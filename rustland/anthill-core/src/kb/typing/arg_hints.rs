@@ -1238,8 +1238,9 @@ pub(super) fn arg_is_function_value_literal(kb: &KnowledgeBase, arg: &Rc<NodeOcc
 /// An `Expr::Apply` is excluded: `inc` is a name the reader may lift to a function value;
 /// `inc(x)` is a call and already carries its own type.
 ///
-/// A BARE name, so read as one is (kernel-language §4.4): a sort beside a same-named
-/// operation is the type, not the function ([`KnowledgeBase::is_type_value_head`]). It
+/// A BARE name, so read as one is (kernel-language §4.4): a type face is the type, not the
+/// function ([`KnowledgeBase::is_type_value_head`]), and the plain symbol of a sort beside
+/// a same-named operation is the operation, in a data context (WI-20261022-7EXEY). It
 /// asked for the keyword written first, which lifted the pair in one order only (WI-974).
 pub(super) fn arg_is_bare_operation_name(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> bool {
     leaf_var_ref(arg).is_some_and(|head| {

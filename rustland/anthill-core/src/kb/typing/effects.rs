@@ -1205,14 +1205,16 @@ pub(super) fn drop_refuted_guarded_labels(
 ///
 /// The head is APPLIED, so it is read as an application is (kernel-language §4.4): a spec
 /// requirement only when the name can be nothing but a type
-/// ([`KnowledgeBase::names_only_a_type`]) — a sort that is also an operation is applied as
+/// ([`KnowledgeBase::is_type_value_head`]) — a sort that is also an operation is applied as
 /// the operation (WI-974). It asked for the keyword written FIRST, so `requires both(x)`
 /// beside `sort both` was a precondition in one order and an unchecked spec in the other.
+/// The BRACKET of such a pair, `requires both[T = A]`, is headed by the sort's type face
+/// and so is the spec requirement written (WI-20261022-7EXEY).
 pub(crate) fn is_value_precondition_clause(kb: &KnowledgeBase, clause: &Value) -> bool {
     match clause.head(kb) {
         ViewHead::Functor {
             functor: Some(f), ..
-        } => !kb.names_only_a_type(f),
+        } => !kb.is_type_value_head(f),
         _ => false,
     }
 }

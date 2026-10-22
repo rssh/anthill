@@ -274,8 +274,8 @@ impl Interpreter {
             // Proposal 055 §2 — a nominal type expression in value position, ALREADY
             // CLASSIFIED by the loader. This arm neither re-asks the name's kinds nor
             // consults the expected sort; it only assembles the value the recorded
-            // denotation names. It is what the two sort arms below (`Expr::Apply`'s
-            // `names_only_a_type` and `reduce_var`'s `is_type_value_head`) become once every producer mints
+            // denotation names. It is what the two sort arms below (`Expr::Apply`'s and
+            // `reduce_var`'s, both `is_type_value_head`) become once every producer mints
             // this form — see their sites for which producers still do not.
             //
             // THE TWO FACES ARE ASSEMBLED BY THE TWO BUILDERS THEY BACK ONTO, and that
@@ -357,15 +357,14 @@ impl Interpreter {
                 // dispatch as `UnknownOperation`. Sits ahead of the classification match.
                 //
                 // A name that is ONLY a type (WI-974) — the loader's test for the same
-                // application ([`KnowledgeBase::names_only_a_type`]). It asked for the
+                // application ([`KnowledgeBase::is_type_value_head`]). It asked for the
                 // keyword written first, so the long spelling of a constructor (`sort Mk {
                 // entity Mk(v) }`) built a type here where `entity Mk(v)` constructed, and a
                 // sort beside a same-named operation was a type or a call by source order.
-                // That pair is now always the call — an application of a name that is an
-                // operation is the operation's (§4.4); a WRITTEN bracket of it is a type
-                // the typer records as `Expr::TypeValue`, which never reaches this arm, and
-                // an unmarked one (a KB loaded without the typer) has lost what says so.
-                if self.kb.names_only_a_type(*functor) {
+                // That pair is read by its FACE now (WI-20261022-7EXEY): its bracket, marked
+                // or not, is headed by the sort's type face and builds the type here, and
+                // its plain symbol applied is the operation's call, below.
+                if self.kb.is_type_value_head(*functor) {
                     return self.start_sort_type(*functor, pos_args, named_args);
                 }
                 // WI-714 (proposal 052): a RULE-headed application (`queens(board)`,

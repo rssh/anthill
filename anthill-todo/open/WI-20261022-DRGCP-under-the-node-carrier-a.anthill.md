@@ -1,0 +1,15 @@
+## Attributes
+
+- id: WI-20261022-DRGCP-under-the-node-carrier-a
+- created: 2026-10-22T17:04:44Z
+
+- status: Open
+- status_agent: user
+- status_at: 2026-10-22T17:04:44Z
+
+- acceptance: cargo-test, scaland-sbt-test
+
+## Description
+
+UNDER THE NODE CARRIER A CONSTRUCTOR'S TYPE BOUND IN A SIGNATURE REACHES A PRECONDITION AS ITS INSTANCE — six rows fail under `ANTHILL_TEST_NODE_CARRIER=1`. Found 2026-10-22 running WI-20261022-7EXEY's controls; MEASURED on origin/main 31fef79b WITHOUT 7EXEY's change, the same six fail (`ANTHILL_TEST_NODE_CARRIER=1 scripts/test.sh -p anthill-core --test wi_tests -- wi4gbqv_ambient_resource_test::an_entity_in_an_ordinary_type_slot_is_still_a_type wi9pgcm_type_level_precondition_test`), so they predate it; without the switch all six pass. The rows: `wi4gbqv_ambient_resource_test::an_entity_in_an_ordinary_type_slot_is_still_a_type`; `wi9pgcm_type_level_precondition_test::` `untrusted_label_into_public_only_sink_is_refused`, `existential_witness_does_not_discharge_the_obligation`, `a_declared_wrapper_gates_its_own_callers`, `mixed_conjunct_decided_and_unprovable_is_refused`, `mixed_conjunct_declared_discharges_and_still_gates`. WHAT DIFFERS: over `enum Level { entity Untrusted; entity Public }`, `fact flows_to(Public[], Public[])`, `operation fetch() -> Text[L = Untrusted]`, `operation send(body: Text[L = ?l]) -> Unit requires flows_to(?l, Public[])` and `send(fetch())`, the load is refused in both modes, but without the switch the unsatisfied precondition is the grounded `flows_to(Untrusted[], Public[])` — the label bound to the constructor's TYPE FACE, as kernel-language §4.4 reads a name in a type context (WI-20260902-JB6RS) — and with the switch it is `flows_to(Untrusted, Public)` (and `allowed(Untrusted, 1)` for `allowed(Untrusted[], 1)`): the label reaches the obligation as the INSTANCE. The switch puts every sort named in an operation's signature on the occurrence a type alias rides (`TypeNode::Aliased`), which changes no meaning (rustland/CLAUDE.md, the third control), so a reader on the precondition path — binding `?l` from the argument's declared type, or grounding the goal for the check — reads the type off the node carrier and loses the face, where the term carrier keeps it. The verdict agrees today only because no fact matches either spelling: with `fact flows_to(Untrusted[], Public[])` added the call should load, and under the switch it would presumably still be refused — the first thing to measure. TO DO: find the reader (CLAUDE.md's recipe: print each `unify_types` / `types_compatible` pair in both modes and diff), fix it so the face survives the node carrier, and prove the fix WITHOUT the switch with a type that rides an occurrence on its own (`value_holding_type_readers_test`'s way). Also say when it began (likely JB6RS, which introduced the face; bisect the six rows under the switch). ACCEPTANCE (cargo-test, driven): the six rows pass under the switch; a row, passing without the switch, where the edge `flows_to(Untrusted[], Public[])` is present and `send(fetch())` loads, with a node-carried label — its control the edge absent; the back-out named at the row.
+

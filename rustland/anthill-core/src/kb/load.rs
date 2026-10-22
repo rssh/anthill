@@ -1620,6 +1620,27 @@ pub enum LoadError {
         /// this load's in source order. Always at least two.
         sites: Vec<String>,
     },
+    /// WI-20261022-7EXEY — a later load declares an `operation` under the name of a SORT a
+    /// SEALED load declared, in that sort's scope, where the sort had no constructor of its
+    /// name. One load may hold the pair (WI-751), and its type is then named by a type face
+    /// (kernel-language.md §4.4, §8.3) that the sealed load's terms do not carry: they name
+    /// the sort by its plain symbol, which the pair makes the operation, so every type the
+    /// sealed load wrote under the name would stop being the type the later load names.
+    /// Measured: `operation Cell(…)` in `anthill.prelude` after the standard library's seal
+    /// left `Cell[V = Int64]` not `Modifiable`.
+    ///
+    /// Not the other way round: a later TYPE beside a sealed operation, or a later operation
+    /// beside a sealed constructor, leaves every sealed term reading as it did — the sealed
+    /// load wrote that name only as the operation, or already named its type by its face.
+    ///
+    /// Not located, and the site pre-rendered, for [`Self::DuplicateTypeDeclaration`]'s
+    /// reason: the two declarations sit in different loads.
+    OperationBesideASealedType {
+        /// The QUALIFIED name.
+        name: String,
+        /// Where this load declares the operation, rendered.
+        site: String,
+    },
     /// WI-939 item 4 — ONE OPERATION, ONE DEFINITION. An operation is defined EITHER
     /// by a body OR by hand-written clauses, never by both: the two are two
     /// definitions of one name, and a rule's operation name is its label else its
@@ -2169,17 +2190,6 @@ pub enum LoadError {
         /// The qualified predicate the head would extend.
         predicate: String,
         /// The joining head, so each independent contributor has its own location.
-        span: Span,
-    },
-    /// WI-974 — `requires Both[T = X]` where `Both` is a SORT and also an OPERATION of the
-    /// same name (WI-751's pair). A clause keeps no bracket for a sort with no constructor,
-    /// so the stored clause is `Both(T: X)` — an application of the operation, which is how
-    /// every reader of a `requires` clause then takes it (§4.4): a value precondition, never
-    /// the spec requirement that was written. Refused where the bracket is still visible,
-    /// rather than read as the call.
-    BracketRequirementOnAnOperationName {
-        /// The sort's name, as resolved.
-        name: String,
         span: Span,
     },
     /// PROPOSAL 061 — a body-less rule DECLARES, and this one can declare nothing: a
@@ -2991,7 +3001,6 @@ impl LoadError {
             | LoadError::EquationSubjectNamesAPredicate { span, .. }
             | LoadError::UnguardedNonEnclosingPredicateJoin { span, .. }
             | LoadError::BodylessRuleDeclaresNothing { span, .. }
-            | LoadError::BracketRequirementOnAnOperationName { span, .. }
             | LoadError::DescriptionWithoutTarget { span, .. }
             | LoadError::DeclarationCarriesClauseText { span, .. } => Some(*span),
             LoadError::TypeMismatch { span, .. }
@@ -3783,9 +3792,6 @@ impl LoadError {
                     predicate
                 )
             }
-            LoadError::BracketRequirementOnAnOperationName { name, span } => {
-                format!("{}: {}", loc.format_start(*span), bracket_requirement_message(name))
-            }
             LoadError::BodylessRuleDeclaresNothing { detail, span } => {
                 format!(
                     "{}: a rule with no body DECLARES a predicate (proposal 061), and \
@@ -4021,6 +4027,9 @@ impl LoadError {
             }
             LoadError::DuplicateConstDeclaration { name, sites } => {
                 duplicate_const_message(name, sites)
+            }
+            LoadError::OperationBesideASealedType { name, site } => {
+                operation_beside_a_sealed_type_message(name, site)
             }
             LoadError::ClausesOfDifferentArity {
                 name,
@@ -4467,6 +4476,9 @@ impl std::fmt::Display for LoadError {
             }
             LoadError::DuplicateConstDeclaration { name, sites } => {
                 write!(f, "{}", duplicate_const_message(name, sites))
+            }
+            LoadError::OperationBesideASealedType { name, site } => {
+                write!(f, "{}", operation_beside_a_sealed_type_message(name, site))
             }
             LoadError::ClausesOfDifferentArity {
                 name,
@@ -5246,13 +5258,6 @@ impl std::fmt::Display for LoadError {
                     name, scope, predicate, span.start, span.end
                 )
             }
-            LoadError::BracketRequirementOnAnOperationName { name, span } => write!(
-                f,
-                "{} (at {}..{})",
-                bracket_requirement_message(name),
-                span.start,
-                span.end
-            ),
             LoadError::BodylessRuleDeclaresNothing { detail, span } => {
                 write!(
                     f,
@@ -6597,7 +6602,7 @@ fn query_application_errors(
         if !quoted
             && !file.terms.is_type_application(id)
             && !file.terms.is_minted(id)
-            && kb.names_only_a_type(resolved)
+            && kb.is_type_value_head(resolved)
         {
             errors.push(
                 LoadError::SortAppliedAsData {
@@ -8451,6 +8456,17 @@ fn duplicate_operation_message(op: &str, sites: &[String], facts: usize) -> Stri
          second DEFINITION, which is WI-939 item 4's separate refusal).",
         sites.len(),
         if facts == 1 { "" } else { "s" },
+    )
+}
+
+/// WI-20261022-7EXEY — the ONE wording of [`LoadError::OperationBesideASealedType`].
+fn operation_beside_a_sealed_type_message(name: &str, site: &str) -> String {
+    format!(
+        "`operation {name}` at {site} is declared beside the sort of that name a sealed load \
+         declared. A sort that shares its name with an operation is named by a type face \
+         (kernel-language.md §4.4, §8.3), and the sealed load named this sort without one, so \
+         every type it wrote under the name would stop being the type this load names. Rename \
+         the operation, or declare the two in one load."
     )
 }
 
@@ -15272,16 +15288,6 @@ pub(crate) fn undefined_rule_body_term_message(functor: &str) -> String {
     )
 }
 
-/// WI-974 — the ONE wording of [`LoadError::BracketRequirementOnAnOperationName`].
-fn bracket_requirement_message(name: &str) -> String {
-    format!(
-        "`requires {name}[…]` names a sort that is also an OPERATION of the same name, and a \
-         stored clause cannot keep the bracket that says which: it would be read as a call of \
-         the operation — a value precondition — not as the requirement written. Rename the \
-         sort or the operation."
-    )
-}
-
 /// WI-20260902-JB6RS — the ONE wording of [`LoadError::SortAppliedAsData`].
 pub(crate) fn sort_applied_as_data_message(sort: &str) -> String {
     format!(
@@ -15850,9 +15856,10 @@ fn const_callee_is_pure(kb: &KnowledgeBase, functor: Symbol) -> Result<(), Strin
 }
 
 /// A bare REFERENCE is pure unless it names a NULLARY operation with effects (a
-/// zero-arg effectful call). A multi-arg op ref is eta — a pure closure value. A sort
-/// that is also an operation is the TYPE when written bare (§4.4,
-/// [`KnowledgeBase::is_type_value_head`]), and a type is pure (WI-974).
+/// zero-arg effectful call). A multi-arg op ref is eta — a pure closure value. A type is
+/// pure (WI-974): a face ([`KnowledgeBase::is_type_value_head`]). The plain symbol of a
+/// sort that is also an operation is the OPERATION when written bare in a data context
+/// (§4.4; WI-20261022-7EXEY), and is held to the operation's effects.
 fn const_ref_is_pure(kb: &KnowledgeBase, sym: Symbol) -> Result<(), String> {
     if kb.has_kind(sym, crate::intern::SymbolKind::Operation) && !kb.is_type_value_head(sym) {
         if let Some(info) = crate::kb::op_info::lookup_operation_info(kb, sym) {
@@ -16121,6 +16128,8 @@ fn load_phase_inner(
     mark!("check_duplicate_operation_declarations");
     all_errors.extend(check_duplicate_const_declarations(kb));
     mark!("check_duplicate_const_declarations");
+    all_errors.extend(check_operations_beside_a_sealed_type(kb));
+    mark!("check_operations_beside_a_sealed_type");
     // WI-20260904-B8ESG — a head ARGUMENT whose functor names nothing. HERE, with the
     // whole-KB checks, because the verdict needs every file loaded: `symbol_declares_nothing`
     // reads `rules_by_functor`, and a predicate defined purely by FACTS has no clauses
@@ -20684,6 +20693,26 @@ fn check_duplicate_const_declarations(kb: &KnowledgeBase) -> Vec<LoadError> {
         .collect()
 }
 
+/// WI-20261022-7EXEY — [`LoadError::OperationBesideASealedType`]: this load's `operation`
+/// under the name of a sort a sealed load declared with no constructor of its name, read
+/// off the scan's ledger as the const check is. A sealed operation declared AGAIN is
+/// [`check_duplicate_operation_declarations`]'s. Nothing sealed, nothing refused.
+fn check_operations_beside_a_sealed_type(kb: &KnowledgeBase) -> Vec<LoadError> {
+    kb.decl_sites
+        .iter()
+        .filter(|decl| {
+            decl.category == DeclCategory::Operation
+                && !kb.sealed.ops.contains_key(&decl.sym)
+                && kb.sealed.sorts.contains(&kb.canonical_sort_sym(decl.sym))
+                && !kb.has_kind(decl.sym, SymbolKind::Entity)
+        })
+        .map(|decl| LoadError::OperationBesideASealedType {
+            name: kb.qualified_name_of(decl.sym).to_string(),
+            site: render_decl_site(kb, decl.site),
+        })
+        .collect()
+}
+
 /// WI-1049 — one declaration site as `path:line:col`.
 ///
 /// A source registered by NAME only holds no text to index a `line:col` against,
@@ -23195,12 +23224,13 @@ fn convert_query_term_expecting(
             // name written as one of its bindings read in a type context, so `hr(red[])`
             // finds the fact `fact hr(red[])` holds.
             if parse_terms.is_type_application(parse_id) {
+                let head = kb_functor;
                 kb_functor = kb.type_context_face(kb_functor);
                 for child in new_pos.iter_mut() {
-                    *child = query_type_context_binding(kb, child);
+                    *child = query_type_context_binding(kb, head, None, child);
                 }
-                for (_, child) in new_named.iter_mut() {
-                    *child = query_type_context_binding(kb, child);
+                for (key, child) in new_named.iter_mut() {
+                    *child = query_type_context_binding(kb, head, Some(*key), child);
                 }
             }
 
@@ -23275,16 +23305,19 @@ fn convert_query_term_expecting(
     expr_node(expr)
 }
 
-/// WI-20260902-JB6RS — a query bracket's binding read in its TYPE context: a bare name
-/// whose declaration has a type face is that face, as [`Loader::type_context_binding`]
-/// reads a clause's. Anything else is left as converted.
+/// WI-20260902-JB6RS — a binding of a query bracket on `head` read in its TYPE context: a
+/// bare name whose declaration has a type face is that face, at every slot but an
+/// operation slot, as [`Loader::type_context_binding`] reads a clause's. Anything else is
+/// left as converted.
 fn query_type_context_binding(
     kb: &KnowledgeBase,
+    head: Symbol,
+    key: Option<Symbol>,
     occ: &Rc<NodeOccurrence>,
 ) -> Rc<NodeOccurrence> {
     match occ.as_expr() {
         Some(Expr::Ref(s)) => {
-            let face = kb.type_context_face(*s);
+            let face = kb.binding_type_face(head, key, *s);
             if face == *s {
                 Rc::clone(occ)
             } else {
@@ -25080,6 +25113,11 @@ struct Loader<'a> {
     // own children — the clause converter's `Term::Fn` arm and the rule-body walk's — and
     // restored by the two wrappers, as `const_fold` is.
     in_type_binding: bool,
+    // WI-20261022-7EXEY — and WHICH binding, while the rule-body walk lowers one: the
+    // bracket's head and the key (`None` for a positional), the slot that decides whether a
+    // name that is an operation as well is bound as its type or as the operation
+    // ([`KnowledgeBase::binding_type_face`]). Read only while `in_type_binding` holds.
+    binding_slot: Option<(Symbol, Option<Symbol>)>,
     // WI-710: nesting depth inside `convert_term_with_expected` — 1 while converting a
     // TOP-LEVEL term (a `fact` head, a rule head / body goal), >1 for a term nested as
     // another term's argument. It tells the two readings of one syntax apart: a
@@ -25586,6 +25624,7 @@ impl<'a> Loader<'a> {
             in_quoted_term: false,
             const_fold: ConstFold::Off,
             in_type_binding: false,
+            binding_slot: None,
             term_depth: 0,
             in_value_position: false,
             rule_head_type_bounds: Vec::new(),
@@ -28437,7 +28476,7 @@ impl<'a> Loader<'a> {
     }
 
     /// WI-20260902-JB6RS — refuse `S(…)` WRITTEN where `S` names only a type
-    /// ([`KnowledgeBase::names_only_a_type`]): only a BARE name falls back to another
+    /// ([`KnowledgeBase::is_type_value_head`]): only a BARE name falls back to another
     /// reading (kernel-language.md §4.4), and an application needs something to apply.
     /// A bracket is the type; a node the converter MINTED is its own encoding. In a CLAUSE
     /// only (`const_fold` is `Off` outside one): an operation body's application is the
@@ -28446,7 +28485,7 @@ impl<'a> Loader<'a> {
         if self.const_fold == ConstFold::Off
             || self.parsed.terms.is_type_application(parse_id)
             || self.parsed.terms.is_minted(parse_id)
-            || !self.kb.names_only_a_type(functor)
+            || !self.kb.is_type_value_head(functor)
         {
             return;
         }
@@ -29934,12 +29973,13 @@ impl<'a> Loader<'a> {
                 // already done this for its own, being converted first, and a value a
                 // binding names (`Vector[Int64, N]`, `Modify[c]`) has no type face.
                 if is_type_app {
+                    let head = new_functor;
                     new_functor = self.kb.type_context_face(new_functor);
                     for child in new_pos.iter_mut() {
-                        *child = self.type_context_binding(*child);
+                        *child = self.type_context_binding(head, None, *child);
                     }
-                    for (_, child) in new_named.iter_mut() {
-                        *child = self.type_context_binding(*child);
+                    for (key, child) in new_named.iter_mut() {
+                        *child = self.type_context_binding(head, Some(*key), *child);
                     }
                 }
 
@@ -31614,10 +31654,15 @@ impl<'a> Loader<'a> {
             // type as well — `Pair.left` in `Box[V = Pair.left]` — for the reason its
             // bracketed twin is (`build_load`'s `is_type_value`): an entry of a bracket is
             // a type argument. Left a reference to the constructor, it was a node eval had
-            // no reading for.
+            // no reading for. A name that is an OPERATION as well is left as it is: its
+            // slot decides ([`KnowledgeBase::binding_type_face`]), and the bracket's frame,
+            // where the head is resolved, reads it (WI-20261022-7EXEY).
             let entry = self.bracket_entries.contains(&parse_id) && !self.lowering_rule_compound_expr;
             let occ = match head.filter(|s| {
-                self.bare_name_denotes_type(*s) || (entry && self.kb.is_constructor_symbol(*s))
+                self.bare_name_denotes_type(*s)
+                    || (entry
+                        && self.kb.type_context_face(*s) != *s
+                        && !self.kb.has_kind(*s, SymbolKind::Operation))
             }) {
                 Some(head) => {
                     self.bare_type_value_occ(head, span, None, !self.lowering_rule_compound_expr)
@@ -32182,6 +32227,31 @@ impl<'a> Loader<'a> {
                         // surface nothing produces — left unconsumed, the end-of-file
                         // sweep reports it rather than this arm dropping it silently.
                         //
+                        // WI-20261022-7EXEY — a bare entry that is an OPERATION as well and
+                        // has a type face was left as written ([`Self::push_leaf_occ`]): its
+                        // slot decides, read here where the head is resolved — its face at a
+                        // type parameter, the operation at any other slot.
+                        if !self.lowering_rule_compound_expr {
+                            let first = self.expr_occ_results.len() - pos_count - occ_named_keys.len();
+                            let keys = std::iter::repeat_n(None, pos_count)
+                                .chain(occ_named_keys.iter().map(|k| Some(*k)));
+                            for (i, key) in keys.enumerate() {
+                                let slot = &self.expr_occ_results[first + i];
+                                let Some(Expr::Ref(s) | Expr::Ident(s) | Expr::VarRef { name: s }) =
+                                    slot.as_expr()
+                                else {
+                                    continue;
+                                };
+                                let s = *s;
+                                if self.kb.has_kind(s, SymbolKind::Operation)
+                                    && self.kb.binding_type_face(kb_functor, key, s) != s
+                                {
+                                    let site = slot.span;
+                                    let ty = self.bare_type_value_occ(s, site, None, true);
+                                    self.expr_occ_results[first + i] = ty;
+                                }
+                            }
+                        }
                         // A type alias's head is the sort it stands for, and the bindings
                         // it fixes are further children, after the written ones.
                         let mut named_keys = occ_named_keys;
@@ -33047,11 +33117,13 @@ impl<'a> Loader<'a> {
         // `convert_term_with_expected` gives.
         let saved_fold = self.const_fold;
         let saved_type_binding = self.in_type_binding;
+        let saved_slot = self.binding_slot;
         self.term_depth = saved + 1;
         let occ = self.build_body_atom_occurrence_inner(parse_id);
         self.term_depth = saved;
         self.const_fold = saved_fold;
         self.in_type_binding = saved_type_binding;
+        self.binding_slot = saved_slot;
         occ
     }
 
@@ -34115,9 +34187,10 @@ impl<'a> Loader<'a> {
     /// headed by its type face (`Box[V = red]` binds `red†`, as the clause holding it does);
     /// anywhere else its INSTANCE — for one that takes fields the all-fields-fresh pattern
     /// [`Self::bare_entity_goal_occurrence`] builds, as the clause converter's
-    /// `bare_name_term` does. `None` for any other name, for a fieldless constructor's
-    /// instance (the bare reference already is it), and in a goal, whose own expansion is
-    /// §8.3's.
+    /// `bare_name_term` does. A sort-named operation as a bracket's binding is its type face
+    /// too (`Box[V = Positive]`, WI-20261022-7EXEY). `None` for any other name, for a
+    /// fieldless constructor's instance (the bare reference already is it), and in a goal,
+    /// whose own expansion is §8.3's.
     fn body_data_slot_name(
         &mut self,
         sym: Symbol,
@@ -34131,12 +34204,22 @@ impl<'a> Loader<'a> {
             && !self.in_body_goal_wrapper
             && !self.in_non_value_role
             && self.const_fold == ConstFold::Data;
-        if !data_slot || sym.is_type_face() || !self.kb.has_kind(sym, SymbolKind::Entity) {
+        if !data_slot || sym.is_type_face() {
             return None;
         }
         if self.in_type_binding {
+            let face = match self.binding_slot {
+                Some((head, key)) => self.kb.binding_type_face(head, key, sym),
+                None => self.kb.type_context_face(sym),
+            };
+            if face == sym {
+                return None;
+            }
             let owner = self.current_owner;
             return Some(self.bare_type_value_occ(sym, span, owner, false));
+        }
+        if !self.kb.has_kind(sym, SymbolKind::Entity) {
+            return None;
         }
         self.bare_entity_goal_occurrence(sym, parse_id)
     }
@@ -34444,6 +34527,18 @@ impl<'a> Loader<'a> {
                 } else {
                     new_functor
                 };
+                // WI-20261022-7EXEY — A BRACKET IS HEADED BY THE TYPE FACE at a GOAL too, as
+                // the clause converter heads it (`convert_term_inner`'s `is_type_app` block)
+                // and the query converter does: `:- Pos[T = Int64]` beside `operation
+                // Pos(x)` is the sort's atom, answered by `fact Pos[T = Int64]`, and was the
+                // operation's call — refused for its labels (MEASURED); an eponymous entity's
+                // bracket goal was its construction, and found nothing. A bracket anywhere
+                // else is the `Expr::TypeValue` below, which takes the face itself.
+                let new_functor = if at_goal && self.parsed.terms.is_type_application(parse_id) {
+                    self.kb.type_context_face(new_functor)
+                } else {
+                    new_functor
+                };
                 // WI-20260824-JM6ZW — A NESTED, BRACKETED SORT APPLICATION IN A DATA SLOT IS
                 // A TYPE VALUE, recorded as the `Expr::TypeValue` the operation-body walk
                 // builds for it (`build_load`'s `is_type_value`: the written bracket and
@@ -34609,6 +34704,7 @@ impl<'a> Loader<'a> {
                             None => {}
                         }
                         self.in_non_value_role = name_chain;
+                        self.binding_slot = Some((new_functor, None));
                         pos.push(self.build_body_atom_occurrence(pid));
                         self.in_body_goal = false;
                         self.in_body_goal_wrapper = false;
@@ -34625,6 +34721,7 @@ impl<'a> Loader<'a> {
                             continue;
                         }
                         let key = self.reintern(sym);
+                        self.binding_slot = Some((new_functor, Some(key)));
                         self.in_non_value_role = name_chain;
                         let child = self.build_body_atom_occurrence(pid);
                         self.in_non_value_role = false;
@@ -36968,12 +37065,13 @@ impl<'a> Loader<'a> {
         // type slot is its TYPE (WI-313, kernel §4.4; `Level.Untrusted` standing in
         // `Text[L = Untrusted]` is the live idiom that depends on it), in every slot,
         // `Modify`'s target included since WI-20260902-JB6RS. Nor a SORT that is also an
-        // operation (WI-751's pair): a bare name in a type slot is the type when it is a
-        // sort and no constructor ([`KnowledgeBase::is_type_value_head`], §4.4), so
-        // `Modify[Both]` is a TYPE target as `Modify[Cell]` is (WI-974).
+        // operation (WI-751's pair): a name in a type slot is the type whenever it has a
+        // type reading ([`KnowledgeBase::has_type_reading`], §4.4), so `Modify[Both]` is a
+        // TYPE target as `Modify[Cell]` is (WI-974) — the sort's type face
+        // (WI-20261022-7EXEY), which `make_sort_ref` below names it by.
         let is_value = self.symbol_is_value_place(sort_sym)
             || (self.kb.has_kind(sort_sym, SymbolKind::Operation)
-                && !self.kb.is_type_value_head(sort_sym));
+                && !self.kb.has_type_reading(sort_sym));
         // NB the operation arm is arity-BLIND, which kernel-language.md §5.6 and
         // `check_modify_targets`' own message both contradict ("a value-producing
         // ZERO-ARG operation"): `Modify[twoArgOp]` lowers as a place today. Left
@@ -41645,7 +41743,6 @@ impl<'a> Loader<'a> {
         // what lets the guard ask `is_type_param` directly instead of re-finding the
         // sort's body scope by name.
         self.check_op_type_param_shadowing(o, prev_scope, &op_qualified);
-        self.refuse_bracket_requirement_on_an_operation_name(o);
         self.refuse_reserved_self_params(o);
         self.record_op_named_slots(o, functor);
 
@@ -42594,29 +42691,6 @@ impl<'a> Loader<'a> {
     /// `Self`. The declarations [`reserved_self_name_errors`] reads do not include an
     /// operation's frame, and a parameter of this name would be silently unreachable:
     /// the type lowering reads `Self` before it resolves any name.
-    /// WI-974 — [`LoadError::BracketRequirementOnAnOperationName`]: a `requires` goal
-    /// WRITTEN as a bracket that every reader will take as a call. Asked here because the
-    /// parse term still says which was written, and of the converted clause with the same
-    /// predicate those readers use (`is_value_precondition_clause`), so the refusal is
-    /// exactly the case they misread.
-    fn refuse_bracket_requirement_on_an_operation_name(&mut self, o: &Operation) {
-        for goal in o.requires.iter().flatten() {
-            if !self.parsed.terms.is_type_application(*goal) {
-                continue;
-            }
-            let converted = self.convert_term(*goal);
-            let Some(base) = self.kb.head_functor(converted) else {
-                continue;
-            };
-            if super::typing::is_value_precondition_clause(self.kb, &Value::term(converted)) {
-                self.errors.push(LoadError::BracketRequirementOnAnOperationName {
-                    name: self.kb.qualified_name_of(base).to_owned(),
-                    span: self.parsed.terms.span(*goal),
-                });
-            }
-        }
-    }
-
     fn refuse_reserved_self_params(&mut self, o: &Operation) {
         let is_self = |loader: &Self, sym: Symbol| {
             loader.parsed.symbols.local_name(sym) == crate::intern::SELF_TYPE_NAME
@@ -43503,22 +43577,15 @@ impl<'a> Loader<'a> {
         Some(node_occurrence::type_in_clause_canon(self.kb, stands_for))
     }
 
-    /// WI-20260924-F8PYZ — a BARE resolved name at the top of an operation's `requires`, as
-    /// the clause's spec: a type alias read through (`read_spec_alias`), exactly as the
-    /// bracketed application in `convert_term`'s `Term::Fn` arm reads one — `requires
-    /// WisStore` IS `requires Store[State = WIS]`. MEASURED before: the requirement was of
-    /// the alias itself, which no provision of `Store` meets, and it went unchecked — a
-    /// call with no provider ran. A bare alias that fixes nothing is the spec's `Ref`, the
-    /// shape a bare `requires Store` has. Any other name, or one in any other position, is
-    /// the `Ref` it always was.
-    /// WI-20260902-JB6RS — a bracket's binding read in its TYPE context: a bare name
-    /// whose declaration has a type face (a constructor) is that face; anything else —
-    /// a variable, a value, an application already headed by its own face — is left as
-    /// converted.
-    fn type_context_binding(&mut self, t: TermId) -> TermId {
+    /// WI-20260902-JB6RS — a binding of a bracket on `head` read in its TYPE context: a
+    /// bare name whose declaration has a type face is that face, at every slot but an
+    /// operation slot ([`KnowledgeBase::binding_type_face`], WI-20261022-7EXEY); anything
+    /// else — a variable, a value, an application already headed by its own face — is left
+    /// as converted.
+    fn type_context_binding(&mut self, head: Symbol, key: Option<Symbol>, t: TermId) -> TermId {
         match *self.kb.get_term(t) {
             Term::Ref(s) => {
-                let face = self.kb.type_context_face(s);
+                let face = self.kb.binding_type_face(head, key, s);
                 if face == s {
                     t
                 } else {
@@ -43529,6 +43596,14 @@ impl<'a> Loader<'a> {
         }
     }
 
+    /// WI-20260924-F8PYZ — a BARE resolved name at the top of an operation's `requires`, as
+    /// the clause's spec: a type alias read through (`read_spec_alias`), exactly as the
+    /// bracketed application in `convert_term`'s `Term::Fn` arm reads one — `requires
+    /// WisStore` IS `requires Store[State = WIS]`. MEASURED before: the requirement was of
+    /// the alias itself, which no provision of `Store` meets, and it went unchecked — a
+    /// call with no provider ran. A bare alias that fixes nothing is the spec's `Ref`, the
+    /// shape a bare `requires Store` has. Any other name, or one in any other position, is
+    /// the `Ref` it always was.
     fn bare_contract_spec(&mut self, sym: Symbol, span: Span) -> Term {
         if !self.in_op_contract_clause {
             return Term::Ref(sym);

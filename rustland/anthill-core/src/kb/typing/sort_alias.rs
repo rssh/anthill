@@ -38,6 +38,10 @@ pub(crate) fn is_sort_param_symbol(kb: &KnowledgeBase, sym: Symbol) -> bool {
 /// [`type_param_global_var`] reaches an operation's BRACKET parameter through the op's
 /// own record, which is where a bracket parameter's variable actually lives.
 pub(crate) fn resolve_sort_alias(kb: &KnowledgeBase, sym: Symbol) -> Option<TermId> {
+    // The DECLARATION's: a type face is the type reading of its declaration, and an alias
+    // that shares its name with an operation has one (WI-20261022-7EXEY) — `-> Money` over
+    // `sort Money = Int64` beside `operation Money(c)` is `Money†`, and stood for nothing.
+    let sym = sym.plain();
     // WI-659 fast path: the SortAlias index (built once at type-check start by
     // `build_sort_alias_index`) answers in O(1). A built index is COMPLETE, so a miss
     // is a genuine "not a SortAlias" and returns `None` with NO fallback re-scan:
@@ -1002,7 +1006,7 @@ pub(crate) fn value_alias(
     let (base, bindings) = match alias_expansion(kb, sym)? {
         AliasExpansion::Sort { base, bindings } => (base, bindings),
         AliasExpansion::NotASort(_) => {
-            let ty = *kb.alias_types.get(&sym)?;
+            let ty = *kb.alias_types.get(&sym.plain())?;
             let names_a_parameter = kb
                 .collect_vars(&TermIdView(ty))
                 .into_iter()
