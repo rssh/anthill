@@ -102,6 +102,9 @@
 //!     FAIL: [`a_member_wider_through_a_spec_its_parameter_provides_fits`],
 //!     [`a_member_wider_through_a_user_spec_its_parameter_provides_fits`] and
 //!     [`a_member_returning_a_provider_of_the_specs_return_fits`].
+//!     That walk is gone (WI-20261003-GR5EN): the provider is an arm of `bind_member_vars_along`,
+//!     `bind_member_vars_through_provision`, at every position the relation walks, and an
+//!     applied carrier is bound by the unifier too (S7YF5) — the back-out is now both.
 //! 109. A NEUTRAL RE-KEYED TO THE ARGUMENT'S VALUE PATH (`arg_paths`) — to its variable. 2 FAIL:
 //!     [`a_lambda_hint_through_a_projection_is_the_callers_path`] and
 //!     [`a_projection_parameter_takes_a_field_path_argument`].

@@ -972,6 +972,7 @@ fn member_narrower_than_spec(
                         &b,
                         &t,
                         variance == Variance::Contravariant,
+                        SpecSlots::Callers,
                     );
                 }
                 if binds_a_cycle(kb, &probe) {
@@ -2359,8 +2360,10 @@ fn spec_at_provision(
 /// Animal) -> Int64`) kept `X` / `R` unbound — and [`types_compatible`] binds nothing, so it
 /// refused them. Each member position meets the spec's: a named tuple's field by its alignment
 /// ([`align_named_tuple_slots`]), an arrow's parameter and result, a same-sort application's
-/// binding by label; an unbound member variable there takes the spec's type. `flipped` is the
-/// relation's direction: an arrow's parameter and a `Contravariant` binding turn it, so there
+/// binding by label, a carrier's provision against the spec it provides
+/// ([`bind_member_vars_through_provision`]); an unbound member variable there takes the spec's
+/// type, and so does a spec variable where [`SpecSlots`] says the member picks it. `flipped` is
+/// the relation's direction: an arrow's parameter and a `Contravariant` binding turn it, so there
 /// the MEMBER's tuple is the one aligned as the subtype (a callback's parameter wider by width
 /// is `(t: (a: X, b: Int64, c: Int64))` behind `(t: (a: Int64, b: Int64))`). The verdict stays
 /// the relation's — this only supplies the variables it reads, and a binding the relation then
@@ -2371,16 +2374,19 @@ fn bind_member_vars_along(
     spec: &Value,
     member: &Value,
     flipped: bool,
+    spec_slots: SpecSlots,
 ) {
     let m = walk_view(kb, subst, member);
-    if matches!(type_head(kb, &m), TypeHead::FlexVar(_)) {
-        unify_types(kb, subst, &m, spec);
+    let s = walk_view(kb, subst, spec);
+    if matches!(type_head(kb, &m), TypeHead::FlexVar(_))
+        || (spec_slots.member_picks(flipped) && matches!(type_head(kb, &s), TypeHead::FlexVar(_)))
+    {
+        unify_types(kb, subst, &m, &s);
         return;
     }
-    let s = walk_view(kb, subst, spec);
     match (extract_type(kb, &s), extract_type(kb, &m)) {
         (TypeExtractor::NamedTuple(sf), TypeExtractor::NamedTuple(mf)) => {
-            bind_member_fields_along(kb, subst, &sf, &mf, TupleAlign::DATA, flipped);
+            bind_member_fields_along(kb, subst, &sf, &mf, TupleAlign::DATA, flipped, spec_slots);
         }
         (
             TypeExtractor::Arrow {
@@ -2400,11 +2406,19 @@ fn bind_member_vars_along(
                 (TypeExtractor::NamedTuple(sf), TypeExtractor::NamedTuple(mf))
                     if arity != 1 && both_named_tuples(kb, &sp, &mp) =>
                 {
-                    bind_member_fields_along(kb, subst, &sf, &mf, TupleAlign::PARAM_LIST, !flipped);
+                    bind_member_fields_along(
+                        kb,
+                        subst,
+                        &sf,
+                        &mf,
+                        TupleAlign::PARAM_LIST,
+                        !flipped,
+                        spec_slots,
+                    );
                 }
-                _ => bind_member_vars_along(kb, subst, &sp, &mp, !flipped),
+                _ => bind_member_vars_along(kb, subst, &sp, &mp, !flipped, spec_slots),
             }
-            bind_member_vars_along(kb, subst, &sr, &mr, flipped);
+            bind_member_vars_along(kb, subst, &sr, &mr, flipped, spec_slots);
         }
         (
             TypeExtractor::Parameterized {
@@ -2425,23 +2439,101 @@ fn bind_member_vars_along(
                 };
                 if let Some(sv) = binding_for_param(kb, &sbind, *k, BindingKeyMatch::Label).cloned()
                 {
-                    bind_member_vars_along(kb, subst, &sv, mv, flip);
+                    bind_member_vars_along(kb, subst, &sv, mv, flip, spec_slots);
                 }
             }
         }
-        _ => {}
+        _ => bind_member_vars_through_provision(kb, subst, &s, &m, flipped, spec_slots),
+    }
+}
+
+/// Who picks a variable on the SPEC's side of [`bind_member_vars_along`]. At a parameter the
+/// caller does: such a variable is a spec parameter the provision leaves unbound, a wildcard
+/// the relation reads as written, and the walk leaves it alone. At the return the member
+/// produces the value, so the spec's unwritten slot is the member's to pick (`-> Describe[K =
+/// ?]` behind a member's `-> Plain`) and the walk binds it, as unification binds it where it
+/// reaches — but only where the member produces it: under a returned arrow's parameter the
+/// caller supplies the value and the slot is the caller's again. Bound there too, `-> (u: (a:
+/// Box[T = Int64])) -> Int64` behind `-> (u: (a: Box[T = K], b: Int64)) -> Int64` loaded, and a
+/// caller passing a `Box[T = String]` to the returned function ran it on one (MEASURED).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SpecSlots {
+    Callers,
+    Members,
+}
+
+impl SpecSlots {
+    /// Does the member pick a spec-side variable at a position of this direction? The return
+    /// is walked with the member the subtype (`flipped`), and a position that turns the
+    /// relation over is one the caller supplies.
+    fn member_picks(self, flipped: bool) -> bool {
+        self == SpecSlots::Members && flipped
+    }
+}
+
+/// [`bind_member_vars_along`] where the SUBTYPE is a carrier and the SUPERTYPE a spec it provides
+/// (`Box[T = Int64]` behind a member's `Describe[K = W]`, a bare `Plain` behind `Describe[K =
+/// W]`): the carrier read as that spec, its provision at this instance
+/// ([`provider_view_at_instance`], the view the relation and the unifier read), each of the
+/// spec's bindings against the view's at its label by the spec's declared variance. Unification
+/// stops short here — between a bare carrier and an applied spec it admits the pair and binds
+/// nothing — so without this walk a member wider through a provider kept its variable unbound
+/// and was refused as taking less, at the top and inside a tuple or an arrow alike. Which side
+/// is the carrier is `flipped`'s: the member's under an arrow's parameter, the spec's at a
+/// parameter.
+fn bind_member_vars_through_provision(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    spec: &Value,
+    member: &Value,
+    flipped: bool,
+    spec_slots: SpecSlots,
+) {
+    let (sub, sup) = if flipped { (member, spec) } else { (spec, member) };
+    let (Some(carrier), Some((provided, sup_bindings))) = (
+        sort_functor_of_view(kb, sub),
+        sort_application_parts(kb, sup),
+    ) else {
+        return;
+    };
+    let (carrier, provided) = (kb.canonical_sort_sym(carrier), kb.canonical_sort_sym(provided));
+    if carrier == provided {
+        return;
+    }
+    let Some((view, _)) = subtype_provider_view(kb, carrier, provided) else {
+        return;
+    };
+    let carrier_bindings = sort_application_parts(kb, sub)
+        .map(|(_, b)| b)
+        .unwrap_or_default();
+    let (view, _) = provider_view_at_instance(kb, subst, carrier, &carrier_bindings, view);
+    for (k, sup_v) in &sup_bindings {
+        let flip = match declared_variance(kb, provided, *k) {
+            Variance::Covariant | Variance::Invariant => flipped,
+            Variance::Contravariant => !flipped,
+            Variance::Bivariant => continue,
+        };
+        let Some(view_v) = binding_for_param(kb, &view, *k, BindingKeyMatch::Label).cloned() else {
+            continue;
+        };
+        if flipped {
+            bind_member_vars_along(kb, subst, sup_v, &view_v, flip, spec_slots);
+        } else {
+            bind_member_vars_along(kb, subst, &view_v, sup_v, flip, spec_slots);
+        }
     }
 }
 
 /// The declaration rule's binding step, a member's position against its spec's: `sub` unified
-/// with `sup` on a probe of `subst`, and where the unifier stops short the member's variables
-/// bound along the relation ([`bind_member_vars_along`], the member the subtype where
-/// `member_is_sub`) — both as the subtype relation reads a carrier through its provision too
-/// ([`bind_along_provider_view`]). The probe, whether the unifier answered `true`, and whether the
-/// probe binds a variable inside itself: such a unifier solves nothing (its occurs check reads a
-/// binding as written: `K ↦ W`, then `W ↦ List[T = K]`), and a deep resolve through it does not
-/// return (MEASURED: the loader's stack overflowed on such a member instead of refusing it), so a
-/// caller keeps nothing of a cyclic probe. Nothing is bound past a contradiction since `before`.
+/// with `sup` on a probe of `subst`, then the member's variables bound along the relation
+/// ([`bind_member_vars_along`], the member the subtype where `member_is_sub`) — whatever the
+/// unifier answered, since its `true` can leave a variable the relation reads unbound (a bare
+/// carrier against an applied spec it provides is admitted binding nothing). The probe, whether
+/// the unifier answered `true`, and whether the probe binds a variable inside itself: such a
+/// unifier solves nothing (its occurs check reads a binding as written: `K ↦ W`, then `W ↦ List[T
+/// = K]`), and a deep resolve through it does not return (MEASURED: the loader's stack overflowed
+/// on such a member instead of refusing it), so a caller keeps nothing of a cyclic probe. Nothing
+/// is bound past a contradiction since `before`.
 fn bind_on_probe(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
@@ -2458,91 +2550,14 @@ fn bind_on_probe(
     if genuine_contradiction_since(kb, &probe, before) {
         return (probe, unified, false);
     }
-    if unified {
-        bind_along_provider_view(kb, &mut probe, sub, sup);
-        return (probe, true, false);
-    }
-    let (spec, member) = if member_is_sub { (sup, sub) } else { (sub, sup) };
-    bind_member_vars_along(kb, &mut probe, spec, member, member_is_sub);
-    // A provision binding kept was checked whole, the relation's bindings with it.
-    let checked = bind_along_provider_view(kb, &mut probe, sub, sup);
-    let cyclic = !checked && binds_a_cycle(kb, &probe);
-    (probe, false, cyclic)
-}
-
-/// WHERE THE SUBTYPE IS A CARRIER AND THE SUPERTYPE A SPEC IT PROVIDES — `List[T = Int64]`
-/// against a member's `FiniteCollection[E = {}]`, a member's `Box[T = Int64]` against the spec's
-/// `Describe[K = ?K]` — the variables either side holds bound from the carrier's provision read at
-/// its arguments: the spec the carrier IS, as the subtype relation reads it, unified with `sup`
-/// on a probe kept only when it holds. Unification across two sorts answers `true` and binds
-/// nothing, and the relation binds nothing either, so a member WIDER than its spec through a
-/// spec-typed parameter left its slot open and was refused as taking less (MEASURED: review 9 —
-/// 160 of 1,200 generated widenings), and a return behind a spec slot the provision leaves
-/// unbound likewise.
-///
-/// At ANY DEPTH a same-sort application reaches: each binding of `sup` against `sub`'s at its
-/// label (`Option[T = Box[T = W]]` behind `Option[T = Describe[K = W]]`, `List[T = Describe]`
-/// behind `List[T = Box[T = Int64]]`).
-///
-/// `true` when it kept a binding — the probe it kept was checked cycle-free whole, so `subst`
-/// is then known to bind no variable inside itself.
-fn bind_along_provider_view(
-    kb: &mut KnowledgeBase,
-    subst: &mut Substitution,
-    sub: &Value,
-    sup: &Value,
-) -> bool {
-    let s = walk_view(kb, subst, sub);
-    let p = walk_view(kb, subst, sup);
-    let (Some(carrier), Some((spec, sup_bindings))) = (
-        sort_functor_of_view(kb, &s),
-        sort_application_parts(kb, &p),
-    ) else {
-        return false;
+    let (spec, member, spec_slots) = if member_is_sub {
+        (sup, sub, SpecSlots::Members)
+    } else {
+        (sub, sup, SpecSlots::Callers)
     };
-    let (carrier, spec) = (kb.canonical_sort_sym(carrier), kb.canonical_sort_sym(spec));
-    if carrier == spec {
-        let Some((_, sub_bindings)) = sort_application_parts(kb, &s) else {
-            return false;
-        };
-        // A later binding that keeps nothing leaves the probe an earlier one checked.
-        let mut kept = false;
-        for (k, pv) in &sup_bindings {
-            if let Some(sv) = binding_for_param(kb, &sub_bindings, *k, BindingKeyMatch::Label).cloned()
-            {
-                kept |= bind_along_provider_view(kb, subst, &sv, pv);
-            }
-        }
-        return kept;
-    }
-    let Some((view, _)) = subtype_provider_view(kb, carrier, spec) else {
-        return false;
-    };
-    let at = build_pattern_subst(kb, &s, carrier);
-    let bindings: Vec<(Symbol, Value)> = view
-        .iter()
-        .map(|(k, v)| {
-            let v = match &at {
-                Some(ps) => walk_pattern_field_type_deep(kb, ps, v),
-                None => v.clone(),
-            };
-            (*k, v)
-        })
-        .collect();
-    let base = kb.make_sort_ref(spec);
-    let viewed = parameterized_value(
-        kb,
-        base,
-        &bindings,
-        crate::kb::node_occurrence::empty_span(),
-        None,
-    );
-    let mut probe = subst.clone();
-    if unify_types(kb, &mut probe, &viewed, &p) && !binds_a_cycle(kb, &probe) {
-        *subst = probe;
-        return true;
-    }
-    false
+    bind_member_vars_along(kb, &mut probe, spec, member, member_is_sub, spec_slots);
+    let cyclic = binds_a_cycle(kb, &probe);
+    (probe, unified, cyclic)
 }
 
 /// [`bind_member_vars_along`] over two field lists, each member field against the spec's it
@@ -2554,6 +2569,7 @@ fn bind_member_fields_along(
     member_fields: &[(Symbol, Value)],
     mode: TupleAlign,
     flipped: bool,
+    spec_slots: SpecSlots,
 ) {
     let pairs: Vec<(Value, Value)> = if flipped {
         let Some(slots) = align_named_tuple_slots(kb, member_fields, spec_fields, mode) else {
@@ -2571,7 +2587,7 @@ fn bind_member_fields_along(
             .collect()
     };
     for (s, m) in pairs {
-        bind_member_vars_along(kb, subst, &s, &m, flipped);
+        bind_member_vars_along(kb, subst, &s, &m, flipped, spec_slots);
     }
 }
 
