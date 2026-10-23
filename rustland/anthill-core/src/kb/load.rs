@@ -5954,10 +5954,11 @@ pub fn scan_definitions_with_sources(
         walk_scopes(&mut pass, &file.items, global);
     }
 
-    // Sub-pass 2: process requires and imports (all sorts exist now). A
-    // Selective import of a rule-defined predicate can't resolve here — its
+    // Sub-pass 2: process requires and imports (all sorts exist now). An
+    // import of a rule-defined predicate, selective or plain, can't resolve here — its
     // head-functor Goal isn't registered until sub-pass 3 — so such names are
-    // deferred into `pending` and retried below (WI-295).
+    // deferred into `pending` and wired by sub-pass 3's head census (WI-295,
+    // WI-20261022-JBHQC).
     // WI-997 / 059 R1 — reported before pass 2 runs, so the duplicate is named as
     // itself rather than through the cascade it causes downstream. Loading
     // CONTINUES (the pass-2/3/4 errors below are still collected), matching how
@@ -6123,6 +6124,32 @@ pub fn scan_definitions_with_sources(
         walk_scopes(&mut pass, &file.items, global);
         errors.extend(file_errors.into_iter().map(|e| e.located_in(file)));
     }
+    // Phase 1b — WIRE THE DEFERRED IMPORTS (WI-20261022-JBHQC). An import of a predicate
+    // a rule head of THIS scan introduces — `import X.Rec.{p}`, `import X.Rec.p` — could
+    // not resolve at sub-pass 2, the head not being minted yet. Phase 1's census says
+    // which heads WILL mint which qualified name, so each such import is wired now, to
+    // the symbol reserved for its target ([`wire_deferred_imports`]), and the ladder
+    // below reads it as it reads any import: from the importing scope and every scope it
+    // encloses, behind whatever a nearer scope holds, for the file that wrote it. One
+    // whose target no head of the scan mints names nothing, and is refused here, before
+    // any head is decided.
+    //
+    // WHAT THIS REPLACED, and why it went. Until this ticket a deferred (selective)
+    // import was wired at sub-pass 4, AFTER the mint, and phase 2 was told about it by a
+    // side list that the mint guard alone read, for the head's own scope alone: a head in
+    // a sort nested in the importing namespace minted a predicate of its own, an equation
+    // whose subject the import brought in loaded clean, and 059 R3 named no target —
+    // three `/code-review` rounds, each finding the next reader the list did not reach.
+    // Wired before phase 2, every reader reads the ladder's own answer.
+    let mut wiring = wire_deferred_imports(
+        kb,
+        &heads,
+        pending,
+        files,
+        source_ids,
+        attribution,
+        &mut errors,
+    );
     // Phase 2 — every ladder answer read off the pre-mint table. Collected in full
     // before phase 3 starts, which is what makes them order-free.
     // THE ANSWER IS KEPT, not just its verdict. The refusal below needs the SYMBOL the
@@ -6130,116 +6157,25 @@ pub fn scan_definitions_with_sources(
     // subject twice on every load — per this change's own census, 516,236 of 643,866
     // denoting head sites (found by `/code-review`). `denotes()` is still the only thing
     // the mint and the collision check read, so nothing else gains a second question.
-    let resolved: Vec<ResolveResult> = heads
+    let mut resolved: Vec<ResolveResult> = heads
         .iter()
         .map(|h| {
             kb.symbols.set_asking_file(Some(source_ids[h.file_idx]));
             rule_head_ladder_answer(kb, h.name, h.scope)
         })
         .collect();
-    // …OR A DEFERRED SELECTIVE PREDICATE IMPORT BRINGS THE NAME IN. The ladder above
-    // cannot see one: a selective import of a PREDICATE is deferred to sub-pass 4
-    // because its target may not be minted until sub-pass 3 has run — and sub-pass 3 is
-    // THIS mint. So at this point `import X.Rec.{freshp}` has not been wired into
-    // `Side`, and a `freshp` head written there reads as introducing a name of its own.
-    //
-    // IT IS NOT A CYCLE, which is why the repair is a guard and not a reordering: the
-    // pending import names a QUALIFIED TARGET (`X.Rec.freshp`), a different name from
-    // the one the head would mint (`Side.freshp`), and `pending` is complete before
-    // sub-pass 3 — the whole pass-2 loop has run. The question is therefore order-free,
-    // which is the property WI-980 rewrote this pass to have.
-    //
-    // MEASURED: `namespace Side { import X.Rec.{freshp}  rule freshp(2) :- true }` MINTED
-    // `Side.freshp` and left the import DEAD — the author's clause silently becoming a
-    // predicate of its own rather than a clause of the one they named, on a program that
-    // loads clean. It also hid an ownership fault: the clause never reached the type's
-    // predicate, so 059 R3 had no cross-entry assembly to refuse.
-    // `wi_rdgqc_deferred_import_mint_test` drives both halves.
-    let denotes: Vec<bool> = resolved
+    // The imports that wait for these answers, then every reservation no head mints
+    // withdrawn, and the heads that read it asked again.
+    wiring.wire_late(kb, &heads, &mut resolved, files, source_ids, &mut errors);
+    wiring.settle(kb, &heads, &mut resolved, files, source_ids, &mut errors);
+    // A head whose answer is the symbol reserved for ITS OWN mint introduces it: it is
+    // the predicate's definer, reached through an import of the predicate it defines.
+    let denotes: Vec<bool> = heads
         .iter()
-        .zip(heads.iter())
-        .map(|(r, h)| {
-            r.denotes()
-                || pending_import_brings_in(&pending, h.scope, h.name, h.file_idx)
-        })
+        .zip(&resolved)
+        .map(|(h, r)| r.denotes() && !wiring.is_own_reservation(h, r))
         .collect();
-    // WI-20260821-JR7BB — FILE-LOCAL visibility and SCOPE-WIDE declaration must not
-    // silently disagree. One file's head may denote through its import while a sibling
-    // file at the same address sees nothing and would therefore mint a local. That local
-    // wins the ladder for BOTH files, retargeting the first file's unchanged head.
-    // Refuse the mixed frozen answers before the mint; keep the key so proposal 061's
-    // multi-file report does not print a second prescription for the same fault.
-    let captured = report_rule_head_import_captures(kb, &heads, &denotes, files, &mut errors);
-    // AND AN EQUATION'S SUBJECT MAY NOT LAND ON ANOTHER SCOPE'S PREDICATE (D0EXD).
-    //
-    // The ladder above answers one question — does the name resolve — for every head
-    // shape. That is right for a predicate head, and right for an equation subject too
-    // wherever what it lands on is a thing equations DEFINE. It is wrong for exactly one
-    // target: a rule-introduced PREDICATE, which owns clauses an equation never
-    // contributes to (WI-898), so the equation's own operation silently ceases to exist
-    // at the scope that wrote it. Asked HERE rather than inside the ladder because the
-    // ladder is the one definition of what a name denotes and must stay one — this is a
-    // refusal layered on its answer, not a second ladder.
-    // ONE SUBJECT IS ONE MESSAGE, however many equations are written about it — the rule
-    // is about the NAME, and every clause about it has the same cause and the same
-    // repair. Reporting per clause printed one fault twice for
-    // `sort Rec { rule f(true) <=> 1 @[simp]  rule f(false) <=> 2 @[simp] }` (found by
-    // `/code-review`), which is what this pass's sibling refusal already avoids
-    // ("ONE MISSING DECLARATION IS ONE MESSAGE"). Reported at the FIRST clause, by file
-    // and offset, so the group's line does not depend on the walk order.
-    let mut absorbed: HashMap<(ScopeId, &str), (usize, Vec<ScopeId>, bool)> = HashMap::new();
-    for ((idx, (head, &denotes_already)), answer) in
-        heads.iter().zip(&denotes).enumerate().zip(&resolved)
-    {
-        if !denotes_already || head.introduced_by != RuleIntroduction::Equation {
-            continue;
-        }
-        let owners = equation_subject_lands_on_predicate(kb, head, answer, global);
-        if owners.is_empty() {
-            continue;
-        }
-        let ambiguous = matches!(answer, ResolveResult::Ambiguous(..));
-        match absorbed.entry((head.scope, head.name)) {
-            std::collections::hash_map::Entry::Vacant(e) => {
-                e.insert((idx, owners, ambiguous));
-            }
-            std::collections::hash_map::Entry::Occupied(mut e) => {
-                let (first, seen, was_ambiguous) = e.get_mut();
-                if (heads[idx].file_idx, heads[idx].span.start)
-                    < (heads[*first].file_idx, heads[*first].span.start)
-                {
-                    *first = idx;
-                }
-                *was_ambiguous |= ambiguous;
-                for o in owners {
-                    if !seen.contains(&o) {
-                        seen.push(o);
-                    }
-                }
-            }
-        }
-    }
-    // A DETERMINISTIC REPORT ORDER, so two absorbed subjects do not print in hash order.
-    let mut groups: Vec<(usize, Vec<ScopeId>, bool)> = absorbed.into_values().collect();
-    groups.sort_by_key(|(first, _, _)| (heads[*first].file_idx, heads[*first].span.start));
-    for (first, owners, ambiguous) in groups {
-        let head = &heads[first];
-        let mut scopes: Vec<String> = owners
-            .iter()
-            .map(|o| kb.scope_display_name(*o).to_owned())
-            .collect();
-        scopes.sort();
-        errors.push(
-            LoadError::EquationSubjectNamesAPredicate {
-                name: head.name.to_owned(),
-                head_scope: kb.scope_display_name(head.scope).to_owned(),
-                predicate_scopes: scopes,
-                ambiguous,
-                span: head.span,
-            }
-            .located_in(files[head.file_idx]),
-        );
-    }
+    let mut captured = report_rule_head_import_captures(kb, &heads, &denotes, files, &mut errors);
     // Phase 3 — DECIDE every head, then mint. Deciding reads the table and minting
     // writes it, so they cannot interleave: `head_name_collisions` takes the KB immutably
     // and no mint has happened when any of its answers is taken. It sees a scope through
@@ -6328,32 +6264,31 @@ pub fn scan_definitions_with_sources(
         if denotes_already {
             continue;
         }
-        scan_rule_goal(kb, head);
+        scan_rule_goal(kb, head, &mut wiring);
     }
-
-    // Sub-pass 4 (WI-295): retry deferred predicate imports. Head-functor Goals
-    // from sub-pass 3 are now in `by_qualified_name`, so a cross-namespace
-    // rule-predicate import resolves like any declared name. (Resolve by
-    // symbol, not `rules_by_functor` — rules aren't asserted until the load phase.)
-    for p in pending {
-        kb.symbols.set_asking_file(Some(source_ids[p.file_idx]));
-        let origin = match attribution {
-            ImportAttribution::PerFile => ImportOrigin::File(source_ids[p.file_idx]),
-            ImportAttribution::Invocation => ImportOrigin::Invocation,
-        };
-        match kb.symbols.by_qualified_name.get(&p.qualified).copied() {
-            Some(sym) => kb.symbols.add_import(p.scope, &p.short, sym, origin),
-            // WI-745: stamp with the file the import was written in (sub-pass 4
-            // runs outside the per-file loop, so `p` carries its own provenance).
-            None => errors.push(
-                LoadError::UnresolvedImport {
-                    path: p.qualified,
-                    span: p.span,
-                }
-                .located_in(files[p.file_idx]),
-            ),
-        }
-    }
+    // Sub-pass 4 (WI-295) — NOTHING LEFT TO RETRY (WI-20261022-JBHQC). A deferred import
+    // was wired in phase 1b to the symbol its definer has just minted, or refused there.
+    wiring.report_unminted(files, &mut errors);
+    // A local the mint put ahead of what a denoting head read, at another address than
+    // the head's own ([`report_post_mint_captures`]); one more key each for 061's report
+    // and 059 R3 to stay quiet on, as `captured` is.
+    let enclosing_captures = report_post_mint_captures(
+        kb,
+        &heads,
+        &denotes,
+        &resolved,
+        &captured,
+        files,
+        source_ids,
+        &mut errors,
+    );
+    collided.extend(enclosing_captures.iter().copied());
+    captured.extend(enclosing_captures);
+    // AND AN EQUATION'S SUBJECT MAY NOT LAND ON ANOTHER SCOPE'S PREDICATE (D0EXD), asked
+    // of the minted table: what a subject landed on through a deferred import is a
+    // symbol from phase 1b, which has its kinds once its definer has minted it
+    // ([`refuse_absorbed_equation_subjects`]).
+    refuse_absorbed_equation_subjects(kb, &heads, &denotes, &resolved, global, files, &mut errors);
 
     // ── 059 R3's NARROW RULE, AND 061's MULTI-FILE REPORT — HERE, LAST ──────────
     //
@@ -6364,7 +6299,8 @@ pub fn scan_definitions_with_sources(
     //     asks it through the loader's own name ladder — before the mint, the predicate
     //     the entry is declaring does not exist for that ladder to find.
     //   * AFTER SUB-PASS 4, because that ladder must read the import table the LOAD will
-    //     read, and sub-pass 4 is the last thing that writes it. MEASURED before the
+    //     read, and nothing writes it after sub-pass 4 (since WI-20261022-JBHQC a deferred
+    //     import is wired before phase 2, and sub-pass 4 retries nothing). MEASURED before the
     //     move, and found by `/code-review`: `namespace Side { import demo.Rec.{freshp}
     //     fact freshp(2) }` beside `namespace Rec { rule freshp(1) :- true }` LOADED
     //     CLEAN with `Rec.freshp` holding two clauses, while the wildcard `import
@@ -6374,7 +6310,7 @@ pub fn scan_definitions_with_sources(
     //     visible before the verdict" — reached from the other side.
     //
     // SO CONDITION (2) IS NOT ORDER-FREE THE WAY CONDITION (1) IS, and the split is the
-    // point: (1) reads `denotes` / `resolved`, the PRE-mint answers phase 2 froze, which
+    // point: (1) reads `denotes`, the PRE-mint answers phase 2 froze, which
     // is what makes the introduce question independent of the order the text is walked
     // in (WI-980); (2) is a question about the FINISHED table and is asked once it is
     // finished.
@@ -6501,10 +6437,10 @@ pub fn scan_definitions_with_sources(
     // IMPLICIT WHOLE-SCOPE EDGE.
     //
     // AFTER SUB-PASS 4, for the same reason the agreement check below waits: a
-    // selective predicate import is the explicit opt-in that makes this join legal,
-    // and deferred predicate imports must be visible before the verdict.  One error per
-    // joining head, not per target predicate — two independent implementors are two
-    // authors and each needs its own location.
+    // predicate import by name, in either form, is the explicit opt-in that makes this
+    // join legal, and deferred predicate imports must be visible before the verdict.
+    // One error per joining head, not per target predicate — two independent
+    // implementors are two authors and each needs its own location.
     //
     // Proposal 061's undeclared case does NOT reach this check.  Phase 3 minted each
     // auto-declaration at its written scope and `NameIntroducedAtTwoVisibleScopes`
@@ -7458,7 +7394,7 @@ fn scan_rule(
 /// ([`KnowledgeBase::cites_a_relation`]) rather than patched onto the stamp here — a
 /// scope that writes one name in both shapes would otherwise be classified by
 /// whichever of its two rules this pass reached first.
-fn scan_rule_goal(kb: &mut KnowledgeBase, site: &RuleHeadSite<'_>) {
+fn scan_rule_goal(kb: &mut KnowledgeBase, site: &RuleHeadSite<'_>, wiring: &mut DeferredWiring) {
     // NO RE-CHECK HERE. It asked `rule_head_ladder_answer` once more — a question the
     // decision phase already froze — against the table THIS LOOP IS FILLING, which is the
     // very defect WI-980 removes, one layer down. Measured: three files, `rule zq(0)` with
@@ -7479,12 +7415,17 @@ fn scan_rule_goal(kb: &mut KnowledgeBase, site: &RuleHeadSite<'_>) {
     // clause under a symbol nothing can cite: that is
     // [`Loader::refuse_unresolvable_absolute_head`], at the LOAD of a rule or a fact.
     let qualified = make_qualified(&site.prefix, site.name);
-    kb.symbols.define(
-        site.name,
-        &qualified,
-        site.introduced_by.symbol_kind(),
-        site.scope,
-    );
+    let kind = site.introduced_by.symbol_kind();
+    // WI-20261022-JBHQC — a name a deferred import waits for is the symbol reserved for
+    // it in phase 1b, which the import already holds: the first head to mint the name
+    // adopts it, and `define` below finds it in the scope as it finds any earlier head's.
+    if let Some(r) = wiring.by_name.get_mut(&qualified) {
+        if !r.minted {
+            kb.symbols.adopt_reserved(r.sym, kind);
+            r.minted = true;
+        }
+    }
+    kb.symbols.define(site.name, &qualified, kind, site.scope);
 }
 
 /// WI-898 — WHICH HEAD SHAPE introduced the name, and therefore WHICH KIND the
@@ -11630,8 +11571,9 @@ fn judge_secondary_entry_rules<'f>(
     // READ AFTER PHASE 3'S MINT, which is why this judge is called where it is: before
     // the mint the entry's own predicate does not exist, so every one of these names
     // resolves to nothing and the census would be empty. Condition (1) is unaffected —
-    // it reads the PRE-mint ladder answers phase 2 froze (`denotes` / `resolved`), which
-    // is what makes it order-free (WI-980).
+    // its verdict reads the PRE-mint ladder answers phase 2 froze (`denotes`), which is
+    // what makes it order-free (WI-980); `resolved` only names where a joining head
+    // landed.
     //
     // PRE-FILTERED ON THE LAST SEGMENT, because the resolve is the cost and this census
     // is the program's whole clause count. A dotted subject lands under its last segment
@@ -11696,9 +11638,10 @@ fn judge_secondary_entry_rules<'f>(
                     names.sort();
                     format!("an ambiguity over {}", names.join(", "))
                 }
-                // Unreachable: `denotes` IS the negation of `NotFound`. Rendered rather
-                // than `unreachable!`d, because a loader must not abort on a shape it
-                // merely did not expect.
+                // Unreachable: `denotes` IS the negation of `NotFound` — a deferred
+                // import too is wired before phase 2 asks (WI-20261022-JBHQC). Rendered
+                // rather than `unreachable!`d, because a loader must not abort on a
+                // shape it merely did not expect.
                 ResolveResult::NotFound => "a name that resolves elsewhere".to_string(),
             };
             errors.push(
@@ -12841,8 +12784,9 @@ fn parent_scope_of(kb: &KnowledgeBase, sym: Symbol, admits: &[SymbolKind]) -> Op
 }
 
 /// Walk one level of nested scopes under `base_path` looking for a symbol
-/// whose short name is `short`. Returns the symbol when exactly one match
-/// is found (multiple matches → ambiguous, no match → none).
+/// whose short name is `short`. Returns every match: the import binds the one
+/// when there is exactly one (multiple matches → ambiguous, no match → none),
+/// and a deferred import keeps whether there was any (WI-20261022-JBHQC).
 ///
 /// Used by selective-import resolution to find enum entities, which live
 /// inside the enum's sort scope rather than directly under the surrounding
@@ -12852,72 +12796,672 @@ fn parent_scope_of(kb: &KnowledgeBase, sym: Symbol, admits: &[SymbolKind]) -> Op
 ///   end
 /// has qualified name `ns.E.parse_ok`, not `ns.parse_ok`. An import
 /// `ns.{parse_ok}` should still bind it.
-fn find_in_nested_scope(
+fn nested_scope_matches(
     kb: &KnowledgeBase,
     base_path: &str,
     short: &str,
-) -> Option<crate::intern::Symbol> {
-    let needle_suffix = format!(".{short}");
-    let prefix = format!("{base_path}.");
+) -> SmallVec<[crate::intern::Symbol; 2]> {
     let mut matches: SmallVec<[crate::intern::Symbol; 2]> = SmallVec::new();
     for (qname, sym) in kb.symbols.by_qualified_name.iter() {
-        if !qname.starts_with(&prefix) || !qname.ends_with(&needle_suffix) {
-            continue;
-        }
         // Require exactly one intermediate segment between base and short:
         // base.<intermediate>.short. Keeps the search to immediate children
         // of the base scope (enums and named sub-scopes), not deeper trees.
-        let middle = &qname[prefix.len()..qname.len() - needle_suffix.len()];
-        if middle.is_empty() || middle.contains('.') {
-            continue;
+        if is_one_scope_below(qname, base_path, short) {
+            matches.push(*sym);
         }
-        matches.push(*sym);
     }
     matches.sort_by_key(|s| s.to_bits());
     matches.dedup();
-    if matches.len() == 1 {
-        Some(matches[0])
-    } else {
-        None
-    }
+    matches
 }
 
-/// WI-295: a `Selective` import name that didn't resolve in sub-pass 2. A
-/// rule-defined predicate's head-functor symbol isn't registered until
-/// sub-pass 3 (`scan_rule_goal`), so cross-namespace predicate imports are
-/// deferred and re-resolved by `scan_definitions`'s post-pass-3 retry.
+/// WI-295: an imported name that didn't resolve in sub-pass 2. A rule-defined
+/// predicate's head-functor symbol isn't registered until sub-pass 3 (`scan_rule_goal`),
+/// so an import of one waits for the head census of sub-pass 3's phase 1, which wires it
+/// ([`wire_deferred_imports`]) — WI-20261022-JBHQC; it was retried after the mint before.
 struct PendingImport {
+    scope: ScopeId,
+    short: String,
+    /// The qualified name the import waits for; a selective import may also land one
+    /// scope below its base ([`PendingForm::Selective`]).
+    qualified: String,
+    span: Span,
+    /// WI-745: index into `scan_definitions`'s `files` slice — the source file
+    /// this import was written in. A pending import is resolved outside the per-file
+    /// loop, so it must carry its own provenance to render `path:line:col` if it stays
+    /// unresolved.
+    file_idx: usize,
+    /// The import's PLACE among the writes of its name, held from sub-pass 2
+    /// ([`SymbolTable::add_deferred_import`]): wired, the import takes it, so a write the
+    /// text makes after it still outranks it — whatever order the wiring runs in.
+    placeholder: Symbol,
+    form: PendingForm,
+}
+
+/// Which import a [`PendingImport`] is, which decides what it may land on.
+enum PendingForm {
+    /// `import a.b.p`: `a.b.p`, the path, and nothing else — what sub-pass 2 asks of the
+    /// plain form.
+    Plain,
+    /// `import a.b.{p}`: `a.b.p`, or the one name a head mints one scope below `a.b` —
+    /// sub-pass 2's nested-scope rung ([`nested_scope_matches`]), which the retry after
+    /// the mint that this replaced never had (found by `/code-review`). `existing_below`:
+    /// sub-pass 2 found a name there already (two or more, or it would have bound one).
+    Selective { base: String, existing_below: bool },
+    /// `import p` that sub-pass 2 bound to `anthill.prelude.p` for want of a top-level
+    /// `p`: a head of this scan minting one is what an earlier load would have shown
+    /// sub-pass 2, so the import is the program's `p` then (WI-20261022-JBHQC).
+    PreludeFallback,
+}
+
+/// WI-20261022-JBHQC — the deferred imports of one scan, wired to symbols reserved for
+/// the names its rule heads will mint ([`SymbolTable::reserve`]).
+#[derive(Default)]
+struct DeferredWiring {
+    by_name: HashMap<String, Reservation>,
+    /// Qualified mint name → the heads that would mint it, for the names an import waits
+    /// for only.
+    census: HashMap<String, Vec<usize>>,
+    /// The imports wired AFTER phase 2 ([`DeferredWiring::wire_late`]).
+    late: Vec<LateImport>,
+}
+
+/// One qualified name a deferred import waits for.
+struct Reservation {
+    sym: Symbol,
+    /// Indices into the scan's heads of every head that would mint the name — its
+    /// DEFINERS.
+    definers: Vec<usize>,
+    /// The imports wired to `sym`, to take back if no definer mints it.
+    imports: Vec<WiredImport>,
+    /// Set by the first definer's mint ([`SymbolTable::adopt_reserved`]).
+    minted: bool,
+}
+
+/// An import wired to a [`Reservation`], and what taking it back means for it.
+struct WiredImport {
+    scope: ScopeId,
+    short: String,
+    origin: ImportOrigin,
+    kind: WiredKind,
+    path: String,
+    span: Span,
+    file_idx: usize,
+}
+
+enum WiredKind {
+    /// Taken back, it names nothing: refused.
+    Plain,
+    /// Taken back from `base.short`, it may still land on the one name a head introduces
+    /// one scope below `base` — re-pointed there, at its place.
+    Selective { base: String, existing_below: bool },
+    /// Taken back, it is the prelude's again — no error.
+    PreludeFallback,
+}
+
+/// An import whose target is chosen by phase 2's answers ([`DeferredWiring::wire_late`]).
+struct LateImport {
     scope: ScopeId,
     short: String,
     qualified: String,
     span: Span,
-    /// WI-745: index into `scan_definitions`'s `files` slice — the source file
-    /// this import was written in. A pending import is resolved in sub-pass 4,
-    /// outside the per-file loop, so it must carry its own provenance to render
-    /// `path:line:col` if it stays unresolved.
     file_idx: usize,
+    placeholder: Symbol,
+    origin: ImportOrigin,
+    kind: LateKind,
 }
 
-/// Is `name` the short name of a DEFERRED selective import into `scope`? Then a head of
-/// that name there REFERENCES what was imported and introduces nothing, exactly as it
-/// would if the import had already been wired.
+enum LateKind {
+    PreludeFallback,
+    OneScopeBelow { base: String, existing_below: bool },
+}
+
+/// Is `qname` exactly ONE scope below `base`, with the short name `short` —
+/// `base.<segment>.short`? The shape of sub-pass 2's nested-scope rung.
+fn is_one_scope_below(qname: &str, base: &str, short: &str) -> bool {
+    let Some(rest) = qname
+        .strip_prefix(base)
+        .and_then(|r| r.strip_prefix('.'))
+        .and_then(|r| r.strip_suffix(short))
+        .and_then(|r| r.strip_suffix('.'))
+    else {
+        return false;
+    };
+    !rest.is_empty() && !rest.contains('.')
+}
+
+/// Does `answer` read one of `syms`?
+fn reads_any(answer: &ResolveResult, syms: &HashSet<Symbol>) -> bool {
+    match answer {
+        ResolveResult::Found(sym) => syms.contains(sym),
+        ResolveResult::Ambiguous(cands, _) => cands.iter().any(|c| syms.contains(c)),
+        ResolveResult::NotFound => false,
+    }
+}
+
+/// WI-20261022-JBHQC — WIRE THE DEFERRED IMPORTS OF A SCAN before its heads are decided.
+/// The head census says which qualified names the scan's rule heads would mint; an
+/// import whose qualified name is among them is wired to a symbol reserved for it, which
+/// the first of its definers adopts at the mint ([`scan_rule_goal`]). One whose name no
+/// head could mint names nothing, and is refused now — before any head is decided, so no
+/// head reads it.
 ///
-/// Short name and scope only: resolving the import's TARGET is sub-pass 4's job and its
-/// failure is sub-pass 4's diagnostic (`UnresolvedName` at the import's span). This
-/// question is narrower — "did the author say this name means something else here" — and
-/// answering it needs no target. An import that turns out to name nothing therefore
-/// still suppresses the mint, which is the right way round: the program is refused
-/// either way, and refusing it for the import the author wrote beats refusing it for a
-/// predicate they did not.
-fn pending_import_brings_in(
-    pending: &[PendingImport],
-    scope: ScopeId,
-    name: &str,
-    file_idx: usize,
-) -> bool {
-    pending
+/// Two kinds wait for phase 2's answers instead ([`DeferredWiring::wire_late`]): a
+/// selective import that can only land one scope below its base, and a prelude fallback.
+/// Each depends on which heads INTRODUCE their name, which only the answers say — and a
+/// head under a prelude fallback must not mint a name only because the import, rewired,
+/// now names it.
+fn wire_deferred_imports(
+    kb: &mut KnowledgeBase,
+    heads: &[RuleHeadSite<'_>],
+    pending: Vec<PendingImport>,
+    files: &[&ParsedFile],
+    source_ids: &[SourceId],
+    attribution: ImportAttribution,
+    errors: &mut Vec<LoadError>,
+) -> DeferredWiring {
+    let mut wiring = DeferredWiring::default();
+    if pending.is_empty() {
+        return wiring;
+    }
+    // The census, for the names an import waits for only: a head of another name mints
+    // nothing any of them can land on.
+    let shorts: HashSet<&str> = pending.iter().map(|p| p.short.as_str()).collect();
+    for (i, h) in heads.iter().enumerate() {
+        if shorts.contains(h.name) {
+            wiring
+                .census
+                .entry(make_qualified(&h.prefix, h.name))
+                .or_default()
+                .push(i);
+        }
+    }
+    for p in pending {
+        let origin = match attribution {
+            ImportAttribution::PerFile => ImportOrigin::File(source_ids[p.file_idx]),
+            ImportAttribution::Invocation => ImportOrigin::Invocation,
+        };
+        let direct = wiring.census.contains_key(&p.qualified);
+        let late = |p: PendingImport, kind: LateKind| LateImport {
+            scope: p.scope,
+            short: p.short,
+            qualified: p.qualified,
+            span: p.span,
+            file_idx: p.file_idx,
+            placeholder: p.placeholder,
+            origin,
+            kind,
+        };
+        match p.form {
+            PendingForm::PreludeFallback if direct => {
+                wiring.late.push(late(p, LateKind::PreludeFallback));
+            }
+            PendingForm::PreludeFallback => {
+                kb.symbols
+                    .drop_deferred_import(p.scope, &p.short, p.placeholder);
+            }
+            PendingForm::Plain if direct => {
+                let target = p.qualified.clone();
+                wiring.wire(kb, heads, &target, p.into_wired(origin, WiredKind::Plain));
+            }
+            PendingForm::Selective {
+                ref base,
+                existing_below,
+            } if direct => {
+                let kind = WiredKind::Selective {
+                    base: base.clone(),
+                    existing_below,
+                };
+                let target = p.qualified.clone();
+                wiring.wire(kb, heads, &target, p.into_wired(origin, kind));
+            }
+            PendingForm::Selective {
+                ref base,
+                existing_below,
+            } if wiring
+                .census
+                .keys()
+                .any(|q| is_one_scope_below(q, base, &p.short)) =>
+            {
+                let base = base.clone();
+                wiring.late.push(late(
+                    p,
+                    LateKind::OneScopeBelow {
+                        base,
+                        existing_below,
+                    },
+                ));
+            }
+            _ => {
+                kb.symbols
+                    .drop_deferred_import(p.scope, &p.short, p.placeholder);
+                errors.push(
+                    LoadError::UnresolvedImport {
+                        path: p.qualified,
+                        span: p.span,
+                    }
+                    .located_in(files[p.file_idx]),
+                );
+            }
+        }
+    }
+    wiring
+}
+
+impl PendingImport {
+    /// This import, about to take its place: its placeholder is spent by the wiring.
+    fn into_wired(self, origin: ImportOrigin, kind: WiredKind) -> (Symbol, WiredImport) {
+        (
+            self.placeholder,
+            WiredImport {
+                scope: self.scope,
+                short: self.short,
+                origin,
+                kind,
+                path: self.qualified,
+                span: self.span,
+                file_idx: self.file_idx,
+            },
+        )
+    }
+}
+
+impl DeferredWiring {
+    /// The symbol reserved for `target`, reserved now if no import waited for it yet.
+    fn reservation(&mut self, kb: &mut KnowledgeBase, heads: &[RuleHeadSite<'_>], target: &str) -> Symbol {
+        if let Some(r) = self.by_name.get(target) {
+            return r.sym;
+        }
+        let definers = self.census[target].clone();
+        let first = &heads[definers[0]];
+        let sym = kb.symbols.reserve(
+            first.name,
+            target,
+            first.introduced_by.symbol_kind(),
+            first.scope,
+        );
+        self.by_name.insert(
+            target.to_owned(),
+            Reservation {
+                sym,
+                definers,
+                imports: Vec::new(),
+                minted: false,
+            },
+        );
+        sym
+    }
+
+    /// Wire the import whose place `placeholder` holds to the symbol reserved for
+    /// `target`, at that place.
+    fn wire(
+        &mut self,
+        kb: &mut KnowledgeBase,
+        heads: &[RuleHeadSite<'_>],
+        target: &str,
+        (placeholder, w): (Symbol, WiredImport),
+    ) {
+        let sym = self.reservation(kb, heads, target);
+        kb.symbols
+            .wire_deferred_import(w.scope, &w.short, placeholder, sym, w.origin);
+        self.by_name
+            .get_mut(target)
+            .expect("reserved above")
+            .imports
+            .push(w);
+    }
+
+    /// Is `answer` the symbol reserved for the name `head` would mint — the head reached
+    /// through an import of the predicate it DEFINES? Then it introduces that predicate.
+    fn is_own_reservation(&self, head: &RuleHeadSite<'_>, answer: &ResolveResult) -> bool {
+        if self.by_name.is_empty() {
+            return false;
+        }
+        let ResolveResult::Found(sym) = answer else {
+            return false;
+        };
+        self.by_name
+            .get(&make_qualified(&head.prefix, head.name))
+            .is_some_and(|r| r.sym == *sym)
+    }
+
+    /// Does head `i` INTRODUCE its name, by its answer?
+    fn introduces(&self, heads: &[RuleHeadSite<'_>], resolved: &[ResolveResult], i: usize) -> bool {
+        !resolved[i].denotes() || self.is_own_reservation(&heads[i], &resolved[i])
+    }
+
+    /// The ONE name a head INTRODUCES exactly one scope below `base`, by the answers —
+    /// beside none that exists (`existing_below`): sub-pass 2's nested-scope rung, asked
+    /// of what the scan mints. A head there that reads another name mints nothing, and
+    /// is not counted (found by `/code-review`).
+    fn one_scope_below(
+        &self,
+        heads: &[RuleHeadSite<'_>],
+        resolved: &[ResolveResult],
+        base: &str,
+        short: &str,
+        existing_below: bool,
+    ) -> Option<String> {
+        if existing_below {
+            return None;
+        }
+        let mut minted = self.census.iter().filter(|(q, definers)| {
+            is_one_scope_below(q, base, short)
+                && definers.iter().any(|&i| self.introduces(heads, resolved, i))
+        });
+        match (minted.next(), minted.next()) {
+            (Some((q, _)), None) => Some(q.clone()),
+            _ => None,
+        }
+    }
+
+    /// THE IMPORTS THAT WAIT FOR PHASE 2'S ANSWERS. A prelude fallback is the program's
+    /// name when a head of the scan introduces that top-level name ON ITS OWN — by its
+    /// answer under the prelude binding, so a head under the fallback does not mint a
+    /// name only because the import, rewired, would name it (found by `/code-review`).
+    /// A selective import one scope below its base lands on [`Self::one_scope_below`].
+    /// Each wired here has every head of its short name asked again; one that lands
+    /// nowhere names nothing (a prelude fallback stays the prelude's).
+    fn wire_late(
+        &mut self,
+        kb: &mut KnowledgeBase,
+        heads: &[RuleHeadSite<'_>],
+        resolved: &mut [ResolveResult],
+        files: &[&ParsedFile],
+        source_ids: &[SourceId],
+        errors: &mut Vec<LoadError>,
+    ) {
+        for l in std::mem::take(&mut self.late) {
+            let (target, kind) = match l.kind {
+                LateKind::PreludeFallback => {
+                    let introduced = self.census[&l.qualified]
+                        .iter()
+                        .any(|&i| self.introduces(heads, resolved, i));
+                    (
+                        introduced.then(|| l.qualified.clone()),
+                        WiredKind::PreludeFallback,
+                    )
+                }
+                LateKind::OneScopeBelow {
+                    base,
+                    existing_below,
+                } => (
+                    self.one_scope_below(heads, resolved, &base, &l.short, existing_below),
+                    WiredKind::Selective {
+                        base,
+                        existing_below,
+                    },
+                ),
+            };
+            let Some(target) = target else {
+                kb.symbols
+                    .drop_deferred_import(l.scope, &l.short, l.placeholder);
+                if !matches!(kind, WiredKind::PreludeFallback) {
+                    errors.push(
+                        LoadError::UnresolvedImport {
+                            path: l.qualified,
+                            span: l.span,
+                        }
+                        .located_in(files[l.file_idx]),
+                    );
+                }
+                continue;
+            };
+            let short = l.short.clone();
+            let wired = WiredImport {
+                scope: l.scope,
+                short: l.short,
+                origin: l.origin,
+                kind,
+                path: l.qualified,
+                span: l.span,
+                file_idx: l.file_idx,
+            };
+            self.wire(kb, heads, &target, (l.placeholder, wired));
+            let readers: Vec<usize> = (0..heads.len()).filter(|&i| heads[i].name == short).collect();
+            reask(kb, heads, resolved, source_ids, &readers);
+        }
+    }
+
+    /// WITHDRAW THE RESERVATIONS NO DEFINER MINTS — each of its definers reads another
+    /// predicate, through a nearer name — and ask the ladder again for every head that
+    /// read one. Each import wired to it is taken back: a selective one is re-pointed,
+    /// at its place, to the name one scope below its base if one head introduces one
+    /// there (found by `/code-review`: a load in two steps resolves it so); a prelude
+    /// fallback is the prelude's again; any other is refused as naming nothing.
+    ///
+    /// ONLY THOSE WHOSE DEFINERS READ NO OTHER IDLE RESERVATION, each round (found by
+    /// `/code-review`): a definer that reads another idle reservation may read nothing once
+    /// THAT is withdrawn, and mint after all — withdrawn together, its import was refused
+    /// though the name it waits for is minted. Where every idle reservation reads another
+    /// (a cycle of imports, each of the other's definer), they go together: no order
+    /// among them is the program's. A round withdraws one at least; a re-pointed import
+    /// lands on a name a head introduces, which is not idle; so this ends.
+    fn settle(
+        &mut self,
+        kb: &mut KnowledgeBase,
+        heads: &[RuleHeadSite<'_>],
+        resolved: &mut [ResolveResult],
+        files: &[&ParsedFile],
+        source_ids: &[SourceId],
+        errors: &mut Vec<LoadError>,
+    ) {
+        loop {
+            let idle: HashSet<Symbol> = self
+                .by_name
+                .values()
+                .filter(|r| r.definers.iter().all(|&i| !self.introduces(heads, resolved, i)))
+                .map(|r| r.sym)
+                .collect();
+            if idle.is_empty() {
+                return;
+            }
+            let ready: HashSet<Symbol> = self
+                .by_name
+                .values()
+                .filter(|r| {
+                    idle.contains(&r.sym)
+                        && r.definers.iter().all(|&i| !reads_any(&resolved[i], &idle))
+                })
+                .map(|r| r.sym)
+                .collect();
+            let batch = if ready.is_empty() { idle } else { ready };
+            let mut names: Vec<String> = self
+                .by_name
+                .iter()
+                .filter(|(_, r)| batch.contains(&r.sym))
+                .map(|(q, _)| q.clone())
+                .collect();
+            names.sort();
+            for qualified in names {
+                let r = self.by_name.remove(&qualified).expect("listed above");
+                for w in r.imports {
+                    self.take_back(kb, heads, resolved, r.sym, w, files, errors);
+                }
+                kb.symbols.withdraw_reserved(r.sym);
+            }
+            let readers: Vec<usize> = (0..heads.len())
+                .filter(|&i| reads_any(&resolved[i], &batch))
+                .collect();
+            reask(kb, heads, resolved, source_ids, &readers);
+        }
+    }
+
+    /// Take back `w`, wired to the withdrawn `sym` ([`Self::settle`] says what that is).
+    #[allow(clippy::too_many_arguments)]
+    fn take_back(
+        &mut self,
+        kb: &mut KnowledgeBase,
+        heads: &[RuleHeadSite<'_>],
+        resolved: &[ResolveResult],
+        sym: Symbol,
+        w: WiredImport,
+        files: &[&ParsedFile],
+        errors: &mut Vec<LoadError>,
+    ) {
+        if let WiredKind::Selective {
+            base,
+            existing_below,
+        } = &w.kind
+        {
+            if let Some(target) = self.one_scope_below(heads, resolved, base, &w.short, *existing_below) {
+                let new = self.reservation(kb, heads, &target);
+                kb.symbols.rewire_import(w.scope, &w.short, sym, new, w.origin);
+                self.by_name
+                    .get_mut(&target)
+                    .expect("reserved above")
+                    .imports
+                    .push(w);
+                return;
+            }
+        }
+        kb.symbols.remove_import(w.scope, &w.short, sym, w.origin);
+        if !matches!(w.kind, WiredKind::PreludeFallback) {
+            errors.push(
+                LoadError::UnresolvedImport {
+                    path: w.path,
+                    span: w.span,
+                }
+                .located_in(files[w.file_idx]),
+            );
+        }
+    }
+
+    /// The mint has run: every reservation [`Self::settle`] kept has a definer that
+    /// introduces it, and so was adopted. One that was not is a loader invariant failing,
+    /// and is REPORTED as that — not as an import naming nothing, which would hide a
+    /// broken `settle` behind an ordinary refusal (found by `/code-review`).
+    fn report_unminted(&self, files: &[&ParsedFile], errors: &mut Vec<LoadError>) {
+        let mut unminted: Vec<(&String, &Reservation)> =
+            self.by_name.iter().filter(|(_, r)| !r.minted).collect();
+        unminted.sort_by_key(|(q, _)| q.as_str());
+        for (qualified, r) in unminted {
+            debug_assert!(
+                false,
+                "deferred import of {qualified}: no definer minted it"
+            );
+            for w in &r.imports {
+                errors.push(
+                    LoadError::Other {
+                        message: format!(
+                            "the import of `{}` was wired to the predicate a rule head of this \
+                             load would mint, and no head minted it. This is a loader invariant \
+                             failing rather than a fault in the program; please report it.",
+                            w.path
+                        ),
+                    }
+                    .located_in(files[w.file_idx]),
+                );
+            }
+        }
+    }
+}
+
+/// Ask the ladder again for the heads `which` lists.
+fn reask(
+    kb: &mut KnowledgeBase,
+    heads: &[RuleHeadSite<'_>],
+    resolved: &mut [ResolveResult],
+    source_ids: &[SourceId],
+    which: &[usize],
+) {
+    for &i in which {
+        let head = &heads[i];
+        kb.symbols.set_asking_file(Some(source_ids[head.file_idx]));
+        resolved[i] = rule_head_ladder_answer(kb, head.name, head.scope);
+    }
+}
+
+/// WI-20261022-JBHQC — A LOCAL THE MINT PUT AHEAD OF WHAT A HEAD DENOTED, at any
+/// address. A head denotes through an import its ladder meets in its own scope or in one
+/// enclosing it, so the local that captures it need not be minted where it is written —
+/// one minted in a scope its ladder meets FIRST takes it as surely, and the clause would
+/// load under that local, clean. [`report_rule_head_import_captures`] asks the one address
+/// before the mint; this asks every other after it, by the evidence phase 2 KEPT: the
+/// frozen answer of each denoting head against what its ladder says now. Only a mint can
+/// make them differ, so only a head whose name the scan minted somewhere is asked again;
+/// an AMBIGUOUS frozen answer is reported at the reference, not here; and a group the
+/// one-address check refused is not refused twice. Found by `/code-review`: `namespace
+/// jq.app { import jq.lib.r  sort S { fact r(5, 6) } }` in one file and `namespace jq.app
+/// { fact r(7, 8) }` in another loaded clean with the first fact under `jq.app.r`, and the
+/// same with `r` declared in `jq.lib`. A first cut asked the collision check's overlay
+/// walk instead, which skips the head's own scope and so refused a head denoting its own
+/// scope's declaration, and one denoting the symbol the capturing scope itself mints —
+/// both programs that load.
+#[allow(clippy::too_many_arguments)]
+fn report_post_mint_captures<'f>(
+    kb: &mut KnowledgeBase,
+    heads: &[RuleHeadSite<'f>],
+    denotes: &[bool],
+    resolved: &[ResolveResult],
+    refused: &HashSet<(ScopeId, &'f str)>,
+    files: &[&ParsedFile],
+    source_ids: &[SourceId],
+    errors: &mut Vec<LoadError>,
+) -> HashSet<(ScopeId, &'f str)> {
+    let minted: HashSet<&str> = heads
         .iter()
-        .any(|p| p.scope == scope && p.short == name && p.file_idx == file_idx)
+        .zip(denotes)
+        .filter(|(_, &d)| !d)
+        .map(|(h, _)| h.name)
+        .collect();
+    let mut groups: HashMap<(ScopeId, &'f str), Vec<usize>> = HashMap::new();
+    for (i, head) in heads.iter().enumerate() {
+        if !denotes[i] || !minted.contains(head.name) || refused.contains(&(head.scope, head.name)) {
+            continue;
+        }
+        let ResolveResult::Found(frozen) = resolved[i] else {
+            continue;
+        };
+        kb.symbols.set_asking_file(Some(source_ids[head.file_idx]));
+        let ResolveResult::Found(now) = rule_head_ladder_answer(kb, head.name, head.scope) else {
+            continue;
+        };
+        if now == frozen {
+            continue;
+        }
+        // Only a mint moves an answer, and a mint is a head of this scan introducing its
+        // name at its scope. An answer that moved to anything else is not a capture this
+        // can name — reported as the loader invariant it is, not skipped.
+        let capturing = kb.symbols.declaring_scope(now).filter(|&scope| {
+            heads
+                .iter()
+                .zip(denotes)
+                .any(|(h, &d)| !d && h.scope == scope && h.name == head.name)
+        });
+        match capturing {
+            Some(scope) => groups.entry((scope, head.name)).or_default().push(i),
+            None => errors.push(
+                LoadError::Other {
+                    message: format!(
+                        "the rule head `{}` written in '{}' resolved to '{}' when its \
+                         predicate was decided and to '{}' once the load's heads were \
+                         minted, and no head of this load introduced the second. This is a \
+                         loader invariant failing rather than a fault in the program; please \
+                         report it.",
+                        head.name,
+                        kb.scope_display_name(head.scope),
+                        kb.qualified_name_of(frozen),
+                        kb.qualified_name_of(now),
+                    ),
+                }
+                .located_in(files[head.file_idx]),
+            ),
+        }
+    }
+    let mut ordered: Vec<((ScopeId, &'f str), Vec<usize>)> = groups.into_iter().collect();
+    ordered.sort_by_key(|((scope, name), _)| {
+        (kb.scope_display_name(*scope).to_owned(), (*name).to_owned())
+    });
+    let mut out = HashSet::new();
+    for ((scope, name), captured) in ordered {
+        let introducing: Vec<usize> = (0..heads.len())
+            .filter(|&i| !denotes[i] && heads[i].scope == scope && heads[i].name == name)
+            .collect();
+        errors.push(capture_refusal(kb, heads, files, scope, name, &captured, &introducing));
+        out.insert((scope, name));
+    }
+    out
 }
 
 /// WI-20260821-JR7BB — refuse one scope's MIXED frozen answers for one rule-head name.
@@ -12930,9 +13474,9 @@ fn pending_import_brings_in(
 /// boundary.
 ///
 /// The check consumes the already-frozen [`denotes`] vector. Re-resolving after the mint
-/// is exactly the bug: the new local has already erased the evidence by then. A deferred
-/// selective import participates only for ITS file — [`pending_import_brings_in`] is
-/// file-keyed for the same reason.
+/// ALONE is exactly the bug: the new local has already erased the evidence by then. The
+/// capture at another address is asked after the mint against the frozen ANSWER, which
+/// keeps that evidence ([`report_post_mint_captures`], WI-20261022-JBHQC).
 fn report_rule_head_import_captures<'f>(
     kb: &KnowledgeBase,
     heads: &[RuleHeadSite<'f>],
@@ -12951,14 +13495,6 @@ fn report_rule_head_import_captures<'f>(
             introducing.push(idx);
         }
     }
-
-    let file_name = |idx: usize| {
-        files[idx]
-            .path
-            .as_ref()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| format!("<file {idx}>"))
-    };
     let mut mixed: Vec<((ScopeId, &'f str), Vec<usize>, Vec<usize>)> = groups
         .into_iter()
         .filter_map(|(key, (imported, introducing))| {
@@ -12975,36 +13511,53 @@ fn report_rule_head_import_captures<'f>(
 
     let mut refused = HashSet::new();
     for ((scope, name), imported, introducing) in mixed {
-        let mut importing_files: Vec<String> = imported
-            .iter()
-            .map(|&i| file_name(heads[i].file_idx))
-            .collect();
-        importing_files.sort();
-        importing_files.dedup();
-        let mut introducing_files: Vec<String> = introducing
-            .iter()
-            .map(|&i| file_name(heads[i].file_idx))
-            .collect();
-        introducing_files.sort();
-        introducing_files.dedup();
-        let first = introducing
-            .iter()
-            .copied()
-            .min_by_key(|&i| (heads[i].file_idx, heads[i].span.start))
-            .expect("a mixed group has an introducing head");
-        errors.push(
-            LoadError::RuleHeadImportCapturedByLocal {
-                name: name.to_owned(),
-                scope: kb.scope_display_name(scope).to_owned(),
-                importing_files,
-                introducing_files,
-                span: heads[first].span,
-            }
-            .located_in(files[heads[first].file_idx]),
-        );
+        errors.push(capture_refusal(kb, heads, files, scope, name, &imported, &introducing));
         refused.insert((scope, name));
     }
     refused
+}
+
+/// THE refusal of a capture (WI-20260821-JR7BB): the local `introducing` heads would mint
+/// at `scope` takes the `importing` heads, which denote through an import. One builder for
+/// both askers — the one address before the mint, every other after it.
+fn capture_refusal(
+    kb: &KnowledgeBase,
+    heads: &[RuleHeadSite<'_>],
+    files: &[&ParsedFile],
+    scope: ScopeId,
+    name: &str,
+    importing: &[usize],
+    introducing: &[usize],
+) -> LoadError {
+    let files_of = |sites: &[usize]| -> Vec<String> {
+        let mut names: Vec<String> = sites
+            .iter()
+            .map(|&i| {
+                let idx = heads[i].file_idx;
+                files[idx]
+                    .path
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| format!("<file {idx}>"))
+            })
+            .collect();
+        names.sort();
+        names.dedup();
+        names
+    };
+    let first = introducing
+        .iter()
+        .copied()
+        .min_by_key(|&i| (heads[i].file_idx, heads[i].span.start))
+        .expect("a capture has an introducing head");
+    LoadError::RuleHeadImportCapturedByLocal {
+        name: name.to_owned(),
+        scope: kb.scope_display_name(scope).to_owned(),
+        importing_files: files_of(importing),
+        introducing_files: files_of(introducing),
+        span: heads[first].span,
+    }
+    .located_in(files[heads[first].file_idx])
 }
 
 /// WI-369: reject importing an `internal` name into a scope that cannot see it.
@@ -13048,7 +13601,7 @@ fn forbid_internal_import(
 
 /// Process `import` declarations → register imported names and parent scopes.
 /// Unresolvable import paths produce errors (deferred predicate imports go to
-/// `pending` for the post-pass-3 retry — see `PendingImport`).
+/// `pending` for sub-pass 3's head census — see `PendingImport`).
 /// WI-20260924-SNJPR — sub-pass 2b: resolve every alias's target HEAD, then run the
 /// sub-pass-2 work that waited for one ([`DeferredAliasWork`]), until neither makes
 /// progress — an import through one alias can bring in the name another alias's target
@@ -13383,15 +13936,18 @@ fn process_one_import(
         // `by_qualified_name` directly and then ask `find_scope_by_name`, which built
         // a term off that same map hit; with the term gone the second conjunct is
         // literally the first, `A && A` and `A || A`.
-        let path = if !raw_path.contains('.') && !kb.has_qualified_name(&raw_path) {
+        // WI-20261022-JBHQC: `fell_back` keeps what was WRITTEN, for a rule head of this
+        // scan that mints it as a top-level name — what sub-pass 2 cannot see yet, and an
+        // earlier load would have shown it ([`PendingForm::PreludeFallback`]).
+        let (path, fell_back) = if !raw_path.contains('.') && !kb.has_qualified_name(&raw_path) {
             let candidate = format!("anthill.prelude.{raw_path}");
             if kb.has_qualified_name(&candidate) {
-                candidate
+                (candidate, Some(raw_path))
             } else {
-                raw_path
+                (raw_path, None)
             }
         } else {
-            raw_path
+            (raw_path, None)
         };
         match &imp.kind {
             OwnedImportKind::Plain => {
@@ -13405,6 +13961,19 @@ fn process_one_import(
                     if !forbid_internal_import(kb, original_sym, short, scope_id, imp.span, errors)
                     {
                         kb.symbols.add_import(scope_id, short, original_sym, origin);
+                        if let Some(written) = fell_back {
+                            let placeholder = kb.symbols.intern_unique("<deferred import>");
+                            kb.symbols.add_deferred_import(scope_id, short, placeholder);
+                            pending.push(PendingImport {
+                                scope: scope_id,
+                                short: short.to_string(),
+                                qualified: written,
+                                span: imp.span,
+                                file_idx,
+                                placeholder,
+                                form: PendingForm::PreludeFallback,
+                            });
+                        }
                     }
                 }
                 // WI-1089 — `import a.b.C` BINDS THE NAME `C`, and nothing else.
@@ -13422,10 +13991,34 @@ fn process_one_import(
                 // rule anything stated; both fell out of treating the target's scope as
                 // a parent. The forms that DO bring contents are still there and still
                 // say so: `import a.b.C.*` and `requires`.
+                //
+                // WI-20261022-JBHQC — A NAME NOT MINTED YET IS DEFERRED, as the
+                // selective form's names are (WI-295). `import a.b.p` binds the one name
+                // `a.b.p` (§8.6), and a predicate a rule head introduces in this load has
+                // that qualified name only after sub-pass 3 — so the lookup waits for
+                // sub-pass 3's head census, and asks it the same question: the qualified
+                // name, no other rung (§5.3 "Naming one from elsewhere" lists both forms).
+                // Refused here instead, the plain form could name such a predicate only
+                // when an EARLIER load had minted it: `import anthill.reflect.feed.reaches`
+                // resolved after the stdlib's sealed load and not in one call over both,
+                // and two namespaces of one program could not import each other's
+                // predicates this way at all.
+                //
+                // Every miss is deferred, a path whose base names nothing too: the head
+                // census refuses an import no head of the scan mints before any head is
+                // decided ([`wire_deferred_imports`]), so a dead one takes no head.
                 if found.is_none() {
-                    errors.push(LoadError::UnresolvedImport {
-                        path: path.clone(),
+                    let short = last_segment(&path);
+                    let placeholder = kb.symbols.intern_unique("<deferred import>");
+                    kb.symbols.add_deferred_import(scope_id, short, placeholder);
+                    pending.push(PendingImport {
+                        scope: scope_id,
+                        short: short.to_string(),
+                        qualified: path.clone(),
                         span: imp.span,
+                        file_idx,
+                        placeholder,
+                        form: PendingForm::Plain,
                     });
                 }
             }
@@ -13464,16 +14057,22 @@ fn process_one_import(
                 // for why that half is not this ticket's to narrow.
                 let base_scope = find_scope_by_name(kb, &path);
                 if base_scope.is_none() && !kb.symbols.by_qualified_name.contains_key(&path) {
-                    // The base path itself doesn't resolve
+                    // The base path itself doesn't resolve — ONE error, as scaland
+                    // reports it. Its names are not deferred (WI-20261022-JBHQC): no
+                    // head of the load mints a name under a base that names nothing, and
+                    // each name waiting for one took every head of its name at and under
+                    // this scope while the import was refused anyway (found by
+                    // `/code-review`).
                     errors.push(LoadError::UnresolvedImport {
                         path: path.clone(),
                         span: imp.span,
                     });
+                    return;
                 }
                 for (short, name_span) in names {
                     let short = short.clone();
                     let qualified = format!("{}.{}", path, short);
-                    let original_sym = kb
+                    let direct = kb
                         .symbols
                         .by_qualified_name
                         .get(&qualified)
@@ -13485,8 +14084,19 @@ fn process_one_import(
                                     _ => None,
                                 }
                             })
-                        })
-                        .or_else(|| find_in_nested_scope(kb, &path, &short));
+                        });
+                    // The nested-scope rung, scanned once: its one match binds, and whether
+                    // it had any is what a deferral of this name keeps (WI-20261022-JBHQC).
+                    let (original_sym, existing_below) = match direct {
+                        Some(sym) => (Some(sym), false),
+                        None => {
+                            let nested = nested_scope_matches(kb, &path, &short);
+                            (
+                                (nested.len() == 1).then(|| nested[0]),
+                                !nested.is_empty(),
+                            )
+                        }
+                    };
                     if let Some(sym) = original_sym {
                         // WI-369: a selective import of an `internal` name into a
                         // scope that can't see it is a forbidden reference.
@@ -13496,15 +14106,22 @@ fn process_one_import(
                     } else {
                         // WI-295: a rule-defined predicate's head-functor symbol
                         // isn't registered until sub-pass 3 (scan_rule_goal),
-                        // which runs after imports — so don't error yet. Defer
-                        // to scan_definitions's post-pass-3 retry, which
-                        // re-resolves it (erroring only if still unbound).
+                        // which runs after imports — so don't error yet. Defer to the
+                        // head census, which wires it or refuses it before any head is
+                        // decided ([`wire_deferred_imports`], WI-20261022-JBHQC).
+                        let placeholder = kb.symbols.intern_unique("<deferred import>");
+                        kb.symbols.add_deferred_import(scope_id, &short, placeholder);
                         pending.push(PendingImport {
                             scope: scope_id,
                             short,
                             qualified,
                             span: *name_span,
                             file_idx,
+                            placeholder,
+                            form: PendingForm::Selective {
+                                base: path.clone(),
+                                existing_below,
+                            },
                         });
                     }
                 }
@@ -23986,6 +24603,94 @@ pub fn resolve_name_in_kb(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> Res
     // emptied and then deleted, so the dotted ladder above is the last rung: a short
     // name that no scope defines and no `-i` supplied denotes NOTHING here, and the
     // caller's WI-476 bare intern is the answer.
+}
+
+/// AN EQUATION'S SUBJECT MAY NOT LAND ON ANOTHER SCOPE'S PREDICATE (D0EXD), judged for
+/// every equation head that `denotes`.
+///
+/// The head ladder ([`rule_head_ladder_answer`]) answers one question — does the name
+/// resolve — for every head shape. That is right for a predicate head, and right for an
+/// equation subject too wherever what it lands on is a thing equations DEFINE. It is
+/// wrong for exactly one target: a rule-introduced PREDICATE, which owns clauses an
+/// equation never contributes to (WI-898), so the equation's own operation silently
+/// ceases to exist at the scope that wrote it. Asked HERE rather than inside the ladder
+/// because the ladder is the one definition of what a name denotes and must stay one —
+/// this is a refusal layered on its answer, not a second ladder.
+///
+/// ONE SUBJECT IS ONE MESSAGE, however many equations are written about it — the rule
+/// is about the NAME, and every clause about it has the same cause and the same
+/// repair. Reporting per clause printed one fault twice for
+/// `sort Rec { rule f(true) <=> 1 @[simp]  rule f(false) <=> 2 @[simp] }` (found by
+/// `/code-review`), which is what this pass's sibling refusal already avoids
+/// ("ONE MISSING DECLARATION IS ONE MESSAGE"). Reported at the FIRST clause, by file
+/// and offset, so the group's line does not depend on the walk order.
+///
+/// ASKED AT SUB-PASS 4'S END (WI-20261022-JBHQC), where `resolved` holds an answer for a
+/// head that denoted through a DEFERRED import too. It was asked before the mint, where
+/// such a head had none: an equation whose subject an `import lib.{r}` or `import lib.r`
+/// brought in loaded clean in one load while the same text was refused when the import
+/// resolved at sub-pass 2 (found by `/code-review`). Nothing between the two positions
+/// reads what this reports.
+fn refuse_absorbed_equation_subjects<'f>(
+    kb: &KnowledgeBase,
+    heads: &[RuleHeadSite<'f>],
+    denotes: &[bool],
+    resolved: &[ResolveResult],
+    global: ScopeId,
+    files: &[&ParsedFile],
+    errors: &mut Vec<LoadError>,
+) {
+    let mut absorbed: HashMap<(ScopeId, &str), (usize, Vec<ScopeId>, bool)> = HashMap::new();
+    for ((idx, head), answer) in heads.iter().enumerate().zip(resolved) {
+        if !denotes[idx] || head.introduced_by != RuleIntroduction::Equation {
+            continue;
+        }
+        let owners = equation_subject_lands_on_predicate(kb, head, answer, global);
+        if owners.is_empty() {
+            continue;
+        }
+        let ambiguous = matches!(answer, ResolveResult::Ambiguous(..));
+        match absorbed.entry((head.scope, head.name)) {
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert((idx, owners, ambiguous));
+            }
+            std::collections::hash_map::Entry::Occupied(mut e) => {
+                let (first, seen, was_ambiguous) = e.get_mut();
+                if (heads[idx].file_idx, heads[idx].span.start)
+                    < (heads[*first].file_idx, heads[*first].span.start)
+                {
+                    *first = idx;
+                }
+                *was_ambiguous |= ambiguous;
+                for o in owners {
+                    if !seen.contains(&o) {
+                        seen.push(o);
+                    }
+                }
+            }
+        }
+    }
+    // A DETERMINISTIC REPORT ORDER, so two absorbed subjects do not print in hash order.
+    let mut groups: Vec<(usize, Vec<ScopeId>, bool)> = absorbed.into_values().collect();
+    groups.sort_by_key(|(first, _, _)| (heads[*first].file_idx, heads[*first].span.start));
+    for (first, owners, ambiguous) in groups {
+        let head = &heads[first];
+        let mut scopes: Vec<String> = owners
+            .iter()
+            .map(|o| kb.scope_display_name(*o).to_owned())
+            .collect();
+        scopes.sort();
+        errors.push(
+            LoadError::EquationSubjectNamesAPredicate {
+                name: head.name.to_owned(),
+                head_scope: kb.scope_display_name(head.scope).to_owned(),
+                predicate_scopes: scopes,
+                ambiguous,
+                span: head.span,
+            }
+            .located_in(files[head.file_idx]),
+        );
+    }
 }
 
 /// WI-20260821-D0EXD — the equation subject's half of the head ladder: what this

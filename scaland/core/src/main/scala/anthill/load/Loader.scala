@@ -127,12 +127,12 @@ object Loader:
     // Before user imports, so explicit imports retain precedence over the prelude.
     autoImportPrelude(kb)
 
-    // Pass 2: Process requires and imports (all sorts exist now). A Selective
-    // import of an AUTO-DECLARED predicate cannot resolve here — its head-functor symbol
-    // is not registered until pass 3 — so such names are deferred into `pending` and
-    // retried below (WI-295). A predicate a body-less rule DECLARES is not one of those
-    // since proposal 061: pass 1 minted it above, so it resolves here like any other
-    // declared name.
+    // Pass 2: Process requires and imports (all sorts exist now). An import, selective
+    // or plain (WI-20261022-JBHQC), of an AUTO-DECLARED predicate cannot resolve here —
+    // its head-functor symbol is not registered until pass 3 — so such names are
+    // deferred into `pending` and retried below (WI-295). A predicate a body-less rule
+    // DECLARES is not one of those since proposal 061: pass 1 minted it above, so it
+    // resolves here like any other declared name.
     val pending = ArrayBuffer.empty[PendingImport[kb.ScopeId]]
     for (file, fid) <- files.zip(fileIds) do
       kb.symbols.setAskingFile(Some(fid))
@@ -189,14 +189,32 @@ object Loader:
       kb.symbols.setAskingFile(Some(fid))
       walkScopes(RuleHeadCollectPass(kb, file.symbols, file.terms, fileIdx, heads, errors), file.items)
 
+    // PHASE 1b — WIRE THE DEFERRED IMPORTS (WI-20261022-JBHQC; rustland's
+    // `wire_deferred_imports`). The head census says which qualified names this scan's
+    // heads will mint; an import waiting for one is wired to the symbol reserved for it
+    // before any head is decided, so the ladder below reads it as any import — from the
+    // importing scope and every scope it encloses, behind whatever a nearer scope holds,
+    // for the file that wrote it. One whose target no head mints is refused here. Until
+    // this ticket a deferred import was retried in pass 4, AFTER the mint, and the mint
+    // guard alone was told of it, for the head's own scope alone.
+    val headSites = heads.toIndexedSeq
+    val wiring = wireDeferredImports(kb, headSites, pending.toIndexedSeq, errors)
+
     // PHASE 2 — every ladder answer read off the PRE-MINT table, in full, before phase 3
     // starts. That is what makes them order-free. WI-995: imports are file-local, so
     // each is asked on behalf of the file the HEAD is written in.
-    val headSites = heads.toIndexedSeq
-    val denotes: IndexedSeq[Boolean] = headSites.map { h =>
+    val answers: Array[ResolveResult] = headSites.map { h =>
       kb.symbols.setAskingFile(Some(fileIds(h.fileIdx)))
-      ruleHeadLadderAnswer(kb, h.name, h.scope).denotes || pending.exists(p =>
-        p.scope == h.scope && p.short == h.name && p.origin.id == fileIds(h.fileIdx))
+      ruleHeadLadderAnswer(kb, h.name, h.scope)
+    }.toArray
+    // The imports that wait for these answers, then every reservation no head mints
+    // withdrawn, and the heads that read it asked again.
+    wireLate(kb, wiring, headSites, answers, fileIds, errors)
+    settleWiring(kb, wiring, headSites, answers, fileIds, errors)
+    // A head whose answer is the symbol reserved for ITS OWN mint introduces it: it is
+    // the predicate's definer, reached through an import of the predicate it defines.
+    val denotes: IndexedSeq[Boolean] = headSites.indices.map { i =>
+      answers(i).denotes && !wiring.isOwnReservation(headSites(i), answers(i))
     }
 
     // PHASE 3 — DECIDE, then mint. Deciding reads the table and minting writes it, so
@@ -204,28 +222,18 @@ object Loader:
     // SENTINEL symbol, and no mint has happened when any of its answers is taken.
     val captured = reportRuleHeadImportCaptures(kb, headSites, denotes, errors)
     val collided = captured ++ reportHeadNameCollisions(kb, headSites, denotes, fileIds, errors)
-    reportPredicateHeadsSpanningFiles(kb, headSites, denotes, collided, errors)
     for (head, denoted) <- headSites.zip(denotes) if !denoted do
       kb.symbols.setAskingFile(Some(fileIds(head.fileIdx)))
-      scanRuleGoal(kb, head)
+      scanRuleGoal(kb, head, wiring)
+    // A local the mint put ahead of what a denoting head read, at another address than
+    // the head's own ([[reportPostMintCaptures]]) — before 061's report, which stays quiet
+    // on it as on the one-address capture.
+    val enclosing = reportPostMintCaptures(kb, headSites, denotes, answers, captured, fileIds, errors)
+    reportPredicateHeadsSpanningFiles(kb, headSites, denotes, collided ++ enclosing, errors)
 
-    // Pass 4 (WI-295): retry the deferred predicate imports. Pass 3's head-functor
-    // symbols are in `byQualifiedName` now, so a cross-namespace rule-predicate
-    // import resolves like any declared name — erroring only if it is still unbound.
-    // WI-1074: the retry runs outside the per-file loop, so each pending import
-    // carries its own provenance and re-asks as the file that wrote it.
-    for p <- pending do
-      kb.symbols.setAskingFile(Some(p.origin.id))
-      resolveSelectiveImport(kb, p.target, p.path, p.short) match
-        case Some(sym) => kb.symbols.addImport(p.scope, p.short, sym, p.origin)
-        // WI-962: the scope name comes off the SYMBOL, like the other two raise sites, and
-        // not off `p.path` — the written import spelling. The two agree (a `define` writes
-        // one qualified name into both the `byQualifiedName` key and the `SymbolDef`, and
-        // that lookup is where `target` came from), but agreeing is not deriving: with the
-        // spelling the field had a second source that could drift, which is the whole
-        // failure this WI is about. `path` is a resolution INPUT here, nothing else.
-        case None =>
-          errors += LoadError.UnresolvedName(p.short, p.span, kb.qualifiedNameOf(p.target))
+    // Pass 4 (WI-295) — NOTHING LEFT TO RETRY (WI-20261022-JBHQC): a deferred import was
+    // wired in phase 1b to the symbol its definer has just minted, or refused there.
+    reportUnminted(kb, wiring, errors)
 
     // WI-1074 — the scan is over; nothing after it asks on one file's behalf until the
     // load phase sets the cursor again.
@@ -1343,8 +1351,35 @@ object Loader:
     * LOOP IS FILLING, which is the defect the split removes. Two heads of one name at one
     * scope are two clauses of one predicate, and `defineSymbolOnce` is already idempotent
     * for them. */
-  private def scanRuleGoal(kb: KnowledgeBase, site: RuleHeadSite[kb.ScopeId]): Unit =
-    defineSymbolOnce(kb, site.name, makeQualified(site.prefix, site.name), site.kind, site.scope)
+  private def scanRuleGoal(
+    kb: KnowledgeBase, site: RuleHeadSite[kb.ScopeId], wiring: DeferredWiring[kb.ScopeId]
+  ): Unit =
+    val qualified = makeQualified(site.prefix, site.name)
+    // WI-20261022-JBHQC — a name a deferred import waits for is the symbol reserved for
+    // it in phase 1b: the first head to mint the name adopts it.
+    adoptReservation(kb, wiring, qualified, site.kind)
+    defineSymbolOnce(kb, site.name, qualified, site.kind, site.scope)
+
+  /** THE refusal of a capture (WI-20260821-JR7BB): the local the `introducing` heads would
+    * mint at `scope` takes the `importing` heads, which denote through an import. One
+    * builder for both askers — the one address before the mint, every other after it. */
+  private def captureRefusal(
+    kb: KnowledgeBase, heads: IndexedSeq[RuleHeadSite[kb.ScopeId]],
+    scope: kb.ScopeId, name: String, importing: IndexedSeq[Int], introducing: IndexedSeq[Int]
+  ): LoadError =
+    val importingFiles = importing.map(i => heads(i).span.file).distinct.sorted
+    val introducingFiles = introducing.map(i => heads(i).span.file).distinct.sorted
+    val first = introducing.minBy(i => (heads(i).fileIdx, heads(i).span.start))
+    LoadError.Other(
+      s"the local rule-head name `$name` in '${kb.scopeDisplayName(scope)}' would " +
+      s"capture the same head as resolved through an import in " +
+      s"${importingFiles.mkString(", ")}. Imports belong only to the files that write " +
+      s"them, but the local declaration requested by ${introducingFiles.mkString(", ")} " +
+      s"would belong to every file at this scope and outrank those imports, silently " +
+      s"retargeting an unchanged clause. Qualify the imported head, import it by name " +
+      s"in every contributing file, or declare the local predicate explicitly and " +
+      s"qualify the foreign contribution.",
+      heads(first).span)
 
   /** WI-20260821-JR7BB — refuse a scope-local rule-head declaration that would capture
     * a sibling file's imported head.
@@ -1371,19 +1406,7 @@ object Loader:
     for ((scope, name), (imported, introducing)) <- groups.toIndexedSeq
         .sortBy((key, _) => (kb.scopeDisplayName(key._1), key._2))
         if imported.nonEmpty && introducing.nonEmpty do
-      val importingFiles = imported.map(i => heads(i).span.file).distinct.sorted
-      val introducingFiles = introducing.map(i => heads(i).span.file).distinct.sorted
-      val first = introducing.minBy(i => (heads(i).fileIdx, heads(i).span.start))
-      errors += LoadError.Other(
-        s"the local rule-head name `$name` in '${kb.scopeDisplayName(scope)}' would " +
-        s"capture the same head as resolved through an import in " +
-        s"${importingFiles.mkString(", ")}. Imports belong only to the files that write " +
-        s"them, but the local declaration requested by ${introducingFiles.mkString(", ")} " +
-        s"would belong to every file at this scope and outrank those imports, silently " +
-        s"retargeting an unchanged clause. Qualify the imported head, import it by name " +
-        s"in every contributing file, or declare the local predicate explicitly and " +
-        s"qualify the foreign contribution.",
-        heads(first).span)
+      errors += captureRefusal(kb, heads, scope, name, imported.toIndexedSeq, introducing.toIndexedSeq)
       refused += ((scope, name))
     refused
 
@@ -2203,20 +2226,34 @@ object Loader:
         true
       case None => false
 
-  /** WI-295: a `Selective` import name that did not resolve in pass 2. The
-    * head-functor symbol of a rule-introduced predicate is not registered until pass
-    * 3, so such names are deferred and retried after it.
-    *
-    * `path` is the import's written spelling, and it is a RESOLUTION INPUT only (WI-962):
-    * [[resolveSelectiveImport]]'s nested-scope rung builds lookup keys out of it. It used
-    * to double as the retry's diagnostic scope name, which is a second source for a field
-    * [[LoadError]] says is derived from a scope; the retry now reads that off `target`
-    * instead. */
+  /** WI-295: an imported name that did not resolve in pass 2. The head-functor symbol
+    * of a rule-introduced predicate is not registered until pass 3, so such names wait
+    * for pass 3's head census, which wires them ([[wireDeferredImports]]) — a `Selective`
+    * import's name, and since WI-20261022-JBHQC a `Plain` import's whole path: §5.3
+    * names both forms as ways to name a rule-introduced functor, and the plain form
+    * refused in pass 2 could name one only when an EARLIER load had minted it. The
+    * `form` says what each may land on — each form as pass 2 would have. */
   private case class PendingImport[S](
-    scope: S, short: String, target: TermSymbol, span: Span, path: String,
+    scope: S, short: String, span: Span, form: PendingForm,
     /** WI-1074 — whose import this is; the pass-4 retry runs outside the per-file loop,
       * so the provenance rides with the deferral. */
-    origin: ImportOrigin.File)
+    origin: ImportOrigin.File,
+    /** The import's PLACE among the writes of its name, held from pass 2
+      * ([[SymbolTable.addDeferredImport]]): wired, the import takes it, so a write the
+      * text makes after it still outranks it, whatever order the wiring runs in. */
+    placeholder: TermSymbol)
+
+  private enum PendingForm:
+    /** `import <path>.{short}`, resolved below `target` ([[resolveSelectiveImport]]).
+      *
+      * `path` is the import's written spelling, and it is a RESOLUTION INPUT only
+      * (WI-962): [[resolveSelectiveImport]]'s nested-scope rung builds lookup keys out
+      * of it. It used to double as the retry's diagnostic scope name, which is a second
+      * source for a field [[LoadError]] says is derived from a scope; the retry now reads
+      * that off `target` instead. */
+    case Selective(target: TermSymbol, path: String, existingBelow: Boolean)
+    /** `import <path>`, whose whole spelling is the qualified name it binds. */
+    case Plain(path: String)
 
   /** Resolve one name of a `Selective` import against the imported symbol `target`
     * (whose qualified name is `pathStr`). THE one resolution both pass 2 and the
@@ -2248,6 +2285,292 @@ object Loader:
       // names, which is a different gap and the one rustland also still fills.
       case _ => findInNestedScope(kb, pathStr, name)
 
+  /** Is `qname` exactly ONE scope below `base`, with the short name `short` —
+    * `base.<segment>.short`? The shape of the nested-scope rung ([[findInNestedScope]]),
+    * asked of what exists at pass 2 and of what the head census will mint. */
+  private def isOneScopeBelow(qname: String, base: String, short: String): Boolean =
+    val prefix = s"$base."
+    val suffix = s".$short"
+    qname.length > prefix.length + suffix.length && qname.startsWith(prefix) &&
+      qname.endsWith(suffix) &&
+      !qname.substring(prefix.length, qname.length - suffix.length).contains('.')
+
+  /** One qualified name a deferred import waits for (WI-20261022-JBHQC): the symbol
+    * reserved for it, the heads that would mint it (its DEFINERS), and the imports wired
+    * to it, to take back if no definer mints it. */
+  private final class Reservation[S](
+    val sym: TermSymbol,
+    val definers: IndexedSeq[Int],
+    val imports: ArrayBuffer[(PendingImport[S], String)],
+    var minted: Boolean)
+
+  /** A selective import that can only land one scope below its base, wired after phase 2
+    * ([[wireLate]]). */
+  private final case class LateImport[S](p: PendingImport[S], base: String, existingBelow: Boolean)
+
+  /** WI-20261022-JBHQC — the deferred imports of one scan, wired to symbols reserved for
+    * the names its rule heads will mint. Rustland's twin is `DeferredWiring`. */
+  private final class DeferredWiring[S](
+    val byName: LinkedHashMap[String, Reservation[S]],
+    /** Qualified mint name → the heads that would mint it, for the names an import
+      * waits for only. */
+    val census: LinkedHashMap[String, ArrayBuffer[Int]],
+    val late: ArrayBuffer[LateImport[S]]):
+
+    /** Is `answer` the symbol reserved for the name `head` would mint — the head reached
+      * through an import of the predicate it DEFINES? Then it introduces it. */
+    def isOwnReservation(head: RuleHeadSite[S], answer: ResolveResult): Boolean =
+      byName.nonEmpty && (answer match
+        case ResolveResult.Found(sym) =>
+          byName.get(makeQualified(head.prefix, head.name)).exists(_.sym == sym)
+        case _ => false)
+
+    /** Does head `i` INTRODUCE its name, by its answer? */
+    def introduces(heads: IndexedSeq[RuleHeadSite[S]], answers: Array[ResolveResult], i: Int): Boolean =
+      !answers(i).denotes || isOwnReservation(heads(i), answers(i))
+
+    /** The ONE name a head INTRODUCES exactly one scope below `base`, by the answers,
+      * beside none that exists: the nested-scope rung, asked of what the scan mints. */
+    def oneScopeBelow(
+      heads: IndexedSeq[RuleHeadSite[S]], answers: Array[ResolveResult],
+      base: String, short: String, existingBelow: Boolean
+    ): Option[String] =
+      if existingBelow then None
+      else
+        val minted = census.collect {
+          case (q, definers) if isOneScopeBelow(q, base, short) && definers.exists(introduces(heads, answers, _)) => q
+        }.toIndexedSeq
+        Option.when(minted.size == 1)(minted.head)
+
+  /** Does `answer` read one of `syms`? */
+  private def readsAny(answer: ResolveResult, syms: collection.Set[TermSymbol]): Boolean = answer match
+    case ResolveResult.Found(sym)       => syms.contains(sym)
+    case ResolveResult.Ambiguous(cands) => cands.exists(syms.contains)
+    case ResolveResult.NotFound         => false
+
+  /** The symbol reserved for `target`, reserved now if no import waited for it yet. */
+  private def reservation(
+    kb: KnowledgeBase, wiring: DeferredWiring[kb.ScopeId],
+    heads: IndexedSeq[RuleHeadSite[kb.ScopeId]], target: String
+  ): Reservation[kb.ScopeId] =
+    wiring.byName.getOrElseUpdate(target, {
+      val definers = wiring.census(target).toIndexedSeq
+      val first = heads(definers.head)
+      Reservation[kb.ScopeId](
+        kb.symbols.reserve(first.name, target, first.kind, first.scope),
+        definers, ArrayBuffer.empty, minted = false)
+    })
+
+  /** Wire the import `p` to the symbol reserved for `target`, at the place it holds. */
+  private def wireImport(
+    kb: KnowledgeBase,
+    wiring: DeferredWiring[kb.ScopeId],
+    heads: IndexedSeq[RuleHeadSite[kb.ScopeId]],
+    target: String,
+    p: PendingImport[kb.ScopeId],
+    written: String
+  ): Unit =
+    val r = reservation(kb, wiring, heads, target)
+    kb.symbols.wireDeferredImport(p.scope, p.short, p.placeholder, r.sym, p.origin)
+    r.imports += ((p, written))
+
+  /** THE SELECTIVE IMPORTS THAT WAIT FOR PHASE 2'S ANSWERS: one that can only land one
+    * scope below its base lands on [[DeferredWiring.oneScopeBelow]]. Each wired here has
+    * every head of its short name asked again; one that lands nowhere names nothing. */
+  private def wireLate(
+    kb: KnowledgeBase,
+    wiring: DeferredWiring[kb.ScopeId],
+    heads: IndexedSeq[RuleHeadSite[kb.ScopeId]],
+    answers: Array[ResolveResult],
+    fileIds: IndexedSeq[FileId],
+    errors: ArrayBuffer[LoadError]
+  ): Unit =
+    for LateImport(p, base, existingBelow) <- wiring.late.toIndexedSeq do
+      wiring.oneScopeBelow(heads, answers, base, p.short, existingBelow) match
+        case Some(target) =>
+          wireImport(kb, wiring, heads, target, p, s"$base.${p.short}")
+          for (h, i) <- heads.zipWithIndex if h.name == p.short do
+            kb.symbols.setAskingFile(Some(fileIds(h.fileIdx)))
+            answers(i) = ruleHeadLadderAnswer(kb, h.name, h.scope)
+        case None =>
+          kb.symbols.dropDeferredImport(p.scope, p.short, p.placeholder)
+          errors += unresolvedDeferred(kb, p, s"$base.${p.short}")
+    wiring.late.clear()
+
+  /** WITHDRAW THE RESERVATIONS NO DEFINER MINTS, and ask the ladder again for every head
+    * that read one. Each import wired to it is taken back: a selective one re-pointed, at
+    * its place, to the one name a head introduces one scope below its base (a load in two
+    * steps resolves it so — found by `/code-review`), any other refused. ONLY those whose
+    * definers read no other idle reservation, each round: one that does may mint once
+    * that one is withdrawn. Where every idle one reads another (a cycle), they go
+    * together. A round withdraws one at least, and a re-pointed import lands on a name a
+    * head introduces, which is not idle; so this ends. */
+  private def settleWiring(
+    kb: KnowledgeBase,
+    wiring: DeferredWiring[kb.ScopeId],
+    heads: IndexedSeq[RuleHeadSite[kb.ScopeId]],
+    answers: Array[ResolveResult],
+    fileIds: IndexedSeq[FileId],
+    errors: ArrayBuffer[LoadError]
+  ): Unit =
+    var done = false
+    while !done do
+      val idle = wiring.byName.values
+        .filter(r => r.definers.forall(i => !wiring.introduces(heads, answers, i)))
+        .map(_.sym).toSet
+      if idle.isEmpty then done = true
+      else
+        val ready = wiring.byName.collect {
+          case (_, r) if idle.contains(r.sym) && r.definers.forall(i => !readsAny(answers(i), idle)) => r.sym
+        }.toSet
+        val batch = if ready.isEmpty then idle else ready
+        for q <- wiring.byName.collect { case (q, r) if batch.contains(r.sym) => q }.toIndexedSeq.sorted do
+          val r = wiring.byName.remove(q).get
+          for (p, path) <- r.imports do takeBack(kb, wiring, heads, answers, r.sym, p, path, errors)
+          kb.symbols.withdrawReserved(r.sym)
+        for (h, i) <- heads.zipWithIndex if readsAny(answers(i), batch) do
+          kb.symbols.setAskingFile(Some(fileIds(h.fileIdx)))
+          answers(i) = ruleHeadLadderAnswer(kb, h.name, h.scope)
+
+  /** Take back `p`, wired to the withdrawn `sym` ([[settleWiring]] says what that is). */
+  private def takeBack(
+    kb: KnowledgeBase,
+    wiring: DeferredWiring[kb.ScopeId],
+    heads: IndexedSeq[RuleHeadSite[kb.ScopeId]],
+    answers: Array[ResolveResult],
+    sym: TermSymbol,
+    p: PendingImport[kb.ScopeId],
+    path: String,
+    errors: ArrayBuffer[LoadError]
+  ): Unit =
+    val repointed = p.form match
+      case PendingForm.Selective(_, base, existingBelow) =>
+        wiring.oneScopeBelow(heads, answers, base, p.short, existingBelow)
+      case PendingForm.Plain(_) => None
+    repointed match
+      case Some(target) =>
+        val r = reservation(kb, wiring, heads, target)
+        kb.symbols.rewireImport(p.scope, p.short, sym, r.sym, p.origin)
+        r.imports += ((p, path))
+      case None =>
+        kb.symbols.removeImport(p.scope, p.short, sym, p.origin)
+        errors += unresolvedDeferred(kb, p, path)
+
+  /** The first head to mint `qualified` adopts the symbol reserved for it. */
+  private def adoptReservation(
+    kb: KnowledgeBase, wiring: DeferredWiring[kb.ScopeId], qualified: String, kind: SymbolKind
+  ): Unit =
+    wiring.byName.get(qualified).filter(!_.minted).foreach { r =>
+      kb.symbols.adoptReserved(r.sym, kind)
+      r.minted = true
+    }
+
+  /** Every reservation [[settleWiring]] kept has a definer that mints it. One that was not
+    * minted is a loader invariant failing, REPORTED as that — not as an import naming
+    * nothing, which would hide a broken [[settleWiring]] behind an ordinary refusal
+    * (found by `/code-review`). */
+  private def reportUnminted(
+    kb: KnowledgeBase, wiring: DeferredWiring[kb.ScopeId], errors: ArrayBuffer[LoadError]
+  ): Unit =
+    for q <- wiring.byName.collect { case (q, r) if !r.minted => q }.toIndexedSeq.sorted
+        (p, path) <- wiring.byName(q).imports do
+      errors += LoadError.Other(
+        s"the import of `$path` was wired to the predicate a rule head of this load would " +
+        s"mint, and no head minted it. This is a loader invariant failing rather than a " +
+        s"fault in the program; please report it.", p.span)
+
+  /** The refusal of a deferred import that names nothing: the selective form's names its
+    * base's scope, as pass 2's would; the plain form's its path. */
+  private def unresolvedDeferred(
+    kb: KnowledgeBase, p: PendingImport[kb.ScopeId], path: String
+  ): LoadError = p.form match
+    case PendingForm.Selective(target, _, _) =>
+      LoadError.UnresolvedName(p.short, p.span, kb.qualifiedNameOf(target))
+    case PendingForm.Plain(_) => LoadError.UnresolvedImport(path, p.span)
+
+  /** WI-20261022-JBHQC — WIRE THE DEFERRED IMPORTS OF A SCAN before its heads are decided.
+    * The head census says which qualified names the scan's heads would mint; an import
+    * whose qualified name is among them is wired to a symbol reserved for it, at the place
+    * it holds, and the first of its definers adopts it at the mint. A selective import that
+    * can only land one scope below its base waits for phase 2's answers ([[wireLate]]). One
+    * whose name no head could mint names nothing, and is refused now, before any head
+    * reads it. */
+  private def wireDeferredImports(
+    kb: KnowledgeBase,
+    heads: IndexedSeq[RuleHeadSite[kb.ScopeId]],
+    pending: IndexedSeq[PendingImport[kb.ScopeId]],
+    errors: ArrayBuffer[LoadError]
+  ): DeferredWiring[kb.ScopeId] =
+    val wiring = DeferredWiring[kb.ScopeId](LinkedHashMap.empty, LinkedHashMap.empty, ArrayBuffer.empty)
+    if pending.isEmpty then return wiring
+    val shorts = pending.map(_.short).toSet
+    for (h, i) <- heads.zipWithIndex if shorts.contains(h.name) do
+      wiring.census.getOrElseUpdate(makeQualified(h.prefix, h.name), ArrayBuffer.empty) += i
+    for p <- pending do
+      p.form match
+        case PendingForm.Plain(path) =>
+          if wiring.census.contains(path) then wireImport(kb, wiring, heads, path, p, path)
+          else
+            kb.symbols.dropDeferredImport(p.scope, p.short, p.placeholder)
+            errors += unresolvedDeferred(kb, p, path)
+        case PendingForm.Selective(_, path, existingBelow) =>
+          val direct = s"$path.${p.short}"
+          if wiring.census.contains(direct) then wireImport(kb, wiring, heads, direct, p, direct)
+          else if wiring.census.keys.exists(isOneScopeBelow(_, path, p.short)) then
+            wiring.late += LateImport(p, path, existingBelow)
+          else
+            kb.symbols.dropDeferredImport(p.scope, p.short, p.placeholder)
+            errors += unresolvedDeferred(kb, p, direct)
+    wiring
+
+  /** WI-20261022-JBHQC — A LOCAL THE MINT PUT AHEAD OF WHAT A HEAD DENOTED, at any address
+    * (rustland's `report_post_mint_captures` says why): the frozen answer of each
+    * denoting head, whose name the scan minted somewhere, against what its ladder says
+    * now. A group the one-address check refused is not refused twice. */
+  private def reportPostMintCaptures(
+    kb: KnowledgeBase,
+    heads: IndexedSeq[RuleHeadSite[kb.ScopeId]],
+    denotes: IndexedSeq[Boolean],
+    answers: Array[ResolveResult],
+    refused: Set[(kb.ScopeId, String)],
+    fileIds: IndexedSeq[FileId],
+    errors: ArrayBuffer[LoadError]
+  ): Set[(kb.ScopeId, String)] =
+    val minted = heads.indices.filter(!denotes(_)).map(heads(_).name).toSet
+    val groups = LinkedHashMap.empty[(kb.ScopeId, String), ArrayBuffer[Int]]
+    for (h, i) <- heads.zipWithIndex
+        if denotes(i) && minted.contains(h.name) && !refused.contains((h.scope, h.name)) do
+      answers(i) match
+        case ResolveResult.Found(frozen) =>
+          kb.symbols.setAskingFile(Some(fileIds(h.fileIdx)))
+          ruleHeadLadderAnswer(kb, h.name, h.scope) match
+            case ResolveResult.Found(now) if now != frozen =>
+              // Only a mint moves an answer, and a mint is a head of this scan introducing
+              // its name at its scope; an answer that moved to anything else is reported as
+              // the loader invariant it is, not skipped.
+              val capturing = kb.symbols.get(now) match
+                case SymbolDef.Resolved(_, _, _, scope) =>
+                  Option.when(heads.indices.exists(j =>
+                    !denotes(j) && heads(j).scope == scope && heads(j).name == h.name))(scope)
+                case SymbolDef.Unresolved(_) => None
+              capturing match
+                case Some(scope) => groups.getOrElseUpdate((scope, h.name), ArrayBuffer.empty) += i
+                case None =>
+                  errors += LoadError.Other(
+                    s"the rule head `${h.name}` written in '${kb.scopeDisplayName(h.scope)}' resolved " +
+                    s"to '${kb.qualifiedNameOf(frozen)}' when its predicate was decided and to " +
+                    s"'${kb.qualifiedNameOf(now)}' once the load's heads were minted, and no head of " +
+                    s"this load introduced the second. This is a loader invariant failing rather " +
+                    s"than a fault in the program; please report it.", h.span)
+            case _ =>
+        case _ =>
+    var out = Set.empty[(kb.ScopeId, String)]
+    for ((scope, name), captured) <- groups.toIndexedSeq.sortBy((k, _) => (kb.scopeDisplayName(k._1), k._2)) do
+      val introducing = heads.indices.filter(i => !denotes(i) && heads(i).scope == scope && heads(i).name == name)
+      errors += captureRefusal(kb, heads, scope, name, captured.toIndexedSeq, introducing)
+      out += ((scope, name))
+    out
+
   private def processImports(
     kb: KnowledgeBase,
     imports: Iterable[Import],
@@ -2276,7 +2599,12 @@ object Loader:
                   // int64/ordered) cannot resolve here. Defer instead of erroring; the
                   // post-pass-3 retry re-resolves it and errors only if still unbound.
                   case None =>
-                    pending += PendingImport(scope, name, sym, n.span, pathStr, origin)
+                    val placeholder = kb.symbols.placeholder()
+                    kb.symbols.addDeferredImport(scope, name, placeholder)
+                    pending += PendingImport(
+                      scope, name, n.span,
+                      PendingForm.Selective(sym, pathStr, nestedScopeMatches(kb, pathStr, name).nonEmpty),
+                      origin, placeholder)
             case ImportKind.Wildcard =>
               // WI-988: a wildcard brings a scope's CONTENTS in, so the path has to name
               // something with contents — a namespace, or a sort (§5.1 names both).
@@ -2285,6 +2613,16 @@ object Loader:
               parentScopeOf(kb, sym, Set(SymbolKind.Namespace, SymbolKind.Sort),
                 s"the wildcard import `$pathStr.*`", imp.path.span, errors)
                 .foreach(p => kb.symbols.addImportParent(scope, p, isEnclosing = false, origin))
+        // WI-20261022-JBHQC — a plain import of a name pass 3 has yet to mint waits for
+        // the head census, as the selective form's names do (WI-295), which asks the
+        // same question pass 2 does: the qualified name. Every miss waits: the census
+        // refuses one no head mints before any head is decided ([[wireDeferredImports]]).
+        case None if imp.kind == ImportKind.Plain =>
+          val short = fileSym.name(imp.path.last)
+          val placeholder = kb.symbols.placeholder()
+          kb.symbols.addDeferredImport(scope, short, placeholder)
+          pending += PendingImport(scope, short, imp.path.span, PendingForm.Plain(pathStr), origin,
+            placeholder)
         case None =>
           errors += LoadError.UnresolvedImport(pathStr, imp.path.span)
 
@@ -2299,22 +2637,17 @@ object Loader:
   private def findInNestedScope(
     kb: KnowledgeBase, basePath: String, short: String
   ): Option[TermSymbol] =
-    val prefix = s"$basePath."
-    val suffix = s".$short"
-    val matches = kb.symbols.byQualifiedName.iterator.collect {
-      case (qname, sym)
-        // The length guard rules out an overlapping prefix/suffix (e.g.
-        // base="a", short="b", qname="a.b"), which would make the substring
-        // bounds invalid; such a qname is the exact `base.short` already
-        // handled by the direct lookup, so it has no intermediate segment.
-        if qname.startsWith(prefix) && qname.endsWith(suffix) &&
-           qname.length >= prefix.length + suffix.length &&
-           {
-             val middle = qname.substring(prefix.length, qname.length - suffix.length)
-             middle.nonEmpty && !middle.contains('.')
-           } => sym
-    }.toSet
+    val matches = nestedScopeMatches(kb, basePath, short)
     if matches.size == 1 then Some(matches.head) else None
+
+  /** Every name exactly one scope below `basePath` with the short name `short` — the
+    * nested-scope rung's matches; a deferred import keeps whether there was any. */
+  private def nestedScopeMatches(
+    kb: KnowledgeBase, basePath: String, short: String
+  ): Set[TermSymbol] =
+    kb.symbols.byQualifiedName.iterator.collect {
+      case (qname, sym) if isOneScopeBelow(qname, basePath, short) => sym
+    }.toSet
 
   /** The scope a symbol names, when its KIND is one that has contents (WI-988).
     *

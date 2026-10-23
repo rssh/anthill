@@ -19,8 +19,11 @@
 //!
 //! ── WHICH ROWS FAIL WHEN THE CHANGE IS BACKED OUT ────────────────────────────
 //!
-//! Drop the `|| pending_import_brings_in(…)` leg from the `denotes` computation in
-//! `scan_definitions_with_sources`. **BOTH ROWS FAIL**, each on a different assertion:
+//! Wire the deferred import only after the mint (`DeferredWiring::wire` inserting no
+//! write, the import added once its definer minted) — since WI-20261022-JBHQC the import
+//! is wired to its target's reserved symbol BEFORE phase 2, which replaced the
+//! `|| pending_import_brings_in(…)` leg this guard first was. Measured after that change:
+//! **BOTH ROWS FAIL**, each on a different assertion:
 //! [`a_head_under_a_deferred_selective_import_joins_what_was_imported`] finds
 //! `Side.freshp` holding the clause (the import dead), and
 //! [`the_import_is_what_decides_not_the_spelling`]'s control arm stops being refused.
