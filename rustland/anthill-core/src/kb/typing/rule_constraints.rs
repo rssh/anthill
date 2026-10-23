@@ -146,6 +146,13 @@ enum LatePosition {
         dot: Rc<NodeOccurrence>,
         position: Value,
     },
+    /// One side of an equality that holds a lambda (`?f <=> lambda () -> now()`, `?l <=> [lambda
+    /// () -> now()]`): its type, once the clause types what the lambda's body reads, is the
+    /// other side's.
+    LambdaValue {
+        lambda: Rc<NodeOccurrence>,
+        other: Rc<NodeOccurrence>,
+    },
 }
 
 /// An operation application's result type at the application's instantiation, and the
@@ -758,6 +765,22 @@ pub(super) fn collect_occurrence_type_constraints(
             let bracket = call_bracket_instances(kb, occ, expr, functor);
             let (nested, result) =
                 constrain_application(kb, functor, pos_args, named_args, &bracket, position, st);
+            // An equality declares no position for its sides, so a side that holds a lambda
+            // gives the other its type itself: the operation-body typer's, read once the
+            // clause types what the lambda's body reads. A data walk reads no lambda's type. A
+            // call's side is typed by its result ([`LatePosition::CallResult`]).
+            if let ([a, b], true) = (pos_args, committed && kb.is_equality_connective_functor(functor)) {
+                for (lambda, other) in [(a, b), (b, a)] {
+                    let a_call = matches!(lambda.as_expr(), Some(Expr::Apply { functor, .. })
+                        if kb.op_record(*functor).is_some() && !kb.is_entity_constructor(*functor));
+                    if !a_call && holds_a_lambda(lambda) {
+                        st.late.push(LatePosition::LambdaValue {
+                            lambda: Rc::clone(lambda),
+                            other: Rc::clone(other),
+                        });
+                    }
+                }
+            }
             // THE CALL'S RESULT IS OF THE SLOT IT FILLS, and at goal position the extra
             // argument of `f(a₁…aₙ, ?r)` is that result (§5.3's functional relation): what
             // the resolver reads the goal as, asked of the resolver. A goal is no value, so
@@ -839,6 +862,19 @@ pub(super) fn collect_occurrence_type_constraints(
         };
         collect_occurrence_type_constraints(kb, c, position, p, child_committed, st);
     }
+}
+
+/// Is there a lambda in `value`, outside any other lambda's body?
+fn holds_a_lambda(value: &Rc<NodeOccurrence>) -> bool {
+    let mut stack = vec![Rc::clone(value)];
+    while let Some(o) = stack.pop() {
+        match o.as_expr() {
+            Some(Expr::Lambda { .. }) => return true,
+            Some(expr) => for_each_child(expr, |c| stack.push(Rc::clone(c))),
+            None => {}
+        }
+    }
+    false
 }
 
 /// The callee and arguments of an application the clause walk reads, a woven call
@@ -1484,7 +1520,7 @@ pub(super) fn settle_late_positions(
                     value_contains_projection(kb, &result.ty)
                         || return_reducible_ctors(kb, &result.ty).iter().any(|f| *f)
                 }
-                LatePosition::DotResult { .. } => true,
+                LatePosition::DotResult { .. } | LatePosition::LambdaValue { .. } => true,
                 LatePosition::RuleGoal { .. } => false,
             };
             if computed || !settle_typed_position(kb, rid, st, &late, &rigids, disagreements) {
@@ -1543,6 +1579,16 @@ fn settle_typed_position(
                 surface: None,
             };
             (SlotOf::Arg(arg), ty, context, arg.span)
+        }
+        LatePosition::LambdaValue { lambda, other } => {
+            let Some(ty) = dot_value_type(kb, rid, st, lambda) else {
+                return false;
+            };
+            let context = TypeErrorContext::Rule {
+                name: kb.head_functor(kb.rule_head(rid)).unwrap_or_else(|| kb.intern("clause")),
+                field: RuleField::Body,
+            };
+            (SlotOf::Arg(other), ty, context, lambda.span)
         }
         LatePosition::DotResult { dot, position } => {
             let Some(ty) = dot_value_type(kb, rid, st, dot) else {
@@ -2156,9 +2202,9 @@ fn rule_goal_columns_at(
     rule_goal_columns(kb, functor)
 }
 
-/// The type of the dot `dot`, typed as the dispatch walk types it, at the types the clause
-/// has given its variables so far; `None` where it does not type — its receiver is one the
-/// clause has not typed yet, or the dot is refused, which the dispatch walk reports.
+/// The type of the dot `dot`, or of a lambda, typed as the dispatch walk types it, at the types
+/// the clause has given its variables so far; `None` where it does not type — a receiver the
+/// clause has not typed yet, or a refused one, which the dispatch walk reports.
 fn dot_value_type(
     kb: &mut KnowledgeBase,
     rid: RuleId,

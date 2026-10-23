@@ -1095,9 +1095,17 @@ head. kernel-language §5.3, "A rule body performs no effect".
   parameter of the operation's own row (`applied_function_args`); `op2(?f, lambda () ->
   stamp(), ?x)` over `effects {R1}` with `g: () -> Int64 @ {R2}` loads, as in an operation
   body. Its type is the clause's for a rule variable, else the one the walk gave it
-  (`value_type_in_clause`); a rule variable whose function the clause does not type names
-  nothing, so `applies` itself, `rule applies(?f, ?r) :- applyThunk(?f, ?r)`, loads. Each is
-  refused where it is written: two in one goal are two refusals. Before, such a function answered nothing, silently: handed through a relation's
+  (`value_type_in_clause`), and what it holds is read through a data sort's fields — a
+  field's row written over the sort's own parameter at the argument the type gives it
+  (`Box2[R = {Clock}]`) — and a type's arguments (`effects_held`); a rule variable whose
+  function the clause does not type names nothing, so `applies` itself, `rule applies(?f, ?r)
+  :- applyThunk(?f, ?r)`, loads. A side of `=`/`<=>` that holds a lambda, a call's side
+  excepted (its result types it), gives the other side its type
+  (`LatePosition::LambdaValue`, typed by the operation-body typer once the clause types what
+  the lambda reads, as a dot's value is), so `?f <=> (lambda () -> now()), applies(?f, ?r)`
+  and a caller handing on `giveF`'s column are refused. A relation whose column already holds
+  the function is not handed it (`rule_goal_columns`): it can apply none, its own clause
+  being refused. Each is refused where it is written: two in one goal are two refusals. Before, such a function answered nothing, silently: handed through a relation's
   head it does not reach the call.
 - **Once.** A call this walk enters before it types the whole atom — `=`, arithmetic, another
   body-less spec operation — skips an effect a call beneath it reported. A fact pattern
@@ -1144,10 +1152,9 @@ Not this part's, measured on the way, each the same on 083cb6b8:
 - A closure handed to another relation through its head answers nothing, pure or not
   (`pureThunk(?f), thunkVia(?f, ?r)`); in one clause it answers. An effectful one is refused
   where it is handed over (above); a pure one still answers nothing.
-- A rule variable bound to a lambda by `<=>` is not typed by it, so `?f <=> lambda () -> now(),
-  applies(?f, ?r)` loads, and so does a caller of `rule giveF(?f) :- ?f <=> lambda () -> now()`
-  that hands `giveF`'s column on; a rule variable typed as a data sort that holds an effectful
-  function (`?b <=> box(f: lambda () -> now()), holds(?b, ?r)`) is not read either.
+- Unparenthesized at a side of `<=>`, `lambda () -> now()` is read as the arrow term
+  `arrow(lambda, now())`, not a lambda: `?f <=> lambda () -> now()` binds `?f` to that term.
+  Parenthesized, and in a call's argument, it is a lambda.
 - `import probe.imp.{c}` resolves to an operation's parameter `c` (`useIt(c: Int64)`) rather
   than the relation `c` the namespace's facts define, so a goal `c(?x)` answers nothing.
 - A lambda in a query pattern, and an operation name passed as data and applied as a function

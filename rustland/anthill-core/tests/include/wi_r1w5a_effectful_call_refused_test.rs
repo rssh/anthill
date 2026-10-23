@@ -20,10 +20,15 @@
 //! time (`?p(?x, ?r)` over an operation it passes as data): such a goal on an effectful
 //! operation is undecided, the decline reported as the bridge reports one, where it failed.
 //!
+//! THE FUNCTION IS FOUND WHERE THE CLAUSE KNOWS IT (user, 2026-10-23): written in the goal,
+//! an operation's result, a side of `<=>` (`?f <=> (lambda () -> now())`, which types `?f`, as
+//! does a list or a value holding one), a relation's column (`giveF(?f)`), or a value of a
+//! data sort whose field holds one (`?b <=> box(f: …)`). A relation whose column already
+//! holds such a function is not handed it: it can apply none.
+//!
 //! Not this part's, and measured on the way (2026-10-23, the same on 083cb6b8): a closure
-//! handed to another relation through its head answers nothing, pure or not; a rule variable
-//! bound to a lambda by `<=>` is not typed by it, so `?f <=> lambda () -> now(), applies(?f,
-//! ?r)` loads; a constraint's goal is not walked by this typing (WI-20261023-76KZN).
+//! handed to another relation through its head answers nothing, pure or not; a constraint's
+//! goal is not walked by this typing (WI-20261023-76KZN).
 //!
 //! ## Back-out
 //!
@@ -47,6 +52,10 @@
 //! | a function handed to an operation whose row stays open (`refuse_performed_effects`' second half) | `an_effectful_call_written_in_a_rule_body_is_refused_at_load` at `writesOwnParam`, `storeWriter` |
 //! | only a parameter the call applies (`applied_function_args`) | `a_function_the_call_does_not_apply_loads` |
 //! | once per place, not per atom (`push_rule_body_effect`'s span test) | `two_functions_handed_in_one_goal_are_two_refusals` |
+//! | a side of `<=>` that holds a lambda typing the other (`LatePosition::LambdaValue`) | `an_effectful_call_written_in_a_rule_body_is_refused_at_load` at `handsBound`, `handsBoundList`, `handsGiven` (`giveF`'s column is no function then); `a_column_that_holds_the_function_is_not_handed_it` |
+//! | what a type holds read past its arrow — fields, type arguments (`effects_held`) | `an_effectful_call_written_in_a_rule_body_is_refused_at_load` at `handsBoundList`, `handsHolder` |
+//! | a field's row read at the type's argument (`/code-review`'s finding, measured on the CLI before the fix) | `an_effectful_call_written_in_a_rule_body_is_refused_at_load` at `handsParamHolder`, `handsWrittenHolder` |
+//! | a column that holds the function not handed it (`refuse_handed_functions`' `given`) | `a_column_that_holds_the_function_is_not_handed_it` |
 //! | the decline's reading strict on `Bool`, its effect named by the member's head (the two `/code-review` findings, measured on the CLI before the fix) | `an_effectful_goal_built_at_run_time_is_undecided`: `pick(true)` answers nothing, `stampIf(true, ?r)` names `EffectExpression.guarded` |
 //!
 //! NOT DRIVEN, and said rather than claimed: the refusal at a goal whose call an equation
@@ -110,11 +119,20 @@ namespace test.r1w5a.eff
   sort Box
     entity box(f: () -> String @ {Clock})
   end
+  sort PBox
+    entity pbox(f: () -> String)
+  end
+  sort Box2
+    effects R = ?
+    entity box2(f: () -> String @ {R})
+  end
 
   -- A relation that applies the function in its column; it loads, the function its caller
   -- hands it is judged where it is handed.
   rule applies(?f, ?r) :- applyThunk(?f, ?r)
   rule holds(?b, ?r) :- ?r <=> "x"
+  -- A relation whose column holds such a function: it gives it, and can apply none.
+  rule giveF(?f) :- ?f <=> (lambda () -> now())
 
   -- A goal built at run time: `?p(?x, ?r)` applies the operation a rule passes as data.
   rule apply2(?p, ?x, ?r) :- ?p(?x, ?r)
@@ -126,7 +144,41 @@ end
 /// Each clause, loaded beside [`PROGRAM`], is refused once, naming the call and the effect.
 /// 7D48J's rows (2026-10-16) and this ticket's 2026-10-21 row, then the placements a call
 /// takes in a rule body.
-const REFUSED: [(&str, &str, &str); 27] = [
+const REFUSED: [(&str, &str, &str); 33] = [
+    // A field written over the sort's own row parameter is read at the argument the value's
+    // type gives it.
+    (
+        "rule handsParamHolder(?r) :- ?b <=> box2(f: lambda () -> now()), holds(?b, ?r)",
+        "a function handed to `test.r1w5a.eff.holds`",
+        "Clock",
+    ),
+    (
+        "rule handsWrittenHolder(?r, ?b: Box2[R = {Clock}]) :- holds(?b, ?r)",
+        "a function handed to `test.r1w5a.eff.holds`",
+        "Clock",
+    ),
+    // A side of `<=>` gives the other its type. The lambda is in parentheses: bare at a side
+    // of `<=>`, `lambda () -> now()` is read as the arrow term `arrow(lambda, now())`.
+    (
+        "rule handsBound(?r) :- ?f <=> (lambda () -> now()), applies(?f, ?r)",
+        "a function handed to `test.r1w5a.eff.applies`",
+        "Clock",
+    ),
+    (
+        "rule handsBoundList(?r) :- ?l <=> [lambda () -> now()], holds(?l, ?r)",
+        "a function handed to `test.r1w5a.eff.holds`",
+        "Clock",
+    ),
+    (
+        "rule handsHolder(?r) :- ?b <=> box(f: lambda () -> now()), holds(?b, ?r)",
+        "a function handed to `test.r1w5a.eff.holds`",
+        "Clock",
+    ),
+    (
+        "rule handsGiven(?r) :- giveF(?f), applies(?f, ?r)",
+        "a function handed to `test.r1w5a.eff.applies`",
+        "Clock",
+    ),
     (
         "rule storeWriter(?s, ?r) :- withStore(?s, lambda (s) -> Store.flush(s, []), ?r)",
         "a function handed to `test.r1w5a.eff.withStore`",
@@ -366,6 +418,19 @@ fn a_let_keeping_its_cell_to_itself_loads() {
     ));
 }
 
+/// A relation whose column holds the function gives it, and is not handed it: `giveF(?f)` is
+/// no refusal, where `applies(?f, ?r)` beside it is.
+#[test]
+fn a_column_that_holds_the_function_is_not_handed_it() {
+    load_kb_with(&with("rule receives(?r) :- giveF(?f), ?r <=> \"y\""));
+    let errs = load_errors_of(&with("rule handsGiven(?r) :- giveF(?f), applies(?f, ?r)"));
+    let refusals = effect_refusals(&errs);
+    assert!(
+        refusals.len() == 1 && refusals[0].contains("handed to `test.r1w5a.eff.applies`"),
+        "{errs:?}"
+    );
+}
+
 /// CONTROL: a pure function handed over loads — to a relation, and to an operation whose row
 /// it binds to `{}`.
 #[test]
@@ -373,7 +438,9 @@ fn a_pure_function_handed_over_loads() {
     load_kb_with(&with(
         "rule handsPure(?r) :- applies(lambda () -> \"x\", ?r)\n  \
          rule handsPureColumn(?r) :- pureThunk(?f), applies(?f, ?r)\n  \
-         rule pureCallback(?c, ?u) :- useVia(?c, lambda (x) -> (), ?u)",
+         rule pureCallback(?c, ?u) :- useVia(?c, lambda (x) -> (), ?u)\n  \
+         rule pureHolder(?r) :- ?b <=> pbox(f: lambda () -> \"x\"), holds(?b, ?r)\n  \
+         rule pureParamHolder(?r) :- ?b <=> box2(f: lambda () -> \"x\"), holds(?b, ?r)",
     ));
 }
 

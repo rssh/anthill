@@ -1202,6 +1202,101 @@ fn performed_by_function(kb: &mut KnowledgeBase, ty: &Value) -> Option<Vec<Value
     Some(row.into_iter().filter(|a| matches!(row_member(kb, a), RowMember::Effect)).collect())
 }
 
+/// The effects a value of type `ty` can hand on in a function it holds: a function's own row,
+/// and those of the functions a data sort's fields, a type's arguments or a tuple's fields
+/// hold — `Error`, a parameter and an open row variable naming none. A field's row written over
+/// the sort's own parameter is read at the argument the type gives it (`Box2[R = {Clock}]`'s
+/// `f: () -> String @ {R}`). A function's own parameters and result are what its later caller
+/// supplies and receives, not what it holds.
+fn effects_held(kb: &mut KnowledgeBase, ty: &Value) -> Vec<Value> {
+    fn push_effect(kb: &KnowledgeBase, a: Value, out: &mut Vec<Value>) {
+        if matches!(row_member(kb, &a), RowMember::Effect)
+            && !out.iter().any(|o| views_structurally_equal(kb, o, &a))
+        {
+            out.push(a);
+        }
+    }
+    fn walk(
+        kb: &mut KnowledgeBase,
+        ty: &Value,
+        args: &[(Symbol, Value)],
+        visiting: &mut HashSet<Symbol>,
+        out: &mut Vec<Value>,
+    ) {
+        if let Some(row) = function_row(kb, ty) {
+            for a in row {
+                // The parameter as the field names it: by its symbol, or as its canonical
+                // variable.
+                let bound = args
+                    .iter()
+                    .find(|(p, _)| {
+                        view_ref_symbol(kb, &a) == Some(*p)
+                            || kb
+                                .canonical_type_param_var(*p)
+                                .is_some_and(|v| views_structurally_equal(kb, &a, &Value::term(v)))
+                    })
+                    .map(|(_, v)| v.clone());
+                match bound {
+                    Some(bound) => {
+                        for b in explode_incurred_effect_row(kb, &bound).unwrap_or_else(|| vec![bound]) {
+                            push_effect(kb, b, out);
+                        }
+                    }
+                    None => push_effect(kb, a, out),
+                }
+            }
+            return;
+        }
+        let fields_of = |kb: &KnowledgeBase, sort: Symbol| -> Vec<Value> {
+            kb.field_constructors_of_sort(sort)
+                .into_iter()
+                .filter_map(|c| kb.entity_field_types(c))
+                .flat_map(|fields| fields.iter().map(|(_, t)| t.clone()))
+                .collect()
+        };
+        match extract_type(kb, ty) {
+            TypeExtractor::SortRef(sort) if !is_sort_param_symbol(kb, sort) => {
+                if visiting.insert(sort) {
+                    for t in fields_of(kb, sort) {
+                        walk(kb, &t, &[], visiting, out);
+                    }
+                }
+            }
+            TypeExtractor::Parameterized { base, bindings } => {
+                // Each argument at the parameter it binds, as the sort's fields name it.
+                let declared = kb.type_param_syms_of(base);
+                let at_params: Vec<(Symbol, Value)> = bindings
+                    .iter()
+                    .filter_map(|(label, v)| {
+                        let name = kb.local_name_of(*label);
+                        declared
+                            .iter()
+                            .find(|&&p| kb.local_name_of(p) == name)
+                            .map(|&p| (p, v.clone()))
+                    })
+                    .collect();
+                for (_, v) in &bindings {
+                    walk(kb, v, args, visiting, out);
+                }
+                if visiting.insert(base) {
+                    for t in fields_of(kb, base) {
+                        walk(kb, &t, &at_params, visiting, out);
+                    }
+                }
+            }
+            TypeExtractor::NamedTuple(fields) => {
+                for (_, t) in fields {
+                    walk(kb, &t, args, visiting, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(kb, ty, &[], &mut HashSet::new(), &mut out);
+    out
+}
+
 /// The arguments of the call `node` of `op` that fill a parameter whose function the call
 /// applies: one whose row names a row parameter of the operation's own row (`useVia`'s
 /// `k: (…) -> Unit @ {Rho}` under `effects {Rho}`). Neither another parameter's function nor
@@ -1275,9 +1370,12 @@ fn relation_goal(kb: &KnowledgeBase, expr: &Expr, pos: BodyPos) -> bool {
     call_dispatch_shape(kb, expr, checked) == Some(CallDispatch::Subgoal)
 }
 
-/// A rule body hands no function that performs an effect to a relation: each function in
-/// the goal's arguments, or in a value built in one, whose row holds an effect other than
-/// `Error` is refused where it is written.
+/// A rule body hands no function that performs an effect to a relation: each value in the
+/// goal's arguments, or built in one, that holds a function whose row holds an effect other
+/// than `Error` ([`effects_held`]) is refused where it is written — but for an effect the
+/// relation's own column already holds. A relation can apply no such function (its clause
+/// would be refused), so a column of that type only receives what it gives:
+/// `giveF(?f), applies(?f, ?r)` hands `giveF`'s function to `applies`, not to `giveF`.
 fn refuse_handed_functions(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
@@ -1295,23 +1393,37 @@ fn refuse_handed_functions(
     else {
         return;
     };
-    let mut stack: Vec<Rc<NodeOccurrence>> = pos_args
+    let functor = *functor;
+    let columns = rule_goal_columns(kb, functor).unwrap_or_default();
+    let slots = pos_args
         .iter()
-        .chain(named_args.iter().map(|(_, a)| a))
-        .cloned()
-        .collect();
-    while let Some(value) = stack.pop() {
-        if let Some(ty) = value_type_in_clause(env, &value) {
-            if let Some(performed) = performed_by_function(kb, &ty) {
-                for effect in performed {
-                    push_rule_body_effect(kb, &value, rule_sym, Some(*functor), true, effect, mark, errors);
+        .enumerate()
+        .map(|(i, a)| (SlotKey::Pos(i), a))
+        .chain(named_args.iter().map(|(k, a)| (SlotKey::Named(*k), a)));
+    let args: Vec<(SlotKey, Rc<NodeOccurrence>)> = slots.map(|(k, a)| (k, Rc::clone(a))).collect();
+    for (slot, arg) in args {
+        let column = columns.iter().find_map(|(k, c)| match (k, c) {
+            (k, ColumnType::Of(t)) if *k == slot => Some(t.clone()),
+            _ => None,
+        });
+        let given = column.map(|t| effects_held(kb, &t)).unwrap_or_default();
+        let mut stack = vec![arg];
+        while let Some(value) = stack.pop() {
+            if let Some(ty) = value_type_in_clause(env, &value) {
+                let held = effects_held(kb, &ty);
+                if !held.is_empty() {
+                    for effect in held {
+                        if !given.iter().any(|g| views_structurally_equal(kb, g, &effect)) {
+                            push_rule_body_effect(kb, &value, rule_sym, Some(functor), true, effect, mark, errors);
+                        }
+                    }
+                    continue;
                 }
-                continue;
             }
-        }
-        if let Some(expr) = value.as_expr() {
-            if pattern_child_indices(expr).is_empty() {
-                for_each_child(expr, |c| stack.push(Rc::clone(c)));
+            if let Some(expr) = value.as_expr() {
+                if pattern_child_indices(expr).is_empty() {
+                    for_each_child(expr, |c| stack.push(Rc::clone(c)));
+                }
             }
         }
     }
