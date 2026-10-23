@@ -172,11 +172,14 @@ fn drain_type_node(tn: &mut TypeNode, stack: &mut Vec<Rc<NodeOccurrence>>) {
             }
         }
         TypeNode::EffectsRows { effects_expr } => drain_type_child(effects_expr, stack),
+        // `binders` is a `Value`-carried list of `denoted` places, whose `Value::Node`
+        // leaves have their own iterative `Drop` — `NamedTuple`'s reason; nothing to hoist.
         TypeNode::Arrow {
             param,
             result,
             effects,
             arity,
+            binders: _,
         } => {
             drain_type_child(param, stack);
             drain_type_child(result, stack);
@@ -2007,11 +2010,22 @@ pub enum TypeNode {
     /// it: a type variable bound to the slot picked the wrapper up, so σ could both
     /// introduce and erase the encoding. A ground `Const` sibling is not a type σ
     /// acts on, so arity is a structural fact substitution cannot touch.
+    ///
+    /// `binders` are the arrow's own parameters by position: a `Value`-carried
+    /// `List[Term]`, each the place as a type holds it (`denoted`, what a row label
+    /// `Modify[k]` holds) or the positional label `_i` at a position that binds no single
+    /// name. A label of the row is aligned to another arrow's parameter by its index here,
+    /// whatever expression the value came through. An arrow formed from a lambda or an
+    /// operation records them; a written one records none, its row's places being a
+    /// callback parameter's, which say their position themselves. It lives outside
+    /// `param` for the reason `arity` does: at arity one `param` is the parameter's type,
+    /// which a type variable may be bound to.
     Arrow {
         param: TypeChild,
         result: TypeChild,
         effects: TypeChild,
         arity: TypeChild,
+        binders: Option<Value>,
     },
     /// `named_tuple(fields: List[TypeField])` — a tuple type whose fields are
     /// `TypeField(name, type)` records. WI-342: minted when a tuple literal has a
@@ -3381,6 +3395,7 @@ fn map_type_node<R: TypeChildRewrite>(
             result,
             effects,
             arity,
+            binders,
         } => {
             let (np, c1) = map_type_child(r, kb, param);
             let (nr, c2) = map_type_child(r, kb, result);
@@ -3389,15 +3404,25 @@ fn map_type_node<R: TypeChildRewrite>(
             // identity — it is mapped anyway rather than copied so this stays one
             // uniform walk over every child (the WI-378 map/collect/close/open
             // lockstep) instead of a slot the next rewrite kind has to remember.
+            // `binders` too: a list of the arrow's own places, which no rewrite of a type
+            // variable reaches.
             let (na, c4) = map_type_child(r, kb, arity);
+            let (nb, c5) = match binders {
+                Some(b) => {
+                    let (nb, ch) = map_value_type(r, kb, b);
+                    (Some(nb), ch)
+                }
+                None => (None, false),
+            };
             (
                 TypeNode::Arrow {
                     param: np,
                     result: nr,
                     effects: nf,
                     arity: na,
+                    binders: nb,
                 },
-                c1 || c2 || c3 || c4,
+                c1 || c2 || c3 || c4 || c5,
             )
         }
         TypeNode::ExprCarried { value, member } => {
@@ -4503,12 +4528,17 @@ fn collect_type_node_vars(
             result,
             effects,
             arity,
+            binders,
         } => {
             collect_type_child(kb, param, vars, seen);
             collect_type_child(kb, result, vars, seen);
             collect_type_child(kb, effects, vars, seen);
-            // Ground `Const(Int)` — contributes no vars, walked for lockstep.
+            // A ground `Const(Int)` and the arrow's own places — contribute no vars, walked
+            // for lockstep.
             collect_type_child(kb, arity, vars, seen);
+            if let Some(b) = binders {
+                collect_value_type(kb, b, vars, seen);
+            }
         }
         TypeNode::ExprCarried { value, member } => {
             collect_type_child(kb, value, vars, seen);
@@ -5287,15 +5317,23 @@ fn type_node_to_term(kb: &mut KnowledgeBase, tn: &TypeNode) -> TermId {
             result,
             effects,
             arity,
+            binders,
         } => {
             let p = type_child_to_term(kb, param);
             let r = type_child_to_term(kb, result);
             let e = type_child_to_term(kb, effects);
             // WI-791: the arity child crosses to the term twin as-is (a ground
             // `Const(Int)`), so the two carriers stay structurally identical —
-            // `GoalKey` identity and discrim keys both depend on that.
+            // `GoalKey` identity and discrim keys both depend on that. So do the
+            // arrow's own binders, the list of its places.
             let a = type_child_to_term(kb, arity);
-            kb.make_arrow_from_effects_rows_arity_term(p, r, e, a)
+            let b = binders.as_ref().map(|b| {
+                value_to_term(kb, b).unwrap_or_else(|e| {
+                    debug_assert!(false, "arrow binders not term-representable: {e:?}");
+                    kb.alloc(Term::Bottom)
+                })
+            });
+            kb.make_arrow_from_effects_rows_arity_term(p, r, e, a, b)
         }
         TypeNode::ExprCarried { value, member } => {
             // A compound-receiver projection is ELIMINATED to a concrete type before
@@ -5684,6 +5722,7 @@ pub(crate) fn value_holds_alias_node(v: &Value) -> bool {
                     result,
                     effects,
                     arity: _,
+                    binders: _,
                 } => child(param) || child(result) || child(effects),
                 TypeNode::EffectsRows { effects_expr } => child(effects_expr),
                 TypeNode::NamedTuple { fields } => value_holds_alias_node(fields),
@@ -6753,11 +6792,14 @@ pub(crate) fn substitute_ref_syms_occ(
                     result,
                     effects,
                     arity,
+                    binders,
                 } => TypeNode::Arrow {
                     param: rewrite_ref_child(param, map),
                     result: rewrite_ref_child(result, map),
                     effects: rewrite_ref_child(effects, map),
                     arity: rewrite_ref_child(arity, map),
+                    // The arrow's own places are re-keyed with the labels that name them.
+                    binders: binders.as_ref().map(|b| rewrite_ref_value(b, map)),
                 },
                 TypeNode::NamedTuple { fields } => TypeNode::NamedTuple {
                     fields: rewrite_ref_value(fields, map),

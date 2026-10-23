@@ -11494,12 +11494,18 @@ impl KnowledgeBase {
     /// tuple-typed parameter presents the same `named_tuple` an n-parameter list
     /// does). Pass 1 whenever the arrow has a single parameter, INCLUDING when that
     /// parameter's type is itself a tuple.
+    ///
+    /// `binders` is the arrow's own places ([`node_occurrence::TypeNode::Arrow`]): built
+    /// by [`Self::make_arrow_binders`] where the arrow is formed, handed on as found
+    /// where one is rebuilt, `None` where the type names no parameter of its own.
+    #[allow(clippy::too_many_arguments)]
     pub fn make_arrow_occ(
         &mut self,
         param: node_occurrence::TypeChild,
         result: node_occurrence::TypeChild,
         effects: node_occurrence::TypeChild,
         arity: usize,
+        binders: Option<crate::eval::value::Value>,
         span: crate::span::SourceSpan,
         owner: Option<Symbol>,
     ) -> Rc<NodeOccurrence> {
@@ -11510,10 +11516,36 @@ impl KnowledgeBase {
                 result,
                 effects,
                 arity,
+                binders,
             },
             span,
             owner,
         )
+    }
+
+    /// An arrow's own places by position, as [`node_occurrence::TypeNode::Arrow`] carries
+    /// them: each a `denoted` occurrence of the binder — what a row label over it holds —
+    /// or, at a position that binds no single name, the positional label `_i`, which no
+    /// label names.
+    pub fn make_arrow_binders(
+        &mut self,
+        slots: &[Option<Symbol>],
+        span: crate::span::SourceSpan,
+        owner: Option<Symbol>,
+    ) -> crate::eval::value::Value {
+        use crate::eval::value::Value;
+        let elems: Vec<Value> = slots
+            .iter()
+            .enumerate()
+            .map(|(i, slot)| match slot {
+                Some(binder) => Value::Node(self.make_denoted_occ_ref(*binder, span, owner)),
+                None => {
+                    let label = self.intern(&crate::intern::positional_label(i));
+                    Value::term(self.alloc(Term::Ref(label)))
+                }
+            })
+            .collect();
+        crate::kb::load::build_value_list(self, elems)
     }
 
     /// WI-791: the arrow `arity` child — a ground `Const(Int)`. Interned like any
@@ -11822,18 +11854,20 @@ impl KnowledgeBase {
         arity: usize,
     ) -> TermId {
         let arity_term = self.make_arity_term(arity);
-        self.make_arrow_from_effects_rows_arity_term(param, result, effects_rows, arity_term)
+        self.make_arrow_from_effects_rows_arity_term(param, result, effects_rows, arity_term, None)
     }
 
     /// [`Self::make_arrow_from_effects_rows`] with the `arity` child already built
     /// — the occurrence→term lowering (`type_node_to_term`) has the exact child the
-    /// occurrence carried and must transplant it rather than re-derive a number.
+    /// occurrence carried and must transplant it rather than re-derive a number, and
+    /// the arrow's own `binders` with it ([`node_occurrence::TypeNode::Arrow`]).
     pub(crate) fn make_arrow_from_effects_rows_arity_term(
         &mut self,
         param: TermId,
         result: TermId,
         effects_rows: TermId,
         arity: TermId,
+        binders: Option<TermId>,
     ) -> TermId {
         let arrow_sym = self.resolve_symbol("anthill.prelude.TypeExtractor.Arrow");
         let param_key = self.intern("param");
@@ -11846,6 +11880,9 @@ impl KnowledgeBase {
         named_args.push((param_key, param));
         named_args.push((result_key, result));
         named_args.push((arity_key, arity));
+        if let Some(binders) = binders {
+            named_args.push((self.intern("binders"), binders));
+        }
         self.make_entity_term(arrow_sym, SmallVec::new(), named_args)
     }
 
@@ -15954,6 +15991,7 @@ mod tests {
             TypeChild::Interned(result_ty),
             TypeChild::Node(Rc::clone(&effects_rows_occ)),
             1,
+            None,
             span,
             None,
         );

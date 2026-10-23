@@ -1277,6 +1277,7 @@ fn occ_contains_var(kb: &KnowledgeBase, vid: VarId, occ: &Rc<NodeOccurrence>) ->
                 result,
                 effects,
                 arity,
+                binders: _,
             } => child(kb, param) || child(kb, result) || child(kb, effects) || child(kb, arity),
             // WI-361: `fields` is the `Value`-carried `List[TypeField]`; the
             // view-walking `occurs_in_view` descends its cons cells + records and

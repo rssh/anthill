@@ -4465,21 +4465,23 @@ fn extract_type_builtin(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
             result,
             effects,
             arity,
+            binders,
         } => {
             // `arity` arrives decoded; re-mint the `Const(Int)` the stdlib entity's
             // `arity: Int64` field holds, through the same builder the typer uses so
-            // a reified arrow is structurally identical to the one it came from.
+            // a reified arrow is structurally identical to the one it came from. The
+            // arrow's own `binders` ride along where it has them, as the entity's do.
             let arity_val = Value::term(interp.kb.make_arity_term(arity));
-            ti_entity(
-                interp,
-                "Arrow",
-                vec![
-                    (param_key, param),
-                    (result_key, result),
-                    (effects_key, effects),
-                    (arity_key, arity_val),
-                ],
-            )
+            let mut fields = vec![
+                (param_key, param),
+                (result_key, result),
+                (effects_key, effects),
+                (arity_key, arity_val),
+            ];
+            if let Some(binders) = binders {
+                fields.push((interp.kb.intern("binders"), binders));
+            }
+            ti_entity(interp, "Arrow", fields)
         }
         TypeExtractor::EffectsRows(e) => {
             ti_entity(interp, "EffectsRows", vec![(effects_expr_key, e)])

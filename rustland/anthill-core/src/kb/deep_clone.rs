@@ -714,11 +714,13 @@ impl Copier {
                 result,
                 effects,
                 arity,
+                binders,
             } => TypeNode::Arrow {
                 param: self.type_child(param),
                 result: self.type_child(result),
                 effects: self.type_child(effects),
                 arity: self.type_child(arity),
+                binders: binders.as_ref().map(|b| self.value(b)),
             },
             TypeNode::NamedTuple { fields } => TypeNode::NamedTuple {
                 fields: self.value(fields),

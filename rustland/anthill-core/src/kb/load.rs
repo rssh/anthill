@@ -39060,11 +39060,14 @@ impl<'a> Loader<'a> {
                 // from the `EffectAbsent` arm) into `present(absent(E))`; the
                 // helper keeps absent atoms bare.
                 let effects_child = self.fold_effect_row_occ(effects, effect_children, span, owner);
+                // A written arrow records no binders: a place its row names is the callback
+                // parameter's (`<op>.f.a`), which says its position itself.
                 TypeChild::Node(self.kb.make_arrow_occ(
                     param_child,
                     result_child,
                     effects_child,
                     arity,
+                    None,
                     span,
                     owner,
                 ))

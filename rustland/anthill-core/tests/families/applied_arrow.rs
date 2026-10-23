@@ -95,7 +95,6 @@ pub static FAMILY: Family = Family {
 
 const TICKET_7EZS6: &str = "WI-20261014-7EZS6";
 const TICKET_6T5C6: &str = "WI-20261014-6T5C6";
-const TICKET_EDPF6: &str = "WI-20261014-EDPF6";
 const TICKET_N2YEK: &str = "WI-20261014-N2YEK";
 
 const EXCEPTIONS: &[Exception] = &[
@@ -140,19 +139,6 @@ const EXCEPTIONS: &[Exception] = &[
         when: &["typed=result", "does=writes-own"],
         ticket: TICKET_6T5C6,
         why: "an operation result's arrow cannot name its own parameter, and the refusal's company differs by spelling",
-    },
-    // A lambda taken out of a tuple is not renamed where it meets a slot.
-    Exception {
-        property: Property::OneVerdict,
-        when: &["typed=tuple", "does=writes-own", "applied=slot"],
-        ticket: TICKET_EDPF6,
-        why: "a lambda out of a tuple is refused at a slot naming its parameter",
-    },
-    Exception {
-        property: Property::OneVerdict,
-        when: &["typed=tuple", "does=writes-own", "applied=slot-own"],
-        ticket: TICKET_EDPF6,
-        why: "a lambda out of a tuple is refused at a slot naming its parameter",
     },
     // A field's row parameter bound to nothing takes a lambda writing its own parameter.
     Exception {

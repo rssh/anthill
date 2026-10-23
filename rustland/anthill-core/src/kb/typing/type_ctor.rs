@@ -250,6 +250,7 @@ fn walk_type_heads(kb: &KnowledgeBase, ty: &Value, bare: bool, visit: &mut impl 
             result,
             effects,
             arity: _,
+            binders: _,
         } => {
             walk_type_heads(kb, &param, bare, visit);
             walk_type_heads(kb, &result, bare, visit);

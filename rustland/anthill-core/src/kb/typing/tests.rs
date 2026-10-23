@@ -1448,6 +1448,7 @@ mod p4_tests {
             &int,
             &[Value::term(label_t), Value::term(tail_t)],
             1,
+            &[],
             span(),
             None,
         );
@@ -1734,6 +1735,7 @@ mod p4_tests {
             TypeChild::Interned(unit_ref),
             TypeChild::Node(rows),
             1,
+            None,
             span(),
             None,
         )
@@ -1826,6 +1828,7 @@ mod p4_tests {
             TypeChild::Interned(unit_ref),
             TypeChild::Node(rows),
             1,
+            None,
             span(),
             None,
         );
@@ -6343,6 +6346,7 @@ mod wi_2nmxa_value_holding_type_reader_tests {
             TypeChild::Interned(base),
             TypeChild::Node(row_node),
             1,
+            None,
             sp,
             None,
         ));

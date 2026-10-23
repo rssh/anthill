@@ -1540,6 +1540,7 @@ fn open_slots_said_by(kb: &mut KnowledgeBase, ty: &Value, other: &Value) -> Opti
             result,
             effects,
             arity,
+            binders,
         } => {
             let TypeExtractor::Arrow {
                 result: their_result,
@@ -1557,7 +1558,7 @@ fn open_slots_said_by(kb: &mut KnowledgeBase, ty: &Value, other: &Value) -> Opti
             let r = value_to_type_child(kb, &said);
             let e = value_to_type_child(kb, &effects);
             let span = crate::kb::node_occurrence::empty_span();
-            return Some(Value::Node(kb.make_arrow_occ(p, r, e, arity, span, None)));
+            return Some(Value::Node(kb.make_arrow_occ(p, r, e, arity, binders, span, None)));
         }
         _ => return None,
     };

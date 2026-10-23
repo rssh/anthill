@@ -1107,13 +1107,6 @@ pub(super) fn build_type(
                     }
                     _ => ext_env.clear_type_denotation(var_name),
                 }
-                // WI-20260929-0RP29: if the value is a CALLABLE whose expression says its
-                // binders — a lambda, an operation, a callback parameter, a name already
-                // holding one — record them, so the callback passed by this name is aligned
-                // as the expression itself would be ([`TypingEnv::callable_places`]).
-                // Cleared otherwise, paired as the two records above are.
-                let places = callback_actual_places(kb, &ext_env, &value_node);
-                ext_env.bind_callable_places(var_name, places);
             }
             // WI-550 / proposal 050: the binding rule `let x = e ⟹ Γ ∪ { x ≡ e }`,
             // re-enabled now that a binder reference reads as its indexable
@@ -1677,12 +1670,16 @@ pub(super) fn build_type(
                 .into_iter()
                 .map(|e| resolve_type_deep_value(kb, &solving.solved, &e))
                 .collect();
+            // The lambda's own binders, which its arrow records where its type names one, so a
+            // label over one is read as its position wherever the value goes.
+            let binders = lambda_binder_slots(&param);
             let fn_ty = make_arrow_value(
                 kb,
                 &param_type,
                 &body_ty,
                 &body_effects,
                 arity,
+                &binders,
                 occ.span,
                 occ.owner,
             );
@@ -2485,9 +2482,9 @@ pub(super) fn concrete_override_threaded(
         // DRIVEN here: backed out at this site alone, no test and none of 42 programs written
         // to reach it changed a verdict or a refusal — it is kept because the act is the one
         // every other site that meets an argument with a slot is measured at.
-        let at_slot = call.arg(kb, &op.params, i).and_then(|(_, occ)| {
+        let at_slot = call.arg(kb, &op.params, i).and_then(|_| {
             let impl_p = impl_info.params[i].0;
-            callback_at_slot(kb, call.env, &mut subst, impl_p, &written_x, occ, &passed_x)
+            callback_at_slot(kb, call.env, &mut subst, impl_p, &written_x, &passed_x)
         });
         unify_types(kb, &mut subst, at_slot.as_ref().unwrap_or(&passed_x), &written_x);
         bound.push((i, passed_ty, written));

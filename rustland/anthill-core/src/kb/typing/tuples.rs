@@ -463,6 +463,7 @@ fn arrow_children<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Option<(Value, Val
             result,
             effects,
             arity,
+            binders: _,
         } => Some((param, result, effects, arity)),
         _ => {
             debug_assert!(

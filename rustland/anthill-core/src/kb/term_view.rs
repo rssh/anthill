@@ -1739,8 +1739,11 @@ fn type_node_head(tn: &TypeNode, kb: &KnowledgeBase) -> ViewHead {
         }
         TypeNode::Denoted { .. } => (type_functor_sym(kb, "Denoted"), 1),
         TypeNode::EffectsRows { .. } => (type_functor_sym(kb, "EffectsRows"), 1),
-        // WI-791: four children — `arity` joined `param`/`result`/`effects`.
-        TypeNode::Arrow { .. } => (type_functor_sym(kb, "Arrow"), 4),
+        // WI-791: four children — `arity` joined `param`/`result`/`effects` — and a fifth
+        // where the arrow records its own `binders`, as its term twin does.
+        TypeNode::Arrow { binders, .. } => {
+            (type_functor_sym(kb, "Arrow"), 4 + usize::from(binders.is_some()))
+        }
         // WI-361: one `fields` child (a `Value`-carried `List[NamedTupleElement]`),
         // matching the term form `NamedTuple(fields: List[NamedTupleElement])`.
         TypeNode::NamedTuple { .. } => (type_functor_sym(kb, "NamedTuple"), 1),
@@ -1780,7 +1783,10 @@ fn type_node_keys(tn: &TypeNode, kb: &KnowledgeBase) -> Vec<Symbol> {
         }
         TypeNode::Denoted { .. } => &["value"],
         TypeNode::EffectsRows { .. } => &["effects_expr"],
-        TypeNode::Arrow { .. } => &["param", "result", "effects", "arity"],
+        TypeNode::Arrow { binders: None, .. } => &["param", "result", "effects", "arity"],
+        TypeNode::Arrow { binders: Some(_), .. } => {
+            &["param", "result", "effects", "arity", "binders"]
+        }
         // WI-361: the single `fields` child (the `List[TypeField]` Value).
         TypeNode::NamedTuple { .. } => &["fields"],
         TypeNode::ExprCarried { .. } => &["value", "member"],
@@ -1826,6 +1832,7 @@ fn type_node_named<'a>(
             result,
             effects,
             arity,
+            binders,
         } => {
             if Some(sym) == key("param") {
                 Some(type_child_view_item(param))
@@ -1835,6 +1842,8 @@ fn type_node_named<'a>(
                 Some(type_child_view_item(effects))
             } else if Some(sym) == key("arity") {
                 Some(type_child_view_item(arity))
+            } else if Some(sym) == key("binders") {
+                binders.as_ref().map(ViewItem::Value)
             } else {
                 None
             }

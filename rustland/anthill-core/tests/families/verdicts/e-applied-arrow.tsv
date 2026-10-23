@@ -104,8 +104,8 @@ typed=tuple,row=exact,applied=slot,does=nothing,declares=all	runs 4112
 typed=tuple,row=exact,applied=slot,does=nothing,declares=none	runs 4112
 typed=tuple,row=exact,applied=slot,does=raises,declares=all	runs 4112
 typed=tuple,row=exact,applied=slot,does=raises,declares=none	refused TypeMismatch/op-effects
-typed=tuple,row=exact,applied=slot,does=writes-own,declares=all	refused TypeMismatch/op-arg
-typed=tuple,row=exact,applied=slot,does=writes-own,declares=none	refused TypeMismatch/op-arg
+typed=tuple,row=exact,applied=slot,does=writes-own,declares=all	runs 552
+typed=tuple,row=exact,applied=slot,does=writes-own,declares=none	refused TypeMismatch/op-effects
 typed=tuple,row=exact,applied=slot,does=writes-scope,declares=all	runs 515
 typed=tuple,row=exact,applied=slot,does=writes-scope,declares=none	refused TypeMismatch/op-effects
 typed=tuple,row=exact,applied=slot,does=raises-callers,declares=all	runs 512
@@ -114,8 +114,8 @@ typed=tuple,row=exact,applied=slot-own,does=nothing,declares=all	runs 4112
 typed=tuple,row=exact,applied=slot-own,does=nothing,declares=none	refused TypeMismatch/op-effects
 typed=tuple,row=exact,applied=slot-own,does=raises,declares=all	runs 4112
 typed=tuple,row=exact,applied=slot-own,does=raises,declares=none	refused TypeMismatch/op-effects
-typed=tuple,row=exact,applied=slot-own,does=writes-own,declares=all	refused TypeMismatch/op-arg
-typed=tuple,row=exact,applied=slot-own,does=writes-own,declares=none	refused TypeMismatch/op-arg
+typed=tuple,row=exact,applied=slot-own,does=writes-own,declares=all	runs 552
+typed=tuple,row=exact,applied=slot-own,does=writes-own,declares=none	refused TypeMismatch/op-effects
 typed=tuple,row=exact,applied=slot-own,does=writes-scope,declares=all	runs 515
 typed=tuple,row=exact,applied=slot-own,does=writes-scope,declares=none	refused TypeMismatch/op-effects
 typed=tuple,row=exact,applied=slot-own,does=raises-callers,declares=all	runs 512

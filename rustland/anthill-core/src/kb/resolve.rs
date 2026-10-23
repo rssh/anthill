@@ -14716,14 +14716,19 @@ impl KnowledgeBase {
                 result,
                 effects,
                 arity,
+                binders,
             } => {
                 self.collect_type_child_unbound_vars(param, subst, out);
                 self.collect_type_child_unbound_vars(result, subst, out);
                 self.collect_type_child_unbound_vars(effects, subst, out);
                 // WI-791: a ground `Const(Int)`, so it yields nothing — walked
                 // anyway to keep this total over the node's children, matching its
-                // loader twin `collect_type_node_vars`.
+                // loader twin `collect_type_node_vars`. The binders are places, no
+                // variables, walked for the same reason.
                 self.collect_type_child_unbound_vars(arity, subst, out);
+                if let Some(b) = binders {
+                    self.collect_type_value_unbound_vars(b, subst, out);
+                }
             }
             TypeNode::ExprCarried { value, member } => {
                 self.collect_type_child_unbound_vars(value, subst, out);
@@ -20376,6 +20381,7 @@ mod tests {
                 )),
                 effects: TypeChild::Interned(bound_term),
                 arity: TypeChild::Interned(arity_term),
+                binders: None,
             },
             span,
             None,

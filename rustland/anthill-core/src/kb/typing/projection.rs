@@ -67,6 +67,7 @@ pub(super) fn type_any_part(
             result,
             effects,
             arity: _,
+            binders: _,
         } => within(&param) || within(&result) || within(&effects),
         TypeExtractor::NamedTuple(fields) => fields.iter().any(|(_, v)| within(v)),
         TypeExtractor::EffectsRows(e) => within(&e),
@@ -1006,6 +1007,7 @@ pub(super) fn collect_projection_receivers(kb: &KnowledgeBase, ty: &Value, out: 
             result,
             effects,
             arity: _,
+            binders: _,
         } => {
             collect_projection_receivers(kb, &param, out);
             collect_projection_receivers(kb, &result, out);
@@ -1333,12 +1335,15 @@ fn eliminate_in(
         }
         // WI-460: a callback arrow's parameter — `(x: s.T) -> Bool @ {EffP, -Modify[x]}`.
         // WI-791: elimination rewrites the parameter TYPE and never the parameter COUNT, so
-        // the arrow keeps its own arity. Its ROW takes `row_syms` where the caller hands one.
+        // the arrow keeps its own arity, and its own binders — the re-keys here are the
+        // callee's parameters, never the arrow's own places. Its ROW takes `row_syms` where
+        // the caller hands one.
         TypeExtractor::Arrow {
             param,
             result,
             effects,
             arity,
+            binders,
         } => {
             let Some(rows) = cx.row_syms else {
                 let Some([p, r, e]) =
@@ -1346,7 +1351,9 @@ fn eliminate_in(
                 else {
                     return Ok(None);
                 };
-                return Ok(Some(Value::Node(kb.make_arrow_occ(p, r, e, arity, sp, owner))));
+                return Ok(Some(Value::Node(
+                    kb.make_arrow_occ(p, r, e, arity, binders, sp, owner),
+                )));
             };
             let row_cx = Discharge {
                 denoted_syms: Some(rows),
@@ -1362,7 +1369,7 @@ fn eliminate_in(
                 None => (param, result),
             };
             let e = e.unwrap_or(effects);
-            Ok(Some(arrow_value(kb, &p, &r, &e, arity, sp, owner)))
+            Ok(Some(arrow_value(kb, &p, &r, &e, arity, binders, sp, owner)))
         }
         TypeExtractor::EffectsRows(expr) => {
             let Some([e]) = eliminate_to_children(kb, [expr], sp, owner, cx)? else {

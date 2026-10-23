@@ -239,6 +239,7 @@ pub(super) fn type_mentions_spec_param(
             result,
             effects,
             arity: _,
+            binders: _,
         } => recur(&param) || recur(&result) || recur(&effects),
         TypeExtractor::NamedTuple(fields) => fields.iter().any(|(_, v)| recur(v)),
         TypeExtractor::EffectsRows(e) => recur(&e),

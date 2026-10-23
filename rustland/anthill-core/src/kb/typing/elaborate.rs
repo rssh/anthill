@@ -119,6 +119,7 @@ pub(super) fn rigidify_unwritten_sort_params(
             result,
             effects,
             arity,
+            binders,
         } => {
             // THE RESULT ONLY. The two other children are each left alone for their own
             // reason, and neither is a hedge:
@@ -159,11 +160,12 @@ pub(super) fn rigidify_unwritten_sort_params(
             let r = value_to_type_child(kb, &nr);
             let e = value_to_type_child(kb, &effects);
             // WI-791: the arrow's own ARITY rides across a rebuild — filling a type slot
-            // rewrites a parameter's TYPE and never the parameter COUNT. Rebuilt as a
-            // `Value::Node` unconditionally, which is the primary arrow form (see
-            // [`make_arrow_value`]: the representation note disclaims hash-consing for
-            // binders), so a ground arrow stays a Node spine over interned leaves.
-            return Some(Value::Node(kb.make_arrow_occ(p, r, e, arity, span, owner)));
+            // rewrites a parameter's TYPE and never the parameter COUNT; so do its own
+            // binders. Rebuilt as a `Value::Node` unconditionally, which is the primary
+            // arrow form (see [`make_arrow_value`]: the representation note disclaims
+            // hash-consing for binders), so a ground arrow stays a Node spine over
+            // interned leaves.
+            return Some(Value::Node(kb.make_arrow_occ(p, r, e, arity, binders, span, owner)));
         }
         TypeExtractor::NamedTuple(fields) => {
             let mut out: Vec<(Symbol, Value)> = Vec::with_capacity(fields.len());

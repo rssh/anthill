@@ -496,8 +496,16 @@ enum anthill.prelude.TypeExtractor
      `(t: (a: A, b: B)) -> R` and `(a: A, b: B) -> R` are the same term, and each
      is accepted where the other is required. It sits OUTSIDE `param` because an
      encoding a type variable can bind to is one substitution can introduce and
-     erase; a ground count sibling is not. >}
-  entity Arrow(param: Term, result: Term, effects: Term, arity: Int64)
+     erase; a ground count sibling is not.
+
+     `binders` are the arrow's own parameters by position: each the place as a type holds
+     it (`Denoted`), or the positional label `_i` at a position that binds no single name.
+     A row label naming one (`Modify[k]` of `lambda (k: Cell[V = Int64]) -> put(k, 5)`) is
+     read as that position, whatever the value came through. A lambda's and an operation's
+     arrow write them; a written arrow leaves the field out, the places its row names being
+     a callback parameter's, which say their position themselves. It sits outside `param`
+     for the reason `arity` does. >}
+  entity Arrow(param: Term, result: Term, effects: Term, arity: Int64, binders: List[Term])
   {< WI-1083: a UNIVERSALLY QUANTIFIED type — `forall A. (x: A) -> A`. FORALL BY
      CONSTRUCTION, storing no quantifier: in anthill every binder is attached to a
      DECLARATION (`operation map[Dst, EffP](…)`, `sort [F] { … }`, `sort T = ?`) and

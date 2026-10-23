@@ -1461,6 +1461,35 @@ pub(super) fn lambda_written_arity(lambda_occ: &Rc<NodeOccurrence>) -> usize {
     param.as_pattern().map(Pattern::binder_arity).unwrap_or(1)
 }
 
+/// WI-706: the ordered top-level binder slots of a lambda parameter pattern — the places
+/// its arrow records ([`make_arrow_value`]). One slot per top-level parameter POSITION, so
+/// the `Vec` length is the lambda's arity: a `Var` slot carries its binder symbol; every
+/// other shape — a `_`/literal (names nothing) or a destructure (`Cons(h, t)` / a nested
+/// tuple, whose sub-binders have no single positional identity) — is a `None` slot, which
+/// stays position-aligned and names nothing a label could be aligned by.
+pub(super) fn lambda_binder_slots(param: &Rc<NodeOccurrence>) -> Vec<Option<Symbol>> {
+    /// One flat binder position: `Some(binder)` for a `Var`, `None` for any other
+    /// shape (a `_`/literal, or a nested tuple/constructor with no single binder).
+    fn slot(p: &Rc<NodeOccurrence>) -> Option<Symbol> {
+        match p.as_pattern() {
+            Some(Pattern::Var { name, .. }) => Some(*name),
+            _ => None,
+        }
+    }
+    match param.as_pattern() {
+        Some(Pattern::Var { name, .. }) => vec![Some(*name)],
+        // A flat tuple (`lambda (a, b) -> …`, including the nullary `()`): one slot
+        // per element (a non-`Var` element is a `None` slot — position-aligned but
+        // unmappable).
+        Some(Pattern::Tuple { positional, .. }) => positional.iter().map(slot).collect(),
+        // A single non-tuple parameter that binds no single alignable name — a `_`,
+        // a literal, or a top-level `Cons(h, t)` destructure — is one `None` slot.
+        Some(Pattern::Wildcard | Pattern::Literal { .. } | Pattern::Constructor { .. }) | None => {
+            vec![None]
+        }
+    }
+}
+
 // ── Operation info lookup ──────────────────────────────────────
 
 /// The operation's declared result type, on whichever carrier it rides: a type that holds

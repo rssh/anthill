@@ -2245,3 +2245,5 @@ mod unresolved_annotation_reported_once_test;
 mod rule_goal_sort_bracket_refused_test;
 #[path = "include/wi_76kzn_constraint_goal_reading_test.rs"]
 mod wi_76kzn_constraint_goal_reading_test;
+#[path = "include/wi_edpf6_arrow_records_its_binders_test.rs"]
+mod wi_edpf6_arrow_records_its_binders_test;

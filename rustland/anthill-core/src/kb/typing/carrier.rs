@@ -4242,8 +4242,8 @@ pub(super) fn override_at_call(
         let impl_ty = expand_sorts_deep(kb, impl_ty, SlotVar::Flexible);
         // A callback as the override's slot reads it, as the qualified call reads it at the
         // spec's ([`callback_at_slot`]).
-        let at_slot = call.arg(kb, &spec_op.params, *i).and_then(|(_, occ)| {
-            callback_at_slot(kb, call.env, &mut sigma, *impl_p, &impl_ty, occ, passed_ty)
+        let at_slot = call.arg(kb, &spec_op.params, *i).and_then(|_| {
+            callback_at_slot(kb, call.env, &mut sigma, *impl_p, &impl_ty, passed_ty)
         });
         unify_types(kb, &mut sigma, at_slot.as_ref().unwrap_or(passed_ty), &impl_ty);
     }
