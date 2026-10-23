@@ -63,6 +63,12 @@ enum ImportOrigin:
     * on a spec made `exposed` non-empty and hid every one of that spec's operations
     * from every `requires` caller. Rustland's twin is `ImportOrigin::Exposure`. */
   case Exposure
+  /** WI-20261022-JBHQC — the PLACE of an import whose target a rule head of the scan has
+    * yet to mint: written where the text writes the import, so the import keeps that
+    * place among the writes of its name, and visible to NOBODY until the head census
+    * wires it ([[SymbolTable.wireDeferredImport]]) or takes it back. Its symbol is a
+    * placeholder of its own. Rustland's twin is `ImportOrigin::Deferred`. */
+  case Deferred
 
 /** Symbol table — maps strings to compact TermSymbol(Int) handles,
   * with optional resolution metadata (kind, scope, qualified name).
@@ -315,6 +321,99 @@ class SymbolTable:
         scope.locals(shortName) = sym
         byQualifiedName(qualifiedName) = sym
         sym
+
+  /** WI-20261022-JBHQC — the symbol a rule head of the load being scanned WILL mint as
+    * `qualifiedName`, for an import to be wired to before it is minted. Not a name yet:
+    * it is in neither [[byQualifiedName]] nor the scope's locals, so nothing finds it but
+    * an import written to it ([[addImport]]). [[adoptReserved]] makes it the name, at the
+    * mint; `kind` is a placeholder the adoption replaces. Rustland's twin is
+    * `SymbolTable::reserve`. */
+  def reserve(shortName: String, qualifiedName: String, kind: SymbolKind, scopeId: ScopeId): TermSymbol =
+    val sym = TermSymbol.fromRaw(defs.length)
+    defs += SymbolDef.Resolved(shortName, qualifiedName, Vector(kind), scopeId)
+    sym
+
+  /** WI-20261022-JBHQC — `sym`, made by [[reserve]], becomes the name it was reserved for,
+    * entered where [[define]] enters a new symbol, so the `define` of the head that mints
+    * it finds it there. `kind` is its first kind, as that head declares it. */
+  def adoptReserved(sym: TermSymbol, kind: SymbolKind): Unit =
+    get(sym) match
+      case SymbolDef.Resolved(short, qualified, _, scope) =>
+        defs(sym.index) = SymbolDef.Resolved(short, qualified, Vector(kind), scope)
+        val entry = scopeEntry(scope)
+        assert(!entry.locals.contains(short), s"adoptReserved($qualified): the scope already holds the name")
+        entry.locals(short) = sym
+        byQualifiedName(qualified) = sym
+      case SymbolDef.Unresolved(name) =>
+        throw IllegalArgumentException(s"adoptReserved: '$name' is not a symbol `reserve` made")
+
+  /** WI-20261022-JBHQC — a symbol of its own for the place a deferred import holds. */
+  def placeholder(): TermSymbol =
+    val sym = TermSymbol.fromRaw(defs.length)
+    defs += SymbolDef.Unresolved("<deferred import>")
+    sym
+
+  /** WI-20261022-JBHQC — hold the PLACE of an import whose target is not minted yet,
+    * after the writes already made of `shortName`, visible to nobody until it is wired or
+    * dropped. */
+  def addDeferredImport(scopeId: ScopeId, shortName: String, placeholder: TermSymbol): Unit =
+    scopeEntry(scopeId).imports.getOrElseUpdate(shortName, ArrayBuffer.empty) +=
+      ((ImportOrigin.Deferred, placeholder))
+
+  /** WI-20261022-JBHQC — the import whose place `placeholder` holds is `sym`, written by
+    * `origin`: the write takes the place, so a write the text makes after the import still
+    * outranks it. A repeated write MOVES there, as [[addImport]] moves it last. */
+  def wireDeferredImport(
+    scopeId: ScopeId, shortName: String, placeholder: TermSymbol, sym: TermSymbol, origin: ImportOrigin
+  ): Unit =
+    replaceImportWrite(scopeId, shortName, (ImportOrigin.Deferred, placeholder), (origin, sym))
+
+  /** WI-20261022-JBHQC — the import whose place `placeholder` holds names nothing: its
+    * place is taken back. */
+  def dropDeferredImport(scopeId: ScopeId, shortName: String, placeholder: TermSymbol): Unit =
+    removeImport(scopeId, shortName, placeholder, ImportOrigin.Deferred)
+
+  /** WI-20261022-JBHQC — the write `origin` made of `old` under `shortName` is of `new`,
+    * at the same place: a selective import whose target was withdrawn, re-pointed to the
+    * name one scope below its base. */
+  def rewireImport(
+    scopeId: ScopeId, shortName: String, old: TermSymbol, sym: TermSymbol, origin: ImportOrigin
+  ): Unit =
+    replaceImportWrite(scopeId, shortName, (origin, old), (origin, sym))
+
+  private def replaceImportWrite(
+    scopeId: ScopeId, shortName: String,
+    old: (ImportOrigin, TermSymbol), now: (ImportOrigin, TermSymbol)
+  ): Unit =
+    refuseTypeFace(now._2, "replaceImportWrite")
+    val writes = scopeEntry(scopeId).imports.getOrElse(shortName,
+      throw IllegalStateException(s"replaceImportWrite($shortName): no writes"))
+    val earlier = writes.indexOf(now)
+    if earlier >= 0 then writes.remove(earlier)
+    val place = writes.indexOf(old)
+    if place < 0 then throw IllegalStateException(s"replaceImportWrite($shortName): $old not written")
+    writes(place) = now
+
+  /** WI-20261022-JBHQC — a symbol [[reserve]] made that no head minted, once every import
+    * of it is taken back: no longer a resolved symbol, so nothing that lists the table's
+    * declarations finds a name no scope carries. */
+  def withdrawReserved(sym: TermSymbol): Unit =
+    get(sym) match
+      case SymbolDef.Resolved(_, qualified, _, _) =>
+        defs(sym.index) = SymbolDef.Unresolved(s"<withdrawn reservation $qualified>")
+      case SymbolDef.Unresolved(name) =>
+        throw IllegalArgumentException(s"withdrawReserved: '$name' is not a symbol `reserve` made")
+
+  /** WI-20261022-JBHQC — take back the write [[addImport]] made of `sym` under
+    * `shortName` by `origin`: an import wired to a symbol [[reserve]] made, which no head
+    * of the load turned out to mint. */
+  def removeImport(scopeId: ScopeId, shortName: String, sym: TermSymbol, origin: ImportOrigin): Unit =
+    scopes.get(scopeId).foreach { scope =>
+      scope.imports.get(shortName).foreach { writes =>
+        writes.filterInPlace(_ != (origin, sym))
+        if writes.isEmpty then scope.imports.remove(shortName)
+      }
+    }
 
   /** Add a role without minting another identity. Unresolved symbols cannot have roles. */
   def addKind(sym: TermSymbol, kind: SymbolKind): Unit =
@@ -653,6 +752,8 @@ class SymbolTable:
     case ImportOrigin.Builtin | ImportOrigin.Declaration | ImportOrigin.Exposure |
         ImportOrigin.Requirement => true
     case ImportOrigin.File(f) => askingFile.contains(f)
+    // A place held for an import not wired yet answers nobody.
+    case ImportOrigin.Deferred => false
 
   /** Get the display name of a symbol. */
   def name(sym: TermSymbol): String =

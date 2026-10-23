@@ -180,6 +180,10 @@ fn audit_corpus(label: &str, files: &[PathBuf]) -> (String, usize, usize) {
                 ImportOrigin::Requirement => {
                     format!("BUG:requirement-origin-in-alias→{target}")
                 }
+                // WI-20261022-JBHQC — the place a deferred import holds during a scan,
+                // wired or taken back before the scan ends; one left after a load is a
+                // place nothing took, and rendered as the leak it is.
+                ImportOrigin::Deferred => format!("BUG:deferred-place-left→{target}"),
             })
             .collect();
         out.push_str(&format!("     `{name}` in `{scope}`: {}\n", w.join(", ")));

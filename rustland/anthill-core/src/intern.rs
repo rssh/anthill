@@ -974,6 +974,13 @@ pub enum ImportOrigin {
     /// the walk runs. The repair for what this takes away is one `import lib.{Sib}`
     /// line, which also says what the sort depends on.
     Requirement,
+    /// WI-20261022-JBHQC — the PLACE of an import whose target a rule head of the scan
+    /// has yet to mint: written where the text writes the import, so the import keeps
+    /// that place among the writes of its name, and visible to NOBODY until the head
+    /// census wires it ([`SymbolTable::wire_deferred_import`], which puts the import's
+    /// own origin there) or takes it back ([`SymbolTable::drop_deferred_import`]). Its
+    /// symbol is a placeholder of its own, so each deferred import names its own place.
+    Deferred,
 }
 
 /// WI-995 — how much of the import machinery a resolution may read.
@@ -1427,6 +1434,60 @@ impl SymbolTable {
         sym
     }
 
+    /// WI-20261022-JBHQC — the symbol a rule head of the load being scanned WILL mint as
+    /// `qualified_name`, for an import to be wired to before it is minted. Not a name yet:
+    /// it is in neither [`Self::by_qualified_name`] nor `scope`'s locals, so nothing finds it
+    /// but an import written to it ([`Self::add_import`]) — a reference that names the
+    /// predicate the import does, and nothing that reads the scope. [`Self::adopt_reserved`]
+    /// makes it the name, at the mint; `kind` is a placeholder the adoption replaces.
+    pub fn reserve(
+        &mut self,
+        local_name: &str,
+        qualified_name: &str,
+        kind: SymbolKind,
+        scope: ScopeId,
+    ) -> Symbol {
+        let sym = Symbol(self.defs.len() as u32);
+        self.defs.push(SymbolDef::Resolved {
+            local_name: local_name.to_owned(),
+            qualified_name: qualified_name.to_owned(),
+            kinds: KindSet::of(kind),
+            written: kind,
+            scope,
+            arg_places: None,
+        });
+        sym
+    }
+
+    /// WI-20261022-JBHQC — `sym`, made by [`Self::reserve`], becomes the name it was
+    /// reserved for: `kind` is its first kind, as the head that mints it declares it, and
+    /// it is entered where [`Self::define`] enters a new symbol — its scope's locals and
+    /// [`Self::by_qualified_name`] — so the `define` of that head finds it there.
+    pub fn adopt_reserved(&mut self, sym: Symbol, kind: SymbolKind) {
+        let Some(SymbolDef::Resolved {
+            local_name,
+            qualified_name,
+            kinds,
+            written,
+            scope,
+            ..
+        }) = self.defs.get_mut(sym.index() as usize)
+        else {
+            panic!("adopt_reserved({sym:?}): not a symbol `reserve` made");
+        };
+        *kinds = KindSet::of(kind);
+        *written = kind;
+        let (local_name, qualified_name, scope) =
+            (local_name.clone(), qualified_name.clone(), *scope);
+        let scope_data = self.scopes.entry(scope).or_default();
+        debug_assert!(
+            !scope_data.locals.contains_key(&local_name),
+            "adopt_reserved({qualified_name}): the scope already holds the name"
+        );
+        scope_data.locals.insert(local_name, sym);
+        self.set_canonical(&qualified_name, sym);
+    }
+
     /// THE ONE WRITE of [`Self::by_qualified_name`]: `sym` is the canonical symbol of
     /// `qualified_name` from here on. Counts a MOVE ([`Self::canonical_moves`]) when a
     /// symbol that already exists has just had its canonical image changed by it:
@@ -1699,6 +1760,142 @@ impl SymbolTable {
             .insert(local_name.to_owned(), sym);
     }
 
+    /// WI-20261022-JBHQC — hold the PLACE of an import whose target is not minted yet:
+    /// `placeholder`, a symbol of its own, written as [`ImportOrigin::Deferred`] after the
+    /// writes already made of `local_name`, visible to nobody until it is wired or dropped.
+    pub fn add_deferred_import(&mut self, scope: ScopeId, local_name: &str, placeholder: Symbol) {
+        self.import_origin
+            .entry(scope)
+            .or_default()
+            .entry(local_name.to_owned())
+            .or_default()
+            .push((ImportOrigin::Deferred, placeholder));
+    }
+
+    /// WI-20261022-JBHQC — the import whose place `placeholder` holds is `sym`, written by
+    /// `origin`: the write takes the place, so a write the text makes after the import
+    /// still outranks it. Where `(origin, sym)` is already written, the place is dropped
+    /// and the earlier write stands — [`Self::add_import`]'s idempotence.
+    pub fn wire_deferred_import(
+        &mut self,
+        scope: ScopeId,
+        local_name: &str,
+        placeholder: Symbol,
+        sym: Symbol,
+        origin: ImportOrigin,
+    ) {
+        self.replace_import_write(
+            scope,
+            local_name,
+            (ImportOrigin::Deferred, placeholder),
+            (origin, sym),
+        );
+    }
+
+    /// WI-20261022-JBHQC — the import whose place `placeholder` holds names nothing:
+    /// its place is taken back.
+    pub fn drop_deferred_import(&mut self, scope: ScopeId, local_name: &str, placeholder: Symbol) {
+        self.remove_import(scope, local_name, placeholder, ImportOrigin::Deferred);
+    }
+
+    /// WI-20261022-JBHQC — the write `origin` made of `old` under `local_name` is of
+    /// `new`, at the same place: a selective import whose target was withdrawn, re-pointed
+    /// to the name one scope below its base. Idempotent as [`Self::add_import`] is.
+    pub fn rewire_import(
+        &mut self,
+        scope: ScopeId,
+        local_name: &str,
+        old: Symbol,
+        new: Symbol,
+        origin: ImportOrigin,
+    ) {
+        self.replace_import_write(scope, local_name, (origin, old), (origin, new));
+    }
+
+    /// Put `new` where `old` is among the writes of `local_name`, or drop `old` where
+    /// `new` is already written; then re-read the scope's alias.
+    fn replace_import_write(
+        &mut self,
+        scope: ScopeId,
+        local_name: &str,
+        old: (ImportOrigin, Symbol),
+        new: (ImportOrigin, Symbol),
+    ) {
+        let writes = self
+            .import_origin
+            .get_mut(&scope)
+            .and_then(|by_name| by_name.get_mut(local_name))
+            .unwrap_or_else(|| panic!("replace_import_write({local_name}): no writes"));
+        let place = writes
+            .iter()
+            .position(|w| *w == old)
+            .unwrap_or_else(|| panic!("replace_import_write({local_name}): {old:?} not written"));
+        if writes.contains(&new) {
+            writes.remove(place);
+        } else {
+            writes[place] = new;
+        }
+        self.refresh_import_alias(scope, local_name);
+    }
+
+    /// The scope's alias for `local_name` is its LAST write that names something — not
+    /// a held place — or none.
+    fn refresh_import_alias(&mut self, scope: ScopeId, local_name: &str) {
+        let last = self
+            .import_origin
+            .get(&scope)
+            .and_then(|by_name| by_name.get(local_name))
+            .and_then(|writes| {
+                writes
+                    .iter()
+                    .rev()
+                    .find(|(o, _)| *o != ImportOrigin::Deferred)
+                    .map(|(_, s)| *s)
+            });
+        let data = self.scopes.entry(scope).or_default();
+        match last {
+            Some(s) => {
+                data.imports.insert(local_name.to_owned(), s);
+            }
+            None => {
+                data.imports.remove(local_name);
+            }
+        }
+    }
+
+    /// WI-20261022-JBHQC — a symbol [`Self::reserve`] made that no head minted, once every
+    /// import of it is taken back: no longer a resolved symbol, so nothing that lists the
+    /// table's declarations finds a name no scope carries.
+    pub fn withdraw_reserved(&mut self, sym: Symbol) {
+        let slot = &mut self.defs[sym.index() as usize];
+        let SymbolDef::Resolved { qualified_name, .. } = slot else {
+            panic!("withdraw_reserved({sym:?}): not a symbol `reserve` made");
+        };
+        let name = format!("<withdrawn reservation {qualified_name}>");
+        *slot = SymbolDef::Unresolved { name };
+    }
+
+    /// WI-20261022-JBHQC — take back the write [`Self::add_import`] made of `sym` under
+    /// `local_name` by `origin`: an import wired to a symbol [`Self::reserve`] made, which no
+    /// head of the load turned out to mint. The scope's alias falls back to the last write
+    /// left, as if this one had not been made.
+    pub fn remove_import(
+        &mut self,
+        scope: ScopeId,
+        local_name: &str,
+        sym: Symbol,
+        origin: ImportOrigin,
+    ) {
+        if let Some(writes) = self
+            .import_origin
+            .get_mut(&scope)
+            .and_then(|by_name| by_name.get_mut(local_name))
+        {
+            writes.retain(|w| *w != (origin, sym));
+        }
+        self.refresh_import_alias(scope, local_name);
+    }
+
     /// WI-995 — [`Self::add_parent`] for a link an IMPORT contributed (a `Plain` or
     /// `Wildcard` import splices its target in as a resolution parent), recording the
     /// writer alongside.
@@ -1969,6 +2166,8 @@ impl SymbolTable {
             | ImportOrigin::Requirement
             | ImportOrigin::Invocation => true,
             ImportOrigin::File(f) => self.asking_file() == Some(f),
+            // A place held for an import not wired yet answers nobody.
+            ImportOrigin::Deferred => false,
         }
     }
 

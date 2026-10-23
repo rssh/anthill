@@ -162,8 +162,13 @@ end
 }
 
 /// A later load is held to an earlier load's clauses: `anthill.reflect.feed.reaches` has
-/// its two-argument clauses in the stdlib, which every recipe but the fresh one loads
-/// first and seals.
+/// its two-argument clauses in the stdlib. WHICH RECIPE MEASURES WHAT: the shared base and
+/// two steps load the stdlib first and seal it, so they measure the LATER load this row is
+/// named for; the fresh recipe is one call over both, and measures that the refusal is
+/// the same within one load — which needs the plain `import …reaches` to resolve in the
+/// load that introduces it (WI-20261022-JBHQC; before it, `UnresolvedImport` there). The
+/// groups are told in load order, the stdlib's first under all three: the fresh recipe
+/// hands the stdlib's files to the one call before the program's.
 #[test]
 fn a_clause_against_an_earlier_loads_clauses_is_refused() {
     let src = r#"
