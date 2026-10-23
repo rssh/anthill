@@ -1073,3 +1073,58 @@ end
               (identifier)))
           (name
             (identifier)))))))
+
+=====================================
+A lambda in an atom position without parentheses is a name, not the keyword (WI-20261015-C9802)
+=====================================
+
+namespace t
+  rule r(?f) :- ?f <=> lambda () -> g(1)
+  rule s(?f) :- ?f <=> (lambda () -> g(1))
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    (name
+      (identifier))
+    (rule_declaration
+      (rule_heads
+        (fn_term
+          (name
+            (identifier))
+          (variable_term
+            (variable))))
+      (rule_body
+        (infix_term
+          (variable_term
+            (variable))
+          (operator_symbol)
+          (fn_term
+            (name
+              (identifier)))
+          (operator_symbol)
+          (fn_term
+            (name
+              (identifier))
+            (integer_literal)))))
+    (rule_declaration
+      (rule_heads
+        (fn_term
+          (name
+            (identifier))
+          (variable_term
+            (variable))))
+      (rule_body
+        (infix_term
+          (variable_term
+            (variable))
+          (operator_symbol)
+          (paren_expr
+            (lambda_expr
+              (pattern_tuple)
+              (fn_term
+                (name
+                  (identifier))
+                (integer_literal)))))))))

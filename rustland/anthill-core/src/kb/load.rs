@@ -2323,6 +2323,19 @@ pub enum LoadError {
         unresolved: String,
         span: Span,
     },
+    /// WI-20261015-C9802: a lambda written where a term is expected — an infix operand, a
+    /// dot receiver, a `match` scrutinee, an `if` condition, a set element — without the
+    /// parentheses kernel-language.md §4.8 requires there. In such a position `lambda` is
+    /// not the keyword (§2.5): it reads as a name, `lambda (x)` as a call to it, and the
+    /// `->` after it as the arrow-type operator, so `?f <=> lambda () -> plus1(1)` bound
+    /// `?f` to `arrow(lambda, 2)`, the body evaluated where it stood. Raised for a written
+    /// `lambda` under a pratt-minted arrow that resolves to nothing, in an operation body
+    /// and in a clause alike, before the two bare-arrow refusals above, whose advice (write
+    /// the keyword) is wrong for it. A `lambda` the program declares is that declaration.
+    /// The span is the `lambda`'s, where the `(` goes.
+    LambdaInTermPosition {
+        span: Span,
+    },
     /// One of the runtime's accounts ([`crate::kb::RuntimeAccount`]) written in a clause: a
     /// fact, a rule head or a goal. A clause's term is a value wherever it binds a variable,
     /// and a program does not construct the runtime's accounts — the bridge reads a raise's
@@ -2984,6 +2997,7 @@ impl LoadError {
             | LoadError::PatternAnnotatedTwice { span }
             | LoadError::LetAnnotationOnNonPattern { span }
             | LoadError::BareArrowInLogicPosition { span, .. }
+            | LoadError::LambdaInTermPosition { span }
             | LoadError::RuntimeAccountInClause { span, .. }
             | LoadError::AggregationConstraintUnsupported { span, .. }
             | LoadError::UnsupportedConstraintForm { span, .. }
@@ -3918,6 +3932,13 @@ impl LoadError {
                     bare_arrow_logic_msg(position, unresolved)
                 )
             }
+            LoadError::LambdaInTermPosition { span } => {
+                format!(
+                    "{}: {}",
+                    loc.format_start(*span),
+                    LAMBDA_IN_TERM_POSITION_MSG
+                )
+            }
             LoadError::RuntimeAccountInClause { ctor, span } => {
                 format!("{}: {}", loc.format_start(*span), runtime_account_in_clause_msg(ctor))
             }
@@ -4246,6 +4267,26 @@ impl LoadError {
 const LAMBDA_KEYWORD_HINT: &str =
     "a lambda needs the `lambda` keyword (e.g. `lambda (x, y) -> body`)";
 
+/// The `lambda` keyword's spelling, read where it is a name (`LoadError::LambdaInTermPosition`).
+const LAMBDA_KEYWORD: &str = "lambda";
+
+/// The one message body for `LoadError::LambdaInTermPosition`, shared by both renderings.
+const LAMBDA_IN_TERM_POSITION_MSG: &str =
+    "a lambda written where a term is expected — an infix operand, a dot receiver, a \
+     `match` scrutinee, an `if` condition, a set element — is put in parentheses: \
+     `(lambda … -> …)`; without them `lambda` is read as a name and `->` builds an \
+     arrow-type term";
+
+/// What `Loader::find_arrow_witness` found under a minted arrow: the first `lambda` written
+/// as a name that resolves to nothing (`LoadError::LambdaInTermPosition`), and the first
+/// binder-looking leaf that resolves to nothing (`LoadError::BareArrowInLogicPosition`). The
+/// `lambda` decides when both are found: the author wrote the keyword.
+#[derive(Default)]
+struct ArrowWitness {
+    lambda: Option<Span>,
+    unresolved: Option<String>,
+}
+
 /// WI-605: the one hint text for `ArrowTermInExprPosition`, shared by both
 /// renderings (`format_with_source` and `Display`) so the wording cannot drift.
 fn arrow_expr_hint() -> String {
@@ -4281,7 +4322,7 @@ fn binder_form_layout(name: &str) -> Option<(usize, usize)> {
     //
     // THE SHORT ARM IS INERT HERE, stated because an earlier draft of this comment
     // justified it with "the callers are not all provenance-gated" and that is FALSE:
-    // both (`check_bare_arrow_typo`, `first_unresolvable_arrow_leaf`) filter the result
+    // both (`check_bare_arrow_typo`, `find_arrow_witness`) filter the result
     // on `is_minted`, so a short spelling can only ever reach a node the filter drops.
     // `dt::is` is kept anyway — it is the one idiom every reader of a desugar target
     // uses, and a reader that has to know its own gating to pick between `==` and `is`
@@ -5403,6 +5444,13 @@ impl std::fmt::Display for LoadError {
                     bare_arrow_logic_msg(position, unresolved),
                     span.start,
                     span.end
+                )
+            }
+            LoadError::LambdaInTermPosition { span } => {
+                write!(
+                    f,
+                    "{} at {}..{}",
+                    LAMBDA_IN_TERM_POSITION_MSG, span.start, span.end
                 )
             }
             LoadError::RuntimeAccountInClause { ctor, span } => {
@@ -26935,7 +26983,11 @@ impl<'a> Loader<'a> {
             (pratt::is_arrow_functor(name), binder_form_layout(name))
         };
         if is_arrow && self.parsed.terms.is_minted(parse_id) {
-            if let Some(unresolved) = self.first_unresolvable_arrow_leaf(parse_id, bound) {
+            let mut witness = ArrowWitness::default();
+            self.find_arrow_witness(parse_id, bound, &mut witness);
+            if let Some(span) = witness.lambda {
+                self.errors.push(LoadError::LambdaInTermPosition { span });
+            } else if let Some(unresolved) = witness.unresolved {
                 self.errors.push(LoadError::BareArrowInLogicPosition {
                     position,
                     unresolved,
@@ -27002,6 +27054,15 @@ impl<'a> Loader<'a> {
     /// unresolvable witness and still loads silently — catching it needs
     /// type-level reasoning, not scope lookups.
     ///
+    /// WI-20261015-C9802: and the first `lambda` written as a NAME — a bare
+    /// `lambda` or a call `lambda(…)` — that is `NotFound` (an ambiguous one is
+    /// a declared name, reported as ambiguous at the reference). Where a term
+    /// is expected `lambda` is not the keyword (§2.5), so a lambda written
+    /// there without its parentheses (§4.8) arrives as exactly this:
+    /// `lambda () -> body` is the call `lambda()` under the arrow-type
+    /// operator. It ends the walk, and decides over a leaf found before it
+    /// (`ArrowWitness`).
+    ///
     /// Binder forms met under the arrow scope their pattern names via
     /// `bound` (see `check_bare_arrow_typo`). The name `Ident`s at
     /// `pos_args[1]` of converter-minted `field_access`/`dot_apply` nodes
@@ -27009,11 +27070,24 @@ impl<'a> Loader<'a> {
     /// scope, so it can never witness the typo (the receiver side is still
     /// walked; a user-written call that merely NAMES a functor
     /// `field_access` is not minted and is walked in full).
-    fn first_unresolvable_arrow_leaf(
+    fn find_arrow_witness(
         &self,
         parse_id: TermId,
         bound: &HashSet<String>,
-    ) -> Option<String> {
+        found: &mut ArrowWitness,
+    ) {
+        if found.lambda.is_some() {
+            return;
+        }
+        // A name not bound here, as the scope resolves it. A `lambda` the program declares,
+        // once or twice, is a name: only one that is `NotFound` is the keyword.
+        let resolution = |name: &str| {
+            (!bound.contains(name))
+                .then(|| self.kb.symbols.resolve_in_scope(name, self.current_scope))
+        };
+        let undeclared_lambda = |name: &str| {
+            name == LAMBDA_KEYWORD && matches!(resolution(name), Some(ResolveResult::NotFound))
+        };
         match self.parsed.terms.get(parse_id) {
             Term::Ident(sym) => {
                 let name = self.parsed.symbols.local_name(*sym);
@@ -27021,16 +27095,20 @@ impl<'a> Loader<'a> {
                     .chars()
                     .next()
                     .is_some_and(|c| c.is_lowercase() || c == '_');
-                if binder_lead
-                    && !bound.contains(name)
-                    && !matches!(
-                        self.kb.symbols.resolve_in_scope(name, self.current_scope),
-                        ResolveResult::Found(_)
-                    )
-                {
-                    return Some(name.to_owned());
+                if !binder_lead {
+                    return;
                 }
-                None
+                match resolution(name) {
+                    Some(ResolveResult::NotFound) if name == LAMBDA_KEYWORD => {
+                        found.lambda = Some(self.parsed.terms.span(parse_id));
+                    }
+                    Some(ResolveResult::NotFound | ResolveResult::Ambiguous(..))
+                        if found.unresolved.is_none() =>
+                    {
+                        found.unresolved = Some(name.to_owned());
+                    }
+                    _ => {}
+                }
             }
             Term::Fn {
                 functor,
@@ -27038,6 +27116,10 @@ impl<'a> Loader<'a> {
                 named_args,
             } => {
                 let name = self.parsed.symbols.local_name(*functor);
+                if !self.parsed.terms.is_minted(parse_id) && undeclared_lambda(name) {
+                    found.lambda = Some(self.parsed.terms.span(parse_id));
+                    return;
+                }
                 // Provenance + arity gate, as in `check_bare_arrow_typo`.
                 let minted_binder = binder_form_layout(name)
                     .filter(|_| self.parsed.terms.is_minted(parse_id))
@@ -27054,16 +27136,12 @@ impl<'a> Loader<'a> {
                             continue; // the pattern binds, it doesn't reference
                         }
                         let scope = if i >= scoped_from { &inner } else { bound };
-                        if let Some(w) = self.first_unresolvable_arrow_leaf(child, scope) {
-                            return Some(w);
-                        }
+                        self.find_arrow_witness(child, scope, found);
                     }
                     for &(_, child) in named_args {
-                        if let Some(w) = self.first_unresolvable_arrow_leaf(child, &inner) {
-                            return Some(w);
-                        }
+                        self.find_arrow_witness(child, &inner, found);
                     }
-                    return None;
+                    return;
                 }
                 // WI-20260825-5W3RJ — the constants, not the short spellings: the
                 // `is_minted` conjunct has already excluded anything a user wrote, so
@@ -27074,18 +27152,13 @@ impl<'a> Loader<'a> {
                     if skip_name_slot && i == 1 {
                         continue;
                     }
-                    if let Some(w) = self.first_unresolvable_arrow_leaf(child, bound) {
-                        return Some(w);
-                    }
+                    self.find_arrow_witness(child, bound, found);
                 }
                 for &(_, child) in named_args {
-                    if let Some(w) = self.first_unresolvable_arrow_leaf(child, bound) {
-                        return Some(w);
-                    }
+                    self.find_arrow_witness(child, bound, found);
                 }
-                None
             }
-            _ => None,
+            _ => {}
         }
     }
 
@@ -31597,9 +31670,21 @@ impl<'a> Loader<'a> {
                     // its compound expressions, and there a bare `->` is an arrow TYPE,
                     // not a typo — the rule side reads it with `check_bare_arrow_typo`,
                     // which scopes binders. See [`Self::lowering_rule_compound_expr`].
+                    // WI-20261015-C9802: a lambda written keyword and all, without its
+                    // parentheses (`1 + lambda () -> 2`), is refused as that instead.
                     Some(n) if pratt::is_arrow_functor(n) && !self.lowering_rule_compound_expr => {
-                        self.errors.push(LoadError::ArrowTermInExprPosition {
-                            span: self.parsed.terms.span(parse_id),
+                        let locals: HashSet<String> = self
+                            .local_names_stack
+                            .iter()
+                            .flat_map(|frame| frame.keys().cloned())
+                            .collect();
+                        let mut witness = ArrowWitness::default();
+                        self.find_arrow_witness(parse_id, &locals, &mut witness);
+                        self.errors.push(match witness.lambda {
+                            Some(span) => LoadError::LambdaInTermPosition { span },
+                            None => LoadError::ArrowTermInExprPosition {
+                                span: self.parsed.terms.span(parse_id),
+                            },
                         });
                         self.expr_body_bottom_recovery = true;
                         let kb_id = self.kb.alloc(Term::Bottom);

@@ -158,7 +158,7 @@ const REFUSED: [(&str, &str, &str); 33] = [
         "Clock",
     ),
     // A side of `<=>` gives the other its type. The lambda is in parentheses: bare at a side
-    // of `<=>`, `lambda () -> now()` is read as the arrow term `arrow(lambda, now())`.
+    // of `<=>` it is refused (WI-20261015-C9802).
     (
         "rule handsBound(?r) :- ?f <=> (lambda () -> now()), applies(?f, ?r)",
         "a function handed to `test.r1w5a.eff.applies`",
@@ -449,7 +449,7 @@ fn a_pure_function_handed_over_loads() {
 #[test]
 fn a_function_value_and_an_open_row_load() {
     let mut kb = load_kb_with(&with(
-        "rule fnValue(?f) :- ?f <=> lambda () -> now()\n  \
+        "rule fnValue(?f) :- ?f <=> (lambda () -> now())\n  \
          rule viaVar(?f, ?r) :- applyThunk(?f, ?r)",
     ));
     let rows = query_unary(&mut kb, "test.r1w5a.eff.fnValue");
