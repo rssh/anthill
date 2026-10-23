@@ -3,9 +3,9 @@
 - id: WI-20260822-NDG34-a-const-reference-does-not
 - created: 2026-08-22T06:16:53Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-08-22T06:16:53Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-10-23T11:54:25Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -61,4 +61,16 @@ TWO MEASUREMENTS FROM WI-879, one that WIDENS the table and one that INVALIDATES
 ### 2026-10-01T10:28:39Z — feedback — user
 
 SCOPE CUT 2026-10-01 after WI-20261001-KDMQS (7ca64491), with the user's agreement: the value-slot rows are fixed there (a const folds in every clause data slot), so the description now holds only the GOAL-position question, re-measured on the KDMQS tree. New finding while re-measuring: :- not(flag) with flag = true answers 1 DEFINITE, a free proof. The previous description (decisions 1-3 and the original table) is in this item's git history before this change.
+
+### 2026-10-23T11:54:17Z — feedback — claude
+
+DELIVERED 2026-10-23 (commit ccfcf21b). A `Bool` const at a goal is the literal it holds, so the goal is the search that literal is.
+
+THE DECISIONS. (1) The search reading, by J38JE's user decision that a Bool-valued expression in goal position is a condition. Folded at load from KDMQS's value table (literal body, another const, a `language rust` const_map host value). Measured, before -> now: `:- flag` 0 -> 1, `:- not(flag)` 1 -> 0, `:- base(2) | flag` 0 -> 1; the `off` rows answer 0 and 1 as before; `:- flag = true` 1 either way. A `Bool` const the table gives no value — a computed body, or a host value only a `language cpp` binding supplies — is refused at the goal with the table's reason, as in a data slot. A query evaluates it instead, and `?- not(ns.flag)` answers 0 (it answered 1). (2) A non-Bool const at a goal (`:- nn`, also under `not` and `|`) is refused, naming the const and its type, beside `:- 42`'s refusal. (3) `flag` is the reference. `flag()` is refused at a goal, as in a value slot and an operation body, and the refusal names the reference; not said of a function-typed const (`inc(3)` keeps the plain message). (4) User decision 2026-10-23: a fact or rule clause whose head names a const is refused at any arity. Such a clause was filed under the const's symbol: `rule flag :- true` beside `const flag: Bool = false` made `:- flag` answer 1.
+
+ALSO FIXED, found while measuring. An enforced constraint's goal reads a `Bool` const: `forall ?x: item(n: ?x) -: flag` was reported violated by facts that satisfy it. A dotted const refused for its value in a rule-body data slot is one error; it added two cascade errors.
+
+ROWS: wi_ndg34_const_goal_test (13 tests), each back-out measured at the file's head; J38JE's `pconst` row and KDMQS's `flag_goal` row now assert 1. Spec §5.2's bullet, §5.3, §5.9; proposal 039's delivery note.
+
+LEFT OPEN. A non-Bool const in a constraint goal is not refused, and neither is a literal (`-: 42` reports the constraint violated): J38JE's goal-reading refusal walks rule bodies only. A query has no refusal channel, so `?- not(ns.nn)` answers 1, as `?- not(42)` does.
 
