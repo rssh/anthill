@@ -170,6 +170,17 @@ pub(super) fn dispatch_calls_in_occ(
             crate::kb::simp_rewrite::reassemble(occ, &new_children)
         }
     };
+    // A function handed to a relation is applied, if at all, in a clause of that relation,
+    // where nothing says whose it is: the clause that hands it over is held to its row.
+    if let (BodyPos::Goal(commit) | BodyPos::GoalTuple(commit), Some(expr)) = (pos, walked.as_expr()) {
+        // At a checked position the walk's own shape answers; at a tolerated one it says
+        // nothing of a relation goal, so it is asked as if checked.
+        let relation = shape == Some(CallDispatch::Subgoal)
+            || (!commit.checked() && relation_goal(kb, expr, pos));
+        if relation {
+            refuse_handed_functions(kb, env, &walked, rule_sym, mark, errors);
+        }
+    }
     let Some(shape) = shape else { return walked };
     // WI-1058 — a SUBGOAL is not a call and has no signature: it is an atom the
     // resolver proves against the clauses its functor heads. Nothing to dispatch, so
@@ -214,7 +225,7 @@ pub(super) fn dispatch_calls_in_occ(
     if shape == CallDispatch::Fragment && node_pos_of(pos) == NodePos::RuleBodyGoal {
         match rewritten_functional_goal(kb, env, simp, &walked) {
             Some(Ok((goal, typed))) => {
-                refuse_performed_effects(kb, &typed, &walked, rule_sym, mark, errors);
+                refuse_performed_effects(kb, env, &typed, &walked, rule_sym, mark, errors);
                 return goal;
             }
             Some(Err(e)) => {
@@ -341,7 +352,7 @@ pub(super) fn dispatch_calls_in_occ(
             // A fact pattern performs only what its arguments do, and each argument that
             // performs one is a call this walk typed and checked first.
             if shape != CallDispatch::Call {
-                refuse_performed_effects(kb, &result, &walked, rule_sym, mark, errors);
+                refuse_performed_effects(kb, env, &result, &walked, rule_sym, mark, errors);
                 result.node
             } else {
                 walked
@@ -1126,9 +1137,10 @@ fn rewritten_functional_goal(
 
 /// The effects a call typed in a rule body performs: its row masked as at an operation's
 /// boundary, with the call's value for the operation's result, less `Error` and less an
-/// open row variable, which names no effect.
-fn performed_in_a_rule_body(kb: &mut KnowledgeBase, result: &TypeResult) -> Vec<Value> {
+/// open row variable, which names no effect — and whether the row holds one.
+fn performed_in_a_rule_body(kb: &mut KnowledgeBase, result: &TypeResult) -> (Vec<Value>, bool) {
     let mut out = Vec::new();
+    let mut open = false;
     let mut regions = None;
     for e in external_effects(kb, &result.env, &result.effects) {
         if extract_effect_resource_sym(kb, &e)
@@ -1141,56 +1153,244 @@ fn performed_in_a_rule_body(kb: &mut KnowledgeBase, result: &TypeResult) -> Vec<
         }
         let atoms = explode_incurred_effect_row(kb, &e).unwrap_or_else(|| vec![e]);
         for a in atoms {
-            if !kb.effect_member_is_error(&a)
-                && !kb.effect_member_is_parametric(&a)
-                && !is_type_param_view(kb, &a)
-            {
-                out.push(a);
+            match row_member(kb, &a) {
+                RowMember::Effect => out.push(a),
+                RowMember::Open => open = true,
+                RowMember::Error => {}
             }
+        }
+    }
+    (out, open)
+}
+
+/// What a member of an incurred row is to a rule body.
+enum RowMember {
+    /// An effect it performs.
+    Effect,
+    /// `Error`, which a rule body propagates.
+    Error,
+    /// A row parameter or variable, which names no effect.
+    Open,
+}
+
+fn row_member(kb: &KnowledgeBase, a: &Value) -> RowMember {
+    if kb.effect_member_is_error(a) {
+        RowMember::Error
+    } else if kb.effect_member_is_parametric(a) || is_type_param_view(kb, a) {
+        RowMember::Open
+    } else {
+        RowMember::Effect
+    }
+}
+
+/// The row of a function type, as its members; `None` for a type that is no function.
+fn function_row(kb: &mut KnowledgeBase, ty: &Value) -> Option<Vec<Value>> {
+    if !type_is_callable(kb, ty) {
+        return None;
+    }
+    let (_, _, row) = arrow_parts(kb, ty)?;
+    Some(match row {
+        Some(row) => explode_incurred_effect_row(kb, &row).unwrap_or_else(|| vec![row]),
+        None => Vec::new(),
+    })
+}
+
+/// The effects a function of type `ty` performs when it is applied — its row, less `Error`
+/// and an open row variable — or `None` for a type that is no function.
+fn performed_by_function(kb: &mut KnowledgeBase, ty: &Value) -> Option<Vec<Value>> {
+    let row = function_row(kb, ty)?;
+    Some(row.into_iter().filter(|a| matches!(row_member(kb, a), RowMember::Effect)).collect())
+}
+
+/// The arguments of the call `node` of `op` that fill a parameter whose function the call
+/// applies: one whose row names a row parameter of the operation's own row (`useVia`'s
+/// `k: (…) -> Unit @ {Rho}` under `effects {Rho}`). Neither another parameter's function nor
+/// the goal's result column.
+fn applied_function_args(
+    kb: &mut KnowledgeBase,
+    op: Symbol,
+    node: &Rc<NodeOccurrence>,
+) -> Vec<Rc<NodeOccurrence>> {
+    let (pos, named): (&[Rc<NodeOccurrence>], &[(Symbol, Rc<NodeOccurrence>)]) =
+        match node.as_expr() {
+            Some(Expr::Apply {
+                pos_args,
+                named_args,
+                ..
+            }) => (pos_args, named_args),
+            Some(Expr::ApplyWithin {
+                args, named_args, ..
+            }) => (args, named_args),
+            _ => return Vec::new(),
+        };
+    let Some(sig) = kb.op_record(op).and_then(|r| r.signature.clone()) else {
+        return Vec::new();
+    };
+    let own_rows: Vec<&Value> = sig
+        .effects
+        .iter()
+        .filter(|e| matches!(row_member(kb, e), RowMember::Open))
+        .collect();
+    let mut applied: Vec<bool> = Vec::with_capacity(sig.params.len());
+    for (_, ty) in &sig.params {
+        let row = function_row(kb, ty).unwrap_or_default();
+        applied.push(
+            row.iter()
+                .any(|a| own_rows.iter().any(|own| views_structurally_equal(kb, a, *own))),
+        );
+    }
+    let pos_params = positional_param_indices(kb, &sig.params, pos.len(), named);
+    let mut out = Vec::new();
+    for (arg, p) in pos.iter().zip(pos_params.iter()) {
+        if p.is_some_and(|p| applied[p]) {
+            out.push(Rc::clone(arg));
+        }
+    }
+    for (name, arg) in named {
+        let p = match_named_arg_param(kb, &sig.params, *name)
+            .and_then(|(p, _)| sig.params.iter().position(|(q, _)| q == p));
+        if p.is_some_and(|p| applied[p]) {
+            out.push(Rc::clone(arg));
         }
     }
     out
 }
 
-/// A rule body performs no effect (kernel-language §5.3): each effect `result` performs
-/// ([`performed_in_a_rule_body`]) is refused at the call `at`, as an operation body's undeclared
-/// effect is. Once: an effect a call beneath this one reported, typed and checked first, is
-/// not this call's to report again — a call in an argument of `=` or of an arithmetic
-/// operation, which this walk enters before it types the whole atom.
+/// The type of a value written in a rule body: the clause's for a rule variable, else the
+/// one this walk typed it at.
+fn value_type_in_clause(env: &TypingEnv, value: &Rc<NodeOccurrence>) -> Option<Value> {
+    match value.as_expr() {
+        Some(Expr::Var(Var::DeBruijn(i))) => env.lookup_debruijn(*i),
+        _ => value.inferred_type(),
+    }
+}
+
+/// Is `expr`, at the goal position `pos`, a goal on a relation — an atom the resolver
+/// proves against clauses — whether or not this walk checks its shape there?
+fn relation_goal(kb: &KnowledgeBase, expr: &Expr, pos: BodyPos) -> bool {
+    let checked = match pos {
+        BodyPos::GoalTuple(_) => BodyPos::GoalTuple(GoalCommit::Top),
+        _ => BodyPos::Goal(GoalCommit::Top),
+    };
+    call_dispatch_shape(kb, expr, checked) == Some(CallDispatch::Subgoal)
+}
+
+/// A rule body hands no function that performs an effect to a relation: each function in
+/// the goal's arguments, or in a value built in one, whose row holds an effect other than
+/// `Error` is refused where it is written.
+fn refuse_handed_functions(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    goal: &Rc<NodeOccurrence>,
+    rule_sym: Option<Symbol>,
+    mark: usize,
+    errors: &mut Vec<TypeError>,
+) {
+    let Some(Expr::Apply {
+        functor,
+        pos_args,
+        named_args,
+        ..
+    }) = goal.as_expr()
+    else {
+        return;
+    };
+    let mut stack: Vec<Rc<NodeOccurrence>> = pos_args
+        .iter()
+        .chain(named_args.iter().map(|(_, a)| a))
+        .cloned()
+        .collect();
+    while let Some(value) = stack.pop() {
+        if let Some(ty) = value_type_in_clause(env, &value) {
+            if let Some(performed) = performed_by_function(kb, &ty) {
+                for effect in performed {
+                    push_rule_body_effect(kb, &value, rule_sym, Some(*functor), true, effect, mark, errors);
+                }
+                continue;
+            }
+        }
+        if let Some(expr) = value.as_expr() {
+            if pattern_child_indices(expr).is_empty() {
+                for_each_child(expr, |c| stack.push(Rc::clone(c)));
+            }
+        }
+    }
+}
+
+/// Push the refusal of `effect` at `at`, once: not where a call within `at`, typed and checked
+/// first, already reported it — a call in an argument of `=` or of an arithmetic operation,
+/// which this walk enters before it types the whole atom — or `at` itself did.
 ///
 /// Not in an equation's guard: a `@[simp]` or `@[unfold]` rule's body is refused for every
 /// operation it names whose row holds any effect (`check_simp_effectful_ops`), and an
 /// untagged equation's never runs.
-fn refuse_performed_effects(
+#[allow(clippy::too_many_arguments)]
+fn push_rule_body_effect(
     kb: &mut KnowledgeBase,
-    result: &TypeResult,
     at: &Rc<NodeOccurrence>,
     rule_sym: Option<Symbol>,
+    call: Option<Symbol>,
+    handed: bool,
+    effect: Value,
     mark: usize,
     errors: &mut Vec<TypeError>,
 ) {
     if rule_sym.is_some_and(|r| kb.is_equality_connective_functor(r)) {
         return;
     }
+    let within = |span: &Option<Span>| {
+        span.is_some_and(|s| s.start >= at.span.span.start && s.end <= at.span.span.end)
+    };
+    let beneath = errors[mark..].iter().cloned().flat_map(TypeError::flatten).any(|e| {
+        matches!(&e, TypeError::RuleBodyEffect { span, effect: reported, .. }
+            if within(span) && views_structurally_equal(kb, reported, &effect))
+    });
+    if !beneath {
+        errors.push(TypeError::RuleBodyEffect {
+            span: Some(at.span.span),
+            rule: rule_sym,
+            call,
+            handed,
+            effect,
+            site: TypeError::here(),
+        });
+    }
+}
+
+/// A rule body performs no effect (kernel-language §5.3): each effect `result` performs
+/// ([`performed_in_a_rule_body`]) is refused at the call `at`, as an operation body's undeclared
+/// effect is. Where the call's row is left open — a callback that writes its own parameter
+/// binds no row parameter — a function at a parameter the call applies is held to its own
+/// row ([`applied_function_args`]), as one handed to a relation is
+/// ([`refuse_handed_functions`]); a rule variable's function names nothing.
+fn refuse_performed_effects(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    result: &TypeResult,
+    at: &Rc<NodeOccurrence>,
+    rule_sym: Option<Symbol>,
+    mark: usize,
+    errors: &mut Vec<TypeError>,
+) {
     // The call as written, and the operation a dot dispatched to, which it does not name.
     let call = match (at.as_expr(), result.node.as_expr()) {
         (Some(Expr::Apply { functor, .. } | Expr::ApplyWithin { functor, .. }), _)
         | (Some(Expr::DotApply { .. }), Some(Expr::Apply { functor, .. })) => Some(*functor),
         _ => None,
     };
-    for effect in performed_in_a_rule_body(kb, result) {
-        let beneath = errors[mark..].iter().cloned().flat_map(TypeError::flatten).any(|e| {
-            matches!(&e, TypeError::RuleBodyEffect { effect: reported, .. }
-                if views_structurally_equal(kb, reported, &effect))
-        });
-        if !beneath {
-            errors.push(TypeError::RuleBodyEffect {
-                span: Some(at.span.span),
-                rule: rule_sym,
-                call,
-                effect,
-                site: TypeError::here(),
-            });
+    let (performed, open) = performed_in_a_rule_body(kb, result);
+    for effect in performed {
+        push_rule_body_effect(kb, at, rule_sym, call, false, effect, mark, errors);
+    }
+    let Some(op) = call.filter(|_| open) else {
+        return;
+    };
+    for arg in applied_function_args(kb, op, &result.node) {
+        let Some(ty) = value_type_in_clause(env, &arg) else {
+            continue;
+        };
+        for effect in performed_by_function(kb, &ty).unwrap_or_default() {
+            push_rule_body_effect(kb, &arg, rule_sym, call, true, effect, mark, errors);
         }
     }
 }

@@ -1087,6 +1087,18 @@ head. kernel-language §5.3, "A rule body performs no effect".
   the call's value type cannot carry one (`result_type_admits_region`); `Modify[result]` that
   the value carries out counts. A member that is a row variable or a parameter's projection
   names no effect.
+- **A function a rule hands over is held to its own row** (user, 2026-10-23): one in a
+  relation goal's argument, or in a value built there, and one handed to an operation whose
+  row stays open — a callback that writes its own parameter fixes no row parameter
+  (`useVia(?c, lambda (x) -> Cell.set(x, 9), ?u)`; the operation-body twin is refused
+  "unconstrained Rho", WI-270), at a parameter the call applies — one whose row names a row
+  parameter of the operation's own row (`applied_function_args`); `op2(?f, lambda () ->
+  stamp(), ?x)` over `effects {R1}` with `g: () -> Int64 @ {R2}` loads, as in an operation
+  body. Its type is the clause's for a rule variable, else the one the walk gave it
+  (`value_type_in_clause`); a rule variable whose function the clause does not type names
+  nothing, so `applies` itself, `rule applies(?f, ?r) :- applyThunk(?f, ?r)`, loads. Each is
+  refused where it is written: two in one goal are two refusals. Before, such a function answered nothing, silently: handed through a relation's
+  head it does not reach the call.
 - **Once.** A call this walk enters before it types the whole atom — `=`, arithmetic, another
   body-less spec operation — skips an effect a call beneath it reported. A fact pattern
   performs only what its arguments do, each typed first. An equation's guard is the
@@ -1129,13 +1141,15 @@ an operation passed as data — with the written clause's refusal beside it (§6
 
 Not this part's, measured on the way, each the same on 083cb6b8:
 
-- A callback that writes its own parameter leaves the callee's row parameter open, so
-  `useVia(?c, lambda (x) -> Cell.set(x, 9), ?u)` loads, and a `Store` writer reached so
-  (`withStore(?s, lambda (s) -> Store.flush(s, []), ?r)`); the operation-body twin is refused
-  "unconstrained Rho" (WI-270, which a rule body skips, WI-622). A writer over a rule variable is
-  refused by the place rule.
 - A closure handed to another relation through its head answers nothing, pure or not
-  (`pureThunk(?f), thunkVia(?f, ?r)`); in one clause it answers.
+  (`pureThunk(?f), thunkVia(?f, ?r)`); in one clause it answers. An effectful one is refused
+  where it is handed over (above); a pure one still answers nothing.
+- A rule variable bound to a lambda by `<=>` is not typed by it, so `?f <=> lambda () -> now(),
+  applies(?f, ?r)` loads, and so does a caller of `rule giveF(?f) :- ?f <=> lambda () -> now()`
+  that hands `giveF`'s column on; a rule variable typed as a data sort that holds an effectful
+  function (`?b <=> box(f: lambda () -> now()), holds(?b, ?r)`) is not read either.
+- `import probe.imp.{c}` resolves to an operation's parameter `c` (`useIt(c: Int64)`) rather
+  than the relation `c` the namespace's facts define, so a goal `c(?x)` answers nothing.
 - A lambda in a query pattern, and an operation name passed as data and applied as a function
   value, are no function values at run time ("unknown operation: applyThunk.f").
 - A query's nullary call is the operation's name as data: `not(plainStamp() = "x")` holds.

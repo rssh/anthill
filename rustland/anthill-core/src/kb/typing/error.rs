@@ -191,14 +191,17 @@ pub enum TypeError {
         span: Option<Span>,
         name: Symbol,
     },
-    /// A call in a rule body whose typed row holds `effect`, an effect other than `Error`:
-    /// a rule body performs no effect (kernel-language §5.3). `call` is the operation the
-    /// call dispatched to; `None` for a `let` or a `match`, whose body performs it.
+    /// A call in a rule body whose typed row holds `effect`, an effect other than `Error`, or
+    /// a function a rule body hands over whose row holds one: a rule body performs no effect
+    /// (kernel-language §5.3). `call` is the operation the call dispatched to, or the
+    /// relation or operation the function is handed to (`handed`); `None` for a `let` or a
+    /// `match`, whose body performs it.
     RuleBodyEffect {
         span: Option<Span>,
         /// The rule's head functor; `None` only if the head carries none.
         rule: Option<Symbol>,
         call: Option<Symbol>,
+        handed: bool,
         effect: Value,
         site: &'static std::panic::Location<'static>,
     },
@@ -1582,9 +1585,12 @@ impl TypeError {
             TypeError::UndefinedDataFunctor { name, .. } => {
                 crate::kb::load::undefined_rule_body_term_message(kb.qualified_name_of(*name))
             }
-            TypeError::RuleBodyEffect { call, effect, .. } => {
-                rule_body_effect_message(kb, *call, effect)
-            }
+            TypeError::RuleBodyEffect {
+                call,
+                handed,
+                effect,
+                ..
+            } => rule_body_effect_message(kb, *call, *handed, effect),
             TypeError::BareMemberCall {
                 member,
                 owning_sorts,
@@ -2536,6 +2542,7 @@ impl TypeError {
             TypeError::RuleBodyEffect {
                 rule,
                 call,
+                handed,
                 effect,
                 site,
                 ..
@@ -2547,8 +2554,12 @@ impl TypeError {
                 }),
                 entity_name: rule.map_or_else(|| "rule".to_string(), |r| kb.local_name_of(r).to_string()),
                 field_name: RuleField::Body.name().to_string(),
-                expected_type: "a call that performs no effect".to_string(),
-                actual_type: rule_body_effect_message(kb, *call, effect),
+                expected_type: if *handed {
+                    "a function that performs no effect".to_string()
+                } else {
+                    "a call that performs no effect".to_string()
+                },
+                actual_type: rule_body_effect_message(kb, *call, *handed, effect),
                 span: self.span(kb),
             },
             TypeError::BareMemberCall {
@@ -3492,10 +3503,17 @@ fn incomplete_construction_message(kb: &KnowledgeBase, ctor: Symbol, missing: &[
 /// [`TypeError::RuleBodyEffect`]'s words. The effect is named as an operation body's
 /// undeclared one is; the run-time decline of a call no clause wrote ends with the same clause,
 /// "and a rule body performs no effect".
-fn rule_body_effect_message(kb: &KnowledgeBase, call: Option<Symbol>, effect: &Value) -> String {
-    let what = match call {
-        Some(op) => format!("the call `{}`", kb.qualified_name_of(op)),
-        None => "this expression".to_string(),
+fn rule_body_effect_message(
+    kb: &KnowledgeBase,
+    call: Option<Symbol>,
+    handed: bool,
+    effect: &Value,
+) -> String {
+    let what = match (call, handed) {
+        (Some(to), true) => format!("a function handed to `{}`", kb.qualified_name_of(to)),
+        (None, true) => "a function handed over here".to_string(),
+        (Some(op), false) => format!("the call `{}`", kb.qualified_name_of(op)),
+        (None, false) => "this expression".to_string(),
     };
     format!(
         "{what}, which performs `{}`, and a rule body performs no effect",

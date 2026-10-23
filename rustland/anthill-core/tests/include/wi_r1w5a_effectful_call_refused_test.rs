@@ -8,15 +8,22 @@
 //! (`hofWR` answered 9), a read that asks a handler was declined at run time, and a goal on an
 //! effectful operation found no clause and failed, so `not(stamp(3))` held.
 //!
+//! A FUNCTION A RULE HANDS OVER IS HELD TO ITS OWN ROW (user, 2026-10-23): to a relation —
+//! which applies it, if at all, in a clause that cannot see whose it is — and to an operation
+//! whose row it leaves open, a callback that writes its own parameter binding no row
+//! parameter. `applies(lambda () -> now(), ?r)` over `rule applies(?f, ?r) :- applyThunk(?f,
+//! ?r)` and `useVia(?c, lambda (x) -> Cell.set(x, 9), ?u)` are refused; `applies` itself, and
+//! a pure function handed over, load. It answered nothing before, silently: a function
+//! handed to a relation through its head does not reach the call.
+//!
 //! RUN TIME KEEPS THE DECLINE for a goal no typer sees — a query's, or one a rule builds at run
 //! time (`?p(?x, ?r)` over an operation it passes as data): such a goal on an effectful
 //! operation is undecided, the decline reported as the bridge reports one, where it failed.
 //!
-//! Not this part's, and measured on the way (2026-10-23, the same on 083cb6b8): a callback
-//! that writes its own parameter leaves the callee's row parameter open, so
-//! `useVia(?c, lambda (x) -> Cell.set(x, 9), ?u)` loads, where its operation-body twin is
-//! refused "unconstrained Rho"; a closure handed to another relation through its head answers
-//! nothing, pure or not; a constraint's goal is not walked by this typing (WI-20261023-76KZN).
+//! Not this part's, and measured on the way (2026-10-23, the same on 083cb6b8): a closure
+//! handed to another relation through its head answers nothing, pure or not; a rule variable
+//! bound to a lambda by `<=>` is not typed by it, so `?f <=> lambda () -> now(), applies(?f,
+//! ?r)` loads; a constraint's goal is not walked by this typing (WI-20261023-76KZN).
 //!
 //! ## Back-out
 //!
@@ -36,6 +43,10 @@
 //! | the run-time decline (`effectful_goal_declined`) | 14: `an_effectful_goal_built_at_run_time_is_undecided`, `a_drained_relation_over_a_declined_goal_names_the_effect`, `wi_9wvt7_clock_handler` ×9, `wi_9wvt7_review5`, and `wi_dqd5w`'s and `wi_nx4fd`'s query rows |
 //! | the decline a schedule, not a fault (an unhandled effect scheduled again, 9WVT7's back-out) | 15: those 14 but `wi_9wvt7_clock_handler…::a_clock_read_at_run_time_is_not_performed`, and that file's two bridge rows, the const read and the guarded member |
 //! | a goal's call error the goal's (`rewritten_functional_goal`) | `a_goal_and_its_value_spelling_are_refused_alike` |
+//! | a function handed to a relation (`refuse_handed_functions`) | `an_effectful_call_written_in_a_rule_body_is_refused_at_load` at `handsLambda`, `handsColumn`, `handsValue`, `handsInData`, `handsUnderNot`, `handsInOr`; `two_functions_handed_in_one_goal_are_two_refusals` |
+//! | a function handed to an operation whose row stays open (`refuse_performed_effects`' second half) | `an_effectful_call_written_in_a_rule_body_is_refused_at_load` at `writesOwnParam`, `storeWriter` |
+//! | only a parameter the call applies (`applied_function_args`) | `a_function_the_call_does_not_apply_loads` |
+//! | once per place, not per atom (`push_rule_body_effect`'s span test) | `two_functions_handed_in_one_goal_are_two_refusals` |
 //! | the decline's reading strict on `Bool`, its effect named by the member's head (the two `/code-review` findings, measured on the CLI before the fix) | `an_effectful_goal_built_at_run_time_is_undecided`: `pick(true)` answers nothing, `stampIf(true, ?r)` names `EffectExpression.guarded` |
 //!
 //! NOT DRIVEN, and said rather than claimed: the refusal at a goal whose call an equation
@@ -45,7 +56,9 @@
 //! holds none.
 //!
 //! CONTROLS, green under every back-out: `a_callee_keeping_its_cell_to_itself_runs`,
-//! `a_function_value_and_an_open_row_load`, `a_pure_goal_built_at_run_time_answers`.
+//! `a_function_value_and_an_open_row_load`, `a_pure_goal_built_at_run_time_answers`,
+//! `a_pure_function_handed_over_loads`; `a_function_the_call_does_not_apply_loads` passes
+//! under all but its own.
 
 use crate::common::{
     assert_refused_naming, fault_messages, load_errors_of, load_kb_with, query_pattern_term,
@@ -61,6 +74,8 @@ namespace test.r1w5a.eff
   import anthill.prelude.List.{cons, nil}
   import anthill.prelude.Option.{some, none}
   import anthill.prelude.Time.{now, Clock}
+  import anthill.kernel.{or}
+  import anthill.persistence.{Store}
 
   sort Boom
     entity boom(why: String)
@@ -89,6 +104,18 @@ namespace test.r1w5a.eff
     let _ = Cell.set(c, n + 6)
     Cell.get(c)
 
+  operation withStore[Rho](s: Store, f: (s: Store) -> Bool @ {Rho}) -> Bool effects {Rho} = f(s)
+  operation clockThunk() -> () -> String @ {Clock} = lambda () -> now()
+  operation pureThunk() -> () -> String = lambda () -> "x"
+  sort Box
+    entity box(f: () -> String @ {Clock})
+  end
+
+  -- A relation that applies the function in its column; it loads, the function its caller
+  -- hands it is judged where it is handed.
+  rule applies(?f, ?r) :- applyThunk(?f, ?r)
+  rule holds(?b, ?r) :- ?r <=> "x"
+
   -- A goal built at run time: `?p(?x, ?r)` applies the operation a rule passes as data.
   rule apply2(?p, ?x, ?r) :- ?p(?x, ?r)
   rule viaRuntime(?r) :- apply2(stampAt, 1, ?r)
@@ -99,7 +126,47 @@ end
 /// Each clause, loaded beside [`PROGRAM`], is refused once, naming the call and the effect.
 /// 7D48J's rows (2026-10-16) and this ticket's 2026-10-21 row, then the placements a call
 /// takes in a rule body.
-const REFUSED: [(&str, &str, &str); 19] = [
+const REFUSED: [(&str, &str, &str); 27] = [
+    (
+        "rule storeWriter(?s, ?r) :- withStore(?s, lambda (s) -> Store.flush(s, []), ?r)",
+        "a function handed to `test.r1w5a.eff.withStore`",
+        "Modify[T = s]",
+    ),
+    (
+        "rule handsLambda(?r) :- applies(lambda () -> now(), ?r)",
+        "a function handed to `test.r1w5a.eff.applies`",
+        "Clock",
+    ),
+    (
+        "rule handsColumn(?r) :- clockThunk(?f), applies(?f, ?r)",
+        "a function handed to `test.r1w5a.eff.applies`",
+        "Clock",
+    ),
+    (
+        "rule handsValue(?r) :- applies(clockThunk(), ?r)",
+        "a function handed to `test.r1w5a.eff.applies`",
+        "Clock",
+    ),
+    (
+        "rule handsInData(?r) :- holds(box(f: lambda () -> now()), ?r)",
+        "a function handed to `test.r1w5a.eff.holds`",
+        "Clock",
+    ),
+    (
+        "rule handsUnderNot(?r) :- not(applies(lambda () -> now(), ?r))",
+        "a function handed to `test.r1w5a.eff.applies`",
+        "Clock",
+    ),
+    (
+        "rule handsInOr(?r) :- or(applies(lambda () -> now(), ?r), ?r <=> \"y\")",
+        "a function handed to `test.r1w5a.eff.applies`",
+        "Clock",
+    ),
+    (
+        "rule writesOwnParam(?c, ?u) :- useVia(?c, lambda (x) -> Cell.set(x, 9), ?u)",
+        "a function handed to `test.r1w5a.eff.useVia`",
+        "Modify[T = x]",
+    ),
     (
         "rule hofWR(?v) :- mkVia(lambda () -> Cell.new(3), ?c), \
          useVia(?c, lambda (x) -> Cell.set(x, 9), ?u), Cell.get(?c, ?v)",
@@ -195,21 +262,50 @@ fn effect_refusals(errs: &[String]) -> Vec<&String> {
         .collect()
 }
 
-/// THE ACCEPTANCE: each effectful call written in a rule body is refused at load, once, naming
-/// the call and the effect. `hofWR` answered 9 and `hofRW` 3, the write performed; `mk` bound
+/// THE ACCEPTANCE: each effectful call written in a rule body, and each effectful function it
+/// hands over, is refused at load, once, naming the call and the effect. `hofWR` and `hofRW`
+/// are refused twice, once for each: `mkVia` hands back a fresh cell, and the callback handed
+/// to `useVia` writes its own parameter. `hofWR` answered 9 and `hofRW` 3, the write performed; `mk` bound
 /// a cell; the clock reads were declined at run time; `now(?r)` answered nothing, silently, and
 /// each negation held.
 #[test]
 fn an_effectful_call_written_in_a_rule_body_is_refused_at_load() {
+    // Every clause is asked, and the ones that miss are named together, so a back-out is
+    // measured row by row.
+    let mut missed: Vec<String> = Vec::new();
     for (clause, call, effect) in REFUSED {
         let errs = load_errors_of(&with(clause));
-        assert_refused_naming(
-            &errs,
-            &[call, &format!("which performs `{effect}`, and a rule body performs no effect")],
-            clause,
-        );
-        assert_eq!(effect_refusals(&errs).len(), 1, "{clause}: refused once: {errs:?}");
+        let named = effect_refusals(&errs)
+            .into_iter()
+            .filter(|e| {
+                e.contains(&format!("{call}, which performs `{effect}`, and a rule body performs no effect"))
+            })
+            .count();
+        if named != 1 {
+            missed.push(format!("{clause}: {named} refusals there: {errs:?}"));
+        }
     }
+    assert!(missed.is_empty(), "each refused once:\n{}", missed.join("\n"));
+}
+
+/// Two functions handed in one goal are two refusals, each where it is written.
+#[test]
+fn two_functions_handed_in_one_goal_are_two_refusals() {
+    let errs = load_errors_of(&with(
+        "rule holds2(?a, ?b, ?r) :- ?r <=> 1\n  \
+         rule twoSites(?r) :- holds2(lambda () -> now(), lambda () -> now(), ?r)",
+    ));
+    assert_eq!(effect_refusals(&errs).len(), 2, "{errs:?}");
+}
+
+/// CONTROL: a function at a parameter the call does not apply is not held to its row, as in
+/// an operation body: `op2` performs `R1` alone, and `g`'s `R2` is fixed at `Clock`.
+#[test]
+fn a_function_the_call_does_not_apply_loads() {
+    load_kb_with(&with(
+        "operation op2[R1, R2](f: () -> Int64 @ {R1}, g: () -> Int64 @ {R2}) -> Int64 effects {R1} = f()\n  \
+         rule unapplied(?f, ?x) :- op2(?f, lambda () -> stamp(), ?x)",
+    ));
 }
 
 /// ONCE, where the call sits in an argument of a call this walk enters before it types the
@@ -267,6 +363,17 @@ fn a_let_keeping_its_cell_to_itself_loads() {
     load_kb_with(&with(
         "rule stays(?v) :- ?v <=> (let c = Cell.new(3)  Cell.get(c))\n  \
          rule staysWrite(?v) :- ?v <=> (let c = Cell.new(3)  let _ = Cell.set(c, 5)  Cell.get(c))",
+    ));
+}
+
+/// CONTROL: a pure function handed over loads — to a relation, and to an operation whose row
+/// it binds to `{}`.
+#[test]
+fn a_pure_function_handed_over_loads() {
+    load_kb_with(&with(
+        "rule handsPure(?r) :- applies(lambda () -> \"x\", ?r)\n  \
+         rule handsPureColumn(?r) :- pureThunk(?f), applies(?f, ?r)\n  \
+         rule pureCallback(?c, ?u) :- useVia(?c, lambda (x) -> (), ?u)",
     ));
 }
 
