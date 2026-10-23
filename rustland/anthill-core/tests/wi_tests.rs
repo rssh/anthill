@@ -1976,6 +1976,8 @@ mod wi_hxgxf_type_value_derivation_test;
 mod wi_n31xx_type_value_read_rule_test;
 #[path = "include/wi_sqzpq_type_pattern_test.rs"]
 mod wi_sqzpq_type_pattern_test;
+#[path = "include/wi_ym8hd_reify_type_pattern_test.rs"]
+mod wi_ym8hd_reify_type_pattern_test;
 
 #[path = "include/wi_xsvcs_op_requires_forward_test.rs"]
 mod wi_xsvcs_op_requires_forward_test;

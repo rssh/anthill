@@ -261,22 +261,26 @@ end
 /// prelude rather than from a user's rigid read: `Error.reify requires ErrorTag[T = T1]`
 /// with `Error provides ErrorTag[T = T] :- TypeValue[T = T]`. Every program that loads
 /// the prelude — which is every program — now carries a standing demand for `TypeValue`,
-/// so the derivation runs and the gate is permanently open. Proposal 071 adds a second
+/// so the derivation runs and the gate is permanently open. Proposal 071 added a second
 /// condition of the same shape, `TypeValuePattern provides TypePattern[T = T] :-
-/// TypeValue[T = T]`, which stays when its stage (c) retires `ErrorTag`.
+/// TypeValue[T = T]`, and since its stage (c) (WI-20261016-YM8HD) it is the one:
+/// `Error.reify requires TypePattern[T = T1]`, and `ErrorTag` is retired. The condition is a
+/// demand whether or not anything requires `TypePattern`, so the gate no longer hangs on
+/// `reify`'s clause.
 ///
 /// WHAT THIS ROW STILL GUARANTEES, and it is why it was kept rather than deleted: the
 /// gate is not DEAD. It is still the predicate that decides, and the assertion now names
-/// the clause that opens it — so a change removing `reify`'s requirement, or one breaking
-/// `any_requirement_names_spec`' provision-condition leg (WI-20260921-28TAT: conditions
-/// are `SortView`-shaped, and reading them with the bare-application decoder matched
-/// NOTHING while looking like it worked), takes this row red instead of silently
-/// returning the workspace to deriving nothing.
+/// the clause that opens it — so a change breaking `any_requirement_names_spec`'
+/// provision-condition leg (WI-20260921-28TAT: conditions are `SortView`-shaped, and reading
+/// them with the bare-application decoder matched NOTHING while looking like it worked), or
+/// one removing `TypePattern`'s row, takes this row red instead of silently returning the
+/// workspace to deriving nothing.
 ///
-/// BACKED OUT: drop the `requires ErrorTag[T = T1]` line in `prelude/effects.anthill`, or
-/// the `condition_names_spec` leg of the gate, and this goes red.
+/// BACKED OUT: the `condition_names_spec` leg of the gate, and this goes red. (Dropping
+/// `reify`'s `requires` line did too while its spec was `ErrorTag`, whose row was the
+/// prelude's only `TypeValue` condition.)
 #[test]
-fn the_preludes_reify_clause_holds_the_derivation_gate_open() {
+fn the_type_pattern_rows_condition_holds_the_derivation_gate_open() {
     let src = r#"
 namespace wihxgxf.nogate
   import anthill.prelude.{Int64}
@@ -293,9 +297,8 @@ end
         .collect();
     assert!(
         !rows.is_empty(),
-        "the prelude's `Error.reify requires ErrorTag[T = T1]` — whose provision is \
-         conditioned on `TypeValue` — is a standing demand, so the gate is open and \
-         every sort carries a derived row; got none"
+        "`TypePattern`'s one row, conditioned on `TypeValue`, is a standing demand, so the \
+         gate is open and every sort carries a derived row; got none"
     );
     // The demand reaches a sort of the USER's program, not merely the prelude's own:
     // the gate is program-wide, and a row only for `anthill.*` would mean the

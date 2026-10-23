@@ -17,8 +17,9 @@
 //! `Function` it is (`kernel-language.md` §4.4: `(A) -> B` is `Function[A, B, E = {}]`), and
 //! is compared as that application ([`arrow_as_function`]). The provider leg the typer's
 //! `bare_sort_compatible` adds (`List` where `Stream` is expected) is not one of them: the
-//! run-time boundary has never read it (`payload_matches` in `eval/eval.rs` is
-//! `sort_sym_compatible` on the head), and the label discharge reads `sort_refines`.
+//! run-time boundary never read it (`payload_matches` was `sort_sym_compatible` on the head
+//! until WI-20261016-YM8HD made the boundary ask `TypePattern.admits`, which runs this
+//! test), and the label discharge reads `sort_refines`.
 //!
 //! PURE, OVER AN IMMUTABLE KB, AND BOUNDED. No substitution and no `&mut`: the run time
 //! calls it from a builtin, and the typer's discharge of an `Error` label is to read the

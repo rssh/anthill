@@ -74,11 +74,12 @@ object Bootstrap:
     * BOTH HALVES ARE RETURNED because a refusal is scoped to ONE DECLARATION, and a
     * throw can carry only one of them. This deliberately revisits WI-1055's
     * abort-the-file choice, which was right about LOUDNESS and wrong about BLAST
-    * RADIUS: `effects.anthill` declares eleven sorts in one namespace and exactly two
-    * of them name `anthill.reflect`, so refusing at the file took the other nine with
-    * them. `Modifiable` was among the nine, which left `MutableCollection`'s emitted
-    * supertrait naming a type no file in the tree declared — a cascade into a file with
-    * nothing wrong with it, and the last error in the whole-prelude closure.
+    * RADIUS: `effects.anthill` declared eleven sorts in one namespace (ten since
+    * WI-20261016-YM8HD retired `ErrorTag`) and exactly two of them name `anthill.reflect`,
+    * so refusing at the file took the other nine with them. `Modifiable` was among the
+    * nine, which left `MutableCollection`'s emitted supertrait naming a type no file in
+    * the tree declared — a cascade into a file with nothing wrong with it, and the last
+    * error in the whole-prelude closure.
     *
     * The failure MODE is unchanged and only its scope narrows. A refused declaration
     * emits nothing; [[emittedTypes]] still promises it (that walk renders no types, so

@@ -41,15 +41,19 @@
 //! other row here would notice.
 //!
 //! THE NARROWING — "catch only the payload this boundary is typed at" — is measured
-//! separately, by making `payload_matches` return `true` unconditionally (the old
-//! carrier-only rule, "is this a raise"). The rows that go red are exactly the ones about
+//! separately, by making the boundary's test answer `true` unconditionally (the old
+//! carrier-only rule, "is this a raise"). The test was `payload_matches` and is
+//! `Interpreter::boundary_admits` since WI-20261016-YM8HD, the boundary asking the
+//! `TypePattern` it requires. The rows that go red are exactly the ones about
 //! a boundary NOT catching something:
 //! `a_boundary_declines_a_payload_it_is_not_typed_at`,
 //! `each_raise_reaches_the_boundary_typed_at_it`,
 //! `a_host_raise_is_not_mistaken_for_the_declared_payload`,
-//! `a_narrowed_boundary_does_not_steal_an_unreadable_payload`,
 //! `a_reify_at_an_operations_own_type_parameter_catches` (its declining third row) and
 //! `a_declined_raise_leaves_the_interpreter_usable` (whose `expect_err` stops erring).
+//! `a_narrowed_boundary_does_not_steal_an_unreadable_payload` was among them while the test
+//! was `payload_matches`; since a payload whose sort cannot be read is declined before any
+//! boundary is asked (`recover_at_reify_boundary`), it passes under this back-out.
 //! Every other row is about a boundary catching its OWN payload, which both rules agree
 //! on.
 
@@ -65,7 +69,7 @@ namespace test.reify
   import anthill.prelude.{Int64, String, Error, Result, List}
   import anthill.prelude.List.{cons, nil}
   import anthill.reflect.{KB, LoadFailed}
-  import anthill.prelude.{ErrorTag}
+  import anthill.reflect.{TypePattern}
 
   sort Boom
     entity boom(why: String)
@@ -237,10 +241,9 @@ namespace test.reify
 
   -- A GENERIC boundary. `catchIt` reifies at ITS OWN type parameter, so at the reify
   -- call site `T1` is the skolem `P` and only the CALL to `catchIt` says what `P` is.
-  -- The frame's type-argument channel carries `P = Boom` there, and
-  -- `collect_closed_type_args` grounds `T1` against it before the dispatch.
+  -- Its `requires TypePattern[T = P]` is filled there, and forwarded to the reify.
   operation catchIt[P](body: () -> Int64 @ {Error[P]}) -> Result[E = P, T = Int64]
-      requires ErrorTag[T = P] =
+      requires TypePattern[T = P] =
     Error.reify(body)
 
   operation viaGeneric() -> Result[E = Boom, T = Int64] =
@@ -255,7 +258,7 @@ namespace test.reify
   -- swallow the `Other`.
   operation catchItEsc[P](body: () -> Int64 @ {Error[P], Error[Other]})
       -> Result[E = P, T = Int64] effects {Error[Other]}
-      requires ErrorTag[T = P] =
+      requires TypePattern[T = P] =
     Error.reify(body)
 
   operation genericDeclines() -> Result[E = Boom, T = Int64] effects {Error[Other]} =
@@ -276,7 +279,7 @@ namespace test.reify
       effects {Error[(a: Int64, b: String)]} =
     Error.reify[T1 = Boom](lambda () -> boomOrTuple(n))
 
-  -- The generic boundary reached through a RULE BODY: `catchIt`'s `requires ErrorTag[T = P]`
+  -- The generic boundary reached through a RULE BODY: `catchIt`'s `requires TypePattern[T = P]`
   -- is filled at the rule's call, `P` being the payload of the thunk's row.
   -- `viaPlainRule` is the same call at a concrete payload.
   rule viaGenericRule(?r) :- catchIt(lambda () -> mayFail(0 - 1), ?r)
@@ -798,7 +801,7 @@ fn a_declined_raise_leaves_the_interpreter_usable() {
     assert_eq!(int_of(&interp, &field(&interp, &again, "value", 0)), 42);
 }
 
-/// THE GENERIC BOUNDARY THROUGH A RULE BODY. `catchIt`'s `requires ErrorTag[T = P]` is
+/// THE GENERIC BOUNDARY THROUGH A RULE BODY. `catchIt`'s `requires TypePattern[T = P]` is
 /// filled at the rule's call, `P` being the payload of the thunk's row, so the boundary is
 /// typed at `Boom` there as in an operation body.
 ///
@@ -871,51 +874,21 @@ fn a_narrowed_boundary_does_not_steal_an_unreadable_payload() {
     assert_eq!(err_why(&interp, &own), "neg");
 }
 
-/// A written `provides ErrorTag[…]` at a tuple: the call finds the row and loads, and the
-/// row carries no `TypeValue` of the payload.
-const WRITTEN_TAG_PROGRAM: &str = r#"
-namespace test.reifytag
-  import anthill.prelude.{Int64, String, Error, Result, ErrorTag}
-  sort Other
-    entity other(n: Int64)
-  end
-  sort Wrapper
-    import anthill.prelude.{Int64, String, ErrorTag}
-    entity wrap(n: Int64)
-    provides ErrorTag[T = (a: Int64, b: String)]
-  end
-  operation raiseTup(n: Int64) -> Int64 effects {Error[(a: Int64, b: String)], Error[Other]} =
-    if n < 0 then Error.raise((a: n, b: "neg")) else Error.raise(other(n))
-  operation tupOp(n: Int64) -> Result[E = (a: Int64, b: String), T = Int64]
-      effects {Error[Other]} =
-    Error.reify(lambda () -> raiseTup(n))
-end
-"#;
-
-/// EVIDENCE THAT NAMES NO PAYLOAD SORT IS REFUSED where the boundary would be installed,
-/// and never read as "cannot narrow": a boundary that catches every payload takes a label
-/// the thunk's row leaves to the caller. MEASURED with the wide catch: `tupOp(7)` below
-/// answered `err(other(n: 7))`, an `Other` delivered as the tuple's `err`. Two routes reach
-/// the refusal — a written `ErrorTag` row, which carries no `TypeValue` (the advised row
-/// of a former refusal leads here, so that refusal names a value of a sort instead), and a
-/// host entry that hands no evidence at all (`call_with_requirements` fills only the parent
-/// sort's chain).
+/// NO EVIDENCE IS REFUSED where the boundary would be installed, and never read as "cannot
+/// narrow": a boundary that catches every payload takes a label the thunk's row leaves to
+/// the caller. MEASURED with the wide catch: `tupOp(7)` over a thunk raising
+/// `{Error[(a: Int64, b: String)], Error[Other]}` answered `err(other(n: 7))`, an `Other`
+/// delivered as the tuple's `err`. The route here is a host entry that hands no evidence
+/// (`call_with_requirements` fills only the parent sort's chain).
 ///
-/// BACK-OUT: the boundary installed at no sort and catching wide, and both rows answer.
+/// A WRITTEN ROW WAS THE OTHER ROUTE while the boundary required `ErrorTag`, which took one:
+/// a `provides ErrorTag[…]` carried no `TypeValue`, and the boundary refused to run on it.
+/// `TypePattern` takes none, and `ErrorTag` is gone (WI-20261016-YM8HD,
+/// `wi_ym8hd_reify_type_pattern_test`).
+///
+/// BACK-OUT: the boundary installed with no pattern and catching wide, and the row answers.
 #[test]
 fn evidence_that_names_no_payload_sort_is_refused() {
-    let mut tagged = crate::common::interp_for(WRITTEN_TAG_PROGRAM);
-    match tagged.call("test.reifytag.tupOp", &[Value::Int(7)]) {
-        Err(e @ EvalError::ReifyPayloadUnread { .. }) => {
-            let text = e.to_string();
-            for want in ["`test.reifytag.Wrapper`'s", "carries no `TypeValue` of the payload"] {
-                assert!(text.contains(want), "expected {want:?}; got {text}");
-            }
-        }
-        other => panic!("a written `ErrorTag` row is no payload sort, got {other:?}"),
-    }
-    assert_eq!(tagged.activation_depth(), 0, "the refused entry leaves no frame");
-
     let mut interp = interp();
     let op = interp
         .kb()
@@ -930,10 +903,11 @@ fn evidence_that_names_no_payload_sort_is_refused() {
     };
     match interp.call_with_requirements("anthill.prelude.Error.reify", &[thunk], Default::default()) {
         Err(e @ EvalError::ReifyPayloadUnread { .. }) => {
-            assert!(e.to_string().contains("with no `ErrorTag` evidence"), "{e}")
+            assert!(e.to_string().contains("with no `TypePattern` evidence"), "{e}")
         }
         other => panic!("a host entry with no evidence is refused, got {other:?}"),
     }
+    assert_eq!(interp.activation_depth(), 0, "the refused entry leaves no frame");
 }
 
 /// A WIDER BOUNDARY ADMITS A NARROWER RAISE, because the ROW already does.
@@ -943,8 +917,8 @@ fn evidence_that_names_no_payload_sort_is_refused() {
 /// boundary would therefore be unsound rather than merely strict: the raise would
 /// escape an operation the typer has already typed effect-free.
 ///
-/// It is `sort_sym_compatible` that answers — the typer's own sort-vs-sort predicate,
-/// whose third leg is the `requires`-refinement this row needs.
+/// It is `TypePattern.admits` that answers (WI-20261016-YM8HD; `sort_sym_compatible` before
+/// it): the one row's `type_admits`, which climbs what a sort refines through `requires`.
 ///
 /// THE FIRST ROW IS THE ONLY ONE THAT DRIVES IT, and the second says why. `T1` is
 /// INFERRED from the body's row unless written, so a plain `Error.reify(…)` around a body

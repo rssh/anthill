@@ -3464,26 +3464,27 @@ class BootstrapTest extends munit.FunSuite:
   }
 
   test("WI-1080: a refusal costs ONE DECLARATION — effects.anthill's reflect-free siblings emit") {
-    // THE CORPUS INSTANCE the ticket was filed on. effects.anthill declares eleven
-    // sorts in `namespace anthill.prelude`; exactly two name `anthill.reflect`
+    // THE CORPUS INSTANCE the ticket was filed on. effects.anthill declared eleven
+    // sorts in `namespace anthill.prelude` (ten now); exactly two name `anthill.reflect`
     // (`MatchFailed`'s fields are NodeOccurrence/Term, `RelationFloundered` carries a
     // Term), and refusing at the FILE took the other nine out with them.
     //
     // NINE since WI-200 retired `ModifyRuntime` (it was twelve sorts and ten emitted).
     // TEN, NOT NINE, then, since WI-20260921-28TAT added `ErrorTag` — the evidence a reify
-    // boundary discharges its payload sort with. It is reflect-FREE itself (`sort T = ?`
-    // and nothing else), so it emits; what names `anthill.reflect` is the CONDITION on
-    // `Error`'s provision of it (`:- TypeValue[T = T]`), and a provision condition is
-    // not a field type. That this row moved by exactly one, and that the one is the sort
-    // added, is the measurement: a refusal still costs ONE declaration.
+    // boundary discharged its payload sort with — and NINE again since WI-20261016-YM8HD
+    // retired it (proposal 071: `Error.reify` requires `anthill.reflect.TypePattern`).
+    // That `Error` still emits is the measurement that matters here: what names
+    // `anthill.reflect` in it is an operation's `requires` clause, and that is not a field
+    // type. Each move was by exactly one, and the one is the sort added or removed: a
+    // refusal still costs ONE declaration.
     val out = Bootstrap.generate(parseStdlib("anthill/prelude/effects.anthill"), scalaTypes)
 
     val emitted = out.files.map(f => f.relPath.substring(f.relPath.lastIndexOf('/') + 1))
     assertEquals(emitted.sorted, IndexedSeq(
       "Branch.scala", "DivisionByZero.scala", "Effect.scala", "EmptyStream.scala",
-      "Error.scala", "ErrorTag.scala", "Modifiable.scala", "Modify.scala",
+      "Error.scala", "Modifiable.scala", "Modify.scala",
       "Suspension.scala").sorted,
-      "the nine reflect-free sorts are what survives a refusal of the other two")
+      "the eight reflect-free sorts are what survives a refusal of the other two")
     // BOTH refusals, which is the multiplicity half: the second was never absent
     // before this ticket, it was unreachable behind the first throw.
     assertEquals(out.refusals.length, 2, out.refusals.map(_.getMessage).mkString("\n"))
@@ -3510,7 +3511,7 @@ class BootstrapTest extends munit.FunSuite:
     // and `Result` in turn provides `Monad`. The closure is a hand-listed set on
     // purpose, so a signature that reaches a new file is a line to add here, not a
     // silent shrink of what is being compiled.
-    ScalaCompile.assertCompiles("effects.anthill's surviving nine",
+    ScalaCompile.assertCompiles("effects.anthill's surviving eight",
       out.files ++ preludeClosure("monad", "result"))
   }
 

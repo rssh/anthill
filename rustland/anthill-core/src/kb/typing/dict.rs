@@ -2339,25 +2339,6 @@ pub(super) fn build_op_scoped_dicts(
                 out.push(None);
                 continue;
             }
-            // AN `ErrorTag` SLOT A RULE BODY CANNOT FILL IS REFUSED, whatever left it
-            // empty — the exception to the marker exemption the rule-body arm below
-            // grants. The slot is the payload sort an `Error.reify` boundary catches, read
-            // at run time out of this evidence, and a boundary with none refuses to run
-            // (`EvalError::ReifyPayloadUnread`), so a call that builds none here can never
-            // answer. An operation body is handed the evidence by its caller (the forward
-            // arms above) or refused naming the clause to add; a rule-body call's
-            // `ErrorTag` is no condition of its clause, since no argument carries its type,
-            // so what the call does not build here no caller supplies later: a payload type
-            // that is a rule variable's or none at all, a tuple, a collection whose element
-            // is open.
-            // Keyed by the SLOT, not the callee, so an operation that reifies at its own
-            // `P` (`requires ErrorTag[T = P]`) is held to it as `Error.reify` is.
-            if park.is_some_and(|s| s.enclosing_op.is_none())
-                && is_error_tag_spec(kb, dep.required_sort)
-            {
-                kb.unsuppliable_requirements.truncate(parked_mark);
-                return Err(Box::new(unfilled_error_tag_refusal(kb, &dep)));
-            }
             // WI-20260919-N31XX (proposal 065) — AN UNFILLED `TypeValue` SLOT IS NEVER
             // BENIGN, which is what takes it out of the silent-absence rule below.
             //
@@ -2478,6 +2459,38 @@ pub(super) fn build_op_scoped_dicts(
                 && !read_where_applied(kb, usage, callee_op, &dep, &disambig)
             {
                 kb.unsuppliable_requirements.truncate(parked_mark);
+                // WHERE THE CALL PINS EVERY ELEMENT, the cause is not an element it leaves
+                // open, and the account below — "this call pins no element" — is false. Two
+                // such causes get the account an operation body gives them, so the two
+                // spellings agree: a structural former (`Error.reify` over a thunk raising
+                // `Error[(Int64, Int64)]`), and a ground goal no provision answers
+                // ([`unprovided_provision`], which answers only where every element is
+                // ground: `Error.reify` over a thunk raising `Error[Shape]`, a spec, which has
+                // no `TypeValue`). (Until WI-20261016-YM8HD a gate keyed on `ErrorTag` refused
+                // that reify above this one, with an account of its own; found by /code-review.)
+                if let Some(former) = former_carrier(kb, &dep)
+                    .filter(|former| former_is_the_cause(kb, &dep, former, s3_failure.as_ref()))
+                {
+                    return Err(Box::new(former_refusal(kb, &dep, &former)));
+                }
+                if let Some(nomatch @ ResolutionResult::NoMatch { .. }) = &s3_failure {
+                    if let Some(unprovided) =
+                        unprovided_provision(kb, &dep, failed_spec(nomatch, dep.required_sort))
+                    {
+                        return Err(Box::new(RequirementRefusal {
+                            account_names_every_repair: false,
+                            no_scope_route: false,
+                            construction_carries_repair: false,
+                            dep_text: render_requires_entry(kb, &dep),
+                            unconstrained: Vec::new(),
+                            refused_covers: Vec::new(),
+                            construction: describe_resolution_failure(kb, nomatch),
+                            pinned: None,
+                            unprovided: Some(unprovided),
+                            untied: None,
+                        }));
+                    }
+                }
                 let dep_text = render_requires_entry(kb, &dep);
                 return Err(Box::new(unrescuable_rule_body_refusal(
                     kb,
@@ -3060,7 +3073,10 @@ fn unrescuable_rule_body_refusal(
              element at this call",
             kb.qualified_name_of(holder),
         ),
-        None => "Pin the element at this call".to_string(),
+        None => "Pin the element at this call — by an argument whose type the clause \
+                 knows, such as a constructor's value or a head variable written with its \
+                 type, since a rule-body goal reads no type bracket"
+            .to_string(),
     };
     RequirementRefusal {
         account_names_every_repair: true,
@@ -3081,42 +3097,6 @@ fn unrescuable_rule_body_refusal(
             spec = kb.qualified_name_of(dep.required_sort),
             callee = kb.qualified_name_of(callee_op),
         ),
-        pinned: None,
-        unprovided: None,
-        untied: None,
-    }
-}
-
-/// Is `spec` `anthill.prelude.ErrorTag`, the evidence an `Error.reify` boundary reads? Asked
-/// only where a slot could not be built, so the name is resolved there.
-pub(super) fn is_error_tag_spec(kb: &KnowledgeBase, spec: Symbol) -> bool {
-    kb.try_resolve_symbol("anthill.prelude.ErrorTag")
-        .is_some_and(|tag| kb.canonical_sort_sym(tag) == kb.canonical_sort_sym(spec))
-}
-
-/// The refusal of a rule-body call whose `ErrorTag` slot it could not build — see the gate
-/// in [`build_op_scoped_dicts`]. Each repair it names is driven by
-/// `wi_9wvt7_reify_rule_body_test::the_advised_repairs_answer`.
-fn unfilled_error_tag_refusal(kb: &KnowledgeBase, dep: &RequiresEntry) -> RequirementRefusal {
-    RequirementRefusal {
-        account_names_every_repair: false,
-        no_scope_route: false,
-        construction_carries_repair: true,
-        dep_text: render_requires_entry(kb, dep),
-        unconstrained: Vec::new(),
-        refused_covers: Vec::new(),
-        construction: "its carrier is the payload sort an `Error.reify` boundary catches, \
-                       and this call builds no evidence of it. A rule-body call's \
-                       `ErrorTag` is no condition its clause can be handed, and without it \
-                       the boundary has no payload sort to catch and refuses to run. Raise, \
-                       in the thunk, a value whose sort the clause knows — a constructor's, \
-                       a rule variable's whose type is written or read off a goal — or bind \
-                       the thunk by a call whose result says what it raises; a tuple, or a \
-                       collection whose element is open, has no instance; write an operation named bare as \
-                       `lambda () -> f()`, \
-                       since a rule body reads the bare name as its zero-argument call; and \
-                       a thunk that raises no `Error` label needs no boundary"
-            .to_owned(),
         pinned: None,
         unprovided: None,
         untied: None,
@@ -3382,7 +3362,10 @@ pub(super) fn held_spec_views(kb: &KnowledgeBase, env: &TypingEnv) -> Vec<HeldSp
 /// all 16 `wi_9wvt7_error_reify_test` rows on `ErrorTag[T = <tuple>]`, and
 /// `eval_test::m3_float_comparison_and_max` on an `Eq[T = Float]` that `Float provides Eq`
 /// answers. `anthill.prelude.Eq` declares only `sort T = ?` (eq/neq live on `PartialEq`,
-/// WI-644) and `anthill.prelude.ErrorTag` declares nothing at all.
+/// WI-644) and `anthill.prelude.ErrorTag` declared nothing at all. (`ErrorTag` is retired
+/// since WI-20261016-YM8HD: the boundary requires `TypePattern`, which declares `admits`
+/// and so is no marker — an unfilled slot of it in a rule body is refused by the gate this
+/// exempts from.)
 ///
 /// NOT A VERDICT ON ITS OWN, in either direction: it EXEMPTS, and the refusal it guards
 /// needs [`dep_completes_to_a_unique_provider`] to fail as well.
@@ -4268,8 +4251,8 @@ pub(super) fn goal_pinned_carrier(kb: &KnowledgeBase, goal: &SortGoal) -> Option
 /// either way.
 ///
 /// A BODY-LESS CALLEE IS HELD TO IT TOO (user, 2026-10-16). One was exempt, on the reading
-/// that its host interprets an absent slot: `Error.reify` (`requires ErrorTag[T = T1]`,
-/// body-less on purpose) caught WIDE where it had no evidence, and the row was taken to
+/// that its host interprets an absent slot: `Error.reify` (then `requires ErrorTag[T =
+/// T1]`, body-less on purpose) caught WIDE where it had no evidence, and the row was taken to
 /// guarantee what it may catch. MEASURED false for a thunk whose row holds a second
 /// `Error` label: `Error.reify(lambda () -> raiseTup(n))` over `{Error[(Int64, Int64)],
 /// Error[Other]}` caught `other(n: 7)` as the tuple's `err`, past the boundary at `Other`
@@ -4496,15 +4479,12 @@ enum FormerCarrier {
 }
 
 /// The specs whose instances only the library supplies: `TypeValue`, derived for every
-/// sort and refused when written; `TypePattern`, whose one row is `TypeValuePattern`'s and
-/// every other refused when written; and `ErrorTag`, whose one reader, an `Error.reify`
-/// boundary, takes the payload's sort from the `TypeValue` evidence of `Error`'s own
-/// provision and refuses to run without it.
+/// sort and refused when written; and `TypePattern`, whose one row is `TypeValuePattern`'s
+/// and every other refused when written.
 #[derive(Clone, Copy, Debug)]
 enum LibraryInstances {
     TypeValue,
     TypePattern,
-    ErrorTag,
 }
 
 impl LibraryInstances {
@@ -4523,24 +4503,17 @@ impl LibraryInstances {
                  written: its one row is `TypeValuePattern`'s, which answers wherever the type has \
                  a `TypeValue`, one derived for a sort that is no spec, for a parametric sort \
                  only where each of its type arguments has one. Name such a sort, every type \
-                 argument of it written"
-            }
-            LibraryInstances::ErrorTag => {
-                "no row of `anthill.prelude.ErrorTag` answers here, and a written one is no \
-                 repair: an `Error.reify` boundary reads `Error`'s own provision alone, which \
-                 answers wherever the payload's type has a `TypeValue`, one derived for a \
-                 sort that is no spec, for a parametric sort only where each of its type \
-                 arguments has one. Raise, in the thunk, a value whose type is such a sort, \
-                 every type argument of it written"
+                 argument of it written — for an `Error.reify`, raise a value of one in the \
+                 thunk"
             }
         }
     }
 
     /// The structural-former refusal's repair at a call of this spec's own member: the call
     /// names a sort, since no row works. Only `TypeValue`'s member is refused here, where no
-    /// candidate answers: `ErrorTag` declares no member, and `TypePattern`'s one row, at its
-    /// own `T`, is a candidate at every goal, so a call of `TypePattern.admits` at a former
-    /// fails beneath it, at the row's condition.
+    /// candidate answers: `TypePattern`'s one row, at its own `T`, is a candidate at every
+    /// goal, so a call of `TypePattern.admits` at a former fails beneath it, at the row's
+    /// condition.
     fn former_repair_at_call(self) -> &'static str {
         match self {
             LibraryInstances::TypeValue => {
@@ -4548,7 +4521,7 @@ impl LibraryInstances {
                  arguments: every `TypeValue` instance is derived, one for a sort, and none \
                  may be written"
             }
-            LibraryInstances::TypePattern | LibraryInstances::ErrorTag => self.former_repair(),
+            LibraryInstances::TypePattern => self.former_repair(),
         }
     }
 
@@ -4560,14 +4533,9 @@ impl LibraryInstances {
                  arguments: every `TypeValue` instance is derived, and none may be written"
             }
             LibraryInstances::TypePattern => {
-                "Name a sort with no tuple or arrow among its type arguments: the one \
-                 `TypePattern` row is `TypeValuePattern`'s, and none may be written"
-            }
-            LibraryInstances::ErrorTag => {
-                "Raise, in the thunk, a value whose type is a sort with no tuple or arrow \
-                 among its type arguments: an `Error.reify` boundary takes the payload's sort \
-                 from the `TypeValue` evidence of `Error`'s own provision, which neither a \
-                 former nor a written row has"
+                "Name a sort with no tuple or arrow among its type arguments — for an \
+                 `Error.reify`, raise a value of one in the thunk: the one `TypePattern` row \
+                 is `TypeValuePattern`'s, and none may be written"
             }
         }
     }
@@ -4582,8 +4550,6 @@ fn library_instances(kb: &KnowledgeBase, spec: Symbol) -> Option<LibraryInstance
         .is_some_and(|tp| kb.canonical_sort_sym(tp) == canon)
     {
         Some(LibraryInstances::TypePattern)
-    } else if is_error_tag_spec(kb, spec) {
-        Some(LibraryInstances::ErrorTag)
     } else {
         None
     }
