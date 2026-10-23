@@ -954,6 +954,19 @@ match (if c then r else s) case row(x) -> x -- scrutinee
 {(if c then a else b), 3}                   -- set element
 ```
 
+A lambda is the one exception: after an infix operator it needs no parentheses, and its
+body is the rest of the chain, which a `,` or a closing bracket ends.  Before an operator
+and as the operand of `not` it is parenthesized like the other forms.  After a `requires`
+or `ensures` clause `=` still opens the operation body.
+
+```
+?f <=> lambda x -> x + 1, apply(?f, ?r)     -- the lambda `x -> x + 1`; the `,` ends it
+operation h(x: Int64) -> (Int64) -> Int64 requires x > 0 = lambda y -> y + x   -- the body
+```
+
+Where a lambda is not admissible `lambda` is a name (§2.5); a `lambda` written there that
+names nothing is refused, naming the parentheses.
+
 A **set** literal's elements are `Term`s and not `Expr`s, unlike a list's, because
 `{ a, b }` is already the braced-body and rule-goal-list spelling; the parenthesized
 form above is how a compound expression reaches one.  (WI-20260829-YBBC3; before it

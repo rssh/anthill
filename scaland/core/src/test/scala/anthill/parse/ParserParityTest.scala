@@ -72,3 +72,40 @@ class ParserParityTest extends munit.FunSuite:
     assert(bareErrors.exists(_.message.contains("single parenthesized type is not a type")),
       s"bare `(A)` must fail for the type-reading reason, got: ${bareErrors.map(_.message)}")
   }
+
+  /** A lambda after an infix operator is the lambda (kernel-language §4.8), the same
+    * term its parenthesized spelling builds; its body is the rest of the chain; and
+    * after a `requires` clause `=` still opens the body. BACK-OUT: `term`'s operand
+    * back at `atomWithFieldAccess` fails the accept case (`lambda ()` is a call there
+    * and `lambda x` no term at all); measured 2026-10-23. */
+  test("a lambda after an infix operator is the lambda, bare as parenthesized") {
+    val file = parsePath(corpusRoot.resolve("accept/lambda_as_infix_operand.anthill"))
+      .toOption.getOrElse(fail("the lambda-operand parity case did not parse"))
+    val items = file.items.collectFirst { case Item.NamespaceItem(ns) => ns }.get.items
+    def render(tid: anthill.term.TermId): String = file.terms.get(tid) match
+      case anthill.term.Term.Const(lit) => Parser.renderLiteral(lit)
+      case anthill.term.Term.Var(anthill.term.Var.Global(id)) => s"?${file.symbols.name(id.name)}"
+      case anthill.term.Term.Var(v) => v.toString
+      case anthill.term.Term.Bottom => "⊥"
+      case anthill.term.Term.Ref(s) => file.symbols.name(s)
+      case anthill.term.Term.Ident(s) => file.symbols.name(s)
+      case fn: anthill.term.Term.Fn =>
+        val args = fn.posArgs.map(render) ++
+          fn.namedArgs.map((k, v) => s"${file.symbols.name(k)}: ${render(v)}")
+        s"${file.symbols.name(fn.functor)}(${args.mkString(", ")})"
+    def body(name: String): IndexedSeq[String] =
+      items.collectFirst {
+        case Item.RuleItem(rule) if rule.heads.exists {
+          case RuleHead.TermHead(h) => render(h).startsWith(s"$name(")
+          case RuleHead.Bottom => false
+        } => rule.body.get.map(render)
+      }.getOrElse(fail(s"no rule `$name`"))
+
+    assertEquals(body("bare"), body("paren"))
+    assert(body("bare").head.contains("lambda_expr("), s"a lambda: ${body("bare")}")
+    assert(body("binder").head.matches(""".*lambda_expr\(.*add\(x, 1\)\)\)"""),
+      s"the body is the rest of the chain: ${body("binder")}")
+    val op = items.collectFirst { case Item.OperationItem(o) if file.symbols.name(o.name.last) == "body" => o }.get
+    assert(op.body.exists(b => render(b).contains("lambda_expr(")), s"the body is the lambda: $op")
+  }
+

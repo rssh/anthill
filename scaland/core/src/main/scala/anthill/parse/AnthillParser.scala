@@ -876,9 +876,15 @@ private class AnthillParserImpl(
   private case class OpToken(sym: TermSymbol, span: Span)
 
   private def term[$: P]: P[TermId] =
-    P(atomWithFieldAccess ~ (infixOp ~ atomWithFieldAccess).rep).map { case (first, pairs) =>
+    P(atomWithFieldAccess ~ (infixOp ~ infixOperand).rep).map { case (first, pairs) =>
       buildInfix(first, pairs)
     }
+
+  /** An operand after an infix operator: an atom, or a lambda (kernel-language §4.8),
+    * which extends as far right as it can and so is the last operand. Mirrors
+    * rustland's `infix_term`. Tried first: after an operator `lambda` is the keyword. */
+  private def infixOperand[$: P]: P[TermId] =
+    P(lambdaExpr | atomWithFieldAccess)
 
   /** A `_term` for an operation's `requires` / `ensures` clause goal. Like
     * `term`, but `=` (equality) is NON-ASSOCIATIVE: a clause goal carries at
@@ -915,8 +921,8 @@ private class AnthillParserImpl(
 
   private def clauseTerm[$: P]: P[TermId] =
     P(
-      atomWithFieldAccess ~ (nonEqInfixOp ~ atomWithFieldAccess).rep ~
-        (eqClauseOp ~ atomWithFieldAccess ~ (nonEqInfixOp ~ atomWithFieldAccess).rep).?
+      atomWithFieldAccess ~ (nonEqInfixOp ~ infixOperand).rep ~
+        (eqClauseOp ~ atomWithFieldAccess ~ (nonEqInfixOp ~ infixOperand).rep).?
     ).map { case (first, leading, eqTail) =>
       val pairs = ArrayBuffer.from(leading)
       eqTail.foreach { case (eqSym, eqRhs, trailing) =>

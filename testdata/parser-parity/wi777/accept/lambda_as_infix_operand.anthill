@@ -1,0 +1,11 @@
+namespace parity.lambda.operand
+  -- A lambda may be the operand after an infix operator (kernel-language §4.8). It
+  -- extends as far right as it can, so it is the last one, and a rule body's `,` ends
+  -- it. After a `requires` clause `=` still opens the operation body.
+  rule bare(?r) :- ?f <=> lambda () -> g(1), h(?f, ?r)
+  rule paren(?r) :- ?f <=> (lambda () -> g(1)), h(?f, ?r)
+  rule binder(?f) :- ?f <=> lambda x -> x + 1
+  rule test(?f) :- ?f = lambda (x: A) -> x
+  operation sum(r: R) -> A = 1 + lambda x -> x
+  operation body(x: A) -> F requires p(x) = lambda y -> y
+end

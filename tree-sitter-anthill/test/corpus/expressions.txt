@@ -1075,12 +1075,12 @@ end
             (identifier)))))))
 
 =====================================
-A lambda in an atom position without parentheses is a name, not the keyword (WI-20261015-C9802)
+A lambda after an infix operator is the lambda; before one it is a name (WI-20261023-2F9HY)
 =====================================
 
 namespace t
-  rule r(?f) :- ?f <=> lambda () -> g(1)
-  rule s(?f) :- ?f <=> (lambda () -> g(1))
+  rule r(?f) :- ?f <=> lambda x -> g(x), h(?f)
+  rule s(?f) :- lambda () -> g(1) <=> ?f
 end
 
 ---
@@ -1101,14 +1101,19 @@ end
           (variable_term
             (variable))
           (operator_symbol)
-          (fn_term
-            (name
-              (identifier)))
-          (operator_symbol)
-          (fn_term
-            (name
+          (lambda_expr
+            (pattern_var
               (identifier))
-            (integer_literal)))))
+            (fn_term
+              (name
+                (identifier))
+              (name
+                (identifier)))))
+        (fn_term
+          (name
+            (identifier))
+          (variable_term
+            (variable)))))
     (rule_declaration
       (rule_heads
         (fn_term
@@ -1118,13 +1123,14 @@ end
             (variable))))
       (rule_body
         (infix_term
-          (variable_term
-            (variable))
+          (fn_term
+            (name
+              (identifier)))
           (operator_symbol)
-          (paren_expr
-            (lambda_expr
-              (pattern_tuple)
-              (fn_term
-                (name
-                  (identifier))
-                (integer_literal)))))))))
+          (fn_term
+            (name
+              (identifier))
+            (integer_literal))
+          (operator_symbol)
+          (variable_term
+            (variable)))))))

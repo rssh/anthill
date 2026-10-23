@@ -144,7 +144,7 @@ end
 /// Each clause, loaded beside [`PROGRAM`], is refused once, naming the call and the effect.
 /// 7D48J's rows (2026-10-16) and this ticket's 2026-10-21 row, then the placements a call
 /// takes in a rule body.
-const REFUSED: [(&str, &str, &str); 33] = [
+const REFUSED: [(&str, &str, &str); 36] = [
     // A field written over the sort's own row parameter is read at the argument the value's
     // type gives it.
     (
@@ -157,10 +157,25 @@ const REFUSED: [(&str, &str, &str); 33] = [
         "a function handed to `test.r1w5a.eff.holds`",
         "Clock",
     ),
-    // A side of `<=>` gives the other its type. The lambda is in parentheses: bare at a side
-    // of `<=>` it is refused (WI-20261015-C9802).
+    // A side of `<=>` or `=` gives the other its type, bare or in parentheses
+    // (WI-20261023-2F9HY).
     (
         "rule handsBound(?r) :- ?f <=> (lambda () -> now()), applies(?f, ?r)",
+        "a function handed to `test.r1w5a.eff.applies`",
+        "Clock",
+    ),
+    (
+        "rule handsBoundBare(?r) :- ?f <=> lambda () -> now(), applies(?f, ?r)",
+        "a function handed to `test.r1w5a.eff.applies`",
+        "Clock",
+    ),
+    (
+        "rule handsEq(?r) :- ?f = (lambda () -> now()), applies(?f, ?r)",
+        "a function handed to `test.r1w5a.eff.applies`",
+        "Clock",
+    ),
+    (
+        "rule handsEqBare(?r) :- ?f = lambda () -> now(), applies(?f, ?r)",
         "a function handed to `test.r1w5a.eff.applies`",
         "Clock",
     ),

@@ -2323,16 +2323,17 @@ pub enum LoadError {
         unresolved: String,
         span: Span,
     },
-    /// WI-20261015-C9802: a lambda written where a term is expected — an infix operand, a
-    /// dot receiver, a `match` scrutinee, an `if` condition, a set element — without the
-    /// parentheses kernel-language.md §4.8 requires there. In such a position `lambda` is
-    /// not the keyword (§2.5): it reads as a name, `lambda (x)` as a call to it, and the
-    /// `->` after it as the arrow-type operator, so `?f <=> lambda () -> plus1(1)` bound
-    /// `?f` to `arrow(lambda, 2)`, the body evaluated where it stood. Raised for a written
-    /// `lambda` under a pratt-minted arrow that resolves to nothing, in an operation body
-    /// and in a clause alike, before the two bare-arrow refusals above, whose advice (write
-    /// the keyword) is wrong for it. A `lambda` the program declares is that declaration.
-    /// The span is the `lambda`'s, where the `(` goes.
+    /// WI-20261015-C9802: a lambda written where a term is expected — before an infix
+    /// operator, as the operand of `not`, a dot receiver, a `match` scrutinee, an `if`
+    /// condition, a set element — without the parentheses kernel-language.md §4.8 requires
+    /// there (after an infix operator a lambda needs none, WI-20261023-2F9HY). In such a
+    /// position `lambda` is not the keyword (§2.5): it reads as a name, `lambda (x)` as a
+    /// call to it, and the `->` after it as the arrow-type operator, so
+    /// `{lambda () -> plus1(1)}` held `arrow(lambda, 2)`, the body evaluated where it
+    /// stood. Raised for a written `lambda` under a pratt-minted arrow that resolves to
+    /// nothing, in an operation body and in a clause alike, before the two bare-arrow
+    /// refusals above, whose advice (write the keyword) is wrong for it. A `lambda` the
+    /// program declares is that declaration. The span is the `lambda`'s, where the `(` goes.
     LambdaInTermPosition {
         span: Span,
     },
@@ -4272,8 +4273,9 @@ const LAMBDA_KEYWORD: &str = "lambda";
 
 /// The one message body for `LoadError::LambdaInTermPosition`, shared by both renderings.
 const LAMBDA_IN_TERM_POSITION_MSG: &str =
-    "a lambda written where a term is expected — an infix operand, a dot receiver, a \
-     `match` scrutinee, an `if` condition, a set element — is put in parentheses: \
+    "a lambda written where a term is expected — before an infix operator, as the \
+     operand of `not`, a dot receiver, a `match` scrutinee, an `if` condition, a set \
+     element — is put in parentheses: \
      `(lambda … -> …)`; without them `lambda` is read as a name and `->` builds an \
      arrow-type term";
 
