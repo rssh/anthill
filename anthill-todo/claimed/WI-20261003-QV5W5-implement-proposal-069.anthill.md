@@ -3,9 +3,9 @@
 - id: WI-20261003-QV5W5-implement-proposal-069
 - created: 2026-10-03T10:06:09Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-10-03T10:06:09Z
+- status: Claimed
+- status_agent: claude
+- status_at: 2026-10-23T05:46:46Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -37,4 +37,8 @@ A CHECK FOR THIS TICKET (user, 2026-10-14), found by the family e-applied-arrow:
 ### 2026-10-20T19:31:18Z — feedback — claude
 
 Now depends on WI-20260821-6WVJB (one arity per predicate, unblocked 2026-10-20 when WI-20260821-ZW940 was closed as decided). Once it is delivered, 069's arity check for a declaration that carries a default is the general rule, and needs no gate of its own: implement 069's omission reading on top of it rather than a defaults-only arity check.
+
+### 2026-10-23T05:46:40Z — feedback — claude
+
+SCOPE NARROWED TO STAGE 1 (user, 2026-10-23: five stage tickets). This ticket is now 069's SORT AND EFFECT-ROW PARAMETER DEFAULTS: `sort Box[T = Int64]`, `sort T = ? default Int64`, `effects E = ? default {}` (§1.4); a written type application that leaves a defaulted slot out takes the default, in every position (§2, context-free), dependent defaults (`T2 = T1`) tied to the slot they name, forward references and wrong kinds refused at the default; an explicit `?` keeps the slot open; 070 §1.4's carrier check reads what the author wrote; a constructor call's sort parameter that inference leaves unbound takes the default (§2 steps 4–5); `Function` declares `effects E = ? default {}` and §4.4 / §8.1 are restated (§4, §7 step 6); tree-sitter, Rust, Scala, reflect and persistence of the sort-parameter default. The other surfaces are filed: stage 2 operation type-parameter defaults WI-20261023-GBH5F, stage 3 operation value defaults and `result:` WI-20261023-CX743, stage 4 entity-constructor defaults WI-20261023-FHT5Z, stage 5 rule-column defaults WI-20261023-9XXBW; WI-188 now depends on stages 3 and 4. THE 0RRQP QUESTION (2026-10-05 note) IS DECIDED, reading (b) (user, 2026-10-23): in a rule clause a constructor in a pattern position whose sort parameter nothing in the clause fixes leaves that parameter a clause variable, which a query or citation binds — `rule same(?p) :- ?p <=> box(a: ?x, b: ?x)` under `sort Box[T = Int64]` answers `Box.same(box(a: "s", b: "s"))`; the default reaches only a WRITTEN type that leaves `T` out (`?p: Box`). Acceptance row for this ticket, with its control.
 
