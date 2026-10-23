@@ -1,8 +1,8 @@
 -- Function: computation with optional effects.
--- E is the effect row (empty for pure functions).
+-- E is the effect row. It defaults to the empty row, so Function[A, B] is the pure
+-- function, as the arrow (A) -> B is; Function[A, B, ?] leaves the row open, and
+-- Function[A, B, E] / (A) -> B @ E write it (kernel-language.md §4.4).
 -- Replaces separate Function (pure) and Operation (effectful) sorts.
--- PureFunction is Function[A, B, E = {}]. With E unbound, Function[A, B] is
--- effect-POLYMORPHIC, as every unwritten parameter is (kernel-language.md §4.4, §8.1).
 sort anthill.prelude.Function
   sort A = ?
   sort B = ?
@@ -10,11 +10,7 @@ sort anthill.prelude.Function
   --   sort E = ? requires EffectsRuntime[Effects = E]
   -- giving E a kind anchor (EffectsRuntime) reachable at typing time —
   -- the substrate for the row-rewrite that WI-307 will bring in.
-  effects E = ?
+  effects E = ? default {}
 
   operation apply(f: Function[A, B, E], x: A) -> B effects E
 end
-
--- PureFunction: Function with no effects.
--- fact PureFunction[A, B] = Function[A, B, E = {}]
--- (the empty effect row `{}` = `effects_rows(empty_row)`, proposal 045 §1)

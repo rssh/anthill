@@ -1023,9 +1023,58 @@ pub(super) fn signature_names_no_carrier(
     functor: Symbol,
     sort: Symbol,
 ) -> bool {
-    let Some(rec) = crate::kb::op_info::lookup_operation_info(kb, functor) else {
-        return false;
-    };
+    signature_carrier(kb, functor, sort) == Some(SignatureCarrier::NamesNone)
+}
+
+/// Where `functor`'s signature lets a call's carrier of `sort` stand — read off one
+/// operation record for both shapes [`unselectable_spec_operation_call`] asks about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SignatureCarrier {
+    /// No parameter, result or effect stands at `sort` or names one of its type parameters
+    /// ([`signature_names_no_carrier`]).
+    NamesNone,
+    /// The result is `sort` itself — `-> Self`, or the bare sort
+    /// (`LogicalStream.guard(cond: Bool) -> LogicalStream[T = Unit, E = E]`) — and no
+    /// parameter or effect stands at `sort` or names one of its type parameters. `Self` in a
+    /// sort is that sort, so the result is no provider of it: `g() -> Box = Mon.unit(7)` is a
+    /// type error beside `operation unit(x: Int64) -> Self` (kernel-language.md §5.4). The
+    /// type expected of the result still binds the sort's parameters, and a provision at
+    /// that binding answers (`IntBag provides Bag[T = Int64]` answers `Bag.empty()` expected
+    /// at `Bag[T = Int64]`), so for a sort with parameters only the dispatch can say whether
+    /// one does.
+    ResultOnly,
+    /// Anything else: some parameter, the result or an effect names a carrier.
+    Named,
+}
+
+/// `functor`'s [`SignatureCarrier`] for `sort`; `None` for a symbol with no operation record.
+pub(super) fn signature_carrier(
+    kb: &KnowledgeBase,
+    functor: Symbol,
+    sort: Symbol,
+) -> Option<SignatureCarrier> {
+    let rec = crate::kb::op_info::lookup_operation_info(kb, functor)?;
+    let names_a_carrier = carrier_position_of(kb, sort);
+    if rec.params.iter().any(|(_, ty)| names_a_carrier(ty))
+        || rec.effects.iter().any(&names_a_carrier)
+    {
+        return Some(SignatureCarrier::Named);
+    }
+    if !names_a_carrier(&rec.return_type) {
+        return Some(SignatureCarrier::NamesNone);
+    }
+    let result_is_the_sort = carrier_sort_of_value(kb, &rec.return_type)
+        .is_some_and(|s| same_sort_canonical(kb, s, sort));
+    Some(if result_is_the_sort {
+        SignatureCarrier::ResultOnly
+    } else {
+        SignatureCarrier::Named
+    })
+}
+
+/// Whether a written type is a position a call's carrier of `sort` can stand at: `sort` at
+/// its head, or one of `sort`'s type parameters anywhere in it.
+fn carrier_position_of(kb: &KnowledgeBase, sort: Symbol) -> impl Fn(&Value) -> bool + '_ {
     let params = sort_type_params_as_pairs(kb, sort);
     let syms: SmallVec<[Symbol; 4]> = params.iter().map(|(s, _)| *s).collect();
     let vars: SmallVec<[VarId; 4]> = params
@@ -1035,13 +1084,10 @@ pub(super) fn signature_names_no_carrier(
             _ => None,
         })
         .collect();
-    let names_a_carrier = |ty: &Value| {
+    move |ty: &Value| {
         carrier_sort_of_value(kb, ty).is_some_and(|s| same_sort_canonical(kb, s, sort))
             || type_mentions_spec_param(kb, ty, &syms, &vars)
-    };
-    !rec.params.iter().any(|(_, ty)| names_a_carrier(ty))
-        && !names_a_carrier(&rec.return_type)
-        && !rec.effects.iter().any(names_a_carrier)
+    }
 }
 
 /// WI-596 — is `spec_sort` a *self-representing* container over `params` (some

@@ -1191,6 +1191,16 @@ namespace anthill.reflect
     index   : Int64                                   -- description index (0-based)
   )
 
+  -- SortParamDefault: the declared default of a sort's type or effect-row parameter
+  -- (`sort Box[T = Int64]`, `effects E = ? default {}`), one row per defaulted
+  -- parameter. `param` is the parameter (one of SortInfo's `parameters`); `default` is
+  -- the type a written application that leaves the parameter out takes, an earlier
+  -- parameter it names standing as that parameter's variable.
+  entity SortParamDefault(
+    param   : Symbol,
+    default : Term
+  )
+
   -- ================================================================
   -- Substitution: variable bindings from query/unification
   -- ================================================================

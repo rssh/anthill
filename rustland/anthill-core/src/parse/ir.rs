@@ -642,6 +642,12 @@ pub struct AbstractSort {
     pub visibility: Option<Visibility>,
     pub name: Name,
     pub definition: TypeExpr,
+    /// Proposal 069 §1.4: the declared DEFAULT of a type or effect-row parameter —
+    /// `sort T = ? default Int64`, `effects E = ? default {}`, or the bracket form's
+    /// `sort Box[T = Int64]`. Only a parameter declaration carries one (its
+    /// `definition` is a [`TypeExpr::Variable`]); the converter refuses the tail on an
+    /// alias. A written type that leaves this parameter out takes the default.
+    pub default: Option<TypeExpr>,
     pub descriptions: Vec<String>,
     pub meta: Option<MetaBlock>,
     pub span: Span,
@@ -679,6 +685,9 @@ pub struct SortWithBody {
     /// ordinary `sort F { … }` — the marked/unmarked split is the distinction
     /// between a parameter-variable and a concrete nested sort.
     pub is_type_param: bool,
+    /// Proposal 069 §1.4: the default of a HIGHER-KINDED type parameter (`sort
+    /// Traverse[F[T] = List, A]`). Only a marked parameter (`is_type_param`) carries one.
+    pub default: Option<TypeExpr>,
     pub visibility: Option<Visibility>,
     pub name: Name,
     pub descriptions: Vec<String>,

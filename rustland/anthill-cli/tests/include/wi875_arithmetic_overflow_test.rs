@@ -7,7 +7,7 @@
 //! overflow traps unconditionally); resolver `div`/`mod` at the same input answered
 //! `no solutions`. The unifying rule is in [`ArithOutcome`]'s doc: the resolver may
 //! answer `no solution` only where it knows NO ANSWER EXISTS; where an answer exists
-//! that the carrier cannot hold, it must fault.
+//! that the carrier cannot hold, or the call raises, it must fault.
 //!
 //! That splits the inputs into three classes, and the tests below are organised by
 //! them. The class boundary is the whole point, so each test names which side it is
@@ -141,15 +141,15 @@ fn negative_divisor_mod_is_euclidean() {
     );
 }
 
-// ── Class 1: no answer exists → `no solution`, and it stays that way ──────
+// ── Class 1: the call raises → a FAULT naming the raise, never an overflow ───
 
-/// CONTROL, and the one that makes the split observable rather than editorial: a
-/// ZERO divisor is a domain gap, not a representation limit, so it must keep
-/// answering `no solutions` with NO fault — the verdict WI-20260911-0V0F7 took
-/// deliberately (`resolve.rs`'s `builtin_arith` doc). Passes both with and without
-/// this change by design; it goes red only if class 3's fault leaks into class 1.
+/// A ZERO divisor is not a representation limit: the call raises the declared
+/// `Error[DivisionByZero]`, and that propagates as its own fault — named as the raise,
+/// not as an overflow, so the two arms stay apart. It was a silent `no solutions` until
+/// the error was made to propagate (WI-20260827-NFXPZ); `resolve.rs`'s `builtin_arith`
+/// doc has the rule.
 #[test]
-fn zero_divisor_is_still_a_silent_no_solution() {
+fn zero_divisor_raises_a_fault_that_is_not_an_overflow() {
     for p in ["div(6, 0, ?r)", "mod(7, 0, ?r)"] {
         let out = query(p);
         assert_eq!(out.code, 0, "`{p}` must run; stderr:\n{}", out.stderr);
@@ -159,24 +159,38 @@ fn zero_divisor_is_still_a_silent_no_solution() {
             out.stdout
         );
         assert!(
+            out.has_diagnostic("warning:", "raised division_by_zero"),
+            "`{p}` must fault naming the raise; stderr:\n{}",
+            out.stderr
+        );
+        assert!(
             !out.has_diagnostic("warning:", "overflowed its carrier"),
-            "a zero divisor is a DOMAIN gap, not an overflow; stderr:\n{}",
+            "a zero divisor raises, it does not overflow; stderr:\n{}",
             out.stderr
         );
     }
 }
 
-/// CONTROL for the same boundary from the other side: `not` over a zero divisor is
-/// still a confident `true`. This is the answer WI-0V0F7 protected — `div(1, 0, ?q)`
-/// is in the relation for no `?q` and the resolver knows it — and the one that would
-/// have been lost had overflow and the zero divisor been given one arm.
+/// `not` over a zero divisor is UNDECIDED: the call raised, so its emptiness is no
+/// refutation, as `not` over an overflow is not. It was a confident `true` until the
+/// error was made to propagate — the answer WI-20260911-0V0F7 had protected.
 #[test]
-fn negation_over_a_zero_divisor_still_refutes() {
+fn negation_over_a_zero_divisor_is_undecided() {
     let out = query("anthill.kernel.not(anthill.prelude.Divisible.div(1, 0, 5))");
     assert!(
-        out.has_stdout_line("true"),
-        "NAF over a zero divisor stays a refutation; stdout:\n{}",
+        !out.has_stdout_line("true"),
+        "NAF over a raising call is no refutation; stdout:\n{}",
         out.stdout
+    );
+    assert!(
+        out.has_stdout_line("1 solution(s), 1 conditional (residual goals undischarged)"),
+        "…it is one conditional answer; stdout:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.has_diagnostic("warning:", "raised division_by_zero"),
+        "…naming the raise; stderr:\n{}",
+        out.stderr
     );
 }
 

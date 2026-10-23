@@ -33,6 +33,8 @@ mod wi_rxt6s_dotted_sort_type_value_test;
 mod wi_r653s_paren_less_dot_test;
 #[path = "include/wi_tcsgt_structural_bracket_entry_test.rs"]
 mod wi_tcsgt_structural_bracket_entry_test;
+#[path = "include/wi_qv5w5_sort_parameter_defaults_test.rs"]
+mod wi_qv5w5_sort_parameter_defaults_test;
 #[path = "include/wi_12nkg_arrow_and_tuple_cover_test.rs"]
 mod wi_12nkg_arrow_and_tuple_cover_test;
 #[path = "include/wi_0gyw1_arrow_provision_labels_test.rs"]
@@ -268,6 +270,12 @@ mod wi902_dot_rule_macro_test;
 
 #[path = "include/wi903_typed_bound_dot_rule_test.rs"]
 mod wi903_typed_bound_dot_rule_test;
+
+#[path = "include/wi905_rewrite_reached_effect_test.rs"]
+mod wi905_rewrite_reached_effect_test;
+
+#[path = "include/wi_nfxpz_error_row_host_op_test.rs"]
+mod wi_nfxpz_error_row_host_op_test;
 
 #[path = "include/wi281_spec_dot_dispatch_test.rs"]
 mod wi281_spec_dot_dispatch_test;
@@ -2110,6 +2118,8 @@ mod wi753_native_rule_body_occurrence_test;
 mod wi_kssa4_spec_typed_value_test;
 #[path = "include/wi_m8qwj_unrunnable_operation_test.rs"]
 mod wi_m8qwj_unrunnable_operation_test;
+#[path = "include/wi_ck7pp_interface_call_test.rs"]
+mod wi_ck7pp_interface_call_test;
 #[path = "include/wi_jrhz0_todo_hole_test.rs"]
 mod wi_jrhz0_todo_hole_test;
 

@@ -4,9 +4,8 @@
 use super::*;
 
 /// WI-508: distinct carrier sorts that `provides` `spec_sort` (canonical,
-/// deduped, the spec sort itself excluded). Used to resolve a nullary
-/// carrier-only-in-result spec op (`new()`) from a UNIQUE provider when the call
-/// site pins no carrier. Mirrors `spec_has_any_providers`' indexed walk.
+/// deduped, the spec sort itself excluded). Mirrors `spec_has_any_providers`'
+/// indexed walk.
 pub(crate) fn impl_sorts_providing_spec(kb: &KnowledgeBase, spec_sort: Symbol) -> Vec<Symbol> {
     let mut out: Vec<Symbol> = Vec::new();
     let spec_canon = kb.canonical_sort_sym(spec_sort);
@@ -27,13 +26,18 @@ pub(crate) fn impl_sorts_providing_spec(kb: &KnowledgeBase, spec_sort: Symbol) -
 /// - (a) the EXPECTED RETURN TYPE names a concrete carrier sort ⇒ that carrier
 ///   is PINNED; use its override (or give up — never silently pick a different
 ///   provider for an explicitly named carrier);
-/// - (b) no carrier pinned and exactly ONE sort provides the spec ⇒ use it
-///   (information hiding);
-/// - (c) no carrier pinned and 2+ providers ⇒ `Ambiguous` (a loud error).
+/// - (b) no carrier pinned and 2+ providers ⇒ `Ambiguous` (a loud error).
 ///
-/// `None` keeps the caller's `NoCandidates` (no provider; a named carrier that
-/// does not provide the spec; or a provider whose nullary override needs a
-/// dispatch dict — see `nullary_carrier_impl_op`).
+/// `None` keeps the caller's `NoCandidates` (no provider; ONE provider and no carrier
+/// pinned; a named carrier that does not provide the spec; or a provider whose nullary
+/// override needs a dispatch dict — see `nullary_carrier_impl_op`).
+///
+/// ONE PROVIDER DOES NOT PIN THE CARRIER (kernel-language.md §5.4: a member's instance is
+/// fixed by an argument or the type expected of its result). It did — "information
+/// hiding" — and `let _ = Mon.make()` over `sort Mon { sort C = ?; operation make() -> C
+/// }` ran `Box`'s member because `Box` was the one sort providing `Mon` (MEASURED,
+/// WI-20261017-CK7PP), which a second provider loaded beside it would have turned into a
+/// refusal. Left `NoCandidates`, the call's open carrier is refused as any other is.
 pub(super) fn resolve_nullary_result_carrier(
     kb: &mut KnowledgeBase,
     spec_sort: Symbol,
@@ -59,12 +63,10 @@ pub(super) fn resolve_nullary_result_carrier(
             }
         }
     }
-    // (b)/(c) No carrier pinned — unique provider, else ambiguous.
+    // (b) No carrier pinned — ambiguous where several provide the spec.
     let providers = impl_sorts_providing_spec(kb, spec_sort);
     match providers.as_slice() {
-        [] => None,
-        [one] => nullary_carrier_impl_op(kb, *one, spec_op_sym, op_short_sym)
-            .map(DispatchOutcome::Unique),
+        [] | [_] => None,
         // WI-843: the SECOND `Ambiguous` producer, and it names its own candidates
         // — these are the providers THIS path counted (`impl_sorts_providing_spec`,
         // no goal to match against), so reusing `resolve_inner`'s list here would

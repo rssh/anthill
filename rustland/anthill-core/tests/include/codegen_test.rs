@@ -1173,3 +1173,30 @@ fn the_bare_name_of_a_parameterised_sort_is_refused() {
         "a sort with no parameter has one instance, and its name is that"
     );
 }
+
+/// WI-20261003-QV5W5 — a sort parameter's default (proposal 069 §1.4) is the Rust default of the
+/// generic, so a written `Box` that leaves `T` out is `Box<i64>` to Rust as to anthill, and a
+/// default naming an earlier parameter names it in Rust too. Rust takes defaults on a trailing
+/// run only, so `Mix[A = Int64, B]` emits no default for `A`; an `impl` header takes none.
+/// FAILS with `declared_generics` replaced by the plain list (`enum Box<T>`).
+#[test]
+fn a_sort_parameter_default_is_the_generics_default() {
+    let out = gen(r#"
+namespace cg
+  sort Box[T = Int64]
+    entity box(v: T)
+    operation get(b: Self) -> T
+  end
+  sort AP[T1, T2 = T1]
+    entity ap(first: T1, second: T2)
+  end
+  sort Mix[A = Int64, B]
+    entity mix(a: A, b: B)
+  end
+end
+"#);
+    assert!(out.contains("enum Box<T = i64> {"), "output:\n{out}");
+    assert!(out.contains("enum AP<T1, T2 = T1> {"), "output:\n{out}");
+    assert!(out.contains("enum Mix<A, B> {"), "output:\n{out}");
+    assert!(out.contains("impl<T> Box<T> {"), "an impl header takes no default:\n{out}");
+}

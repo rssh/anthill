@@ -392,7 +392,7 @@ fn through_option_coercion<'a>(
                 },
             origin:
                 crate::kb::node_occurrence::OccurrenceOrigin::Synthesized {
-                    written_in: None, ..
+                    written_by: None, ..
                 },
             ..
         } if pos_args.is_empty()

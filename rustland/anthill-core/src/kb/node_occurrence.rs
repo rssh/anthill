@@ -10,7 +10,7 @@ use smallvec::SmallVec;
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
-use crate::intern::{ScopeId, Symbol};
+use crate::intern::Symbol;
 use crate::parse::desugar_target as dt;
 use crate::span::SourceSpan;
 
@@ -18,7 +18,7 @@ pub use super::occurrence::PassId;
 use super::subst::Substitution;
 use super::term::{Literal, Term, TermId, Var, VarId};
 use super::typing::get_named_arg;
-use super::KnowledgeBase;
+use super::{KnowledgeBase, RuleId};
 use super::term_view::{TermView, ViewHead, ViewItem};
 use crate::eval::value::Value;
 
@@ -34,10 +34,10 @@ pub enum OccurrenceOrigin {
     Synthesized {
         from: Rc<NodeOccurrence>,
         by: PassId,
-        /// The scope this node's text was written in, when the node is the text of a
-        /// rewrite spliced at `from`: its rule's. `None` for a node a pass built, which
-        /// has no text of its own. Read through [`NodeOccurrence::text_scope`].
-        written_in: Option<ScopeId>,
+        /// The rule whose text this node is, when the node is the text of a rewrite
+        /// spliced at `from`. `None` for a node a pass built, which has no text of its
+        /// own. Read through [`NodeOccurrence::rewritten_by`].
+        written_by: Option<RuleId>,
     },
 }
 
@@ -158,7 +158,9 @@ fn drain_type_node(tn: &mut TypeNode, stack: &mut Vec<Rc<NodeOccurrence>>) {
     match tn {
         // WI-20260904-02ERR: a leaf owns no `Rc`, so there is nothing to drain.
         TypeNode::Var(_) => {}
-        TypeNode::Aliased { stands_for, .. } => drain_type_child(stands_for, stack),
+        TypeNode::Aliased { stands_for, .. } | TypeNode::Defaulted { stands_for, .. } => {
+            drain_type_child(stands_for, stack)
+        }
         TypeNode::Denoted { value } => {
             let placeholder = NodeOccurrence::new_expr(Expr::Bottom, empty_span(), None);
             stack.push(std::mem::replace(value, placeholder));
@@ -586,7 +588,7 @@ impl NodeOccurrence {
                     OccurrenceOrigin::Synthesized {
                         from,
                         by,
-                        written_in,
+                        written_by,
                     },
                 ..
             } => Rc::new(NodeOccurrence {
@@ -595,7 +597,7 @@ impl NodeOccurrence {
                     origin: OccurrenceOrigin::Synthesized {
                         from: Rc::clone(from),
                         by: *by,
-                        written_in: *written_in,
+                        written_by: *written_by,
                     },
                     // WI-20260902-4NEKZ: CARRIED, like the origin beside it. A rebuild
                     // (De Bruijn open/close, substitution, `@[simp]` reassembly) is the
@@ -734,14 +736,14 @@ impl NodeOccurrence {
     /// a non-`Expr` result has neither a provenance to fix nor a surface name to recover,
     /// so it is left alone THERE rather than absorbed here.
     ///
-    /// `written_in` is the scope of the rule whose text this node is, for a rewrite's
-    /// right-hand side spliced at `from`; `None` for a result a macro built.
+    /// `written_by` is the rule whose text this node is, for a rewrite's right-hand side
+    /// spliced at `from`; `None` for a result a macro built.
     pub fn reparented_from(
         &self,
         from: Rc<NodeOccurrence>,
         by: PassId,
         owner: Option<Symbol>,
-        written_in: Option<ScopeId>,
+        written_by: Option<RuleId>,
     ) -> Rc<Self> {
         let NodeKind::Expr { expr, .. } = &self.kind else {
             unreachable!("reparented_from: caller must gate on NodeKind::Expr")
@@ -760,7 +762,7 @@ impl NodeOccurrence {
                 origin: OccurrenceOrigin::Synthesized {
                     from,
                     by,
-                    written_in,
+                    written_by,
                 },
                 // WI-20260902-4NEKZ: carried, for the reason `rebuilt_expr` states.
                 dot_chain: self.is_dot_chain(),
@@ -921,7 +923,7 @@ impl NodeOccurrence {
                 origin: OccurrenceOrigin::Synthesized {
                     from,
                     by,
-                    written_in: None,
+                    written_by: None,
                 },
                 // WI-20260902-4NEKZ: NOT carried from `from`, and that is the difference
                 // between this constructor and `rebuilt_expr`. A rebuild is the same node
@@ -986,28 +988,30 @@ impl NodeOccurrence {
         node.span
     }
 
-    /// The scope this occurrence's text was written in, when that is not where the
-    /// occurrence now sits: it is the text of a rewrite spliced into another body, or a
-    /// node a pass built from such text (the call a dot in it lowers to). `None` for
-    /// text written where it stands.
+    /// The rule whose text this occurrence is, when that is not where the occurrence now
+    /// sits: it is the text of a rewrite spliced into another body, or a node a pass
+    /// built from such text (the call a dot in it lowers to). `None` for text written
+    /// where it stands. Of a rewrite inside a rewrite's text, the inner rule.
     ///
-    /// An `internal` name is visible to a rule's text from the rule's scope wherever the
-    /// rule fires, as a name the rule wrote is — that one is resolved when the rule
-    /// loads, and a dot is resolved only once its receiver has a type, at the redex.
+    /// A name the rule wrote is resolved when the rule loads, and a dot in its text only
+    /// once its receiver has a type, at the redex; so the two questions asked of a dot
+    /// there are asked through this. An `internal` member is visible to it from the
+    /// rule's scope wherever the rule fires (`typing::written_scope`), and the operation
+    /// it reaches is held to the rule's effect refusal (`typing::effectful_rewrite_call`).
     /// The arguments of the redex are spliced in as the occurrences they were, so the
     /// caller's text under a rewrite is still the caller's.
-    pub fn text_scope(&self) -> Option<ScopeId> {
+    pub fn rewritten_by(&self) -> Option<RuleId> {
         let mut node = self;
         loop {
             match &node.kind {
                 NodeKind::Expr {
                     origin:
                         OccurrenceOrigin::Synthesized {
-                            from, written_in, ..
+                            from, written_by, ..
                         },
                     ..
-                } => match written_in {
-                    Some(scope) => return Some(*scope),
+                } => match written_by {
+                    Some(rule) => return Some(*rule),
                     None => node = from,
                 },
                 _ => return None,
@@ -2069,6 +2073,40 @@ pub enum TypeNode {
     /// alias is invisible to whatever asks what the type is. The name is read by
     /// [`written_alias`] alone, for a message.
     Aliased { alias: Symbol, stands_for: TypeChild },
+    /// A parameter slot the author LEFT OUT, holding the parameter's declared default
+    /// (proposal 069 §1.4): `E = {}` of a written `Function[A, B]`, under `effects E = ?
+    /// default {}`. `param` is the parameter, `stands_for` the default as this
+    /// application instantiated it.
+    ///
+    /// It is here for the same reason [`Self::Aliased`] is: what was written at this place
+    /// — nothing — is a fact the shared term of the default cannot say. Every structural
+    /// read is the read of `stands_for`, so the slot IS the default to whatever asks what
+    /// the type is; what asks what was written is the carrier rule
+    /// (`check_sort_parameter_carriers`, which reads the slot as left out). A default that
+    /// is a VARIABLE is never wrapped, as an alias of a type parameter is not
+    /// (`Loader::bare_alias_read`): the readers that ask whether a type is a variable match
+    /// it by carrier.
+    Defaulted { param: Symbol, stands_for: TypeChild },
+}
+
+impl TypeNode {
+    /// The type a transparent wrapper stands for — [`Self::Aliased`]'s and
+    /// [`Self::Defaulted`]'s — whose every structural read is that type's.
+    pub fn stands_for(&self) -> Option<&TypeChild> {
+        match self {
+            TypeNode::Aliased { stands_for, .. } | TypeNode::Defaulted { stands_for, .. } => {
+                Some(stands_for)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Is `v` a slot its author left out, filled from the parameter's default
+/// ([`TypeNode::Defaulted`])?
+pub fn is_default_fill(v: &crate::eval::value::Value) -> bool {
+    matches!(v, crate::eval::value::Value::Node(occ)
+        if matches!(occ.as_type(), Some(TypeNode::Defaulted { .. })))
 }
 
 /// The alias a type was written through, when `occ` is one ([`TypeNode::Aliased`]) —
@@ -3302,6 +3340,17 @@ fn map_type_node<R: TypeChildRewrite>(
                 ch,
             )
         }
+        // The slot stays one its author left out; the default is rewritten as any child is.
+        TypeNode::Defaulted { param, stands_for } => {
+            let (ns, ch) = map_type_child(r, kb, stands_for);
+            (
+                TypeNode::Defaulted {
+                    param: *param,
+                    stands_for: ns,
+                },
+                ch,
+            )
+        }
         TypeNode::Denoted { value } => {
             let nv = r.node(kb, value);
             let ch = !Rc::ptr_eq(&nv, value);
@@ -4438,7 +4487,9 @@ fn collect_type_node_vars(
             }
         }
         TypeNode::Var(_) => {}
-        TypeNode::Aliased { stands_for, .. } => collect_type_child(kb, stands_for, vars, seen),
+        TypeNode::Aliased { stands_for, .. } | TypeNode::Defaulted { stands_for, .. } => {
+            collect_type_child(kb, stands_for, vars, seen)
+        }
         TypeNode::Denoted { value } => collect_type_or_expr_node_vars(kb, value, vars, seen),
         TypeNode::Parameterized { base, bindings } => {
             collect_type_child(kb, base, vars, seen);
@@ -5212,7 +5263,9 @@ fn type_node_to_term(kb: &mut KnowledgeBase, tn: &TypeNode) -> TermId {
         // so interning here is the CALLER's request, not the leak the ticket removes.
         TypeNode::Var(v) => kb.alloc_or_find_var_term(*v),
         // The hash-consed twin is the type's: a term has no place for the written name.
-        TypeNode::Aliased { stands_for, .. } => type_child_to_term(kb, stands_for),
+        TypeNode::Aliased { stands_for, .. } | TypeNode::Defaulted { stands_for, .. } => {
+            type_child_to_term(kb, stands_for)
+        }
         TypeNode::Denoted { value } => {
             let v = occurrence_to_term(kb, value);
             kb.make_denoted(v)
@@ -5620,6 +5673,7 @@ pub(crate) fn value_holds_alias_node(v: &Value) -> bool {
         match &n.kind {
             NodeKind::Type(ty) => match ty {
                 TypeNode::Aliased { .. } => true,
+                TypeNode::Defaulted { stands_for, .. } => child(stands_for),
                 // A variable, and a value: neither is written through a type alias.
                 TypeNode::Var(_) | TypeNode::Denoted { .. } => false,
                 TypeNode::Parameterized { base, bindings } => {
@@ -6675,6 +6729,10 @@ pub(crate) fn substitute_ref_syms_occ(
                 TypeNode::Var(v) => TypeNode::Var(*v),
                 TypeNode::Aliased { alias, stands_for } => TypeNode::Aliased {
                     alias: *alias,
+                    stands_for: rewrite_ref_child(stands_for, map),
+                },
+                TypeNode::Defaulted { param, stands_for } => TypeNode::Defaulted {
+                    param: *param,
                     stands_for: rewrite_ref_child(stands_for, map),
                 },
                 TypeNode::Denoted { value } => TypeNode::Denoted {

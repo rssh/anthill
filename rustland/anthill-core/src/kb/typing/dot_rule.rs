@@ -21,13 +21,16 @@ use super::*;
 
 /// Fire a sort-specific `@[simp]` dot rule at a DotApply, or `Ok(None)` to fall to
 /// the default. `recv_sort` is the receiver's least sort (the firing guard's
-/// key); `from` is the DotApply occ (synthesized-RHS provenance).
+/// key); `from` is the DotApply occ (synthesized-RHS provenance). With the result, the
+/// rule that fired: the caller holds the call it replaces to that rule's effect
+/// refusal.
 ///
 /// WI-902: the RHS is instantiated by the shared
 /// [`crate::kb::simp_rewrite::instantiate_rhs`], so a macro-headed dot rule expands at
 /// compile time exactly as a macro-headed `Apply` rule does — this site used to
-/// stop at the template. `Err` is that macro's REJECTION of the occurrences it was
-/// handed, for the caller to report at this redex (WI-757), the same contract as
+/// stop at the template. `Err` is that instantiation's refusal (the macro's rejection
+/// of the occurrences it was handed, or a call its expansion builds that no rewrite
+/// may), for the caller to report at this redex (WI-757), the same contract as
 /// [`fire_simp`].
 ///
 /// WI-903: this site does NOT consult `kb.rule_type_bounds`, and does not have to
@@ -57,7 +60,7 @@ pub(super) fn try_fire_dot_rule(
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
     from: &Rc<NodeOccurrence>,
     rids: &[RuleId],
-) -> Result<Option<Rc<NodeOccurrence>>, crate::kb::simp_rewrite::MacroRejection> {
+) -> Result<Option<(Rc<NodeOccurrence>, RuleId)>, crate::kb::simp_rewrite::FireRefusal> {
     // WI-903: hoisted out of the loop, as before — but the selection itself is now
     // `fires_as_dot_rule`, the SAME predicate the loader's typed-bound refusal
     // asks. A third condition added here therefore narrows the refusal with it,
@@ -111,10 +114,148 @@ pub(super) fn try_fire_dot_rule(
                 }
             };
             return crate::kb::simp_rewrite::instantiate_rhs(kb, rid, rhs, &fresh, build, from)
-                .map(Some);
+                .map(|synth| Some((synth, rid)));
         }
     }
     Ok(None)
+}
+
+/// The operation a dot reaches by the method ladder: `short` called on a receiver typed
+/// `recv_ty`, whose least sort is `recv_sort` — the receiver's own member, a spec it
+/// provides or requires, a spec constraining a type parameter or a clause slot, its
+/// parent sort's member. `Ok(None)` when no rung finds one, and the dot is a field, a
+/// column, or nothing; `Err` for a refusal a rung makes on the way (an `internal` own
+/// member hidden from `from_scope`, rival suppliers, a tie between constraining specs).
+/// `call_shape` is the synthesized call's, receiver included.
+///
+/// Asked by the dot's default dispatch, and by a dot rule that fired on the dot: the
+/// call the rule replaces is the one this answers.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn dot_method_operation(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    recv_sort: Option<Symbol>,
+    recv_ty: &Value,
+    short: &str,
+    from_scope: ScopeId,
+    dot_span: Option<Span>,
+    call_shape: (usize, usize),
+) -> Result<Option<Symbol>, TypeError> {
+    // WI-1035: the receiver's OWN member is resolved SEPARATELY from the two
+    // spec fallbacks below, because it is not merely a rung of the name ladder
+    // — when it backs a spec the receiver provides it is route 1 of a SUPPLIER
+    // SET, and taking it is a dispatch decision. See
+    // [`dot_member_dispatch_decision`].
+    //
+    // `find_operation_in_scope` reads the sort symbol from a bare
+    // `Ref(sort)` / `sort(args)` head, which is what `make_sort_ref` builds
+    // since WI-361 (it built a `sort_ref(name:…)` wrapper before).
+    let op_sym = if let Some(s) = recv_sort {
+        let sort_term = kb.alloc(Term::Ref(s));
+        let mut own_op = crate::kb::load::find_operation_in_scope(kb, sort_term, short);
+        // `own_member`, not `member`: the dot's member NAME is `short`; this is the
+        // operation it resolved to, which is what the callee's own parameter is called.
+        if let Some(own_member) = own_op {
+            // Before the dispatch decision: on an abstract-spec receiver that
+            // hands the call to the spec operation the member backs, which a
+            // hidden member is not passed over for.
+            if let Some(e) = hidden_dot_member(kb, own_member, from_scope, dot_span) {
+                return Err(e);
+            }
+            match dot_member_dispatch_decision(kb, s, own_member, short, dot_span)? {
+                DotMember::Take => {}
+                DotMember::DispatchByValue(spec_op) => own_op = Some(spec_op),
+            }
+        }
+        own_op
+            // WI-281: spec-satisfaction fallback — `member` may be an
+            // operation on a spec `s` *provides* (e.g. `(3).min(5)` →
+            // `Ord.min` via `fact Ord[Int]`), not declared on
+            // `s` itself. The synthesized `Apply` below is identical;
+            // re-typing it rides the normal spec-op dispatch +
+            // `req_insertion`, which threads the requirement.
+            .or_else(|| find_spec_op_for_provided_sort(kb, s, short))
+            // WI-614: a spec-typed receiver (`FiniteCollection[…]`) can invoke a
+            // member of a spec it REQUIRES — `FiniteCollection requires Iterable`
+            // ⟹ `.find`/`.isEmpty`/`.iterator`, since a `FiniteCollection` IS
+            // walkable. Gated on an abstract-spec receiver so a concrete carrier
+            // keeps resolving via its OWN + PROVIDED members alone (its Iterable
+            // members already reach it through the provides graph).
+            .or_else(|| {
+                carrier_is_abstract_spec(kb, s)
+                    .then(|| find_spec_op_for_required_sort(kb, s, short))
+                    .flatten()
+            })
+    } else if let Some(param_ty) = constrained_param_receiver_type(kb, env, recv_ty) {
+        // WI-1119: the receiver is a TYPE PARAMETER, so it has no sort whose
+        // members the three rungs above could search — but a `requires` clause on
+        // the enclosing operation or its sort may constrain it, and the NAMED
+        // spelling of this very call is already licensed by that clause. Resolve
+        // the member against the constraining specs so the dot reaches the same
+        // spec operation the named spelling does (§8.7).
+        //
+        // A tie between two constraining specs is refused HERE rather than
+        // fallen through: the arms after the ladder (field access, relation projection)
+        // would answer nothing and the frame would end in `DotDispatchNoMatch`,
+        // reporting "no such member" for a member found TWICE.
+        find_spec_op_for_constrained_param(kb, env, param_ty, short, call_shape, dot_span)?
+    } else if env.in_rule_body() {
+        // A rule variable typed by a variable a requirement slot of another clause
+        // variable's type constrains ([`find_spec_op_for_clause_slot`]).
+        find_spec_op_for_clause_slot(kb, env, recv_ty, short, dot_span)?
+    } else {
+        None
+    };
+    // WI-20260826-JSFHG — THE PARENT-SORT RUNG, for an ENTITY-typed receiver.
+    //
+    // A `Colour.red` value IS a `Colour` (§8.2), so a member declared on `Colour`
+    // is reachable through it — but the three rungs above search the receiver's own
+    // sort symbol, which for a variant type is the CONSTRUCTOR, and a constructor
+    // declares no operations. So `r.shout()` on `r: Colour.red` reported "no such
+    // member (dot dispatch)" while the named spelling `shout(r)` resolved and the
+    // widening `takeAny(r)` was accepted — one value, two answers, which is the
+    // position-dependence WI-752 exists to abolish. Found by /code-review: the
+    // mechanism predates this ticket, but making variant-typed values REACHABLE is
+    // what put values in front of it.
+    //
+    // PURELY ADDITIVE: it is consulted only where every rung above answered `None`,
+    // so no dot that resolves today can resolve differently.
+    //
+    // EXCEPT AGAINST THE RECEIVER'S OWN FIELD, which it must not steal. Where
+    // `op_sym` is `None` the frame falls through to field access, and an entity's
+    // own field is a MORE specific answer than a same-named operation on its
+    // parent; taking the parent's would make `r.v` mean something different on
+    // `Colour.red` than the field it names. So the rung stands down when the member
+    // names a field of the receiver entity, and the fall-through keeps it.
+    Ok(match (op_sym, recv_sort.and_then(|s| kb.strict_parent_sort(s))) {
+        (None, Some(parent)) => {
+            let names_own_field = recv_sort
+                .and_then(|s| kb.entity_field_types(s))
+                .is_some_and(|fs| {
+                    fs.iter()
+                        .any(|(f, _)| short_name_of(kb.local_name_of(*f)) == short)
+                });
+            if names_own_field {
+                None
+            } else {
+                let parent_term = kb.alloc(Term::Ref(parent));
+                let mut found =
+                    crate::kb::load::find_operation_in_scope(kb, parent_term, short);
+                // The SAME dispatch decision rung 1 makes, asked at the parent, so
+                // a member that backs a spec the parent provides is routed
+                // identically whether it is reached through `Colour` or through
+                // `Colour.red`.
+                if let Some(own_member) = found {
+                    match dot_member_dispatch_decision(kb, parent, own_member, short, dot_span)? {
+                        DotMember::Take => {}
+                        DotMember::DispatchByValue(spec_op) => found = Some(spec_op),
+                    }
+                }
+                found.or_else(|| find_spec_op_for_provided_sort(kb, parent, short))
+            }
+        }
+        (other, _) => other,
+    })
 }
 
 /// WI-281: spec-satisfaction method resolution. When `member` is not declared

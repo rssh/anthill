@@ -425,18 +425,33 @@ pub enum TypeError {
     },
     /// WI-20260909-M8QWJ: a call, in an operation body, of a member of a sort that may be
     /// provided, where nothing can select a provider: the operation's signature names no
-    /// carrier ([`signature_names_no_carrier`]), no requirement in scope supplies the sort,
-    /// and the call writes no bracket — so it runs at the sort itself, and there it reaches
-    /// `reached` (the operation called, or a member its body calls), which has no body, host
-    /// mapping or builtin. It loaded clean and died `OperationBodyMissing` at the call.
-    /// `clauses` is whether clauses are indexed under `reached`, which changes the repair the
-    /// refusal names.
+    /// carrier ([`signature_names_no_carrier`]) or names the sort in its result alone
+    /// (`result_only`, WI-20261017-CK7PP), nothing in scope supplies the sort
+    /// ([`nothing_in_scope_selects`]), and the call writes no bracket — so it runs at the
+    /// sort itself, and there it reaches `reached` (the operation called, or a member its
+    /// body calls), which has no body, host mapping or builtin. It loaded clean and died
+    /// `OperationBodyMissing` at the call. `clauses` is whether clauses are indexed under
+    /// `reached`, which changes the repair the refusal names.
     CallOfUnselectableSpecOperation {
         span: Option<Span>,
         op: Symbol,
         spec: Symbol,
         reached: Symbol,
         clauses: bool,
+        /// `op` names `spec` in its result alone, as `spec` itself
+        /// ([`SignatureCarrier::ResultOnly`]): no argument names a provider of such a
+        /// member, and the repair is the provider's own member.
+        result_only: bool,
+    },
+    /// A call, in an operation body, of a body-less member `op` of `spec` whose carrier is
+    /// a sort other than `spec`, known at load — `carrier` — which supplies no member for
+    /// it, while `op` itself has no body, host mapping or builtin: the dispatch reaches `op`
+    /// at `carrier`, and nothing there runs (kernel-language.md §5.4).
+    CarrierSuppliesNoMember {
+        span: Option<Span>,
+        op: Symbol,
+        spec: Symbol,
+        carrier: Symbol,
     },
     /// A call, in an operation body, of a member of a sort that may be provided, with no
     /// receiver, that fixes none of the sort's parameters — by its bracket, its arguments or
@@ -794,8 +809,9 @@ pub enum TypeError {
     ///
     /// `op` is the operation, `sort` its sort, `sort_param` the parameter used (`V`) and
     /// `param` the operation's parameter that is the sort at an open `sort_param` (`c`) —
-    /// or, `nested`, holds one (`xs: List[T = Cell]`). The check and its scope are
-    /// [`check_sort_parameter_carriers`]'s.
+    /// or, `nested`, holds one (`xs: List[T = Cell]`). `defaulted` when the slot was left
+    /// out and holds its parameter's default (proposal 069 §2) rather than an open `?`.
+    /// The check and its scope are [`check_sort_parameter_carriers`]'s.
     SortParamWithoutCarrier {
         span: Option<Span>,
         op: Symbol,
@@ -803,6 +819,7 @@ pub enum TypeError {
         sort_param: Symbol,
         param: Symbol,
         nested: bool,
+        defaulted: bool,
     },
     /// WI-828: a cross-sort call (direct or op-as-function-value) to an
     /// operation of a `requires`-carrying sort whose requirement the call site
@@ -1087,14 +1104,21 @@ fn sort_param_without_carrier_detail(
     sort_param: Symbol,
     param: Symbol,
     nested: bool,
+    defaulted: bool,
 ) -> (String, String) {
     let s = short_name_of(kb.local_name_of(sort));
     let v = short_name_of(kb.local_name_of(sort_param));
     let c = kb.local_name_of(param);
     let me = crate::intern::SELF_TYPE_NAME;
+    let (holds, is) = if defaulted {
+        (format!("holds a `{s}` at `{v}`'s default"), format!("is a `{s}` at `{v}`'s default"))
+    } else {
+        (format!("holds any `{s}`"), format!("is any `{s}`"))
+    };
+    let left = if defaulted { "left out" } else { "left to a `?`" };
     let (is, repair) = if nested {
         (
-            format!("`{c}` holds any `{s}`"),
+            format!("`{c}` {holds}"),
             format!(
                 "Write that `{s}` as `{me}` to make it the carrier; or, where it is another \
                  `{s}` on purpose, give its `{v}` a name of its own (`[X]`, `{s}[{v} = X]`)"
@@ -1102,7 +1126,7 @@ fn sort_param_without_carrier_detail(
         )
     } else {
         (
-            format!("`{c}` is any `{s}`"),
+            format!("`{c}` {is}"),
             format!(
                 "Type `{c}` as `{me}` to make it the carrier, or write `{c}.{v}` where that \
                  `{s}`'s `{v}` is meant; or, where `{c}` is another `{s}` on purpose, give its \
@@ -1116,8 +1140,8 @@ fn sort_param_without_carrier_detail(
              signature uses"
         ),
         format!(
-            "`{v}` used with no carrier: {is} — its `{v}` is left to a `?` — so it is not \
-             the one whose `{v}` this is, and no parameter is `{me}`. {repair}"
+            "`{v}` used with no carrier: {is} — its `{v}` is {left} — so it is not the one \
+             whose `{v}` this is, and no parameter is `{me}`. {repair}"
         ),
     )
 }
@@ -1626,11 +1650,13 @@ impl TypeError {
                 spec,
                 reached,
                 clauses,
+                result_only,
                 ..
             } => {
                 let qn = kb.qualified_name_of(*op);
                 let spec_qn = kb.qualified_name_of(*spec);
                 let short = short_name_of(qn);
+                let body = short_name_of(kb.qualified_name_of(*reached));
                 let what = if reached == op {
                     "it".to_string()
                 } else {
@@ -1654,6 +1680,28 @@ impl TypeError {
                     .map(|p| format!("{p} = …"))
                     .collect::<Vec<_>>()
                     .join(", ");
+                // A sort with no parameter has no instance a bracket could name: the repair
+                // is a provider's own member, as for a result-only member.
+                if params.is_empty() && !*result_only {
+                    return format!(
+                        "a call of `{qn}` that nothing can run: `{spec_qn}` may be provided, \
+                         but no provider can be selected here — no argument, result or effect \
+                         of `{short}` stands at `{spec_qn}`, and no `requires {spec_qn}` is in \
+                         scope — so the call reaches `{qn}` itself, and {own}. Call the member \
+                         of a sort that provides `{spec_qn}` by that sort's name \
+                         (`Provider.{short}(…)`), or give `{body}` a body"
+                    );
+                }
+                if *result_only {
+                    return format!(
+                        "a call of `{qn}` that nothing can run: `{short}` names `{spec_qn}` in \
+                         its result alone, and `Self` in `{spec_qn}` is `{spec_qn}`, so the \
+                         call names no provider — no argument stands at `{spec_qn}` and no \
+                         `requires {spec_qn}[…]` is in scope — and reaches `{qn}` itself, and \
+                         {own}. Call the member of a sort that provides `{spec_qn}` by that \
+                         sort's name (`Provider.{short}(…)`), or give `{body}` a body"
+                    );
+                }
                 format!(
                     "a call of `{qn}` that nothing can run: `{spec_qn}` may be provided, but \
                      no provider can be selected here — no argument, result or effect of \
@@ -1663,7 +1711,20 @@ impl TypeError {
                      bracket, `{qn}[{params}](…)`, with a `requires {spec_qn}[…]` on the \
                      enclosing operation where the bracket names a parameter of it, or give \
                      `{body}` a body",
-                    body = short_name_of(kb.qualified_name_of(*reached)),
+                )
+            }
+            TypeError::CarrierSuppliesNoMember {
+                op, spec, carrier, ..
+            } => {
+                let qn = kb.qualified_name_of(*op);
+                let short = short_name_of(qn);
+                let carrier_qn = kb.qualified_name_of(*carrier);
+                format!(
+                    "a call of `{qn}` at `{carrier_qn}` that nothing can run: `{carrier_qn}` \
+                     provides `{}` but supplies no `{short}`, and `{qn}` has no body, host \
+                     mapping or builtin. Give `{carrier_qn}` a member `{short}`, or call it \
+                     on a value of a sort that supplies one",
+                    kb.qualified_name_of(*spec),
                 )
             }
             TypeError::CallNamesNoInstance {
@@ -2024,10 +2085,17 @@ impl TypeError {
                 sort_param,
                 param,
                 nested,
+                defaulted,
                 ..
             } => {
-                let (expected, got) =
-                    sort_param_without_carrier_detail(kb, *sort, *sort_param, *param, *nested);
+                let (expected, got) = sort_param_without_carrier_detail(
+                    kb,
+                    *sort,
+                    *sort_param,
+                    *param,
+                    *nested,
+                    *defaulted,
+                );
                 format!(
                     "in `{}`: expected {expected}, got {got}",
                     kb.qualified_name_of(*op)
@@ -2248,6 +2316,7 @@ impl TypeError {
             | TypeError::TypeArgsOnNonOperation { span, .. }
             | TypeError::CallOfClauseDefinedOperation { span, .. }
             | TypeError::CallOfUnselectableSpecOperation { span, .. }
+            | TypeError::CarrierSuppliesNoMember { span, .. }
             | TypeError::CallNamesNoInstance { span, .. }
             | TypeError::AmbiguousRequirementKey { span, .. }
             | TypeError::SelectionValueNotASort { span, .. }
@@ -2550,6 +2619,7 @@ impl TypeError {
             // message carries the whole repair.
             TypeError::CallOfClauseDefinedOperation { op, .. }
             | TypeError::CallOfUnselectableSpecOperation { op, .. }
+            | TypeError::CarrierSuppliesNoMember { op, .. }
             | TypeError::CallNamesNoInstance { op, .. } => LoadError::TypeMismatch {
                 origin: None,
                 entity_name: kb.qualified_name_of(*op).to_string(),
@@ -2759,10 +2829,17 @@ impl TypeError {
                 sort_param,
                 param,
                 nested,
+                defaulted,
                 ..
             } => {
-                let (expected_type, actual_type) =
-                    sort_param_without_carrier_detail(kb, *sort, *sort_param, *param, *nested);
+                let (expected_type, actual_type) = sort_param_without_carrier_detail(
+                    kb,
+                    *sort,
+                    *sort_param,
+                    *param,
+                    *nested,
+                    *defaulted,
+                );
                 LoadError::TypeMismatch {
                     origin: None,
                     entity_name: kb.qualified_name_of(*op).to_string(),

@@ -282,17 +282,14 @@ pub enum BuiltinTag {
     Mul,
     /// `anthill.prelude.Int64.div(?a, ?b)` — truncated integer division (also the
     /// `divExact` alias); the `/` and `div` operators desugar here. PARTIAL: a
-    /// zero divisor yields no solution — the SLD reading of the declared
-    /// `Error[DivisionByZero] :- eq(b, 0)` (SLD has no effect machinery, so the
-    /// guard firing = the goal has no result; the eval interpreter raises the
-    /// catchable effect instead). WI-863; the guard is hard-coded here pending
-    /// WI-874's declaration-driven extraction.
+    /// zero divisor raises the declared `Error[DivisionByZero] :- eq(b, 0)`, which
+    /// the resolver reports as the fault a raise is (WI-20260827-NFXPZ). The guard is
+    /// hard-coded here pending WI-874's declaration-driven extraction.
     Div,
     /// `anthill.prelude.Int64.mod(?a, ?b)` — Euclidean remainder (always
-    /// non-negative), the `%` / `mod` operators. PARTIAL: a zero divisor yields no
-    /// solution (WI-863). Int + BigInt; the int slot is CHECKED, so it is safe on
-    /// the `i64::MIN mod -1` overflow that eval's unchecked `int_mod` panics on —
-    /// at the cost of dropping that one answer (0) as `no solution`.
+    /// non-negative), the `%` / `mod` operators. PARTIAL: a zero divisor raises, as
+    /// `div`'s does. Int + BigInt; the int slot is CHECKED, so it is safe on the
+    /// `i64::MIN mod -1` overflow that eval's unchecked `int_mod` panics on.
     Mod,
     // ── Conversion builtins ─────────────────────────────────
     /// `anthill.prelude.BigInt.to_bigint(?n, ?result)` — Int → BigInt.
@@ -1328,10 +1325,15 @@ enum Num {
 /// under which overflow would have become a third. The resolver must not treat them
 /// alike, because only one of them makes `no solution` a TRUE statement:
 ///
-/// - [`Self::Undefined`] — **no answer exists.** `div(1, 0, ?q)` is in the relation
-///   for no `?q`, and the resolver knows it, so `Failure` is an answer rather than an
-///   absence of one. Left exactly as WI-20260911-0V0F7 decided it; see
-///   [`KnowledgeBase::builtin_arith`]'s doc for that argument in full.
+/// - [`Self::Undefined`] — **no answer exists.** The operation has no slot for the
+///   carrier (`Float` has no `mod`), so `Failure` is an answer rather than an absence of
+///   one.
+/// - [`Self::DivisionByZero`] — **the call raises.** `div(1, 0, ?q)` has no value, and
+///   the operation declares that as an error, `Error[DivisionByZero] :- eq(b, 0)`, not
+///   as an empty relation. So it FAULTS ([`KnowledgeBase::arith_division_by_zero`]), as
+///   the same raise does through the eval bridge for a host function: `not(div(1, 0,
+///   5))` is undecided, not true (user, 2026-10-23; it was `Failure` until then, by
+///   WI-20260911-0V0F7's reading of the goal as a relation).
 /// - [`Self::Overflow`] — **an answer exists and this carrier cannot hold it.**
 ///   `add(i64::MAX, 1, ?r)` answering `no solutions` would assert that `i64::MAX` has
 ///   no successor, and `not(add(i64::MAX, 1, ?r))` would then SUCCEED. That is a
@@ -1339,12 +1341,13 @@ enum Num {
 ///   reports it and marks the answer set incomplete, which is precisely the channel
 ///   0V0F7 built and declined to use for the zero divisor.
 ///
-/// The rule the two arms encode, and the one to read a new carrier slot against: the
+/// The rule the arms encode, and the one to read a new carrier slot against: the
 /// resolver may answer `no solution` only where it knows no answer exists; where an
-/// answer exists that the carrier cannot hold, it must fault.
+/// answer exists that the carrier cannot hold, or the call raises, it must fault.
 enum ArithOutcome<T> {
     Value(T),
     Undefined,
+    DivisionByZero,
     Overflow,
 }
 
@@ -6233,7 +6236,7 @@ impl KnowledgeBase {
                 answer_subst,
                 "div",
                 |a, b| match b {
-                    0 => ArithOutcome::Undefined,
+                    0 => ArithOutcome::DivisionByZero,
                     _ => ArithOutcome::checked(a.checked_div(b)),
                 },
                 Self::bigint_checked_div,
@@ -6245,7 +6248,7 @@ impl KnowledgeBase {
                 answer_subst,
                 "mod",
                 |a, b| match b {
-                    0 => ArithOutcome::Undefined,
+                    0 => ArithOutcome::DivisionByZero,
                     -1 => ArithOutcome::Value(0),
                     _ => ArithOutcome::Value(a.rem_euclid(b)),
                 },
@@ -10277,56 +10280,23 @@ impl KnowledgeBase {
     /// If 2 positional args: used as an equation builtin (reduces term to result).
     /// If 3 positional args: binds the 3rd arg to the computed result.
     /// Operates on Int, BigInt, or Float constants. Each `*_op` returns an
-    /// [`ArithOutcome`]: `Undefined` marks an argument outside the operation's domain
-    /// (a zero divisor, or a carrier the op does not define) and yields `Failure` —
-    /// the SLD reading of a partial operation's guard firing (WI-863) — while
-    /// `Overflow` marks an answer this carrier cannot hold and FAULTS instead
-    /// ([`Self::arith_overflow`], WI-875). That type's doc carries the rule which
-    /// decides between them; the paragraph below is only about the `Undefined` half.
+    /// [`ArithOutcome`]: `Undefined` marks a carrier the operation does not define and
+    /// yields `Failure`; `DivisionByZero` marks the raise of a partial operation's
+    /// declared `Error[DivisionByZero] :- eq(b, 0)` and FAULTS
+    /// ([`Self::arith_division_by_zero`]); `Overflow` marks an answer this carrier cannot
+    /// hold and FAULTS too ([`Self::arith_overflow`], WI-875). That type's doc carries the
+    /// rule which decides between them.
     ///
-    /// **WI-20260911-0V0F7 CONSIDERED MAKING THAT `Undefined` A FAULT AND DID NOT.** That
-    /// ticket named an inconsistency — through the OTHER door the same division raises,
-    /// since `Int64.div` declares `Error[DivisionByZero] :- eq(b, 0)` and a raise
-    /// escaping [`Self::bridge_op_to_eval`] is now a loud fault — and the obvious repair
-    /// was to make this arm loud to match.
-    ///
-    /// **THE OTHER DOOR IS NOT REACHABLE FROM A RULE BODY, MEASURED, AND THAT IS WHY
-    /// THERE IS NOTHING TO MATCH.** An operation whose body can divide by zero MUST name
-    /// the effect — the typer refuses it otherwise ("expected declared: [], got
-    /// undeclared effect: Error[T = DivisionByZero]") — and a CONCRETE `Error` member in
-    /// the row makes `effect_row_admits_relational_view` refuse the WI-938 relational
-    /// view, so such a goal never reaches the bridge at all. Measured WITH ITS CONTROL:
-    /// `operation divByParam(a, b) -> Int64 effects {Error[T = DivisionByZero]} = a / b`
-    /// answers `no solutions` for `divByParam(1, 0, ?r)` AND for `divByParam(6, 2, ?r)`,
-    /// which would be 3 — the raise has nothing to do with it. So the divergence is real
-    /// in KIND and has no witness at division: what that ticket actually fixed is a raise
-    /// on a row the operation does not have to declare (the HOST channel's
-    /// `match_failed`).
-    ///
-    /// WHAT STANDS ON ITS OWN MERITS is that the two doors ask two different questions.
-    /// Eval asks what the VALUE is and there is none, so it must raise. A goal asks
-    /// whether a TUPLE IS IN A RELATION, and `div(1, 0, ?q)` is in it for no `?q` —
-    /// which the resolver KNOWS, unlike [`Self::builtin_cmp`]'s no-order arm, where it
-    /// genuinely has no order to answer with. `int64.anthill` says so in the language
-    /// itself: `div(a, b) -> Int64 effects { Error[DivisionByZero] :- eq(b, 0) }`.
-    /// (That citation used to be `constraint div_nonzero_primary: neq(?b, 0) :-
-    /// div(?_, ?b)`, which WI-882 deleted — it merely restated the effect row in the
-    /// inert denial channel, so the effect row was always the load-bearing half.)
-    ///
-    /// Making this a fault would trade a true answer for "undecided":
-    /// `not(div(1, 0, 5))` would stop succeeding, and the enclosing search would be
-    /// marked incomplete over a condition the resolver decided. Measured by building it: the zero-divisor pins go red, each
-    /// with `1 solution(s), 1 conditional` where the pin says `no solutions`. USER
-    /// DECISION, taken: leave it.
-    ///
-    /// Those pins are `wi863_operator_arithmetic_test`'s
-    /// `division_by_zero_is_no_solution_not_a_refusal` plus, since WI-875,
-    /// `wi875_arithmetic_overflow_test`'s `zero_divisor_is_still_a_silent_no_solution`
-    /// and `negation_over_a_zero_divisor_still_refutes` — which carry this argument now,
-    /// stated as the CONTROL against the overflow fault beside them. The second of the
-    /// original pair, `min_over_negative_one_yields_no_solution_not_a_crash`, is gone:
-    /// WI-875 split that input, so `mod` answers 0 and `div` faults, and neither half
-    /// measures this paragraph any more.
+    /// A ZERO DIVISOR PROPAGATES ITS ERROR (user, 2026-10-23, with WI-20260827-NFXPZ), at a
+    /// goal (`div(1, 0, ?q)`) as at a value (`?x <=> Int64.div(1, 0)`). Until then it was
+    /// `Failure`, by WI-20260911-0V0F7's reading — a goal asks whether `(1, 0, q)` is in
+    /// the relation, and it is for no `q` — so `not(div(1, 0, 5))` SUCCEEDED and a value
+    /// position answered `no solutions` beside an operation body that raised. That reading
+    /// left the operations with the same declared row answering two ways: `Int64.rem`,
+    /// which no builtin computes, runs its host function through the bridge and its
+    /// `division_by_zero` raise is a fault there. Pinned by
+    /// `wi863_operator_arithmetic_test` and `wi875_arithmetic_overflow_test`'s zero-divisor
+    /// rows, read beside the overflow fault they share a channel with.
     fn builtin_arith<V: TermView>(
         &mut self,
         goal: &V,
@@ -10365,18 +10335,24 @@ impl KnowledgeBase {
         // WI-685: `value_num` reads a numeric literal carrier-neutrally through
         // the view (Term or Node), so no collapse-to-Term step is needed.
         // `Undefined` → Failure, same as a cross-type pair: no answer exists and the
-        // resolver knows it. `Overflow` → a FAULT, because an answer does exist — see
-        // [`ArithOutcome`] for why the two must not share an arm, and this function's
-        // doc for why the `Undefined` half stays divergent from eval (WI-20260911-0V0F7).
+        // resolver knows it. `DivisionByZero` and `Overflow` → a FAULT, because the call
+        // raises or an answer does exist — see [`ArithOutcome`] for why they must not
+        // share an arm with `Undefined`.
         let result_term = match (self.value_num(&a), self.value_num(&b)) {
             (Some(Num::Int(x)), Some(Num::Int(y))) => match int_op(x, y) {
                 ArithOutcome::Value(r) => self.alloc(Term::Const(Literal::Int(r))),
                 ArithOutcome::Undefined => return BuiltinResult::Failure,
+                ArithOutcome::DivisionByZero => {
+                    return self.arith_division_by_zero(op, "Int64", faults)
+                }
                 ArithOutcome::Overflow => return self.arith_overflow(op, faults),
             },
             (Some(Num::Big(x)), Some(Num::Big(y))) => match bigint_op(&x, &y) {
                 ArithOutcome::Value(r) => self.alloc(Term::Const(Literal::BigInt(r))),
                 ArithOutcome::Undefined => return BuiltinResult::Failure,
+                ArithOutcome::DivisionByZero => {
+                    return self.arith_division_by_zero(op, "BigInt", faults)
+                }
                 ArithOutcome::Overflow => return self.arith_overflow(op, faults),
             },
             (Some(Num::Float(x)), Some(Num::Float(y))) => match float_op(x.0, y.0) {
@@ -10384,6 +10360,9 @@ impl KnowledgeBase {
                     self.alloc(Term::Const(Literal::Float(ordered_float::OrderedFloat(r))))
                 }
                 ArithOutcome::Undefined => return BuiltinResult::Failure,
+                ArithOutcome::DivisionByZero => {
+                    unreachable!("no Float slot raises: IEEE division is total")
+                }
                 ArithOutcome::Overflow => return self.arith_overflow(op, faults),
             },
             // TWO NUMBERS OF DIFFERENT CARRIERS reach no slot above, and answering
@@ -10410,6 +10389,28 @@ impl KnowledgeBase {
             // 2-arg form: succeeds as a ground test (both args are concrete constants)
             None => BuiltinResult::Success,
         }
+    }
+
+    /// Report an [`ArithOutcome::DivisionByZero`] and answer nothing: the call raised the
+    /// `Error[DivisionByZero]` its operation declares. The text is the one the eval
+    /// bridge reports for the same raise from a host function (`Int64.rem(7, 0)`), the
+    /// payload rendered as eval builds it, so the builtin and the bridge read alike.
+    ///
+    /// `Failure` with `truncated` set, as [`Self::arith_overflow`]: the answer set is
+    /// INCOMPLETE and a `not(…)` above it cannot read the emptiness as a refutation.
+    fn arith_division_by_zero(
+        &self,
+        op: &'static str,
+        carrier: &'static str,
+        faults: &mut ReduceFaults,
+    ) -> BuiltinResult {
+        faults.fault(format!(
+            "`anthill.prelude.{carrier}.{op}` could not be evaluated by the resolver: raised \
+             division_by_zero(op: \"{carrier}.{op}\"). An empty answer set here is NOT a \
+             refutation — the call produced no value. A rule that means to skip a zero \
+             divisor tests it first: `?b != 0`.",
+        ));
+        BuiltinResult::Failure
     }
 
     /// Report an [`ArithOutcome::Overflow`] and answer nothing (WI-875).
@@ -10468,21 +10469,21 @@ impl KnowledgeBase {
         b: &num_bigint::BigInt,
     ) -> ArithOutcome<num_bigint::BigInt> {
         match b.sign() {
-            num_bigint::Sign::NoSign => ArithOutcome::Undefined,
+            num_bigint::Sign::NoSign => ArithOutcome::DivisionByZero,
             _ => ArithOutcome::Value(a / b),
         }
     }
 
     /// The BigInt slot of `BuiltinTag::Mod`: Euclidean (always non-negative)
-    /// remainder, matching i64 `rem_euclid` and the eval `Int64.mod`. `Undefined` on
-    /// a zero divisor. `%` follows the dividend's sign, so a negative remainder is
+    /// remainder, matching i64 `rem_euclid` and the eval `Int64.mod`. `DivisionByZero`
+    /// on a zero divisor. `%` follows the dividend's sign, so a negative remainder is
     /// lifted by `|b|` (WI-863).
     fn bigint_rem_euclid(
         a: &num_bigint::BigInt,
         b: &num_bigint::BigInt,
     ) -> ArithOutcome<num_bigint::BigInt> {
         if b.sign() == num_bigint::Sign::NoSign {
-            return ArithOutcome::Undefined;
+            return ArithOutcome::DivisionByZero;
         }
         let r = a % b;
         ArithOutcome::Value(if r.sign() == num_bigint::Sign::Minus {
@@ -11673,7 +11674,15 @@ impl KnowledgeBase {
             // resolver builtin or a cpp `operation_map` entry is not something THIS
             // runtime can call), which is exactly the question "will the bridge be able
             // to run this".
-            None if needs_dict && super::typing::op_is_interpretable(self, op) => None,
+            //
+            // A HOST function reached here is held to the same row as at a value position;
+            // a callee the bridge runs as anthill code keeps the arm as before.
+            None if needs_dict
+                && super::typing::op_is_interpretable(self, op)
+                && (!self.is_interpreter_mapped_op(op) || self.host_op_runs_in_rule_body(op)) =>
+            {
+                None
+            }
             None => return v, // abstract op, nothing to fold and nothing to dispatch
         };
         // Recursion guard: a self-recursive op never folds to a value — treat it
@@ -12757,50 +12766,45 @@ impl KnowledgeBase {
     /// WI-20260826-VPEWK — may a VALUE position run `f`'s host implementation?
     ///
     /// [`KnowledgeBase::is_interpreter_mapped_op`] (this runtime has a function for it)
-    /// AND EFFECT-FREE, and the second clause is not symmetry for its own sake. The
-    /// GOAL side states it at [`Self::bare_bodied_bool_relation`] — "an effectful body
-    /// is not a logical relation, and the eval bridge's empty effect registry would
-    /// suspend on one anyway" — and the second half of that sentence is the part that
-    /// does NOT carry over to a host function. A bodied op RAISES its effect while the
-    /// bridge evaluates the body, so the bridge's `Err(_) => None` arm catches it
-    /// ("an unhandled effect (resolution must not perform effects)") and the call
-    /// residualizes. A HOST function raises nothing: it is opaque Rust that simply
-    /// runs, so its declared `effects` row is the only thing standing between a rule
-    /// body and a real side effect, and nothing downstream reads it.
+    /// AND a declared row a rule body may run ([`Self::host_op_runs_in_rule_body`]).
     ///
-    /// NOT A TOTAL GUARD, and saying so here rather than letting a reader assume it.
-    /// This predicate gates ONE arm of `reduce_op_value`'s body `match`; the
-    /// `needs_dict` arm beside it (`None if needs_dict && op_is_interpretable(..)`,
-    /// WI-1037) admits a host-mapped callee with NO effect test and reaches the same
-    /// `bridge_op_to_eval`. So a `requires`-carrying spec op whose dictionary selects
-    /// a host-mapped, effect-declaring member would still run its Rust here. Raised by
-    /// /code-review and NOT DRIVEN — assembling that fixture needs a provider whose
-    /// impl member is host-mapped — so it is recorded as a code-path reading, not a
-    /// measurement, and left to WI-20260827-NFXPZ, which has to settle the effect
-    /// policy for both arms at once rather than leave two gates disagreeing.
-    ///
-    /// MEASURED, which is why this is a clause and not a comment. A fixture sort
-    /// mapping two operations to the SAME host function, one declared pure and one
-    /// with `effects {Error}`, answered 1 for BOTH at a rule-body operand while this
-    /// gate read `is_interpreter_mapped_op` alone. The effect row was inert. With the
-    /// clause the pure one answers 1 and the effectful one residualizes.
-    ///
-    /// A missing signature is a DECLINE, as at the Bool gate: "no declaration" is not
-    /// "no effects", and an op the loader never scanned is not one to run.
-    ///
-    /// EMPTY, not "empty except `Error`", and that is the conservative half. USER
-    /// DIRECTION 2026-08-27: `Error` is a FAILURE CHANNEL rather than a state effect and
-    /// should probably be admitted ("handle error by erroring rule"). Left refused here
-    /// because what an erroring operand MEANS for SLD is undecided — fail the clause,
-    /// propagate a diagnostic, or residualize — and under a fail reading such an operand
-    /// inside `not(...)` SUCCEEDS, turning a host error into a positive answer.
-    /// WI-20260827-NFXPZ owns that decision; a `Modify[…]` row stays refused either way.
+    /// MEASURED, which is why the second clause is a clause and not a comment. A fixture
+    /// sort mapping two operations to the SAME host function, one declared pure and one
+    /// with `effects {Clock}`, answers 1 for the pure one at a rule-body operand and
+    /// leaves the other unreduced; read by `is_interpreter_mapped_op` alone, both
+    /// answered 1 and the effect row was inert.
     fn host_op_reducible_at_a_value(&self, f: Symbol) -> bool {
-        self.is_interpreter_mapped_op(f)
-            && self
-                .op_record(f)
-                .and_then(|r| r.signature.as_ref())
-                .is_some_and(|sig| sig.effects.is_empty())
+        self.is_interpreter_mapped_op(f) && self.host_op_runs_in_rule_body(f)
+    }
+
+    /// WI-20260827-NFXPZ — may a rule body run `f` as a HOST function, as far as its
+    /// declared effect row says? Each member of the row is `Error` — bare, applied or
+    /// guarded ([`Self::effect_member_is_error`]) — and a row with none qualifies.
+    ///
+    /// A host function is opaque Rust that simply runs. A state effect it declares
+    /// (`Modify[…]`, `Clock`, `External`) it performs, and nothing downstream reads the
+    /// row, so any such member refuses it; so does a row PARAMETER, which a carrier may
+    /// instantiate to one. `Error` is the one it cannot perform behind the bridge's
+    /// back: the function RETURNS it, and the bridge reports what it returns as it
+    /// reports a raise in a body — the call has no value, the answer set is marked
+    /// incomplete, and `not(…)` above it is undecided. So the error propagates, and a
+    /// host error is never read as a refutation (user, 2026-10-23).
+    ///
+    /// Asked by every route a rule body takes to a host function: a value position
+    /// ([`Self::host_op_reducible_at_a_value`]), a dictionary-selected member
+    /// (`reduce_op_value`'s `needs_dict` arm), and the goal views
+    /// ([`Self::effect_row_admits_relational_view`]). A missing signature is a DECLINE:
+    /// "no declaration" is not "no effects", and an op the loader never scanned is not
+    /// one to run.
+    fn host_op_runs_in_rule_body(&self, f: Symbol) -> bool {
+        self.op_record(f)
+            .and_then(|r| r.signature.as_ref())
+            .is_some_and(|sig| self.host_row_runs_in_rule_body(sig))
+    }
+
+    /// [`Self::host_op_runs_in_rule_body`]'s row test, for a caller holding the signature.
+    fn host_row_runs_in_rule_body(&self, sig: &super::op_info::OpSignature) -> bool {
+        sig.effects.iter().all(|e| self.effect_member_is_error(e))
     }
 
     /// Does `f`'s declared effect row leave it a LOGICAL RELATION — i.e. may a
@@ -12865,24 +12869,27 @@ impl KnowledgeBase {
     /// "Bodied" is [`Self::bridge_runs_anthill_code`]: `Error.reify`'s row `{Rho}` is its
     /// thunk's effects past the discharged `Error[T1]`, and the thunk is what the bridge runs.
     ///
-    /// AN `Error` MEMBER IS ADMITTED FOR A BODIED OPERATION TOO, on the same argument: the
-    /// bridge runs the body, a raise inside it is caught and the call does not reduce, and
-    /// that is what the call answers in a value slot. Refused here, the goal had no reading,
-    /// so it had no clauses and FAILED: over `three() -> Int64 effects {Error} = 3`,
-    /// `three(?r)` answered nothing where `?r <=> three()` answers 3, and `not(three(3))`
-    /// held. A host function keeps the strict reading ([`Self::host_op_reducible_at_a_value`]),
-    /// and an effect other than `Error` stays refused: a body that performs one is declined
-    /// at the boundary by its typed row (WI-20260926-7D48J's row).
+    /// AN `Error` MEMBER IS ADMITTED, on the same argument: the bridge runs the body, a
+    /// raise inside it is caught and the call does not reduce, and that is what the call
+    /// answers in a value slot. Refused here, the goal had no reading, so it had no clauses
+    /// and FAILED: over `three() -> Int64 effects {Error} = 3`, `three(?r)` answered nothing
+    /// where `?r <=> three()` answers 3, and `not(three(3))` held. A HOST function is
+    /// admitted for an `Error` member too, since what it returns the bridge reports as it
+    /// does a raise, but for no parametric one ([`Self::host_op_runs_in_rule_body`]). An
+    /// effect other than `Error` stays refused: a body that performs one is declined at the
+    /// boundary by its typed row (WI-20260926-7D48J's row).
     pub(crate) fn effect_row_admits_relational_view(
         &self,
         f: Symbol,
         sig: &super::op_info::OpSignature,
     ) -> bool {
-        sig.effects.is_empty()
-            || (self.bridge_runs_anthill_code(f)
-                && sig.effects.iter().all(|e| {
-                    self.effect_member_is_parametric(e) || self.effect_member_is_error(e)
-                }))
+        if self.bridge_runs_anthill_code(f) {
+            sig.effects.iter().all(|e| {
+                self.effect_member_is_parametric(e) || self.effect_member_is_error(e)
+            })
+        } else {
+            self.host_row_runs_in_rule_body(sig)
+        }
     }
 
     /// WI-580 (design §3.3/§5): is `f` a functor whose *bare* goal is the
@@ -14597,7 +14604,7 @@ impl KnowledgeBase {
                 }
             }
             TypeNode::Var(_) => {}
-            TypeNode::Aliased { stands_for, .. } => {
+            TypeNode::Aliased { stands_for, .. } | TypeNode::Defaulted { stands_for, .. } => {
                 self.collect_type_child_unbound_vars(stands_for, subst, out)
             }
             TypeNode::Denoted { value } => self.collect_unbound_vars_node(value, subst, out),

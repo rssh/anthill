@@ -205,6 +205,8 @@ fn collect_trait_sorts_from_items(
 
 struct SortInfo<'a> {
     type_params: Vec<String>,
+    /// Each of `type_params`' declared default (proposal 069 §1.4), in the same order.
+    type_param_defaults: Vec<Option<&'a TypeExpr>>,
     supertraits: Vec<String>,
     entities: Vec<&'a Entity>,
     operations: Vec<&'a Operation>,
@@ -218,6 +220,7 @@ impl<'a> SortInfo<'a> {
     fn from_items(items: &'a [Item], symbols: &SymbolTable) -> Self {
         let mut info = SortInfo {
             type_params: Vec::new(),
+            type_param_defaults: Vec::new(),
             supertraits: Vec::new(),
             entities: Vec::new(),
             operations: Vec::new(),
@@ -232,6 +235,7 @@ impl<'a> SortInfo<'a> {
                 Item::AbstractSort(s) => {
                     info.type_params
                         .push(symbols.local_name(s.name.last()).to_owned());
+                    info.type_param_defaults.push(s.default.as_ref());
                 }
                 Item::RequiresDecl(r) => {
                     // `effects E = ?` desugars to `requires
@@ -757,6 +761,34 @@ impl<'a> RustCodegen<'a> {
             && tys
                 .into_iter()
                 .any(|ty| self.is_trait_type(&self.type_expr_short_name(ty)))
+    }
+
+    /// A sort's generic parameter list as its DECLARATION writes it (`enum Box<T = i64>`):
+    /// each parameter with its declared default (proposal 069 §1.4), so a written `Box` that
+    /// leaves `T` out is `Box<i64>` to Rust as to anthill. Rust takes a default only on a
+    /// trailing run of parameters, so the defaults are emitted from the last parameter that
+    /// declares none onward; an `impl` header takes none at all, and is written without.
+    fn declared_generics(&self, info: &SortInfo) -> String {
+        if info.type_params.is_empty() {
+            return String::new();
+        }
+        let trailing_from = info
+            .type_param_defaults
+            .iter()
+            .rposition(|d| d.is_none())
+            .map_or(0, |i| i + 1);
+        let params: Vec<String> = info
+            .type_params
+            .iter()
+            .enumerate()
+            .map(|(i, name)| match info.type_param_defaults.get(i).copied().flatten() {
+                Some(default) if i >= trailing_from => {
+                    format!("{name} = {}", self.type_to_rust(default))
+                }
+                _ => name.clone(),
+            })
+            .collect();
+        format!("<{}>", params.join(", "))
     }
 
     // ── Type expression mapping ──────────────────────────────────
@@ -1542,12 +1574,13 @@ impl<'a> RustCodegen<'a> {
     fn emit_sort_as_enum(&mut self, sort: &SortWithBody, sort_name: &str, info: &SortInfo) {
         let vis = self.visibility_prefix(sort.visibility);
 
-        // Generic parameters
+        // Generic parameters: the declaration's carry their defaults, the `impl`s' cannot.
         let generics = if info.type_params.is_empty() {
             String::new()
         } else {
             format!("<{}>", info.type_params.join(", "))
         };
+        let declared_generics = self.declared_generics(info);
 
         if !self.has_trait_object_field(
             info.entities
@@ -1556,7 +1589,7 @@ impl<'a> RustCodegen<'a> {
         ) {
             self.emit_derive_attr();
         }
-        self.line(&format!("{vis}enum {sort_name}{generics} {{"));
+        self.line(&format!("{vis}enum {sort_name}{declared_generics} {{"));
         self.indent();
 
         for entity in &info.entities {
@@ -1641,10 +1674,8 @@ impl<'a> RustCodegen<'a> {
         // Determine trait generics (non-collapsed type params)
         let trait_generics = if collapse_self {
             String::new()
-        } else if info.type_params.is_empty() {
-            String::new()
         } else {
-            format!("<{}>", info.type_params.join(", "))
+            self.declared_generics(info)
         };
 
         // Supertraits

@@ -335,12 +335,20 @@ fn the_producer_argument_case_is_closed_by_its_own_type_parameter() {
 /// Fails when the signature is reverted — which is what makes it the control for the
 /// declaration half of this change, the carrier rows being the control for the code
 /// half.
+///
+/// The `requires` licenses the call. Without one, `pure(1)` is refused before its result
+/// is typed: `pure` names `LogicalStream` in its result alone, and nothing provides
+/// `LogicalStream` with a `pure` (kernel-language.md §5.4; WI-20261017-CK7PP). MEASURED
+/// again with it (2026-10-23): `pure` reverted to `pure(x: T) -> LogicalStream` in the
+/// stdlib, this row fails.
 #[test]
 fn pures_own_type_parameter_threads_its_argument_type() {
     let src = r#"namespace test.wi1076.purethreads
   import anthill.prelude.{LogicalStream, Int64, String}
   import anthill.prelude.LogicalStream.{pure}
-  operation lift() -> LogicalStream[T = String, E = {}] = pure(1)
+  operation lift() -> LogicalStream[T = String, E = {}]
+    requires LogicalStream[T = String, E = {}]
+  = pure(1)
 end
 "#;
     let errs = crate::common::try_load_kb_with(src)

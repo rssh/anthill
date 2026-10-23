@@ -128,7 +128,9 @@ fn node_contains_callable(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> bool 
             // one, the check runs again on the substituted type.
             TypeNode::Var(_) => false,
             // A denoted carries a VALUE, not a type spine — no callable type inside it.
-            TypeNode::Aliased { stands_for, .. } => child(stands_for),
+            TypeNode::Aliased { stands_for, .. } | TypeNode::Defaulted { stands_for, .. } => {
+                child(stands_for)
+            }
             TypeNode::Denoted { .. } => false,
             TypeNode::Parameterized { base, bindings } => {
                 child(base) || bindings.iter().any(|(_, c)| child(c))

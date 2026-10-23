@@ -3,9 +3,9 @@
 - id: WI-20260827-NFXPZ-an-error-effect-should-not
 - created: 2026-08-27T05:19:03Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-08-27T05:19:03Z
+- status_at: 2026-10-23T05:24:21Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -39,4 +39,8 @@ ACCEPTANCE: the `err` row above answers per the decision in item 1, in BOTH pola
 ### 2026-10-21T19:50:15Z — feedback — user
 
 THE BODIED HALF IS DONE (2026-10-21, decided with the user: keep it, and kernel-language §5.3 amended): a BODIED operation whose row's concrete members are all `Error` has its goal views (`effect_row_admits_relational_view`, through `effect_member_is_error`), since the bridge runs the body and a raise leaves the call unreduced, as in a value slot. Before, over `three() -> Int64 effects {Error} = 3`, `three(?r)` answered nothing where `?r <=> three()` answers 3, and `not(three(3))` held; a raising body's goal failed and `not(…)` over it proved a falsehood. Rows: error_row_relational_view_test; wi939 / wi_dqd5w / wi_nx4fd's 'concrete effect still refused' rows now use `Clock`. WHAT IS LEFT HERE is this ticket's own subject: a HOST-mapped operation with an `Error` row (`host_op_reducible_at_a_value` still demands an empty row), whose goal still has no reading.
+
+### 2026-10-23T05:24:19Z — feedback — claude
+
+DELIVERED (d0a3d6b1). DECIDED (user, 2026-10-23): an error propagates — 'div should propagate error … if it is not propagates error effect - it should be fixed'. ITEM 1: an erroring operand leaves the call without a value and the error is REPORTED (the bridge's fault: 'could not be evaluated by the resolver: raised …. An empty answer set here is NOT a refutation'), the answer set marked incomplete — the bodied half's reading (2026-10-21). ITEM 2: not(…) over it is undecided, never true. ITEM 3: both gates move — the value position and the goal views — and so does the dictionary-selected host member (reduce_op_value's needs_dict arm, which VPEWK recorded as running any host member with no effect test): one predicate, host_op_runs_in_rule_body. ITEM 4: each member of the row is Error (bare, applied, guarded — effect_member_is_error now reads past a guard); a state effect or a row parameter still refuses. WIDENED WITH THE USER: the arithmetic builtins' zero divisor (div, mod; Int64, BigInt) was a silent 'no solution' (WI-20260911-0V0F7's decision) beside Int64.rem, which no builtin computes and which now raises through the bridge — the same declared row answering two ways; it now faults with eval's wording (ArithOutcome::DivisionByZero). The 068 design used div(1, 0) as its ABSENT example; ABSENT keeps its missing-provider case. MEASURED, rule body, before → after: Int64.rem(7, 2) conditional → 1, rem(7, 2, ?r) nothing → 1; Int64.rem(7, 0) / Int64.div(7, 0) / 7 / 0 / mod / BigInt.div(…, 0) → fault, incomplete; not(Int64.div(7, 0) = 3) 1 definite → 1 conditional; ?b != 0 guard → no solutions, no warning; trimFx {Error} "  a  "/"  b  "/not → 1 / none / 1; Error.raise → fault; {Clock} and {Clock, Error} → not run. KB.loaded from a rule body now runs and the bridge refuses its scoped-KB result loudly. ROWS: wi_nfxpz_error_row_host_op_test (8); restated wi863 division_by_zero_raises_and_is_no_refutation, wi875 zero_divisor_raises_a_fault_that_is_not_an_overflow + negation_over_a_zero_divisor_is_undecided, K4JGC a_raising_call_propagates_where_it_is_read, CYNPE a_call_waiting_beside_an_unreduced_one_is_asked_again, VPEWK's operand and arity+1 rows; wi863/wi875's old rows had passed vacuously. Each part backed out alone fails exactly its rows (test header). NOT DRIVEN: the needs_dict arm's row check (no fixture weaves a call onto a host member). Spec: kernel-language §5.3, §5.4. Full workspace 10463 passed, 0 failed; families unchanged; scaland testFull 762 passed.
 

@@ -315,3 +315,7 @@ no `q`. The stdlib already says so in the language itself, at the declaration:
 the resolver has no order to answer with at all, which is why that one had to become a
 fault. The argument is recorded at `builtin_arith`'s doc, corrected to match this.
 
+### 2026-10-23T05:24:20Z — feedback — claude
+
+REVERSED (user, 2026-10-23, with WI-20260827-NFXPZ, d0a3d6b1): a zero divisor of the arithmetic builtins propagates its declared Error[DivisionByZero] — it faults as a raise does, the answer set incomplete — instead of answering 'no solution'. So not(div(1, 0, 5)) is undecided now, and the pins this ticket's decision named are restated (wi863 division_by_zero_raises_and_is_no_refutation, wi875 zero_divisor_raises_a_fault_that_is_not_an_overflow and negation_over_a_zero_divisor_is_undecided). What moved it: Int64.rem, which shares the guarded row and no builtin computes, runs its host function through the bridge once NFXPZ admits an Error row, and its raise is a fault there — the same row would have answered two ways.
+

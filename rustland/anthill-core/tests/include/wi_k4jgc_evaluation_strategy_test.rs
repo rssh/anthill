@@ -31,7 +31,7 @@
 //!   * the fold cap counted per DATA level (`evaluate_child` passing `depth + 1`) —
 //!     `a_deep_value_is_walked_to_its_end` (a panic);
 //!   * a builtin's failure over numbers read as "not run" —
-//!     `a_call_with_no_value_fails_where_it_is_read`;
+//!     `a_raising_call_propagates_where_it_is_read`;
 //!   * a goal-only builtin classified like any call — `a_goal_passed_as_data_stays_the_term`.
 //!
 //! The CONTROL rows pass either way, by design, and each says why at its site.
@@ -350,18 +350,22 @@ fn a_deep_value_is_walked_to_its_end() {
     assert!(holds(&mut kb, "longUnify"), "{:?}", rows(&mut kb, "longUnify"));
 }
 
-/// A call that RAN and has NO value — `div(1, 0)` — fails whatever reads it, exactly as its
-/// relation `div(1, 0, ?r)` fails (the CONTROL here, answering nothing either way): `<=>`,
-/// `=` and a goal argument all answer nothing, and `not(... = 3)` holds. FAILS with the
-/// builtin's failure read as "not run": each of the three is a conditional residual and
-/// `divNot` is undecided.
+/// A call that RAISES — `div(1, 0)` — has no value wherever it is read, and its error
+/// propagates: `<=>`, `=`, a goal argument and the relation `div(1, 0, ?r)` each answer
+/// nothing with the answer set marked incomplete, and `not(... = 3)` is one undecided row,
+/// no refutation. Until the error was made to propagate (WI-20260827-NFXPZ) the zero divisor
+/// was a call with no value that FAILS whatever reads it, and `divNot` held; FAILS with that
+/// reading back, the four complete and `divNot` definite.
 #[test]
-fn a_call_with_no_value_fails_where_it_is_read() {
+fn a_raising_call_propagates_where_it_is_read() {
     let mut kb = kb();
     for rel in ["divBound", "divTested", "divArgument", "divRelation"] {
-        assert_eq!(rows(&mut kb, rel), Vec::<(String, bool)>::new(), "{rel}");
+        let goal = crate::common::query_pattern_term(&mut kb, &format!("k4jgc.{rel}(?r)"));
+        let (sols, stats) = kb.resolve_with_stats(&[goal], &ResolveConfig::default());
+        assert!(sols.is_empty(), "{rel}: no value, so no answer; got {}", sols.len());
+        assert!(stats.truncated, "{rel}: the raise marks the answer set incomplete");
     }
-    assert!(holds(&mut kb, "divNot"), "{:?}", rows(&mut kb, "divNot"));
+    assert_eq!(rows(&mut kb, "divNot"), vec![("1".to_string(), false)]);
 }
 
 /// A GOAL-ONLY builtin (`eq`) passed as DATA to a relation is not a value computation: it

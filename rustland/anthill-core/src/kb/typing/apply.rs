@@ -503,11 +503,13 @@ pub(super) fn check_apply_iter(
                 spec,
                 reached,
                 clauses,
+                result_only,
             }) = unselectable_spec_operation_call(
                 kb,
                 env,
                 fn_sym,
                 call_type_args_of(occ).is_some() || call_recv_type_of(occ).is_some(),
+                true,
             ) {
                 return Err(TypeError::CallOfUnselectableSpecOperation {
                     span,
@@ -515,6 +517,7 @@ pub(super) fn check_apply_iter(
                     spec,
                     reached,
                     clauses,
+                    result_only,
                 });
             }
         }
@@ -3637,6 +3640,77 @@ pub(super) fn check_apply_iter(
             } else {
                 outcome
             };
+            // A MEMBER THAT NAMES ITS SORT IN ITS RESULT ALONE, at a sort with parameters,
+            // where the dispatch found nothing or landed on the member itself — the call's
+            // carrier is the sort (kernel-language.md §5.4), whose own member runs nothing.
+            // The ground case is asked above as well, before the dispatch
+            // ([`unselectable_spec_operation_call`]), which is what reaches a result-only
+            // member WITH a default body — that call never comes here; this one waits for the
+            // dispatch because the type
+            // expected of the result binds the sort's parameters, and a provision at that
+            // binding answers (`IntBag provides Bag[T = Int64]` answers `Bag.empty()` at
+            // `Bag[T = Int64]` — MEASURED, refused when this was asked before the dispatch).
+            // MEASURED on the tree before (WI-20261017-CK7PP): `Set.insert(Set.empty(), 1)`
+            // and `LogicalStream.guard(true)` loaded and died `OperationBodyMissing`.
+            let reached_the_sort_itself = match &outcome {
+                DispatchOutcome::NoCandidates => pinned_carrier.is_none(),
+                DispatchOutcome::Unique(target) => {
+                    kb.canonical_sym(*target) == kb.canonical_sym(fn_sym)
+                        && pinned_carrier.is_none_or(|c| same_sort_canonical(kb, c, spec_sort))
+                }
+                DispatchOutcome::Deferred
+                | DispatchOutcome::Ambiguous(_)
+                | DispatchOutcome::NoMatch { .. } => false,
+            };
+            if env.in_evaluated_body()
+                && reached_the_sort_itself
+                && runs_nothing_of_its_own(kb, fn_sym)
+                && signature_carrier(kb, fn_sym, spec_sort) == Some(SignatureCarrier::ResultOnly)
+                && nothing_in_scope_selects(kb, env, spec_sort)
+            {
+                let canon = kb.canonical_sym(fn_sym);
+                return Err(TypeError::CallOfUnselectableSpecOperation {
+                    span,
+                    op: fn_sym,
+                    spec: spec_sort,
+                    reached: fn_sym,
+                    clauses: kb.has_clauses_under(canon) || kb.has_clauses_under(fn_sym),
+                    result_only: true,
+                });
+            }
+            // A CARRIER THAT SUPPLIES NO MEMBER, where the member called runs nothing
+            // (kernel-language.md §5.4): the dispatch resolves the carrier's provision and
+            // lands on `fn_sym` itself, which has no body, host mapping or builtin. MEASURED
+            // on the tree before (WI-20261017-CK7PP): `LogicalStream.mplus(r, r)` and
+            // `r.mplus(r)` over `r: Relation[T = Int64, E = {}]` loaded clean — `Relation`
+            // provides `LogicalStream` by a forwarding row the provision check reads as a
+            // sub-interface (`provider_owes_operations`) and supplies none of its
+            // construction members — and died `OperationBodyMissing`. Asked of the carrier
+            // the call names at load only; a value's carrier is the run's to find.
+            //
+            // THE DISPATCH LANDS ON `fn_sym` FOR A SUPPLIER IT DOES NOT READ, so the
+            // carrier's suppliers are asked by every route ([`spec_op_suppliers_for_carrier`]):
+            // an instance fact's operation binding (WI-431), a witness's member, a later
+            // load's fill. MEASURED: asked of the dispatch alone, eleven rows over those
+            // routes were refused, `wi431_instance_fact_coverage_test` among them.
+            if env.in_evaluated_body() {
+                if let (DispatchOutcome::Unique(target), Some(carrier)) = (&outcome, pinned_carrier) {
+                    if kb.canonical_sym(*target) == kb.canonical_sym(fn_sym)
+                        && !same_sort_canonical(kb, carrier, spec_sort)
+                        && runs_nothing_of_its_own(kb, fn_sym)
+                        && !spec_op_suppliers_for_carrier(kb, spec_sort, carrier, fn_sym, op_short_sym)
+                            .iter()
+                            .any(|supplier| op_is_executable(kb, supplier.target))
+                    {
+                        return Err(TypeError::CarrierSuppliesNoMember {
+                            span,
+                            op: fn_sym,
+                            spec: spec_sort,
+                            carrier,
+                        });
+                    }
+                }
+            }
             // WI-1027 — the BODY-LESS half of WI-1012's load refusal, raised ONCE above
             // the outcome arms rather than at each of them (the "refuse above the returns,
             // do not enumerate them" discipline WI-839's review adopted and WI-841's

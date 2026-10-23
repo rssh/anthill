@@ -366,7 +366,7 @@ fn an_entity_field_lambda_is_refused_in_both_bodies_once_its_body_pins_the_binde
             });
         assert!(
             errs.iter()
-                .any(|e| e.contains("expected Function[A = Int64, B = Int64], got String -> Int64")),
+                .any(|e| e.contains("expected Function[A = Int64, B = Int64, E = {}], got String -> Int64")),
             "{ns}: expected the solved-arrow mismatch, got: {errs:?}",
         );
     }
@@ -476,7 +476,7 @@ fn load2(ns: &str, body: &str) -> KnowledgeBase {
 ///
 /// ```text
 ///   type mismatch in outer.return (op-return):
-///     expected Function[A = String, B = Int64], got Int64 -> Int64
+///     expected Function[A = String, B = Int64, E = {}], got Int64 -> Int64
 /// ```
 ///
 /// BACK-OUT: drop the `resolve_type_deep_value` through `body_solutions` at the
@@ -503,7 +503,7 @@ end
         .expect("the body pins `?v` to Int64; a String declaration must be refused");
     assert!(
         errs.iter()
-            .any(|e| e.contains("expected Function[A = String, B = Int64], got Int64 -> Int64")),
+            .any(|e| e.contains("expected Function[A = String, B = Int64, E = {}], got Int64 -> Int64")),
         "expected the solved-arrow mismatch at the op-return, got: {errs:?}",
     );
 
@@ -1068,7 +1068,7 @@ fn a_direct_application_of_a_multi_binder_lambda_no_longer_aborts_the_typer() {
 /// ```text
 ///   BEFORE  rule apply1(lambda x -> "no", 2)   loads, answers "no"
 ///   AFTER   type mismatch in value.body (rule):
-///           expected Function[A = Int64, B = Int64], got Int64 -> String
+///           expected Function[A = Int64, B = Int64, E = {}], got Int64 -> String
 ///   TWIN    operation … = apply1(lambda x -> "no", 2)
 ///           type mismatch in apply1.f (op-arg): expected …, got Int64 -> String
 /// ```
@@ -1100,7 +1100,7 @@ fn part_b_a_rule_body_data_slot_checks_its_children_against_the_declaration() {
              {body}end\n"
         )
     };
-    const WHOLE_ARROW: &str = "expected Function[A = Int64, B = Int64], got Int64 -> String";
+    const WHOLE_ARROW: &str = "expected Function[A = Int64, B = Int64, E = {}], got Int64 -> String";
 
     // 1. THE GAP, CLOSED — the rule-body spelling is refused.
     let errs = crate::common::try_load_kb_with(&src_of(
@@ -1496,7 +1496,7 @@ fn a_lambda_in_an_argument_slot_is_not_generalized() {
 ///
 ///     let g = lambda x -> x   let h: Function[A = Int64, B = Int64] = g   h(2)
 ///       -> type mismatch in h.annotation (let-binding):
-///          expected Function[A = Int64, B = Int64], got ??param -> ??param
+///          expected Function[A = Int64, B = Int64, E = {}], got ??param -> ??param
 ///
 /// The lambda mints NO requirement, so nothing here is generalized — which is what places the
 /// gap. Rung 3 now gives an un-annotated binder a real FLEXIBLE variable where it used to

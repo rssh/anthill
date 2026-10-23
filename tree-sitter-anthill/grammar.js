@@ -37,6 +37,12 @@ module.exports = grammar({
     // (removed: abstract_sort vs sort_with_body conflict — `= ?` disambiguates)
     // After operation clauses, `requires` could be another clause or a standalone declaration
     [$.operation_declaration],
+    // Proposal 069 §1.4: a `default` after a parameter declaration (`sort T = ?`,
+    // `effects E = ?`) is either that parameter's default tail or the leading
+    // modifier of the next item's `default provides X` (WI-862). The token after
+    // `default` decides — `provides` is no type — so GLR explores both.
+    [$.abstract_sort],
+    [$.effects_sort_item],
     [$.variable_term],
     [$.variable_term, $.fn_term],
     // `?x.m` is field_access; `?x.m(...)` extends it into a fn_term. Explore
@@ -274,6 +280,10 @@ module.exports = grammar({
     // Sort (abstract and defined)
     // =========================================================
 
+    // Proposal 069 §1.4: `sort T = ? default Int64` declares a parameter with a
+    // default. The tail is parsed after any definition; the converter admits it only
+    // where the definition declares a parameter (`?` or a named variable), so `sort T
+    // = Int64 default X` is refused at the default rather than read as an alias.
     abstract_sort: $ => seq(
       repeat(field('description', $.description_block)),
       optional($.visibility),
@@ -281,8 +291,14 @@ module.exports = grammar({
       field('name', $.name),
       '=',
       field('definition', $._type),
+      optional($._parameter_default),
       optional($.meta_block),
     ),
+
+    // The `default` tail of a parameter declaration (proposal 069 §1.4). Its value is a
+    // type argument's (`_common_type_expr`), so an effect row (`effects E = ? default
+    // {}`) and a value in a type are written as they are in a binding.
+    _parameter_default: $ => seq('default', field('default', $._common_type_expr)),
 
     sort_with_body: $ => seq(
       repeat(field('description', $.description_block)),
@@ -305,9 +321,9 @@ module.exports = grammar({
     // (`A`, desugars to `sort A = ?`) or HIGHER-KINDED (`F[T]`, a binder that
     // itself carries a bracketed member — the one shape the flat
     // `operation_type_param_list` lacks). Recursive: the member list reuses this
-    // rule. No `= default` form — sort-param defaults are undefined by §5.4 (the
-    // examples are bare `[F[T]]` / `[A, B]`); a defaulted sort is the `sort X = T`
-    // body form.
+    // rule. A param may declare a default after `=` (proposal 069 §1.4: `sort
+    // Box[T = Int64]`, `sort AsymmetricPair[T1, T2 = T1]`), which desugars to the
+    // statement form's `default` tail.
     sort_type_param_list: $ => seq(
       '[',
       commaSep1($.sort_type_param),
@@ -317,6 +333,7 @@ module.exports = grammar({
     sort_type_param: $ => seq(
       field('name', $.identifier),
       optional($.sort_type_param_list),
+      optional(seq('=', field('default', $._common_type_expr))),
     ),
 
     // WI-454 (§5.4 surface sugar): PER-STATEMENT non-rigid type-variable binder
@@ -387,6 +404,7 @@ module.exports = grammar({
       field('name', $.name),
       '=',
       field('definition', $._type),
+      optional($._parameter_default),
       optional($.meta_block),
     ),
 

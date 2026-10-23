@@ -680,8 +680,10 @@ fn check_operation_signatures(kb: &KnowledgeBase) -> Vec<TypeError> {
 ///
 /// * the signature USES `V` — in a parameter, the return or an effect;
 /// * some PARAMETER is, or holds, the sort at an OPEN `V`: the slot left out, or written
-///   `?`. A slot written with a NAME of its own (`[X](c: Cell[V = X])`) is another instance
-///   said aloud, and is not this;
+///   `?`. A slot left out is left out whether or not its parameter's default then fills it
+///   (proposal 069 §2: `c: Cell` under `sort Cell[V = Int64]` is not this cell). A slot
+///   written with a NAME of its own (`[X](c: Cell[V = X])`) is another instance said aloud,
+///   and is not this;
 /// * no parameter is, or holds, the sort at `V` itself — which is what `Self` is.
 ///
 /// WHAT IT LEAVES ALONE, each by a condition failing rather than by a list: an operation
@@ -840,11 +842,18 @@ fn check_sort_parameter_carriers(kb: &KnowledgeBase) -> Vec<TypeError> {
             if carried {
                 continue;
             }
+            // A slot holding its parameter's default was LEFT OUT, and is read as such
+            // (proposal 069 §2): `p: Box` under `sort Box[T = Int64]` is not this box.
             let open = refs.iter().find(|(_, _, bindings)| match slot(bindings) {
                 None => true,
-                Some(v) => value_is_anonymous_wildcard(kb, &v),
+                Some(v) => {
+                    crate::kb::node_occurrence::is_default_fill(&v)
+                        || value_is_anonymous_wildcard(kb, &v)
+                }
             });
-            if let Some((param, nested, _)) = open {
+            if let Some((param, nested, bindings)) = open {
+                let defaulted = slot(bindings)
+                    .is_some_and(|v| crate::kb::node_occurrence::is_default_fill(&v));
                 errors.push(TypeError::SortParamWithoutCarrier {
                     span: kb.functor_span(op_sym).map(|s| s.span),
                     op: op_sym,
@@ -852,6 +861,7 @@ fn check_sort_parameter_carriers(kb: &KnowledgeBase) -> Vec<TypeError> {
                     sort_param: *sort_param,
                     param: *param,
                     nested: *nested,
+                    defaulted,
                 });
                 break;
             }
@@ -1127,7 +1137,18 @@ fn check_branch_external_exclusion(kb: &mut KnowledgeBase) -> Vec<TypeError> {
 /// term `id` — the operation symbols an equational `@[simp]`/`@[unfold]` head
 /// (`eq(lhs, rhs)`) mentions, so the formation gate can test each for an effect
 /// row. Iterative to survive a deep head.
+///
+/// A dot in the head (`?e.m(?x)`, stored as the `dot_apply` entity) names no operation:
+/// its member is the name it resolves to where the rule is written, and the operation
+/// the dot reaches is the receiver's, decided at each call the rule fires on. So its
+/// `name` slot is not collected — read here it refused `Holder.risky` for a dot that
+/// reaches a pure `Other.risky` and missed an effectful one outside the rule's scope.
+/// The dot is judged at the redex instead ([`effectful_rewrite_call`], and
+/// `typing::build`'s dot arm for the call a dot rule replaces). Its receiver and
+/// arguments are collected like any other term.
 fn collect_op_functors_in_term(kb: &KnowledgeBase, id: TermId, out: &mut Vec<Symbol>) {
+    let dot_apply = crate::kb::simp_rewrite::dot_apply_head_sym(kb);
+    let member_label = kb.lookup_symbol("name");
     let mut stack = vec![id];
     while let Some(t) = stack.pop() {
         match kb.get_term(t) {
@@ -1136,12 +1157,17 @@ fn collect_op_functors_in_term(kb: &KnowledgeBase, id: TermId, out: &mut Vec<Sym
                 pos_args,
                 named_args,
             } => {
-                out.push(*functor);
+                let dot = Some(*functor) == dot_apply;
+                if !dot {
+                    out.push(*functor);
+                }
                 for a in pos_args.iter() {
                     stack.push(*a);
                 }
-                for (_, a) in named_args.iter() {
-                    stack.push(*a);
+                for (label, a) in named_args.iter() {
+                    if !(dot && Some(*label) == member_label) {
+                        stack.push(*a);
+                    }
                 }
             }
             // WI-20260902-CZJ2N — A NULLARY CALL IS STORED BARE, so `rule tau() <=> 7
@@ -1181,7 +1207,11 @@ fn collect_op_functors_in_value(kb: &KnowledgeBase, v: &Value, out: &mut Vec<Sym
 /// rewriting its call is unsound for the same reason equations of it are refused (an
 /// `External` `create_issue` rewritten twice mints two issues; a `Modify`/`Error` op
 /// is not equational either — the FUNCTION-HOOD predicate, matching the part-1 gate).
-/// The firing sites stay effect-blind; this LOAD-TIME gate rejects the rule instead.
+/// This LOAD-TIME gate rejects the rule for each operation it NAMES. An operation the
+/// rule reaches only at a call it fires on is judged there, by the same predicate and
+/// the same refusal ([`effectful_rewrite_error`]): a dot in its text
+/// ([`effectful_rewrite_call`]), the call a dot rule replaces, and a call its macro
+/// builds. A rule no call fires on is then refused for none of those.
 ///
 /// Keyed on the effect ROW only, NOT `requires`: `Set`/`Map` carry a sort-level
 /// `requires Eq[T]` that rides into their ops (`member`/`insert`/`get`), and the
@@ -1212,9 +1242,9 @@ fn check_simp_effectful_ops(kb: &mut KnowledgeBase) -> Vec<TypeError> {
         // (`eq(lhs, rhs)`) plus any body goals/guards (a guarded `@[simp]` rule fires
         // with its guard). The body is already dot-dispatched (this pass runs after
         // `type_rule_bodies`), so a `?x.effectful_op()` guard is an `Apply` here. A
-        // head written in method syntax stays a `dot_apply` TERM — but a `DotApply`
-        // redex never fires under simp (WI-279 `try_fire` returns None), so leaving
-        // its method functor uncollected declines nothing that could rewrite.
+        // dot in the head is not: it stays a `dot_apply` term, whose operation is known
+        // only at a call the rule fires on, and is judged there
+        // ([`collect_op_functors_in_term`] says where).
         let mut functors: Vec<Symbol> = Vec::new();
         collect_op_functors_in_value(kb, kb.rule_head_value(rid), &mut functors);
         for node in kb.rule_body_nodes(rid) {
@@ -1228,6 +1258,8 @@ fn check_simp_effectful_ops(kb: &mut KnowledgeBase) -> Vec<TypeError> {
         // (proposal 043.1 §3.6: a macro rejects by raising), not a runtime effect, and
         // without this exemption `check_macro_purity`'s "at most `Error`" allowance
         // would be dead — every macro declaring it refused at the rule that names it.
+        // What the macro splices IS a call this rewrite emits, and is judged where it is
+        // built (`simp_rewrite::instantiate_rhs`, `RewriteCall::MacroBuilt`).
         //
         // `macro_expanded_rhs_head` — NOT a local `is_macro` test — is what keeps the
         // exemption tied to the expansion that justifies it: it re-applies `try_fire`'s
@@ -1253,63 +1285,157 @@ fn check_simp_effectful_ops(kb: &mut KnowledgeBase) -> Vec<TypeError> {
             let Some(block) = kb.effect_row_blocking_equations(f) else {
                 continue;
             };
-            // Name the rule (label if any) — built here, only on an actual violation.
-            let label = kb
-                .rule_label(rid)
-                .map(|l| format!("`{}`", kb.qualified_name_of(l)))
-                .unwrap_or_else(|| "an unlabeled".to_string());
-            errors.push(TypeError::Other {
-                site: TypeError::here(),
-                span: kb.functor_span(f).map(|s| s.span),
-                context: TypeErrorContext::OperationEffects { op_name: f },
-                // ONE predicate, named once: POTENTIALLY EFFECTFUL. The two arms
-                // are the reason, not two verdicts — a row that is already an
-                // effect and a row that may become one are refused alike, because
-                // nothing here can tell which instantiation will be written
-                // (WI-1049 decision). The `actual` clause below says which, since
-                // that is what tells the author what to do.
-                expected: format!(
-                    "{label} `@[simp]`/`@[unfold]` rewrite not to mention potentially \
-                     effectful operation `{}`",
-                    kb.qualified_name_of(f),
-                ),
-                // WI-1049 — one arm per case, NOT a shared prefix plus a suffix.
-                // Composing them doubled the claim ("… is not a function — … an
-                // effectful operation is not equational") and moved the sentence
-                // boundary, which broke `wi757`'s `EFFECTFUL_REWRITE_MARKER` on
-                // capitalization alone. The Effectful text is therefore byte-identical
-                // to the pre-WI-1049 wording: that arm was never the defect.
-                //
-                // The polymorphic repair is measured, not guessed: a law over a
-                // carrier's OWN pure `insert`/`isEmpty` loads clean under `@[simp]`,
-                // while the same law on the effect-polymorphic spec is refused.
-                actual: match block {
-                    crate::kb::body_specialize::EquationBlock::Effectful(ref row) => format!(
-                        "operation `{}` carries effect row {row} — a directional rewrite \
-                         DUPLICATES, REORDERS, or DROPS the matched call, which no effect \
-                         tolerates (an External call rewritten twice runs twice); an \
-                         effectful operation is not equational. Proposal 054 §\"Consumers \
-                         that must decline it\".",
-                        kb.qualified_name_of(f),
-                    ),
-                    crate::kb::body_specialize::EquationBlock::Polymorphic(ref row) => format!(
-                        "operation `{}` is effect-POLYMORPHIC — its row {row} is a row \
-                         VARIABLE, so the operation is pure at a pure carrier and effectful \
-                         at an effectful one, and a declaration here binds EVERY carrier. It \
-                         is therefore POTENTIALLY EFFECTFUL and refused alike: a directional \
-                         rewrite DUPLICATES, REORDERS, or DROPS the matched call, which no \
-                         effect tolerates. Declare the equation where the row is already \
-                         concrete (on a carrier whose own operations are pure) rather than on \
-                         the sort that leaves `{}` open. Proposal 054 §\"Consumers that must \
-                         decline it\".",
-                        kb.qualified_name_of(f),
-                        row.trim_matches(['{', '}']),
-                    ),
-                },
-            });
+            errors.push(effectful_rewrite_error(
+                kb,
+                rid,
+                f,
+                &block,
+                RewriteCall::Named,
+                kb.functor_span(f).map(|s| s.span),
+            ));
         }
     }
     errors
+}
+
+/// How a `@[simp]`/`@[unfold]` rule puts a call of an operation where it fires — the
+/// first clause of its refusal ([`effectful_rewrite_error`]).
+#[derive(Clone, Copy, Debug)]
+pub(super) enum RewriteCall {
+    /// The rule names the operation, and is refused where it loads.
+    Named,
+    /// A dot in the rule's text reaches it, at a call the rule fires on.
+    Dot,
+    /// A dot rule fires on a dot that reaches it, and so replaces that call.
+    Replaced,
+    /// The macro at the rule's right-hand side builds a call of it.
+    MacroBuilt,
+}
+
+/// The refusal of `rule` for putting a call of `op` where it fires, `block` being why
+/// `op` is potentially effectful. One text for the four ways of [`RewriteCall`], so a
+/// dot and the operation's written name are refused alike.
+pub(super) fn effectful_rewrite_error(
+    kb: &KnowledgeBase,
+    rule: RuleId,
+    op: Symbol,
+    block: &crate::kb::body_specialize::EquationBlock,
+    how: RewriteCall,
+    span: Option<Span>,
+) -> TypeError {
+    let label = kb
+        .rule_label(rule)
+        .map(|l| format!("`{}`", kb.qualified_name_of(l)))
+        .unwrap_or_else(|| "an unlabeled".to_string());
+    let op_name = kb.qualified_name_of(op);
+    TypeError::Other {
+        site: TypeError::here(),
+        span,
+        context: TypeErrorContext::OperationEffects { op_name: op },
+        // ONE predicate, named once: POTENTIALLY EFFECTFUL. The two arms
+        // are the reason, not two verdicts — a row that is already an
+        // effect and a row that may become one are refused alike, because
+        // nothing here can tell which instantiation will be written
+        // (WI-1049 decision). The `actual` clause below says which, since
+        // that is what tells the author what to do. A dot at a redex is held to the
+        // same predicate, the declared row, rather than to its call's instance: the
+        // dot and the written name of the operation it reaches are one call.
+        expected: match how {
+            RewriteCall::Named => format!(
+                "{label} `@[simp]`/`@[unfold]` rewrite not to mention potentially \
+                 effectful operation `{op_name}`"
+            ),
+            RewriteCall::Dot => format!(
+                "{label} `@[simp]` rewrite not to reach potentially effectful operation \
+                 `{op_name}` by a dot in its text"
+            ),
+            RewriteCall::Replaced => format!(
+                "{label} `@[simp]` dot rule not to replace a call of potentially effectful \
+                 operation `{op_name}`"
+            ),
+            RewriteCall::MacroBuilt => format!(
+                "{label} `@[simp]` rewrite not to build, by its macro, a call of potentially \
+                 effectful operation `{op_name}`"
+            ),
+        },
+        // WI-1049 — one arm per case, NOT a shared prefix plus a suffix.
+        // Composing them doubled the claim ("… is not a function — … an
+        // effectful operation is not equational") and moved the sentence
+        // boundary, which broke `wi757`'s `EFFECTFUL_REWRITE_MARKER` on
+        // capitalization alone. The Effectful text is therefore byte-identical
+        // to the pre-WI-1049 wording: that arm was never the defect.
+        //
+        // The polymorphic repair is measured, not guessed: a law over a
+        // carrier's OWN pure `insert`/`isEmpty` loads clean under `@[simp]`,
+        // while the same law on the effect-polymorphic spec is refused.
+        actual: match block {
+            crate::kb::body_specialize::EquationBlock::Effectful(row) => format!(
+                "operation `{op_name}` carries effect row {row} — a directional rewrite \
+                 DUPLICATES, REORDERS, or DROPS the matched call, which no effect \
+                 tolerates (an External call rewritten twice runs twice); an \
+                 effectful operation is not equational. Proposal 054 §\"Consumers \
+                 that must decline it\".",
+            ),
+            crate::kb::body_specialize::EquationBlock::Polymorphic(row) => format!(
+                "operation `{op_name}` is effect-POLYMORPHIC — its row {row} is a row \
+                 VARIABLE, so the operation is pure at a pure carrier and effectful \
+                 at an effectful one, and a declaration here binds EVERY carrier. It \
+                 is therefore POTENTIALLY EFFECTFUL and refused alike: a directional \
+                 rewrite DUPLICATES, REORDERS, or DROPS the matched call, which no \
+                 effect tolerates. Declare the equation where the row is already \
+                 concrete (on a carrier whose own operations are pure) rather than on \
+                 the sort that leaves `{}` open. Proposal 054 §\"Consumers that must \
+                 decline it\".",
+                row.trim_matches(['{', '}']),
+            ),
+        },
+    }
+}
+
+/// The refusal of `dot`, a dot in a rewrite's text that reached `op`, when `op` is
+/// potentially effectful — asked where the dot is dispatched, the redex, because only
+/// there does its receiver have a type. `None` for a dot written where it stands, and
+/// for one that reaches an operation with no effect.
+///
+/// Located at the call the rule fired on ([`NodeOccurrence::written_site`]), in the
+/// body being typed: the dot's own span is in the rule's text, which may be another
+/// file than the one the error is reported against.
+pub(super) fn effectful_rewrite_call(
+    kb: &KnowledgeBase,
+    dot: &NodeOccurrence,
+    op: Symbol,
+) -> Option<TypeError> {
+    let rule = dot.rewritten_by()?;
+    let block = kb.effect_row_blocking_equations(op)?;
+    Some(effectful_rewrite_error(
+        kb,
+        rule,
+        op,
+        &block,
+        RewriteCall::Dot,
+        Some(dot.written_site().span),
+    ))
+}
+
+/// The refusal of `rule`, a dot rule that fired on `dot`, for the call it replaces —
+/// `replaced`, what the dot reaches without the rule (`dot_method_operation`) — when
+/// that operation is potentially effectful: the rewrite drops the call. Located as
+/// [`effectful_rewrite_call`] is.
+pub(super) fn replaced_call_refusal(
+    kb: &KnowledgeBase,
+    rule: RuleId,
+    dot: &NodeOccurrence,
+    replaced: Symbol,
+) -> Option<TypeError> {
+    let block = kb.effect_row_blocking_equations(replaced)?;
+    Some(effectful_rewrite_error(
+        kb,
+        rule,
+        replaced,
+        &block,
+        RewriteCall::Replaced,
+        Some(dot.written_site().span),
+    ))
 }
 
 /// Extract constructor and operation symbol lists from a SortInfo fact.

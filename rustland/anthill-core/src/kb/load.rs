@@ -15115,6 +15115,14 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
         kb.intern("index"),
     ];
     kb.register_entity_fields(description_info, description_info_fields);
+    let sort_param_default = kb.symbols.define(
+        "SortParamDefault",
+        "anthill.reflect.SortParamDefault",
+        SymbolKind::Entity,
+        reflect_scope,
+    );
+    let sort_param_default_fields = vec![kb.intern("param"), kb.intern("default")];
+    kb.register_entity_fields(sort_param_default, sort_param_default_fields);
 
     // MemberInfo is emitted while loading arbitrary source, including the small
     // bootstrap/test KBs that do not load reflect.anthill. Pre-register its enum
@@ -17486,6 +17494,7 @@ fn declare_type_aliases(
     let mut errors = Vec::new();
     let mut pending: HashSet<Symbol> = HashSet::new();
     let mut names: HashMap<Symbol, Vec<Symbol>> = HashMap::new();
+    let mut effect_params: HashSet<Symbol> = HashSet::new();
     let mut round = AliasRound::Collect;
     loop {
         let mut progress = false;
@@ -17497,6 +17506,7 @@ fn declare_type_aliases(
                 loader: &mut loader,
                 pending: &mut pending,
                 names: &mut names,
+                effect_params: &mut effect_params,
                 round,
                 progress: &mut progress,
             };
@@ -17541,6 +17551,10 @@ struct AliasDeclarePass<'l, 'a> {
     /// The pending aliases each still-pending alias's definition names
     /// ([`AliasRound::Names`]).
     names: &'l mut HashMap<Symbol, Vec<Symbol>>,
+    /// Every effect-row parameter of every level of the files (`effects E = ?`), collected
+    /// on the first round: a default is of its parameter's kind, and may name a row
+    /// parameter of an enclosing sort as well as its own.
+    effect_params: &'l mut HashSet<Symbol>,
     round: AliasRound,
     progress: &'l mut bool,
 }
@@ -17548,6 +17562,17 @@ struct AliasDeclarePass<'l, 'a> {
 impl AliasDeclarePass<'_, '_> {
     fn level(&mut self, items: &[Item]) {
         let domain = self.loader.current_domain();
+        if self.round == AliasRound::Collect {
+            for row in effect_row_params_at(&self.loader.parsed.symbols, items) {
+                let written = self.loader.parsed.symbols.local_name(row).to_owned();
+                if let ResolveResult::Found(s) =
+                    resolve_name_in_kb(self.loader.kb, &written, self.loader.current_scope)
+                {
+                    self.effect_params.insert(s);
+                }
+            }
+        }
+        self.level_defaults(items);
         for item in items {
             let Item::AbstractSort(abs) = item else {
                 if let Item::SortWithBody(inner) = item {
@@ -17589,6 +17614,141 @@ impl AliasDeclarePass<'_, '_> {
                     self.pending.remove(&sym);
                     *self.progress = true;
                 }
+            }
+        }
+    }
+
+    /// Proposal 069 §1.4 — this level's parameter DEFAULTS, read in the rounds as an alias
+    /// is. A sort whose parameters declare defaults is PENDING until they are recorded, so
+    /// an alias or another sort's default that names it reads them (`sort F =
+    /// Function[A, B]` is the pure function type whichever file declares `Function`); and
+    /// they are recorded, in declaration order, once every alias and defaulted sort they
+    /// name is. A default whose sort it reaches again (`sort Tree[T = Tree]`) never becomes
+    /// ready, and is refused on the last round.
+    fn level_defaults(&mut self, items: &[Item]) {
+        let defaults: Vec<ParameterDefault<'_>> = items
+            .iter()
+            .filter_map(|item| match item {
+                Item::AbstractSort(a) if matches!(a.definition, TypeExpr::Variable { .. }) => {
+                    Some(ParameterDefault {
+                        name: &a.name,
+                        default: a.default.as_ref()?,
+                        span: a.span,
+                        members: None,
+                    })
+                }
+                Item::SortWithBody(s) if s.is_type_param => Some(ParameterDefault {
+                    name: &s.name,
+                    default: s.default.as_ref()?,
+                    span: s.span,
+                    members: Some(
+                        s.items
+                            .iter()
+                            .filter(|i| {
+                                matches!(i, Item::AbstractSort(_))
+                                    || matches!(i, Item::SortWithBody(m) if m.is_type_param)
+                            })
+                            .count(),
+                    ),
+                }),
+                _ => None,
+            })
+            .collect();
+        if defaults.is_empty() {
+            return;
+        }
+        let owner = self.loader.current_scope.owner();
+        match self.round {
+            // A member of a HIGHER-KINDED parameter (`T` of `sort S[F[T = Int64]]`) is the
+            // parameter of a type constructor, given where `F` is applied (`F[T = A]`); it is
+            // no parameter of a sort, and a default on it would turn every bare `F` into `F`
+            // applied.
+            AliasRound::Collect if super::typing::is_sort_param_symbol(self.loader.kb, owner) => {
+                for decl in &defaults {
+                    let name = join_segments(&self.loader.parsed.symbols, &decl.name.segments);
+                    let site = SourceSpan::from_span(self.loader.source_id, decl.span);
+                    self.loader.errors.push(LoadError::Other {
+                        message: format!(
+                            "{}: `{name}` is a parameter of the higher-kinded parameter `{}`, \
+                             which takes its arguments where it is applied (`{}[{name} = …]`), \
+                             so it declares no default; a default is declared on a sort's own \
+                             parameter (`sort S[F[T] = List]`)",
+                            render_decl_site(self.loader.kb, site),
+                            self.loader.kb.local_name_of(owner),
+                            self.loader.kb.local_name_of(owner),
+                        ),
+                    });
+                }
+            }
+            AliasRound::Collect => {
+                if self.loader.kb.has_kind(owner, SymbolKind::Sort) {
+                    self.pending.insert(owner);
+                } else {
+                    for decl in &defaults {
+                        let name = join_segments(&self.loader.parsed.symbols, &decl.name.segments);
+                        let site = SourceSpan::from_span(self.loader.source_id, decl.span);
+                        self.loader.errors.push(LoadError::Other {
+                            message: format!(
+                                "{}: `{name}` declares a default, but it is not a parameter of \
+                                 a sort: a default is declared on a sort's type parameter \
+                                 (`sort Box[T = Int64]`, `sort T = ? default Int64` inside \
+                                 `sort Box … end`)",
+                                render_decl_site(self.loader.kb, site),
+                            ),
+                        });
+                    }
+                }
+            }
+            _ if !self.pending.contains(&owner) => {}
+            AliasRound::Ready => {
+                let waiting = defaults
+                    .iter()
+                    .any(|d| !self.pending_aliases_named(d.default).is_empty());
+                if waiting {
+                    return;
+                }
+                for decl in &defaults {
+                    self.loader.record_parameter_default(owner, decl, self.effect_params);
+                }
+                self.pending.remove(&owner);
+                *self.progress = true;
+            }
+            AliasRound::Names => {
+                let mut named: Vec<Symbol> = Vec::new();
+                for decl in &defaults {
+                    for s in self.pending_aliases_named(decl.default) {
+                        if !named.contains(&s) {
+                            named.push(s);
+                        }
+                    }
+                }
+                self.names.insert(owner, named);
+            }
+            AliasRound::Rest => {
+                self.pending.remove(&owner);
+                let Some(chain) = chain_back_to(owner, self.names) else {
+                    // It names a sort or alias that reaches itself, and is not on the
+                    // chain: that one is refused at its own declaration. Its defaults are
+                    // recorded, as an alias is in the same place.
+                    for decl in &defaults {
+                        self.loader.record_parameter_default(owner, decl, self.effect_params);
+                    }
+                    return;
+                };
+                let kb = &*self.loader.kb;
+                let chain: Vec<&str> = chain.iter().map(|s| kb.local_name_of(*s)).collect();
+                let site = SourceSpan::from_span(self.loader.source_id, defaults[0].span);
+                self.loader.errors.push(LoadError::Other {
+                    message: format!(
+                        "{}: a parameter default of `{}` reaches the sort again through what \
+                         it names ({}), so it stands for no type. A default is a type the \
+                         omitted parameter takes; it may name the sort's earlier \
+                         parameters, not the sort",
+                        render_decl_site(kb, site),
+                        kb.qualified_name_of(owner),
+                        chain.join(" -> "),
+                    ),
+                });
             }
         }
     }
@@ -17641,6 +17801,43 @@ impl AliasDeclarePass<'_, '_> {
             ),
         });
     }
+}
+
+/// One parameter's declared default, as [`AliasDeclarePass::level_defaults`] reads it off a
+/// level: a simple parameter's (`sort T = ? default X`, `[T = X]`), or a HIGHER-KINDED one's
+/// (`[F[T] = List]`), whose `members` is how many parameters it declares.
+struct ParameterDefault<'a> {
+    name: &'a Name,
+    default: &'a TypeExpr,
+    span: Span,
+    members: Option<usize>,
+}
+
+/// The effect-row parameters declared at one level — `effects E = ?`, which the converter
+/// desugars to `sort E = ?` beside `requires anthill.prelude.EffectsRuntime[Effects = E]` —
+/// by their written (parse-table) names.
+fn effect_row_params_at(symbols: &crate::intern::SymbolTable, items: &[Item]) -> Vec<Symbol> {
+    items
+        .iter()
+        .filter_map(|item| {
+            let Item::RequiresDecl(r) = item else {
+                return None;
+            };
+            let TypeExpr::Parameterized { name, bindings } = &r.type_expr else {
+                return None;
+            };
+            if join_segments(symbols, &name.segments) != "anthill.prelude.EffectsRuntime" {
+                return None;
+            }
+            match bindings.as_slice() {
+                [SortBinding {
+                    bound: TypeExpr::Simple(row),
+                    ..
+                }] if row.segments.len() == 1 => Some(row.segments[0]),
+                _ => None,
+            }
+        })
+        .collect()
 }
 
 /// The chain from `alias` back to itself through the aliases each definition names —
@@ -23466,15 +23663,167 @@ fn positional_type_keys(
         .collect()
 }
 
+/// Does the sort an application of `head` binds declare a default for any of its parameters?
+/// Asked before a caller reads the application's arguments, which costs a conversion of each.
+fn declares_parameter_defaults(kb: &KnowledgeBase, head: Symbol) -> bool {
+    !kb.sort_param_defaults.is_empty()
+        && kb.type_arg_owner(head).is_some_and(|sort| {
+            kb.type_param_syms_of(sort)
+                .iter()
+                .any(|p| kb.sort_param_defaults.contains_key(p))
+        })
+}
+
+/// One slot proposal 069 fills in a written application ([`parameter_default_fills`]).
+pub(crate) struct DefaultFill {
+    /// The slot's key: the parameter's short name, as a written binding is keyed.
+    pub(crate) key: Symbol,
+    /// What the slot holds.
+    pub(crate) value: Value,
+    /// `Some(param)` where the slot holds `param`'s declared default; `None` where it is
+    /// a slot left out with no default that a later default names, and holds the one
+    /// fresh variable both stand for.
+    pub(crate) default_of: Option<Symbol>,
+}
+
+/// Proposal 069 §2 — the slots a written application of `head` (its arguments `written`,
+/// keyed by short name) takes from its sort's declared defaults
+/// ([`KnowledgeBase::sort_param_defaults`]), in declaration order. A default naming an
+/// earlier parameter (`T2 = T1`) is instantiated at what the application has there: what
+/// it writes, the default filled before it, or — for a slot left out that declares no
+/// default — one fresh variable, filled into that slot too, so `AsymmetricPair` is
+/// `AsymmetricPair[T1 = ?, T2 = ?]` with the two one variable, whose quantifier the
+/// position decides as it decides that of any `?`. A slot with no default that no default
+/// names is left out, as before. Empty for a sort that declares no default.
+///
+/// THE ONE READING of a default at a use, for every lowering of a written type: a type
+/// position (`Loader::fill_parameter_defaults`), a type application written in a clause's or
+/// a query's term ([`normalize_type_args`]), and one an operation body writes as a value
+/// (`Loader::push_type_value_defaults`) — so `idt(Box[V = F])` holds the type `x: Box[V =
+/// F]` declares.
+pub(crate) fn parameter_default_fills(
+    kb: &mut KnowledgeBase,
+    head: Symbol,
+    written: &[(Symbol, Value)],
+) -> Vec<DefaultFill> {
+    if !declares_parameter_defaults(kb, head) {
+        return Vec::new();
+    }
+    let Some(sort) = kb.type_arg_owner(head) else {
+        return Vec::new();
+    };
+    let params: SmallVec<[Symbol; 4]> = kb.type_param_syms_of(sort).iter().copied().collect();
+    let canonical = |kb: &KnowledgeBase, p: Symbol| {
+        kb.canonical_type_param_var(p).and_then(|t| match kb.get_term(t) {
+            Term::Var(Var::Global(vid)) => Some(*vid),
+            _ => None,
+        })
+    };
+    let mut fills: Vec<DefaultFill> = Vec::new();
+    // What each parameter's canonical variable stands for at this application.
+    let mut at_site: Vec<(VarId, Value)> = Vec::new();
+    for (i, &param) in params.iter().enumerate() {
+        let short = kb.local_name_of(param).to_owned();
+        let own = canonical(kb, param);
+        if let Some((_, v)) = written.iter().find(|(k, _)| kb.local_name_of(*k) == short) {
+            if let Some(vid) = own {
+                at_site.push((vid, v.clone()));
+            }
+            continue;
+        }
+        let Some(default) = kb.sort_param_defaults.get(&param).copied() else {
+            continue;
+        };
+        let mut subst = crate::kb::subst::Substitution::new();
+        for vid in kb.collect_vars(&default) {
+            let Some(earlier) = params[..i]
+                .iter()
+                .copied()
+                .find(|&p| canonical(kb, p).is_some_and(|v| v.raw() == vid.raw()))
+            else {
+                continue;
+            };
+            let value = match at_site.iter().find(|(v, _)| v.raw() == vid.raw()) {
+                Some((_, value)) => value.clone(),
+                None => {
+                    let anon = kb.intern("_");
+                    let fresh = kb.fresh_var(anon);
+                    let var_t = Value::term(kb.alloc(Term::Var(Var::Global(fresh))));
+                    let earlier_short = kb.local_name_of(earlier).to_owned();
+                    fills.push(DefaultFill {
+                        key: kb.intern(&earlier_short),
+                        value: var_t.clone(),
+                        default_of: None,
+                    });
+                    at_site.push((vid, var_t.clone()));
+                    var_t
+                }
+            };
+            subst.bind_value(kb, vid, value);
+        }
+        let value = if subst.is_empty() {
+            Value::term(default)
+        } else {
+            kb.reify_value(&Value::term(default), &subst)
+        };
+        if let Some(vid) = own {
+            at_site.push((vid, value.clone()));
+        }
+        fills.push(DefaultFill {
+            key: kb.intern(&short),
+            value,
+            default_of: Some(param),
+        });
+    }
+    fills
+}
+
+/// A child of a type application written in a term, as [`normalize_type_args`] reads and
+/// builds one: a clause's term, or the occurrence a query and an operation body hold.
+trait TypeArgChild: Sized {
+    /// The type this child writes, or `None` where it writes none a default could name.
+    fn type_of(kb: &mut KnowledgeBase, child: &Self) -> Option<Value>;
+    /// The child holding the type `value`.
+    fn holding(kb: &mut KnowledgeBase, value: &Value) -> Self;
+}
+
+impl TypeArgChild for TermId {
+    fn type_of(_kb: &mut KnowledgeBase, child: &Self) -> Option<Value> {
+        Some(Value::term(*child))
+    }
+    fn holding(kb: &mut KnowledgeBase, value: &Value) -> Self {
+        match value {
+            Value::Term { id, .. } => *id,
+            other => node_occurrence::value_to_term(kb, other)
+                .expect("a default instantiated over terms is a term"),
+        }
+    }
+}
+
+impl TypeArgChild for Rc<NodeOccurrence> {
+    fn type_of(kb: &mut KnowledgeBase, child: &Self) -> Option<Value> {
+        node_occurrence::try_occurrence_to_term(kb, child).map(Value::term)
+    }
+    fn holding(kb: &mut KnowledgeBase, value: &Value) -> Self {
+        let term = match value {
+            Value::Term { id, .. } => *id,
+            other => node_occurrence::value_to_term(kb, other)
+                .expect("a default instantiated over terms is a term"),
+        };
+        type_value_occurrence(kb, term, node_occurrence::empty_span(), None)
+    }
+}
+
 /// The arguments of a type application in a term — a clause's, a query's, an operation's
 /// `requires` and `ensures` — as the one term its type is: a positional bound to the
 /// parameter it takes, and the arguments in the order an operation body's value of the type
 /// has them (`KnowledgeBase::make_parameterized_type`). The inputs `Pair[Int64, String]`,
 /// `Pair[A = Int64, B = String]` and `Pair[B = String, A = Int64]` are normalized to one
 /// term, so a fact holding one is found by a goal or a query writing another, and a
-/// requirement written with one is the requirement written with another. Called once the
-/// arguments are known to fit the sort.
-fn normalize_type_args<C>(
+/// requirement written with one is the requirement written with another. A parameter the
+/// application leaves out takes its declared default ([`parameter_default_fills`]), as in a
+/// type position. Called once the arguments are known to fit the sort.
+fn normalize_type_args<C: TypeArgChild>(
     kb: &mut KnowledgeBase,
     sort: Symbol,
     pos: &mut Vec<C>,
@@ -23484,6 +23833,21 @@ fn normalize_type_args<C>(
         let keys: Vec<Symbol> = named.iter().map(|(k, _)| *k).collect();
         if let Some(bound) = positional_type_keys(kb, sort, &keys, pos.len()) {
             named.extend(bound.into_iter().zip(pos.drain(..)));
+        }
+    }
+    if pos.is_empty() && declares_parameter_defaults(kb, sort) {
+        // Every argument of a type application reads as a type; one that did not would be
+        // taken for a slot left out, and given its default.
+        let written: Vec<(Symbol, Value)> = named
+            .iter()
+            .map(|(k, c)| {
+                let ty = C::type_of(kb, c).expect("a type argument reads as a type");
+                (*k, ty)
+            })
+            .collect();
+        for fill in parameter_default_fills(kb, sort, &written) {
+            let child = C::holding(kb, &fill.value);
+            named.push((fill.key, child));
         }
     }
     kb.canonicalize_record_named_args(sort, named);
@@ -25721,6 +26085,11 @@ struct Loader<'a> {
     /// type it stands for, instead of to that type's shared term. Set around a type whose
     /// written name is kept ([`Self::written_type_to_value`]).
     alias_nodes: bool,
+    /// Set while lowering the bare name written into a HIGHER-KINDED slot (`F = List` of
+    /// `Tagged[F = List, A = Colour]`), or an HK parameter's default: the name is the
+    /// unapplied constructor there, so its own parameters' defaults are not filled in
+    /// ([`Self::fill_parameter_defaults`]). Read and cleared by the name's lowering.
+    hk_slot: bool,
     /// The annotations of the typed binders (`(x: T)`) of the expression being converted
     /// whose type was written through a type alias, each under its binder's own symbol,
     /// until the frame that builds the binder's pattern occurrence places it
@@ -26315,6 +26684,7 @@ impl<'a> Loader<'a> {
             in_effect_absence: false,
             in_type_position: false,
             alias_nodes: false,
+            hk_slot: false,
             written_binder_anns: HashMap::new(),
             in_op_body_value: false,
             lowering_op_body_term: false,
@@ -32971,6 +33341,9 @@ impl<'a> Loader<'a> {
                             self.expr_occ_results.push(child);
                             named_keys.push(key);
                         }
+                        // Proposal 069 §2 — a parameter the bracket leaves out takes its
+                        // declared default, as the same type written in a type position does.
+                        self.push_type_value_defaults(head, pos_count, &mut named_keys, span);
                         node_occurrence::BuildFrame::TypeValue {
                             span,
                             // A TYPE: a constructor's bracket is headed by its type face
@@ -37796,6 +38169,117 @@ impl<'a> Loader<'a> {
         }
     }
 
+    /// [`parameter_default_fills`] for a type application an operation body writes as a value
+    /// (`idt(Box[V = …])`): its `pos_count` positional and `named_keys` named children are
+    /// the last ones on the occurrence stack; each slot filled is pushed after them.
+    fn push_type_value_defaults(
+        &mut self,
+        head: Symbol,
+        pos_count: usize,
+        named_keys: &mut Vec<Symbol>,
+        span: SourceSpan,
+    ) {
+        use crate::eval::value::Value;
+        if !declares_parameter_defaults(self.kb, head) {
+            return;
+        }
+        let first = self.expr_occ_results.len() - pos_count - named_keys.len();
+        let Some(positional) = positional_type_keys(self.kb, head, named_keys, pos_count) else {
+            // Over-applied: the fit check reports it, and nothing is filled.
+            return;
+        };
+        let keys: Vec<Symbol> = positional.into_iter().chain(named_keys.iter().copied()).collect();
+        let mut written: Vec<(Symbol, Value)> = Vec::with_capacity(keys.len());
+        for (i, key) in keys.into_iter().enumerate() {
+            let child = Rc::clone(&self.expr_occ_results[first + i]);
+            // As in [`normalize_type_args`]: an argument read as no type would be taken for
+            // a slot left out.
+            let ty = node_occurrence::try_occurrence_to_term(self.kb, &child)
+                .expect("a type argument reads as a type");
+            written.push((key, Value::term(ty)));
+        }
+        for fill in parameter_default_fills(self.kb, head, &written) {
+            let ty = node_occurrence::value_to_term(self.kb, &fill.value)
+                .expect("a default instantiated over terms is a term");
+            let child = type_value_occurrence(self.kb, ty, span, self.current_owner);
+            self.expr_occ_results.push(child);
+            named_keys.push(fill.key);
+        }
+    }
+
+    /// Is `key` a HIGHER-KINDED parameter of `head`'s sort — one declaring parameters of
+    /// its own (`F` of `sort Tagged[F[T], A]`)?
+    fn is_higher_kinded_slot(&self, head: Symbol, key: Symbol) -> bool {
+        let Some(sort) = self.kb.type_arg_owner(head) else {
+            return false;
+        };
+        self.kb
+            .type_param_sym_of(sort, self.kb.local_name_of(key))
+            .is_some_and(|param| !self.kb.type_param_syms_of(param).is_empty())
+    }
+
+    /// Proposal 069 §2 — complete a written application of `head` (its `bindings`, as
+    /// lowered so far) with the slots [`parameter_default_fills`] fills. Every written
+    /// type is lowered here, so a default is the same in every type position. Where the
+    /// written name is kept ([`Self::alias_nodes`]) a slot holding a default rides a
+    /// [`node_occurrence::TypeNode::Defaulted`] occurrence, which every reader reads as the
+    /// default and the carrier rule reads as left out.
+    fn fill_parameter_defaults(
+        &mut self,
+        head: Symbol,
+        bindings: &mut Vec<(Symbol, node_occurrence::TypeChild)>,
+        span: SourceSpan,
+        owner: Option<Symbol>,
+    ) {
+        use crate::eval::value::Value;
+        use node_occurrence::TypeChild;
+        if !declares_parameter_defaults(self.kb, head) {
+            return;
+        }
+        // What is written, read through a wrapper that keeps how it was written.
+        let written: Vec<(Symbol, Value)> = bindings
+            .iter()
+            .map(|(k, c)| {
+                let c = match c {
+                    TypeChild::Node(n) => n
+                        .as_type()
+                        .and_then(node_occurrence::TypeNode::stands_for)
+                        .unwrap_or(c),
+                    TypeChild::Interned(_) => c,
+                };
+                let v = match c {
+                    TypeChild::Interned(t) => Value::term(*t),
+                    TypeChild::Node(n) => Value::Node(Rc::clone(n)),
+                };
+                (*k, v)
+            })
+            .collect();
+        for fill in parameter_default_fills(self.kb, head, &written) {
+            let child = super::typing::value_to_type_child_at(self.kb, &fill.value, span, owner);
+            // A default that is a VARIABLE (`T2 = T1` where `T1` is left out, or names a
+            // parameter the use binds to one) stays the variable, as an alias of a type
+            // parameter does ([`Self::bare_alias_read`]): the readers that ask whether a
+            // type is a variable match it by carrier, and wrapped it was one none of them
+            // saw — `pick[X](p: AP[T1 = X]) -> X` was refused "expected ?X, got ?X".
+            let is_var = match &child {
+                TypeChild::Interned(t) => matches!(self.kb.get_term(*t), Term::Var(_)),
+                TypeChild::Node(n) => matches!(n.as_type(), Some(node_occurrence::TypeNode::Var(_))),
+            };
+            let child = match fill.default_of {
+                Some(param) if self.alias_nodes && !is_var => TypeChild::Node(NodeOccurrence::new_type(
+                    node_occurrence::TypeNode::Defaulted {
+                        param,
+                        stands_for: child,
+                    },
+                    span,
+                    owner,
+                )),
+                _ => child,
+            };
+            bindings.push((fill.key, child));
+        }
+    }
+
     /// `sort_sym` applied to `child_bindings` — the tail of
     /// [`Self::type_expr_to_child_inner`]'s `Parameterized` arm, shared with
     /// [`Self::self_type_child`] so `Self` is assembled exactly as the written
@@ -38050,7 +38534,16 @@ impl<'a> Loader<'a> {
                     }
                 }
                 let sort_sym = self.remap_name(name);
-                let child = self.type_name_child(sort_sym, span, owner);
+                let mut defaulted = Vec::new();
+                if !std::mem::replace(&mut self.hk_slot, false) {
+                    self.fill_parameter_defaults(sort_sym, &mut defaulted, span, owner);
+                }
+                let child = if defaulted.is_empty() {
+                    self.type_name_child(sort_sym, span, owner)
+                } else {
+                    let site_span = self.type_expr_span(ty);
+                    self.parameterized_child(sort_sym, defaulted, site_span, span, owner)
+                };
                 self.bare_alias_read(child, site, span, owner)
             }
             TypeExpr::Parameterized { name, bindings } => {
@@ -38101,11 +38594,16 @@ impl<'a> Loader<'a> {
                     // type by `check_modify_targets`. There are no ambient places: a
                     // resource is threaded as a parameter (a zero-argument operation's
                     // result is refused too, `PlaceType::Ambient`).
+                    let unapplied = matches!(b.bound, TypeExpr::Simple(_))
+                        && key.is_some_and(|k| self.is_higher_kinded_slot(sort_sym, k));
+                    let saved_hk = std::mem::replace(&mut self.hk_slot, unapplied);
                     let bound_child = self.type_expr_to_child(&b.bound, span, owner);
+                    self.hk_slot = saved_hk;
                     if let Some(key) = key {
                         child_bindings.push((key, bound_child));
                     }
                 }
+                self.fill_parameter_defaults(sort_sym, &mut child_bindings, span, owner);
                 // The base name's OWN span (`type_expr_span`, that rule's owner), not
                 // the threaded `span` — that one is the whole annotation's, so a NESTED
                 // instantiation (`Map[K = Int64, V = Set[T = Float]]`) would report the
@@ -39409,6 +39907,191 @@ impl<'a> Loader<'a> {
             });
             return;
         }
+    }
+
+    /// Proposal 069 §1.4 — record the declared default of `decl`, a parameter of `owner`,
+    /// lowered in `owner`'s scope ([`KnowledgeBase::sort_param_defaults`]). Refused at the
+    /// default, and not recorded: a default naming its own parameter or a LATER one (a
+    /// default may name only earlier parameters, so a chain of defaults ends at a slot
+    /// something else decides); one of the wrong kind — a row for a type parameter, a type
+    /// for an effect-row parameter (`effect_params`, of every level); one holding a value,
+    /// which the table keeps no place for.
+    fn record_parameter_default(
+        &mut self,
+        owner: Symbol,
+        decl: &ParameterDefault<'_>,
+        effect_params: &HashSet<Symbol>,
+    ) {
+        let default = decl.default;
+        let param = self.remap_name(decl.name);
+        let site = SourceSpan::from_span(self.source_id, decl.span);
+        let short = self.kb.local_name_of(param).to_owned();
+        if let Some(members) = decl.members {
+            self.record_higher_kinded_default(owner, param, members, default, site);
+            return;
+        }
+        let is_row_param = effect_params.contains(&param);
+        let scope = self.current_scope;
+        let is_row = |kb: &KnowledgeBase, name: &Name| {
+            let written = join_segments(&self.parsed.symbols, &name.segments);
+            matches!(resolve_name_in_kb(kb, &written, scope),
+                ResolveResult::Found(s) if effect_params.contains(&s))
+        };
+        // A row is written `{…}` or names an earlier row parameter; a type is anything else.
+        let default_is_row = match default {
+            TypeExpr::EffectRow(_) => Some(true),
+            TypeExpr::Simple(name) => Some(is_row(self.kb, name)),
+            TypeExpr::Variable { .. } => None,
+            _ => Some(false),
+        };
+        let wrong_kind = default_is_row.is_some_and(|row| row != is_row_param);
+        if wrong_kind {
+            let (param_kind, expected) = if is_row_param {
+                ("an effect-row parameter", "an effect row (`{}`, `{Error}`) or a row parameter")
+            } else {
+                ("a type parameter", "a type")
+            };
+            self.errors.push(LoadError::Other {
+                message: format!(
+                    "{}: the default of `{short}` is of the wrong kind: `{short}` is \
+                     {param_kind} of `{}`, so its default is {expected}",
+                    render_decl_site(self.kb, site),
+                    self.kb.qualified_name_of(owner),
+                ),
+            });
+            return;
+        }
+        let value = self.type_expr_to_value(default);
+        let Ok(term) = node_occurrence::value_to_term(&mut self.kb, &value) else {
+            self.errors.push(LoadError::Other {
+                message: format!(
+                    "{}: the default of `{short}` holds a value; a parameter default is a \
+                     type",
+                    render_decl_site(self.kb, site),
+                ),
+            });
+            return;
+        };
+        // Declaration order: this parameter and every later one may not be named.
+        let params: Vec<Symbol> = self.kb.type_param_syms_of(owner).to_vec();
+        let at = params.iter().position(|&p| p == param);
+        let mentioned = self.kb.collect_vars(&term);
+        let later: Vec<Symbol> = at
+            .map(|i| params[i..].to_vec())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|&p| {
+                self.kb.canonical_type_param_var(p).is_some_and(|v| {
+                    matches!(self.kb.get_term(v), Term::Var(Var::Global(vid))
+                        if mentioned.iter().any(|m| m.raw() == vid.raw()))
+                })
+            })
+            .collect();
+        if let Some(&named) = later.first() {
+            self.refuse_default_out_of_order(param, named, site);
+            return;
+        }
+        self.file_parameter_default(owner, param, term);
+    }
+
+    /// `param`'s default names `named`, itself or a parameter declared after it: refused, as
+    /// defaults are ordered.
+    fn refuse_default_out_of_order(&mut self, param: Symbol, named: Symbol, site: SourceSpan) {
+        let short = self.kb.local_name_of(param).to_owned();
+        let why = if named == param {
+            format!("names `{short}` itself")
+        } else {
+            format!("names `{}`, which is declared after it", self.kb.local_name_of(named))
+        };
+        self.errors.push(LoadError::Other {
+            message: format!(
+                "{}: the default of `{short}` {why}: defaults are ordered, and a default may \
+                 name only the parameters declared before it",
+                render_decl_site(self.kb, site),
+            ),
+        });
+    }
+
+    /// File `param`'s default: the table every written application reads, and the
+    /// `anthill.reflect.SortParamDefault` row a rule reads. The row names an earlier
+    /// parameter by reference, as an `OperationInfo` type does, where the table holds its
+    /// variable for a use site to instantiate.
+    fn file_parameter_default(&mut self, owner: Symbol, param: Symbol, default: TermId) {
+        self.kb.sort_param_defaults.insert(param, default);
+        let mut by_name = crate::kb::subst::Substitution::new();
+        for &p in self.kb.type_param_syms_of(owner).to_vec().iter() {
+            if let Some(var) = self.kb.canonical_type_param_var(p) {
+                if let Term::Var(Var::Global(vid)) = *self.kb.get_term(var) {
+                    let named = self.kb.make_name_term_from_sym(p);
+                    by_name.bind_term(self.kb, vid, named);
+                }
+            }
+        }
+        let written = self.kb.apply_subst(default, &by_name);
+        let functor = self.kb.resolve_symbol("anthill.reflect.SortParamDefault");
+        let param_field = self.kb.intern("param");
+        let default_field = self.kb.intern("default");
+        let param_term = self.kb.make_name_term_from_sym(param);
+        let fact = self.kb.alloc(Term::Fn {
+            functor,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(param_field, param_term), (default_field, written)]),
+        });
+        let domain = self.current_domain();
+        self.kb.assert_metadata_fact(fact, ClauseKind::Sort, domain, None);
+    }
+
+    /// [`Self::record_parameter_default`] of a HIGHER-KINDED parameter (`F[T] = List`):
+    /// its default is an unapplied sort that declares as many parameters as `F` does
+    /// (`members`), written bare, or an earlier HK parameter of the same arity.
+    fn record_higher_kinded_default(
+        &mut self,
+        owner: Symbol,
+        param: Symbol,
+        members: usize,
+        default: &TypeExpr,
+        site: SourceSpan,
+    ) {
+        let short = self.kb.local_name_of(param).to_owned();
+        let named = match default {
+            TypeExpr::Simple(name) => {
+                let saved = std::mem::replace(&mut self.hk_slot, true);
+                let value = self.type_expr_to_value(default);
+                self.hk_slot = saved;
+                let sym = self.remap_name(name);
+                let arity = self.kb.type_param_syms_of(sym).len();
+                // An HK parameter named is an EARLIER one: declaration order, as for every
+                // default.
+                let params = self.kb.type_param_syms_of(owner);
+                if let (Some(named_at), Some(at)) = (
+                    params.iter().position(|&p| p == sym),
+                    params.iter().position(|&p| p == param),
+                ) {
+                    if named_at >= at {
+                        self.refuse_default_out_of_order(param, sym, site);
+                        return;
+                    }
+                }
+                match value {
+                    crate::eval::value::Value::Term { id, .. } if arity == members => Some(id),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        let Some(term) = named else {
+            self.errors.push(LoadError::Other {
+                message: format!(
+                    "{}: the default of `{short}` is of the wrong kind: `{short}` is a \
+                     higher-kinded parameter of `{}` declaring {members} parameter(s), so its \
+                     default is a sort declaring {members}, written bare (`{short} = List`)",
+                    render_decl_site(self.kb, site),
+                    self.kb.qualified_name_of(owner),
+                ),
+            });
+            return;
+        };
+        self.file_parameter_default(owner, param, term);
     }
 
     fn load_abstract_sort(&mut self, s: &AbstractSort, domain: Symbol) {

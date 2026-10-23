@@ -27,7 +27,7 @@
 //!     goal asked 4 times: once, then again after each sibling's progress);
 //!   * an UNREDUCED goal parked though a call in it still waits on a variable (the
 //!     `unbound_vars_in_goal_calls` test in `schedule_unanswerable_goal`) —
-//!     `a_call_waiting_beside_an_unreduced_one_can_still_refute` (one undecided row);
+//!     `a_call_waiting_beside_an_unreduced_one_is_asked_again` (one undecided row);
 //!   * an UNREDUCED goal suspended on all its variables instead of parked —
 //!     `a_parked_goal_is_never_asked_again` (asked 2 times: again once `?c` is bound);
 //!   * the WI-938 hook delaying a call that did not run even where a HYPOTHESIS matches the
@@ -35,8 +35,8 @@
 //!     assumption answers it; the tree before this ticket passes it, by the fall-through);
 //!   * an UNREDUCED goal residualized on the spot instead of rotated behind its siblings —
 //!     `a_failing_sibling_still_refutes_a_parked_goal` and
-//!     `a_call_waiting_beside_an_unreduced_one_can_still_refute` (an undecided row where the
-//!     clause is false) and `a_parked_goal_is_never_asked_again` (the clause residualizes
+//!     `a_call_waiting_beside_an_unreduced_one_is_asked_again` (an undecided row where the
+//!     clause has no answer) and `a_parked_goal_is_never_asked_again` (the clause residualizes
 //!     before its siblings run).
 //!
 //! The CONTROLS pass either way, by design, and each says why at its site. The ticket's two
@@ -216,15 +216,18 @@ fn a_hypothesis_still_answers_a_stuck_call() {
 
 /// An UNREDUCED comparison is not parked while a call beside it still waits on a variable:
 /// `Int64.div(1, ?z) = Conv.tag("km")` is undecided until `?z` is bound — to `0` the division
-/// has no value (ABSENT), which outranks UNREDUCED, and the clause is REFUTED: 0 answers, the
-/// search complete. Parked on the spot, it was never asked again and the clause came back
-/// undecided. The control: bound to `1`, the comparison stays undecided.
+/// is asked again and RAISES, and the clause has no answer: 0 answers, the raise marking the
+/// answer set incomplete. Parked on the spot, it was never asked again and the clause came
+/// back as one undecided answer naming the UNREDUCED call. The control: bound to `1`, the
+/// comparison stays undecided. (Until the zero divisor's error was made to propagate,
+/// WI-20260827-NFXPZ, the division had no value, ABSENT, and the clause was refuted with
+/// the search complete.)
 #[test]
-fn a_call_waiting_beside_an_unreduced_one_can_still_refute() {
+fn a_call_waiting_beside_an_unreduced_one_is_asked_again() {
     let mut kb = kb();
     let (sols, stats) = resolve(&mut kb, "absent");
     assert!(sols.is_empty(), "`div(1, 0)` has no value; got {} answers", sols.len());
-    assert!(!stats.truncated, "and the search is complete: the answer is 0, definitely");
+    assert!(stats.truncated, "and the raise marks the answer set incomplete");
     assert_eq!(
         crate::common::undecided_causes(&mut kb, "wicynpe.absentLater"),
         vec![vec![UnknownCause::Unreduced]],

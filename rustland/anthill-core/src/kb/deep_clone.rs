@@ -409,11 +409,11 @@ impl Copier {
                         OccurrenceOrigin::Synthesized {
                             from,
                             by,
-                            written_in,
+                            written_by,
                         } => OccurrenceOrigin::Synthesized {
                             from: self.node(from),
                             by: plain(by),
-                            written_in: plain(written_in),
+                            written_by: plain(written_by),
                         },
                     },
                     dot_chain: plain(dot_chain),
@@ -690,6 +690,10 @@ impl Copier {
             TypeNode::Var(var) => TypeNode::Var(plain(var)),
             TypeNode::Aliased { alias, stands_for } => TypeNode::Aliased {
                 alias: plain(alias),
+                stands_for: self.type_child(stands_for),
+            },
+            TypeNode::Defaulted { param, stands_for } => TypeNode::Defaulted {
+                param: plain(param),
                 stands_for: self.type_child(stands_for),
             },
             TypeNode::Denoted { value } => TypeNode::Denoted {
@@ -1090,6 +1094,7 @@ impl KnowledgeBase {
             sort_alias_index: plain(&self.sort_alias_index),
             alias_targets: plain(&self.alias_targets),
             alias_types: plain(&self.alias_types),
+            sort_param_defaults: plain(&self.sort_param_defaults),
             alias_heads: plain(&self.alias_heads),
             aliases_applying: plain(&self.aliases_applying),
             scan_alias_decls: plain(&self.scan_alias_decls),

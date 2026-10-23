@@ -2218,9 +2218,10 @@ private class AnthillParserImpl(
   private def sortNamedDecl[$: P]: P[SortDeclBuilder] =
     P(name ~ (abstractSortRest | sortWithBodyRest)).map { case (n, rest) =>
       (vis, span) => rest match
-        case Left((defn, meta)) =>
+        case Left((defn, default, meta)) =>
           Item.AbstractSortItem(
-            AbstractSort(vis, n, defn, IndexedSeq.empty, meta, span, isEffectRow = false))
+            AbstractSort(vis, n, defn, IndexedSeq.empty, meta, span, isEffectRow = false,
+              default = parameterDefault(n, "sort", defn, default)))
         case Right((imports, items, meta)) =>
           Item.SortWithBodyItem(SortWithBody(vis, n, IndexedSeq.empty, imports,
             flattenProvisionMembers(items), meta, span, SortDeclKind.Sort))
@@ -2274,10 +2275,39 @@ private class AnthillParserImpl(
     * item rather than as a second item, so nothing downstream of the loader
     * changes. */
   private def effectsSortItem[$: P]: P[Item] =
-    P(located(visibility.? ~ keyword("effects") ~ name ~ "=" ~/ typeExpr ~ metaBlock.?)).map {
-      case ((vis, n, defn, meta), span) =>
+    P(located(visibility.? ~ keyword("effects") ~ name ~ "=" ~/ typeExpr ~
+        defaultTail.? ~ metaBlock.?)).map {
+      case ((vis, n, defn, default, meta), span) =>
         Item.AbstractSortItem(
-          AbstractSort(vis, n, defn, IndexedSeq.empty, meta, span, isEffectRow = true))
+          AbstractSort(vis, n, defn, IndexedSeq.empty, meta, span, isEffectRow = true,
+            default = parameterDefault(n, "effects", defn, default)))
+    }
+
+  /** Proposal 069 §1.4 — the `default` tail of `sort T = ? default X` / `effects E = ?
+    * default X`, its value a type argument's (`commonTypeExpr`), so `{}` is a row. The
+    * lookahead keeps a following `default provides …` (WI-862) the next item's: rustland
+    * resolves the same token by a GLR fork on what follows it. Paired with
+    * [[parameterDefault]], which keeps it only on a parameter. */
+  private def defaultTail[$: P]: P[(TypeExpr, Span)] =
+    P(keyword("default") ~ !keyword("provides") ~/ located(commonTypeExpr))
+
+  /** The `default` tail of a declaration whose definition is `defn`, kept only where the
+    * definition DECLARES a parameter (`?` or a named variable): on `sort T = Int64` it
+    * would turn an alias into a parameter, or be dropped, so it is refused at the default
+    * — rustland's `convert_parameter_default`. */
+  private def parameterDefault(
+    n: Name, keyword: String, defn: TypeExpr, default: Option[(TypeExpr, Span)]
+  ): Option[TypeExpr] =
+    default.flatMap { case (ty, span) =>
+      defn match
+        case TypeExpr.Variable(_, _) => Some(ty)
+        case _ =>
+          val nm = n.segments.map(symbols.name).mkString(".")
+          errors += ParseError(
+            s"`$keyword $nm = …` is not a parameter declaration, so it takes no " +
+            s"`default`: only a parameter (`$keyword $nm = ? default …`) has a default, " +
+            s"and `$keyword $nm = T` names the type `T` itself", span)
+          None
     }
 
   /** `enum NAME ... end` — same body shape as `sort NAME ... end` but the
@@ -2289,8 +2319,9 @@ private class AnthillParserImpl(
           flattenProvisionMembers(items), meta, span, SortDeclKind.Enum))
     }
 
-  private def abstractSortRest[$: P]: P[Left[(TypeExpr, Option[MetaBlock]), Nothing]] =
-    P("=" ~/ typeExpr ~ metaBlock.?).map { case (te, mb) => Left((te, mb)) }
+  private def abstractSortRest[$: P]
+    : P[Left[(TypeExpr, Option[(TypeExpr, Span)], Option[MetaBlock]), Nothing]] =
+    P("=" ~/ typeExpr ~ defaultTail.? ~ metaBlock.?).map { case (te, d, mb) => Left((te, d, mb)) }
 
   private def sortWithBodyRest[$: P]: P[Right[Nothing, (IndexedSeq[Import], IndexedSeq[Item], Option[MetaBlock])]] =
     P(sortTypeParamList.? ~ body ~ metaBlock.?).map { case (paramsOpt, (imports, items), meta) =>
@@ -2317,7 +2348,8 @@ private class AnthillParserImpl(
   // would make a name that spans `?F { sort ?T sort ?U }` — a plausible-looking range
   // that is wrong, which is worse than the `mkSpan(0, 0)` it replaced.
   private case class SortTypeParam(
-    name: TermSymbol, members: Option[IndexedSeq[SortTypeParam]], nameSpan: Span, span: Span)
+    name: TermSymbol, members: Option[IndexedSeq[SortTypeParam]], nameSpan: Span, span: Span,
+    default: Option[TypeExpr] = None)
 
   private def sortTypeParamList[$: P]: P[IndexedSeq[SortTypeParam]] =
     P("[" ~ sortTypeParam.rep(1, sep = ",") ~ "]").map(_.toIndexedSeq)
@@ -2331,9 +2363,9 @@ private class AnthillParserImpl(
     // offset from a span rather than capturing it, and it depended on [[Span.at]]
     // storing `start` verbatim; WI-971 removed the dependency along with the
     // hand-written bracket.
-    P(located(located(ident) ~ sortTypeParamList.?)).map {
-      case ((n, nameSpan, members), span) =>
-        SortTypeParam(n, members, nameSpan, span)
+    P(located(located(ident) ~ sortTypeParamList.? ~ ("=" ~/ commonTypeExpr).?)).map {
+      case ((n, nameSpan, members, default), span) =>
+        SortTypeParam(n, members, nameSpan, span, default)
     }
 
   /** Desugar one enclosing type-param binder to the SAME IR rustland's
@@ -2342,8 +2374,8 @@ private class AnthillParserImpl(
     * fresh anonymous `?` — picked up by the loader's `sort T = ?` type-param arm);
     * a HIGHER-KINDED param `F[T]` → a `SortWithBody` MARKED `isTypeParam` whose
     * body holds the recursively-desugared members (the loader mints F as a type
-    * param of the enclosing sort). No `= default` form (sort-param defaults are
-    * undefined by §5.4). */
+    * param of the enclosing sort). A `= Default` is kept as the parameter's default
+    * (proposal 069 §1.4). */
   private def desugarSortTypeParam(p: SortTypeParam): Item =
     // `nameSpan` for the NAME and `span` for the declaration — every other `Name` in
     // this parser spans exactly its identifier token, and this one must too.
@@ -2353,13 +2385,13 @@ private class AnthillParserImpl(
         Item.SortWithBodyItem(SortWithBody(
           None, nm, IndexedSeq.empty, IndexedSeq.empty,
           members.map(desugarSortTypeParam), None, p.span,
-          SortDeclKind.Sort, isTypeParam = true))
+          SortDeclKind.Sort, isTypeParam = true, default = p.default))
       case None =>
         // WI-989: `nameSpan`, not `span` — the `?` this synthesizes stands for the
         // parameter's own unspecified bound, so it points at the parameter's name.
         Item.AbstractSortItem(
           AbstractSort(None, nm, freshAnonTypeVar(p.nameSpan), IndexedSeq.empty, None, p.span,
-            isEffectRow = false))
+            isEffectRow = false, default = p.default))
 
   // Same shape as `operationDecl`: the dispatcher consumed the `rule` keyword, so it
   // is the one that can span from it (WI-947).

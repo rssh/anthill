@@ -651,9 +651,11 @@ object Bootstrap:
     sort.items.collect {
       case Item.AbstractSortItem(s) =>
         TypeParamDecl(
-          sym.name(s.name.last), s.name.span, IndexedSeq.empty, isEffect = s.isEffectRow)
+          sym.name(s.name.last), s.name.span, IndexedSeq.empty, isEffect = s.isEffectRow,
+          default = s.default)
       case Item.SortWithBodyItem(s) if s.isTypeParam =>
-        TypeParamDecl(sym.name(s.name.last), s.name.span, sortTypeParams(sym, s))
+        TypeParamDecl(sym.name(s.name.last), s.name.span, sortTypeParams(sym, s),
+          default = s.default)
       case Item.RequiresDeclItem(RequiresDecl(Some(binder), _, _)) =>
         TypeParamDecl(sym.name(binder.last), binder.span, IndexedSeq.empty)
     }
@@ -687,7 +689,9 @@ object Bootstrap:
     }
 
   private def paramKinds(params: IndexedSeq[TypeParamDecl]): ParamKinds =
-    ParamKinds(params.map(p => if p.isEffect then ParamKind.Effect else ParamKind.Type))
+    ParamKinds(
+      params.map(p => if p.isEffect then ParamKind.Effect else ParamKind.Type),
+      params.map(p => p.anthillName -> p.default))
 
   /** One type parameter, as anthill wrote it and as Scala binds it.
     *
@@ -703,7 +707,9 @@ object Bootstrap:
     */
   private case class TypeParamDecl(
     anthillName: String, span: Span, members: IndexedSeq[TypeParamDecl],
-    isEffect: Boolean = false
+    isEffect: Boolean = false,
+    /** The declared default (proposal 069 §1.4), which a use leaving the slot out takes. */
+    default: Option[TypeExpr] = None
   ):
     val scalaName: String = Names.scalaTypeName(anthillName)
     /** `T`, `M[_]`, `F[_[_]]` — what goes between the sort's brackets. */
@@ -880,7 +886,8 @@ object Bootstrap:
       s"sort `${sym.name(sort.name.last)}`", sort.name.span, effectivePkg,
       importedNames(sym, sort.imports, outerImports),
       enclosing = Some(
-        EnclosingSort(sym.name(sort.name.last), sortName, binders, carrierParam)),
+        EnclosingSort(sym.name(sort.name.last), sortName, binders, carrierParam,
+          written.map(_.default))),
       params = binders.toMap)
     val requires = sort.items.collect {
       case Item.RequiresDeclItem(r) =>

@@ -961,17 +961,19 @@ fn no_such_member_message(kb: &KnowledgeBase, recv_ty: &Value, field_name: &str)
 /// it is asked from, and the scope its refusal names.
 ///
 /// The text of a rewrite is its rule's, wherever the rewrite fired
-/// ([`NodeOccurrence::text_scope`]): a `@[simp]` rule written in `Box` reaches `Box`'s
+/// ([`NodeOccurrence::rewritten_by`]): a `@[simp]` rule written in `Box` reaches `Box`'s
 /// `internal` members with a dot from every call it rewrites, as it does with a name,
 /// and one written elsewhere does not. Any other text is the code being checked
 /// ([`TypingEnv::referencing_scope`]) — the operation's scope, the rule's, or the global
 /// scope for code written at the top level, which no symbol of the frame names.
 pub(super) fn written_scope(kb: &KnowledgeBase, env: &TypingEnv, occ: &NodeOccurrence) -> ScopeId {
-    occ.text_scope()
-        .unwrap_or_else(|| match env.referencing_scope() {
+    match occ.rewritten_by() {
+        Some(rule) => kb.symbols.scope_id(kb.rule_domain(rule)),
+        None => match env.referencing_scope() {
             Some(s) => kb.symbols.scope_id(s),
             None => kb.global_scope(),
-        })
+        },
+    }
 }
 
 /// The refusal of a dot that found `member`, where `member` is `internal` and hidden

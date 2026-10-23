@@ -3,9 +3,9 @@
 - id: WI-20261003-QV5W5-implement-proposal-069
 - created: 2026-10-03T10:06:09Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-10-03T10:06:09Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-10-23T07:00:34Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -37,4 +37,16 @@ A CHECK FOR THIS TICKET (user, 2026-10-14), found by the family e-applied-arrow:
 ### 2026-10-20T19:31:18Z — feedback — claude
 
 Now depends on WI-20260821-6WVJB (one arity per predicate, unblocked 2026-10-20 when WI-20260821-ZW940 was closed as decided). Once it is delivered, 069's arity check for a declaration that carries a default is the general rule, and needs no gate of its own: implement 069's omission reading on top of it rather than a defaults-only arity check.
+
+### 2026-10-23T05:46:40Z — feedback — claude
+
+SCOPE NARROWED TO STAGE 1 (user, 2026-10-23: five stage tickets). This ticket is now 069's SORT AND EFFECT-ROW PARAMETER DEFAULTS: `sort Box[T = Int64]`, `sort T = ? default Int64`, `effects E = ? default {}` (§1.4); a written type application that leaves a defaulted slot out takes the default, in every position (§2, context-free), dependent defaults (`T2 = T1`) tied to the slot they name, forward references and wrong kinds refused at the default; an explicit `?` keeps the slot open; 070 §1.4's carrier check reads what the author wrote; a constructor call's sort parameter that inference leaves unbound takes the default (§2 steps 4–5); `Function` declares `effects E = ? default {}` and §4.4 / §8.1 are restated (§4, §7 step 6); tree-sitter, Rust, Scala, reflect and persistence of the sort-parameter default. The other surfaces are filed: stage 2 operation type-parameter defaults WI-20261023-GBH5F, stage 3 operation value defaults and `result:` WI-20261023-CX743, stage 4 entity-constructor defaults WI-20261023-FHT5Z, stage 5 rule-column defaults WI-20261023-9XXBW; WI-188 now depends on stages 3 and 4. THE 0RRQP QUESTION (2026-10-05 note) IS DECIDED, reading (b) (user, 2026-10-23): in a rule clause a constructor in a pattern position whose sort parameter nothing in the clause fixes leaves that parameter a clause variable, which a query or citation binds — `rule same(?p) :- ?p <=> box(a: ?x, b: ?x)` under `sort Box[T = Int64]` answers `Box.same(box(a: "s", b: "s"))`; the default reaches only a WRITTEN type that leaves `T` out (`?p: Box`). Acceptance row for this ticket, with its control.
+
+### 2026-10-23T06:19:06Z — feedback — claude
+
+One stage-1 item moved to stage 2 (WI-20261023-GBH5F, the note there has the measurement): the default of a CONSTRUCTOR call's unbound sort parameter. Installed at the construction it preceded the enclosing call's parameter type — arguments are typed before their parameters (WI-379) — and refused `wantS(tag(n: 1))`. It needs the call-level installation stage 2 builds for operation type parameters. Stage 1 keeps every WRITTEN type's default (type positions, a bracket written as a value in a clause, a query or a body) and the pattern reading (b).
+
+### 2026-10-23T07:00:32Z — feedback — claude
+
+DELIVERED (05e3df43), stage 1 of proposal 069. A sort's type and effect-row parameters declare defaults (bracket, statement and effects forms, higher-kinded included); a written type leaving a defaulted slot out takes it in every type position, in a bracket written as a value in a clause, a query or a body, and through an alias's definition; `Function` declares `effects E = ? default {}`, so `Function[A, B]` is pure and `Function[A, B, ?]` open. Declaration refusals: out of order, wrong kind (across levels), reaching its own sort, on a higher-kinded member, holding a value; a default on an alias at the parse. Reflection: `anthill.reflect.SortParamDefault`. The 070 carrier rule reads a default-filled slot as left out (`TypeNode::Defaulted`); a default that is a variable stays the variable, unwrapped — found by /code-review as `pick[X](p: AP[T1 = X]) -> X` refused 'expected ?X, got ?X'. Reading (b) holds: `Box.same(box(a: "s", b: "s"))` answers under `sort Box[T = Int64]`. Codegen: Rust generics carry the defaults; scaland's emitter completes a use by name. Moved to stage 2: a construction's parameter its inference leaves free (note on WI-20261023-GBH5F). Left on WI-20261003-KPBVX: the carrier rule through an alias. Runs: rustland/scripts/test.sh 10496 passed / 0 failed, the same under ANTHILL_TEST_NODE_CARRIER=1, scripts/families.sh holds (c and e re-blessed, the four QV5W5 exceptions removed from e), scaland sbt testFull 718 + 47 + 1 passed, npx tree-sitter test 235/235.
 
