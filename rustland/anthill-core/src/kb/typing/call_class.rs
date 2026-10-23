@@ -334,12 +334,24 @@ pub(super) fn clause_defined_own_operation(kb: &KnowledgeBase, op_sym: Symbol) -
 ///     `map(m: M[A], …)` stands at `M` in no form [`signature_names_no_carrier`] reads, and
 ///     the value of `m` directs the dispatch (MEASURED: without this leg, every
 ///     `Monad.map` over a `Result` was refused);
+///   * or its signature names the sort in its result alone, as the sort itself
+///     ([`SignatureCarrier::ResultOnly`]): `Mon.unit(x: Int64) -> Self` in a `sort Mon`
+///     with no parameter. `Self` in a sort is that sort, so the result names no provider
+///     (kernel-language.md §5.4): MEASURED on the tree before (WI-20261017-CK7PP), with a
+///     provider `Box`, `Mon.unit(7)` loaded and died `OperationBodyMissing`. Ground here
+///     too: where the sort has parameters the type expected of the result binds them, and
+///     a provision at that binding answers (`IntBag provides Bag[T = Int64]` answers
+///     `Bag.empty()` at `Bag[T = Int64]`, MEASURED), which only the dispatch can see — it
+///     refuses such a call where it finds nothing (`check_apply_iter`, after the
+///     dispatch). A site that does not dispatch (`dispatched` false: the bare zero-arg
+///     reading `empty`) never reaches a provision that way — MEASURED, the bare `empty` at
+///     `Bag[T = Int64]` died beside `IntBag` — and asks this of every result-only member;
 ///   * no requirement in scope reaches the sort — the enclosing operation's own
 ///     `requires`, the enclosing frame's chain, or a requirement either of them requires
 ///     in turn ([`requires_tree`]: `User requires Mid` and `Mid requires Deep` puts `Deep`
 ///     in `User`'s reach) — and the enclosing sort neither is the sort (a sibling call
 ///     runs at the instance its body was entered at, which this call's own caller decides)
-///     nor provides it;
+///     nor, having no constructors, provides it;
 ///   * the call writes no bracket and no receiver type (`selects`) — `Sp.op[…](…)`, or
 ///     the dot on a type value `Desc[T = Leaf].label()`, whose bracket rides the call as
 ///     its receiver type — either of which may name the carrier.
@@ -359,12 +371,18 @@ pub(super) fn unselectable_spec_operation_call(
     env: &TypingEnv,
     op_sym: Symbol,
     selects: bool,
+    dispatched: bool,
 ) -> Option<Unselectable> {
     if selects {
         return None;
     }
     let spec = spec_op_parent_sort(kb, op_sym)?;
-    if !signature_names_no_carrier(kb, op_sym, spec) || !signature_is_ground(kb, op_sym) {
+    let result_only = match signature_carrier(kb, op_sym, spec)? {
+        SignatureCarrier::Named => return None,
+        SignatureCarrier::NamesNone => false,
+        SignatureCarrier::ResultOnly => true,
+    };
+    if (dispatched || !result_only) && !signature_is_ground(kb, op_sym) {
         return None;
     }
     let spec_canon = kb.canonical_sort_sym(spec);
@@ -375,23 +393,7 @@ pub(super) fn unselectable_spec_operation_call(
     } else {
         return None;
     };
-    if env
-        .enclosing_sort()
-        .is_some_and(|enclosing| sort_provides(kb, enclosing, spec))
-    {
-        return None;
-    }
-    let in_scope: SmallVec<[Symbol; 4]> = env
-        .op_requires()
-        .iter()
-        .chain(env.enclosing_frame_chain().entries())
-        .map(|entry| entry.required_sort)
-        .collect();
-    let mut visited: SmallVec<[Symbol; 8]> = SmallVec::new();
-    if in_scope
-        .into_iter()
-        .any(|required| requirement_reaches(kb, required, spec_canon, &mut visited))
-    {
+    if !nothing_in_scope_selects(kb, env, spec) {
         return None;
     }
     let reached_canon = kb.canonical_sym(reached);
@@ -399,18 +401,59 @@ pub(super) fn unselectable_spec_operation_call(
         spec,
         reached,
         clauses: kb.has_clauses_under(reached_canon) || kb.has_clauses_under(reached),
+        result_only,
     })
+}
+
+/// WI-20260909-M8QWJ — nothing where a call of a member of `spec` is written supplies
+/// `spec`: the enclosing sort neither is it nor, without constructors, provides it, and no
+/// requirement in scope reaches it — the enclosing operation's own `requires`, the
+/// enclosing frame's chain, or a requirement either of them requires in turn
+/// ([`requirement_reaches`]).
+///
+/// A member of the sort, or of a sort without constructors that provides it, is entered at
+/// the instance of the value it was dispatched on, and a call there reaches that instance's
+/// member (`Mid provides Sp` with `operation other(m: Self) -> Int64 = Sp.name()`, entered
+/// at a `W`, answers `W.name`). A member of a sort WITH constructors runs at that sort,
+/// which is no instance of the called one: MEASURED on the tree before (WI-20261017-CK7PP),
+/// `Sp.name()` in a member of `W provides Sp` loaded and died `OperationBodyMissing`, though
+/// `W` declares `name`.
+pub(super) fn nothing_in_scope_selects(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    spec: Symbol,
+) -> bool {
+    if env.enclosing_sort().is_some_and(|enclosing| {
+        same_sort_canonical(kb, enclosing, spec)
+            || (sort_provides(kb, enclosing, spec)
+                && !sort_is_data(kb, kb.canonical_sort_sym(enclosing)))
+    }) {
+        return false;
+    }
+    let spec_canon = kb.canonical_sort_sym(spec);
+    let in_scope: SmallVec<[Symbol; 4]> = env
+        .op_requires()
+        .iter()
+        .chain(env.enclosing_frame_chain().entries())
+        .map(|entry| entry.required_sort)
+        .collect();
+    let mut visited: SmallVec<[Symbol; 8]> = SmallVec::new();
+    !in_scope
+        .into_iter()
+        .any(|required| requirement_reaches(kb, required, spec_canon, &mut visited))
 }
 
 /// WI-20260909-M8QWJ — what [`unselectable_spec_operation_call`] found: the sort that may
 /// be provided, the operation the call reaches at that sort itself and that runs nothing
-/// (the called operation, or a member its body calls), and whether clauses are indexed
-/// under that operation, which changes the repair the refusal names.
+/// (the called operation, or a member its body calls), whether clauses are indexed under
+/// that operation, and whether the called operation names the sort in its result alone —
+/// each changes the repair the refusal names.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Unselectable {
     pub(super) spec: Symbol,
     pub(super) reached: Symbol,
     pub(super) clauses: bool,
+    pub(super) result_only: bool,
 }
 
 /// A CALL THAT NOTHING ELSE NAMES THE INSTANCE OF NAMES IT ITSELF (user, 2026-10-17):
@@ -550,12 +593,20 @@ pub(super) fn runs_nothing_of_its_own(kb: &KnowledgeBase, op: Symbol) -> bool {
         && !kb.is_reify_operation(kb.canonical_sym(op))
 }
 
-/// WI-20260909-M8QWJ — the first member of `spec_canon` that `op`'s BODY reaches through
-/// calls of the sort's members, at any depth, and that runs nothing at the sort itself:
+/// WI-20260909-M8QWJ — the first member of `spec_canon`, or of a sort it provides, that
+/// `op`'s BODY reaches through calls of such members, at any depth, and that runs nothing
+/// at the sort itself. A provided sort's member is reached as a sibling is: a body of a sort
+/// without constructors is entered at a value's instance ([`nothing_in_scope_selects`]),
+/// and one run at the sort itself has none — MEASURED (WI-20261017-CK7PP): `sort Mid {
+/// provides Sp; operation other() -> Int64 = Sp.name() }` and `Mid.other()` loaded and died
+/// at `Sp.name`. Running nothing is:
 /// [`runs_nothing_of_its_own`], no `@[simp]` equation (the rewrite may have fired inside the
-/// body, which this walk does not see, so one counts as a definition here), and a signature
-/// naming no carrier and ground — a member a value or a type could direct to a provider is
-/// not this sort's to answer. A call carrying its dictionary (`ApplyWithin`) is not followed:
+/// body, which this walk does not see, so one counts as a definition here), and a ground
+/// signature naming no carrier, or the sort in its result alone — a member a value or a type
+/// could direct to a provider is not this sort's to answer. MEASURED for the second
+/// (WI-20261017-CK7PP): `sort Mon { operation unit(x: Int64) -> Self; operation two() ->
+/// Self = unit(2) }` with a provider `Box`, and `Mon.two()` loaded and died at `Mon.unit`.
+/// A call carrying its dictionary (`ApplyWithin`) is not followed:
 /// the dictionary is the selection. `visited` ends a recursion between members.
 fn sibling_reached_unrunnable(
     kb: &KnowledgeBase,
@@ -578,10 +629,12 @@ fn sibling_reached_unrunnable(
             Expr::VarRef { name } => Some(*name),
             _ => None,
         };
-        let sibling = callee.filter(|c| {
-            spec_op_parent_sort(kb, *c).is_some_and(|s| kb.canonical_sort_sym(s) == spec_canon)
+        let sibling = callee.and_then(|c| {
+            spec_op_parent_sort(kb, c)
+                .filter(|&parent| sort_provides(kb, spec_canon, parent))
+                .map(|parent| (c, parent))
         });
-        if let Some(sibling) = sibling {
+        if let Some((sibling, parent)) = sibling {
             if kb.op_body_node(sibling).is_some() {
                 if let Some(found) = sibling_reached_unrunnable(kb, sibling, spec_canon, visited)
                 {
@@ -591,7 +644,10 @@ fn sibling_reached_unrunnable(
                 && crate::kb::simp_rewrite::equation_clause_census(kb, kb.canonical_sym(sibling))
                     .simp_tagged
                     == 0
-                && signature_names_no_carrier(kb, sibling, spec_canon)
+                && matches!(
+                    signature_carrier(kb, sibling, parent),
+                    Some(SignatureCarrier::NamesNone | SignatureCarrier::ResultOnly)
+                )
                 && signature_is_ground(kb, sibling)
             {
                 return Some(sibling);

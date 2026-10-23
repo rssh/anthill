@@ -8,9 +8,10 @@
 //! `resolve_nullary_result_carrier`) resolves the carrier, in priority order:
 //!   (a) the EXPECTED RETURN TYPE names a concrete carrier  → that carrier's
 //!       override (PinNow);
-//!   (b) no carrier pinned and exactly ONE provider exists  → use it
-//!       (information hiding);
-//!   (c) no carrier pinned and 2+ providers                 → loud ambiguity.
+//!   (b) no carrier pinned and 2+ providers                 → loud ambiguity.
+//! No carrier pinned and ONE provider is refused as an open carrier is
+//! (WI-20261017-CK7PP): the one provider used to be taken, "information hiding",
+//! which a second provider loaded beside it would turn into a refusal.
 //! A `requires`-covered call (a generic consumer over `requires
 //! MutableCollection`) keeps taking the existing Deferred / dict-threaded path.
 
@@ -88,7 +89,7 @@ namespace test.wi508e
     operation make() -> Foo = foo()
     provides Maker[C = Foo, Element = Foo]
   end
-  -- (b) carrier unpinned but a UNIQUE provider exists -> information hiding
+  -- carrier unpinned beside a UNIQUE provider -> refused, as an open carrier is
   operation mkUnique() -> Bool =
     let x = Maker.make()
     true
@@ -113,7 +114,7 @@ namespace test.wi508f
     operation make() -> Bar = bar()
     provides Maker[C = Bar, Element = Bar]
   end
-  -- (c) carrier unpinned with 2+ providers -> loud ambiguity at load
+  -- (b) carrier unpinned with 2+ providers -> loud ambiguity at load
   operation mkAmbig() -> Bool =
     let x = Maker.make()
     true
@@ -125,9 +126,15 @@ fn wi508_annotation_disambiguates_with_two_providers() {
     let _ = interp_for(TWO_PROVIDERS);
 }
 
+/// One provider does not pin the carrier (kernel-language.md §5.4). It ran `Foo.make`
+/// until WI-20261017-CK7PP.
 #[test]
-fn wi508_unique_provider_information_hiding() {
-    let _ = interp_for(ONE_PROVIDER);
+fn wi508_one_provider_does_not_pin_the_carrier() {
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(ONE_PROVIDER),
+        &["test.wi508e.Maker.make", "missing `requires Maker[C = …]`"],
+        "Maker.make() beside one provider",
+    );
 }
 
 #[test]

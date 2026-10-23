@@ -2116,6 +2116,8 @@ mod wi753_native_rule_body_occurrence_test;
 mod wi_kssa4_spec_typed_value_test;
 #[path = "include/wi_m8qwj_unrunnable_operation_test.rs"]
 mod wi_m8qwj_unrunnable_operation_test;
+#[path = "include/wi_ck7pp_interface_call_test.rs"]
+mod wi_ck7pp_interface_call_test;
 #[path = "include/wi_jrhz0_todo_hole_test.rs"]
 mod wi_jrhz0_todo_hole_test;
 

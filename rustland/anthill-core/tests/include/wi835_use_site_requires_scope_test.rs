@@ -351,7 +351,7 @@ namespace test.wi835.lawful
   operation m1() -> Map[K = TotalFloat, V = Int64] = Map.empty()
   operation m2() -> Map[K = Int64, V = Int64] = Map.empty()
   operation m3() -> Map[K = String, V = Int64] = Map.empty()
-  operation s1() -> Set[T = Int64] = Set.empty()
+  operation s1(s: Set[T = Int64]) -> Set[T = Int64] = s
 end
 "#,
     );

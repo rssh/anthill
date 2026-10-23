@@ -1238,13 +1238,15 @@ pub(super) fn check_bare_ref(
         // provider can be selected for is refused here as its parenthesized spelling is at
         // `check_apply_iter` (MEASURED by review: `import MySpec.{ping}` and a bare `ping`
         // loaded clean and died at eval where `MySpec.ping()` was refused). A bare name
-        // writes no bracket and no receiver.
+        // writes no bracket and no receiver, and is not dispatched: no provision answers it
+        // through the type expected of it (WI-20261017-CK7PP).
         if !env.in_rule_body() {
             if let Some(Unselectable {
                 spec,
                 reached,
                 clauses,
-            }) = unselectable_spec_operation_call(kb, env, sym, false)
+                result_only,
+            }) = unselectable_spec_operation_call(kb, env, sym, false, false)
             {
                 return Err(TypeError::CallOfUnselectableSpecOperation {
                     span,
@@ -1252,6 +1254,7 @@ pub(super) fn check_bare_ref(
                     spec,
                     reached,
                     clauses,
+                    result_only,
                 });
             }
         }
