@@ -201,16 +201,17 @@ namespace anthill.stage0
   --
   --   AN OFF-RAMP WITH NO STATED REASON IS USELESS.
   --
-  -- Rejecting an item without saying why leaves nobody able to act on it, so
-  -- that stays a LOAD ERROR rather than a convention the commands are trusted to
-  -- keep. Everything else about a reason is a command-level rule (`update`
-  -- refuses `--reason` where it would have nothing to attach to), not a fact
-  -- about the domain.
-  constraint rejected_names_its_reason :-
+  -- Rejecting an item without saying why leaves nobody able to act on it. The
+  -- three denials below state that; a plain denial is not enforced
+  -- (kernel-language §6.2), so `update` is what keeps it: it refuses an off-ramp
+  -- without `--reason` (`ok_reason`). Everything else about a reason is a
+  -- command-level rule (`update` refuses `--reason` where it would have nothing
+  -- to attach to), not a fact about the domain.
+  constraint rejected_names_its_reason: false :-
     WorkItem(last_status_change: StatusChange(status: Rejected, reason: none))
-  constraint proposal_rejected_names_its_reason :-
+  constraint proposal_rejected_names_its_reason: false :-
     WorkItem(last_status_change: StatusChange(status: ProposalRejected, reason: none))
-  constraint stale_names_its_reason :-
+  constraint stale_names_its_reason: false :-
     WorkItem(last_status_change: StatusChange(status: Stale, reason: none))
 
   -- =================================================================

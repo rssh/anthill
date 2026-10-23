@@ -5195,20 +5195,15 @@ impl<'a> Converter<'a> {
             Some("no") => Quantifier::No,
             _ => return None,
         };
-        // Three binder shapes (grammar): `(?x: T)` typed sugar, `?x: cond`, `?x`.
-        let (var, condition) = if let Some(tb) = self.field(node, "typed_binding") {
-            self.convert_typed_binding(tb)
-        } else {
-            let var = self
-                .field(node, "var")
-                .map(|n| self.variable_name(n))
-                .unwrap_or_default();
-            let condition = self
-                .field(node, "condition")
-                .map(|b| self.convert_rule_body(b))
-                .unwrap_or_default();
-            (var, condition)
-        };
+        // Two binder shapes (grammar): `?x: cond` and `?x`.
+        let var = self
+            .field(node, "var")
+            .map(|n| self.variable_name(n))
+            .unwrap_or_default();
+        let condition = self
+            .field(node, "condition")
+            .map(|b| self.convert_rule_body(b))
+            .unwrap_or_default();
         let body_node = self.field(node, "body")?;
         // WI-023: a `:- guard` / `-: conclusion` on the quantifier's `-:` body
         // hoists (via the inlined `_constraint_body`) onto this node; the loader
@@ -5248,33 +5243,6 @@ impl<'a> Converter<'a> {
             },
             _ => ConstraintBody::Patterns(self.convert_rule_body(node)),
         }
-    }
-
-    /// `(?x: T)` desugars (per grammar) to binder `x` with condition
-    /// `TypeOf(occ: ?x, type: T)`.
-    fn convert_typed_binding(&mut self, node: Node) -> (String, Vec<TermId>) {
-        let var_node = self.field(node, "var");
-        let var = var_node.map(|n| self.variable_name(n)).unwrap_or_default();
-        let mut condition = Vec::new();
-        if let (Some(vn), Some(tn)) = (var_node, self.field(node, "type")) {
-            let span = self.span(node);
-            let occ_term = self.convert_variable_node(vn);
-            let type_term = self.convert_term(tn);
-            let occ_field = self.intern("occ");
-            let type_field = self.intern("type");
-            let functor = self.intern("TypeOf");
-            let named_args: SmallVec<[(Symbol, TermId); 2]> =
-                SmallVec::from_slice(&[(occ_field, occ_term), (type_field, type_term)]);
-            condition.push(self.terms.alloc(
-                Term::Fn {
-                    functor,
-                    pos_args: SmallVec::new(),
-                    named_args,
-                },
-                span,
-            ));
-        }
-        (var, condition)
     }
 
     fn convert_aggregation(&mut self, node: Node) -> Option<ConstraintBody> {

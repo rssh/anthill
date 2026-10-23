@@ -1162,7 +1162,9 @@ Not this part's, measured on the way, each the same on 083cb6b8:
 - A query's nullary call is the operation's name as data: `not(plainStamp() = "x")` holds.
 - A `let` in a rule body's value slot, also in a call's argument, is bound unevaluated.
 - A constraint's goal is not walked by the clause typing (WI-20261023-76KZN):
-  `constraint c :- plainStamp() = "2000"` loads.
+  `constraint c :- plainStamp() = "2000"` loads. Delivered by that ticket: a constraint's goals
+  are typed as a rule body's, and `constraint c: false :- plainStamp() = "2000"` is refused
+  (unlabeled, `c` is the denial's invariant, a goal that names nothing).
 - A guarded effect on a program's operation is dropped at every literal call: `safe(0)` over
   `effects {Error[Boom] :- eq(n, 0)}` loads in an operation body that declares no `Error`, and
   `stampIf(true)` over `{Clock :- eq(b, true)}` in a rule body; the stdlib's `Int64.div(7, 0)`

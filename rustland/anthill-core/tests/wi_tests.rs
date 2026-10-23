@@ -2243,3 +2243,5 @@ mod relation_citation_reads_every_clause_test;
 mod unresolved_annotation_reported_once_test;
 #[path = "include/rule_goal_sort_bracket_refused_test.rs"]
 mod rule_goal_sort_bracket_refused_test;
+#[path = "include/wi_76kzn_constraint_goal_reading_test.rs"]
+mod wi_76kzn_constraint_goal_reading_test;

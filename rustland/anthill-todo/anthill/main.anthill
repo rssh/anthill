@@ -3546,9 +3546,9 @@ namespace anthill.todo
         case none() -> status_ok(changed_by(st, agent))
         case some(_) -> status_reason_unused()
 
-    -- An off-ramp is OK only when --reason was supplied: the domain refuses a
-    -- rejection that does not say why, so catching it here names the flag
-    -- instead of failing the load.
+    -- An off-ramp is OK only when --reason was supplied: the domain states that
+    -- a rejection says why, in a denial that is not enforced, so this is where
+    -- it is kept.
     operation ok_reason(st: WorkStatus, agent: String,
                         reason_opt: Option[String]) -> UpdateStatus
       effects Clock

@@ -129,14 +129,17 @@ fn a_well_typed_comparison_reports_nothing() {
 #[test]
 fn a_faulted_constraint_guard_says_why() {
     // The REAL quantified-constraint syntax (`no ?x: <goal> -: <goal>`), which is what
-    // drives `eval_count_guard`. `tag("a")` binds `?x` from a fact the constraint's
-    // typing does not read, so `gt(?x, 1)` reaches the resolver as a String/Int64 pair and
-    // faults.
+    // drives `eval_count_guard`. `holder(v: ?x)` binds `?x` from a field typed `Term`, which
+    // the constraint's typing reads as any term — a `String` in a plain column it refuses at
+    // load, since a constraint's goals are typed (WI-20261023-76KZN) — so `gt(?x, 1)`
+    // reaches the resolver as a String/Int64 pair and faults.
     let src = r#"
 namespace rec.guard
   import anthill.prelude.{Int64, String, Bool, PartialOrd}
-  fact tag("a")
-  constraint no_big: no ?x: tag(?x) -: PartialOrd.gt(?x, 1)
+  import anthill.reflect.Term
+  entity holder(v: Term)
+  fact holder(v: "a")
+  constraint no_big: no ?x: holder(v: ?x) -: PartialOrd.gt(?x, 1)
 end
 "#;
     // The guard cannot decide, so the load blocks with `ConstraintUndecidable` — that

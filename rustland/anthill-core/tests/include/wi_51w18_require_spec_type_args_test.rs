@@ -647,35 +647,37 @@ fn a_positional_effect_row_keeps_its_slot_too() {
 fn a_bracketed_requires_loads_in_every_term_surface() {
     // THE REGRESSION THE UN-STRIP INTRODUCED, and it shipped green because the corpus
     // could not reach it. Constraint bodies, operation `ensures` bodies and
-    // aggregation-constraint conditions are stored as TERMS, not occurrences, and only
-    // the occurrence walk got the spec-instance arm. Every one of these reported
+    // aggregation-constraint conditions are converted as TERMS (a constraint's for its
+    // guard, and as occurrences too since its goals are typed), and only the occurrence
+    // walk got the spec-instance arm. Every one of these reported
     // `unresolved name 'T'` where it loaded before the change.
     //
     // The deleted term-side lowering was justified by "the whole test binary passes with
     // it disabled" — but the corpus has zero BRACKETED `requires(` outside a rule body,
-    // so the binary could not have measured it. These five rows are the measurement.
+    // so the binary could not have measured it. These rows are the measurement.
+    //
+    // A constraint's goals are typed as a rule body's are (WI-20261023-76KZN), so each
+    // grounds its requirement with a call of `Desc`'s, as a rule body must. The row once
+    // labelled "aggregation" was a denial whose goal `count(…)` names nothing, and is
+    // gone: an aggregation constraint is refused at load, so no row here can hold one.
     for (name, tail) in [
         (
             "constraint",
-            "  constraint c :- requires(Desc[T]), seed(?x)\n",
+            "  constraint c: false :- requires(Desc[T]), seed(?x), Desc.describe(?x) = 7\n",
         ),
         (
             "constraint-bind",
-            "  constraint c :- ?d = require[Desc[T]], seed(?x)\n",
+            "  constraint c: false :- ?d = require[Desc[T]], seed(?x), Desc.describe(?x) = 7\n",
         ),
         (
             "ensures",
             "  operation we(x: Int64) -> Int64 ensures requires(Desc[T]) = x\n",
         ),
-        (
-            "aggregation",
-            "  constraint a :- count(?x, seed(?x), ?n), requires(Desc[T])\n",
-        ),
         // THE CONTROL: the bare spelling, which never travelled the bracket path and so
         // loaded either way. It is here so a reader can see which rows the change moves.
         (
             "control-bare",
-            "  constraint c :- requires(Desc), seed(?x)\n",
+            "  constraint c: false :- requires(Desc), seed(?x), Desc.describe(?x) = 7\n",
         ),
     ] {
         let src = term_surface_program("test.w51w18.term", tail);
@@ -686,8 +688,8 @@ fn a_bracketed_requires_loads_in_every_term_surface() {
     }
 }
 
-/// A file whose `requires(…)` sits in a body stored as a TERM rather than as
-/// occurrences — a constraint, an `ensures`, an aggregation condition.
+/// A file whose `requires(…)` sits in a body converted as a TERM — a constraint, an
+/// `ensures`, an aggregation condition.
 fn term_surface_program(ns: &str, tail: &str) -> String {
     format!(
         r#"namespace {ns}

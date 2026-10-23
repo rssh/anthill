@@ -16693,6 +16693,41 @@ fn const_expr_form_name(e: &Expr) -> &'static str {
     }
 }
 
+/// The guards the post-load check leaves alone: those of the constraints whose text holds
+/// a located error of `errors` (kernel-language §8.4). Their verdict would be about the
+/// facts, where the defect is the text, and the load is refused either way.
+fn refused_constraint_guards(kb: &KnowledgeBase, errors: &[LoadError]) -> Vec<super::ConstraintId> {
+    let located: Vec<(&Option<Arc<Path>>, &Arc<str>, Span)> = errors
+        .iter()
+        .filter_map(|e| match e {
+            LoadError::Located {
+                path,
+                source,
+                inner,
+            } => inner.user_span().map(|sp| (path, source, sp)),
+            _ => None,
+        })
+        .collect();
+    if located.is_empty() {
+        return Vec::new();
+    }
+    kb.guard_sites()
+        .into_iter()
+        .filter(|(_, site)| {
+            let Some((path, text)) = kb.sources.provenance(site.source) else {
+                return false;
+            };
+            located.iter().any(|&(p, s, sp)| {
+                *p == path
+                    && (Arc::ptr_eq(s, &text) || **s == *text)
+                    && site.span.start <= sp.start
+                    && sp.end <= site.span.end
+            })
+        })
+        .map(|(id, _)| id)
+        .collect()
+}
+
 #[allow(unused_assignments)]
 fn load_phase_inner(
     kb: &mut KnowledgeBase,
@@ -17562,7 +17597,8 @@ fn load_phase_inner(
     // whose LogicalQuery the shared lowerer cannot handle is surfaced loudly as a
     // load-blocking error rather than silently passing. No-op when no guards are
     // registered (the common case — no quantified constraints).
-    for check in kb.check_all_guards() {
+    let refused = refused_constraint_guards(kb, &all_errors);
+    for check in kb.check_guards_except(&refused) {
         match check {
             super::GuardCheck::Holds => {}
             super::GuardCheck::Violated(label) => {
@@ -43923,7 +43959,8 @@ impl<'a> Loader<'a> {
     fn load_constraint_inner(&mut self, c: &Constraint, domain: Symbol) {
         // An unlabeled constraint names nothing to key a block by; the converter refuses
         // a block on one (WI-20260914-DV7DP), as it refuses a description block.
-        if let Some(label) = c.label.as_ref().map(|n| self.remap_name(n)) {
+        let label_sym = c.label.as_ref().map(|n| self.remap_name(n));
+        if let Some(label) = label_sym {
             self.emit_own_descriptions(label, &c.descriptions, domain);
             self.record_declaration_block(label, MemberKind::Constraint, c.meta.as_ref(), domain);
         }
@@ -43938,7 +43975,7 @@ impl<'a> Loader<'a> {
         let mut constraint_goals: Vec<TermId> = Vec::new();
         collect_constraint_body_goal_tids(&c.body, &mut constraint_goals);
         let no_tvars = HashSet::new();
-        for tid in constraint_goals {
+        for &tid in &constraint_goals {
             self.reject_binding_unify_in_contract(tid, "constraint");
             // WI-618: a keyword-less lambda typo in a constraint goal.
             self.check_bare_arrow_typo(tid, "a constraint", &no_tvars);
@@ -43975,7 +44012,7 @@ impl<'a> Loader<'a> {
                 if let Some(lq) = self.build_logical_query(&c.body) {
                     let span = SourceSpan::from_span(self.source_id, c.span);
                     self.note_constraint_domain_goal_sorts(lq, span);
-                    self.kb.add_guard_labeled(lq, label);
+                    self.kb.add_guard_at(lq, label, Some(span));
                     self.store_logical_query_constraint_fact(lq, domain);
                 }
             }
@@ -43988,8 +44025,52 @@ impl<'a> Loader<'a> {
                         label,
                         span: c.span,
                     });
+                return;
             }
         }
+        self.assert_constraint_goal_clause(&constraint_goals, label_sym, domain);
+    }
+
+    /// The goals a constraint proves, stored as a clause with the head `⊥`. A constraint
+    /// is a headless rule (kernel-language §6.2), so its goals are read and typed as a rule
+    /// body's are, with the same refusals at the same places. Nothing resolves a `⊥` head:
+    /// the guard engine evaluates the constraint's `LogicalQuery`, and an ordinary denial
+    /// stays inert. The body is every goal the constraint proves, in written order
+    /// ([`collect_constraint_body_goal_tids`]), built as a rule body's atoms are; a
+    /// constraint with none stores nothing. It is not a denial that states the
+    /// constraint — `forall ?x: C -: B` stores `⊥ :- C, B` — so it is for reading and
+    /// typing only, and nothing may resolve it. The clause is derived, so a spec's laws
+    /// ([`KnowledgeBase::spec_laws`]) still count the constraint once.
+    fn assert_constraint_goal_clause(
+        &mut self,
+        goals: &[TermId],
+        label: Option<Symbol>,
+        domain: Symbol,
+    ) {
+        if goals.is_empty() {
+            return;
+        }
+        let prev_owner = self.current_owner;
+        if label.is_some() {
+            self.current_owner = label;
+        }
+        // The goals were converted for the guard first, which emitted their descriptions.
+        let prev_descs = std::mem::replace(&mut self.descs_emitted_by_convert, true);
+        // Each atom is a goal, as a rule body's is (`load_rule_inner`).
+        let body_nodes: Vec<Rc<NodeOccurrence>> = goals
+            .iter()
+            .map(|&tid| {
+                let prev_goal = std::mem::replace(&mut self.in_body_goal, true);
+                let atom = self.build_body_atom_occurrence(tid);
+                self.in_body_goal = prev_goal;
+                atom
+            })
+            .collect();
+        self.descs_emitted_by_convert = prev_descs;
+        self.current_owner = prev_owner;
+        let bottom = self.kb.alloc(Term::Bottom);
+        self.kb
+            .assert_rule_debruijn_with_nodes(bottom, body_nodes, ClauseKind::Constraint, domain, None);
     }
 
     /// Store the inert `Constraint(head(…) [, guard(…)])` reflection fact for a

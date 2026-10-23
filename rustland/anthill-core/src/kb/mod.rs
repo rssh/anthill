@@ -118,7 +118,6 @@ enum GuardKind {
 /// A registered integrity guard.
 #[derive(Clone)]
 struct Guard {
-    #[allow(dead_code)]
     id: ConstraintId,
     /// The guard's `LogicalQuery`, carried carrier-agnostically (WI-023): a
     /// `Value::Term` for the hash-consed structural form the loader builds today,
@@ -132,6 +131,9 @@ struct Guard {
     trigger_sorts: Vec<Symbol>,
     /// Source `constraint` label, for violation diagnostics. `None` if unlabeled.
     label: Option<String>,
+    /// Where the `constraint` is written, for the post-load check to leave it alone when
+    /// the load refused its text. `None` for a guard a host registered by hand.
+    site: Option<crate::span::SourceSpan>,
 }
 
 /// Outcome of evaluating one registered guard in the WI-023 post-load check.
@@ -5024,6 +5026,17 @@ impl KnowledgeBase {
         guard: V,
         label: Option<String>,
     ) -> ConstraintId {
+        self.add_guard_at(guard, label, None)
+    }
+
+    /// [`add_guard_labeled`](Self::add_guard_labeled) for a guard written as a
+    /// `constraint` at `site`.
+    pub fn add_guard_at<V: term_view::TermView>(
+        &mut self,
+        guard: V,
+        label: Option<String>,
+        site: Option<crate::span::SourceSpan>,
+    ) -> ConstraintId {
         use crate::eval::value::Value;
         use crate::kb::persist_subst::BindValue;
         // Own the guard carrier-agnostically. `as_bind_value` captures the whole
@@ -5052,6 +5065,7 @@ impl KnowledgeBase {
             kind: GuardKind::General,
             trigger_sorts,
             label,
+            site,
         });
         id
     }
@@ -5179,6 +5193,14 @@ impl KnowledgeBase {
         self.guards.iter().map(|g| g.query.clone()).collect()
     }
 
+    /// Each guard written as a `constraint`, with where it is written.
+    pub fn guard_sites(&self) -> Vec<(ConstraintId, crate::span::SourceSpan)> {
+        self.guards
+            .iter()
+            .filter_map(|g| g.site.map(|site| (g.id, site)))
+            .collect()
+    }
+
     /// Sorts whose facts re-fire guard `cid`.
     pub fn guard_trigger_sorts(&self, cid: ConstraintId) -> &[Symbol] {
         self.guards
@@ -5279,8 +5301,17 @@ impl KnowledgeBase {
     /// post-load constraint check. Carrier-agnostic: each guard is read through
     /// [`TermView`](term_view::TermView).
     pub fn check_all_guards(&mut self) -> Vec<GuardCheck> {
+        self.check_guards_except(&[])
+    }
+
+    /// [`check_all_guards`](Self::check_all_guards) leaving out `skipped`: the guards of
+    /// the constraints whose text the load refused (kernel-language §8.4).
+    pub fn check_guards_except(&mut self, skipped: &[ConstraintId]) -> Vec<GuardCheck> {
         let mut out = Vec::with_capacity(self.guards.len());
         for idx in 0..self.guards.len() {
+            if skipped.contains(&self.guards[idx].id) {
+                continue;
+            }
             let query = self.guards[idx].query.clone();
             let label = self.guards[idx].label.clone();
             // WI-513: `evaluate_guard` lowers the constraint through the shared

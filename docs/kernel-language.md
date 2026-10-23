@@ -4659,8 +4659,7 @@ Constraint ::= DescriptionBlock*
 ConstraintBody ::= RuleBody [':-' RuleBody]
                  | QuantifiedConstraint
                  | AggregationConstraint
-QuantifiedConstraint ::= Quantifier '(' Variable ':' Term ')' '-:' ConstraintBody
-                       | Quantifier Variable ':' RuleBody '-:' ConstraintBody
+QuantifiedConstraint ::= Quantifier Variable ':' RuleBody '-:' ConstraintBody
                        | Quantifier Variable '-:' ConstraintBody
 Quantifier ::= 'forall' | 'some' | 'one' | 'lone' | 'no'
 AggregationConstraint ::= Aggregate '(' Variable ':' RuleBody '-:' RuleBody ')'
@@ -4684,11 +4683,15 @@ rule in twelve places and no longer does; see §8.4 for what each one turned out
 to be, and note that two of them were not merely inert but *wrong*, which an
 inert channel is very good at hiding.
 
+A constraint's goals — its invariant and guard, a quantifier's condition and body —
+are held to what a rule body's goals are held to (§5.3), an ordinary denial's
+included. Without a label, the name before `:-` is the invariant; a labeled denial
+with no invariant is `constraint name: false :- guard`.
+
 The quantified forms from proposal 023 are enforced through KB guards. The
 condition selects bindings for the variable; `some`, `one`, `lone`, and `no`
 require respectively at least one, exactly one, at most one, or zero satisfying
-bindings. `forall` requires the body for every selected binding. A typed binder
-`forall (?x: T) -: body` supplies the type/domain condition directly.
+bindings. `forall` requires the body for every selected binding.
 
 The delivered `forall` guard can negate a single body atom. A multi-atom
 `forall` body is currently refused as an unsupported constraint form because
@@ -5850,7 +5853,8 @@ checked once after the complete source set has loaded and again when a fact that
 matches one of its trigger sorts is asserted:
 
 1. The post-load check blocks the load when the guard is violated, cannot be
-   lowered, or cannot be decided within the resolver budget.
+   lowered, or cannot be decided within the resolver budget. A constraint whose
+   text the load refuses is not checked.
 2. The per-assert check retracts and rejects a newly inserted fact when the guard
    is violated or undecidable.
 3. A labeled violation identifies the source constraint in its diagnostic.

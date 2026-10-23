@@ -151,11 +151,12 @@ same reason — nothing can conflict over them.
 **What the flat form has to state, and what it must not.** `status` and its
 companions were one payload-carrying variant; written as independent fields they
 admit an `Open` carrying a stale rejection reason. So the part of the invariant
-that is still wanted is restated where the domain lives, as constraints, and a
-violation is a **load error**:
+that is still wanted is restated where the domain lives, as denials. A plain denial
+is not enforced (kernel-language §6.2), so `update` keeps it: it refuses an off-ramp
+without `--reason`.
 
 ```anthill
-  constraint rejected_names_its_reason :-
+  constraint rejected_names_its_reason: false :-
     WorkItem(last_status_change: StatusChange(status: Rejected, reason: none))
   -- …and the same for ProposalRejected and Stale.
 ```

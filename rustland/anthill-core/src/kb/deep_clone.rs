@@ -930,6 +930,7 @@ impl Copier {
             kind,
             trigger_sorts,
             label,
+            site,
         } = guard;
         Guard {
             id: plain(id),
@@ -937,6 +938,7 @@ impl Copier {
             kind: plain(kind),
             trigger_sorts: plain(trigger_sorts),
             label: plain(label),
+            site: plain(site),
         }
     }
 

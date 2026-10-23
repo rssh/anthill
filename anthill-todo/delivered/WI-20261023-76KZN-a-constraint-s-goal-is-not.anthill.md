@@ -3,9 +3,9 @@
 - id: WI-20261023-76KZN-a-constraint-s-goal-is-not
 - created: 2026-10-23T11:57:59Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-10-23T11:57:59Z
+- status_at: 2026-10-23T20:13:04Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -34,4 +34,8 @@ ACCEPTANCE: drive each row above and assert the refusal by its variant and name.
 ### 2026-10-23T17:13:26Z — feedback — claude
 
 ROW ADDED (from WI-20261013-R1W5A, 2026-10-23, measured on 38a260a6): a constraint's goal is not held to the rule-body effect refusal either. Over `operation plainStamp() -> String effects {Clock} = now()`, `constraint noStamp :- plainStamp() = "2000"` loads, where the same goal in a rule body is refused at load ("the call `plainStamp`, which performs `Clock`, and a rule body performs no effect", `kb/typing/rule_dispatch.rs` `refuse_performed_effects`); a function handed to a relation in a constraint goal is not checked (`refuse_handed_functions`). Walking a constraint's goals with the rule-body readings, as TO DO says, reaches both. ACCEPTANCE ADDS: `noStamp` refused naming the call and `Clock`; a constraint goal handing `lambda () -> now()` to a relation refused.
+
+### 2026-10-23T20:13:03Z — feedback — claude
+
+DELIVERED (user decisions 2026-10-23). A constraint's goals (invariant, guard, a quantifier's condition and body) are stored as a clause with the head ⊥, kind Constraint, origin Derived, built as a rule body's atoms are (Loader::assert_constraint_goal_clause), so every rule-body pass reaches them: the goal readings, the clause typing (effect and handed-function refusals, op-arg checks — WI-20260902-65QKB's three rows now refuse), and 'names nothing'. Nothing resolves ⊥; the guard still evaluates the LogicalQuery; spec_laws still counts the constraint once. A constraint whose text the load refuses is not checked by the post-load guard (refused_constraint_guards, §8.4). The unlabeled spelling 'constraint NAME :- G' reads NAME as the invariant goal: anthill-todo's three domain constraints and five test fixtures rewritten to 'constraint NAME: false :- G' (inert, as before). The typed binder 'forall (?x: T) -: body' is removed from the grammar, converter and §6.2: its TypeOf condition named nothing and its guard matched nothing. §6.2 and §8.4 updated. Rows: wi_76kzn_constraint_goal_reading_test (back-outs at its head). Gate 10609/0; scaland testFull 748/0.
 

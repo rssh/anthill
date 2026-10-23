@@ -77,6 +77,7 @@ end
 fn labeled_constraint_description_names_the_constraint() {
     const SRC: &str = r#"
 namespace wi1072.constraint
+  fact p(1)
   {< labeled denial >}
   constraint distinct: p(?x), p(?x)
 end
