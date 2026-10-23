@@ -13332,9 +13332,6 @@ impl TermSource for KnowledgeBase {
     fn qualified_name(&self, sym: Symbol) -> &str {
         self.qualified_name_of(sym)
     }
-    fn heads_only_a_type(&self, _id: TermId, sym: Symbol) -> bool {
-        self.is_type_value_head(sym)
-    }
 }
 
 #[cfg(test)]

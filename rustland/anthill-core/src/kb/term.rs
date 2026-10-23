@@ -532,12 +532,12 @@ mod tests {
 
 /// Read-only view over a term graph plus the symbol table that names its
 /// functors. Implemented by `KnowledgeBase` (hash-consed) and by
-/// `ParsedFile` (parse-IR + parse-time symbol table). Lets `TermPrinter`
-/// render either without duplicating the printing logic.
+/// `ParsedFile` (parse-IR + parse-time symbol table), for a reader that holds
+/// `TermId`s. The printer reads through `persistence::print::PrintView` instead,
+/// which reads a value and an occurrence as well as a term (WI-20261022-DRGCP).
 ///
 /// Distinct from `kb::term_view::TermView`, which abstracts unification
-/// over `TermId` vs runtime `Value`. This trait is for *rendering*; that
-/// one is for *matching*.
+/// over `TermId` vs runtime `Value`.
 pub trait TermSource {
     fn term(&self, id: TermId) -> &Term;
     fn sym_name(&self, sym: Symbol) -> &str;
@@ -549,16 +549,5 @@ pub trait TermSource {
     /// (e.g. parse-side `ParsedFile`), which simply keeps the generic Fn form.
     fn qualified_name(&self, sym: Symbol) -> &str {
         self.sym_name(sym)
-    }
-    /// Is the application `id`, headed by `sym`, a TYPE whatever slot it stands in — headed
-    /// by a constructor's type face, or by a sort with no constructor, predicate or
-    /// operation of its name (WI-20260902-JB6RS, kernel-language.md §4.4)? Such an
-    /// application is written with the bracket, since its parenthesized spelling is
-    /// refused. A view with a kind table asks it ([`crate::kb::KnowledgeBase`]); one with
-    /// none answers from what it has — the face here, the written bracket on the parse
-    /// side.
-    fn heads_only_a_type(&self, id: TermId, sym: Symbol) -> bool {
-        let _ = id;
-        sym.is_type_face()
     }
 }

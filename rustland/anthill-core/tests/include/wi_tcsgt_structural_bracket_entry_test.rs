@@ -547,7 +547,10 @@ fn an_entry_under_a_rules_let_and_if_is_the_type() {
         Value::Node(occ) => anthill_core::persistence::print::TermPrinter::new(&kb).print_occurrence(occ),
         other => panic!("expected the expression the clause holds, got {other:?}"),
     };
-    assert!(printed.contains("param: String"), "{printed}");
+    // The entry is printed as the type it is (WI-20261022-DRGCP): a substitution rebuilt it
+    // over the bound variable, and that carrier used to be written as the application
+    // `Arrow(param: String, …)`, which this row read the parameter off.
+    assert!(printed.contains("(String) -> Int64"), "{printed}");
     assert!(!printed.contains('?'), "{printed}");
     assert!(!printed.contains("<spliced>"), "{printed}");
 }
