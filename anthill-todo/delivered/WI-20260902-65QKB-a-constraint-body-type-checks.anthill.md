@@ -3,9 +3,9 @@
 - id: WI-20260902-65QKB-a-constraint-body-type-checks
 - created: 2026-09-02T17:33:25Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-02T17:33:25Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-10-23T20:17:30Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -30,4 +30,10 @@ AND IT INVALIDATES A SCOPING ARGUMENT. WI-20260902-4NEKZ's population census is 
 SCOPE. Find why the typer's op-arg/eq-operand checking is not reached for a constraint body (a constraint is loaded as a rule with an integrity-guard flag, so the likely cause is a gate keyed on the rule-head reading that a constraint has no head for), and either run the same checking there or state at the site, with a measurement, why a constraint body is deliberately unchecked. Then re-take 4NEKZ's six-name-kind matrix as a THREE-position one and record which rows move.
 
 Found by /code-review on WI-20260902-4NEKZ; the reproduction above was run in this repo on 2026-09-02.
+
+## Changes
+
+### 2026-10-23T20:17:29Z — feedback — claude
+
+CLOSED (user, 2026-10-23). Delivered by WI-20261023-76KZN (2af1fe3f): a constraint's goals are typed as a rule body's, and the three rows refuse at load — measured with the constraint written `constraint k: false :- <body>` (unlabeled, `constraint k :- <body>` reads `k` as the invariant goal, now refused as naming nothing): dbl(true) = 1 → 'dbl.x (op-arg): expected Int64, got Bool'; dbl(rel) = 1 → 'expected Int64, got Relation[…]'; rel = 7 → 'eq.b (op-arg): expected Relation[…], got Int64'. The 4NEKZ matrix was not re-taken as three positions; closed without it by the user.
 
