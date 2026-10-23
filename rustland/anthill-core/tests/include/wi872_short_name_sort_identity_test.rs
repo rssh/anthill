@@ -90,6 +90,7 @@ fn two_namespace_foo(param_type: &str, arg: &str) -> String {
          import wi872.b.{{mkfoo2}}\n  \
          sort Use\n    \
          operation takeA(f: {param_type}) -> Int64 = 1\n    \
+         operation same[X](x: X) -> X = x\n    \
          operation drive() -> Int64 = takeA({arg})\n  end\nend\n"
     )
 }
@@ -166,11 +167,15 @@ fn a_sort_from_another_namespace_is_refused_at_a_parameter() {
 /// The same collision NESTED under a parameterized type. A separate arm because the
 /// diagnostic's walk is what makes it reachable — a bare-`sort_ref`-only cause would
 /// leave this printing the untargeted note, and it is exactly as wrong here.
+///
+/// The list reaches the argument through `same`, whose slot declares no element type: at
+/// one that does, a `cons` spine is checked as the list literal is (kernel-language §4.6,
+/// WI-20261013-R1W5A), and the collision is refused at its head, a bare sort.
 #[test]
 fn a_nested_sort_from_another_namespace_is_refused() {
     let errs = load_errs(&two_namespace_foo(
         "List[T = Foo]",
-        "cons(head: mkfoo2(y: 7), tail: nil())",
+        "same(cons(head: mkfoo2(y: 7), tail: nil()))",
     ));
     assert!(
         errs.iter().any(|e| e.contains("takeA.f")),

@@ -68,6 +68,8 @@ use super::*;
 pub(super) fn dispatch_calls_in_occ(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
+    // The `@[simp]` gate ([`simp_gate`]), read once for the pass: typing asserts no equation.
+    simp: &(bool, Vec<RuleId>),
     occ: &Rc<NodeOccurrence>,
     pos: BodyPos,
     // WI-1058 — the ENCLOSING rule's head functor, for the two checks that report about a
@@ -126,7 +128,8 @@ pub(super) fn dispatch_calls_in_occ(
         // is never read as a call on a functor that names nothing, and a type's sort-name
         // leaves are never read as unresolved values.
         (_, _) if pos == BodyPos::Untyped => Rc::clone(occ),
-        (Some(CallDispatch::Checked | CallDispatch::BinderForm), _) | (_, None) => Rc::clone(occ),
+        (Some(CallDispatch::Checked | CallDispatch::BinderForm | CallDispatch::Fragment), _)
+        | (_, None) => Rc::clone(occ),
         (_, Some(expr)) => {
             // The children of a compound expression are written as an operation body
             // is, and are typed as that text whichever descent reaches them
@@ -161,7 +164,7 @@ pub(super) fn dispatch_calls_in_occ(
                 .zip(child_expected)
                 .zip(child_declared)
                 .map(|(((c, p), e), d)| {
-                    dispatch_calls_in_occ(kb, env, c, p, rule_sym, e, d, errors)
+                    dispatch_calls_in_occ(kb, env, simp, c, p, rule_sym, e, d, errors)
                 })
                 .collect();
             crate::kb::simp_rewrite::reassemble(occ, &new_children)
@@ -193,12 +196,38 @@ pub(super) fn dispatch_calls_in_occ(
     // children may have been rewritten, and both the type-check and the node this returns
     // must see that tree. It is the same `Rc` for the two non-recursing shapes.
     //
+    // A call is written as an operation body is (068 §3): an operation's application, a
+    // dot, a spec operation's call in a value slot or as the goal it is. A comparison
+    // goal is not one; its operands are the rule's own term.
+    let a_call = match shape {
+        CallDispatch::Fragment | CallDispatch::Checked => true,
+        CallDispatch::BodyLessSpecOp => pos == BodyPos::Value,
+        _ => false,
+    };
+    let fragment_env = a_call.then(|| env.as_fragment()).flatten();
+    let env = fragment_env.as_ref().unwrap_or(env);
+    // A goal `f(args, ?r)` is `?r <=> f(args)` (kernel-language §5.3): where an equation
+    // rewrites the call, the goal is stored as that equation of its result.
+    if shape == CallDispatch::Fragment && node_pos_of(pos) == NodePos::RuleBodyGoal {
+        if let Some(goal) = rewritten_functional_goal(kb, env, simp, &walked) {
+            return goal;
+        }
+    }
     // WI-1104 — and it hands the typer THE POSITION. This walk is the only thing in the
     // language that knows it: it owns goal descent ([`child_body_positions`]), so by the
     // time a node reaches `type_check_node` the answer exists nowhere else. Everything
     // BENEATH the handed-over node is data, which is why [`NodePos`] has two values where
     // [`BodyPos`] has four — the typer never descends into a goal.
-    match type_check_node_at(kb, env, &walked, expected, node_pos_of(pos)) {
+    match type_check_node_gated_at(
+        kb,
+        env,
+        &walked,
+        expected,
+        simp.0,
+        &simp.1,
+        node_pos_of(pos),
+        FlowEnv::empty(),
+    ) {
         // `result.node` is the dispatched tree (method `Apply` / reflect
         // `field_access` / a pinned spec-op `Apply`), re-typed and redex-free —
         // the same form an op body's call rewrites to.
@@ -316,7 +345,7 @@ pub(super) fn dispatch_calls_in_occ(
                 // WI-20260903-FC2X4 — `BinderForm` shares this arm and shares its reason:
                 // it does not recurse either, so `mark` is its own start and there is
                 // nothing beneath it to have reported already.
-                CallDispatch::Checked | CallDispatch::BinderForm => {
+                CallDispatch::Checked | CallDispatch::BinderForm | CallDispatch::Fragment => {
                     debug_assert_eq!(
                         mark,
                         errors.len(),
@@ -945,9 +974,10 @@ fn already_reported(kb: &KnowledgeBase, reported_beneath: &[TypeError], leaf: &T
 
 /// WI-1043 — WHICH shape [`dispatch_calls_in_occ`] is deciding: it governs whether the
 /// walk RECURSES into the node before deciding it, whether it is type-checked at all, and
-/// how a failure is reported. Three surface shapes reach `type_check_node`; two of them
-/// have been reaching it since WI-282 / WI-1026 and the third was admitted by WI-1043. The
-/// two WI-1058 added do NOT reach it — they are CHECKED, not typed.
+/// how a failure is reported. Five shapes reach `type_check_node` — `Checked` and
+/// `BodyLessSpecOp` (WI-282 / WI-1026 / WI-1043), `Call` (WI-1058), `BinderForm`
+/// (WI-20260903-FC2X4) and `Fragment` (068 C1c); the two WI-1058 added for a goal and a
+/// data term do NOT reach it — they are CHECKED, not typed.
 ///
 /// WI-1056 retired the third distinction this carried — `reports_every_failure`, WI-1043's
 /// narrowing to the two 058 TIES of the deciding call. That clause was what let WI-1043
@@ -995,6 +1025,123 @@ pub(super) enum CallDispatch {
     /// pattern into Γ (`bind_and_label_pattern`) and type the subtree under it, which is
     /// the one place in the typer that knows how — and reports leaf by leaf.
     BinderForm,
+    /// An operation's application in a value slot, or the goal that is an operation's
+    /// call: a fragment (068 §3), typed whole as an operation body is, equations on, and
+    /// stored rewritten (068-implementation §6.2, decision 4). Same policy as
+    /// [`Self::Checked`].
+    Fragment,
+}
+
+/// The goal `f(args, ?r)` on an operation, stored as `?r <=> <the call rewritten>` when an
+/// equation rewrites `f(args)` — typed as the call is in a value slot. `None` where the
+/// goal is not that spelling, or the call keeps its operation: the goal is then typed as
+/// written, with its result column.
+fn rewritten_functional_goal(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    simp: &(bool, Vec<RuleId>),
+    goal: &Rc<NodeOccurrence>,
+) -> Option<Rc<NodeOccurrence>> {
+    let Some(Expr::Apply {
+        functor,
+        pos_args,
+        named_args,
+        type_args,
+        recv_type,
+    }) = goal.as_expr()
+    else {
+        return None;
+    };
+    let declared = kb.op_record(*functor)?.signature.as_ref()?.params.len();
+    if !named_args.is_empty() || pos_args.len() != declared + 1 {
+        return None;
+    }
+    let (result, args) = pos_args.split_last()?;
+    let call = goal.rebuilt_expr(Expr::Apply {
+        functor: *functor,
+        pos_args: args.to_vec(),
+        named_args: Vec::new(),
+        type_args: type_args.clone(),
+        recv_type: recv_type.clone(),
+    });
+    let typed = type_check_node_gated_at(
+        kb,
+        env,
+        &call,
+        None,
+        simp.0,
+        &simp.1,
+        NodePos::Value,
+        FlowEnv::empty(),
+    )
+    .ok()?;
+    if matches!(typed.node.as_expr(), Some(Expr::Apply { functor: f, .. }) if f == functor) {
+        return None;
+    }
+    let unify = kb.unify_functor();
+    Some(goal.rebuilt_expr(Expr::Apply {
+        functor: unify,
+        pos_args: vec![Rc::clone(result), typed.node],
+        named_args: Vec::new(),
+        type_args: Vec::new(),
+        recv_type: None,
+    }))
+}
+
+/// Is a goal on the operation `functor` with these arguments one of its two readings —
+/// its call at its parameter list, of a `Bool` (or a type that may be one), or that call
+/// and one positional result column?
+fn operation_goal_reading(kb: &KnowledgeBase, functor: Symbol, pos: usize, named: usize) -> bool {
+    let Some(sig) = kb.op_record(functor).and_then(|r| r.signature.as_ref()) else {
+        return false;
+    };
+    let declared = sig.params.len();
+    if named == 0 && pos == declared + 1 {
+        return true;
+    }
+    pos + named == declared
+        && sort_functor_of_view(kb, &sig.return_type).is_none_or(|s| kb.sort_sym_is_bool(s))
+}
+
+/// Does `arg` hold a type written in the rule's own term — a dotted path (the `field_access`
+/// chain a goal's argument keeps), or a bracket with an entry no type value? A goal's
+/// arguments are built so, and the operation-body typer has no reading of them; a goal
+/// holding one keeps the reading it has as a goal.
+fn holds_a_type_as_the_rules_term(arg: &Rc<NodeOccurrence>) -> bool {
+    let mut stack = vec![Rc::clone(arg)];
+    while let Some(o) = stack.pop() {
+        if o.is_dot_chain() {
+            return true;
+        }
+        match o.as_expr() {
+            Some(Expr::TypeValue {
+                pos_args,
+                named_args,
+                ..
+            }) => {
+                let entries = pos_args.iter().chain(named_args.iter().map(|(_, e)| e));
+                if entries
+                    .clone()
+                    .any(|e| !matches!(e.as_expr(), Some(Expr::TypeValue { .. } | Expr::Spliced(_))))
+                {
+                    return true;
+                }
+                stack.extend(entries.cloned());
+            }
+            Some(expr) => for_each_child(expr, |c| stack.push(Rc::clone(c))),
+            None => {}
+        }
+    }
+    false
+}
+
+/// Is `functor` an operation, whose application in a value slot computes — not an entity
+/// constructor, which builds, nor the chain a dotted name is written as (068-implementation
+/// §5.1: a dotted name is not a call)?
+fn operation_application(kb: &KnowledgeBase, functor: Symbol) -> bool {
+    kb.op_record(functor).is_some()
+        && !kb.is_entity_constructor(functor)
+        && kb.builtin_of(functor) != Some(crate::kb::resolve::BuiltinTag::FieldAccess)
 }
 
 /// WI-282 / WI-1026 / WI-1043: is THIS node a call [`dispatch_calls_in_occ`] must decide
@@ -1146,7 +1293,10 @@ pub(super) fn call_dispatch_shape(
         // doc says a missing row there is silent.
         _ if !pattern_child_indices(expr).is_empty() => Some(CallDispatch::BinderForm),
         Expr::Apply {
-            functor, pos_args, ..
+            functor,
+            pos_args,
+            named_args,
+            ..
         } => {
             let spec_op = || {
                 spec_op_call_parent(kb, *functor).map(|_| {
@@ -1160,7 +1310,9 @@ pub(super) fn call_dispatch_shape(
             match pos {
                 // Returned above, with the type-term test it shares a reason with.
                 BodyPos::Untyped => None,
-                BodyPos::Value => spec_op().or(Some(CallDispatch::DataTerm)),
+                BodyPos::Value => spec_op()
+                    .or_else(|| operation_application(kb, *functor).then_some(CallDispatch::Fragment))
+                    .or(Some(CallDispatch::DataTerm)),
                 BodyPos::Goal(commit) | BodyPos::GoalTuple(commit) => {
                     // 1 — a connective (rung 1). The `tuple` wrapper is recognised only
                     // in the slot the table put one in, never by its name alone.
@@ -1176,6 +1328,19 @@ pub(super) fn call_dispatch_shape(
                     // 3 — a resolver BUILTIN, which is read by the builtin.
                     if kb.builtin_of(*functor).is_some() {
                         return None;
+                    }
+                    // A goal on an operation no clause defines is that operation's call,
+                    // where it is written as one of the two goals a call is (§5.3); any
+                    // other is `check_rule_body_goal_readings`' to refuse.
+                    if operation_application(kb, *functor)
+                        && kb.rules_by_functor_iter(*functor).next().is_none()
+                        && operation_goal_reading(kb, *functor, pos_args.len(), named_args.len())
+                        && !pos_args
+                            .iter()
+                            .chain(named_args.iter().map(|(_, a)| a))
+                            .any(|a| holds_a_type_as_the_rules_term(a))
+                    {
+                        return Some(CallDispatch::Fragment);
                     }
                     // 4 — a FACT PATTERN, whose shape is the entity's declared field
                     // schema. The one goal-position shape with a declaration to check

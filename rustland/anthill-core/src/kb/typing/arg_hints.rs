@@ -15,7 +15,7 @@ pub(super) fn hof_arg_hint(
     param_type: Option<Value>,
 ) -> Option<Value> {
     let pt = param_type?;
-    if is_hof_shaped(arg) && arrow_parts(kb, &pt).is_some() {
+    if is_hof_shaped(kb, arg) && arrow_parts(kb, &pt).is_some() {
         Some(pt)
     } else {
         None
@@ -113,9 +113,15 @@ pub(super) fn relation_ref_arg_type(
 /// WI-793 named it: the SAME predicate decides which arguments must never be staged
 /// ahead of the hints, because a staged argument is visited before any hint exists and
 /// these are exactly the arguments a hint is for.
-pub(super) fn is_hof_shaped(arg: &Rc<NodeOccurrence>) -> bool {
+///
+/// A rule body's own term writes a bare operation name as `Ref`, where an operation body
+/// writes it as `VarRef`: a call there is typed as an operation body is (068 §3), so that
+/// reference is one too. Any other `Ref` — a nullary constructor, a resolved name — is a
+/// value.
+pub(super) fn is_hof_shaped(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> bool {
     match arg.as_expr() {
         Some(Expr::Lambda { .. } | Expr::VarRef { .. }) => true,
+        Some(Expr::Ref(s)) => kb.has_kind(*s, crate::intern::SymbolKind::Operation),
         Some(
             Expr::Apply {
                 pos_args,
@@ -367,7 +373,7 @@ pub(super) fn known_arg_types_and_staged(
             ps.iter().enumerate().any(|(j, (_, pty))| {
                 param_arg_index(kb, ps, &pos_slots, j, named_args)
                     .and_then(|u| arg_at(pos_args, named_args, u))
-                    .is_some_and(is_hof_shaped)
+                    .is_some_and(|a| is_hof_shaped(kb, a))
                     && type_mentions_spec_param(kb, pty, &spec_syms, &spec_vars)
             })
         })
@@ -417,7 +423,7 @@ pub(super) fn known_arg_types_and_staged(
         } else if (projected.contains(psym)
             || tp_pinning.contains(psym)
             || spec_carrier.contains(psym))
-            && !is_hof_shaped(a)
+            && !is_hof_shaped(kb, a)
         {
             staged.push(unified);
         }
@@ -497,7 +503,7 @@ fn op_tp_pinning_params(
         mentions[j]
             && param_arg_index(kb, ps, pos_slots, j, named_args)
                 .and_then(|u| arg_at(pos_args, named_args, u))
-                .is_some_and(is_hof_shaped)
+                .is_some_and(|a| is_hof_shaped(kb, a))
     });
     if !some_hof_mentions_tp {
         return Vec::new();
@@ -669,7 +675,7 @@ pub(super) fn one_arg_hint(
     // caller names, and the argument check refused it against the eliminated slot (MEASURED:
     // review 9 — reached once the receiver's provision binds `J` at depth).
     let pt_hof = match (inst, pt_hof) {
-        (Some(s), Some(t)) if is_hof_shaped(arg) || seq_literal_kind(kb, arg).is_some() => {
+        (Some(s), Some(t)) if is_hof_shaped(kb, arg) || seq_literal_kind(kb, arg).is_some() => {
             Some(resolve_type_deep_value(kb, s, &t))
         }
         (_, t) => t,

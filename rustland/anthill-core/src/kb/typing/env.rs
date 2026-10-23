@@ -13,6 +13,10 @@ pub(super) enum RuleText {
     /// What stands under a compound expression. The loader writes it as it writes an
     /// operation body (`load::is_compound_expression_marker`).
     Expression,
+    /// A call of the rule's own term, outside every compound expression: typed as an
+    /// operation body is (068 §3), and a callee's own `requires` there is a condition of
+    /// the clause, which the clause's inference supplies (`infer_rule_body_requirements`).
+    Fragment,
 }
 
 /// A lambda, an `if`, a `let`, a `match` or an in-body proof: the nodes of the forms the
@@ -404,12 +408,31 @@ impl TypingEnv {
         self.rule_body_dispatch != Some(RuleText::Term)
     }
 
+    /// The env a call of a rule body's own term is typed in ([`RuleText::Fragment`]).
+    /// `None` where this env types another text.
+    pub(super) fn as_fragment(&self) -> Option<TypingEnv> {
+        if self.rule_body_dispatch != Some(RuleText::Term) {
+            return None;
+        }
+        let mut env = self.clone();
+        env.rule_body_dispatch = Some(RuleText::Fragment);
+        Some(env)
+    }
+
+    /// Is a callee's own `requires` a condition of the enclosing clause here, and not
+    /// this call's to supply ([`RuleText::Fragment`])?
+    pub(super) fn leaves_own_requirements_to_the_clause(&self) -> bool {
+        self.rule_body_dispatch == Some(RuleText::Fragment)
+    }
+
     /// The env the children of `expr` are typed in, where it is not this one: `expr` is
-    /// a compound expression in a rule body's own term. Asked at each descent into a
-    /// rule body's node — the typer's visit, and the walk that hands a rule body's
-    /// calls to the typer one at a time.
+    /// a compound expression in a rule body's own term, or in a call of it. Asked at
+    /// each descent into a rule body's node — the typer's visit, and the walk that hands
+    /// a rule body's calls to the typer one at a time.
     pub(super) fn under(&self, expr: &Expr) -> Option<TypingEnv> {
-        if self.rule_body_dispatch != Some(RuleText::Term) || !is_compound_expression(expr) {
+        if !matches!(self.rule_body_dispatch, Some(RuleText::Term | RuleText::Fragment))
+            || !is_compound_expression(expr)
+        {
             return None;
         }
         let mut env = self.clone();

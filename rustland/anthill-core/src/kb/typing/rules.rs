@@ -323,6 +323,8 @@ pub(super) fn type_rule_bodies(
     errors: &mut Vec<TypeError>,
     sources: &mut Vec<Option<crate::span::SourceId>>,
 ) {
+    // Read once: typing rewrites bodies and asserts no equation.
+    let simp = simp_gate(kb);
     for rid in kb.live_rule_ids() {
         // WI-20261010-9BKZ4 — a sealed load's rule bodies were typed by that load.
         if rule_body_is_typed_once(kb, rid) != (which == RuleBodies::SealedOnly) {
@@ -483,6 +485,7 @@ pub(super) fn type_rule_bodies(
                     let rewritten = dispatch_calls_in_occ(
                         kb,
                         &env,
+                        &simp,
                         n,
                         BodyPos::Goal(GoalCommit::Top),
                         rule_sym,

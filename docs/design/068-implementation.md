@@ -987,6 +987,91 @@ one call over both, the control loading; the check backed out, the two-call half
 gate's other rows were green with the check in: no test and no bundled program adds such a
 clause.
 
+### 6.11 C1c, a call typed as an operation body (WI-20261013-R1W5A, first part, 2026-10-23)
+
+Decision 4, and decision 3's first two C1c classes. `kb/typing/rule_dispatch.rs`
+(`CallDispatch::Fragment`, `rewritten_functional_goal`), `TypingEnv::as_fragment`
+(`RuleText::Fragment`); rows in `wi_r1w5a_call_typed_as_an_operation_body_test`, the ledger at
+its head.
+
+- **An operation's application is typed whole**: in a value slot, and as the goal that is its
+  call — `f(args)` of a `Bool`, `f(args, ?r)` on an operation no clause defines. The walk
+  hands it to the typer as it hands a dot, equations on, and stores the typed node. Before it
+  was a data term the walk only name-checked. A goal `f(args, ?r)` whose call an equation
+  rewrites is stored as `?r <=> <the rewritten call>`. A dotted name (`field_access`) is no
+  call (§5.1), a comparison's operands are the rule's own term, and a goal of another shape
+  is the goal check's to refuse.
+- **What it is typed in is the operation body's text** (`RuleText::Fragment`), and so is every
+  call the walk types whole — a dot and a defaulted spec operation anywhere, a body-less spec
+  operation in a value slot — and the clause typing's reading of a dot: a literal, a `()` an
+  equation leaves and a bare operation name (`Ref`, hinted as `VarRef` is) read as an
+  operation body reads them. A comparison goal (`=` and its family as a goal) keeps the rule's
+  text: its operands are data.
+- **A callee's own `requires` there is the clause's condition**, as it was: the fragment's
+  typing neither stamps the operation's slots nor refuses one, and the clause's inference
+  (`infer_rule_body_requirements`) weaves it as before. Stamped, the slot read as known and the
+  inference declined it: `Util.isLess(x: ?a, y: ?b)` answered under `Int64`'s own order
+  where the caller's `Descending` was selected. Making the typer's classification the
+  inference's input is C1d's.
+- **Decided with the user, 2026-10-23**: a `cons`/`nil` spine at a position that declares its
+  element type is checked as the literal it is lowered from, in both bodies (kernel-language
+  §4.6; `spine_field_expected`, the seed in `check_constructor_iter`); and a type written in a
+  call's argument — a dotted sort path, a sort's bracket — is the type value it denotes, as in
+  an operation body (`Loader::written_type_in_call_argument`). For a call in a value slot and
+  a dot's: a goal's arguments stay the rule's own term, since whether a goal on an operation is
+  its call or a relation its clauses define is known only once every clause is loaded, and a
+  goal holding such a type keeps the reading it has as a goal (`holds_a_type_as_the_rules_term`).
+  Found by `/code-review`: with the goal's arguments built as a call's, `f(Outer.Inner)` over
+  `rule f(Outer.Inner) :- true` stopped matching its own clause. Typed field by field, the rule
+  body's `total([car(n: 1), van(n: 2)])` was refused (`cons.tail: expected List[T = Car], got
+  List[T = Van]`) where the operation body's literal loads; and `which(Outer.Inner)`, today 0
+  (the chain), was refused, a plain reference to the sort.
+- **Found and fixed:** the clause typing read a call's positional arguments only, so a
+  labelled argument typed nothing (`constrain_application`); its typer stamp then read as a
+  known type to the inference above.
+
+| written | before | now |
+|---|---|---|
+| `?x <=> dbl(2)`; the goal `dbl(2, ?x)` | residual; nothing | 4; 4 |
+| `?x <=> Box.open(Box.mk(4))` beside the dot and the parametric sort's call | residual | 4, as both |
+| `?r <=> Tw.twice(m(v: 3), "km")`, a law over `Conv.conv` | residual | 14 |
+| `?r <=> takes(Box.mk(4).nothing(), 4)` (7G99A's program 5) | refused, `expected Unit, got ()` | 4 |
+| `viaHead(3, ?r)`, `?a: Int64` at `Option[T = Int64]` | `match_failed` | 3 |
+| `isPos(3)` over `rule isPos(?n) <=> ?n > 0 @[simp]` | nothing; `not(isPos(3))` held | holds |
+| `?c <=> sub2(1, 5, 9)`, `sub2(1, 5, bogus: 9)`, `sub2(1)`, `sub2("a", 5)`, the goal `rep(3, 3, ?c)` | -4, -4, residual, fault, `3` | refused, as in an operation body |
+| `?x <=> app(dbl, 2)` | residual | refused, as in an operation body |
+| `?r <=> named_match((1, 2))` at `(a: Int64, b: Int64)` | 3 | refused, as in an operation body |
+
+**The count** (with the refusals recorded and nothing refused): the corpus of §1.2 records
+nothing. The suite (gate 10567): 30 records in 26 tests, every one a row built to be refused —
+this file's 3, the other checks' refusals this typing now gives too (`wi1056` ×2, `wi1104`,
+`wi710` ×2, `wi839`, `wi753`, `wi756` ×2, `wi_wf14z`, `wi_mhrn1`'s labelled goal ×2,
+`wi_nr6fj`, `wi_2sz88` ×2, `wi_a3fy2` ×4, `wi_fcz3n`), the ones it now owns (`wi_50b2k` ×4,
+`wi_fc2x4`), and the two rows that turn (`wi_mhrn1`'s left-over argument, `wi_qqpq2`'s
+positional tuple at a named slot), each rewritten to its written clause's refusal beside the
+run-time goal it drove. Taken before the readings above were fixed, the first count was 157
+records in 83 tests: an operation's own requirement, 63 in 43 (`wi_p7vp4`, `wi_nekr0`,
+`wi_prva2`, `wi_gfs6a`, `wi_n31xx`, `wi_nr6fj`); a dotted name or a type written in a call's
+argument read as a value, 48 in 11 (`dotted_nullary_op_call`, `wi_4nekz`, `wi_rxt6s`,
+`wi_tcsgt`); the spine (`wi_m32c2`); a labelled bare operation reference (`wi_50b2k`); and the
+rows built to be refused above.
+
+Rows moved by design: `wi_rxt6s`'s `a_rule_bodys_call_argument_is_the_sort` (21, was 0);
+`wi_mhrn1`'s and `wi_qqpq2`'s rows above; `wi_80zv8`'s join and `wi872`'s nested collision now
+reach their argument through a `let` or a generic identity, since at a declaring slot the
+spine is checked field by field.
+
+Three readings make a rule body's own term inside a call read as an operation body's, each at
+its reader: a bare operation name (`Ref`, hinted as `VarRef` is), a written type (built by the
+operation-body walk), and the spine (hinted in the Apply arm). Building a call's arguments with
+the operation-body walk, as a compound expression is built, would retire all three; readers
+that tell `VarRef` from `Ref` and that this part did not reach (`leaf_var_ref`,
+`arg_is_bare_operation_name`, `varref_arg_env_type`) still see the rule's spelling.
+
+Left to C1c: decision 3's third class, an effectful application refused by its typed row,
+with the run-time half of the 2026-10-21 row (an effectful operation's goal undecided where no
+typer sees it); kernel-language §5.3's statement of it.
+
 ## 7. Testing
 
 Per CLAUDE.md: each ticket's rows live in one test module, driven by value with its back-outs run

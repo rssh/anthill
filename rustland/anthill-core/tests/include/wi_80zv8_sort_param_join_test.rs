@@ -180,6 +180,10 @@ fn a_subtype_and_its_supertype_join_in_either_order() {
 /// Circle]` is and the literal `[c, s]` always was. The first field used to decide, so the
 /// first of these was refused, `cons.tail (entity-field): expected List[T = Circle], got
 /// List[T = Shape]`.
+///
+/// Bound by a `let` first, where nothing declares the list's element type: at a slot that
+/// declares it, a `cons` spine is checked as the list literal is (kernel-language §4.6,
+/// WI-20261013-R1W5A), each field against the declaration, and no join is taken.
 #[test]
 fn a_constructors_fields_join_in_either_order() {
     for (ns, params, expr) in [
@@ -188,7 +192,7 @@ fn a_constructors_fields_join_in_either_order() {
     ] {
         let errs = load_errors(&program(
             ns,
-            &format!("  operation go({params}) -> Int64 = takes_strings({expr})"),
+            &format!("  operation go({params}) -> Int64 =\n    let l = {expr}\n    takes_strings(l)"),
         ));
         assert_refused_naming(
             &errs,

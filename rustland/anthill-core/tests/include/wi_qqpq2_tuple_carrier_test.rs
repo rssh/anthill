@@ -218,13 +218,30 @@ fn the_positional_operation_body_twin_is_unmoved() {
 /// answers, the two carriers answered it differently, and the reader it gates picks a
 /// different arm on the answer. MEASURED both ways — 3 with the normalization, one
 /// FLOUNDERED solution without it.
+///
+/// WRITTEN IN A CLAUSE IT IS REFUSED, as its operation-body twin is: the call is typed as an
+/// operation body is (WI-20261013-R1W5A), and `(1, 2)` is no `(a: Int64, b: Int64)`. The
+/// run-time reading this row drives is asked through a goal built at run time, which no
+/// typer sees.
 #[test]
 fn a_positional_tuple_meeting_a_name_keyed_pattern_reads_by_slot() {
-    let mut kb = load(
-        "zzqqpq2.poscross",
-        "  rule value(?r) :- ?r <=> named_match((1, 2))\n",
+    let src = format!(
+        "namespace zzqqpq2.poscrossw\n{PREAMBLE}  rule value(?r) :- ?r <=> named_match((1, 2))\nend\n"
     );
-    assert_eq!(only_int(&mut kb, "zzqqpq2.poscross.value"), 3);
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&src),
+        &["named_match.p", "expected (a: Int64, b: Int64), got (_1: Int64, _2: Int64)"],
+        "the written call",
+    );
+    let mut kb = load("zzqqpq2.poscross", "");
+    let goal = crate::common::query_pattern_term(&mut kb, "?r <=> zzqqpq2.poscross.named_match((1, 2))");
+    let var = goal.pos_arg(&kb, 0).expect("`?r`").to_value();
+    let rows: Vec<_> = kb
+        .resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default())
+        .iter()
+        .map(|sol| kb.reify_value(&var, &sol.subst).literal_int64(&kb))
+        .collect();
+    assert_eq!(rows, vec![Some(3)]);
 }
 
 /// **A PERMUTED NAMED TUPLE BINDS BY NAME THROUGH A `match` / `let` PATTERN** — the row

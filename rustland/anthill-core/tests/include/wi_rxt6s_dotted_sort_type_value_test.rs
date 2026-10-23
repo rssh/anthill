@@ -57,15 +57,17 @@
 //!       the two rungs above the sort's; a whole name resolves to one symbol.
 //!     a_binder_named_like_the_root_is_still_the_receiver — the local pass comes first.
 //!     a_data_slot_still_stores_the_chain — a clause's own term is not this walk's.
-//!     a_rule_bodys_argument_is_still_the_term_it_was — the boundary, below.
+//!     a_rule_bodys_call_argument_is_the_sort — the boundary, below.
 //!   The rung placed FIRST, before the rule's and the const's, changes no row of the
 //!   core crate: the three hand on one node.
 //!
-//! THE BOUNDARY. Only the receiver of a dot is read so in a rule body's own term. A path
-//! written as an ARGUMENT there stays the chain the clause stores, so `?x <=>
-//! which(Outer.Inner)` hands `which` that chain and not the type value the bare `Inner`
-//! is. Reading every type written in a clause's term is proposal 055 umbrella B
-//! (WI-20260823-53W12); the row pins today's answer and turns with it.
+//! THE BOUNDARY. In a rule body's own term a path is read so where it is a dot's receiver
+//! and where it is a call's argument: a call there is typed as an operation body is
+//! (WI-20261013-R1W5A, decided with the user 2026-10-23), so `?x <=> which(Outer.Inner)`
+//! hands `which` the sort, as its operation-body twin does. A path in a data slot that is
+//! no call's stays the chain the clause stores (`a_data_slot_still_stores_the_chain`).
+//! Reading every type written in a clause's term is proposal 055 umbrella B
+//! (WI-20260823-53W12).
 
 use anthill_core::eval::Value;
 
@@ -551,16 +553,17 @@ fn a_data_slot_still_stores_the_chain() {
     }
 }
 
-/// The boundary (module doc). An argument written in a rule body's own term is the term
-/// the clause stores: the path stays its chain there, and `which` is handed that chain.
+/// The boundary (module doc). A path written as a call's argument in a rule body is the
+/// sort, as in an operation body: `which` is handed `Inner` and answers 21. It was handed
+/// the chain and answered 0 until WI-20261013-R1W5A.
 #[test]
-fn a_rule_bodys_argument_is_still_the_term_it_was() {
+fn a_rule_bodys_call_argument_is_the_sort() {
     assert_eq!(
         ints("rxt6sruleargbare", "  rule r(?x) :- ?x <=> which(Inner)"),
         [21]
     );
     assert_eq!(
         ints("rxt6srulearg", "  rule r(?x) :- ?x <=> which(Outer.Inner)"),
-        [0]
+        [21]
     );
 }

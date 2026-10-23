@@ -989,8 +989,17 @@ pub(super) fn constrain_application<A: ConstrainedArg>(
         // index, `pick(?l, k: 1)` over `(k: Int64, l: Leaf)` typed `?l` as `Int64`, and a
         // later `Desc.describe(?l, ?r)` was refused for a carrier the clause never had.
         let pos_params = positional_param_indices(kb, &op.params, pos_args.len(), named_args);
+        // A labelled argument meets the parameter its label names.
+        let labelled: Vec<Option<usize>> = named_args
+            .iter()
+            .map(|(label, _)| op.params.iter().position(|(p, _)| same_label(kb, *p, *label)))
+            .collect();
+        let slots = pos_args
+            .iter()
+            .zip(pos_params)
+            .chain(named_args.iter().map(|(_, arg)| arg).zip(labelled));
         let mut params: Vec<(Symbol, ArgType)> = Vec::new();
-        for (index, (arg, param)) in pos_args.iter().zip(pos_params).enumerate() {
+        for (index, (arg, param)) in slots.enumerate() {
             // WI-341 Stage A: seed inference from the param type carrier-agnostically.
             if let Some((param_sym, param_type)) = param.and_then(|p| op.params.get(p)) {
                 let (param_type, instantiated) =
@@ -2164,6 +2173,8 @@ fn dot_value_type(
     env.set_debruijn_types(Rc::new(types));
     env.set_rule_scope(kb.rule_domain(rid));
     env.mark_rule_body_dispatch();
+    // A dot is a call, typed as the dispatch walk types one.
+    let env = env.as_fragment().unwrap_or(env);
     type_check_node_at(kb, &env, dot, None, NodePos::Value)
         .ok()
         .map(|r| r.ty)

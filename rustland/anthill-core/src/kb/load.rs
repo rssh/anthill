@@ -26284,6 +26284,11 @@ struct Loader<'a> {
     // sets it for each of its own children, so it never reaches past one level — the
     // arguments of a call inside a chain are values again.
     in_non_value_role: bool,
+    // Set while a rule body's walk builds the arguments of an operation's application, and
+    // kept for the constructions nested in them: a call there is written as an operation
+    // body is (068 §3), so a type written in its arguments is built as the operation-body
+    // walk builds it ([`Self::written_type_in_call_argument`]).
+    in_call_argument: bool,
     // WI-605: set by the bare-arrow diagnostic arm when it substitutes a
     // `Term::Bottom` recovery leaf into the body being converted. Cleared at
     // `convert_expr_term` entry; read by `load_operation` / `load_const` to
@@ -26823,6 +26828,7 @@ impl<'a> Loader<'a> {
             in_body_goal: false,
             in_body_goal_wrapper: false,
             in_non_value_role: false,
+            in_call_argument: false,
             expr_body_bottom_recovery: false,
             defined_sorts: Vec::new(),
             fact_rule_ids: Vec::new(),
@@ -34352,13 +34358,44 @@ impl<'a> Loader<'a> {
         let saved_fold = self.const_fold;
         let saved_type_binding = self.in_type_binding;
         let saved_slot = self.binding_slot;
+        let saved_call_argument = self.in_call_argument;
         self.term_depth = saved + 1;
-        let occ = self.build_body_atom_occurrence_inner(parse_id);
+        let occ = match self.written_type_in_call_argument(parse_id) {
+            Some(type_value) => type_value,
+            None => self.build_body_atom_occurrence_inner(parse_id),
+        };
         self.term_depth = saved;
         self.const_fold = saved_fold;
         self.in_type_binding = saved_type_binding;
         self.binding_slot = saved_slot;
+        self.in_call_argument = saved_call_argument;
         occ
+    }
+
+    /// A type written in an argument of an operation's application in a rule body — a
+    /// dotted path that names a sort, a sort's bracket — built as the operation-body walk
+    /// builds it, the type value it denotes ([`Self::written_type_receiver_occurrence`]):
+    /// `which(Outer.Inner)` hands `which` the sort, as in an operation body. Outside a call a
+    /// type written in a data slot stays the term the clause matches. `None` for a node
+    /// that is no candidate, which the caller builds.
+    fn written_type_in_call_argument(&mut self, parse_id: TermId) -> Option<Rc<NodeOccurrence>> {
+        if !self.in_call_argument
+            || !(self.parsed.terms.is_type_application(parse_id)
+                || self.dotted_sort_name(parse_id).is_some())
+        {
+            return None;
+        }
+        let kb_term = self.convert_term(parse_id);
+        if let Some(type_value) = self.written_type_receiver_occurrence(parse_id, kb_term) {
+            return Some(type_value);
+        }
+        // No written type: built as the rule's own term. The `convert_term` above emitted the
+        // subtree's inline descriptions, and the walk must not emit them again
+        // ([`Self::descs_emitted_by_convert`]).
+        let saved_descs = std::mem::replace(&mut self.descs_emitted_by_convert, true);
+        let occ = self.build_body_atom_occurrence_inner(parse_id);
+        self.descs_emitted_by_convert = saved_descs;
+        Some(occ)
     }
 
     /// WI-20260903-FC2X4 — IS THIS PARSE NODE ONE OF THE FIVE COMPOUND EXPRESSION
@@ -34647,6 +34684,8 @@ impl<'a> Loader<'a> {
         };
         let mut pos_args = Vec::with_capacity(parse_pos.len() - 2);
         let mut named_args = Vec::with_capacity(parse_named.len());
+        // A method call's arguments are a call's.
+        let saved_call_argument = std::mem::replace(&mut self.in_call_argument, true);
         for (i, (label, value)) in entries.into_iter().enumerate() {
             let value = value.expect("checked by `lined_up`");
             match label {
@@ -34657,6 +34696,7 @@ impl<'a> Loader<'a> {
                 }
             }
         }
+        self.in_call_argument = saved_call_argument;
         self.descs_emitted_by_convert = saved_descs;
         Some(Expr::DotApply {
             receiver,
@@ -35926,6 +35966,20 @@ impl<'a> Loader<'a> {
                     // conjunction WRAPPER, whose components are the goals; that is carried
                     // by the second flag, so a node is a wrapper because of WHERE IT SITS
                     // and never because of what it is named.
+                    // An operation's application in a value slot: its arguments are a
+                    // call's. A goal's are the rule's own term, since whether the goal is the
+                    // operation's call or a relation its clauses define is known only once
+                    // every clause is loaded; a comparison's (`=`, `<=>`) are the rule's own
+                    // data (068 §1), and a connective's are goals.
+                    if !at_goal
+                        && self.kb.has_kind(new_functor, SymbolKind::Operation)
+                        && !self.kb.has_kind(new_functor, SymbolKind::Entity)
+                        && !self.kb.is_equality_connective_functor(new_functor)
+                        && self.kb.goal_arg_slots(new_functor, pos_args.len()).is_empty()
+                        && !name_chain
+                    {
+                        self.in_call_argument = true;
+                    }
                     let slots = if at_goal && !is_wrapper {
                         self.kb.goal_arg_slots(new_functor, pos_args.len())
                     } else {
