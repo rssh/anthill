@@ -158,7 +158,9 @@ fn drain_type_node(tn: &mut TypeNode, stack: &mut Vec<Rc<NodeOccurrence>>) {
     match tn {
         // WI-20260904-02ERR: a leaf owns no `Rc`, so there is nothing to drain.
         TypeNode::Var(_) => {}
-        TypeNode::Aliased { stands_for, .. } => drain_type_child(stands_for, stack),
+        TypeNode::Aliased { stands_for, .. } | TypeNode::Defaulted { stands_for, .. } => {
+            drain_type_child(stands_for, stack)
+        }
         TypeNode::Denoted { value } => {
             let placeholder = NodeOccurrence::new_expr(Expr::Bottom, empty_span(), None);
             stack.push(std::mem::replace(value, placeholder));
@@ -2071,6 +2073,40 @@ pub enum TypeNode {
     /// alias is invisible to whatever asks what the type is. The name is read by
     /// [`written_alias`] alone, for a message.
     Aliased { alias: Symbol, stands_for: TypeChild },
+    /// A parameter slot the author LEFT OUT, holding the parameter's declared default
+    /// (proposal 069 §1.4): `E = {}` of a written `Function[A, B]`, under `effects E = ?
+    /// default {}`. `param` is the parameter, `stands_for` the default as this
+    /// application instantiated it.
+    ///
+    /// It is here for the same reason [`Self::Aliased`] is: what was written at this place
+    /// — nothing — is a fact the shared term of the default cannot say. Every structural
+    /// read is the read of `stands_for`, so the slot IS the default to whatever asks what
+    /// the type is; what asks what was written is the carrier rule
+    /// (`check_sort_parameter_carriers`, which reads the slot as left out). A default that
+    /// is a VARIABLE is never wrapped, as an alias of a type parameter is not
+    /// (`Loader::bare_alias_read`): the readers that ask whether a type is a variable match
+    /// it by carrier.
+    Defaulted { param: Symbol, stands_for: TypeChild },
+}
+
+impl TypeNode {
+    /// The type a transparent wrapper stands for — [`Self::Aliased`]'s and
+    /// [`Self::Defaulted`]'s — whose every structural read is that type's.
+    pub fn stands_for(&self) -> Option<&TypeChild> {
+        match self {
+            TypeNode::Aliased { stands_for, .. } | TypeNode::Defaulted { stands_for, .. } => {
+                Some(stands_for)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Is `v` a slot its author left out, filled from the parameter's default
+/// ([`TypeNode::Defaulted`])?
+pub fn is_default_fill(v: &crate::eval::value::Value) -> bool {
+    matches!(v, crate::eval::value::Value::Node(occ)
+        if matches!(occ.as_type(), Some(TypeNode::Defaulted { .. })))
 }
 
 /// The alias a type was written through, when `occ` is one ([`TypeNode::Aliased`]) —
@@ -3304,6 +3340,17 @@ fn map_type_node<R: TypeChildRewrite>(
                 ch,
             )
         }
+        // The slot stays one its author left out; the default is rewritten as any child is.
+        TypeNode::Defaulted { param, stands_for } => {
+            let (ns, ch) = map_type_child(r, kb, stands_for);
+            (
+                TypeNode::Defaulted {
+                    param: *param,
+                    stands_for: ns,
+                },
+                ch,
+            )
+        }
         TypeNode::Denoted { value } => {
             let nv = r.node(kb, value);
             let ch = !Rc::ptr_eq(&nv, value);
@@ -4440,7 +4487,9 @@ fn collect_type_node_vars(
             }
         }
         TypeNode::Var(_) => {}
-        TypeNode::Aliased { stands_for, .. } => collect_type_child(kb, stands_for, vars, seen),
+        TypeNode::Aliased { stands_for, .. } | TypeNode::Defaulted { stands_for, .. } => {
+            collect_type_child(kb, stands_for, vars, seen)
+        }
         TypeNode::Denoted { value } => collect_type_or_expr_node_vars(kb, value, vars, seen),
         TypeNode::Parameterized { base, bindings } => {
             collect_type_child(kb, base, vars, seen);
@@ -5214,7 +5263,9 @@ fn type_node_to_term(kb: &mut KnowledgeBase, tn: &TypeNode) -> TermId {
         // so interning here is the CALLER's request, not the leak the ticket removes.
         TypeNode::Var(v) => kb.alloc_or_find_var_term(*v),
         // The hash-consed twin is the type's: a term has no place for the written name.
-        TypeNode::Aliased { stands_for, .. } => type_child_to_term(kb, stands_for),
+        TypeNode::Aliased { stands_for, .. } | TypeNode::Defaulted { stands_for, .. } => {
+            type_child_to_term(kb, stands_for)
+        }
         TypeNode::Denoted { value } => {
             let v = occurrence_to_term(kb, value);
             kb.make_denoted(v)
@@ -5622,6 +5673,7 @@ pub(crate) fn value_holds_alias_node(v: &Value) -> bool {
         match &n.kind {
             NodeKind::Type(ty) => match ty {
                 TypeNode::Aliased { .. } => true,
+                TypeNode::Defaulted { stands_for, .. } => child(stands_for),
                 // A variable, and a value: neither is written through a type alias.
                 TypeNode::Var(_) | TypeNode::Denoted { .. } => false,
                 TypeNode::Parameterized { base, bindings } => {
@@ -6677,6 +6729,10 @@ pub(crate) fn substitute_ref_syms_occ(
                 TypeNode::Var(v) => TypeNode::Var(*v),
                 TypeNode::Aliased { alias, stands_for } => TypeNode::Aliased {
                     alias: *alias,
+                    stands_for: rewrite_ref_child(stands_for, map),
+                },
+                TypeNode::Defaulted { param, stands_for } => TypeNode::Defaulted {
+                    param: *param,
                     stands_for: rewrite_ref_child(stands_for, map),
                 },
                 TypeNode::Denoted { value } => TypeNode::Denoted {

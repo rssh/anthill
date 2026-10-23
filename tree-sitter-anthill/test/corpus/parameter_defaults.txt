@@ -1,0 +1,98 @@
+=====================================
+sort type params with defaults
+=====================================
+
+sort Pair[T1, T2 = T1, F[T] = List]
+end
+
+---
+
+(source_file
+  (sort_with_body
+    name: (name (identifier))
+    (sort_type_param_list
+      (sort_type_param
+        name: (identifier))
+      (sort_type_param
+        name: (identifier)
+        default: (simple_type (name (identifier))))
+      (sort_type_param
+        name: (identifier)
+        (sort_type_param_list
+          (sort_type_param
+            name: (identifier)))
+        default: (simple_type (name (identifier)))))))
+
+=====================================
+statement-form parameter and effect-row defaults
+=====================================
+
+sort Box
+  sort T = ? default Int64
+  effects E = ? default {}
+end
+
+---
+
+(source_file
+  (sort_with_body
+    name: (name (identifier))
+    (abstract_sort
+      name: (name (identifier))
+      definition: (variable_term (variable))
+      default: (simple_type (name (identifier))))
+    (effects_sort_item
+      name: (name (identifier))
+      definition: (variable_term (variable))
+      default: (effect_row))))
+
+=====================================
+a parameter without a default before default provides
+=====================================
+
+sort P
+  sort A = ?
+  default provides Apply[F = {a}]
+end
+
+---
+
+(source_file
+  (sort_with_body
+    name: (name (identifier))
+    (abstract_sort
+      name: (name (identifier))
+      definition: (variable_term (variable)))
+    (provides_clause
+      spec: (application
+        name: (name (identifier))
+        (sort_binding
+          param: (name (identifier))
+          type: (effect_row
+            (simple_type (name (identifier)))))))))
+
+=====================================
+a default tail before default provides
+=====================================
+
+sort P
+  sort A = ? default Int64
+  default provides Apply[F = {a}]
+end
+
+---
+
+(source_file
+  (sort_with_body
+    name: (name (identifier))
+    (abstract_sort
+      name: (name (identifier))
+      definition: (variable_term (variable))
+      default: (simple_type (name (identifier))))
+    (provides_clause
+      spec: (application
+        name: (name (identifier))
+        (sort_binding
+          param: (name (identifier))
+          type: (effect_row
+            (simple_type (name (identifier)))))))))

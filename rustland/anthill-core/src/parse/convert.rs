@@ -4087,6 +4087,7 @@ impl<'a> Converter<'a> {
             .field(node, "definition")
             .map(|def| self.convert_type(def))
             .unwrap_or_else(|| self.fresh_anon_type_var(span));
+        let default = self.convert_parameter_default(node, &definition, "sort");
 
         // Descriptions: collect abstract_sort's own description fields first,
         // then hoist from variable_term's descriptions if empty.
@@ -4109,10 +4110,40 @@ impl<'a> Converter<'a> {
             visibility,
             name,
             definition,
+            default,
             descriptions,
             meta,
             span,
         })
+    }
+
+    /// Proposal 069 §1.4 — the `default` tail of `sort T = ? default X` / `effects E = ?
+    /// default X`, converted. Admitted only where the definition DECLARES a parameter (`?`
+    /// or a named variable): on `sort T = Int64` the tail would turn an alias into a
+    /// parameter, or be dropped, so it is refused at the default instead.
+    fn convert_parameter_default(
+        &mut self,
+        node: Node,
+        definition: &TypeExpr,
+        keyword: &str,
+    ) -> Option<TypeExpr> {
+        let default_node = self.field(node, "default")?;
+        if !matches!(definition, TypeExpr::Variable { .. }) {
+            let name = self
+                .field(node, "name")
+                .map(|n| self.text(n).to_owned())
+                .unwrap_or_default();
+            self.err(
+                format!(
+                    "`{keyword} {name} = …` is not a parameter declaration, so it takes no \
+                     `default`: only a parameter (`{keyword} {name} = ? default …`) has a \
+                     default, and `{keyword} {name} = T` names the type `T` itself"
+                ),
+                default_node,
+            );
+            return None;
+        }
+        Some(self.convert_type(default_node))
     }
 
     /// WI-320 / proposal 045: desugar an `effects E = T` sort-item into the
@@ -4148,6 +4179,7 @@ impl<'a> Converter<'a> {
             .field(node, "definition")
             .map(|def| self.convert_type(def))
             .unwrap_or_else(|| self.fresh_anon_type_var(span));
+        let default = self.convert_parameter_default(node, &definition, "effects");
 
         let mut descriptions: Vec<String> = self
             .fields_by_name(node, "description")
@@ -4168,6 +4200,7 @@ impl<'a> Converter<'a> {
             visibility,
             name: name.clone(),
             definition,
+            default,
             descriptions,
             meta,
             span,
@@ -4256,6 +4289,7 @@ impl<'a> Converter<'a> {
         Some(SortWithBody {
             kind,
             is_type_param: false,
+            default: None,
             visibility,
             name,
             descriptions,
@@ -4280,7 +4314,8 @@ impl<'a> Converter<'a> {
     /// byte-identical to the existing type-param form). A HIGHER-KINDED param
     /// `F[T]` becomes a `SortWithBody` marked `is_type_param: true` whose body
     /// holds its members (recursively desugared); the loader (WI-452) reads the
-    /// marker to mint the carrier's backing var. A `= Default` keeps the default.
+    /// marker to mint the carrier's backing var. A `= Default` keeps the default
+    /// (proposal 069 §1.4), as the statement form's `default` tail does.
     fn desugar_sort_type_param(&mut self, node: Node) -> Item {
         let span = self.span(node);
         let name_sym = self
@@ -4290,13 +4325,13 @@ impl<'a> Converter<'a> {
         let name = Name::simple(name_sym, span);
 
         // Higher-kinded `F[T]` carries its own member list → marked carrier; a simple
-        // `A` → `sort A = ?`. No `= default` form (sort-param defaults are undefined by
-        // §5.4 and the grammar does not admit one here). Shares the IR construction
-        // with the WI-454 per-statement binder via `make_type_param_item`.
+        // `A` → `sort A = ?`. Shares the IR construction with the WI-454 per-statement
+        // binder via `make_type_param_item`.
         let members = self
             .child_by_kind(node, "sort_type_param_list")
             .map(|list| self.desugar_sort_type_param_list(list));
-        self.make_type_param_item(name, members, None, None, span)
+        let default = self.field(node, "default").map(|d| self.convert_type(d));
+        self.make_type_param_item(name, members, default, None, None, span)
     }
 
     /// WI-454 (§5.4 surface sugar): a per-statement non-rigid type-variable binder
@@ -4346,7 +4381,7 @@ impl<'a> Converter<'a> {
             items
         });
         let (visibility, meta) = self.convert_declaration_attributes(node, HostClaimSite::Refused("a type parameter"));
-        Some(self.make_type_param_item(name, members, visibility, meta, span))
+        Some(self.make_type_param_item(name, members, None, visibility, meta, span))
     }
 
     /// Construct a non-rigid type-parameter `Item` — the SHARED desugar target of
@@ -4361,6 +4396,7 @@ impl<'a> Converter<'a> {
         &mut self,
         name: Name,
         members: Option<Vec<Item>>,
+        default: Option<TypeExpr>,
         visibility: Option<Visibility>,
         meta: Option<MetaBlock>,
         span: Span,
@@ -4369,6 +4405,7 @@ impl<'a> Converter<'a> {
             Some(items) => Item::SortWithBody(SortWithBody {
                 kind: SortDeclKind::Sort,
                 is_type_param: true,
+                default,
                 visibility,
                 name,
                 descriptions: Vec::new(),
@@ -4381,6 +4418,7 @@ impl<'a> Converter<'a> {
                 visibility,
                 name,
                 definition: self.fresh_anon_type_var(span),
+                default,
                 descriptions: Vec::new(),
                 meta,
                 span,
@@ -5033,6 +5071,7 @@ impl<'a> Converter<'a> {
             visibility: None,
             name: binder,
             definition: self.fresh_anon_type_var(decl.span),
+            default: None,
             descriptions: Vec::new(),
             meta: None,
             span: decl.span,

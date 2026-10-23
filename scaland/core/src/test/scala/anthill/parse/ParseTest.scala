@@ -2013,3 +2013,58 @@ end
       case TypeExpr.Simple(n) => assertEquals(pf.symbols.name(n.last), "Foo")
       case other => fail(s"`x: Foo[]` is the type `Foo`, got $other")
   }
+
+  // ── WI-20261003-QV5W5: proposal 069 parameter defaults ────────────────────
+
+  /** The three spellings of a parameter default land on the parameter's own declaration:
+    * the bracket form, the statement form, and an effect row's. FAILS with `defaultTail` or the
+    * bracket's `= …` dropped from its production: the source is then a parse error. */
+  test("WI-20261003-QV5W5: a parameter default is kept on the parameter, in every spelling") {
+    val src =
+      """sort Box[T1, T2 = T1, F[T] = List]
+        |  sort U = ? default Int64
+        |  effects E = ? default {}
+        |end""".stripMargin
+    val pf = Parser.parse(src, "<defaults>").fold(es => fail(es.map(_.message).mkString("; ")), identity)
+    val box = pf.items.collectFirst { case Item.SortWithBodyItem(s) => s }.get
+    val st = pf.symbols
+    def abs(n: String) = box.items.collectFirst {
+      case Item.AbstractSortItem(a) if st.name(a.name.last) == n => a
+    }.getOrElse(fail(s"no parameter `$n`"))
+    assertEquals(abs("T1").default, None)
+    abs("T2").default match
+      case Some(TypeExpr.Simple(n)) => assertEquals(st.name(n.last), "T1")
+      case other => fail(s"`T2 = T1`, got $other")
+    abs("U").default match
+      case Some(TypeExpr.Simple(n)) => assertEquals(st.name(n.last), "Int64")
+      case other => fail(s"`U = ? default Int64`, got $other")
+    assertEquals(abs("E").default, Some(TypeExpr.EffectRow(IndexedSeq.empty)))
+    val f = box.items.collectFirst { case Item.SortWithBodyItem(s) if s.isTypeParam => s }.get
+    f.default match
+      case Some(TypeExpr.Simple(n)) => assertEquals(st.name(n.last), "List")
+      case other => fail(s"`F[T] = List`, got $other")
+  }
+
+  /** `sort Al = Int64 default String` names a type, and a default would make it a
+    * parameter or be dropped: refused at the default, as rustland's converter refuses it.
+    * FAILS with `parameterDefault` keeping the default whatever the definition is. */
+  test("WI-20261003-QV5W5: a default on an alias is refused") {
+    Parser.parse("sort Al = Int64 default String", "<alias>") match
+      case Right(_) => fail("expected the alias's default refused")
+      case Left(errs) =>
+        val m = errs.map(_.message).mkString("; ")
+        assert(m.contains("`sort Al = …` is not a parameter declaration"), m)
+  }
+
+  /** A `default provides …` after a parameter is the next item's modifier, with or
+    * without a default tail between them (WI-862's spelling is unchanged). FAILS with the
+    * `!keyword("provides")` lookahead taken out of `defaultTail`: the first spelling reads
+    * `provides` as the default's type and the provision is a parse error. */
+  test("WI-20261003-QV5W5: `default provides` after a parameter is still a provision") {
+    for decl <- Seq("sort A = ?", "sort A = ? default Int64") do
+      val src = s"sort P\n  $decl\n  default provides Apply[F = {a}]\nend"
+      val pf = Parser.parse(src, "<p>").fold(es => fail(es.map(_.message).mkString("; ")), identity)
+      val p = pf.items.collectFirst { case Item.SortWithBodyItem(s) => s }.get
+      assert(p.items.exists { case Item.ProvidesClauseItem(_) => true; case _ => false },
+        s"$decl: the provision is lost: ${p.items}")
+  }

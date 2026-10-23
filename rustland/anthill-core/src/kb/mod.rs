@@ -1716,6 +1716,14 @@ pub struct KnowledgeBase {
     /// scan of every `SortAlias` fact, once per use of an alias.
     pub(crate) alias_types: HashMap<Symbol, TermId>,
 
+    /// Proposal 069 §1.4 — each type or effect-row PARAMETER's declared default, keyed by
+    /// the parameter's symbol, as its declaration lowered it in the declaring sort's
+    /// scope: an earlier parameter it names (`T2 = T1`) is that parameter's canonical
+    /// variable, which a use site replaces by what it writes there. Recorded with the
+    /// aliases (`load::declare_type_aliases`), before any written type is lowered, so
+    /// every written application that leaves the parameter out reads it.
+    pub(crate) sort_param_defaults: HashMap<Symbol, TermId>,
+
     /// WI-20260924-SNJPR — each TYPE ALIAS's target HEAD, as a SYMBOL (`sort WisStore =
     /// Store[State = WIS]` ↦ `Store`), known from the SCAN on: the scan resolves each
     /// alias's written target in the scope that declares it once imports are wired
@@ -2945,6 +2953,7 @@ impl KnowledgeBase {
             sort_alias_index: None,
             alias_targets: HashMap::new(),
             alias_types: HashMap::new(),
+            sort_param_defaults: HashMap::new(),
             alias_heads: HashMap::new(),
             aliases_applying: HashSet::new(),
             scan_alias_decls: HashMap::new(),

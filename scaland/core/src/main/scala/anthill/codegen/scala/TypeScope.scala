@@ -1,7 +1,7 @@
 package anthill.codegen.scala
 
 import anthill.intern.{ABSOLUTE_PATH_MARKER, SymbolTable}
-import anthill.parse.{Name, TypeExpr}
+import anthill.parse.{Name, SortBinding, TypeExpr}
 import anthill.span.Span
 
 /** What ONE declared type parameter is, in the only distinction `scala_std` has
@@ -22,7 +22,13 @@ enum ParamKind:
   * count a use site is CHECKED against and the count it is EMITTED with are two
   * different numbers, and a single `arity` field could only be one of them.
   */
-case class ParamKinds(kinds: IndexedSeq[ParamKind]):
+case class ParamKinds(
+  kinds: IndexedSeq[ParamKind],
+  /** Each parameter's anthill name and declared DEFAULT (proposal 069 §1.4), in the order
+    * of `kinds` — or empty where the declaration is not read for them (an entity, a name
+    * no declaration says), and a use site's arguments are then read as written. */
+  declared: IndexedSeq[(String, Option[TypeExpr])] = IndexedSeq.empty
+):
   /** How many arguments a use site must write — anthill's own parameter count. */
   def written: Int = kinds.length
   /** How many the emitted Scala type takes. */
@@ -45,7 +51,50 @@ case class ParamKinds(kinds: IndexedSeq[ParamKind]):
       s"keepTypeArgs on ${args.length} argument(s) against $written parameter(s)")
     args.zip(kinds).collect { case (a, ParamKind.Type) => a }
 
+  /** A use site's arguments in DECLARATION order, each slot taken from the binding that
+    * names it, else the next positional one, else the parameter's declared default
+    * (proposal 069 §2) — a default naming an earlier parameter (`T2 = T1`) with what the
+    * use has there. Read by NAME, so `Holder[A = Int64]` under `sort Holder[F[T] = List,
+    * A]` is `Holder[List, Int64]` and a reordered `Pair[B = X, A = Y]` is `Pair[Y, X]`.
+    * The arguments as written where a slot is left out with no default, or an argument is
+    * left over — a positional past the last slot, or a name no parameter has: the arity
+    * check then refuses them, as it did every partial or over-applied one.
+    * Erased slots are completed too, and dropped after by [[keepTypeArgs]]. */
+  def complete(sym: SymbolTable, bindings: IndexedSeq[SortBinding]): IndexedSeq[TypeExpr] =
+    val asWritten = bindings.map(_.bound)
+    val names = declared.map(_._1).toSet
+    val unknownName = bindings.exists(b => b.param.exists(p => !names.contains(sym.name(p.last))))
+    if declared.length != kinds.length || declared.isEmpty || unknownName then asWritten
+    else
+      val positional = bindings.filter(_.param.isEmpty).map(_.bound).iterator
+      val filled = declared.foldLeft(Option(IndexedSeq.empty[(String, TypeExpr)])) {
+        case (None, _) => None
+        case (Some(done), (name, default)) =>
+          bindings
+            .collectFirst { case SortBinding(Some(p), t) if sym.name(p.last) == name => t }
+            .orElse(Option.when(positional.hasNext)(positional.next()))
+            .orElse(default.map(ParamKinds.instantiate(sym, _, done.toMap)))
+            .map(t => done :+ (name -> t))
+      }
+      filled match
+        case Some(slots) if !positional.hasNext => slots.map(_._2)
+        case _ => asWritten
+
 object ParamKinds:
+  /** A declared default at a use: each earlier parameter it names replaced by what the use
+    * has in that slot. The default's other names are rendered where the use is. */
+  def instantiate(sym: SymbolTable, te: TypeExpr, at: Map[String, TypeExpr]): TypeExpr =
+    def go(t: TypeExpr): TypeExpr = t match
+      case TypeExpr.Simple(n) if n.segments.length == 1 =>
+        at.getOrElse(sym.name(n.last), t)
+      case TypeExpr.Parameterized(n, bs) =>
+        TypeExpr.Parameterized(n, bs.map(b => b.copy(bound = go(b.bound))))
+      case TypeExpr.TupleType(fields) => TypeExpr.TupleType(fields.map((k, v) => k -> go(v)))
+      case TypeExpr.Arrow(ps, r, es) => TypeExpr.Arrow(ps.map(go), go(r), es.map(go))
+      case TypeExpr.EffectRow(es) => TypeExpr.EffectRow(es.map(go))
+      case other => other
+    go(te)
+
   val none: ParamKinds = ParamKinds(IndexedSeq.empty)
   /** A declaration with no effect parameters — every entity, and every sort that
     * writes only `sort X = ?`. */
@@ -100,17 +149,22 @@ case class EnclosingSort(
     * or `None` for a sort that receives on itself. A projection off a receiver typed by
     * it reads the sort's own parameters, as one off a receiver typed by the sort does
     * (WI-20261001-80ZV8; see `TypeScope.projection`). */
-  carrier: Option[String] = None
+  carrier: Option[String] = None,
+  /** Each parameter's declared default, in `binders` order (proposal 069 §1.4). */
+  defaults: IndexedSeq[Option[TypeExpr]] = IndexedSeq.empty
 ):
   /** What `Self` attaches: the parameters that survive erasure — which are exactly the
     * ones with a Scala name to attach. */
   def params: IndexedSeq[String] = binders.collect { case (_, ParamBinding.Scala(n, _)) => n }
 
   /** What an explicit application is checked and erased against. */
-  def kinds: ParamKinds = ParamKinds(binders.map {
-    case (_, ParamBinding.Scala(_, _)) => ParamKind.Type
-    case (_, ParamBinding.Effect) => ParamKind.Effect
-  })
+  def kinds: ParamKinds = ParamKinds(
+    binders.map {
+      case (_, ParamBinding.Scala(_, _)) => ParamKind.Type
+      case (_, ParamBinding.Effect) => ParamKind.Effect
+    },
+    if defaults.length == binders.length then binders.map(_._1).zip(defaults)
+    else IndexedSeq.empty)
 
   /** How the SORT binds one of its own parameter names — the question a projection off
     * a `Self` receiver asks, and the reason this is not `TypeScope.params`: that map

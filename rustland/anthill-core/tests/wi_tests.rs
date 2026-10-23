@@ -33,6 +33,8 @@ mod wi_rxt6s_dotted_sort_type_value_test;
 mod wi_r653s_paren_less_dot_test;
 #[path = "include/wi_tcsgt_structural_bracket_entry_test.rs"]
 mod wi_tcsgt_structural_bracket_entry_test;
+#[path = "include/wi_qv5w5_sort_parameter_defaults_test.rs"]
+mod wi_qv5w5_sort_parameter_defaults_test;
 #[path = "include/wi_12nkg_arrow_and_tuple_cover_test.rs"]
 mod wi_12nkg_arrow_and_tuple_cover_test;
 #[path = "include/wi_0gyw1_arrow_provision_labels_test.rs"]

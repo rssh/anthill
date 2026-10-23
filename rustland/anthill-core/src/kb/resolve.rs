@@ -14604,7 +14604,7 @@ impl KnowledgeBase {
                 }
             }
             TypeNode::Var(_) => {}
-            TypeNode::Aliased { stands_for, .. } => {
+            TypeNode::Aliased { stands_for, .. } | TypeNode::Defaulted { stands_for, .. } => {
                 self.collect_type_child_unbound_vars(stands_for, subst, out)
             }
             TypeNode::Denoted { value } => self.collect_unbound_vars_node(value, subst, out),

@@ -1,7 +1,7 @@
 package anthill.codegen.scala
 
 import anthill.intern.SymbolTable
-import anthill.parse.{Name, TypeExpr}
+import anthill.parse.{Name, SortBinding, TypeExpr}
 
 /** TypeExpr → Scala type string. Uses the default `scala_std` type
   * mapping per `docs/scala-forward-mapping.md` table in §2 + §1.1.
@@ -25,7 +25,7 @@ object TypeGen:
       // construct — a written row, an effect parameter's name — that erasure
       // exists to remove. So the head is placed first, and only the surviving
       // arguments are rendered.
-      named(sym, n, bindings.map(_.bound), scope)
+      named(sym, n, bindings, scope)
     case TypeExpr.TupleType(fields) =>
       // The empty tuple goes through the profile's scalar table rather than a literal
       // "Unit": one answer to "what is anthill's Unit in Scala", so the two cannot
@@ -102,8 +102,9 @@ object TypeGen:
     * collapse: a row in an ordinary `sort E = ?` slot is a type-level value.
     */
   private def named(
-    sym: SymbolTable, n: Name, args: IndexedSeq[TypeExpr], scope: TypeScope
+    sym: SymbolTable, n: Name, bindings: IndexedSeq[SortBinding], scope: TypeScope
   ): String =
+    val args = bindings.map(_.bound)
     // THE WRITTEN SPELLING, not the leaf (WI-1081): a refusal about
     // `anthill.reflect.Symbol` that names only `Symbol` sends the reader to look for a
     // bare name the source never wrote. Identical to the leaf for a simple name, which
@@ -144,14 +145,15 @@ object TypeGen:
           "emitted rather than refused.)",
           n.span)
         render(sym, sub, scope.withoutValue(receiver))
-      case NamePlacement.Direct(placement) => placed(sym, n, written, args, scope, placement)
+      case NamePlacement.Direct(placement) => placed(sym, n, written, bindings, scope, placement)
 
   /** The name, once [[TypeScope.placeName]] has said where it goes. `written` is the
     * spelling the source wrote, which every refusal here names. */
   private def placed(
-    sym: SymbolTable, n: Name, written: String, args: IndexedSeq[TypeExpr],
+    sym: SymbolTable, n: Name, written: String, bindings: IndexedSeq[SortBinding],
     scope: TypeScope, placement: Placement
   ): String =
+    val args = bindings.map(_.bound)
     def rendered(as: IndexedSeq[TypeExpr]): IndexedSeq[String] = as.map(render(sym, _, scope))
     // The argument-side rule. Reached only where nothing declares the slots.
     def erasedByArgument: IndexedSeq[TypeExpr] = args.filterNot(scope.isEffectArgument(sym, _))
@@ -198,8 +200,12 @@ object TypeGen:
         //
         // An explicit application is checked against what the declaration WRITES
         // (`self.kinds.written`), because that is what the anthill declaration says
-        // and what a sibling occurrence spells.
-        if args.isEmpty then
+        // and what a sibling occurrence spells. A slot it leaves out takes the
+        // parameter's default where one is declared (proposal 069 §2), inside the
+        // sort as outside it — so a bare name whose every parameter has one is the
+        // sort at its defaults, and is emitted.
+        val full = self.kinds.complete(sym, bindings)
+        if args.isEmpty && (thisInstance || full.length != self.kinds.written) then
           if !thisInstance && self.params.nonEmpty then throw BootstrapError(
             s"${scope.decl}: `$written` is the enclosing sort, which declares " +
             s"${self.kinds.written} type parameter(s)${erasureNote(self.kinds)}, and none " +
@@ -210,16 +216,19 @@ object TypeGen:
             "this instance",
             n.span)
           else self.scalaName + brackets(self.params)
-        else if args.length != self.kinds.written then
+        else if full.length != self.kinds.written then
           throw BootstrapError(
             s"${scope.decl}: `$written` is the enclosing sort, which declares " +
             s"${self.kinds.written} type parameter(s)${erasureNote(self.kinds)}, but " +
             s"${args.length} argument(s) were written. The parameters Bootstrap emits " +
             "and the ones the declaration writes have diverged",
             n.span)
-        else self.scalaName + brackets(rendered(self.kinds.keepTypeArgs(args)))
+        else self.scalaName + brackets(rendered(self.kinds.keepTypeArgs(full)))
       case Placement.Known(scalaName, kinds) =>
-        if args.length != kinds.written then
+        // A slot left out takes its declared default (proposal 069 §2); one with none is
+        // still the partial occurrence below.
+        val full = kinds.complete(sym, bindings)
+        if full.length != kinds.written then
           // WI-1055 B3. The written occurrence is PARTIAL — `Pair` where
           // `Pair[A, B]` is needed. In anthill a slot left out is OPEN, the sort at
           // any type there (proposal 070 §1.3); Scala has no bare type constructor
@@ -241,7 +250,7 @@ object TypeGen:
             "of the rest; Scala has no bare type constructor in this position, so " +
             "there is no spelling to emit",
             n.span)
-        else scalaName + brackets(rendered(kinds.keepTypeArgs(args)))
+        else scalaName + brackets(rendered(kinds.keepTypeArgs(full)))
       case Placement.ErasedEffect(name) =>
         // WI-1062. The name denotes an effect ROW — a sort's `effects E = ?`
         // parameter, or an operation type parameter its signature only ever uses in

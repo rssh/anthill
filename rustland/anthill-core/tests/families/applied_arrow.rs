@@ -96,7 +96,6 @@ pub static FAMILY: Family = Family {
 const TICKET_7EZS6: &str = "WI-20261014-7EZS6";
 const TICKET_6T5C6: &str = "WI-20261014-6T5C6";
 const TICKET_EDPF6: &str = "WI-20261014-EDPF6";
-const TICKET_QV5W5: &str = "WI-20261003-QV5W5";
 const TICKET_N2YEK: &str = "WI-20261014-N2YEK";
 
 const EXCEPTIONS: &[Exception] = &[
@@ -161,31 +160,6 @@ const EXCEPTIONS: &[Exception] = &[
         when: &["typed=field", "row=open", "does=writes-own"],
         ticket: TICKET_N2YEK,
         why: "`Box[EB = {}]` admits a lambda writing its own parameter, and applying it writes `q`",
-    },
-    // An unwritten `Function` row accepts any row, and its application loses the write.
-    Exception {
-        property: Property::Sound,
-        when: &["typed=function", "does=writes-own", "applied=call"],
-        ticket: TICKET_QV5W5,
-        why: "a lambda writing its parameter held at `Function[A, B]` is applied with nothing declared",
-    },
-    Exception {
-        property: Property::Sound,
-        when: &["typed=function", "does=writes-own", "applied=alias"],
-        ticket: TICKET_QV5W5,
-        why: "a lambda writing its parameter held at `Function[A, B]` is applied with nothing declared",
-    },
-    Exception {
-        property: Property::OneVerdict,
-        when: &["typed=function", "does=writes-own", "applied=call"],
-        ticket: TICKET_QV5W5,
-        why: "held at `Function[A, B]` the lambda runs, handed to a slot naming its parameter it is refused",
-    },
-    Exception {
-        property: Property::OneVerdict,
-        when: &["typed=function", "does=writes-own", "applied=alias"],
-        ticket: TICKET_QV5W5,
-        why: "held at `Function[A, B]` the lambda runs, handed to a slot naming its parameter it is refused",
     },
 ];
 

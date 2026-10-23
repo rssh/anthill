@@ -3073,7 +3073,7 @@ end
 "#;
     assert_refused_naming(
         &load_errors(src),
-        &["put.k (op-arg): expected List[T = Function[A = Int64, B = Int64]]"],
+        &["put.k (op-arg): expected List[T = Function[A = Int64, B = Int64, E = {}]]"],
         "a wrong nested callable",
     );
 }

@@ -5409,3 +5409,39 @@ class BootstrapTest extends munit.FunSuite:
     assert(refused.getMessage.contains("`b.E`"),
       s"the refusal must name the projection, not the leaf: ${refused.getMessage}")
   }
+
+  // ── WI-20261003-QV5W5: proposal 069 parameter defaults ────────────────────
+
+  private val defaultsSource =
+    """namespace anthill.wiqv5w5
+      |  sort Box[T = Int64]
+      |    entity box(v: T)
+      |  end
+      |  sort AP[T1, T2 = T1]
+      |    entity ap(first: T1, second: T2)
+      |  end
+      |  sort Use
+      |    operation unbox(b: Box) -> Int64
+      |    operation ints(p: AP[Int64]) -> Int64
+      |    operation swapped(p: AP[T2 = String, T1 = Int64]) -> Int64
+      |  end
+      |end
+      |""".stripMargin
+
+  /** A slot the use leaves out takes the parameter's default (proposal 069 §2): `b: Box`
+    * is `Box` at `Int64`, and `AP[Int64]` is `AP` at `Int64` twice (`T2 = T1`). Read by
+    * NAME, so a reordered named application is put in declaration order. The emission
+    * compiles. A higher-kinded default (`F[T] = List`) is not here: a bare sort as an
+    * argument has no Scala spelling in this emitter, written or defaulted alike. FAILS WHEN
+    * BACKED OUT, MEASURED: with `ParamKinds.complete` answering the arguments as written,
+    * `unbox` is refused as a partial occurrence. */
+  test("WI-20261003-QV5W5: a parameter left out is emitted at its default") {
+    val files = gen(parseSource(defaultsSource, "defaults.anthill"))
+    val src = files.map(_.contents).mkString("\n")
+    for want <- Seq(
+        "def unbox(b: Box[_root_.scala.Long]): _root_.scala.Long",
+        "def ints(p: AP[_root_.scala.Long, _root_.scala.Long]): _root_.scala.Long",
+        "def swapped(p: AP[_root_.scala.Long, _root_.java.lang.String]): _root_.scala.Long") do
+      assert(src.contains(want), s"expected `$want` in:\n$src")
+    ScalaCompile.assertCompiles("a sort used at its defaults", files)
+  }

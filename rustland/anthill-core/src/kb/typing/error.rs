@@ -794,8 +794,9 @@ pub enum TypeError {
     ///
     /// `op` is the operation, `sort` its sort, `sort_param` the parameter used (`V`) and
     /// `param` the operation's parameter that is the sort at an open `sort_param` (`c`) —
-    /// or, `nested`, holds one (`xs: List[T = Cell]`). The check and its scope are
-    /// [`check_sort_parameter_carriers`]'s.
+    /// or, `nested`, holds one (`xs: List[T = Cell]`). `defaulted` when the slot was left
+    /// out and holds its parameter's default (proposal 069 §2) rather than an open `?`.
+    /// The check and its scope are [`check_sort_parameter_carriers`]'s.
     SortParamWithoutCarrier {
         span: Option<Span>,
         op: Symbol,
@@ -803,6 +804,7 @@ pub enum TypeError {
         sort_param: Symbol,
         param: Symbol,
         nested: bool,
+        defaulted: bool,
     },
     /// WI-828: a cross-sort call (direct or op-as-function-value) to an
     /// operation of a `requires`-carrying sort whose requirement the call site
@@ -1087,14 +1089,21 @@ fn sort_param_without_carrier_detail(
     sort_param: Symbol,
     param: Symbol,
     nested: bool,
+    defaulted: bool,
 ) -> (String, String) {
     let s = short_name_of(kb.local_name_of(sort));
     let v = short_name_of(kb.local_name_of(sort_param));
     let c = kb.local_name_of(param);
     let me = crate::intern::SELF_TYPE_NAME;
+    let (holds, is) = if defaulted {
+        (format!("holds a `{s}` at `{v}`'s default"), format!("is a `{s}` at `{v}`'s default"))
+    } else {
+        (format!("holds any `{s}`"), format!("is any `{s}`"))
+    };
+    let left = if defaulted { "left out" } else { "left to a `?`" };
     let (is, repair) = if nested {
         (
-            format!("`{c}` holds any `{s}`"),
+            format!("`{c}` {holds}"),
             format!(
                 "Write that `{s}` as `{me}` to make it the carrier; or, where it is another \
                  `{s}` on purpose, give its `{v}` a name of its own (`[X]`, `{s}[{v} = X]`)"
@@ -1102,7 +1111,7 @@ fn sort_param_without_carrier_detail(
         )
     } else {
         (
-            format!("`{c}` is any `{s}`"),
+            format!("`{c}` {is}"),
             format!(
                 "Type `{c}` as `{me}` to make it the carrier, or write `{c}.{v}` where that \
                  `{s}`'s `{v}` is meant; or, where `{c}` is another `{s}` on purpose, give its \
@@ -1116,8 +1125,8 @@ fn sort_param_without_carrier_detail(
              signature uses"
         ),
         format!(
-            "`{v}` used with no carrier: {is} — its `{v}` is left to a `?` — so it is not \
-             the one whose `{v}` this is, and no parameter is `{me}`. {repair}"
+            "`{v}` used with no carrier: {is} — its `{v}` is {left} — so it is not the one \
+             whose `{v}` this is, and no parameter is `{me}`. {repair}"
         ),
     )
 }
@@ -2024,10 +2033,17 @@ impl TypeError {
                 sort_param,
                 param,
                 nested,
+                defaulted,
                 ..
             } => {
-                let (expected, got) =
-                    sort_param_without_carrier_detail(kb, *sort, *sort_param, *param, *nested);
+                let (expected, got) = sort_param_without_carrier_detail(
+                    kb,
+                    *sort,
+                    *sort_param,
+                    *param,
+                    *nested,
+                    *defaulted,
+                );
                 format!(
                     "in `{}`: expected {expected}, got {got}",
                     kb.qualified_name_of(*op)
@@ -2759,10 +2775,17 @@ impl TypeError {
                 sort_param,
                 param,
                 nested,
+                defaulted,
                 ..
             } => {
-                let (expected_type, actual_type) =
-                    sort_param_without_carrier_detail(kb, *sort, *sort_param, *param, *nested);
+                let (expected_type, actual_type) = sort_param_without_carrier_detail(
+                    kb,
+                    *sort,
+                    *sort_param,
+                    *param,
+                    *nested,
+                    *defaulted,
+                );
                 LoadError::TypeMismatch {
                     origin: None,
                     entity_name: kb.qualified_name_of(*op).to_string(),

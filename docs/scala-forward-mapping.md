@@ -616,7 +616,19 @@ receiver `xs: Self` is the sort's own `T` (§2.1b). The sort's BARE name inside 
 definition is ANY instance of it, as it is outside: where the sort emits a parameter there
 is no spelling this mapper emits for that, and the declaration is REFUSED — exactly as a
 bare occurrence of any other parameterised sort is (a partial application, below). A sort
-that emits no parameter has one instance, and its name is that. (Until the proposal's
+that emits no parameter has one instance, and its name is that.
+
+**A slot left out takes its declared default** (proposal 069 §2), and is then no partial
+application. A use site's arguments are read BY NAME into declaration order — the binding
+that names a slot, else the next positional one, else the parameter's default, a default
+naming an earlier parameter taking what the use has there (`ParamKinds.complete`). Under
+`sort Box[T = Int64]` the bare `b: Box` is `b: Box[Long]`, under `sort AP[T1, T2 = T1]`
+`AP[Int64]` is `AP[Long, Long]`, and a reordered `AP[T2 = String, T1 = Int64]` is
+`AP[Long, String]`; an erased effect slot is completed and dropped with the rest, so
+`Function[A, B]` needs no `E`. The default is rendered where the use is, so a name in it is
+placed in the use's scope. A slot left out with no default is the partial application
+below, refused as before. A higher-kinded default (`F[T] = List`) is a bare sort as an
+argument, which this mapper does not emit whether written or defaulted. (Until the proposal's
 stage (e) the two spellings emitted byte for byte the same: the bare name was read as this
 instance — the implicit tie, on the emission side.) The readers that recognise the
 declaring sort by NAME read both: a sort whose operations receive on `Self` is

@@ -680,8 +680,10 @@ fn check_operation_signatures(kb: &KnowledgeBase) -> Vec<TypeError> {
 ///
 /// * the signature USES `V` — in a parameter, the return or an effect;
 /// * some PARAMETER is, or holds, the sort at an OPEN `V`: the slot left out, or written
-///   `?`. A slot written with a NAME of its own (`[X](c: Cell[V = X])`) is another instance
-///   said aloud, and is not this;
+///   `?`. A slot left out is left out whether or not its parameter's default then fills it
+///   (proposal 069 §2: `c: Cell` under `sort Cell[V = Int64]` is not this cell). A slot
+///   written with a NAME of its own (`[X](c: Cell[V = X])`) is another instance said aloud,
+///   and is not this;
 /// * no parameter is, or holds, the sort at `V` itself — which is what `Self` is.
 ///
 /// WHAT IT LEAVES ALONE, each by a condition failing rather than by a list: an operation
@@ -840,11 +842,18 @@ fn check_sort_parameter_carriers(kb: &KnowledgeBase) -> Vec<TypeError> {
             if carried {
                 continue;
             }
+            // A slot holding its parameter's default was LEFT OUT, and is read as such
+            // (proposal 069 §2): `p: Box` under `sort Box[T = Int64]` is not this box.
             let open = refs.iter().find(|(_, _, bindings)| match slot(bindings) {
                 None => true,
-                Some(v) => value_is_anonymous_wildcard(kb, &v),
+                Some(v) => {
+                    crate::kb::node_occurrence::is_default_fill(&v)
+                        || value_is_anonymous_wildcard(kb, &v)
+                }
             });
-            if let Some((param, nested, _)) = open {
+            if let Some((param, nested, bindings)) = open {
+                let defaulted = slot(bindings)
+                    .is_some_and(|v| crate::kb::node_occurrence::is_default_fill(&v));
                 errors.push(TypeError::SortParamWithoutCarrier {
                     span: kb.functor_span(op_sym).map(|s| s.span),
                     op: op_sym,
@@ -852,6 +861,7 @@ fn check_sort_parameter_carriers(kb: &KnowledgeBase) -> Vec<TypeError> {
                     sort_param: *sort_param,
                     param: *param,
                     nested: *nested,
+                    defaulted,
                 });
                 break;
             }

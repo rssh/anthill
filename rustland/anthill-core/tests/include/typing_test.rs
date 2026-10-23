@@ -4153,33 +4153,37 @@ fn subtype_arrow_pure_le_function_with_effects() {
     );
 }
 
-/// WI-332: Function with NO E binding is polymorphic in effects — accepts
-/// effectful actuals (matches the missing-A convention). Distinguishes
-/// `Function[Int64, Int64]` (polymorphic E, accept anything) from
-/// `Function[A=Int64, B=Int64, E={}]` (explicit closed empty, reject
-/// effectful). Without this distinction, common user code like
-/// `operation use(f: Function[Int64, Int64]) = f(5)` would regress against
-/// effectful lambda actuals that worked pre-WI-332.
+/// A WRITTEN `Function[A = Int64, B = Int64]` is the pure function (`Function` declares `effects
+/// E = ? default {}`, proposal 069 §4): an operation raising `Error` is refused there, a pure one
+/// is taken and runs, and `E = ?` is the spelling that admits any row. This replaced WI-332's
+/// reading of an unwritten `E` as any row, which the default supersedes. FAILS with the default
+/// taken out of `function.anthill` (the refusal is gone).
 #[test]
-fn subtype_arrow_with_effect_le_function_no_E_binding_polymorphic() {
-    let mut kb = load_stdlib_kb();
-    let int_ty = kb.make_sort_ref_by_name("Int64");
-    let reads_sym = kb.intern("Reads");
-    let reads = kb.make_sort_ref(reads_sym);
-
-    let actual = kb.make_arrow_type(int_ty, int_ty, &[reads], 1);
-
-    let fn_sym = kb.resolve_symbol("anthill.prelude.Function");
-    let fn_base = kb.make_sort_ref(fn_sym);
-    let a_sym = kb.intern("A");
-    let b_sym = kb.intern("B");
-    // Function[A=Int64, B=Int64] — NO E binding, polymorphic in effects.
-    let expected = kb.make_parameterized_type(fn_base, &[(a_sym, int_ty), (b_sym, int_ty)]);
-
+fn a_written_function_without_its_row_is_pure_and_e_hole_is_open() {
+    const PROGRAM: &str = "\
+namespace typing.fnrow
+  import anthill.prelude.{Int64, Function, Error}
+  operation boom(x: Int64) -> Int64 effects {Error} = x
+  operation inc(x: Int64) -> Int64 = x + 1
+  operation use(f: Function[A = Int64, B = Int64]) -> Int64 = f(5)
+  operation useOpen(f: Function[A = Int64, B = Int64, E = ?]) -> Int64 = 0
+  operation pure() -> Int64 = use(inc)
+  operation open() -> Int64 = useOpen(boom)
+{extra}end
+";
+    let errors = crate::common::load_errors_of(
+        &PROGRAM.replace("{extra}", "  operation effectful() -> Int64 = use(boom)\n"),
+    );
     assert!(
-        types_compatible(&mut kb, actual, expected),
-        "arrow(Int64, Int64, {{Reads}}) <: Function[A=Int64, B=Int64] — missing \
-         E binding is polymorphic in effects, accepts any actual"
+        errors.iter().any(|e| e.contains("use.f (op-arg)")
+            && e.contains("declares `Error`, which the closed row does not admit")),
+        "`use(boom)` must be refused at `f`: {errors:?}",
+    );
+    let mut kb = crate::common::load_kb_with(&PROGRAM.replace("{extra}", ""));
+    assert_eq!(
+        crate::common::one_definite_int(&mut kb, "typing.fnrow.pure"),
+        Some(6),
+        "a pure operation is taken where `Function[A, B]` is declared",
     );
 }
 

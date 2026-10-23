@@ -219,7 +219,7 @@ end
     assert!(
         errs.iter().any(|e| {
             e.contains("type mismatch in take.f (op-arg)")
-                && e.contains("expected Function[A = (acc: Int64, x: Int64), B = Int64]")
+                && e.contains("expected Function[A = (acc: Int64, x: Int64), B = Int64, E = {}]")
                 && e.contains("A = (_1: Int64, _2: Int64)")
         }),
         "rejection must be the op-arg type mismatch naming BOTH tuple keyings; got: {errs:?}",

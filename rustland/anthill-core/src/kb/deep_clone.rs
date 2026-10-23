@@ -692,6 +692,10 @@ impl Copier {
                 alias: plain(alias),
                 stands_for: self.type_child(stands_for),
             },
+            TypeNode::Defaulted { param, stands_for } => TypeNode::Defaulted {
+                param: plain(param),
+                stands_for: self.type_child(stands_for),
+            },
             TypeNode::Denoted { value } => TypeNode::Denoted {
                 value: self.node(value),
             },
@@ -1090,6 +1094,7 @@ impl KnowledgeBase {
             sort_alias_index: plain(&self.sort_alias_index),
             alias_targets: plain(&self.alias_targets),
             alias_types: plain(&self.alias_types),
+            sort_param_defaults: plain(&self.sort_param_defaults),
             alias_heads: plain(&self.alias_heads),
             aliases_applying: plain(&self.aliases_applying),
             scan_alias_decls: plain(&self.scan_alias_decls),

@@ -377,7 +377,13 @@ case class AbstractSort(
     * NO DEFAULT, deliberately: a future desugar that mints an effect parameter
     * would silently get `false` and its sort would emit a parameter that should
     * have been erased. Spelled at all three construction sites instead. */
-  isEffectRow: Boolean
+  isEffectRow: Boolean,
+  /** Proposal 069 §1.4: the declared DEFAULT of a type or effect-row parameter —
+    * `sort T = ? default Int64`, `effects E = ? default {}`, the bracket form's
+    * `sort Box[T = Int64]`. Only a parameter declaration carries one; the parser
+    * refuses the tail on an alias. A written type that leaves the parameter out takes
+    * it. No default value, for `isEffectRow`'s reason. */
+  default: Option[TypeExpr]
 )
 
 /** Sort or enum declaration kind. Enums are sorts whose subterms are
@@ -400,7 +406,10 @@ case class SortWithBody(
     * nested sort. The loader reads this to register the carrier as a type param
     * of the enclosing sort (mirrors the `sort T = ?` abstract-sort arm). An
     * UNMARKED `sort F { … }` stays a concrete nested sort. */
-  isTypeParam: Boolean = false
+  isTypeParam: Boolean = false,
+  /** Proposal 069 §1.4: the default of a HIGHER-KINDED type parameter (`sort
+    * Traverse[F[T] = List, A]`); only a marked parameter (`isTypeParam`) carries one. */
+  default: Option[TypeExpr] = None
 )
 
 case class FieldDecl(name: TermSymbol, ty: TypeExpr)
