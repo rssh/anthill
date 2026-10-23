@@ -170,6 +170,15 @@ impl KnowledgeBase {
         answer
     }
 
+    /// Is `sym`'s declared type `Bool`, the one type whose const names a goal (§5.3). Read
+    /// once the load walk has recorded the type (`Loader::load_const`), so not by a clause
+    /// converting mid-load, which takes the value instead.
+    pub(crate) fn const_type_is_bool(&self, sym: Symbol) -> bool {
+        self.const_type(sym)
+            .and_then(|t| super::typing::sort_functor_of_view(self, t))
+            .is_some_and(|s| self.sort_sym_is_bool(s))
+    }
+
     /// `sym`'s value from the EVALUATOR (`force_const`), as a literal, or `None` when it
     /// cannot be computed or is not a literal. Only for a QUERY pattern, which converts
     /// against a loaded program. A clause converting mid-load must not call it: the KB it

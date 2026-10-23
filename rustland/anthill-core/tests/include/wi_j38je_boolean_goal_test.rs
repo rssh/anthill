@@ -457,13 +457,12 @@ fn what_the_condition_reading_cannot_yet_reduce() {
     // position is CLOSED — a term with no reading is a load error — and two shapes are
     // deliberately still outside the refusal:
     //
-    //  * A `const` REFERENCE in GOAL position (`:- flag`) loads and silently never
-    //    matches. Withheld on purpose while there was no repair to point at, because a
-    //    `const` folded NOWHERE in a rule body. That half is fixed: WI-20261001-KDMQS folds
-    //    a const in every rule-body VALUE slot, so the `pfold` row below answers 1 where it
-    //    answered 0, and `:- flag = true` is now a working repair. The goal-position
-    //    reading itself (refuse it, or give it the search reading) is still
-    //    WI-20260822-NDG34's, and the `pconst` row pins it unmoved.
+    //  * A `const` REFERENCE in GOAL position (`:- flag`) loaded and silently never
+    //    matched. WI-20261001-KDMQS folded a const in every rule-body VALUE slot, so the
+    //    `pfold` row below answers 1 where it answered 0; WI-20260822-NDG34 gave the goal
+    //    the search reading — a `Bool` const there is the literal it holds — so the
+    //    `pconst` row answers 1 where it answered 0. That ticket's suite owns it
+    //    (`wi_ndg34_const_goal_test`); this row stays as the trace of the bound.
     //  * A BOOL-RETURNING OPERATION CALL in goal position already evaluates, through
     //    WI-938's derived relational view at the operation's own arity — the reading
     //    item 1 settled, arriving by a mechanism this ticket did not write.
@@ -508,7 +507,12 @@ fn what_the_condition_reading_cannot_yet_reduce() {
          rule pandop(1) :- Box.bothbig(box(n: 5))\n  \
          rule pdotn(1)  :- box(n: 5).n\nend\n",
     );
-    assert_eq!(answers(&mut kb, "j38jeh.pconst(1)"), 0, "a `const` goal: still silent");
+    assert_eq!(
+        answers(&mut kb, "j38jeh.pconst(1)"),
+        1,
+        "a `Bool` const goal is the search its value is (WI-20260822-NDG34). This row read \
+         `0`, 'still silent', until that ticket"
+    );
     assert_eq!(
         answers(&mut kb, "j38jeh.pfold(1)"),
         1,

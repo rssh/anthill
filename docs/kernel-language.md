@@ -2157,7 +2157,7 @@ None of the builtins in the resolver-builtin row is reachable bare. Each is writ
 * **what the gate still declines**, and the reasons are different. A **body-less spec op** is no longer among them: it dispatches by its ground carrier (**WI-20260926-K4JGC**), and one no provider supplies is UNREDUCED — `:- Set.insert(Set.empty(), 1) = Set.insert(Set.empty(), 1)` is undecided, not **1** *as data* as it was while the gate declined it as symbolic algebra (068 §2.3; `Set`'s route is WI-20260926-QCJ0B). An **effectful** operation is declined because a host function performs a state effect where the bridge cannot see it — its declared row is the only guard, and a bodied op's effect is caught by the bridge instead. A row whose every member is `Error` (bare, applied, or guarded, `Error[DivisionByZero] :- eq(b, 0)`) does not decline a host function: the error is what the function returns, and the bridge reports it as it reports a raise in a body — the call has no value, the answer set is marked incomplete, and `not(…)` over the call is undecided. A zero divisor of the arithmetic builtins propagates the same way (§5.4, a call that raises). A third case CLOSED with **WI-880** and is recorded because it was a soundness gap rather than an incompleteness: an operation whose host function was registered by **hardcoded name** rather than by an `operation_map` clause was declined for neither reason above but because the gate could not **see** it (**WI-884**'s split). `:- String.concat("a", "b") = "ab"` answered 0, and — unlike the two cases above — it was *decided false* rather than suspended, so `not(…)` over it answered **1**: a positive definite answer out of a call that never ran. WI-880 migrated the whole remaining hardcoded surface — `String`'s eight, `Int64`'s arithmetic, conversions and division, `Float`'s division and IEEE predicates, `BigInt`'s conversions, and the **26 `anthill.reflect` accessors** — so the gate sees one registry and both rows flipped (`wi_vpewk_host_op_operand_test::a_migrated_registration_is_visible_to_the_gate`). It was not yet the WHOLE surface: 46 more stayed hardcoded — `PartialEq.eq`/`neq`, `struct_eq`, `Map`, the relational algebra, the runtime-effect operations and the dispatch-value readers — until **WI-20260922-BRT4Y** moved them too, so every operation the interpreter registers is now one this gate can see (the effect-row clause above still declines the effectful ones). The reflection family was the one whose consequence was not "a host op is awkward at one position": since the whole accessor surface sat in the invisible half, **no rule could decompose a term at all**, and `not(term_as_int(7) = some(7))` answered **1 DEFINITE** — a positive conclusion drawn from a term the rule never read (`wi880_reflect_mapping_test`). Twenty of those twenty-six are declared at NAMESPACE level and so have no `<carrier>.<operation>` key; a binding block whose target is the **namespace** registers them, which is a different question from §8.7's "a namespace-level operation is not BACKING" — that rule is about discharging a `provides`, and a mapping says what *realizes* a declared operation.
 
 **A NESTED host call reduces too, and that took a second fix.** `reduce_op_value` used to σ-walk each argument to a `Value` without REDUCING one that was itself an op-call, so a nested call residualized — WI-20260826-VPEWK's documented remainder, sound but incomplete. Making the accessors host-mapped turned that incompleteness into a **wrong answer**: an un-reduced call IS a term, so a parameter declared `Term` passed the bridge's ground check and the host function ran ON THE CALL — measured, `:- term_as_int(as_term(7)) = none()` answered **1 DEFINITE** where the true value is `some(7)`. (The `= some(7)` row is 0 on both sides of that back-out and cannot see it; the un-fired path and the wrong-value path agree there by accident.) A host callee's arguments are reduced before the bridge now, so the nested call answers correctly and VPEWK's remainder closes with it. Two guards are measured across that change and unmoved by it: symbolic algebra — undecided since WI-20260926-K4JGC, and answering 1 as data then (`:- Set.insert(Set.empty(), 1) = Set.insert(Set.empty(), 1)` — those callees are in no interpreter registry, so the recursion bails on them) — and a bodied op split against a host call is unchanged. **What still declines** is the BINDING case: `eq` never binds, so `term_as_int(7) = ?v` suspends — a question about the connective, owned by `WI-20260822-F0HHB`.
-* a **`const` reference in GOAL position** (`:- flag`) answers 0 (**WI-20260822-NDG34**). In a **value slot** it is its value (§5.9, **WI-20261001-KDMQS**): with `const nn: Int64 = 5` and `const flag: Bool = true`, `:- Int64.gt(nn, 3)` and `:- flag = true` answer 1, as their literal spellings do, and as the *same* references inside an operation body always folded. Both rows answered 0 before KDMQS.
+* a `const` named as a goal is the search its value is when the const is a `Bool` (§5.3), and in a value slot it is its value (§5.9): with `const nn: Int64 = 5` and `const flag: Bool = true`, `:- flag`, `:- Int64.gt(nn, 3)` and `:- flag = true` answer 1, as their literal spellings do and as the same references inside an operation body do.
 
 `a & b` in a goal is **not** refused — that refusal was lifted with the conjunction primitive (§6.6), and `:- true & true` / `:- true & false` answer 1 / 0.
 
@@ -2495,6 +2495,14 @@ FUNCTOR and a constant has none; the refusal therefore sits with WI-583's non-`B
 operation error, which answers the same question — *is this term readable as a goal at
 all?* — and the error names the constant, its position, and both repairs (an argument
 `p(42)` or a comparison `?x = 42`; `false` if the clause is meant to be dead).
+
+A `Bool` const named as a goal is the constant it holds, so it is the same search: with
+`const flag: Bool = true`, `:- flag` succeeds and `:- not(flag)` fails, however the const
+is spelled. The value is the one a data slot takes when the clause loads (§5.9), so a
+`Bool` const that table gives no value is a load error at the goal; a query evaluates it
+instead. A const of another type is a load error, as its value would be: `:- nn` with
+`const nn: Int64 = 5`. A const is named and not applied, so `:- flag()` is a load error,
+as `flag()` is in a value slot and in an operation body.
 
 **Equations are not this construct.** An equational rule (`lhs <=> rhs`) extends
 unification; its clauses are indexed under the connective, not under its subject, so the
@@ -4448,12 +4456,15 @@ program: a const with no load-time value is evaluated there, as an operation bod
 evaluate it. That matters because a fact can hold such a value without naming the const,
 for example when it was asserted at run time or reloaded from a store.
 
+A goal is not a data slot, but a `Bool` const named as one is folded by the same table,
+to the search its value is (§5.3). A const of another type there, or one the table
+refuses, is a load error.
+
 Some positions are NOT data slots and keep the symbol:
 - An **operation body** folds the const when it is evaluated. That is also what keeps a
   program loadable when its binding layer is not the interpreter's.
 - A **compound expression** (`if`, `let`, `match`, `lambda`) is evaluated wherever it is
   written, even inside a clause, so the same rule applies to it.
-- A bare const in **GOAL position** (`:- flag`) is a goal, not a value (WI-20260822-NDG34).
 - A **type argument** (`Vector[Int64, N]`) is not a data slot.
 - A field declared `anthill.reflect.Term` holds a **quoted** pattern.
 - The subject and replacement of an **equation** clause head are rewrite sides, matched
@@ -4461,9 +4472,10 @@ Some positions are NOT data slots and keep the symbol:
 
 A const name is declared at most once per scope, and the loader refuses a second
 declaration, naming both: a scope maps a name to one symbol, and a const keeps one
-declared type and one value under it. Consts of the same name on different sorts are
-distinct symbols. A bodyless const and the `const_map` entry that supplies its value are
-one declaration and its binding.
+declared type and one value under it. A `fact` or a rule clause whose head names a const
+is refused for the same reason, at any arity: a goal naming the const reads its value.
+Consts of the same name on different sorts are distinct symbols. A bodyless const and the
+`const_map` entry that supplies its value are one declaration and its binding.
 
 A const is named by its one-segment name where that is in scope, or dotted from its sort
 or namespace — `S.c`, `Float.infinity` — in an operation body and in a const's value as in

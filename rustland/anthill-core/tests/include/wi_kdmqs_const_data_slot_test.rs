@@ -38,7 +38,8 @@
 //! [`the_symbolic_spelling_still_matches_its_fact`] (before: symbol against symbol;
 //! after: value against value. It guards the regression a facts-only fold would have
 //! caused, where the goal kept the symbol and the fact held the value);
-//! the GOAL-position row `:- flag`, which is WI-20260822-NDG34's and stays 0;
+//! the GOAL-position row `:- flag`, which is WI-20260822-NDG34's (1 since that ticket,
+//! by its own fold);
 //! [`a_quoted_term_field_keeps_the_const_as_written`] (which DID fail, 0 ≠ 1, before
 //! `Loader::entity_field_is_quoted`: the occurrence walk folded what the quoted term
 //! kept); and the operation-body row of
@@ -271,8 +272,7 @@ fn the_symbolic_spelling_still_matches_its_fact() {
 }
 
 /// The value-slot rows of WI-20260822-NDG34: a const read by a rule-body goal's argument
-/// is its value. The GOAL-position row `:- flag` is that ticket's own question and is not
-/// moved here: it stays 0.
+/// is its value. The GOAL-position row `:- flag` is that ticket's own fold, not this one's.
 #[test]
 fn a_const_in_a_rule_body_value_slot_is_its_value() {
     let mut kb = crate::common::load_kb_with(CONST_SRC);
@@ -285,8 +285,9 @@ fn a_const_in_a_rule_body_value_slot_is_its_value() {
     );
     assert_eq!(
         definite(&mut kb, "kdmqs.c.flag_goal"),
-        0,
-        "CONTROL: a bare const in GOAL position is not folded (WI-20260822-NDG34)",
+        1,
+        "a bare `Bool` const in GOAL position is the search its value is \
+         (WI-20260822-NDG34; it read 0 before that ticket)",
     );
 }
 

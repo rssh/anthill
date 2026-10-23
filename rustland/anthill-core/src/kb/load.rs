@@ -856,6 +856,18 @@ pub enum LoadError {
         /// Where the goal is written.
         span: Span,
     },
+    /// WI-20260822-NDG34 (spec §5.3, §5.9): a `const` written as a rule-body GOAL that is
+    /// not the search `true` / `false`. A `Bool` const with a load-time value is that
+    /// literal at a goal; `problem` says why this one is not. The const sibling of
+    /// [`Self::ConstantInGoalPosition`]: before it, `:- flag` loaded and answered nothing
+    /// for `const flag: Bool = true`, and `:- not(flag)` answered one.
+    ConstInGoalPosition {
+        /// The const, qualified.
+        name: String,
+        problem: ConstGoalProblem,
+        /// Where the goal is written.
+        span: Span,
+    },
     /// WI-20260902-8K4RB: the subject of a bodyless EQUATION written in a rule-body
     /// GOAL position — `rule reader(1) :- tauX` beside `rule tauX <=> 7 @[simp]`.
     ///
@@ -2332,6 +2344,17 @@ pub enum LoadError {
         functor: String,
         span: Span,
     },
+    /// WI-20260822-NDG34 (spec §5.9): a `fact` or a `rule` clause whose head names a
+    /// `const`, at any arity. A goal naming the const is the const's value, so the clause
+    /// was reached by no bare goal: `rule flag :- true` beside `const flag: Bool = false`
+    /// left `:- flag` answering the const's `false`, with nothing said.
+    ClauseHeadNamesConst {
+        /// The refused item's kind — `"fact"` or `"rule"`.
+        kind: &'static str,
+        /// The const, qualified.
+        name: String,
+        span: Span,
+    },
     /// WI-023: an `aggregation` constraint (`count/sum/min/max(…) op bound`). The
     /// parser and loader carry it faithfully, but the guard engine cannot yet
     /// evaluate aggregation — so the loader reports it loudly (load-blocking)
@@ -2975,6 +2998,7 @@ impl LoadError {
             | LoadError::SelfTypeMisuse { span, .. }
             | LoadError::TypeParamShadowsSlot { span, .. }
             | LoadError::FunctorOwnedByExtent { span, .. }
+            | LoadError::ClauseHeadNamesConst { span, .. }
             | LoadError::MacroRejected { span, .. }
             | LoadError::UndefinedAfterDefinePass { span, .. }
             | LoadError::UndefinedRuleBodyGoal { span, .. }
@@ -2986,6 +3010,7 @@ impl LoadError {
             | LoadError::UndefinedHeadArgument { span, .. }
             | LoadError::SortAppliedAsData { span, .. }
             | LoadError::ConstantInGoalPosition { span, .. }
+            | LoadError::ConstInGoalPosition { span, .. }
             | LoadError::EquationSubjectInGoalPosition { span, .. }
             | LoadError::UnknownEntityField { span, .. }
             | LoadError::SecondaryEntryContent { span, .. }
@@ -3403,6 +3428,17 @@ impl LoadError {
                     "{}: {}",
                     loc.format_start(*span),
                     constant_in_goal_position_message(literal)
+                )
+            }
+            LoadError::ConstInGoalPosition {
+                name,
+                problem,
+                span,
+            } => {
+                format!(
+                    "{}: {}",
+                    loc.format_start(*span),
+                    const_in_goal_position_message(name, problem)
                 )
             }
             LoadError::EquationSubjectInGoalPosition { functor, span } => {
@@ -3832,6 +3868,13 @@ impl LoadError {
                     loc.format_start(*span),
                     qualified,
                     consequence
+                )
+            }
+            LoadError::ClauseHeadNamesConst { kind, name, span } => {
+                format!(
+                    "{}: {}",
+                    loc.format_start(*span),
+                    clause_head_names_const_message(kind, name)
                 )
             }
             LoadError::FunctorOwnedByExtent {
@@ -4920,6 +4963,19 @@ impl std::fmt::Display for LoadError {
                 span.start,
                 span.end
             ),
+            LoadError::ConstInGoalPosition {
+                name,
+                problem,
+                span,
+            } => {
+                write!(
+                    f,
+                    "{} at {}..{}",
+                    const_in_goal_position_message(name, problem),
+                    span.start,
+                    span.end
+                )
+            }
             LoadError::ConstantInGoalPosition { literal, span } => {
                 write!(
                     f,
@@ -5294,6 +5350,15 @@ impl std::fmt::Display for LoadError {
                     f,
                     "internal: '{}' was not defined by the loader's name pass, so {} (at {}..{})",
                     qualified, consequence, span.start, span.end,
+                )
+            }
+            LoadError::ClauseHeadNamesConst { kind, name, span } => {
+                write!(
+                    f,
+                    "{} at {}..{}",
+                    clause_head_names_const_message(kind, name),
+                    span.start,
+                    span.end
                 )
             }
             LoadError::FunctorOwnedByExtent {
@@ -15358,6 +15423,59 @@ pub(crate) fn constant_in_goal_position_message(literal: &str) -> String {
     )
 }
 
+/// Why a const written as a rule-body goal is not the search its value would be
+/// ([`LoadError::ConstInGoalPosition`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConstGoalProblem {
+    /// Its type is not `Bool`, so it names no truth: `:- nn` with `const nn: Int64 = 5`.
+    NotBool { ty: String },
+    /// A `Bool` const whose value is not known when the clause loads
+    /// (`kb::const_value`): a computed body, or a host value this runtime has no binding for.
+    ValueUnavailable { reason: String },
+    /// A `Bool` const whose value is known, left standing by the walk that built the goal:
+    /// a defect of that walk, which the goal would otherwise answer as nothing. No program
+    /// in the suite reaches it; it keeps a missed fold from being the silent wrong answer
+    /// this refusal family exists to remove.
+    NotFolded,
+}
+
+/// WI-20260822-NDG34 — the one wording of [`LoadError::ClauseHeadNamesConst`], for its two
+/// renderings.
+fn clause_head_names_const_message(kind: &str, name: &str) -> String {
+    format!(
+        "this {kind}'s head names the const `{name}`: a const is a value and not a \
+         relation, a name in a scope is one symbol, and a goal naming the const reads its \
+         value (kernel-language.md §5.9). Give the relation a name of its own."
+    )
+}
+
+/// WI-20260822-NDG34 — the one wording of [`LoadError::ConstInGoalPosition`], shared by
+/// its two renderings and the typer's face of it, as [`constant_in_goal_position_message`]
+/// is for a literal.
+pub(crate) fn const_in_goal_position_message(name: &str, problem: &ConstGoalProblem) -> String {
+    let short = last_segment(name);
+    match problem {
+        ConstGoalProblem::NotBool { ty } => format!(
+            "the const `{name}` of type `{ty}` is written as a rule-body GOAL: only a `Bool` \
+             const reads as a goal, as the search its value is (`true` succeeds, `false` \
+             fails, kernel-language.md §5.3), so this goal can never match and the rule it \
+             is written in can never fire. If this is data, it belongs in a goal's ARGUMENT \
+             (`p({short})`) or in a comparison (`?x = {short}`)."
+        ),
+        ConstGoalProblem::ValueUnavailable { reason } => format!(
+            "the const `{name}` is written as a rule-body GOAL, where a `Bool` const is the \
+             search its value is, and that value is not known when the clause loads: \
+             {reason}. Write the value itself, or compute it in the body of a `Bool` \
+             operation and write that operation as the goal."
+        ),
+        ConstGoalProblem::NotFolded => format!(
+            "the `Bool` const `{name}` is written as a rule-body GOAL and was not folded to \
+             its value by the walk that built the clause, so the goal would match nothing. \
+             This is a defect in that walk, not in the program."
+        ),
+    }
+}
+
 /// WI-20260902-8K4RB — the ONE wording of [`LoadError::EquationSubjectInGoalPosition`],
 /// shared by the located `format_with_source` rendering, the span-less `Display`, and
 /// the [`super::typing::TypeError`] face the goal-reading pass raises it through (the
@@ -22858,9 +22976,12 @@ pub fn convert_query_term(
         // bare-interns the two answers that name no single symbol (WI-476), and an
         // unresolved bare intern heads no clause, so the pattern matches nothing and the
         // CLI's `report_unknown_functor_name` gets a name to diagnose instead of
-        // `field_access`.
+        // `field_access`. A `Bool` const is the literal it holds, as at every goal.
         let expr = if kb.symbols.is_resolved(sym) {
-            Expr::Ref(sym)
+            match query_slot_const(kb, sym, ConstFold::Goal) {
+                Some(lit) => Expr::Const(lit),
+                None => Expr::Ref(sym),
+            }
         } else {
             Expr::Ident(sym)
         };
@@ -22937,8 +23058,9 @@ fn expand_bare_entity_query_name(
     })
 }
 
-/// WI-20261001-KDMQS — the query twin of `Loader::data_slot_const_value`: `sym`'s value
-/// when the pattern walk is in a data slot and `sym` is a const.
+/// WI-20261001-KDMQS — the query twin of `Loader::data_slot_const_value` and
+/// `Loader::goal_const_value`: `sym`'s value when `sym` is a const and the pattern walk is
+/// in a data slot, or at a goal and the value is a `Bool`.
 ///
 /// A QUERY CAN EVALUATE, which a clause conversion cannot: it converts against a LOADED
 /// program. So a const with no load-time value (a computed body) is asked of the
@@ -22949,15 +23071,22 @@ fn expand_bare_entity_query_name(
 ///
 /// What the evaluator cannot produce either (no value source in this runtime, a body that
 /// raises, a value that is not a literal) keeps the symbol, because a query pattern has no
-/// error channel. Its empty answer is then true: no stored clause holds that value.
-fn query_data_slot_const(kb: &mut KnowledgeBase, sym: Symbol, fold: ConstFold) -> Option<Literal> {
-    if fold != ConstFold::Data || !kb.has_kind(sym, SymbolKind::Const) {
+/// error channel. Its empty answer is then true: no stored clause holds that value. At a
+/// goal, a const that is not a `Bool` keeps the symbol too and matches nothing, which is
+/// what a query does with `not(42)`: it has no refusal to make.
+fn query_slot_const(kb: &mut KnowledgeBase, sym: Symbol, fold: ConstFold) -> Option<Literal> {
+    if !matches!(fold, ConstFold::Data | ConstFold::Goal) || !kb.has_kind(sym, SymbolKind::Const) {
         return None;
     }
-    match kb.const_slot_value(sym) {
-        Ok(lit) => Some(lit),
-        Err(_) => kb.evaluated_const_literal(sym),
+    // At a goal only a `Bool` const has a reading, so another is not evaluated to be dropped.
+    if fold == ConstFold::Goal && !kb.const_type_is_bool(sym) {
+        return None;
     }
+    let lit = match kb.const_slot_value(sym) {
+        Ok(lit) => lit,
+        Err(_) => kb.evaluated_const_literal(sym)?,
+    };
+    (fold == ConstFold::Data || matches!(lit, Literal::Bool(_))).then_some(lit)
 }
 
 /// The query twin of `Loader::data_slot_alias_type`: in a data slot, a type alias is the
@@ -23327,8 +23456,6 @@ fn convert_query_term_expecting(
             // position with no load-error channel to be loud from. The mint carries its
             // ADDRESS now, which outranks scope by construction, so the ordinary query
             // ladder is the whole answer and no producer has to be enumerated.
-            // WI-20261001-KDMQS — a dotted chain naming a const, in a data slot, is the
-            // const's value: the query twin of the loader's arm.
             if fold == ConstFold::Data {
                 // 8DXVK: a qualified sort in a query's data/type operand is the
                 // sort value, as its bare spelling is. Leaving the dotted path
@@ -23341,13 +23468,18 @@ fn convert_query_term_expecting(
                             .unwrap_or_else(|| expr_node(Expr::Ref(symbol)));
                     }
                 }
-                if let Some(c) = dotted_citation_name(parse_symbols, parse_terms, parse_id)
-                    .and_then(|name| const_named(kb, &name, scope))
-                {
-                    if let Some(lit) = query_data_slot_const(kb, c, fold) {
-                        return expr_node(Expr::Const(lit));
-                    }
+            }
+            // WI-20261001-KDMQS — a dotted chain naming a const, in a data slot, is the
+            // const's value, and at a goal a `Bool` const's: the query twin of the
+            // loader's arms.
+            if let Some(c) = dotted_citation_name(parse_symbols, parse_terms, parse_id)
+                .and_then(|name| const_named(kb, &name, scope))
+            {
+                if let Some(lit) = query_slot_const(kb, c, fold) {
+                    return expr_node(Expr::Const(lit));
                 }
+            }
+            if fold == ConstFold::Data {
                 // A constructor named by its qualified name is the reference its
                 // one-segment name is (the `Term::Ident` arm below).
                 if let Some(ctor) = dotted_citation_name(parse_symbols, parse_terms, parse_id)
@@ -23605,7 +23737,7 @@ fn convert_query_term_expecting(
         Term::Ident(sym) => {
             let name = parse_symbols.local_name(sym);
             match resolve_name_in_kb(kb, name, scope) {
-                ResolveResult::Found(resolved) => match query_data_slot_const(kb, resolved, fold) {
+                ResolveResult::Found(resolved) => match query_slot_const(kb, resolved, fold) {
                     Some(lit) => Expr::Const(lit),
                     None => match query_data_slot_alias(kb, resolved, fold) {
                         Some(occ) => return occ,
@@ -23620,7 +23752,7 @@ fn convert_query_term_expecting(
         Term::Ref(sym) => {
             let name = parse_symbols.local_name(sym);
             let resolved = resolve_query_name(kb, name, scope);
-            match query_data_slot_const(kb, resolved, fold) {
+            match query_slot_const(kb, resolved, fold) {
                 Some(lit) => Expr::Const(lit),
                 None => match query_data_slot_alias(kb, resolved, fold) {
                     Some(occ) => return occ,
@@ -25248,8 +25380,8 @@ enum ConstFold {
     /// the symbol here. Where it is evaluated (an operation body) eval folds it on demand.
     Off,
     /// A GOAL position: a clause head itself, a body goal, a connective's goal slot. A
-    /// bare const here is a goal, not a value, and whether it may be one is
-    /// WI-20260822-NDG34's question, not this one's.
+    /// `Bool` const at a rule-body, constraint or query goal is the literal it holds, a
+    /// search (`Loader::goal_const_value`, `query_slot_const`); a clause head is not folded.
     Goal,
     /// A conjunction WRAPPER in a goal slot (`forall_impl`'s `tuple(…)`): each of its
     /// components is a goal.
@@ -28821,6 +28953,13 @@ impl<'a> Loader<'a> {
         const_named(self.kb, &name, self.current_scope)
     }
 
+    /// Is this walk at a GOAL the term walk folds a `Bool` const in: a goal that is not a
+    /// clause head — a constraint's, or a goal slot the rule-body walk handed over. A head
+    /// names its relation, and a const there is refused (`Self::refuse_if_const_head`).
+    fn term_walk_at_goal(&self) -> bool {
+        self.const_fold == ConstFold::Goal && self.clause_head.is_none()
+    }
+
     /// The entity constructor a converter-minted dotted chain (`Colour.red`) names, when this
     /// walk is in a clause DATA slot: a constructor's qualified name is the reference its
     /// one-segment name is, so `fact holds(Colour.red)` holds `red`'s symbol, and a goal or a
@@ -28834,10 +28973,16 @@ impl<'a> Loader<'a> {
         ctor_named(self.kb, &name, self.current_scope)
     }
 
-    /// The term a clause holds for a resolved name `sym`: a const in a data slot its value, a
-    /// type alias there the type it stands for, anything else its reference. One reading for
-    /// the one-segment name and a constructor's qualified one.
+    /// The term a clause holds for a resolved name `sym`: a `Bool` const at a goal the
+    /// literal it holds, a const in a data slot its value, a type alias there the type it
+    /// stands for, anything else its reference. One reading for the one-segment name, the
+    /// written reference and a constructor's qualified name.
     fn resolved_name_term(&mut self, sym: Symbol, parse_id: TermId, span: Span) -> Term {
+        if self.term_walk_at_goal() {
+            if let Some(lit) = self.goal_const_value(sym) {
+                return Term::Const(lit);
+            }
+        }
         match self.data_slot_const_value(sym, parse_id) {
             Some(lit) => Term::Const(lit),
             None => match self.data_slot_alias_type(sym) {
@@ -29235,6 +29380,18 @@ impl<'a> Loader<'a> {
                 self.const_fold = node_fold;
                 if let Some(c) = self.data_slot_dotted_const(parse_id) {
                     if let Some(lit) = self.data_slot_const_value(c, parse_id) {
+                        let kb_id = self.kb.alloc(Term::Const(lit));
+                        self.term_map.insert(parse_id.raw(), kb_id);
+                        return kb_id;
+                    }
+                }
+                // And at a goal, a `Bool` const named dotted is the literal it holds.
+                if self.term_walk_at_goal() {
+                    let at_goal = self
+                        .dotted_name_rooted_at_no_binding(parse_id)
+                        .and_then(|name| const_named(self.kb, &name, self.current_scope))
+                        .and_then(|c| self.goal_const_value(c));
+                    if let Some(lit) = at_goal {
                         let kb_id = self.kb.alloc(Term::Const(lit));
                         self.term_map.insert(parse_id.raw(), kb_id);
                         return kb_id;
@@ -30394,13 +30551,7 @@ impl<'a> Loader<'a> {
                 let new_sym = self.remap_symbol_strict(sym, span);
                 // WI-20261001-KDMQS — a const in a clause data slot is its value, and a
                 // type alias the type it stands for.
-                match self.data_slot_const_value(new_sym, parse_id) {
-                    Some(lit) => Term::Const(lit),
-                    None => match self.data_slot_alias_type(new_sym) {
-                        Some(ty) => self.kb.get_term(ty).clone(),
-                        None => self.bare_name_term(new_sym, span),
-                    },
-                }
+                self.resolved_name_term(new_sym, parse_id, span)
             }
             Term::Bottom => Term::Bottom,
             Term::Ident(sym) => {
@@ -34520,16 +34671,36 @@ impl<'a> Loader<'a> {
     /// `Term::Ident` arms below. It did not, so `:- ns.flag` answered nothing where
     /// `:- flag` answered and `:- not(ns.flag)` SUCCEEDED — this ticket's headline.
 
-    /// The expression a rule body's walk reads a resolved name `sym` as, outside a goal: a
-    /// const in a data slot its value, a type its type value, a nullary operation its call,
-    /// anything else its reference. One reading for the one-segment name and a constructor's
-    /// qualified one.
+    /// The expression a rule body's walk reads a resolved name `sym` as: a `Bool` const at a
+    /// goal the literal it holds, a const in a data slot its value, a type its type value, a
+    /// nullary operation its call, anything else its reference. One reading for the
+    /// one-segment name and a constructor's qualified one.
     fn body_resolved_name_expr(&mut self, sym: Symbol, parse_id: TermId, span: SourceSpan) -> Expr {
+        if self.in_body_goal && !self.in_body_goal_wrapper {
+            if let Some(lit) = self.goal_const_value(sym) {
+                return Expr::Const(lit);
+            }
+        }
         match self.data_slot_const_value(sym, parse_id) {
             Some(lit) => Expr::Const(lit),
             None => self
                 .body_bare_type_value(sym, span)
                 .unwrap_or_else(|| self.nullary_op_call_or_ref(sym, parse_id)),
+        }
+    }
+
+    /// A `Bool` const named as a GOAL is the literal it holds, which a goal reads as a
+    /// search: `true` succeeds, `false` fails (§5.3). The value is the load-time one a data
+    /// slot takes (`kb::const_value`). Any other const is kept as named, and in a rule body
+    /// the typer refuses it (`check_goal_atom_reading`): a const of another type names no
+    /// truth, and a `Bool` one with no load-time value has none to fold.
+    fn goal_const_value(&mut self, sym: Symbol) -> Option<Literal> {
+        if !self.kb.has_kind(sym, SymbolKind::Const) {
+            return None;
+        }
+        match self.kb.const_slot_value(sym) {
+            Ok(lit @ Literal::Bool(_)) => Some(lit),
+            _ => None,
         }
     }
 
@@ -34777,10 +34948,16 @@ impl<'a> Loader<'a> {
                 // WI-20261001-KDMQS — a dotted chain naming a const in a DATA slot is its
                 // value: the twin of `convert_term_inner`'s arm, so a fact holding
                 // `Float.infinity` and a body goal spelling it build one term.
+                // Refused for its value, the chain is the const's name, as the one-segment
+                // spelling keeps it: read on as a projection, it added two errors that named
+                // no mistake of the program's ("a defect in the walk that built this
+                // occurrence").
                 if let Some(c) = self.data_slot_dotted_const(parse_id) {
-                    if let Some(lit) = self.data_slot_const_value(c, parse_id) {
-                        return NodeOccurrence::new_expr(Expr::Const(lit), span, None);
-                    }
+                    let expr = match self.data_slot_const_value(c, parse_id) {
+                        Some(lit) => Expr::Const(lit),
+                        None => Expr::Ref(c),
+                    };
+                    return NodeOccurrence::new_expr(expr, span, None);
                 }
                 // A constructor's qualified name is the reference its one-segment name is.
                 if let Some(ctor) = self.data_slot_dotted_ctor(parse_id) {
@@ -34859,7 +35036,10 @@ impl<'a> Loader<'a> {
                             if let Some(occ) = self.bare_entity_goal_occurrence(sym, parse_id) {
                                 return occ;
                             }
-                            self.nullary_op_call_or_ref(sym, parse_id)
+                            match self.goal_const_value(sym) {
+                                Some(lit) => Expr::Const(lit),
+                                None => self.nullary_op_call_or_ref(sym, parse_id),
+                            }
                         } else {
                             // An UNRESOLVED name has neither reading to take — no field
                             // schema, no declared arity — and mirrors the one-segment
@@ -40356,6 +40536,21 @@ impl<'a> Loader<'a> {
         }
     }
 
+    /// WI-20260822-NDG34 — refuse a clause whose head names a `const`
+    /// ([`LoadError::ClauseHeadNamesConst`]), and return `true` so the caller stores no
+    /// clause. A scope maps the name to one symbol, and a const keeps one value under it.
+    fn refuse_if_const_head(&mut self, head: TermId, kind: &'static str, span: Span) -> bool {
+        let Some(functor) = self.kb.head_functor(head) else {
+            return false;
+        };
+        if !self.kb.has_kind(functor, SymbolKind::Const) {
+            return false;
+        }
+        let name = self.kb.qualified_name_of(functor).to_string();
+        self.errors.push(LoadError::ClauseHeadNamesConst { kind, name, span });
+        true
+    }
+
     fn load_fact(&mut self, f: &Fact, domain: Symbol) {
         let fact_kind = ClauseKind::Fact;
 
@@ -40449,7 +40644,9 @@ impl<'a> Loader<'a> {
         self.in_value_position = false;
         // WI-797: a mounted-extent functor is virtualized through its store, so a
         // resident source fact for it is refused (single owner).
-        if self.refuse_if_extent_owned(term, "fact", self.parsed.terms.span(f.term)) {
+        if self.refuse_if_extent_owned(term, "fact", self.parsed.terms.span(f.term))
+            || self.refuse_if_const_head(term, "fact", self.parsed.terms.span(f.term))
+        {
             self.current_owner = prev_owner;
             return;
         }
@@ -41444,7 +41641,9 @@ impl<'a> Loader<'a> {
                     positive_heads.push(head);
                     // WI-797: a mounted-extent functor must have no resident rule
                     // (single owner) — refuse any head owned by a mounted source.
-                    if self.refuse_if_extent_owned(head, "rule", self.parsed.terms.span(*tid)) {
+                    if self.refuse_if_extent_owned(head, "rule", self.parsed.terms.span(*tid))
+                        || self.refuse_if_const_head(head, "rule", self.parsed.terms.span(*tid))
+                    {
                         self.current_owner = prev_owner;
                         return;
                     }

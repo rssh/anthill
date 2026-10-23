@@ -1298,33 +1298,49 @@ pub(super) fn check_rule_body_operation_requires(kb: &mut KnowledgeBase) -> Vec<
 /// (which `bare_bodied_bool_relation` already declines to route on purity
 /// grounds); a NON-concrete return (a bare type parameter that may instantiate
 /// to `Bool`); the functional-relation form `f(args, result)` (arity + 1); a
-/// rule-backed functor (a genuine relation); and a `const` REFERENCE in goal position,
-/// which is silently dead today but has no working repair to point at — a const does
-/// not fold anywhere in a rule body, so refusing it here would strand the author
-/// (MEASURED: with `const nn: Int64 = 5`, `:- Int64.gt(nn, 3)` answers 0 where
-/// `Int64.gt(5, 3)` answers 1, while the SAME reference inside an operation body folds
-/// — WI-20260822-NDG34 owns it). See `check_goal_atom_reading`.
+/// rule-backed functor (a genuine relation). See `check_goal_atom_reading`.
 ///
 /// A THIRD SHAPE: a goal on a rule-less operation whose ARGUMENT LIST is neither the
 /// operation's parameter list nor that list and one positional result column
 /// ([`operation_goal_arity_error`]). It is the operation's call — there is no clause to
 /// prove it against — and no call has that shape, so it is refused wherever a goal is
 /// proved, a `|` branch and a quantifier's body included.
+///
+/// A FOURTH SHAPE: a `const` at a goal (WI-20260822-NDG34). A `Bool` const with a
+/// load-time value is folded by the loader to the literal it holds, a search
+/// (`Loader::goal_const_value`), so one that reaches here is either of another type,
+/// which names no truth, or a `Bool` with no value to fold
+/// ([`crate::kb::load::ConstGoalProblem`]). Applied (`flag()`), it is the call the typer
+/// refuses in a value slot and an operation body, [`TypeError::UnknownApplyFunctor`]. No
+/// clause is filed under a const (`Loader::refuse_if_const_head`), so a const is never a
+/// relation's name here.
 pub(super) fn check_rule_body_goal_readings(
     kb: &mut KnowledgeBase,
 ) -> Vec<(TypeError, Option<crate::span::SourceId>)> {
     let mut errors: Vec<(TypeError, Option<crate::span::SourceId>)> = Vec::new();
     let mut held_to_parameters: Vec<Rc<NodeOccurrence>> = Vec::new();
+    let mut const_goals: Vec<Rc<NodeOccurrence>> = Vec::new();
     for rid in kb.live_rule_ids() {
         if kb.is_fact(rid) {
             continue; // facts have no body
         }
         for atom in kb.rule_body_nodes(rid) {
-            check_goal_atom_reading(kb, atom, &mut errors, &mut held_to_parameters);
+            check_goal_atom_reading(
+                kb,
+                atom,
+                &mut errors,
+                &mut held_to_parameters,
+                &mut const_goals,
+            );
         }
     }
     for goal in held_to_parameters {
         if let Some(e) = operation_goal_arity_error(kb, &goal) {
+            errors.push((e, Some(goal.span.source)));
+        }
+    }
+    for goal in const_goals {
+        if let Some(e) = const_goal_error(kb, &goal) {
             errors.push((e, Some(goal.span.source)));
         }
     }
@@ -1447,6 +1463,9 @@ fn check_goal_atom_reading(
     // The goals [`operation_goal_arity_error`] is asked about once the walk is over: it
     // interns, and this walk holds the KB shared.
     held_to_parameters: &mut Vec<Rc<NodeOccurrence>>,
+    // The const goals [`const_goal_error`] judges once the walk is over, for the same
+    // reason: it reads the const's load-time value, which memoizes.
+    const_goals: &mut Vec<Rc<NodeOccurrence>>,
 ) {
     let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(atom)];
     while let Some(o) = stack.pop() {
@@ -1495,6 +1514,10 @@ fn check_goal_atom_reading(
                 _ => continue,
             }
         };
+        if kb.has_kind(f, crate::intern::SymbolKind::Const) {
+            const_goals.push(Rc::clone(&o));
+            continue;
+        }
         // A resolver builtin (`eq`/`neq`/`gt`/`find_dictionary`/…) has its own
         // goal semantics — skip. We deliberately do NOT recurse into its value
         // operands: a non-Bool op-call inside `eq(length(?l), 3)` is a value, not
@@ -1591,6 +1614,49 @@ fn check_goal_atom_reading(
             Some(o.span.source),
         ));
     }
+}
+
+/// WI-20260822-NDG34 — the verdict on a const written as a goal that the loader left
+/// standing (see [`check_rule_body_goal_readings`]'s fourth shape). An applied `Bool` const
+/// (`flag()`), or one of a function type, is the call refused everywhere else; any other
+/// const of another type names no truth, applied or not, and its repairs are the data
+/// ones. `None` for a `Bool` const whose known value is of another type: its declaration
+/// is refused for that already, and a second error here would say the same thing worse.
+fn const_goal_error(kb: &mut KnowledgeBase, goal: &Rc<NodeOccurrence>) -> Option<TypeError> {
+    use crate::kb::load::ConstGoalProblem;
+    let span = Some(goal.span.span);
+    let expr = goal.as_expr()?;
+    let (name, applied) = match expr {
+        Expr::Ref(c) | Expr::Ident(c) => (*c, false),
+        _ => (expr_call_parts(expr)?.0, true),
+    };
+    let ty = kb
+        .const_type(name)
+        .cloned()
+        .expect("a loaded const has its declared type (`Loader::load_const`)");
+    let problem = if kb.const_type_is_bool(name) {
+        if applied {
+            return Some(TypeError::UnknownApplyFunctor { span, name });
+        }
+        match kb.const_slot_value(name) {
+            Err(unavailable) => ConstGoalProblem::ValueUnavailable {
+                reason: unavailable.describe(kb, name),
+            },
+            Ok(Literal::Bool(_)) => ConstGoalProblem::NotFolded,
+            Ok(_) => return None,
+        }
+    } else if applied && type_is_callable(kb, &ty) {
+        return Some(TypeError::UnknownApplyFunctor { span, name });
+    } else {
+        ConstGoalProblem::NotBool {
+            ty: type_display_name_value(kb, &ty),
+        }
+    };
+    Some(TypeError::ConstInGoalPosition {
+        span,
+        name,
+        problem,
+    })
 }
 
 /// The verdict on a goal that CALLS a rule-less operation: its arguments fill the
