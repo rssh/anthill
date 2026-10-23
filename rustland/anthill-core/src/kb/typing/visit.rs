@@ -1426,23 +1426,49 @@ pub(super) fn reassemble_match(
 /// typed (bottom-up), so their `min_sort` is available for the guard there.
 ///
 /// WI-757: `Err` is a macro-RHS lowering whose MACRO rejected the occurrences it
-/// was handed. The caller turns it into a [`TypeError::MacroRejected`] at this
-/// redex via [`macro_rejection_error`] and abandons the node — so one rejection
-/// yields exactly one error, and a fire that instead succeeds leaves nothing
-/// behind that could go stale. `try_fire_dot_rule` is the sibling site under the
-/// same contract.
+/// was handed, or whose expansion builds a call no rewrite may put where it fires.
+/// The caller turns it into a load error at this redex via [`fire_refusal_error`] and
+/// abandons the node — so one refusal yields exactly one error, and a fire that
+/// instead succeeds leaves nothing behind that could go stale. `try_fire_dot_rule`
+/// is the sibling site under the same contract.
 pub(super) fn fire_simp(
     kb: &mut KnowledgeBase,
     node: &Rc<NodeOccurrence>,
     rids: &[RuleId],
-) -> Result<Option<Rc<NodeOccurrence>>, crate::kb::simp_rewrite::MacroRejection> {
+) -> Result<Option<Rc<NodeOccurrence>>, crate::kb::simp_rewrite::FireRefusal> {
     crate::kb::simp_rewrite::try_fire(kb, node, rids)
+}
+
+/// Render a [`FireRefusal`](crate::kb::simp_rewrite::FireRefusal) as the typer's error
+/// at `redex`, the node the rule fired on. A call a macro builds is refused as the
+/// rule naming its operation is ([`effectful_rewrite_error`]), located where the
+/// redex was written: the expansion's own spans are the macro's choice.
+pub(super) fn fire_refusal_error(
+    kb: &KnowledgeBase,
+    refusal: crate::kb::simp_rewrite::FireRefusal,
+    redex: &Rc<NodeOccurrence>,
+) -> TypeError {
+    match refusal {
+        crate::kb::simp_rewrite::FireRefusal::Macro(rejection) => {
+            macro_rejection_error(rejection, redex)
+        }
+        crate::kb::simp_rewrite::FireRefusal::EffectfulCall { rule, op, block } => {
+            effectful_rewrite_error(
+                kb,
+                rule,
+                op,
+                &block,
+                RewriteCall::MacroBuilt,
+                Some(redex.written_site().span),
+            )
+        }
+    }
 }
 
 /// WI-757: render a carried-out [`MacroRejection`](crate::kb::simp_rewrite::MacroRejection)
 /// as the typer's error, located at the offending sub-expression the macro named —
 /// falling back to `redex`, the node the rule fired on, when it named none.
-pub(super) fn macro_rejection_error(
+fn macro_rejection_error(
     rejection: crate::kb::simp_rewrite::MacroRejection,
     redex: &Rc<NodeOccurrence>,
 ) -> TypeError {

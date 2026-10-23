@@ -72,7 +72,7 @@ use std::rc::Rc;
 use smallvec::SmallVec;
 
 use crate::eval::value::Value;
-use crate::intern::{ScopeId, Symbol};
+use crate::intern::Symbol;
 use crate::parse::desugar_target as dt;
 
 use super::load::meta_has_flag;
@@ -125,6 +125,23 @@ pub struct MacroRejection {
     /// to the reporter, which falls back to the redex; that is what a RAISED
     /// rejection gets, `raise` carrying a payload and no occurrence.
     pub span: Option<crate::span::SourceSpan>,
+}
+
+/// Why a matched `@[simp]` rewrite was not spliced, for the typer to report at the
+/// redex (`typing::fire_refusal_error`). Both are refusals of the program, never a
+/// decline: falling through to the unrewritten call would hide them.
+#[derive(Debug)]
+pub enum FireRefusal {
+    /// The macro at the right-hand side's head rejected the occurrences it was handed.
+    Macro(MacroRejection),
+    /// The macro's expansion builds a call of `op`, potentially effectful for the
+    /// reason `block` gives — a call `rule` would put where it fires, held to the
+    /// refusal a rule naming `op` gets at load ([`effectful_macro_call`]).
+    EffectfulCall {
+        rule: RuleId,
+        op: Symbol,
+        block: crate::kb::body_specialize::EquationBlock,
+    },
 }
 
 /// Whether any indexed `@[simp]` equation exists — the gate the typer's firing
@@ -483,12 +500,12 @@ pub(super) trait SimpFirer {
 
 /// The typer's firing strategy: type-directed [`try_fire`].
 pub(super) struct TyperFirer {
-    /// WI-757: the FIRST macro rejection this walk saw. The [`SimpFirer`] face is
+    /// WI-757: the FIRST refusal this walk saw. The [`SimpFirer`] face is
     /// `Option`-valued (the resolver's firer has no diagnostic to report), so this
-    /// harness keeps the rejection here instead of discarding it — [`run`] hands it
+    /// harness keeps the refusal here instead of discarding it — [`run`] hands it
     /// back to its caller. The typer's own firing site does NOT go through this
     /// firer; it calls [`try_fire`] directly and reports at the redex.
-    pub(super) rejected: Option<MacroRejection>,
+    pub(super) rejected: Option<FireRefusal>,
 }
 
 impl SimpFirer for TyperFirer {
@@ -524,12 +541,12 @@ impl SimpFirer for TyperFirer {
 /// helper-level test harness exercising [`try_fire`] / [`reassemble`] /
 /// [`substitute_to_occurrence`] over the bare occurrence representation.
 ///
-/// WI-757: returns the FIRST macro rejection the walk saw, if any — this harness
-/// has no error sink of its own, and a rejection is a definitive user-caused
+/// WI-757: returns the FIRST refusal the walk saw, if any — this harness
+/// has no error sink of its own, and a refusal is a definitive user-caused
 /// failure that must not evaporate. `None` = every body rewrote (or declined)
 /// cleanly.
-#[must_use = "a macro rejection is a user-facing diagnostic; dropping it silences it"]
-pub fn run(kb: &mut KnowledgeBase) -> Option<MacroRejection> {
+#[must_use = "a fire refusal is a user-facing diagnostic; dropping it silences it"]
+pub fn run(kb: &mut KnowledgeBase) -> Option<FireRefusal> {
     if !has_simp_equations(kb) {
         return None;
     }
@@ -936,7 +953,7 @@ pub(super) fn try_fire(
     kb: &mut KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
     rids: &[RuleId],
-) -> Result<Option<Rc<NodeOccurrence>>, MacroRejection> {
+) -> Result<Option<Rc<NodeOccurrence>>, FireRefusal> {
     let node_functor = match occ.as_expr() {
         Some(Expr::Apply { functor, .. }) => *functor,
         Some(Expr::Constructor { name, .. }) => *name,
@@ -1265,6 +1282,9 @@ fn fold_capture_redex(
 /// The synthesis [`PassId`] is fetched HERE rather than threaded in: [`simp_pass`]
 /// is idempotent for exactly this reason, and a fire that does not match should not
 /// pay for one. That let both callers drop a parameter and `TyperFirer` drop a field.
+///
+/// What a macro expands to is a call the rewrite puts where it fires, and is held to
+/// the rule's effect refusal here, where the rule is known ([`effectful_macro_call`]).
 pub(super) fn instantiate_rhs(
     kb: &mut KnowledgeBase,
     rid: RuleId,
@@ -1272,10 +1292,52 @@ pub(super) fn instantiate_rhs(
     fresh: &[VarId],
     subst: &Substitution,
     from: &Rc<NodeOccurrence>,
-) -> Result<Rc<NodeOccurrence>, MacroRejection> {
+) -> Result<Rc<NodeOccurrence>, FireRefusal> {
     let pass = simp_pass(kb);
     let template = build_rhs_template(kb, rid, rhs, fresh, subst, from, pass);
-    Ok(try_expand_macro(kb, &template)?.unwrap_or(template))
+    match try_expand_macro(kb, &template).map_err(FireRefusal::Macro)? {
+        Some(expansion) => match effectful_macro_call(kb, &expansion) {
+            Some((op, block)) => Err(FireRefusal::EffectfulCall {
+                rule: rid,
+                op,
+                block,
+            }),
+            None => Ok(expansion),
+        },
+        None => Ok(template),
+    }
+}
+
+/// The first call a macro's `expansion` BUILDS to a potentially effectful operation,
+/// with why it is one ([`KnowledgeBase::effect_row_blocking_equations`]).
+///
+/// The rule names the macro, which the load-time gate exempts because its call is
+/// evaluated away; the calls it builds are what the rewrite leaves in the body, and a
+/// rule that named one of them would be refused. Only a node the macro built is read
+/// (stamped `macro_expand_pass`, what `make_apply` and `splice_query_runner` write):
+/// one it was handed and gives back is the redex's own text, whose calls are the
+/// caller's.
+fn effectful_macro_call(
+    kb: &mut KnowledgeBase,
+    expansion: &Rc<NodeOccurrence>,
+) -> Option<(Symbol, crate::kb::body_specialize::EquationBlock)> {
+    let macro_pass = crate::kb::occurrence::macro_expand_pass(kb);
+    let mut stack = vec![Rc::clone(expansion)];
+    while let Some(node) = stack.pop() {
+        if node.synthesized_by() != Some(macro_pass) {
+            continue;
+        }
+        let Some(expr) = node.as_expr() else {
+            continue;
+        };
+        if let Expr::Apply { functor, .. } | Expr::ApplyWithin { functor, .. } = expr {
+            if let Some(block) = kb.effect_row_blocking_equations(*functor) {
+                return Some((*functor, block));
+            }
+        }
+        node_occurrence::for_each_child(expr, |c| stack.push(Rc::clone(c)));
+    }
+    None
 }
 
 /// [`instantiate_rhs`]'s sibling for the RESOLVER's fire (`resolve.rs`
@@ -1398,9 +1460,8 @@ fn build_rhs_template(
     match kb.rule_equation_rhs_node(rid) {
         Some(node) => {
             let opened = node_occurrence::open_debruijn_node(kb, &node, fresh);
-            // The rule's own scope rides its text into the redex.
-            let written_in = kb.symbols.scope_id(kb.rule_domain(rid));
-            let spliced = reparent_spliced(&opened, from, pass, written_in);
+            // The rule rides its text into the redex.
+            let spliced = reparent_spliced(&opened, from, pass, rid);
             let applied = node_occurrence::substitute_occurrence(kb, &spliced, subst);
             bottom_out_unbound(&applied, fresh)
         }
@@ -1417,8 +1478,9 @@ fn build_rhs_template(
 /// walks the OCCURRENCE and mints nothing. Every node keeps its span and its `dot_chain`
 /// ([`NodeOccurrence::reparented_from`]) and changes exactly two things — its provenance
 /// and its `owner`. The provenance says whose text it is as well as where it went:
-/// `written_in` is the rule's scope, which is where an `internal` name is visible to
-/// the rule's text from ([`NodeOccurrence::text_scope`]).
+/// `written_by` is the rule ([`NodeOccurrence::rewritten_by`]), whose scope is where an
+/// `internal` name is visible to the rule's text from, and whose effect refusal a dot in
+/// that text answers to at the redex.
 ///
 /// WHAT THE SPAN AND THE BIT REPAIR, measured — `rule trig(?x) <=> sink(ns.inner.rel)
 /// @[simp]` with a consumer that fires it: THREE "expected resolved name, got unresolved"
@@ -1452,7 +1514,7 @@ fn reparent_spliced(
     rhs_node: &Rc<NodeOccurrence>,
     from: &Rc<NodeOccurrence>,
     pass: PassId,
-    written_in: ScopeId,
+    written_by: RuleId,
 ) -> Rc<NodeOccurrence> {
     let mut work: Vec<SpliceOp> = vec![SpliceOp::Visit(Rc::clone(rhs_node))];
     let mut results: Vec<Rc<NodeOccurrence>> = Vec::new();
@@ -1483,7 +1545,7 @@ fn reparent_spliced(
                         Rc::clone(from),
                         pass,
                         from.owner,
-                        Some(written_in),
+                        Some(written_by),
                     )
                 } else if node.as_pattern().is_some() {
                     // WI-20260903-FC2X4 — …AND ITS OWNER MOVES WITH ITS SIBLINGS'. The
@@ -2989,8 +3051,8 @@ mod tests {
         );
 
         let pass = simp_pass(&mut kb);
-        let rule_scope = kb.symbols.scope_id(f);
-        let spliced = reparent_spliced(&rhs, &from, pass, rule_scope);
+        // The rule the text is marked with plays no part in the owners asserted here.
+        let spliced = reparent_spliced(&rhs, &from, pass, RuleId::from_index(0));
         assert_eq!(
             spliced.owner,
             Some(owner),

@@ -817,6 +817,10 @@ end
 /// stood before the arm written for it and took it — "the call `…counter(…)`, which produces a
 /// fresh value", while `rustc` reported the other arm unreachable (MEASURED).
 ///
+/// The macro builds the constructor alone, and `touch` is the caller's call. It built
+/// `touch(counter())` as well until a call a macro builds to an effectful operation was refused
+/// at the expansion (WI-905), which stopped the typing before the argument was read.
+///
 /// BACK-OUT, over the whole `wi_tests` binary: the arm for a call put back before the nullary
 /// arm fails this row and [`a_construction_a_rewrite_leaves_an_application_is_a_constructor`],
 /// whose construction it takes for a call too, and nothing else.
@@ -825,7 +829,7 @@ fn a_spliced_nullary_constructor_is_the_constant() {
     let src = r#"
 namespace test.wi4gbqv.splice
   import anthill.prelude.{Int64, Unit, Modify, Modifiable}
-  import anthill.prelude.List.{cons, nil}
+  import anthill.prelude.List.{nil}
   import anthill.reflect.{NodeOccurrence, make_apply}
 
   sort CounterState
@@ -835,11 +839,11 @@ namespace test.wi4gbqv.splice
 
   operation touch(target: CounterState) -> Unit effects Modify[target] = ()
   operation mkctr(x: NodeOccurrence) -> NodeOccurrence =
-    make_apply("test.wi4gbqv.splice.touch", cons(make_apply("test.wi4gbqv.splice.CounterState.counter", nil(), x), nil()), x)
-  operation poke(c: Int64) -> Unit
-  rule poke(?c) <=> mkctr(?c) @[simp]
+    make_apply("test.wi4gbqv.splice.CounterState.counter", nil(), x)
+  operation ctr(c: Int64) -> CounterState
+  rule ctr(?c) <=> mkctr(?c) @[simp]
 
-  operation w() -> Unit = poke(1)
+  operation w() -> Unit = touch(ctr(1))
 end
 "#;
     let errs = refusals_of(src);

@@ -146,6 +146,9 @@ fn written_sort_dot(
         if let Some(refusal) = hidden(kb, op) {
             return refusal;
         }
+        if let Some(e) = effectful_rewrite_call(kb, occ, op) {
+            return DenotedDot::Refused(e);
+        }
         let recv_type = match receiver(kb) {
             Ok(recv_type) => recv_type,
             Err(refusal) => return refusal,

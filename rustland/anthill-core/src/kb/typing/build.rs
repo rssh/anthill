@@ -390,8 +390,9 @@ pub(super) fn build_type(
                         // its own words at the sub-expression it named, and abandon
                         // the node (the residual template would only add a second,
                         // less informative error naming the lowering's parameter).
-                        Err(rejection) => {
-                            results.push(Err(macro_rejection_error(rejection, &node)));
+                        // So is a call the macro's expansion builds that no rewrite may.
+                        Err(refusal) => {
+                            results.push(Err(fire_refusal_error(kb, refusal, &node)));
                             return;
                         }
                     }
@@ -530,8 +531,8 @@ pub(super) fn build_type(
                         }
                         Ok(None) => {}
                         // WI-757 — same contract as the Apply arm above.
-                        Err(rejection) => {
-                            results.push(Err(macro_rejection_error(rejection, &node)));
+                        Err(refusal) => {
+                            results.push(Err(fire_refusal_error(kb, refusal, &node)));
                             return;
                         }
                     }
@@ -643,6 +644,19 @@ pub(super) fn build_type(
             // and typed once inside the synthesized call (with the callee's
             // param hints).
 
+            // Owned: `kb` is mutated below (alloc / find_operation_in_scope),
+            // so the borrowed name can't be held across it.
+            let short = short_name_of(kb.local_name_of(member)).to_string();
+            // The dot is the call of the operation it resolves to, and an `internal`
+            // operation is hidden from it where its written name would be
+            // ([`hidden_dot_member`]). Asked of the operation the ladder settles on, and
+            // of the receiver's own member before a dispatch decision can hand the call
+            // on from it.
+            let from_scope = written_scope(kb, &env, &occ);
+            // The call shape is the SYNTHESIZED call's, receiver included — the same
+            // `(receiver, …pos_nodes)` list built below when a member is found.
+            let call_shape = (1 + pos_nodes.len(), named_nodes.len());
+
             // INC2: a sort-specific `@[simp]` dot rule (declared in the
             // receiver's sort) OVERRIDES the default. Fire it first; only fall
             // to the default fallback when none fires. Gated on remaining
@@ -661,7 +675,28 @@ pub(super) fn build_type(
                         &occ,
                         simp_rids,
                     ) {
-                        Ok(Some(synth)) => {
+                        Ok(Some((synth, rule))) => {
+                            // The rule replaces the call this dot makes without it, and
+                            // that call is held to the rule's effect refusal as a call
+                            // the rule names is.
+                            match dot_method_operation(
+                                kb, &env, recv_sort, &recv.ty, &short, from_scope, dot_span,
+                                call_shape,
+                            ) {
+                                Ok(Some(replaced)) => {
+                                    if let Some(e) = replaced_call_refusal(kb, rule, &occ, replaced) {
+                                        results.push(Err(e));
+                                        return;
+                                    }
+                                }
+                                // Without the rule the dot reaches no operation — a field, a
+                                // column, or nothing — so the rule replaces no call.
+                                Ok(None) => {}
+                                // Without the rule the dot's dispatch is refused (a hidden
+                                // member, rival suppliers), so it makes no call to replace;
+                                // that refusal is the default's, which the rule overrides.
+                                Err(_) => {}
+                            }
                             push_visit_at(work, synth, env, expected, fuel - 1, pos);
                             return;
                         }
@@ -669,8 +704,8 @@ pub(super) fn build_type(
                         // WI-902 — same contract as the Apply arm above (WI-757);
                         // falling through would instead take the default dispatch,
                         // whose diagnostic names neither the macro nor the reason.
-                        Err(rejection) => {
-                            results.push(Err(macro_rejection_error(rejection, &occ)));
+                        Err(refusal) => {
+                            results.push(Err(fire_refusal_error(kb, refusal, &occ)));
                             return;
                         }
                     }
@@ -678,160 +713,17 @@ pub(super) fn build_type(
             }
 
             // DEFAULT method fallback: resolve `member` to an operation declared
-            // on the receiver's sort, then synthesize `op(receiver, ...args)` —
-            // `x.m(a)` becomes `m(x, a)`. This is engine logic (functor resolved
-            // dynamically), not a writable rule.
-            // Owned: `kb` is mutated below (alloc / find_operation_in_scope),
-            // so the borrowed name can't be held across it.
-            let short = short_name_of(kb.local_name_of(member)).to_string();
-            // The dot is the call of the operation it resolves to, and an `internal`
-            // operation is hidden from it where its written name would be
-            // ([`hidden_dot_member`]). Asked of the operation the ladder settles on, and
-            // of the receiver's own member before a dispatch decision can hand the call
-            // on from it.
-            let from_scope = written_scope(kb, &env, &occ);
-            // WI-1035: the receiver's OWN member is resolved SEPARATELY from the two
-            // spec fallbacks below, because it is not merely a rung of the name ladder
-            // — when it backs a spec the receiver provides it is route 1 of a SUPPLIER
-            // SET, and taking it is a dispatch decision. See
-            // [`dot_member_dispatch_decision`].
-            //
-            // `find_operation_in_scope` reads the sort symbol from a bare
-            // `Ref(sort)` / `sort(args)` head, which is what `make_sort_ref` builds
-            // since WI-361 (it built a `sort_ref(name:…)` wrapper before).
-            let op_sym = if let Some(s) = recv_sort {
-                let sort_term = kb.alloc(Term::Ref(s));
-                let mut own_op = crate::kb::load::find_operation_in_scope(kb, sort_term, &short);
-                // `own_member`, not `member`: the outer `member` is the dot's member NAME
-                // (read above, and by `try_fire_dot_rule`); this is the operation it
-                // resolved to, which is what the callee's own parameter is called.
-                if let Some(own_member) = own_op {
-                    // Before the dispatch decision: on an abstract-spec receiver that
-                    // hands the call to the spec operation the member backs, which a
-                    // hidden member is not passed over for.
-                    if let Some(e) = hidden_dot_member(kb, own_member, from_scope, dot_span) {
-                        results.push(Err(e));
-                        return;
-                    }
-                    match dot_member_dispatch_decision(kb, s, own_member, &short, dot_span) {
-                        Ok(DotMember::Take) => {}
-                        Ok(DotMember::DispatchByValue(spec_op)) => own_op = Some(spec_op),
-                        Err(e) => {
-                            results.push(Err(e));
-                            return;
-                        }
-                    }
+            // on the receiver's sort ([`dot_method_operation`]), then synthesize
+            // `op(receiver, ...args)` — `x.m(a)` becomes `m(x, a)`. This is engine
+            // logic (functor resolved dynamically), not a writable rule.
+            let op_sym = match dot_method_operation(
+                kb, &env, recv_sort, &recv.ty, &short, from_scope, dot_span, call_shape,
+            ) {
+                Ok(op_sym) => op_sym,
+                Err(e) => {
+                    results.push(Err(e));
+                    return;
                 }
-                own_op
-                    // WI-281: spec-satisfaction fallback — `member` may be an
-                    // operation on a spec `s` *provides* (e.g. `(3).min(5)` →
-                    // `Ord.min` via `fact Ord[Int]`), not declared on
-                    // `s` itself. The synthesized `Apply` below is identical;
-                    // re-typing it rides the normal spec-op dispatch +
-                    // `req_insertion`, which threads the requirement.
-                    .or_else(|| find_spec_op_for_provided_sort(kb, s, &short))
-                    // WI-614: a spec-typed receiver (`FiniteCollection[…]`) can invoke a
-                    // member of a spec it REQUIRES — `FiniteCollection requires Iterable`
-                    // ⟹ `.find`/`.isEmpty`/`.iterator`, since a `FiniteCollection` IS
-                    // walkable. Gated on an abstract-spec receiver so a concrete carrier
-                    // keeps resolving via its OWN + PROVIDED members alone (its Iterable
-                    // members already reach it through the provides graph).
-                    .or_else(|| {
-                        carrier_is_abstract_spec(kb, s)
-                            .then(|| find_spec_op_for_required_sort(kb, s, &short))
-                            .flatten()
-                    })
-            } else if let Some(param_ty) = constrained_param_receiver_type(kb, &env, &recv.ty) {
-                // WI-1119: the receiver is a TYPE PARAMETER, so it has no sort whose
-                // members the three rungs above could search — but a `requires` clause on
-                // the enclosing operation or its sort may constrain it, and the NAMED
-                // spelling of this very call is already licensed by that clause. Resolve
-                // the member against the constraining specs so the dot reaches the same
-                // spec operation the named spelling does (§8.7).
-                // The call shape is the SYNTHESIZED call's, receiver included — the same
-                // `(receiver, …pos_nodes)` list built below when a member is found.
-                let call_shape = (1 + pos_nodes.len(), named_nodes.len());
-                match find_spec_op_for_constrained_param(
-                    kb, &env, param_ty, &short, call_shape, dot_span,
-                ) {
-                    Ok(found) => found,
-                    // A tie between two constraining specs is refused HERE rather than
-                    // fallen through: the arms below (field access, relation projection)
-                    // would answer nothing and the frame would end in `DotDispatchNoMatch`,
-                    // reporting "no such member" for a member found TWICE.
-                    Err(e) => {
-                        results.push(Err(e));
-                        return;
-                    }
-                }
-            } else if env.in_rule_body() {
-                // A rule variable typed by a variable a requirement slot of another clause
-                // variable's type constrains ([`find_spec_op_for_clause_slot`]).
-                match find_spec_op_for_clause_slot(kb, &env, &recv.ty, &short, dot_span) {
-                    Ok(found) => found,
-                    Err(e) => {
-                        results.push(Err(e));
-                        return;
-                    }
-                }
-            } else {
-                None
-            };
-            // WI-20260826-JSFHG — THE PARENT-SORT RUNG, for an ENTITY-typed receiver.
-            //
-            // A `Colour.red` value IS a `Colour` (§8.2), so a member declared on `Colour`
-            // is reachable through it — but the three rungs above search the receiver's own
-            // sort symbol, which for a variant type is the CONSTRUCTOR, and a constructor
-            // declares no operations. So `r.shout()` on `r: Colour.red` reported "no such
-            // member (dot dispatch)" while the named spelling `shout(r)` resolved and the
-            // widening `takeAny(r)` was accepted — one value, two answers, which is the
-            // position-dependence WI-752 exists to abolish. Found by /code-review: the
-            // mechanism predates this ticket, but making variant-typed values REACHABLE is
-            // what put values in front of it.
-            //
-            // PURELY ADDITIVE: it is consulted only where every rung above answered `None`,
-            // so no dot that resolves today can resolve differently.
-            //
-            // EXCEPT AGAINST THE RECEIVER'S OWN FIELD, which it must not steal. Where
-            // `op_sym` is `None` the frame falls through to field access, and an entity's
-            // own field is a MORE specific answer than a same-named operation on its
-            // parent; taking the parent's would make `r.v` mean something different on
-            // `Colour.red` than the field it names. So the rung stands down when the member
-            // names a field of the receiver entity, and the fall-through keeps it.
-            let op_sym = match (op_sym, recv_sort.and_then(|s| kb.strict_parent_sort(s))) {
-                (None, Some(parent)) => {
-                    let names_own_field = recv_sort
-                        .and_then(|s| kb.entity_field_types(s))
-                        .is_some_and(|fs| {
-                            fs.iter()
-                                .any(|(f, _)| short_name_of(kb.local_name_of(*f)) == short)
-                        });
-                    if names_own_field {
-                        None
-                    } else {
-                        let parent_term = kb.alloc(Term::Ref(parent));
-                        let mut found =
-                            crate::kb::load::find_operation_in_scope(kb, parent_term, &short);
-                        // The SAME dispatch decision rung 1 makes, asked at the parent, so
-                        // a member that backs a spec the parent provides is routed
-                        // identically whether it is reached through `Colour` or through
-                        // `Colour.red`.
-                        if let Some(own_member) = found {
-                            match dot_member_dispatch_decision(
-                                kb, parent, own_member, &short, dot_span,
-                            ) {
-                                Ok(DotMember::Take) => {}
-                                Ok(DotMember::DispatchByValue(spec_op)) => found = Some(spec_op),
-                                Err(e) => {
-                                    results.push(Err(e));
-                                    return;
-                                }
-                            }
-                        }
-                        found.or_else(|| find_spec_op_for_provided_sort(kb, parent, &short))
-                    }
-                }
-                (other, _) => other,
             };
             if let Some(op_sym) = op_sym {
                 // Asked of the operation the ladder settled on, so every rung above
@@ -840,6 +732,12 @@ pub(super) fn build_type(
                 // parameter, the parent sort's member, and the operation a dispatch
                 // decision handed the call to.
                 if let Some(e) = hidden_dot_member(kb, op_sym, from_scope, dot_span) {
+                    results.push(Err(e));
+                    return;
+                }
+                // A dot in a rewrite's text reaches its operation only here, so the
+                // rule's effect refusal is asked of it here too.
+                if let Some(e) = effectful_rewrite_call(kb, &occ, op_sym) {
                     results.push(Err(e));
                     return;
                 }

@@ -409,11 +409,11 @@ impl Copier {
                         OccurrenceOrigin::Synthesized {
                             from,
                             by,
-                            written_in,
+                            written_by,
                         } => OccurrenceOrigin::Synthesized {
                             from: self.node(from),
                             by: plain(by),
-                            written_in: plain(written_in),
+                            written_by: plain(written_by),
                         },
                     },
                     dot_chain: plain(dot_chain),
