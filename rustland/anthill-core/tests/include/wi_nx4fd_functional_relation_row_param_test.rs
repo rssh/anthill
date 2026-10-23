@@ -93,7 +93,7 @@
 
 use anthill_core::eval::Value;
 
-use crate::common::{definite_unary, load_kb_with, query_unary};
+use crate::common::{definite_unary, load_kb_with};
 
 /// WI-20260922-0DK3H — the load errors of a fixture this ticket turned from a silent
 /// non-answer into a refusal. Panics if it loads, because "it loaded" is the outcome
@@ -353,6 +353,10 @@ fn carriers_own_operation_still_binds() {
 ///
 /// The pure twin is what makes the refusal mean anything: one operation answering
 /// nothing is also what an un-drivable fixture answers.
+///
+/// WRITTEN IN A RULE BODY THE EFFECTFUL GOAL IS REFUSED AT LOAD (WI-20261013-R1W5A), so the
+/// view is asked of the goal at run time, a query's: no definite answer, the search
+/// incomplete, where it found no clause and answered nothing.
 #[test]
 fn a_concretely_effectful_op_is_still_refused_at_arity_plus_one() {
     let src = r#"
@@ -365,7 +369,6 @@ namespace nx4fd_eff
 
   fact mark(1)
   rule pure_r(?r) :- mark(?m), pure_twice(21, ?r)
-  rule loud_r(?r) :- mark(?m), loud_twice(21, ?r)
 end
 "#;
     let mut kb = load_kb_with(src);
@@ -375,11 +378,24 @@ end
         "the effect-free twin must BIND 42 — otherwise the row below measures an \
          un-drivable fixture rather than the effect gate; got {pure:?}"
     );
-    assert_eq!(
-        definite_unary(&mut kb, "nx4fd_eff.loud_r").len(),
-        0,
+    let goal = crate::common::query_pattern_term(&mut kb, "nx4fd_eff.loud_twice(21, ?r)");
+    let (solutions, stats) =
+        kb.resolve_with_stats(&[goal], &anthill_core::kb::resolve::ResolveConfig::default());
+    assert!(
+        solutions.iter().all(|s| !s.residual.is_empty()) && stats.truncated,
         "a CONCRETE effect row (`Clock`) must keep the operation out of the \
-         functional-relation view — the widening is for row PARAMETERS only"
+         functional-relation view — the widening is for row PARAMETERS only: no definite \
+         answer, the search incomplete; got {} answers, truncated {}",
+        solutions.len(),
+        stats.truncated
+    );
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&src.replace(
+            "\nend\n",
+            "\n  rule loud_r(?r) :- mark(?m), loud_twice(21, ?r)\nend\n",
+        )),
+        &["loud_twice", "performs `Clock`, and a rule body performs no effect"],
+        "the goal written in a rule body",
     );
 }
 

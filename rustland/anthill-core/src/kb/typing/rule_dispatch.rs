@@ -208,9 +208,27 @@ pub(super) fn dispatch_calls_in_occ(
     let env = fragment_env.as_ref().unwrap_or(env);
     // A goal `f(args, ?r)` is `?r <=> f(args)` (kernel-language §5.3): where an equation
     // rewrites the call, the goal is stored as that equation of its result.
+    // The call is the goal's, so an error typing it is the goal's too, reported once with the
+    // goal kept as written: typed as written instead, the goal met no equation, and a call
+    // the equation rewrites into a refused one loaded in this spelling alone.
     if shape == CallDispatch::Fragment && node_pos_of(pos) == NodePos::RuleBodyGoal {
-        if let Some(goal) = rewritten_functional_goal(kb, env, simp, &walked) {
-            return goal;
+        match rewritten_functional_goal(kb, env, simp, &walked) {
+            Some(Ok((goal, typed))) => {
+                refuse_performed_effects(kb, &typed, &walked, rule_sym, mark, errors);
+                return goal;
+            }
+            Some(Err(e)) => {
+                let kept: Vec<TypeError> = e
+                    .flatten()
+                    .into_iter()
+                    .filter(|leaf| !undecidable_by_this_typer(leaf))
+                    .collect();
+                if !kept.is_empty() {
+                    errors.push(aggregate_errors(kept));
+                    return walked;
+                }
+            }
+            None => {}
         }
     }
     // WI-1104 — and it hands the typer THE POSITION. This walk is the only thing in the
@@ -320,7 +338,10 @@ pub(super) fn dispatch_calls_in_occ(
                     ArgValidation::Ok | ArgValidation::WrapSome { .. } => {}
                 }
             }
+            // A fact pattern performs only what its arguments do, and each argument that
+            // performs one is a call this walk typed and checked first.
             if shape != CallDispatch::Call {
+                refuse_performed_effects(kb, &result, &walked, rule_sym, mark, errors);
                 result.node
             } else {
                 walked
@@ -1033,15 +1054,16 @@ pub(super) enum CallDispatch {
 }
 
 /// The goal `f(args, ?r)` on an operation, stored as `?r <=> <the call rewritten>` when an
-/// equation rewrites `f(args)` — typed as the call is in a value slot. `None` where the
-/// goal is not that spelling, or the call keeps its operation: the goal is then typed as
-/// written, with its result column.
+/// equation rewrites `f(args)` — typed as the call is in a value slot, and returned with that
+/// typing, or the error typing the call. `None` where the goal is not that spelling, no
+/// equation's left side is headed by `f`, or the call keeps its operation: the goal is then
+/// typed as written, with its result column.
 fn rewritten_functional_goal(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
     simp: &(bool, Vec<RuleId>),
     goal: &Rc<NodeOccurrence>,
-) -> Option<Rc<NodeOccurrence>> {
+) -> Option<Result<(Rc<NodeOccurrence>, TypeResult), TypeError>> {
     let Some(Expr::Apply {
         functor,
         pos_args,
@@ -1054,6 +1076,16 @@ fn rewritten_functional_goal(
     };
     let declared = kb.op_record(*functor)?.signature.as_ref()?.params.len();
     if !named_args.is_empty() || pos_args.len() != declared + 1 {
+        return None;
+    }
+    // Only a call an equation may rewrite, one whose left side `functor` heads: for any other
+    // the goal typed as written is the call's typing, and its result column is read there.
+    let rewritable = simp.0
+        && simp
+            .1
+            .iter()
+            .any(|&rid| crate::kb::simp_rewrite::stored_lhs_functor(kb, rid) == Some(*functor));
+    if !rewritable {
         return None;
     }
     let (result, args) = pos_args.split_last()?;
@@ -1073,34 +1105,94 @@ fn rewritten_functional_goal(
         &simp.1,
         NodePos::Value,
         FlowEnv::empty(),
-    )
-    .ok()?;
+    );
+    let typed = match typed {
+        Ok(typed) => typed,
+        Err(e) => return Some(Err(e)),
+    };
     if matches!(typed.node.as_expr(), Some(Expr::Apply { functor: f, .. }) if f == functor) {
         return None;
     }
     let unify = kb.unify_functor();
-    Some(goal.rebuilt_expr(Expr::Apply {
+    let stored = goal.rebuilt_expr(Expr::Apply {
         functor: unify,
-        pos_args: vec![Rc::clone(result), typed.node],
+        pos_args: vec![Rc::clone(result), Rc::clone(&typed.node)],
         named_args: Vec::new(),
         type_args: Vec::new(),
         recv_type: None,
-    }))
+    });
+    Some(Ok((stored, typed)))
 }
 
-/// Is a goal on the operation `functor` with these arguments one of its two readings —
-/// its call at its parameter list, of a `Bool` (or a type that may be one), or that call
-/// and one positional result column?
-fn operation_goal_reading(kb: &KnowledgeBase, functor: Symbol, pos: usize, named: usize) -> bool {
-    let Some(sig) = kb.op_record(functor).and_then(|r| r.signature.as_ref()) else {
-        return false;
-    };
-    let declared = sig.params.len();
-    if named == 0 && pos == declared + 1 {
-        return true;
+/// The effects a call typed in a rule body performs: its row masked as at an operation's
+/// boundary, with the call's value for the operation's result, less `Error` and less an
+/// open row variable, which names no effect.
+fn performed_in_a_rule_body(kb: &mut KnowledgeBase, result: &TypeResult) -> Vec<Value> {
+    let mut out = Vec::new();
+    let mut regions = None;
+    for e in external_effects(kb, &result.env, &result.effects) {
+        if extract_effect_resource_sym(kb, &e)
+            .is_some_and(|r| crate::kb::region::is_result_region_sym(kb, r))
+        {
+            let regions = regions.get_or_insert_with(|| crate::kb::region::region_sorts(kb));
+            if !crate::kb::region::result_type_admits_region(kb, &result.ty, regions) {
+                continue;
+            }
+        }
+        let atoms = explode_incurred_effect_row(kb, &e).unwrap_or_else(|| vec![e]);
+        for a in atoms {
+            if !kb.effect_member_is_error(&a)
+                && !kb.effect_member_is_parametric(&a)
+                && !is_type_param_view(kb, &a)
+            {
+                out.push(a);
+            }
+        }
     }
-    pos + named == declared
-        && sort_functor_of_view(kb, &sig.return_type).is_none_or(|s| kb.sort_sym_is_bool(s))
+    out
+}
+
+/// A rule body performs no effect (kernel-language §5.3): each effect `result` performs
+/// ([`performed_in_a_rule_body`]) is refused at the call `at`, as an operation body's undeclared
+/// effect is. Once: an effect a call beneath this one reported, typed and checked first, is
+/// not this call's to report again — a call in an argument of `=` or of an arithmetic
+/// operation, which this walk enters before it types the whole atom.
+///
+/// Not in an equation's guard: a `@[simp]` or `@[unfold]` rule's body is refused for every
+/// operation it names whose row holds any effect (`check_simp_effectful_ops`), and an
+/// untagged equation's never runs.
+fn refuse_performed_effects(
+    kb: &mut KnowledgeBase,
+    result: &TypeResult,
+    at: &Rc<NodeOccurrence>,
+    rule_sym: Option<Symbol>,
+    mark: usize,
+    errors: &mut Vec<TypeError>,
+) {
+    if rule_sym.is_some_and(|r| kb.is_equality_connective_functor(r)) {
+        return;
+    }
+    // The call as written, and the operation a dot dispatched to, which it does not name.
+    let call = match (at.as_expr(), result.node.as_expr()) {
+        (Some(Expr::Apply { functor, .. } | Expr::ApplyWithin { functor, .. }), _)
+        | (Some(Expr::DotApply { .. }), Some(Expr::Apply { functor, .. })) => Some(*functor),
+        _ => None,
+    };
+    for effect in performed_in_a_rule_body(kb, result) {
+        let beneath = errors[mark..].iter().cloned().flat_map(TypeError::flatten).any(|e| {
+            matches!(&e, TypeError::RuleBodyEffect { effect: reported, .. }
+                if views_structurally_equal(kb, reported, &effect))
+        });
+        if !beneath {
+            errors.push(TypeError::RuleBodyEffect {
+                span: Some(at.span.span),
+                rule: rule_sym,
+                call,
+                effect,
+                site: TypeError::here(),
+            });
+        }
+    }
 }
 
 /// Does `arg` hold a type written in the rule's own term — a dotted path (the `field_access`
@@ -1334,7 +1426,7 @@ pub(super) fn call_dispatch_shape(
                     // other is `check_rule_body_goal_readings`' to refuse.
                     if operation_application(kb, *functor)
                         && kb.rules_by_functor_iter(*functor).next().is_none()
-                        && operation_goal_reading(kb, *functor, pos_args.len(), named_args.len())
+                        && kb.operation_goal_reading(*functor, pos_args.len(), named_args.len())
                         && !pos_args
                             .iter()
                             .chain(named_args.iter().map(|(_, a)| a))

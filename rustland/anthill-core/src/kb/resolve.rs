@@ -3144,6 +3144,39 @@ impl SearchStream {
             }
         }
 
+        // A goal that is the call of an operation whose row holds an effect is not run: a
+        // rule body performs no effect, and the views above decline it. Written in a clause
+        // it is refused at load; this one was built at run time, a query's. It is undecided,
+        // and the decline is reported as the bridge reports one; it had fallen to candidate
+        // selection, found no clause, and failed, so `not(stamp(3))` held. A hypothesis about
+        // the goal as written still answers it, as for the call above that did not run.
+        if hypotheses.is_none() {
+            if let Some((op, effect)) = kb.effectful_goal_declined(&goal_val) {
+                let found = self.hypothesis_candidates(kb, &goal_val);
+                if found.is_empty() {
+                    let declined = EvalError::UnhandledEffect { name: effect };
+                    let mut faults = ReduceFaults::default();
+                    kb.note_bridge_error(op, &declined, declined.bridge_disposition(kb), &mut faults);
+                    Self::absorb_reduce_faults(
+                        &mut self.errors,
+                        &mut self.faults,
+                        &mut self.truncated,
+                        faults,
+                        &goal_val,
+                    );
+                    let goal = within.clone().unwrap_or_else(|| goal_val.clone());
+                    return self.schedule_unanswerable_goal(
+                        kb,
+                        &goal,
+                        depth,
+                        delay_mode,
+                        Some(UnknownCause::Unreduced),
+                    );
+                }
+                hypotheses = Some(found);
+            }
+        }
+
         // WI-20260926-K4JGC (068-implementation D3) — A GOAL'S ARGUMENTS ARE EVALUATED
         // BEFORE CANDIDATE SELECTION. Candidate selection matches the goal against clause
         // heads structurally, so a call written in an argument met them as DATA:
@@ -12274,6 +12307,20 @@ impl KnowledgeBase {
             "bridge_op_to_eval: internal evaluator error bridging `{}`: {e}",
             self.qualified_name_of(op),
         );
+        self.note_bridge_error(op, &e, disposition, faults);
+        None
+    }
+
+    /// What the stream is told of a call of `op` that did not run to a value, by the
+    /// error's disposition — for the bridge, and for a goal the resolver declines without
+    /// running it ([`Self::effectful_goal_declined`]), so the two report one way.
+    fn note_bridge_error(
+        &self,
+        op: Symbol,
+        e: &EvalError,
+        disposition: crate::eval::BridgeDisposition,
+        faults: &mut ReduceFaults,
+    ) {
         match disposition {
             // By design: an undecided semantic compare, or a capability the scratch
             // interpreter does not have. Nothing is wrong and nothing is incomplete.
@@ -12286,14 +12333,13 @@ impl KnowledgeBase {
             // printed "RAISED `String`". `render_raised_payload` is the one owner of a
             // payload's text and every other consumer of a raise already uses it.
             crate::eval::BridgeDisposition::Fault => {
-                faults.fault(self.bridge_fault_message(op, &e))
+                faults.fault(self.bridge_fault_message(op, e))
             }
             // A requirement the call reads is known not to be available at these
             // arguments: the caller reads the call as having no value
             // (`KnowledgeBase::evaluate_call`).
             crate::eval::BridgeDisposition::NoProvider => faults.no_provider(),
         }
-        None
     }
 
     /// Shared core of the SLD→eval bridge (WI-625): lend the KB to a fresh
@@ -12910,11 +12956,8 @@ impl KnowledgeBase {
     /// builtin or a body-less predicate (the common case) bails before the
     /// `rules_by_functor` allocation, which is reached only for a bodied Bool op.
     pub(crate) fn bare_bodied_bool_relation(&self, f: Symbol) -> bool {
-        if self.builtins.get(&f).is_some() || !self.op_reducible_in_rule_body(f) {
-            return false;
-        }
         // Read the cached signature by ref (no record clone).
-        let Some(sig) = self.op_record(f).and_then(|r| r.signature.as_ref()) else {
+        let Some(sig) = self.reducible_operation(f) else {
             return false;
         };
         // Effect-free — [`Self::effect_row_admits_relational_view`], which owns what
@@ -13045,10 +13088,7 @@ impl KnowledgeBase {
         // String.length("abc")` answered 3, and `not(String.length("abc", 3))` proved a
         // falsehood. Driven by
         // `wi_vpewk_host_op_operand_test::the_arity_plus_one_view_runs_a_host_op`.
-        if self.builtins.get(&f).is_some() || !self.op_reducible_in_rule_body(f) {
-            return None;
-        }
-        let sig = self.op_record(f).and_then(|r| r.signature.as_ref())?;
+        let sig = self.reducible_operation(f)?;
         if !self.effect_row_admits_relational_view(f, sig) {
             return None;
         }
@@ -13158,6 +13198,60 @@ impl KnowledgeBase {
         pinned.is_some_and(|target| {
             self.rules_by_functor_iter(f).next().is_none() && self.bare_bodied_bool_relation(target)
         })
+    }
+
+    /// The operation a goal headed `f` may be read as the call of, and its signature: not a
+    /// builtin, and a body or a host mapping the bridge runs. What the relational views and
+    /// the decline of an effectful one ([`Self::effectful_goal_declined`]) share; each adds
+    /// its own clauses — the effect row, the result, the arity, no clause of `f`'s own. The
+    /// signature is read first: a goal on a relation has none.
+    fn reducible_operation(&self, f: Symbol) -> Option<&super::op_info::OpSignature> {
+        let sig = self.op_record(f)?.signature.as_ref()?;
+        (self.builtins.get(&f).is_none() && self.op_reducible_in_rule_body(f)).then_some(sig)
+    }
+
+    /// Is a goal on the operation `f` with these arguments one of its two readings (§5.3) —
+    /// its call at its parameter list, of a `Bool` (or a type that may be one), or that call
+    /// and one positional result column? The typer reads a rule-body goal by it, and the
+    /// resolver an effectful one it declines.
+    pub(crate) fn operation_goal_reading(&self, f: Symbol, pos: usize, named: usize) -> bool {
+        let Some(sig) = self.op_record(f).and_then(|r| r.signature.as_ref()) else {
+            return false;
+        };
+        let declared = sig.params.len();
+        if named == 0 && pos == declared + 1 {
+            return true;
+        }
+        pos + named == declared
+            && super::typing::sort_functor_of_view(self, &sig.return_type)
+                .is_none_or(|s| self.sort_sym_is_bool(s))
+    }
+
+    /// A goal that is an operation's call at one of its two readings
+    /// ([`Self::operation_goal_reading`]), where no clause defines `f` and its row holds an
+    /// effect a rule body does not perform, so its views decline it
+    /// ([`Self::effect_row_admits_relational_view`]): the operation and the effect, by the
+    /// qualified name of its kind where it has one. Read off the spelled functor: a goal the
+    /// typer pinned to an implementation is a clause's, refused at load when that
+    /// implementation's row holds an effect.
+    pub(crate) fn effectful_goal_declined(&self, goal: &Value) -> Option<(Symbol, String)> {
+        let (f, pos_arity, named_arity) = goal_call_head(self, goal)?;
+        let sig = self.reducible_operation(f)?;
+        if self.effect_row_admits_relational_view(f, sig)
+            || !self.operation_goal_reading(f, pos_arity, named_arity)
+            || self.rules_by_functor_iter(f).next().is_some()
+        {
+            return None;
+        }
+        let host = !self.bridge_runs_anthill_code(f);
+        let effect = sig.effects.iter().find(|e| {
+            !self.effect_member_is_error(e) && (host || !self.effect_member_is_parametric(e))
+        })?;
+        let name = match super::typing::declared_member_kind(self, effect) {
+            Some(s) => self.qualified_name_of(s).to_string(),
+            None => super::typing::type_display_name_value(self, effect),
+        };
+        Some((f, name))
     }
 
     /// WI-938's gate: `Some((f, n))` when `goal` is the FUNCTIONAL-RELATION view `f(a₁…aₙ, ?r)`

@@ -24,17 +24,24 @@
 //! `relation_floundered`, which reads as an unbound variable; now each route records a
 //! fault naming `anthill.prelude.Time.Clock`, and the drain fails with that reason.
 //!
+//! WRITTEN IN A RULE BODY THE FOUR ROUTES ARE REFUSED AT LOAD since WI-20261013-R1W5A, a rule
+//! body performing no effect (`a_clock_read_written_in_a_rule_body_is_refused_at_load`). The
+//! rows about the run time ask a clock read no typer sees: a query's goal and value slot, and a
+//! goal a rule builds at run time, `?p(?x, ?r)` over `stampOr` passed as data — the relation the
+//! drains read and the refuted branch takes. A goal on the effectful operation is declined
+//! without running it, with the fault the bridge reports; the value slot is the bridge's.
+//!
 //! WHAT FAILS UNDER WHICH BACK-OUT — MEASURED, each switched off alone in one build:
 //!
-//!   * `time_now` put back to reading the clock itself → every row that reads it, fifteen of
-//!     the sixteen:
-//!     `a_clock_read_in_a_rule_body_is_not_performed` (four definite timestamps),
-//!     `a_declined_clock_read_is_reported`, the four drained rows, the three other
-//!     refuted-branch rows, `a_guarded_clock_member_is_reported_as_performed` and
-//!     `a_clock_const_read_from_a_rule_names_the_row_and_no_route` (nothing is declined),
+//!   * `time_now` put back to reading the clock itself → every row that runs it, eight of
+//!     the sixteen (re-measured on WI-20261013-R1W5A's routes):
+//!     `a_clock_read_at_run_time_is_not_performed` and `a_declined_clock_read_is_reported`
+//!     (the value slot answers a timestamp), `a_guarded_clock_member_is_reported_as_performed`
+//!     and `a_clock_const_read_from_a_rule_names_the_row_and_no_route` (nothing is declined),
 //!     `an_operation_reads_the_clock_through_its_handler` and
 //!     `a_clock_const_in_an_operation_body_reads_the_handler` (the frozen handler is not
-//!     asked), and both data-slot rows (the const reads the wall clock at load).
+//!     asked), and both data-slot rows (the const reads the wall clock at load). The drained
+//!     and refuted-branch rows read a goal declined without running it, and pass.
 //!   * `dispatch_effect_operation` made to resolve the operation before it takes the
 //!     handler, as the dispatcher did → `a_clock_const_in_a_data_slot_is_refused_naming_clock`
 //!     and `a_clock_const_in_a_data_slot_is_refused_naming_clock_ahead_of_the_stdlib`
@@ -87,24 +94,35 @@ namespace test.clock
   operation plainStamp() -> String effects {Clock} = now()
   operation applyThunk[Rho](f: () -> String @ {Rho}) -> String effects {Rho} = f()
 
-  rule viaReify(?r) :- Error.reify(lambda () -> stampOr(1), ?r)
-  rule viaHof(?r) :- applyThunk(lambda () -> now(), ?r)
-  rule viaMap(?r) :- List.mapElems(cons(1, nil()), lambda (x) -> now(), ?r)
-  rule inValueSlot(?r) :- ?r <=> plainStamp()
+  -- A goal built at run time: `?p(?x, ?r)` applies the operation a rule passes as data.
+  rule apply2(?p, ?x, ?r) :- ?p(?x, ?r)
+  rule viaRuntime(?r) :- apply2(stampOr, 1, ?r)
 
   -- A relation over the clock read, drained from an operation body, and that operation
   -- called from a rule.
-  operation stampCount() -> Int64 effects {Error} = List.length(viaHof.takeN(10))
+  operation stampCount() -> Int64 effects {Error} = List.length(viaRuntime.takeN(10))
   rule countFromRule(?n) :- ?n <=> stampCount()
 end
 "#;
 
-/// The rule-body routes to a clock read.
-const ROUTES: [&str; 4] = [
-    "test.clock.viaReify",
-    "test.clock.viaHof",
-    "test.clock.viaMap",
-    "test.clock.inValueSlot",
+/// The rule-body routes to a clock read, each as the clause that writes it and the call its
+/// refusal names.
+const ROUTES: [(&str, &str); 4] = [
+    ("rule viaReify(?r) :- Error.reify(lambda () -> stampOr(1), ?r)", "Error.reify"),
+    ("rule viaHof(?r) :- applyThunk(lambda () -> now(), ?r)", "test.clock.applyThunk"),
+    (
+        "rule viaMap(?r) :- List.mapElems(cons(1, nil()), lambda (x) -> now(), ?r)",
+        "List.mapElems",
+    ),
+    ("rule inValueSlot(?r) :- ?r <=> plainStamp()", "test.clock.plainStamp"),
+];
+
+/// A clock read no typer sees: a goal a rule builds at run time, a query's goal on the
+/// operation, and a query's value slot, which the bridge runs.
+const AT_RUN_TIME: [&str; 3] = [
+    "test.clock.viaRuntime(?r)",
+    "test.clock.stampOr(1, ?r)",
+    "?r <=> test.clock.stampOr(1)",
 ];
 
 /// A `Clock` that always answers `stamp`.
@@ -112,54 +130,53 @@ fn frozen_clock(stamp: &'static str) -> EffectHandler {
     Box::new(move |_interp, _op, _args| Ok(HandlerAction::Pure(Value::Str(stamp.to_string()))))
 }
 
-/// THE DEFECT. Four rule-body routes to a clock read: each is undecided — answers, none
-/// definite — where each answered the wall clock.
-///
-/// ONE ANSWER PER SHAPE THE COLUMN'S TYPE FILLS, where that type is a data sort with a
-/// variable in it (WI-20261013-WF14Z): the clause reads `?r`'s type off the call's result
-/// column, and an inferred column type is its bound, as a written one is — `Error.reify`'s
-/// `Result[T = String, E = e]` fills an `ok` and an `err`, `mapElems`'s `List[T = b]` a list
-/// of each length up to the search's depth. The written `?r: Result[T = String, E = Boom]`
-/// answers the two (measured, before and after). The other two routes' columns are a
-/// `String`, which has nothing to fill: one answer each.
+/// Each route written in a rule body is refused at load, naming the call and the effect
+/// (WI-20261013-R1W5A): a rule body performs no effect. They answered a definite timestamp
+/// before this ticket's first fix, and then each was undecided at run time.
 #[test]
-fn a_clock_read_in_a_rule_body_is_not_performed() {
-    let mut kb = crate::common::load_kb_with(PROGRAM);
-    for qn in ROUTES {
-        let rows = crate::common::query_unary(&mut kb, qn);
-        assert!(
-            !rows.is_empty() && rows.iter().all(|(_, definite)| !definite),
-            "{qn}: answers, every one undecided: {rows:?}"
+fn a_clock_read_written_in_a_rule_body_is_refused_at_load() {
+    for (clause, call) in ROUTES {
+        let src = crate::common::replace_in_fixture(PROGRAM, "\nend\n", &format!("\n  {clause}\nend\n"));
+        crate::common::assert_refused_naming(
+            &crate::common::load_errors_of(&src),
+            &[call, "performs `Clock`, and a rule body performs no effect"],
+            clause,
         );
-        let shapes = match qn {
-            "test.clock.viaReify" => Some(2),
-            "test.clock.viaMap" => None,
-            _ => Some(1),
-        };
-        if let Some(n) = shapes {
-            assert_eq!(
-                rows.len(),
-                n,
-                "{qn}: one answer per shape its column fills: {rows:?}"
-            );
-        }
     }
 }
 
-/// THE DECLINE IS REPORTED: each route records a fault naming the effect, which marks the
-/// search incomplete, where it left a bare residual with nothing said.
+/// THE DEFECT, where no typer sees the read: each is undecided — one answer, not definite —
+/// where a rule-body read answered the wall clock.
+#[test]
+fn a_clock_read_at_run_time_is_not_performed() {
+    use anthill_core::kb::resolve::ResolveConfig;
+    let mut kb = crate::common::load_kb_with(PROGRAM);
+    for pattern in AT_RUN_TIME {
+        let goal = crate::common::query_pattern_term(&mut kb, pattern);
+        let solutions = kb.resolve(&[goal], &ResolveConfig::default());
+        assert!(
+            solutions.len() == 1 && !solutions[0].residual.is_empty(),
+            "{pattern}: one answer, undecided: {} answers, residuals {:?}",
+            solutions.len(),
+            solutions.iter().map(|s| s.residual.len()).collect::<Vec<_>>()
+        );
+    }
+}
+
+/// THE DECLINE IS REPORTED: each records a fault naming the effect, which marks the search
+/// incomplete, where it left a bare residual with nothing said.
 #[test]
 fn a_declined_clock_read_is_reported() {
     use anthill_core::kb::resolve::ResolveConfig;
     let mut kb = crate::common::load_kb_with(PROGRAM);
-    for qn in ROUTES {
-        let goal = crate::common::query_pattern_term(&mut kb, &format!("{qn}(?r)"));
+    for pattern in AT_RUN_TIME {
+        let goal = crate::common::query_pattern_term(&mut kb, pattern);
         let (_, stats) = kb.resolve_with_stats(&[goal], &ResolveConfig::default());
         assert!(
             stats.errors.iter().any(|e| e
                 .message
                 .contains("it performs `anthill.prelude.Time.Clock`, and a rule body performs no effect")),
-            "{qn}: the declined read is named: {:?}",
+            "{pattern}: the declined read is named: {:?}",
             stats.errors
         );
     }
@@ -202,7 +219,7 @@ fn a_drain_reached_from_a_rule_names_the_effect_and_no_reify() {
 }
 
 /// And through a rule-body `Error.reify` typed at another payload, the drain's failure gets no
-/// boundary advice either: `countOrBoom` drains `viaHof`, and a rule reifies it at `Boom`. It
+/// boundary advice either: `countOrBoom` drains `viaRuntime`, and a rule reifies it at `Boom`. It
 /// was told that a boundary typed at this payload catches it, which reads as a repair.
 ///
 /// BACK-OUT: the reify arm put ahead of the `evaluation_failure` arm in `bridge_fault_message`,
@@ -214,7 +231,7 @@ fn a_drain_escaping_a_rule_body_reify_gets_no_boundary_advice() {
         "  rule countFromRule(?n) :- ?n <=> stampCount()\n",
         "  rule countFromRule(?n) :- ?n <=> stampCount()\n  \
          operation countOrBoom(n: Int64) -> Int64 effects {Error[Boom], Error} =\n    \
-         if n < 0 then Error.raise(boom(\"negative\")) else List.length(viaHof.takeN(10))\n  \
+         if n < 0 then Error.raise(boom(\"negative\")) else List.length(viaRuntime.takeN(10))\n  \
          rule viaReifyDrain(?r) :- Error.reify(lambda () -> countOrBoom(1), ?r)\n",
     );
     let messages = fault_messages(&src, "test.clock.viaReifyDrain(?r)");
@@ -273,9 +290,10 @@ namespace test.clockrefuted
     entity rec(n: Int64)
   end
   fact rec(n: 1)
-  operation applyThunk[Rho](f: () -> String @ {Rho}) -> String effects {Rho} = f()
-  rule effectFirst(?n) :- rec(n: ?n), applyThunk(lambda () -> now(), ?s), ?n > 100
-  rule testFirst(?n) :- rec(n: ?n), ?n > 100, applyThunk(lambda () -> now(), ?s)
+  operation stampAt(n: Int64) -> String effects {Clock} = now()
+  rule apply2(?p, ?x, ?r) :- ?p(?x, ?r)
+  rule effectFirst(?n) :- rec(n: ?n), apply2(stampAt, ?n, ?s), ?n > 100
+  rule testFirst(?n) :- rec(n: ?n), ?n > 100, apply2(stampAt, ?n, ?s)
   rule notEffectFirst(?n) :- rec(n: ?n), not(effectFirst(?n))
   rule notTestFirst(?n) :- rec(n: ?n), not(testFirst(?n))
   operation countEffectFirst() -> Int64 effects {Error} = List.length(effectFirst.takeN(10))

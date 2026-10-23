@@ -45,17 +45,12 @@
 //! WHAT FAILS UNDER WHICH BACK-OUT — MEASURED, each switched off alone in one build:
 //!
 //!   * (a) backed out → `a_rule_body_reify_catches_the_raise`,
-//!     `a_rule_body_reify_waits_for_its_argument`, `a_payload_the_boundary_declines_is_a_fault`,
-//!     `the_advised_repairs_answer` (no solutions, no fault) and
-//!     `an_effectful_thunk_leaves_the_goal_undecided` (no solutions: refuted, not undecided);
-//!     outside this file, the rows that reach a clock read or a scoped load through a
-//!     rule-body reify (`wi_9wvt7_clock_handler_test`, `wi_9wvt7_bridged_scoped_kb_test`).
-//!   * (b) backed out → the first three, `the_advised_repairs_answer`,
-//!     `an_unpinned_host_entry_is_refused_and_leaves_no_frame` and
-//!     `an_effectful_thunk_leaves_the_goal_undecided`: the bridge is asked and answers no body,
-//!     which leaves the goal undecided with nothing naming the declined print; outside this
-//!     file, the scoped-KB row that loads through a rule-body reify,
-//!     `wi_9wvt7_clock_handler_test::a_declined_clock_read_is_reported` and
+//!     `a_rule_body_reify_waits_for_its_argument`, `a_payload_the_boundary_declines_is_a_fault`
+//!     and `the_advised_repairs_answer` (no solutions, no fault); outside this file, the rows
+//!     that reach a scoped load through a rule-body reify (`wi_9wvt7_bridged_scoped_kb_test`).
+//!   * (b) backed out → the first three, `the_advised_repairs_answer` and
+//!     `an_unpinned_host_entry_is_refused_and_leaves_no_frame`: the bridge is asked and answers
+//!     no body; outside this file, the scoped-KB row that loads through a rule-body reify and
 //!     `wi_9wvt7_error_reify_test::evidence_that_names_no_payload_sort_is_refused`.
 //!   * (b)'s first step backed out — an error from entering the thunk returned past the run,
 //!     as the host entry first did → `an_unpinned_host_entry_is_refused_and_leaves_no_frame`
@@ -66,11 +61,15 @@
 //!     its programs load clean, and the bridge's absence faults `either(7, 7, ?r)` when it
 //!     runs. With both of (d)'s halves backed out it is still undecided, the boundary
 //!     refusing evidence that names no payload sort.
-//!   * an unhandled effect scheduled again, as it was → `an_effectful_thunk_leaves_the_goal_undecided`
-//!     (the declined print is named nowhere).
 //!   * (d)'s bridge absence backed out → `a_generic_catcher_cited_from_a_rule_faults` and
 //!     `an_unpinned_host_entry_is_refused_and_leaves_no_frame`: each is still refused, by the
 //!     boundary's own refusal of no evidence, which names no unpinned slot.
+//!
+//! The rows that reached an effectful thunk through a rule-body reify (`printing`, and the
+//! clock routes of `wi_9wvt7_clock_handler_test`) are refused at load since WI-20261013-R1W5A,
+//! and were taken off the lists above by that, not by running the back-outs again: no reify of
+//! an effectful thunk is left for (a), (b) or an unhandled effect scheduled again to reach. The
+//! last is measured on the clock file's run-time rows.
 //!
 //! The operation-body twin of `direct` — the same reify in an operation the rule calls — is
 //! `viaPlainRule` in `wi_9wvt7_error_reify_test::a_generic_boundary_answers_through_a_rule_body`.
@@ -122,9 +121,6 @@ namespace test.rrb
   -- nor is the `load_failed` a failed scoped load raises.
   rule declined(?r) :- Error.reify(lambda () -> twoWays(7), ?r)
   rule declinedLoad(?r) :- Error.reify(lambda () -> loadOrBoom(1), ?r)
-
-  rule printing(?r) :- Error.reify(lambda () -> printThenBoom(), ?r)
-  rule printingWritten(?r: Result[T = Int64, E = Boom]) :- Error.reify(lambda () -> printThenBoom(), ?r)
 end
 "#;
 
@@ -222,35 +218,27 @@ fn a_payload_the_boundary_declines_is_a_fault() {
     );
 }
 
-/// A thunk with another effect (`ConsoleOutput`) is not run to an answer: the bridge's
-/// effect registry is empty, so the print is not performed and the goal stays UNDECIDED —
-/// answers, none definite — with the decline reported, naming the effect. Before (a) the
-/// goal was refuted instead: no answer at all.
+/// A thunk with another effect (`ConsoleOutput`) is refused at load, naming the effect
+/// (WI-20261013-R1W5A): the reify's row is its thunk's past the caught `Error`, and a rule
+/// body performs no effect. Before, the goal was undecided at run time, the print not
+/// performed; before (a), refuted.
 ///
-/// TWO ANSWERS, AN `ok` AND AN `err`, since WI-20261013-WF14Z: the clause reads `?r`'s type
-/// off the call's result column, `Result[T = Int64, E = Boom]`, and an inferred column type
-/// is its bound, which fills a column the body leaves unbound — as the written twin
-/// `printingWritten` does.
+/// No run-time twin: a thunk reaches a rule body's `Error.reify` at run time only as a closure
+/// value, one a clause reads the type of where it is made, and a closure handed to another
+/// relation through its head answers nothing (reported to the user, 2026-10-23).
 #[test]
-fn an_effectful_thunk_leaves_the_goal_undecided() {
-    let mut kb = crate::common::load_kb_with(PROGRAM);
-    for qn in ["test.rrb.printing", "test.rrb.printingWritten"] {
-        let rows = crate::common::query_unary(&mut kb, qn);
-        assert!(
-            rows.len() == 2 && rows.iter().all(|(_, definite)| !definite),
-            "{qn}: an `ok` and an `err`, each undecided: {rows:?}"
+fn an_effectful_thunk_is_refused_at_load() {
+    for clause in [
+        "rule printing(?r) :- Error.reify(lambda () -> printThenBoom(), ?r)",
+        "rule printingWritten(?r: Result[T = Int64, E = Boom]) :- Error.reify(lambda () -> printThenBoom(), ?r)",
+    ] {
+        let src = crate::common::replace_in_fixture(PROGRAM, "\nend\n", &format!("\n  {clause}\nend\n"));
+        crate::common::assert_refused_naming(
+            &crate::common::load_errors_of(&src),
+            &["Error.reify", "performs `ConsoleOutput`, and a rule body performs no effect"],
+            clause,
         );
     }
-    let goal = crate::common::query_pattern_term(&mut kb, "test.rrb.printing(?r)");
-    let (_, stats) = kb.resolve_with_stats(&[goal], &ResolveConfig::default());
-    assert!(
-        stats
-            .errors
-            .iter()
-            .any(|e| e.message.contains("performs `anthill.prelude.Console.ConsoleOutput`")),
-        "the declined print is named: {:?}",
-        stats.errors
-    );
 }
 
 /// A HOST CALL whose `ErrorTag` slot its arguments do not pin is refused where the boundary

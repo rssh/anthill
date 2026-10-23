@@ -191,6 +191,17 @@ pub enum TypeError {
         span: Option<Span>,
         name: Symbol,
     },
+    /// A call in a rule body whose typed row holds `effect`, an effect other than `Error`:
+    /// a rule body performs no effect (kernel-language §5.3). `call` is the operation the
+    /// call dispatched to; `None` for a `let` or a `match`, whose body performs it.
+    RuleBodyEffect {
+        span: Option<Span>,
+        /// The rule's head functor; `None` only if the head carries none.
+        rule: Option<Symbol>,
+        call: Option<Symbol>,
+        effect: Value,
+        site: &'static std::panic::Location<'static>,
+    },
     /// WI-565: the refinement of [`TypeError::UnknownApplyFunctor`] for the specific case
     /// where the unresolved bare functor IS the short name of a MEMBER operation
     /// of one or more sorts (`owning_sorts`). A member's bare name is in scope
@@ -1571,6 +1582,9 @@ impl TypeError {
             TypeError::UndefinedDataFunctor { name, .. } => {
                 crate::kb::load::undefined_rule_body_term_message(kb.qualified_name_of(*name))
             }
+            TypeError::RuleBodyEffect { call, effect, .. } => {
+                rule_body_effect_message(kb, *call, effect)
+            }
             TypeError::BareMemberCall {
                 member,
                 owning_sorts,
@@ -2336,6 +2350,7 @@ impl TypeError {
             | TypeError::IncompleteConstruction { span, .. }
             | TypeError::UnknownApplyFunctor { span, .. }
             | TypeError::UndefinedDataFunctor { span, .. }
+            | TypeError::RuleBodyEffect { span, .. }
             | TypeError::BareMemberCall { span, .. }
             | TypeError::UnreducedEquationFunctor { span, .. }
             | TypeError::DispatchNoMatch { span, .. }
@@ -2517,6 +2532,24 @@ impl TypeError {
                 span: self
                     .span(kb)
                     .unwrap_or_else(|| crate::span::Span::new(0, 0)),
+            },
+            TypeError::RuleBodyEffect {
+                rule,
+                call,
+                effect,
+                site,
+                ..
+            } => LoadError::TypeMismatch {
+                origin: Some(TypeMismatchOrigin {
+                    error_kind: "RuleBodyEffect",
+                    context_kind: "rule",
+                    site: *site,
+                }),
+                entity_name: rule.map_or_else(|| "rule".to_string(), |r| kb.local_name_of(r).to_string()),
+                field_name: RuleField::Body.name().to_string(),
+                expected_type: "a call that performs no effect".to_string(),
+                actual_type: rule_body_effect_message(kb, *call, effect),
+                span: self.span(kb),
             },
             TypeError::BareMemberCall {
                 member,
@@ -3454,4 +3487,18 @@ fn missing_requires_place(kb: &KnowledgeBase, clause: &str, site: RequiresSite) 
 fn incomplete_construction_message(kb: &KnowledgeBase, ctor: Symbol, missing: &[Symbol]) -> String {
     let missing: Vec<String> = missing.iter().map(|f| kb.local_name_of(*f).to_string()).collect();
     crate::kb::load::incomplete_construction_message(kb.local_name_of(ctor), &missing)
+}
+
+/// [`TypeError::RuleBodyEffect`]'s words. The effect is named as an operation body's
+/// undeclared one is; the run-time decline of a call no clause wrote ends with the same clause,
+/// "and a rule body performs no effect".
+fn rule_body_effect_message(kb: &KnowledgeBase, call: Option<Symbol>, effect: &Value) -> String {
+    let what = match call {
+        Some(op) => format!("the call `{}`", kb.qualified_name_of(op)),
+        None => "this expression".to_string(),
+    };
+    format!(
+        "{what}, which performs `{}`, and a rule body performs no effect",
+        type_display_name_value(kb, effect),
+    )
 }

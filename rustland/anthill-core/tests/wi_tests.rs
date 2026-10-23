@@ -1938,6 +1938,8 @@ mod wi_0rrqp_clause_typed_through_constructor_test;
 mod wi_wf14z_clause_typed_as_a_whole_test;
 #[path = "include/wi_r1w5a_call_typed_as_an_operation_body_test.rs"]
 mod wi_r1w5a_call_typed_as_an_operation_body_test;
+#[path = "include/wi_r1w5a_effectful_call_refused_test.rs"]
+mod wi_r1w5a_effectful_call_refused_test;
 #[path = "include/wi_0k8wd_selection_per_requirement_test.rs"]
 mod wi_0k8wd_selection_per_requirement_test;
 #[path = "include/wi_50zmn_two_requirements_of_one_sort_test.rs"]

@@ -1070,7 +1070,82 @@ that tell `VarRef` from `Ref` and that this part did not reach (`leaf_var_ref`,
 
 Left to C1c: decision 3's third class, an effectful application refused by its typed row,
 with the run-time half of the 2026-10-21 row (an effectful operation's goal undecided where no
-typer sees it); kernel-language §5.3's statement of it.
+typer sees it); kernel-language §5.3's statement of it. Built in §6.12.
+
+### 6.12 C1c, an effectful call refused by its typed row (WI-20261013-R1W5A, second part, 2026-10-23)
+
+Decision 3's third class, and the run-time half of the ticket's 2026-10-21 row.
+`kb/typing/rule_dispatch.rs` (`refuse_performed_effects`, `performed_in_a_rule_body`),
+`TypeError::RuleBodyEffect`; `kb/resolve.rs` (`KnowledgeBase::effectful_goal_declined`, the
+bridge's `note_bridge_error`); rows in `wi_r1w5a_effectful_call_refused_test`, the ledger at its
+head. kernel-language §5.3, "A rule body performs no effect".
+
+- **A call the walk types whose row holds an effect other than `Error` is refused at its
+  place**, naming the call and the effect: an operation's application, a dot, a spec
+  operation's call, a `let` or a `match`. The row is read as at an operation's boundary: a
+  `let`'s own resource is dropped (`external_effects`), and a `Modify` of a fresh region where
+  the call's value type cannot carry one (`result_type_admits_region`); `Modify[result]` that
+  the value carries out counts. A member that is a row variable or a parameter's projection
+  names no effect.
+- **Once.** A call this walk enters before it types the whole atom — `=`, arithmetic, another
+  body-less spec operation — skips an effect a call beneath it reported. A fact pattern
+  performs only what its arguments do, each typed first. An equation's guard is the
+  effectful-rewrite gate's (`check_simp_effectful_ops`), which refuses every operation it
+  names whose row holds any effect.
+- **Run time.** A goal on an effectful operation that no clause writes — a query's, or one a
+  rule builds at run time — is declined in `step_init` with the fault the bridge reports for
+  a declined effect, through the bridge's own disposition of it, and is undecided. It fell to
+  candidate selection, found no clause, and failed, so `not(stamp(3))` held.
+- **Found and fixed, the first part's:** a goal `f(args, ?r)` dropped the error of typing its
+  call `f(args)` and was typed as written, where no equation fires, so a call an equation
+  rewrites into a refused one was refused in the value-slot spelling alone. The error is the
+  goal's. The call is typed apart from the goal only where an enabled equation's left side is
+  headed by `f` (`stored_lhs_functor`); any other goal is typed as written, with its result
+  column.
+- **Found by `/code-review`, and fixed:** the decline read a goal's `Bool` reading strictly
+  where the typer reads a result that may be a `Bool` (`pick(true)` over `pick[T](x: T) -> T`
+  failed silently), and named a guarded member by its wrapper (`EffectExpression.guarded`). The
+  reading is now one (`KnowledgeBase::operation_goal_reading`), the member read past `X :- g`
+  (`typing::declared_member_kind`), and the views and the decline share one eligibility
+  (`reducible_operation`).
+
+| written | before | now |
+|---|---|---|
+| `hofWR(?v)`, `hofRW(?v)` over `mkVia(lambda () -> Cell.new(3), ?c)` | 9, 3 | refused, `mkVia` performs `Modify[result]` |
+| `mkVia(lambda () -> Cell.new(3), ?c)` | binds a `<Cell>` | refused |
+| `applyThunk(lambda () -> now(), ?r)`, `?r <=> plainStamp()` | conditional, the decline reported | refused, `Clock` |
+| `now(?r)` | nothing, silently | refused |
+| `not(now("2000"))`, `not(plainStamp("2000"))`, `not(stamp(3))` | hold | refused |
+| `localCell(3, ?r)`, the cell kept to itself | 9 | 9 |
+| the queries `stamp(3)`, `not(stamp(3))`; `apply2(stampAt, 1, ?r)` over `?p(?x, ?r)` | nothing, holds; nothing | undecided, reported |
+
+**The count** (refusals recorded, nothing refused): the corpus of §1.2 records nothing. The
+suite: 66 records in 28 tests, every one a row built around an effectful rule-body call — the
+9WVT7 routes (`wi_9wvt7_clock_handler` ×10, `wi_9wvt7_reify_rule_body` ×4, `wi_9wvt7_review5`),
+NFXPZ's `clkErr` ×8 (one program), DQD5W's `loud_fires`, NX4FD's `loud_r`, VPEWK's `clk` ×2, and
+`wi698`'s `@[simp]` guard, the rewrite gate's, left to it. Each moved row asks a goal no typer
+sees — a query's goal or value slot, or a goal a rule builds at run time with `?p(?x, ?r)` over
+an operation passed as data — with the written clause's refusal beside it (§6.6's convention).
+
+Not this part's, measured on the way, each the same on 083cb6b8:
+
+- A callback that writes its own parameter leaves the callee's row parameter open, so
+  `useVia(?c, lambda (x) -> Cell.set(x, 9), ?u)` loads, and a `Store` writer reached so
+  (`withStore(?s, lambda (s) -> Store.flush(s, []), ?r)`); the operation-body twin is refused
+  "unconstrained Rho" (WI-270, which a rule body skips, WI-622). A writer over a rule variable is
+  refused by the place rule.
+- A closure handed to another relation through its head answers nothing, pure or not
+  (`pureThunk(?f), thunkVia(?f, ?r)`); in one clause it answers.
+- A lambda in a query pattern, and an operation name passed as data and applied as a function
+  value, are no function values at run time ("unknown operation: applyThunk.f").
+- A query's nullary call is the operation's name as data: `not(plainStamp() = "x")` holds.
+- A `let` in a rule body's value slot, also in a call's argument, is bound unevaluated.
+- A constraint's goal is not walked by the clause typing (WI-20261023-76KZN):
+  `constraint c :- plainStamp() = "2000"` loads.
+- A guarded effect on a program's operation is dropped at every literal call: `safe(0)` over
+  `effects {Error[Boom] :- eq(n, 0)}` loads in an operation body that declares no `Error`, and
+  `stampIf(true)` over `{Clock :- eq(b, true)}` in a rule body; the stdlib's `Int64.div(7, 0)`
+  is refused.
 
 ## 7. Testing
 
