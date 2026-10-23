@@ -236,7 +236,8 @@ driven by `wi_cynpe_waiting_goals_test` (back-outs stated at its sites):
   cause: a binding can still change such an answer (a Γ fact can match the goal then). An
   UNREDUCED call never runs, but a SUSPENDED call in the same goal may, and turn out ABSENT — which
   outranks UNREDUCED (`Stuck::join`) and fails the goal: `Int64.div(1, ?z) = Conv.tag("km")`,
-  `?z` later bound to `0`, must refute its clause. So an UNREDUCED goal is PARKED only when no
+  `?z` later bound to `0`, must be asked again rather than parked (it then raises, and since
+  2026-10-23 the raise marks the answer set incomplete instead of refuting the clause). So an UNREDUCED goal is PARKED only when no
   call written in its arguments holds an unbound variable (`unbound_vars_in_goal_calls` — a
   variable outside every call cannot matter, since no binding holds a call); otherwise it is
   SUSPENDED on exactly those, with its cause. Found by this ticket's `/code-review`.
@@ -311,8 +312,12 @@ driven by `wi_cynpe_waiting_goals_test` (back-outs stated at its sites):
   which is how identical stuck calls unify by reflexivity.
 - **Four states, not two.** SUSPENDED and UNREDUCED as §2; SYMBOLIC (D7's rigid-variable call,
   and a ground call the evaluator declined — an effect row, a fault) is kept as the term and a
-  test over it waits; ABSENT — an arithmetic builtin over NUMBERS with no answer, `div(1, 0)` —
-  fails whatever reads it, as the relation `div(1, 0, ?r)` fails.
+  test over it waits; ABSENT — an arithmetic builtin over NUMBERS with no answer — fails
+  whatever reads it, as its relation fails. A zero divisor was the example here (`div(1, 0)`)
+  until 2026-10-23, when the user decided its declared `Error[DivisionByZero]` propagates
+  (WI-20260827-NFXPZ): the builtin now faults, so the call still has no value and the goal
+  still answers nothing, but the answer set is marked incomplete and `not(…)` over it is
+  undecided.
 - **Builtins in a value slot compute** through their result column (`add(a, b)` as
   `add(a, b, ?r)`): arithmetic in an operand or a goal argument answered nothing before, and the
   WI-670 row needed it. A GOAL-ONLY builtin (`eq`, `not`, …) written as data is SYMBOLIC — a goal

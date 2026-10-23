@@ -46,11 +46,13 @@
 //!      ALONE, and by design — every row in it pins what the arm must NOT reach, so
 //!      there is nothing in it for a back-out to break. That is what makes it a
 //!      control rather than a measurement.
-//!   2. THE EFFECT CLAUSE inside `host_op_reducible_at_a_value` (the `sig.effects.is_empty()`
-//!      conjunct). FAILS: only `an_effectful_host_op_does_not_run_at_an_operand`, whose
-//!      `fx` row answers 1 instead of 0. Every other test in this file passes with the
-//!      clause gone, which is exactly why that test exists — the whole-arm back-out above
-//!      cannot see this half at all.
+//!   2. THE EFFECT CLAUSE inside `host_op_reducible_at_a_value`
+//!      (`host_op_runs_in_rule_body`). Read as "empty only", as it was before
+//!      WI-20260827-NFXPZ, it FAILS
+//!      `a_host_op_runs_at_an_operand_behind_an_error_row_and_not_behind_a_clock_row`'s `fx`
+//!      rows; the resolver's body-less arm made to take a host function (4DYR6's back-out)
+//!      runs the `clk` row's `Clock` operation and fails it there. That test exists because
+//!      the whole-arm back-out above cannot see this half at all.
 //!
 //! A third back-out, the host leg of `is_unreduced_op_call`, is measured at its own site
 //! rather than here: without it the unground row answers `no solutions` (a decided FALSE)
@@ -317,62 +319,60 @@ fn a_migrated_registration_is_visible_to_the_gate() {
     );
 }
 
-/// AN EFFECTFUL HOST OPERATION DOES NOT RUN IN A RULE BODY — the clause
-/// WI-20260822-ZJZS7 item 2 asked to have confirmed, and it did NOT hold for free.
+/// A HOST function runs at a rule-body operand only where its declared row lets it: each
+/// member `Error`, or none (`host_op_runs_in_rule_body`). A host function is opaque Rust that
+/// simply runs, so a state effect it declares it performs, and its row is the only thing
+/// between a rule body and that effect; `Error` it RETURNS, and the bridge reports what it
+/// returns as it reports a raise in a body.
 ///
-/// The GOAL side has always stated it (`bare_bodied_bool_relation`: "an effectful body
-/// is not a logical relation, and the eval bridge's empty effect registry would suspend
-/// on one anyway"). The second half of that reason does not carry over to a HOST
-/// function: a bodied op RAISES its effect while the bridge evaluates the body, so the
-/// bridge's `Err(_) => None` arm catches it — but a host function is opaque Rust that
-/// simply runs, raises nothing, and its declared `effects` row is the only thing between
-/// a rule body and a real side effect.
+/// THE FIXTURE MAPS THE OPERATIONS TO THE SAME HOST FUNCTION, so the ONLY difference between
+/// the rows is the `effects` row. A fixture that gave them different host functions would
+/// confound "the effect row was read" with "that function behaves differently". MEASURED
+/// before the effect clause existed: every row answered 1 — the row was inert.
 ///
-/// THE FIXTURE MAPS BOTH OPERATIONS TO THE SAME HOST FUNCTION, so the ONLY difference
-/// between the two rows is the `effects` row. A fixture that gave them different host
-/// functions would confound "the effect row was read" with "that function behaves
-/// differently". MEASURED before the effect clause: BOTH answered 1 — the row was inert.
-///
-/// WHY `Error` AND NOT A STATE EFFECT. A `Modify[p]` operation cannot be reached from a
-/// rule body with a literal argument at all — the typer refuses the CALL at load ("expected
-/// an argument naming a PLACE … got a literal"), so the state-effect hazard is already
-/// guarded one rung up and there is no row to drive here. `Error` is the effect a rule body
-/// can actually reach, which makes it the one this gate is really about.
-///
-/// AND IT IS THE ROW MOST LIKELY TO CHANGE. USER DIRECTION 2026-08-27: "error effect we can
-/// allow (and handle error by erroring rule)" — i.e. `Error` is a FAILURE CHANNEL, not a
-/// state effect, and refusing it here is conservative rather than principled. Deliberately
-/// not done in this ticket (deciding what "erroring rule" means for SLD — fail the clause,
-/// or propagate — is a semantics question, not a gate tweak) and filed as
-/// WI-20260827-NFXPZ, which also has to answer what an erroring operand under
-/// `not(...)` means: under a fail reading it SUCCEEDS, turning a host error into a
-/// positive answer.
-/// This row is written to FAIL when that lands, which is the intent: the gate becomes
-/// "no effects EXCEPT `Error`" and the assertion below becomes 1.
+/// `Error` RUNS since WI-20260827-NFXPZ (user, 2026-08-27: "error effect we can allow";
+/// 2026-10-23: the error propagates). Before, the `effects {Error}` row did not run either and
+/// this row asserted 0 for it. Both polarities: the host function's answer decides the
+/// comparison, and a `not(…)` over a false one holds.
 #[test]
-fn an_effectful_host_op_does_not_run_at_an_operand() {
+fn a_host_op_runs_at_an_operand_behind_an_error_row_and_not_behind_a_clock_row() {
     let mut kb = crate::common::load_kb_with(
-        "namespace vpewkf\n  import anthill.prelude.{String}\n  \
+        "namespace vpewkf\n  import anthill.prelude.{String, Clock}\n  \
          sort MyS\n    \
            operation trimIt(s: String) -> String @[host_implemented]\n    \
-           operation trimFx(s: String) -> String\n      effects {Error} @[host_implemented]\n  end\n  \
+           operation trimFx(s: String) -> String\n      effects {Error} @[host_implemented]\n    \
+           operation trimClk(s: String) -> String\n      effects {Clock} @[host_implemented]\n  end\n  \
          provides MyS language rust\n    artifact \"scratch\"\n    \
            carrier { MyS: \"String\" }\n    \
-           operation_map {\n      trimIt: \"string_trim\",\n      trimFx: \"string_trim\"\n    }\n  end\n  \
+           operation_map {\n      trimIt: \"string_trim\",\n      trimFx: \"string_trim\",\n      trimClk: \"string_trim\"\n    }\n  end\n  \
          rule pure(1) :- MyS.trimIt(\"  a  \") = \"a\"\n  \
-         rule fx(1)   :- MyS.trimFx(\"  a  \") = \"a\"\nend\n",
+         rule fx(1)   :- MyS.trimFx(\"  a  \") = \"a\"\n  \
+         rule fxNo(1) :- MyS.trimFx(\"  b  \") = \"a\"\n  \
+         rule fxNot(1) :- not(MyS.trimFx(\"  b  \") = \"a\")\n  \
+         rule clk(1)  :- MyS.trimClk(\"  a  \") = \"a\"\nend\n",
     );
     assert_eq!(
         answers(&mut kb, "vpewkf.pure(1)"),
         1,
         "CONTROL: the PURE operation runs its host function at an operand. Without \
-         this row the one below would pass on a fixture that simply never worked"
+         this row the ones below would pass on a fixture that simply never worked"
     );
     assert_eq!(
         answers(&mut kb, "vpewkf.fx(1)"),
-        0,
-        "…and the SAME host function behind an operation declared `effects {{Error}}` \
-         does NOT run. The only difference between the two rules is the effect row"
+        1,
+        "the SAME host function behind `effects {{Error}}` runs"
+    );
+    assert_eq!(
+        (answers(&mut kb, "vpewkf.fxNo(1)"), total(&mut kb, "vpewkf.fxNo(1)")),
+        (0, 0),
+        "…its answer decides the comparison: a wrong one is DECIDED false"
+    );
+    assert_eq!(answers(&mut kb, "vpewkf.fxNot(1)"), 1, "…and `not` over it holds");
+    assert_eq!(
+        (answers(&mut kb, "vpewkf.clk(1)"), total(&mut kb, "vpewkf.clk(1)")),
+        (0, 1),
+        "behind `effects {{Clock}}` it does NOT run: one conditional answer, the call \
+         left unreduced"
     );
 }
 
@@ -442,13 +442,14 @@ fn an_eq_between_a_host_call_and_a_bodied_call_does_not_depend_on_operand_order(
 #[test]
 fn the_arity_plus_one_view_runs_a_host_op() {
     let mut kb = crate::common::load_kb_with(
-        "namespace vpewkr\n  import anthill.prelude.{String, Int64}\n  \
+        "namespace vpewkr\n  import anthill.prelude.{String, Int64, Clock}\n  \
          sort MyS\n    \
            operation trimIt(s: String) -> String @[host_implemented]\n    \
-           operation trimFx(s: String) -> String\n      effects {Error} @[host_implemented]\n  end\n  \
+           operation trimFx(s: String) -> String\n      effects {Error} @[host_implemented]\n    \
+           operation trimClk(s: String) -> String\n      effects {Clock} @[host_implemented]\n  end\n  \
          provides MyS language rust\n    artifact \"scratch\"\n    \
            carrier { MyS: \"String\" }\n    \
-           operation_map {\n      trimIt: \"string_trim\",\n      trimFx: \"string_trim\"\n    }\n  end\n  \
+           operation_map {\n      trimIt: \"string_trim\",\n      trimFx: \"string_trim\",\n      trimClk: \"string_trim\"\n    }\n  end\n  \
          rule len(?n)   :- String.length(\"abc\", ?n)\n  \
          rule up(?r)    :- String.toUpper(\"abc\", ?r)\n  \
          rule bound(?n) :- ?n <=> String.length(\"abc\")\n  \
@@ -456,7 +457,8 @@ fn the_arity_plus_one_view_runs_a_host_op() {
          rule len4(1)   :- String.length(\"abc\", 4)\n  \
          rule nlen(1)   :- not(String.length(\"abc\", 3))\n  \
          rule pure(?r)  :- MyS.trimIt(\"  a  \", ?r)\n  \
-         rule fx(?r)    :- MyS.trimFx(\"  a  \", ?r)\nend\n",
+         rule fx(?r)    :- MyS.trimFx(\"  a  \", ?r)\n  \
+         rule clk(?r)   :- MyS.trimClk(\"  a  \", ?r)\nend\n",
     );
     use anthill_core::eval::Value;
     use crate::common::definite_unary;
@@ -493,9 +495,14 @@ fn the_arity_plus_one_view_runs_a_host_op() {
         matches!(pure.as_slice(), [Value::Str(s)] if s == "a"),
         "CONTROL for `fx`: the same host function with no effect row binds; got {pure:?}"
     );
+    let fx = definite_unary(&mut kb, "vpewkr.fx");
+    assert!(
+        matches!(fx.as_slice(), [Value::Str(s)] if s == "a"),
+        "…and behind `effects {{Error}}` it binds too (WI-20260827-NFXPZ); got {fx:?}"
+    );
     assert_eq!(
-        definite_unary(&mut kb, "vpewkr.fx").len(),
+        definite_unary(&mut kb, "vpewkr.clk").len(),
         0,
-        "…and behind `effects {{Error}}` it does not run at arity+1 either"
+        "…while behind `effects {{Clock}}` it does not run at arity+1"
     );
 }

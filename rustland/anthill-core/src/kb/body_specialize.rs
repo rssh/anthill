@@ -1416,15 +1416,14 @@ impl KnowledgeBase {
         }
     }
 
-    /// Is the row member `e` the `Error` effect — bare, or applied (`Error[T = Boom]`)?
-    /// Read by its HEAD, as [`Self::effect_member_is_parametric`] is, and by the resolved
-    /// symbol, never by a name's last segment.
+    /// Is the row member `e` the `Error` effect — bare, applied (`Error[T = Boom]`), or
+    /// guarded (`Error[DivisionByZero] :- eq(b, 0)`, present wherever the guard may
+    /// hold)? Read by its HEAD, as [`Self::effect_member_is_parametric`] is, and by the
+    /// resolved symbol, never by a name's last segment
+    /// ([`super::typing::effect_label_names_sort`], which peeks past the guard).
     pub(crate) fn effect_member_is_error(&self, e: &crate::eval::value::Value) -> bool {
-        let Some(error) = self.error_sort_sym else {
-            return false;
-        };
-        super::typing::sort_functor_of_view(self, e)
-            .is_some_and(|s| self.canonical_sort_sym(s) == self.canonical_sort_sym(error))
+        self.error_sort_sym
+            .is_some_and(|error| super::typing::effect_label_names_sort(self, e, error))
     }
 
     /// Derive `op`'s defining equations from its body (design §3.4.1, WI-669):

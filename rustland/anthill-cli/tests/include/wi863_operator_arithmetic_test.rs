@@ -99,12 +99,14 @@ fn div_truncates_toward_zero() {
     );
 }
 
-/// THE partiality pin: a zero divisor is NOT a value, so the goal has no result —
-/// `no solutions`, exit 0. It must NOT be a refusal (the functor IS known) and NOT
-/// a panic (Rust integer division by zero). This is the SLD reading of the
-/// declared `Error[DivisionByZero] :- eq(b, 0)` guard firing.
+/// THE partiality pin: a zero divisor is NOT a value, and the call RAISES the declared
+/// `Error[DivisionByZero] :- eq(b, 0)`: the error propagates as a fault naming the raise,
+/// and the answer set is marked incomplete — `no solutions`, but no refutation. It must NOT
+/// be a refusal (the functor IS known) and NOT a panic (Rust integer division by zero).
+/// It answered a silent `no solutions` until the error was made to propagate
+/// (WI-20260827-NFXPZ), which this row then also accepted.
 #[test]
-fn division_by_zero_is_no_solution_not_a_refusal() {
+fn division_by_zero_raises_and_is_no_refutation() {
     for p in ["6 / 0", "div(6, 0, ?r)", "7 mod 0", "mod(7, 0, ?r)"] {
         let out = query(p);
         assert_eq!(
@@ -115,6 +117,16 @@ fn division_by_zero_is_no_solution_not_a_refusal() {
         assert!(
             out.has_stdout_line("no solutions"),
             "`{p}` -> no solutions; stdout:\n{}",
+            out.stdout
+        );
+        assert!(
+            out.has_diagnostic("warning:", "raised division_by_zero"),
+            "`{p}` must fault naming the raise; stderr:\n{}",
+            out.stderr
+        );
+        assert!(
+            out.stdout.contains("the search is INCOMPLETE"),
+            "`{p}`'s empty answer is no refutation; stdout:\n{}",
             out.stdout
         );
         assert_eq!(

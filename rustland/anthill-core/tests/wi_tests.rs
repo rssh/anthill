@@ -272,6 +272,9 @@ mod wi903_typed_bound_dot_rule_test;
 #[path = "include/wi905_rewrite_reached_effect_test.rs"]
 mod wi905_rewrite_reached_effect_test;
 
+#[path = "include/wi_nfxpz_error_row_host_op_test.rs"]
+mod wi_nfxpz_error_row_host_op_test;
+
 #[path = "include/wi281_spec_dot_dispatch_test.rs"]
 mod wi281_spec_dot_dispatch_test;
 

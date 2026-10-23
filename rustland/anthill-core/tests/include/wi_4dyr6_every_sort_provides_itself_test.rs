@@ -98,7 +98,8 @@
 //! (6) the resolver's body-less arm made to take an operation the interpreter has a host
 //!     function for (`reduce_op_value`).
 //!   FAILS, the effectful host function running at a rule-body operand:
-//!     `wi_vpewk_host_op_operand_test::an_effectful_host_op_does_not_run_at_an_operand`.
+//!     `wi_vpewk_host_op_operand_test::a_host_op_runs_at_an_operand_behind_an_error_row_and_not_behind_a_clock_row`
+//!     (its `Clock` row; until WI-20260827-NFXPZ the `Error` row was the effectful one).
 //!
 //! THE FENCES, each measured the other way.
 //!   `signature_names_no_carrier` made to answer yes — FAIL, loading clean:
