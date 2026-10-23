@@ -29,3 +29,9 @@ TO DO: hold every goal a constraint proves — the invariant, the guard, a quant
 
 ACCEPTANCE: drive each row above and assert the refusal by its variant and name. Add the controls that answer: `-: true`, `-: flag`, `-: Int64.gt(nn, 3)`, and a Bool operation `-: is_big`, each holding under `forall` and failing under `no`. Say at the file's head which tests fail when the walk is backed out.
 
+## Changes
+
+### 2026-10-23T17:13:26Z — feedback — claude
+
+ROW ADDED (from WI-20261013-R1W5A, 2026-10-23, measured on 38a260a6): a constraint's goal is not held to the rule-body effect refusal either. Over `operation plainStamp() -> String effects {Clock} = now()`, `constraint noStamp :- plainStamp() = "2000"` loads, where the same goal in a rule body is refused at load ("the call `plainStamp`, which performs `Clock`, and a rule body performs no effect", `kb/typing/rule_dispatch.rs` `refuse_performed_effects`); a function handed to a relation in a constraint goal is not checked (`refuse_handed_functions`). Walking a constraint's goals with the rule-body readings, as TO DO says, reaches both. ACCEPTANCE ADDS: `noStamp` refused naming the call and `Clock`; a constraint goal handing `lambda () -> now()` to a relation refused.
+
