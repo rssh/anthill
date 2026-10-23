@@ -623,7 +623,7 @@ pub fn type_check_node_gated_in_gamma(
 }
 
 /// WI-1104: [`type_check_node_gated`] told WHERE the node sits — see [`type_check_node_at`].
-fn type_check_node_gated_at(
+pub(super) fn type_check_node_gated_at(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
     occ: &Rc<NodeOccurrence>,

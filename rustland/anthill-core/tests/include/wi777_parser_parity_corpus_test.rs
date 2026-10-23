@@ -82,6 +82,10 @@ fn wi777_rust_parser_pins_the_shared_parity_corpus() {
     //     each alone. Rustland's half is JB6RS's `application` at `commaSep`, pinned by
     //     tree-sitter's own corpus row (`test/corpus/empty_bracket.txt`); it was not
     //     regenerated at `commaSep1` to measure it here.
+    //   * WI-20261023-2F9HY, BOTH sides: `lambda_as_infix_operand` fails with tree-sitter's
+    //     `infix_term` operand back at `_atom_term` (on 01424c91 `lambda x` after `<=>` is a
+    //     syntax error) and with scaland's `infixOperand` back at `atomWithFieldAccess`
+    //     (measured, `found " -> x + 1"`). Scaland's `ParserParityTest` also pins the shape.
     //   * `one_positional_arrow`, `one_denoted_tuple_type`, `two_named_tuple_trailing_comma`
     //     and the two older reject cases pass under every back-out above, and guard the
     //     unchanged language around the fixes.

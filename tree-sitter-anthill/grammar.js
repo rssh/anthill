@@ -1437,8 +1437,9 @@ module.exports = grammar({
     // the argument that already licensed a bare `lambda` here — this generalizes it to
     // the family rather than keeping one member privileged.
     //
-    // NOT widened to the positions with no delimiter: an infix operand and a dot
-    // receiver are `_atom_term`, and a `set_literal` element stays a `_term` because
+    // NOT widened to the positions with no delimiter: an infix operand (but for a
+    // `lambda_expr` after an operator, see `infix_term`) and a dot receiver are
+    // `_atom_term`, and a `set_literal` element stays a `_term` because
     // `{ a, b }` is already the block/goal-list spelling and admitting `_expr_body`
     // there is a real `rule { _term • , }` conflict (MEASURED). Those reach the
     // compound forms through `paren_expr`, which now wraps an `_expr_body`.
@@ -1542,9 +1543,19 @@ module.exports = grammar({
     operator_symbol: $ => token(prec(-1, /[+\-*/%^|&=<>~]+/)),
 
     // Flat infix: all operators at one grammar level, Pratt resolver handles precedence.
+    //
+    // An operand after an operator may be a `lambda_expr` (kernel-language §4.8):
+    // `?f <=> lambda () -> e`. Without it `lambda` is not the keyword there (a soft
+    // keyword, §2.5), and `lambda ()` read as a call to a name under the `->` operator
+    // (WI-20261015-C9802). A lambda extends as far right as it can, so it is the last
+    // operand: `?f <=> lambda x -> x + 1` is `?f <=> (lambda x -> (x + 1))`, and in a
+    // rule body the `,` ends it. After a `requires`/`ensures` clause `=` is lexed as the
+    // body separator, so `requires x > 0 = lambda y -> y` keeps `lambda y -> y` as the
+    // body. MEASURED: 4199 parse states before, 5019 after; admitting it only after the
+    // last operator is 5273. The other compound forms stay parenthesized here.
     infix_term: $ => prec(1, seq(
       $._atom_term,
-      repeat1(seq($._infix_op, $._atom_term)),
+      repeat1(seq($._infix_op, choice($._atom_term, $.lambda_expr))),
     )),
 
     _infix_op: $ => choice(

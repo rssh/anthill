@@ -219,8 +219,8 @@ end
 // ── B. who raised it ─────────────────────────────────────────────────────────────────────
 
 /// A DRAIN'S FAILURE CAUGHT AND RAISED AGAIN IS STILL THE RUNTIME'S. `Result.reflect(Error.reify(
-/// …))` catches the `evaluation_failure` of a drain whose search asked the `Clock` handler and
-/// raises the same value again; the rule reading it is told the effect, and no boundary. The
+/// …))` catches the `evaluation_failure` of a drain whose search declined a `Clock` read — a
+/// goal on `stampAt` built at run time — and raises the same value again; the rule reading it is told the effect, and no boundary. The
 /// payload's constructor says whose it is, since no program constructs one (the sixth review,
 /// `wi_9wvt7_review6_test`); before, a mark on the error alone made the raise again the
 /// program's, and the rule was told to reach for `Error.reify`, which only hides the declined
@@ -236,11 +236,12 @@ namespace test.r5.rethrow
   import anthill.reflect.{Term, Solution, fresh_var, as_term, ResolveStreamFailure}
   import anthill.reflect.KB.{kb, execute}
   import anthill.reflect.LogicalQuery.{pattern_query}
-  operation applyThunk[Rho](f: () -> String @ {Rho}) -> String effects {Rho} = f()
+  operation stampAt(n: Int64) -> String effects {Clock} = now()
+  rule apply2(?p, ?x, ?r) :- ?p(?x, ?r)
   sort Probes
     entity Stamp(s: String)
   end
-  rule Stamp(s: ?r) :- applyThunk(lambda () -> now(), ?r)
+  rule Stamp(s: ?r) :- apply2(stampAt, 1, ?r)
   operation probe() -> Int64 effects Error[ResolveStreamFailure] =
     match splitFirst(execute(kb(), pattern_query(term: as_term(Stamp(s: fresh_var[String]("x"))))))
       case none()  -> 0

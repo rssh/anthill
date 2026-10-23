@@ -244,6 +244,38 @@ pub(super) fn declared_element_type(
     extract_type_param(kb, exp, "T")
 }
 
+/// Is `ctor` one of `List`'s two constructors, which a `[…]` is lowered to (§4.6)?
+pub(super) fn is_list_spine_constructor(kb: &KnowledgeBase, ctor: Symbol) -> bool {
+    // The last segment first, a filter only — the symbol decides: this is asked of every
+    // argument and field the typer hints.
+    let qualified = match short_name_of(kb.local_name_of(ctor)) {
+        "cons" => "anthill.prelude.List.cons",
+        "nil" => "anthill.prelude.List.nil",
+        _ => return false,
+    };
+    kb.try_resolve_symbol(qualified) == Some(ctor)
+}
+
+/// The expectation a field of a `cons` / `nil` spine takes where the spine's own
+/// expectation declares its element type (§4.6): the spine is the list literal, so its
+/// head is an element, at the declared element type, and its tail the rest of the
+/// literal, at the declared list.
+pub(super) fn spine_field_expected(
+    kb: &KnowledgeBase,
+    ctor: Symbol,
+    field: Symbol,
+    expected: &Option<Value>,
+) -> Option<Value> {
+    if !is_list_spine_constructor(kb, ctor) {
+        return None;
+    }
+    let element = declared_element_type(kb, SeqLiteral::List, expected.as_ref())?;
+    match kb.entity_field_types(ctor)?.iter().position(|(f, _)| *f == field)? {
+        0 => Some(element),
+        _ => expected.clone(),
+    }
+}
+
 /// WI-285 / WI-289 / WI-20260826-7JDWY — THE ELEMENT TYPE AND EFFECTS OF A COLLECTION
 /// LITERAL, and the ONE place that rule is stated.
 ///
@@ -1392,6 +1424,16 @@ pub(super) fn check_constructor_iter(
     // with a `5` is a `Box[V = Int64]`. A construction that writes neither has none to read.
     seed_constructor_type_args(kb, &mut subst, env, occ, parent_sort, ctor_sym, span)?;
     seed_receiver_type_args(kb, &mut subst, env, occ, parent_sort, ctor_sym, span)?;
+    // A `cons` / `nil` spine is the list literal (§4.6): where its expectation declares the
+    // element type, the declaration is the element type and each element is checked
+    // against it, so it is read before the fields.
+    if let Some(exp) = expected.as_ref().filter(|exp| {
+        is_list_spine_constructor(kb, ctor_sym)
+            && declared_element_type(kb, SeqLiteral::List, Some(exp)).is_some()
+    }) {
+        let own = own_application(kb, parent_sort.unwrap_or(ctor_sym));
+        unify_types(kb, &mut subst, &TermIdView(own), exp);
+    }
 
     // WI-384: fields unify FIRST so each argument pins its param, THEN the caller
     // `expected` fills only the still-free params (the args-before-expected order of

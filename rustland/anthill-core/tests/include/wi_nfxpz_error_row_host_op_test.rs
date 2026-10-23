@@ -72,7 +72,6 @@ namespace nfxpz
   rule bigDiv0(?x) :- ?x <=> BigInt.div(BigInt.to_bigint(7), BigInt.to_bigint(0))
   rule bigMod0(?x) :- ?x <=> BigInt.mod(BigInt.to_bigint(7), BigInt.to_bigint(0))
   rule raised(?x) :- ?x <=> Error.raise(boom(why: "x"))
-  rule clkErr(1) :- MyS.trimClkErr("  a  ") = "a"
   rule bodied(?x) :- ?x <=> pick(5)
   rule bodied0(?x) :- ?x <=> pick(0)
 end
@@ -156,12 +155,29 @@ fn a_raise_from_a_host_function_propagates() {
 
 /// CONTROL against this ticket's back-outs: a row with a state effect beside `Error` keeps
 /// the host function from running — one conditional answer, the call left unreduced. (It
-/// fails with the resolver's body-less arm made to take a host function, the 4DYR6 back-out.)
+/// failed with the resolver's body-less arm made to take a host function, the 4DYR6 back-out,
+/// measured on the clause before WI-20261013-R1W5A.)
+///
+/// Written in a rule body the call is refused at load (WI-20261013-R1W5A), so it is asked as
+/// a query.
 #[test]
 fn a_state_effect_beside_error_still_refuses() {
     let mut kb = load_kb_with(SRC);
-    let (rows, _) = ask(&mut kb, "clkErr");
-    assert_eq!(rows, vec![("1".to_string(), false)], "clkErr");
+    let goal = query_pattern_term(&mut kb, "nfxpz.MyS.trimClkErr(\"  a  \") = \"a\"");
+    let solutions = kb.resolve(&[goal], &ResolveConfig::default());
+    assert!(
+        solutions.len() == 1 && !solutions[0].residual.is_empty(),
+        "one conditional answer, the call left unreduced: {} answers",
+        solutions.len()
+    );
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&SRC.replace(
+            "\nend\n",
+            "\n  rule clkErr(1) :- MyS.trimClkErr(\"  a  \") = \"a\"\nend\n",
+        )),
+        &["trimClkErr", "performs `Clock`, and a rule body performs no effect"],
+        "the call written in a rule body",
+    );
 }
 
 /// CONTROL against this ticket's back-outs: the bodied twin, which the 2026-10-21 half

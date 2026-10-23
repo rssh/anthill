@@ -856,6 +856,18 @@ pub enum LoadError {
         /// Where the goal is written.
         span: Span,
     },
+    /// WI-20260822-NDG34 (spec §5.3, §5.9): a `const` written as a rule-body GOAL that is
+    /// not the search `true` / `false`. A `Bool` const with a load-time value is that
+    /// literal at a goal; `problem` says why this one is not. The const sibling of
+    /// [`Self::ConstantInGoalPosition`]: before it, `:- flag` loaded and answered nothing
+    /// for `const flag: Bool = true`, and `:- not(flag)` answered one.
+    ConstInGoalPosition {
+        /// The const, qualified.
+        name: String,
+        problem: ConstGoalProblem,
+        /// Where the goal is written.
+        span: Span,
+    },
     /// WI-20260902-8K4RB: the subject of a bodyless EQUATION written in a rule-body
     /// GOAL position — `rule reader(1) :- tauX` beside `rule tauX <=> 7 @[simp]`.
     ///
@@ -2311,6 +2323,20 @@ pub enum LoadError {
         unresolved: String,
         span: Span,
     },
+    /// WI-20261015-C9802: a lambda written where a term is expected — before an infix
+    /// operator, as the operand of `not`, a dot receiver, a `match` scrutinee, an `if`
+    /// condition, a set element — without the parentheses kernel-language.md §4.8 requires
+    /// there (after an infix operator a lambda needs none, WI-20261023-2F9HY). In such a
+    /// position `lambda` is not the keyword (§2.5): it reads as a name, `lambda (x)` as a
+    /// call to it, and the `->` after it as the arrow-type operator, so
+    /// `{lambda () -> plus1(1)}` held `arrow(lambda, 2)`, the body evaluated where it
+    /// stood. Raised for a written `lambda` under a pratt-minted arrow that resolves to
+    /// nothing, in an operation body and in a clause alike, before the two bare-arrow
+    /// refusals above, whose advice (write the keyword) is wrong for it. A `lambda` the
+    /// program declares is that declaration. The span is the `lambda`'s, where the `(` goes.
+    LambdaInTermPosition {
+        span: Span,
+    },
     /// One of the runtime's accounts ([`crate::kb::RuntimeAccount`]) written in a clause: a
     /// fact, a rule head or a goal. A clause's term is a value wherever it binds a variable,
     /// and a program does not construct the runtime's accounts — the bridge reads a raise's
@@ -2330,6 +2356,17 @@ pub enum LoadError {
         kind: &'static str,
         /// The owned functor's qualified name.
         functor: String,
+        span: Span,
+    },
+    /// WI-20260822-NDG34 (spec §5.9): a `fact` or a `rule` clause whose head names a
+    /// `const`, at any arity. A goal naming the const is the const's value, so the clause
+    /// was reached by no bare goal: `rule flag :- true` beside `const flag: Bool = false`
+    /// left `:- flag` answering the const's `false`, with nothing said.
+    ClauseHeadNamesConst {
+        /// The refused item's kind — `"fact"` or `"rule"`.
+        kind: &'static str,
+        /// The const, qualified.
+        name: String,
         span: Span,
     },
     /// WI-023: an `aggregation` constraint (`count/sum/min/max(…) op bound`). The
@@ -2961,6 +2998,7 @@ impl LoadError {
             | LoadError::PatternAnnotatedTwice { span }
             | LoadError::LetAnnotationOnNonPattern { span }
             | LoadError::BareArrowInLogicPosition { span, .. }
+            | LoadError::LambdaInTermPosition { span }
             | LoadError::RuntimeAccountInClause { span, .. }
             | LoadError::AggregationConstraintUnsupported { span, .. }
             | LoadError::UnsupportedConstraintForm { span, .. }
@@ -2975,6 +3013,7 @@ impl LoadError {
             | LoadError::SelfTypeMisuse { span, .. }
             | LoadError::TypeParamShadowsSlot { span, .. }
             | LoadError::FunctorOwnedByExtent { span, .. }
+            | LoadError::ClauseHeadNamesConst { span, .. }
             | LoadError::MacroRejected { span, .. }
             | LoadError::UndefinedAfterDefinePass { span, .. }
             | LoadError::UndefinedRuleBodyGoal { span, .. }
@@ -2986,6 +3025,7 @@ impl LoadError {
             | LoadError::UndefinedHeadArgument { span, .. }
             | LoadError::SortAppliedAsData { span, .. }
             | LoadError::ConstantInGoalPosition { span, .. }
+            | LoadError::ConstInGoalPosition { span, .. }
             | LoadError::EquationSubjectInGoalPosition { span, .. }
             | LoadError::UnknownEntityField { span, .. }
             | LoadError::SecondaryEntryContent { span, .. }
@@ -3403,6 +3443,17 @@ impl LoadError {
                     "{}: {}",
                     loc.format_start(*span),
                     constant_in_goal_position_message(literal)
+                )
+            }
+            LoadError::ConstInGoalPosition {
+                name,
+                problem,
+                span,
+            } => {
+                format!(
+                    "{}: {}",
+                    loc.format_start(*span),
+                    const_in_goal_position_message(name, problem)
                 )
             }
             LoadError::EquationSubjectInGoalPosition { functor, span } => {
@@ -3834,6 +3885,13 @@ impl LoadError {
                     consequence
                 )
             }
+            LoadError::ClauseHeadNamesConst { kind, name, span } => {
+                format!(
+                    "{}: {}",
+                    loc.format_start(*span),
+                    clause_head_names_const_message(kind, name)
+                )
+            }
             LoadError::FunctorOwnedByExtent {
                 kind,
                 functor,
@@ -3873,6 +3931,13 @@ impl LoadError {
                     "{}: {}",
                     loc.format_start(*span),
                     bare_arrow_logic_msg(position, unresolved)
+                )
+            }
+            LoadError::LambdaInTermPosition { span } => {
+                format!(
+                    "{}: {}",
+                    loc.format_start(*span),
+                    LAMBDA_IN_TERM_POSITION_MSG
                 )
             }
             LoadError::RuntimeAccountInClause { ctor, span } => {
@@ -4203,6 +4268,27 @@ impl LoadError {
 const LAMBDA_KEYWORD_HINT: &str =
     "a lambda needs the `lambda` keyword (e.g. `lambda (x, y) -> body`)";
 
+/// The `lambda` keyword's spelling, read where it is a name (`LoadError::LambdaInTermPosition`).
+const LAMBDA_KEYWORD: &str = "lambda";
+
+/// The one message body for `LoadError::LambdaInTermPosition`, shared by both renderings.
+const LAMBDA_IN_TERM_POSITION_MSG: &str =
+    "a lambda written where a term is expected — before an infix operator, as the \
+     operand of `not`, a dot receiver, a `match` scrutinee, an `if` condition, a set \
+     element — is put in parentheses: \
+     `(lambda … -> …)`; without them `lambda` is read as a name and `->` builds an \
+     arrow-type term";
+
+/// What `Loader::find_arrow_witness` found under a minted arrow: the first `lambda` written
+/// as a name that resolves to nothing (`LoadError::LambdaInTermPosition`), and the first
+/// binder-looking leaf that resolves to nothing (`LoadError::BareArrowInLogicPosition`). The
+/// `lambda` decides when both are found: the author wrote the keyword.
+#[derive(Default)]
+struct ArrowWitness {
+    lambda: Option<Span>,
+    unresolved: Option<String>,
+}
+
 /// WI-605: the one hint text for `ArrowTermInExprPosition`, shared by both
 /// renderings (`format_with_source` and `Display`) so the wording cannot drift.
 fn arrow_expr_hint() -> String {
@@ -4238,7 +4324,7 @@ fn binder_form_layout(name: &str) -> Option<(usize, usize)> {
     //
     // THE SHORT ARM IS INERT HERE, stated because an earlier draft of this comment
     // justified it with "the callers are not all provenance-gated" and that is FALSE:
-    // both (`check_bare_arrow_typo`, `first_unresolvable_arrow_leaf`) filter the result
+    // both (`check_bare_arrow_typo`, `find_arrow_witness`) filter the result
     // on `is_minted`, so a short spelling can only ever reach a node the filter drops.
     // `dt::is` is kept anyway — it is the one idiom every reader of a desugar target
     // uses, and a reader that has to know its own gating to pick between `==` and `is`
@@ -4920,6 +5006,19 @@ impl std::fmt::Display for LoadError {
                 span.start,
                 span.end
             ),
+            LoadError::ConstInGoalPosition {
+                name,
+                problem,
+                span,
+            } => {
+                write!(
+                    f,
+                    "{} at {}..{}",
+                    const_in_goal_position_message(name, problem),
+                    span.start,
+                    span.end
+                )
+            }
             LoadError::ConstantInGoalPosition { literal, span } => {
                 write!(
                     f,
@@ -5296,6 +5395,15 @@ impl std::fmt::Display for LoadError {
                     qualified, consequence, span.start, span.end,
                 )
             }
+            LoadError::ClauseHeadNamesConst { kind, name, span } => {
+                write!(
+                    f,
+                    "{} at {}..{}",
+                    clause_head_names_const_message(kind, name),
+                    span.start,
+                    span.end
+                )
+            }
             LoadError::FunctorOwnedByExtent {
                 kind,
                 functor,
@@ -5338,6 +5446,13 @@ impl std::fmt::Display for LoadError {
                     bare_arrow_logic_msg(position, unresolved),
                     span.start,
                     span.end
+                )
+            }
+            LoadError::LambdaInTermPosition { span } => {
+                write!(
+                    f,
+                    "{} at {}..{}",
+                    LAMBDA_IN_TERM_POSITION_MSG, span.start, span.end
                 )
             }
             LoadError::RuntimeAccountInClause { ctor, span } => {
@@ -15975,6 +16090,59 @@ pub(crate) fn constant_in_goal_position_message(literal: &str) -> String {
     )
 }
 
+/// Why a const written as a rule-body goal is not the search its value would be
+/// ([`LoadError::ConstInGoalPosition`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConstGoalProblem {
+    /// Its type is not `Bool`, so it names no truth: `:- nn` with `const nn: Int64 = 5`.
+    NotBool { ty: String },
+    /// A `Bool` const whose value is not known when the clause loads
+    /// (`kb::const_value`): a computed body, or a host value this runtime has no binding for.
+    ValueUnavailable { reason: String },
+    /// A `Bool` const whose value is known, left standing by the walk that built the goal:
+    /// a defect of that walk, which the goal would otherwise answer as nothing. No program
+    /// in the suite reaches it; it keeps a missed fold from being the silent wrong answer
+    /// this refusal family exists to remove.
+    NotFolded,
+}
+
+/// WI-20260822-NDG34 — the one wording of [`LoadError::ClauseHeadNamesConst`], for its two
+/// renderings.
+fn clause_head_names_const_message(kind: &str, name: &str) -> String {
+    format!(
+        "this {kind}'s head names the const `{name}`: a const is a value and not a \
+         relation, a name in a scope is one symbol, and a goal naming the const reads its \
+         value (kernel-language.md §5.9). Give the relation a name of its own."
+    )
+}
+
+/// WI-20260822-NDG34 — the one wording of [`LoadError::ConstInGoalPosition`], shared by
+/// its two renderings and the typer's face of it, as [`constant_in_goal_position_message`]
+/// is for a literal.
+pub(crate) fn const_in_goal_position_message(name: &str, problem: &ConstGoalProblem) -> String {
+    let short = last_segment(name);
+    match problem {
+        ConstGoalProblem::NotBool { ty } => format!(
+            "the const `{name}` of type `{ty}` is written as a rule-body GOAL: only a `Bool` \
+             const reads as a goal, as the search its value is (`true` succeeds, `false` \
+             fails, kernel-language.md §5.3), so this goal can never match and the rule it \
+             is written in can never fire. If this is data, it belongs in a goal's ARGUMENT \
+             (`p({short})`) or in a comparison (`?x = {short}`)."
+        ),
+        ConstGoalProblem::ValueUnavailable { reason } => format!(
+            "the const `{name}` is written as a rule-body GOAL, where a `Bool` const is the \
+             search its value is, and that value is not known when the clause loads: \
+             {reason}. Write the value itself, or compute it in the body of a `Bool` \
+             operation and write that operation as the goal."
+        ),
+        ConstGoalProblem::NotFolded => format!(
+            "the `Bool` const `{name}` is written as a rule-body GOAL and was not folded to \
+             its value by the walk that built the clause, so the goal would match nothing. \
+             This is a defect in that walk, not in the program."
+        ),
+    }
+}
+
 /// WI-20260902-8K4RB — the ONE wording of [`LoadError::EquationSubjectInGoalPosition`],
 /// shared by the located `format_with_source` rendering, the span-less `Display`, and
 /// the [`super::typing::TypeError`] face the goal-reading pass raises it through (the
@@ -23475,9 +23643,12 @@ pub fn convert_query_term(
         // bare-interns the two answers that name no single symbol (WI-476), and an
         // unresolved bare intern heads no clause, so the pattern matches nothing and the
         // CLI's `report_unknown_functor_name` gets a name to diagnose instead of
-        // `field_access`.
+        // `field_access`. A `Bool` const is the literal it holds, as at every goal.
         let expr = if kb.symbols.is_resolved(sym) {
-            Expr::Ref(sym)
+            match query_slot_const(kb, sym, ConstFold::Goal) {
+                Some(lit) => Expr::Const(lit),
+                None => Expr::Ref(sym),
+            }
         } else {
             Expr::Ident(sym)
         };
@@ -23554,8 +23725,9 @@ fn expand_bare_entity_query_name(
     })
 }
 
-/// WI-20261001-KDMQS — the query twin of `Loader::data_slot_const_value`: `sym`'s value
-/// when the pattern walk is in a data slot and `sym` is a const.
+/// WI-20261001-KDMQS — the query twin of `Loader::data_slot_const_value` and
+/// `Loader::goal_const_value`: `sym`'s value when `sym` is a const and the pattern walk is
+/// in a data slot, or at a goal and the value is a `Bool`.
 ///
 /// A QUERY CAN EVALUATE, which a clause conversion cannot: it converts against a LOADED
 /// program. So a const with no load-time value (a computed body) is asked of the
@@ -23566,15 +23738,22 @@ fn expand_bare_entity_query_name(
 ///
 /// What the evaluator cannot produce either (no value source in this runtime, a body that
 /// raises, a value that is not a literal) keeps the symbol, because a query pattern has no
-/// error channel. Its empty answer is then true: no stored clause holds that value.
-fn query_data_slot_const(kb: &mut KnowledgeBase, sym: Symbol, fold: ConstFold) -> Option<Literal> {
-    if fold != ConstFold::Data || !kb.has_kind(sym, SymbolKind::Const) {
+/// error channel. Its empty answer is then true: no stored clause holds that value. At a
+/// goal, a const that is not a `Bool` keeps the symbol too and matches nothing, which is
+/// what a query does with `not(42)`: it has no refusal to make.
+fn query_slot_const(kb: &mut KnowledgeBase, sym: Symbol, fold: ConstFold) -> Option<Literal> {
+    if !matches!(fold, ConstFold::Data | ConstFold::Goal) || !kb.has_kind(sym, SymbolKind::Const) {
         return None;
     }
-    match kb.const_slot_value(sym) {
-        Ok(lit) => Some(lit),
-        Err(_) => kb.evaluated_const_literal(sym),
+    // At a goal only a `Bool` const has a reading, so another is not evaluated to be dropped.
+    if fold == ConstFold::Goal && !kb.const_type_is_bool(sym) {
+        return None;
     }
+    let lit = match kb.const_slot_value(sym) {
+        Ok(lit) => lit,
+        Err(_) => kb.evaluated_const_literal(sym)?,
+    };
+    (fold == ConstFold::Data || matches!(lit, Literal::Bool(_))).then_some(lit)
 }
 
 /// The query twin of `Loader::data_slot_alias_type`: in a data slot, a type alias is the
@@ -23944,8 +24123,6 @@ fn convert_query_term_expecting(
             // position with no load-error channel to be loud from. The mint carries its
             // ADDRESS now, which outranks scope by construction, so the ordinary query
             // ladder is the whole answer and no producer has to be enumerated.
-            // WI-20261001-KDMQS — a dotted chain naming a const, in a data slot, is the
-            // const's value: the query twin of the loader's arm.
             if fold == ConstFold::Data {
                 // 8DXVK: a qualified sort in a query's data/type operand is the
                 // sort value, as its bare spelling is. Leaving the dotted path
@@ -23958,13 +24135,18 @@ fn convert_query_term_expecting(
                             .unwrap_or_else(|| expr_node(Expr::Ref(symbol)));
                     }
                 }
-                if let Some(c) = dotted_citation_name(parse_symbols, parse_terms, parse_id)
-                    .and_then(|name| const_named(kb, &name, scope))
-                {
-                    if let Some(lit) = query_data_slot_const(kb, c, fold) {
-                        return expr_node(Expr::Const(lit));
-                    }
+            }
+            // WI-20261001-KDMQS — a dotted chain naming a const, in a data slot, is the
+            // const's value, and at a goal a `Bool` const's: the query twin of the
+            // loader's arms.
+            if let Some(c) = dotted_citation_name(parse_symbols, parse_terms, parse_id)
+                .and_then(|name| const_named(kb, &name, scope))
+            {
+                if let Some(lit) = query_slot_const(kb, c, fold) {
+                    return expr_node(Expr::Const(lit));
                 }
+            }
+            if fold == ConstFold::Data {
                 // A constructor named by its qualified name is the reference its
                 // one-segment name is (the `Term::Ident` arm below).
                 if let Some(ctor) = dotted_citation_name(parse_symbols, parse_terms, parse_id)
@@ -24222,7 +24404,7 @@ fn convert_query_term_expecting(
         Term::Ident(sym) => {
             let name = parse_symbols.local_name(sym);
             match resolve_name_in_kb(kb, name, scope) {
-                ResolveResult::Found(resolved) => match query_data_slot_const(kb, resolved, fold) {
+                ResolveResult::Found(resolved) => match query_slot_const(kb, resolved, fold) {
                     Some(lit) => Expr::Const(lit),
                     None => match query_data_slot_alias(kb, resolved, fold) {
                         Some(occ) => return occ,
@@ -24237,7 +24419,7 @@ fn convert_query_term_expecting(
         Term::Ref(sym) => {
             let name = parse_symbols.local_name(sym);
             let resolved = resolve_query_name(kb, name, scope);
-            match query_data_slot_const(kb, resolved, fold) {
+            match query_slot_const(kb, resolved, fold) {
                 Some(lit) => Expr::Const(lit),
                 None => match query_data_slot_alias(kb, resolved, fold) {
                     Some(occ) => return occ,
@@ -25953,8 +26135,8 @@ enum ConstFold {
     /// the symbol here. Where it is evaluated (an operation body) eval folds it on demand.
     Off,
     /// A GOAL position: a clause head itself, a body goal, a connective's goal slot. A
-    /// bare const here is a goal, not a value, and whether it may be one is
-    /// WI-20260822-NDG34's question, not this one's.
+    /// `Bool` const at a rule-body, constraint or query goal is the literal it holds, a
+    /// search (`Loader::goal_const_value`, `query_slot_const`); a clause head is not folded.
     Goal,
     /// A conjunction WRAPPER in a goal slot (`forall_impl`'s `tuple(…)`): each of its
     /// components is a goal.
@@ -26152,6 +26334,11 @@ struct Loader<'a> {
     // sets it for each of its own children, so it never reaches past one level — the
     // arguments of a call inside a chain are values again.
     in_non_value_role: bool,
+    // Set while a rule body's walk builds the arguments of an operation's application, and
+    // kept for the constructions nested in them: a call there is written as an operation
+    // body is (068 §3), so a type written in its arguments is built as the operation-body
+    // walk builds it ([`Self::written_type_in_call_argument`]).
+    in_call_argument: bool,
     // WI-605: set by the bare-arrow diagnostic arm when it substitutes a
     // `Term::Bottom` recovery leaf into the body being converted. Cleared at
     // `convert_expr_term` entry; read by `load_operation` / `load_const` to
@@ -26691,6 +26878,7 @@ impl<'a> Loader<'a> {
             in_body_goal: false,
             in_body_goal_wrapper: false,
             in_non_value_role: false,
+            in_call_argument: false,
             expr_body_bottom_recovery: false,
             defined_sorts: Vec::new(),
             fact_rule_ids: Vec::new(),
@@ -26797,7 +26985,11 @@ impl<'a> Loader<'a> {
             (pratt::is_arrow_functor(name), binder_form_layout(name))
         };
         if is_arrow && self.parsed.terms.is_minted(parse_id) {
-            if let Some(unresolved) = self.first_unresolvable_arrow_leaf(parse_id, bound) {
+            let mut witness = ArrowWitness::default();
+            self.find_arrow_witness(parse_id, bound, &mut witness);
+            if let Some(span) = witness.lambda {
+                self.errors.push(LoadError::LambdaInTermPosition { span });
+            } else if let Some(unresolved) = witness.unresolved {
                 self.errors.push(LoadError::BareArrowInLogicPosition {
                     position,
                     unresolved,
@@ -26864,6 +27056,15 @@ impl<'a> Loader<'a> {
     /// unresolvable witness and still loads silently — catching it needs
     /// type-level reasoning, not scope lookups.
     ///
+    /// WI-20261015-C9802: and the first `lambda` written as a NAME — a bare
+    /// `lambda` or a call `lambda(…)` — that is `NotFound` (an ambiguous one is
+    /// a declared name, reported as ambiguous at the reference). Where a term
+    /// is expected `lambda` is not the keyword (§2.5), so a lambda written
+    /// there without its parentheses (§4.8) arrives as exactly this:
+    /// `lambda () -> body` is the call `lambda()` under the arrow-type
+    /// operator. It ends the walk, and decides over a leaf found before it
+    /// (`ArrowWitness`).
+    ///
     /// Binder forms met under the arrow scope their pattern names via
     /// `bound` (see `check_bare_arrow_typo`). The name `Ident`s at
     /// `pos_args[1]` of converter-minted `field_access`/`dot_apply` nodes
@@ -26871,11 +27072,24 @@ impl<'a> Loader<'a> {
     /// scope, so it can never witness the typo (the receiver side is still
     /// walked; a user-written call that merely NAMES a functor
     /// `field_access` is not minted and is walked in full).
-    fn first_unresolvable_arrow_leaf(
+    fn find_arrow_witness(
         &self,
         parse_id: TermId,
         bound: &HashSet<String>,
-    ) -> Option<String> {
+        found: &mut ArrowWitness,
+    ) {
+        if found.lambda.is_some() {
+            return;
+        }
+        // A name not bound here, as the scope resolves it. A `lambda` the program declares,
+        // once or twice, is a name: only one that is `NotFound` is the keyword.
+        let resolution = |name: &str| {
+            (!bound.contains(name))
+                .then(|| self.kb.symbols.resolve_in_scope(name, self.current_scope))
+        };
+        let undeclared_lambda = |name: &str| {
+            name == LAMBDA_KEYWORD && matches!(resolution(name), Some(ResolveResult::NotFound))
+        };
         match self.parsed.terms.get(parse_id) {
             Term::Ident(sym) => {
                 let name = self.parsed.symbols.local_name(*sym);
@@ -26883,16 +27097,20 @@ impl<'a> Loader<'a> {
                     .chars()
                     .next()
                     .is_some_and(|c| c.is_lowercase() || c == '_');
-                if binder_lead
-                    && !bound.contains(name)
-                    && !matches!(
-                        self.kb.symbols.resolve_in_scope(name, self.current_scope),
-                        ResolveResult::Found(_)
-                    )
-                {
-                    return Some(name.to_owned());
+                if !binder_lead {
+                    return;
                 }
-                None
+                match resolution(name) {
+                    Some(ResolveResult::NotFound) if name == LAMBDA_KEYWORD => {
+                        found.lambda = Some(self.parsed.terms.span(parse_id));
+                    }
+                    Some(ResolveResult::NotFound | ResolveResult::Ambiguous(..))
+                        if found.unresolved.is_none() =>
+                    {
+                        found.unresolved = Some(name.to_owned());
+                    }
+                    _ => {}
+                }
             }
             Term::Fn {
                 functor,
@@ -26900,6 +27118,10 @@ impl<'a> Loader<'a> {
                 named_args,
             } => {
                 let name = self.parsed.symbols.local_name(*functor);
+                if !self.parsed.terms.is_minted(parse_id) && undeclared_lambda(name) {
+                    found.lambda = Some(self.parsed.terms.span(parse_id));
+                    return;
+                }
                 // Provenance + arity gate, as in `check_bare_arrow_typo`.
                 let minted_binder = binder_form_layout(name)
                     .filter(|_| self.parsed.terms.is_minted(parse_id))
@@ -26916,16 +27138,12 @@ impl<'a> Loader<'a> {
                             continue; // the pattern binds, it doesn't reference
                         }
                         let scope = if i >= scoped_from { &inner } else { bound };
-                        if let Some(w) = self.first_unresolvable_arrow_leaf(child, scope) {
-                            return Some(w);
-                        }
+                        self.find_arrow_witness(child, scope, found);
                     }
                     for &(_, child) in named_args {
-                        if let Some(w) = self.first_unresolvable_arrow_leaf(child, &inner) {
-                            return Some(w);
-                        }
+                        self.find_arrow_witness(child, &inner, found);
                     }
-                    return None;
+                    return;
                 }
                 // WI-20260825-5W3RJ — the constants, not the short spellings: the
                 // `is_minted` conjunct has already excluded anything a user wrote, so
@@ -26936,18 +27154,13 @@ impl<'a> Loader<'a> {
                     if skip_name_slot && i == 1 {
                         continue;
                     }
-                    if let Some(w) = self.first_unresolvable_arrow_leaf(child, bound) {
-                        return Some(w);
-                    }
+                    self.find_arrow_witness(child, bound, found);
                 }
                 for &(_, child) in named_args {
-                    if let Some(w) = self.first_unresolvable_arrow_leaf(child, bound) {
-                        return Some(w);
-                    }
+                    self.find_arrow_witness(child, bound, found);
                 }
-                None
             }
-            _ => None,
+            _ => {}
         }
     }
 
@@ -29526,6 +29739,13 @@ impl<'a> Loader<'a> {
         const_named(self.kb, &name, self.current_scope)
     }
 
+    /// Is this walk at a GOAL the term walk folds a `Bool` const in: a goal that is not a
+    /// clause head — a constraint's, or a goal slot the rule-body walk handed over. A head
+    /// names its relation, and a const there is refused (`Self::refuse_if_const_head`).
+    fn term_walk_at_goal(&self) -> bool {
+        self.const_fold == ConstFold::Goal && self.clause_head.is_none()
+    }
+
     /// The entity constructor a converter-minted dotted chain (`Colour.red`) names, when this
     /// walk is in a clause DATA slot: a constructor's qualified name is the reference its
     /// one-segment name is, so `fact holds(Colour.red)` holds `red`'s symbol, and a goal or a
@@ -29539,10 +29759,16 @@ impl<'a> Loader<'a> {
         ctor_named(self.kb, &name, self.current_scope)
     }
 
-    /// The term a clause holds for a resolved name `sym`: a const in a data slot its value, a
-    /// type alias there the type it stands for, anything else its reference. One reading for
-    /// the one-segment name and a constructor's qualified one.
+    /// The term a clause holds for a resolved name `sym`: a `Bool` const at a goal the
+    /// literal it holds, a const in a data slot its value, a type alias there the type it
+    /// stands for, anything else its reference. One reading for the one-segment name, the
+    /// written reference and a constructor's qualified name.
     fn resolved_name_term(&mut self, sym: Symbol, parse_id: TermId, span: Span) -> Term {
+        if self.term_walk_at_goal() {
+            if let Some(lit) = self.goal_const_value(sym) {
+                return Term::Const(lit);
+            }
+        }
         match self.data_slot_const_value(sym, parse_id) {
             Some(lit) => Term::Const(lit),
             None => match self.data_slot_alias_type(sym) {
@@ -29940,6 +30166,18 @@ impl<'a> Loader<'a> {
                 self.const_fold = node_fold;
                 if let Some(c) = self.data_slot_dotted_const(parse_id) {
                     if let Some(lit) = self.data_slot_const_value(c, parse_id) {
+                        let kb_id = self.kb.alloc(Term::Const(lit));
+                        self.term_map.insert(parse_id.raw(), kb_id);
+                        return kb_id;
+                    }
+                }
+                // And at a goal, a `Bool` const named dotted is the literal it holds.
+                if self.term_walk_at_goal() {
+                    let at_goal = self
+                        .dotted_name_rooted_at_no_binding(parse_id)
+                        .and_then(|name| const_named(self.kb, &name, self.current_scope))
+                        .and_then(|c| self.goal_const_value(c));
+                    if let Some(lit) = at_goal {
                         let kb_id = self.kb.alloc(Term::Const(lit));
                         self.term_map.insert(parse_id.raw(), kb_id);
                         return kb_id;
@@ -31099,13 +31337,7 @@ impl<'a> Loader<'a> {
                 let new_sym = self.remap_symbol_strict(sym, span);
                 // WI-20261001-KDMQS — a const in a clause data slot is its value, and a
                 // type alias the type it stands for.
-                match self.data_slot_const_value(new_sym, parse_id) {
-                    Some(lit) => Term::Const(lit),
-                    None => match self.data_slot_alias_type(new_sym) {
-                        Some(ty) => self.kb.get_term(ty).clone(),
-                        None => self.bare_name_term(new_sym, span),
-                    },
-                }
+                self.resolved_name_term(new_sym, parse_id, span)
             }
             Term::Bottom => Term::Bottom,
             Term::Ident(sym) => {
@@ -31440,9 +31672,21 @@ impl<'a> Loader<'a> {
                     // its compound expressions, and there a bare `->` is an arrow TYPE,
                     // not a typo — the rule side reads it with `check_bare_arrow_typo`,
                     // which scopes binders. See [`Self::lowering_rule_compound_expr`].
+                    // WI-20261015-C9802: a lambda written keyword and all, without its
+                    // parentheses (`1 + lambda () -> 2`), is refused as that instead.
                     Some(n) if pratt::is_arrow_functor(n) && !self.lowering_rule_compound_expr => {
-                        self.errors.push(LoadError::ArrowTermInExprPosition {
-                            span: self.parsed.terms.span(parse_id),
+                        let locals: HashSet<String> = self
+                            .local_names_stack
+                            .iter()
+                            .flat_map(|frame| frame.keys().cloned())
+                            .collect();
+                        let mut witness = ArrowWitness::default();
+                        self.find_arrow_witness(parse_id, &locals, &mut witness);
+                        self.errors.push(match witness.lambda {
+                            Some(span) => LoadError::LambdaInTermPosition { span },
+                            None => LoadError::ArrowTermInExprPosition {
+                                span: self.parsed.terms.span(parse_id),
+                            },
                         });
                         self.expr_body_bottom_recovery = true;
                         let kb_id = self.kb.alloc(Term::Bottom);
@@ -34201,13 +34445,44 @@ impl<'a> Loader<'a> {
         let saved_fold = self.const_fold;
         let saved_type_binding = self.in_type_binding;
         let saved_slot = self.binding_slot;
+        let saved_call_argument = self.in_call_argument;
         self.term_depth = saved + 1;
-        let occ = self.build_body_atom_occurrence_inner(parse_id);
+        let occ = match self.written_type_in_call_argument(parse_id) {
+            Some(type_value) => type_value,
+            None => self.build_body_atom_occurrence_inner(parse_id),
+        };
         self.term_depth = saved;
         self.const_fold = saved_fold;
         self.in_type_binding = saved_type_binding;
         self.binding_slot = saved_slot;
+        self.in_call_argument = saved_call_argument;
         occ
+    }
+
+    /// A type written in an argument of an operation's application in a rule body — a
+    /// dotted path that names a sort, a sort's bracket — built as the operation-body walk
+    /// builds it, the type value it denotes ([`Self::written_type_receiver_occurrence`]):
+    /// `which(Outer.Inner)` hands `which` the sort, as in an operation body. Outside a call a
+    /// type written in a data slot stays the term the clause matches. `None` for a node
+    /// that is no candidate, which the caller builds.
+    fn written_type_in_call_argument(&mut self, parse_id: TermId) -> Option<Rc<NodeOccurrence>> {
+        if !self.in_call_argument
+            || !(self.parsed.terms.is_type_application(parse_id)
+                || self.dotted_sort_name(parse_id).is_some())
+        {
+            return None;
+        }
+        let kb_term = self.convert_term(parse_id);
+        if let Some(type_value) = self.written_type_receiver_occurrence(parse_id, kb_term) {
+            return Some(type_value);
+        }
+        // No written type: built as the rule's own term. The `convert_term` above emitted the
+        // subtree's inline descriptions, and the walk must not emit them again
+        // ([`Self::descs_emitted_by_convert`]).
+        let saved_descs = std::mem::replace(&mut self.descs_emitted_by_convert, true);
+        let occ = self.build_body_atom_occurrence_inner(parse_id);
+        self.descs_emitted_by_convert = saved_descs;
+        Some(occ)
     }
 
     /// WI-20260903-FC2X4 — IS THIS PARSE NODE ONE OF THE FIVE COMPOUND EXPRESSION
@@ -34496,6 +34771,8 @@ impl<'a> Loader<'a> {
         };
         let mut pos_args = Vec::with_capacity(parse_pos.len() - 2);
         let mut named_args = Vec::with_capacity(parse_named.len());
+        // A method call's arguments are a call's.
+        let saved_call_argument = std::mem::replace(&mut self.in_call_argument, true);
         for (i, (label, value)) in entries.into_iter().enumerate() {
             let value = value.expect("checked by `lined_up`");
             match label {
@@ -34506,6 +34783,7 @@ impl<'a> Loader<'a> {
                 }
             }
         }
+        self.in_call_argument = saved_call_argument;
         self.descs_emitted_by_convert = saved_descs;
         Some(Expr::DotApply {
             receiver,
@@ -35225,16 +35503,36 @@ impl<'a> Loader<'a> {
     /// `Term::Ident` arms below. It did not, so `:- ns.flag` answered nothing where
     /// `:- flag` answered and `:- not(ns.flag)` SUCCEEDED — this ticket's headline.
 
-    /// The expression a rule body's walk reads a resolved name `sym` as, outside a goal: a
-    /// const in a data slot its value, a type its type value, a nullary operation its call,
-    /// anything else its reference. One reading for the one-segment name and a constructor's
-    /// qualified one.
+    /// The expression a rule body's walk reads a resolved name `sym` as: a `Bool` const at a
+    /// goal the literal it holds, a const in a data slot its value, a type its type value, a
+    /// nullary operation its call, anything else its reference. One reading for the
+    /// one-segment name and a constructor's qualified one.
     fn body_resolved_name_expr(&mut self, sym: Symbol, parse_id: TermId, span: SourceSpan) -> Expr {
+        if self.in_body_goal && !self.in_body_goal_wrapper {
+            if let Some(lit) = self.goal_const_value(sym) {
+                return Expr::Const(lit);
+            }
+        }
         match self.data_slot_const_value(sym, parse_id) {
             Some(lit) => Expr::Const(lit),
             None => self
                 .body_bare_type_value(sym, span)
                 .unwrap_or_else(|| self.nullary_op_call_or_ref(sym, parse_id)),
+        }
+    }
+
+    /// A `Bool` const named as a GOAL is the literal it holds, which a goal reads as a
+    /// search: `true` succeeds, `false` fails (§5.3). The value is the load-time one a data
+    /// slot takes (`kb::const_value`). Any other const is kept as named, and in a rule body
+    /// the typer refuses it (`check_goal_atom_reading`): a const of another type names no
+    /// truth, and a `Bool` one with no load-time value has none to fold.
+    fn goal_const_value(&mut self, sym: Symbol) -> Option<Literal> {
+        if !self.kb.has_kind(sym, SymbolKind::Const) {
+            return None;
+        }
+        match self.kb.const_slot_value(sym) {
+            Ok(lit @ Literal::Bool(_)) => Some(lit),
+            _ => None,
         }
     }
 
@@ -35482,10 +35780,16 @@ impl<'a> Loader<'a> {
                 // WI-20261001-KDMQS — a dotted chain naming a const in a DATA slot is its
                 // value: the twin of `convert_term_inner`'s arm, so a fact holding
                 // `Float.infinity` and a body goal spelling it build one term.
+                // Refused for its value, the chain is the const's name, as the one-segment
+                // spelling keeps it: read on as a projection, it added two errors that named
+                // no mistake of the program's ("a defect in the walk that built this
+                // occurrence").
                 if let Some(c) = self.data_slot_dotted_const(parse_id) {
-                    if let Some(lit) = self.data_slot_const_value(c, parse_id) {
-                        return NodeOccurrence::new_expr(Expr::Const(lit), span, None);
-                    }
+                    let expr = match self.data_slot_const_value(c, parse_id) {
+                        Some(lit) => Expr::Const(lit),
+                        None => Expr::Ref(c),
+                    };
+                    return NodeOccurrence::new_expr(expr, span, None);
                 }
                 // A constructor's qualified name is the reference its one-segment name is.
                 if let Some(ctor) = self.data_slot_dotted_ctor(parse_id) {
@@ -35564,7 +35868,10 @@ impl<'a> Loader<'a> {
                             if let Some(occ) = self.bare_entity_goal_occurrence(sym, parse_id) {
                                 return occ;
                             }
-                            self.nullary_op_call_or_ref(sym, parse_id)
+                            match self.goal_const_value(sym) {
+                                Some(lit) => Expr::Const(lit),
+                                None => self.nullary_op_call_or_ref(sym, parse_id),
+                            }
                         } else {
                             // An UNRESOLVED name has neither reading to take — no field
                             // schema, no declared arity — and mirrors the one-segment
@@ -35746,6 +36053,20 @@ impl<'a> Loader<'a> {
                     // conjunction WRAPPER, whose components are the goals; that is carried
                     // by the second flag, so a node is a wrapper because of WHERE IT SITS
                     // and never because of what it is named.
+                    // An operation's application in a value slot: its arguments are a
+                    // call's. A goal's are the rule's own term, since whether the goal is the
+                    // operation's call or a relation its clauses define is known only once
+                    // every clause is loaded; a comparison's (`=`, `<=>`) are the rule's own
+                    // data (068 §1), and a connective's are goals.
+                    if !at_goal
+                        && self.kb.has_kind(new_functor, SymbolKind::Operation)
+                        && !self.kb.has_kind(new_functor, SymbolKind::Entity)
+                        && !self.kb.is_equality_connective_functor(new_functor)
+                        && self.kb.goal_arg_slots(new_functor, pos_args.len()).is_empty()
+                        && !name_chain
+                    {
+                        self.in_call_argument = true;
+                    }
                     let slots = if at_goal && !is_wrapper {
                         self.kb.goal_arg_slots(new_functor, pos_args.len())
                     } else {
@@ -41061,6 +41382,21 @@ impl<'a> Loader<'a> {
         }
     }
 
+    /// WI-20260822-NDG34 — refuse a clause whose head names a `const`
+    /// ([`LoadError::ClauseHeadNamesConst`]), and return `true` so the caller stores no
+    /// clause. A scope maps the name to one symbol, and a const keeps one value under it.
+    fn refuse_if_const_head(&mut self, head: TermId, kind: &'static str, span: Span) -> bool {
+        let Some(functor) = self.kb.head_functor(head) else {
+            return false;
+        };
+        if !self.kb.has_kind(functor, SymbolKind::Const) {
+            return false;
+        }
+        let name = self.kb.qualified_name_of(functor).to_string();
+        self.errors.push(LoadError::ClauseHeadNamesConst { kind, name, span });
+        true
+    }
+
     fn load_fact(&mut self, f: &Fact, domain: Symbol) {
         let fact_kind = ClauseKind::Fact;
 
@@ -41154,7 +41490,9 @@ impl<'a> Loader<'a> {
         self.in_value_position = false;
         // WI-797: a mounted-extent functor is virtualized through its store, so a
         // resident source fact for it is refused (single owner).
-        if self.refuse_if_extent_owned(term, "fact", self.parsed.terms.span(f.term)) {
+        if self.refuse_if_extent_owned(term, "fact", self.parsed.terms.span(f.term))
+            || self.refuse_if_const_head(term, "fact", self.parsed.terms.span(f.term))
+        {
             self.current_owner = prev_owner;
             return;
         }
@@ -42149,7 +42487,9 @@ impl<'a> Loader<'a> {
                     positive_heads.push(head);
                     // WI-797: a mounted-extent functor must have no resident rule
                     // (single owner) — refuse any head owned by a mounted source.
-                    if self.refuse_if_extent_owned(head, "rule", self.parsed.terms.span(*tid)) {
+                    if self.refuse_if_extent_owned(head, "rule", self.parsed.terms.span(*tid))
+                        || self.refuse_if_const_head(head, "rule", self.parsed.terms.span(*tid))
+                    {
                         self.current_owner = prev_owner;
                         return;
                     }

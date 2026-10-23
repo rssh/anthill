@@ -1517,6 +1517,8 @@ mod wi1096_list_literal_lowering_test;
 mod wi1099_list_literal_twin_test;
 #[path = "include/wi_kdmqs_const_data_slot_test.rs"]
 mod wi_kdmqs_const_data_slot_test;
+#[path = "include/wi_ndg34_const_goal_test.rs"]
+mod wi_ndg34_const_goal_test;
 
 #[path = "include/wi1098_derive_eq_total_test.rs"]
 mod wi1098_derive_eq_total_test;
@@ -1934,6 +1936,12 @@ mod wi_p7vp4_rule_body_requirements_test;
 mod wi_0rrqp_clause_typed_through_constructor_test;
 #[path = "include/wi_wf14z_clause_typed_as_a_whole_test.rs"]
 mod wi_wf14z_clause_typed_as_a_whole_test;
+#[path = "include/wi_r1w5a_call_typed_as_an_operation_body_test.rs"]
+mod wi_r1w5a_call_typed_as_an_operation_body_test;
+#[path = "include/wi_r1w5a_effectful_call_refused_test.rs"]
+mod wi_r1w5a_effectful_call_refused_test;
+#[path = "include/wi_c9802_lambda_in_term_position_test.rs"]
+mod wi_c9802_lambda_in_term_position_test;
 #[path = "include/wi_0k8wd_selection_per_requirement_test.rs"]
 mod wi_0k8wd_selection_per_requirement_test;
 #[path = "include/wi_50zmn_two_requirements_of_one_sort_test.rs"]

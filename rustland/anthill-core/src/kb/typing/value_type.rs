@@ -240,6 +240,11 @@ pub(super) fn arg_is_tuple_literal(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>)
 /// on the strength of the old claim — harmless today, and not a thing to rely on.
 pub(super) fn seq_literal_kind(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> Option<SeqLiteral> {
     match &arg.kind {
+        // A `cons` / `nil` spine is the list literal it is lowered from (§4.6).
+        NodeKind::Expr {
+            expr: Expr::Constructor { name, .. } | Expr::Apply { functor: name, .. },
+            ..
+        } if is_list_spine_constructor(kb, *name) => Some(SeqLiteral::List),
         NodeKind::Expr {
             expr: Expr::Constructor { name, .. },
             ..

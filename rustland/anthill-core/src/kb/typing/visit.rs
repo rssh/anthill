@@ -585,7 +585,7 @@ pub(super) fn visit_type(
             let has_hof_arg = pos_args
                 .iter()
                 .chain(named_args.iter().map(|(_, a)| a))
-                .any(is_hof_shaped);
+                .any(|a| is_hof_shaped(kb, a));
             let has_call_arg = pos_args
                 .iter()
                 .chain(named_args.iter().map(|(_, a)| a))
@@ -677,7 +677,7 @@ pub(super) fn visit_type(
             if staged.is_empty() {
                 // THE ORDINARY PATH, unchanged: no argument hint depends on a sibling
                 // argument's type, so hint everything and visit everything.
-                let (pos_hints, named_hints) = apply_arg_hints(
+                let (mut pos_hints, mut named_hints) = apply_arg_hints(
                     kb,
                     functor,
                     op_params.as_ref(),
@@ -687,6 +687,23 @@ pub(super) fn visit_type(
                     env.receiver_aliases(),
                     site.as_ref(),
                 );
+                // A `cons` / `nil` spine a rule body builds by its name, as the
+                // constructor arm hints the one an operation body builds (§4.6).
+                if let Some(fields) = is_list_spine_constructor(kb, functor)
+                    .then(|| kb.entity_field_types(functor).map(|f| f.to_vec()))
+                    .flatten()
+                {
+                    for ((field, _), hint) in fields.iter().zip(pos_hints.iter_mut()) {
+                        if let Some(h) = spine_field_expected(kb, functor, *field, &expected) {
+                            *hint = Some(h);
+                        }
+                    }
+                    for ((label, _), hint) in named_args.iter().zip(named_hints.iter_mut()) {
+                        if let Some(h) = spine_field_expected(kb, functor, *label, &expected) {
+                            *hint = Some(h);
+                        }
+                    }
+                }
                 work.push(TypeWorkOp::Build(TypeBuildFrame::Apply {
                     occ: occ_clone,
                     fn_sym: functor,
@@ -930,6 +947,12 @@ pub(super) fn visit_type(
                         return Some(h.clone());
                     }
                     let field = field_types.as_ref().and_then(|fs| fs.get(i)).cloned();
+                    if let Some(h) = field
+                        .as_ref()
+                        .and_then(|(fs, _)| spine_field_expected(kb, name, *fs, &expected))
+                    {
+                        return Some(h);
+                    }
                     if self_is_tuple_lit {
                         let label = crate::intern::positional_label(i);
                         if let Some(h) = tuple_component_expected(kb, &expected, &label) {
@@ -984,6 +1007,9 @@ pub(super) fn visit_type(
             let named_hints: Vec<Option<Value>> = named_args
                 .iter()
                 .map(|(fname, arg)| {
+                    if let Some(h) = spine_field_expected(kb, name, *fname, &expected) {
+                        return Some(h);
+                    }
                     if self_is_tuple_lit {
                         let label = kb.local_name_of(*fname).to_string();
                         if let Some(h) = tuple_component_expected(kb, &expected, &label) {

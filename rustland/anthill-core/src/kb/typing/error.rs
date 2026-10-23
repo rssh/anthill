@@ -191,6 +191,20 @@ pub enum TypeError {
         span: Option<Span>,
         name: Symbol,
     },
+    /// A call in a rule body whose typed row holds `effect`, an effect other than `Error`, or
+    /// a function a rule body hands over whose row holds one: a rule body performs no effect
+    /// (kernel-language §5.3). `call` is the operation the call dispatched to, or the
+    /// relation or operation the function is handed to (`handed`); `None` for a `let` or a
+    /// `match`, whose body performs it.
+    RuleBodyEffect {
+        span: Option<Span>,
+        /// The rule's head functor; `None` only if the head carries none.
+        rule: Option<Symbol>,
+        call: Option<Symbol>,
+        handed: bool,
+        effect: Value,
+        site: &'static std::panic::Location<'static>,
+    },
     /// WI-565: the refinement of [`TypeError::UnknownApplyFunctor`] for the specific case
     /// where the unresolved bare functor IS the short name of a MEMBER operation
     /// of one or more sorts (`owning_sorts`). A member's bare name is in scope
@@ -878,6 +892,15 @@ pub enum TypeError {
         /// The constant as written, for the diagnostic — `42`, `"hello"`, `1.5`.
         literal: String,
     },
+    /// WI-20260822-NDG34: a `const` written as a rule-body GOAL that the loader did not
+    /// fold to `true` / `false` (`Loader::goal_const_value`) — its type is not `Bool`, or
+    /// its value is not known when the clause loads. The const sibling of
+    /// [`Self::ConstantInGoalPosition`].
+    ConstInGoalPosition {
+        span: Option<Span>,
+        name: Symbol,
+        problem: crate::kb::load::ConstGoalProblem,
+    },
     /// WI-20260902-8K4RB: the subject of a bodyless EQUATION
     /// ([`crate::intern::SymbolKind::EquationFunctor`]) written in a rule-body GOAL
     /// position — `rule reader(1) :- tauX` beside `rule tauX <=> 7 @[simp]`.
@@ -1069,6 +1092,32 @@ fn sort_applied_as_call(kb: &KnowledgeBase, name: Symbol) -> Option<String> {
              written with brackets, `{n}[…]`"
         )
     })
+}
+
+/// What an application of `name` that names no operation is, where its declaration says:
+/// a sort's ([`sort_applied_as_call`]) or a const's ([`const_applied_as_call`]).
+fn name_applied_as_call(kb: &KnowledgeBase, name: Symbol) -> Option<String> {
+    sort_applied_as_call(kb, name).or_else(|| const_applied_as_call(kb, name))
+}
+
+/// WI-20260822-NDG34 — `flag()` where `const flag: Bool` is declared. A const is a value,
+/// not an operation (§5.9), so the reference is `flag`. Surface-neutral, for the reason
+/// [`sort_applied_as_call`] is. Not said of a const of a function type, which is a value an
+/// application could be meant for.
+fn const_applied_as_call(kb: &KnowledgeBase, name: Symbol) -> Option<String> {
+    if !kb.has_kind(name, crate::intern::SymbolKind::Const) {
+        return None;
+    }
+    let ty = kb.const_type(name)?;
+    if type_is_callable(kb, ty) {
+        return None;
+    }
+    let n = kb.local_name_of(name);
+    Some(format!(
+        "unknown functor — `{n}` names a const of type `{}`, a value and not an operation, \
+         so nothing is applied to it: the reference is `{n}`",
+        type_display_name_value(kb, ty)
+    ))
 }
 
 /// `(declaring scope, name)` of an `internal` member, as both renderings of
@@ -1529,13 +1578,19 @@ impl TypeError {
             TypeError::IncompleteConstruction { ctor, missing, .. } => {
                 incomplete_construction_message(kb, *ctor, missing)
             }
-            TypeError::UnknownApplyFunctor { name, .. } => match sort_applied_as_call(kb, *name) {
+            TypeError::UnknownApplyFunctor { name, .. } => match name_applied_as_call(kb, *name) {
                 Some(advice) => format!("unknown apply functor: {}: {advice}", kb.local_name_of(*name)),
                 None => format!("unknown apply functor: {}", kb.local_name_of(*name)),
             },
             TypeError::UndefinedDataFunctor { name, .. } => {
                 crate::kb::load::undefined_rule_body_term_message(kb.qualified_name_of(*name))
             }
+            TypeError::RuleBodyEffect {
+                call,
+                handed,
+                effect,
+                ..
+            } => rule_body_effect_message(kb, *call, *handed, effect),
             TypeError::BareMemberCall {
                 member,
                 owning_sorts,
@@ -2138,6 +2193,9 @@ impl TypeError {
             TypeError::ConstantInGoalPosition { literal, .. } => {
                 crate::kb::load::constant_in_goal_position_message(literal)
             }
+            TypeError::ConstInGoalPosition { name, problem, .. } => {
+                crate::kb::load::const_in_goal_position_message(kb.qualified_name_of(*name), problem)
+            }
             TypeError::EquationSubjectInGoalPosition { functor, .. } => {
                 crate::kb::load::equation_subject_in_goal_position_message(
                     kb.qualified_name_of(*functor),
@@ -2298,6 +2356,7 @@ impl TypeError {
             | TypeError::IncompleteConstruction { span, .. }
             | TypeError::UnknownApplyFunctor { span, .. }
             | TypeError::UndefinedDataFunctor { span, .. }
+            | TypeError::RuleBodyEffect { span, .. }
             | TypeError::BareMemberCall { span, .. }
             | TypeError::UnreducedEquationFunctor { span, .. }
             | TypeError::DispatchNoMatch { span, .. }
@@ -2336,6 +2395,7 @@ impl TypeError {
             | TypeError::UnsatisfiableRequirement { span, .. }
             | TypeError::NonBoolOpInGoalPosition { span, .. }
             | TypeError::ConstantInGoalPosition { span, .. }
+            | TypeError::ConstInGoalPosition { span, .. }
             | TypeError::EquationSubjectInGoalPosition { span, .. }
             | TypeError::EqOverrideUnbacked { span, .. }
             | TypeError::DotDispatchNoMatch { span, .. }
@@ -2466,7 +2526,7 @@ impl TypeError {
                         crate::kb::load::no_declaration_census(),
                         crate::kb::load::undefined_name_repair(kb.local_name_of(*name)),
                     )
-                } else if let Some(advice) = sort_applied_as_call(kb, *name) {
+                } else if let Some(advice) = name_applied_as_call(kb, *name) {
                     advice
                 } else {
                     "unknown functor".to_string()
@@ -2478,6 +2538,29 @@ impl TypeError {
                 span: self
                     .span(kb)
                     .unwrap_or_else(|| crate::span::Span::new(0, 0)),
+            },
+            TypeError::RuleBodyEffect {
+                rule,
+                call,
+                handed,
+                effect,
+                site,
+                ..
+            } => LoadError::TypeMismatch {
+                origin: Some(TypeMismatchOrigin {
+                    error_kind: "RuleBodyEffect",
+                    context_kind: "rule",
+                    site: *site,
+                }),
+                entity_name: rule.map_or_else(|| "rule".to_string(), |r| kb.local_name_of(r).to_string()),
+                field_name: RuleField::Body.name().to_string(),
+                expected_type: if *handed {
+                    "a function that performs no effect".to_string()
+                } else {
+                    "a call that performs no effect".to_string()
+                },
+                actual_type: rule_body_effect_message(kb, *call, *handed, effect),
+                span: self.span(kb),
             },
             TypeError::BareMemberCall {
                 member,
@@ -2959,6 +3042,12 @@ impl TypeError {
                     span: self.span(kb).unwrap_or_default(),
                 }
             }
+            TypeError::ConstInGoalPosition { name, problem, .. } => LoadError::ConstInGoalPosition {
+                name: kb.qualified_name_of(*name).to_string(),
+                problem: problem.clone(),
+                // WI-1034's convention, as the literal sibling above: the goal's own text.
+                span: self.span(kb).unwrap_or_default(),
+            },
             TypeError::EquationSubjectInGoalPosition { functor, .. } => {
                 LoadError::EquationSubjectInGoalPosition {
                     functor: kb.qualified_name_of(*functor).to_string(),
@@ -3409,4 +3498,25 @@ fn missing_requires_place(kb: &KnowledgeBase, clause: &str, site: RequiresSite) 
 fn incomplete_construction_message(kb: &KnowledgeBase, ctor: Symbol, missing: &[Symbol]) -> String {
     let missing: Vec<String> = missing.iter().map(|f| kb.local_name_of(*f).to_string()).collect();
     crate::kb::load::incomplete_construction_message(kb.local_name_of(ctor), &missing)
+}
+
+/// [`TypeError::RuleBodyEffect`]'s words. The effect is named as an operation body's
+/// undeclared one is; the run-time decline of a call no clause wrote ends with the same clause,
+/// "and a rule body performs no effect".
+fn rule_body_effect_message(
+    kb: &KnowledgeBase,
+    call: Option<Symbol>,
+    handed: bool,
+    effect: &Value,
+) -> String {
+    let what = match (call, handed) {
+        (Some(to), true) => format!("a function handed to `{}`", kb.qualified_name_of(to)),
+        (None, true) => "a function handed over here".to_string(),
+        (Some(op), false) => format!("the call `{}`", kb.qualified_name_of(op)),
+        (None, false) => "this expression".to_string(),
+    };
+    format!(
+        "{what}, which performs `{}`, and a rule body performs no effect",
+        type_display_name_value(kb, effect),
+    )
 }

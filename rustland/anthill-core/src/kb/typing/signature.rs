@@ -4480,19 +4480,45 @@ pub(crate) fn declared_row_may_hold(kb: &KnowledgeBase, effects: &[Value], effec
         if kb.effect_member_is_parametric(e) {
             return true;
         }
-        let label = match e.head(kb).functor_sym().map(|f| kb.qualified_name_of(f)) {
-            Some("anthill.prelude.EffectExpression.absent") => return false,
-            Some(
-                "anthill.prelude.EffectExpression.present"
-                | "anthill.prelude.EffectExpression.guarded",
-            ) => match view_child_value(kb, e, "label") {
-                Some(label) => label,
-                None => return true,
-            },
-            _ => e.clone(),
-        };
-        effect_label_kind(kb, &label).is_none_or(|kind| same_sort_canonical(kb, kind, effect))
+        match declared_member_label(kb, e) {
+            DeclaredLabel::Denied => false,
+            DeclaredLabel::Unread => true,
+            DeclaredLabel::Label(label) => effect_label_kind(kb, &label)
+                .is_none_or(|kind| same_sort_canonical(kb, kind, effect)),
+        }
     })
+}
+
+/// What a declared row member holds, read past `+X` and `X :- g`.
+enum DeclaredLabel {
+    /// A denial, `-X`: it holds nothing.
+    Denied,
+    /// A `present` or `guarded` member whose label this cannot read.
+    Unread,
+    Label(Value),
+}
+
+fn declared_member_label(kb: &KnowledgeBase, e: &Value) -> DeclaredLabel {
+    match e.head(kb).functor_sym().map(|f| kb.qualified_name_of(f)) {
+        Some("anthill.prelude.EffectExpression.absent") => DeclaredLabel::Denied,
+        Some(
+            "anthill.prelude.EffectExpression.present" | "anthill.prelude.EffectExpression.guarded",
+        ) => match view_child_value(kb, e, "label") {
+            Some(label) => DeclaredLabel::Label(label),
+            None => DeclaredLabel::Unread,
+        },
+        _ => DeclaredLabel::Label(e.clone()),
+    }
+}
+
+/// The effect kind a declared row member names, read past `+X` and `X :- g` as
+/// [`declared_row_may_hold`] reads it; `None` for a denial, a parameter, or a member whose
+/// kind this cannot name.
+pub(crate) fn declared_member_kind(kb: &KnowledgeBase, e: &Value) -> Option<Symbol> {
+    match declared_member_label(kb, e) {
+        DeclaredLabel::Label(label) => effect_label_kind(kb, &label),
+        DeclaredLabel::Denied | DeclaredLabel::Unread => None,
+    }
 }
 
 /// WI-20260901-47VWX — WHAT A RUN OF [`check_written_row_bindings`] IS FOR.

@@ -256,6 +256,13 @@ pub(super) fn extract_callable_type<V: TermView>(kb: &mut KnowledgeBase, ty: &V)
     extract_type(kb, ty)
 }
 
+/// Is `ty` a function type — an arrow or a `Function[…]` — read without interning, for a
+/// diagnostic that has the KB shared. The keys [`extract_callable_type`] interns exist once
+/// any function type has been written, which a loaded program's types have been.
+pub(super) fn type_is_callable(kb: &KnowledgeBase, ty: &Value) -> bool {
+    arrow_parts_extracted(kb, &extract_type(kb, ty)).is_some()
+}
+
 /// The decode half of [`arrow_parts`], over an ALREADY-CLASSIFIED callee
 /// (WI-798). Split out so a caller that has classified the callee once — see
 /// [`extract_callable_type`] — can read its parts without paying for a second

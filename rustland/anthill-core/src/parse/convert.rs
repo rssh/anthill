@@ -1641,8 +1641,10 @@ impl<'a> Converter<'a> {
             }
         }
         work.push(WorkOp::Build(BuildFrame::Infix { node, slots }));
+        // An operand after an operator may be a `lambda_expr` (kernel-language §4.8),
+        // which is an expression body.
         for child in operand_nodes.iter().rev() {
-            work.push(WorkOp::Visit(WorkKind::Term, *child));
+            work.push(WorkOp::Visit(fn_arg_work_kind(child.kind()), *child));
         }
     }
 
@@ -6055,9 +6057,10 @@ fn is_term_kind(kind: &str) -> bool {
             // positional argument, a named-argument value, a list element or a
             // tuple component: `map(xs, lambda x -> f(x))`, `f(if c then a else b)`.
             // The grammar admits these five only in `_expr_body` and in the
-            // DELIMITED value positions (WI-20260829-YBBC3) — never as an infix
-            // operand, a dot receiver or inside a pattern, so the `is_term_kind`
-            // call sites that serve those never receive one. The list is
+            // DELIMITED value positions (WI-20260829-YBBC3), and a `lambda_expr` as
+            // an operand after an infix operator (WI-20261023-2F9HY) — never as a dot
+            // receiver or inside a pattern, so the `is_term_kind` call sites that
+            // serve those never receive one. The list is
             // [`is_expr_body_kind`] so the routing in `fn_arg_work_kind` and the
             // admission here cannot drift apart.
             | "lambda_expr"

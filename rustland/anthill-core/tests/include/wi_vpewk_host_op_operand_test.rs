@@ -348,8 +348,7 @@ fn a_host_op_runs_at_an_operand_behind_an_error_row_and_not_behind_a_clock_row()
          rule pure(1) :- MyS.trimIt(\"  a  \") = \"a\"\n  \
          rule fx(1)   :- MyS.trimFx(\"  a  \") = \"a\"\n  \
          rule fxNo(1) :- MyS.trimFx(\"  b  \") = \"a\"\n  \
-         rule fxNot(1) :- not(MyS.trimFx(\"  b  \") = \"a\")\n  \
-         rule clk(1)  :- MyS.trimClk(\"  a  \") = \"a\"\nend\n",
+         rule fxNot(1) :- not(MyS.trimFx(\"  b  \") = \"a\")\nend\n",
     );
     assert_eq!(
         answers(&mut kb, "vpewkf.pure(1)"),
@@ -368,8 +367,11 @@ fn a_host_op_runs_at_an_operand_behind_an_error_row_and_not_behind_a_clock_row()
         "…its answer decides the comparison: a wrong one is DECIDED false"
     );
     assert_eq!(answers(&mut kb, "vpewkf.fxNot(1)"), 1, "…and `not` over it holds");
+    // Written in a rule body the call is refused at load (WI-20261013-R1W5A); a query's
+    // is the goal no typer sees.
+    let clk = "vpewkf.MyS.trimClk(\"  a  \") = \"a\"";
     assert_eq!(
-        (answers(&mut kb, "vpewkf.clk(1)"), total(&mut kb, "vpewkf.clk(1)")),
+        (answers(&mut kb, clk), total(&mut kb, clk)),
         (0, 1),
         "behind `effects {{Clock}}` it does NOT run: one conditional answer, the call \
          left unreduced"
@@ -457,8 +459,7 @@ fn the_arity_plus_one_view_runs_a_host_op() {
          rule len4(1)   :- String.length(\"abc\", 4)\n  \
          rule nlen(1)   :- not(String.length(\"abc\", 3))\n  \
          rule pure(?r)  :- MyS.trimIt(\"  a  \", ?r)\n  \
-         rule fx(?r)    :- MyS.trimFx(\"  a  \", ?r)\n  \
-         rule clk(?r)   :- MyS.trimClk(\"  a  \", ?r)\nend\n",
+         rule fx(?r)    :- MyS.trimFx(\"  a  \", ?r)\nend\n",
     );
     use anthill_core::eval::Value;
     use crate::common::definite_unary;
@@ -500,9 +501,12 @@ fn the_arity_plus_one_view_runs_a_host_op() {
         matches!(fx.as_slice(), [Value::Str(s)] if s == "a"),
         "…and behind `effects {{Error}}` it binds too (WI-20260827-NFXPZ); got {fx:?}"
     );
+    // Written in a rule body the goal is refused at load (WI-20261013-R1W5A); a query's is
+    // the goal no typer sees.
+    let clk = "vpewkr.MyS.trimClk(\"  a  \", ?r)";
     assert_eq!(
-        definite_unary(&mut kb, "vpewkr.clk").len(),
-        0,
-        "…while behind `effects {{Clock}}` it does not run at arity+1"
+        (answers(&mut kb, clk), total(&mut kb, clk)),
+        (0, 1),
+        "…while behind `effects {{Clock}}` it does not run at arity+1: one undecided answer"
     );
 }

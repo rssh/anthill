@@ -1073,3 +1073,64 @@ end
               (identifier)))
           (name
             (identifier)))))))
+
+=====================================
+A lambda after an infix operator is the lambda; before one it is a name (WI-20261023-2F9HY)
+=====================================
+
+namespace t
+  rule r(?f) :- ?f <=> lambda x -> g(x), h(?f)
+  rule s(?f) :- lambda () -> g(1) <=> ?f
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    (name
+      (identifier))
+    (rule_declaration
+      (rule_heads
+        (fn_term
+          (name
+            (identifier))
+          (variable_term
+            (variable))))
+      (rule_body
+        (infix_term
+          (variable_term
+            (variable))
+          (operator_symbol)
+          (lambda_expr
+            (pattern_var
+              (identifier))
+            (fn_term
+              (name
+                (identifier))
+              (name
+                (identifier)))))
+        (fn_term
+          (name
+            (identifier))
+          (variable_term
+            (variable)))))
+    (rule_declaration
+      (rule_heads
+        (fn_term
+          (name
+            (identifier))
+          (variable_term
+            (variable))))
+      (rule_body
+        (infix_term
+          (fn_term
+            (name
+              (identifier)))
+          (operator_symbol)
+          (fn_term
+            (name
+              (identifier))
+            (integer_literal))
+          (operator_symbol)
+          (variable_term
+            (variable)))))))

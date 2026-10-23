@@ -218,6 +218,10 @@ end
 ///
 /// The effect is `Clock`: a bodied operation's `Error` row is admitted, since the bridge
 /// catches a raise as it does in a value slot (`error_row_relational_view_test`).
+///
+/// WRITTEN IN A RULE BODY THE EFFECTFUL GOAL IS REFUSED AT LOAD (WI-20261013-R1W5A), so the
+/// view is asked of the goal at run time, a query's: it is undecided, the call not run, where
+/// it found no clause and failed.
 #[test]
 fn a_concretely_effectful_bool_op_is_still_refused() {
     let src = r#"
@@ -230,20 +234,36 @@ namespace dqd5w_eff
 
   fact mark(1)
   rule pure_fires(?m) :- mark(?m), pure_flag(1)
-  rule loud_fires(?m) :- mark(?m), loud_flag(1)
 end
 "#;
     let mut kb = load_kb_with(src);
     assert_eq!(
         definite_unary(&mut kb, "dqd5w_eff.pure_fires").len(),
         1,
-        "the effect-free twin must decide — otherwise the row below measures an          un-drivable fixture rather than the effect gate"
+        "the effect-free twin must decide — otherwise the row below measures an \
+         un-drivable fixture rather than the effect gate"
     );
-    assert_eq!(
-        definite_unary(&mut kb, "dqd5w_eff.loud_fires").len(),
-        0,
+    let goal = crate::common::query_pattern_term(&mut kb, "dqd5w_eff.loud_flag(1)");
+    let (solutions, stats) = kb.resolve_with_stats(
+        &[goal],
+        &anthill_core::kb::resolve::ResolveConfig::default(),
+    );
+    assert!(
+        solutions.iter().all(|s| !s.residual.is_empty()) && stats.truncated,
         "a CONCRETE effect row (`Clock`) must keep the operation out of the relational \
-         view — the DQD5W widening is for row PARAMETERS only"
+         view — the DQD5W widening is for row PARAMETERS only: no definite answer, the \
+         search incomplete; got {} answers, truncated {}",
+        solutions.len(),
+        stats.truncated
+    );
+    let errs = crate::common::load_errors_of(&src.replace(
+        "\nend\n",
+        "\n  rule loud_fires(?m) :- mark(?m), loud_flag(1)\nend\n",
+    ));
+    crate::common::assert_refused_naming(
+        &errs,
+        &["loud_flag", "performs `Clock`, and a rule body performs no effect"],
+        "the goal written in a rule body",
     );
 }
 
