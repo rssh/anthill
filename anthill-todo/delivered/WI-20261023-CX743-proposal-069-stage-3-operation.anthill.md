@@ -3,9 +3,9 @@
 - id: WI-20261023-CX743-proposal-069-stage-3-operation
 - created: 2026-10-23T05:45:56Z
 
-- status: Claimed
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-10-24T17:43:14Z
+- status_at: 2026-10-24T18:53:05Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -44,4 +44,8 @@ RUNS: rustland/scripts/test.sh 10754 passed, 0 failed; scripts/families.sh holds
 ### 2026-10-24T18:48:36Z — feedback — claude
 
 DECIDED (user, 2026-10-24): a default for a parameter the signature reads — an effect over it (`Modify[c]`), a projection off it (`-> b.V`), a value in a type — stays refused at the declaration. Letting it work would make the call type the default before its own inference, the order 069 §2 reverses; the complexity is not worth it.
+
+### 2026-10-24T18:53:04Z — feedback — claude
+
+Delivered 2026-10-24 (84cd13af, merged with origin/main in a389ed71; the rule-body bracket's follow-up WI-20261024-TC54R filed in 203103e9). DECIDED WITH THE USER (2026-10-24): a call of a provider's member takes the spec's defaults; the Scala generator writes a literal default as the method's own and refuses another, the Rust generator emits none; a default for a parameter the signature reads stays refused; a default that takes itself is refused; a call's bracket in a rule body should work and waits on RYDNV (TC54R); the kernel-language text — §5.4's Param production and three paragraphs (a call takes the default of a parameter it leaves out; a default is set after all of the call's inference, and where inference and a default could both decide, inference wins; the spec owns its defaults and what is refused), §5.3's `result:` column, the exact-fill paragraph's `or its default` and `result:`. RUNS on the merged tree: rustland/scripts/test.sh 10797 passed, 0 failed; scripts/families.sh holds; scaland sbt testFull 761 + 47 + 1 passed, 0 failed; npx tree-sitter test 240/240 (the merge left the grammar untouched).
 
