@@ -1726,6 +1726,15 @@ pub struct KnowledgeBase {
     /// every written application that leaves the parameter out reads it.
     pub(crate) sort_param_defaults: HashMap<Symbol, TermId>,
 
+    /// Proposal 069 §1.3 (stage 2) — each OPERATION type parameter's declared default
+    /// (`operation decode[T = String](…)`), keyed by the parameter's variable, the one the
+    /// operation's `OperationInfo.type_params` lists, as its declaration lowered it in the
+    /// operation's scope: an earlier parameter it names is that parameter's variable. A call
+    /// whose inference leaves the parameter unbound binds it to this term in the call's own
+    /// substitution, where the earlier parameter is already bound (`typing::
+    /// install_type_param_defaults`). Recorded by `Loader::record_operation_type_param_defaults`.
+    pub(crate) op_type_param_defaults: HashMap<VarId, TermId>,
+
     /// WI-20260924-SNJPR — each TYPE ALIAS's target HEAD, as a SYMBOL (`sort WisStore =
     /// Store[State = WIS]` ↦ `Store`), known from the SCAN on: the scan resolves each
     /// alias's written target in the scope that declares it once imports are wired
@@ -2956,6 +2965,7 @@ impl KnowledgeBase {
             alias_targets: HashMap::new(),
             alias_types: HashMap::new(),
             sort_param_defaults: HashMap::new(),
+            op_type_param_defaults: HashMap::new(),
             alias_heads: HashMap::new(),
             aliases_applying: HashSet::new(),
             scan_alias_decls: HashMap::new(),

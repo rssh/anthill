@@ -74,20 +74,21 @@ class DiagnosticLocationTest extends munit.FunSuite:
   }
 
   test("a refusal about a well-formed declaration points at the offending token") {
-    // WI-850: the type-param default. Line 3, and the column is the `T` — not the
-    // `[`, not the whitespace before it.
+    // The braced-block visibility refusal (the WI-850 type-param default was this row's
+    // refusal until WI-20261023-GBH5F gave the default a meaning). Line 3, and the column
+    // is the modifier — not the whitespace before it.
     val src =
       """namespace demo
         |  sort S
-        |    operation g[T = S](x: S) -> S
+        |    internal operation { g(x: S) -> S }
         |  end
         |end""".stripMargin
     val errs = parseErrors(src)
-    val refusal = errs.find(_.message.contains("carries a default"))
-      .getOrElse(fail(s"expected the WI-850 refusal, got: ${errs.map(_.render).mkString("; ")}"))
-    assertEquals(at(refusal.span), (3, 17))
-    assertEquals(src.split("\n")(2).charAt(16), 'T')  // the column really is the `T`
-    assert(refusal.render.startsWith("demo.anthill:3:17: "), refusal.render)
+    val refusal = errs.find(_.message.contains("cannot precede a braced"))
+      .getOrElse(fail(s"expected the visibility refusal, got: ${errs.map(_.render).mkString("; ")}"))
+    assertEquals(at(refusal.span), (3, 5))
+    assertEquals(src.split("\n")(2).charAt(4), 'i')  // the column really is the modifier
+    assert(refusal.render.startsWith("demo.anthill:3:5: "), refusal.render)
   }
 
   test("WI-952: an unterminated block comment is located at its OPENER") {
@@ -540,9 +541,9 @@ class DiagnosticLocationTest extends munit.FunSuite:
     val parseAt = parseErrors(
       """namespace demo
         |  sort S
-        |    operation g[T = S](x: S) -> S
+        |    internal operation { g(x: S) -> S }
         |  end
-        |end""".stripMargin).find(_.message.contains("carries a default")).get
+        |end""".stripMargin).find(_.message.contains("cannot precede a braced")).get
     val loadAt = loadErrors(
       """namespace v
         |  sort Rel

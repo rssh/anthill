@@ -1,0 +1,5 @@
+namespace wi852
+
+  entity mk(x: Int64, x: Int64)
+
+end

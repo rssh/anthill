@@ -509,52 +509,52 @@ class ParseTest extends munit.FunSuite:
     assertEquals(pf.symbols.name(op.typeParams.head.name), "E")
   }
 
-  // WI-850: a type-param DEFAULT is REFUSED, not stored. It still PARSES — that is
-  // what lets the message name the operation and the parameter instead of failing as
-  // an unexpected `=`. (This test used to assert the default was captured; nothing
-  // ever read it, and the loader minted a fresh var from the NAME alone.)
-  test("WI-850: an operation type-param default `[B = Int]` is refused, naming both") {
-    val src =
+  // Proposal 069 §1.3 (stage 2, WI-20261023-GBH5F): an operation type-param DEFAULT is
+  // carried as its PARSED type. WI-850 refused it here until rustland's stage 2 gave it a
+  // reader; scaland's generator emits a method's type parameter without it.
+  private def defaultsOf(src: String): (ParsedFile, IndexedSeq[Option[TypeExpr]]) =
+    val pf = Parser.parse(src, "<op>").toOption.getOrElse(fail(s"parse failed: $src"))
+    val op = pf.items.collect { case Item.SortWithBodyItem(s) => s }
+      .flatMap(_.items.collect { case Item.OperationItem(o) => o })
+      .headOption.getOrElse(fail("no operation"))
+    (pf, op.typeParams.map(_.default))
+
+  test("WI-GBH5F: an operation type-param default `[B = Int]` is carried as its type") {
+    val (pf, defaults) = defaultsOf(
       """sort Demo
         |  sort Int = ?
         |  sort Term = ?
         |  operation g[A, B = Int](t: Term) -> Int
-        |end""".stripMargin
-    Parser.parse(src, "<op>") match
-      case Right(_) => fail("expected a refusal for the type-param default")
-      case Left(errs) =>
-        assertEquals(errs.length, 1, s"one error, got: ${errs.map(_.message)}")
-        val m = errs.head.message
-        assert(m.contains("operation `g`"), m)
-        assert(m.contains("type parameter `B`"), m)
-        assert(m.contains("`B = Int`"), m)
+        |end""".stripMargin)
+    assertEquals(defaults.head, None)
+    defaults(1) match
+      case Some(TypeExpr.Simple(n)) => assertEquals(pf.symbols.name(n.segments.last), "Int")
+      case other => fail(s"`B`'s default is the type `Int`; got $other")
   }
 
-  /** WI-20261020-80VNX — the refusal quotes a WRITTEN BRACKET back with the bracket: the
-    * guard's `Foo[]` is the type, and `Foo()` would be another term. BACKED OUT
-    * (`renderTerm`'s bracket arm): the message reads `p(Foo())`. */
-  test("WI-850: the refusal renders a written bracket as one") {
-    val src =
+  test("WI-GBH5F: a row parameter's default is a written row, and `[T = ?]` is the bare `T`") {
+    val (_, defaults) = defaultsOf(
       """sort Demo
-        |  sort Term = ?
-        |  operation g[B = (Term) -> Term @ {E :- p(Foo[], Bar[X = 1])}](t: Term) -> Term
-        |end""".stripMargin
-    Parser.parse(src, "<op>") match
-      case Right(_) => fail("expected a refusal for the type-param default")
-      case Left(errs) =>
-        val m = errs.map(_.message).mkString("; ")
-        assert(m.contains("p(Foo[], Bar[X = 1])"), m)
+        |  sort Int = ?
+        |  operation tick[E = {}, T = ?]() -> Int effects E
+        |end""".stripMargin)
+    defaults.head match
+      case Some(TypeExpr.EffectRow(es)) => assert(es.isEmpty, es)
+      case other => fail(s"`E`'s default is the empty row; got $other")
+    assertEquals(defaults(1), None, "`T = ?` declares no default")
   }
 
-  test("WI-850: a bare type-param list carries no refusal") {
+  test("WI-850: a bare type-param list carries no default") {
     val (pf, op) = parseDemoOp("  operation g[A, B](t: Term) -> Int")
     assertEquals(op.typeParams.map(tp => pf.symbols.name(tp.name)), IndexedSeq("A", "B"))
+    assert(op.typeParams.forall(_.default.isEmpty), op.typeParams)
   }
 
   // ── WI-950: a refusal belongs to the production that recorded it ─────────
-  //   Three productions refuse from inside a fastparse `.map` — the WI-639
-  //   projection-label checks, the braced-`operation`-block visibility refusal,
-  //   and the WI-850 type-param default. A `.map` runs when ITS production
+  //   Productions refuse from inside a fastparse `.map` — the WI-639
+  //   projection-label checks and the braced-`operation`-block visibility refusal
+  //   (the WI-850 type-param default was a third until WI-20261023-GBH5F gave the
+  //   default a meaning). A `.map` runs when ITS production
   //   succeeds, which is not the same as the enclosing parse accepting that
   //   text, so a shared error buffer kept the refusal across the backtrack.
   //   WHAT EACH TEST HOLDS DOWN — the three `assertOnlyParseFailure` tests and
@@ -577,23 +577,6 @@ class ParseTest extends munit.FunSuite:
         assert(errs.head.message.startsWith("parse error: "),
           s"$label: expected the parse failure, got: ${errs.head.message}")
 
-  test("WI-950: a discarded type-param-default refusal does not survive the parse") {
-    // The entry parses (recording the WI-850 refusal), then the closing `}` fails
-    // under the `~/` cut and the whole declaration is discarded with it.
-    assertOnlyParseFailure("braced block",
-      """sort Demo
-        |  sort A = ?
-        |  sort B = ?
-        |  operation { g[T = Int](x: A) -> B  <garbage> }
-        |end""".stripMargin)
-    assertOnlyParseFailure("single operation",
-      """sort Demo
-        |  sort A = ?
-        |  sort B = ?
-        |  operation g[T = Int](x: A) -> B <garbage>
-        |end""".stripMargin)
-  }
-
   test("WI-950: a discarded projection refusal does not survive the parse") {
     // The projection parses inside the literal (recording the duplicate-key
     // refusal); the unterminated literal then discards the term it was built for.
@@ -612,12 +595,6 @@ class ParseTest extends munit.FunSuite:
 
   test("WI-950: a refusal the parse DID accept still surfaces") {
     for (label, src) <- Seq(
-      "type-param default" ->
-        """sort Demo
-          |  sort A = ?
-          |  sort B = ?
-          |  operation g[T = Int](x: A) -> B
-          |end""".stripMargin,
       "projection" -> "fact p({?y.(a, a)})",
       "block visibility" ->
         """sort Demo
@@ -635,91 +612,58 @@ class ParseTest extends munit.FunSuite:
   }
 
   test("WI-950: a refusal about an ACCEPTED declaration survives a later syntax error") {
-    // `sourceFile` deliberately does not scope: the operation below parses, so its
-    // refusal is live even though the file as a whole does not. Scoping the top
-    // production (the shape the first cut of WI-950 shipped) reports ONLY the
-    // syntax error here, and the author learns about the default one run later.
+    // `sourceFile` deliberately does not scope: the block below parses, so its refusal
+    // is live even though the file as a whole does not. Scoping the top production (the
+    // shape the first cut of WI-950 shipped) reports ONLY the syntax error here, and the
+    // author learns about the visibility one run later. (This row used the WI-850
+    // type-param default until WI-20261023-GBH5F gave the default a meaning.)
     val src =
       """sort Demo
         |  sort A = ?
-        |  sort B = ?
-        |  operation g[T = A](x: A) -> B
+        |  internal operation { g(x: A) -> A }
         |end
         |fact p(""".stripMargin
     Parser.parse(src, "<wi950>") match
       case Right(_) => fail("expected the parse to fail")
       case Left(errs) =>
         val msgs = errs.map(_.message)
-        assert(msgs.exists(_.contains("type parameter `T` carries a default")),
+        assert(msgs.exists(_.contains("cannot precede a braced `operation { … }` block")),
           s"the accepted declaration's refusal must survive; got: ${msgs.mkString("; ")}")
         assert(msgs.exists(_.startsWith("parse error: ")),
           s"the syntax error must be reported too; got: ${msgs.mkString("; ")}")
   }
 
-  // WI-950: the refusal quotes the default back to the author, and it renders the
-  // parsed `TypeExpr` to do it. A `.!` source capture spans whatever trivia was
-  // written inside the type, and normalising THAT needs the whole token model — not
-  // just the comment forms. `renderTypeExpr` has no lexer to keep in sync.
-
-  private def assertQuotedDefault(src: String, expected: String): Unit =
-    Parser.parse(src, "<wi950>") match
-      case Right(_) => fail("expected a refusal for the type-param default")
-      case Left(errs) =>
-        assertEquals(errs.length, 1, errs.map(_.message).mkString("; "))
-        val m = errs.head.message
-        assert(m.contains(s"`T = $expected`"), s"expected `T = $expected`; got: $m")
-        assert(!m.contains("\n"), m)
-
-  test("WI-950: the quoted type-param default drops interior comments and newlines") {
-    assertQuotedDefault(
+  // WI-950 measured a refusal quoting the type-param default from a source capture; the
+  // default is now the PARSED tree the IR carries (WI-20261023-GBH5F), so trivia never
+  // reaches it, and an identifier that re-lexing would truncate is one token.
+  test("WI-GBH5F: a default's interior comment and line break are trivia, not in its tree") {
+    val (pf, defaults) = defaultsOf(
       """sort Demo
         |  sort A = ?
         |  sort B = ?
         |  sort List = ?
+        |  sort Int = ?
         |  operation g[T = List[ {- note -} Int
         |        ]](x: A) -> B
-        |end""".stripMargin,
-      "List[Int]")
+        |end""".stripMargin)
+    defaults.head match
+      case Some(TypeExpr.Parameterized(n, Seq(SortBinding(None, TypeExpr.Simple(arg))))) =>
+        assertEquals(pf.symbols.name(n.segments.last), "List")
+        assertEquals(pf.symbols.name(arg.segments.last), "Int")
+      case other => fail(s"`List[Int]`; got $other")
   }
 
-  test("WI-950: a `-`-bearing identifier in the quoted default is not truncated") {
-    // An anthill identifier may contain `-` (`Tokens.identToken`), so `my--type` is
-    // ONE token whose `--` is not a line comment. Anything that re-lexes a source
-    // capture to strip trivia truncates this to `my` and then RECOMMENDS the
-    // truncation — quoting a type the author never wrote.
-    assertQuotedDefault(
+  test("WI-GBH5F: a `-`-bearing identifier in a default is one token") {
+    val (pf, defaults) = defaultsOf(
       """sort Demo
         |  sort A = ?
         |  sort B = ?
         |  sort my--type = ?
         |  operation g[T = my--type](x: A) -> B
-        |end""".stripMargin,
-      "my--type")
-  }
-
-  test("WI-950: a string literal in the quoted default keeps its contents and quotes") {
-    // `"a -- b"` is a string, not a line comment; the literal is re-encoded from the
-    // parsed `StringLit`, so the quoted default is source the author could paste back.
-    assertQuotedDefault(
-      """sort Demo
-        |  sort A = ?
-        |  sort B = ?
-        |  sort Tagged = ?
-        |  operation g[T = Tagged["a -- b"]](x: A) -> B
-        |end""".stripMargin,
-      """Tagged["a -- b"]""")
-  }
-
-  test("WI-950: a value-in-type and a named binding render in the quoted default") {
-    assertQuotedDefault(
-      """sort Demo
-        |  sort A = ?
-        |  sort B = ?
-        |  sort Vector = ?
-        |  sort Int64 = ?
-        |  operation g[T = Vector[E = Int64, 3]](x: A) -> B
-        |end""".stripMargin,
-      "Vector[E = Int64, 3]")
+        |end""".stripMargin)
+    defaults.head match
+      case Some(TypeExpr.Simple(n)) => assertEquals(pf.symbols.name(n.segments.last), "my--type")
+      case other => fail(s"`my--type`; got $other")
   }
 
   test("WI-269: no type-param list ⇒ empty typeParams") {

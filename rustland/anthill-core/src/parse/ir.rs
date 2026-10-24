@@ -779,21 +779,19 @@ pub struct Operation {
     pub span: Span,
 }
 
-/// One declared operation type parameter — a NAME, and nothing else.
-///
-/// WI-850: the surface `[T = Int64]` DEFAULT form used to ride here in an
-/// `Option<TypeExpr>` that no reader ever consulted — the loader mints one fresh var
-/// per parameter from `name` alone, so a defaulted declaration loaded exactly as the
-/// bare one and the default was dropped in silence. The verdict is REFUSAL, taken at
-/// the converter (`convert_operation_type_params`, which carries the reasons): the
-/// kernel spec's production is `TypeParam ::= Name` (§5.4), and proposal 042 OQ3 left
-/// the semantics unadopted for want of a driver. The field is gone rather than kept
-/// unread, so nothing here reads as though a default were honoured; honouring one
-/// (042 OQ3's option (a)) reinstates it beside the minted var and deletes the refusal.
+/// One declared operation type parameter: its NAME, and the DEFAULT its declaration may
+/// give it (`[T = Int64]`, proposal 069 §1.3).
 #[derive(Clone, Debug, PartialEq)]
 pub struct TypeParam {
     pub name: Symbol,
     pub span: Span,
+    /// Proposal 069 §1.3 (stage 2, WI-20261023-GBH5F) — the type a call takes for this
+    /// parameter where its inference leaves it unbound. Read by the loader, which resolves
+    /// it in the operation's scope (`OperationTypeParamDefault`), and by the typer, which
+    /// installs it where WI-270's unconstrained-parameter refusal used to be raised. Until
+    /// this stage the form was refused at the converter (WI-850): an earlier `Option` here
+    /// had no reader, and a defaulted declaration loaded exactly as the bare one.
+    pub default: Option<TypeExpr>,
     /// WI-840 (proposal 058 §4.7): `Some(k)` when this parameter was declared as a
     /// NAMED requirement slot in the operation's `requires` clause list
     /// (`requires plus: Monoid[T]`) rather than in its `[…]` bracket; `k` is the

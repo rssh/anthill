@@ -1099,6 +1099,7 @@ impl KnowledgeBase {
             alias_targets: plain(&self.alias_targets),
             alias_types: plain(&self.alias_types),
             sort_param_defaults: plain(&self.sort_param_defaults),
+            op_type_param_defaults: plain(&self.op_type_param_defaults),
             alias_heads: plain(&self.alias_heads),
             aliases_applying: plain(&self.aliases_applying),
             scan_alias_decls: plain(&self.scan_alias_decls),
