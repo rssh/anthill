@@ -793,6 +793,11 @@ impl TypingEnv {
         self.type_denotations.get(&name)
     }
 
+    /// Does a name in scope denote a written type?
+    pub(super) fn has_type_denotations(&self) -> bool {
+        !self.type_denotations.is_empty()
+    }
+
     pub fn declare_local_resource(&mut self, name: Symbol) {
         self.local_resources.push(name);
     }

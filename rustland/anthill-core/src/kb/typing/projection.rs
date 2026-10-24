@@ -1156,6 +1156,30 @@ pub(super) fn eliminate_type_projections(
     .eliminate(kb, ty)
 }
 
+/// `ty` with each projection off a name a `let` bound to a written type read as the member of
+/// the sort it denotes — `dd.T` under `let dd = D` is `D.T` ([`denoted_member_type`]) — and every
+/// other projection as it is written. A body site reads a binder's annotation through it before
+/// anything reads the annotation's projections off the receivers' types: the type of `dd` is
+/// `Type`, which has no member `T`. `scope` is where the annotation is written
+/// ([`written_scope`]).
+pub(super) fn read_denoted_projections(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    scope: ScopeId,
+    ty: &Value,
+    ctx: &TypeErrorContext,
+    span: Option<Span>,
+) -> Result<Value, TypeError> {
+    if !env.has_type_denotations() {
+        return Ok(ty.clone());
+    }
+    Discharge {
+        denotations: Some((env, scope)),
+        ..Discharge::new(&env.var_bindings, Receivers::Own(Some(env.receiver_aliases())), ctx, span)
+    }
+    .eliminate(kb, ty)
+}
+
 /// WI-20261003-P1PVT — WHOSE NAMES a projection's receivers are, which decides what names the
 /// open slots of a field path ([`field_type_at_path`]). Each discharge says, because the two
 /// differ exactly where a path's head is re-keyed to nothing: in a body that head is the body's
@@ -1211,6 +1235,11 @@ pub(super) struct Discharge<'a> {
     pub(super) selections: &'a [InstanceSelection],
     /// A caller's reading of a projection, tried before the call's ([`ProjectionReading`]).
     pub(super) reading: Option<ProjectionReading<'a>>,
+    /// The body whose `let`s bound names to written types, and the scope its text is written
+    /// in: this discharge reads a projection off such a name as the denoted sort's member
+    /// ([`denoted_member_type`]) and leaves every other projection as it is
+    /// ([`read_denoted_projections`]).
+    pub(super) denotations: Option<(&'a TypingEnv, ScopeId)>,
     pub(super) ctx: &'a TypeErrorContext,
     pub(super) span: Option<Span>,
 }
@@ -1233,6 +1262,7 @@ impl<'a> Discharge<'a> {
             arg_paths: None,
             selections: &[],
             reading: None,
+            denotations: None,
             ctx,
             span,
         }
@@ -1295,9 +1325,13 @@ fn eliminate_in(
 ) -> Result<Option<Value>, TypeError> {
     let (sp, owner) = site_of(ty);
     match extract_type(kb, ty) {
-        TypeExtractor::ExprCarried { value, member } => {
-            project_expr_carried(kb, &value, member, cx)
-        }
+        TypeExtractor::ExprCarried { value, member } => match cx.denotations {
+            Some((env, scope)) => {
+                denoted_member_type(kb, env, scope, &value, member, cx.ctx, cx.span).transpose()
+            }
+            None => project_expr_carried(kb, &value, member, cx),
+        },
+        TypeExtractor::RigidTypeProjection { .. } if cx.denotations.is_some() => Ok(None),
         // WI-428: a rigid type-receiver projection (`P.Key` / `MemStore.Key`) — validated
         // and δ-grounded (or kept as the rigid neutral) against the declaring sort's
         // `requires` chain / the subject's own manifest bindings; no `arg_types` receiver

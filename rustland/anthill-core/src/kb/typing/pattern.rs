@@ -660,6 +660,11 @@ pub(super) fn bind_and_label_pattern(
                 let v = written_type_at_body_rigids(kb, env, &v);
                 let v = if value_contains_projection(kb, &v) {
                     let ctx = TypeErrorContext::LetBinding { var: *name };
+                    // A projection off a name that denotes a sort first, as the `let` site
+                    // reads it.
+                    let scope = written_scope(kb, env, ann);
+                    let v = read_denoted_projections(kb, env, scope, &v, &ctx, Some(ann.span.span))
+                        .unwrap_or(v);
                     eliminate_type_projections(
                         kb,
                         &v,

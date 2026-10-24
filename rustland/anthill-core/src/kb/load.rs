@@ -23822,7 +23822,7 @@ fn query_data_slot_alias(
 /// a value in a type its constant, and a tuple, an arrow or a row the type itself, typed
 /// `Type` (`Loader::entry_type_value_occ`). For a type alias read as a value
 /// ([`super::typing::value_alias`]): the alias's type has no written node of its own.
-fn type_value_occurrence(
+pub(crate) fn type_value_occurrence(
     kb: &mut KnowledgeBase,
     ty: TermId,
     site: SourceSpan,
@@ -23863,6 +23863,142 @@ fn type_value_occurrence(
         }
     };
     NodeOccurrence::new_expr(expr, site, owner)
+}
+
+/// What the name `written`, written in a type position, lowers to read through where it
+/// names a type alias (`Loader::bare_alias_read`); `None` where it is the name itself. `within`
+/// says whether it is written inside the scope that declares it, `alias_nodes` whether the
+/// written name is kept beside the type it stands for ([`node_occurrence::TypeNode::Aliased`]).
+pub(crate) fn alias_read(
+    kb: &mut KnowledgeBase,
+    written: Symbol,
+    within: bool,
+    alias_nodes: bool,
+    span: SourceSpan,
+    owner: Option<Symbol>,
+) -> Option<node_occurrence::TypeChild> {
+    use node_occurrence::TypeChild;
+    let stands_for = match alias_type_at_a_use(kb, written, within) {
+        // An alias of a type parameter (`sort OS = S` inside `sort Outer[S]`) is that
+        // parameter's variable, and stays it: a variable has its own spellings, and
+        // the readers that ask "is this type a variable" match them by carrier
+        // (`typing::resolved_var`, `leaf_held_as_term`, the σ chain end). Wrapped in
+        // a node it was a variable none of them saw — MEASURED: `own(x: OS) -> S = x`
+        // refused, "expected ?S, got ?S".
+        Some(crate::eval::value::Value::Term { id: ty, .. })
+            if matches!(kb.get_term(ty), Term::Var(_)) =>
+        {
+            return Some(TypeChild::Interned(ty))
+        }
+        // As written where the written name is kept, as its term where it is not — the
+        // form a type written out in full takes in either.
+        Some(ty) if alias_nodes => super::typing::value_to_type_child_at(kb, &ty, span, owner),
+        Some(ty) => TypeChild::Interned(
+            node_occurrence::value_to_term(kb, &ty)
+                .expect("an alias's type is recorded only where its term is"),
+        ),
+        // The node-carrier control: a sort that is no alias rides the node too,
+        // standing for itself. A type PARAMETER's own name is left alone, as an alias
+        // of one is above.
+        None if alias_nodes
+            && node_carrier_control()
+            && !super::typing::is_sort_param_symbol(kb, written) =>
+        {
+            TypeChild::Interned(kb.alloc(Term::Ref(written)))
+        }
+        None => return None,
+    };
+    if !alias_nodes {
+        return Some(stands_for);
+    }
+    Some(TypeChild::Node(NodeOccurrence::new_type(
+        node_occurrence::TypeNode::Aliased {
+            alias: written,
+            stands_for,
+        },
+        span,
+        owner,
+    )))
+}
+
+/// The type the type alias `written` stands for at one use (`Loader::bare_alias_type`), `None`
+/// for a name that is no alias and for one read as written there — an alias naming a type
+/// parameter of the sort declaring it, outside that sort (`within` false).
+pub(crate) fn alias_type_at_a_use(
+    kb: &mut KnowledgeBase,
+    written: Symbol,
+    within: bool,
+) -> Option<crate::eval::value::Value> {
+    let stands_for = kb.alias_types.get(&written)?.clone();
+    let names_a_parameter = kb
+        .collect_vars(&stands_for)
+        .into_iter()
+        .any(|v| kb.is_canonical_type_param_var(v));
+    if names_a_parameter && !within {
+        return None;
+    }
+    let mut at_this_use = [stands_for];
+    open_slots_anew(kb, &mut at_this_use);
+    let [at_this_use] = at_this_use;
+    Some(at_this_use)
+}
+
+/// `Loader::open_slots_anew`: each slot an alias's definition leaves open with `?` is an
+/// unknown of this use alone, the same one wherever it occurs in `types`.
+fn open_slots_anew(kb: &mut KnowledgeBase, types: &mut [crate::eval::value::Value]) {
+    let mut open: Vec<VarId> = Vec::new();
+    for t in types.iter() {
+        for v in kb.collect_vars(t) {
+            if !kb.is_canonical_type_param_var(v) && !open.contains(&v) {
+                open.push(v);
+            }
+        }
+    }
+    if open.is_empty() {
+        return;
+    }
+    let mut anew = crate::kb::subst::Substitution::new();
+    for v in open {
+        let fresh = kb.fresh_var(v.name());
+        let fresh = kb.alloc(Term::Var(Var::Global(fresh)));
+        anew.bind_term(kb, v, fresh);
+    }
+    for t in types.iter_mut() {
+        *t = node_occurrence::subst_value_type(kb, t, &anew).0;
+    }
+}
+
+/// Is `scope` the scope `sym` is declared in, or inside it — the reading a name written
+/// there takes (`Loader::within_declaring_scope_of`)?
+pub(crate) fn written_within_declaring_scope(kb: &KnowledgeBase, sym: Symbol, scope: ScopeId) -> bool {
+    kb.symbols
+        .declaring_scope(sym)
+        .is_some_and(|declared_in| declared_in == scope || kb.symbols.encloses(declared_in, scope))
+}
+
+/// The type value the bare name `head` denotes, as `Loader::bare_type_value_occ` builds it:
+/// `within` says whether the name is written inside the sort that declares it.
+pub(crate) fn name_type_value_occurrence(
+    kb: &mut KnowledgeBase,
+    head: Symbol,
+    within: bool,
+    structural: bool,
+    site: SourceSpan,
+    owner: Option<Symbol>,
+) -> Rc<NodeOccurrence> {
+    match value_alias_term(kb, head, within, structural) {
+        Some(ty) => type_value_occurrence(kb, ty, site, owner),
+        // A TYPE, so a constructor is named by its type face (WI-20260902-JB6RS).
+        None => NodeOccurrence::new_expr(
+            Expr::TypeValue {
+                head: kb.type_context_face(head),
+                pos_args: Vec::new(),
+                named_args: Vec::new(),
+            },
+            site,
+            owner,
+        ),
+    }
 }
 
 /// The parameter each of `count` positional arguments of the type application `sort[…]`
@@ -34910,8 +35046,10 @@ impl<'a> Loader<'a> {
             return None;
         }
         let occ = self.convert_expr_term(parse_id);
+        // A tuple, an arrow or a row — a structural alias's type — is the type itself,
+        // spliced (`type_value_occurrence`).
         debug_assert!(
-            matches!(occ.as_expr(), Some(Expr::TypeValue { .. })),
+            matches!(occ.as_expr(), Some(Expr::TypeValue { .. } | Expr::Spliced(_))),
             "written_type_receiver_occurrence: the operation-body walk did not classify a \
              receiver this walk read as a written type"
         );
@@ -35474,19 +35612,7 @@ impl<'a> Loader<'a> {
         structural: bool,
     ) -> Rc<NodeOccurrence> {
         let within = self.within_declaring_scope_of(head);
-        match value_alias_term(self.kb, head, within, structural) {
-            Some(ty) => type_value_occurrence(self.kb, ty, site, owner),
-            // A TYPE, so a constructor is named by its type face (WI-20260902-JB6RS).
-            None => NodeOccurrence::new_expr(
-                Expr::TypeValue {
-                    head: self.kb.type_context_face(head),
-                    pos_args: Vec::new(),
-                    named_args: Vec::new(),
-                },
-                site,
-                owner,
-            ),
-        }
+        name_type_value_occurrence(self.kb, head, within, structural, site, owner)
     }
 
     /// A type application in VALUE position whose head is a type alias: the sort the alias
@@ -36317,7 +36443,11 @@ impl<'a> Loader<'a> {
         // chain a citation are `dotted_citation_name`'s, and it re-asks them per level.
         let dot_chain =
             dotted_citation_name(&self.parsed.symbols, &self.parsed.terms, parse_id).is_some();
-        let node = NodeOccurrence::new_expr_dot_chain(expr, span, None, dot_chain);
+        // A method call written without parentheses, `(D).T`, is marked as an operation
+        // body's is: what the typer reads off a written type's dot depends on it.
+        let paren_less = matches!(expr, Expr::DotApply { .. })
+            && self.parsed.terms.is_paren_less_dot(parse_id);
+        let node = NodeOccurrence::new_expr_written(expr, span, None, dot_chain, paren_less);
         // WI-753 — A REFLECT FORM WRITTEN AS DATA IS READ BY THE ARMS THAT READ IT AS A TERM.
         //
         // `occurrence_term(?e, if_expr(cond: ?c, …))` writes a reflect form as a pattern; its
@@ -37413,49 +37543,8 @@ impl<'a> Loader<'a> {
             return child;
         };
         let written = *written;
-        let stands_for = match self.bare_alias_type(written) {
-            // An alias of a type parameter (`sort OS = S` inside `sort Outer[S]`) is that
-            // parameter's variable, and stays it: a variable has its own spellings, and
-            // the readers that ask "is this type a variable" match them by carrier
-            // (`typing::resolved_var`, `leaf_held_as_term`, the σ chain end). Wrapped in
-            // a node it was a variable none of them saw — MEASURED: `own(x: OS) -> S = x`
-            // refused, "expected ?S, got ?S".
-            Some(crate::eval::value::Value::Term { id: ty, .. })
-                if matches!(self.kb.get_term(ty), Term::Var(_)) =>
-            {
-                return TypeChild::Interned(ty)
-            }
-            // As written where the written name is kept, as its term where it is not — the
-            // form a type written out in full takes in either.
-            Some(ty) if self.alias_nodes => {
-                super::typing::value_to_type_child_at(self.kb, &ty, span, owner)
-            }
-            Some(ty) => TypeChild::Interned(
-                node_occurrence::value_to_term(self.kb, &ty)
-                    .expect("an alias's type is recorded only where its term is"),
-            ),
-            // The node-carrier control: a sort that is no alias rides the node too,
-            // standing for itself. A type PARAMETER's own name is left alone, as an alias
-            // of one is above.
-            None if self.alias_nodes
-                && node_carrier_control()
-                && !super::typing::is_sort_param_symbol(self.kb, written) =>
-            {
-                child
-            }
-            None => return child,
-        };
-        if !self.alias_nodes {
-            return stands_for;
-        }
-        TypeChild::Node(NodeOccurrence::new_type(
-            node_occurrence::TypeNode::Aliased {
-                alias: written,
-                stands_for,
-            },
-            span,
-            owner,
-        ))
+        let within = self.within_declaring_scope_of(written);
+        alias_read(self.kb, written, within, self.alias_nodes, span, owner).unwrap_or(child)
     }
 
     /// The type a type ALIAS written bare in a type position stands for — `Box[V = Int64]`
@@ -37491,19 +37580,8 @@ impl<'a> Loader<'a> {
     /// …AND THAT SLOT IS OPEN ANEW AT EACH USE, as each written `?` is
     /// ([`Self::open_slots_anew`]).
     fn bare_alias_type(&mut self, written: Symbol) -> Option<crate::eval::value::Value> {
-        let stands_for = self.kb.alias_types.get(&written)?.clone();
-        let names_a_parameter = self
-            .kb
-            .collect_vars(&stands_for)
-            .into_iter()
-            .any(|v| self.kb.is_canonical_type_param_var(v));
-        if names_a_parameter && !self.within_declaring_scope_of(written) {
-            return None;
-        }
-        let mut at_this_use = [stands_for];
-        self.open_slots_anew(&mut at_this_use);
-        let [at_this_use] = at_this_use;
-        Some(at_this_use)
+        let within = self.within_declaring_scope_of(written);
+        alias_type_at_a_use(self.kb, written, within)
     }
 
     /// The types ONE use of an alias has, from the ones its declaration recorded: each
@@ -37516,34 +37594,12 @@ impl<'a> Loader<'a> {
     ///
     /// A type parameter's own variable is not such a slot and stays the parameter's.
     fn open_slots_anew(&mut self, types: &mut [crate::eval::value::Value]) {
-        let mut open: Vec<VarId> = Vec::new();
-        for t in types.iter() {
-            for v in self.kb.collect_vars(t) {
-                if !self.kb.is_canonical_type_param_var(v) && !open.contains(&v) {
-                    open.push(v);
-                }
-            }
-        }
-        if open.is_empty() {
-            return;
-        }
-        let mut anew = crate::kb::subst::Substitution::new();
-        for v in open {
-            let fresh = self.kb.fresh_var(v.name());
-            let fresh = self.kb.alloc(Term::Var(Var::Global(fresh)));
-            anew.bind_term(self.kb, v, fresh);
-        }
-        for t in types.iter_mut() {
-            *t = node_occurrence::subst_value_type(self.kb, t, &anew).0;
-        }
+        open_slots_anew(self.kb, types)
     }
 
     /// Is the scope being lowered in the scope `sym` is declared in, or inside it?
     fn within_declaring_scope_of(&self, sym: Symbol) -> bool {
-        self.kb.symbols.declaring_scope(sym).is_some_and(|declared_in| {
-            declared_in == self.current_scope
-                || self.kb.symbols.encloses(declared_in, self.current_scope)
-        })
+        written_within_declaring_scope(self.kb, sym, self.current_scope)
     }
 
     /// WI-20260924-SNJPR — a type-position application binding again a parameter its alias

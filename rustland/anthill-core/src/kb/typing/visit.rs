@@ -105,6 +105,19 @@ pub(super) fn visit_type(
             let mut pattern = pattern;
             let annotation = match annotation {
                 Some(ann) if value_contains_projection(kb, &ann) => {
+                    let var = extract_pattern_var_name(&pattern).unwrap_or_else(|| kb.intern("_"));
+                    let ctx = TypeErrorContext::LetBinding { var };
+                    // A projection off a name that denotes a sort is that sort's member:
+                    // `dd.T` under `let dd = D` is `D.T`, where the receiver's type, `Type`,
+                    // has no member `T`.
+                    let scope = written_scope(kb, &env, &occ);
+                    let ann = match read_denoted_projections(kb, &env, scope, &ann, &ctx, occ_span) {
+                        Ok(ann) => ann,
+                        Err(e) => {
+                            results.push(Err(e));
+                            return;
+                        }
+                    };
                     // WI-400 increment C (eager let-alias): canonicalize the annotation's
                     // projection receiver through the env's let-aliases BEFORE elimination,
                     // so `let y = z; let k: y.M` resolves `y.M` against the SAME receiver as
@@ -115,8 +128,6 @@ pub(super) fn visit_type(
                         &ann,
                         occ.span,
                     );
-                    let var = extract_pattern_var_name(&pattern).unwrap_or_else(|| kb.intern("_"));
-                    let ctx = TypeErrorContext::LetBinding { var };
                     // WI-459: a let-annotation is a BODY-site projection — the receiver is
                     // the in-scope value itself, there is no call argument to re-key to
                     // (`None`).
@@ -252,6 +263,24 @@ pub(super) fn visit_type(
                 let written = pattern_annotation_value(kb, ann_occ)?;
                 Some(written_type_at_body_rigids(kb, &env, &written))
             });
+            // A projection off a name that denotes a sort is that sort's member, as in a
+            // `let`'s annotation; every other projection stays the path type it is written.
+            let ann_type = match ann_type {
+                Some(ann) if value_contains_projection(kb, &ann) => {
+                    let binder =
+                        extract_pattern_var_name(&param).unwrap_or_else(|| kb.intern("_"));
+                    let ctx = TypeErrorContext::BinderAnnotation { binder };
+                    let scope = written_scope(kb, &env, &occ);
+                    match read_denoted_projections(kb, &env, scope, &ann, &ctx, Some(occ.span.span)) {
+                        Ok(ann) => Some(ann),
+                        Err(e) => {
+                            results.push(Err(e));
+                            return;
+                        }
+                    }
+                }
+                other => other,
+            };
             let param_type: Value = ann_type
                 .or_else(|| {
                     // Checking direction: the expected arrow's param slot, as-is.

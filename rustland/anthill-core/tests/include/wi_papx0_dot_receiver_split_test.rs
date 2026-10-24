@@ -649,17 +649,18 @@ fn a_lambda_under_the_binding_sees_the_denotation() {
     assert_eq!(got, 3);
 }
 
-/// A nested sort is declared in `Box` and is not a call. The refusal says that, and does
-/// not say `Box` has no such member.
+/// A constant is declared in `Box` and is none of what the dot reaches. The refusal says
+/// that, and does not say `Box` has no such member. (A nested sort is a type member, which
+/// the dot reaches: `wi_qk77s_type_member_through_a_denoting_value_test`.)
 #[test]
 fn a_declaration_that_is_no_call_is_refused_truthfully() {
     let rendered = refusal(
         "papx0nested",
         "",
-        "  namespace Box\n    sort Inner\n      entity inn\n    end\n  end\n  operation go() -> Type =\n    let t = Box\n    t.Inner",
+        "  namespace Box\n    const k: Int64 = 3\n  end\n  operation go() -> Int64 =\n    let t = Box\n    t.k",
     );
     assert!(
-        rendered.contains("`Inner` is declared in `Box` and is none of them"),
+        rendered.contains("`k` is declared in `Box` and is none of them"),
         "{rendered}"
     );
     assert!(!rendered.contains("no such member"), "{rendered}");
