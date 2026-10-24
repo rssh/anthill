@@ -16,7 +16,7 @@
 //!
 //! ── WHICH ROWS FAIL WHEN A PART IS BACKED OUT ────────────────────────────────
 //!
-//! SIX PARTS, each backed out alone and RUN over this file and the `wi329`, `wi_450ka`,
+//! NINE PARTS, each backed out alone and RUN over this file and the `wi329`, `wi_450ka`,
 //! `wi_6mpn2`, `wi_1tjqh`, `wi_9wvt7` and `wi_0rp29` rows:
 //!
 //! 1. THE ARGUMENT LOOPS LEAVE THE ROW TO THE PASS (`slot_at_argument_row` answering the slot as
@@ -48,6 +48,18 @@
 //!    arm panicking again). 1 FAILS here: [`a_function_result_at_the_shared_row_is_applied`], a
 //!    panic on every build before it; and `ctd6d_row_carrier_tests::an_entity_carried_bare_row_wraps_on_its_spine`
 //!    in the library's tests.
+//! 7. A TYPE PARAMETER SEVERAL SLOTS' LABELS NAME FIXED BY THE ARGUMENTS TOGETHER
+//!    (`fix_label_type_params` not run). 2 FAIL:
+//!    [`a_payload_two_slots_share_takes_what_both_arguments_offer`] and
+//!    [`a_payload_two_slots_share_the_arguments_disagree_on_is_refused`].
+//! 8. …ONLY WHERE TWO ARGUMENTS OR MORE OFFER IT A VALUE (one argument's labels left to the
+//!    pairing). 1 FAILS: `wi_9wvt7_reify_rule_body_test::an_unfilled_pattern_slot_is_refused_where_it_is_written`
+//!    — one `reify` body raising `Error[P]` and `Error[Other]` fixed `T1 = Other`, which made the
+//!    rule variable's payload `Other`.
+//! 9. …AND, WHERE SEVERAL VALUES FIT EVERY ARGUMENT, THE CANONICAL FIRST OF THEM (none bound, the
+//!    pairing left to decide). 1 FAILS:
+//!    [`a_payload_several_values_fit_is_the_canonical_first_in_either_order`], refused at `use`'s
+//!    effects with `b` written first.
 
 use crate::common::{assert_refused_naming, load_errors_of, run_int64};
 
@@ -92,6 +104,30 @@ namespace {ns}
 
   operation mk[Rho](a: () -> Int64 @ {{Rho}}, b: () -> Int64 @ {{Rho}}, f: Function[A = Int64, B = Int64, E = Rho]) -> Function[A = Int64, B = Int64, E = Rho] =
     f
+
+  operation guard[E, Rho](f: () -> Int64 @ {{Error[E], Rho}}) -> Int64
+    effects {{Rho}}
+    requires TypePattern[T = E]
+  =
+    match Error.reify(f)
+      case ok(v) -> v
+      case err(e) -> 9
+
+  operation two_e[E, Rho](a: () -> Int64 @ {{Error[E], Rho}}, b: () -> Int64 @ {{Error[E], Rho}}) -> Int64
+    effects {{Rho}}
+    requires TypePattern[T = E]
+  = guard(a) * 10 + guard(b)
+
+  operation boomOrI(n: Int64) -> Int64 effects {{Error[Boom], Error[Int64]}} =
+    if n < 0 then Error.raise(boom("negative")) else Error.raise(n)
+
+  operation quietS() -> Int64 effects {{Error[String]}} = 4
+
+  operation iOrS(n: Int64) -> Int64 effects {{Error[Int64], Error[String]}} =
+    if n > 0 then Error.raise(n) else Error.raise("none")
+
+  operation boomIS(n: Int64) -> Int64 effects {{Error[Boom], Error[Int64], Error[String]}} =
+    if n > 0 then Error.raise(n) else Error.raise(boom("none"))
 
   operation two_lacks[Rho](a: () -> Int64 @ {{Rho, -Clock}}, b: () -> Int64 @ {{Rho}}) -> Int64 effects {{Rho}} =
     a() * 10 + b()
@@ -348,4 +384,73 @@ fn a_function_result_at_the_shared_row_is_applied() {
         ),
         Ok(512),
     );
+}
+
+/// A TYPE PARAMETER BOTH SLOTS' LABELS NAME TAKES THE PAYLOAD BOTH ARGUMENTS OFFER, in either
+/// order: `two_e[E, Rho](a: … @ {Error[E], Rho}, b: … @ {Error[E], Rho})` discharges `Error[E]`
+/// from each (`guard`, over `Error.reify`). `a` writes `q` and raises 5; `b` may raise `Boom` or
+/// an `Int64` and raises 7. `E = Int64` is the one payload both offer, and `b`'s `Error[Boom]`
+/// is the row's: both caught, 9 and 9, `q` written — 9952. Each order was refused on the build
+/// before (the first pair fixed `E`, and the other order's label went to `Rho`).
+#[test]
+fn a_payload_two_slots_share_takes_what_both_arguments_offer() {
+    let ns_of = |tag: &str| format!("wirdns4.{tag}");
+    for (tag, call) in [
+        ("payload_ab", "two_e(lambda () -> Error.raise(put(q, 5)), lambda () -> boomOrI(7))"),
+        ("payload_ba", "two_e(b: lambda () -> boomOrI(7), a: lambda () -> Error.raise(put(q, 5)))"),
+    ] {
+        let ns = ns_of(tag);
+        let src = program(&ns, "Modify[q], Error[Boom]", &format!("    {call}"))
+            .replace("  operation go() -> Int64 =", "  operation go() -> Int64 effects {Error[Boom]} =");
+        assert_eq!(run_int64(&src, &format!("{ns}.go")), Ok(9952), "`{call}`");
+    }
+}
+
+/// … AND WHERE THE ARGUMENTS OFFER NO ONE PAYLOAD THE CALL IS REFUSED, in either order, naming
+/// each in the order written — §8.1's refusal of a parameter whose arguments disagree. `a` raises an `Int64`, `b`
+/// declares `Error[String]`: `E = Int64` (`b`'s label to the row) loaded with `a` first and
+/// `E = String` was refused with `b` first (MEASURED). The bracket the refusal asks for runs: `a`
+/// caught, 9; `b` answers 4; `q` written — 9452.
+#[test]
+fn a_payload_two_slots_share_the_arguments_disagree_on_is_refused() {
+    for (tag, call, listed) in [
+        ("disagree_ab", "two_e(lambda () -> Error.raise(put(q, 5)), lambda () -> quietS())", "Int64 (a), String (b)"),
+        ("disagree_ba", "two_e(b: lambda () -> quietS(), a: lambda () -> Error.raise(put(q, 5)))", "String (b), Int64 (a)"),
+    ] {
+        let src = program(&format!("wirdns4.{tag}"), "Modify[q], Error[String]", &format!("    {call}"))
+            .replace("  operation go() -> Int64 =", "  operation go() -> Int64 effects {Error[String]} =");
+        let errs = load_errors_of(&src);
+        assert_eq!(errs.len(), 1, "`{call}`: the one refusal, got {errs:#?}");
+        assert_refused_naming(
+            &errs,
+            &["type mismatch in two_e.type_args", "no type every argument's labels give type parameter `E` of `two_e`", listed],
+            &format!("`{call}`"),
+        );
+    }
+    let ns = "wirdns4.disagree_bracket";
+    let src = program(
+        ns,
+        "Modify[q], Error[String]",
+        "    two_e[E = Int64](lambda () -> Error.raise(put(q, 5)), lambda () -> quietS())",
+    )
+    .replace("  operation go() -> Int64 =", "  operation go() -> Int64 effects {Error[String]} =");
+    assert_eq!(run_int64(&src, &format!("{ns}.go")), Ok(9452));
+}
+
+/// … AND WHERE SEVERAL PAYLOADS FIT EVERY ARGUMENT, the first in the canonical label order is
+/// bound, whichever argument is written first: `a` may raise `Int64` or `String`, `b` `Boom`,
+/// `Int64` or `String`, so `E = Int64` and the rest is the row. Both raise an `Int64`, both are
+/// caught, `q` written — 9952. Left to the pairing, `b` first made `E = Boom` (its first label),
+/// and `a`'s `Error[Int64]` went to the row, which `use` does not declare: refused.
+#[test]
+fn a_payload_several_values_fit_is_the_canonical_first_in_either_order() {
+    for (tag, call) in [
+        ("several_ab", "two_e(lambda () -> iOrS(put(q, 5)), lambda () -> boomIS(7))"),
+        ("several_ba", "two_e(b: lambda () -> boomIS(7), a: lambda () -> iOrS(put(q, 5)))"),
+    ] {
+        let ns = format!("wirdns4.{tag}");
+        let src = program(&ns, "Modify[q], Error[String], Error[Boom]", &format!("    {call}"))
+            .replace("  operation go() -> Int64 =", "  operation go() -> Int64 effects {Error[String], Error[Boom]} =");
+        assert_eq!(run_int64(&src, &format!("{ns}.go")), Ok(9952), "`{call}`");
+    }
 }

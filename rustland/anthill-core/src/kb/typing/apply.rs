@@ -1063,7 +1063,11 @@ pub(super) fn check_apply_iter(
         // longer reported unconstrained. No-op unless the callee declares type params and
         // one of them is still unbound. Each slot is read as the call reads it
         // (`effective_param_types`) where the call made it so.
-        infer_discharged_row_tails(kb, &mut subst, &op, &callback_pairs, &effective_param_types);
+        if let Err(no_common) =
+            infer_discharged_row_tails(kb, &mut subst, &op, &callback_pairs, &effective_param_types)
+        {
+            return Err(no_common.into_call_error(kb, fn_sym, span));
+        }
 
         // WI-705: reject a call whose SIGNATURE — the op's own effect row or any
         // arrow-typed param row — an instantiation has made UNINHABITABLE (`{X, -X}`,

@@ -4687,6 +4687,10 @@ fn selection_witness_sym(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
 /// `K` — a pure body, or the outer of two handlers for the same label — has no counterpart for the
 /// declared `K`, which is no equality, and unification refused without binding.
 ///
+/// A type parameter several slots' LABELS name (`Error[E]` in two of them) is fixed first, by
+/// the arguments together ([`fix_label_type_params`]): pairing one argument after another, the
+/// first fixed it and the other's label went to the row.
+///
 /// Which pairs are solved here, [`slot_row`] says; the loops' unification relates every other
 /// pair's rows as before. A tail left unbound — rigid (a forall-Skolem is not ours to solve,
 /// WI-336), bound already, or one whose binding is refused below — is the pre-existing behavior
@@ -4716,10 +4720,19 @@ pub(super) fn infer_discharged_row_tails(
     op: &OperationInfoFull,
     pairs: &[(Symbol, Value, Value)],
     read: &HashMap<Symbol, Value>,
-) {
+) -> Result<(), NoCommonPayload> {
     if op.type_params.is_empty() || pairs.is_empty() {
-        return;
+        return Ok(());
     }
+    // Each pair's slot row beside its argument's, read once for the label phase and the tails.
+    let slot_rows: Vec<(Symbol, SlotRow)> = pairs
+        .iter()
+        .filter_map(|(param, written, actual)| {
+            let declared = read.get(param).unwrap_or(written);
+            slot_row(kb, subst, declared, actual).map(|row| (*param, row))
+        })
+        .collect();
+    fix_label_type_params(kb, subst, op, &slot_rows)?;
 
     // Lower bounds per tail, accumulated across every callback parameter naming it: the
     // labels no declared label covers, the caller's rigid rows, and what the slots deny.
@@ -4730,9 +4743,9 @@ pub(super) fn infer_discharged_row_tails(
         denied: Vec<Value>,
     }
     let mut lower: Vec<Lower> = Vec::new();
-    for (param, written, actual) in pairs {
-        let declared = read.get(param).unwrap_or(written);
-        let Some(SlotRow {
+    for (
+        _,
+        SlotRow {
             tail,
             present: d_present,
             absent: d_absent,
@@ -4740,10 +4753,9 @@ pub(super) fn infer_discharged_row_tails(
             actual_present: a_present,
             actual_rigid: a_rigid,
             ..
-        }) = slot_row(kb, subst, declared, actual)
-        else {
-            continue;
-        };
+        },
+    ) in slot_rows
+    {
         let rows: SmallVec<[TermId; 2]> = a_rigid
             .into_iter()
             .filter(|r| !d_rigid.contains(r))
@@ -4805,6 +4817,134 @@ pub(super) fn infer_discharged_row_tails(
         // accurate about the state, silent about the cause. Conservative rather than
         // wrong: the pass never claims a residual it could not bind.
         bind_row_tail(kb, subst, t, &labels, &rows);
+    }
+    Ok(())
+}
+
+/// A TYPE PARAMETER OF THE CALLEE THAT SEVERAL CALLBACK SLOTS' LABELS NAME is fixed by the
+/// arguments together, before [`infer_discharged_row_tails`] pairs any of them: a label's
+/// payload is an invariant occurrence (`Error[E]` — `Error` declares no variance for `T`), so
+/// the value every such argument offers is bound, and where none is offered by all of them the
+/// call is refused naming each, as §8.1 refuses a parameter whose arguments disagree.
+/// `two_e[E, Rho](a: () -> Int64 @ {Error[E], Rho}, b: () -> Int64 @ {Error[E], Rho})` at an `a`
+/// raising `Error[Int64]` and a `b` raising `Error[String]` loaded with `a` first (`E = Int64`,
+/// `b`'s label to `Rho`) and was refused with `b` first (MEASURED): the first pair the pass met
+/// fixed `E`.
+///
+/// What an argument offers: the determined value the parameter takes where one of its row's
+/// labels unifies with one of its slot's — each label tried alone. A parameter one argument
+/// alone offers values for is the pairing's to fix, as it was. Where several values fit every
+/// argument, the first in the canonical label order is bound — the one the pairing takes for
+/// one argument alone — so that no argument's order decides it.
+fn fix_label_type_params(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    op: &OperationInfoFull,
+    slot_rows: &[(Symbol, SlotRow)],
+) -> Result<(), NoCommonPayload> {
+    if slot_rows.len() < 2 {
+        return Ok(());
+    }
+    let free: SmallVec<[(Symbol, VarId); 2]> = op
+        .type_params
+        .iter()
+        .filter_map(|(name, var)| match var {
+            Var::Global(vid)
+                if resolved_var(kb, &walk_view(kb, subst, &Value::Var(*var))) == Some(*vid) =>
+            {
+                Some((*name, *vid))
+            }
+            _ => None,
+        })
+        .collect();
+    if free.is_empty() {
+        return Ok(());
+    }
+    // Per free parameter: each argument that offers it a value, with the values it offers.
+    let mut offers: Vec<(VarId, Symbol, Vec<Value>)> = Vec::new();
+    for (param, row) in slot_rows {
+        for d in &row.present {
+            let d_deep = walk_type_deep_value(kb, subst, d);
+            if !kb.mentions_var(&d_deep, &|v| free.iter().any(|(_, f)| v == Var::Global(*f))) {
+                continue;
+            }
+            for a in &row.actual_present {
+                let mut trial = subst.clone();
+                if !unify_types(kb, &mut trial, a, d) {
+                    continue;
+                }
+                for (_, vid) in &free {
+                    let value = walk_type_deep_value(kb, &trial, &Value::Var(Var::Global(*vid)));
+                    if resolved_var(kb, &value).is_some() || !resolved_type_is_determined(kb, &value) {
+                        continue;
+                    }
+                    let i = match offers.iter().position(|(v, p, _)| v == vid && p == param) {
+                        Some(i) => i,
+                        None => {
+                            offers.push((*vid, *param, Vec::new()));
+                            offers.len() - 1
+                        }
+                    };
+                    if !offers[i].2.iter().any(|w| types_equivalent(kb, w, &value)) {
+                        offers[i].2.push(value);
+                    }
+                }
+            }
+        }
+    }
+    for (name, vid) in free {
+        let by_arg: Vec<&(VarId, Symbol, Vec<Value>)> = offers.iter().filter(|(v, _, _)| *v == vid).collect();
+        if by_arg.len() < 2 {
+            continue;
+        }
+        let mut common: Vec<Value> = Vec::new();
+        for value in &by_arg[0].2 {
+            let everywhere = by_arg[1..]
+                .iter()
+                .all(|(_, _, values)| values.iter().any(|w| types_equivalent(kb, w, value)));
+            if everywhere {
+                common.push(value.clone());
+            }
+        }
+        if common.is_empty() {
+            return Err(NoCommonPayload(NoJoin {
+                type_param: Some(name),
+                contributions: by_arg
+                    .iter()
+                    .flat_map(|(_, param, values)| values.iter().map(|v| (*param, v.clone())))
+                    .collect(),
+            }));
+        }
+        common.sort_by_cached_key(|v| type_display_name_value(kb, v));
+        let bound = bind_resolved(kb, subst, vid, common.swap_remove(0));
+        debug_assert!(bound, "a payload every argument offers binds its parameter");
+    }
+    Ok(())
+}
+
+/// Several callback slots' labels name one type parameter of the callee, and no value is
+/// offered by every argument ([`fix_label_type_params`]): `Int64 (a), String (b)`.
+pub(super) struct NoCommonPayload(NoJoin);
+
+impl NoCommonPayload {
+    /// The refusal of the call, at its span, in the context §8.1's disagreeing parameter takes.
+    pub(super) fn into_call_error(self, kb: &KnowledgeBase, op: Symbol, span: Option<Span>) -> TypeError {
+        let name = self
+            .0
+            .type_param
+            .map(|s| type_param_display_name(kb, s))
+            .unwrap_or_default();
+        TypeError::Other {
+            site: TypeError::here(),
+            span,
+            context: TypeErrorContext::OperationTypeParams { op_name: op },
+            expected: format!("one type for `{name}` that every argument's labels give it"),
+            actual: format!(
+                "no type every argument's labels give type parameter `{name}` of `{}`: {}",
+                kb.local_name_of(op),
+                self.0.listed(kb)
+            ),
+        }
     }
 }
 
