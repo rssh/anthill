@@ -41,3 +41,15 @@ ROWS: rustland/anthill-core/tests/include/wi_7g99a_unit_is_the_empty_tuple_test.
 
 RUNS: rustland/scripts/test.sh 10655 passed, 0 failed; the same with ANTHILL_TEST_NODE_CARRIER=1; scripts/families.sh holds, no verdict moved; scaland sbt testFull 748 + 47 + 1 passed, 0 failed.
 
+### 2026-10-24T06:41:40Z — feedback — claude
+
+Follow-up 2026-10-24 (5cdccb0b), the two items reported as not done, made inline at the user's word. LOWERING: `value_to_term` / `alloc_from_value` lower a tuple value (`Value::Tuple`, `Value::Unit`) to the `TupleLiteral(_1: …, name: …)` term a rule writes for it (`KnowledgeBase::tuple_value_term`, positional components first), so an operation-built tuple persists (`Store.persist` refused it, `UnsupportedVariant("Tuple")`), reads through reflection (`reads_as_term` accepts it; `value_functor` still names no sort for it, a tuple's type being its tuple type), and reifies in a rule head match (`prove_rule_predicate` over `mk((1, 2))` is proved). VIEWHEAD: `ViewHead::Functor { functor }` is a `Symbol`; the `None` arms (12 sites) and `StructToken::Open(None, …)` are gone, `sort_named_keys_for_matching` and `no_order_message` take a `Symbol`.
+
+FOUND ON THE WAY: since bd90bdbe a tuple holding `NaN` compared equal to itself, `(n, 1) = (n, 1)`, because the partial-carrier gate stopped at the `TupleLiteral` head; a tuple is now a partial-transparent carrier (eq_derive). A `TupleLiteral` constructor occurrence printed by name (`term_to_string` in a rule body gave `TupleLiteral(_1: 1, _2: 2)`); it prints as its literal, a lone positional component keeping its label. A raised payload names a tuple as its literal. NOT DONE, reported: a `Map` key is refused for an operation-built tuple, as for an operation-built entity (`MapKey` keys neither carrier).
+
+/code-review (xhigh, 4 findings, all fixed): the payload renderer, the lone positional component, two bare blocks left by the rewrite, a stale doc.
+
+ROWS (wi_7g99a_unit_is_the_empty_tuple_test, now 34; persistence_builtins_test::a_fact_holding_an_operation_built_tuple_is_persisted), each with its back-out measured by a switch: lowering refused (the persist row, the prove test), `reads_as_term` without the tuple arm (the reflection row), the constructor occurrence printed by name and the lone component unlabelled (the written-tuple row), the payload renderer by head (the raise row), the tuple out of the transparent carriers (the NaN row, which passes on bd90bdbe's parent). Rewritten to the new premise: wi366, eval_q3, wi_drgcp, wi_w1ykh (to an operation reference), the leaf-lowering and with_fresh_vars unit tests (to a relation), wi1013/1014/1019/391/662/acg10/cynpe (the `Symbol` functor).
+
+RUNS: rustland/scripts/test.sh 10660 passed, 0 failed; the same with ANTHILL_TEST_NODE_CARRIER=1; scripts/families.sh holds; scaland sbt testFull 748 + 47 + 1 passed.
+
