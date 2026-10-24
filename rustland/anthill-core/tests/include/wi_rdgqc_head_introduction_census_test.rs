@@ -5,8 +5,8 @@
 //! `intern(name)` — ONE GLOBAL NAME two scopes then share, with the loser's clause
 //! answering inside the winner's scope, on a program that loads clean. That is WI-894's
 //! defect class, and four shapes were in it. This file is the census: every head-bearing
-//! shape and its answer today, including the one remaining leak, pinned so that whoever
-//! closes it has to come here and say so.
+//! shape and its answer today. The last leak it pinned — the heads of a multi-head rule —
+//! is closed by WI-20260908-NE0E4, whose suite carries that shape's back-outs.
 //!
 //! ── THE TWO HALVES OF THE ENUMERATION ───────────────────────────────────────
 //!
@@ -34,7 +34,7 @@
 //! | `rule p :- …` paren-less       | YES     | A, 0 and 1  (P85Z7)          |
 //! | `rule f(?x) <=> …` equation    | YES     | A, two distinct symbols      |
 //! | `fact p(1)` fact head          | YES     | A, 0 and 1  (see below)      |
-//! | `rule l: p(1), q(9) :- …`      | **no**  | B, 2 and 2  (NE0E4)          |
+//! | `rule l: p(1), q(9) :- …`      | YES     | B, 1 and 1  (NE0E4)          |
 //! | head in `provides … language`  | YES     | A, 1 and 1  (TTHRK)          |
 //! | `rule ns.p :- …` qualified     | n/a     | C — REFERENCES, by design    |
 //! | `rule ?x.m(?y) :- …` desugared | n/a     | C — the desugar's functor    |
@@ -60,10 +60,9 @@
 //! That is the drift-catcher the merge buys: before it, the same swap had two homes
 //! (the verdict's and the second walk's) and only one of them was under test.
 //!
-//! **PART B PINS NE0E4'S DEFECT, SO IT HAS NO BACK-OUT — IT FAILS WHEN THAT DEFECT IS
-//! FIXED**, which is the point. The row asserts the leak (2 answers where 1 is right)
-//! beside a control in a shape that scopes (1 answer, its own). The control is what
-//! makes the 2 a measurement of the shape rather than of the fixture.
+//! **PART B's MULTI-HEAD ROW USED TO PIN NE0E4's LEAK** (2 answers where 1 is right,
+//! beside a single-head control at 1). NE0E4 closed it; the row now asserts (1, 1) and
+//! fails under that ticket's back-out 1 — see `wi_ne0e4_multi_head_introduction_test`.
 //!
 //! **AND PART C PASSES AGAINST THE PRE-MERGE CODE, BY DESIGN.** RDGQC's change is
 //! behaviour-preserving — one walk where there were two — so no diagnostic moved:
@@ -160,7 +159,7 @@ fn an_equation_subject_is_scoped_where_it_is_written() {
     );
 }
 
-// ── PART B — THE SHAPES LEFT OUT: the leak, pinned beside a control ─────────
+// ── PART B — THE SHAPES THAT USED TO LEAK, now scoped like the rest ─────────
 
 /// A FACT HEAD IS SCOPED WHERE IT IS WRITTEN, EXACTLY AS THE `rule … :- true` SPELLING
 /// OF THE SAME CLAUSE IS — the two are ONE clause (§1234: "a `fact` counts, since
@@ -204,11 +203,12 @@ fn a_fact_head_is_scoped_exactly_like_the_rule_spelling_of_the_same_clause() {
 }
 
 #[test]
-fn a_multi_head_rules_functors_are_unscoped_and_two_scopes_share_one_predicate() {
-    // `subject_introduces` refuses at `head_count != 1` — a rule with several heads
-    // names no SINGLE predicate — while each head still LANDS its own clause. The heads
-    // therefore take the bare intern. WI-20260908-NE0E4 owns the fix and carries the
-    // sharper cross-sort row; this is the census entry.
+fn a_multi_head_rules_heads_are_scoped_where_they_are_written() {
+    // A multi-head rule with a body is N clauses (§5.3), so each head introduces what
+    // its single-head rule would (WI-20260908-NE0E4). THIS ROW USED TO PIN THE LEAK —
+    // `subject_introduces` refused at `head_count != 1`, the heads took the bare intern,
+    // and each scope read the other's clause: (2, 2), neither name citable. The cross-
+    // sort row and the back-outs are `wi_ne0e4_multi_head_introduction_test`'s.
     let src = "namespace zzRDGQC.ma\n  fact base(0)\n  rule law: pick(1), other(9) :- base(0)\n  \
                rule see(?x) :- pick(?x)\nend\n\
                namespace zzRDGQC.mb\n  fact base(0)\n  rule law: pick(2), other(8) :- base(0)\n  \
@@ -216,26 +216,14 @@ fn a_multi_head_rules_functors_are_unscoped_and_two_scopes_share_one_predicate()
     let mut kb = crate::common::load_kb_with(src);
     assert_eq!(
         (answers(&mut kb, "zzRDGQC.ma.see"), answers(&mut kb, "zzRDGQC.mb.see")),
-        (2, 2),
-        "LIVE (NE0E4): each scope reads the other's head. Closing it makes this (1, 1)"
+        (1, 1),
+        "each scope answers from its OWN head and neither from the other's"
     );
     assert!(
-        kb.try_resolve_symbol("zzRDGQC.ma.pick").is_none()
-            && kb.try_resolve_symbol("zzRDGQC.mb.pick").is_none(),
-        "and neither name is citable — the clauses live under one uncitable global, \
-         which is WHY the readers cross. Closing NE0E4 makes both `is_some()`"
-    );
-    // THE CONTROL that isolates the HEAD COUNT: the same clause as a SINGLE-head rule
-    // mints and does not leak. Without it the (2, 2) could be about the label.
-    let ctl = "namespace zzRDGQC.mca\n  fact base(0)\n  rule pick(1) :- base(0)\n  \
-               rule see(?x) :- pick(?x)\nend\n\
-               namespace zzRDGQC.mcb\n  fact base(0)\n  rule pick(2) :- base(0)\n  \
-               rule see(?x) :- pick(?x)\nend\n";
-    let mut kb = crate::common::load_kb_with(ctl);
-    assert_eq!(
-        (answers(&mut kb, "zzRDGQC.mca.see"), answers(&mut kb, "zzRDGQC.mcb.see")),
-        (1, 1),
-        "single-head control must scope — that is what makes the axis the head COUNT"
+        kb.try_resolve_symbol("zzRDGQC.ma.pick").is_some()
+            && kb.try_resolve_symbol("zzRDGQC.mb.pick").is_some()
+            && kb.try_resolve_symbol("zzRDGQC.ma.other").is_some(),
+        "and every head is CITABLE under its own scope's qualified name"
     );
 }
 

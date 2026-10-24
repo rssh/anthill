@@ -3,9 +3,9 @@
 - id: WI-20260908-NE0E4-a-multi-head-rule-s-heads-are
 - created: 2026-09-08T20:53:59Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-08T20:53:59Z
+- status: Claimed
+- status_agent: claude
+- status_at: 2026-10-24T08:26:30Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -77,4 +77,18 @@ CONTROLS FOR WHOEVER TAKES THIS: the two above must stay at 0, `zzS.P.lawP` must
 naming something citable, and a multi-head rule whose heads are ALREADY declared elsewhere
 must not double-declare or shadow (`refuseDeclarationThatCannotStand` is the neighbouring
 refusal that already fires for a name a rule may not take over).
+
+## Changes
+
+### 2026-10-24T11:51:12Z — feedback — claude
+
+DECIDED (user, 2026-10-24): OPTION 1 — each head of a multi-head rule with a body introduces exactly what its single-head rule `Hᵢ :- B` would (at the scope it is written in, or joining what its name already denotes); option 2 (a head must already resolve) and option 3 (split at parse time) declined. In a secondary entry (059 R3) the rule is judged HEAD BY HEAD — the recommendation, taken when the question went unanswered, and kept. The spec wording (`docs/kernel-language.md` §5.1's secondary-entry row; §5.3's scoping rule, its enumeration of what introduces nothing, its paren-less spellings and its multi-head paragraph; proposal 059) kept as written. The labeled-rule-in-a-host-`provides`-block load failure found on the way is filed as WI-20261024-RMZQZ, not fixed here.
+
+### 2026-10-24T11:51:15Z — feedback — claude
+
+/code-review, three rounds (2026-10-24), what each finding became. FIXED: (1) a multi-head rule the load refuses for its SHAPE — no body, no label, `⊥` among its heads — stores nothing, so it mints nothing and files no clause row: ONE decider, `several_heads_refusal` (scaland `severalHeadsRefusal`), read by `load_rule` and by the clause path's mint and by 059 R3's deferral, which skips such a rule (before, the refused line drew "introduces that name at 2 scopes" / "declare it" / R3's "introduces no name at all" too). (2) 059 R3 takes its verdict and its reason off ONE walk: `RuleHeadCollectPass::collect` records a `HeadMiss` (position + reason) for every head of a deferred rule that introduces nothing — a `Query` source's head too — beside its `RuleHeadSite`s; the judge refuses a rule with a miss naming every such head by position and with its own reason (a one-head refusal too), judges the rule's introducing heads all the same (a head refused on its own is reported now, not after the first fix), and refuses a rule with neither a site nor a miss for a head as an internal inconsistency (debug_assert) — before, it inferred a miss from "fewer sites than heads" and re-walked the heads for the reason. (3) Deterministic order where one rule's heads share its span: the site index breaks the tie in R3's report and in the absorbed-equation report. (4) Scaland refuses in rustland's order — the reading, `⊥`, WI-1090's connective, the label — so one program gets one diagnostic in both. (5) A rule with no head is refused (IR-only; the old label arm caught it for the wrong reason). (6) Tests: R3 rows one per test; the label holds no clause; the Scala parser row drives the clause store; Scala's copied load/query helpers moved into `LoadFixture`. (7) Spec: §5.3's paren-less-spellings heading (none remains unscoped), §5.1's R3 row, §5.3's label sentence (true also when a head is spelled as the label). DECLINED, with the reason: per-head refusals in `load_rule` (a non-defining connective in an empty-bodied rule, a const head, a mounted extent's head) are outside the shape decider by design — MEASURED, `rule law: aa, f(1) === 2 :- true` beside a nested `rule aa :- true` reports exactly what the two heads written apart do, `aa`'s collision being `aa`'s own fault; per-head diagnostic spans stay the RULE's, as for every single-head site (a location-convention change across every head diagnostic, not this ticket's); several R3 refusals for one rule are kept — each names a different head, as the rule written apart would.
+
+### 2026-10-24T11:51:18Z — feedback — claude
+
+2026-10-24, the measurements. Rust back-outs (77 rows: this ticket's file, the RDGQC census, APXSS, WI-1001, WI-894, in a temporary binary): 16 back-outs, each failing its rows — the table is the header of `wi_ne0e4_multi_head_introduction_test.rs`; baseline 77/77. Scala back-outs (113 rows over MultiHeadIntroductionTest, HeadIntroductionCensusTest, ParserIntegrationTest, DiagnosticLocationTest): 5, each failing its rows — the table is `MultiHeadIntroductionTest`'s header; baseline 113/113. Full Rust workspace gate on the final tree: 36 binaries, 10 701 passed, 0 failed, 17 ignored (`rustland/target/test-run-20261024-143137.log`). Full scaland `testFull`: 758 + 47 + 1 passed, 0 failed.
 

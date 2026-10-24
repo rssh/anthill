@@ -1795,6 +1795,9 @@ mod wi_rdgqc_deferred_import_mint_test;
 #[path = "include/wi_rdgqc_head_introduction_census_test.rs"]
 mod wi_rdgqc_head_introduction_census_test;
 
+#[path = "include/wi_ne0e4_multi_head_introduction_test.rs"]
+mod wi_ne0e4_multi_head_introduction_test;
+
 #[path = "include/wi_8k4rb_equation_subject_goal_position_test.rs"]
 mod wi_8k4rb_equation_subject_goal_position_test;
 

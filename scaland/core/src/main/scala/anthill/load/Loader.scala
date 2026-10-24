@@ -1316,7 +1316,7 @@ object Loader:
         case Item.NamespaceItem(_) | Item.SortWithBodyItem(_) =>
 
     private def collect(rule: Rule, scope: kb.ScopeId, prefix: String): Unit =
-      for (name, kind) <- ruleIntroducedFunctor(rule, fileSym, fileTerms) do
+      for (name, kind) <- headIntroductions(rule, fileSym, fileTerms) do
         sites += RuleHeadSite(fileIdx, scope, prefix, name, kind, rule.span)
 
     /** A fact is the one-head PREDICATE rule, so it is asked [[introducedName]]'s
@@ -1338,8 +1338,8 @@ object Loader:
     * laws are ignored INSIDE ITS OWN SORT, on a program that loads clean.
     *
     * WI-898 — WHICH KIND the fresh symbol gets travelled with the name from the same
-    * head walk that picked it ([[ruleIntroducedFunctor]]), so no second walk can
-    * disagree.
+    * head walk that picked it ([[headIntroduces]], asked per head by
+    * [[headIntroductions]]; WI-20260908-NE0E4), so no second walk can disagree.
     *
     * `defineSymbolOnce`, not `define`: `define` writes `byQualifiedName` for the
     * qualified name UNCONDITIONALLY whenever the SHORT name is new in the target scope,
@@ -1758,9 +1758,9 @@ object Loader:
       case _                                 => false
 
   /** Does this rule's body add NOTHING to its head — no body at all, or a body of
-    * nothing but erased `true`s? Asked by [[ruleIntroducedFunctor]], for which an
-    * equation is BODYLESS (§8.3), and by [[loadRuleHeads]]'s non-defining-connective
-    * refusal, whose subject is the same emptiness.
+    * nothing but erased `true`s? Asked by [[headIntroduces]], for which an equation is
+    * BODYLESS (§8.3), and by [[loadRuleHeads]]'s non-defining-connective refusal, whose
+    * subject is the same emptiness.
     *
     * NOT the same question as "is this a DECLARATION", which is [[ruleReading]]'s and is
     * keyed on the SYNTACTIC absence of a body. That is 061's split point: `rule p(?x)`
@@ -1970,12 +1970,13 @@ object Loader:
     * `match` on it with no shape question of its own.
     *
     * A FACT head needs no variant: it is the one-head predicate rule (§6.1) and gets
-    * these answers through [[introducedName]]. A MULTI-head rule's leak is not one
-    * either — [[SeveralHeads]] says only that the rule names no single predicate, while
-    * each of its heads still lands a clause under a functor no scope owns
-    * (WI-20260908-NE0E4). */
+    * these answers through [[introducedName]]. Nor does a MULTI-head rule with a body:
+    * each of its heads asks [[headIntroduces]] on its own ([[headIntroductions]],
+    * WI-20260908-NE0E4). */
   private enum NoIntroduction:
-    /** SEVERAL HEADS name no single predicate. Carries the count the sentence quotes. */
+    /** SEVERAL HEADS on a BODY-LESS rule, which DECLARES and so names one predicate.
+      * Carries the count the sentence quotes. A multi-head rule with a body is N clauses,
+      * and each head introduces on its own ([[headIntroductions]], WI-20260908-NE0E4). */
     case SeveralHeads(count: Int)
     /** A `⊥` denial, which names no predicate. */
     case DenialHead
@@ -2040,33 +2041,92 @@ object Loader:
     * THE HEAD COUNT IS ASKED FIRST: a multi-head rule whose first head is also malformed
     * is told it writes several heads, not that its first one is unreadable.
     *
-    * The SUBJECT is the node the rule is about: for an equation (`ite(true, ?t, ?_) <=>
-    * ?t`) that is the LHS; for a predicate head it is the head itself. This is the one
-    * place the two part ways, and the kind travels with the name so a second walk cannot
-    * disagree (WI-898). The rule's LABEL is deliberately never read. */
+    * The ONE-NAME question, which is the DECLARATION reader's ([[ruleReading]]): a
+    * declaration declares one predicate, so several heads answer
+    * [[NoIntroduction.SeveralHeads]] here. The clause path asks [[headIntroductions]],
+    * which takes a multi-head rule with a body head by head (WI-20260908-NE0E4). */
   private def ruleIntroducedFunctor(
     rule: Rule, fileSym: SymbolTable, fileTerms: SimpleTermStore
   ): Either[NoIntroduction, (String, SymbolKind)] =
     rule.heads match
-      case IndexedSeq(RuleHead.Bottom) => Left(NoIntroduction.DenialHead)
+      case IndexedSeq(RuleHead.Bottom)           => Left(NoIntroduction.DenialHead)
       case IndexedSeq(RuleHead.TermHead(headId)) =>
-        // Only a BODY-LESS rule can be an equation (a `:-` rule with an `=` head is an
-        // ordinary predicate whose head happens to be an equality goal).
-        //
-        // §8.3 — an equation is BODYLESS, which is a property of the RULE, so the
-        // question goes through the ONE owner of it ([[ruleBodyIsEmptyConjunction]])
-        // rather than off `body.isDefined` directly: since 061 `rule f(?x) <=> ?x :-
-        // true` is the explicit spelling of the same empty body, and it must read as the
-        // equation it is HERE and at [[loadRuleHeads]] alike.
-        val equationLhs =
-          if ruleBodyIsEmptyConjunction(rule, fileTerms) then
-            parseEquationLhs(fileSym, fileTerms, headId)
-          else None
-        val (subject, kind) = equationLhs match
-          case Some(lhs) => (lhs, SymbolKind.EquationFunctor)
-          case None      => (headId, SymbolKind.Goal)
-        introducedName(fileSym, fileTerms, subject).map((_, kind))
-      case heads => Left(NoIntroduction.SeveralHeads(heads.length))
+        headIntroduces(ruleBodyIsEmptyConjunction(rule, fileTerms), headId, fileSym, fileTerms)
+      case heads                                 => Left(NoIntroduction.SeveralHeads(heads.length))
+
+  /** What ONE head of `rule` introduces. The SUBJECT is the node the head is about: for
+    * an equation (`ite(true, ?t, ?_) <=> ?t`) that is the LHS; for a predicate head it is
+    * the head itself. This is the one place the two part ways, and the kind travels with
+    * the name so a second walk cannot disagree (WI-898). The rule's LABEL is deliberately
+    * never read. */
+  private def headIntroduces(
+    bodyless: Boolean, headId: TermId, fileSym: SymbolTable, fileTerms: SimpleTermStore
+  ): Either[NoIntroduction, (String, SymbolKind)] =
+    // Only a BODY-LESS rule can be an equation (a `:-` rule with an `=` head is an
+    // ordinary predicate whose head happens to be an equality goal).
+    //
+    // §8.3 — an equation is BODYLESS, which is a property of the RULE, so the caller
+    // asks the ONE owner of it ([[ruleBodyIsEmptyConjunction]]) once per rule, as
+    // rustland's `head_subject_name` is handed it, rather than off `body.isDefined`
+    // directly: since 061 `rule f(?x) <=> ?x :- true` is the explicit spelling of the
+    // same empty body, and it must read as the equation it is HERE and at
+    // [[loadRuleHeads]] alike.
+    val equationLhs =
+      if bodyless then parseEquationLhs(fileSym, fileTerms, headId)
+      else None
+    val (subject, kind) = equationLhs match
+      case Some(lhs) => (lhs, SymbolKind.EquationFunctor)
+      case None      => (headId, SymbolKind.Goal)
+    introducedName(fileSym, fileTerms, subject).map((_, kind))
+
+  /** WI-20260908-NE0E4 — every name a rule's HEADS introduce, for the clause path's mint.
+    *
+    * A multi-head rule WITH A BODY is N clauses sharing one body (§5.3, "conjunctive
+    * sugar"), so each head introduces exactly what the single-head rule `Hᵢ :- B` would:
+    * at the scope it is written in, unless its name already denotes. It used to introduce
+    * nothing — [[ruleIntroducedFunctor]] answers `SeveralHeads` — and each head then took
+    * the bare intern, ONE global name: `rule lawP: aa, bb :- …` in sort P and `rule lawQ:
+    * aa, cc :- …` in sort Q shared `aa`, and P's reader answered from Q's clause.
+    *
+    * A MULTI-HEAD RULE THAT STORES NOTHING introduces nothing — a body-less one (a
+    * declaration declares ONE predicate), an unlabeled one, one with `⊥` among its heads.
+    * The load refuses each ([[severalHeadsRefusal]], the one decider), so minting its
+    * heads would put names in the table for a rule that stores nothing, and the refused
+    * line drew a second error ("introduces that name at 2 scopes", "declare it"). Mirrors
+    * rustland's `RuleHeadCollectPass::collect`. */
+  private def headIntroductions(
+    rule: Rule, fileSym: SymbolTable, fileTerms: SimpleTermStore
+  ): IndexedSeq[(String, SymbolKind)] =
+    if severalHeadsRefusal(rule).isDefined then IndexedSeq.empty
+    else
+      val bodyless = ruleBodyIsEmptyConjunction(rule, fileTerms)
+      rule.heads.flatMap:
+        case RuleHead.TermHead(headId) => headIntroduces(bodyless, headId, fileSym, fileTerms).toOption
+        // A `⊥` denial names no predicate.
+        case RuleHead.Bottom           => None
+
+  /** WHY A RULE WITH SEVERAL HEADS STORES NO CLAUSE AT ALL — `None` for every rule that
+    * stores one per head (a labeled rule with a body and no `⊥` among its heads) and for
+    * every one-head rule. ONE DECIDER, read by the load that refuses such a rule
+    * ([[loadRuleHeads]]; the body-less arm through [[ruleReading]]'s `DeclaresNothing`)
+    * and by the clause path's mint ([[headIntroductions]]). Mirrors rustland's
+    * `several_heads_refusal`, arm for arm and in its order: the body first, then `⊥`,
+    * then the label. */
+  private def severalHeadsRefusal(rule: Rule): Option[SeveralHeadsRefusal] =
+    if rule.heads.length < 2 then None
+    else if rule.body.isEmpty then Some(SeveralHeadsRefusal.Declaration)
+    else if rule.heads.contains(RuleHead.Bottom) then Some(SeveralHeadsRefusal.DenialAmongHeads)
+    else if rule.label.isEmpty then Some(SeveralHeadsRefusal.Unlabeled)
+    else None
+
+  private enum SeveralHeadsRefusal:
+    /** No body: the rule reads as a DECLARATION, which declares one predicate. */
+    case Declaration
+    /** A `⊥` denial beside other heads. NO SOURCE REACHES IT: the grammar writes `⊥`
+      * only as a rule's sole head; the IR can still hold the shape. */
+    case DenialAmongHeads
+    /** No label: N clauses with no citation handle. */
+    case Unlabeled
 
   /** THE SHAPE: a head the infix desugar wrote with an equality-family connective —
     * its functor spelling and its LHS operand — or `None` when `head` is not one. The
@@ -3010,16 +3070,41 @@ object Loader:
     val hasBottom = rule.heads.exists { case RuleHead.Bottom => true; case _ => false }
     val positiveHeads = rule.heads.collect { case RuleHead.TermHead(t) => t }
 
-    if hasBottom && rule.heads.length > 1 then
+    // The rule's SHAPE refusal ([[severalHeadsRefusal]], the one decider the clause
+    // path's mint reads too — [[headIntroductions]] — so a rule refused here mints
+    // nothing), read at the places below it is reported from. THE REFUSALS RUN IN
+    // RUSTLAND'S ORDER (`load_rule`): the reading, `⊥`, WI-1090's connective, the label —
+    // so one program gets one diagnostic in both implementations (found by
+    // `/code-review`: an unlabeled `rule f(1) === 2, g(1) :- true` was told about its
+    // label here and about its `===` there).
+    val severalHeads = severalHeadsRefusal(rule)
+
+    // PROPOSAL 061 — NO BODY ⇒ DECLARES. A body-less plain head brought its predicate
+    // into existence in PASS 1 ([[declarePredicate]]) and asserts NOTHING here;
+    // asserting it is what `fact` and the explicit `:- true` are for. The reading is
+    // taken from the ONE decider both passes share, so the name pass 1 minted and the
+    // clause this pass declines to store cannot disagree.
+    //
+    // ASKED BEFORE WI-1090's CONNECTIVE REFUSAL, in rustland's order (`load_rule` reads
+    // `rule_reading` first): a body-less multi-head rule with a `===` head is refused for
+    // what it is — several heads where a declaration declares one — in both
+    // implementations. A one-head connective rule reads `Clause` here and reaches the
+    // refusal below unchanged.
+    ruleReading(rule, fileSym, fileTerms) match
+      case RuleReading.Clause => ()
+      case RuleReading.Declaration(name) =>
+        refuseDeclarationThatCannotStand(kb, rule, name, fileSym, fileTerms, scope, errors)
+        return
+      case RuleReading.DeclaresNothing(why) =>
+        errors += LoadError.Other(
+          "a body-less rule DECLARES its predicate (proposal 061, §5.3), but this one " +
+          s"declares nothing: ${why.detail}",
+          rule.span)
+        return
+
+    if severalHeads.contains(SeveralHeadsRefusal.DenialAmongHeads) then
       errors += LoadError.Other(
         "denial heads (`⊥`) cannot be combined with positive heads in a multi-head rule",
-        rule.span)
-      return
-
-    if positiveHeads.length > 1 && rule.label.isEmpty then
-      errors += LoadError.Other(
-        "multi-head rule requires a label so the rule has a unique citation handle " +
-        "(e.g. `rule my_law: H1, H2 :- B`)",
         rule.span)
       return
 
@@ -3039,22 +3124,12 @@ object Loader:
         refuseNonDefiningConnectiveHead(fileSym, fileTerms, h, fileTerms.spanOf(h), errors))
       if refused then return
 
-    // PROPOSAL 061 — NO BODY ⇒ DECLARES. A body-less plain head brought its predicate
-    // into existence in PASS 1 ([[declarePredicate]]) and asserts NOTHING here;
-    // asserting it is what `fact` and the explicit `:- true` are for. The reading is
-    // taken from the ONE decider both passes share, so the name pass 1 minted and the
-    // clause this pass declines to store cannot disagree.
-    ruleReading(rule, fileSym, fileTerms) match
-      case RuleReading.Clause => ()
-      case RuleReading.Declaration(name) =>
-        refuseDeclarationThatCannotStand(kb, rule, name, fileSym, fileTerms, scope, errors)
-        return
-      case RuleReading.DeclaresNothing(why) =>
-        errors += LoadError.Other(
-          "a body-less rule DECLARES its predicate (proposal 061, §5.3), but this one " +
-          s"declares nothing: ${why.detail}",
-          rule.span)
-        return
+    if severalHeads.contains(SeveralHeadsRefusal.Unlabeled) then
+      errors += LoadError.Other(
+        "multi-head rule requires a label so the rule has a unique citation handle " +
+        "(e.g. `rule my_law: H1, H2 :- B`)",
+        rule.span)
+      return
 
     // WI-20260901-719FJ: a top-level body atom IS a goal, so a dotted paren-less
     // citation written there is the NAME. Below the top level a goal is found by

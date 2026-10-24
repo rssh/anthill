@@ -1,8 +1,7 @@
 package anthill.load
 
 import anthill.kb.{KnowledgeBase, LoadFixture}
-import anthill.term.{Term, Var, Literal}
-import anthill.resolve.SearchStream
+import anthill.kb.LoadFixture.{groundAnswers, refusal, tryLoad, unaryAnswers as answers}
 
 /** WI-20260821-RDGQC (rustland's twin: `wi_rdgqc_head_introduction_census_test`) — WHICH
   * HEAD SHAPES INTRODUCE A NAME, STATED ONCE AND DRIVEN ONCE.
@@ -19,7 +18,7 @@ import anthill.resolve.SearchStream
   * | `rule f(?x) <=> …` equation subject   | YES     | A, two distinct symbols         |
   * | `fact p(1)`, `fact p`                 | YES     | A, 1 and 1, as `rule … :- true` |
   * | head in a host `provides` block        | YES     | A, 1 and 1 in the realized sorts |
-  * | `rule l: p(1), q(9) :- …`             | **no**  | B, 2 and 2 (NE0E4)              |
+  * | `rule l: p(1), q(9) :- …`             | YES     | B, 1 and 1 (NE0E4)              |
   * | `rule ns.p …`, `fact ns.p(…)`, `..p`  | n/a     | C, D — REFERENCES, by design    |
   * | `rule ?x.m(?y)`                       | n/a     | C — the desugar's functor       |
   *
@@ -44,7 +43,8 @@ import anthill.resolve.SearchStream
   *    and distinct`.
   *
   * THREE ROWS PASS UNDER EVERY ONE OF THOSE, BY DESIGN, and say so at their site: the
-  * multi-head row pins NE0E4's defect and fails when that defect is FIXED; `a fact head
+  * multi-head row is NE0E4's and fails under that ticket's back-out
+  * (`MultiHeadIntroductionTest`); `a fact head
   * and a rule head of one name…` is the control a fact arm must not break; and `the
   * repairs those refusals advise…` measures the advice, a declared predicate needing no
   * mint. PART C ALSO PASSES AGAINST THE TWO-WALK CODE — merging the walks moved no
@@ -53,34 +53,8 @@ import anthill.resolve.SearchStream
   */
 class HeadIntroductionCensusTest extends munit.FunSuite:
 
-  private def tryLoad(files: (String, String)*)(using munit.Location)
-      : Either[Seq[String], KnowledgeBase] =
-    val kb = KnowledgeBase()
-    Prelude.register(kb)
-    LoadFixture.registerKernel(kb)
-    val parsed = files.toIndexedSeq.map((label, src) => LoadFixture.parsed(src, label))
-    val errs = Loader.loadAll(kb, parsed)
-    if errs.isEmpty then Right(kb) else Left(errs.toSeq.map(_.render))
-
   private def loaded(src: String)(using munit.Location): KnowledgeBase =
     LoadFixture.loaded(src, "census.anthill")
-
-  private def refusal(files: (String, String)*)(using munit.Location): Seq[String] =
-    tryLoad(files*).left.getOrElse(fail("expected a load refusal, the program loaded"))
-
-  /** Solutions of `<qn>(?x)` — the goal built on the SYMBOL the name resolves to, so a
-    * clause that landed on another symbol is not counted. */
-  private def answers(kb: KnowledgeBase, qn: String)(using munit.Location): Int =
-    val sym = kb.tryResolveSymbol(qn).getOrElse(fail(s"`$qn` must resolve — fixture drift"))
-    val v = kb.alloc(Term.Var(Var.Global(kb.freshVar(kb.intern("x")))))
-    SearchStream.resolve(kb, kb.alloc(Term.Fn(sym, IArray(v), IArray.empty)))
-      .allSolutions(kb).length
-
-  private def groundAnswers(kb: KnowledgeBase, qn: String, value: Long)(using munit.Location): Int =
-    val sym = kb.tryResolveSymbol(qn).getOrElse(fail(s"`$qn` must resolve"))
-    val arg = kb.alloc(Term.Const(Literal.IntLit(value)))
-    SearchStream.resolve(kb, kb.alloc(Term.Fn(sym, IArray(arg), IArray.empty)))
-      .allSolutions(kb).length
 
   /** The names the scope `qn` itself declares. */
   private def locals(kb: KnowledgeBase, qn: String)(using munit.Location): Set[String] =
@@ -260,13 +234,14 @@ class HeadIntroductionCensusTest extends munit.FunSuite:
       assert(errors.exists(_.contains(target)), errors.toString)
   }
 
-  // ── PART B — THE SHAPE LEFT OUT: the leak, pinned beside a control ──────────
+  // ── PART B — THE SHAPE THAT USED TO LEAK, now scoped like the rest ──────────
 
-  test("a multi-head rule's functors are unscoped and two scopes share one predicate") {
-    // `ruleIntroducedFunctor` answers `SeveralHeads` — the rule names no SINGLE
-    // predicate — while each head still lands its own clause, under the bare intern.
-    // WI-20260908-NE0E4 owns the fix; closing it makes this (1, 1) and both names
-    // resolve.
+  test("a multi-head rule's heads are scoped where they are written") {
+    // A multi-head rule with a body is N clauses (§5.3), so each head introduces what
+    // its single-head rule would (WI-20260908-NE0E4). THIS ROW USED TO PIN THE LEAK —
+    // `ruleIntroducedFunctor` answered `SeveralHeads`, the heads took the bare intern,
+    // and each scope read the other's clause: (2, 2), neither name citable. The
+    // cross-sort row and the back-outs are `MultiHeadIntroductionTest`'s.
     //
     // THE BODIES ARE `true`, so the row reads no fact: written `:- base(0)` it moved
     // with the fact arm (a shared `base` doubled every count) and pinned two things.
@@ -278,15 +253,11 @@ class HeadIntroductionCensusTest extends munit.FunSuite:
     val kb = loaded(
       two("ma", "rule law: pick(1), other(9) :- true") + "\n" +
         two("mb", "rule law: pick(2), other(8) :- true"))
-    assertEquals((answers(kb, "zzC.ma.see"), answers(kb, "zzC.mb.see")), (2, 2),
-      "LIVE (NE0E4): each scope reads the other's head")
-    assert(!kb.hasQualifiedName("zzC.ma.pick") && !kb.hasQualifiedName("zzC.mb.pick"),
-      "and neither name is citable — the clauses live under one uncitable global")
-    // THE CONTROL that isolates the HEAD COUNT: the same clause as a single-head rule.
-    val ctl = loaded(
-      two("mca", "rule pick(1) :- true") + "\n" + two("mcb", "rule pick(2) :- true"))
-    assertEquals((answers(ctl, "zzC.mca.see"), answers(ctl, "zzC.mcb.see")), (1, 1),
-      "single-head control must scope — that is what makes the axis the head COUNT")
+    assertEquals((answers(kb, "zzC.ma.see"), answers(kb, "zzC.mb.see")), (1, 1),
+      "each scope answers from its OWN head and neither from the other's")
+    assert(kb.hasQualifiedName("zzC.ma.pick") && kb.hasQualifiedName("zzC.mb.pick")
+        && kb.hasQualifiedName("zzC.ma.other"),
+      "and every head is CITABLE under its own scope's qualified name")
   }
 
   // ── PART C — EVERY `NoIntroduction` REASON IS REACHABLE, AND SAYS ITS OWN THING ──

@@ -6150,6 +6150,11 @@ pub fn scan_definitions_with_sources(
     let mut heads: Vec<RuleHeadSite<'_>> = Vec::new();
     // WI-1001 — see [`ClauseSite`]. Collected on the same walk, kept in its own list.
     let mut clause_sites: Vec<ClauseSite<'_>> = Vec::new();
+    // WI-20260908-NE0E4 — see [`HeadMiss`]. The same walk, its own list, kept for the
+    // rules R3 judges.
+    let mut head_misses: Vec<HeadMiss> = Vec::new();
+    let deferred_rules: HashSet<(usize, u32)> =
+        entry_rules.iter().map(|er| (er.file_idx, er.span.start)).collect();
     for (file_idx, file) in files.iter().enumerate() {
         kb.symbols.set_asking_file(Some(source_ids[file_idx]));
         // WI-745 / WI-953: this pass reports now, so its errors are stamped with
@@ -6164,6 +6169,8 @@ pub fn scan_definitions_with_sources(
             file_idx,
             sites: &mut heads,
             clauses: &mut clause_sites,
+            misses: &mut head_misses,
+            deferred_rules: &deferred_rules,
             role,
             // ONLY WHEN 059 R3 HAS SOMETHING TO JUDGE — the same condition
             // `judge_secondary_entry_rules` returns on, settled by sub-pass 1b above.
@@ -6376,6 +6383,8 @@ pub fn scan_definitions_with_sources(
     let r3_refused = judge_secondary_entry_rules(
         kb,
         &heads,
+        &head_misses,
+        &deferred_rules,
         &clause_sites,
         &denotes,
         &resolved,
@@ -7413,10 +7422,11 @@ fn scan_rule(
 ///
 /// The shape that reached that fallback is an EQUATION (`lhs = rhs` / `lhs <=>
 /// rhs`): its head functor is the CONNECTIVE, so the name it introduces sits at
-/// `pos_args[0]` ([`rule_introduced_functor_name`]) and was never looked at here.
+/// `pos_args[0]` ([`head_subject_name`]) and was never looked at here.
 ///
 /// WHICH name that is — and why a rule's LABEL has no say in it (WI-896) — is
-/// [`rule_introduced_functor_name`]'s question, answered there.
+/// [`head_subject_name`]'s question narrowed by [`subject_introduces`], asked PER HEAD
+/// ([`RuleHeadCollectPass::collect`]; WI-20260908-NE0E4), and answered there.
 ///
 /// The two halves of the ticket land together: scoping alone would break every
 /// cross-file bare use (`ordered.anthill`'s `max` law reaching `bool.anthill`'s
@@ -7458,9 +7468,8 @@ fn scan_rule_goal(kb: &mut KnowledgeBase, site: &RuleHeadSite<'_>, wiring: &mut 
     // kind SET rather than through whichever the pass reached first (WI-898).
     // WI-1075: a MARKED head (`..a.b`) can never reach this mint, and does not need
     // its own arm here — the marker is built from the separator, so every marked name
-    // contains a `.` and [`rule_introduced_functor_name`]'s older refusal ("a qualified
-    // name references an existing symbol; it never introduces one") already returned
-    // `None` for it. What the marker still needs is the REFUSAL, since a marked head
+    // contains a `.` and [`subject_introduces`]' refusal ("a qualified name references
+    // an existing symbol; it never introduces one") already returned `Err` for it. What the marker still needs is the REFUSAL, since a marked head
     // that names nothing would otherwise fall to the WI-476 bare intern and store a
     // clause under a symbol nothing can cite: that is
     // [`Loader::refuse_unresolvable_absolute_head`], at the LOAD of a rule or a fact.
@@ -7532,7 +7541,7 @@ impl RuleIntroduction {
 /// meaning lives in the two callers:
 ///
 /// * [`parse_equation_lhs`] adds `is_equation_functor` — the DEFINING subset — and
-///   is what [`rule_introduced_functor_name`] asks.
+///   is what [`head_subject_name`] asks.
 /// * `Loader::collect_rule_tvar_names` takes this one whole, because a `[T]`
 ///   introducer rides on the LHS of a comparison exactly as it does on the LHS of a
 ///   definition.
@@ -7562,8 +7571,8 @@ fn parse_connective_head<'a>(
 /// The LHS operand of a parse-layer DEFINING EQUATION head (`lhs = rhs` / `<=>`), or
 /// `None` when `head` is not one — [`parse_connective_head`] narrowed to the
 /// connectives that define ([`is_equation_functor`](crate::parse::pratt::is_equation_functor)).
-/// The question [`rule_introduced_functor_name`] asks: whose name does this rule
-/// introduce, and does the head shape make it an equation functor?
+/// The question [`head_subject_name`] asks: whose name does this head introduce, and
+/// does the head shape make it an equation functor?
 ///
 /// `===` is deliberately NOT one (WI-1090, spec §"Equality: test vs. bind"): it is a
 /// test, its subject defines nothing, and a bodyless `===` head is refused at load
@@ -7654,8 +7663,8 @@ fn is_empty_conjunction_goal(parse_terms: &SimpleTermStore, tid: TermId) -> bool
 }
 
 /// Does this rule's body add NOTHING to its head — no body at all, or a body that is
-/// exactly the empty conjunction? Asked by [`rule_introduced_functor_name`], for which
-/// an equation is BODYLESS (§8.3).
+/// exactly the empty conjunction? It is the `bodyless` every reader of a head's subject
+/// passes [`head_subject_name`], for which an equation is BODYLESS (§8.3).
 ///
 /// IT IS NOT THE SAME EMPTINESS `load_rule` READS, and an earlier version of this
 /// comment claimed it was (found by /code-review). `load_rule` judges its own body off
@@ -7763,6 +7772,59 @@ fn rule_reading(
         // acquire a declaration reading by accident.
         Ok((_, RuleIntroduction::Equation)) => RuleReading::Clause,
         Err(_) => RuleReading::DeclaresNothing,
+    }
+}
+
+/// WHY A RULE WITH SEVERAL HEADS STORES NO CLAUSE AT ALL — `None` for every rule that
+/// stores one per head (a labeled rule with a body and no `⊥` among its heads) and for
+/// every one-head rule.
+///
+/// ONE DECIDER, read by the load that refuses such a rule (`Loader::load_rule`, which
+/// reaches the [`Self::Declaration`] arm through [`rule_reading`]'s `DeclaresNothing`) and
+/// by every pass that would otherwise act on its heads — the clause path's mint
+/// ([`RuleHeadCollectPass::collect`]) and 059 R3's deferral
+/// ([`SecondaryEntryPass::defer_rule`]). A head of a rule that stores nothing must mint
+/// nothing: since each head of a multi-head rule introduces on its own
+/// (WI-20260908-NE0E4), a refused line otherwise also put its heads' names in the table,
+/// and the author was told twice about it — "requires a label", then "introduces that
+/// name at 2 scopes" or "declare it" for a line that loads nothing (found by
+/// `/code-review`).
+///
+/// THE ARMS ARE ASKED IN `load_rule`'s ORDER: the body first (a body-less rule is
+/// refused through [`rule_reading`] before any head is converted), then `⊥`, then the
+/// label.
+///
+/// IT DECIDES THE RULE'S SHAPE, NOT ITS HEADS. `load_rule` also drops a whole rule over
+/// ONE head — a non-defining connective in an empty-bodied rule (WI-1090), a const head,
+/// a mounted extent's head — and the rule's other heads still mint: each is judged as its
+/// single-head rule would be. MEASURED (2026-10-24): `rule law: aa, f(1) === 2 :- true`
+/// beside a nested `sort S { rule aa :- true }` reports exactly what `rule aa :- true`
+/// and `rule f(1) === 2 :- true` written apart do — the `===` refusal, and `aa`
+/// introduced at two visible scopes, a fault of `aa` itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SeveralHeadsRefusal {
+    /// No body: the rule reads as a DECLARATION, which declares one predicate
+    /// ([`NoIntroduction::SeveralHeads`]).
+    Declaration,
+    /// A `⊥` denial beside other heads. NO SOURCE REACHES IT: the grammar writes `⊥` only
+    /// as a rule's sole head (`rule_heads: choice('⊥', commaSep1(…))`). The parse IR's
+    /// `Vec<RuleHead>` can still hold the shape, and `load_rule` refuses it.
+    DenialAmongHeads,
+    /// No label: N clauses with no citation handle.
+    Unlabeled,
+}
+
+fn several_heads_refusal(r: &Rule) -> Option<SeveralHeadsRefusal> {
+    if r.heads.len() < 2 {
+        None
+    } else if r.body.is_none() {
+        Some(SeveralHeadsRefusal::Declaration)
+    } else if r.heads.iter().any(|h| matches!(h, RuleHead::Bottom)) {
+        Some(SeveralHeadsRefusal::DenialAmongHeads)
+    } else if r.label.is_none() {
+        Some(SeveralHeadsRefusal::Unlabeled)
+    } else {
+        None
     }
 }
 
@@ -8027,14 +8089,14 @@ fn non_defining_connective_head(
 /// the [`NoIntroduction`] variant says WHICH shape (a non-term head, a desugared
 /// subject, a head that is not an application at all).
 ///
-/// TWO QUESTIONS ARE ASKED OF THIS ANSWER, and they part ways on two things.
-/// [`rule_introduced_functor_name`] asks which name the RULE introduces — a question
-/// about the whole rule, so [`subject_introduces`] adds the head COUNT and the
-/// qualified-spelling refusal. WI-20260827-APXSS's clause census asks where each head's
-/// clause LANDS, and asks it PER HEAD: a labeled multi-head rule fans out into one
-/// asserted rule per head (`load_rule`), so every one of them files a clause while the
-/// rule introduces nothing. Split so the SHAPE walk below has one owner and the two
-/// readers differ only in what they layer on top.
+/// TWO QUESTIONS ARE ASKED OF THIS ANSWER, and they part ways on one thing: the
+/// qualified spelling. Which name a head INTRODUCES is [`subject_introduces`] applied to
+/// it — a dotted subject references, and introduces nothing. WI-20260827-APXSS's clause
+/// census asks where each head's clause LANDS, and a dotted head lands one. Both are asked
+/// PER HEAD: a labeled multi-head rule fans out into one asserted rule per head
+/// (`load_rule`), so each head files a clause and each introduces what its single-head
+/// rule would (WI-20260908-NE0E4). Split so the SHAPE walk below has one owner and the
+/// two readers differ only in what they layer on top.
 ///
 /// WHICH NODE THE RULE IS ABOUT is the only thing the two kinds of head disagree
 /// on. A PREDICATE head is its own subject; an EQUATION's head functor is the
@@ -8203,10 +8265,17 @@ fn head_subject_name<'a>(
 /// whole ladder, whose dotted rung would answer such a name correctly).
 ///
 /// IT IS NOT A CENSUS OF CLAUSES, and WI-20260827-APXSS is the ticket that says so: a
-/// dotted head introduces nothing AND STILL LANDS A CLAUSE on whatever it references,
-/// and so does every head of a labeled MULTI-HEAD rule. Anything asking "which predicate
-/// does this clause belong to" must read [`head_subject_name`] PER HEAD and resolve it,
-/// never this.
+/// dotted head introduces nothing AND STILL LANDS A CLAUSE on whatever it references.
+/// Anything asking "which predicate does this clause belong to" must read
+/// [`head_subject_name`] PER HEAD and resolve it, never this.
+///
+/// NOR IS IT THE CLAUSE PATH'S INTRODUCTION, which is asked PER HEAD too
+/// ([`RuleHeadCollectPass::collect`], WI-20260908-NE0E4): a multi-head rule with a body
+/// is N clauses (§5.3, "conjunctive sugar"), and each head introduces exactly what the
+/// single-head rule `Hᵢ :- B` would. This is the ONE-NAME question — every reader of it
+/// is a DECLARATION reader ([`rule_reading`], pass 1's mint, the declaration checks in
+/// `load_rule`), and a declaration declares one predicate, so several heads still answer
+/// [`NoIntroduction::SeveralHeads`] here.
 fn rule_introduced_functor_name<'a>(
     r: &Rule,
     parse_sym: &'a crate::intern::SymbolTable,
@@ -8215,19 +8284,16 @@ fn rule_introduced_functor_name<'a>(
     // THE HEAD COUNT IS ASKED FIRST, and that is WI-20260821-RDGQC merging two walks
     // rather than a change of verdict: [`bodyless_declares_nothing_detail`] already
     // asked it first (a multi-head rule whose FIRST head is also malformed should be
-    // told it writes several heads, not that its first one is unreadable), while this
-    // walk asked it last, through [`subject_introduces`]. Every count but 1 refused
-    // then and refuses now, so no rule changes reading; what changes is that the two
-    // orders are one order, which is the only way the reason and the verdict cannot
-    // drift. `heads[0]` below is total for the same reason — a 0-head rule left
-    // through the arm above.
+    // told it writes several heads, not that its first one is unreadable). Every count
+    // but 1 refused then and refuses now. `heads[0]` below is total for the same reason
+    // — a 0-head rule left through the arm above.
     if r.heads.len() != 1 {
         return Err(NoIntroduction::SeveralHeads(r.heads.len()));
     }
     let bodyless = rule_body_is_empty_conjunction(r, parse_terms);
     let (subject, introduced_by) =
         head_subject_name(&r.heads[0], bodyless, parse_sym, parse_terms)?;
-    Ok((subject_introduces(subject, r.heads.len())?, introduced_by))
+    Ok((subject_introduces(subject)?, introduced_by))
 }
 
 /// WI-20260821-RDGQC — **THE ENUMERATION**: every reason a rule head introduces no name
@@ -8256,18 +8322,17 @@ fn rule_introduced_functor_name<'a>(
 /// reason of its own; `wi_rdgqc_head_introduction_census_test` drives the surface forms
 /// so the shared answer cannot drift.
 ///
-/// One deliberate leak remains outside a single introduced name: each functor of a
-/// **MULTI-HEAD** rule lands its own clause while the rule introduces nothing — the
-/// [`Self::SeveralHeads`] arm is that refusal, and WI-20260908-NE0E4 owns the cross-sort
-/// leak it leaves. A variant no producer builds is its own defect class (WI-816), so that
-/// fact is stated here rather than represented by another `NoIntroduction` arm.
+/// Nor does a **MULTI-HEAD** rule with a body: each of its heads asks the single-head
+/// question on its own ([`RuleHeadCollectPass::collect`], WI-20260908-NE0E4), so its
+/// answers are this enum's answers for a one-head rule.
 // `Debug` alone, and it is LOAD-BEARING: `scan_rule_goal`'s `expect` renders it, so a
 // verdict/reading disagreement panics with the REASON. No other derive has a reader.
 #[derive(Debug)]
 enum NoIntroduction<'a> {
-    /// SEVERAL HEADS name no single predicate. Carries the count the sentence quotes.
-    /// Each head still LANDS its own clause — that census is [`ClauseSite`]'s, taken
-    /// per head, and is deliberately not this question.
+    /// SEVERAL HEADS on a BODY-LESS rule, which DECLARES and so names one predicate.
+    /// Carries the count the sentence quotes. Only [`rule_introduced_functor_name`] — the
+    /// declaration question — builds it: a multi-head rule WITH a body is N clauses, and
+    /// each head introduces on its own (WI-20260908-NE0E4).
     SeveralHeads(usize),
     /// A non-term head — today exactly the `⊥` DENIAL, which names no predicate.
     DenialHead,
@@ -8319,15 +8384,19 @@ impl NoIntroduction<'_> {
     }
 }
 
-/// THE TWO REFUSALS THEMSELVES, so that a caller which already holds the subject
+/// THE REFUSAL ITSELF, so that a caller which already holds the subject
 /// ([`RuleHeadCollectPass::collect`], which needs it for the clause census anyway) can
 /// ask the question without walking the head's shape a second time — and cannot spell
-/// the answer differently. `Ok` is the name the rule INTRODUCES.
+/// the answer differently. `Ok` is the name the HEAD introduces.
 ///
 /// A QUALIFIED spelling references rather than introduces — see
-/// [`rule_introduced_functor_name`]. SEVERAL HEADS name no single predicate, so the rule
-/// introduces nothing at all; each head still LANDS its own clause, which is the census
-/// [`ClauseSite`] takes and this one does not.
+/// [`rule_introduced_functor_name`].
+///
+/// A QUESTION ABOUT ONE HEAD, and the head COUNT is no longer asked here
+/// (WI-20260908-NE0E4). It was, and a multi-head rule's heads therefore introduced
+/// nothing while each landed its clause under the bare intern — ONE global name, so two
+/// sorts writing `aa` read each other's clause. The count is the DECLARATION question's
+/// ([`rule_introduced_functor_name`]); the clause path asks this once per head.
 ///
 /// IT ALSO NARROWS THE CARRIER, and that is the dot rule doing a second job rather than
 /// a second rule (WI-20260901-719FJ): a subject reaches this as a [`Cow`] because the
@@ -8336,13 +8405,7 @@ impl NoIntroduction<'_> {
 /// A chain has at least two segments, so its name always carries the dot refused above;
 /// what survives is borrowed, and the callers that want a `&'a str` — every one of them,
 /// since only an INTRODUCED name is stored — get it without restating the invariant.
-fn subject_introduces<'a>(
-    subject: Cow<'a, str>,
-    head_count: usize,
-) -> Result<&'a str, NoIntroduction<'a>> {
-    if head_count != 1 {
-        return Err(NoIntroduction::SeveralHeads(head_count));
-    }
+fn subject_introduces<'a>(subject: Cow<'a, str>) -> Result<&'a str, NoIntroduction<'a>> {
     if subject.contains('.') {
         // BY VALUE so this MOVES rather than clones. The one subject that is `Owned` is
         // a folded dot-chain, which is exactly the shape this arm refuses — so taking a
@@ -11003,14 +11066,22 @@ impl SecondaryEntryPass<'_> {
     /// take off the head site alone: a 061 DECLARATION mints its own name in pass 1, so
     /// its head DENOTES — to itself — and the ladder answer that means "someone else
     /// already declared this" for a clause means the opposite for a declaration.
+    ///
+    /// A MULTI-HEAD RULE THAT STORES NOTHING is not deferred: `load_rule` refuses it
+    /// ([`several_heads_refusal`]), and it has no head site to judge, so R3 would add
+    /// "this head introduces no name at all" to that refusal — two reasons for one line.
     fn defer_rule(&mut self, address: Symbol, sort: &str, r: &Rule) {
+        if several_heads_refusal(r).is_some() {
+            return;
+        }
+        let (parse_sym, parse_terms) = (self.parse_sym, self.parse_terms);
         self.rules.push(SecondaryEntryRule {
             file_idx: self.file_idx,
             address,
             sort: sort.to_string(),
-            label: rule_label(self.parse_sym, r),
-            is_declaration: rule_reading(r, self.parse_sym, self.parse_terms)
-                == RuleReading::Declaration,
+            label: rule_label(parse_sym, r),
+            is_declaration: rule_reading(r, parse_sym, parse_terms) == RuleReading::Declaration,
+            head_count: r.heads.len(),
             span: r.span,
         });
     }
@@ -11188,20 +11259,60 @@ fn predicate_spans_entries_reason(name: &str, elsewhere: &str) -> String {
 }
 
 /// 059's conditions, as they reach a head that introduces NO NAME AT ALL: a DOT rule
-/// or an OPERATOR rule (whose functor is the desugar's `dot_apply` / `add`), a
-/// QUALIFIED head (which references rather than introduces), or several heads at once.
+/// or an OPERATOR rule (whose functor is the desugar's `dot_apply` / `add`), or a
+/// QUALIFIED head (which references rather than introduces). A multi-head rule is
+/// judged head by head (WI-20260908-NE0E4) and is refused naming the heads that sink it
+/// ([`head_introduces_nothing_reason`]); one that stores nothing is not deferred at all
+/// ([`SecondaryEntryPass::defer_rule`]).
 ///
 /// Excluded by condition (1) rather than by a clause of their own, which 059 calls the
 /// sign the condition is the right one — and it is what keeps the `@[simp]`-fires-in-
 /// the-typer hazard out: a desugared conclusion introduces nothing, so it can only ever
 /// be a clause of a predicate someone else owns.
-const HEAD_INTRODUCES_NOTHING_REASON: &str = "this head introduces no name at all — a \
-    DOT rule (`?x.m(?y)`) and an OPERATOR rule (`?a + ?b`) carry the desugar's own \
-    functor, a QUALIFIED head references an existing symbol, and a rule with several \
-    heads names no single predicate. So the clause joins a predicate written \
+const HEAD_INTRODUCES_NOTHING_SHAPES: &str = "a DOT rule (`?x.m(?y)`) and an OPERATOR \
+    rule (`?a + ?b`) carry the desugar's own functor, and a QUALIFIED head references an \
+    existing symbol";
+const HEAD_INTRODUCES_NOTHING_CONSEQUENCE: &str = "So the clause joins a predicate written \
     elsewhere, and the search over rules is not monotone: it can make a statement that \
     was true false. 059 R3 admits a rule in a secondary entry only when its head \
     INTRODUCES";
+
+/// The refusal for one deferred rule whose heads `missed` introduce nothing (in text
+/// order), each with ITS OWN reason. A MULTI-HEAD rule is N clauses and is judged head by
+/// head (WI-20260908-NE0E4), so its refusal names EVERY head that sinks it, by position —
+/// `rule law: Rec.p(1), Rec.q(2), f(3) :- B` is refused for heads 1 and 2, and naming
+/// only the first would refuse the author again for the second once it is fixed; a dot
+/// or an operator head's reason does not quote the head, so the position is what tells
+/// two of them apart.
+fn head_introduces_nothing_reason(head_count: usize, missed: &[&HeadMiss]) -> String {
+    if head_count == 1 {
+        let why = &missed.first().expect("a rule's miss row is made by its first miss").why;
+        return format!(
+            "this head introduces no name at all: {why}. {HEAD_INTRODUCES_NOTHING_CONSEQUENCE}"
+        );
+    }
+    let (which, whose) = match missed.len() {
+        1 => ("one introduces".to_owned(), "that head's"),
+        n => (format!("{n} introduce"), "each such head's"),
+    };
+    let named: Vec<String> = missed
+        .iter()
+        .map(|m| format!("head {}: {}", m.position, m.why))
+        .collect();
+    format!(
+        "of this rule's {head_count} heads, {which} no name at all — {}. A multi-head rule \
+         is N clauses and is judged head by head, so it is refused as {whose} own rule \
+         would be. {HEAD_INTRODUCES_NOTHING_CONSEQUENCE}",
+        named.join("; ")
+    )
+}
+
+fn one_head_introduces_nothing_reason() -> String {
+    format!(
+        "this head introduces no name at all — {HEAD_INTRODUCES_NOTHING_SHAPES}. \
+         {HEAD_INTRODUCES_NOTHING_CONSEQUENCE}"
+    )
+}
 
 /// 061's DECLARATION form, in a secondary entry. Refused, and the reason is 059's
 /// condition (2) rather than a new rule: a declaration exists precisely to let a
@@ -11360,6 +11471,10 @@ struct SecondaryEntryRule {
     /// 061's DECLARATION reading — a body-less plain head. See
     /// [`SecondaryEntryPass::defer_rule`] for why it is read at collection time.
     is_declaration: bool,
+    /// How many heads the rule writes. A multi-head rule is judged PER HEAD
+    /// (WI-20260908-NE0E4): it is admitted only when every head recorded a
+    /// [`RuleHeadSite`], and refused when one recorded a [`HeadMiss`].
+    head_count: usize,
     span: Span,
 }
 
@@ -11409,8 +11524,9 @@ struct EntryTextRange {
 /// `rule H :- true`, a fact in the main entry and a rule in a secondary entry compose
 /// ONE predicate. RDGQC also makes an introducing fact a [`RuleHeadSite`], but the two
 /// censuses still cannot fuse: this one includes every clause that LANDS on a predicate
-/// — qualified heads and each head of a multi-head rule included — while `RuleHeadSite`
-/// contains only a head that can introduce one name. Only condition (2) reads this one.
+/// — qualified heads included — while `RuleHeadSite` contains only a head whose name it
+/// can introduce: one that does, or one that DENOTES and joins. Only condition (2) reads
+/// this one.
 ///
 /// MEASURED BEFORE IT EXISTED, and found by `/code-review` rather than by a failing row:
 /// `sort Rec { fact freshp(2); rule q(0) :- not freshp(1) }` beside `namespace Rec {
@@ -11466,6 +11582,35 @@ struct ClauseSite<'f> {
     /// owned.
     subject: Cow<'f, str>,
     span: Span,
+}
+
+/// WI-20260908-NE0E4 — a rule head that introduces NO NAME, and why. The third census
+/// [`RuleHeadCollectPass::collect`] takes on its one walk, beside [`RuleHeadSite`] (a
+/// head whose name it introduces or joins) and [`ClauseSite`] (where a clause lands),
+/// and read by 059 R3 alone ([`judge_secondary_entry_rules`]).
+///
+/// THE JUDGE TAKES BOTH ITS VERDICT AND ITS REASON OFF THESE TWO CENSUSES: a deferred
+/// rule with a miss is refused naming every such head, and one with neither a miss nor a
+/// site for every head is a loader inconsistency, refused as one. It used to infer a miss
+/// from "fewer sites than heads" and walk the heads again for the reason — two walks
+/// that had to agree (found by `/code-review`).
+///
+/// EVERY PATH OF THE HEAD LOOP RECORDS ONE OF THE TWO for a deferred rule — a site, or a
+/// miss with its reason (a `Query` source's head too: a query declares nothing) — so the
+/// "neither" the judge still refuses loudly is a rule the walk never reached.
+///
+/// Recorded only for a DEFERRED rule (the pass's `deferred_rules`): the judge reads no
+/// other, and a program with one secondary entry would otherwise format a sentence for
+/// every qualified, dot and operator head it has.
+struct HeadMiss {
+    file_idx: usize,
+    /// The RULE's span — the R3 join key, as [`RuleHeadSite::span`] is.
+    span: Span,
+    /// Which head of the rule, 1-based in text order — what the refusal names it by,
+    /// since a DOT or an operator head's reason does not quote the head.
+    position: usize,
+    /// Why the head introduces nothing, in the author's terms ([`NoIntroduction::detail`]).
+    why: String,
 }
 
 /// The subject a `fact` head is ABOUT, AS WRITTEN — the same shape question
@@ -11548,12 +11693,21 @@ fn fact_head_subject_name<'a>(
 ///      is a secondary entry (this file's or another's), and a clause inside neither
 ///      reached the predicate by naming it.
 ///
-/// A rule whose head is not a [`RuleHeadSite`] at all introduces NO NAME (a dot rule, an
-/// operator rule, a qualified head, several heads) and is refused per rule, since it has
-/// no predicate to group under.
+/// A rule whose head is a [`HeadMiss`] introduces NO NAME (a dot rule, an operator rule,
+/// a qualified head) and is refused per rule, since it has no predicate to group under.
+/// A multi-head rule the load refuses (no body, no label) is never deferred here
+/// ([`SecondaryEntryPass::defer_rule`]).
+///
+/// A MULTI-HEAD rule is judged PER HEAD (WI-20260908-NE0E4): it is N clauses (§5.3),
+/// each head introduces on its own, and each joins the group of the predicate it
+/// introduces — so the rule is admitted when every head would be admitted as the
+/// single-head rule `Hᵢ :- B`. A head that introduces nothing refuses the rule, as it
+/// would refuse that head's single-head rule, and the refusal names every such head.
 fn judge_secondary_entry_rules<'f>(
     kb: &KnowledgeBase,
     heads: &[RuleHeadSite<'f>],
+    misses: &[HeadMiss],
+    deferred_rules: &HashSet<(usize, u32)>,
     clause_sites: &[ClauseSite<'f>],
     denotes: &[bool],
     resolved: &[ResolveResult],
@@ -11571,34 +11725,75 @@ fn judge_secondary_entry_rules<'f>(
     if entry_rules.is_empty() {
         return refused;
     }
-    // THE JOIN KEY. A rule's span is its identity within its file, and both passes read
-    // it off the same `Rule`.
-    let head_at: HashMap<(usize, u32), usize> = heads
-        .iter()
-        .enumerate()
-        .map(|(i, h)| ((h.file_idx, h.span.start), i))
-        .collect();
-
-    // Group the deferred rules by the PREDICATE their head is about.
-    let mut groups: HashMap<(ScopeId, &'f str), Vec<(usize, usize)>> = HashMap::new();
-    for (k, er) in entry_rules.iter().enumerate() {
-        match head_at.get(&(er.file_idx, er.span.start)) {
-            None => errors.push(
-                secondary_entry_rule_error(er, HEAD_INTRODUCES_NOTHING_REASON)
-                    .located_in(files[er.file_idx]),
-            ),
-            Some(&i) => groups
-                .entry((heads[i].scope, heads[i].name))
-                .or_default()
-                .push((k, i)),
+    // THE JOIN KEY. A rule's span is its identity within its file, and every census
+    // reads it off the same `Rule`. A KEY HOLDS EVERY SITE OF THE RULE — one per
+    // introducing head (WI-20260908-NE0E4) — so a multi-head rule's heads cannot
+    // overwrite each other here and leave all but the last unjudged. Only a DEFERRED
+    // rule's key is ever looked up, so only those are indexed — and only those record a
+    // [`HeadMiss`].
+    let mut head_at: HashMap<(usize, u32), Vec<usize>> = HashMap::new();
+    for (i, h) in heads.iter().enumerate() {
+        let key = (h.file_idx, h.span.start);
+        if deferred_rules.contains(&key) {
+            head_at.entry(key).or_default().push(i);
         }
     }
+    let mut misses_at: HashMap<(usize, u32), Vec<&HeadMiss>> = HashMap::new();
+    for m in misses {
+        misses_at.entry((m.file_idx, m.span.start)).or_default().push(m);
+    }
+
+    // Group the deferred rules by the PREDICATE each of their heads is about — EVERY
+    // introducing head, a refused rule's too: a head that would be refused on its own is
+    // reported now, not after the author has fixed the head that refused the rule first
+    // (found by `/code-review`). It also keeps 061 quiet about such a head, whose repair
+    // — a declaration — R3 refuses a secondary entry.
+    let mut groups: HashMap<(ScopeId, &'f str), Vec<(usize, usize)>> = HashMap::new();
+    for (k, er) in entry_rules.iter().enumerate() {
+        let key = (er.file_idx, er.span.start);
+        let sites = head_at.get(&key).map(Vec::as_slice).unwrap_or_default();
+        for &i in sites {
+            groups
+                .entry((heads[i].scope, heads[i].name))
+                .or_default()
+                .push((k, i));
+        }
+        let reason = match misses_at.get(&key) {
+            // EVERY head recorded a site: the rule is judged head by head, below.
+            None if sites.len() == er.head_count => continue,
+            // A head that introduces nothing (`rule law: fresh(1), Rec.p(2) :- B`): its
+            // clause lands on a predicate written elsewhere, and the whole rule is
+            // refused, as that head's single-head rule would be.
+            Some(missed) => head_introduces_nothing_reason(er.head_count, missed),
+            // NEITHER: a head the walk recorded as neither introducing nor not. That is
+            // the census's own invariant broken, so it is said as one — and R3's default
+            // is DENY, so the uncomputable verdict must not read as admitted.
+            None => {
+                debug_assert!(
+                    false,
+                    "a deferred rule with {} heads recorded {} sites and no miss",
+                    er.head_count,
+                    sites.len()
+                );
+                format!(
+                    "the loader recorded {} of this rule's {} heads as introducing a name \
+                     and the others as neither introducing nor not — an internal \
+                     inconsistency, please report it",
+                    sites.len(),
+                    er.head_count
+                )
+            }
+        };
+        errors.push(secondary_entry_rule_error(er, reason).located_in(files[er.file_idx]));
+    }
     // A DETERMINISTIC report order, so two refused predicates do not print in hash order.
+    // The SITE index breaks the tie between two heads of one rule, which share its span:
+    // sites are recorded in the order the text is walked, head by head.
     let mut ordered: Vec<((ScopeId, &'f str), Vec<(usize, usize)>)> = groups.into_iter().collect();
     ordered.sort_by_key(|(_, members)| {
         members
             .iter()
-            .map(|&(k, _)| (entry_rules[k].file_idx, entry_rules[k].span.start))
+            .map(|&(k, i)| (entry_rules[k].file_idx, entry_rules[k].span.start, i))
             .min()
             .expect("a group is created with at least one member")
     });
@@ -11729,7 +11924,7 @@ fn judge_secondary_entry_rules<'f>(
             // which is what this reason says — and R3's default is DENY, so the
             // uncomputable condition must not read as met.
             errors.push(
-                secondary_entry_rule_error(er, HEAD_INTRODUCES_NOTHING_REASON)
+                secondary_entry_rule_error(er, one_head_introduces_nothing_reason())
                     .located_in(files[er.file_idx]),
             );
             refused.insert((scope, name));
@@ -12453,6 +12648,11 @@ struct RuleHeadCollectPass<'a, 'f> {
     /// See [`ClauseSite`] for why a fact cannot join `sites`, and for why this one keeps
     /// the spellings `sites` drops.
     clauses: &'a mut Vec<ClauseSite<'f>>,
+    /// WI-20260908-NE0E4 — the heads that introduce nothing, and why. See [`HeadMiss`].
+    misses: &'a mut Vec<HeadMiss>,
+    /// The `(file_idx, span.start)` of every rule 059 R3 judges — the only rules whose
+    /// [`HeadMiss`] rows have a reader.
+    deferred_rules: &'a HashSet<(usize, u32)>,
     /// COLLECT THE CLAUSE CENSUS AT ALL? Its ONE reader
     /// ([`judge_secondary_entry_rules`]) returns immediately when no rule was deferred
     /// from a secondary entry, and that is settled by sub-pass 1b — which runs BEFORE
@@ -12478,8 +12678,7 @@ impl<'f> RuleHeadCollectPass<'_, 'f> {
         // axes (WI-20260827-APXSS):
         //
         //  * PER HEAD, not per rule. A LABELED multi-head rule fans out into N asserted
-        //    rules, one per head (`load_rule`), so every head files its own clause —
-        //    while the RULE introduces nothing, having no single predicate to name.
+        //    rules, one per head (`load_rule`), so every head files its own clause.
         //    MEASURED, and found by `/code-review`: `rule law: freshp(2), other(1) :-
         //    true` in the main entry beside `namespace Rec { rule freshp(1) :- true }`
         //    loaded CLEAN with `Rec.freshp` holding two clauses from two entries. Its
@@ -12490,15 +12689,35 @@ impl<'f> RuleHeadCollectPass<'_, 'f> {
         //    what it references.
         //
         // So the wider answer is taken first, and the narrower is [`subject_introduces`]
-        // applied to it — which is exactly what `rule_introduced_functor_name` is.
+        // applied to it.
+        //
+        // THE NARROWER IS PER HEAD TOO (WI-20260908-NE0E4). A multi-head rule with a body
+        // is N clauses sharing one body (§5.3, "conjunctive sugar"), so each head
+        // introduces exactly what the single-head rule `Hᵢ :- B` would: at the scope it
+        // is written in, unless its name already denotes. It used to introduce nothing,
+        // and each head then took the bare intern — ONE global name, so `rule lawP: aa,
+        // bb :- …` in sort P and `rule lawQ: aa, cc :- …` in sort Q shared `aa`, and P's
+        // reader answered from Q's clause on a program that loaded clean.
+        //
+        // A MULTI-HEAD RULE THAT STORES NOTHING files nothing in EITHER census — a
+        // body-less one (a declaration declares ONE predicate), an unlabeled one, one with
+        // `⊥` among its heads. `load_rule` refuses each ([`several_heads_refusal`], the one
+        // decider), so a head of it minting a name would put a name in the table for a
+        // rule that stores nothing, and a clause row would count a clause that never
+        // lands; both drew a second error about the refused line.
+        if several_heads_refusal(r).is_some() {
+            return;
+        }
         let bodyless = rule_body_is_empty_conjunction(r, parse_terms);
-        let head_count = r.heads.len();
-        for head in &r.heads {
-            let Ok((subject, introduced_by)) =
-                head_subject_name(head, bodyless, parse_sym, parse_terms)
-            else {
-                continue;
-            };
+        for (position, head) in (1..).zip(&r.heads) {
+            let (subject, introduced_by) =
+                match head_subject_name(head, bodyless, parse_sym, parse_terms) {
+                    Ok(read) => read,
+                    Err(why) => {
+                        self.miss(r.span, position, || why.detail());
+                        continue;
+                    }
+                };
             // AN EQUATION IS NOT A CLAUSE OF ITS SUBJECT. Its stored clause is headed
             // by the `eq`/`unify` CONNECTIVE ([`RuleIntroduction::Equation`]), so it
             // indexes NOTHING under the subject's name and condition (2) — which counts
@@ -12517,13 +12736,23 @@ impl<'f> RuleHeadCollectPass<'_, 'f> {
             if introduced_by == RuleIntroduction::Predicate {
                 self.clause(subject.clone(), r.span, resolves_in, written_in);
             }
-            let Ok(name) = subject_introduces(subject, head_count) else {
-                continue;
+            let name = match subject_introduces(subject) {
+                Ok(name) => name,
+                Err(why) => {
+                    self.miss(r.span, position, || why.detail());
+                    continue;
+                }
             };
             // A QUERY declares nothing, whichever keyword carries the head — see
             // [`SourceRole`]. Gated HERE and not at the walk, so a query source's clause
-            // census is unchanged; it is the MINT that a query must not reach.
+            // census is unchanged; it is the MINT that a query must not reach. For 059 R3
+            // it is a head that introduces nothing, and says so (found by `/code-review`:
+            // recording neither, a query's rule in a secondary entry tripped the judge's
+            // inconsistency arm).
             if self.role == SourceRole::Query {
+                self.miss(r.span, position, || {
+                    "it is written in a QUERY source, and a query declares nothing".to_owned()
+                });
                 continue;
             }
             self.sites.push(RuleHeadSite {
@@ -12541,6 +12770,20 @@ impl<'f> RuleHeadCollectPass<'_, 'f> {
                 },
             });
         }
+    }
+
+    /// One [`HeadMiss`] — head `position` of the rule at `span` introduces nothing — when
+    /// that rule is one 059 R3 judges.
+    fn miss(&mut self, span: Span, position: usize, why: impl FnOnce() -> String) {
+        if !self.deferred_rules.contains(&(self.file_idx, span.start)) {
+            return;
+        }
+        self.misses.push(HeadMiss {
+            file_idx: self.file_idx,
+            span,
+            position,
+            why: why(),
+        });
     }
 
     /// One [`ClauseSite`]. The two scopes coincide everywhere but inside a host
@@ -12638,7 +12881,7 @@ impl<'f> RuleHeadCollectPass<'_, 'f> {
         if self.role == SourceRole::Query {
             return;
         }
-        if let Ok(name) = subject_introduces(subject, 1) {
+        if let Ok(name) = subject_introduces(subject) {
             self.sites.push(RuleHeadSite {
                 file_idx: self.file_idx,
                 scope: resolves_in,
@@ -24766,8 +25009,12 @@ fn refuse_absorbed_equation_subjects<'f>(
         }
     }
     // A DETERMINISTIC REPORT ORDER, so two absorbed subjects do not print in hash order.
+    // The SITE index breaks the tie between two heads of one multi-head rule, which share
+    // its span (WI-20260908-NE0E4): sites are recorded head by head, in text order.
     let mut groups: Vec<(usize, Vec<ScopeId>, bool)> = absorbed.into_values().collect();
-    groups.sort_by_key(|(first, _, _)| (heads[*first].file_idx, heads[*first].span.start));
+    groups.sort_by_key(|(first, _, _)| {
+        (heads[*first].file_idx, heads[*first].span.start, *first)
+    });
     for (first, owners, ambiguous) in groups {
         let head = &heads[first];
         let mut scopes: Vec<String> = owners
@@ -42756,6 +43003,8 @@ impl<'a> Loader<'a> {
         // `body_nodes` is known — see the install below.
         let mut positive_head_parse_ids: Vec<TermId> = Vec::with_capacity(r.heads.len());
         let mut has_bottom = false;
+        // The rule's SHAPE refusal, read at the two places below it is reported from.
+        let several_heads = several_heads_refusal(r);
         for (h_idx, h) in r.heads.iter().enumerate() {
             match h {
                 RuleHead::Term(tid) => {
@@ -42871,8 +43120,9 @@ impl<'a> Loader<'a> {
             }
         }
 
-        // ⊥ does not combine with positive heads.
-        if has_bottom && r.heads.len() > 1 {
+        // ⊥ does not combine with positive heads — asked of [`several_heads_refusal`], the
+        // one decider the clause path's mint reads too, so a refused rule mints nothing.
+        if several_heads == Some(SeveralHeadsRefusal::DenialAmongHeads) {
             self.errors.push(LoadError::Other {
                 message:
                     "denial heads (`⊥`) cannot be combined with positive heads in a multi-head rule"
@@ -42969,26 +43219,36 @@ impl<'a> Loader<'a> {
         // into N rules sharing label X, each with head H_i and the
         // same body B — `using X` fans out to all of them via
         // `rules_by_label[X]`.
-        let kb_heads: Vec<TermId> = match (&r.label, has_bottom, positive_heads.len()) {
-            // Denial: head = ⊥. (Labeled cites via label index;
-            // unlabeled denial is citable only by pattern.)
-            (_, true, _) => vec![self.kb.alloc(Term::Bottom)],
-
-            // Labeled — single or multi-head; each head becomes its
-            // own rule sharing the label.
-            (Some(_), false, _) => positive_heads,
-
-            // Unlabeled single-head: head term IS the KB identity.
-            (None, false, 1) => positive_heads,
-
-            // Unlabeled multi-head: no unique citation handle.
-            (None, false, _) => {
-                self.errors.push(LoadError::Other {
-                    message: "multi-head rule requires a label so the rule has a unique citation handle (e.g. `rule my_law: H1, H2 :- B`)".to_string(),
-                });
-                self.current_owner = prev_owner;
-                return;
-            }
+        //
+        // Unlabeled multi-head: no unique citation handle. Asked of
+        // [`several_heads_refusal`], as the `⊥` refusal above is.
+        // NO HEAD AT ALL. The grammar writes at least one (`rule_heads: commaSep1(…)`, and
+        // the converter's `⊥` where none is read), so no source reaches this; the IR can
+        // hold the shape, and it is refused rather than stored as nothing — the label arm
+        // below used to catch it, for the wrong reason, before it asked the head count.
+        if r.heads.is_empty() {
+            self.errors.push(LoadError::Other {
+                message: "this rule has no head — an internal inconsistency, since the \
+                          parser writes at least one; please report it"
+                    .to_string(),
+            });
+            self.current_owner = prev_owner;
+            return;
+        }
+        if several_heads == Some(SeveralHeadsRefusal::Unlabeled) {
+            self.errors.push(LoadError::Other {
+                message: "multi-head rule requires a label so the rule has a unique citation handle (e.g. `rule my_law: H1, H2 :- B`)".to_string(),
+            });
+            self.current_owner = prev_owner;
+            return;
+        }
+        // Denial: head = ⊥ (labeled cites via label index; unlabeled denial is citable
+        // only by pattern). Otherwise each head becomes its own rule — sharing the label
+        // when there are several, and the head term IS the KB identity when there is one.
+        let kb_heads: Vec<TermId> = if has_bottom {
+            vec![self.kb.alloc(Term::Bottom)]
+        } else {
+            positive_heads
         };
 
         for (head_idx, kb_head) in kb_heads.into_iter().enumerate() {
@@ -47455,6 +47715,8 @@ rule at_the_top(1)
             file_idx: 0,
             sites: &mut sites,
             clauses: &mut clause_sites,
+            misses: &mut Vec::new(),
+            deferred_rules: &HashSet::new(),
             census_clauses: true,
             role: SourceRole::Program,
             errors: &mut errors,

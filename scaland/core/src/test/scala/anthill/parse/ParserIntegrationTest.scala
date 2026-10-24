@@ -382,9 +382,11 @@ class ParserIntegrationTest extends munit.FunSuite:
     val errs = Loader.loadAll(kb, IndexedSeq(pf))
     assert(errs.isEmpty, s"Load errors: $errs")
 
-    // KB should hold one horn rule per head: completed/1 and timestamp/2.
-    val completedSym = kb.intern("completed")
-    val timestampSym = kb.intern("timestamp")
+    // KB should hold one horn rule per head: completed/1 and timestamp/2 — each under
+    // the sort's own symbol, since each head introduces where it is written
+    // (WI-20260908-NE0E4). This row read the bare global intern before that ticket.
+    val completedSym = kb.tryResolveSymbol("Demo.completed").getOrElse(fail("Demo.completed"))
+    val timestampSym = kb.tryResolveSymbol("Demo.timestamp").getOrElse(fail("Demo.timestamp"))
     val completedRules = kb.byFunctor(completedSym)
     val timestampRules = kb.byFunctor(timestampSym)
     assertEquals(completedRules.length, 1, "expected one rule indexed by completed")
@@ -1447,7 +1449,9 @@ class ParserIntegrationTest extends munit.FunSuite:
     assertEquals(kb.symbols.byQualifiedName.get("p3e.S.isEmpty"), None)
   }
 
-  test("a MULTI-HEAD rule introduces nothing") {
+  test("each head of a MULTI-HEAD rule introduces its name where it is written") {
+    // WI-20260908-NE0E4: a multi-head rule with a body is N clauses (§5.3), so each head
+    // introduces what its single-head rule would. This row used to assert the opposite.
     val (kb, _) = loadFixture(
       """namespace p3f
         |  sort S
@@ -1455,8 +1459,14 @@ class ParserIntegrationTest extends munit.FunSuite:
         |  end
         |end""".stripMargin)
     for h <- Seq("h1", "h2") do
-      assertEquals(kb.symbols.byQualifiedName.get(s"p3f.S.$h"), None,
-        s"`$h` is one of several heads — a multi-head rule introduces nothing")
+      assertEquals(kindOf(kb, s"p3f.S.$h"), Some(SymbolKind.Goal),
+        s"`$h` is introduced in the sort it is written in")
+      // AND ITS CLAUSE IS STORED THERE — the symbol existing is not the leak's absence:
+      // a head minted in the sort whose clause still went to the bare intern would pass
+      // the kind check alone.
+      val sym = kb.tryResolveSymbol(s"p3f.S.$h").getOrElse(fail(s"p3f.S.$h"))
+      assertEquals(kb.byFunctor(sym).length, 1, s"`$h`'s clause is the sort's")
+      assertEquals(kb.byFunctor(kb.intern(h)).length, 0, s"and none is under the bare `$h`")
   }
 
   /** The mint guard and the reference resolver must answer a SHORT name the same way.
