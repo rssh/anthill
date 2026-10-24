@@ -586,6 +586,13 @@ pub(super) fn visit_type(
                     }
                 }
             }
+            // Proposal 069 §3 — a compound argument a default the call takes names is
+            // bound to a local first, and the call is typed under the binding: the
+            // default then names the local, and the argument is evaluated once.
+            if let Some(bound) = bind_arguments_a_default_names(kb, &env, &occ) {
+                push_visit_at(work, bound, env, expected, fuel, pos);
+                return;
+            }
             let functor = *functor;
             // WI-20260824-JM6ZW — NO SORT-APPLICATION HINT. A sort-headed bracket
             // application is an `Expr::TypeValue` by the time it is typed (proposal 055

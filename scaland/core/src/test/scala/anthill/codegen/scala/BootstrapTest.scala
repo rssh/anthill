@@ -491,6 +491,40 @@ class BootstrapTest extends munit.FunSuite:
     ScalaCompile.assertCompiles("cell.anthill's emission", files)
   }
 
+  // Proposal 069 §1.1 (stage 3, WI-20261023-CX743): a literal parameter default is the
+  // Scala method's own default, and the emission compiles; any other default is refused
+  // (user, 2026-10-24). FAILS with `OpGen.renderDefault` returning "": the literal
+  // assertions; with its refusal arm returning "" instead, the `intercept`.
+  test("WI-CX743: a literal parameter default is the Scala method's, and compiles") {
+    val source =
+      """namespace demo.defaults
+        |  import anthill.prelude.{Int64, String, Bool}
+        |  sort Clamp
+        |    operation clamp(x: Int64, low: Int64 = 0, high: Int64 = 100) -> Int64
+        |    operation connect(host: String = "local\"host", port: Int64) -> Int64
+        |    operation flag(on: Bool = true) -> Bool
+        |  end
+        |end
+        |""".stripMargin
+    val files = gen(parseSource(source, "defaults.anthill"))
+    val src = files.find(_.relPath.endsWith("/Clamp.scala"))
+      .getOrElse(fail(s"expected Clamp.scala in: ${files.map(_.relPath)}")).contents
+    assert(src.contains("low: _root_.scala.Long = 0L, high: _root_.scala.Long = 100L"), src)
+    assert(src.contains("""host: _root_.java.lang.String = "local\"host""""), src)
+    assert(src.contains("on: _root_.scala.Boolean = true"), src)
+    ScalaCompile.assertCompiles("the defaults' emission", files)
+    val refused = intercept[BootstrapError](gen(parseSource(
+      """namespace demo.defaults2
+        |  import anthill.prelude.{Int64}
+        |  sort Clamp
+        |    operation clamp(x: Int64, low: Int64 = x) -> Int64
+        |  end
+        |end
+        |""".stripMargin, "defaults2.anthill")))
+    assert(refused.getMessage.contains("declares a default for `low` that is not a literal"),
+      refused.getMessage)
+  }
+
   test("WI-1055 A3: a sort's own name is not rewritten through the prelude type map") {
     // WI-1021's headline, fixed by the same mechanism and therefore pinned here.
     // `mapPrelude` rewrote `Pair` to `Tuple2` unconditionally, INCLUDING inside

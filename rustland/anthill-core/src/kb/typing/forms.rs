@@ -184,7 +184,7 @@ pub(super) struct CaptureRewrite {
 /// WI-727 — clone a typed argument result (`TypeResult` does not derive `Clone`, though all
 /// its fields do). Used to carry a matched named argument's already-computed result into the
 /// rewritten result list when a capture op mixes declared-named args with captured ones.
-fn clone_arg_result(r: &Result<TypeResult, TypeError>) -> Result<TypeResult, TypeError> {
+pub(super) fn clone_arg_result(r: &Result<TypeResult, TypeError>) -> Result<TypeResult, TypeError> {
     match r {
         Ok(t) => Ok(TypeResult {
             ty: t.ty.clone(),

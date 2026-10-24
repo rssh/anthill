@@ -1214,6 +1214,17 @@ namespace anthill.reflect
     default : Term
   )
 
+  -- OperationParamDefault: the declared default of an operation's value parameter
+  -- (`operation clamp(x: Int64, low: Int64 = 0)`, proposal 069 §1.1), one row per
+  -- defaulted parameter. `op` is the operation; `param` is the parameter, by its name in
+  -- the operation's scope (`<operation>.low`); `default` is the expression a call that
+  -- leaves the parameter out takes, an earlier parameter it names standing by reference.
+  entity OperationParamDefault(
+    op      : Symbol,
+    param   : Symbol,
+    default : NodeOccurrence
+  )
+
   -- ================================================================
   -- Substitution: variable bindings from query/unification
   -- ================================================================

@@ -17,7 +17,7 @@
 //!    `result` (`TypeResult`), `type_ctor` (type-level constructors, relation schemas).
 //!  * The expression walker — `expr` (entry points, work ops), `visit` / `build` (the two
 //!    halves of the iterative typer), `forms`, `apply` (`check_apply_iter`), `arg_hints`,
-//!    `args`, `constructor`, `callable`, `relation`, `eta`, `dot_rule`, `type_receiver`
+//!    `args`, `param_defaults` (a call's defaulted arguments), `constructor`, `callable`, `relation`, `eta`, `dot_rule`, `type_receiver`
 //!    (a dot on a receiver that denotes a sort), `pattern`, `projection`.
 //!  * Dispatch and dictionaries — `call_class`, `dispatch`, `slots`, `dict`,
 //!    `dep_projection`, `bridge`, `requires`.
@@ -109,6 +109,7 @@ mod forms;
 mod gamma;
 mod join_instantiation;
 mod op_bodies;
+mod param_defaults;
 mod pattern;
 mod projection;
 mod provider_constraint;
@@ -167,6 +168,7 @@ pub(crate) use forms::*;
 pub use gamma::*;
 use join_instantiation::*;
 use op_bodies::*;
+pub(crate) use param_defaults::*;
 use pattern::*;
 pub(crate) use projection::*;
 pub(crate) use provider_constraint::*;

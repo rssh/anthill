@@ -20,7 +20,12 @@ pub(super) fn check_operation_bodies(
         op_sym: Symbol,
         return_type: Value, // WI-341 carrier-agnostic
         declared_effects: Vec<Value>,
-        body_node: Rc<NodeOccurrence>,
+        /// `None` for a body-less operation, which is checked only for the defaults its
+        /// parameters declare (proposal 069 §1.1).
+        body_node: Option<Rc<NodeOccurrence>>,
+        /// Where the operation's checked text is — its body, else its first default — and
+        /// the declaration it sits in: the span and owner the signature's slot fills read.
+        site: (crate::span::SourceSpan, Option<Symbol>),
         params: Vec<(Symbol, Value)>,
         span: Option<Span>,
         /// WI-424/WI-942 — every type param in scope for this body → its per-body
@@ -66,10 +71,13 @@ pub(super) fn check_operation_bodies(
         if param_projection_cycle(kb, &rec.params).is_some() {
             continue;
         }
-        // Body-less ops (specs) have no body to type-check.
-        let body_node = match rec.body_node {
-            Some(n) => n,
-            None => continue,
+        // Body-less ops (specs, host operations) have no body to type-check, but a default
+        // their parameters declare is typed here as a body is (proposal 069 §3).
+        let body_node = rec.body_node;
+        let site = match (&body_node, kb.op_param_defaults(rec.op_sym).first()) {
+            (Some(body), _) => (body.span, body.owner),
+            (None, Some((_, default))) => (default.span, default.owner),
+            (None, None) => continue,
         };
         // WI-392: while CHECKING this operation's body, its OWN declared type
         // parameters are universally quantified — Skolemize them to `Var::Rigid`
@@ -134,7 +142,7 @@ pub(super) fn check_operation_bodies(
         let mut alias_rigid_params: Vec<(Symbol, Var)> = Vec::new();
         for (name, var) in alias_params {
             let at_path = match var {
-                Var::Global(vid) => top_level_slot_path(kb, &rec.params, vid, body_node.span),
+                Var::Global(vid) => top_level_slot_path(kb, &rec.params, vid, site.0),
                 _ => None,
             };
             match (var, at_path) {
@@ -207,8 +215,8 @@ pub(super) fn check_operation_bodies(
                     UnwrittenFill::Projection(ValuePath::var(*n)),
                     t,
                     SlotPosition::Body,
-                    body_node.span,
-                    body_node.owner,
+                    site.0,
+                    site.1,
                 );
                 (*n, ty.unwrap_or_else(|| t.clone()))
             })
@@ -257,6 +265,7 @@ pub(super) fn check_operation_bodies(
             return_type,
             declared_effects,
             body_node,
+            site,
             params,
             span,
             sort_rigid_len,
@@ -314,11 +323,13 @@ pub(super) fn check_operation_bodies(
     // (and the final flush), which is robust to the loop's early `continue`s.
     let mut cur_src: Option<crate::span::SourceId> = None;
     for op in &ops_to_check {
-        count_body_typed(BodyKind::Operation);
+        if op.body_node.is_some() {
+            count_body_typed(BodyKind::Operation);
+        }
         while sources.len() < errors.len() {
             sources.push(cur_src);
         }
-        cur_src = Some(op.body_node.span.source);
+        cur_src = Some(op.site.0.source);
         let mut env = TypingEnv::empty();
         // WI-20260830-JM7A8 — this pass is the DRAINER for value-precondition failures,
         // so it installs the sink. `check_apply_iter` then records them and keeps typing
@@ -349,6 +360,9 @@ pub(super) fn check_operation_bodies(
             op.sort_rigid_len,
             Rc::clone(&op.rigidify),
         );
+        // The environment before any parameter is bound: a parameter default is typed in
+        // it with the parameters declared before it alone (proposal 069 §3).
+        let base_env = env.clone();
         // WI-400 (body-site): a projection param type (`k: s.cell.T`) must be discharged
         // against the OTHER params' DECLARED types before it is bound into the body env —
         // the body-check peer of the call-site elimination (`check_apply_iter` / WI-398,
@@ -408,8 +422,8 @@ pub(super) fn check_operation_bodies(
                                 UnwrittenFill::Projection(ValuePath::var(*name)),
                                 &elim,
                                 SlotPosition::Body,
-                                op.body_node.span,
-                                op.body_node.owner,
+                                op.site.0,
+                                op.site.1,
                             )
                             .unwrap_or(elim);
                             if !views_structurally_equal(kb, &elim, &cur) {
@@ -584,10 +598,142 @@ pub(super) fn check_operation_bodies(
         // what the single-diagnostic output looked like before this ticket, with the
         // second verdict added rather than the first moved.
         let op_err_mark = errors.len();
+        // Proposal 069 §3 — each parameter default, typed as the argument a call that leaves
+        // the parameter out is given: in the body's environment holding only the parameters
+        // declared before it, against the parameter's type, its effects held to the
+        // operation's declared row. Each call that takes it types it again where the call
+        // is (`complete_defaulted_arguments`); this is the declaration's own verdict, so an
+        // operation no call reaches is held to it too.
+        let defaults = kb.op_param_defaults(op.op_sym).to_vec();
+        for (param, default) in &defaults {
+            let Some(at) = op.params.iter().position(|(n, _)| n == param) else {
+                errors.push(TypeError::Other {
+                    site: TypeError::here(),
+                    span: Some(default.span.span),
+                    context: TypeErrorContext::OperationArgument {
+                        op_name: op.op_sym,
+                        param: *param,
+                    },
+                    expected: "a default filed under one of the operation's parameters".into(),
+                    actual: "a default whose parameter the signature does not list — an \
+                             internal error"
+                        .into(),
+                });
+                continue;
+            };
+            // A parameter the signature reads — an effect over it (`Modify[c]`), a
+            // projection off it (`b.V`), a value in a type (`Vector[Int64, n]`) — is read off
+            // the argument a call gives it while the call's inference runs, and a default is
+            // taken after: refused here rather than met at each call as a type that names
+            // nothing.
+            let unwritten = kb.intern_unique("$left-out");
+            let rename: HashMap<Symbol, Symbol> = HashMap::from([(*param, unwritten)]);
+            let read_by = op
+                .params
+                .iter()
+                .filter(|(n, _)| n != param)
+                .map(|(_, t)| t)
+                .chain(std::iter::once(&op.return_type))
+                .chain(op.declared_effects.iter())
+                .cloned()
+                .collect::<Vec<Value>>()
+                .into_iter()
+                .any(|v| {
+                    let renamed = substitute_ref_syms_value(kb, &v, &rename);
+                    !views_structurally_equal(kb, &renamed, &v)
+                });
+            if read_by {
+                let name = short_name_of(kb.local_name_of(*param)).to_owned();
+                errors.push(TypeError::Other {
+                    site: TypeError::here(),
+                    span: Some(default.span.span),
+                    context: TypeErrorContext::OperationArgument {
+                        op_name: op.op_sym,
+                        param: *param,
+                    },
+                    expected: format!(
+                        "a default for a parameter the signature does not read; `{name}` is \
+                         read by it (an effect over `{name}`, a projection off it, a value in \
+                         a type)"
+                    ),
+                    actual: format!(
+                        "a default for `{name}`: a call reads the parameter off the argument it \
+                         gives while its inference runs, and takes a default after"
+                    ),
+                });
+                continue;
+            }
+            let mut default_env = base_env.clone();
+            for (name, ty) in &op.params[..at] {
+                default_env.bind_var(*name, env.lookup_var(*name).unwrap_or_else(|| ty.clone()));
+            }
+            let declared = env
+                .lookup_var(*param)
+                .unwrap_or_else(|| op.params[at].1.clone());
+            let context = TypeErrorContext::OperationArgument {
+                op_name: op.op_sym,
+                param: *param,
+            };
+            match type_check_node_gated_in_gamma(
+                kb,
+                &default_env,
+                default,
+                Some(declared.clone()),
+                simp_enabled,
+                &simp_rids,
+                gamma0.clone(),
+            ) {
+                Ok(result) => {
+                    let mut subst = Substitution::new();
+                    if let ArgValidation::Fail(err) = validate_arg_against_param(
+                        kb,
+                        &mut subst,
+                        &result.ty,
+                        &declared,
+                        Some(default.span.span),
+                        context.clone(),
+                        Some(&result.node),
+                    ) {
+                        errors.push(err);
+                    }
+                    // At the operation's boundary, as its body's: what the default makes
+                    // fresh is the parameter's value, which escapes only where the
+                    // operation returns it.
+                    let incurred = crate::kb::region::op_boundary_effects(
+                        kb,
+                        &result.env,
+                        &op.return_type,
+                        op.op_sym,
+                        region_sorts,
+                        &result.effects,
+                    );
+                    let name = short_name_of(kb.local_name_of(*param)).to_owned();
+                    for (expected, actual) in
+                        undeclared_effects(kb, &op.rigidify, &effective_effects, &incurred)
+                    {
+                        errors.push(TypeError::Other {
+                            site: TypeError::here(),
+                            span: Some(default.span.span),
+                            context: context.clone(),
+                            expected,
+                            actual: format!("{actual}, incurred by the default of `{name}`"),
+                        });
+                    }
+                }
+                Err(err) => errors.extend(err.flatten()),
+            }
+        }
+        let Some(body_node) = op.body_node.as_ref() else {
+            let deferred = env.take_deferred_preconditions();
+            if !deferred.is_empty() {
+                errors.splice(op_err_mark..op_err_mark, deferred);
+            }
+            continue;
+        };
         match type_check_node_gated_in_gamma(
             kb,
             &env,
-            &op.body_node,
+            body_node,
             Some(effective_return.clone()),
             simp_enabled,
             &simp_rids,
@@ -600,7 +746,7 @@ pub(super) fn check_operation_bodies(
                 // every downstream consumer (req_insertion, eval, codegen)
                 // see the rewritten form. Only when a rule actually fired
                 // (`ptr_eq` unchanged ⇒ no allocation, no write).
-                if !Rc::ptr_eq(&result.node, &op.body_node) {
+                if !Rc::ptr_eq(&result.node, body_node) {
                     kb.set_op_body_node(op.op_sym, Rc::clone(&result.node));
                 }
                 // WI-20260828-N2FHM — see [`surviving_dot_apply`]. Checked on the STORED
@@ -905,151 +1051,19 @@ pub(super) fn check_operation_bodies(
                 // top-level `absent` scan. A non-row atom is kept whole, so a plain
                 // label, a denoted `Modify[c]` and a bare row var compare exactly as
                 // before.
-                let canon_subst = (*op.rigidify).clone();
-                let atom_label_key = kb.intern("label");
-                let mut declared_canon: Vec<Value> = Vec::new();
-                // WI-20260825-CBRSW — the DENIED atoms of the declared row, kept apart
-                // so an effect the row explicitly forbids is not reported as one the
-                // author merely forgot to declare. The two have different repairs: an
-                // undeclared effect is fixed by adding the label, and a denied one
-                // cannot be — the row says the body must not perform it. Proposal 064's
-                // whole value is in that negative claim, so it gets its own message.
-                let mut declared_absent: Vec<Value> = Vec::new();
-                // THE DISPLAY IS BUILT FROM THE SAME FLATTENING, which is the rule the
-                // pre-APWM3 note here already stated for the elimination — "a
-                // diagnostic names the atoms AS DISCHARGED" — carried one step
-                // further. The two halves of this message must be comparable, and
-                // printing `{merge[left = present[label = External], right =
-                // empty_row]}` beside an incurred `External` is the un-comparable
-                // rendering that made the gap read as a mystery rather than as the
-                // over-declaration it asks for. Absences keep their written `-X` form
-                // via [`effect_atom_display`].
-                let mut declared_display: Vec<String> = Vec::new();
-                // AN ALIAS LABEL IS THE LABEL IT STANDS FOR, on both sides (`sort Fails =
-                // Error[Foo]`): compared as written, a body applying a callback whose row says
-                // `Fails` was refused against a declared `Error[Foo]` on every build ("undeclared
-                // effect: Fails", MEASURED: review 9's fix pass). The display keeps the spelling.
-                for e in &effective_effects {
-                    match explode_declared_effect_row(kb, e) {
-                        Some((admitting, absent)) => {
-                            for a in &admitting {
-                                declared_display.push(effect_atom_display(kb, a, atom_label_key));
-                                let a = walk_type_deep_value(kb, &canon_subst, a);
-                                declared_canon.push(dealiased(kb, &a));
-                            }
-                            for l in &absent {
-                                declared_display
-                                    .push(format!("-{}", type_display_name_value(kb, l)));
-                                declared_absent.push(walk_type_deep_value(kb, &canon_subst, l));
-                            }
-                        }
-                        None => {
-                            declared_display.push(effect_atom_display(kb, e, atom_label_key));
-                            let e = walk_type_deep_value(kb, &canon_subst, e);
-                            declared_canon.push(dealiased(kb, &e));
-                        }
-                    }
-                }
-                for effect in &ext_effects {
-                    // WI-441: a ROW-shaped incurred effect — a callback's row
-                    // value flowing into the body effects (applying a
-                    // `@ {EffP, -…}` callback incurs its whole row; a declared
-                    // row var bound at a call site walks to a `merge(…)`
-                    // structure) — EXPLODES into its components: each present
-                    // label and each row-tail var is checked against the
-                    // declared atoms individually. Absences are constraints,
-                    // not incurred effects, and `empty_row` contributes
-                    // nothing. A non-row effect stays a single atom. Each
-                    // component is canon-walked AFTER the explode: a
-                    // Node-carried row's tail extracts as the raw Global var,
-                    // which only the per-component walk maps to its Rigid.
-                    let components: Vec<Value> = match explode_incurred_effect_row(kb, effect) {
-                        Some(atoms) => atoms,
-                        None => vec![effect.clone()],
-                    };
-                    for comp in &components {
-                        let comp_canon = walk_type_deep_value(kb, &canon_subst, comp);
-                        let comp_key = dealiased(kb, &comp_canon);
-                        // WI-818: a declared GUARDED atom `L :- g` conservatively
-                        // CONTAINS its label ([`guarded_effect_label`]'s reading),
-                        // so a body incurring raw `L` — `head`'s raise under the
-                        // declared `Error[EmptyStream] :- isEmpty(s)` — is within
-                        // the declaration. The guard is a CALL-SITE discharge
-                        // device (WI-067), not a body-side obligation — the
-                        // author's asserted claim, exactly as for the body-less
-                        // partial primitive `div`.
-                        //
-                        // WI-20260830-APWM3 LEFT THAT SECOND LEG FIRING NOWHERE, and it
-                        // is kept deliberately rather than by oversight. `guarded` is
-                        // row-shaped, so [`explode_declared_effect_row`] now flattens a
-                        // top-level `L :- g` to `L` via `decompose_effect_row`'s guarded
-                        // arm — which states the SAME conservative-presence rule — and
-                        // the direct compare above answers first. MEASURED across the
-                        // whole suite: 19 312 firings with the flattening backed out
-                        // (`Stream.head`, `Stream.tail`, `List.head` — the WI-818
-                        // primitives themselves), 0 with it in. What is left to it is the
-                        // atom the explode DECLINES: `decompose_effect_row` returns
-                        // `None` on a row whose own present/absent sets clash
-                        // ([`row_self_contradiction`]), and the un-flattened atom then
-                        // reaches here whole. A single written element cannot be that
-                        // row — an `effects {a, b}` group loads as SEPARATE atoms, so a
-                        // guarded one decomposes alone and never clashes — but a
-                        // PROJECTED row carrying `{L :- g, -L}` from a carrier binding
-                        // can be, and that shape was not constructible to drive here.
-                        // So this is a narrow, measured, un-driven guard, and the
-                        // asymmetry decides it: keeping it costs one qualified-name
-                        // compare on a path already failing, and dropping it would
-                        // refuse `Stream.head` outright if any decline path exists that
-                        // this reading missed.
-                        let declared = declared_canon.iter().any(|d| {
-                            views_structurally_equal(kb, &comp_key, d)
-                                || guarded_effect_label(kb, d).is_some_and(|lbl| {
-                                    views_structurally_equal(kb, &comp_key, &lbl)
-                                })
-                        });
-                        if !declared {
-                            // WI-20260825-CBRSW: a DENIED effect first. The verdict is
-                            // [`label_violates_absence`], so the closure holds here too
-                            // — a body minting `Permission[GptModel]` under a declared
-                            // `-Permission[Model]` names the denial it broke rather than
-                            // a label the row never mentioned.
-                            // The op's OWN rigidify subst, not an empty one — the same
-                            // one every neighbouring comparison in this block uses.
-                            // `walk_type_deep_value` does not rewrite inside occurrence
-                            // carriers (the WI-441 note above), so a `Value::Node`-carried
-                            // label still holds its Global var here; resolving through
-                            // the rigidify is what maps it to the Rigid the declared atom
-                            // became. With an empty subst that pair silently degraded to
-                            // the generic "undeclared effect" wording — the failure this
-                            // branch exists to avoid. (Found by review.)
-                            // Each absence read through its aliases as the labels above are; the
-                            // message keeps the spelling.
-                            let denied = declared_absent.iter().find(|a| {
-                                let a = dealiased(kb, a);
-                                label_violates_absence(kb, &canon_subst, &comp_key, &a)
-                            });
-                            let actual = match denied {
-                                Some(a) => format!(
-                                    "denied effect: {} — the row DECLARES `-{}`, so this \
-                                     is not a missing declaration but a violated one; \
-                                     the body must not perform it",
-                                    type_display_name_value(kb, &comp_canon),
-                                    type_display_name_value(kb, a),
-                                ),
-                                None => format!(
-                                    "undeclared effect: {}",
-                                    type_display_name_value(kb, &comp_canon)
-                                ),
-                            };
-                            errors.push(TypeError::Other {
-                                site: TypeError::here(),
-                                span: op.span,
-                                context: TypeErrorContext::OperationEffects { op_name: op.op_sym },
-                                expected: format!("declared: [{}]", declared_display.join(", ")),
-                                actual,
-                            });
-                        }
-                    }
+                for (expected, actual) in undeclared_effects(
+                    kb,
+                    &op.rigidify,
+                    &effective_effects,
+                    &ext_effects,
+                ) {
+                    errors.push(TypeError::Other {
+                        site: TypeError::here(),
+                        span: op.span,
+                        context: TypeErrorContext::OperationEffects { op_name: op.op_sym },
+                        expected,
+                        actual,
+                    });
                 }
 
                 // Collect exhaustiveness diagnostics from the typing env
@@ -1089,6 +1103,164 @@ pub(super) fn check_operation_bodies(
     while sources.len() < errors.len() {
         sources.push(cur_src);
     }
+}
+
+/// The effects of `incurred` that the operation's declared row (`effective_effects`, its
+/// atoms with their receiver projections discharged) does not admit, each as the
+/// `(expected, actual)` pair of its diagnostic. `rigidify` is the operation's type-parameter
+/// rigidify substitution, which both sides are walked through. Read for the body and for
+/// each parameter default, whose effects are the operation's (proposal 069 §3).
+fn undeclared_effects(
+    kb: &mut KnowledgeBase,
+    rigidify: &Substitution,
+    effective_effects: &[Value],
+    incurred: &[Value],
+) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let canon_subst = rigidify.clone();
+    let atom_label_key = kb.intern("label");
+    let mut declared_canon: Vec<Value> = Vec::new();
+    // WI-20260825-CBRSW — the DENIED atoms of the declared row, kept apart
+    // so an effect the row explicitly forbids is not reported as one the
+    // author merely forgot to declare. The two have different repairs: an
+    // undeclared effect is fixed by adding the label, and a denied one
+    // cannot be — the row says the body must not perform it. Proposal 064's
+    // whole value is in that negative claim, so it gets its own message.
+    let mut declared_absent: Vec<Value> = Vec::new();
+    // THE DISPLAY IS BUILT FROM THE SAME FLATTENING, which is the rule the
+    // pre-APWM3 note here already stated for the elimination — "a
+    // diagnostic names the atoms AS DISCHARGED" — carried one step
+    // further. The two halves of this message must be comparable, and
+    // printing `{merge[left = present[label = External], right =
+    // empty_row]}` beside an incurred `External` is the un-comparable
+    // rendering that made the gap read as a mystery rather than as the
+    // over-declaration it asks for. Absences keep their written `-X` form
+    // via [`effect_atom_display`].
+    let mut declared_display: Vec<String> = Vec::new();
+    // AN ALIAS LABEL IS THE LABEL IT STANDS FOR, on both sides (`sort Fails =
+    // Error[Foo]`): compared as written, a body applying a callback whose row says
+    // `Fails` was refused against a declared `Error[Foo]` on every build ("undeclared
+    // effect: Fails", MEASURED: review 9's fix pass). The display keeps the spelling.
+    for e in effective_effects {
+        match explode_declared_effect_row(kb, e) {
+            Some((admitting, absent)) => {
+                for a in &admitting {
+                    declared_display.push(effect_atom_display(kb, a, atom_label_key));
+                    let a = walk_type_deep_value(kb, &canon_subst, a);
+                    declared_canon.push(dealiased(kb, &a));
+                }
+                for l in &absent {
+                    declared_display
+                        .push(format!("-{}", type_display_name_value(kb, l)));
+                    declared_absent.push(walk_type_deep_value(kb, &canon_subst, l));
+                }
+            }
+            None => {
+                declared_display.push(effect_atom_display(kb, e, atom_label_key));
+                let e = walk_type_deep_value(kb, &canon_subst, e);
+                declared_canon.push(dealiased(kb, &e));
+            }
+        }
+    }
+    for effect in incurred {
+        // WI-441: a ROW-shaped incurred effect — a callback's row
+        // value flowing into the body effects (applying a
+        // `@ {EffP, -…}` callback incurs its whole row; a declared
+        // row var bound at a call site walks to a `merge(…)`
+        // structure) — EXPLODES into its components: each present
+        // label and each row-tail var is checked against the
+        // declared atoms individually. Absences are constraints,
+        // not incurred effects, and `empty_row` contributes
+        // nothing. A non-row effect stays a single atom. Each
+        // component is canon-walked AFTER the explode: a
+        // Node-carried row's tail extracts as the raw Global var,
+        // which only the per-component walk maps to its Rigid.
+        let components: Vec<Value> = match explode_incurred_effect_row(kb, effect) {
+            Some(atoms) => atoms,
+            None => vec![effect.clone()],
+        };
+        for comp in &components {
+            let comp_canon = walk_type_deep_value(kb, &canon_subst, comp);
+            let comp_key = dealiased(kb, &comp_canon);
+            // WI-818: a declared GUARDED atom `L :- g` conservatively
+            // CONTAINS its label ([`guarded_effect_label`]'s reading),
+            // so a body incurring raw `L` — `head`'s raise under the
+            // declared `Error[EmptyStream] :- isEmpty(s)` — is within
+            // the declaration. The guard is a CALL-SITE discharge
+            // device (WI-067), not a body-side obligation — the
+            // author's asserted claim, exactly as for the body-less
+            // partial primitive `div`.
+            //
+            // WI-20260830-APWM3 LEFT THAT SECOND LEG FIRING NOWHERE, and it
+            // is kept deliberately rather than by oversight. `guarded` is
+            // row-shaped, so [`explode_declared_effect_row`] now flattens a
+            // top-level `L :- g` to `L` via `decompose_effect_row`'s guarded
+            // arm — which states the SAME conservative-presence rule — and
+            // the direct compare above answers first. MEASURED across the
+            // whole suite: 19 312 firings with the flattening backed out
+            // (`Stream.head`, `Stream.tail`, `List.head` — the WI-818
+            // primitives themselves), 0 with it in. What is left to it is the
+            // atom the explode DECLINES: `decompose_effect_row` returns
+            // `None` on a row whose own present/absent sets clash
+            // ([`row_self_contradiction`]), and the un-flattened atom then
+            // reaches here whole. A single written element cannot be that
+            // row — an `effects {a, b}` group loads as SEPARATE atoms, so a
+            // guarded one decomposes alone and never clashes — but a
+            // PROJECTED row carrying `{L :- g, -L}` from a carrier binding
+            // can be, and that shape was not constructible to drive here.
+            // So this is a narrow, measured, un-driven guard, and the
+            // asymmetry decides it: keeping it costs one qualified-name
+            // compare on a path already failing, and dropping it would
+            // refuse `Stream.head` outright if any decline path exists that
+            // this reading missed.
+            let declared = declared_canon.iter().any(|d| {
+                views_structurally_equal(kb, &comp_key, d)
+                    || guarded_effect_label(kb, d).is_some_and(|lbl| {
+                        views_structurally_equal(kb, &comp_key, &lbl)
+                    })
+            });
+            if !declared {
+                // WI-20260825-CBRSW: a DENIED effect first. The verdict is
+                // [`label_violates_absence`], so the closure holds here too
+                // — a body minting `Permission[GptModel]` under a declared
+                // `-Permission[Model]` names the denial it broke rather than
+                // a label the row never mentioned.
+                // The op's OWN rigidify subst, not an empty one — the same
+                // one every neighbouring comparison in this block uses.
+                // `walk_type_deep_value` does not rewrite inside occurrence
+                // carriers (the WI-441 note above), so a `Value::Node`-carried
+                // label still holds its Global var here; resolving through
+                // the rigidify is what maps it to the Rigid the declared atom
+                // became. With an empty subst that pair silently degraded to
+                // the generic "undeclared effect" wording — the failure this
+                // branch exists to avoid. (Found by review.)
+                // Each absence read through its aliases as the labels above are; the
+                // message keeps the spelling.
+                let denied = declared_absent.iter().find(|a| {
+                    let a = dealiased(kb, a);
+                    label_violates_absence(kb, &canon_subst, &comp_key, &a)
+                });
+                let actual = match denied {
+                    Some(a) => format!(
+                        "denied effect: {} — the row DECLARES `-{}`, so this \
+                         is not a missing declaration but a violated one; \
+                         the body must not perform it",
+                        type_display_name_value(kb, &comp_canon),
+                        type_display_name_value(kb, a),
+                    ),
+                    None => format!(
+                        "undeclared effect: {}",
+                        type_display_name_value(kb, &comp_canon)
+                    ),
+                };
+                out.push((
+                    format!("declared: [{}]", declared_display.join(", ")),
+                    actual,
+                ));
+            }
+        }
+    }
+    out
 }
 
 /// Collect which entity constructors a pattern covers.

@@ -125,6 +125,13 @@ pub struct OpSignature {
 pub struct OperationRecord {
     pub signature: Option<OpSignature>,
     pub body: Option<Rc<NodeOccurrence>>,
+    /// Proposal 069 §1.1 — each defaulted parameter's default, in declaration order: the
+    /// parameter (its symbol in `signature.params`) and the default as the loader lowered
+    /// it in the operation's scope, where an earlier parameter it names is that
+    /// parameter's reference. A call that leaves the parameter out takes a copy, typed
+    /// where the call is (`typing::complete_defaulted_arguments`). Empty for an operation
+    /// that declares none.
+    pub param_defaults: Vec<(Symbol, Rc<NodeOccurrence>)>,
 }
 
 /// WI-398: every operation's `(symbol, params)` in ONE pass over the `OperationInfo`

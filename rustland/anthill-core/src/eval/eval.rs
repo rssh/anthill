@@ -630,12 +630,16 @@ impl Interpreter {
         // a `__req_*` param by name — WI-237 names model), then a
         // frame type-arg (a body reading a declared `T` from
         // `operation foo[T](...)` per WI-272), then dispatch.
+        //
+        // A reference to a DECLARATION reads no local ([`names_a_declaration`]).
+        let local_name = (!names_a_declaration(&self.kb, sym)).then_some(target_name.as_str());
         let bound = {
             let top = self
                 .stack
                 .top()
                 .ok_or_else(|| EvalError::Internal("reduce_var on empty stack".into()))?;
-            find_local(&self.kb, &top.locals, &target_name)
+            local_name
+                .and_then(|name| find_local(&self.kb, &top.locals, name))
                 .cloned()
                 .or_else(|| {
                     // WI-1045: no conversion — the dictionary IS this value.
@@ -2657,7 +2661,8 @@ impl Interpreter {
     /// operation of that name, and wins. That shadowing is the whole point here,
     /// and it is why this entry is distinct from `dispatch_resolved_operation`:
     /// a *name* is subject to scope, an already-resolved operation Symbol is not
-    /// (WI-455).
+    /// (WI-455). A name the loader resolved to a declaration is that declaration
+    /// ([`names_a_declaration`]); a local shadows it under its binder's own symbol.
     fn dispatch_call_with_requirements_inner(
         &mut self,
         target: Symbol,
@@ -2688,7 +2693,13 @@ impl Interpreter {
                 .stack
                 .top()
                 .ok_or_else(|| EvalError::Internal("dispatch_call with no parent".into()))?;
-            let local = find_local(&self.kb, &top.locals, &target_name);
+            // A name the loader resolved to a declaration is not a local's
+            // ([`names_a_declaration`]): a local that shadows it is its own binder there.
+            let local = if names_a_declaration(&self.kb, target) {
+                None
+            } else {
+                find_local(&self.kb, &top.locals, &target_name)
+            };
             // 068 §2: a call THROUGH a local that holds one of the caller's unknowns reads it.
             if local.is_some_and(|v| self.is_unknown(v)) {
                 return Err(self.reads_unknown("a call through a function value"));
@@ -5271,6 +5282,26 @@ impl Interpreter {
 }
 
 // ── helpers ─────────────────────────────────────────────────────
+
+/// Whether `sym` is the symbol of a DECLARATION — a constant, an operation, a constructor,
+/// a sort, a relation — rather than of a local. A frame local is bound under its binder's symbol (a
+/// parameter's place, a `let` / lambda / `match` binder's own), and a body's reference to a
+/// local is to that symbol: the loader resolves a name to a local where one is in scope,
+/// so a reference it resolved to a declaration was written where none is. Read by name
+/// ([`find_local`]), such a reference was captured by a local of its spelling wherever
+/// text is spliced into another body: a parameter default at a caller holding a local of a
+/// name the default writes (proposal 069 §3), a `@[simp]` right-hand side at its redex.
+fn names_a_declaration(kb: &KnowledgeBase, sym: Symbol) -> bool {
+    use crate::intern::SymbolKind;
+    !kb.has_kind(sym, SymbolKind::Param)
+        && (kb.has_kind(sym, SymbolKind::Const)
+            || kb.has_kind(sym, SymbolKind::Operation)
+            || kb.has_kind(sym, SymbolKind::Sort)
+            || kb.has_kind(sym, SymbolKind::Entity)
+            || kb.has_kind(sym, SymbolKind::Goal)
+            || kb.has_kind(sym, SymbolKind::Rule)
+            || kb.is_constructor_symbol(sym))
+}
 
 /// Short-name-aware local lookup. See the note in reduce_var for why we
 /// compare by name rather than by interned `Symbol`.

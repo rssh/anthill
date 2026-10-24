@@ -288,7 +288,7 @@ pub(super) fn type_check_sorts_collect(
     // oracle types them all the same and says if that changed anything.
     if TYPECHECK_FREE_OPS {
         let (free, sealed): (Vec<_>, Vec<_>) = kb
-            .op_bodies_iter()
+            .op_checked_texts_iter()
             .filter(|(s, _)| !sort_owned_ops.contains(s))
             .partition(|(s, _)| !kb.sealed.holds_typed_operation(*s));
         // In the order the bodies were written, as the constants below are: the

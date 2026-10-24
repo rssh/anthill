@@ -284,6 +284,22 @@ pub(super) fn check_apply_iter(
             // skip where bare was a loud mismatch) and stamp dangling vars
             // into annotated-let merges.
         }
+        // Proposal 069 §1.1 — IN A RULE-BODY GOAL the result column may be NAMED, `result:`
+        // (kernel-language §5.4 reserves the name for it). It is set aside here, before the
+        // capture can fold it, and the call is read without it; it is the goal's result
+        // column, checked against the return below and written after the parameters when
+        // the call is completed.
+        let result_split = (pos == NodePos::RuleBodyGoal)
+            .then(|| split_result_column(kb, occ, named_args, named_results))
+            .flatten();
+        let (occ, named_args, named_results): (
+            &Rc<NodeOccurrence>,
+            &[(Symbol, Rc<NodeOccurrence>)],
+            &[Result<TypeResult, TypeError>],
+        ) = match &result_split {
+            Some(r) => (&r.occ, &r.named_args, &r.named_results),
+            None => (occ, named_args, named_results),
+        };
         // WI-727 (proposal 056): fold any leftover named arguments into the `...args: R`
         // capture record, so everything below is the ORDINARY path — `args` matches the
         // capture parameter, `R` is inferred from the record's type, and the `Without`
@@ -1274,7 +1290,23 @@ pub(super) fn check_apply_iter(
                     .expect("WI-1104: every argument result is `Ok` past `collect_arg_errors`")
                     .ty
                     .clone()
-            });
+            })
+            .or_else(|| result_split.as_ref().map(|r| r.column.ty.clone()));
+        // Proposal 069 §1.1: a shorter goal is a call, which a `Bool` operation answers; on
+        // any other its result needs a column.
+        if pos == NodePos::RuleBodyGoal && result_column_type.is_none()
+            && !binding.leaves_a_parameter_unfilled()
+        {
+            arg_type_errors.extend(short_goal_without_result(
+                kb,
+                fn_sym,
+                &op.params,
+                &op.return_type,
+                pos_args,
+                named_args,
+                span,
+            ));
+        }
         if !arg_type_errors.is_empty() {
             return Err(aggregate_errors(arg_type_errors));
         }
@@ -1896,6 +1928,50 @@ pub(super) fn check_apply_iter(
         // check, which then refuses only a parameter with no default. In a rule body too
         // (user, 2026-10-24).
         install_type_param_defaults(kb, &mut subst, &op);
+
+        // Proposal 069 §1.1 / §3 — and a parameter the call leaves out takes its value
+        // default, typed here, at the instance the call has fixed: the call is complete
+        // before anything below reads it, so the dispatch, the requirement dictionaries and
+        // eval see it at the declared arity.
+        // Every reader of the call's arguments below reads the completed call: its
+        // arguments in parameter order, a default's beside the written ones.
+        let completed;
+        let completed_params: SmallVec<[Option<usize>; 4]>;
+        let (occ, pos_args, named_args, pos_results, named_results, pos_call_params): (
+            &Rc<NodeOccurrence>,
+            &[Rc<NodeOccurrence>],
+            &[(Symbol, Rc<NodeOccurrence>)],
+            &[Result<TypeResult, TypeError>],
+            &[Result<TypeResult, TypeError>],
+            &[Option<usize>],
+        ) = match complete_defaulted_arguments(
+            kb,
+            env,
+            occ,
+            fn_sym,
+            &op.params,
+            &subst,
+            (pos_results, named_args, named_results),
+            result_split.as_ref().map(|r| &r.column),
+            span,
+        )? {
+            Some(call) => {
+                merge_effects_into(kb, &mut arg_effects, &call.effects);
+                completed = call;
+                completed_params = (0..completed.args.len())
+                    .map(|i| (i < op.params.len()).then_some(i))
+                    .collect();
+                (
+                    &completed.node,
+                    &completed.args,
+                    &[],
+                    &completed.results,
+                    &[],
+                    &completed_params,
+                )
+            }
+            None => (occ, pos_args, named_args, pos_results, named_results, &pos_call_params),
+        };
 
         // Apply param-name substitution to op.effects (WI-209), then
         // walk each through `walk_type_deep` so type-var bindings from

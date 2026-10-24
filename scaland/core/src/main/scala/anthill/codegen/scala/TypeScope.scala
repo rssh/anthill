@@ -1,7 +1,7 @@
 package anthill.codegen.scala
 
 import anthill.intern.{ABSOLUTE_PATH_MARKER, SymbolTable}
-import anthill.parse.{Name, SortBinding, TypeExpr}
+import anthill.parse.{Name, SimpleTermStore, SortBinding, TypeExpr}
 import anthill.span.Span
 
 /** What ONE declared type parameter is, in the only distinction `scala_std` has
@@ -400,7 +400,10 @@ case class TypeScope(
   /** The project-wide prelude tables: the profile's scalars and the types the
     * auto-imported files emit (WI-1060). Resolved by the caller and passed into
     * `Bootstrap.generate` — the emitter reads no KB (proposal 034). */
-  types: ScalaTypes
+  types: ScalaTypes,
+  /** The parsed file's terms, where a parameter default written as a literal is read
+    * (proposal 069 §1.1, [[OpGen]]). */
+  terms: SimpleTermStore
 ):
 
   def at(what: String, where: Span): TypeScope = copy(decl = what, declSpan = where)

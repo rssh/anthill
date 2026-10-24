@@ -40928,6 +40928,119 @@ impl<'a> Loader<'a> {
         }
     }
 
+    /// Proposal 069 §1.1 / §3 — each parameter default `o` declares, lowered in the
+    /// operation's scope `op_scope` (current), and filed on the operation's record
+    /// ([`KnowledgeBase::set_op_param_defaults`]) and as its
+    /// `anthill.reflect.OperationParamDefault` row. Refused where it names its own
+    /// parameter or a later one (defaults are ordered: a call fills them left to right,
+    /// each in a frame holding the parameters before it) or the reserved `result`, and on
+    /// a variadic capture, which collects what the call writes and has nothing to default.
+    /// Its type and its effects are the typer's to check, at the declaration.
+    fn record_operation_param_defaults(&mut self, o: &Operation, op: Symbol, op_scope: ScopeId) {
+        if o.params.iter().all(|p| p.default.is_none()) {
+            return;
+        }
+        let op_name = self.kb.qualified_name_of(op).to_owned();
+        let places: Vec<Option<Symbol>> = o
+            .params
+            .iter()
+            .map(|p| {
+                let short = self.parsed.symbols.local_name(p.name).to_owned();
+                self.op_param_symbol(op, &short)
+            })
+            .collect();
+        let result_sym = match self.kb.symbols.resolve_in_scope("result", op_scope) {
+            ResolveResult::Found(sym) => Some(sym),
+            _ => None,
+        };
+        let mut defaults: Vec<(Symbol, Rc<NodeOccurrence>)> = Vec::new();
+        for (i, p) in o.params.iter().enumerate() {
+            let Some(default) = p.default else {
+                continue;
+            };
+            let short = self.parsed.symbols.local_name(p.name).to_owned();
+            let site = render_decl_site(self.kb, SourceSpan::from_span(self.source_id, p.span));
+            if p.rest {
+                self.errors.push(LoadError::Other {
+                    message: format!(
+                        "{site}: the variadic capture `...{short}` of `{op_name}` declares a \
+                         default; a capture collects the named arguments a call writes, and \
+                         takes none of its own"
+                    ),
+                });
+                continue;
+            }
+            // The scan registered every parameter but one named `result`, which
+            // `load_operation` has already refused; a default with no parameter to be
+            // filed under is that case.
+            let Some(param) = places[i] else {
+                continue;
+            };
+            let node = self.convert_expr_term(default);
+            if self.expr_body_bottom_recovery {
+                // A bare-arrow recovery inside the default, already reported.
+                continue;
+            }
+            let mut named: Vec<Symbol> = Vec::new();
+            node_occurrence::for_each_named_reference(&node, |s| named.push(s));
+            let later = (i..o.params.len()).find(|&j| places[j].is_some_and(|q| named.contains(&q)));
+            if let Some(j) = later {
+                let why = if j == i {
+                    format!("names `{short}` itself")
+                } else {
+                    format!(
+                        "names `{}`, which is declared after it",
+                        self.parsed.symbols.local_name(o.params[j].name)
+                    )
+                };
+                self.errors.push(LoadError::Other {
+                    message: format!(
+                        "{site}: the default of `{short}` of `{op_name}` {why}: defaults are \
+                         ordered, and a default may name only the parameters declared before it"
+                    ),
+                });
+                continue;
+            }
+            if result_sym.is_some_and(|r| named.contains(&r)) {
+                self.errors.push(LoadError::Other {
+                    message: format!(
+                        "{site}: the default of `{short}` of `{op_name}` names `result`, the \
+                         operation's return value, which a default is computed before"
+                    ),
+                });
+                continue;
+            }
+            self.file_operation_param_default(op, param, &node);
+            defaults.push((param, node));
+        }
+        if !defaults.is_empty() {
+            self.kb.set_op_param_defaults(op, defaults);
+        }
+    }
+
+    /// The `anthill.reflect.OperationParamDefault` row of `param`'s default `default`.
+    fn file_operation_param_default(&mut self, op: Symbol, param: Symbol, default: &Rc<NodeOccurrence>) {
+        use crate::eval::value::Value;
+        let functor = self.kb.resolve_symbol("anthill.reflect.OperationParamDefault");
+        let op_field = self.kb.intern("op");
+        let param_field = self.kb.intern("param");
+        let default_field = self.kb.intern("default");
+        let op_term = self.kb.make_name_term_from_sym(op);
+        let param_term = self.kb.make_name_term_from_sym(param);
+        let head = Value::Entity {
+            functor,
+            pos: Rc::from(Vec::<Value>::new()),
+            named: Rc::from(vec![
+                (op_field, Value::term(op_term)),
+                (param_field, Value::term(param_term)),
+                (default_field, Value::Node(Rc::clone(default))),
+            ]),
+        };
+        let domain = self.current_domain();
+        self.kb
+            .assert_metadata_fact_value(head, ClauseKind::Sort, domain, None);
+    }
+
     /// The `anthill.reflect.OperationTypeParamDefault` row of `param`'s default `default`,
     /// an earlier bracket parameter it names standing by reference (its symbol in the
     /// operation's scope), as `SortParamDefault` names one.
@@ -44206,6 +44319,10 @@ impl<'a> Loader<'a> {
         // bare-arrow arm does not cover) into a live SLD rewrite rule carrying
         // the mis-parsed arrow term.
         let body_poisoned = self.expr_body_bottom_recovery;
+
+        // Proposal 069 §1.1 — the parameter defaults, lowered in the operation's scope
+        // (still current), where an earlier parameter is the name it is.
+        self.record_operation_param_defaults(o, functor, op_scope);
 
         // WI-087: operation attributes. Lower the operation's `meta_block`
         // (`@[Marker, Key: value, ...]`) into a `meta(key: value, ...)` term —

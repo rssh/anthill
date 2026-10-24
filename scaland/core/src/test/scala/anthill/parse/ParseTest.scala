@@ -544,6 +544,29 @@ class ParseTest extends munit.FunSuite:
     assertEquals(defaults(1), None, "`T = ?` declares no default")
   }
 
+  // Proposal 069 §1.1 (stage 3, WI-20261023-CX743): an operation VALUE-parameter default
+  // is carried as its parsed expression, and a parameter written without one has none.
+  // FAILS with the `("=" ~ exprBody).?` tail of `param` removed: the declaration does not
+  // parse.
+  test("WI-CX743: a value-parameter default is carried as its expression") {
+    val pf = Parser.parse(
+      """sort Demo
+        |  sort Int64 = ?
+        |  operation clamp(x: Int64, low: Int64 = 0, high: Int64 = max_of(low, 100)) -> Int64
+        |end""".stripMargin, "<op>").toOption.getOrElse(fail("parse failed"))
+    val op = pf.items.collect { case Item.SortWithBodyItem(s) => s }
+      .flatMap(_.items.collect { case Item.OperationItem(o) => o })
+      .headOption.getOrElse(fail("no operation"))
+    assertEquals(op.params.map(p => pf.symbols.name(p.name)), IndexedSeq("x", "low", "high"))
+    assertEquals(op.params.head.default, None)
+    op.params(1).default.map(pf.terms.get) match
+      case Some(Term.Const(Literal.IntLit(0))) => ()
+      case other => fail(s"`low`'s default is the literal 0; got $other")
+    op.params(2).default.map(pf.terms.get) match
+      case Some(fn: Term.Fn) => assertEquals(pf.symbols.name(fn.functor), "max_of")
+      case other => fail(s"`high`'s default is the call `max_of(low, 100)`; got $other")
+  }
+
   test("WI-850: a bare type-param list carries no default") {
     val (pf, op) = parseDemoOp("  operation g[A, B](t: Term) -> Int")
     assertEquals(op.typeParams.map(tp => pf.symbols.name(tp.name)), IndexedSeq("A", "B"))

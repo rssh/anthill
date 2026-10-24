@@ -1,7 +1,8 @@
 package anthill.codegen.scala
 
 import anthill.intern.SymbolTable
-import anthill.parse.{Effect, Operation, TypeExpr, TypeParam}
+import anthill.parse.{Effect, Operation, Param, TypeExpr, TypeParam}
+import anthill.term.{Literal, Term}
 
 /** Operation → abstract `def`. v1 emits trait-member signatures only;
   * concrete companion objects are deferred to the KB-driven gen.
@@ -70,11 +71,45 @@ object OpGen:
     val params = op.params.map { p =>
       val pName = Names.scalaFieldName(sym.name(p.name))
       val pTy = TypeGen.render(sym, p.ty, scope)
-      s"$pName: $pTy"
+      s"$pName: $pTy${renderDefault(op, p, scope, sym)}"
     }.mkString("(", ", ", ")")
     val using = usingClause(evidence)
     val ret = renderReturn(op, scope, sym)
     s"def $name$tpStr$params$using: $ret"
+
+  /** Proposal 069 §1.1: a parameter's default, as the Scala method's own (user,
+    * 2026-10-24): a literal is written as Scala's, and any other default is refused —
+    * the emitter translates no expression, and a signature that dropped it would declare
+    * a parameter every call must write. "" for a parameter with none. */
+  private def renderDefault(
+    op: Operation, p: Param, scope: TypeScope, sym: SymbolTable
+  ): String =
+    p.default match
+      case None => ""
+      case Some(tid) =>
+        scope.terms.get(tid) match
+          case Term.Const(Literal.IntLit(v))    => s" = ${v}L"
+          case Term.Const(Literal.BigIntLit(v)) => s" = BigInt(\"$v\")"
+          case Term.Const(Literal.FloatLit(v))  => s" = ${v.value}"
+          case Term.Const(Literal.BoolLit(v))   => s" = $v"
+          case Term.Const(Literal.StringLit(v)) => s" = ${scalaString(v)}"
+          case _ => throw BootstrapError(
+            s"operation `${sym.name(op.name.last)}` declares a default for " +
+            s"`${sym.name(p.name)}` that is not a literal; Bootstrap writes a literal " +
+            "default as the Scala method's own and translates no other expression",
+            p.span)
+
+  /** A Scala string literal holding `v`. */
+  private def scalaString(v: String): String =
+    v.flatMap {
+      case '"'  => "\\\""
+      case '\\' => "\\\\"
+      case '\n' => "\\n"
+      case '\r' => "\\r"
+      case '\t' => "\\t"
+      case c if c < ' ' => f"\\u${c.toInt}%04x"
+      case c => c.toString
+    }.mkString("\"", "", "\"")
 
   /** WI-840: a NAMED requirement slot on an OPERATION (`requires plus: Monoid[T]`)
     * rides in `typeParams` but names a WITNESS, not a type.

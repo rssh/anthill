@@ -815,6 +815,12 @@ pub struct Param {
     /// parameter into a single named-tuple record. At most one, trailing (enforced
     /// in the loader). `false` for an ordinary parameter.
     pub rest: bool,
+    /// Proposal 069 §1.1 — the value a call takes for this parameter where it leaves
+    /// the parameter out (`low: Int64 = 0`). Lowered by the loader in the operation's
+    /// scope, checked by the typer at the declaration, and inserted into each call
+    /// that omits the parameter, so every call reaches its callee at full arity.
+    pub default: Option<TermId>,
+    pub span: Span,
 }
 
 // ── Const (proposal 039 / WI-084) ───────────────────────────────

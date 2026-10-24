@@ -1736,9 +1736,13 @@ pub(super) fn call_dispatch_shape(
                     // A goal on an operation no clause defines is that operation's call,
                     // where it is written as one of the two goals a call is (§5.3); any
                     // other is `check_rule_body_goal_readings`' to refuse.
+                    // A column named `result:` (proposal 069 §1.1) is the result of the
+                    // call the other arguments write, whatever their count.
+                    let named_result = named_args.iter().any(|(label, _)| is_result_label(kb, *label));
                     if operation_application(kb, *functor)
                         && kb.rules_by_functor_iter(*functor).next().is_none()
-                        && kb.operation_goal_reading(*functor, pos_args.len(), named_args.len())
+                        && (named_result
+                            || kb.operation_goal_reading(*functor, pos_args.len(), named_args.len()))
                         && !pos_args
                             .iter()
                             .chain(named_args.iter().map(|(_, a)| a))

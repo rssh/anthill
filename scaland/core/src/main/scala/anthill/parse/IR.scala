@@ -454,19 +454,22 @@ case class Operation(
   * record. At most one, and trailing; enforced in the loader (which knows the
   * qualified operation name the diagnostic quotes), as rustland does — and WI-947
   * added `span` so that refusal can also point AT the offending parameter, which is
-  * the driving case for giving `LoadError.Other` a location at all. */
-case class Param(name: TermSymbol, ty: TypeExpr, rest: Boolean, span: Span)
+  * the driving case for giving `LoadError.Other` a location at all.
+  *
+  * `default` is proposal 069 §1.1's: the value a call takes for the parameter where it
+  * leaves the parameter out (`low: Int64 = 0`), the parsed expression. */
+case class Param(
+  name: TermSymbol,
+  ty: TypeExpr,
+  rest: Boolean,
+  span: Span,
+  default: Option[TermId] = None
+)
 
 /** Operation-local type parameter (WI-269): `[T]`.
   * Mirrors rustland's `TypeParam`. These declare operation-local logical
   * variables, distinct from sort-parameter bindings at an instantiation
   * site.
-  *
-  * WI-850: there is no `default` field. A written `[T = Int64]` still PARSES —
-  * so the refusal can name the operation and the parameter instead of failing as
-  * an unexpected `=` — and is then refused, never stored. The kernel spec's
-  * production is `TypeParam ::= Name` (§5.4), and a stored default had no reader:
-  * the loader mints a fresh var per parameter from its NAME alone.
   *
   * WI-840 (proposal 058 §4.7): `requirementSlot` is `Some(k)` when the parameter was
   * declared as a NAMED requirement slot in the operation's `requires` clause list

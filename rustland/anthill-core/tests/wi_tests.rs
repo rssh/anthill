@@ -1996,6 +1996,8 @@ mod wi_sqzpq_type_pattern_test;
 mod wi_ym8hd_reify_type_pattern_test;
 #[path = "include/wi_gbh5f_operation_type_param_defaults_test.rs"]
 mod wi_gbh5f_operation_type_param_defaults_test;
+#[path = "include/wi_cx743_operation_value_param_defaults_test.rs"]
+mod wi_cx743_operation_value_param_defaults_test;
 
 #[path = "include/wi_xsvcs_op_requires_forward_test.rs"]
 mod wi_xsvcs_op_requires_forward_test;

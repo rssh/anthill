@@ -782,6 +782,32 @@ impl NodeOccurrence {
         rebuilt
     }
 
+    /// Proposal 069 §3 — this expression node, with `expr`, as a copy SPLICED at the call
+    /// `at`: a parameter default the call takes. It carries `at`'s span and owner, so a
+    /// diagnostic raised while the call types it points at the call it was typed for, and
+    /// it is synthesized from `at`; nothing of the stored default is shared, so the stamps
+    /// one call's typing writes are its own. The dot bits are the default's, as written.
+    pub fn spliced_at(&self, expr: Expr, at: &Rc<NodeOccurrence>, by: PassId) -> Rc<Self> {
+        Rc::new(NodeOccurrence {
+            kind: NodeKind::Expr {
+                expr,
+                origin: OccurrenceOrigin::Synthesized {
+                    from: Rc::clone(at),
+                    by,
+                    written_by: None,
+                },
+                dot_chain: self.is_dot_chain(),
+                paren_less: self.is_paren_less(),
+                classification: RefCell::new(None),
+                op_dicts: RefCell::new(SmallVec::new()),
+                inferred_type: RefCell::new(None),
+                lowered_receiver: RefCell::new(None),
+            },
+            span: at.span,
+            owner: at.owner,
+        })
+    }
+
     /// WI-502 / WI-1026 — carry `src`'s TYPER-WRITTEN stamps onto this rebuilt
     /// occurrence: the `inferred_type` and the `CallClass`.
     ///
@@ -2512,6 +2538,26 @@ pub fn for_each_child(expr: &Expr, mut f: impl FnMut(&Rc<NodeOccurrence>)) {
 /// invariant. Sub-pattern-only walks that legitimately exclude it call
 /// [`for_each_subpattern`] by name.
 #[inline]
+/// Every NAME an expression tree refers to: a reference (`Ref`, `Ident`, `VarRef`) and
+/// the callee an application names, at any depth, patterns' annotations included. A name
+/// a binder inside the tree declares is a symbol of its own (the loader's per-site
+/// binder), so a reference to it is never mistaken for an outer one of its spelling.
+pub fn for_each_named_reference(occ: &Rc<NodeOccurrence>, mut f: impl FnMut(Symbol)) {
+    let mut work: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(occ)];
+    while let Some(node) = work.pop() {
+        if let Some(expr) = node.as_expr() {
+            match expr {
+                Expr::Ref(s) | Expr::Ident(s) | Expr::VarRef { name: s } => f(*s),
+                Expr::Apply { functor, .. } | Expr::ApplyWithin { functor, .. } => f(*functor),
+                _ => {}
+            }
+            for_each_child(expr, |c| work.push(Rc::clone(c)));
+        } else if node.as_pattern().is_some() {
+            for_each_pattern_child(&node, |c| work.push(Rc::clone(c)));
+        }
+    }
+}
+
 pub fn for_each_pattern_child(occ: &NodeOccurrence, mut f: impl FnMut(&Rc<NodeOccurrence>)) {
     let NodeKind::Pattern { pattern, type_ann } = &occ.kind else {
         return;

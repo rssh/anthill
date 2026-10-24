@@ -13221,6 +13221,12 @@ impl KnowledgeBase {
         if named == 0 && pos == declared + 1 {
             return true;
         }
+        // Proposal 069 §1.1: with a parameter default declared, a shorter goal is the call
+        // too, which leaves the parameter out; on an operation that does not return `Bool`
+        // the typer refuses one with no result column.
+        if pos + named < declared && super::typing::call_defaults(self, f).is_some() {
+            return true;
+        }
         pos + named == declared
             && super::typing::sort_functor_of_view(self, &sig.return_type)
                 .is_none_or(|s| self.sort_sym_is_bool(s))

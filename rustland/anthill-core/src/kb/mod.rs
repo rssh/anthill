@@ -3727,6 +3727,25 @@ impl KnowledgeBase {
         self.op_records.entry(op_sym).or_default().body = Some(node);
     }
 
+    /// Proposal 069 §1.1 — record an operation's parameter defaults
+    /// ([`op_info::OperationRecord::param_defaults`]). Called by the loader once per
+    /// declaration that writes one.
+    pub(crate) fn set_op_param_defaults(
+        &mut self,
+        op_sym: Symbol,
+        defaults: Vec<(Symbol, Rc<NodeOccurrence>)>,
+    ) {
+        self.op_records.entry(op_sym).or_default().param_defaults = defaults;
+    }
+
+    /// Proposal 069 §1.1 — the defaults `op_sym` declares for its parameters, in
+    /// declaration order; empty when it declares none.
+    pub fn op_param_defaults(&self, op_sym: Symbol) -> &[(Symbol, Rc<NodeOccurrence>)] {
+        self.op_records
+            .get(&op_sym)
+            .map_or(&[], |r| r.param_defaults.as_slice())
+    }
+
     /// WI-656 — the unified per-operation record (cached signature + body node),
     /// if this operation has one. Backs `op_info::lookup_operation_info`'s O(1)
     /// fast path.
@@ -3950,6 +3969,20 @@ impl KnowledgeBase {
         self.op_records
             .iter()
             .filter_map(|(s, r)| r.body.as_ref().map(|b| (*s, b)))
+    }
+
+    /// Every operation the typer has text of its own to check in — a body, or a default
+    /// a parameter declares (proposal 069 §1.1) — with the first such text: the body,
+    /// else the first default.
+    pub(crate) fn op_checked_texts_iter(
+        &self,
+    ) -> impl Iterator<Item = (Symbol, &Rc<NodeOccurrence>)> + '_ {
+        self.op_records.iter().filter_map(|(s, r)| {
+            r.body
+                .as_ref()
+                .or_else(|| r.param_defaults.first().map(|(_, d)| d))
+                .map(|b| (*s, b))
+        })
     }
 
     /// Proposal 039 / WI-084 — iterate every anthill-bodied constant's

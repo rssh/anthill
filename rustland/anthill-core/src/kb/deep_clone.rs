@@ -945,7 +945,11 @@ impl Copier {
     }
 
     fn operation_record(&mut self, record: &OperationRecord) -> OperationRecord {
-        let OperationRecord { signature, body } = record;
+        let OperationRecord {
+            signature,
+            body,
+            param_defaults,
+        } = record;
         OperationRecord {
             signature: signature.as_ref().map(|signature| {
                 let OpSignature {
@@ -968,6 +972,10 @@ impl Copier {
                 }
             }),
             body: body.as_ref().map(|body| self.node(body)),
+            param_defaults: param_defaults
+                .iter()
+                .map(|(param, default)| (plain(param), self.node(default)))
+                .collect(),
         }
     }
 
@@ -1278,7 +1286,10 @@ mod tests {
         let mut roots: Vec<&Rc<NodeOccurrence>> = Vec::new();
         let mut ops: Vec<_> = kb.op_records.iter().collect();
         ops.sort_by_key(|(op, _)| op.to_bits());
-        roots.extend(ops.into_iter().filter_map(|(_, record)| record.body.as_ref()));
+        for (_, record) in ops {
+            roots.extend(record.body.as_ref());
+            roots.extend(record.param_defaults.iter().map(|(_, default)| default));
+        }
         for rule in &kb.rules {
             roots.extend(rule.body_nodes.iter());
             roots.extend(rule.rhs_node.as_ref());

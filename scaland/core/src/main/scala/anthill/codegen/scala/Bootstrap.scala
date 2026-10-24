@@ -119,7 +119,7 @@ object Bootstrap:
     // would see it while the shadow half did not — one emission's two halves
     // disagreeing about what the file declares (WI-1065 review).
     val env = FileEnv(fileTypes(pf.symbols, pf.items, ""), types,
-      specMemberNames(Seq(pf), base = types.specMembers))
+      specMemberNames(Seq(pf), base = types.specMembers), pf.terms)
     emitItems(pf.symbols, pf.items, "", env, Map.empty, files, refusals)
     // SEQUENCED, not inlined into the constructor call: `refuseColliding` APPENDS to
     // `refusals`, so building `Generated` from both in one expression would be correct
@@ -444,7 +444,9 @@ object Bootstrap:
     /** [[ScalaTypes.specMembers]] plus this file's own sorts ([[specMemberNames]]'
       * `base` merge) — the view [[requiresMapping]]'s shadow check reads, complete
       * for same-file required specs the resolved closure never saw. */
-    specMembers: Map[String, Set[String]]
+    specMembers: Map[String, Set[String]],
+    /** The file's parsed terms, read for a parameter default ([[TypeScope.terms]]). */
+    terms: SimpleTermStore
   ):
 
     private val fileTypePlacements: Map[(String, String), Placement.Known] =
@@ -471,7 +473,8 @@ object Bootstrap:
       // parameters through `withValues` (WI-1081). A sort's `requires`, an entity's
       // fields and a namespace's scope have no value to project off.
       TypeScope(decl, declSpan, writtenIn.getOrElse(pkg), pkg, enclosing, params,
-        Map.empty, fileTypePlacements, imports, decls.declaredNotEmitted.keySet, scalaTypes)
+        Map.empty, fileTypePlacements, imports, decls.declaredNotEmitted.keySet, scalaTypes,
+        terms)
 
   /** The name environment of one parsed file, in ONE walk.
     *

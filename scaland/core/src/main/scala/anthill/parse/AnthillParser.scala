@@ -2071,8 +2071,10 @@ private class AnthillParserImpl(
   private def param[$: P]: P[Param] =
     // WI-947: the span starts at the `...` when there is one — the marker IS what the
     // loader's placement refusal is about, so it is what the diagnostic must point at.
-    P(located("...".!.? ~ ident ~ ":" ~ typeExpr)).map {
-      case ((rest, n, t), span) => Param(n, t, rest.isDefined, span)
+    // Proposal 069 §1.1: `low: Int64 = 0`, the value an argument's (`exprBody`, as a
+    // named argument's).
+    P(located("...".!.? ~ ident ~ ":" ~ typeExpr ~ ("=" ~ !"=" ~/ exprBody).?)).map {
+      case ((rest, n, t, default), span) => Param(n, t, rest.isDefined, span, default)
     }
 
   // ── Visibility ───────────────────────────────────────────────

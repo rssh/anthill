@@ -144,3 +144,70 @@ operation tick[E = {}, T = ?]() -> Int64 effects E
     return_type: (simple_type (name (identifier)))
     (operation_clause
       (effects_clause (simple_type (name (identifier)))))))
+
+=====================================
+operation value-parameter defaults
+=====================================
+
+operation clamp(x: Int64, low: Int64 = 0, high: Int64 = max_of(low, 100)) -> Int64
+operation connect(host: String = "localhost", port: Int64) -> Int64 = port
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name (identifier))
+    (param
+      name: (identifier)
+      type: (simple_type (name (identifier))))
+    (param
+      name: (identifier)
+      type: (simple_type (name (identifier)))
+      default: (integer_literal))
+    (param
+      name: (identifier)
+      type: (simple_type (name (identifier)))
+      default: (fn_term
+        name: (name (identifier))
+        (name (identifier))
+        (integer_literal)))
+    return_type: (simple_type (name (identifier))))
+  (operation_declaration
+    name: (name (identifier))
+    (param
+      name: (identifier)
+      type: (simple_type (name (identifier)))
+      default: (string_literal))
+    (param
+      name: (identifier)
+      type: (simple_type (name (identifier))))
+    return_type: (simple_type (name (identifier)))
+    body: (name (identifier))))
+
+=====================================
+a compound value-parameter default ends at the comma
+=====================================
+
+operation pick(f: (Int64) -> Int64 = lambda x -> x, n: Int64 = if b() then 1 else 2) -> Int64
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name (identifier))
+    (param
+      name: (identifier)
+      type: (arrow_type
+        params: (tuple_type (simple_type (name (identifier))))
+        return_type: (simple_type (name (identifier))))
+      default: (lambda_expr
+        param: (pattern_var (identifier))
+        body: (name (identifier))))
+    (param
+      name: (identifier)
+      type: (simple_type (name (identifier)))
+      default: (if_expr
+        condition: (fn_term name: (name (identifier)))
+        then: (integer_literal)
+        else: (integer_literal)))
+    return_type: (simple_type (name (identifier)))))

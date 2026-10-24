@@ -564,11 +564,16 @@ module.exports = grammar({
     // `.(`) so it diverges at the lexer from `.` / `.(` / `A.B` and stays
     // conflict-free. "At most one, trailing" is enforced in the loader, not the
     // grammar.
+    //
+    // Proposal 069 §1.1: `low: Int64 = 0` declares the value a call takes for a
+    // parameter it leaves out. Its value is an argument's (`_expr_body`, as a named
+    // argument's), whose own body cannot consume the comma that ends the parameter.
     param: $ => seq(
       optional(field('rest', token('...'))),
       field('name', $.identifier),
       ':',
       field('type', $._type),
+      optional(seq('=', field('default', $._expr_body))),
     ),
 
     operation_clause: $ => choice(

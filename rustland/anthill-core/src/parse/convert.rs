@@ -4985,7 +4985,17 @@ impl<'a> Converter<'a> {
         // WI-727: the `...` variadic-capture marker (grammar `rest` field).
         let rest = self.field(node, "rest").is_some();
 
-        Param { name, ty, rest }
+        // Proposal 069 §1.1: the value a call takes for this parameter when it leaves
+        // the parameter out.
+        let default = self.field(node, "default").map(|d| self.convert_expr_body(d));
+
+        Param {
+            name,
+            ty,
+            rest,
+            default,
+            span: self.span(node),
+        }
     }
 
     // ── Requires declaration ──────────────────────────────────────

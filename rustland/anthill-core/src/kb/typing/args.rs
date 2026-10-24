@@ -1000,7 +1000,7 @@ pub(super) fn validate_arrow_param_result(
 /// coerced argument / field node. `declared` (the resolved `Option[T]`) is
 /// stamped as the wrapper's inferred type here — the `Stamp` frame only
 /// stamps the enclosing node's own result, never an inserted child.
-fn synthesize_some_wrap(
+pub(super) fn synthesize_some_wrap(
     kb: &mut KnowledgeBase,
     child: &Rc<NodeOccurrence>,
     declared: &Value,
@@ -1207,10 +1207,12 @@ pub(super) struct ArgumentBinding {
     /// binds a parameter a positional argument (or an earlier label) already filled.
     /// Empty = every label resolved to a distinct free slot.
     pub(super) label_errors: Vec<TypeError>,
-    /// The declared parameters this call filled with nothing, in declaration order.
-    /// Carried as the NAMES rather than as a count: with labels in play a call can
-    /// supply the right number of arguments and still leave a slot empty, and which
-    /// one it is is the whole of what the author has to fix.
+    /// The declared parameters this call filled with nothing and whose declaration gives
+    /// no default, in declaration order. Carried as the NAMES rather than as a count: with
+    /// labels in play a call can supply the right number of arguments and still leave a
+    /// slot empty, and which one it is is the whole of what the author has to fix. A
+    /// parameter left out that declares a default is not here: the call takes the default
+    /// (proposal 069 §1.1, [`complete_defaulted_arguments`]).
     unfilled: Vec<Symbol>,
     /// Positional arguments past the end of the declared list — each occupies no slot
     /// at all. Counted rather than flagged so the diagnostic can state the count given.
@@ -1219,6 +1221,14 @@ pub(super) struct ArgumentBinding {
     /// [`relational_result_column`], which §5.3 restricts to the all-positional
     /// spelling — see there.
     has_named_args: bool,
+}
+
+impl ArgumentBinding {
+    /// Whether the call leaves out a parameter that declares no default — the arity
+    /// verdict's to refuse ([`call_arity_error`]).
+    pub(super) fn leaves_a_parameter_unfilled(&self) -> bool {
+        !self.unfilled.is_empty()
+    }
 }
 
 /// WI-20260827-1F0QP: the PARAMETER each POSITIONAL argument of a call binds — one
@@ -1430,15 +1440,24 @@ pub(super) fn bind_call_arguments(
     span: Option<Span>,
 ) -> ArgumentBinding {
     let positional_filled = pos_count.min(params.len());
+    // Proposal 069 §1.1: a parameter left out whose declaration gives a default is
+    // filled, by the default — asked only of a call that leaves one out.
+    let mut defaults: Option<Option<CallDefaults>> = None;
+    let mut without_default = |position: usize| {
+        !defaults
+            .get_or_insert_with(|| call_defaults(kb, callee))
+            .as_ref()
+            .is_some_and(|d| d.has(position))
+    };
     // Most calls pass no labels at all; keep the common path allocation-free
     // (the pre-WI-783 inline version was guarded by the same emptiness test).
     // `unfilled` allocates only for a call that is already wrong.
     if named_args.is_empty() {
         return ArgumentBinding {
             label_errors: Vec::new(),
-            unfilled: params[positional_filled..]
-                .iter()
-                .map(|(s, _)| *s)
+            unfilled: (positional_filled..params.len())
+                .filter(|&i| without_default(i))
+                .map(|i| params[i].0)
                 .collect(),
             surplus_positional: pos_count - positional_filled,
             has_named_args: false,
@@ -1503,11 +1522,9 @@ pub(super) fn bind_call_arguments(
         }
     }
     ArgumentBinding {
-        unfilled: params
-            .iter()
-            .zip(&covered)
-            .filter(|(_, filled)| !**filled)
-            .map(|((s, _), _)| *s)
+        unfilled: (0..params.len())
+            .filter(|&i| !covered[i] && without_default(i))
+            .map(|i| params[i].0)
             .collect(),
         label_errors,
         surplus_positional: pos_count - positional_filled,
@@ -1829,12 +1846,23 @@ pub(super) fn call_arity_error(
             plural(declared),
             short_name_of(kb.local_name_of(c)),
         ),
-        None => format!(
-            "{} argument{} — the parameter list `{}` declares",
-            declared,
-            plural(declared),
-            kb.qualified_name_of(callee),
-        ),
+        // A parameter that declares a default may be left out (proposal 069 §1.1), so the
+        // count is a range where one does.
+        None => {
+            let defaulted = call_defaults(kb, callee)
+                .map_or(0, |d| d.by_position.iter().filter(|x| x.is_some()).count());
+            format!(
+                "{}{} argument{} — the parameter list `{}` declares",
+                if defaulted == 0 {
+                    String::new()
+                } else {
+                    format!("{} to ", declared - defaulted)
+                },
+                declared,
+                plural(declared),
+                kb.qualified_name_of(callee),
+            )
+        }
     };
     Some(TypeError::Other {
         site: TypeError::here(),
@@ -1934,8 +1962,14 @@ pub(super) fn reorder_named_args_in_apply(
     //
     // Untouched when the call is not mixed: an all-positional call has no labels to
     // rank against and an all-named one has no positional arguments to move, so both
-    // keep the exact node they had.
-    if !pos_children.is_empty() && !triples.is_empty() {
+    // keep the exact node they had. And untouched when it leaves a parameter out for its
+    // default (proposal 069 §1.1): positional, the arguments would read as the leading
+    // parameters, so the labels stay until the completion writes the call out whole
+    // ([`complete_defaulted_arguments`]).
+    if !pos_children.is_empty()
+        && !triples.is_empty()
+        && pos_children.len() + triples.len() == params.len()
+    {
         // Through [`positional_param_indices`], the owner `bind_call_arguments` and the
         // two type-check loops read — so the parameter an argument is CHECKED against is
         // by construction the one it is BOUND to.

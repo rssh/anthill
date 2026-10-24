@@ -3024,6 +3024,34 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
                 continue;
             };
 
+            // Proposal 069 §3 — THE SPEC OWNS ITS OPERATION'S DEFAULTS: a member matches
+            // the parameter list and declares none, and a call through the spec takes the
+            // spec's. A member's own would be a second answer to what an omitted argument
+            // is, compared with nothing.
+            if let Some((param, default)) = kb.op_param_defaults(impl_op).first() {
+                let site = crate::kb::load::render_decl_site(kb, default.span);
+                let param = short(kb, *param);
+                let spec_has = kb
+                    .op_param_defaults(spec_op)
+                    .iter()
+                    .any(|(p, _)| short(kb, *p) == param);
+                errors.push(LoadError::Other {
+                    message: format!(
+                        "{site}: `{}.{sn}` declares a default for `{param}`, and it is the \
+                         member `{}` provides of `{}.{sn}`: the spec owns its operation's \
+                         defaults, so a member declares none{}",
+                        kb.qualified_name_of(p.carrier),
+                        kb.qualified_name_of(p.carrier),
+                        kb.qualified_name_of(p.spec),
+                        if spec_has {
+                            " — a call through the spec takes the spec's"
+                        } else {
+                            "; declare it on the spec's operation"
+                        },
+                    ),
+                });
+            }
+
             // WI-20260822-1MAGR — THE MEMBER'S SIGNATURE, before the legs below.
             //
             // AND AN ARITY MISMATCH ENDS THE PAIR, which is not tidiness. Every leg

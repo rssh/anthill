@@ -2196,9 +2196,10 @@ impl TypeError {
             } => {
                 let op_qn = kb.qualified_name_of(*op_sym);
                 format!(
-                    "operation `{}` returns `{}`, not `Bool` — it cannot be used as a rule-body condition (goal position). Only a Bool-returning operation is gated there as `eq({}(…), true)`; a non-Bool operation has no relational reading",
+                    "operation `{}` returns `{}`, not `Bool` — it cannot be used as a rule-body condition (goal position). Only a Bool-returning operation is gated there as `eq({}(…), true)`; a non-Bool operation has no relational reading — a goal binds its result in one more positional column or in a column named `result:` (`{}(…, result: ?r)`)",
                     op_qn,
                     kb.qualified_name_of(*return_sort),
+                    short_name_of(op_qn),
                     short_name_of(op_qn),
                 )
             }
@@ -3042,7 +3043,8 @@ impl TypeError {
                         "a Bool-returning operation (gated as `eq(op(…), true)`) or a relation"
                             .to_string(),
                     actual_type: format!(
-                        "operation returning `{ret}` in rule-body goal position — no relational reading"
+                        "operation returning `{ret}` in rule-body goal position — no relational \
+                         reading; write `result: ?r` for the call's result"
                     ),
                     span: self.span(kb),
                 }

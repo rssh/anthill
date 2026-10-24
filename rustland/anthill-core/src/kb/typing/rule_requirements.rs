@@ -1484,7 +1484,11 @@ fn check_goal_atom_reading(
         // actually runs, and costs nothing on a plain atom — whose arguments are DATA,
         // so the table answers empty.
         stack.extend(proved_goal_children(kb, expr));
+        // A goal with a column named `result:` (proposal 069 §1.1) binds the call's
+        // result, as the functional view does.
+        let mut names_result = false;
         let (f, provided) = if let Some((f, pos, named)) = expr_call_parts(expr) {
+            names_result = named.iter().any(|(label, _)| is_result_label(kb, *label));
             (f, pos.len() + named.len())
         } else {
             match expr {
@@ -1580,7 +1584,7 @@ fn check_goal_atom_reading(
         // pre-existing relational pattern WI-583 does not touch, and any other count is
         // the arity verdict's, taken above — skip any call whose arity ≠ the op's
         // parameter count.
-        if provided != sig.params.len() {
+        if provided != sig.params.len() || names_result {
             continue;
         }
         // Classify the return sort HEAD. Only a CONCRETE non-Bool sort is a
@@ -1692,6 +1696,13 @@ fn operation_goal_arity_error(
     }
     let rec = crate::kb::op_info::lookup_operation_info(kb, *functor)?;
     let span = Some(goal.span.span);
+    // A column named `result:` is the goal's result, not an argument (proposal 069 §1.1).
+    let named_args: Vec<(Symbol, Rc<NodeOccurrence>)> = named_args
+        .iter()
+        .filter(|(label, _)| !is_result_label(kb, *label))
+        .cloned()
+        .collect();
+    let named_args = named_args.as_slice();
     let mut binding = bind_call_arguments(
         kb,
         &rec.params,

@@ -123,6 +123,31 @@ fn simple_function_call_body() {
     );
 }
 
+/// Proposal 069 §3 (WI-20261023-CX743) — a call that leaves out a defaulted parameter
+/// reaches C++ at the callee's full arity, its defaults written in: the typer completes the
+/// call in the stored body, and the generator lowers what is stored. FAILS with the
+/// typer's completion backed out (MEASURED): the call is emitted short, `clamp(120, 50)`,
+/// its `50` in `low`'s place.
+#[test]
+fn a_call_leaving_out_a_defaulted_parameter_is_emitted_whole() {
+    let source = r#"
+        namespace test.expr_a
+          import anthill.prelude.{Int64}
+          sort Bounds
+            operation clamp(x: Int64, low: Int64 = 0, high: Int64 = 100) -> Int64 = x
+            operation high_end() -> Int64 = clamp(120, high: 50)
+          end
+        end
+    "#;
+    let mut kb = load_kb_with(source);
+    let cpp = emit_traits_struct(&mut kb, "test.expr_a.Bounds").expect("emit Bounds");
+
+    assert!(
+        cpp.contains("return clamp(120, 0, 50);"),
+        "the completed call is emitted whole:\n{cpp}"
+    );
+}
+
 #[test]
 fn nested_call_body() {
     // `triple_inc(x: Int64) -> Int64 = inc(inc(inc(x)))` — recursive call
