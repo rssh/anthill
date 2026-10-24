@@ -13214,6 +13214,12 @@ impl KnowledgeBase {
         self.reify_operation_sym
     }
 
+    /// `anthill.prelude.Error`, the effect sort a raise performs, resolved once with the
+    /// other connectives; `None` for a KB without the prelude.
+    pub(crate) fn error_sort_sym(&self) -> Option<Symbol> {
+        self.error_sort_sym
+    }
+
     /// Is `f` [`Self::reify_operation`]? One comparison: it is asked on the resolver's
     /// per-goal gates.
     pub(crate) fn is_reify_operation(&self, f: Symbol) -> bool {

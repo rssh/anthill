@@ -519,6 +519,7 @@ fn effects_program(ns: &str, spec_op: &str, member: &str, declared: &str, call: 
 namespace {ns}
   import anthill.prelude.{{Int64, Bool, Option, String, Error, List, Pair}}
   import anthill.prelude.Pair.{{pair}}
+  import anthill.reflect.{{TypeValue}}
   sort Animal
     entity cat(n: Int64)
     entity dog(m: String)
@@ -542,9 +543,12 @@ end
     )
 }
 
-const DEFAULTED_OP: &str = "operation op[U](s: Self, k: Int64, u: U) -> Int64 = 0";
-const CAR_OP_KU: &str =
-    "operation op[W](c: Self, k: W, u: W) -> Int64 effects {Error[W]} = Error.raise(k)";
+// The members raise at `W`, so each requires `TypeValue[T = W]` and its spec operation states
+// the clause over its own parameter (proposal 071 stage (d)).
+const DEFAULTED_OP: &str =
+    "operation op[U](s: Self, k: Int64, u: U) -> Int64 requires TypeValue[T = U] = 0";
+const CAR_OP_KU: &str = "operation op[W](c: Self, k: W, u: W) -> Int64 effects {Error[W]} \
+                         requires TypeValue[T = W] = Error.raise(k)";
 
 /// A BRACKET AN ARGUMENT CONTRADICTS IS REFUSED WHERE THE OVERRIDE CHARGES AN EFFECT, in the
 /// carrier spelling's words: `Sp.op[U = String](x, 5, "s")` over `Car.op[W](c, k: W, u: W)
@@ -573,9 +577,10 @@ fn a_bracket_an_argument_contradicts_is_refused_where_the_override_charges_an_ef
     }
     // … and where the override writes that parameter with a projection of its own (`c.V`),
     // eliminated against the arguments before the argument is judged.
-    let spec_op = "operation op[U](s: Self, k: Pair[A = Int64, B = Int64], u: U) -> Int64 = 0";
+    let spec_op = "operation op[U](s: Self, k: Pair[A = Int64, B = Int64], u: U) -> Int64 \
+                   requires TypeValue[T = U] = 0";
     let member = "operation op[W](c: Self, k: Pair[A = c.V, B = W], u: W) -> Int64 effects \
-                  {Error[W]} = Error.raise(u)";
+                  {Error[W]} requires TypeValue[T = W] = Error.raise(u)";
     for (q, call) in [
         ("sp", "Sp.op[U = String](x, pair(1, 5), \"s\")"),
         ("car", "Car.op[W = String](x, pair(1, 5), \"s\")"),
@@ -630,9 +635,9 @@ fn a_bracket_agreeing_with_its_arguments_charges_what_it_says() {
 /// refused and declaring `Error[Animal]` loads. From the arguments alone it is `Error[cat]`.
 #[test]
 fn a_bracket_wider_than_its_arguments_is_what_the_override_charges() {
-    let spec_op = "operation op[U](s: Self, a: U, b: U) -> Int64";
-    let member =
-        "operation op[W](c: Self, a: W, b: W) -> Int64 effects {Error[W]} = Error.raise(b)";
+    let spec_op = "operation op[U](s: Self, a: U, b: U) -> Int64 requires TypeValue[T = U]";
+    let member = "operation op[W](c: Self, a: W, b: W) -> Int64 effects {Error[W]} \
+                  requires TypeValue[T = W] = Error.raise(b)";
     for (q, call) in [
         ("sp", "Sp.op[U = Animal](x, c1, c1)"),
         ("car", "Car.op[W = Animal](x, c1, c1)"),

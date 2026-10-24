@@ -6,6 +6,7 @@
 -- — see proposal 038.
 sort anthill.prelude.BigInt
   import anthill.prelude.{Eq, Ord, Numeric}
+  import anthill.reflect.{TypeValue}
   -- WI-20260825-KD9SW: a WRITTEN bare `eq`/`neq` (an effect guard, a law) names the
   -- operation by import now; a minted `=`/`!=` carries its own address and needs nothing.
   import anthill.prelude.PartialEq.{eq}
@@ -34,9 +35,9 @@ sort anthill.prelude.BigInt
   -- ONLY THE ZERO DIVISOR IS PARTIAL: `BigInt` is unbounded, so there is no
   -- `Int64.div`-style overflow arm. The guarded effect is the one `Int64` writes.
   operation {
-    div(a: BigInt, b: BigInt) -> BigInt effects { Error[DivisionByZero] :- eq(b, 0) } @[host_implemented]  -- truncated quotient; partial: b ≠ 0
-    mod(a: BigInt, b: BigInt) -> BigInt effects { Error[DivisionByZero] :- eq(b, 0) } @[host_implemented]  -- Euclidean remainder, never negative; partial: b ≠ 0
-    rem(a: BigInt, b: BigInt) -> BigInt effects { Error[DivisionByZero] :- eq(b, 0) } @[host_implemented]  -- truncated remainder, sign follows the dividend; partial: b ≠ 0
+    div(a: BigInt, b: BigInt) -> BigInt effects { Error[DivisionByZero] :- eq(b, 0) } requires TypeValue[T = DivisionByZero] @[host_implemented]  -- truncated quotient; partial: b ≠ 0
+    mod(a: BigInt, b: BigInt) -> BigInt effects { Error[DivisionByZero] :- eq(b, 0) } requires TypeValue[T = DivisionByZero] @[host_implemented]  -- Euclidean remainder, never negative; partial: b ≠ 0
+    rem(a: BigInt, b: BigInt) -> BigInt effects { Error[DivisionByZero] :- eq(b, 0) } requires TypeValue[T = DivisionByZero] @[host_implemented]  -- truncated remainder, sign follows the dividend; partial: b ≠ 0
   }
 
   -- WI-880: `BigInt`'s ARITHMETIC, host-backed and named in this carrier's

@@ -471,8 +471,12 @@ end
     // field written (the reader asks the constructor and that it is applied, not the field).
     let nil = functor_of(&kb, "anthill.prelude.List.nil");
     let nil_term = kb.make_name_term_from_sym(nil);
-    let entity = |functor, field| EvalError::Raised {
-        payload: Value::Entity {
+    let raised = |payload| EvalError::Raised {
+        payload,
+        raised_type: anthill_core::eval::RaisedType::Unknown,
+    };
+    let entity = |functor, field| {
+        raised(Value::Entity {
             functor,
             pos: Vec::new().into(),
             named: vec![(
@@ -484,7 +488,7 @@ end
                 },
             )]
             .into(),
-        },
+        })
     };
     for (qname, field, disposition) in [
         (
@@ -514,7 +518,7 @@ end
             named_args: smallvec::smallvec![(field, nil_term)],
         });
         assert_eq!(
-            EvalError::Raised { payload: Value::term(term) }.bridge_disposition(&kb),
+            raised(Value::term(term)).bridge_disposition(&kb),
             disposition,
             "`{qname}` on the term carrier answers as on the entity"
         );
@@ -522,7 +526,7 @@ end
         // clause's bare name — and raised it is the program's own payload, a fault.
         let bare = kb.make_name_term_from_sym(functor);
         assert_eq!(
-            EvalError::Raised { payload: Value::term(bare) }.bridge_disposition(&kb),
+            raised(Value::term(bare)).bridge_disposition(&kb),
             BridgeDisposition::Fault,
             "`{qname}` named bare is the program's payload"
         );

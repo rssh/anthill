@@ -698,7 +698,7 @@ namespace anthill.reflect
     -- and `LoadFailed` is named in that file's `emit_only` closure for the reason its
     -- own comment gives about `LayerSymbol` / `LayerClause`.
     operation loaded(sources: List[T = String]) -> KB
-      effects Error[LoadFailed] @[host_implemented]
+      effects Error[LoadFailed] requires TypeValue[T = LoadFailed] @[host_implemented]
 
     -- KB admits Modify[kb]: assert / retract / add_guard mutate the
     -- KB's internal indexes. Required by proposal 037 Rule 8.
@@ -748,7 +748,7 @@ namespace anthill.reflect
     -- `Result<Box<dyn Stream<Solution, ResolveStreamFailure>>, ResolveStreamFailure>`.
     operation execute(kb: KB, query: LogicalQuery)
       -> Stream[T = Solution, E = Error[ResolveStreamFailure]]
-      effects Error[ResolveStreamFailure] @[host_implemented]
+      effects Error[ResolveStreamFailure] requires TypeValue[T = ResolveStreamFailure] @[host_implemented]
 
     -- Direct enumeration of asserted facts whose head functor is the given
     -- entity. The entity is passed as its TYPE (e.g. `facts_of(kb(),

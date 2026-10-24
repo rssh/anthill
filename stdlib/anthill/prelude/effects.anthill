@@ -99,10 +99,19 @@ namespace anthill.prelude
   -- rather than a try/catch — the caught value is ordinary data.
   sort Error
     import anthill.prelude.{Nothing, Result}
-    import anthill.reflect.{TypePattern}
+    import anthill.reflect.{TypePattern, TypeValue}
     sort T = ?
     provides Effect[T = Error[?]]
-    operation raise(error: T) -> Nothing effects Error[T] @[host_implemented]
+    -- A RAISE CARRIES ITS TYPE (proposal 071 §1.3): the `TypeValue` of its payload's
+    -- type, which the clause puts in the call's requirement channel, travels with the
+    -- raised value, and a boundary asks its pattern about that type, arguments and all —
+    -- a boundary at `Box[V = Int64]` declines a raised `Box[V = String]`. A raise at a
+    -- type with no `TypeValue` (a tuple, an arrow, a sort holding one) is refused at load;
+    -- a generic raiser states the clause, and its callers thread the evidence. So does a
+    -- host operation that raises, for each `Error[X]` its row raises. What the host function
+    -- of a row that says only `Error` (`Error[T = ?]`) raises carries the unknown type: only
+    -- a boundary whose pattern is `?` catches it.
+    operation raise(error: T) -> Nothing effects Error[T] requires TypeValue[T = T] @[host_implemented]
 
     -- THE BOUNDARY. Runs `body`; a raise inside it aborts HERE and becomes
     -- `err(payload)`, a normal return becomes `ok(value)`.
@@ -137,15 +146,13 @@ namespace anthill.prelude
     -- `requires TypePattern[T = T1]` IS WHAT MAKES THAT DECIDABLE (proposal 071
     -- §1.4). A raise reaching the boundary is caught when the `admits` of the
     -- pattern this clause puts in the call's requirement channel answers yes for
-    -- the raised value's type; the boundary calls that API and reads no dictionary
-    -- by position. Until 071's stage (d) a raise carries no type, and the type
-    -- asked about is the raised value's head sort. Before WI-20260921-28TAT there
+    -- the type the raise carries; the boundary calls that API and reads no
+    -- dictionary by position. Before WI-20260921-28TAT there
     -- was no evidence at all, and where the type-argument channel could not ground
     -- `T1` the boundary silently caught every payload — swallowing a label its own
     -- row had left to its caller. A call whose `T1` has no `TypePattern` evidence
     -- is refused at load. A call whose evidence is taken from its arguments when
-    -- it runs — a host's, or a generic operation's that a rule body calls —
-    -- refuses to run where they do not fix `T1`.
+    -- it runs — a host's — refuses to run where they do not fix `T1`.
     --
     -- SO A GENERIC BOUNDARY DECLARES IT. An operation reifying at its OWN type
     -- parameter writes `requires TypePattern[T = P]`, and its callers supply the

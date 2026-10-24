@@ -51,8 +51,8 @@
 //! `a_host_raise_is_not_mistaken_for_the_declared_payload`,
 //! `a_reify_at_an_operations_own_type_parameter_catches` (its declining third row) and
 //! `a_declined_raise_leaves_the_interpreter_usable` (whose `expect_err` stops erring).
-//! `a_narrowed_boundary_does_not_steal_an_unreadable_payload` was among them while the test
-//! was `payload_matches`; since a payload whose sort cannot be read is declined before any
+//! `a_narrowed_boundary_does_not_steal_a_raise_of_unknown_type` was among them while the test
+//! was `payload_matches`; since a raise whose type is not known is declined before any
 //! boundary is asked (`recover_at_reify_boundary`), it passes under this back-out.
 //! Every other row is about a boundary catching its OWN payload, which both rules agree
 //! on.
@@ -66,7 +66,8 @@ const PROGRAM: &str = r#"
 namespace test.reify
   import anthill.prelude.Result
   import anthill.prelude.Result.{ok, err}
-  import anthill.prelude.{Int64, String, Error, Result, List}
+  import anthill.prelude.{Int64, String, Error, Result, List, Time}
+  import anthill.prelude.Time.{Clock}
   import anthill.prelude.List.{cons, nil}
   import anthill.reflect.{KB, LoadFailed}
   import anthill.reflect.{TypePattern}
@@ -267,17 +268,16 @@ namespace test.reify
   operation genericDeclineOuter() -> Result[E = Other, T = Result[E = Boom, T = Int64]] =
     Error.reify(lambda () -> genericDeclines())
 
-  -- A READABLE AND AN UNREADABLE PAYLOAD. `tupleInnerAtBoom` is WRITTEN at `Boom` around a
-  -- body that raises both a `Boom` and a tuple, so the typer makes it declare the tuple label
-  -- as escaping — the row saying it discharged only `Boom`. The tuple must therefore leave
-  -- it; no boundary can be typed at a tuple (a structural former has no `TypeValue`), so it
-  -- leaves the call.
-  operation boomOrTuple(n: Int64) -> Int64 effects {Error[Boom], Error[(a: Int64, b: String)]} =
-    if n < 0 then Error.raise(boom("neg")) else Error.raise((a: n, b: "tup"))
+  -- A RAISE OF A KNOWN AND OF AN UNKNOWN TYPE. `clockInnerAtBoom` is WRITTEN at `Boom` around
+  -- a body that raises a `Boom` or reads the clock, and its row leaves `Clock` to its caller.
+  -- A `Clock` handler that THROWS raises a value no channel typed (proposal 071 §1.3), so
+  -- the `Boom` boundary must let it leave the call. (Until stage (d) the unreadable payload
+  -- was a raised tuple, which is refused at load now: a tuple has no `TypeValue`.)
+  operation boomOrClock(n: Int64) -> String effects {Error[Boom], Clock} =
+    if n < 0 then Error.raise(boom("neg")) else Time.now()
 
-  operation tupleInnerAtBoom(n: Int64) -> Result[E = Boom, T = Int64]
-      effects {Error[(a: Int64, b: String)]} =
-    Error.reify[T1 = Boom](lambda () -> boomOrTuple(n))
+  operation clockInnerAtBoom(n: Int64) -> Result[E = Boom, T = String] effects {Clock} =
+    Error.reify[T1 = Boom](lambda () -> boomOrClock(n))
 
   -- The generic boundary reached through a RULE BODY: `catchIt`'s `requires TypePattern[T = P]`
   -- is filled at the rule's call, `P` being the payload of the thunk's row.
@@ -839,36 +839,46 @@ fn a_generic_boundary_answers_through_a_rule_body() {
     }
 }
 
-/// A BOUNDARY DOES NOT STEAL A PAYLOAD IT CANNOT READ — where "catch what you cannot read"
-/// turns out to be wrong.
+/// A BOUNDARY DOES NOT STEAL A RAISE WHOSE TYPE IS NOT KNOWN — where "catch what you cannot
+/// read" turns out to be wrong.
 ///
-/// `tupleInnerAtBoom` is written `Error.reify[T1 = Boom]` around a body raising BOTH `Boom`
-/// and a tuple, and the typer requires it to declare the tuple label as ESCAPING — the row
-/// saying the `Boom` boundary discharged only `Boom`. So the tuple leaves the boundary, and
-/// the call, as the raise it is.
+/// `clockInnerAtBoom` is written `Error.reify[T1 = Boom]` around a body that raises `Boom` or
+/// reads the clock, and a `Clock` handler that throws raises a value whose type no channel
+/// states (`RaisedType::Unknown`, proposal 071 §1.3). The `Boom` boundary discharged only
+/// `Boom`, so the throw leaves it, and the call, as the raise it is.
 ///
-/// MEASURED when `payload_matches` caught an unreadable carrier instead of declining: a
-/// boundary typed at the tuple around this one answered `ok`, and this one
-/// `err(Tuple{a: 7, b: "tup"})` — it swallowed a label the row had assigned elsewhere,
-/// which is the exact defect the narrowing exists to close. The `Boom` row is the control:
-/// it is the boundary's OWN payload and answers through it either way.
+/// MEASURED in the shape this had before stage (d), a raised tuple whose sort could not be
+/// read, when `payload_matches` caught it instead of declining: a boundary typed at the
+/// tuple around this one answered `ok`, and this one `err(Tuple{a: 7, b: "tup"})` — it
+/// swallowed a label the row had assigned elsewhere, which is the exact defect the narrowing
+/// exists to close. A typed raise of a tuple is refused at load now
+/// (`a_raise_at_a_former_is_refused_at_the_raise`). The `Boom` row is the control: it is
+/// the boundary's OWN payload and answers through it either way.
+///
+/// BACK-OUT: a raise of unknown type answered as a type every pattern admits
+/// (`Interpreter::raised_type_value`), and the `err` arm is the stolen throw.
 #[test]
-fn a_narrowed_boundary_does_not_steal_an_unreadable_payload() {
+fn a_narrowed_boundary_does_not_steal_a_raise_of_unknown_type() {
+    use anthill_core::eval::effects::HandlerAction;
     let mut interp = interp();
+    interp
+        .register_effect_handler(
+            "anthill.prelude.Time.Clock",
+            Box::new(|_interp, _op, _args| Ok(HandlerAction::Throw(Value::Str("tick".into())))),
+        )
+        .expect("register a throwing Clock handler");
 
-    match interp.call("test.reify.tupleInnerAtBoom", &[Value::Int(7)]) {
-        Err(EvalError::Raised { payload, .. }) => {
-            assert_eq!(str_of(&interp, &field(&interp, &payload, "b", 1)), "tup")
-        }
+    match interp.call("test.reify.clockInnerAtBoom", &[Value::Int(7)]) {
+        Err(EvalError::Raised { payload, .. }) => assert_eq!(str_of(&interp, &payload), "tick"),
         other => panic!(
-            "the tuple label leaves the `Boom` boundary as the raise it is — an `err` here \
-             means the boundary stole it; got {other:?}"
+            "the handler's throw leaves the `Boom` boundary as the raise it is — an `err` \
+             here means the boundary stole it; got {other:?}"
         ),
     }
 
     // The control: the boundary's OWN payload still answers through it.
     let own = interp
-        .call("test.reify.tupleInnerAtBoom", &[Value::Int(-1)])
+        .call("test.reify.clockInnerAtBoom", &[Value::Int(-1)])
         .expect("a Boom is the boundary's own payload");
     assert_eq!(short_name(&interp, &own), "err");
     assert_eq!(err_why(&interp, &own), "neg");

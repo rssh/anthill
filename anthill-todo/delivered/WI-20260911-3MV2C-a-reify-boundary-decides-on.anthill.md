@@ -3,9 +3,9 @@
 - id: WI-20260911-3MV2C-a-reify-boundary-decides-on
 - created: 2026-09-11T06:05:45Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-11T06:05:45Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-10-24T17:57:34Z
 
 - acceptance: cargo-test
 
@@ -185,4 +185,8 @@ WRITTEN FROM READING, NOT MEASURED — no build was run for this entry.
 ### 2026-10-17T21:41:02Z — feedback — claude
 
 Proposal 071 (Draft, 2026-10-16; decided with the user on WI-20260908-9WVT7's third review) takes the decision the 2026-09-18 entry left open: continuum point 3, a ground type term on the raise and a pattern on the boundary. A raise carries the `TypeValue` of its payload's static type (`raise … requires TypeValue[T = T]`), and `Error.reify` requires `TypePattern[T = T1]` and calls its `admits` with that type, so a boundary at `Box[V = Int64]` declines a `Box[V = String]`; `ErrorTag` is retired. The derived-only fork is answered derived-only: neither spec takes a written row. Host raisers supply their payload sort's derived evidence, as the 2026-09-18 entry anticipated. Stage (d), WI-20261016-5CDN5, delivers this ticket: its acceptance holds this ticket's nested `Box[V = Int64]` / `Box[V = String]` rows with the two-distinct-sorts control, and this ticket depends on it. The 2026-09-18 first step is overtaken: `ground_type_params` went with the frame channel (WI-20260921-28TAT), and the comparison becomes `admits`, one subtype test over two type terms, carrier-neutral on both sides (071 §1.5), built in stage (b), WI-20261016-SQZPQ.
+
+### 2026-10-24T17:57:31Z — feedback — claude
+
+Delivered by WI-20261016-5CDN5 (proposal 071 stage (d), 619218f7), as 071 planned. A raise carries the `TypeValue` of its payload's type, threaded to it as every requirement is, and a boundary asks its pattern's `admits` about that type, arguments and all: this ticket's nested boundaries at `Box[V = Int64]` (inner) and `Box[V = String]` (outer) answer through the outer for a `Box[V = String]` raise and the inner for a `Box[V = Int64]` one, with the two-distinct-sorts row as the control that passes either way (`wi_5cdn5_raise_carries_its_type_test::nested_box_boundaries_answer_by_the_type_argument`; FAILS with the raised type read as the head sort, as stage (c) read it). The same holds through a generic raiser, `Result.reflect`, a host function's raise, and an `Error` handler that rethrows. Of this ticket's three directions none was taken as written: the type is neither reconstructed from the value nor carried on every value, but carried on the raise — continuum point 3 — and nothing reads a raise's type off its payload (user, 2026-10-24).
 

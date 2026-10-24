@@ -1109,7 +1109,7 @@ impl Interpreter {
         if let Some(builtin) = self.builtins.get(&sym).cloned() {
             self.const_cache
                 .insert(sym, super::ConstCacheEntry::Forcing);
-            let v = self.call_host(sym, &builtin, &[])?;
+            let v = self.call_host(sym, &builtin, &[], SmallVec::new())?;
             self.const_cache
                 .insert(sym, super::ConstCacheEntry::Cached(v.clone()));
             return Ok(v);
@@ -2877,9 +2877,10 @@ impl Interpreter {
             let saved_dict = self.builtin_dispatch_dict.take();
             self.builtin_dispatch_dict =
                 find_requirement(&requirements, self.fields.req_self).cloned();
+            // And the whole channel, for a host function that raises (proposal 071 §1.3).
             let result = if self.profiling {
                 let t0 = std::time::Instant::now();
-                let r = self.call_host(target, &builtin, &arg_values);
+                let r = self.call_host(target, &builtin, &arg_values, requirements);
                 let dt = t0.elapsed().as_nanos();
                 BUILTIN_PROF.with(|p| {
                     let mut m = p.borrow_mut();
@@ -2889,7 +2890,7 @@ impl Interpreter {
                 });
                 r
             } else {
-                self.call_host(target, &builtin, &arg_values)
+                self.call_host(target, &builtin, &arg_values, requirements)
             };
             self.builtin_dispatch_dict = saved_dict;
             return Ok(StepOutcome::Deliver(result?));
@@ -2925,7 +2926,8 @@ impl Interpreter {
                     // must not leave a ring entry for a call that never happened.
                     if let Some(builtin) = self.builtins.get(&impl_target).cloned() {
                         self.note_dispatch(impl_target);
-                        let result = self.call_host(impl_target, &builtin, &arg_values)?;
+                        let result =
+                            self.call_host(impl_target, &builtin, &arg_values, requirements)?;
                         return Ok(StepOutcome::Deliver(result));
                     }
                     if let Some((impl_body, impl_params)) = self.cached_operation_body(impl_target)
@@ -2984,7 +2986,8 @@ impl Interpreter {
                 // was written against.
                 if let Some(builtin) = self.builtins.get(&impl_target).cloned() {
                     self.note_dispatch(impl_target);
-                    let result = self.call_host(impl_target, &builtin, &arg_values)?;
+                    let result =
+                        self.call_host(impl_target, &builtin, &arg_values, requirements)?;
                     return Ok(StepOutcome::Deliver(result));
                 }
                 if let Some((body_node, params)) = self.cached_operation_body(impl_target) {
@@ -3015,7 +3018,8 @@ impl Interpreter {
                 let saved_dict = self.builtin_dispatch_dict.take();
                 self.builtin_dispatch_dict =
                     find_requirement(&requirements, self.fields.req_self).cloned();
-                let result = self.call_host(impl_target, &builtin, &arg_values);
+                let result =
+                    self.call_host(impl_target, &builtin, &arg_values, requirements);
                 self.builtin_dispatch_dict = saved_dict;
                 return Ok(StepOutcome::Deliver(result?));
             }
@@ -3916,7 +3920,7 @@ impl Interpreter {
     /// COSTS ONE CACHED `is_empty()` on the universal path: an operation that writes no
     /// `requires` of its own returns at the first test, off `op_requires_chain_rc`'s
     /// per-op cache.
-    fn fill_missing_op_scoped_slots(
+    pub(super) fn fill_missing_op_scoped_slots(
         &mut self,
         target: Symbol,
         arg_values: &[Value],
@@ -4369,6 +4373,24 @@ impl Interpreter {
         self.apply_callable_value(body, Vec::new(), SmallVec::new())
     }
 
+    /// The `Type` a raise carries, built for the boundaries that ask
+    /// ([`Self::recover_at_reify_boundary`]): the type its evidence names. `None` for a raise
+    /// whose type is not known ([`super::RaisedType::Unknown`]): only a pattern at `?` would
+    /// admit it, and no boundary has one — `TypePattern` has no instance at an open slot,
+    /// and no row discharges a bare `Error` label.
+    fn raised_type_value(
+        &mut self,
+        raised_type: &super::RaisedType,
+    ) -> Result<Option<Value>, EvalError> {
+        match raised_type {
+            super::RaisedType::Evidence(evidence) => {
+                let t = super::builtins::type_of_dictionary(self, evidence)?;
+                Ok(Some(Value::term(t)))
+            }
+            super::RaisedType::Unknown => Ok(None),
+        }
+    }
+
     /// Proposal 027.4 — build one arm of the `Result` a boundary delivers.
     ///
     /// Through [`Self::finish_constructor`], the same producer a source-written
@@ -4412,7 +4434,11 @@ impl Interpreter {
         e: EvalError,
         floor: usize,
     ) -> Result<Value, EvalError> {
-        let EvalError::Raised { payload } = &e else {
+        let EvalError::Raised {
+            payload,
+            raised_type,
+        } = &e
+        else {
             return Err(e);
         };
         let Some(err_ctor) = self.error_layer.as_ref().map(|l| l.result_err) else {
@@ -4429,29 +4455,37 @@ impl Interpreter {
         // code (`admits`) on this stack — where the raise's frames were, those discarded
         // first — and the scan must not hold the stack while it does.
         //
-        // THE TYPE ASKED ABOUT IS THE RAISED VALUE'S HEAD SORT, built once per raise, as a type
-        // with its arguments left out, until 071's stage (d) has a raise carry its type. A
-        // value records the sort its constructor belongs to and none of the type arguments it
-        // was built at, and an argument left out admits, so a boundary at `Box[V = Int64]`
-        // accepts a raised `Box[V = String]` — as the head-sort comparison this replaced did
-        // (WI-20260911-3MV2C, which stage (d) delivers).
+        // THE TYPE ASKED ABOUT IS THE ONE THE RAISE CARRIES (071 §1.3), built only where some
+        // boundary may ask — once per run the raise crosses, a host call back into anthill
+        // being a run of its own: the type its `TypeValue` evidence names,
+        // arguments and all, so a boundary at `Box[V = Int64]` declines a raised
+        // `Box[V = String]` (WI-20260911-3MV2C). Until stage (d) it was the raised value's
+        // head sort, arguments left out — a value records the sort its constructor belongs to
+        // and none of the type arguments it was built at — and a pattern at any arguments
+        // admitted it.
         //
-        // A RAISED VALUE WHOSE SORT CANNOT BE READ IS ADMITTED BY NO BOUNDARY, and the
-        // alternative was tried and is WRONG: a boundary has been told what it discharges,
-        // and the row told the OUTER boundary about everything else. MEASURED on a fixture
-        // that loaded clean at the time — `innerAtBoom` at `T1 = Boom` declaring a tuple
-        // label as escaping, wrapped in a `reify` typed at that tuple — catching gave `ok` at
-        // the outer boundary and `err(Tuple{…})` at the inner: the inner stole a label the
-        // row had assigned to the outer. No boundary is typed at a tuple now (a structural
-        // former has no `TypePattern` row, and the call is refused), so a raised tuple
-        // leaves the run as the raise it is, which is what its row says.
+        // A RAISE OF THE UNKNOWN TYPE (a bare `Error` row's host function, a host handler's
+        // throw) IS CAUGHT ONLY BY A BOUNDARY WHOSE PATTERN IS `?` — none exists until 071's
+        // stage (e) builds pattern evidence at an open slot — and every other boundary lets
+        // it pass outward. Catching it at a boundary typed otherwise was measured WRONG in
+        // the shape it had before stage (d), a raised value whose sort could not be read: a
+        // boundary has been told what it discharges, and the row told the OUTER boundary
+        // about everything else.
+        // On a fixture that loaded clean at the time — `innerAtBoom` at `T1 = Boom` declaring
+        // a tuple label as escaping, wrapped in a `reify` typed at that tuple — catching gave
+        // `ok` at the outer boundary and `err(Tuple{…})` at the inner: the inner stole a label
+        // the row had assigned to the outer. No row discharges a bare `Error` label either,
+        // so such a raise leaves the run as the raise it is, which is what its row says.
+        let boundaries = self.stack.reify_boundaries(floor);
+        if boundaries.is_empty() {
+            return Err(e);
+        }
         let raised = payload.clone();
-        let Some(head) = runtime_carrier_sort(&self.kb, &raised) else {
+        let Some(raised_type) = self.raised_type_value(raised_type)? else {
             return Err(e);
         };
-        let raised_type = Value::term(self.kb.make_sort_ref(head));
         let mut accepted = None;
-        for idx in self.stack.reify_boundaries(floor) {
+        for idx in boundaries {
             let Some(pattern) = self.stack.boundary_pattern(idx).cloned() else {
                 return Err(EvalError::Internal(format!(
                     "recover_at_reify_boundary: frame {idx} is no boundary"
@@ -5322,7 +5356,7 @@ fn find_local<'a>(
 /// Synth names are interned once (see `kb::typing::synth_req_names`), so
 /// Symbol equality suffices — unlike `find_local`, which must compare
 /// resolved short names. Reverse order: last binding wins (shadowing).
-fn find_requirement<'a>(
+pub(super) fn find_requirement<'a>(
     reqs: &'a SmallVec<[(Symbol, super::value::Dictionary); 2]>,
     name: Symbol,
 ) -> Option<&'a super::value::Dictionary> {

@@ -1801,6 +1801,9 @@ mod wi_rdgqc_deferred_import_mint_test;
 #[path = "include/wi_rdgqc_head_introduction_census_test.rs"]
 mod wi_rdgqc_head_introduction_census_test;
 
+#[path = "include/wi_ne0e4_multi_head_introduction_test.rs"]
+mod wi_ne0e4_multi_head_introduction_test;
+
 #[path = "include/wi_8k4rb_equation_subject_goal_position_test.rs"]
 mod wi_8k4rb_equation_subject_goal_position_test;
 
@@ -2265,3 +2268,5 @@ mod wi_edpf6_arrow_records_its_binders_test;
 mod wi_rdns4_shared_row_tail_test;
 #[path = "include/wi_rdns4_nested_callback_row_test.rs"]
 mod wi_rdns4_nested_callback_row_test;
+#[path = "include/wi_5cdn5_raise_carries_its_type_test.rs"]
+mod wi_5cdn5_raise_carries_its_type_test;

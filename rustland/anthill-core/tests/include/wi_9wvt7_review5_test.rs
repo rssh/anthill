@@ -287,7 +287,7 @@ namespace test.r5.keyedreq
     entity keyed(k: K)
   end
   operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = TypeValue.type_value[T = B]()
-  operation catchIt[P](x: P) -> Int64 requires TypePattern[T = P] =
+  operation catchIt[P](x: P) -> Int64 requires TypePattern[T = P], TypeValue[T = P] =
     match Error.reify(lambda () -> Error.raise(x))
       case ok(v) -> 1
       case err(e) -> 2

@@ -46,11 +46,12 @@ namespace test.w2858g
 
   sort Host
     import anthill.prelude.{Int64, Error}
+    import anthill.reflect.{TypeValue}
     import test.w2858g.{Boom}
     entity host
     operation bounce(n: Int64) -> Int64 @[host_implemented]
     operation bounceTwice(n: Int64) -> Int64 @[host_implemented]
-    operation bounceRaising(n: Int64) -> Int64 effects {Error[Boom]} @[host_implemented]
+    operation bounceRaising(n: Int64) -> Int64 effects {Error[Boom]} requires TypeValue[T = Boom] @[host_implemented]
   end
 
   provides Host language rust

@@ -488,11 +488,11 @@ end
 
 // ── (6) EVERY HEAD OF A LABELED MULTI-HEAD RULE ─────────────────────────────
 
-/// THE LANDING, DRIVEN — and the second axis on which a clause census is wider than an
-/// introduces census. A LABELED multi-head rule fans out into one asserted rule per head
-/// (`load_rule`), so each head files its own clause, while the RULE introduces nothing:
-/// it names no single predicate, which is why `rule_introduced_functor_name` returns
-/// `None` for it and why nothing recorded those heads.
+/// THE LANDING, DRIVEN. A LABELED multi-head rule fans out into one asserted rule per
+/// head (`load_rule`), so each head files its own clause. This used to be the second axis
+/// on which the clause census was wider than the introduces census — the rule introduced
+/// nothing then, and nothing recorded its heads; since WI-20260908-NE0E4 each head also
+/// introduces what its single-head rule would.
 #[test]
 fn every_head_of_a_multi_head_rule_really_lands_a_clause() {
     assert_composed(
@@ -503,9 +503,9 @@ fn every_head_of_a_multi_head_rule_really_lands_a_clause() {
         None,
     );
     // AND THE **SECOND** HEAD LANDS TOO — otherwise this row would be equally true of an
-    // implementation that dropped everything after the first head. Both names are minted
-    // by the main entry's own single-head rules, since a multi-head rule introduces
-    // neither of them.
+    // implementation that dropped everything after the first head. Both names are also
+    // written by the main entry's own single-head rules, so the row reads the same
+    // whether or not a multi-head head introduces (it does, since WI-20260908-NE0E4).
     let mut kb = crate::common::expect_loaded(crate::common::try_load_kb_with(
         "namespace apxss.mhl2\n  import anthill.prelude.{Int64}\n  \
          sort Rec\n    entity rec(n: Int64)\n    rule freshp(1) :- true\n    \

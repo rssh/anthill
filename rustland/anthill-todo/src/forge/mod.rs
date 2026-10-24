@@ -204,9 +204,14 @@ fn checked_handle(entry: &str) -> Result<&str, String> {
 /// A failure on the `Error` effect channel the `Forge` operations declare. It
 /// reaches the user as `error: <message>` through `exit_code_from_main`, which
 /// is what every one of these is for.
+///
+/// Its type is not known (proposal 071 §1.3): the `Forge` rows say `Error`, which is
+/// `Error[T = ?]`, so the operation is handed no `TypeValue` of a payload, and no boundary
+/// catches the raise — as no row discharges the label.
 fn raised(message: String) -> EvalError {
     EvalError::Raised {
         payload: Value::Str(message),
+        raised_type: anthill_core::eval::RaisedType::Unknown,
     }
 }
 

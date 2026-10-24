@@ -11847,6 +11847,19 @@ impl KnowledgeBase {
             .map(WovenDispatch::Stamped);
         let woven = woven.or(stamped.as_ref());
         if needs_dict {
+            // NOT WITH AN ARGUMENT THAT IS STILL A CALL. The bridge takes values, and a call
+            // left standing is a ground term the body would run on, as WI-880's host arm
+            // records for its own route. Declined, the call stays a call: inside a folded
+            // body it rides the enclosing operation's single depth-0 bridge, which evaluates
+            // its arguments, as every nested call does; as a goal's own operand it delays
+            // (`is_unreduced_op_call`). MEASURED (WI-20261016-5CDN5): `keep(Error.reify(lambda
+            // () -> loadBad()))` in a body a rule folds, `keep[P]` declaring `requires
+            // TypeValue[T = P]`, ran `keep` on the term `reify(lambda …)` and faulted
+            // `match_failed`; `Result.reflect`, which declares that clause since proposal 071
+            // stage (d), did the same.
+            if param_args.values().any(|a| self.is_unreduced_op_call(a)) {
+                return v;
+            }
             return self
                 .bridge_op_to_eval(op, &params, &param_args, subst, woven, faults)
                 .unwrap_or(v);
@@ -12067,7 +12080,7 @@ impl KnowledgeBase {
         // Read off the payload's constructor: `evaluation_failure` is an account of the
         // runtime's, which no program constructs ([`super::RuntimeAccount`]).
         let (detail, repair) = match e {
-            EvalError::Raised { payload } => (
+            EvalError::Raised { payload, .. } => (
                 format!("raised {}", crate::eval::render_raised_payload(self, payload)),
                 if crate::eval::error::raised_runtime_account(self, payload)
                     == Some(super::RuntimeAccount::EvaluationFailure)
@@ -12618,8 +12631,12 @@ impl KnowledgeBase {
         // `1 conditional (residual goals undischarged)`. A reduction widened
         // without its delay predicate is the WI-738 soundness floor knocked out
         // from under exactly the calls the widening newly admits.
+        //
+        // `Error.reify` with them: it has neither a body nor a host function, and the bridge
+        // runs its thunk as a body (`bridge_runs_anthill_code`), so a call of it left
+        // standing is a computation not made, not data.
         self.builtins.get(&functor).is_none()
-            && (self.op_body_node(functor).is_some() || self.is_interpreter_mapped_op(functor))
+            && (self.bridge_runs_anthill_code(functor) || self.is_interpreter_mapped_op(functor))
     }
 
     /// The occurrence of a bodied (non-builtin) op-call operand, from ANY of the

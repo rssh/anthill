@@ -103,9 +103,17 @@ pub enum EvalError {
     /// Produced at the effect-dispatch site from a handler's
     /// `HandlerAction::Throw(payload)`. The payload is an ordinary opaque
     /// `Value` — error-ness lives in *this variant* (the channel), not in
-    /// the value itself. Until catch/recover constructs land (WI-195+), a
-    /// raised Error aborts evaluation carrying its payload here.
-    Raised { payload: Value },
+    /// the value itself. A raise travels to the innermost `Error.reify` boundary
+    /// whose pattern admits `raised_type`, and aborts evaluation if none does.
+    ///
+    /// A host function raises through `Interpreter::raise_error`, which takes the type
+    /// from the requirement channel its operation was handed.
+    Raised {
+        payload: Value,
+        /// The type the raise carries (proposal 071 §1.3), which a boundary asks its
+        /// pattern about.
+        raised_type: RaisedType,
+    },
     /// A handler returned a continuation-manipulating action (`Fail`,
     /// `Choice`, or `Suspend`) that the runtime cannot yet honor — those
     /// need the Branch / suspend-resume substrate (WI-075). Hitting one is
@@ -297,6 +305,16 @@ pub enum EvalError {
     ReifyPayloadUnread {
         detail: String,
     },
+    /// Proposal 071 §1.3 — a raise whose type is not in hand: `Error.raise`, or a host
+    /// operation that raises, entered with no `TypeValue` evidence in its requirement channel
+    /// (a call entered from argument values that do not pin the payload), or a host raise
+    /// outside any host operation. Caught by a boundary that reads the payload's sort
+    /// alone, it would land inside a `Result` typed at other arguments (WI-20260911-3MV2C).
+    /// `detail` is pre-rendered where the type was asked for. A PROGRAM limit, not an
+    /// evaluator invariant, so not [`Self::Internal`].
+    RaiseTypeUnread {
+        detail: String,
+    },
     /// Proposal 071 — `anthill.reflect.type_admits` (the test `TypePattern.admits` runs) was
     /// asked about a pair its predicate does not judge (`kb::typing::type_pattern_admits`,
     /// whose `form` lists what it does not). An answer there would be a guess. `detail` is
@@ -306,6 +324,27 @@ pub enum EvalError {
         detail: String,
     },
     Internal(String),
+}
+
+/// The type a raise carries (proposal 071 §1.3): what a boundary asks its pattern's `admits`
+/// about (`Interpreter::recover_at_reify_boundary`). Built into a `Type` at the first
+/// boundary that asks, not at the raise (071 open question 4, user 2026-10-24): a raise no
+/// boundary sees builds nothing. Never read off the payload: a value records the sort its
+/// constructor belongs to and none of the type arguments it was built at.
+#[derive(Clone, Debug)]
+pub enum RaisedType {
+    /// The `TypeValue` evidence of the payload's type, threaded to the raise as every
+    /// requirement is: the dictionary `Error.raise`'s `requires TypeValue[T = T]` was handed,
+    /// the one a raising host operation's `requires TypeValue[T = X]` was handed, or the
+    /// constant of a payload the runtime raises with no operation behind it (`ErrorLayer`).
+    /// Its type is the whole type, arguments and all, so a boundary at `Box[V = Int64]`
+    /// declines a raised `Box[V = String]`.
+    Evidence(crate::eval::value::Dictionary),
+    /// The payload's type is not known: the raise of an operation whose row says `Error`,
+    /// which is `Error[T = ?]`, or a host effect handler's throw. No pattern but one at `?`
+    /// admits it — the unknown type of WI-20260910-6ARRN — and no boundary has such a pattern
+    /// yet, as no row discharges a bare `Error` label.
+    Unknown,
 }
 
 /// WI-20260911-0V0F7 — which of three things an [`EvalError`] escaping the SLD→eval
@@ -413,7 +452,7 @@ impl EvalError {
             EvalError::ConstValueUnavailable { .. } => BridgeDisposition::Schedule,
 
             // ── Fault: the callee could not be run to an answer ──
-            EvalError::Raised { payload } => raised_disposition(kb, payload),
+            EvalError::Raised { payload, .. } => raised_disposition(kb, payload),
             // ── NoProvider: the requirement is known not to be available ──
             //
             // A slot the argument types pinned and no provider answers: the call has no
@@ -464,6 +503,7 @@ impl EvalError {
             | EvalError::KbReadFailed(_)
             | EvalError::ScopedKbOutlivesCall { .. }
             | EvalError::ReifyPayloadUnread { .. }
+            | EvalError::RaiseTypeUnread { .. }
             | EvalError::TypePatternUnjudged { .. }
             | EvalError::Internal(_) => BridgeDisposition::Fault,
         }
@@ -737,6 +777,7 @@ impl std::fmt::Display for EvalError {
                 }
             }
             EvalError::ReifyPayloadUnread { detail } => write!(f, "{detail}"),
+            EvalError::RaiseTypeUnread { detail } => write!(f, "{detail}"),
             EvalError::TypePatternUnjudged { detail } => write!(f, "type_admits: {detail}"),
             EvalError::Internal(s) => write!(f, "internal evaluator error: {s}"),
         }
