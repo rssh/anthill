@@ -2338,6 +2338,42 @@ pub(super) fn project_type_member(
         {
             return r;
         }
+        // A type member that is no parameter — `sort T = Int64`, `sort L = List[T = A]` — is
+        // what the written `Sort.Member` is, read at the parameters the receiver's type binds.
+        //
+        // An `internal` one is refused: a projection carries no scope to ask its visibility
+        // from, and an internal member is hidden from outside its sort.
+        if let Some(found) = declared_type_member(kb, s, member) {
+            if kb.symbols.is_internal(found) {
+                return Err(projection_type_error(
+                    ctx,
+                    span,
+                    &format!(
+                        "'{member}' is internal to '{}', and a projection off a value does not read an internal member",
+                        kb.qualified_name_of(s).to_owned(),
+                    ),
+                ));
+            }
+            return match member_at(kb, s, found, Some(arg_ty)) {
+                MemberAt::Name => Ok(ProjResult::Grounded(written_member_type(
+                    kb,
+                    found,
+                    false,
+                    site_of(arg_ty),
+                ))),
+                MemberAt::Definition(ty) => Ok(ProjResult::Grounded(ty)),
+                MemberAt::Open => {
+                    let (expected, actual) = open_member_refusal(kb, s, found);
+                    Err(TypeError::Other {
+                        site: TypeError::here(),
+                        span,
+                        context: ctx.clone(),
+                        expected,
+                        actual,
+                    })
+                }
+            };
+        }
         return Err(projection_type_error(
             ctx,
             span,

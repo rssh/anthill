@@ -39,3 +39,26 @@ class QualifiedConstructorTest extends munit.FunSuite:
     assertEquals(answers(kb, "zzqc.byQualified", 0), 1)
     assertEquals(answers(kb, "zzqc.sameTerm", 1), 1)
   }
+
+  /** A sort's qualified name is the reference its one-segment name is in a data slot too
+    * (rustland's `wi_qk77s_dotted_type_in_a_data_slot_test`). FAILS with the sort read as a
+    * chain: the fact holds `field_access(Outer, Inner)`, which `holds(Inner)` does not find. */
+  test("a fact holding a sort's qualified name holds the sort") {
+    val kb = LoadFixture.loaded(
+      """namespace zzqs
+        |  sort Outer
+        |    sort Inner
+        |    end
+        |  end
+        |  import zzqs.Outer.Inner
+        |  fact holds(Outer.Inner)
+        |  fact plain(Inner)
+        |  rule byShort :- holds(Inner)
+        |  rule byQualified :- plain(Outer.Inner)
+        |end
+        |""".stripMargin,
+      "qualified_sort.anthill",
+    )
+    assertEquals(answers(kb, "zzqs.byShort", 0), 1)
+    assertEquals(answers(kb, "zzqs.byQualified", 0), 1)
+  }

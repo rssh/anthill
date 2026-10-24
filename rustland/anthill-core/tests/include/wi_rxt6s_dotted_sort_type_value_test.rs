@@ -56,7 +56,8 @@
 //!     a_dotted_rule_citation_is_still_the_relation, a_dotted_const_is_still_its_value —
 //!       the two rungs above the sort's; a whole name resolves to one symbol.
 //!     a_binder_named_like_the_root_is_still_the_receiver — the local pass comes first.
-//!     a_data_slot_still_stores_the_chain — a clause's own term is not this walk's.
+//!     a_data_slot_still_stores_the_chain — a clause's own term is not this walk's (its sort
+//!       rows are `wi_qk77s_dotted_type_in_a_data_slot_test`'s).
 //!     a_rule_bodys_call_argument_is_the_sort — the boundary, below.
 //!   The rung placed FIRST, before the rule's and the const's, changes no row of the
 //!   core crate: the three hand on one node.
@@ -64,10 +65,10 @@
 //! THE BOUNDARY. In a rule body's own term a path is read so where it is a dot's receiver
 //! and where it is a call's argument: a call there is typed as an operation body is
 //! (WI-20261013-R1W5A, decided with the user 2026-10-23), so `?x <=> which(Outer.Inner)`
-//! hands `which` the sort, as its operation-body twin does. A path in a data slot that is
-//! no call's stays the chain the clause stores (`a_data_slot_still_stores_the_chain`).
-//! Reading every type written in a clause's term is proposal 055 umbrella B
-//! (WI-20260823-53W12).
+//! hands `which` the sort, as its operation-body twin does. In a data slot that is no call's
+//! a sort's path is the type value its bare name is (WI-20261024-QK77S), and a rule's path
+//! stays the chain the clause stores (`a_data_slot_still_stores_the_chain`). Reading every
+//! type written in a clause's term is proposal 055 umbrella B (WI-20260823-53W12).
 
 use anthill_core::eval::Value;
 
@@ -521,10 +522,9 @@ fn a_path_from_the_root_is_reached_past_a_binder() {
     );
 }
 
-/// A clause's own term keeps the chain: the fact and the goal that spell one path build
-/// one term, for a rule's name and for a sort's. And it is the chain that is stored: the
-/// reference the bare name is does not match it, from either side — the boundary of the
-/// module doc, in a data slot.
+/// A clause's own term keeps the chain of a rule's name: the fact and the goal that spell one
+/// path build one term. A sort's path is the type value its bare name is there too
+/// (WI-20261024-QK77S), so the fact and the goal match whichever of the two each writes.
 #[test]
 fn a_data_slot_still_stores_the_chain() {
     for (ns, body, expected) in [
@@ -541,12 +541,12 @@ fn a_data_slot_still_stores_the_chain() {
         (
             "rxt6sdatabaregoal",
             "  fact holds(Outer.Inner)\n  rule r(1) :- holds(Inner)",
-            vec![],
+            vec![1],
         ),
         (
             "rxt6sdatabarefact",
             "  fact holds(Inner)\n  rule r(1) :- holds(Outer.Inner)",
-            vec![],
+            vec![1],
         ),
     ] {
         assert_eq!(ints(ns, body), expected, "{ns}");

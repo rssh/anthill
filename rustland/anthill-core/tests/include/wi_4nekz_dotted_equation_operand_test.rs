@@ -275,16 +275,13 @@ fn every_citation_form_reaches_the_same_reading() {
 /// WI-20260902-40KSW and will move when it lands — what must not move is the two
 /// positions agreeing.
 ///
-/// ONE OF THE FIVE NO LONGER PAIRS, by WI-20261012-RXT6S: a sort named by a path is its
-/// type value in an operation body, so a chain that names a sort is read there (`eq.b:
-/// expected Type, got Int64`) and only the rule body walks into its segments. For it the
-/// row holds the rule body to a refusal that is not the rung's own — the comparison against
-/// a `Relation`, which is what a too-wide rung would put there — and the operation body to
-/// not blaming the path's root. A constructor's qualified name pairs again: it is the
-/// constructor in both positions, as its one-segment name is (WI-20260908-9WVT7,
-/// `wi_9wvt7_qualified_constructor_test`), so both compare `red` with `7` (`eq.b: expected
-/// Color, got Int64`), and both read a free-standing entity's as its bare name, a type
-/// (`eq.b: expected Type, got Int64`). The row's name is kept: the delivered ticket cites it.
+/// A sort named by a path is its type value in both positions (WI-20261012-RXT6S in an
+/// operation body, WI-20261024-QK77S in a rule body's data slot), so both compare it with `7`
+/// (`eq.b: expected Type, got Int64`). A constructor's qualified name is the constructor in
+/// both, as its one-segment name is (WI-20260908-9WVT7, `wi_9wvt7_qualified_constructor_test`),
+/// so both compare `red` with `7` (`eq.b: expected Color, got Int64`), and both read a
+/// free-standing entity's as its bare name, a type (`eq.b: expected Type, got Int64`). The
+/// row's name is kept: the delivered ticket cites it.
 #[test]
 fn the_five_other_name_kinds_still_agree_with_the_operation_body() {
     const DECL: &str = "\
@@ -300,12 +297,12 @@ namespace zz4nf.inner
   rule rel(1) :- b(1)
 end
 ";
-    for (label, body, paired) in [
-        ("constructor", "zz4nf.Color.red = 7", true),
-        ("sort", "zz4nf.Color = 7", false),
-        ("namespace", "zz4nf.inner = 7", true),
-        ("entity", "zz4nf.acct = 7", true),
-        ("nothing", "zz4nf.nosuch.x = 7", true),
+    for (label, body) in [
+        ("constructor", "zz4nf.Color.red = 7"),
+        ("sort", "zz4nf.Color = 7"),
+        ("namespace", "zz4nf.inner = 7"),
+        ("entity", "zz4nf.acct = 7"),
+        ("nothing", "zz4nf.nosuch.x = 7"),
     ] {
         let rule = crate::common::try_load_kb_with(&format!(
             "{DECL}namespace zz4nfr\n  rule r(1) :- {body}\nend\n"
@@ -318,26 +315,13 @@ end
         ))
         .err()
         .unwrap_or_default();
-        if paired {
-            assert_eq!(
-                rule.len(),
-                op.len(),
-                "{label} (`{body}`): a chain naming no rule is NOT this ticket's — the two \
-                 positions report it identically, and must keep doing so \
-                 (WI-20260902-40KSW owns the message itself).\nrule body: {rule:#?}\nop body: {op:#?}"
-            );
-        } else {
-            assert!(
-                rule.iter().all(|e| !e.contains("Relation") && !e.contains("eq.b")),
-                "{label} (`{body}`): the rule body's refusal is not the relation rung's — \
-                 it took no chain that names no rule: {rule:#?}"
-            );
-            assert!(
-                !op.is_empty() && op.iter().all(|e| !e.contains("zz4nf.name")),
-                "{label} (`{body}`): the operation body reads the sort the path names, and \
-                 refuses what is done with it: {op:#?}"
-            );
-        }
+        assert_eq!(
+            rule.len(),
+            op.len(),
+            "{label} (`{body}`): a chain naming no rule is NOT this ticket's — the two \
+             positions report it identically, and must keep doing so \
+             (WI-20260902-40KSW owns the message itself).\nrule body: {rule:#?}\nop body: {op:#?}"
+        );
         assert!(
             !rule.is_empty(),
             "{label}: …and it is still refused — this row must not become a silent \

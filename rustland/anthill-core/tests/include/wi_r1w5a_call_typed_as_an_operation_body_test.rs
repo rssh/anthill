@@ -258,8 +258,9 @@ fn a_spine_at_a_declaring_slot_is_checked_as_the_literal() {
 /// A type written in a call's argument is the type value it denotes, as in an operation body:
 /// `which(Outer.Inner)`, the written call `H.keep(Outer.Inner)` and the dot `(H).keep(Outer.Inner)`
 /// each hand `which` the sort and answer 21, as the operation-body twin does. Each answered 0,
-/// `which` handed the chain (WI-20260823-53W12's rows). A path in a goal's argument stays the
-/// chain the clause stores: `fact holds(Outer.Inner)` is still not found by `holds(Inner)`.
+/// `which` handed the chain (WI-20260823-53W12's rows). A path in a clause's data slot is the
+/// type value its bare name is (WI-20261024-QK77S): `fact holds(Outer.Inner)` is found by
+/// `holds(Inner)`.
 #[test]
 fn a_type_in_a_calls_argument_is_its_type_value() {
     let src = ns(
@@ -271,10 +272,10 @@ fn a_type_in_a_calls_argument_is_its_type_value() {
     }
     assert_eq!(run_int64(&src, "test.r1w5a.path.twin"), Ok(21));
     let mut kb = load_kb_with(&src);
-    assert!(query_unary(&mut kb, "test.r1w5a.path.matched").is_empty());
-    // A goal's arguments are the rule's own term (§5.3): the goal hands `which` the chain,
-    // as before (WI-20260823-53W12), and is not refused for it.
-    assert_eq!(sole_int(&src, "test.r1w5a.path.goalForm"), 0);
+    assert_eq!(query_unary(&mut kb, "test.r1w5a.path.matched").len(), 1);
+    // A goal's arguments are the rule's own term (§5.3), where a path is the type value its
+    // bare name is: the goal hands `which` the sort, as `which(Inner, ?x)` does.
+    assert_eq!(sole_int(&src, "test.r1w5a.path.goalForm"), 21);
 }
 
 /// A goal on an operation that has clauses is a relation they define, matched as written:

@@ -1096,6 +1096,15 @@ pub(crate) fn value_alias(
     })
 }
 
+/// Does the type `ty`, as a declaration lowered it, hold a sort's type-parameter variable —
+/// an alias defined over the parameters of the sort declaring it (`sort L = List[T = A]`)? A
+/// slot left open with `?` holds a variable of no parameter.
+pub(crate) fn holds_type_parameter_var(kb: &KnowledgeBase, ty: &Value) -> bool {
+    kb.collect_vars(ty)
+        .into_iter()
+        .any(|v| kb.is_canonical_type_param_var(v))
+}
+
 /// Does the clause-canon type `ty` name a type parameter anywhere — a `Ref(param)` leaf?
 fn names_a_type_parameter(kb: &KnowledgeBase, ty: TermId) -> bool {
     let mut stack = vec![ty];

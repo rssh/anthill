@@ -194,6 +194,7 @@ use type_ctor::*;
 pub(crate) use type_ctor::type_mentions_unresolved_name;
 pub(crate) use type_pattern::*;
 use type_receiver::*;
+pub(crate) use type_receiver::{alias_member, AliasMember};
 pub use type_preds::*;
 pub use unify::*;
 pub use value_type::*;

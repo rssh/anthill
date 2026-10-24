@@ -3377,11 +3377,13 @@ object Loader:
         case None => ()
     // A CONSTRUCTOR'S QUALIFIED NAME IS THE REFERENCE ITS ONE-SEGMENT NAME IS, in a data slot
     // too (§6.7): `fact holds(Colour.red)` holds `red`'s symbol, as `fact plain(red)` does, so
-    // a goal writing either spelling finds either fact. Any other dotted chain in a data slot
-    // keeps its spelling. Mirrors rustland's `data_slot_dotted_ctor`.
+    // a goal writing either spelling finds either fact; and so is a sort's (`fact
+    // holds(Outer.Inner)` holds `Inner`'s). Any other dotted chain in a data slot keeps its
+    // spelling. Mirrors rustland's `data_slot_dotted_ctor` and `data_slot_dotted_type`, which
+    // also reads an alias through, as scaland reads none.
     else
       dottedCitationName(fileSym, fileTerms, termId).map(lookupWritten(kb, _, scope)) match
-        case Some(ResolveResult.Found(sym)) if kb.isConstructorSymbol(sym) =>
+        case Some(ResolveResult.Found(sym)) if kb.isConstructorSymbol(sym) || kb.namesOnlyAType(sym) =>
           return kb.alloc(Term.Ref(sym))
         case _ => ()
 

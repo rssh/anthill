@@ -22,7 +22,7 @@
 //!     a_rewrite_reads_the_member_where_it_is_written
 //!     a_type_member_is_no_call
 //!     a_member_hidden_from_the_dot_is_hidden_from_both_positions (its value half)
-//!     a_member_over_the_sorts_parameters_is_refused_through_a_bracket (its value half)
+//!     a_member_over_the_sorts_parameters_is_read_at_the_bracket (its value half)
 //!   the type read (`read_denoted_projections` answering its input) — FAIL:
 //!     a_type_member_through_the_value_annotates_as_the_written_one
 //!     a_bracket_binds_the_parameter_it_names
@@ -36,7 +36,7 @@
 //!     a_rewrite_reads_the_member_where_it_is_written
 //!     a_member_the_sort_does_not_declare_is_refused_about_the_sort
 //!     a_member_hidden_from_the_dot_is_hidden_from_both_positions (its type half)
-//!     a_member_over_the_sorts_parameters_is_refused_through_a_bracket
+//!     a_member_over_the_sorts_parameters_is_read_at_the_bracket
 //!   the lambda site's read alone — FAIL: a_lambda_binder_reads_the_member_too
 //!   the pattern site's read alone — FAIL: a_lambda_binder_reads_the_member_too,
 //!     a_pattern_binder_reads_the_member_too
@@ -57,9 +57,33 @@
 //!     a_rule_body_reads_the_member_of_a_written_type
 //!     (the rows of `wi_papx0_…`, `wi_r653s_…` and `wi_a3fy2_…` pass either way)
 //!
+//!
+//!   Measured with the rows of the reading at a receiver's bindings and the alias, value and
+//!   bracket readings beside them:
+//!   a member's definition never read at the receiver's bindings (`member_at` answering its
+//!   written name) — FAIL:
+//!     a_member_over_the_sorts_parameters_is_read_at_the_bracket
+//!     a_type_member_off_a_value_is_the_written_one
+//!     an_alias_member_is_read_at_the_alias_parameters
+//!     (and two rows of `wi_qk77s_dotted_type_in_a_data_slot_test`)
+//!   a type member that is no parameter not projected off a value (`project_type_member`'s
+//!   arm skipped) — FAIL: a_type_member_off_a_value_is_the_written_one
+//!   the alias-prefix pass of the field ladder (`DotFieldPass::AliasPrefix` admitting
+//!   nothing), and separately the sort rung taking a chain read through an alias that fixes
+//!   parameters — FAIL, each: an_alias_member_is_read_at_the_alias_parameters
+//!   a bracket entry rooted at a value read as a name (`try_value_rooted_entry` and the
+//!   term walk's rung off), and separately a value's type member read as a value
+//!   (`type_member_as_value` skipped) — FAIL, each:
+//!     a_type_member_in_a_value_bracket_is_the_member
+//!
+//!   the refusal of an internal member projected off a value — FAIL:
+//!     an_internal_member_off_a_value_is_refused
+//!
 //!   PASS EITHER WAY, by design: a_type_that_denotes_nothing_here_keeps_its_refusal — a
 //!   parameter `t: Type` denotes no sort at the dot, so `t.T` is the `Type` value's
-//!   member, which `Type` does not have.
+//!   member, which `Type` does not have. a_path_past_an_alias_member_is_read_by_its_name —
+//!   the fence of the sort rung's alias test: a path past the alias's member keeps the name
+//!   reading (measured also with the test asked through `dotted_alias_receiver`).
 
 use anthill_core::eval::Value;
 
@@ -76,6 +100,7 @@ const DECLS: &str = "\
     sort A = ?
     sort B = ?
     sort L = List[T = A]
+    sort LB = List[T = B]
     sort K = Int64
     sort S = List[T = ?]
     entity q(x: A, y: B)
@@ -89,6 +114,9 @@ const DECLS: &str = "\
     const c: Int64 = 3
   end
   sort CA = P[T = String]
+  sort CB = P
+  sort CQ = Q[A = Int64]
+  sort LI = List[T = Int64]
   operation idt(t: Type) -> Type = t
   operation bit(c: Bool) -> Int64 = if c then 1 else 0
 ";
@@ -402,24 +430,142 @@ fn a_member_hidden_from_the_dot_is_hidden_from_both_positions() {
 }
 
 /// A member defined over the sort's parameters (`L = List[T = A]`), reached through a
-/// receiver that binds them, is refused: the bracket is not read into the member. A member
+/// receiver that binds them, is its definition at them, as a field's type is: `qq.L` under
+/// `let qq = Q[A = Int64]` is `List[T = Int64]`, in a type and as a value. One whose
+/// definition names a parameter the receiver leaves open (`LB` over `B`) is refused. A member
 /// that reads no parameter (`K = Int64`) is the member, bracket or not.
 #[test]
-fn a_member_over_the_sorts_parameters_is_refused_through_a_bracket() {
-    assert_refused_naming(
-        &refusals("unread1", "let qq = Q[A = Int64]\n    let y: qq.L = [5]\n    0"),
-        &["`L` is defined over the parameters of `Q`"],
-        "qq.L in a type",
-    );
-    assert_refused_naming(
-        &refusals("unread2", "let qq = Q[A = Int64]\n    let t = idt(qq.L)\n    0"),
-        &["`L` is defined over the parameters of `Q`"],
-        "qq.L as a value",
-    );
+fn a_member_over_the_sorts_parameters_is_read_at_the_bracket() {
     assert_eq!(
-        run("unread3", "let qq = Q[A = Int64]\n    let y: qq.K = 5\n    y"),
+        run("atb1", "let qq = Q[A = Int64]\n    let y: qq.L = [5]\n    bit(PartialEq.eq(qq.L, LI))"),
+        Ok(1)
+    );
+    assert_refused_naming(
+        &refusals("atb2", "let qq = Q[A = Int64]\n    let y: qq.L = [\"s\"]\n    0"),
+        &["expected Int64, got String"],
+        "qq.L is List[T = Int64]",
+    );
+    for (ns, main) in [
+        ("atb3", "let qq = Q[A = Int64]\n    let y: qq.LB = [5]\n    0"),
+        ("atb4", "let qq = Q[A = Int64]\n    let t = idt(qq.LB)\n    0"),
+    ] {
+        assert_refused_naming(
+            &refusals(ns, main),
+            &["`LB` is defined over a parameter of `Q` the receiver leaves open"],
+            ns,
+        );
+    }
+    assert_eq!(
+        run("atb5", "let qq = Q[A = Int64]\n    let y: qq.K = 5\n    y"),
         Ok(5)
     );
+}
+
+/// A type member off a VALUE is the member the written name is, at the parameters the
+/// value's type binds: `let y: x.T = 5` over `x: D` is `let y: D.T = 5`, refused in its words
+/// for a string; `x.L` over `x: Q[A = Int64]` is `List[T = Int64]`; a parameter the value's
+/// type leaves open is the value's own (`x.LB` over `x: Q[A = Int64]` is `List[T = x.B]`). It
+/// was refused, "type 'D' has no member 'T'": only a parameter was read off a value.
+#[test]
+fn a_type_member_off_a_value_is_the_written_one() {
+    let decls = "  operation five(x: D) -> Int64 =\n    let y: x.T = 5\n    y\n  operation \
+                 six(x: D, y: x.T) -> Int64 = y + 1\n  operation lst(x: Q[A = Int64]) -> Int64 =\n    \
+                 let y: x.L = [5]\n    0\n";
+    assert_eq!(
+        run_int64(
+            &program_with("ov1", decls, "five(d(x: 1)) + six(d(x: 1), 5) + lst(q(x: 1, y: \"s\"))"),
+            "qk77s.ov1.main"
+        ),
+        Ok(11)
+    );
+    let written = refusal_text("ov2", "let y: D.T = \"s\"\n    0");
+    let off_value = load_errors_of(&program_with(
+        "ov3",
+        "  operation bad(x: D) -> Int64 =\n    let y: x.T = \"s\"\n    0\n",
+        "0",
+    ));
+    assert_refused_naming(&off_value, &[&written[0]], "x.T over x: D");
+    assert_refused_naming(
+        &load_errors_of(&program_with(
+            "ov4",
+            "  operation bad(x: Q[A = Int64]) -> Int64 =\n    let y: x.LB = [5]\n    0\n",
+            "0",
+        )),
+        &["expected x.B, got Int64"],
+        "x.LB is List[T = x.B]",
+    );
+}
+
+/// A member through an alias that fixes parameters is read at them, in an operation body:
+/// `CA.T` is `String`, `CQ.L` is `List[T = Int64]`, `CQ.K` is `Int64` — as a dot on the alias
+/// written as a type value reads them. Through an alias that fixes none (`CB = P`), `CB.T` is
+/// the written `P.T`. `CA.T` was refused, "T.name: expected resolved name"; `CQ.L` was the
+/// member's name, `L`, which nothing equals.
+#[test]
+fn an_alias_member_is_read_at_the_alias_parameters() {
+    assert_eq!(
+        run(
+            "al1",
+            "bit(PartialEq.eq(CA.T, String)) + 2 * bit(PartialEq.eq(CQ.L, LI)) + 4 * \
+             bit(PartialEq.eq(CQ.K, Int64))"
+        ),
+        Ok(7)
+    );
+    let written = refusal_text("al2", "let t = idt(P.T)\n    0");
+    let through = refusal_text("al3", "let t = idt(CB.T)\n    0");
+    assert_eq!(through, written);
+}
+
+/// A path past a member of the alias's sort (`CQ.Inner.X`) is the sort's nested member, read
+/// by its name as before: only a member of the alias itself is read at its parameters.
+#[test]
+fn a_path_past_an_alias_member_is_read_by_its_name() {
+    let decls = "  sort Q3\n    sort A = ?\n    sort Inner\n      sort X = Int64\n      entity inn\n    \
+                 end\n    entity q3(x: A)\n  end\n  sort CQ3 = Q3[A = Int64]\n";
+    let main = "bit(PartialEq.eq(CQ3.Inner.X, Int64)) + 2 * bit(PartialEq.eq(CQ3.Inner, Q3.Inner))";
+    assert_eq!(run_int64(&program_with("pa1", decls, main), "qk77s.pa1.main"), Ok(3));
+}
+
+/// An `internal` type member projected off a value is refused: a projection carries no scope
+/// to ask its visibility from. (Inside the declaring sort too, where the written name is
+/// visible — the projection's limit, which the written name does not have.)
+#[test]
+fn an_internal_member_off_a_value_is_refused() {
+    let src = "namespace lib.ivm\n  import anthill.prelude.{String}\n  sort V\n    internal sort H \
+               = String\n    entity v\n  end\nend\nnamespace qk77s.ivm\n  import anthill.prelude.{Int64}\n  \
+               import lib.ivm.V\n  operation bad(x: V) -> Int64 =\n    let y: x.H = \"s\"\n    0\nend\n";
+    assert_refused_naming(
+        &load_errors_of(src),
+        &["'H' is internal to 'lib.ivm.V', and a projection off a value does not read an internal member"],
+        "x.H",
+    );
+}
+
+/// A bracket's entry written as a dot on a value is that value's member: `List[T = dd.T]`
+/// under `let dd = D`, `List[T = x.T]` over `x: P[T = Int64]` and `List[pp.T]` under `let pp
+/// = P[T = Int64]` are `List[T = Int64]`. Each was refused, "unresolved name 'dd.T'": the
+/// entry is lowered as a type, one dotted name. A value's type member read as a value is the
+/// type it is where the value's type determines it, and refused where it leaves it open.
+#[test]
+fn a_type_member_in_a_value_bracket_is_the_member() {
+    let decls = "  operation viaParam(x: P[T = Int64]) -> Int64 = bit(PartialEq.eq(List[T = x.T], \
+                 LI)) + 2 * bit(PartialEq.eq(x.T, Int64))\n";
+    let main = "let dd = D\n    let pp = P[T = Int64]\n    bit(PartialEq.eq(List[T = dd.T], LI)) + 2 * \
+                bit(PartialEq.eq(List[pp.T], LI)) + 4 * viaParam(p(x: 1))";
+    assert_eq!(
+        run_int64(&program_with("vb1", decls, main), "qk77s.vb1.main"),
+        Ok(1 + 2 + 4 * 3)
+    );
+    for (ns, decls, token) in [
+        ("vb2", "  operation g(x: P) -> Type = x.T\n", "the receiver's type leaves it open here"),
+        (
+            "vb3",
+            "  operation g(x: P[T = Int64]) -> Type = x.T()\n",
+            "the type member written without parentheses, `.T`",
+        ),
+    ] {
+        assert_refused_naming(&load_errors_of(&program_with(ns, decls, "0")), &[token], ns);
+    }
 }
 
 /// The boundary: a parameter `t: Type` denotes no sort at the dot, so `t.T` is the member of

@@ -273,23 +273,40 @@ fn written_sort_dot(
             DenotedMember::Fixed(ty) => {
                 crate::kb::load::type_value_occurrence(kb, ty, occ.span, occ.owner)
             }
-            // The type value the written `Sort.Member` is, as the loader builds a written
-            // type — with the operation-body walk, in a rule body too
-            // (`Loader::written_type_receiver_occurrence`), so a structural alias is the
-            // type it stands for.
-            DenotedMember::Open | DenotedMember::Member => {
-                if let Some((expected, actual)) = bracket_unread_by(kb, &sort, found) {
-                    return refused(TypeError::here(), expected, actual);
+            kind @ (DenotedMember::Open | DenotedMember::Member) => {
+                // A parameter left open is its written name; another member is read at the
+                // parameters the receiver binds.
+                let at = match kind {
+                    DenotedMember::Open => MemberAt::Name,
+                    _ => match denoted_receiver_type(kb, env, denotation, &sort) {
+                        Some(receiver) => member_at(kb, head, found, receiver.as_ref()),
+                        None => {
+                            return refused(
+                                TypeError::here(),
+                                "a receiver whose type arguments are written types".to_string(),
+                                unnamed_argument(kb, denotation),
+                            )
+                        }
+                    },
+                };
+                match at {
+                    // The type value the written `Sort.Member` is, as the loader builds a
+                    // written type — with the operation-body walk, in a rule body too
+                    // (`Loader::written_type_receiver_occurrence`), so a structural alias is
+                    // the type it stands for.
+                    MemberAt::Name => {
+                        let within =
+                            crate::kb::load::written_within_declaring_scope(kb, found, from_scope);
+                        crate::kb::load::name_type_value_occurrence(
+                            kb, found, within, true, occ.span, occ.owner,
+                        )
+                    }
+                    MemberAt::Definition(ty) => type_value_of(kb, &ty, occ),
+                    MemberAt::Open => {
+                        let (expected, actual) = open_member_refusal(kb, head, found);
+                        return refused(TypeError::here(), expected, actual);
+                    }
                 }
-                let within = crate::kb::load::written_within_declaring_scope(kb, found, from_scope);
-                crate::kb::load::name_type_value_occurrence(
-                    kb,
-                    found,
-                    within,
-                    true,
-                    occ.span,
-                    occ.owner,
-                )
             }
         };
         return DenotedDot::Call(node);
@@ -421,33 +438,200 @@ fn denoted_type_member(
     }
 }
 
-/// The refusal of a member whose definition names the sort's parameters, reached through a
-/// receiver that binds them: the bracket is not read into the member's definition, and the
-/// member without it is another type. A parameter is no such member: it has no definition
-/// recorded as an alias's. `(expected, actual)`.
-fn bracket_unread_by(
-    kb: &KnowledgeBase,
-    sort: &DenotedSort,
-    member: Symbol,
-) -> Option<(String, String)> {
-    let binds = sort.bracketed || !sort.alias_fixed(kb).is_empty();
-    // As the loader asks it of an alias written by name (`alias_type_at_a_use`): a slot the
-    // definition leaves open with `?` is no parameter's.
-    let names_a_parameter = kb.alias_types.get(&member).is_some_and(|ty| {
-        kb.collect_vars(ty)
-            .into_iter()
-            .any(|v| kb.is_canonical_type_param_var(v))
-    });
-    (binds && names_a_parameter).then(|| {
-        let denoted = kb.local_name_of(sort.head);
-        let short = short_name_of(kb.local_name_of(member));
-        (
-            format!("a member of `{denoted}` the receiver's type arguments do not reach into"),
-            format!(
-                "`{short}` is defined over the parameters of `{denoted}`, and a member reached through a receiver that binds them is read without the binding"
-            ),
-        )
+/// The type member `member` declares in `sort` — a nested sort, an alias, a parameter — by its
+/// qualified name, as the written `Sort.Member` names it. An eponymous sort's name is its
+/// constructor's, as the loader's `sort_named` reads it.
+pub(super) fn declared_type_member(kb: &KnowledgeBase, sort: Symbol, member: &str) -> Option<Symbol> {
+    let qualified = format!("{}.{member}", kb.qualified_name_of(sort));
+    kb.symbols
+        .by_qualified_name
+        .get(&qualified)
+        .copied()
+        .filter(|d| kb.has_kind(*d, crate::intern::SymbolKind::Sort) && !kb.is_entity_constructor(*d))
+}
+
+/// What `Alias.Member` names in a clause's term, a rule body's data slot or a query, where
+/// `Alias` is a type alias that owns no members and fixes parameters of the sort it stands
+/// for (`CA.T` over `sort CA = P[T = String]`): that sort's member read at the parameters the
+/// alias fixes, as a dot on the alias's type value reads it in an operation body
+/// ([`denoted_sort_dot`]). For the walks that build a term with no typer after them.
+pub(crate) enum AliasMember {
+    /// The member, read as its written name is.
+    Name(Symbol),
+    /// The type it is at the alias's parameters.
+    Type(TermId),
+    /// Its definition names a parameter the alias leaves open: the refusal's sentence.
+    Open(String),
+}
+
+/// [`AliasMember`] of `alias` and `member`; `None` where `alias` is no such alias or its
+/// sort declares no type member `member`.
+pub(crate) fn alias_member(kb: &mut KnowledgeBase, alias: Symbol, member: &str) -> Option<AliasMember> {
+    if !kb.is_scan_alias(alias) || owns_members(kb, alias) {
+        return None;
+    }
+    let (base, fixed) = alias_type_application(kb, alias)?;
+    if fixed.is_empty() {
+        return None;
+    }
+    let found = declared_type_member(kb, base, member)?;
+    if kb.type_params_of_sort(base).iter().any(|p| p == member) {
+        return Some(
+            match fixed.iter().find(|(k, _)| short_name_of(kb.local_name_of(*k)) == member) {
+                Some((_, ty)) => AliasMember::Type(*ty),
+                None => AliasMember::Name(found),
+            },
+        );
+    }
+    let base_ref = kb.make_sort_ref(base);
+    let receiver = Value::term(kb.make_parameterized_type(base_ref, &fixed));
+    Some(match member_at(kb, base, found, Some(&receiver)) {
+        MemberAt::Name => AliasMember::Name(found),
+        MemberAt::Definition(ty) => match crate::kb::node_occurrence::value_to_term(kb, &ty) {
+            Ok(id) => AliasMember::Type(id),
+            Err(_) => AliasMember::Open(format!(
+                "`{alias}.{member}` is a type that holds a value, which a clause's term does not hold",
+                alias = kb.local_name_of(alias),
+            )),
+        },
+        MemberAt::Open => {
+            let (_, actual) = open_member_refusal(kb, base, found);
+            AliasMember::Open(actual)
+        }
     })
+}
+
+/// What a type member of a sort that is no parameter is through a receiver of the sort.
+pub(super) enum MemberAt {
+    /// The member as its written name reads: one whose definition names none of the sort's
+    /// parameters, or one reached through a receiver that binds none of them.
+    Name,
+    /// Its definition, the parameters the receiver binds read into it: `L` over `sort L =
+    /// List[T = A]` through a receiver of `Q[A = Int64]` is `List[T = Int64]`.
+    Definition(Value),
+    /// Its definition names a parameter the receiver leaves open.
+    Open,
+}
+
+/// The type member `member` of `sort`, a member that is no parameter, through a receiver of
+/// the type `receiver`: its definition at the parameters the receiver binds, as a field's
+/// type is read at them ([`build_pattern_subst`]). `None` for a receiver that says nothing of
+/// the sort's parameters — a bare sort — which reads the member as its written name does.
+pub(super) fn member_at(
+    kb: &mut KnowledgeBase,
+    sort: Symbol,
+    member: Symbol,
+    receiver: Option<&Value>,
+) -> MemberAt {
+    let Some(definition) = kb.alias_types.get(&member).cloned() else {
+        return MemberAt::Name;
+    };
+    if !holds_type_parameter_var(kb, &definition) {
+        return MemberAt::Name;
+    }
+    let Some(subst) = receiver.and_then(|r| build_pattern_subst(kb, r, sort)) else {
+        return MemberAt::Name;
+    };
+    let at = walk_pattern_field_type_deep(kb, &subst, &definition);
+    if holds_type_parameter_var(kb, &at) {
+        MemberAt::Open
+    } else {
+        MemberAt::Definition(at)
+    }
+}
+
+/// The refusal of [`MemberAt::Open`]. `(expected, actual)`.
+pub(super) fn open_member_refusal(kb: &KnowledgeBase, sort: Symbol, member: Symbol) -> (String, String) {
+    let sort = kb.local_name_of(sort);
+    let short = short_name_of(kb.local_name_of(member));
+    (
+        format!("a member of `{sort}` the receiver's type arguments determine"),
+        format!(
+            "`{short}` is defined over a parameter of `{sort}` the receiver leaves open; bind it, `{sort}[…]`"
+        ),
+    )
+}
+
+/// The type a receiver that denotes a sort is, at which a member reached through it is read:
+/// its bracket, as the written companion receiver's is, or the parameters its alias fixes.
+/// `Some(None)` for a bare sort, which says nothing of its parameters; `None` where an
+/// argument of the bracket names no type.
+fn denoted_receiver_type(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    denotation: &Rc<NodeOccurrence>,
+    sort: &DenotedSort,
+) -> Option<Option<Value>> {
+    if !sort.bracketed {
+        return Some(sort.alias.and_then(|alias| alias_receiver_type(kb, alias)).map(Value::term));
+    }
+    type_value_denoted_type(kb, env, denotation).map(|id| Some(Value::term(id)))
+}
+
+/// The refusal's text of a bracket an argument of which names no type.
+fn unnamed_argument(kb: &KnowledgeBase, denotation: &Rc<NodeOccurrence>) -> String {
+    let written = crate::persistence::print::TermPrinter::new(kb).print_occurrence(denotation);
+    format!("`{written}` has an argument that names no type here")
+}
+
+/// `x.T` read as a value, where `x` is a value of `sort` and `T` a type member of it: the type
+/// value of the type the projection off `x` is, when it names no type parameter. A type
+/// member is no call: `called` refuses `x.T()`.
+pub(super) fn type_member_as_value(
+    kb: &mut KnowledgeBase,
+    receiver_ty: &Value,
+    sort: Symbol,
+    member_short: &str,
+    member: Symbol,
+    called: bool,
+    occ: &Rc<NodeOccurrence>,
+) -> Result<Rc<NodeOccurrence>, TypeError> {
+    let span = Some(occ.span.span);
+    let ctx = TypeErrorContext::DotProjection { member };
+    let denoted = kb.local_name_of(sort).to_string();
+    let refused = |expected: String, actual: String| TypeError::Other {
+        site: TypeError::here(),
+        span,
+        context: TypeErrorContext::DotProjection { member },
+        expected,
+        actual,
+    };
+    if called {
+        return Err(refused(
+            format!("the type member written without parentheses, `.{member_short}`"),
+            format!("`{member_short}` is a type member of `{denoted}`, and a type is no call"),
+        ));
+    }
+    // Known at load: no variable, no projection off a value, no parameter of the body.
+    let known = |kb: &KnowledgeBase, ty: &Value| {
+        kb.collect_vars(ty).is_empty()
+            && !value_contains_projection(kb, ty)
+            && !value_contains_rigid(kb, ty)
+    };
+    match project_type_member(kb, receiver_ty, member_short, None, None, &[], &ctx, span)? {
+        ProjResult::Grounded(ty) if known(kb, &ty) => Ok(type_value_of(kb, &ty, occ)),
+        _ => Err(refused(
+            format!("a type member of `{denoted}` the receiver's type determines"),
+            format!(
+                "`{member_short}` is a type member of `{denoted}`, and the receiver's type leaves it open here, so it is no type value"
+            ),
+        )),
+    }
+}
+
+/// The type value of the type `ty`, built where `occ` stands: as the walks build a type written
+/// in value position (`load::type_value_occurrence`).
+fn type_value_of(kb: &mut KnowledgeBase, ty: &Value, occ: &Rc<NodeOccurrence>) -> Rc<NodeOccurrence> {
+    match crate::kb::node_occurrence::value_to_term(kb, ty) {
+        Ok(id) => crate::kb::load::type_value_occurrence(kb, id, occ.span, occ.owner),
+        // A type that holds a value rides an occurrence, and is spliced as the type itself.
+        Err(_) => {
+            let node = NodeOccurrence::new_expr(Expr::Spliced(ty.clone()), occ.span, occ.owner);
+            let type_ty = kb.make_sort_ref_by_name("anthill.prelude.Type");
+            node.set_inferred_type(Value::term(type_ty));
+            node
+        }
+    }
 }
 
 /// `name.member` in a type, where a `let` bound `name` to a written type: the type the
@@ -469,14 +653,7 @@ pub(super) fn denoted_member_type(
     let sort = denoted_sort(kb, &denotation);
     let head = sort.head;
     let short = short_name_of(kb.local_name_of(member)).to_string();
-    let qualified = format!("{}.{short}", kb.qualified_name_of(head));
-    let Some(found) = kb
-        .symbols
-        .by_qualified_name
-        .get(&qualified)
-        .copied()
-        .filter(|d| kb.has_kind(*d, crate::intern::SymbolKind::Sort))
-    else {
+    let Some(found) = declared_type_member(kb, head, &short) else {
         return Some(Err(projection_type_error(
             ctx,
             span,
@@ -517,28 +694,49 @@ pub(super) fn denoted_member_type(
                 Err(e) => Err(e),
             }
         }
-        DenotedMember::Member => match bracket_unread_by(kb, &sort, found) {
-            Some((expected, actual)) => Err(TypeError::Other {
-                site: TypeError::here(),
-                span,
-                context: ctx.clone(),
-                expected,
-                actual,
-            }),
-            // The member as the written name reads in a type: an alias is the type it
-            // stands for, its name kept beside it.
-            None => {
-                let within = crate::kb::load::written_within_declaring_scope(kb, found, scope);
-                let site = site_of(receiver);
-                Ok(
-                    match crate::kb::load::alias_read(kb, found, within, true, site.0, site.1) {
-                        Some(child) => crate::kb::node_occurrence::type_child_as_value(&child),
-                        None => Value::term(kb.make_sort_ref(found)),
-                    },
-                )
+        DenotedMember::Member => {
+            let Some(at) = denoted_receiver_type(kb, env, &denotation, &sort) else {
+                return Some(Err(projection_type_error(
+                    ctx,
+                    span,
+                    &unnamed_argument(kb, &denotation),
+                )));
+            };
+            match member_at(kb, head, found, at.as_ref()) {
+                // The member as the written name reads in a type: an alias is the type it
+                // stands for, its name kept beside it.
+                MemberAt::Name => {
+                    let within = crate::kb::load::written_within_declaring_scope(kb, found, scope);
+                    Ok(written_member_type(kb, found, within, site_of(receiver)))
+                }
+                MemberAt::Definition(ty) => Ok(ty),
+                MemberAt::Open => {
+                    let (expected, actual) = open_member_refusal(kb, head, found);
+                    Err(TypeError::Other {
+                        site: TypeError::here(),
+                        span,
+                        context: ctx.clone(),
+                        expected,
+                        actual,
+                    })
+                }
             }
-        },
+        }
     })
+}
+
+/// The type member `member` as its written name reads in a type: an alias is the type it
+/// stands for, its name kept beside it (`load::alias_read`).
+pub(super) fn written_member_type(
+    kb: &mut KnowledgeBase,
+    member: Symbol,
+    within: bool,
+    site: (crate::span::SourceSpan, Option<Symbol>),
+) -> Value {
+    match crate::kb::load::alias_read(kb, member, within, true, site.0, site.1) {
+        Some(child) => crate::kb::node_occurrence::type_child_as_value(&child),
+        None => Value::term(kb.make_sort_ref(member)),
+    }
 }
 
 /// Is `expr` a dot whose receiver is a written type?

@@ -880,6 +880,31 @@ pub(super) fn build_type(
                 }
             }
 
+            // A type member of the receiver's sort read as a value is the type value of the
+            // type the projection off the receiver is — `List[T = x.T]` under `x: P[T =
+            // Int64]` holds `Int64` — as a type member's written name read as a value is its
+            // type value. One the receiver's type leaves open names no value known here.
+            if let Some(sort) = recv_sort {
+                let member_short = short_name_of(kb.local_name_of(member)).to_string();
+                if declared_type_member(kb, sort, &member_short).is_some() {
+                    match type_member_as_value(
+                        kb,
+                        &recv.ty,
+                        sort,
+                        &member_short,
+                        member,
+                        !occ.is_paren_less() || !pos_nodes.is_empty() || !named_nodes.is_empty(),
+                        &occ,
+                    ) {
+                        Ok(node) => {
+                            push_visit_at(work, node, env, expected, fuel.saturating_sub(1), pos)
+                        }
+                        Err(e) => results.push(Err(e)),
+                    }
+                    return;
+                }
+            }
+
             // No method and no field matched → clear diagnostic at the dot span.
             // WI-1119: when the receiver is a type PARAMETER, name it and the specs that
             // do constrain it. Recomputing the constraint set here rather than threading it

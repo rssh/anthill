@@ -2588,6 +2588,15 @@ pub enum LoadError {
         reason: String,
         span: Span,
     },
+    /// A clause DATA SLOT names a type member through a type alias (`CQ.L` over `sort CQ =
+    /// Q[A = Int64]`) whose definition names a parameter the alias leaves open, so the
+    /// member is no type there (`typing::alias_member`). `why` is the sentence the dot on
+    /// the alias's type value is refused with in an operation body.
+    TypeMemberOpenThroughAlias {
+        name: String,
+        why: String,
+        span: Span,
+    },
     /// WI-525 (proposal 049, NAF discipline): a BINDING `<=>` / `let` goal (both
     /// lower to `unify(?v, e)`) appears in a contract position — an operation
     /// `requires` / `ensures` clause, or a `constraint` body. Contracts TEST
@@ -3007,6 +3016,7 @@ impl LoadError {
             | LoadError::ForbiddenInternalAccess { span, .. }
             | LoadError::UnsafeNegatedUnify { span, .. }
             | LoadError::ConstValueUnavailableInDataSlot { span, .. }
+            | LoadError::TypeMemberOpenThroughAlias { span, .. }
             | LoadError::BindingInContract { span, .. }
             | LoadError::CallTypeArgsNotSupportedHere { span, .. }
             | LoadError::ParenLessBracketBindsNothing { span, .. }
@@ -4241,6 +4251,9 @@ impl LoadError {
                     loc.format_start(*span),
                     const_unavailable_message(name, reason),
                 )
+            }
+            LoadError::TypeMemberOpenThroughAlias { name, why, span } => {
+                format!("{}: `{name}` names no type here: {why}", loc.format_start(*span))
             }
             LoadError::UnsafeNegatedUnify { var_name, span } => {
                 format!(
@@ -5644,6 +5657,9 @@ impl std::fmt::Display for LoadError {
                     span.start,
                     span.end,
                 )
+            }
+            LoadError::TypeMemberOpenThroughAlias { name, why, span } => {
+                write!(f, "`{name}` names no type here: {why} at {}..{}", span.start, span.end)
             }
             LoadError::UnsafeNegatedUnify { var_name, span } => {
                 write!(
@@ -23930,11 +23946,7 @@ pub(crate) fn alias_type_at_a_use(
     within: bool,
 ) -> Option<crate::eval::value::Value> {
     let stands_for = kb.alias_types.get(&written)?.clone();
-    let names_a_parameter = kb
-        .collect_vars(&stands_for)
-        .into_iter()
-        .any(|v| kb.is_canonical_type_param_var(v));
-    if names_a_parameter && !within {
+    if super::typing::holds_type_parameter_var(kb, &stands_for) && !within {
         return None;
     }
     let mut at_this_use = [stands_for];
@@ -24336,13 +24348,20 @@ fn convert_query_term_expecting(
                 // 8DXVK: a qualified sort in a query's data/type operand is the
                 // sort value, as its bare spelling is. Leaving the dotted path
                 // as field_access bypassed domain's type-position validation.
-                if let Some(name) = dotted_citation_name(parse_symbols, parse_terms, parse_id) {
-                    let symbol = resolve_query_name(kb, &name, scope);
-                    if kb.has_kind(symbol, SymbolKind::Sort) && !kb.is_entity_constructor(symbol) {
-                        // A type alias, as its bare spelling is (`query_data_slot_alias`).
+                match dotted_citation_name(parse_symbols, parse_terms, parse_id)
+                    .and_then(|name| dotted_type_named(kb, &name, scope))
+                {
+                    // A type alias, as its bare spelling is (`query_data_slot_alias`).
+                    Some(DottedType::Sort(symbol)) => {
                         return query_data_slot_alias(kb, symbol, fold)
                             .unwrap_or_else(|| expr_node(Expr::Ref(symbol)));
                     }
+                    Some(DottedType::Type(ty)) => {
+                        return type_value_occurrence(kb, ty, node_occurrence::empty_span(), None);
+                    }
+                    // A query has no load error to report it with: the chain is kept, and
+                    // matches nothing a clause holds.
+                    Some(DottedType::Open(_)) | None => {}
                 }
             }
             // WI-20261001-KDMQS — a dotted chain naming a const, in a data slot, is the
@@ -24841,6 +24860,45 @@ fn const_named(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> Option<Symbol>
 fn ctor_named(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> Option<Symbol> {
     match resolve_name_in_kb(kb, name, scope) {
         ResolveResult::Found(sym) if kb.is_entity_constructor(sym) => Some(sym),
+        _ => None,
+    }
+}
+
+/// What a dotted `name` names in a data slot: a sort (`D.T`, `ns.Box`), read by its name, or a
+/// member through a type alias that fixes parameters (`CA.T`), read at them
+/// ([`super::typing::alias_member`]).
+enum DottedType {
+    Sort(Symbol),
+    Type(TermId),
+    Open(String),
+}
+
+fn dotted_type_named(kb: &mut KnowledgeBase, name: &str, scope: ScopeId) -> Option<DottedType> {
+    use super::typing::AliasMember;
+    if let Some((prefix, member)) = name.rsplit_once('.') {
+        if let ResolveResult::Found(alias) = resolve_name_in_kb(kb, prefix, scope) {
+            match super::typing::alias_member(kb, alias, member) {
+                Some(AliasMember::Name(sym)) => return Some(DottedType::Sort(sym)),
+                Some(AliasMember::Type(ty)) => return Some(DottedType::Type(ty)),
+                Some(AliasMember::Open(why)) => return Some(DottedType::Open(why)),
+                None => {}
+            }
+        }
+    }
+    sort_named(kb, name, scope).map(DottedType::Sort)
+}
+
+/// The sort a one-segment or dotted `name` denotes at `scope` — `D.T`, `ns.Box` — or `None`
+/// when it denotes anything else or nothing. A sort's qualified name is the type value its
+/// one-segment name is. A free-standing entity's name is its constructor's
+/// ([`ctor_named`]). Quiet, for [`const_named`]'s reason.
+fn sort_named(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> Option<Symbol> {
+    match resolve_name_in_kb(kb, name, scope) {
+        ResolveResult::Found(sym)
+            if kb.has_kind(sym, SymbolKind::Sort) && !kb.is_entity_constructor(sym) =>
+        {
+            Some(sym)
+        }
         _ => None,
     }
 }
@@ -26188,6 +26246,11 @@ enum DotFieldPass<'n> {
     /// receiver is that name minus its last segment), so the prefix scan costs no walk
     /// and no allocation of its own.
     ValuePrefix(&'n str),
+    /// The receiver's dotted name resolves to a type alias that owns no members, so no member
+    /// of it is a name the whole chain resolves to: the chain is a dot on the type value the
+    /// alias is, which the typer reads as the written `(CA).T` (`typing::denoted_sort_dot`).
+    /// After the whole-chain rungs, as the prefix pass is.
+    AliasPrefix(&'n str),
 }
 
 /// WI-582 / WI-20260908-PW9A0 — a type variable a rule head INTRODUCED (`g[A](…)`), as
@@ -29956,6 +30019,28 @@ impl<'a> Loader<'a> {
         ctor_named(self.kb, &name, self.current_scope)
     }
 
+    /// The type a converter-minted dotted chain names, when this walk is in a clause DATA
+    /// slot: a sort's qualified name (`D.T`, `ns.Box`) is the type value its one-segment name
+    /// is, an alias read through, as the query walk reads it, and a member through an alias
+    /// that fixes parameters (`CA.T`) is read at them ([`dotted_type_named`]). A member whose
+    /// definition names a parameter the alias leaves open is refused. Rooted at no binding,
+    /// as [`Self::data_slot_dotted_const`] is.
+    fn data_slot_dotted_type(&mut self, parse_id: TermId) -> Option<DottedType> {
+        if self.const_fold != ConstFold::Data {
+            return None;
+        }
+        let name = self.dotted_name_rooted_at_no_binding(parse_id)?;
+        let found = dotted_type_named(self.kb, &name, self.current_scope)?;
+        if let DottedType::Open(why) = &found {
+            self.errors.push(LoadError::TypeMemberOpenThroughAlias {
+                name,
+                why: why.clone(),
+                span: self.parsed.terms.span(parse_id),
+            });
+        }
+        Some(found)
+    }
+
     /// The term a clause holds for a resolved name `sym`: a `Bool` const at a goal the
     /// literal it holds, a const in a data slot its value, a type alias there the type it
     /// stands for, anything else its reference. One reading for the one-segment name, the
@@ -30380,11 +30465,23 @@ impl<'a> Loader<'a> {
                         return kb_id;
                     }
                 }
-                // A constructor's qualified name is the term its one-segment name is.
-                if let Some(ctor) = self.data_slot_dotted_ctor(parse_id) {
-                    let span = self.parsed.terms.span(parse_id);
-                    let term = self.resolved_name_term(ctor, parse_id, span);
-                    let kb_id = self.kb.alloc(term);
+                // A constructor's qualified name is the term its one-segment name is, and so
+                // is a sort's.
+                let named = match self.data_slot_dotted_ctor(parse_id) {
+                    Some(ctor) => Some(DottedType::Sort(ctor)),
+                    None => self.data_slot_dotted_type(parse_id),
+                };
+                let kb_id = match named {
+                    Some(DottedType::Sort(named)) => {
+                        let span = self.parsed.terms.span(parse_id);
+                        let term = self.resolved_name_term(named, parse_id, span);
+                        Some(self.kb.alloc(term))
+                    }
+                    Some(DottedType::Type(ty)) => Some(ty),
+                    Some(DottedType::Open(_)) => Some(self.kb.alloc(Term::Bottom)),
+                    None => None,
+                };
+                if let Some(kb_id) = kb_id {
                     self.term_map.insert(parse_id.raw(), kb_id);
                     return kb_id;
                 }
@@ -31531,6 +31628,21 @@ impl<'a> Loader<'a> {
                         return child;
                     }
                 }
+                // In an operation body, a bracket's entry written `dd.T`, rooted at a value,
+                // is the dot on that value, as the operation-body walk builds it
+                // (`try_value_rooted_entry`).
+                if let Some((root, member)) = self
+                    .lowering_op_body_term
+                    .then(|| self.value_rooted_name(sym, parse_id))
+                    .flatten()
+                {
+                    let receiver = self.mk_var_ref(root);
+                    let name_ref = self.kb.alloc(Term::Ref(member));
+                    let args_list = self.kb.build_list(&[]);
+                    let kb_id = self.mk_dot_apply(receiver, name_ref, args_list);
+                    self.term_map.insert(parse_id.raw(), kb_id);
+                    return kb_id;
+                }
                 let new_sym = self.remap_symbol_strict(sym, span);
                 // WI-20261001-KDMQS — a const in a clause data slot is its value, and a
                 // type alias the type it stands for.
@@ -32232,7 +32344,7 @@ impl<'a> Loader<'a> {
                                 if self.try_qualified_const_ref(parse_id, whole, results) {
                                     return;
                                 }
-                                if self.try_qualified_sort_ref(parse_id, whole, results) {
+                                if self.try_qualified_sort_ref(parse_id, &chain, whole, results) {
                                     return;
                                 }
                                 if self.try_qualified_ctor_ref(parse_id, whole, results) {
@@ -32242,6 +32354,14 @@ impl<'a> Loader<'a> {
                                     return;
                                 }
                                 if let Some((receiver, _member)) = chain.rsplit_once('.') {
+                                    if self.try_identifier_dot_field(
+                                        parse_id,
+                                        &pos_args,
+                                        work,
+                                        DotFieldPass::AliasPrefix(receiver),
+                                    ) {
+                                        return;
+                                    }
                                     if self.try_identifier_dot_field(
                                         parse_id,
                                         &pos_args,
@@ -32315,12 +32435,79 @@ impl<'a> Loader<'a> {
                 }
             }
             _ => {
+                if self.try_value_rooted_entry(parse_id, work, results) {
+                    return;
+                }
                 let kb_id = self.convert_term(parse_id);
                 self.create_occurrence(parse_id, kb_id);
                 results.push(kb_id);
                 self.push_leaf_occ(parse_id, kb_id);
             }
         }
+    }
+
+    /// A bracket's entry written as a dotted name rooted at a value — `List[T = dd.T]`, `dd`
+    /// a `let` binder or a parameter — is the dot on that value, as in a type it is the
+    /// projection off it ([`Self::try_expr_carried_projection`]). The converter lowered the
+    /// entry as a type, one dotted name; resolved as one, it named nothing.
+    fn try_value_rooted_entry(
+        &mut self,
+        parse_id: TermId,
+        work: &mut Vec<LoadWorkOp>,
+        results: &mut Vec<TermId>,
+    ) -> bool {
+        if !self.bracket_entries.contains(&parse_id) {
+            return false;
+        }
+        let Term::Ref(sym) = self.parsed.terms.get(parse_id).clone() else {
+            return false;
+        };
+        let Some((root_sym, member_sym)) = self.value_rooted_name(sym, parse_id) else {
+            return false;
+        };
+        // As [`Self::try_identifier_dot_call`] builds its receiver: the binder's reference,
+        // then the dot, located at the entry.
+        let receiver_kb = self.mk_var_ref(root_sym);
+        results.push(receiver_kb);
+        self.push_leaf_occ(parse_id, receiver_kb);
+        let name_ref = self.kb.alloc(Term::Ref(member_sym));
+        work.push(LoadWorkOp::Build(LoadBuildFrame::DotApply {
+            outer_parse_id: parse_id,
+            name_ref,
+            pos_count: 0,
+            named_keys: SmallVec::new(),
+            paren_less: true,
+        }));
+        true
+    }
+
+    /// A dotted name of one dot whose root is a value — a `let` binder or a parameter — as
+    /// `(root, member)`: the dot `dd.T` a type position reads as the projection off `dd`.
+    fn value_rooted_name(&mut self, sym: Symbol, parse_id: TermId) -> Option<(Symbol, Symbol)> {
+        let name = self.parsed.symbols.local_name(sym).to_owned();
+        let (root, member) = name.split_once('.')?;
+        if member.contains('.') {
+            return None;
+        }
+        let root_sym = self.dot_receiver_binder(root)?;
+        let member_sym = self.remap_name_str(member, self.parsed.terms.span(parse_id));
+        Some((root_sym, member_sym))
+    }
+
+    /// The reflect `dot_apply(receiver, name, args)` term a dot lowers to, `args` the list of
+    /// its `ApplyArg`s.
+    fn mk_dot_apply(&mut self, receiver: TermId, name_ref: TermId, args_list: TermId) -> TermId {
+        let s = &self.expr_syms;
+        let (dot_apply, k_receiver, k_name, k_args) = (s.dot_apply, s.k_receiver, s.k_name, s.k_args);
+        self.kb.alloc(Term::Fn {
+            functor: dot_apply,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[
+                (k_receiver, receiver),
+                (k_name, name_ref),
+                (k_args, args_list),
+            ]),
+        })
     }
 
     /// WI-443: re-route an identifier-receiver dot call. The scope-blind
@@ -32667,6 +32854,7 @@ impl<'a> Loader<'a> {
         let admitted = match pass {
             DotFieldPass::LocalRoot => self.field_access_root_is_value(pos_args[0]).is_some(),
             DotFieldPass::ValuePrefix(receiver_name) => self.name_has_value_prefix(receiver_name),
+            DotFieldPass::AliasPrefix(receiver_name) => self.pure_alias_named(receiver_name).is_some(),
         };
         if !admitted {
             return false;
@@ -32870,6 +33058,8 @@ impl<'a> Loader<'a> {
     fn try_qualified_sort_ref(
         &mut self,
         parse_id: TermId,
+        // The chain's dotted name, whose receiver the alias pass reads.
+        name: &str,
         // What the chain's name resolves to, as [`Self::try_qualified_rule_ref`] takes it.
         whole: Option<Symbol>,
         results: &mut Vec<TermId>,
@@ -32877,8 +33067,25 @@ impl<'a> Loader<'a> {
         let Some(sym) = whole.filter(|sym| self.kb.has_kind(*sym, SymbolKind::Sort)) else {
             return false;
         };
+        // A member of an alias that fixes parameters (`CQ.L` over `sort CQ = Q[A = Int64]`)
+        // is read at them, as a dot on the alias's type value reads it
+        // ([`DotFieldPass::AliasPrefix`]); its name alone would drop them.
+        let fixing_alias = name
+            .rsplit_once('.')
+            .and_then(|(receiver, _)| self.pure_alias_named(receiver))
+            .is_some_and(|alias| super::typing::alias_receiver_type(self.kb, alias).is_some());
+        if fixing_alias {
+            return false;
+        }
         self.push_name_ref(parse_id, sym, results);
         true
+    }
+
+    /// The type alias that owns no members a dotted receiver `name` resolves to — a member
+    /// written through it is the dot on its type value ([`DotFieldPass::AliasPrefix`]).
+    fn pure_alias_named(&self, name: &str) -> Option<Symbol> {
+        self.resolve_qualified_readonly(name)
+            .filter(|alias| self.kb.is_scan_alias(*alias) && !super::typing::owns_members(self.kb, *alias))
     }
 
     /// AN ENTITY CONSTRUCTOR NAMED BY A DOTTED PATH with no trailing `(…)` — `Colour.red`,
@@ -33859,16 +34066,7 @@ impl<'a> Loader<'a> {
                 }
                 results.truncate(drain_start);
                 let args_list = self.kb.build_list(&arg_terms);
-                let s = &self.expr_syms;
-                let kb_id = self.kb.alloc(Term::Fn {
-                    functor: s.dot_apply,
-                    pos_args: SmallVec::new(),
-                    named_args: SmallVec::from_slice(&[
-                        (s.k_receiver, receiver),
-                        (s.k_name, name_ref),
-                        (s.k_args, args_list),
-                    ]),
-                });
+                let kb_id = self.mk_dot_apply(receiver, name_ref, args_list);
                 self.create_occurrence(outer_parse_id, kb_id);
                 results.push(kb_id);
                 if self.occ_suppress == 0 {
@@ -35978,13 +36176,27 @@ impl<'a> Loader<'a> {
                     };
                     return NodeOccurrence::new_expr(expr, span, None);
                 }
-                // A constructor's qualified name is the reference its one-segment name is.
-                if let Some(ctor) = self.data_slot_dotted_ctor(parse_id) {
-                    if let Some(occ) = self.body_data_slot_name(ctor, parse_id, span) {
-                        return occ;
+                // A constructor's qualified name is the reference its one-segment name is, and
+                // a sort's the type value its one-segment name is.
+                let named = match self.data_slot_dotted_ctor(parse_id) {
+                    Some(ctor) => Some(DottedType::Sort(ctor)),
+                    None => self.data_slot_dotted_type(parse_id),
+                };
+                match named {
+                    Some(DottedType::Sort(named)) => {
+                        if let Some(occ) = self.body_data_slot_name(named, parse_id, span) {
+                            return occ;
+                        }
+                        let expr = self.body_resolved_name_expr(named, parse_id, span);
+                        return NodeOccurrence::new_expr(expr, span, None);
                     }
-                    let expr = self.body_resolved_name_expr(ctor, parse_id, span);
-                    return NodeOccurrence::new_expr(expr, span, None);
+                    Some(DottedType::Type(ty)) => {
+                        return type_value_occurrence(self.kb, ty, span, None);
+                    }
+                    Some(DottedType::Open(_)) => {
+                        return NodeOccurrence::new_expr(Expr::Bottom, span, None);
+                    }
+                    None => {}
                 }
                 // Every child is a DATA slot unless this node is a connective in goal
                 // position (its goal slots are set per child in the positional loop). The
