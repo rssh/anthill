@@ -3,9 +3,9 @@
 - id: WI-20260908-NE0E4-a-multi-head-rule-s-heads-are
 - created: 2026-09-08T20:53:59Z
 
-- status: Claimed
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-10-24T08:26:30Z
+- status_at: 2026-10-24T12:13:45Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -91,4 +91,8 @@ DECIDED (user, 2026-10-24): OPTION 1 — each head of a multi-head rule with a b
 ### 2026-10-24T11:51:18Z — feedback — claude
 
 2026-10-24, the measurements. Rust back-outs (77 rows: this ticket's file, the RDGQC census, APXSS, WI-1001, WI-894, in a temporary binary): 16 back-outs, each failing its rows — the table is the header of `wi_ne0e4_multi_head_introduction_test.rs`; baseline 77/77. Scala back-outs (113 rows over MultiHeadIntroductionTest, HeadIntroductionCensusTest, ParserIntegrationTest, DiagnosticLocationTest): 5, each failing its rows — the table is `MultiHeadIntroductionTest`'s header; baseline 113/113. Full Rust workspace gate on the final tree: 36 binaries, 10 701 passed, 0 failed, 17 ignored (`rustland/target/test-run-20261024-143137.log`). Full scaland `testFull`: 758 + 47 + 1 passed, 0 failed.
+
+### 2026-10-24T12:13:49Z — feedback — claude
+
+Delivered 2026-10-24 (fe7f4669, merged with origin/main in 258ed829). A multi-head rule's heads are scoped where they are written: `rule law: H1, H2 :- B` is N clauses (§5.3), and each head introduces exactly what `Hᵢ :- B` would — so two sorts that each write `rule law: aa, … :- …` have two predicates `P.aa` and `Q.aa`, each sort's reader answers from its own clause, and `:- aa` / `:- aa()` are one term (EQG4F item 4's multi-head route). The label is the citation handle and fans out to the scoped clauses. A multi-head rule the load refuses for its shape mints nothing. In a secondary entry (059 R3) the rule is judged head by head, refused naming every head that introduces nothing, with every introducing head judged too. Both implementations; spec §5.1 and §5.3 and proposal 059 amended. On the merged tree: the full Rust workspace gate, 36 binaries, 10 732 passed, 0 failed, 17 ignored (`rustland/target/test-run-20261024-145419.log`); scaland `testFull`, 758 + 47 + 1 passed, 0 failed. Filed on the way: WI-20261024-RMZQZ (a labeled rule in a host `provides` block does not load).
 
