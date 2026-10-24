@@ -6,8 +6,9 @@
 //! (`Interpreter::boundary_admits`). It reads no sub-dictionary by position, as the `ErrorTag`
 //! boundary did (`reify_payload_sub`), so no other row of the spec could put another sort
 //! where the boundary read the payload: `TypePattern` takes no written row, and `ErrorTag`
-//! is gone. Until 071's stage (d) a raise carries no type, and the type asked about is the
-//! raised value's head sort, its arguments left out.
+//! is gone. Until 071's stage (d) a raise carried no type, and the type asked about was the
+//! raised value's head sort, its arguments left out; since that stage it is the type the
+//! raise carries (`wi_5cdn5_raise_carries_its_type_test`).
 //!
 //! The reify rows of `wi_9wvt7_error_reify_test`, `wi_9wvt7_reify_rule_body_test`,
 //! `wi_9wvt7_review5_test`, `wi_n31xx_type_value_read_rule_test` and `alias_written_name_test`
@@ -19,17 +20,17 @@
 //! * The stdlib's `ErrorTag` put back (the sort and `Error`'s row): `error_tag_is_an_ordinary_unresolved_name`.
 //! * `boundary_admits` answering `true` for every raise — the catch on the carrier alone —
 //!   the rows about a boundary NOT catching: `wi_9wvt7_error_reify_test`'s narrowing list
-//!   (its header names them) and `a_boundary_reads_the_raised_head_until_a_raise_carries_its_type`'s
+//!   (its header names them) and `a_boundary_reads_the_type_the_raise_carries`'s
 //!   control `narrowOther`.
 //! * `boundary_admits` answering `false`: every row of those files in which a boundary
-//!   catches, and both rows of `a_boundary_reads_the_raised_head_until_a_raise_carries_its_type`.
+//!   catches, and both rows of `a_boundary_reads_the_type_the_raise_carries`.
 //! * The install-time check that the dictionary is a `TypePattern` instance
 //!   (`Interpreter::enter_reify_boundary`): `a_dictionary_that_is_no_pattern_is_refused_before_the_thunk_runs`,
 //!   whose host rows then run the thunk.
 //! * The frames of a raise discarded before a boundary is asked
 //!   (`ActivationStack::discard_above_boundary`): `a_raise_at_the_depth_caps_last_frame_is_caught`.
-//! * The type asked about built with the raised value's arguments rather than its head
-//!   alone is not a back-out of this stage — it is stage (d), and it is what flips `narrowR`.
+//! * The type asked about built from the raised value's head alone, as this stage built it,
+//!   is stage (d) backed out: `a_boundary_reads_the_type_the_raise_carries`'s `narrowR`.
 
 
 use anthill_core::eval::EvalError;
@@ -84,7 +85,7 @@ namespace test.ym8hd.f1b
     provides {spec}[T = (a: Int64, b: String)] :- TypeValue[T = Other]
   end
   operation raiseTup(n: Int64) -> Int64 effects {{Error[(a: Int64, b: String)], Error[Other]}} =
-    if n < 0 then Error.raise((a: n, b: "neg")) else Error.raise(other(n))
+    Error.raise(other(n))
   operation tupOp(n: Int64) -> Result[E = (a: Int64, b: String), T = Int64]
       effects {{Error[Other]}} =
     Error.reify(lambda () -> raiseTup(n))
@@ -149,21 +150,24 @@ fn f1s_first_program_without_its_row_answers_through_the_one_row() {
     assert_eq!(crate::common::run_int64(&src, "test.ym8hd.f1a.caught"), Ok(22));
 }
 
-/// THE TYPE THE BOUNDARY ASKS ABOUT IS THE RAISED VALUE'S HEAD SORT until 071's stage (d)
-/// has a raise carry its type — so the verdict of every boundary is the one the head-sort
-/// comparison it replaced gave (WI-20260911-3MV2C).
+/// THE TYPE THE BOUNDARY ASKS ABOUT IS THE ONE THE RAISE CARRIES, its arguments with it, since
+/// 071's stage (d) (WI-20261016-5CDN5). Until then it was the raised value's head sort, and
+/// the verdict of every boundary was the one the head-sort comparison it replaced gave
+/// (WI-20260911-3MV2C).
 ///
 /// `narrowR(1)` is 071's measured program: `inner` is a boundary at `Boom[Reason = Int64]`
 /// that leaves `Error[Boom[Reason = String]]` to its caller, and `narrowR` catches that at
-/// `Boom[Reason = String]`. The raised `boom("s")` records the sort `Boom` and none of its
-/// arguments, an argument left out admits, and `inner`'s pattern admits it: `"inner"`, where
-/// `"outer"` is right. STAGE (d) FLIPS THIS ROW, and its acceptance says so (071 §5).
+/// `Boom[Reason = String]`. The raise carries `Boom[Reason = String]`, which `inner`'s pattern
+/// does not admit, so the outer boundary catches it: `"outer"`. Until stage (d) the raised
+/// `boom("s")` was read as the sort `Boom`, arguments left out, which `inner` admitted:
+/// `"inner"` (071 §5).
 ///
 /// THE CONTROL, `narrowOther`, is a sort the inner pattern does not admit: an `Other` raised
-/// past a `Boom` boundary reaches the outer one. FAILS with `boundary_admits` answering `true`
-/// (`"inner"`), and the first row with it answering `false` (`"outer"`).
+/// past a `Boom` boundary reaches the outer one, either way. FAILS with `boundary_admits`
+/// answering `true` (`"inner"`); the first row FAILS with the raised type read as its head
+/// sort, as stage (c) read it (`"inner"`).
 #[test]
-fn a_boundary_reads_the_raised_head_until_a_raise_carries_its_type() {
+fn a_boundary_reads_the_type_the_raise_carries() {
     let mut interp = crate::common::interp_for(
         r#"
 namespace test.ym8hd.narrow
@@ -198,7 +202,7 @@ namespace test.ym8hd.narrow
 end
 "#,
     );
-    for (op, want) in [("narrowR", "inner"), ("narrowOther", "outer")] {
+    for (op, want) in [("narrowR", "outer"), ("narrowOther", "outer")] {
         let v = interp
             .call(&format!("test.ym8hd.narrow.{op}"), &[])
             .unwrap_or_else(|e| panic!("{op}: {e}"));

@@ -2331,19 +2331,22 @@ fn own_join_program(ns: &str, declared: &str, args: &str) -> String {
         r#"
 namespace {ns}
   import anthill.prelude.{{Int64, Bool, Option, String, Error, List}}
+  import anthill.reflect.{{TypeValue}}
   sort Animal
     entity cat(n: Int64)
     entity dog(m: String)
   end
+  -- The override raises at `W`, so it requires `TypeValue[T = W]`, and the spec operation
+  -- states the clause over its own parameter (proposal 071 stage (d)).
   sort Sp
     sort T = ?
-    operation op[U](s: Self, a: U, b: U) -> Int64
+    operation op[U](s: Self, a: U, b: U) -> Int64 requires TypeValue[T = U]
   end
   sort Car
     sort V = ?
     entity car(v: V)
     provides Sp[T = V]
-    operation op[W](c: Self, a: W, b: W) -> Int64 effects {{Error[W]}} = Error.raise(b)
+    operation op[W](c: Self, a: W, b: W) -> Int64 effects {{Error[W]}} requires TypeValue[T = W] = Error.raise(b)
   end
   operation via(x: Car[V = Int64]) -> Int64 effects {{Error[{declared}]}} =
     let c1: cat = cat(n: 1)
@@ -2368,15 +2371,16 @@ fn an_overrides_own_type_parameter_reads_the_spec_parameter_at_the_call() {
 namespace {ns}
   import anthill.prelude.{{Int64, Bool, Option, String, Error, List}}
   import anthill.prelude.List.{{cons, nil}}
+  import anthill.reflect.{{TypeValue}}
   sort Sp
     sort T = ?
-    operation op[U](s: Self, a: List[T = Int64], b: List[T = U], w: U) -> Int64
+    operation op[U](s: Self, a: List[T = Int64], b: List[T = U], w: U) -> Int64 requires TypeValue[T = U]
   end
   sort Car
     sort V = ?
     entity car(v: V)
     provides Sp[T = V]
-    operation op[W](c: Self, a: List[T = Int64], b: List[T = W], w: W) -> Int64 effects {{Error[W]}} = Error.raise(w)
+    operation op[W](c: Self, a: List[T = Int64], b: List[T = W], w: W) -> Int64 effects {{Error[W]}} requires TypeValue[T = W] = Error.raise(w)
   end
   operation via(x: Car[V = Int64]) -> Int64 effects {{Error[{declared}]}} =
     Sp.op(x, nil, nil, "boom")

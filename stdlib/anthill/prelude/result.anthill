@@ -23,6 +23,7 @@
    in the `match` bodies below and nowhere else. >}
 enum anthill.prelude.Result
   import anthill.prelude.{Monad, Error}
+  import anthill.reflect.{TypeValue}
 
   sort E = ?                                         -- the error payload type
   sort T = ?                                         -- the success type — the Monad carrier's member
@@ -51,8 +52,9 @@ enum anthill.prelude.Result
 
   -- The reflect direction: put a Result BACK into the effect channel. `ok`
   -- yields its value, `err` raises its payload — so the row gains `Error[P]`,
-  -- the payload type read off the Result itself rather than asserted.
-  operation reflect[P, A](r: Result[E = P, T = A]) -> A effects Error[P] =
+  -- the payload type read off the Result itself rather than asserted. The raise
+  -- carries the `TypeValue` of `P`, which its caller threads (proposal 071 §1.3).
+  operation reflect[P, A](r: Result[E = P, T = A]) -> A effects Error[P] requires TypeValue[T = P] =
     match r
       case ok(v)  -> v
       case err(e) -> Error.raise(e)

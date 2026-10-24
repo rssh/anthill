@@ -17,7 +17,7 @@ use std::rc::Rc;
 use crate::intern::Symbol;
 use crate::kb::node_occurrence::NodeOccurrence;
 
-use super::{EvalError, Interpreter, Value};
+use super::{EvalError, Interpreter, RaisedType, Value};
 
 /// Opaque marker for a resolver-level alternative continuation the runtime
 /// can re-enter on backtrack. Placeholder until the Branch substrate
@@ -50,7 +50,18 @@ pub enum HandlerAction {
     /// Abort with an anthill-level error payload. The dispatch site turns
     /// this into [`EvalError::Raised`]. Error-ness lives *here*, in the
     /// channel — the payload is an ordinary opaque `Value`, untagged.
+    ///
+    /// The raise is typed by the operation the handler performs (proposal 071 §1.3): a
+    /// handler of an effect operation raises for it, at the `TypeValue` of the `Error[X]`
+    /// its row raises. The `Error` handler performs no operation that declares a payload —
+    /// it answers a raise — so what IT throws is of the unknown type; to let the raise it was
+    /// handed continue, it answers [`Self::Rethrow`].
     Throw(Value),
+    /// The `Error` handler's answer to `raise`: let the raise it was handed continue,
+    /// unchanged — its payload and the type it carries. What a handler that only observes
+    /// raises (one that logs them) answers, and what the default handler answers. A handler of
+    /// any other effect has no raise to rethrow, and its `Rethrow` is refused.
+    Rethrow,
     /// Abort the current resolver branch (resolver-level failure). The
     /// `Value` is the failure reason/diagnostic — symmetric with `Throw`,
     /// it records *why* the branch was abandoned so an exhausted search can
@@ -70,6 +81,7 @@ impl HandlerAction {
         match self {
             HandlerAction::Pure(_) => "Pure",
             HandlerAction::Throw(_) => "Throw",
+            HandlerAction::Rethrow => "Rethrow",
             HandlerAction::Fail(_) => "Fail",
             HandlerAction::Choice(..) => "Choice",
             HandlerAction::Suspend(..) => "Suspend",
@@ -227,28 +239,38 @@ pub fn scripted_console_input_handler(script: SharedInputScript) -> EffectHandle
 // ── Default Error handler ──────────────────────────────────────
 
 /// Default `Error` handler (proposal 027 §Error, WI-073). `raise(error: T)`
-/// carries the error payload as `args[0]`; the handler returns
-/// [`HandlerAction::Throw`] with it, and the dispatch site turns that into
-/// [`EvalError::Raised`]. Error-ness lives in the channel (the `Throw`
+/// carries the error payload as `args[0]`; the handler answers
+/// [`HandlerAction::Rethrow`], and the raise continues as
+/// [`EvalError::Raised`], with the type it carries (proposal 071 §1.3). Error-ness lives in the channel (the `Throw`
 /// variant), not in the value — the payload is an ordinary opaque `Value`
 /// of the operation's `T`, propagated verbatim. Until catch/recover
 /// constructs land (WI-195+), a raised Error aborts evaluation carrying its
 /// payload.
 pub fn default_error_handler() -> EffectHandler {
     Box::new(|_interp, _op_sym, args| {
-        let payload = args
-            .first()
-            .cloned()
-            .ok_or_else(|| EvalError::ArityMismatch {
+        if args.is_empty() {
+            return Err(EvalError::ArityMismatch {
                 op: "Error.raise",
                 expected: 1,
                 got: 0,
-            })?;
-        Ok(HandlerAction::Throw(payload))
+            });
+        }
+        Ok(HandlerAction::Rethrow)
     })
 }
 
 // ── Interpreter integration ────────────────────────────────────
+
+/// Where a raise the runtime builds takes its type (proposal 071 §1.3; user, 2026-10-24).
+#[derive(Clone, Copy)]
+pub(crate) enum RaiseBy {
+    /// From the running host operation, whose `requires TypeValue[T = X]` its caller
+    /// threads to it ([`Interpreter::raise_error`]).
+    Operation,
+    /// A payload the runtime raises with no operation behind the raise — a pattern that
+    /// fails, a stream pulled: its sort's constant evidence, which the error layer holds.
+    Account(fn(&super::ErrorLayer) -> &super::value::Dictionary),
+}
 
 /// The handler map. Stored behind an `Option` inside `Interpreter` so we
 /// can `.take()` the handler out of the map, invoke it (which needs
@@ -327,7 +349,8 @@ impl Interpreter {
     }
 
     /// Invoke the handler for `effect_qname` with an operation symbol already resolved
-    /// and the arguments: [`Self::raise_error`]'s route, and a test's. The builtins of
+    /// and the arguments: a test's route. A raise is routed by [`Self::raise_typed`], which
+    /// reads the `Error` handler's [`HandlerAction::Rethrow`] itself. The builtins of
     /// an effect operation go through `Self::dispatch_effect_operation` instead, which
     /// takes the handler before it resolves the operation.
     pub fn invoke_effect_handler(
@@ -386,20 +409,60 @@ impl Interpreter {
     fn run_effect_handler(
         &mut self,
         effect_sym: Symbol,
-        mut handler: EffectHandler,
+        handler: EffectHandler,
         effect_qname: &str,
         op_sym: Symbol,
         args: &[Value],
     ) -> Result<Value, EvalError> {
+        let action = self.run_handler(effect_sym, handler, op_sym, args)?;
+        self.interpret_handler_action(action, effect_qname, op_sym)
+    }
+
+    /// Run `handler` for `op_sym` and put it back. The `Error` handler answers a raise and
+    /// performs no operation, so it runs with no builtin's channel: a raise of its own is of
+    /// the unknown type (`Self::host_raised_type`), not typed by the `Error.raise` that invoked
+    /// it. Any other handler performs the effect operation running, and keeps its channel.
+    fn run_handler(
+        &mut self,
+        effect_sym: Symbol,
+        mut handler: EffectHandler,
+        op_sym: Symbol,
+        args: &[Value],
+    ) -> Result<HandlerAction, EvalError> {
+        let answers_a_raise = self.kb.error_sort_sym() == Some(effect_sym);
+        let channel = if answers_a_raise { self.running_builtin.take() } else { None };
         let action = handler(self, op_sym, args);
+        if answers_a_raise {
+            self.running_builtin = channel;
+        }
         self.effect_handlers.return_handler(effect_sym, handler);
+        action
+    }
+
+    /// What a handler's `action` means for the call that invoked it — every action but the
+    /// `Error` handler's [`HandlerAction::Rethrow`], which [`Self::raise_typed`] reads.
+    fn interpret_handler_action(
+        &mut self,
+        action: HandlerAction,
+        effect_qname: &str,
+        op_sym: Symbol,
+    ) -> Result<Value, EvalError> {
         // Interpret the carrier. Only `Pure`/`Throw` are wired (WI-389);
         // the continuation-manipulating variants need the Branch /
         // suspend-resume substrate (WI-075) and surface a loud error until
         // then, rather than being silently dropped.
-        match action? {
+        match action {
             HandlerAction::Pure(v) => Ok(v),
-            HandlerAction::Throw(payload) => Err(EvalError::Raised { payload }),
+            // The effect operation the handler performs raises it, at the type its row raises
+            // (`Self::host_raised_type`); the `Error` handler performs none, and runs with no
+            // channel, so its throw is of the unknown type.
+            HandlerAction::Throw(payload) => {
+                let raised_type = self.host_raised_type()?;
+                Err(EvalError::Raised {
+                    payload,
+                    raised_type,
+                })
+            }
             // Fail / Choice / Suspend manipulate the continuation and need
             // the Branch / suspend-resume substrate (WI-075). Until then,
             // hitting one is a runtime-internal not-implemented state — fail
@@ -411,6 +474,10 @@ impl Interpreter {
                 // though the resolver-fail path itself isn't wired yet.
                 let detail = match &unsupported {
                     HandlerAction::Fail(reason) => Some(format!("{reason:?}")),
+                    HandlerAction::Rethrow => Some(
+                        "only the `Error` handler, answering a raise, has a raise to rethrow"
+                            .to_owned(),
+                    ),
                     _ => None,
                 };
                 Err(EvalError::UnsupportedHandlerAction {
@@ -438,30 +505,150 @@ impl Interpreter {
     /// covers. Internal-only conditions a builtin can hit (a missing store
     /// registration, a lowering bug) are NOT routed here — they stay
     /// `EvalError::Internal` faults, since no `effects Error` declared them.
+    ///
+    /// THE TYPE OF WHAT IT RAISES IS THREADED TO IT (proposal 071 §1.3; user, 2026-10-24):
+    /// a host operation whose row raises `Error[X]` declares `requires TypeValue[T = X]` —
+    /// refused at load if it does not (`LoadError::HostRaiseWithoutTypeValue`) — and the
+    /// raise carries the dictionary its call was handed for that clause
+    /// ([`Self::host_raised_type`]). One whose row says only `Error` raises a payload of a
+    /// type not known ([`RaisedType::Unknown`]). Nothing is read off the payload.
+    /// `Error.raise` is such an operation — its builtin raises through here, with the
+    /// `TypeValue[T = T]` its call was handed — and a payload the runtime raises with no
+    /// operation behind it carries its sort's constant ([`Self::raise_error_payload`]'s
+    /// [`RaiseBy::Account`]).
     pub fn raise_error(&mut self, payload: Value) -> EvalError {
-        let error_sym = self.kb.try_resolve_symbol("anthill.prelude.Error");
-        if error_sym.map_or(false, |s| self.effect_handlers.has(s)) {
-            let op_sym = match self.kb.try_resolve_symbol("anthill.prelude.Error.raise") {
-                Some(s) => s,
-                None => self.kb_mut().intern("raise"),
-            };
-            match self.invoke_effect_handler("anthill.prelude.Error", op_sym, &[payload]) {
-                Err(e) => e,
-                // The default Error handler Throws; a handler that *returned*
-                // a value for `raise` is unsound (`raise` -> Nothing). Surface
-                // that loudly rather than dropping the error.
-                Ok(v) => EvalError::Internal(format!(
-                    "Error handler resumed a raise (returned {}) — Error is non-resumable",
-                    v.type_name(),
-                )),
-            }
-        } else {
-            EvalError::Raised { payload }
+        match self.host_raised_type() {
+            Ok(raised_type) => self.raise_typed(payload, raised_type),
+            Err(e) => e,
         }
     }
 
-    /// Build an `Error`-effect payload entity `ctor(field: value, …)` and route
-    /// it through [`Self::raise_error`] (WI-467 / WI-610) — the shared core of
+    /// The type a raise of the running host function carries: the `TypeValue` dictionary its
+    /// operation's `requires TypeValue[T = X]` slot holds in the channel its call was handed
+    /// (`Interpreter::running_builtin`), or [`RaisedType::Unknown`] where its row says only
+    /// `Error`.
+    ///
+    /// THE CHANNEL IS READ HERE, AS A BODY'S IS ON ENTRY, AND ONLY HERE: a call that does not
+    /// raise resolves nothing. The type is the running operation's — the member's, where a
+    /// value directed the call to it through its spec operation — and a slot its route
+    /// stamped none for is filled from the argument values (`fill_missing_op_scoped_slots`):
+    /// a host's call, the SLD bridge. What is still missing has no type in hand and is refused
+    /// ([`EvalError::RaiseTypeUnread`]), before anything is raised.
+    ///
+    /// A HOST RAISE OUTSIDE ANY HOST FUNCTION — an effect handler's, which runs with no
+    /// channel (`Interpreter::run_effect_handler`) — is of the unknown type, as the handler's
+    /// `Throw` is: no operation states what it raises.
+    fn host_raised_type(&mut self) -> Result<RaisedType, EvalError> {
+        let unread = |detail: String| EvalError::RaiseTypeUnread { detail };
+        let Some((op, requirements, args)) = self
+            .running_builtin
+            .as_ref()
+            .map(|b| (b.op, b.requirements.clone(), b.args.clone()))
+        else {
+            return Ok(RaisedType::Unknown);
+        };
+        let slot = match crate::kb::typing::host_raise_type(&mut self.kb, op) {
+            crate::kb::typing::HostRaiseType::Slot(i) => i,
+            crate::kb::typing::HostRaiseType::Unknown => return Ok(RaisedType::Unknown),
+            crate::kb::typing::HostRaiseType::Projected => {
+                return Err(unread(format!(
+                    "`{}` raised, and its row names what it raises through a projection or a \
+                     row variable: the type is the call's, which nothing threads to a host \
+                     function. A host operation that raises names its `Error[X]` and requires \
+                     `TypeValue[T = X]`",
+                    self.kb.qualified_name_of(op)
+                )))
+            }
+            crate::kb::typing::HostRaiseType::Unanswered { .. } => {
+                return Err(unread(format!(
+                    "`{}` raises `Error[…]` and requires no `TypeValue` of the payload, or \
+                     raises more than one: the load refuses that of a `@[host_implemented]` \
+                     operation, and a builtin registered over this one raises with no type in \
+                     hand",
+                    self.kb.qualified_name_of(op)
+                )))
+            }
+            crate::kb::typing::HostRaiseType::NoDeclaration => {
+                return Err(unread(format!(
+                    "`{}` raised and is no declared operation: nothing states what it raises",
+                    self.kb.qualified_name_of(op)
+                )))
+            }
+        };
+        let unpinned_detail = format!(
+            "`{}` raised with no `TypeValue` evidence of its payload's type: its caller had none \
+             to hand — a call whose arguments do not pin it",
+            self.kb.qualified_name_of(op)
+        );
+        let mut requirements = requirements;
+        if let Some(args) = args {
+            self.fill_missing_op_scoped_slots(op, &args, &mut requirements)?;
+        }
+        let name = crate::kb::typing::op_dict_entries(&mut self.kb, op).name_at(&mut self.kb, slot);
+        let Some(evidence) =
+            name.and_then(|name| super::eval::find_requirement(&requirements, name).cloned())
+        else {
+            return Err(unread(unpinned_detail));
+        };
+        if let Err(detail) = crate::kb::typing::marker_refusal(&self.kb, evidence.impl_sort()) {
+            return Err(EvalError::UnpinnedRequirement {
+                detail,
+                marker: evidence.impl_sort(),
+            });
+        }
+        Ok(RaisedType::Evidence(evidence))
+    }
+
+    /// [`Self::raise_error`] for a raise that carries `raised_type`, routed through the `Error`
+    /// handler where one is registered.
+    ///
+    /// THE HANDLER SAYS WHETHER THE RAISE CONTINUES ([`HandlerAction::Rethrow`]) — this raise,
+    /// with its type — or is replaced by a value it throws, of the unknown type: the handler
+    /// performs no operation that declares a payload. Told apart by the answer and never by
+    /// comparing the thrown value with the raised one, which a payload holding an opaque value
+    /// (a closure, a stream) never equals.
+    pub(crate) fn raise_typed(&mut self, payload: Value, raised_type: RaisedType) -> EvalError {
+        let error_sym = self.kb.error_sort_sym();
+        if !error_sym.is_some_and(|s| self.effect_handlers.has(s)) {
+            return EvalError::Raised {
+                payload,
+                raised_type,
+            };
+        }
+        let op_sym = match self.kb.try_resolve_symbol("anthill.prelude.Error.raise") {
+            Some(s) => s,
+            None => self.kb_mut().intern("raise"),
+        };
+        let (effect_sym, handler) = match self.take_handler_for_invoke("anthill.prelude.Error") {
+            Ok(h) => h,
+            Err(e) => return e,
+        };
+        match self.run_handler(effect_sym, handler, op_sym, std::slice::from_ref(&payload)) {
+            Ok(HandlerAction::Rethrow) => EvalError::Raised {
+                payload,
+                raised_type,
+            },
+            Ok(HandlerAction::Throw(thrown)) => EvalError::Raised {
+                payload: thrown,
+                raised_type: RaisedType::Unknown,
+            },
+            // A handler that *returned* a value for `raise` is unsound (`raise` -> Nothing).
+            // Surface that loudly rather than dropping the error.
+            Ok(HandlerAction::Pure(v)) => EvalError::Internal(format!(
+                "Error handler resumed a raise (returned {}) — Error is non-resumable",
+                v.type_name(),
+            )),
+            Ok(other) => match self.interpret_handler_action(other, "anthill.prelude.Error", op_sym)
+            {
+                Err(e) => e,
+                Ok(_) => EvalError::Internal("Error handler answered a raise with a value".into()),
+            },
+            Err(e) => e,
+        }
+    }
+
+    /// Build an `Error`-effect payload entity `ctor(field: value, …)` and raise it, its type
+    /// taken as `by` says (WI-467 / WI-610) — the shared core of
     /// [`Self::raise_division_by_zero`] and [`Self::raise_match_failed`].
     ///
     /// Resolving the payload constructor is LOUD, not fallback-interned: a
@@ -480,6 +667,7 @@ impl Interpreter {
         ctor_qname: &str,
         ctor_short: &str,
         named: Vec<(&str, Value)>,
+        by: RaiseBy,
     ) -> EvalError {
         let functor = match crate::eval::builtins::require_symbol(self, ctor_qname, ctor_short) {
             Ok(s) => s,
@@ -497,7 +685,19 @@ impl Interpreter {
             pos: Rc::from([]),
             named: named_syms.into(),
         };
-        self.raise_error(payload)
+        match by {
+            RaiseBy::Operation => self.raise_error(payload),
+            RaiseBy::Account(evidence_of) => {
+                let Some(evidence) = self.error_layer.as_ref().map(|l| evidence_of(l).clone())
+                else {
+                    return EvalError::Internal(format!(
+                        "raising `{ctor_qname}` with no error layer: the runtime raises it \
+                         with its sort's `TypeValue` evidence, which the layer holds"
+                    ));
+                };
+                self.raise_typed(payload, RaisedType::Evidence(evidence))
+            }
+        }
     }
 
     /// Raise a division-by-zero as an anthill `Error[DivisionByZero]` effect
@@ -510,6 +710,7 @@ impl Interpreter {
             "anthill.prelude.DivisionByZero.division_by_zero",
             "division_by_zero",
             vec![("op", Value::Str(op.to_string()))],
+            RaiseBy::Operation,
         )
     }
 
@@ -534,6 +735,8 @@ impl Interpreter {
                 ("occurrence", Value::Node(occurrence)),
                 ("scrutinee", scrutinee),
             ],
+            // A `match`, a `let` or a parameter pattern raises it, and no operation.
+            RaiseBy::Account(|l| &l.match_failed_type),
         )
     }
 
@@ -556,6 +759,9 @@ impl Interpreter {
             crate::kb::RuntimeAccount::RelationFloundered.qualified_name(),
             "relation_floundered",
             vec![("goals", goals)],
+            // Raised as a typed relation is drained: by the pull, under the row the
+            // relation carries, and no operation's.
+            RaiseBy::Account(|l| &l.relation_floundered_type),
         )
     }
 
@@ -582,6 +788,7 @@ impl Interpreter {
             crate::kb::RuntimeAccount::LoadFailed.qualified_name(),
             "load_failed",
             vec![("diagnostics", list)],
+            RaiseBy::Operation,
         )
     }
 
@@ -592,26 +799,39 @@ impl Interpreter {
     /// `NotYetImplemented` is `unsupported_operation`, for the reason `LowerError` keeps
     /// it apart: a well-formed query this face has not wired is a gap in the face, not
     /// the caller's mistake. Everything else is `malformed_query`.
-    pub fn raise_query_lowering(&mut self, e: crate::kb::execute::LowerError) -> EvalError {
+    ///
+    /// `by` is the door's: `KB.execute` raises it as the operation it is, with the evidence
+    /// its `requires TypeValue[T = ResolveStreamFailure]` was handed; `Relation.splitFirst`
+    /// lowers on the stream's first pull, under the row the relation carries.
+    pub(crate) fn raise_query_lowering(
+        &mut self,
+        e: crate::kb::execute::LowerError,
+        by: RaiseBy,
+    ) -> EvalError {
         let ctor = match e {
             crate::kb::execute::LowerError::NotYetImplemented(_) => "unsupported_operation",
             _ => "malformed_query",
         };
-        self.raise_resolve_stream_failure(ctor, e.to_string())
+        self.raise_resolve_stream_failure(ctor, e.to_string(), by)
     }
 
     /// WI-20260911-8Y5BE — raise a pull on a stream that can no longer answer as the
     /// declared `Error[ResolveStreamFailure]`: payload `stream_misused(detail)`.
     pub fn raise_stream_misused(&mut self, detail: String) -> EvalError {
-        self.raise_resolve_stream_failure("stream_misused", detail)
+        self.raise_resolve_stream_failure(
+            "stream_misused",
+            detail,
+            RaiseBy::Account(|l| &l.resolve_stream_failure_type),
+        )
     }
 
     /// A `ResolveStreamFailure` variant that carries only prose `detail`.
-    fn raise_resolve_stream_failure(&mut self, ctor: &str, detail: String) -> EvalError {
+    fn raise_resolve_stream_failure(&mut self, ctor: &str, detail: String, by: RaiseBy) -> EvalError {
         self.raise_error_payload(
             &format!("anthill.reflect.ResolveStreamFailure.{ctor}"),
             ctor,
             vec![("detail", Value::Str(detail))],
+            by,
         )
     }
 
@@ -651,6 +871,8 @@ impl Interpreter {
             crate::kb::RuntimeAccount::EvaluationFailure.qualified_name(),
             "evaluation_failure",
             vec![("goals", goals), ("reason", Value::Str(reason)), ("at", at)],
+            // A pull whose search faulted.
+            RaiseBy::Account(|l| &l.resolve_stream_failure_type),
         )
     }
 

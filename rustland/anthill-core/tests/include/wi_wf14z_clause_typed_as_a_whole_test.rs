@@ -49,7 +49,7 @@
 //! | a column that says nothing taking the other clauses' type (`generalize_columns`) | `a_relation_that_calls_itself_reads_its_own_columns`, `a_goal_on_a_relation_of_its_cycle_reads_nothing` |
 //! | generalized, the citation's join instead | `two_clauses_that_tie_their_columns_differently_are_generalized` (and github-todo's `open_item`, measured on the first cut) |
 //! | a stamp's sort parameter opened per citation (`ClauseTypes::at_citation`) | `wi_0rrqp…::a_head_bound_beside_the_constructor_reads_the_same` |
-//! | a value's unknown part read from its bound (`read_unknowns_from_bound`) | `a_typed_head_admits_a_value_whose_part_its_bound_fixes`, `wi_9wvt7_error_reify…::a_generic_boundary_answers_through_a_rule_body`, `wi_9wvt7_reify_rule_body…::a_generic_catcher_cited_from_a_rule_faults` |
+//! | a value's unknown part read from its bound (`read_unknowns_from_bound`) | `a_typed_head_admits_a_value_whose_part_its_bound_fixes`, `wi_9wvt7_error_reify…::a_generic_boundary_answers_through_a_rule_body` |
 //! | the parameter form's field read and method call (`clause_param_field_read`, `clause_param_method_call`), each alone | `a_field_of_a_head_parameter_is_a_receiver` |
 //! | the parameter form's bracket refused (`clause_param_method_call`) | `a_bracket_on_a_parameter_forms_method_call_is_refused` |
 //! | only a committed goal typing (`collect_occurrence_type_constraints`'s `committed`) | `a_branch_or_a_negation_types_nothing_outside_it` |

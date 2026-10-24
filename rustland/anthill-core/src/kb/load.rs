@@ -1745,6 +1745,24 @@ pub enum LoadError {
         /// Where the operation is declared.
         span: Span,
     },
+    /// Proposal 071 §1.3 — a `@[host_implemented]` operation whose row raises a written
+    /// `Error[X]` it states no `requires TypeValue[T = X]` for (`typing::host_raise_type`).
+    /// A raise carries the type of its payload, and a host function has it only as a
+    /// dictionary its caller threads to it, as every requirement is: without the clause it
+    /// has none, and its raise could be caught by no boundary that the row says catches it.
+    /// More than one such label is refused too: a raise would have to say which it is.
+    HostRaiseWithoutTypeValue {
+        /// The operation, qualified.
+        op: String,
+        /// The payloads of the written `Error` labels no clause answers, rendered.
+        payloads: Vec<String>,
+        /// A bare `Error` label beside them.
+        bare: bool,
+        /// `Error[T = ?]` written out, which the typer reads otherwise than the bare `Error`.
+        open: bool,
+        /// Where the operation is declared.
+        span: Span,
+    },
     /// WI-20260922-BRT4Y — the drift check: an `operation_map` entry realizes an
     /// operation whose declaration does not claim `@[host_implemented]`.
     HostMappingUnclaimed {
@@ -3020,6 +3038,7 @@ impl LoadError {
             | LoadError::UndefinedContractGoal { span, .. }
             | LoadError::HostImplementedUnsupplied { span, .. }
             | LoadError::HostImplementedWithBody { span, .. }
+            | LoadError::HostRaiseWithoutTypeValue { span, .. }
             | LoadError::OperationWithoutDefinition { span, .. }
             | LoadError::UndefinedRuleBodyTerm { span, .. }
             | LoadError::UndefinedHeadArgument { span, .. }
@@ -3389,6 +3408,17 @@ impl LoadError {
                 "{}: {}",
                 loc.format_start(*span),
                 host_implemented_with_body_message(op)
+            ),
+            LoadError::HostRaiseWithoutTypeValue {
+                op,
+                payloads,
+                bare,
+                open,
+                span,
+            } => format!(
+                "{}: {}",
+                loc.format_start(*span),
+                host_raise_without_type_value_message(op, payloads, *bare, *open)
             ),
             LoadError::OperationWithoutDefinition {
                 op,
@@ -4928,6 +4958,19 @@ impl std::fmt::Display for LoadError {
                 f,
                 "{} at {}..{}",
                 host_implemented_with_body_message(op),
+                span.start,
+                span.end
+            ),
+            LoadError::HostRaiseWithoutTypeValue {
+                op,
+                payloads,
+                bare,
+                open,
+                span,
+            } => write!(
+                f,
+                "{} at {}..{}",
+                host_raise_without_type_value_message(op, payloads, *bare, *open),
                 span.start,
                 span.end
             ),
@@ -16228,6 +16271,44 @@ fn host_implemented_with_body_message(op: &str) -> String {
     )
 }
 
+/// Proposal 071 §1.3 — the ONE wording of [`LoadError::HostRaiseWithoutTypeValue`].
+fn host_raise_without_type_value_message(
+    op: &str,
+    payloads: &[String],
+    bare: bool,
+    open: bool,
+) -> String {
+    if open {
+        return format!(
+            "host operation `{op}` raises `Error[T = ?]`. A raise carries the type of its \
+             payload, which a boundary catches by, and `Error[T = ?]` states none while a \
+             boundary at a specific type may discharge it. Write `Error`, which a host \
+             function raises at the unknown type, or name the payload as `Error[X]` with \
+             `requires TypeValue[T = X]`."
+        );
+    }
+    match payloads {
+        [payload] if !bare => format!(
+            "host operation `{op}` raises `Error[{payload}]` and does not require \
+             `anthill.reflect.TypeValue[T = {payload}]`. A raise carries the type of its \
+             payload, which a boundary catches by, and a host function has it only as the \
+             dictionary its caller hands it. Declare `requires TypeValue[T = {payload}]` on \
+             `{op}` (`import anthill.reflect.{{TypeValue}}`)."
+        ),
+        _ => format!(
+            "host operation `{op}` raises {}: a raise carries the type of its payload, and a \
+             host function raising one of several would have to say which it is. Declare one \
+             `Error[…]` label with its `requires TypeValue[T = …]`.",
+            payloads
+                .iter()
+                .map(|p| format!("`Error[{p}]`"))
+                .chain(bare.then(|| "`Error`".to_owned()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
 /// WI-20260922-BRT4Y — the ONE wording of [`LoadError::HostMappingUnclaimed`].
 fn host_mapping_unclaimed_message(op: &str, host_fn: &str, lang: &str) -> String {
     format!(
@@ -17455,6 +17536,12 @@ fn load_phase_inner(
     // a mark on a provider whose provision `eq_derive` has not asserted yet.
     super::defaults::seed_default_provider_index(kb);
     mark!("seed_default_provider_index");
+    // Proposal 071 §1.3 — a host operation that raises states the `TypeValue` of what it
+    // raises. Below every pass that asserts provisions, since it reads each operation's
+    // `requires` chain, and above the `run_typer` gate for the reason the
+    // `@[host_implemented]` claim check is: it judges declarations, not bodies.
+    all_errors.extend(check_host_raise_types(kb));
+    mark!("check_host_raise_types");
     // WI-20260901-Q68AK — `run_typer: false` stops HERE, with everything the typer reads
     // already built. What the item walk left for a check that will now not run is settled
     // in two lines, and they pull in OPPOSITE directions (WI-20260901-47VWX):
@@ -20113,6 +20200,44 @@ pub fn build_host_op_mappings(kb: &mut KnowledgeBase) -> Vec<LoadError> {
 /// loader told them apart only by whether some binding block happened to map it. So
 /// `stdlib/` alone LOADED CLEAN and died `OperationBodyMissing` at eval.
 pub const HOST_IMPLEMENTED_ATTR: &str = "host_implemented";
+
+/// Proposal 071 §1.3 — every `@[host_implemented]` operation THIS phase declared whose row
+/// raises a written `Error[X]` no `requires TypeValue[T = X]` answers
+/// ([`LoadError::HostRaiseWithoutTypeValue`]). A bare `Error` (`Error[T = ?]`) needs none:
+/// what it raises carries the unknown type, caught only by a boundary whose pattern is `?`.
+fn check_host_raise_types(kb: &mut KnowledgeBase) -> Vec<LoadError> {
+    let claimed = super::op_info::host_implemented_operations(kb);
+    let mut sites: Vec<(Symbol, crate::span::SourceSpan)> = kb.op_decl_sites_iter().collect();
+    sites.sort_by_key(|(_, site)| (site.source.raw(), site.span.start, site.span.end));
+    let mut errors = Vec::new();
+    for (op, site) in sites {
+        if !claimed.contains(&kb.canonical_sym(op)) {
+            continue;
+        }
+        let super::typing::HostRaiseType::Unanswered {
+            written,
+            bare,
+            open,
+        } =
+            super::typing::host_raise_type(kb, op)
+        else {
+            continue;
+        };
+        let payloads = written
+            .iter()
+            .map(|p| super::typing::type_display_name_value(kb, p))
+            .collect();
+        let error = LoadError::HostRaiseWithoutTypeValue {
+            op: kb.qualified_name_of(op).to_string(),
+            payloads,
+            bare,
+            open,
+            span: site.span,
+        };
+        errors.push(error.located_in_kb_source(kb, site.source));
+    }
+    errors
+}
 
 /// WI-20260922-BRT4Y — hold the CLAIM (`@[host_implemented]`) and the EVIDENCE (an
 /// `operation_map` entry, in any language) to each other. Three refusals:

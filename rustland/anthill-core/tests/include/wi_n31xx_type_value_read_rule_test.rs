@@ -1105,6 +1105,10 @@ end
 /// refused at the call, as a requirement at any former is, and the repair it names is a
 /// sort: no row of `TypePattern` may be written.
 ///
+/// The thunks DECLARE the tuple label and raise none: since proposal 071 stage (d) a raise
+/// at a tuple is refused at the raise (`wi_5cdn5_raise_carries_its_type_test`), and this row
+/// is the boundary's refusal, alone.
+///
 /// BACK-OUT: `former_carrier`'s `op_body_node` guard put back, and both programs load
 /// clean — the exemption this row was the control of, inverted.
 #[test]
@@ -1116,8 +1120,9 @@ fn a_body_less_callee_is_held_to_the_former_refusal() {
 namespace test.n31xx.formerhost
   import anthill.prelude.{Error, Int64, Result, String}
 
-  operation raisesTuple(n: Int64) -> Int64 effects {Error[(a: Int64, b: String)]} =
-    Error.raise((a: n, b: "neg"))
+  -- DECLARES the tuple label and raises nothing: a raise at a tuple is refused at the
+  -- raise since proposal 071 stage (d), and this row is about the boundary.
+  operation raisesTuple(n: Int64) -> Int64 effects {Error[(a: Int64, b: String)]} = n
 
   operation caughtTuple() -> Result[E = (a: Int64, b: String), T = Int64] =
     Error.reify(lambda () -> raisesTuple(0 - 1))
@@ -1135,7 +1140,7 @@ namespace test.n31xx.formerhost2
   end
 
   operation raiseTup(n: Int64) -> Int64 effects {Error[(a: Int64, b: String)], Error[Other]} =
-    if n < 0 then Error.raise((a: n, b: "neg")) else Error.raise(other(n))
+    Error.raise(other(n))
 
   operation tupOp(n: Int64) -> Result[E = (a: Int64, b: String), T = Int64]
       effects {Error[Other]} =
@@ -1193,8 +1198,7 @@ namespace test.n31xx.withintag
   import anthill.prelude.{Error, Int64, Option, Result, String}
   import anthill.prelude.Option.{some}
 
-  operation raisesOpt() -> Int64 effects {Error[Option[T = (a: Int64, b: String)]]} =
-    Error.raise(some((a: 1, b: "x")))
+  operation raisesOpt() -> Int64 effects {Error[Option[T = (a: Int64, b: String)]]} = 1
 
   operation caught() -> Result[E = Option[T = (a: Int64, b: String)], T = Int64] =
     Error.reify(lambda () -> raisesOpt())

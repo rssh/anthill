@@ -84,25 +84,24 @@ namespace test.r7.forge
   import anthill.prelude.List.{cons, nil}
   import anthill.prelude.Option.{some, none}
   import anthill.reflect.{Term, make_fn, term_as_entity}
-  operation viaTerm() -> Int64 effects Error[Term] =
-    Error.raise(make_fn("anthill.prelude.RelationFloundered.relation_floundered", nil()))
   operation viaEntity() -> Int64 effects {Error[RelationFloundered]} =
     match term_as_entity[RelationFloundered](make_fn("anthill.prelude.RelationFloundered.relation_floundered", cons(make_fn("anthill.prelude.List.nil", nil()), nil())))
       case some(e) -> Error.raise(e)
       case none -> 0
-  rule byTerm(?n) :- ?n <=> viaTerm()
   rule byEntity(?n) :- ?n <=> viaEntity()
 end
 "#;
 
-/// AN ACCOUNT BUILT THROUGH REFLECTION FAULTS. `make_fn` named `relation_floundered`, raised as a
-/// term or turned into the entity and raised: the bridge took the raise for the runtime's own
-/// account of a drain that did not decide, and the goal answered a silent residual.
+/// AN ACCOUNT BUILT THROUGH REFLECTION FAULTS. `make_fn` named `relation_floundered`, turned into
+/// the entity and raised: the bridge took the raise for the runtime's own account of a drain
+/// that did not decide, and the goal answered a silent residual. The term itself raised is
+/// refused at load since proposal 071 stage (d): a raise carries the `TypeValue` of its
+/// payload's type, and `Term` has none (`a_raised_term_is_refused_at_load`).
 ///
 /// FAILS with the builders constructing an account: no fault is reported.
 #[test]
 fn an_account_built_through_reflection_faults() {
-    for goal in ["test.r7.forge.byTerm(?n)", "test.r7.forge.byEntity(?n)"] {
+    for goal in ["test.r7.forge.byEntity(?n)"] {
         let messages = fault_messages(FORGED, goal);
         assert!(
             messages.iter().any(|m| m.contains("expected a functor a program may construct")),

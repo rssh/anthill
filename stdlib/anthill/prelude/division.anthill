@@ -31,6 +31,7 @@
 sort anthill.prelude.Divisible
   -- WI-20260825-KD9SW: the `:- eq(b, 0)` effect guard below writes the name out.
   import anthill.prelude.PartialEq.{eq}
+  import anthill.reflect.{TypeValue}
 
   sort T = ?
 
@@ -49,10 +50,12 @@ sort anthill.prelude.Divisible
   -- `:- eq(b, 0)` rather than unconditionally: WI-479's discharge then drops the effect
   -- at any call whose divisor is a literal non-zero, on every carrier at once.
   --
-  -- NO `requires`. A base that states no law needs nothing beneath it to state it with;
-  -- `Numeric` is required by each branch, where the laws that read `mul` and `add`
-  -- actually live.
-  operation div(a: T, b: T) -> T effects { Error[DivisionByZero] :- eq(b, 0) }
+  -- NO SORT-LEVEL `requires`. A base that states no law needs nothing beneath it to state
+  -- it with; `Numeric` is required by each branch, where the laws that read `mul` and `add`
+  -- actually live. The operation's own clause is the `TypeValue` of what it raises: a
+  -- carrier's host member raises `DivisionByZero` with the evidence its call hands it
+  -- (proposal 071 §1.3), and an override requires nothing its spec operation does not.
+  operation div(a: T, b: T) -> T effects { Error[DivisionByZero] :- eq(b, 0) } requires TypeValue[T = DivisionByZero]
 end
 
 -- EuclideanDomain: division WITH REMAINDER. The standard structure — an integral domain
@@ -81,6 +84,7 @@ end
 -- `wi863_operator_arithmetic_test` pins deliberately.
 sort anthill.prelude.EuclideanDomain
   import anthill.prelude.{Numeric, Divisible}
+  import anthill.reflect.{TypeValue}
   -- WI-20260825-KD9SW: a WRITTEN bare `eq`/`neq` (an effect guard, a law) names the
   -- operation by import now; a minted `=`/`!=` carries its own address and needs nothing.
   import anthill.prelude.PartialEq.{eq, neq}
@@ -97,8 +101,8 @@ sort anthill.prelude.EuclideanDomain
   -- The guarded effect, for the reason `Divisible.div` states: an override NARROWS and
   -- never widens, so the row a carrier declares must already be covered here.
   operation {
-    mod(a: T, b: T) -> T effects { Error[DivisionByZero] :- eq(b, 0) }   -- Euclidean remainder: always non-negative; `%`
-    rem(a: T, b: T) -> T effects { Error[DivisionByZero] :- eq(b, 0) }   -- truncated remainder: sign follows the dividend
+    mod(a: T, b: T) -> T effects { Error[DivisionByZero] :- eq(b, 0) } requires TypeValue[T = DivisionByZero]   -- Euclidean remainder: always non-negative; `%`
+    rem(a: T, b: T) -> T effects { Error[DivisionByZero] :- eq(b, 0) } requires TypeValue[T = DivisionByZero]   -- truncated remainder: sign follows the dividend
   }
 
   -- The division identity, over the pair that satisfies it. Guarded, so it keeps `=`

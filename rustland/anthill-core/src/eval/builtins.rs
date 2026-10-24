@@ -2566,7 +2566,10 @@ fn relation_split_first(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
     // does not lower, so the two faces of one query cannot disagree about it.
     let search = match interp.kb.execute_logical_query(&query) {
         Ok(search) => search,
-        Err(e) => return Err(interp.raise_query_lowering(e)),
+        Err(e) => return Err(interp.raise_query_lowering(
+            e,
+            crate::eval::effects::RaiseBy::Account(|l| &l.resolve_stream_failure_type),
+        )),
     };
     let handle = interp.alloc_stream(StreamSource::MaterializedResolver {
         search: Some(search),
@@ -4309,7 +4312,7 @@ fn kb_execute(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
     // `Error[ResolveStreamFailure]`, not an internal fault, which a handler can catch.
     let search = match interp.kb.execute_logical_query(&query) {
         Ok(search) => search,
-        Err(e) => return Err(interp.raise_query_lowering(e)),
+        Err(e) => return Err(interp.raise_query_lowering(e, crate::eval::effects::RaiseBy::Operation)),
     };
     let handle = interp.alloc_stream(StreamSource::Resolver {
         search: Some(search),
@@ -6124,8 +6127,9 @@ fn type_value_of_self(interp: &mut Interpreter, args: &[Value]) -> Result<Value,
 
 /// The `Type` term a dictionary names — see [`type_value_of_self`]. Recursive over the
 /// sub-dictionaries, which is what makes a NESTED argument
-/// (`Box[V = List[T = Int64]]`) answer the whole term rather than its head.
-fn type_of_dictionary(
+/// (`Box[V = List[T = Int64]]`) answer the whole term rather than its head. Also the type a
+/// raise carries, built where a boundary asks (`Interpreter::recover_at_reify_boundary`).
+pub(crate) fn type_of_dictionary(
     interp: &mut Interpreter,
     dict: &Dictionary,
 ) -> Result<crate::kb::term::TermId, EvalError> {
@@ -6795,6 +6799,12 @@ effect_dispatcher!(
 // the same channel a native builtin's declared `effects Error` takes. The
 // generic dispatcher's no-handler fault became reachable from surface
 // code the moment `Stream.head`'s default body raised (WI-818).
+//
+// THE TYPE OF THE RAISE IS ITS CALL'S, as for every host operation that raises (proposal 071
+// §1.3): `raise` requires `TypeValue[T = T]`, the call hands that dictionary in the channel
+// the builtin runs with (`Interpreter::running_builtin`), and `raise_error` takes it from
+// there. A host's own call, `interp.call("anthill.prelude.Error.raise", [v])`, stamps none,
+// and has it resolved from `v` there, as a body's slot is on entry.
 fn error_raise(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [payload] = args else {
         return Err(EvalError::ArityMismatch {

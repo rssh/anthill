@@ -636,9 +636,7 @@ fn register_pipeline(kb: &mut KnowledgeBase) {
         // A FAILED REQUEST IS THE DECLARED `Error`, raised — not a fault and not an
         // empty reply. `complete`'s row carries `Error` for exactly this.
         let reply = chat_completion(&endpoint, &model, &prompt)
-            .map_err(|msg| anthill_core::eval::EvalError::Raised {
-                payload: Value::Str(msg),
-            })?;
+            .map_err(|msg| interp.raise_error(Value::Str(msg)))?;
         text_value(interp.kb(), &reply)
     })
     .expect("register guardians_live_complete");
@@ -674,10 +672,10 @@ fn register_pipeline(kb: &mut KnowledgeBase) {
     // row declares rather than inventing mail: a test that reaches one learns that it
     // did, by name.
     for (key, arity) in [("guardians_fetch", 1), ("guardians_send", 2), ("guardians_observe", 2)] {
-        kb.register_host_fn(key, arity, move |_interp, _args| {
-            Err(anthill_core::eval::EvalError::Raised {
-                payload: Value::Str(format!("{key}: no deployment is bound in this harness")),
-            })
+        kb.register_host_fn(key, arity, move |interp, _args| {
+            Err(interp.raise_error(Value::Str(format!(
+                "{key}: no deployment is bound in this harness"
+            ))))
         })
         .unwrap_or_else(|e| panic!("register {key}: {e:?}"));
     }

@@ -67,8 +67,11 @@
 //!     programs load clean, and `either(7, 7, ?r)` is undecided at every query, the boundary
 //!     refusing to run with no evidence.
 //!   * the boundary's refusal of no evidence backed out (the boundary installed, catching
-//!     nothing) → `a_generic_catcher_cited_from_a_rule_faults` (`useA` raises past the
-//!     boundary instead) and `an_unpinned_host_entry_is_refused_and_leaves_no_frame`. Until
+//!     nothing) → `an_unpinned_host_entry_is_refused_and_leaves_no_frame`. A rule body no
+//!     longer reaches the boundary with no evidence: since proposal 071 stage (d) the raise in
+//!     its thunk requires the payload's `TypeValue` and is refused at load first
+//!     (`a_generic_catcher_cited_from_a_rule_is_refused_at_its_raise`), where until then
+//!     `useA` reached the boundary and raised past it under this back-out. Until
 //!     WI-20261016-YM8HD the bridge kept the slot as an absence marker for both, read by a
 //!     gate keyed on `ErrorTag`; that refusal named the unpinned slot, and this one names
 //!     the two routes that hand none.
@@ -149,9 +152,12 @@ namespace test.rrb
 
   sort Host
     import anthill.prelude.{Int64, Error}
+    import anthill.reflect.{TypeValue}
     import test.rrb.{Boom}
     entity host
-    operation boomNow() -> Int64 effects {Error[Boom]} @[host_implemented]
+    -- A host operation that raises requires the `TypeValue` of what it raises (proposal
+    -- 071 §1.3), threaded by its caller as every requirement is.
+    operation boomNow() -> Int64 effects {Error[Boom]} requires TypeValue[T = Boom] @[host_implemented]
   end
 
   provides Host language rust
@@ -298,11 +304,13 @@ const UNFILLED_PATTERN_PROGRAMS: [(&str, &str); 7] = [
         "a rule variable's type beside a second label",
         r#"
 namespace test.rrbo
+  import anthill.reflect.{TypeValue}
   import anthill.prelude.{Int64, String, Error, Result}
   sort Other
     entity other(n: Int64)
   end
-  operation raiseEither[P](p: P, n: Int64) -> Int64 effects {Error[P], Error[Other]} =
+  operation raiseEither[P](p: P, n: Int64) -> Int64 effects {Error[P], Error[Other]}
+      requires TypeValue[T = P] =
     if n < 0 then Error.raise(p) else Error.raise(other(n))
   rule either(?p, ?n, ?r) :- Error.reify(lambda () -> raiseEither(?p, ?n), ?r)
 end
@@ -321,12 +329,14 @@ end
         "a collection whose element is open",
         r#"
 namespace test.rrbo
+  import anthill.reflect.{TypeValue}
   import anthill.prelude.{Int64, String, Error, Result, List}
   import anthill.prelude.List.{nil}
   sort Other
     entity other(n: Int64)
   end
-  operation raiseEither[P](p: P, n: Int64) -> Int64 effects {Error[P], Error[Other]} =
+  operation raiseEither[P](p: P, n: Int64) -> Int64 effects {Error[P], Error[Other]}
+      requires TypeValue[T = P] =
     if n < 0 then Error.raise(p) else Error.raise(other(n))
   rule eitherNil(?n, ?r) :- Error.reify(lambda () -> raiseEither(nil(), ?n), ?r)
 end
@@ -386,7 +396,11 @@ end
 ];
 
 /// A rule-body call whose pattern slot it builds no evidence for is refused where it is
-/// written. The boundary catches by that evidence, and with none it refuses to run, so the
+/// written — AT THE RAISE, where the thunk raises at a type the clause leaves open (proposal
+/// 071 stage (d)): the raising call requires the `TypeValue` of that type, which the clause
+/// pins as little as the pattern, and is refused first (the rule variable's shapes, the open
+/// collection). A tuple is refused at both. Where the thunk raises nothing open — a spec as
+/// the payload, no `Error` label, an operation named bare — the refusal is the pattern's. The boundary catches by that evidence, and with none it refuses to run, so the
 /// call can never answer: with (d)'s load refusal backed out the programs load and
 /// `either(7, 7, ?r)` is undecided at every query. Before the boundary refused to run with
 /// no evidence it caught every payload, and `either(7, 7, ?r)` answered `err(other(n: 7))`,
@@ -407,11 +421,23 @@ fn an_unfilled_pattern_slot_is_refused_where_it_is_written() {
         assert!(!errs.is_empty(), "{shape}: refused, got a clean load");
         let wants: &[&str] = if shape == "a tuple" {
             &[
+                "anthill.reflect.TypeValue[T = (_1: Int64, _2: Int64)]",
                 "anthill.reflect.TypePattern[T = (_1: Int64, _2: Int64)]",
                 "a STRUCTURAL FORMER",
                 "Name a sort with no tuple or arrow among its type arguments",
             ]
-        } else if shape == "a collection whose element is open" || shape == "a spec as the payload" {
+        } else if shape.starts_with("a rule variable's type") {
+            &[
+                "anthill.reflect.TypeValue[T = ",
+                "nothing in the clause determines which `anthill.reflect.TypeValue` instance",
+                "Pin the element at this call",
+            ]
+        } else if shape == "a collection whose element is open" {
+            &[
+                "anthill.reflect.TypeValue[T = anthill.prelude.List]",
+                "no row of `anthill.reflect.TypeValue` answers here, and none may be written",
+            ]
+        } else if shape == "a spec as the payload" {
             &[
                 "anthill.reflect.TypePattern[T = ",
                 "no row of `anthill.reflect.TypePattern` answers here, and none may be written",
@@ -429,11 +455,15 @@ fn an_unfilled_pattern_slot_is_refused_where_it_is_written() {
 }
 
 /// A GENERIC operation that reifies at its own `P` (`requires TypePattern[T = P]`), cited from
-/// a rule whose arguments do not pin `P`, reaches the boundary with no evidence, and the
-/// boundary refuses to run: a fault, where the boundary caught every payload. With a value of
-/// `P` among the arguments the bridge pins it and the boundary narrows.
+/// a rule whose arguments do not pin `P`, IS REFUSED AT LOAD, AT THE RAISE (proposal 071 stage
+/// (d)): the thunk calls `raiseEither(?p, ?n)`, whose `requires TypeValue[T = P]` nothing in
+/// the clause pins. Until stage (d) both clauses loaded; `useA` reached the boundary with no
+/// evidence, refused there, and `eitherW` had the bridge pin `P` from `?p`'s value as it ran.
+/// With the payload a constructor's value the clause pins `P`, and the boundary narrows: the
+/// `Other` passes it, the `Boom` is caught.
 const GENERIC_CATCHER: &str = r#"
 namespace test.rrbg
+  import anthill.reflect.{TypeValue}
   import anthill.prelude.{Int64, String, Error, Result}
   import anthill.reflect.{TypePattern}
   sort Boom
@@ -442,7 +472,8 @@ namespace test.rrbg
   sort Other
     entity other(n: Int64)
   end
-  operation raiseEither[P](p: P, n: Int64) -> Int64 effects {Error[P], Error[Other]} =
+  operation raiseEither[P](p: P, n: Int64) -> Int64 effects {Error[P], Error[Other]}
+      requires TypeValue[T = P] =
     if n < 0 then Error.raise(p) else Error.raise(other(n))
   operation catchAll[P, R](body: () -> Int64 @ {Error[P], R}) -> Result[E = P, T = Int64]
       effects {R} requires TypePattern[T = P] =
@@ -451,21 +482,39 @@ namespace test.rrbg
       effects {R} requires TypePattern[T = P] =
     Error.reify(body)
   rule eitherA(?p, ?n, ?r) :- catchAll(lambda () -> raiseEither(?p, ?n), ?r)
-  rule useA(?r) :- eitherA(boom("b"), 7, ?r)
   rule eitherW(?p, ?n, ?r) :- catchWith(?p, lambda () -> raiseEither(?p, ?n), ?r)
-  rule useW(?r) :- eitherW(boom("b"), 7, ?r)
-  rule useWneg(?r) :- eitherW(boom("b"), 0 - 1, ?r)
 end
 "#;
 
 #[test]
-fn a_generic_catcher_cited_from_a_rule_faults() {
-    let mut kb = crate::common::load_kb_with(GENERIC_CATCHER);
-    let errors = faults(&mut kb, "test.rrbg.useA");
-    assert!(
-        errors.iter().any(|e| e.contains("its caller had none to hand")),
-        "the unpinned slot reaches the boundary as no evidence, refused there: {errors:?}"
+fn a_generic_catcher_cited_from_a_rule_is_refused_at_its_raise() {
+    let errs = crate::common::load_errors_of(GENERIC_CATCHER);
+    assert_eq!(errs.len(), 2, "one refusal per clause: {errs:#?}");
+    // Each clause's own refusal, located at its line: the two are not one refusal reported
+    // twice.
+    for clause in ["rule eitherA", "rule eitherW"] {
+        let line = GENERIC_CATCHER
+            .lines()
+            .position(|l| l.contains(clause))
+            .map(|i| i + 1)
+            .unwrap_or_else(|| panic!("`{clause}` is in the fixture"));
+        let refusal = errs
+            .iter()
+            .find(|e| e.starts_with(&format!("{line}:")))
+            .unwrap_or_else(|| panic!("{clause}: a refusal at line {line}: {errs:#?}"));
+        for want in [
+            "anthill.reflect.TypeValue[T = test.rrbg.raiseEither.P]",
+            "nothing in the clause determines which `anthill.reflect.TypeValue` instance",
+        ] {
+            assert!(refusal.contains(want), "{clause}: expected {want:?}; got {refusal:?}");
+        }
+    }
+    let pinned = crate::common::replace_in_fixture(
+        GENERIC_CATCHER,
+        "  rule eitherA(?p, ?n, ?r) :- catchAll(lambda () -> raiseEither(?p, ?n), ?r)\n  rule eitherW(?p, ?n, ?r) :- catchWith(?p, lambda () -> raiseEither(?p, ?n), ?r)\n",
+        "  rule eitherB(?n, ?r) :- catchWith(boom(\"b\"), lambda () -> raiseEither(boom(\"b\"), ?n), ?r)\n  rule useW(?r) :- eitherB(7, ?r)\n  rule useWneg(?r) :- eitherB(0 - 1, ?r)\n",
     );
+    let mut kb = crate::common::load_kb_with(&pinned);
     let errors = faults(&mut kb, "test.rrbg.useW");
     assert!(
         errors.iter().any(|e| e.contains("raised other(n: 7)")),
@@ -489,6 +538,7 @@ fn a_generic_catcher_cited_from_a_rule_faults() {
 /// ticket, where it was refused; FAILS with the head's bound read as no position.
 const REPAIRS_PROGRAM: &str = r#"
 namespace test.rrbr
+  import anthill.reflect.{TypeValue}
   import anthill.prelude.{Int64, String, Error, Result}
   sort Boom
     entity boom(why: String)
@@ -496,7 +546,8 @@ namespace test.rrbr
   sort Other
     entity other(n: Int64)
   end
-  operation raiseEither[P](p: P, n: Int64) -> Int64 effects {Error[P], Error[Other]} =
+  operation raiseEither[P](p: P, n: Int64) -> Int64 effects {Error[P], Error[Other]}
+      requires TypeValue[T = P] =
     if n < 0 then Error.raise(p) else Error.raise(other(n))
   operation raiseNow() -> Int64 effects {Error[Boom]} = Error.raise(boom("now"))
 

@@ -641,3 +641,135 @@ pub(crate) fn written_type_pattern_provisions(kb: &KnowledgeBase) -> Vec<LoadErr
         .map(|provider| LoadError::HandWrittenTypePattern { provider })
         .collect()
 }
+
+/// Proposal 071 §1.3 — where a host operation's raise takes its type from. An operation
+/// that raises requires the `TypeValue` of what it raises, and the dictionary reaches a
+/// host function the way every requirement reaches an operation — threaded by its caller
+/// (decided with the user, 2026-10-24). One reading, for the load rule that refuses a host
+/// operation stating no clause (`LoadError::HostRaiseWithoutTypeValue`) and for the run
+/// time that takes the dictionary out of the frame (`Interpreter::raise_error`).
+#[derive(Debug)]
+pub(crate) enum HostRaiseType {
+    /// The position, in the operation's dictionary chain ([`op_dict_entries`]), of the
+    /// `requires TypeValue[T = X]` its one written `Error[X]` label states — the operation's
+    /// own clause or its sort's: its frame slot is that chain's `names` at this index.
+    Slot(usize),
+    /// Its one `Error` label is bare — `Error[T = ?]` — or there is none: what it raises is
+    /// of the unknown type (WI-20260910-6ARRN's), caught only by a boundary whose pattern is
+    /// `?`.
+    Unknown,
+    /// No written `Error` label, and an element a call resolves — a projection (`s.E`), a row
+    /// variable — which may carry one: the type of what it raises is the call's, which
+    /// nothing threads to the host function, and its raise is refused at run time.
+    Projected,
+    /// `Error` labels the clauses do not answer: one written `Error[X]` with no `requires
+    /// TypeValue[T = X]`, or more than one label (a bare `Error` among them), of which a raise
+    /// would have to say which it is; or `Error[T = ?]` written out (`open`), which the typer
+    /// lets a boundary at a specific type discharge, where the bare `Error` it means is
+    /// refused there (user, 2026-10-24) — so a host raise under it would pass a boundary the
+    /// typer counted on.
+    Unanswered { written: Vec<Value>, bare: bool, open: bool },
+    /// No operation of that name is declared: nothing states what it raises.
+    NoDeclaration,
+}
+
+/// [`HostRaiseType`] of `op`, read off its declared effect row and its `requires` chain.
+/// A guarded label (`{ Error[X] :- eq(b, 0) }`) is its label.
+pub(crate) fn host_raise_type(kb: &mut KnowledgeBase, op: Symbol) -> HostRaiseType {
+    // A KB that declares no `Error` (no prelude) has no raise to type and no boundary.
+    let (Some(error), Some(type_value)) = (
+        kb.error_sort_sym,
+        kb.try_resolve_symbol("anthill.reflect.TypeValue"),
+    ) else {
+        return HostRaiseType::Unknown;
+    };
+    let Some(info) = crate::kb::op_info::lookup_operation_info(kb, op) else {
+        return HostRaiseType::NoDeclaration;
+    };
+    let mut written: Vec<Value> = Vec::new();
+    let mut bare = false;
+    let mut open = false;
+    let mut projected = false;
+    for e in &info.effects {
+        let guarded = guarded_effect_label(kb, e);
+        let label = guarded.as_ref().unwrap_or(e);
+        if effect_label_names_sort(kb, label, error) {
+            match extract_type_param(kb, label, "T") {
+                Some(t) if matches!(t.head(kb), crate::kb::term_view::ViewHead::Var(_)) => {
+                    open = true
+                }
+                Some(payload) => written.push(payload),
+                None => bare = true,
+            }
+        } else if !matches!(
+            type_head(kb, label),
+            TypeHead::SortRef(_) | TypeHead::Parameterized { .. }
+        ) {
+            projected = true;
+        }
+    }
+    if open {
+        return HostRaiseType::Unanswered {
+            written,
+            bare,
+            open,
+        };
+    }
+    let payload = match (written.as_slice(), bare) {
+        ([payload], false) => payload.clone(),
+        ([], true) => return HostRaiseType::Unknown,
+        ([], false) if projected => return HostRaiseType::Projected,
+        ([], false) => return HostRaiseType::Unknown,
+        _ => {
+            return HostRaiseType::Unanswered {
+                written,
+                bare,
+                open,
+            }
+        }
+    };
+    let chain = op_dict_entries(kb, op);
+    let found = chain.entries().iter().position(|entry| {
+        kb.canonical_sort_sym(entry.required_sort) == kb.canonical_sort_sym(type_value)
+            && extract_type_param(kb, &entry.spec, "T").is_some_and(|t| same_type(kb, &t, &payload))
+    });
+    match found {
+        Some(i) => HostRaiseType::Slot(i),
+        None => HostRaiseType::Unanswered {
+            written: vec![payload],
+            bare: false,
+            open: false,
+        },
+    }
+}
+
+/// `a` and `b` are one written type: structurally, a sort named by two of its symbols
+/// (an alias, a re-export) being the one sort.
+fn same_type(kb: &KnowledgeBase, a: &Value, b: &Value) -> bool {
+    if crate::kb::term_view::views_structurally_equal(kb, a, b) {
+        return true;
+    }
+    match (type_head(kb, a), type_head(kb, b)) {
+        (TypeHead::SortRef(x), TypeHead::SortRef(y)) => same_sort_canonical(kb, x, y),
+        _ => false,
+    }
+}
+
+/// Proposal 071 §1.3 — the `TypeValue` evidence of `sort`, a sort the RUNTIME raises a value
+/// of with no operation behind the raise to thread it: a `match` with no arm that fits, a
+/// stream pulled. Its type is fixed, so its evidence is a constant (user, 2026-10-24):
+/// `sort`'s derived row, which must be unconditional — a sort with no type parameter and no
+/// `requires`, whose dictionary is `Dictionary(impl: sort)`. `None` where it is not, which
+/// the caller reports as a library its evaluator was not written for.
+pub(crate) fn account_type_value_evidence(
+    kb: &mut KnowledgeBase,
+    sort: Symbol,
+) -> Option<crate::eval::value::Dictionary> {
+    let type_value = kb.try_resolve_symbol("anthill.reflect.TypeValue")?;
+    let derived = provides_rows_of_provider(kb, sort)
+        .any(|row| same_sort_canonical(kb, row.spec_base, type_value));
+    if !derived || dict_layout(kb, type_value, sort, None).arity() != 0 {
+        return None;
+    }
+    crate::eval::value::Dictionary::build(kb, sort, [])
+}

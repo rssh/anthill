@@ -27,7 +27,7 @@ use crate::kb::KnowledgeBase;
 use crate::parse::desugar_target as dt;
 
 pub use error::{
-    macro_rejection_message, render_raised_payload, BridgeDisposition, EvalError,
+    macro_rejection_message, render_raised_payload, BridgeDisposition, EvalError, RaisedType,
 };
 pub use eval::{type_value_decl, value_functor};
 pub use frame::{ActivationStack, Frame};
@@ -372,6 +372,18 @@ pub(crate) struct ErrorLayer {
     /// `TypePattern.admits[T = T1](t)` makes through the row's dictionary
     /// (`resolve_op_target`), made once here: every boundary's dictionary has this `impl`.
     pub admits_member: Symbol,
+    /// The `TypeValue` evidence of the payload sorts the RUNTIME raises a value of with no
+    /// operation behind the raise to thread one (proposal 071 §1.3; user, 2026-10-24): a
+    /// pattern that fails (`MatchFailed`), a relation drain that stayed undecided
+    /// (`RelationFloundered`), a stream pulled past a fault or misused
+    /// (`ResolveStreamFailure`). Each sort is fixed and has no type parameter, so its evidence
+    /// is a constant, resolved here once from its derived row.
+    pub match_failed_type: crate::eval::value::Dictionary,
+    pub relation_floundered_type: crate::eval::value::Dictionary,
+    pub resolve_stream_failure_type: crate::eval::value::Dictionary,
+    /// `anthill.reflect.TypeValue`: a builtin whose chain requires it keeps its argument
+    /// values for its raise (`Interpreter::call_host`).
+    pub type_value: Symbol,
 }
 
 impl ErrorLayer {
@@ -416,6 +428,18 @@ impl ErrorLayer {
                 .copied()
                 .unwrap_or_else(|| disagree("no slot name for its `requires`"))
         };
+        let account = |kb: &mut KnowledgeBase, qn: &str| {
+            let sort = r(kb, qn);
+            crate::kb::typing::account_type_value_evidence(kb, sort).unwrap_or_else(|| {
+                disagree(&format!(
+                    "no unconditional `TypeValue` row of `{qn}`, a payload the runtime raises"
+                ))
+            })
+        };
+        let type_value = r(kb, "anthill.reflect.TypeValue");
+        let match_failed_type = account(kb, "anthill.prelude.MatchFailed");
+        let relation_floundered_type = account(kb, "anthill.prelude.RelationFloundered");
+        let resolve_stream_failure_type = account(kb, "anthill.reflect.ResolveStreamFailure");
         let admits_member = crate::kb::typing::resolve_op_target(kb, pattern_provider, admits);
         if admits_member == admits {
             disagree("no member of `anthill.reflect.TypeValuePattern` that answers `admits`");
@@ -428,8 +452,29 @@ impl ErrorLayer {
             admits,
             pattern_provider,
             admits_member,
+            match_failed_type,
+            relation_floundered_type,
+            resolve_stream_failure_type,
+            type_value,
         })
     }
+}
+
+/// The requirement channel a builtin call carries ([`Interpreter::running_builtin`]), read
+/// only where its host function raises (`Interpreter::raise_error`): what is missing from it
+/// is resolved there, never on a call that does not raise.
+pub(crate) struct RunningBuiltin {
+    /// The builtin's own operation.
+    pub op: Symbol,
+    /// The channel as the call handed it. Where a route built it for the spec operation a
+    /// value directed the call through, its slots are named as the member's are wherever the
+    /// two chains agree — a member restates its spec operation's `requires` — and a slot
+    /// named otherwise reads as missing, and is filled from [`Self::args`].
+    pub requirements: smallvec::SmallVec<[(Symbol, value::Dictionary); 2]>,
+    /// The argument values, kept for an operation whose clauses require a `TypeValue`, so that
+    /// a slot the route stamped none for is filled from them at the raise as a body's is on
+    /// entry (`fill_missing_op_scoped_slots`). `None` for every other builtin.
+    pub args: Option<Vec<Value>>,
 }
 
 /// Top-level interpreter state. Owns the KB so builtins and effect handlers
@@ -458,6 +503,12 @@ pub struct Interpreter {
     /// WI-20260913-2858G) sees its own dictionary on the way in and the caller's again on
     /// the way out, rather than inheriting whatever ran last.
     pub(crate) builtin_dispatch_dict: Option<crate::eval::value::Dictionary>,
+    /// Proposal 071 §1.3 — the requirement channel of the builtin currently running, or
+    /// `None` outside one. A builtin enters no frame, and a host function that raises takes
+    /// the `TypeValue` of what it raises out of this channel ([`Self::raise_error`]), as an
+    /// operation body reads a slot of its frame. Set and RESTORED around the builtin call
+    /// ([`Self::call_host`]), for [`Self::builtin_dispatch_dict`]'s reason.
+    pub(crate) running_builtin: Option<RunningBuiltin>,
     pub(crate) fields: FieldSymbols,
     pub(crate) closures: ClosureArenaRef,
     pub(crate) streams: StreamArenaRef,
@@ -549,6 +600,7 @@ impl Interpreter {
         };
         Self {
             builtin_dispatch_dict: None,
+            running_builtin: None,
             kb,
             stack,
             builtins: HashMap::new(),
@@ -828,7 +880,7 @@ impl Interpreter {
                     ),
                 ));
             }
-            return self.call_host(sym, &builtin, args);
+            return self.call_host(sym, &builtin, args, smallvec::SmallVec::new());
         }
         // A BODY-LESS operation is entered by value-directed dispatch to a provider's,
         // and `invoke_op_with_requirements` builds THAT frame from the provider's own
@@ -962,7 +1014,10 @@ impl Interpreter {
             args
         };
         if let Some(builtin) = self.builtins.get(&sym).cloned() {
-            return self.call_host(sym, &builtin, args);
+            // The calling clause's conditions for the builtin's own chain stand in for what
+            // its argument values would give, as they do for a body below (WI-20260925-P7VP4).
+            let requirements = self.supplied_channel(sym, supplied_slots);
+            return self.call_host(sym, &builtin, args, requirements);
         }
         // 068 §2: an operation whose carrier the call would be dispatched by, reached with
         // that carrier one of the caller's unknowns, cannot be chosen yet — run as it is, a
@@ -1197,22 +1252,62 @@ impl Interpreter {
             })
     }
 
+    /// The slots a woven rule-body call SUPPLIED for `op`'s chain (`call_op_bridged`'s
+    /// `supplied_slots`, one per slot in chain order), named as the chain names them.
+    fn supplied_channel(
+        &mut self,
+        op: Symbol,
+        supplied_slots: &[Option<value::Dictionary>],
+    ) -> smallvec::SmallVec<[(Symbol, value::Dictionary); 2]> {
+        let mut requirements = smallvec::SmallVec::new();
+        if supplied_slots.iter().any(Option::is_some) {
+            let names = crate::kb::typing::op_dict_entries(&mut self.kb, op).names(&mut self.kb);
+            for (name, dict) in names.iter().zip(supplied_slots) {
+                if let Some(dict) = dict {
+                    requirements.push((*name, dict.clone()));
+                }
+            }
+        }
+        requirements
+    }
+
     /// Run a host function — the one door every host call goes through. 068 §2: a host
     /// function reads whatever it is handed (`eq` over an unknown answered `false`,
     /// arithmetic over one a type mismatch), so one handed any of the caller's unknowns
     /// waits, as the bridge's whole call used to. Checked here and nowhere else, no route of
     /// the dispatch — a direct target, an override, a spec implementation chosen by value, a
     /// dictionary sibling, the bridge's own entry — can hand one an unknown.
+    ///
+    /// `requirements` is the channel the route handed. A builtin enters no frame, so the
+    /// channel is kept for the call ([`Self::running_builtin`]), where a host function that
+    /// raises reads it (proposal 071 §1.3).
     pub(crate) fn call_host(
         &mut self,
         sym: Symbol,
         builtin: &BuiltinFn,
         args: &[Value],
+        requirements: smallvec::SmallVec<[(Symbol, value::Dictionary); 2]>,
     ) -> Result<Value, EvalError> {
         if args.iter().any(|a| self.mentions_unknown(a)) {
             return Err(self.reads_unknown(&format!("host `{}`", self.kb.qualified_name_of(sym))));
         }
-        (builtin)(self, args)
+        // Only an operation whose own clauses require a `TypeValue` can raise with a slot to
+        // fill from them; one requiring `Eq` or `Ord` keeps nothing.
+        let args_kept = self.error_layer.as_ref().map(|l| l.type_value).and_then(|tv| {
+            let tv = self.kb.canonical_sort_sym(tv);
+            crate::kb::typing::op_requires_chain_rc(&mut self.kb, sym)
+                .iter()
+                .any(|e| self.kb.canonical_sort_sym(e.required_sort) == tv)
+                .then(|| args.to_vec())
+        });
+        let saved = self.running_builtin.replace(RunningBuiltin {
+            op: sym,
+            requirements,
+            args: args_kept,
+        });
+        let result = (builtin)(self, args);
+        self.running_builtin = saved;
+        result
     }
 
     /// The suspension a read of one of the caller's unknowns raises: the call cannot be
@@ -1279,7 +1374,7 @@ impl Interpreter {
             }
         })?;
         if let Some(builtin) = self.builtins.get(&sym).cloned() {
-            return self.call_host(sym, &builtin, args);
+            return self.call_host(sym, &builtin, args, smallvec::SmallVec::new());
         }
         // Names model: `__req_self` → a self-referential placeholder for
         // the parent sort; `__req_<spec>` → each host-supplied chain
@@ -1438,7 +1533,7 @@ impl Interpreter {
                 let runnable = match impl_target {
                     Some(t) => {
                         if let Some(builtin) = self.builtins.get(&t).cloned() {
-                            return self.call_host(t, &builtin, args);
+                            return self.call_host(t, &builtin, args, requirements);
                         }
                         self.cached_operation_body(t)
                             .map(|(body, params)| (t, body, params))

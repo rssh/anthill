@@ -2260,3 +2260,5 @@ mod wi_edpf6_arrow_records_its_binders_test;
 mod wi_rdns4_shared_row_tail_test;
 #[path = "include/wi_rdns4_nested_callback_row_test.rs"]
 mod wi_rdns4_nested_callback_row_test;
+#[path = "include/wi_5cdn5_raise_carries_its_type_test.rs"]
+mod wi_5cdn5_raise_carries_its_type_test;
