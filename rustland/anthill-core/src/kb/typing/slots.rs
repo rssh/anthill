@@ -4692,8 +4692,16 @@ fn selection_witness_sym(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
 /// first fixed it and the other's label went to the row.
 ///
 /// Which pairs are solved here, [`slot_row`] says; the loops' unification relates every other
-/// pair's rows as before. A tail left unbound — rigid (a forall-Skolem is not ours to solve,
-/// WI-336), bound already, or one whose binding is refused below — is the pre-existing behavior
+/// pair's rows as before. The pass solves in ROUNDS: a slot whose row holds TWO flexible tails
+/// (`{E, EffP}`) is solved once the rounds before it have bound all but one — `two2[E, EffP](a:
+/// () -> Int64 @ {E, EffP}, b: () -> Int64 @ {EffP})` at a pure `a` and a writing `b` binds
+/// `EffP` from `b`, and then `E` to what `a` raises beyond it, `{}`. Read in one round, `a`'s
+/// slot was skipped and `E` left unconstrained (MEASURED; the program ran while the loops bound
+/// `EffP` from `b`). A slot whose two tails no other slot decides is the call's to state, by a
+/// bracket (`[E = …]`): which lower bound belongs to which tail is not decided by the arguments;
+/// it is unified as written after the rounds, as the loops unified it before they left its row
+/// here. A tail left unbound — rigid (a forall-Skolem is not ours to solve, WI-336), bound
+/// already, or one whose binding is refused below — is the pre-existing behavior
 /// (`first_unconstrained_type_param` then reports it), never a wrong binding.
 ///
 /// The residual is [`pair_present_labels`]' `only_a`: the actual's present labels that pair
@@ -4724,15 +4732,51 @@ pub(super) fn infer_discharged_row_tails(
     if op.type_params.is_empty() || pairs.is_empty() {
         return Ok(());
     }
-    // Each pair's slot row beside its argument's, read once for the label phase and the tails.
-    let slot_rows: Vec<(Symbol, SlotRow)> = pairs
-        .iter()
-        .filter_map(|(param, written, actual)| {
-            let declared = read.get(param).unwrap_or(written);
-            slot_row(kb, subst, declared, actual).map(|row| (*param, row))
-        })
-        .collect();
-    fix_label_type_params(kb, subst, op, &slot_rows)?;
+    let declared_at = |i: usize| -> &Value {
+        let (param, written, _) = &pairs[i];
+        read.get(param).unwrap_or(written)
+    };
+    // The pairs the pass reads, each beside its slot row: their labels first, all together.
+    let mut unread: Vec<usize> = Vec::new();
+    let mut label_rows: Vec<(Symbol, SlotRow)> = Vec::new();
+    for (i, (param, _, actual)) in pairs.iter().enumerate() {
+        if let Some(row) = slot_row(kb, subst, declared_at(i), actual) {
+            unread.push(i);
+            label_rows.push((*param, row));
+        }
+    }
+    fix_label_type_params(kb, subst, op, &label_rows)?;
+    // Each round solves the slot rows left one flexible tail by the rounds before it.
+    loop {
+        let mut slot_rows: Vec<(Symbol, SlotRow)> = Vec::new();
+        unread.retain(|&i| match slot_row(kb, subst, declared_at(i), &pairs[i].2) {
+            Some(row) if row.tails.len() == 1 => {
+                slot_rows.push((pairs[i].0, row));
+                false
+            }
+            _ => true,
+        });
+        if slot_rows.is_empty() {
+            break;
+        }
+        solve_slot_rows(kb, subst, slot_rows);
+    }
+    // A slot no round solved — two tails no other slot decides, or each tail bound by other
+    // slots — is unified as written, as the argument loops unified it before they left its row
+    // here: its labels pair with the argument's, and a type parameter only they name is bound
+    // there (`Error[P]` in `three_p`'s two-tail slot, both tails the other slots'). The verdict
+    // is DISCARDED, as the loops discard theirs: the conformance check after this pass judges
+    // the callback against the row as it stands.
+    for i in unread {
+        let declared = declared_at(i).clone();
+        unify_types(kb, subst, &pairs[i].2, &declared);
+    }
+    Ok(())
+}
+
+/// One round of [`infer_discharged_row_tails`]: each slot row's one flexible tail bound to the
+/// union of its lower bounds.
+fn solve_slot_rows(kb: &mut KnowledgeBase, subst: &mut Substitution, slot_rows: Vec<(Symbol, SlotRow)>) {
 
     // Lower bounds per tail, accumulated across every callback parameter naming it: the
     // labels no declared label covers, the caller's rigid rows, and what the slots deny.
@@ -4746,7 +4790,7 @@ pub(super) fn infer_discharged_row_tails(
     for (
         _,
         SlotRow {
-            tail,
+            tails,
             present: d_present,
             absent: d_absent,
             rigid: d_rigid,
@@ -4756,6 +4800,7 @@ pub(super) fn infer_discharged_row_tails(
         },
     ) in slot_rows
     {
+        let tail = tails[0];
         let rows: SmallVec<[TermId; 2]> = a_rigid
             .into_iter()
             .filter(|r| !d_rigid.contains(r))
@@ -4818,24 +4863,23 @@ pub(super) fn infer_discharged_row_tails(
         // wrong: the pass never claims a residual it could not bind.
         bind_row_tail(kb, subst, t, &labels, &rows);
     }
-    Ok(())
 }
 
 /// A TYPE PARAMETER OF THE CALLEE THAT SEVERAL CALLBACK SLOTS' LABELS NAME is fixed by the
-/// arguments together, before [`infer_discharged_row_tails`] pairs any of them: a label's
-/// payload is an invariant occurrence (`Error[E]` — `Error` declares no variance for `T`), so
-/// the value every such argument offers is bound, and where none is offered by all of them the
-/// call is refused naming each, as §8.1 refuses a parameter whose arguments disagree.
+/// arguments together, before [`infer_discharged_row_tails`] pairs any of them, as §8.1 fixes a
+/// parameter several arguments bind: at the JOIN of what they give it where it occurs covariantly
+/// in the labels — `Error[E]`, `Error`'s payload declared `Covariant` — and at the one value they
+/// all give it where it occurs invariantly (a label sort of no declared variance), and where there
+/// is none the call is refused naming each contribution ([`payload_every_argument_fits`]).
 /// `two_e[E, Rho](a: () -> Int64 @ {Error[E], Rho}, b: () -> Int64 @ {Error[E], Rho})` at an `a`
 /// raising `Error[Int64]` and a `b` raising `Error[String]` loaded with `a` first (`E = Int64`,
 /// `b`'s label to `Rho`) and was refused with `b` first (MEASURED): the first pair the pass met
-/// fixed `E`.
+/// fixed `E`. At an `a` raising `Error[Circle]` and a `b` raising `Error[Shape]`, `Circle
+/// requires Shape`, `E = Shape` in either order — an equal payload asked of both refused it.
 ///
-/// What an argument offers: the determined value the parameter takes where one of its row's
-/// labels unifies with one of its slot's — each label tried alone. A parameter one argument
-/// alone offers values for is the pairing's to fix, as it was. Where several values fit every
-/// argument, the first in the canonical label order is bound — the one the pairing takes for
-/// one argument alone — so that no argument's order decides it.
+/// What an argument offers: what a label of its row gives the parameter where it unifies with a
+/// label of its slot, read as the join reads an argument ([`contributions_to`]) — each label tried
+/// alone. A parameter one argument alone offers values for is the pairing's to fix, as it was.
 fn fix_label_type_params(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
@@ -4860,8 +4904,9 @@ fn fix_label_type_params(
     if free.is_empty() {
         return Ok(());
     }
-    // Per free parameter: each argument that offers it a value, with the values it offers.
-    let mut offers: Vec<(VarId, Symbol, Vec<Value>)> = Vec::new();
+    // Per free parameter: each argument that offers it a value, with the values it offers, each
+    // beside whether a label holds the parameter there at an invariant occurrence.
+    let mut offers: Vec<(VarId, Symbol, Vec<(Value, bool)>)> = Vec::new();
     for (param, row) in slot_rows {
         for d in &row.present {
             let d_deep = walk_type_deep_value(kb, subst, d);
@@ -4869,61 +4914,99 @@ fn fix_label_type_params(
                 continue;
             }
             for a in &row.actual_present {
-                let mut trial = subst.clone();
-                if !unify_types(kb, &mut trial, a, d) {
+                if !unify_types(kb, &mut subst.clone(), a, d) {
                     continue;
                 }
-                for (_, vid) in &free {
-                    let value = walk_type_deep_value(kb, &trial, &Value::Var(Var::Global(*vid)));
-                    if resolved_var(kb, &value).is_some() || !resolved_type_is_determined(kb, &value) {
-                        continue;
-                    }
-                    let i = match offers.iter().position(|(v, p, _)| v == vid && p == param) {
+                for (vid, at_invariant, value) in contributions_to(kb, subst, &free, *param, d, a) {
+                    let i = match offers.iter().position(|(v, p, _)| *v == vid && p == param) {
                         Some(i) => i,
                         None => {
-                            offers.push((*vid, *param, Vec::new()));
+                            offers.push((vid, *param, Vec::new()));
                             offers.len() - 1
                         }
                     };
-                    if !offers[i].2.iter().any(|w| types_equivalent(kb, w, &value)) {
-                        offers[i].2.push(value);
+                    let known = offers[i].2.iter().any(|(w, inv)| *inv == at_invariant && types_equivalent(kb, w, &value));
+                    if !known {
+                        offers[i].2.push((value, at_invariant));
                     }
                 }
             }
         }
     }
     for (name, vid) in free {
-        let by_arg: Vec<&(VarId, Symbol, Vec<Value>)> = offers.iter().filter(|(v, _, _)| *v == vid).collect();
+        let by_arg: Vec<&(VarId, Symbol, Vec<(Value, bool)>)> =
+            offers.iter().filter(|(v, _, _)| *v == vid).collect();
         if by_arg.len() < 2 {
             continue;
         }
-        let mut common: Vec<Value> = Vec::new();
-        for value in &by_arg[0].2 {
-            let everywhere = by_arg[1..]
-                .iter()
-                .all(|(_, _, values)| values.iter().any(|w| types_equivalent(kb, w, value)));
-            if everywhere {
-                common.push(value.clone());
-            }
-        }
-        if common.is_empty() {
+        // An invariant occurrence fixes the parameter, and the arguments that offer it only at
+        // covariant ones are judged against it afterwards, as §8.1 has it.
+        let invariant = by_arg.iter().any(|(_, _, values)| values.iter().any(|(_, inv)| *inv));
+        let offered: Vec<(Symbol, Vec<Value>)> = by_arg
+            .iter()
+            .map(|(_, param, values)| {
+                let at = values.iter().filter(|(_, inv)| *inv || !invariant);
+                (*param, at.map(|(v, _)| v.clone()).collect::<Vec<Value>>())
+            })
+            .filter(|(_, values)| !values.is_empty())
+            .collect();
+        let slices: Vec<&[Value]> = offered.iter().map(|(_, values)| values.as_slice()).collect();
+        let Some(value) = payload_every_argument_fits(kb, &slices, invariant) else {
             return Err(NoCommonPayload(NoJoin {
                 type_param: Some(name),
-                contributions: by_arg
+                contributions: offered
                     .iter()
-                    .flat_map(|(_, param, values)| values.iter().map(|v| (*param, v.clone())))
+                    .flat_map(|(param, values)| values.iter().map(|v| (*param, v.clone())))
                     .collect(),
             }));
-        }
-        common.sort_by_cached_key(|v| type_display_name_value(kb, v));
-        let bound = bind_resolved(kb, subst, vid, common.swap_remove(0));
-        debug_assert!(bound, "a payload every argument offers binds its parameter");
+        };
+        let bound = bind_resolved(kb, subst, vid, value);
+        debug_assert!(bound, "a payload every argument fits under binds its parameter");
     }
     Ok(())
 }
 
-/// Several callback slots' labels name one type parameter of the callee, and no value is
-/// offered by every argument ([`fix_label_type_params`]): `Int64 (a), String (b)`.
+/// The value a label's parameter takes from the values each argument `offered` it: the JOIN of
+/// one value of each argument ([`join_types`], the `if`/`match` arm join), or at an `invariant`
+/// occurrence a value every argument offers. Where several choices give several values, the
+/// least of them, else the first in the canonical label order — the one the pairing takes for
+/// one argument alone — so that no argument's order decides it. `None`: no choice has a value.
+fn payload_every_argument_fits(kb: &mut KnowledgeBase, offered: &[&[Value]], invariant: bool) -> Option<Value> {
+    let (first, rest) = offered.split_first()?;
+    let mut values: Vec<Value> = first.to_vec();
+    for offer in rest {
+        let mut next: Vec<Value> = Vec::new();
+        for acc in &values {
+            for value in offer.iter() {
+                let joined = if invariant {
+                    types_equivalent(kb, acc, value).then(|| acc.clone())
+                } else {
+                    join_types(kb, acc.clone(), value.clone())
+                };
+                if let Some(joined) = joined {
+                    if !next.iter().any(|n| types_equivalent(kb, n, &joined)) {
+                        next.push(joined);
+                    }
+                }
+            }
+        }
+        values = next;
+    }
+    values.sort_by_cached_key(|v| {
+        let head = sort_functor_of_view(kb, v).map(|s| kb.qualified_name_of(s).to_string());
+        (type_display_name_value(kb, v), head)
+    });
+    let below = |kb: &mut KnowledgeBase, sub: &Value, sup: &Value| {
+        types_compatible(kb, &mut Substitution::new(), sub, sup)
+    };
+    let least = (0..values.len())
+        .find(|&i| (0..values.len()).all(|j| below(kb, &values[i], &values[j])))
+        .unwrap_or(0);
+    (!values.is_empty()).then(|| values.swap_remove(least))
+}
+
+/// Several callback slots' labels name one type parameter of the callee, and no value fits what
+/// every argument offers ([`fix_label_type_params`]): `Int64 (a), String (b)`.
 pub(super) struct NoCommonPayload(NoJoin);
 
 impl NoCommonPayload {
@@ -4949,10 +5032,10 @@ impl NoCommonPayload {
 }
 
 /// A callback slot's row beside the row of the argument passed there, as
-/// [`infer_discharged_row_tails`] reads the two: the slot's one flexible tail, which that pass
-/// binds, and the parts of both rows it binds it from.
+/// [`infer_discharged_row_tails`] reads the two: the slot's flexible tails, which that pass
+/// binds once one of them is left, and the parts of both rows it binds it from.
 struct SlotRow {
-    tail: TermId,
+    tails: SmallVec<[TermId; 2]>,
     present: Vec<Value>,
     absent: Vec<Value>,
     /// The slot's rigid tails — the caller's own rows, which hold themselves and take nothing.
@@ -4966,10 +5049,10 @@ struct SlotRow {
 /// The pair `declared` (a slot) and `actual` (its argument's type) whose row
 /// [`infer_discharged_row_tails`] solves — `None` where it solves none: the slot is no callable
 /// or states no row (`Function[A, B]`); its row has no flexible tail (closed, or holding the
-/// caller's own rows alone: nothing to infer) or TWO (a row UNION, `{E, EffP}` — which lower
-/// bound belongs to which tail is not decidable here); or the argument's row is OPEN — a tail of
-/// it a flexible variable — or states an absence: those are the shapes the unify and subtype
-/// arms reason about with their own tail machinery.
+/// caller's own rows alone: nothing to infer); or the argument's row is OPEN — a tail of it a
+/// flexible variable — or states an absence: those are the shapes the unify and subtype arms
+/// reason about with their own tail machinery. A row with TWO flexible tails (a row UNION,
+/// `{E, EffP}`) is read too, and solved once the other slots leave it one.
 fn slot_row(kb: &mut KnowledgeBase, subst: &Substitution, declared: &Value, actual: &Value) -> Option<SlotRow> {
     if !type_head_is_callable(kb, declared) {
         return None;
@@ -4980,14 +5063,18 @@ fn slot_row(kb: &mut KnowledgeBase, subst: &Substitution, declared: &Value, actu
     let d_row = canonical_effects_row(kb, &d_eff);
     let (present, d_tails, absent) = decompose_effect_row(kb, subst, &d_row)?;
     let rigid = rigid_row_tails(kb, subst, &d_tails);
-    let mut flexible = d_tails
-        .iter()
-        .map(|t| walk_type(kb, subst, *t))
-        .filter(|t| !rigid.contains(t));
-    let (Some(tail), None) = (flexible.next(), flexible.next()) else {
-        return None;
-    };
-    if !matches!(kb.get_term(tail), Term::Var(Var::Global(_))) {
+    let mut tails: SmallVec<[TermId; 2]> = SmallVec::new();
+    for t in &d_tails {
+        let t = walk_type(kb, subst, *t);
+        if rigid.contains(&t) || tails.contains(&t) {
+            continue;
+        }
+        if !matches!(kb.get_term(t), Term::Var(Var::Global(_))) {
+            return None;
+        }
+        tails.push(t);
+    }
+    if tails.is_empty() {
         return None;
     }
     let (_, _, Some(a_eff)) = arrow_parts(kb, actual)? else {
@@ -5003,7 +5090,7 @@ fn slot_row(kb: &mut KnowledgeBase, subst: &Substitution, declared: &Value, actu
         return None;
     }
     Some(SlotRow {
-        tail,
+        tails,
         present,
         absent,
         rigid,
@@ -5045,9 +5132,11 @@ pub(super) fn slot_at_argument_row(
     if !callback_pair_recorded(kb, op, declared) {
         return None;
     }
-    let SlotRow { tail, actual_row, .. } = slot_row(kb, subst, declared, actual)?;
-    if tail_named_outside_callback_rows(kb, subst, op, param, declared, tail) {
-        return None;
+    let SlotRow { tails, actual_row, .. } = slot_row(kb, subst, declared, actual)?;
+    for tail in tails {
+        if tail_named_outside_callback_rows(kb, subst, op, param, declared, tail) {
+            return None;
+        }
     }
     callable_with_row(kb, declared, &actual_row)
 }

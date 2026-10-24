@@ -16,7 +16,7 @@
 //!
 //! ── WHICH ROWS FAIL WHEN A PART IS BACKED OUT ────────────────────────────────
 //!
-//! NINE PARTS, each backed out alone and RUN over this file and the `wi329`, `wi_450ka`,
+//! FIFTEEN PARTS, each backed out alone and RUN over this file and the `wi329`, `wi_450ka`,
 //! `wi_6mpn2`, `wi_1tjqh`, `wi_9wvt7` and `wi_0rp29` rows:
 //!
 //! 1. THE ARGUMENT LOOPS LEAVE THE ROW TO THE PASS (`slot_at_argument_row` answering the slot as
@@ -60,6 +60,32 @@
 //!    pairing left to decide). 1 FAILS:
 //!    [`a_payload_several_values_fit_is_the_canonical_first_in_either_order`], refused at `use`'s
 //!    effects with `b` written first.
+//! 10. A SLOT WITH TWO FLEXIBLE TAILS READ IN A LATER ROUND (the pass in one round). 2 FAIL:
+//!    [`a_slot_with_two_tails_takes_what_the_other_slots_leave`], "expected a type for 'E'" — a
+//!    regression of part 1, the programs ran on the build before it — and
+//!    [`a_row_two_tails_share_is_still_refused_where_no_slot_decides`] on the wording, refused
+//!    at `E` where the union is denied. Its `two2b` refusals pass either way, by design.
+//! 11. A PAYLOAD SEVERAL ARGUMENTS GIVE IS THEIR JOIN (an equal payload asked of every argument).
+//!    3 FAIL: [`a_payload_two_slots_share_is_the_join_of_what_the_arguments_offer`], refused "no
+//!    type every argument's labels give" — a regression of part 7, `b` first ran on the build
+//!    before it — [`a_payload_a_two_tail_slot_shares_is_the_join_too`], and
+//!    [`a_payload_join_the_bracket_refuses_is_refused_as_the_bracket_is`] on the wording.
+//! 12. A TWO-TAIL SLOT'S ROW LEFT TO THE PASS BY THE LOOPS, its labels in the one label phase
+//!    (`slot_at_argument_row` answering `None` for two tails: the loops unify it as written, as
+//!    before). 1 FAILS:
+//!    [`a_payload_a_two_tail_slot_shares_is_the_join_too`], refused "undeclared effect" — the
+//!    loops' unification of the two-tail row fixed `P` at its own argument's payload.
+//! 13. A SLOT NO ROUND SOLVES UNIFIED AS WRITTEN AFTER THE ROUNDS. 1 FAILS:
+//!    [`a_slot_no_round_solves_is_unified_as_written`], "expected a type for 'P'" in both of its
+//!    shapes — `P` is named by that slot's labels alone.
+//! 14. A LABEL'S INVARIANT PARAMETER TAKES ONE VALUE EVERY ARGUMENT GIVES (read as covariant).
+//!    2 FAIL: [`a_payload_an_invariant_label_names_is_one_value_every_argument_gives`], refused
+//!    at `a`'s slot in place of the arguments' disagreement, and
+//!    [`an_invariant_occurrence_fixes_a_payload_a_covariant_one_shares`], its `Log[Circle]`
+//!    joined to `Shape` and refused at `a`'s slot.
+//! 15. …FROM THE INVARIANT OCCURRENCES ALONE, the covariant ones judged against it (every offer
+//!    asked to agree). 1 FAILS: [`an_invariant_occurrence_fixes_a_payload_a_covariant_one_shares`],
+//!    refused "no type every argument's labels give" in both orders.
 
 use crate::common::{assert_refused_naming, load_errors_of, run_int64};
 
@@ -69,7 +95,7 @@ fn program(ns: &str, declares: &str, body: &str) -> String {
     format!(
         r#"
 namespace {ns}
-  import anthill.prelude.{{Int64, Unit, String, Cell, Modify, Error, Result, Function, Clock, Option}}
+  import anthill.prelude.{{Int64, Unit, String, Cell, Modify, Error, Result, Function, Clock, Option, Effect}}
   import anthill.prelude.Result.{{ok, err}}
   import anthill.prelude.Option.{{some, none}}
   import anthill.reflect.{{TypePattern}}
@@ -131,6 +157,52 @@ namespace {ns}
 
   operation two_lacks[Rho](a: () -> Int64 @ {{Rho, -Clock}}, b: () -> Int64 @ {{Rho}}) -> Int64 effects {{Rho}} =
     a() * 10 + b()
+
+  operation two2[E, EffP](a: () -> Int64 @ {{E, EffP}}, b: () -> Int64 @ {{EffP}}) -> Int64 effects {{E, EffP}} =
+    a() * 10 + b()
+
+  operation two2b[E, EffP](a: () -> Int64 @ {{E, EffP}}, b: () -> Int64 @ {{E, EffP}}) -> Int64 effects {{E, EffP}} =
+    a() * 10 + b()
+
+  operation four2[E, EffP, Q](a: () -> Int64 @ {{E, EffP}}, b: () -> Int64 @ {{EffP, Q}}, c: () -> Int64 @ {{Q}}) -> Int64
+    effects {{E, EffP, Q}}
+  = a() * 100 + b() * 10 + c()
+
+  sort Shape
+  end
+  sort Circle
+    requires Shape
+    entity circle
+  end
+  operation circleFails() -> Int64 effects {{Error[Circle]}} = Error.raise(circle)
+  operation shapeFails() -> Int64 effects {{Error[Shape]}} = 4
+
+  operation mix[P, E, X](a: () -> Int64 @ {{Error[P], E, X}}, b: () -> Int64 @ {{Error[P], X}}) -> Int64
+    effects {{E, X}}
+    requires TypePattern[T = P]
+  = guard(a) * 10 + guard(b)
+
+  operation three_p[P, E, EffP](a: () -> Int64 @ {{Error[P], E, EffP}}, b: () -> Int64 @ {{EffP}}, c: () -> Int64 @ {{E}}) -> Int64
+    effects {{E, EffP}}
+    requires TypePattern[T = P]
+  = guard(a) * 100 + b() * 10 + c()
+
+  operation dflt[P, E = {{}}, X = {{}}](a: () -> Int64 @ {{Error[P], E, X}}) -> Int64
+    effects {{E, X}}
+    requires TypePattern[T = P]
+  = guard(a)
+
+  sort Log
+    sort T = ?
+    provides Effect[T = Log[?]]
+  end
+  operation logC() -> Int64 effects {{Log[Circle]}} = 1
+  operation logS() -> Int64 effects {{Log[Shape]}} = 2
+  operation two_l[E, Rho](a: () -> Int64 @ {{Log[E], Rho}}, b: () -> Int64 @ {{Log[E], Rho}}) -> Int64 effects {{Rho}} = 7
+  operation two_le[E, Rho](a: () -> Int64 @ {{Log[E], Rho}}, b: () -> Int64 @ {{Error[E], Rho}}) -> Int64
+    effects {{Rho}}
+    requires TypePattern[T = E]
+  = guard(b)
 
   operation try_catch[Rho, P](body: () -> Int64 @ {{Error[P], Rho}}, recover: (e: P) -> Int64 @ {{Rho}}) -> Int64
     effects {{Rho}}
@@ -453,4 +525,172 @@ fn a_payload_several_values_fit_is_the_canonical_first_in_either_order() {
             .replace("  operation go() -> Int64 =", "  operation go() -> Int64 effects {Error[String], Error[Boom]} =");
         assert_eq!(run_int64(&src, &format!("{ns}.go")), Ok(9952), "`{call}`");
     }
+}
+
+/// A SLOT WHOSE ROW HOLDS TWO FLEXIBLE TAILS TAKES WHAT THE OTHER SLOTS LEAVE, in a later round:
+/// `two2[E, EffP](a: … @ {E, EffP}, b: … @ {EffP})` binds `EffP` from `b`, then `E` to what `a`
+/// raises beyond it — `{}` for a pure `a` (3414), `{Clock}` for a clocked one (5414) — and a chain
+/// of three slots takes three rounds (`four2`: `Q` from `c`, `EffP` from `b`, `E` from `a`, 54114).
+/// Each order of the arguments. Read in one round, `a`'s slot was skipped and `E` left
+/// unconstrained; the `two2` programs ran on the build before part 1, whose loops bound `EffP`
+/// from `b` (MEASURED), and `four2` there ran with `c` written first only.
+#[test]
+fn a_slot_with_two_tails_takes_what_the_other_slots_leave() {
+    for (tag, call) in [
+        ("tt_pure_ab", "two2(lambda () -> 3, lambda () -> put(r, 4))"),
+        ("tt_pure_ba", "two2(b: lambda () -> put(r, 4), a: lambda () -> 3)"),
+    ] {
+        assert_eq!(runs(tag, "Modify[r]", &format!("    {call}")), Ok(3414), "`{call}`");
+    }
+    for (tag, call, value) in [
+        ("tt_clock_ab", "two2(lambda () -> clocked(), lambda () -> put(r, 4))", 5414),
+        ("tt_clock_ba", "two2(b: lambda () -> put(r, 4), a: lambda () -> clocked())", 5414),
+        ("tt_chain_abc", "four2(lambda () -> clocked(), lambda () -> put(r, 4), lambda () -> 1)", 54114),
+        ("tt_chain_cba", "four2(c: lambda () -> 1, b: lambda () -> put(r, 4), a: lambda () -> clocked())", 54114),
+    ] {
+        let ns = format!("wirdns4.{tag}");
+        let src = program(&ns, "Modify[r], Clock", &format!("    {call}"))
+            .replace("  operation go() -> Int64 =", "  operation go() -> Int64 effects {Clock} =");
+        assert_eq!(run_int64(&src, &format!("{ns}.go")), Ok(value), "`{call}`");
+    }
+}
+
+/// THE CONTROLS: what the rounds bind is held to what the caller declares — `use` declaring the
+/// write and not the clock is refused at its own effects, naming `Clock` — and a row whose two
+/// tails no other slot decides is the call's to state: `two2b`, both slots `@ {E, EffP}`, is
+/// refused at `E` in either order (as on every build), and its bracket runs.
+#[test]
+fn a_row_two_tails_share_is_still_refused_where_no_slot_decides() {
+    assert_refused_naming(
+        &refused("tt_under", "Modify[r]", "    two2(lambda () -> clocked(), lambda () -> put(r, 4))"),
+        &["use.effects", "undeclared effect", "Clock"],
+        "a clocked `a` under a `use` declaring the write alone",
+    );
+    for (tag, call) in [
+        ("tt_both_ab", "two2b(lambda () -> 3, lambda () -> put(r, 4))"),
+        ("tt_both_ba", "two2b(lambda () -> put(r, 4), lambda () -> 3)"),
+    ] {
+        assert_refused_naming(
+            &refused(tag, "Modify[r]", &format!("    {call}")),
+            &["two2b.type_arg", "expected a type for 'E'"],
+            &format!("`{call}`"),
+        );
+    }
+    assert_eq!(
+        runs("tt_both_bracket", "Modify[r]", "    two2b[E = {}](lambda () -> 3, lambda () -> put(r, 4))"),
+        Ok(3414),
+    );
+}
+
+/// A PAYLOAD SEVERAL SLOTS' LABELS NAME IS THE JOIN OF WHAT THE ARGUMENTS OFFER: `a` raises
+/// `Error[Circle]`, `b` declares `Error[Shape]`, `Circle requires Shape`, so `E = Shape` and both
+/// labels are discharged, in either order — `a` caught, 9; `b` answers 4: 9412, `use` declaring
+/// nothing. An equal payload asked of both arguments refused it in both orders; on the build
+/// before part 7 it ran with `b` written first and was refused with `a` first (MEASURED).
+#[test]
+fn a_payload_two_slots_share_is_the_join_of_what_the_arguments_offer() {
+    for (tag, call) in [
+        ("join_ab", "two_e(lambda () -> circleFails(), lambda () -> shapeFails())"),
+        ("join_ba", "two_e(b: lambda () -> shapeFails(), a: lambda () -> circleFails())"),
+    ] {
+        assert_eq!(runs(tag, "", &format!("    {call}")), Ok(9412), "`{call}`");
+    }
+}
+
+/// THE CONTROL: THE JOIN IS THE BRACKET THE CALL COULD HAVE WRITTEN, and judged as it is. With
+/// `Circle provides Shape` in place of `requires`, a handler of `Error[Shape]` does not discharge
+/// `Error[Circle]` — `two_e[E = Shape](…)` is refused at `a`, on every build — and the call that
+/// infers `E = Shape` is refused there too, in either order.
+#[test]
+fn a_payload_join_the_bracket_refuses_is_refused_as_the_bracket_is() {
+    for (tag, call) in [
+        ("prov_bracket", "two_e[E = Shape](lambda () -> circleFails(), lambda () -> shapeFails())"),
+        ("prov_ab", "two_e(lambda () -> circleFails(), lambda () -> shapeFails())"),
+        ("prov_ba", "two_e(b: lambda () -> shapeFails(), a: lambda () -> circleFails())"),
+    ] {
+        let src = program(&format!("wirdns4.{tag}"), "", &format!("    {call}"))
+            .replace("    requires Shape\n    entity circle", "    provides Shape\n    entity circle");
+        assert_refused_naming(
+            &load_errors_of(&src),
+            &["type mismatch in two_e.a (op-arg)", "Error[T = Circle]"],
+            &format!("`{call}`"),
+        );
+    }
+}
+
+/// … AND WHERE ONE OF THE SLOTS HOLDS TWO TAILS: `mix[P, E, X](a: … @ {Error[P], E, X}, b: … @
+/// {Error[P], X})` at an `a` raising `Error[Circle]` and a `b` raising `Error[Shape]` binds `P =
+/// Shape`, the join, and then `X` from `b` and `E` from `a`: both caught, 94; the other way round,
+/// 49. The loops unified the two-tail row as written and fixed `P` at `a`'s payload, `b`'s label
+/// went to `X` and `use` was charged `Error[Shape]`; on HEAD before the rounds every order was
+/// refused at `E` (MEASURED).
+#[test]
+fn a_payload_a_two_tail_slot_shares_is_the_join_too() {
+    for (tag, call, value) in [
+        ("mix_cs", "mix(lambda () -> circleFails(), lambda () -> shapeFails())", 9412),
+        ("mix_cs_named", "mix(b: lambda () -> shapeFails(), a: lambda () -> circleFails())", 9412),
+        ("mix_sc", "mix(lambda () -> shapeFails(), lambda () -> circleFails())", 4912),
+    ] {
+        assert_eq!(runs(tag, "", &format!("    {call}")), Ok(value), "`{call}`");
+    }
+}
+
+/// A SLOT NO ROUND SOLVES IS UNIFIED AS WRITTEN, after the rounds, as the loops unified it before
+/// they left its row to the pass — so a type parameter only its labels name is bound there:
+/// `three_p`'s two-tail slot `@ {Error[P], E, EffP}` has both tails taken by the other two slots,
+/// and `dflt[P, E = {}, X = {}]`'s by the defaults, installed after the pass. `P = Circle`, the
+/// raise caught: 955 (each order) and 9; left unread, `P` was unconstrained.
+#[test]
+fn a_slot_no_round_solves_is_unified_as_written() {
+    for (tag, call) in [
+        ("p_abc", "three_p(lambda () -> circleFails(), lambda () -> clocked(), lambda () -> clocked())"),
+        ("p_cba", "three_p(c: lambda () -> clocked(), b: lambda () -> clocked(), a: lambda () -> circleFails())"),
+    ] {
+        let ns = format!("wirdns4.{tag}");
+        let src = program(&ns, "Clock", &format!("    {call}"))
+            .replace("  operation go() -> Int64 =", "  operation go() -> Int64 effects {Clock} =");
+        assert_eq!(run_int64(&src, &format!("{ns}.go")), Ok(95512), "`{call}`");
+    }
+    assert_eq!(runs("p_default", "", "    dflt(lambda () -> circleFails())"), Ok(912));
+}
+
+/// AN INVARIANT LABEL'S PARAMETER IS ONE VALUE EVERY ARGUMENT GIVES, as §8.1 fixes an invariant
+/// occurrence: `Log` declares no variance, so `two_l(a: … Log[Circle], b: … Log[Shape])` is the
+/// arguments disagreeing, refused in either order naming each — read as `Error`'s covariant
+/// payload, `E = Shape` was joined and the call refused at `a`'s slot instead. The same payload
+/// twice runs: 7.
+#[test]
+fn a_payload_an_invariant_label_names_is_one_value_every_argument_gives() {
+    for (tag, call, listed) in [
+        ("log_ab", "two_l(lambda () -> logC(), lambda () -> logS())", "Circle (a), Shape (b)"),
+        ("log_ba", "two_l(b: lambda () -> logS(), a: lambda () -> logC())", "Shape (b), Circle (a)"),
+    ] {
+        assert_refused_naming(
+            &refused(tag, "", &format!("    {call}")),
+            &["type mismatch in two_l.type_args", "no type every argument's labels give type parameter `E` of `two_l`", listed],
+            &format!("`{call}`"),
+        );
+    }
+    assert_eq!(runs("log_same", "", "    two_l(lambda () -> logC(), lambda () -> logC())"), Ok(712));
+}
+
+/// … AND WHERE ONE SLOT HOLDS IT INVARIANTLY AND ANOTHER COVARIANTLY, the invariant occurrence
+/// fixes it and the covariant one is judged against it: `two_le[E, Rho](a: … @ {Log[E], Rho}, b:
+/// … @ {Error[E], Rho})` at an `a` declaring `Log[Shape]` and a `b` raising `Error[Circle]` is `E =
+/// Shape`, `b` caught, 9, in either order — as `two_le[E = Shape](…)` is. Asked to agree, the two
+/// offers were refused. `Log[Circle]` beside `Error[Shape]` fixes `E = Circle`, and `b`'s label
+/// is then `use`'s, which declares nothing: refused there, as the bracket would be.
+#[test]
+fn an_invariant_occurrence_fixes_a_payload_a_covariant_one_shares() {
+    for (tag, call) in [
+        ("le_ab", "two_le(lambda () -> logS(), lambda () -> circleFails())"),
+        ("le_ba", "two_le(b: lambda () -> circleFails(), a: lambda () -> logS())"),
+    ] {
+        assert_eq!(runs(tag, "", &format!("    {call}")), Ok(912), "`{call}`");
+    }
+    assert_refused_naming(
+        &refused("le_wider", "", "    two_le(lambda () -> logC(), lambda () -> shapeFails())"),
+        &["use.effects", "undeclared effect", "Error[T = Shape]"],
+        "`Log[Circle]` beside `Error[Shape]`",
+    );
 }
