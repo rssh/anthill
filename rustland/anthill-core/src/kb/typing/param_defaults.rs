@@ -339,9 +339,11 @@ pub(super) fn complete_defaulted_arguments(
             .filter_map(|(p, a)| a.as_ref().map(|a| (*p, Rc::clone(a))))
             .collect();
         let spliced = splice_default(&at_instance, &named, occ, pass);
-        // A rule body has no channel for a call's bracket (`CallTypeArgsNotSupportedHere`,
-        // the refusal a written one gets there): a default writing one would have it
-        // dropped where the call is.
+        // A rule body has no channel for a call's bracket yet (`CallTypeArgsNotSupportedHere`,
+        // the refusal a written one gets there): its requirement weave reads the argument
+        // values, not the typer's σ the bracket binds, so a default writing one would have it
+        // dropped where the call is. Lifted with the written one's (WI-20261024-TC54R, after
+        // WI-20261013-RYDNV).
         if env.in_rule_body() {
             if let Some(callee) = bracketed_call(&spliced) {
                 return Err(TypeError::Other {

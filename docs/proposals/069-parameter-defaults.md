@@ -31,7 +31,7 @@
 - A spec owns its operation's defaults; a provider's member declares none (refused), and a call of the member takes the spec's (user): `box(n: 10).scale()` and `Box.scale(box(n: 10))` take `Scaler.scale`'s.
 - A default is refused at its declaration for a parameter the signature reads — an effect over it (`Modify[c]`), a projection off it (`b.V`), a value in a type: the call reads the parameter off its argument while its inference runs, and the default comes after. Also refused there: a default that takes itself (a call it makes leaves its parameter out again), and one on a variadic capture.
 - A default's effects are judged at the operation's boundary, as its body's: what it makes fresh is the parameter's value, which escapes only where the operation returns it.
-- In a rule body a default that writes a call's bracket is refused, since a rule body has no channel for one.
+- In a rule body a default that writes a call's bracket is refused, as a written bracket is there today: the typer reads the bracket, and the rule body's requirement weave reads the argument values (WI-20261013-RYDNV). Reading it there, for both, is WI-20261024-TC54R (user: it should work, and waits on RYDNV).
 - A goal at the declared arity on an operation that does not return `Bool` keeps its refusal, which now names `result:`.
 - Code generation (user): the Scala generator writes a literal default as the method's own (`low: Long = 0L`) and refuses any other; the Rust generator emits the parameter without it. The C++ generator lowers the completed call, and the Rust bundle runs the interpreter.
 

@@ -37,3 +37,7 @@ ROWS: rustland/anthill-core/tests/include/wi_cx743_operation_value_param_default
 
 RUNS: rustland/scripts/test.sh 10754 passed, 0 failed; scripts/families.sh holds, no verdict moved; node-carrier control over the new file passes; scaland sbt testFull 748 + 47 + 1 passed, 0 failed; npx tree-sitter test 240/240. /code-review (xhigh): 14 findings, 13 fixed, 1 no change needed (a body-less spec operation with a default and a projected return loads, measured).
 
+### 2026-10-24T18:42:27Z — feedback — claude
+
+2026-10-24, the rule-body bracket refusal (user): a call's bracket in a rule body should work and is not implemented yet. It waits on WI-20261013-RYDNV — the typer reads a rule-body call's bracket, the requirement weave reads the argument values — and lifting it, for a written bracket and for a default that writes one, is WI-20261024-TC54R (depends on RYDNV). Until then CX743 keeps the refusal, so the default is not dropped in silence.
+
