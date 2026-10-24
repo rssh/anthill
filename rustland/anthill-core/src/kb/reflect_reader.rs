@@ -512,7 +512,7 @@ pub fn reify_walk<V: TermView, B: ReifyBuilder>(
         // in reload-faithful mode, so the persistence round trip does not go through
         // here.
         ViewHead::Functor {
-            functor: Some(sym),
+            functor: sym,
             pos_arity: 0,
             named_arity: 0,
         } => builder.on_ref(kb, sym),
@@ -522,7 +522,7 @@ pub fn reify_walk<V: TermView, B: ReifyBuilder>(
             builder.on_ref(kb, bottom)
         }
         ViewHead::Functor {
-            functor: Some(functor),
+            functor,
             pos_arity,
             named_arity,
         } => {
@@ -549,7 +549,7 @@ pub fn reify_walk<V: TermView, B: ReifyBuilder>(
             }
             builder.on_fn(kb, functor, args)
         }
-        ViewHead::Functor { functor: None, .. } | ViewHead::Opaque => panic!(
+        ViewHead::Opaque => panic!(
             "reify_walk: non-term carrier in a Term slot (functor-less aggregate \
              or opaque value)",
         ),

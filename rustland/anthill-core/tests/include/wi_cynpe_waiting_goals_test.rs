@@ -139,7 +139,7 @@ fn residual_holds_call(kb: &KnowledgeBase, sol: &Solution, name: &str) -> bool {
         else {
             return false;
         };
-        functor.is_some_and(|f| kb.local_name_of(f) == name)
+        kb.local_name_of(functor) == name
             || (0..pos_arity).any(|i| v.pos_arg(kb, i).is_some_and(|c| holds(kb, &c.to_value(), name)))
             || v.named_keys(kb)
                 .into_iter()

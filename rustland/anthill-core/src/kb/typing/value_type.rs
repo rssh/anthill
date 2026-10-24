@@ -404,7 +404,7 @@ fn view_mentions_a_written_parameter<V: TermView>(
         ViewHead::Functor {
             functor, pos_arity, ..
         } => {
-            functor.is_some_and(|f| is_sort_param_symbol(kb, f))
+            is_sort_param_symbol(kb, functor)
                 || view_any_child(kb, ty, pos_arity, |c| {
                     view_mentions_a_written_parameter(kb, c, written)
                 })
@@ -638,8 +638,8 @@ fn constructor_value_type(
 }
 
 /// WI-578 — the type-term of an anonymous aggregate (a tuple / `Unit`) from its
-/// children's types: `Unit` for the empty case, else a `named_tuple` with positional
-/// components under the `_1.._n` convention (WI-442) plus any named components. The
+/// children's types: a `named_tuple` with positional components under the `_1.._n`
+/// convention (WI-442) plus any named components — `Unit` for none. The
 /// synthetic span is unused unless a child type is a `Value::Node` (denoted-poisoned),
 /// which a runtime tuple's ground component types are not.
 pub(super) fn tuple_value_type(
@@ -647,9 +647,6 @@ pub(super) fn tuple_value_type(
     pos_types: Vec<Value>,
     named_types: Vec<(Symbol, Value)>,
 ) -> Value {
-    if pos_types.is_empty() && named_types.is_empty() {
-        return Value::term(kb.make_sort_ref_by_name("Unit"));
-    }
     let mut fields: Vec<(Symbol, Value)> = Vec::with_capacity(pos_types.len() + named_types.len());
     for (i, cty) in pos_types.into_iter().enumerate() {
         let name = kb.intern(&positional_label(i));
@@ -903,23 +900,13 @@ fn value_type_term_d(
         // 0 since WI-20260902-CZJ2N, where `constructor_value_type(kb, c, &[], &[])`
         // is exactly what its own arm computed.
         ViewHead::Functor {
-            functor: Some(functor),
+            functor,
             pos_arity,
             ..
         } => {
             let pos_types = child_types_pos(kb, subst, v, pos_arity, depth + 1);
             let named_types = child_types_named(kb, subst, v, depth + 1);
             constructor_value_type(kb, functor, &pos_types, &named_types)
-        }
-        // An anonymous aggregate: `Unit` (0-ary) or a tuple → named_tuple type.
-        ViewHead::Functor {
-            functor: None,
-            pos_arity,
-            ..
-        } => {
-            let pos_types = child_types_pos(kb, subst, v, pos_arity, depth + 1);
-            let named_types = child_types_named(kb, subst, v, depth + 1);
-            tuple_value_type(kb, pos_types, named_types)
         }
         // Bare identifier / bottom / opaque handle — no structural type to read.
         ViewHead::Ident(_) | ViewHead::Bottom | ViewHead::Opaque => fresh_type_var(kb),
@@ -1432,7 +1419,7 @@ pub(crate) fn simp_requires_guard_holds(
 ) -> bool {
     let (functor, pos_arity) = match redex.head(kb) {
         ViewHead::Functor {
-            functor: Some(f),
+            functor: f,
             pos_arity,
             ..
         } => (f, pos_arity),

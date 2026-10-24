@@ -793,23 +793,12 @@ module.exports = grammar({
     quantified_constraint: $ => prec.right(seq(
       field('quantifier', $.quantifier_keyword),
       choice(
-        // Typed binding: forall (?x: T) -: body
-        // Sugar for: forall ?x: TypeOf(occ: ?x, type: T) -: body
-        seq(field('typed_binding', $.typed_constraint_binding), '-:', field('body', $._constraint_body)),
         // Explicit condition: forall ?x: condition -: body
         seq(field('var', $.variable), ':', field('condition', $.rule_body), '-:', field('body', $._constraint_body)),
         // Bare variable (condition is the body itself): forall ?x -: body
         seq(field('var', $.variable), '-:', field('body', $._constraint_body)),
       ),
     )),
-
-    typed_constraint_binding: $ => seq(
-      '(',
-      field('var', $.variable),
-      ':',
-      field('type', $._term),
-      ')',
-    ),
 
     quantifier_keyword: $ => choice('forall', 'some', 'one', 'lone', 'no'),
 

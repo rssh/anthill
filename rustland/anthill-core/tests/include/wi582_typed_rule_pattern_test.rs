@@ -501,8 +501,8 @@ fn an_alias_of_the_spec_is_refused_as_the_spec_is() {
     }
 }
 
-/// A `domain` GOAL IN A CONSTRAINT IS THE SAME GOAL. `constraint c :- one(?x), domain(?x,
-/// Summable)` asks of a value what a rule body's goal asks, and holds of nothing for the
+/// A `domain` GOAL IN A CONSTRAINT IS THE SAME GOAL. `constraint c: false :- one(?x),
+/// domain(?x, Summable)` asks of a value what a rule body's goal asks, and holds of nothing for the
 /// same reason. Recorded only where a rule is loaded, it loaded there and held by
 /// provision — the reading the refusal's own text says is not made.
 ///
@@ -514,7 +514,7 @@ fn a_domain_goal_in_a_constraint_is_refused_too() {
     let errs = crate::common::load_errors_of(&summable(
         ns,
         "  import anthill.kernel.{domain}\n",
-        "  fact one(true)\n  constraint no_summable_ones\n    :- one(?x), domain(?x, Summable)",
+        "  fact one(true)\n  constraint no_summable_ones: false\n    :- one(?x), domain(?x, Summable)",
     ));
     assert_eq!(errs.len(), 1, "one refusal, at the goal; got {errs:#?}");
     assert!(

@@ -194,13 +194,13 @@ end
 /// `Ref` / `Fn` functor. Mirrors the loader's `unwrap_spec_view` reader.
 fn binding_base_sym<V: TermView>(kb: &KnowledgeBase, binding: &V) -> Option<Symbol> {
     let name_of = |head: ViewHead| match head {
-        ViewHead::Functor { functor, .. } => functor,
+        ViewHead::Functor { functor, .. } => Some(functor),
         ViewHead::Ident(s) => Some(s),
         _ => None,
     };
     match binding.head(kb) {
         ViewHead::Functor {
-            functor: Some(functor),
+            functor,
             ..
         } if kb.qualified_name_of(functor).ends_with("SortView") => {
             name_of(binding.pos_arg(kb, 0)?.head(kb))

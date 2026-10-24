@@ -457,7 +457,7 @@ fn dictionary_parts(kb: &anthill_core::kb::KnowledgeBase, v: &Value) -> (String,
     // Read CARRIER-NEUTRALLY, through the same view an eval `RequirementHandle`
     // answers under. That is the assertion: one shape, whichever side built it.
     let ViewHead::Functor {
-        functor: Some(ctor),
+        functor: ctor,
         ..
     } = v.head(kb)
     else {
@@ -472,7 +472,7 @@ fn dictionary_parts(kb: &anthill_core::kb::KnowledgeBase, v: &Value) -> (String,
         .unwrap_or_else(|| panic!("a dictionary must carry `impl`; head `{head}`"))
         .to_value();
     let ViewHead::Functor {
-        functor: Some(s),
+        functor: s,
         pos_arity: 0,
         named_arity: 0,
     } = impl_child.head(kb)

@@ -46,11 +46,16 @@ pub enum TypeExtractor {
     /// into Rust values, and leaving arity undecoded made every consumer write its
     /// own `Const(Int)` reader. An arrow whose child is missing or unreadable is
     /// [`TypeExtractor::Error`], not an arrow with a guessed count.
+    ///
+    /// `binders` are the arrow's own places by position, where its type names one
+    /// ([`node_occurrence::TypeNode::Arrow`]) — the raw list, read by
+    /// [`arrow_own_binders`]; a rebuild hands it on as it found it.
     Arrow {
         param: Value,
         result: Value,
         effects: Value,
         arity: usize,
+        binders: Option<Value>,
     },
     /// WI-1083 — a UNIVERSALLY QUANTIFIED type, `∀ binders. body`: the type of an
     /// operation that declares type parameters, taken as a function VALUE. Mirrors
@@ -445,6 +450,7 @@ pub fn extract_type<V: TermView>(kb: &KnowledgeBase, ty: &V) -> TypeExtractor {
                 result,
                 effects,
                 arity,
+                binders: view_child_value(kb, ty, "binders"),
             },
             _ => TypeExtractor::Error,
         },

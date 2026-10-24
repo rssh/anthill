@@ -848,7 +848,7 @@ pub(super) fn value_is_nil_list<V: TermView>(kb: &KnowledgeBase, v: &V) -> bool 
     };
     matches!(
         v.head(kb),
-        ViewHead::Functor { functor: Some(f), .. } if kb.canonical_sym(f) == kb.canonical_sym(nil)
+        ViewHead::Functor { functor: f, .. } if kb.canonical_sym(f) == kb.canonical_sym(nil)
     )
 }
 
@@ -858,7 +858,7 @@ pub(super) fn value_is_nil_list<V: TermView>(kb: &KnowledgeBase, v: &V) -> bool 
 pub(super) fn is_list_cons_cell<V: TermView>(kb: &KnowledgeBase, v: &V) -> bool {
     match v.head(kb) {
         ViewHead::Functor {
-            functor: Some(f), ..
+            functor: f, ..
         } => kb.qualified_name_of(f) == "anthill.prelude.List.cons",
         _ => false,
     }
@@ -1197,7 +1197,7 @@ fn denoted_ref_sym(kb: &mut KnowledgeBase, r: &impl TermView) -> Option<Symbol> 
     let child = r.named_arg(kb, value_key)?;
     match child.head(kb) {
         ViewHead::Functor {
-            functor: Some(s),
+            functor: s,
             pos_arity: 0,
             named_arity: 0,
         } => Some(s),
@@ -1277,6 +1277,7 @@ fn occ_contains_var(kb: &KnowledgeBase, vid: VarId, occ: &Rc<NodeOccurrence>) ->
                 result,
                 effects,
                 arity,
+                binders: _,
             } => child(kb, param) || child(kb, result) || child(kb, effects) || child(kb, arity),
             // WI-361: `fields` is the `Value`-carried `List[TypeField]`; the
             // view-walking `occurs_in_view` descends its cons cells + records and
@@ -1492,7 +1493,7 @@ pub(super) fn occurs_in(kb: &KnowledgeBase, vid: VarId, term: TermId) -> bool {
 fn bare_head_is_param_var(kb: &KnowledgeBase, head: &ViewHead, vid: VarId) -> bool {
     matches!(
         head,
-        ViewHead::Functor { functor: Some(s), pos_arity: 0, named_arity: 0 }
+        ViewHead::Functor { functor: s, pos_arity: 0, named_arity: 0 }
             if sort_param_ref_is_var(kb, *s, vid)
     )
 }

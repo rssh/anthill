@@ -363,7 +363,7 @@ fn sort_named(kb: &KnowledgeBase, v: &Value) -> String {
     match v.head(kb) {
         ViewHead::Ident(s)
         | ViewHead::Functor {
-            functor: Some(s),
+            functor: s,
             pos_arity: 0,
             ..
         } => kb.qualified_name_of(s).to_string(),

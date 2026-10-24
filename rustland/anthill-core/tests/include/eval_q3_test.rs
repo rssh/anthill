@@ -87,8 +87,21 @@ fn q3_alloc_from_value_passes_through_term() {
 fn q3_alloc_from_value_rejects_closures_streams_lazies() {
     let mut kb = load_kb_with("namespace test.q3_rej end\n");
 
-    // Unit has no KB-term representation either — covers the whole
-    // "interpreter-only Value" class in one check.
+    // A relation has no KB-term representation — an interpreter-only value, as a
+    // closure, a stream and a lazy are; it is the one of the class built without an
+    // interpreter.
+    let relation = Value::Relation {
+        query: std::rc::Rc::new(Value::Unit),
+        columns: std::rc::Rc::from(vec![]),
+    };
+    let err = kb.alloc_from_value(&relation).unwrap_err();
+    assert!(
+        matches!(err, LowerError::UnsupportedVariant(_)),
+        "expected UnsupportedVariant for a relation, got {err:?}"
+    );
+
+    // A tuple is no such value (WI-20261011-7G99A): `Unit` and the empty tuple lower to
+    // the `TupleLiteral()` term a rule writes for `()`.
     for v in [
         Value::Unit,
         Value::Tuple {
@@ -96,10 +109,11 @@ fn q3_alloc_from_value_rejects_closures_streams_lazies() {
             named: Vec::new().into(),
         },
     ] {
-        let err = kb.alloc_from_value(&v).unwrap_err();
-        assert!(
-            matches!(err, LowerError::UnsupportedVariant(_)),
-            "expected UnsupportedVariant for {v:?}, got {err:?}"
+        let t = kb.alloc_from_value(&v).expect("a tuple lowers");
+        assert_eq!(
+            anthill_core::persistence::print::TermPrinter::new(&kb).print_term(t),
+            "()",
+            "{v:?}"
         );
     }
 }

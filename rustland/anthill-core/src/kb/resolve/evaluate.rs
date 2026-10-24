@@ -176,7 +176,7 @@ impl KnowledgeBase {
     /// where `fact holds(ns.rel)` and the goal `holds(ns.rel)` must build ONE term.
     pub(super) fn is_qualified_name(&self, v: &Value) -> bool {
         let ViewHead::Functor {
-            functor: Some(f),
+            functor: f,
             pos_arity: 2,
             named_arity: 0,
         } = v.head(self)
@@ -198,7 +198,7 @@ impl KnowledgeBase {
         match v.head(self) {
             ViewHead::Ident(_) => true,
             ViewHead::Functor {
-                functor: Some(f),
+                functor: f,
                 pos_arity: 0,
                 named_arity: 0,
             } => {
@@ -310,16 +310,10 @@ impl KnowledgeBase {
         if !spine_changed {
             return Ok(v);
         }
-        Ok(match functor {
-            Some(functor) => Value::Entity {
-                functor,
-                pos: Rc::from(pos),
-                named: Rc::from(named),
-            },
-            None => Value::Tuple {
-                pos: Rc::from(pos),
-                named: Rc::from(named),
-            },
+        Ok(Value::Entity {
+            functor,
+            pos: Rc::from(pos),
+            named: Rc::from(named),
         })
     }
 
@@ -408,7 +402,7 @@ impl KnowledgeBase {
             }
         }
         let ViewHead::Functor {
-            functor: Some(functor),
+            functor,
             pos_arity,
             ..
         } = goal.head(self)
@@ -448,7 +442,7 @@ impl KnowledgeBase {
     /// spine: a citation's marker re-wrapped around its evaluated root goal.
     pub(super) fn with_pos_arg(&self, v: &Value, i: usize, new: Value) -> Value {
         let ViewHead::Functor {
-            functor: Some(functor),
+            functor,
             pos_arity,
             ..
         } = v.head(self)
@@ -524,7 +518,7 @@ impl KnowledgeBase {
         }
         match v.head(self) {
             ViewHead::Functor {
-                functor: Some(f),
+                functor: f,
                 pos_arity,
                 named_arity,
             } => pos_arity + named_arity > 0 && self.names_a_computation(f),
@@ -553,11 +547,10 @@ impl KnowledgeBase {
         }
         match v.head(self) {
             ViewHead::Functor {
-                functor: Some(f), ..
+                functor: f, ..
             } => !self
                 .qualified_name_of(f)
                 .starts_with(REFLECT_EXPR_PREFIX),
-            ViewHead::Functor { functor: None, .. } => true,
             _ => false,
         }
     }
@@ -806,7 +799,7 @@ impl KnowledgeBase {
         // Every other carrier: the arguments through the view, a changed call rebuilt as
         // a transient spine.
         let ViewHead::Functor {
-            functor: Some(functor),
+            functor,
             pos_arity,
             ..
         } = call.head(self)
@@ -895,7 +888,7 @@ impl KnowledgeBase {
             return BuiltinValue::Stuck(Stuck::Symbolic);
         };
         let ViewHead::Functor {
-            functor: Some(f),
+            functor: f,
             pos_arity,
             named_arity,
         } = call.head(self)

@@ -142,7 +142,7 @@ pub(super) fn rewrite_find_dictionary_goal(
         // and an `Apply` answers it: `occ_head_symbol` (used by
         // `collect_find_dictionary_bases` and by this function's own caller) matches the
         // `Apply` arm, and the resolver's `builtin_find_dictionary` walks the argument and
-        // takes `ViewHead::Functor { functor: Some(_) }`. A bare `require[Desc]` still
+        // takes `ViewHead::Functor { functor: _ }`. A bare `require[Desc]` still
         // arrives here as the `Ref` it always was.
         new_pos.push(Rc::clone(spec_arg));
         new_pos.push(NodeOccurrence::new_expr(Expr::Ref(functor), span, owner));

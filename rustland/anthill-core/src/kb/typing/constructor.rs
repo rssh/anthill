@@ -3,10 +3,9 @@
 
 use super::*;
 
-/// Tuple-literal special case routed from `check_constructor_iter`:
-/// empty tuple → `Unit`; populated tuple → `named_tuple` whose fields
-/// are `_0, _1, …` for positional args and the source label for named
-/// args.
+/// Tuple-literal special case routed from `check_constructor_iter`: a
+/// `named_tuple` whose fields are `_1, _2, …` for positional args and the
+/// source label for named args — `Unit` for none.
 fn check_tuple_literal_constructor(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
@@ -17,11 +16,6 @@ fn check_tuple_literal_constructor(
     expected: Option<Value>,
     occ: &Rc<NodeOccurrence>,
 ) -> Result<TypeResult, TypeError> {
-    if pos_results.is_empty() && named_results.is_empty() {
-        let unit_ty = kb.make_sort_ref_by_name("anthill.prelude.Unit");
-        return Ok(TypeResult::pure(unit_ty, env.clone(), Rc::clone(occ)));
-    }
-
     // WI-714 (proposal 052) — the tuple a distribute-dot `r.(f1, f2)` desugared into is a
     // PROJECTION of `r`, not a tuple of `r`'s columns. Recognized by the mark `convert.rs`
     // left on it (WI-762), since the desugared term is identical to the hand-written tuple;
@@ -864,7 +858,7 @@ fn param_leaves_belong_to_sort<V: TermView>(kb: &KnowledgeBase, t: &V, own_param
     match t.head(kb) {
         ViewHead::Ident(sym) => belongs(kb, sym),
         ViewHead::Functor {
-            functor: Some(functor),
+            functor,
             pos_arity,
             ..
         } => {
@@ -1487,9 +1481,8 @@ pub(super) fn check_constructor_iter(
                 // A callback as the field's slot reads it, as a call reads one at a
                 // parameter's ([`callback_at_slot`]): the sort's row parameter takes a write
                 // to a cell in scope, and none to the callback's own parameter.
-                let arg_occ = &named_args[idx].1;
                 let at_slot =
-                    callback_at_slot(kb, env, &mut subst, *field_sym, declared_type, arg_occ, &arg_ty);
+                    callback_at_slot(kb, env, &mut subst, *field_sym, declared_type, &arg_ty);
                 unify_types(kb, &mut subst, at_slot.as_ref().unwrap_or(&arg_ty), declared_type);
                 merge_effects_into(kb, &mut effects, &r.effects);
             }
@@ -1501,8 +1494,8 @@ pub(super) fn check_constructor_iter(
             if let Ok(r) = r_opt {
                 let arg_ty = field_arg_type(kb, declared_type, r);
                 // See the named loop.
-                let at_slot = pos_args.get(i).and_then(|arg_occ| {
-                    callback_at_slot(kb, env, &mut subst, *field_sym, declared_type, arg_occ, &arg_ty)
+                let at_slot = pos_args.get(i).and_then(|_| {
+                    callback_at_slot(kb, env, &mut subst, *field_sym, declared_type, &arg_ty)
                 });
                 unify_types(kb, &mut subst, at_slot.as_ref().unwrap_or(&arg_ty), declared_type);
                 merge_effects_into(kb, &mut effects, &r.effects);

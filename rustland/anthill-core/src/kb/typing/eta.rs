@@ -437,12 +437,16 @@ pub(super) fn operation_as_function_value(
     // arity, whatever its sole parameter's type happens to look like. `get_a(t: (a,
     // b))` mints arity 1 even though `param` is a 2-field `named_tuple`, so it no
     // longer passes for the genuinely 2-parameter `(p: A, q: B) -> R`.
+    // The operation's own parameters, which its row names (`Modify[c]` of `put(c, n)`).
+    let binders: Vec<Option<Symbol>> =
+        kb.symbols.arg_places(sym).iter().map(|p| Some(*p)).collect();
     let arrow = make_arrow_value(
         kb,
         &param,
         &return_type,
         &op.effects,
         op.params.len(),
+        &binders,
         span,
         owner,
     );

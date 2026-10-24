@@ -143,6 +143,41 @@ fn persist_then_flush_writes_fact_to_disk() {
     );
 }
 
+/// WI-20261011-7G99A — a fact holding a tuple an operation built is persisted as the term
+/// a rule writes for it, and written as its literal. FAILS on the parent commit, where
+/// lowering the fact refused the tuple (`UnsupportedVariant("Tuple")`).
+#[test]
+fn a_fact_holding_an_operation_built_tuple_is_persisted() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().to_path_buf();
+    let src = "namespace test.g99apersist\n  import anthill.prelude.Int64\n  sort Holder\n    entity h(p: (Int64, Int64))\n  end\n  operation mk() -> Holder = Holder.h(p: (1, 2))\nend\n";
+    let mut interp = interp_for(src);
+    let fact = interp.call("test.g99apersist.mk", &[]).expect("mk");
+
+    let store_val = filestore_value(&mut interp, root.to_str().unwrap());
+    let key = interp.store_canonical_key(&store_val).expect("canonical key");
+    interp
+        .register_mirror(
+            key,
+            Box::new(FileStore::new(root.clone(), FileConvention::Flat)),
+            &[],
+        )
+        .expect("a file store declares no intrinsic policy, so nothing is resolved");
+    interp
+        .call(
+            "anthill.persistence.Store.persist",
+            &[store_val.clone(), fact, Value::Unit],
+        )
+        .expect("persist call");
+    let flushed = interp
+        .call("anthill.persistence.Store.flush", &[store_val, Value::Unit])
+        .expect("flush call");
+    assert!(matches!(flushed, Value::Bool(true)));
+
+    let content = std::fs::read_to_string(root.join("facts.anthill")).unwrap();
+    assert!(content.contains("h(p: (1, 2))"), "got:\n{content}");
+}
+
 #[test]
 fn failed_mirror_persist_does_not_assert_a_resident_fact() {
     // The declared adapter returns StoredRef, and its store-before-KB ordering

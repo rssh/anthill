@@ -170,7 +170,7 @@ fn modify_op_effect_label_rides_in_fact_as_node() {
     let node_modify = rec.effects.iter().any(|eff| match eff {
         Value::Node(_) => matches!(
             eff.head(&kb),
-            ViewHead::Functor { functor: Some(f), .. }
+            ViewHead::Functor { functor: f, .. }
                 if kb.local_name_of(f).rsplit('.').next() == Some("Modify")
         ),
         _ => false,

@@ -231,7 +231,7 @@ fn a_dictionary_views_as_its_impl_and_sub_dictionaries() {
             pos_arity,
             named_arity,
         } => {
-            assert_eq!(functor, Some(dict_sym), "views under its own declared sort");
+            assert_eq!(functor, dict_sym, "views under its own declared sort");
             assert_eq!(pos_arity, 1, "one sub-dictionary, positionally");
             assert_eq!(named_arity, 1, "and `impl`");
         }

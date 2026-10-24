@@ -165,7 +165,7 @@ fn a_woven_call_heads_as_its_reflect_twin() {
 
     match occ.head(&kb) {
         ViewHead::Functor {
-            functor: Some(f),
+            functor: f,
             pos_arity,
             named_arity,
         } => {
@@ -298,7 +298,7 @@ fn a_plain_call_in_the_same_clause_is_unmoved() {
     assert!(
         matches!(
             found.head(&kb),
-            ViewHead::Functor { functor: Some(f), pos_arity: 1, .. } if f == plain
+            ViewHead::Functor { functor: f, pos_arity: 1, .. } if f == plain
         ),
         "a plain call heads as its CALLEE at its own arity — the transparent reading \
          the woven form must NOT take, since its term twin is the `apply_within` wrap",

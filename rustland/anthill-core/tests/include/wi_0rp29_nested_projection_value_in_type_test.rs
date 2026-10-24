@@ -305,25 +305,42 @@
 //! `wi_0rp29_*` files, `wi_xzmgc_composed_carrier_param_test`, `wi347_override_refinement_test` and
 //! `wi_f3fyj_value_in_type_binding_test` (434 rows):
 //!
-//! 61. A VARIABLE THAT IS NO CALLABLE PLACE SAYS NO BINDERS (`callback_actual_places`) — an empty
-//!     list of them, as an operation taking nothing. 4 FAIL:
-//!     [`a_binder_at_no_known_position_is_refused_where_the_row_speaks_of_one`],
+//! 61. A TYPE THAT RECORDS NO PARAMETERS OF ITS OWN SAYS NONE (`arrow_own_binders`) — an empty
+//!     list of them, as a function taking nothing. Re-measured (see below): 12 FAIL here —
 //!     [`a_callback_bound_by_a_pattern_or_typed_function_is_judged`],
-//!     [`a_callback_held_in_a_variable_is_judged`] and
-//!     [`a_callback_held_in_a_variable_is_judged_by_the_stdlib`].
-//! 62. A `let` KEEPS ITS CALLABLE'S BINDERS (`bind_callable_places`, build.rs) — keeps none. 2
-//!     FAIL: [`a_let_bound_lambda_is_aligned_by_its_binders`] and
-//!     [`a_let_bound_lambda_is_aligned_by_its_binders_control`].
-//! 63. A CALLBACK PARAMETER'S PLACE SAYS ITS OWN POSITION (`callback_binder_position`) — not read.
-//!     2 FAIL: [`a_callback_parameters_place_says_its_own_position`] and
-//!     [`a_callback_parameters_place_says_its_own_position_control`].
-//! 64. A LABEL NAMING A VALUE COMPARED AS IT STANDS WHERE THE BINDERS ARE UNKNOWN — passed over. 4
-//!     FAIL: [`a_binder_at_no_known_position_is_refused_where_the_row_speaks_of_one`],
+//!     [`a_callback_held_in_a_variable_is_judged`],
+//!     [`a_callback_held_in_a_variable_is_judged_by_the_stdlib`],
 //!     [`a_callback_parameters_place_says_its_own_position`],
+//!     [`a_callback_stating_an_absence_is_held_to_a_closed_row`],
+//!     [`a_callback_stating_an_absence_is_held_to_a_denied_label`],
+//!     [`a_field_callback_raising_a_denied_label_is_refused`],
+//!     [`a_label_naming_a_value_in_scope_is_compared_as_it_stands`],
+//!     [`a_label_naming_a_value_in_scope_is_held_to_a_closed_row`],
+//!     [`a_lacked_row_bound_by_a_later_argument_is_still_enforced`],
+//!     [`a_let_over_a_callback_parameter_is_aligned_by_its_places`] and review 9's
+//!     `a_returned_arrows_row_takes_the_field_paths_head_control`.
+//! 62. A LAMBDA'S ARROW RECORDS ITS BINDERS (the `LambdaBody` frame) — records none. It was a
+//!     `let`'s record of the binders of the lambda it held; the arrow carries them now, through a
+//!     `let`, a tuple and a pattern alike. Re-measured: 8 FAIL here —
+//!     [`a_destructured_lambda_is_aligned_by_its_binders`] with its twin,
+//!     [`a_let_bound_lambda_is_aligned_by_its_binders`] with its control,
+//!     [`a_let_over_a_callback_parameter_is_aligned_by_its_places_control`], and review 9's
+//!     `a_function_slot_names_no_parameter_for_a_callbacks_own_place`,
+//!     `a_lambda_handing_its_callback_another_cell_is_refused` and
+//!     `a_lambda_swapping_its_callbacks_arguments_is_refused`.
+//! 63. A CALLBACK PARAMETER'S PLACE SAYS ITS OWN POSITION (`callback_binder_position`) — not read.
+//!     Re-measured: 4 FAIL here — [`a_callback_parameters_place_says_its_own_position`] and
+//!     [`a_let_over_a_callback_parameter_is_aligned_by_its_places`], each with its control.
+//! 64. A LABEL NAMING A VALUE COMPARED AS IT STANDS WHERE THE BINDERS ARE UNKNOWN — passed over. 3
+//!     FAIL: [`a_callback_parameters_place_says_its_own_position`],
 //!     [`a_label_naming_a_value_in_scope_is_compared_as_it_stands`] and
-//!     [`a_label_naming_a_value_in_scope_is_held_to_a_closed_row`].
-//! 65. A BINDER AT NO KNOWN POSITION REFUSED (`unplaced_binder`) — not refused. 1 FAILS:
-//!     [`a_binder_at_no_known_position_is_refused_where_the_row_speaks_of_one`].
+//!     [`a_label_naming_a_value_in_scope_is_held_to_a_closed_row`]. NOT re-measured: the fourth
+//!     row it listed, a lambda out of a tuple, has known binders now (part 62) and is
+//!     [`a_destructured_lambda_is_aligned_by_its_binders`].
+//! 65. A BINDER OUT OF ITS SCOPE REFUSED (`unplaced_binder`) — not refused. It was a binder at no
+//!     known position, a lambda's out of a tuple; what is left is a binder of an enclosing
+//!     lambda, named by a lambda it returned, whose own type records it not. Re-measured: 1
+//!     FAILS here — [`a_binder_out_of_its_scope_is_refused_where_the_row_speaks_of_one`].
 //! 66. THE CALLBACK'S OWN ROW VARIABLE JUDGED UNDER A CLOSED ROW — not judged. 1 FAILS:
 //!     [`a_callbacks_own_row_variable_is_not_admitted_by_a_closed_row`].
 //! 67. A CALLBACK STATING AN ABSENCE JUDGED ON WHAT IT PRESENTS — exempt. 2 FAIL:
@@ -343,29 +360,46 @@
 //!     `typing_test::subtype_rejects_malformed_multi_tail_row` FAILS (MEASURED by the workspace
 //!     run).
 //!
-//! Parts 62 and 63 TOGETHER: 6 FAIL — the four rows of the two parts and
-//! [`a_let_over_a_callback_parameter_is_aligned_by_its_places`] with its control, which fail under
-//! neither alone (the `let` keeps the parameter's places, and each place says its own position:
-//! either reading aligns it).
+//! Parts 62 and 63 TOGETHER: what fails under either, but review 9's
+//! `a_lambda_handing_its_callback_another_cell_is_refused` and
+//! `a_lambda_swapping_its_callbacks_arguments_is_refused`, which fail under part 62 alone and hold
+//! with 63 out beside it: it is part 63's reading, given a lambda whose type records nothing, that
+//! admits their write. (A `let` keeps no record of its own any more: a `let` over a callback
+//! parameter is aligned by part 63 alone.)
 //!
 //! AN EARLIER PART RE-MEASURED, this pass having rewritten the validator's entry:
-//!   * part 56 (the callback row judged of every argument — returned for one that says no binders):
-//!     11 FAIL — [`a_binder_at_no_known_position_is_refused_where_the_row_speaks_of_one`],
+//!   * part 56 (the callback row judged of every argument — returned for one whose type records no
+//!     parameters): re-measured, 20 FAIL here —
 //!     [`a_callback_bound_by_a_pattern_or_typed_function_is_judged`],
 //!     [`a_callback_held_in_a_variable_is_judged`],
 //!     [`a_callback_held_in_a_variable_is_judged_by_the_stdlib`],
 //!     [`a_callback_parameters_place_says_its_own_position`],
+//!     [`a_callback_stating_an_absence_is_held_to_a_closed_row`],
+//!     [`a_callback_stating_an_absence_is_held_to_a_denied_label`],
+//!     [`a_callbacks_own_row_variable_is_not_admitted_by_a_closed_row`],
 //!     [`a_field_callback_beside_a_lacked_row_is_refused`],
 //!     [`a_field_callback_is_held_to_a_lacked_row_however_it_is_passed`],
 //!     [`a_field_callback_raising_a_denied_label_is_refused`],
 //!     [`a_function_slots_bare_row_parameter_is_an_open_row_control`],
-//!     [`a_label_naming_a_value_in_scope_is_compared_as_it_stands`] and
-//!     [`a_label_naming_a_value_in_scope_is_held_to_a_closed_row`].
+//!     [`a_label_naming_a_value_in_scope_is_compared_as_it_stands`],
+//!     [`a_label_naming_a_value_in_scope_is_held_to_a_closed_row`],
+//!     [`a_lacked_row_bound_by_a_later_argument_is_still_enforced`],
+//!     [`a_let_over_a_callback_parameter_is_aligned_by_its_places`],
+//!     [`an_absence_over_a_rigid_row_variable_refuses_a_label`],
+//!     [`an_absence_over_a_row_variable_denies_the_variable`],
+//!     [`an_absence_over_an_unwritten_row_denies_that_row`],
+//!     [`another_rigid_row_variable_beside_a_lacked_one_is_refused`] and review 9's
+//!     `a_returned_arrows_row_takes_the_field_paths_head_control`.
 //!
-//! Of this pass's 26 rows, every one fails under at least one part but the two of parts 62 and 63
-//! together and five passing either way by design, as their sites say:
+//! RE-MEASURED by WI-20261014-EDPF6, which moved what says a callback's own parameters from its
+//! expression to its type: parts 61, 62, 63, 65 and 56, each backed out alone over the four
+//! `wi_0rp29_*` files and the suites `wi_edpf6_arrow_records_its_binders_test` names (614 rows),
+//! on the tree that file's ledger describes.
+//!
+//! Of this pass's 28 rows, every one fails under at least one part but five passing either way by
+//! design, as their sites say:
 //! [`a_callback_held_in_a_variable_is_judged_control`],
-//! [`a_binder_at_no_known_position_is_refused_where_the_row_speaks_of_one_control`],
+//! [`a_destructured_lambda_is_aligned_by_its_binders_control`],
 //! [`a_callbacks_own_row_variable_is_not_admitted_by_a_closed_row_mirror`],
 //! [`a_callbacks_own_row_variable_is_not_admitted_by_a_closed_row_control`] and
 //! [`a_pure_callback_fits_a_slot_whose_row_is_two_of_the_callers_own_control`].
@@ -4225,17 +4259,14 @@ end
     );
 }
 
-/// A LABEL LEFT NAMING A BINDER AT NO KNOWN POSITION IS REFUSED where the declared row speaks
-/// of a binder in the same effect. A lambda taken out of a tuple says no binders: its
-/// `Modify[k]` may or may not be the `x` that `-Modify[x]` denies, and nobody states the
-/// correspondence — so the call is refused for that, not passed and not refused for a row the
-/// callback might satisfy. It LOADED, and wrote the cell under `-Modify[x]` (MEASURED). FAILS
-/// under ledger part 65 (refused then as a closed row's — another verdict, on the bracket
-/// alone), and under parts 61 and 64 (it loads).
+/// A LAMBDA TAKEN OUT OF A TUPLE BY A PATTERN IS ALIGNED BY ITS BINDERS, as the lambda written at
+/// the call is: its arrow records them (WI-20261014-EDPF6). So it is refused under `-Modify[x]`
+/// by the absence it violates, where it LOADED and wrote the cell (MEASURED), and was then
+/// refused for a position nobody said. FAILS under ledger part 62.
 #[test]
-fn a_binder_at_no_known_position_is_refused_where_the_row_speaks_of_one() {
+fn a_destructured_lambda_is_aligned_by_its_binders() {
     let src = r#"
-namespace wi0rp29.cbv_unplaced
+namespace wi0rp29.cbv_destructured
   import anthill.prelude.{Int64, String, List, Cell, Modify, Unit, Bool}
   operation app[EffP](q: Cell[V = Int64], f: (x: Cell[V = Int64]) -> Unit @ {EffP, -Modify[x]}) -> Unit effects {EffP} = f(q)
   operation go() -> Int64 =
@@ -4248,18 +4279,67 @@ end
     assert_refused_naming(
         &load_errors(src),
         &[
-            "whose own parameters are known by position",
-            "`k` is a parameter of the callback itself, at a position this expression does \
-             not say",
+            "to lack `Modify[T = f.x]` (its `-…` lacks-constraint)",
+            "the callback `g` declares `Modify[T = k]` on the corresponding parameter",
         ],
         "a destructured lambda writing its own parameter",
+    );
+}
+
+/// … AND ITS TWIN: the same destructured lambda into a slot that ADMITS `Modify[x]` fits by the
+/// same alignment, and writes the cell: 42 + 1. FAILS under ledger part 62.
+#[test]
+fn a_destructured_lambda_is_aligned_by_its_binders_twin() {
+    let src = r#"
+namespace wi0rp29.cbv_destructured_ok
+  import anthill.prelude.{Int64, String, List, Cell, Modify, Unit, Bool}
+  operation app[EffP](q: Cell[V = Int64], f: (x: Cell[V = Int64]) -> Unit @ {EffP, Modify[x]}) -> Unit effects {EffP, Modify[q]} = f(q)
+  operation go() -> Int64 =
+    let c: Cell[V = Int64] = Cell.new(1)
+    let (g, n) = (lambda (k: Cell[V = Int64]) -> Cell.set(k, 42), 1)
+    let _ = app[EffP = {}](c, g)
+    Cell.get(c) + n
+end
+"#;
+    assert_eq!(run_src(src, "wi0rp29.cbv_destructured_ok.go"), Ok(43));
+}
+
+/// A LABEL LEFT NAMING A BINDER OUT OF ITS SCOPE IS REFUSED where the declared row speaks of a
+/// binder in the same effect. `mk(c)` is the lambda `mk` returns, whose row writes `k` — `mk`'s
+/// own binder, which the returned lambda's type does not record as a parameter of its own. Its
+/// `Modify[k]` is the write to `c` the application made it, and may or may not be the `x` that
+/// `-Modify[x]` denies; nobody states the correspondence, so the call is refused for that.
+/// FAILS under ledger part 65 (refused then as a closed row's — another verdict, on the bracket
+/// alone).
+#[test]
+fn a_binder_out_of_its_scope_is_refused_where_the_row_speaks_of_one() {
+    let src = r#"
+namespace wi0rp29.cbv_unplaced
+  import anthill.prelude.{Int64, String, List, Cell, Modify, Unit, Bool}
+  operation app[EffP](q: Cell[V = Int64], f: (x: Cell[V = Int64]) -> Unit @ {EffP, -Modify[x]}) -> Unit effects {EffP} = f(q)
+  operation go() -> Int64 =
+    let c: Cell[V = Int64] = Cell.new(1)
+    let d: Cell[V = Int64] = Cell.new(1)
+    let mk = lambda (k: Cell[V = Int64]) -> lambda (j: Cell[V = Int64]) -> Cell.set(k, 42)
+    let _ = app[EffP = {}](c, mk(d))
+    Cell.get(c) + Cell.get(d)
+end
+"#;
+    assert_refused_naming(
+        &load_errors(src),
+        &[
+            "whose row names values in scope and its own parameters",
+            "`k` is a binder out of scope here, which the callback's type does not record as a \
+             parameter of its own",
+        ],
+        "a returned lambda writing its enclosing lambda's binder",
     );
 }
 
 /// … AND ITS CONTROL: the same destructured lambda, PURE, names no binder and fits; 41 + 1.
 /// Passes either way by design.
 #[test]
-fn a_binder_at_no_known_position_is_refused_where_the_row_speaks_of_one_control() {
+fn a_destructured_lambda_is_aligned_by_its_binders_control() {
     let src = r#"
 namespace wi0rp29.cbv_unplaced_ok
   import anthill.prelude.{Int64, String, List, Cell, Modify, Unit, Bool}

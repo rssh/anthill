@@ -105,7 +105,7 @@ fn type_view_is_ground_g<V: TermView>(kb: &KnowledgeBase, v: &V, rigid_ok: bool)
             pos_arity,
             named_arity: _,
         } => {
-            if functor.is_some_and(|f| is_sort_param_symbol(kb, f)) {
+            if is_sort_param_symbol(kb, functor) {
                 return false;
             }
             view_all_children(kb, v, pos_arity, |c| type_view_is_ground_g(kb, c, rigid_ok))
@@ -359,11 +359,14 @@ fn node_type_is_ground_g(
             // WI-791: `arity` is a ground `Const(Int)` by construction and so cannot
             // change this verdict; it is checked anyway so the walk stays total over
             // the node's children.
+            // The arrow's own `binders` are its places, which its row reads as the
+            // alignment-aware validators do — nothing for groundness to say.
             TypeNode::Arrow {
                 param,
                 result,
                 effects,
                 arity,
+                binders: _,
             } => {
                 // WI-41YYE: only the callable introduces a binder-alignment
                 // boundary. A Box's row naming the enclosing cell is comparable;

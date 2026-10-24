@@ -58,6 +58,51 @@ struct Greeter {
     assert_eq!(cpp2, expected, "Greeter traits struct mismatch:\n{cpp2}");
 }
 
+/// WI-20261011-7G99A — `Unit` is the tuple of no components, so a return written `-> ()`
+/// is the `-> Unit` of the row above: `void`, with its dispatch body. FAILS on the parent
+/// commit, where the written `()` lowered to `std::tuple<>` and took no body.
+#[test]
+fn a_return_written_as_the_empty_tuple_is_void() {
+    let source = r#"
+        namespace test.unitret
+          import anthill.prelude.{Int64, String, Modify, Option, Modifiable}
+          import anthill.realization.{Implementation, CarrierBinding}
+          import anthill.prelude.Option.{none, some}
+
+          sort Greeter
+            provides Modifiable[T = Self]
+            operation greet(self: Greeter, name: String) -> ()
+              effects Modify[self]
+            operation count(self: Greeter) -> Int64
+          end
+
+          fact Implementation(
+            target:        "test.unitret.Greeter",
+            artifact:      "greeter.hpp",
+            language:      "cpp",
+            profile:       some("cpp17-stl"),
+            description:   none,
+            carrier:       [CarrierBinding(sort_name: "Greeter",
+                                           host_type: "::greet::Greeter")],
+            namespace_map: []
+          )
+        end
+    "#;
+    let mut kb = load_kb_with(source);
+    let cpp = emit_traits_struct(&mut kb, "test.unitret.Greeter").expect("emit Greeter");
+    let expected = "\
+struct Greeter {
+    static int64_t count(::greet::Greeter self) {
+        return self.count();
+    }
+    static void greet(::greet::Greeter self, std::string name) {
+        self.greet(name);
+    }
+};
+";
+    assert_eq!(cpp, expected, "Greeter traits struct mismatch:\n{cpp}");
+}
+
 #[test]
 fn emitted_bodies_actually_compile() {
     // Build a tiny anthill spec with a sort + carrier, emit the

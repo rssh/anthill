@@ -45,11 +45,10 @@ pub enum ViewHead {
     Var(Var),
     /// Literal constant.
     Const(Literal),
-    /// Function / constructor application. Used for both `Term::Fn` and
-    /// `Value::Entity` / `Value::Tuple`, distinguished by whether `functor`
-    /// is `Some`.
+    /// Function / constructor application: a `Term::Fn`, a `Value::Entity`, and a tuple
+    /// value, which reads as its `TupleLiteral(_1: …)` twin.
     Functor {
-        functor: Option<Symbol>,
+        functor: Symbol,
         pos_arity: usize,
         named_arity: usize,
     },
@@ -73,14 +72,14 @@ impl ViewHead {
     /// spelling and not the other — see [`functor_view_head`].
     pub(crate) fn nullary(functor: Symbol) -> ViewHead {
         ViewHead::Functor {
-            functor: Some(functor),
+            functor,
             pos_arity: 0,
             named_arity: 0,
         }
     }
 
-    /// The head's functor symbol (WI-436), or `None` for a functor-less aggregate /
-    /// var / const / opaque head.
+    /// The head's functor symbol (WI-436), or `None` for a var / const / ident / bottom /
+    /// opaque head.
     ///
     /// WI-20260902-CZJ2N: it no longer has a `Ref` arm to fold in — a bare name is a
     /// nullary `Functor` head now, so this is a plain read. Kept because 40-odd readers
@@ -89,9 +88,7 @@ impl ViewHead {
     /// collide with a same-named user sort).
     pub(crate) fn functor_sym(&self) -> Option<Symbol> {
         match self {
-            ViewHead::Functor {
-                functor: Some(s), ..
-            } => Some(*s),
+            ViewHead::Functor { functor, .. } => Some(*functor),
             _ => None,
         }
     }
@@ -123,7 +120,7 @@ impl ViewHead {
 /// after a load-time registration (the order-sensitivity WI-436's own note recorded).
 fn functor_view_head(functor: Symbol, pos_arity: usize, named_arity: usize) -> ViewHead {
     ViewHead::Functor {
-        functor: Some(functor),
+        functor,
         pos_arity,
         named_arity,
     }
@@ -533,6 +530,31 @@ fn tuple_literal_functor(kb: &KnowledgeBase) -> Option<Symbol> {
     kb.try_resolve_symbol(dt::qualified(dt::TUPLE_LITERAL))
 }
 
+/// A tuple VALUE — `Value::Tuple`, and `Value::Unit`, the tuple of no components — reads as
+/// the term a rule writes for the same text, `TupleLiteral(_1: …, name: …)`: all named, a
+/// positional component under its `_N` label. So a tuple an operation built matches the
+/// tuple of a fact or a goal, as an entity it built does. `register_prelude` defines the
+/// entity, and every load runs it.
+fn tuple_value_head(kb: &KnowledgeBase, pos: usize, named: usize) -> ViewHead {
+    let functor = tuple_literal_functor(kb)
+        .expect("tuple view: `TupleLiteral` is not defined — the KB was never given its prelude");
+    functor_view_head(functor, 0, pos + named)
+}
+
+/// The `_N` key of a tuple's positional component `i`, the symbol a rule's tuple term
+/// carries there. Eval interns the labels of every tuple it builds, and the typer and the
+/// loader those of every tuple they type or store, so a value that reaches here without
+/// its label was built by hand.
+fn tuple_positional_key(kb: &KnowledgeBase, i: usize) -> Symbol {
+    kb.positional_label_symbol(i).unwrap_or_else(|| {
+        panic!(
+            "tuple view: positional label `{}` not interned — a tuple value of that width \
+             was built outside eval, the typer and the loader",
+            crate::intern::positional_label(i)
+        )
+    })
+}
+
 // ── Lambda ↔ `lambda_expr` term isomorphism (WI-814) ────────────
 //
 // A `lambda p -> e` occurrence reads byte-identically to the term twin the
@@ -787,7 +809,7 @@ fn wrapped_expr_head(expr: &Expr, kb: &KnowledgeBase) -> Option<ViewHead> {
     // WI-815 made a soundness surface.
     let f = reflect_ctor_sym(kb, qname, qname.rsplit('.').next().unwrap_or(qname));
     Some(ViewHead::Functor {
-        functor: Some(f),
+        functor: f,
         pos_arity: 0,
         named_arity: keys.len(),
     })
@@ -1261,7 +1283,7 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
         // (`requirement-channel.md` §9) — a `TermId`, a `Value` and a
         // `NodeOccurrence` spelling one dictionary must not present three heads.
         Some(Expr::Dictionary { subs, .. }) => ViewHead::Functor {
-            functor: Some(dictionary_ctor_sym(kb)),
+            functor: dictionary_ctor_sym(kb),
             pos_arity: subs.len(),
             named_arity: 1,
         },
@@ -1631,13 +1653,13 @@ fn occ_named_keys(occ: &NodeOccurrence, kb: &KnowledgeBase) -> Vec<Symbol> {
         Some(Expr::TupleLit { positional, named }) => {
             let mut keys: Vec<Symbol> = named.iter().map(|(s, _)| *s).collect();
             for i in 0..positional.len() {
-                keys.push(kb.lookup_symbol(&crate::intern::positional_label(i)).unwrap_or_else(
-                    || panic!(
+                keys.push(kb.positional_label_symbol(i).unwrap_or_else(|| {
+                    panic!(
                         "TupleLiteral view: positional label `{}` not interned — the \
                          KB holds a tuple-literal occurrence but never built its twin",
                         crate::intern::positional_label(i),
-                    ),
-                ));
+                    )
+                }));
             }
             keys
         }
@@ -1739,8 +1761,11 @@ fn type_node_head(tn: &TypeNode, kb: &KnowledgeBase) -> ViewHead {
         }
         TypeNode::Denoted { .. } => (type_functor_sym(kb, "Denoted"), 1),
         TypeNode::EffectsRows { .. } => (type_functor_sym(kb, "EffectsRows"), 1),
-        // WI-791: four children — `arity` joined `param`/`result`/`effects`.
-        TypeNode::Arrow { .. } => (type_functor_sym(kb, "Arrow"), 4),
+        // WI-791: four children — `arity` joined `param`/`result`/`effects` — and a fifth
+        // where the arrow records its own `binders`, as its term twin does.
+        TypeNode::Arrow { binders, .. } => {
+            (type_functor_sym(kb, "Arrow"), 4 + usize::from(binders.is_some()))
+        }
         // WI-361: one `fields` child (a `Value`-carried `List[NamedTupleElement]`),
         // matching the term form `NamedTuple(fields: List[NamedTupleElement])`.
         TypeNode::NamedTuple { .. } => (type_functor_sym(kb, "NamedTuple"), 1),
@@ -1755,7 +1780,7 @@ fn type_node_head(tn: &TypeNode, kb: &KnowledgeBase) -> ViewHead {
     };
     match functor {
         Some(f) => ViewHead::Functor {
-            functor: Some(f),
+            functor: f,
             pos_arity: 0,
             named_arity,
         },
@@ -1780,7 +1805,10 @@ fn type_node_keys(tn: &TypeNode, kb: &KnowledgeBase) -> Vec<Symbol> {
         }
         TypeNode::Denoted { .. } => &["value"],
         TypeNode::EffectsRows { .. } => &["effects_expr"],
-        TypeNode::Arrow { .. } => &["param", "result", "effects", "arity"],
+        TypeNode::Arrow { binders: None, .. } => &["param", "result", "effects", "arity"],
+        TypeNode::Arrow { binders: Some(_), .. } => {
+            &["param", "result", "effects", "arity", "binders"]
+        }
         // WI-361: the single `fields` child (the `List[TypeField]` Value).
         TypeNode::NamedTuple { .. } => &["fields"],
         TypeNode::ExprCarried { .. } => &["value", "member"],
@@ -1826,6 +1854,7 @@ fn type_node_named<'a>(
             result,
             effects,
             arity,
+            binders,
         } => {
             if Some(sym) == key("param") {
                 Some(type_child_view_item(param))
@@ -1835,6 +1864,8 @@ fn type_node_named<'a>(
                 Some(type_child_view_item(effects))
             } else if Some(sym) == key("arity") {
                 Some(type_child_view_item(arity))
+            } else if Some(sym) == key("binders") {
+                binders.as_ref().map(ViewItem::Value)
             } else {
                 None
             }
@@ -1883,7 +1914,7 @@ fn effect_expr_head(en: &EffectExprNode, kb: &KnowledgeBase) -> ViewHead {
     };
     match effect_functor_sym(kb, short) {
         Some(f) => ViewHead::Functor {
-            functor: Some(f),
+            functor: f,
             pos_arity: 0,
             named_arity,
         },
@@ -2130,8 +2161,7 @@ pub trait TermView {
     /// to a constant `false`.
     ///
     /// Mirrors [`crate::kb::discrim::view_is_indexable`]'s recursion — the same
-    /// walk, a different verdict (that one additionally rejects a functor-less
-    /// aggregate, which keys here perfectly well).
+    /// walk.
     fn bears_opaque(&self, kb: &KnowledgeBase) -> bool {
         match self.head(kb) {
             ViewHead::Opaque => true,
@@ -2246,12 +2276,11 @@ pub fn views_structurally_equal<A: TermView, B: TermView>(
 }
 
 /// A single node of a [`GoalKey`] — a kb-free structural token. `Const` carries
-/// the literal value, `Open` the functor (or `None` for a functor-less
-/// aggregate) plus arities, the rest a leaf symbol/var. Derives `Hash`/`Eq`, so
+/// the literal value, `Open` the functor plus arities, the rest a leaf symbol/var. Derives `Hash`/`Eq`, so
 /// a `Vec<StructToken>` is self-contained — no `kb` needed to compare or hash.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum StructToken {
-    Open(Option<Symbol>, usize, usize),
+    Open(Symbol, usize, usize),
     NamedKey(Symbol),
     Const(Literal),
     Ref(Symbol),
@@ -2318,30 +2347,6 @@ impl GoalKey {
     /// vars, which fact-dedup must NOT.
     pub fn is_opaque_free(&self) -> bool {
         self.0.iter().all(Self::token_bears_payload)
-    }
-
-    /// True when no token is an ANONYMOUS functor — `Open(None, ..)`, the head of a
-    /// functor-less aggregate (`Value::Unit`, `Value::Tuple`).
-    ///
-    /// Such a token names no constructor, so two DIFFERENT functor-less carriers of
-    /// the same arity are indistinguishable: `Value::Unit` and
-    /// `Value::Tuple{pos: [], named: []}` both head as `Functor{None, 0, 0}` and key
-    /// as the single token `Open(None, 0, 0)`. Payload-BEARING (it carries both
-    /// arities), so [`Self::is_opaque_free`] cannot see it — a separate question,
-    /// separately named.
-    ///
-    /// Only fact dedup asks: `value_to_term` used to return `Err` for `Unit` /
-    /// `Tuple`, so the old key refused them outright, and dedup must not silently
-    /// start admitting what its predecessor rejected (over-dedup DROPS a fact). The
-    /// query cache does NOT ask — a functor-less goal is still keyed distinctly by
-    /// its children, and excluding it would only lose caching. `discrim::view_is_indexable`
-    /// rejects these heads for the third, adjacent reason: they carry no
-    /// discrimination key.
-    pub fn has_named_functors(&self) -> bool {
-        !self
-            .0
-            .iter()
-            .any(|t| matches!(t, StructToken::Open(None, _, _)))
     }
 
     /// True when this key may safely index the resolver's per-query cache. Two
@@ -2887,7 +2892,7 @@ impl OpRefHalves {
 
 fn opref_head(present: OpRefHalves, kb: &KnowledgeBase) -> ViewHead {
     ViewHead::Functor {
-        functor: Some(reflect_ctor_sym(kb, OPREF_QNAME, "OpRef")),
+        functor: reflect_ctor_sym(kb, OPREF_QNAME, "OpRef"),
         pos_arity: 0,
         named_arity: opref_shape(present).len(),
     }
@@ -2902,16 +2907,8 @@ impl TermView for Value {
             Value::Float(f) => ViewHead::Const(Literal::Float(ordered_float::OrderedFloat(*f))),
             Value::Bool(b) => ViewHead::Const(Literal::Bool(*b)),
             Value::Str(s) => ViewHead::Const(Literal::String(s.clone())),
-            Value::Unit => ViewHead::Functor {
-                functor: None,
-                pos_arity: 0,
-                named_arity: 0,
-            },
-            Value::Tuple { pos, named, .. } => ViewHead::Functor {
-                functor: None,
-                pos_arity: pos.len(),
-                named_arity: named.len(),
-            },
+            Value::Unit => tuple_value_head(kb, 0, 0),
+            Value::Tuple { pos, named, .. } => tuple_value_head(kb, pos.len(), named.len()),
             Value::Entity {
                 functor,
                 pos,
@@ -2973,7 +2970,6 @@ impl TermView for Value {
                 Term::Fn { pos_args, .. } => pos_args.get(i).copied().map(ViewItem::Term),
                 _ => None,
             },
-            Value::Tuple { pos, .. } => pos.get(i).map(ViewItem::Value),
             Value::Entity { pos, .. } => pos.get(i).map(ViewItem::Value),
             Value::Node(occ) => occ_view_pos_arg(occ, kb, i),
             _ => None,
@@ -2989,10 +2985,13 @@ impl TermView for Value {
                     .map(|(_, t)| ViewItem::Term(*t)),
                 _ => None,
             },
-            Value::Tuple { named, .. } => named
-                .iter()
-                .find(|(s, _)| *s == sym)
-                .map(|(_, v)| ViewItem::Value(v)),
+            Value::Tuple { pos, named } => {
+                if let Some((_, v)) = named.iter().find(|(s, _)| *s == sym) {
+                    return Some(ViewItem::Value(v));
+                }
+                let idx = crate::intern::positional_label_index(kb.local_name_of(sym))?;
+                pos.get(idx).map(ViewItem::Value)
+            }
             Value::Entity { named, .. } => named
                 .iter()
                 .find(|(s, _)| *s == sym)
@@ -3072,7 +3071,15 @@ impl TermView for Value {
                 Term::Fn { named_args, .. } => named_args.iter().map(|(s, _)| *s).collect(),
                 _ => Vec::new(),
             },
-            Value::Tuple { named, .. } => named.iter().map(|(s, _)| *s).collect(),
+            // Positional first: eval keeps a leading run of `_N`-labelled components
+            // positional and the rest named (`classify_ctor_arg`), so this is the order
+            // they were written in, the order the rule's term holds them in.
+            Value::Tuple { pos, named } => {
+                let mut keys: Vec<Symbol> =
+                    (0..pos.len()).map(|i| tuple_positional_key(kb, i)).collect();
+                keys.extend(named.iter().map(|(s, _)| *s));
+                keys
+            }
             Value::Entity { named, .. } => named.iter().map(|(s, _)| *s).collect(),
             Value::Node(occ) => occ_view_named_keys(occ, kb),
             // WI-1019 — the SAME shape the head counted and `named_arg` resolves
@@ -3466,7 +3473,7 @@ impl TermView for ReflectedExpr {
             // arg, no positionals.
             Some(Expr::Const(lit)) => match self.lit_functor(lit) {
                 Some(f) => ViewHead::Functor {
-                    functor: Some(f),
+                    functor: f,
                     pos_arity: 0,
                     named_arity: 1,
                 },
@@ -3616,7 +3623,7 @@ mod nullary_head_tests {
         ] {
             assert!(matches!(
                 h,
-                ViewHead::Functor { functor: Some(s), pos_arity: 0, named_arity: 0 } if s == red
+                ViewHead::Functor { functor: s, pos_arity: 0, named_arity: 0 } if s == red
             ));
             assert_eq!(h.functor_sym(), Some(red));
         }
@@ -3653,7 +3660,7 @@ mod nullary_head_tests {
         );
         assert!(matches!(
             plain_fn.head(&kb),
-            ViewHead::Functor { functor: Some(s), pos_arity: 0, named_arity: 0 } if s == plain
+            ViewHead::Functor { functor: s, pos_arity: 0, named_arity: 0 } if s == plain
         ));
         assert!(views_structurally_equal(&kb, &plain_ref, &plain_fn));
     }
@@ -3743,7 +3750,7 @@ mod wi520_tests {
 
         let av = Value::Node(Rc::clone(&a));
         // Head is the SAME `Functor` head its term twin produces — NOT `Opaque`.
-        assert!(matches!(av.head(&kb), ViewHead::Functor { functor: Some(s), .. } if s == foo));
+        assert!(matches!(av.head(&kb), ViewHead::Functor { functor: s, .. } if s == foo));
         let twin = occurrence_to_term(&mut kb, &a);
         assert_eq!(av.head(&kb).functor_sym(), twin.head(&kb).functor_sym());
 
@@ -3811,7 +3818,7 @@ mod wi520_tests {
             assert!(
                 matches!(
                     occ.head(&kb),
-                    ViewHead::Functor { functor: Some(f), pos_arity: 0, named_arity: 2 } if f == pair
+                    ViewHead::Functor { functor: f, pos_arity: 0, named_arity: 2 } if f == pair
                 ),
                 "{:?}",
                 occ.head(&kb)

@@ -2527,20 +2527,19 @@ fn signature_self_contradiction_error(
 /// VALIDATION-only: `subst` is read (label walking / bound row-tail resolution) and never
 /// extended — inference stays with the `unify_types` pass that precedes this check.
 ///
-/// EVERY CALLBACK, HOWEVER IT IS WRITTEN (WI-20260929-0RP29). What the argument's expression
-/// decides is only which places are aligned ([`callback_actual_places`]): an operation, a
-/// lambda, a callback parameter and a `let` holding one say their binders, and a label naming
-/// one is read at its position. Of any other expression (a field, a call's result, a pattern
-/// binder) the labels are read as they stand — a label naming a value in scope names that
-/// value — and one naming a callback parameter's place says its position itself. A label left
-/// naming a binder at no known position is refused where the declared row speaks of a binder
-/// in the same effect ([`unplaced_binder`]). Nothing is passed over.
+/// EVERY CALLBACK, HOWEVER IT IS WRITTEN (WI-20260929-0RP29). The places a label of the row
+/// may name are the ones the argument's TYPE records as its own ([`arrow_own_binders`]): a
+/// lambda's binders and an operation's parameters, wherever the value came through — a `let`,
+/// a tuple's component, a pattern, a list's element. A label naming one is read at its
+/// position, and one naming a callback parameter's place says its position itself; any other
+/// label is read as it stands — one naming a value in scope names that value. A label left
+/// naming a binder out of scope that the type does not record is refused where the declared
+/// row speaks of a binder in the same effect ([`unplaced_binder`]). Nothing is passed over.
 ///
-/// WI-706 closed the LAMBDA gap: a non-eta argument no longer bails. The actual
-/// callback source is now an eta'd op-ref OR an inline lambda ([`callback_actual_places`]);
-/// a lambda's inferred row already rides its arrow type (`arrow_parts(actual)`, built
-/// from the body's effects by the `LambdaBody` frame), and its top-level binder slots
-/// align to the declared places exactly as an op's `arg_places` do. So
+/// WI-706 closed the LAMBDA gap: a non-eta argument no longer bails. A lambda's inferred row
+/// rides its arrow type (`arrow_parts(actual)`, built from the body's effects by the
+/// `LambdaBody` frame), and its top-level binder slots, which the arrow records, align to the
+/// declared places exactly as an op's parameters do. So
 /// `shield[EffP = {}](lambda () -> poke())` — a lambda whose body incurs `{Outside}` —
 /// is now REJECTED against the `-Outside` slot, agreeing with the eta twin `…(poke)`.
 /// (The *self-contradiction* half — a lambda whose DECLARED param row is uninhabitable
@@ -2549,14 +2548,14 @@ fn signature_self_contradiction_error(
 ///
 /// An un-flattenable lambda parameter (a `_`, a `Cons(h, t)` destructure, or a nested
 /// tuple) yields a `None` place slot: it stays position-aligned to the declared param
-/// but contributes no place-map entry, so a PLACE-CARRYING actual label over it cannot
-/// be matched to a declared PRESENT label by alignment. Such a label is then handled by
-/// the same absent/closed checks as any other — absorbed by an open declared tail (a
-/// row-polymorphic row) or rejected on a closed row (agreeing with the generic
-/// arrow-subtype check that also runs, but with a label-naming diagnostic). A
-/// PLACE-INDEPENDENT label (`Outside` / `External`, the WI-698 motivation) needs no
-/// alignment and is always checked precisely, so a place-free escape through a
-/// destructure lambda is caught — which the prior whole-lambda skip missed.
+/// but contributes no place-map entry, so a PLACE-CARRYING actual label over one of its
+/// parts cannot be matched to a declared label by alignment. Where the declared row speaks
+/// of a binder in the same effect, such a label is refused as a binder at no position the
+/// type records ([`unplaced_binder`]); otherwise it is handled by the same absent/closed
+/// checks as any other — absorbed by an open declared tail (a row-polymorphic row) or
+/// rejected on a closed row. A PLACE-INDEPENDENT label (`Outside` / `External`, the WI-698
+/// motivation) needs no alignment and is always checked precisely, so a place-free escape
+/// through a destructure lambda is caught — which the prior whole-lambda skip missed.
 pub(super) fn validate_callback_effect_row(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
@@ -2573,15 +2572,6 @@ pub(super) fn validate_callback_effect_row(
     if !type_head_is_callable(kb, declared) {
         return None;
     }
-    // The callback's OWN BINDERS by position, where its expression says them
-    // ([`callback_actual_places`]) — what a label of its row may name, aligned below to the
-    // declared slot's places. `None` for an expression that says none (a field `h.f`, a call's
-    // result `mk()`, a pattern binder): its row is judged all the same. The whole check used to
-    // return for such an argument, so `Strm.each(s, h.f)` passed a callback raising its own
-    // stream's row where `let g = h.f` then `Strm.each(s, g)` was refused, and `each2[EffP =
-    // {}](h.f)` passed one raising a label the row denies (MEASURED) — the verdict turned on how
-    // the callback was written (WI-20260929-0RP29).
-    let actual_places = callback_actual_places(kb, env, arg_occ);
     let subject = |kb: &KnowledgeBase| callback_actual_subject(kb, arg_occ);
     // WI-705 (was WI-700): the self-contradictory-instantiation reject moved OUT of
     // here to the SIGNATURE-altitude `check_signature_self_contradiction` (run after
@@ -2758,6 +2748,16 @@ pub(super) fn validate_callback_effect_row(
             });
         }
     }
+    // The callback's OWN BINDERS by position, as its type records them ([`arrow_own_binders`])
+    // — what a label of its row may name, aligned below to the declared slot's places. `None`
+    // for a type that records none — a written arrow, whose places say their position
+    // themselves (below) — and its row is judged all the same. The whole check used to return
+    // for an argument whose expression said no binders, so `Strm.each(s, h.f)` passed a
+    // callback raising its own stream's row where `let g = h.f` then `Strm.each(s, g)` was
+    // refused, and `each2[EffP = {}](h.f)` passed one raising a label the row denies
+    // (MEASURED) — the verdict turned on how the callback was written (WI-20260929-0RP29).
+    // Read here, below the pure row's return: a row that names nothing needs no places.
+    let actual_places = arrow_own_binders(kb, actual);
     // WI-706: the actual callback's argument places, aligned to the declared places
     // positionally. An eta'd op contributes its `arg_places` (all real); a lambda contributes
     // its top-level binder slots (`None` for a `_`/literal position, which occupies a slot so
@@ -2880,14 +2880,13 @@ pub(super) fn validate_callback_effect_row(
     }
     // A label naming a CALLBACK PARAMETER's place (`<op>.g.y`) says its position itself: that
     // kind of place exists in the row of its own arrow only (WI-341,
-    // [`callback_binder_position`]), so an expression that says no places of its own and carries
-    // the arrow — an `if` over two callback parameters — has this callback's binder at that
-    // position. NOT ONE THAT SAYS ITS OWN (a lambda, an operation, a `let` holding one): an
-    // APPLICATION of `g` inside it charges `g`'s place as written whatever `g` was applied to,
-    // so `lambda (k) -> g(d)` carried `Modify[g.y]` exactly as `lambda (k) -> g(k)` does, and
-    // read as the lambda's binder it admitted the write to `d` past a closed `@ {Modify[x]}`
-    // and defeated a `-Modify[a]` (MEASURED: review 9). There the label is compared as it
-    // stands, as the lambda's own places are aligned above.
+    // [`callback_binder_position`]), so a type that records no places of its own and carries
+    // the arrow has this callback's binder at that position. NOT ONE THAT RECORDS ITS OWN (a
+    // lambda's, an operation's): an APPLICATION of `g` inside it charges `g`'s place as written
+    // whatever `g` was applied to, so `lambda (k) -> g(d)` carried `Modify[g.y]` exactly as
+    // `lambda (k) -> g(k)` does, and read as the lambda's binder it admitted the write to `d`
+    // past a closed `@ {Modify[x]}` and defeated a `-Modify[a]` (MEASURED: review 9). There the
+    // label is compared as it stands, as the lambda's own places are aligned above.
     if actual_places.is_none() {
         for la in &a_present {
             let Some(place) = extract_effect_resource_sym(kb, la) else {
@@ -3005,42 +3004,40 @@ pub(super) fn validate_callback_effect_row(
         // it stands: `run3[EffP = {}](c, mk(c))` over `mk(c) -> … @ {Modify[c]}` writes `c`,
         // which the row denies or does not admit, and a label naming a value used to be passed
         // over for every callback whose places are unknown (MEASURED: a pure operation wrote
-        // the cell). One that names NOTHING in scope is a binder of the callback itself, at a
-        // position its expression does not say ([`unplaced_binder`]): where the declared row
-        // speaks of one of ITS binders in the same effect, admitting and denying both turn on a
-        // correspondence nobody states, and the call is refused for that — not passed, and not
-        // refused for a row the callback might well satisfy.
-        if actual_places.is_none() {
-            if let Some(binder) = unplaced_binder(kb, env, &place_map, la) {
-                let speaks_of_a_binder = e_present.iter().chain(e_absent.iter()).any(|le| {
-                    extract_effect_resource_sym(kb, le)
-                        .is_some_and(|e| declared_places.contains(&e))
-                        && same_effect_sort(kb, la, le)
+        // the cell). One that names NOTHING in scope and no parameter the callback's type
+        // records is a binder out of its scope — an enclosing lambda's, named by a lambda it
+        // returned, or a part of a parameter the lambda destructures ([`unplaced_binder`]):
+        // where the declared row speaks of one of ITS binders in the same effect, admitting
+        // and denying both turn on a correspondence nobody states, and the call is refused for
+        // that — not passed, and not refused for a row the callback might well satisfy.
+        if let Some(binder) = unplaced_binder(kb, env, &place_map, la) {
+            let speaks_of_a_binder = e_present.iter().chain(e_absent.iter()).any(|le| {
+                extract_effect_resource_sym(kb, le)
+                    .is_some_and(|e| declared_places.contains(&e))
+                    && same_effect_sort(kb, la, le)
+            });
+            if speaks_of_a_binder {
+                return Some(TypeError::Other {
+                    site: TypeError::here(),
+                    span,
+                    context: TypeErrorContext::OperationArgument {
+                        op_name: fn_sym,
+                        param: param_sym,
+                    },
+                    expected: format!(
+                        "a callback for parameter `{}` of `{}` whose row names values in \
+                         scope and its own parameters",
+                        kb.local_name_of(param_sym),
+                        kb.qualified_name_of(fn_sym),
+                    ),
+                    actual: format!(
+                        "{} declares `{}`, and `{}` is a binder out of scope here, which \
+                         the callback's type does not record as a parameter of its own",
+                        subject(kb),
+                        type_display_name_value(kb, la),
+                        kb.local_name_of(binder),
+                    ),
                 });
-                if speaks_of_a_binder {
-                    return Some(TypeError::Other {
-                        site: TypeError::here(),
-                        span,
-                        context: TypeErrorContext::OperationArgument {
-                            op_name: fn_sym,
-                            param: param_sym,
-                        },
-                        expected: format!(
-                            "a callback for parameter `{}` of `{}` whose own parameters are \
-                             known by position — an operation, a lambda, a callback parameter, \
-                             or a `let` holding one",
-                            kb.local_name_of(param_sym),
-                            kb.qualified_name_of(fn_sym),
-                        ),
-                        actual: format!(
-                            "{} declares `{}`, and `{}` is a parameter of the callback itself, \
-                             at a position this expression does not say",
-                            subject(kb),
-                            type_display_name_value(kb, la),
-                            kb.local_name_of(binder),
-                        ),
-                    });
-                }
             }
         }
         if !e_open {
@@ -3068,11 +3065,11 @@ pub(super) fn validate_callback_effect_row(
     None
 }
 
-/// The place an effect label names that is a BINDER OF THE CALLBACK ITSELF at a position
-/// nothing says: a value place (`Modify[k]`) that `aligned` does not map and that is no value in
-/// scope at the call (`env`). A lambda's binder is such a place outside the lambda; so is an
-/// operation's parameter outside that operation. `None` for a label naming no value, a value in
-/// scope, or a global identity (an ambient resource, a nullary constructor).
+/// The place an effect label names that is a BINDER OUT OF SCOPE at the call and no parameter
+/// the callback's type records: a value place (`Modify[k]`) that `aligned` does not map and
+/// that is no value in scope at the call (`env`). A lambda's binder is such a place outside the
+/// lambda; so is an operation's parameter outside that operation. `None` for a label naming no
+/// value, a value in scope, or a global identity (an ambient resource, a nullary constructor).
 fn unplaced_binder(
     kb: &KnowledgeBase,
     env: &TypingEnv,
@@ -3108,8 +3105,8 @@ fn binder_out_of_scope(kb: &KnowledgeBase, env: &TypingEnv, place: Symbol) -> bo
 /// A CALLBACK ARGUMENT AS ITS SLOT READS IT, before the two are unified (WI-20261013-1TJQH) —
 /// two things, both about the callback's own parameters:
 ///
-///  * THE ARGUMENT'S ROW IN THE SLOT'S BINDER NAMES. Where the argument's expression says its
-///    parameters by position ([`callback_actual_places`]) and the slot names as many, a label
+///  * THE ARGUMENT'S ROW IN THE SLOT'S BINDER NAMES. Where the argument's type records its
+///    parameters by position ([`arrow_own_binders`]) and the slot names as many, a label
 ///    over the callback's parameter `i` is renamed to the slot's (`Modify[c]` of `setter(c)`
 ///    into `f: (x: …) -> … @ {Modify[x], EffP}` is `Modify[x]`), as [`validate_callback_effect_row`]
 ///    aligns them — so the slot's own label takes it and the rest of the row is the row
@@ -3121,8 +3118,9 @@ fn binder_out_of_scope(kb: &KnowledgeBase, env: &TypingEnv, place: Symbol) -> bo
 ///  * A ROW VARIABLE OF THE SLOT TAKES NO LABEL OVER A BINDER OUT OF SCOPE AT THE CALL: each
 ///    flexible tail of the slot's row is made to lack every label of the argument's row that
 ///    still names one — the slot's own binder, a parameter of the callback at no aligned
-///    position, or a place that is no value there ([`binder_out_of_scope`]: the binder of a
-///    lambda taken out of a tuple). So the tail's own lacks check ([`bind_row_tail`]) refuses
+///    position, or a place that is no value there ([`binder_out_of_scope`]: an enclosing
+///    lambda's binder that a lambda it returned names). So the tail's own lacks check
+///    ([`bind_row_tail`]) refuses
 ///    that label and binds every other. The variable stands outside the callback's arrow — it
 ///    is the called operation's row parameter, read in that operation's own row and result —
 ///    and there the binder names nothing. Bound, `run(q, g)` over `g: (k: Cell[V = Int64]) ->
@@ -3148,7 +3146,6 @@ pub(super) fn callback_at_slot(
     subst: &mut Substitution,
     param_sym: Symbol,
     declared: &Value,
-    arg_occ: &Rc<NodeOccurrence>,
     actual: &Value,
 ) -> Option<Value> {
     if !type_head_is_callable(kb, declared) {
@@ -3161,7 +3158,7 @@ pub(super) fn callback_at_slot(
     }
     let mut renamed: HashMap<Symbol, Symbol> = HashMap::new();
     let mut unaligned: SmallVec<[Symbol; 4]> = SmallVec::new();
-    if let Some(places) = callback_actual_places(kb, env, arg_occ) {
+    if let Some(places) = arrow_own_binders(kb, actual) {
         let declared_places = kb.symbols.arg_places(param_sym);
         if places.len() == declared_places.len() {
             renamed.extend(
@@ -3234,77 +3231,6 @@ fn same_effect_sort(kb: &KnowledgeBase, a: &Value, e: &Value) -> bool {
     }
 }
 
-/// A callback argument's OWN BINDERS BY POSITION — the places a label of its effect row may
-/// name (`Modify[c]` of `setter(c: Cell)`), which [`validate_callback_effect_row`] aligns to the
-/// declared slot's — where the argument's EXPRESSION says them (an arrow type does not):
-///
-///  * an operation, or a callback-typed parameter that registered places: its `arg_places`;
-///  * an inline lambda: its top-level binder slots ([`lambda_binder_slots`]) — it always has
-///    them, even where a parameter cannot be flattened to one binder (a `None` slot,
-///    position-aligned but unmappable);
-///  * a `let`-bound name holding one of those ([`TypingEnv::callable_places`]).
-///
-/// `None` for every other expression — a field, a call's result, a pattern- or lambda-bound
-/// name, a `Function[…]`-typed parameter, a `const`. THAT IS NOT "NO PLACES": the row of such a
-/// callback names values in scope, or nothing, and is judged as it stands. (WI-706 read every
-/// variable reference as an operation; one that is no callable place then had an EMPTY place
-/// list, which the arity bail took for a disagreement.)
-pub(super) fn callback_actual_places(
-    kb: &KnowledgeBase,
-    env: &TypingEnv,
-    occ: &Rc<NodeOccurrence>,
-) -> Option<Vec<Option<Symbol>>> {
-    if let Some(sym) = extract_var_ref_sym_node(occ) {
-        if let Some(places) = env.callable_places(sym) {
-            return Some(places.to_vec());
-        }
-        // An OPERATION's places are its parameters, however many; anything else is a callable
-        // place only where it registered some.
-        let places = kb.symbols.arg_places(sym);
-        return (kb.has_kind(sym, crate::intern::SymbolKind::Operation) || !places.is_empty())
-            .then(|| places.iter().map(|s| Some(*s)).collect());
-    }
-    if let NodeKind::Expr {
-        expr: Expr::Lambda { param, .. },
-        ..
-    } = &occ.kind
-    {
-        return lambda_binder_slots(param);
-    }
-    None
-}
-
-/// WI-706: the ordered top-level binder slots of a lambda parameter pattern (see
-/// [`callback_actual_places`]). One slot per top-level parameter POSITION so the
-/// `Vec` length is the lambda's arity (aligning to the declared `arg_places`): a
-/// `Var` slot carries its binder symbol; every other shape — a `_`/literal (names
-/// nothing) or a destructure (`Cons(h, t)` / a nested tuple, whose sub-binders have
-/// no single positional identity) — is a `None` slot. A `None` slot stays
-/// position-aligned but contributes no place-map entry (see
-/// [`validate_callback_effect_row`] for how a label over it is then handled).
-fn lambda_binder_slots(param: &Rc<NodeOccurrence>) -> Option<Vec<Option<Symbol>>> {
-    /// One flat binder position: `Some(binder)` for a `Var`, `None` for any other
-    /// shape (a `_`/literal, or a nested tuple/constructor with no single binder).
-    fn slot(p: &Rc<NodeOccurrence>) -> Option<Symbol> {
-        match p.as_pattern() {
-            Some(Pattern::Var { name, .. }) => Some(*name),
-            _ => None,
-        }
-    }
-    match param.as_pattern()? {
-        Pattern::Var { name, .. } => Some(vec![Some(*name)]),
-        // A flat tuple (`lambda (a, b) -> …`, including the nullary `()`): one slot
-        // per element (a non-`Var` element is a `None` slot — position-aligned but
-        // unmappable).
-        Pattern::Tuple { positional, .. } => Some(positional.iter().map(slot).collect()),
-        // A single non-tuple parameter that binds no single alignable name — a `_`,
-        // a literal, or a top-level `Cons(h, t)` destructure — is one `None` slot.
-        Pattern::Wildcard | Pattern::Literal { .. } | Pattern::Constructor { .. } => {
-            Some(vec![None])
-        }
-    }
-}
-
 /// WI-706: the diagnostic subject naming the offending callback argument — the operation by
 /// qualified name (`operation `…poke3``), a parameter or a local by its own (`the callback
 /// `g``), a generic phrase for an inline lambda (it has no name to cite) and for any other
@@ -3351,7 +3277,7 @@ pub(super) fn sort_sym_of_view<V: TermView>(kb: &KnowledgeBase, v: &V) -> Option
         // bare `Ref` handled above via `extract_sort_ref_sym` (WI-361); `Ident` here.
         ViewHead::Ident(s) => Some(s),
         ViewHead::Functor {
-            functor: Some(functor),
+            functor,
             pos_arity,
             named_arity,
         } if pos_arity + named_arity > 0 => Some(functor),

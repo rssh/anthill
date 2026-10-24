@@ -332,13 +332,12 @@ impl Value {
             // was a predicate that CLAIMED a leaf `alloc_from_value` does not produce,
             // which is the unsound direction.
             Value::Entity { .. } => false,
+            // A tuple lowers to its `TupleLiteral(…)` application, which is no leaf.
+            Value::Unit | Value::Tuple { .. } => false,
             // `alloc_from_value` answers `UnsupportedVariant` for all of these: the
-            // interpreter-owned handles and the term-less aggregates have no
-            // faithful term form, and `Node` has one only through the separate
-            // occurrence-aware boundary.
-            Value::Unit
-            | Value::Tuple { .. }
-            | Value::Closure(_)
+            // interpreter-owned handles have no faithful term form, and `Node` has one
+            // only through the separate occurrence-aware boundary.
+            Value::Closure(_)
             | Value::OpRef { .. }
             | Value::Stream(_)
             | Value::Substitution(_)
@@ -353,6 +352,34 @@ impl Value {
 }
 
 impl KnowledgeBase {
+    /// A tuple value — `Value::Tuple`, and `Value::Unit`, the tuple of no components — as
+    /// the term a rule writes for the same text, `TupleLiteral(_1: …, name: …)`: every
+    /// component named, a positional one under its `_N` label, in the order written, which
+    /// is the order the tuple view reads it in. Each component is lowered by `lower`.
+    pub(crate) fn tuple_value_term(
+        &mut self,
+        pos: &[Value],
+        named: &[(Symbol, Value)],
+        lower: impl Fn(&mut KnowledgeBase, &Value) -> Result<TermId, LowerError>,
+    ) -> Result<TermId, LowerError> {
+        let functor = self.resolve_symbol(crate::parse::desugar_target::qualified(
+            crate::parse::desugar_target::TUPLE_LITERAL,
+        ));
+        let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+        for (i, p) in pos.iter().enumerate() {
+            let label = self.intern(&crate::intern::positional_label(i));
+            named_args.push((label, lower(self, p)?));
+        }
+        for (sym, v) in named.iter() {
+            named_args.push((*sym, lower(self, v)?));
+        }
+        Ok(self.alloc(Term::Fn {
+            functor,
+            pos_args: SmallVec::new(),
+            named_args,
+        }))
+    }
+
     /// Recursively promote a runtime `Value` into a hash-consed `TermId`.
     ///
     /// This is the **sole** input-boundary hash-cons site described in
@@ -363,9 +390,9 @@ impl KnowledgeBase {
     /// `Value::Term(tid)` returns the existing `tid` verbatim (no walk,
     /// no extra refcount). Scalar variants are looked up in the dedup
     /// index. `Value::Entity` recurses into its args and sorts named
-    /// fields canonically. `Value::Unit`, `Value::Tuple`, and the
-    /// interpreter-owned handles (`Closure`, `Stream`) have no
-    /// term equivalent and error rather than round-trip through a
+    /// fields canonically. A tuple value lowers to the term a rule writes for it
+    /// ([`Self::tuple_value_term`]). The interpreter-owned handles (`Closure`,
+    /// `Stream`) have no term equivalent and error rather than round-trip through a
     /// synthetic representation.
     pub fn alloc_from_value(&mut self, v: &Value) -> Result<TermId, LowerError> {
         match v {
@@ -446,8 +473,10 @@ impl KnowledgeBase {
                     named_args,
                 }))
             }
-            Value::Unit => Err(LowerError::UnsupportedVariant("Unit")),
-            Value::Tuple { .. } => Err(LowerError::UnsupportedVariant("Tuple")),
+            Value::Unit => self.tuple_value_term(&[], &[], Self::alloc_from_value),
+            Value::Tuple { pos, named } => {
+                self.tuple_value_term(pos, named, Self::alloc_from_value)
+            }
             Value::Closure(_) => Err(LowerError::UnsupportedVariant("Closure")),
             Value::OpRef { .. } => Err(LowerError::UnsupportedVariant("OpRef")),
             Value::Stream(_) => Err(LowerError::UnsupportedVariant("Stream")),
@@ -589,7 +618,7 @@ impl KnowledgeBase {
     ) {
         match view.head(self) {
             ViewHead::Functor {
-                functor: Some(_),
+                functor: _,
                 pos_arity,
                 ..
             } => {
@@ -653,7 +682,7 @@ impl KnowledgeBase {
             // its named-arg section) is self-delimiting and the stream stays
             // injective.
             ViewHead::Functor {
-                functor: Some(functor),
+                functor,
                 pos_arity,
                 ..
             } => {
@@ -697,14 +726,14 @@ impl KnowledgeBase {
             ViewHead::Ident(s) => out.push(SynthKey::Ident(s)),
             ViewHead::Bottom => out.push(SynthKey::Bottom),
             // A nullary application reads as `Functor` at arity 0 (WI-20260902-CZJ2N,
-            // which retired the separate `Ref` head), so `functor: None` here
-            // is a functor-less aggregate (`Value::Tuple`/`Unit`) and `Opaque` a
+            // which retired the separate `Ref` head), and no carrier reads with a `None`
+            // functor (a tuple value reads as its `TupleLiteral` twin); `Opaque` is a
             // runtime carrier (Closure/Stream/…). Neither is a valid goal shape —
             // `lower_leaf`/`alloc_from_value` reject them upstream — so this is
             // unreachable; scream in debug. In release a benign `Bottom` keeps the
             // key well-formed: the body is re-materialized from the same goals, so
             // a degraded key at worst forgoes a memo hit, never an unsound reuse.
-            ViewHead::Functor { functor: None, .. } | ViewHead::Opaque => {
+            ViewHead::Opaque => {
                 debug_assert!(
                     false,
                     "WI-678: non-goal carrier (aggregate/opaque) reached synth body key"
@@ -1132,7 +1161,9 @@ mod tests {
     /// group to `Ok(self.terms.alloc(Term::Bottom))`: `disagreed: ["Unit"]`.
     #[test]
     fn leaf_lowering_agrees_with_alloc() {
-        let mut interp = crate::eval::Interpreter::new(KnowledgeBase::new());
+        let mut kb = KnowledgeBase::new();
+        crate::kb::load::register_prelude(&mut kb);
+        let mut interp = crate::eval::Interpreter::new(kb);
         let s = interp.kb_mut().intern("wi1023");
         let tid = interp.kb_mut().alloc(Term::Ref(s));
         let vid = VarId::new(1, s);
@@ -1145,7 +1176,7 @@ mod tests {
             Value::Str("s".into()),
             Value::Unit,
             Value::Tuple {
-                pos: Rc::from(vec![]),
+                pos: Rc::from(vec![Value::Int(1)]),
                 named: Rc::from(vec![]),
             },
             Value::Entity {
@@ -1235,16 +1266,18 @@ mod tests {
             "predicate claims a leaf `alloc_from_value` does not produce: {overclaimed:?}"
         );
 
-        // AND EXACT EVERYWHERE BUT `Entity`, which is deliberately conservative
-        // (WI-20260902-CZJ2N — a NULLARY entity's answer depends on the functor's kind,
-        // which `lowers_to_leaf_term` has no `KnowledgeBase` to ask). Excluding it by
-        // NAME rather than weakening the oracle for every variant: an `Err` → `Ok` move
-        // anywhere else still fails here.
+        // AND EXACT EVERYWHERE BUT `Entity` and `Unit`, which are deliberately
+        // conservative (WI-20260902-CZJ2N — a NULLARY application's answer depends on the
+        // functor's kind, which `lowers_to_leaf_term` has no `KnowledgeBase` to ask). `Unit`
+        // is the nullary `TupleLiteral()`, kept an application where the entity is
+        // free-standing — a loaded KB — and its bare name in this prelude-only one.
+        // Excluding them by NAME rather than weakening the oracle for every variant: an
+        // `Err` → `Ok` move anywhere else still fails here.
         let underclaimed: Vec<&str> = samples
             .iter()
             .filter(|v| !v.lowers_to_leaf_term() && is_leaf(kb, v))
             .map(variant_name)
-            .filter(|n| *n != "Entity")
+            .filter(|n| *n != "Entity" && *n != "Unit")
             .collect();
         assert!(
             underclaimed.is_empty(),

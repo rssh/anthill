@@ -350,7 +350,7 @@ fn required_specs(kb: &mut KnowledgeBase, sort_qn: &str) -> Vec<Value> {
 fn head_name<V: TermView>(kb: &KnowledgeBase, v: &V) -> String {
     match v.head(kb) {
         ViewHead::Functor {
-            functor: Some(name),
+            functor: name,
             ..
         }
         | ViewHead::Ident(name) => kb.qualified_name_of(name).to_owned(),

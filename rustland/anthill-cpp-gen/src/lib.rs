@@ -1880,6 +1880,9 @@ fn is_body_emittable(
         let short = short_name_of(&qualified);
         return Ok(resolve_type_mapping(kb, ctx, &[short], None)?.is_some());
     }
+    if matches!(extract_type(kb, ty), TypeExtractor::NamedTuple(fields) if fields.is_empty()) {
+        return Ok(unit_mapping(kb, ctx)?.is_some());
+    }
     let Some((base_sym, binding_values)) = unpack_parameterized(kb, ty) else {
         return Ok(false);
     };
@@ -3232,7 +3235,8 @@ fn collect_type_refs<V: TermView>(
             let keys = ty.named_keys(kb);
             if pos_arity == 0 && keys.is_empty() {
                 // A bare name: its own constructor applied to nothing.
-                if let Some(s) = functor.map(Symbol::plain).filter(|s| in_band.contains(s)) {
+                let s = functor.plain();
+                if in_band.contains(&s) {
                     out.insert(s);
                 }
                 return;
@@ -4242,7 +4246,7 @@ fn effect_kind_short<V: TermView>(kb: &KnowledgeBase, label: &V) -> Option<Strin
     match label.head(kb) {
         ViewHead::Ident(s)
         | ViewHead::Functor {
-            functor: Some(s), ..
+            functor: s, ..
         } => Some(short_of(s)),
         _ => None,
     }
@@ -5148,6 +5152,14 @@ fn lower_type(
             arity,
             ..
         } => lower_arrow_type(kb, ctx, &param, &result, arity),
+        TypeExtractor::NamedTuple(fields) if fields.is_empty() => match unit_mapping(kb, ctx)? {
+            Some(hit) => Ok(hit.host_type),
+            None => Err(CppCodegenError {
+                message: "`Unit`, the tuple of no components, has no `TypeMapping` in this \
+                          profile"
+                    .into(),
+            }),
+        },
         TypeExtractor::NamedTuple(fields) => {
             ctx.requested_includes
                 .borrow_mut()
@@ -5166,12 +5178,12 @@ fn lower_type(
             // a `Ref` / `Ident` term always was.
             ViewHead::Ident(sym)
             | ViewHead::Functor {
-                functor: Some(sym),
+                functor: sym,
                 pos_arity: 0,
                 named_arity: 0,
             } => sort_to_cpp(kb, ctx, sym),
             ViewHead::Functor {
-                functor: Some(functor),
+                functor,
                 ..
             } => {
                 let qualified = kb.qualified_name_of(functor);
@@ -5633,6 +5645,15 @@ fn query_type_mappings(
 /// highest-priority overlay present — the one query that backs BOTH
 /// declared-signature host-type lowering (reads `host_type`) and value-level
 /// marshalling (reads `lift` / `lower`).
+/// The profile's mapping for `Unit`, the tuple of no components (`void` in `cpp_std`):
+/// the one answer [`lower_type`] lowers it by and [`is_body_emittable`] asks.
+fn unit_mapping(
+    kb: &mut KnowledgeBase,
+    ctx: &CodegenContext,
+) -> Result<Option<TypeMappingHit>, CppCodegenError> {
+    resolve_type_mapping(kb, ctx, &["Unit"], None)
+}
+
 fn resolve_type_mapping(
     kb: &mut KnowledgeBase,
     ctx: &CodegenContext,
@@ -5835,7 +5856,7 @@ fn receiver_short_name(kb: &KnowledgeBase, v: &Value) -> Option<String> {
         // instead of dropping the row as nameless.
         other => match other.head(kb) {
             anthill_core::kb::term_view::ViewHead::Functor {
-                functor: Some(f), ..
+                functor: f, ..
             } => Some(short_name_of(kb.qualified_name_of(f)).to_string()),
             _ => None,
         },

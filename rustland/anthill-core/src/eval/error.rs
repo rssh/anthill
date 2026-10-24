@@ -485,7 +485,7 @@ pub(crate) fn raised_runtime_account(
     match value {
         Value::Entity { .. } | Value::Term { .. } | Value::Node(_) => match value.head(kb) {
             ViewHead::Functor {
-                functor: Some(f),
+                functor: f,
                 pos_arity,
                 named_arity,
             } if pos_arity + named_arity > 0 => kb.runtime_account_of(f),
@@ -836,12 +836,18 @@ fn render_payload_at(kb: &crate::kb::KnowledgeBase, v: &Value, depth: usize) -> 
                     pos_arity,
                     named_arity,
                 } => {
-                    let name = functor.map_or_else(
-                        || "(tuple)".to_string(),
-                        |f| kb.local_name_of(f).to_string(),
-                    );
+                    // A tuple is written as its literal: `(1, 2)`, `()`.
+                    let tuple = kb.qualified_name_of(functor)
+                        == crate::parse::desugar_target::qualified(
+                            crate::parse::desugar_target::TUPLE_LITERAL,
+                        );
+                    let name = if tuple {
+                        String::new()
+                    } else {
+                        kb.local_name_of(functor).to_string()
+                    };
                     if (pos_arity + named_arity) == 0 || depth >= MAX_DEPTH {
-                        return name;
+                        return if tuple { "()".to_string() } else { name };
                     }
                     let mut parts: Vec<String> = Vec::with_capacity(pos_arity + named_arity);
                     for i in 0..pos_arity {
@@ -850,12 +856,22 @@ fn render_payload_at(kb: &crate::kb::KnowledgeBase, v: &Value, depth: usize) -> 
                             None => "?".to_string(),
                         });
                     }
-                    for key in other.named_keys(kb) {
+                    let keys = other.named_keys(kb);
+                    let unlabelled = tuple
+                        && keys.len() > 1
+                        && keys.iter().enumerate().all(|(i, k)| {
+                            crate::intern::is_positional_label_at(kb.local_name_of(*k), i)
+                        });
+                    for key in keys {
                         let rendered = match other.named_arg(kb, key) {
                             Some(c) => render_payload_at(kb, &c.to_value(), depth + 1),
                             None => "?".to_string(),
                         };
-                        parts.push(format!("{}: {rendered}", kb.local_name_of(key)));
+                        if unlabelled {
+                            parts.push(rendered);
+                        } else {
+                            parts.push(format!("{}: {rendered}", kb.local_name_of(key)));
+                        }
                     }
                     format!("{name}({})", parts.join(", "))
                 }

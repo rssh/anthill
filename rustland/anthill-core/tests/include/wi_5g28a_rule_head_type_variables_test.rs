@@ -328,7 +328,7 @@ fn body_mentions(kb: &KnowledgeBase, qn: &str, functor_qn: &str) -> bool {
     kb.rule_body_nodes(rid).iter().any(|n| {
         matches!(
             TermView::head(&anthill_core::eval::Value::Node(n.clone()), kb),
-            ViewHead::Functor { functor: Some(f), .. } if f == target
+            ViewHead::Functor { functor: f, .. } if f == target
         )
     })
 }

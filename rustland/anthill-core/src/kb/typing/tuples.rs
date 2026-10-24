@@ -153,9 +153,9 @@ pub(super) fn align_named_tuple_slots(
         }
     }
     // Width stops SHORT of the unit type. Every test below is vacuous on an empty
-    // `b`, so `(a: A, b: B)` would conform to `()` — but `()` is not "the record
-    // with no fields", it is the UNIT sort, which §4.5 gives exactly ONE value,
-    // and a 2-component tuple is not that value. Unit relates to unit only.
+    // `b`, so `(a: A, b: B)` would conform to `()` — but `()` is `Unit`, which §4.5
+    // gives exactly ONE value, and a 2-component tuple is not that value. Unit
+    // relates to unit only.
     if b_fields.is_empty() && !a_fields.is_empty() {
         return None;
     }
@@ -463,6 +463,7 @@ fn arrow_children<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Option<(Value, Val
             result,
             effects,
             arity,
+            binders: _,
         } => Some((param, result, effects, arity)),
         _ => {
             debug_assert!(

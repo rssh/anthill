@@ -67,6 +67,7 @@ pub(super) fn type_any_part(
             result,
             effects,
             arity: _,
+            binders: _,
         } => within(&param) || within(&result) || within(&effects),
         TypeExtractor::NamedTuple(fields) => fields.iter().any(|(_, v)| within(v)),
         TypeExtractor::EffectsRows(e) => within(&e),
@@ -188,7 +189,7 @@ fn bare_field_access(kb: &KnowledgeBase, receiver: &Value) -> Option<(Value, Sym
     let dot_sym = kb.try_resolve_symbol(dt::qualified(dt::DOT_APPLY))?;
     if !matches!(
         receiver.head(kb),
-        ViewHead::Functor { functor: Some(f), .. } if f == dot_sym
+        ViewHead::Functor { functor: f, .. } if f == dot_sym
     ) {
         return None;
     }
@@ -200,7 +201,7 @@ fn bare_field_access(kb: &KnowledgeBase, receiver: &Value) -> Option<(Value, Sym
             (a.head(kb), nil_sym),
             (
                 ViewHead::Functor {
-                    functor: Some(r),
+                    functor: r,
                     pos_arity: 0,
                     named_arity: 0,
                 },
@@ -1006,6 +1007,7 @@ pub(super) fn collect_projection_receivers(kb: &KnowledgeBase, ty: &Value, out: 
             result,
             effects,
             arity: _,
+            binders: _,
         } => {
             collect_projection_receivers(kb, &param, out);
             collect_projection_receivers(kb, &result, out);
@@ -1333,12 +1335,15 @@ fn eliminate_in(
         }
         // WI-460: a callback arrow's parameter — `(x: s.T) -> Bool @ {EffP, -Modify[x]}`.
         // WI-791: elimination rewrites the parameter TYPE and never the parameter COUNT, so
-        // the arrow keeps its own arity. Its ROW takes `row_syms` where the caller hands one.
+        // the arrow keeps its own arity, and its own binders — the re-keys here are the
+        // callee's parameters, never the arrow's own places. Its ROW takes `row_syms` where
+        // the caller hands one.
         TypeExtractor::Arrow {
             param,
             result,
             effects,
             arity,
+            binders,
         } => {
             let Some(rows) = cx.row_syms else {
                 let Some([p, r, e]) =
@@ -1346,7 +1351,9 @@ fn eliminate_in(
                 else {
                     return Ok(None);
                 };
-                return Ok(Some(Value::Node(kb.make_arrow_occ(p, r, e, arity, sp, owner))));
+                return Ok(Some(Value::Node(
+                    kb.make_arrow_occ(p, r, e, arity, binders, sp, owner),
+                )));
             };
             let row_cx = Discharge {
                 denoted_syms: Some(rows),
@@ -1362,7 +1369,7 @@ fn eliminate_in(
                 None => (param, result),
             };
             let e = e.unwrap_or(effects);
-            Ok(Some(arrow_value(kb, &p, &r, &e, arity, sp, owner)))
+            Ok(Some(arrow_value(kb, &p, &r, &e, arity, binders, sp, owner)))
         }
         TypeExtractor::EffectsRows(expr) => {
             let Some([e]) = eliminate_to_children(kb, [expr], sp, owner, cx)? else {
@@ -1461,7 +1468,7 @@ fn eliminate_spec_view(
     cx: &Discharge,
 ) -> Result<Option<Value>, TypeError> {
     let ViewHead::Functor {
-        functor: Some(functor),
+        functor,
         pos_arity,
         ..
     } = ty.head(kb)
@@ -3183,7 +3190,7 @@ pub(super) fn push_op_requires_clause(
     }
     match clause.head(kb) {
         ViewHead::Functor {
-            functor: Some(f),
+            functor: f,
             pos_arity,
             ..
         } if kb.local_name_of(f) == "conjunction" => {
@@ -3195,9 +3202,9 @@ pub(super) fn push_op_requires_clause(
         }
         // Match the ground `push_op_requires_clause_term` exactly: a FUNCTOR head at
         // any arity — the bare spelling included, since WI-20260902-CZJ2N — becomes an
-        // entry; an `Ident` (or functor-less) head is skipped (WI-662).
+        // entry; an `Ident` head is skipped (WI-662).
         ViewHead::Functor {
-            functor: Some(f), ..
+            functor: f, ..
         } => {
             out.push(RequiresEntry {
                 required_sort: f,

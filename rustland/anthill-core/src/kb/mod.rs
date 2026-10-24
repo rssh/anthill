@@ -118,7 +118,6 @@ enum GuardKind {
 /// A registered integrity guard.
 #[derive(Clone)]
 struct Guard {
-    #[allow(dead_code)]
     id: ConstraintId,
     /// The guard's `LogicalQuery`, carried carrier-agnostically (WI-023): a
     /// `Value::Term` for the hash-consed structural form the loader builds today,
@@ -132,6 +131,9 @@ struct Guard {
     trigger_sorts: Vec<Symbol>,
     /// Source `constraint` label, for violation diagnostics. `None` if unlabeled.
     label: Option<String>,
+    /// Where the `constraint` is written, for the post-load check to leave it alone when
+    /// the load refused its text. `None` for a guard a host registered by hand.
+    site: Option<crate::span::SourceSpan>,
 }
 
 /// Outcome of evaluating one registered guard in the WI-023 post-load check.
@@ -630,7 +632,7 @@ pub(crate) fn head_functor_and_arity<V: term_view::TermView + ?Sized>(
 ) -> Option<(Symbol, usize)> {
     match head.head(kb) {
         term_view::ViewHead::Functor {
-            functor: Some(f),
+            functor: f,
             pos_arity,
             named_arity,
         } => Some((f, pos_arity + named_arity)),
@@ -5034,6 +5036,17 @@ impl KnowledgeBase {
         guard: V,
         label: Option<String>,
     ) -> ConstraintId {
+        self.add_guard_at(guard, label, None)
+    }
+
+    /// [`add_guard_labeled`](Self::add_guard_labeled) for a guard written as a
+    /// `constraint` at `site`.
+    pub fn add_guard_at<V: term_view::TermView>(
+        &mut self,
+        guard: V,
+        label: Option<String>,
+        site: Option<crate::span::SourceSpan>,
+    ) -> ConstraintId {
         use crate::eval::value::Value;
         use crate::kb::persist_subst::BindValue;
         // Own the guard carrier-agnostically. `as_bind_value` captures the whole
@@ -5062,6 +5075,7 @@ impl KnowledgeBase {
             kind: GuardKind::General,
             trigger_sorts,
             label,
+            site,
         });
         id
     }
@@ -5189,6 +5203,14 @@ impl KnowledgeBase {
         self.guards.iter().map(|g| g.query.clone()).collect()
     }
 
+    /// Each guard written as a `constraint`, with where it is written.
+    pub fn guard_sites(&self) -> Vec<(ConstraintId, crate::span::SourceSpan)> {
+        self.guards
+            .iter()
+            .filter_map(|g| g.site.map(|site| (g.id, site)))
+            .collect()
+    }
+
     /// Sorts whose facts re-fire guard `cid`.
     pub fn guard_trigger_sorts(&self, cid: ConstraintId) -> &[Symbol] {
         self.guards
@@ -5289,8 +5311,17 @@ impl KnowledgeBase {
     /// post-load constraint check. Carrier-agnostic: each guard is read through
     /// [`TermView`](term_view::TermView).
     pub fn check_all_guards(&mut self) -> Vec<GuardCheck> {
+        self.check_guards_except(&[])
+    }
+
+    /// [`check_all_guards`](Self::check_all_guards) leaving out `skipped`: the guards of
+    /// the constraints whose text the load refused (kernel-language §8.4).
+    pub fn check_guards_except(&mut self, skipped: &[ConstraintId]) -> Vec<GuardCheck> {
         let mut out = Vec::with_capacity(self.guards.len());
         for idx in 0..self.guards.len() {
+            if skipped.contains(&self.guards[idx].id) {
+                continue;
+            }
             let query = self.guards[idx].query.clone();
             let label = self.guards[idx].label.clone();
             // WI-513: `evaluate_guard` lowers the constraint through the shared
@@ -5717,8 +5748,7 @@ impl KnowledgeBase {
     /// MISS the `TermId` key did not have.
     ///
     /// A THIRD PREDICATE ANSWERS A NEIGHBOURING QUESTION — `discrim::view_is_indexable`,
-    /// "does this head carry a discrimination key?", which also rejects `Opaque` but
-    /// additionally rejects functor-less aggregates that key here perfectly well. It
+    /// "does this head carry a discrimination key?", which also rejects `Opaque`. It
     /// is not shared because the two failure modes differ: an unindexable head is
     /// REFUSED (the discrim insert walk panics), whereas an unkeyable head must only
     /// DEGRADE — WI-348's contract is that a head this function cannot key is stored
@@ -5738,7 +5768,7 @@ impl KnowledgeBase {
     /// MISS: stored, just not collapsed — never unsound) and everything else keys.
     fn value_fact_dedup_key(&self, head: &crate::eval::value::Value) -> Option<term_view::GoalKey> {
         let key = term_view::goal_fingerprint(self, head, &subst::Substitution::new());
-        (key.is_opaque_free() && key.has_named_functors()).then_some(key)
+        key.is_opaque_free().then_some(key)
     }
 
     /// Assert a fact `functor(pos…, named…)` from carrier-agnostic `Value`
@@ -5909,7 +5939,7 @@ impl KnowledgeBase {
     fn goal_head_sym_arity<V: term_view::TermView>(&self, view: &V) -> Option<(Symbol, usize)> {
         match term_view::TermView::head(view, self) {
             term_view::ViewHead::Functor {
-                functor: Some(s),
+                functor: s,
                 pos_arity,
                 ..
             } => Some((s, pos_arity)),
@@ -6161,7 +6191,7 @@ impl KnowledgeBase {
         // (`Fn{S, [], []}` for a `Sort`-kind name, which `nullary_canon` does not fold)
         // — a distinction that measures nothing here in either direction.
         if let term_view::ViewHead::Functor {
-            functor: Some(functor),
+            functor,
             pos_arity,
             ..
         } = term_view::TermView::head(view, self)
@@ -6282,7 +6312,7 @@ impl KnowledgeBase {
         view: &'a V,
     ) -> Vec<term_view::ViewItem<'a>> {
         let term_view::ViewHead::Functor {
-            functor: Some(functor),
+            functor,
             pos_arity,
             ..
         } = term_view::TermView::head(view, self)
@@ -6472,7 +6502,7 @@ impl KnowledgeBase {
         item: term_view::ViewItem<'a>,
     ) -> Vec<term_view::ViewItem<'a>> {
         if let term_view::ViewHead::Functor {
-            functor: Some(f),
+            functor: f,
             pos_arity,
             ..
         } = term_view::TermView::head(&item, self)
@@ -7451,7 +7481,7 @@ impl KnowledgeBase {
         // reach here as different heads.
         let sub_sym = match sub.head(self) {
             term_view::ViewHead::Functor {
-                functor: Some(s),
+                functor: s,
                 pos_arity: 0,
                 named_arity: 0,
             } => s,
@@ -7468,7 +7498,7 @@ impl KnowledgeBase {
             // `red` of `red†` as `Foo` of `Foo†`. Before the faces both held because the
             // two were one term (the structural arm above); this keeps the answer.
             term_view::ViewHead::Functor {
-                functor: Some(s),
+                functor: s,
                 pos_arity: 0,
                 named_arity: 0,
             } => s.plain() == parent_sym || s.plain() == sub_sym.plain(),
@@ -10574,7 +10604,7 @@ impl KnowledgeBase {
         // never `eq`-headed — falls through to `false` as it always should.
         match term_view::TermView::head(&entry.head, self) {
             term_view::ViewHead::Functor {
-                functor: Some(functor),
+                functor,
                 pos_arity,
                 ..
             } => self.is_equality_connective_functor(functor) && pos_arity == 2,
@@ -10670,15 +10700,15 @@ impl KnowledgeBase {
         //    A `Value::Entity{ctor, [scalar…]}` operand (the common eq-bridge
         //    case) now fires the rule correctly instead of being dropped.
         //  - A carrier with NO faithful term form — an opaque runtime handle
-        //    (`Closure`/`Stream`/`Map`/`Cell`/`Substitution`/`Requirement`), a
-        //    term-less `Unit`/`Tuple`, or an `Entity` carrying one — cannot enter
-        //    the TermId `body_rename` machinery, so the rule candidate simply can't
-        //    fire over this match: DROP it (mark `contradiction`, exactly like the
-        //    occurs-check drop below and the resolver's `tree_subst`-contradiction
-        //    drop). This IS reachable on real input — the WI-625 eval→SLD
-        //    `eq`/`neq` bridge feeds raw ground operands (`Value::Entity{ctor,
-        //    [Value::Tuple…]}`) into a rule-backed `eq`'s head match — so a
-        //    process-aborting panic here would crash on legitimate user code.
+        //    (`Closure`/`Stream`/`Map`/`Cell`/`Substitution`/`Relation`), or an
+        //    `Entity` carrying one — cannot enter the TermId `body_rename`
+        //    machinery, so the rule candidate simply can't fire over this match:
+        //    DROP it (mark `contradiction`, exactly like the occurs-check drop
+        //    below and the resolver's `tree_subst`-contradiction drop). This IS
+        //    reachable on real input — the WI-625 eval→SLD `eq`/`neq` bridge feeds
+        //    raw ground operands into a rule-backed `eq`'s head match — so a
+        //    process-aborting panic here would crash on legitimate user code. (A
+        //    tuple is no such carrier: it lowers to its `TupleLiteral(_1: …)` term.)
         //    Dropping the candidate makes `eq` fall back to its structural verdict
         //    (what it already does when no override can decide), not a silent
         //    unbound-var wrong answer. Reifying the operand at the producer (the
@@ -11008,6 +11038,20 @@ impl KnowledgeBase {
     /// short-name symbol `build_sort_ops_table` keyed its entries by.
     pub fn lookup_symbol(&self, name: &str) -> Option<Symbol> {
         self.symbols.lookup(name)
+    }
+
+    /// The symbol of the positional label `_{index + 1}`, if it was ever interned.
+    pub fn positional_label_symbol(&self, index: usize) -> Option<Symbol> {
+        self.symbols.positional_label_symbol(index)
+    }
+
+    /// Intern the positional labels `_1` … `_{width}`, each one not yet held.
+    pub fn intern_positional_labels(&mut self, width: usize) {
+        for index in 0..width {
+            if self.positional_label_symbol(index).is_none() {
+                self.intern(&crate::intern::positional_label(index));
+            }
+        }
     }
 
     /// Look up a resolved symbol by qualified name.
@@ -11473,12 +11517,18 @@ impl KnowledgeBase {
     /// tuple-typed parameter presents the same `named_tuple` an n-parameter list
     /// does). Pass 1 whenever the arrow has a single parameter, INCLUDING when that
     /// parameter's type is itself a tuple.
+    ///
+    /// `binders` is the arrow's own places ([`node_occurrence::TypeNode::Arrow`]): built
+    /// by [`Self::make_arrow_binders`] where the arrow is formed, handed on as found
+    /// where one is rebuilt, `None` where the type names no parameter of its own.
+    #[allow(clippy::too_many_arguments)]
     pub fn make_arrow_occ(
         &mut self,
         param: node_occurrence::TypeChild,
         result: node_occurrence::TypeChild,
         effects: node_occurrence::TypeChild,
         arity: usize,
+        binders: Option<crate::eval::value::Value>,
         span: crate::span::SourceSpan,
         owner: Option<Symbol>,
     ) -> Rc<NodeOccurrence> {
@@ -11489,10 +11539,36 @@ impl KnowledgeBase {
                 result,
                 effects,
                 arity,
+                binders,
             },
             span,
             owner,
         )
+    }
+
+    /// An arrow's own places by position, as [`node_occurrence::TypeNode::Arrow`] carries
+    /// them: each a `denoted` occurrence of the binder — what a row label over it holds —
+    /// or, at a position that binds no single name, the positional label `_i`, which no
+    /// label names.
+    pub fn make_arrow_binders(
+        &mut self,
+        slots: &[Option<Symbol>],
+        span: crate::span::SourceSpan,
+        owner: Option<Symbol>,
+    ) -> crate::eval::value::Value {
+        use crate::eval::value::Value;
+        let elems: Vec<Value> = slots
+            .iter()
+            .enumerate()
+            .map(|(i, slot)| match slot {
+                Some(binder) => Value::Node(self.make_denoted_occ_ref(*binder, span, owner)),
+                None => {
+                    let label = self.intern(&crate::intern::positional_label(i));
+                    Value::term(self.alloc(Term::Ref(label)))
+                }
+            })
+            .collect();
+        crate::kb::load::build_value_list(self, elems)
     }
 
     /// WI-791: the arrow `arity` child — a ground `Const(Int)`. Interned like any
@@ -11801,18 +11877,20 @@ impl KnowledgeBase {
         arity: usize,
     ) -> TermId {
         let arity_term = self.make_arity_term(arity);
-        self.make_arrow_from_effects_rows_arity_term(param, result, effects_rows, arity_term)
+        self.make_arrow_from_effects_rows_arity_term(param, result, effects_rows, arity_term, None)
     }
 
     /// [`Self::make_arrow_from_effects_rows`] with the `arity` child already built
     /// — the occurrence→term lowering (`type_node_to_term`) has the exact child the
-    /// occurrence carried and must transplant it rather than re-derive a number.
+    /// occurrence carried and must transplant it rather than re-derive a number, and
+    /// the arrow's own `binders` with it ([`node_occurrence::TypeNode::Arrow`]).
     pub(crate) fn make_arrow_from_effects_rows_arity_term(
         &mut self,
         param: TermId,
         result: TermId,
         effects_rows: TermId,
         arity: TermId,
+        binders: Option<TermId>,
     ) -> TermId {
         let arrow_sym = self.resolve_symbol("anthill.prelude.TypeExtractor.Arrow");
         let param_key = self.intern("param");
@@ -11825,6 +11903,9 @@ impl KnowledgeBase {
         named_args.push((param_key, param));
         named_args.push((result_key, result));
         named_args.push((arity_key, arity));
+        if let Some(binders) = binders {
+            named_args.push((self.intern("binders"), binders));
+        }
         self.make_entity_term(arrow_sym, SmallVec::new(), named_args)
     }
 
@@ -13286,7 +13367,7 @@ impl KnowledgeBase {
     pub fn get_builtin_view<V: term_view::TermView>(&self, goal: &V) -> Option<BuiltinTag> {
         match goal.head(self) {
             term_view::ViewHead::Functor {
-                functor: Some(sym), ..
+                functor: sym, ..
             } => self.builtin_of(sym),
             _ => None,
         }
@@ -14330,12 +14411,10 @@ mod tests {
             "duplicate-label heads must not collapse into one fact"
         );
 
-        // (3) ANONYMOUS FUNCTOR. `Value::Unit` and an EMPTY `Value::Tuple` both head
-        //     as `Functor{None, 0, 0}` and key as one payload-BEARING token
-        //     `Open(None, 0, 0)` — so `is_opaque_free` cannot see the collision, and
-        //     the old key refused them outright (`value_to_term` returned `Err` for
-        //     `Unit` / `Tuple`). Dedup must not start admitting what its predecessor
-        //     rejected. Backing out `has_named_functors` fails this arm.
+        // (3) A NATIVE TUPLE. `Value::Unit` and an EMPTY `Value::Tuple` are one value,
+        //     `()`, and read as its rule twin `TupleLiteral()` (WI-20261011-7G99A): one
+        //     key, under a named functor, so dedup keys them as one fact. A tuple of
+        //     components keys as its `TupleLiteral` twin, its order kept.
         let unit_key = term_view::goal_fingerprint(&kb, &Value::Unit, &sigma);
         let empty_tuple = Value::Tuple {
             pos: Rc::from(Vec::<Value>::new()),
@@ -14344,16 +14423,28 @@ mod tests {
         assert_eq!(
             unit_key,
             term_view::goal_fingerprint(&kb, &empty_tuple, &sigma),
-            "Unit and an empty Tuple are indistinguishable through the view — the hazard",
+            "Unit and an empty Tuple are one value",
         );
         assert!(
-            unit_key.is_opaque_free(),
-            "and opaque-freedom cannot see it"
+            kb.value_fact_dedup_key(&Value::Unit).is_some()
+                && kb.value_fact_dedup_key(&empty_tuple).is_some(),
+            "and it keys under the tuple's functor",
         );
-        assert!(
-            kb.value_fact_dedup_key(&Value::Unit).is_none()
-                && kb.value_fact_dedup_key(&empty_tuple).is_none(),
-            "so an anonymous functor must get no dedup key",
+        let native = |named: Vec<(Symbol, Value)>| Value::Tuple {
+            pos: Rc::from(Vec::<Value>::new()),
+            named: Rc::from(named),
+        };
+        let n1 = native(vec![(x, one.clone()), (y, two.clone())]);
+        let n2 = native(vec![(y, two.clone()), (x, one.clone())]);
+        assert_eq!(
+            term_view::goal_fingerprint(&kb, &n1, &sigma),
+            term_view::goal_fingerprint(&kb, &tuple(vec![(x, one.clone()), (y, two.clone())]), &sigma),
+            "a native tuple keys as its `TupleLiteral` twin",
+        );
+        assert_ne!(
+            term_view::goal_fingerprint(&kb, &n1, &sigma),
+            term_view::goal_fingerprint(&kb, &n2, &sigma),
+            "and its component order is its identity",
         );
     }
 
@@ -14666,7 +14757,7 @@ mod tests {
     /// stores through `push_value_head_entry`, whose discrimination-tree insert
     /// walks EVERY positional and named child (`insert_walk_args`) and PANICS on an
     /// `Opaque` head — a deliberate loud refusal that predates WI-815 ("no fact/rule
-    /// form in use today produces a functor-less / opaque stored head; fail loudly
+    /// form in use today produces an opaque stored head; fail loudly
     /// rather than silently mis-index"). So the refusal that actually fires is
     /// louder than the dedup guard — though NOT earlier: `assert_fact_value` calls
     /// `value_fact_dedup_key` first and only then `push_value_head_entry`, so the
@@ -14685,7 +14776,7 @@ mod tests {
     /// head becomes storable, which is exactly when
     /// `wi815_a_lossy_key_degrades_to_no_dedup` should grow its fact-level half.
     #[test]
-    #[should_panic(expected = "functor-less / opaque head")]
+    #[should_panic(expected = "opaque head")]
     fn wi815_an_opaque_bearing_head_cannot_be_stored_at_all() {
         let mut kb = KnowledgeBase::new();
         crate::kb::load::register_prelude(&mut kb);
@@ -15337,9 +15428,10 @@ mod tests {
         // WI-625 eq/neq bridge routes a `Value::Entity{ctor, [Value::Tuple…]}`
         // operand here) and must NOT be silently dropped into an unbound-var wrong
         // answer. Instead the candidate is dropped (`contradiction`), so eq falls
-        // back to its structural verdict. Feed `mk(tuple(1, 2))` — an Entity
-        // carrying a term-less `Value::Tuple`, the exact reachable shape — and
-        // assert the returned links are a contradiction (candidate dropped).
+        // back to its structural verdict. Feed `mk(<a relation>)` — an Entity
+        // carrying a term-less child (it was a `Value::Tuple` until a tuple became
+        // the `TupleLiteral(_1: …)` term, WI-20261011-7G99A) — and assert the
+        // returned links are a contradiction (candidate dropped).
         use crate::eval::value::Value;
         use std::rc::Rc;
         use term::Var;
@@ -15366,15 +15458,15 @@ mod tests {
         let body_nodes = kb.term_body_to_nodes(&[body_q]);
         let rid = kb.assert_rule_debruijn_with_nodes(head, body_nodes, sort, domain, None);
 
-        // A term-less Tuple nested in an Entity — value_to_term recurses into the
-        // Tuple child and errors, so the whole candidate is dropped.
-        let tuple = Value::Tuple {
-            pos: Rc::from(vec![Value::Int(1), Value::Int(2)]),
-            named: Rc::from(Vec::<(crate::intern::Symbol, Value)>::new()),
+        // A term-less child nested in an Entity — value_to_term recurses into it
+        // and errors, so the whole candidate is dropped.
+        let relation = Value::Relation {
+            query: Rc::new(Value::Unit),
+            columns: Rc::from(vec![]),
         };
         let entity = Value::Entity {
             functor: mk,
-            pos: Rc::from(vec![tuple]),
+            pos: Rc::from(vec![relation]),
             named: Rc::from(Vec::<(crate::intern::Symbol, Value)>::new()),
         };
         let mut tree_subst = subst::Substitution::new();
@@ -15392,19 +15484,24 @@ mod tests {
     }
 
     #[test]
-    fn prove_rule_predicate_no_panic_on_entity_tuple_operand() {
+    fn prove_rule_predicate_no_panic_on_an_unreifiable_operand() {
         // WI-636 end-to-end: this replicates the reachable path the WI-625 eq/neq
         // bridge drives — `prove_rule_predicate` builds an Entity goal from raw
         // ground operands and resolves it through `with_fresh_vars`. An operand
-        // that is a `Value::Entity` carrying a term-less `Value::Tuple` used to
-        // panic (aborting the process); it must now resolve without crashing, the
-        // rule candidate dropping so the predicate is simply unproved (`Refuted`).
+        // that is a `Value::Entity` carrying a term-less child used to panic
+        // (aborting the process); it must now resolve without crashing, the rule
+        // candidate dropping so the predicate is simply unproved (`Refuted`). The
+        // child was a `Value::Tuple` until a tuple became the `TupleLiteral(_1: …)`
+        // term a rule writes for it (WI-20261011-7G99A): an operand carrying one now
+        // reifies, and the predicate holds.
         use crate::eval::value::Value;
         use crate::kb::resolve::PredicateProof;
         use std::rc::Rc;
         use term::Var;
 
         let mut kb = KnowledgeBase::new();
+        crate::kb::load::register_prelude(&mut kb);
+        kb.intern_positional_labels(2);
         let pr = kb.intern("pr");
         let marker = kb.intern("marker");
         let mk = kb.intern("mk");
@@ -15430,22 +15527,33 @@ mod tests {
         let body_nodes = kb.term_body_to_nodes(&[marker_t]);
         kb.assert_rule_debruijn_with_nodes(head, body_nodes, sort, domain, None);
 
-        // Operand `mk(tuple(1, 2))`: an Entity carrying a term-less Tuple.
+        let under_mk = |child: Value| Value::Entity {
+            functor: mk,
+            pos: Rc::from(vec![child]),
+            named: Rc::from(Vec::<(crate::intern::Symbol, Value)>::new()),
+        };
+
+        // Operand `mk(<a relation>)`: an Entity carrying a term-less child. No panic;
+        // the candidate drops, so the predicate is unproved.
+        let relation = Value::Relation {
+            query: Rc::new(Value::Unit),
+            columns: Rc::from(vec![]),
+        };
+        let proof = kb.prove_rule_predicate(pr, vec![under_mk(relation), Value::Int(0)]);
+        assert!(
+            matches!(proof, PredicateProof::Refuted),
+            "un-reifiable operand → dropped candidate → Refuted (no crash)",
+        );
+
+        // Operand `mk((1, 2))`: the tuple reifies, and `pr(?a, ?b) :- marker` holds.
         let tuple = Value::Tuple {
             pos: Rc::from(vec![Value::Int(1), Value::Int(2)]),
             named: Rc::from(Vec::<(crate::intern::Symbol, Value)>::new()),
         };
-        let entity = Value::Entity {
-            functor: mk,
-            pos: Rc::from(vec![tuple]),
-            named: Rc::from(Vec::<(crate::intern::Symbol, Value)>::new()),
-        };
-
-        // No panic; the candidate drops, so the predicate is unproved.
-        let proof = kb.prove_rule_predicate(pr, vec![entity, Value::Int(0)]);
+        let proof = kb.prove_rule_predicate(pr, vec![under_mk(tuple), Value::Int(0)]);
         assert!(
-            matches!(proof, PredicateProof::Refuted),
-            "un-reifiable operand → dropped candidate → Refuted (no crash)",
+            matches!(proof, PredicateProof::Proved),
+            "a tuple operand reifies: {proof:?}",
         );
     }
 
@@ -15707,6 +15815,8 @@ mod tests {
         use crate::eval::value::Value;
 
         let mut kb = KnowledgeBase::new();
+        crate::kb::load::register_prelude(&mut kb);
+        kb.intern_positional_labels(2);
         let pair = kb.intern("Pair");
         let inner = kb.intern("Inner");
         let leaf = kb.intern("Leaf");
@@ -15933,12 +16043,13 @@ mod tests {
             TypeChild::Interned(result_ty),
             TypeChild::Node(Rc::clone(&effects_rows_occ)),
             1,
+            None,
             span,
             None,
         );
 
         let functor_of = |h: &ViewHead| match h {
-            ViewHead::Functor { functor, .. } => *functor,
+            ViewHead::Functor { functor, .. } => Some(*functor),
             _ => None,
         };
 

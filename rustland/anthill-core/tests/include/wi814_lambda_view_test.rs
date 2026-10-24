@@ -387,7 +387,7 @@ fn control_flow_forms_read_as_their_loader_twins() {
         let expected_functor = kb.try_resolve_symbol(qname).unwrap();
         match o.head(&kb) {
             ViewHead::Functor {
-                functor: Some(f),
+                functor: f,
                 pos_arity,
                 named_arity,
             } => {

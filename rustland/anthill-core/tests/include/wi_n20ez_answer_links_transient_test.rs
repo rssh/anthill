@@ -375,7 +375,7 @@ fn compound_links_still_answer_their_matched_subterm() {
             let p = kb.answer_binding(vids[0], &s.subst).expect("?p binds");
             match p.head(&kb) {
                 ViewHead::Functor {
-                    functor: Some(f), ..
+                    functor: f, ..
                 } => assert_eq!(f, box_sym, "the link is the head's `Box(…)` subterm"),
                 other => panic!("expected a `Box` application, got {other:?}"),
             }
@@ -395,7 +395,7 @@ fn compound_links_still_answer_their_matched_subterm() {
     let p = kb.answer_binding(vids[0], &sols[0].subst).expect("?p binds");
     match p.head(&kb) {
         ViewHead::Functor {
-            functor: Some(f), ..
+            functor: f, ..
         } => assert_eq!(f, pair_sym),
         other => panic!("expected a `Pair` application, got {other:?}"),
     }
@@ -442,7 +442,7 @@ fn twice_redex(kb: &mut KnowledgeBase) -> Value {
 fn head_functor(kb: &KnowledgeBase, v: &Value) -> Option<String> {
     match v.head(kb) {
         ViewHead::Functor {
-            functor: Some(f), ..
+            functor: f, ..
         } => Some(kb.qualified_name_of(f).to_string()),
         _ => None,
     }

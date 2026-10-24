@@ -402,7 +402,7 @@ pub(super) fn for_each_head_symbol<V: TermView>(
 ) {
     let head = ty.head(kb);
     if let ViewHead::Functor {
-        functor: Some(f), ..
+        functor: f, ..
     }
     | ViewHead::Ident(f) = head
     {
@@ -492,7 +492,7 @@ fn mentioned_unknowns<V: TermView>(
     match head {
         ViewHead::Var(Var::Rigid(vid)) => rigids.push(vid),
         ViewHead::Functor {
-            functor: Some(f),
+            functor: f,
             pos_arity: 0,
             named_arity: 0,
         }
@@ -738,11 +738,8 @@ fn type_display_name_view<V: TermView>(kb: &KnowledgeBase, v: &V, spelling: Spel
         // A carrier with no structure to read — a closure, a stream. Not a type and not
         // nameable as one; `?` is what the occurrence renderer already answered.
         ViewHead::Opaque => "?".to_string(),
-        // A functor-LESS application is a `Value::Tuple`, which no type has a twin for
-        // (every hash-consed type application carries a functor). `?`, as before.
-        ViewHead::Functor { functor: None, .. } => "?".to_string(),
         ViewHead::Functor {
-            functor: Some(f),
+            functor: f,
             pos_arity,
             named_arity: _,
         } => {
@@ -788,12 +785,16 @@ fn type_display_name_view<V: TermView>(kb: &KnowledgeBase, v: &V, spelling: Spel
                 // Arrow(param, result, effects, arity) — WI-307/WI-331: `effects` is a
                 // singular `EffectsRows(EffectExpression)` Type, not a legacy `List[Type]`.
                 "Arrow" => {
-                    let p = named_child_display(kb, v, "param", spelling);
                     let r = named_child_display(kb, v, "result", spelling);
                     // WI-791: an arity-1 tuple param is ONE parameter, not a list.
                     let arity = named_child(kb, v, "arity")
                         .and_then(|c| c.literal_int64(kb))
                         .and_then(|n| usize::try_from(n).ok());
+                    // A nullary arrow's parameter list is written `()`.
+                    let p = match arity {
+                        Some(0) => "()".to_string(),
+                        _ => named_child_display(kb, v, "param", spelling),
+                    };
                     let param_is_tuple = named_child(kb, v, "param")
                         .is_some_and(|c| matches!(type_head(kb, &c), TypeHead::NamedTuple));
                     let arrow = format!("{} -> {}", display_arrow_param(p, arity, param_is_tuple), r);
@@ -832,7 +833,15 @@ fn type_display_name_view<V: TermView>(kb: &KnowledgeBase, v: &V, spelling: Spel
                             )
                         })
                         .collect();
-                    format!("({})", parts.join(", "))
+                    // The tuple of no components is `Unit`, the prelude's name for it. The
+                    // qualified text keeps `()`: a name there tells sorts apart, and a sort
+                    // declared at the top level as `Unit` is named `Unit`.
+                    match spelling {
+                        Spelling::Meaning | Spelling::Written if parts.is_empty() => {
+                            "Unit".to_string()
+                        }
+                        _ => format!("({})", parts.join(", ")),
+                    }
                 }
                 // WI-CZJ2N — `Nothing` is a NULLARY constructor, and a nullary functor IS the
                 // bare reference, so the two spellings the term renderer needed two arms for
@@ -968,7 +977,7 @@ fn collect_row_parts<V: TermView>(
 ) {
     let form = match part.head(kb) {
         ViewHead::Functor {
-            functor: Some(f), ..
+            functor: f, ..
         } => kb
             .qualified_name_of(f)
             .strip_prefix("anthill.prelude.EffectExpression."),
@@ -1114,7 +1123,7 @@ pub(crate) fn effect_atom_order_key(kb: &KnowledgeBase, t: TermId) -> String {
 fn effect_atom_order_key_of<V: TermView>(kb: &KnowledgeBase, v: &V) -> String {
     match v.head(kb) {
         ViewHead::Functor {
-            functor: Some(f),
+            functor: f,
             pos_arity,
             ..
         } => type_application_display(kb, v, f, pos_arity, NamedOrder::Stored, Spelling::Meaning),
@@ -1260,7 +1269,7 @@ pub(super) fn view_ref_symbol<V: TermView>(kb: &KnowledgeBase, v: &V) -> Option<
     match v.head(kb) {
         ViewHead::Ident(s) => Some(s),
         ViewHead::Functor {
-            functor: Some(f),
+            functor: f,
             pos_arity: 0,
             named_arity: 0,
         } => Some(f),

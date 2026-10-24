@@ -1448,6 +1448,7 @@ mod p4_tests {
             &int,
             &[Value::term(label_t), Value::term(tail_t)],
             1,
+            &[],
             span(),
             None,
         );
@@ -1734,6 +1735,7 @@ mod p4_tests {
             TypeChild::Interned(unit_ref),
             TypeChild::Node(rows),
             1,
+            None,
             span(),
             None,
         )
@@ -1826,6 +1828,7 @@ mod p4_tests {
             TypeChild::Interned(unit_ref),
             TypeChild::Node(rows),
             1,
+            None,
             span(),
             None,
         );
@@ -2755,7 +2758,7 @@ mod wi621_carrier_neutral_goal_subst {
         // Structurally `eq(5, 0)`.
         match grounded.head(&kb) {
             ViewHead::Functor {
-                functor: Some(f),
+                functor: f,
                 pos_arity,
                 ..
             } => {
@@ -2796,7 +2799,7 @@ mod wi621_carrier_neutral_goal_subst {
         let out = substitute_ref_terms(&mut kb, &goal, &sigma);
         match out.pos_arg(&kb, 0).expect("operand 0").head(&kb) {
             ViewHead::Functor {
-                functor: Some(f), ..
+                functor: f, ..
             } => {
                 assert_eq!(
                     f, var_ref_sym,
@@ -2904,11 +2907,14 @@ mod wi621_carrier_neutral_goal_subst {
     }
 
     /// A σ-parameter nested inside a native `Value::Tuple` operand of a goal is
-    /// grounded — the functor-less-aggregate arm recurses into the tuple (parity with
-    /// the term-side walk descending a tuple `Term::Fn`), not the verbatim `_` clone.
+    /// grounded — the tuple reads as its `TupleLiteral(_1: …, _2: …)` twin, and the walk
+    /// recurses into it as the term-side walk descends a tuple `Term::Fn`, not the
+    /// verbatim `_` clone. The labels are interned, as a program that writes a pair has.
     #[test]
     fn tuple_operand_var_ref_grounds() {
         let mut kb = kb();
+        let first = kb.intern(&crate::intern::positional_label(0));
+        kb.intern(&crate::intern::positional_label(1));
         let b = kb.intern("b");
         let pred = kb.intern("pred");
         let var_ref_b = kb.make_var_ref_term(b);
@@ -2929,11 +2935,17 @@ mod wi621_carrier_neutral_goal_subst {
         let grounded = substitute_ref_terms(&mut kb, &goal, &sigma);
 
         let tuple_out = grounded.pos_arg(&kb, 0).expect("tuple operand");
+        let tuple_literal = kb.resolve_symbol(crate::parse::desugar_target::qualified(
+            crate::parse::desugar_target::TUPLE_LITERAL,
+        ));
         assert!(
-            matches!(tuple_out.head(&kb), ViewHead::Functor { functor: None, .. }),
-            "operand stays a functor-less tuple",
+            matches!(
+                tuple_out.head(&kb),
+                ViewHead::Functor { functor: f, pos_arity: 0, named_arity: 2 } if f == tuple_literal
+            ),
+            "operand stays a tuple",
         );
-        match tuple_out.pos_arg(&kb, 0).expect("tuple elem 0").head(&kb) {
+        match tuple_out.named_arg(&kb, first).expect("tuple elem 0").head(&kb) {
             ViewHead::Const(Literal::Int(5)) => {}
             other => panic!("var_ref(b) inside the tuple must ground to 5, got {other:?}"),
         }
@@ -6343,6 +6355,7 @@ mod wi_2nmxa_value_holding_type_reader_tests {
             TypeChild::Interned(base),
             TypeChild::Node(row_node),
             1,
+            None,
             sp,
             None,
         ));
@@ -8079,5 +8092,24 @@ mod s8cyd_qualified_text_test {
             projection(&mut kb, "anthill.prelude.PartialEq"),
         );
         one_text_for_a_reader_and_two_for_a_name(&kb, of_eq, of_partial_eq);
+    }
+}
+
+/// WI-20261011-7G99A — `Unit` is the tuple of no components: a diagnostic calls it
+/// `Unit`, and the qualified text a proof record's name is made of keeps `()`, since a
+/// sort declared at the top level as `Unit` is named `Unit` there.
+#[cfg(test)]
+mod wi_7g99a_unit_display_test {
+    use super::super::*;
+    use crate::kb::load::register_prelude;
+    use crate::kb::term_view::ViewItem;
+
+    #[test]
+    fn the_empty_tuple_is_unit_to_a_reader_and_a_tuple_to_a_name() {
+        let mut kb = KnowledgeBase::new();
+        register_prelude(&mut kb);
+        let unit = kb.make_named_tuple_type(&[]);
+        assert_eq!(type_display_name(&kb, unit), "Unit");
+        assert_eq!(type_qualified_text(&kb, &ViewItem::Term(unit)), "()");
     }
 }

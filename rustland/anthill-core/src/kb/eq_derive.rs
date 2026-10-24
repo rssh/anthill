@@ -607,12 +607,17 @@ pub(crate) fn run(kb: &mut KnowledgeBase, c: &EqClassification) {
     // not: a parametric boundary's own `eq` (`Pair.eq`) compares its components, so a
     // `Float` argument makes it partial too. A NON-parametric boundary (`TotalFloat`)
     // is not here, and still shields what it holds.
-    let transparent: HashSet<Symbol> = c
+    let mut transparent: HashSet<Symbol> = c
         .sorts
         .iter()
         .filter(|&&s| !kb.type_param_syms_of(s).is_empty())
         .flat_map(|&s| kb.field_constructors_of_sort(s))
         .collect();
+    // A tuple is walked through too: it is no sort's constructor, its partiality is its
+    // components', and a tuple value reads as its `TupleLiteral(_1: …)` twin.
+    transparent.insert(kb.resolve_symbol(crate::parse::desugar_target::qualified(
+        crate::parse::desugar_target::TUPLE_LITERAL,
+    )));
     kb.partial_transparent_carriers = transparent;
 
     // WI-1103 — MARK every row asserted here. The exemption from provider-coverage
@@ -1399,8 +1404,8 @@ impl KnowledgeBase {
     /// scan whose head-check stops at a `Float` leaf and at any sort/constructor
     /// head — reading the precomputed per-constructor classification in O(1) (it
     /// already stopped at lawful-Eq boundaries, so there is no descent into a
-    /// `TotalFloat` field) — while a functor-less aggregate (tuple/unit, no sort to
-    /// key on) walks its fields.
+    /// `TotalFloat` field) — while a tuple, a partial-transparent carrier, walks its
+    /// fields.
     pub(crate) fn value_reaches_partial_carrier(&self, v: &Value) -> bool {
         // A structural (non-σ) gate — `None` is the inert empty σ `fold_gate` never
         // consults for `chase_sigma: false`, so no `Substitution` is minted per call.

@@ -89,7 +89,7 @@ fn binding_by_short(kb: &KnowledgeBase, spec: &Value, short: &str) -> Option<(Sy
 fn head_short_name<V: TermView>(kb: &KnowledgeBase, v: &V) -> String {
     match v.head(kb) {
         ViewHead::Functor {
-            functor: Some(name),
+            functor: name,
             ..
         }
         | ViewHead::Ident(name) => short_of(kb.local_name_of(name)).to_owned(),

@@ -220,7 +220,7 @@ fn tuple_literal_reads_its_twin_and_order_stays_identity() {
             pos_arity,
             named_arity,
         } => {
-            assert_eq!(functor, Some(f), "the twin's functor");
+            assert_eq!(functor, f, "the twin's functor");
             assert_eq!((pos_arity, named_arity), (0, 2), "two NAMED components");
         }
         other => panic!("the occurrence must read structurally, got {other:?}"),
@@ -392,7 +392,7 @@ fn a_positional_tuple_literal_agrees_with_the_parsers_term() {
             pos_arity,
             named_arity,
         } => {
-            assert_eq!(functor, Some(f));
+            assert_eq!(functor, f);
             assert_eq!(
                 (pos_arity, named_arity),
                 (0, 2),

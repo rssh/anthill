@@ -286,6 +286,7 @@ fn arrow_parts_extracted(
             result,
             effects,
             arity: _,
+            binders: _,
         } => Some((Some(param.clone()), result.clone(), Some(effects.clone()))),
         TypeExtractor::Parameterized { base, bindings } => {
             let (param, result, effects) = function_spec_parts(kb, *base, bindings)?;

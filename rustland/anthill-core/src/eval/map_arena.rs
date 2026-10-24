@@ -148,7 +148,7 @@ impl MapKey {
                 Term::Const(_) => Some(MapKey::Term(*tid)),
                 _ => match v.head(kb) {
                     ViewHead::Functor {
-                        functor: Some(s),
+                        functor: s,
                         pos_arity: 0,
                         named_arity: 0,
                     } => Some(MapKey::Ref(s)),
@@ -168,7 +168,7 @@ impl MapKey {
                 ViewHead::Const(Literal::Bool(b)) => Some(MapKey::Bool(b)),
                 ViewHead::Const(Literal::String(s)) => Some(MapKey::Str(s)),
                 ViewHead::Functor {
-                    functor: Some(sym),
+                    functor: sym,
                     pos_arity: 0,
                     named_arity: 0,
                 } => Some(MapKey::Ref(sym)),

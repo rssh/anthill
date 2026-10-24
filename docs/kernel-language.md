@@ -469,10 +469,13 @@ other, and the mismatch is a **load error**, not a run-time trap. Write the
 one-parameter form as `((a: A, b: B)) -> R` when there is no binder to name it;
 that is also how it prints.
 
-> An arity-1 parameter list still **drops its binder name** — `(v: A) -> R` and
-> `(w: A) -> R` are the same type — so a named argument cannot be resolved
-> against a single-parameter arrow. Arity is recorded; the arity-1 binder name is
-> not.
+> An arrow formed from a lambda or an operation records its own parameters,
+> beside `param` as it records its arity. A row label naming one (`Modify[k]` of
+> `lambda (k: Cell[V = Int64]) -> put(k, 5)`) is that parameter, by its position,
+> wherever the value goes (the callback row check below); a callback parameter's
+> place says its position itself. The relations above do not read them: `(v: A) -> R` and `(w: A) -> R` are
+> the same type, and a named argument cannot be resolved against a single-parameter
+> arrow.
 
 **Applying a function value checks its arguments** (WI-792). The rules above
 relate one arrow to another; this is the other half — which *arguments* fit an
@@ -542,7 +545,7 @@ None of this relates a named tuple to a positional one as **data**: rule 4 stand
 
 The `@` token annotates effects on the arrow, consistent with the term-level Pratt operator where `a -> b @ c` desugars to `arrow_effect(a, b, c)`. A pure arrow `(A) -> B` desugars to `arrow(params..., B)` in the KB; an effectful arrow `(A) -> B @ E` desugars to `arrow_effect(params..., B, E)`.
 
-The braced annotation `@ {…}` admits the proposal-045 row algebra: bare labels (present), an explicit row variable (`?` anonymous, `?r` named, or a declared row binder `E` — an **open** row, §5.5), and `-e` absence atoms (`lacks` constraints). `@ {}` is the explicit closed-empty (pure) row, identical to no annotation. An absence-only annotation (`@ -Modify[x]`) is a **closed** row carrying the lacks constraint; the co-finite "anything except `e`" is written with an explicit open base — `@ {?, -Modify[x]}` or `@ {Eff, -Modify[x]}` (WI-440 row-openness decision: an implicit fresh tail would be unnameable by the enclosing operation, which must declare the row it incurs when applying the callback). A callback parameter's row is checked at each call site against the argument operation's declared row, with the callback's binder places aligned positionally to the argument's own parameters (`Modify[c]` on the argument's param 0 matches `Modify[x]`/`-Modify[x]` on the callback's param 0); an unresolved place in a `-…` absence label is a load-blocking error (the constraint would be vacuous). **An absence over a row VARIABLE** (`-R` — written, or spliced from `-s.E` over a row whose tail is a variable, `E = {Error[Foo], R}`) denies that whole row, not a label (WI-20260929-0RP29, user decision 2026-10-01): a row holding `R` itself violates it — `{R, -R}` is uninhabitable as `{e, -e}` is, and a callback raising `R` is refused where `-R` is required — and beside a RIGID `R` (the enclosing operation's own row, unknown where the check runs) neither a label nor another rigid row variable can be shown outside it (`{Error[Foo]}` or `{Q}` where `{EffP, -R}` is required), so each is refused — unless the callback's own row lacks `R`. An **unwritten** row is such a row as well: inside `use(s: Strm[T = Int64], …)` the stream's row is the projection `s.E` — `use`'s own, unknown there — so an absence over it (`-s.E`) is held exactly as `-R` is. A callback typed by the enclosing operation STATES it — `g: (x: Int64) -> Bool @ {Q, -R}`, `@ {Error[Foo], -s.E}` — and that type holds the operation's own callers to it (an instantiation making `Q` and `R` overlap is `{e, -e}`, refused at that call); the refusal names this repair. The rule holds of every callback argument however it is written — an operation, a lambda, a parameter, a name bound by a `let` or a pattern, a field (`h.f`), a call's result — and under a call-site bracket as without one; a label an absence denies, and a closed row, are judged of each alike. The spelling decides only the ALIGNMENT: an operation, a lambda, a callback parameter and a `let` holding one say their own binders by position; of any other argument a label naming a value in scope names that value, and one naming a callback parameter's place says its position itself. A label left naming a binder at no known position (a lambda taken out of a tuple) is refused where the declared row speaks of one of its own binders in the same effect. A row variable of the argument's row is judged as well. The declared row is read as the call fixes it: a row parameter of the called operation is what the call's bracket says, or what the arguments determine, and one that neither fixes takes the callback's own row. What is left in the declared row is labels and row parameters of the enclosing operation. Such a parameter stands for a row chosen by the enclosing operation's own caller, unknown where the check runs, so nothing but the parameter itself can be shown to lie inside it: a callback raising `R` conforms to a declared row that holds `R`, whatever stands beside it, and a label the declared row does not write, another row parameter `Q`, or a write to the callback's own parameter where the row names none is refused. The caller says the row whole (`run[EffP = {R, Error[Foo]}](…)`). What the callback's row lacks does not exempt what it presents. The row a call tests is the row as that call reads it: an absence spliced from a projection denies what the argument's row holds, so `@ {EffP, -s.E}` at `EffP = {Error[Foo]}` over a stream raising `Error[Foo]` is `{e, -e}`. An operation's OWN row holding and lacking one row parameter (`effects {Q, -Q}`) is refused at its declaration, as `{e, -e}` is. The constraint is a lacks constraint, not a row difference: nothing subtracts `R` from `Q`. Read as a label, the variable matched none and `-R` constrained nothing.
+The braced annotation `@ {…}` admits the proposal-045 row algebra: bare labels (present), an explicit row variable (`?` anonymous, `?r` named, or a declared row binder `E` — an **open** row, §5.5), and `-e` absence atoms (`lacks` constraints). `@ {}` is the explicit closed-empty (pure) row, identical to no annotation. An absence-only annotation (`@ -Modify[x]`) is a **closed** row carrying the lacks constraint; the co-finite "anything except `e`" is written with an explicit open base — `@ {?, -Modify[x]}` or `@ {Eff, -Modify[x]}` (WI-440 row-openness decision: an implicit fresh tail would be unnameable by the enclosing operation, which must declare the row it incurs when applying the callback). A callback parameter's row is checked at each call site against the argument operation's declared row, with the callback's binder places aligned positionally to the argument's own parameters (`Modify[c]` on the argument's param 0 matches `Modify[x]`/`-Modify[x]` on the callback's param 0); an unresolved place in a `-…` absence label is a load-blocking error (the constraint would be vacuous). **An absence over a row VARIABLE** (`-R` — written, or spliced from `-s.E` over a row whose tail is a variable, `E = {Error[Foo], R}`) denies that whole row, not a label (WI-20260929-0RP29, user decision 2026-10-01): a row holding `R` itself violates it — `{R, -R}` is uninhabitable as `{e, -e}` is, and a callback raising `R` is refused where `-R` is required — and beside a RIGID `R` (the enclosing operation's own row, unknown where the check runs) neither a label nor another rigid row variable can be shown outside it (`{Error[Foo]}` or `{Q}` where `{EffP, -R}` is required), so each is refused — unless the callback's own row lacks `R`. An **unwritten** row is such a row as well: inside `use(s: Strm[T = Int64], …)` the stream's row is the projection `s.E` — `use`'s own, unknown there — so an absence over it (`-s.E`) is held exactly as `-R` is. A callback typed by the enclosing operation STATES it — `g: (x: Int64) -> Bool @ {Q, -R}`, `@ {Error[Foo], -s.E}` — and that type holds the operation's own callers to it (an instantiation making `Q` and `R` overlap is `{e, -e}`, refused at that call); the refusal names this repair. The rule holds of every callback argument however it is written — an operation, a lambda, a parameter, a name bound by a `let` or a pattern, a field (`h.f`), a call's result — and under a call-site bracket as without one; a label an absence denies, and a closed row, are judged of each alike. The ALIGNMENT is read off the argument's type, whatever the value came through: a label naming one of the parameters the type records (above) is read at that parameter's position, so a lambda taken out of a tuple, by a pattern or out of a list is aligned as the lambda written at the call is. A label naming a value in scope names that value, and one naming a callback parameter's place says its position itself where the type records no parameters of its own. A label left naming a binder out of its scope that the type does not record — an enclosing lambda's, named by a lambda it returned, or a part of a parameter the lambda destructures — is refused where the declared row speaks of one of its own binders in the same effect. A row variable of the argument's row is judged as well. The declared row is read as the call fixes it: a row parameter of the called operation is what the call's bracket says, or what the arguments determine, and one that neither fixes takes the callback's own row. What is left in the declared row is labels and row parameters of the enclosing operation. Such a parameter stands for a row chosen by the enclosing operation's own caller, unknown where the check runs, so nothing but the parameter itself can be shown to lie inside it: a callback raising `R` conforms to a declared row that holds `R`, whatever stands beside it, and a label the declared row does not write, another row parameter `Q`, or a write to the callback's own parameter where the row names none is refused. The caller says the row whole (`run[EffP = {R, Error[Foo]}](…)`). What the callback's row lacks does not exempt what it presents. The row a call tests is the row as that call reads it: an absence spliced from a projection denies what the argument's row holds, so `@ {EffP, -s.E}` at `EffP = {Error[Foo]}` over a stream raising `Error[Foo]` is `{e, -e}`. An operation's OWN row holding and lacking one row parameter (`effects {Q, -Q}`) is refused at its declaration, as `{e, -e}` is. The constraint is a lacks constraint, not a row difference: nothing subtracts `R` from `Q`. Read as a label, the variable matched none and `-R` constrained nothing.
 
 The arrow sort `(A) -> B` is equivalent to `Function[A, B, E = {}]` from stdlib — the empty effect row, written. The effectful arrow `(A) -> B @ E` is equivalent to `Function[A, B, E]`. `Function` declares its row `effects E = ? default {}`, so a `Function[A, B]` that leaves `E` unwritten takes the default and is the pure arrow too, in every position — a parameter, a return, an annotation, a rule's bound, an alias — and a callable raising anything is refused there. `Function[A, B, ?]` is the effect-polymorphic spelling: the explicit `?` keeps the row open (§8.1). `Function` is the unified sort for all callable values — pure and effectful. Effect subtyping applies: a pure function can be passed where an effectful function is expected (`Function[A, B, E = {}] <: Function[A, B, E]` for any `E`).
 
@@ -781,6 +784,8 @@ compared as one.
 | `(A, B)` | `(_1: A, _2: B)` |
 | `(1, "hello")` | `(_1: 1, _2: "hello")` |
 | `()` | `()` (unit, no fields) |
+
+**`Unit` is the tuple of no components.** The prelude declares `sort Unit = ()`, so `()` and `Unit` written as types are one type, and the literal `()` is its one value wherever it is written: an operation body, a fact, a goal, a rule's own term. Over `entity u(v: Unit, n: Int64)`, `fact u(v: (), n: 4)` loads and the goal `u(v: (), n: ?r)` answers `4`.
 
 **Representation:** Tuple literals are represented as `TupleLiteral(...)` terms with named args, analogous to `SetLiteral(...)` for sets. The `TupleLiteral` entity is defined in `anthill.reflect`.
 
@@ -4668,8 +4673,7 @@ Constraint ::= DescriptionBlock*
 ConstraintBody ::= RuleBody [':-' RuleBody]
                  | QuantifiedConstraint
                  | AggregationConstraint
-QuantifiedConstraint ::= Quantifier '(' Variable ':' Term ')' '-:' ConstraintBody
-                       | Quantifier Variable ':' RuleBody '-:' ConstraintBody
+QuantifiedConstraint ::= Quantifier Variable ':' RuleBody '-:' ConstraintBody
                        | Quantifier Variable '-:' ConstraintBody
 Quantifier ::= 'forall' | 'some' | 'one' | 'lone' | 'no'
 AggregationConstraint ::= Aggregate '(' Variable ':' RuleBody '-:' RuleBody ')'
@@ -4693,11 +4697,15 @@ rule in twelve places and no longer does; see §8.4 for what each one turned out
 to be, and note that two of them were not merely inert but *wrong*, which an
 inert channel is very good at hiding.
 
+A constraint's goals — its invariant and guard, a quantifier's condition and body —
+are held to what a rule body's goals are held to (§5.3), an ordinary denial's
+included. Without a label, the name before `:-` is the invariant; a labeled denial
+with no invariant is `constraint name: false :- guard`.
+
 The quantified forms from proposal 023 are enforced through KB guards. The
 condition selects bindings for the variable; `some`, `one`, `lone`, and `no`
 require respectively at least one, exactly one, at most one, or zero satisfying
-bindings. `forall` requires the body for every selected binding. A typed binder
-`forall (?x: T) -: body` supplies the type/domain condition directly.
+bindings. `forall` requires the body for every selected binding.
 
 The delivered `forall` guard can negate a single body atom. A multi-atom
 `forall` body is currently refused as an unsupported constraint form because
@@ -5859,7 +5867,8 @@ checked once after the complete source set has loaded and again when a fact that
 matches one of its trigger sorts is asserted:
 
 1. The post-load check blocks the load when the guard is violated, cannot be
-   lowered, or cannot be decided within the resolver budget.
+   lowered, or cannot be decided within the resolver budget. A constraint whose
+   text the load refuses is not checked.
 2. The per-assert check retracts and rejects a newly inserted fact when the guard
    is violated or undecidable.
 3. A labeled violation identifies the source constraint in its diagnostic.

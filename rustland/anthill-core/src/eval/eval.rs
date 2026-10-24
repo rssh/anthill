@@ -5193,6 +5193,9 @@ impl Interpreter {
         let value = if Some(ctor_sym) == self.reflect.list_literal {
             self.build_list_value(pos, &named)?
         } else if is_tuple_literal {
+            // A tuple reads as its rule twin, a positional component under its `_N`
+            // label (`term_view`): the label is a symbol of the KB the value is read in.
+            self.kb.intern_positional_labels(pos.len());
             Value::Tuple {
                 pos: pos.into(),
                 named: named.into(),
@@ -5410,8 +5413,9 @@ pub fn value_functor(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
         // answers `Dictionary` through the arm above — the same answer its σ-built
         // twin already gave, which is what one representation means.)
         Value::OpRef { .. } => None,
-        // No name to give: a scalar, a functor-less aggregate, an opaque runtime
-        // handle, a logic variable. Listed rather than defaulted so a new `Value`
+        // No name to give: a scalar, a tuple (whose `TupleLiteral` head is its
+        // representation, not a sort's constructor), an opaque runtime handle, a logic
+        // variable. Listed rather than defaulted so a new `Value`
         // variant must decide here (the `runtime_carrier_sort` discipline).
         Value::Int(_)
         | Value::BigInt(_)

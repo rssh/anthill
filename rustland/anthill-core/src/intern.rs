@@ -844,6 +844,11 @@ pub struct SymbolTable {
     /// WI-20261011-A3NND — the owner of each type parameter registered, in the order
     /// they were ([`Self::add_type_param`]): see [`Self::type_param_owners_since`].
     type_param_log: Vec<ScopeId>,
+    /// The symbol of each positional label `_N` the table holds, by the 0-based index
+    /// [`positional_label_index`] reads off it: filled where [`Self::intern`] mints the
+    /// symbol, so it answers for every such label, and read by
+    /// [`Self::positional_label_symbol`] without formatting the label.
+    positional_labels: HashMap<usize, Symbol>,
     /// All per-scope data, keyed by the scope's owning symbol.
     scopes: HashMap<ScopeId, Scope>,
     /// WI-369: symbols declared `internal` — hidden from cross-scope resolution
@@ -1169,6 +1174,8 @@ impl SymbolTable {
             // its length sees, after a layer's discard, an owner that no longer has the
             // parameter, and reads more for it, never less.
             type_param_log: _,
+            // MONOTONE — derived from `intern_map`, which is.
+            positional_labels: _,
             scopes,
             internal_syms,
             import_origin,
@@ -1259,6 +1266,7 @@ impl SymbolTable {
             by_qualified_name: HashMap::new(),
             canonical_moves: 0,
             type_param_log: Vec::new(),
+            positional_labels: HashMap::new(),
             scopes: HashMap::new(),
             internal_syms: HashSet::new(),
             import_origin: HashMap::new(),
@@ -1295,6 +1303,7 @@ impl SymbolTable {
             by_qualified_name,
             canonical_moves,
             type_param_log,
+            positional_labels,
             scopes,
             internal_syms,
             import_origin,
@@ -1320,6 +1329,7 @@ impl SymbolTable {
             // keyed right in the copy: the same count.
             canonical_moves: plain(canonical_moves),
             type_param_log: plain(type_param_log),
+            positional_labels: plain(positional_labels),
             scopes: plain(scopes),
             internal_syms: plain(internal_syms),
             import_origin: plain(import_origin),
@@ -1368,7 +1378,15 @@ impl SymbolTable {
         let sym = Symbol(self.defs.len() as u32);
         self.defs.push(SymbolDef::Unresolved { name: s.to_owned() });
         self.intern_map.insert(s.to_owned(), sym);
+        if let Some(index) = positional_label_index(s) {
+            self.positional_labels.insert(index, sym);
+        }
         sym
+    }
+
+    /// The symbol of the positional label `_{index + 1}`, if it was ever interned.
+    pub fn positional_label_symbol(&self, index: usize) -> Option<Symbol> {
+        self.positional_labels.get(&index).copied()
     }
 
     /// Mint a FRESH, distinct Unresolved symbol carrying `name` as its display

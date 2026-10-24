@@ -258,7 +258,7 @@ pub(crate) fn goal_form(kb: &mut KnowledgeBase, v: Value) -> Value {
 /// via `/code-review`.
 fn goal_form_proposition(kb: &mut KnowledgeBase, v: Value) -> Value {
     let ViewHead::Functor {
-        functor: Some(f),
+        functor: f,
         pos_arity,
         named_arity,
     } = v.head(kb)
@@ -402,7 +402,7 @@ pub fn refute_guard(kb: &mut KnowledgeBase, flow: &FlowEnv, guard: &Value) -> bo
 pub(super) fn negate_goal(kb: &mut KnowledgeBase, goal: &Value) -> Option<Value> {
     let (eq_sym, neq_sym) = eq_neq_functors(kb);
     if let ViewHead::Functor {
-        functor: Some(f),
+        functor: f,
         pos_arity,
         named_arity,
     } = goal.head(kb)

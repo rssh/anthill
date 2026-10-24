@@ -559,7 +559,7 @@ fn binding_as_the_caller_writes(kb: &KnowledgeBase, v: &Value) -> String {
     let param = match v.head(kb) {
         ViewHead::Ident(s) => Some(s),
         ViewHead::Functor {
-            functor: Some(s),
+            functor: s,
             pos_arity: 0,
             ..
         } if v.named_keys(kb).is_empty() => Some(s),
@@ -1416,7 +1416,7 @@ fn entry_type_param_bindings(
     // application is not the shape an entry has here — the structural reject.
     let bindings: SmallVec<[(Symbol, Value); 2]> = match entry.spec.head(kb) {
         ViewHead::Functor {
-            functor: Some(functor),
+            functor,
             pos_arity,
             named_arity,
         } => {

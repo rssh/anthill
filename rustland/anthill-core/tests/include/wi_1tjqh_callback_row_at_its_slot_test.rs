@@ -48,16 +48,14 @@
 //!    [`the_override_a_call_dispatches_to_reads_the_callback_at_its_own_slot`] is charged the
 //!    binder.
 //! 3. THE SLOT'S ROW VARIABLE LACKS A LABEL OVER A BINDER OUT OF SCOPE AT THE CALL
-//!    (`callback_at_slot` registering none). 5 FAIL, each where the binder is no callback
-//!    parameter's place — a lambda taken out of a tuple, or a slot that names no parameter to
-//!    rename to:
-//!    [`a_modifying_callback_is_refused_at_an_open_row_that_lacks_the_write_however_written`]
-//!    loads clean at the tuple, and
-//!    [`a_callbacks_own_parameter_is_no_label_a_row_parameter_takes`],
-//!    [`a_slot_naming_the_callbacks_parameter_takes_the_write_and_the_row_parameter_the_rest`],
-//!    [`a_constructor_reads_the_callback_at_its_fields_slot`] and
+//!    (`callback_at_slot` registering none). 2 FAIL, each where the slot names no parameter to
+//!    rename to: [`a_constructor_reads_the_callback_at_its_fields_slot`] and
 //!    [`a_function_value_reads_the_callback_at_its_slot`] are refused for an undeclared
-//!    `Modify[k]` instead, the binder leaked into the caller's row.
+//!    `Modify[k]` instead, the binder leaked into the caller's row. (Re-measured by
+//!    WI-20261014-EDPF6, on the tree its test file's ledger describes: a lambda taken out of a
+//!    tuple is renamed by part 4 now, its arrow
+//!    recording its parameters, and the renamed label is a callback parameter's place, which
+//!    part 2 refuses on its own.)
 //! 4. THE CALLBACK'S ROW IN THE SLOT'S BINDER NAMES (`callback_at_slot` renaming nothing, the
 //!    callback's own parameters lacked as they stand). 2 FAIL, "unconstrained":
 //!    [`a_slot_naming_the_callbacks_parameter_takes_the_write_and_the_row_parameter_the_rest`]
@@ -308,8 +306,9 @@ fn the_bracket_says_the_row_in_every_spelling() {
 ///
 /// The callback parameter is the one that matters: `use` here declares NO effect, and with the
 /// label bound it loaded, the call charged `Modify[g.k]`, which `use`'s boundary drops — `go`
-/// answered 552, the first cell written by an operation typed pure (MEASURED). FAILS under
-/// part 3 at the tuple, and at the lambda — a clean load — with part 2 out as well.
+/// answered 552, the first cell written by an operation typed pure (MEASURED). FAILS with parts
+/// 2 and 3 both out — a clean load. Under part 3 alone it holds since WI-20261014-EDPF6: the
+/// tuple's label is renamed by part 4 to a place part 2 refuses.
 #[test]
 fn a_callbacks_own_parameter_is_no_label_a_row_parameter_takes() {
     let unconstrained = ["type mismatch in", "run.type_arg", "expected a type for 'EffP'"];
@@ -364,8 +363,8 @@ fn a_callbacks_own_parameter_is_no_label_a_row_parameter_takes() {
 /// the callback's `Modify[k]` met no label of the slot, whose binder is another symbol, and
 /// went to the tail. FAILS under part 4, and under part 1 for the callback writing `r` too.
 ///
-/// A lambda taken out of a tuple says its parameters at no position: refused, by the words
-/// that say so — FAILS under part 3, where it is refused for a leaked `Modify[k]` instead.
+/// A lambda taken out of a tuple is read at its parameters' positions as the lambda written at
+/// the call is: its arrow records them (WI-20261014-EDPF6).
 #[test]
 fn a_slot_naming_the_callbacks_parameter_takes_the_write_and_the_row_parameter_the_rest() {
     for (does, row, answer) in [
@@ -394,28 +393,28 @@ fn a_slot_naming_the_callbacks_parameter_takes_the_write_and_the_row_parameter_t
             );
         }
     }
+    let ns = "wi1tjqh.named_tuple";
     let src = program(
-        "wi1tjqh.named_tuple",
+        ns,
         &Shape {
             run: RUN_OWN,
             body: "    let t = (lambda (k: Cell[V = Int64]) -> put(k, 5) + put(r, 6), 1)\n    run(q, t._1)",
             ..Shape::default()
         },
     );
-    assert_refused_naming(
-        &load_errors_of(&src),
-        &["type mismatch in run.f (op-arg)", "known by position"],
+    assert_eq!(
+        run_int64(&src, &format!("{ns}.go")),
+        Ok(1156),
         "a lambda out of a tuple writing its own parameter at a slot naming one",
     );
 }
 
 /// A MODIFYING CALLBACK AGAINST AN OPEN ROW THAT LACKS THE WRITE (`f: (x) -> Unit @ {Eff,
 /// -Modify[x]}`) IS REFUSED HOWEVER IT IS WRITTEN — an operation, a lambda, a `let`, a callback
-/// parameter, each by the absence it violates; a lambda out of a tuple by the position nobody
-/// says. With the label bound and nothing said of the binder, the operation, the lambda, the
-/// `let` and the tuple all LOADED: the label `Eff` took covered itself before the absence was
-/// read (MEASURED). FAILS under part 3 at the tuple, and at the operation, the lambda and the
-/// `let` as well once part 4 is out with it.
+/// parameter, a lambda out of a tuple, each by the absence it violates. With the label bound and
+/// nothing said of the binder, the operation, the lambda, the `let` and the tuple all LOADED:
+/// the label `Eff` took covered itself before the absence was read (MEASURED). FAILS under part
+/// 3 at the operation, the lambda, the `let` and the tuple once part 4 is out with it.
 #[test]
 fn a_modifying_callback_is_refused_at_an_open_row_that_lacks_the_write_however_written() {
     let lambda = "lambda (c: Cell[V = Int64]) -> Cell.set(c, 1)";
@@ -447,7 +446,7 @@ end
             "tuple",
             "",
             format!("    let t = ({lambda}, 1)\n    taker(t._1)"),
-            &["type mismatch in taker.f (op-arg)", "known by position"][..],
+            &lacks[..],
         ),
     ] {
         let src = program(&format!("wi1tjqh.lacks_{spelling}"), parameter, &body);

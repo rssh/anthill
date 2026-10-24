@@ -1770,7 +1770,7 @@ pub(super) fn user_precondition_clauses(kb: &KnowledgeBase, clauses: &[Value]) -
 /// denoted-bearing user precondition rides as a `Value::Node`).
 pub(super) fn is_effects_runtime_clause(kb: &KnowledgeBase, clause: &Value) -> bool {
     matches!(clause.head(kb),
-        ViewHead::Functor { functor: Some(f), .. }
+        ViewHead::Functor { functor: f, .. }
             if kb.qualified_name_of(f) == "anthill.prelude.EffectsRuntime")
 }
 
@@ -2298,7 +2298,7 @@ fn format_binding_type_for_goal(kb: &KnowledgeBase, v: &Value, as_written: bool)
         // unresolved `Ident` falls here.
         ViewHead::Ident(s) => kb.qualified_name_of(s).to_string(),
         ViewHead::Functor {
-            functor: Some(functor),
+            functor,
             pos_arity,
             named_arity,
         } => {

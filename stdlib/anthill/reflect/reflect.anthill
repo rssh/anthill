@@ -400,8 +400,9 @@ namespace anthill.reflect
   -- when the term has no matching named arg or is not Fn-shaped — INCLUDING a
   -- leaf term (a literal, a variable, a bare name), which reads as a term and
   -- simply has no named args. A value that is no term at all — an opaque runtime
-  -- handle, a functor-less aggregate, an operation reference — RAISES instead, so
-  -- an unrecognised carrier is never spelled as `none()` (WI-20260827-W1YKH).
+  -- handle, an operation reference — RAISES instead, so an unrecognised carrier is
+  -- never spelled as `none()` (WI-20260827-W1YKH). A tuple is its
+  -- `TupleLiteral(_1: …)` term.
   operation term_field(t: Term, name: String) -> Option[T = Term] @[host_implemented]
 
   -- Extract a String literal value from a term. Returns none() unless the

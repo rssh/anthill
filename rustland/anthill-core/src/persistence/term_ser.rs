@@ -720,7 +720,7 @@ fn type_named(kb: &KnowledgeBase, s: &str) -> Option<Symbol> {
 fn type_head_and_inner(kb: &KnowledgeBase, ty: &Value) -> (Option<Symbol>, Option<Value>) {
     match ty.head(kb) {
         ViewHead::Functor {
-            functor: Some(head),
+            functor: head,
             ..
         } => {
             let inner = ty

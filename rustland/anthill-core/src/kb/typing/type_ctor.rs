@@ -5,8 +5,9 @@
 use super::*;
 
 /// WI-714 / WI-20260818-YQB1Y — build a relation SCHEMA type from an ordered column list:
-/// `Unit` for zero columns, else the named tuple keyed by the columns IN GIVEN ORDER (not
-/// re-sorted, so the type's field order matches the runtime materialized row). The shared
+/// the named tuple keyed by the columns IN GIVEN ORDER (not re-sorted, so the type's field
+/// order matches the runtime materialized row) — `Unit`, the tuple of no components, for
+/// zero columns. The shared
 /// shape that [`assemble_relation_type`] (a fresh / projected relation) and
 /// [`without_named_tuple_types`] (fix's post-drop residual) both produce.
 ///
@@ -43,10 +44,7 @@ pub(super) fn relation_schema_type(
     columns: &[(Symbol, Value)],
     sp: crate::span::SourceSpan,
 ) -> Value {
-    match columns.len() {
-        0 => Value::term(kb.make_sort_ref_by_name("anthill.prelude.Unit")),
-        _ => named_tuple_value(kb, columns, sp, None),
-    }
+    named_tuple_value(kb, columns, sp, None)
 }
 
 /// WI-1128 / WI-20260818-YQB1Y — read a relation schema's COLUMNS, or `None` if the type is
@@ -66,16 +64,8 @@ pub(super) fn relation_schema_type(
 /// per operation (merge / drop / select) and a shared sentence would have to be vague about
 /// all three.
 pub(super) fn schema_fields(kb: &KnowledgeBase, t: &Value) -> Option<Vec<(Symbol, Value)>> {
-    // Resolved ONCE. A `Unit` that does not resolve costs a WRONG REFUSAL rather than a
-    // wrong acceptance — every caller here refuses on `None`, so the failure mode is a
-    // loud error naming `Unit` as a non-schema, not a silently mis-computed schema.
-    let unit = kb.try_resolve_symbol("anthill.prelude.Unit");
     match extract_type(kb, t) {
         TypeExtractor::NamedTuple(fields) => Some(fields),
-        // A BARE `Unit` sort ref — exactly what [`relation_schema_type`] mints for zero
-        // columns, and now ONLY that. A `Unit[..]` APPLICATION is a different type and must
-        // not read as membership, the same distinction `membership_schema_type` draws.
-        TypeExtractor::SortRef(s) if unit == Some(s) => Some(Vec::new()),
         _ => None,
     }
 }
@@ -162,15 +152,9 @@ fn concat_named_tuple_types(
         }
         merged.push((name, ty));
     }
-    // Through [`relation_schema_type`], NOT `named_tuple_value` directly — every producer in
-    // this family goes through it, and `Concat` was the one that did not (review-found,
-    // MEASURED). Since WI-20260818-YQB1Y a `Unit` operand contributes an EMPTY field list, so
-    // `merged` can legitimately be empty — and an empty named tuple is `()`, which is NOT the
-    // `Unit` a zero-column relation's schema is and NOT what `materialize_solution` builds for
-    // a zero-column row. Measured before the fix: `anyone.join(anyone, …)` over two membership
-    // relations typed as `Relation[T = ()]` against a `Unit`-declared consumer, and `negate`
-    // over it reported "free column(s): " with an empty list. That is the same
-    // type-disagrees-with-its-own-value lie this ticket removed, one arity further down.
+    // Through [`relation_schema_type`], as every producer in this family. Since
+    // WI-20260818-YQB1Y a `Unit` operand contributes an EMPTY field list, so `merged` can be
+    // empty: the schema `Unit` of two membership relations.
     Ok(relation_schema_type(kb, &merged, site.sp))
 }
 
@@ -250,6 +234,7 @@ fn walk_type_heads(kb: &KnowledgeBase, ty: &Value, bare: bool, visit: &mut impl 
             result,
             effects,
             arity: _,
+            binders: _,
         } => {
             walk_type_heads(kb, &param, bare, visit);
             walk_type_heads(kb, &result, bare, visit);
@@ -727,18 +712,9 @@ fn without_named_tuple_types(
     site: &CtorReduceSite,
 ) -> Result<Value, String> {
     // The fields to drop — `drop` is the captured record type (a named tuple). An empty
-    // capture (an empty named tuple, or `Unit`) drops nothing → the identity (OQ #6).
+    // capture (`Unit`, the tuple of no components) drops nothing → the identity (OQ #6).
     let drop_fields = match extract_type(kb, drop) {
         TypeExtractor::NamedTuple(f) => f,
-        // A bare `Unit` drop (a generic `Without[T, Unit]`) drops nothing → identity. Both
-        // sides must be `Some` and equal — a `.zip` guards against `None == None` (a headless
-        // `drop` when `Unit` is also unresolvable) silently selecting this arm.
-        _ if sort_functor_of_view(kb, drop)
-            .zip(kb.try_resolve_symbol("anthill.prelude.Unit"))
-            .is_some_and(|(f, u)| f == u) =>
-        {
-            Vec::new()
-        }
         _ => {
             return Err(
                 "`Without` drop operand must be a record (named tuple) of the columns \
@@ -849,17 +825,10 @@ fn membership_schema_type(
     _site: &CtorReduceSite,
 ) -> Result<Value, String> {
     let extracted = extract_type(kb, t);
-    // `Unit` — the 0-column schema — is the one accepted operand; return it unchanged so
-    // the enclosing `Relation[T = Membership[T = r.T]]` reduces to `Relation[T = Unit]`.
-    // A BARE sort ref, which is exactly what `relation_schema_type` mints for zero columns:
-    // a `Unit[..]` APPLICATION is a different type and must not read as closed. And if `Unit`
-    // itself does not resolve there is no verdict to give — DEFER (return the operand
-    // unreduced) rather than let a failed lookup turn the accepted type into the offender.
-    let unit = kb.try_resolve_symbol("anthill.prelude.Unit");
-    let Some(unit) = unit else {
-        return Ok(t.clone());
-    };
-    if matches!(extracted, TypeExtractor::SortRef(s) if s == unit) {
+    // `Unit` — the 0-column schema, the tuple of no components — is the one accepted
+    // operand; return it unchanged so the enclosing `Relation[T = Membership[T = r.T]]`
+    // reduces to `Relation[T = Unit]`.
+    if matches!(&extracted, TypeExtractor::NamedTuple(fields) if fields.is_empty()) {
         return Ok(t.clone());
     }
     let offending = match extracted {

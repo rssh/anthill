@@ -180,7 +180,7 @@ impl Dictionary {
         use crate::kb::term_view::{TermView, ViewHead};
         let (ctor, impl_key) = crate::kb::term_view::dictionary_view_syms(kb)?;
         let ViewHead::Functor {
-            functor: Some(f),
+            functor: f,
             pos_arity,
             named_arity: 1,
         } = v.head(kb)
@@ -197,7 +197,7 @@ impl Dictionary {
         let impl_sort = match v.named_arg(kb, impl_key)?.head(kb) {
             ViewHead::Ident(s) => s,
             ViewHead::Functor {
-                functor: Some(s),
+                functor: s,
                 pos_arity: 0,
                 ..
             } => s,

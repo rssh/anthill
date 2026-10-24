@@ -661,7 +661,7 @@ fn tuple_components_from_view<'a>(
     use crate::parse::desugar_target as dt;
 
     let ViewHead::Functor {
-        functor: Some(f),
+        functor: f,
         pos_arity,
         ..
     } = value.head(kb)

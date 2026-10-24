@@ -48,10 +48,10 @@
 //!    own mixed fixture (`rule tgt()` inside, `rule nsx.tgt` outside), which it had to
 //!    write in ONE spelling because no single goal reached both clauses. It now
 //!    answers both, in either spelling.
-//!  * A **CONSTRAINT** body is the one proposition-shaped position NOT reached — see
-//!    [`a_constraint_body_is_inert_for_every_spelling`], which measures why: a denial is
-//!    stored as an inert fact and registered as no guard, so a goal there decides
-//!    nothing whatever it names, dotted or not.
+//!  * A **CONSTRAINT** body was the one proposition-shaped position not reached here.
+//!    Its goals are now read as a rule body's (WI-20261023-76KZN), and
+//!    [`a_constraint_body_reads_a_citation_as_a_rule_body_does`] holds the two to one
+//!    verdict per spelling.
 //!
 //! ── WHICH ROWS FAIL WHEN THE CHANGE IS BACKED OUT ────────────────────────────
 //!
@@ -132,8 +132,11 @@
 //! §6.7), [`a_data_slot_still_stores_the_chain_on_both_sides_of_a_match`],
 //! [`a_hand_written_field_access_is_still_a_call_in_both_positions`] (the mint gate's own
 //! fixture), [`a_dotted_equation_subject_still_fires_nothing`],
-//! [`the_two_nullary_spellings_are_one_term`] (the PIN, flipped by CZJ2N), and
-//! [`a_constraint_body_is_inert_for_every_spelling`] (the boundary).
+//! [`the_two_nullary_spellings_are_one_term`] (the PIN, flipped by CZJ2N), and the
+//! constraint row (the boundary: a denial's body was inert). That row was replaced by
+//! [`a_constraint_body_reads_a_citation_as_a_rule_body_does`] when a constraint's goals
+//! came to be read as a rule body's (WI-20261023-76KZN), and the replacement was not
+//! measured under these back-outs: its dotted rows read the citation as this ticket does.
 //!
 //! STDLIB LOADS: TWO —
 //! [`an_operation_body_still_reads_the_dotted_citation_as_the_relation_value`] and
@@ -737,40 +740,47 @@ fn a_hand_written_field_access_is_still_a_call_in_both_positions() {
     );
 }
 
-/// THE FIFTH POSITION, NAMED RATHER THAN LEFT UNSAID: a `constraint` body. It is NOT
-/// reached by this ticket, and the reason is that the position is inert for EVERY
-/// spelling — a denial is stored as an inert `Constraint(head:, guard:)` fact and is not
-/// registered as a guard (`load_constraint`, and the stdlib depends on that), so a goal
-/// there decides nothing whatever it names.
-///
-/// DRIVEN so the claim is not an inherited justification: the third arm names a namespace
-/// that DOES NOT EXIST, and loads just as clean as the two that do. A citation the loader
-/// cannot resolve at all being silent there is the position's own property, not the
-/// dotted spelling's — which is what makes this somebody else's ticket rather than a
-/// fourth hole left open here.
+/// THE FIFTH POSITION: a `constraint` body. A constraint's goals are read as a rule body's
+/// are (WI-20261023-76KZN), so each spelling here has the verdict its rule-body twin has:
+/// the dotted paren-less citation and the applied one run the predicate, and a citation of a
+/// namespace that does not exist is refused in both. Before, a denial's body was inert and
+/// all three loaded clean.
 #[test]
-fn a_constraint_body_is_inert_for_every_spelling() {
-    for (label, src) in [
+fn a_constraint_body_reads_a_citation_as_a_rule_body_does() {
+    for (label, prelude, goals, loads) in [
         (
             "dotted paren-less",
-            "fact b719(1)\nnamespace zz719.ct\n  rule tgt :- b719(1)\nend\n\
-             constraint cx719\n  :- zz719.ct.tgt, zz719.ct.tgt\n",
+            "fact b719(1)\nnamespace zz719.ct\n  rule tgt :- b719(1)\nend\n",
+            "zz719.ct.tgt, zz719.ct.tgt",
+            true,
         ),
         (
             "applied",
-            "fact b719(1)\nnamespace zz719.ctp\n  rule tgt() :- b719(1)\nend\n\
-             constraint cy719\n  :- zz719.ctp.tgt(), zz719.ctp.tgt()\n",
+            "fact b719(1)\nnamespace zz719.ctp\n  rule tgt() :- b719(1)\nend\n",
+            "zz719.ctp.tgt(), zz719.ctp.tgt()",
+            true,
         ),
         (
             "a namespace that does not exist",
-            "fact b719(1)\nconstraint cz719\n  :- zz719.nope.tgt, zz719.nope.tgt\n",
+            "fact b719(1)\n",
+            "zz719.nope.tgt, zz719.nope.tgt",
+            false,
         ),
     ] {
-        assert!(
-            crate::common::try_load_kb_with(src).is_ok(),
-            "{label}: a denial constraint's body is inert at load — if this ever refuses, \
-             the constraint position has acquired a reading and this ticket's boundary \
-             has to move with it"
+        let constraint = crate::common::load_errors_of(&format!(
+            "{prelude}constraint cx719: false\n  :- {goals}\n"
+        ));
+        let rule = crate::common::load_errors_of(&format!("{prelude}rule rx719 :- {goals}\n"));
+        assert_eq!(
+            rule.is_empty(),
+            loads,
+            "{label}: the rule-body twin, the reading the constraint is held to; got {rule:#?}"
+        );
+        assert_eq!(
+            constraint.is_empty(),
+            loads,
+            "{label}: a constraint's goal reads its citation as a rule body does; got \
+             {constraint:#?}"
         );
     }
 }

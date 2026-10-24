@@ -331,7 +331,7 @@ fn an_ordinary_namespace_keeps_its_content_rules() {
     sort Param = ?
     rule p(1) :- true
     fact q(2)
-    constraint no_three :- p(3)
+    constraint no_three: false :- p(3)
     describe p {< a rule someone else could own >}
 "#;
     let plain = format!(
@@ -419,7 +419,7 @@ fn every_refused_production_is_refused() {
         ("fact", "    fact freshq(2)", "`fact`"),
         (
             "constraint",
-            "    constraint no_three :- Rec.show(rec(n: 3))",
+            "    constraint no_three: false :- Rec.show(rec(n: 3))",
             "`constraint`",
         ),
     ];

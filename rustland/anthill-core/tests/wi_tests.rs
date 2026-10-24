@@ -53,6 +53,8 @@ mod wi_rm247_data_sort_equation_test;
 mod wi_4dyr6_every_sort_provides_itself_test;
 #[path = "include/wi_3hn0n_tuple_on_rhs_test.rs"]
 mod wi_3hn0n_tuple_on_rhs_test;
+#[path = "include/wi_7g99a_unit_is_the_empty_tuple_test.rs"]
+mod wi_7g99a_unit_is_the_empty_tuple_test;
 #[path = "include/wi_3hn0n_found_load_error_order_test.rs"]
 mod wi_3hn0n_found_load_error_order_test;
 #[path = "include/wi_cr6gd_clause_defined_call_test.rs"]
@@ -2247,3 +2249,7 @@ mod relation_citation_reads_every_clause_test;
 mod unresolved_annotation_reported_once_test;
 #[path = "include/rule_goal_sort_bracket_refused_test.rs"]
 mod rule_goal_sort_bracket_refused_test;
+#[path = "include/wi_76kzn_constraint_goal_reading_test.rs"]
+mod wi_76kzn_constraint_goal_reading_test;
+#[path = "include/wi_edpf6_arrow_records_its_binders_test.rs"]
+mod wi_edpf6_arrow_records_its_binders_test;

@@ -781,7 +781,6 @@ pub(super) fn check_apply_iter(
                             &mut subst,
                             *param_sym,
                             param_type,
-                            arg_occ,
                             &arg_result.ty,
                         )
                     };
@@ -847,7 +846,6 @@ pub(super) fn check_apply_iter(
                             &mut subst,
                             *param_sym,
                             param_type,
-                            arg_occ,
                             &arg_result.ty,
                         )
                     };
@@ -1004,14 +1002,10 @@ pub(super) fn check_apply_iter(
                 if let Some(arg_ty) = param_to_arg_type.get(param_sym) {
                     // The slot's row as this call reads it, before the argument meets it —
                     // see the argument loops.
-                    let arg_occ = match bound_arg(kb, &op.params, &pos_call_params, i, named_args) {
-                        Some(BoundArg::Pos(j)) => Some(&pos_args[j]),
-                        Some(BoundArg::Named(k)) => Some(&named_args[k].1),
-                        None => None,
-                    };
-                    let at_slot = arg_occ.and_then(|arg_occ| {
-                        callback_at_slot(kb, env, &mut subst, *param_sym, &eff, arg_occ, arg_ty)
-                    });
+                    let at_slot = bound_arg(kb, &op.params, &pos_call_params, i, named_args)
+                        .and_then(|_| {
+                            callback_at_slot(kb, env, &mut subst, *param_sym, &eff, arg_ty)
+                        });
                     unify_types(kb, &mut subst, at_slot.as_ref().unwrap_or(arg_ty), &eff);
                     // The discharge inference reads the callback as this slot reads it: the
                     // argument loops deferred this parameter, and recorded it as written.
@@ -5027,7 +5021,6 @@ pub(super) fn check_apply_iter(
                                 &mut subst,
                                 *param_sym,
                                 slot_type,
-                                &pos_args[i],
                                 &arg_result.ty,
                             );
                             match validate_arg_against_param(
@@ -5186,7 +5179,7 @@ pub(super) fn check_apply_iter(
                 // checks in the other order. Left alone deliberately: the two
                 // errors say different true things about the argument, and
                 // suppressing one here would make the two paths diverge.
-                for (i, (arg_name, arg_occ)) in named_args.iter().enumerate() {
+                for (i, (arg_name, _)) in named_args.iter().enumerate() {
                     let Ok(arg_result) = &named_results[i] else {
                         continue;
                     };
@@ -5203,7 +5196,6 @@ pub(super) fn check_apply_iter(
                         &mut subst,
                         param_sym,
                         &param_type,
-                        arg_occ,
                         &arg_result.ty,
                     );
                     match validate_arg_against_param(
@@ -5794,9 +5786,10 @@ fn rekeyed_return(
                 result,
                 effects,
                 arity,
+                binders,
             } => {
                 let e = changed(kb, &effects, rows)?;
-                Some(arrow_value(kb, &param, &result, &e, arity, sp, owner))
+                Some(arrow_value(kb, &param, &result, &e, arity, binders, sp, owner))
             }
             TypeExtractor::Parameterized { base, bindings }
                 if !is_sort_view_functor(kb, base) && effect_expr_form(kb, base).is_none() =>

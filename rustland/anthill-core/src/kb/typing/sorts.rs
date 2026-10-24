@@ -1565,8 +1565,43 @@ fn check_value_against_type(
         Some("parameterized") => {
             check_value_against_parameterized(kb, value, declared_type, entity_sym, field_sym, span)
         }
-        _ => None, // type_var, arrow, named_tuple, nothing — skip for now
+        Some("named_tuple") => {
+            check_value_against_tuple(kb, value, declared_type, entity_sym, field_sym, span)
+        }
+        _ => None, // type_var, arrow, nothing — skip for now
     }
+}
+
+/// Check a value against a tuple type — `Unit` is the tuple of no components. The value's
+/// type, read off the stored term, is related to the declared one by the relation an
+/// argument meets its slot by, so width and labels are judged as everywhere else (§4.5).
+/// A variable is not judged here.
+fn check_value_against_tuple(
+    kb: &mut KnowledgeBase,
+    value: TermId,
+    declared_type: &Value,
+    entity_sym: Symbol,
+    field_sym: Symbol,
+    span: Option<Span>,
+) -> Option<TypeError> {
+    if matches!(kb.get_term(value), Term::Var(_)) {
+        return None;
+    }
+    let mut subst = Substitution::new();
+    let actual = value_type_term(kb, &subst, &Value::term(value));
+    if types_compatible(kb, &mut subst, &actual, declared_type) {
+        return None;
+    }
+    Some(TypeError::Other {
+        site: TypeError::here(),
+        span,
+        context: TypeErrorContext::EntityField {
+            entity: entity_sym,
+            field: field_sym,
+        },
+        expected: declared_type_display(kb, declared_type),
+        actual: type_display_name_value(kb, &actual),
+    })
 }
 
 /// Check value against a simple sort_ref type.
