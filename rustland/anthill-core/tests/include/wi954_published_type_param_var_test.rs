@@ -178,20 +178,18 @@ fn the_carrier_is_not_a_parameter_of_its_enclosing_sort() {
 #[test]
 fn a_declaration_that_is_not_a_type_parameter_denotes_no_parameter_variable() {
     let kb = crate::common::load_kb_with(SRC);
-    for qn in ["anthill.reflect.Term", "anthill.prelude.Unit"] {
-        let s = sym(&kb, qn);
-        assert!(
-            crate::common::sort_alias_backing_var(&kb, s).is_some(),
-            "`{qn}` must still be backed by a `SortAlias` to a Var — otherwise this \
-             control measures nothing",
-        );
-        assert_eq!(
-            type_param_global_var(&kb, s),
-            None,
-            "`{qn}` declares no type parameter, so it denotes no parameter variable \
-             (the pre-WI-954 ladder answered with its alias var)",
-        );
-    }
+    let s = sym(&kb, "anthill.reflect.Term");
+    assert!(
+        crate::common::sort_alias_backing_var(&kb, s).is_some(),
+        "`anthill.reflect.Term` must still be backed by a `SortAlias` to a Var — otherwise \
+         this control measures nothing",
+    );
+    assert_eq!(
+        type_param_global_var(&kb, s),
+        None,
+        "`anthill.reflect.Term` declares no type parameter, so it denotes no parameter \
+         variable (the pre-WI-954 ladder answered with its alias var)",
+    );
 }
 
 /// COMPLETENESS over the real corpus: every parameter a stdlib sort declares has a

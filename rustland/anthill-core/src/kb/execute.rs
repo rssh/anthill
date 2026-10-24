@@ -697,8 +697,8 @@ impl KnowledgeBase {
             ViewHead::Ident(s) => out.push(SynthKey::Ident(s)),
             ViewHead::Bottom => out.push(SynthKey::Bottom),
             // A nullary application reads as `Functor` at arity 0 (WI-20260902-CZJ2N,
-            // which retired the separate `Ref` head), so `functor: None` here
-            // is a functor-less aggregate (`Value::Tuple`/`Unit`) and `Opaque` a
+            // which retired the separate `Ref` head), and no carrier reads with a `None`
+            // functor (a tuple value reads as its `TupleLiteral` twin); `Opaque` is a
             // runtime carrier (Closure/Stream/…). Neither is a valid goal shape —
             // `lower_leaf`/`alloc_from_value` reject them upstream — so this is
             // unreachable; scream in debug. In release a benign `Bottom` keeps the

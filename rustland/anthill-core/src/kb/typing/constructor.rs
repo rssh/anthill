@@ -3,10 +3,9 @@
 
 use super::*;
 
-/// Tuple-literal special case routed from `check_constructor_iter`:
-/// empty tuple → `Unit`; populated tuple → `named_tuple` whose fields
-/// are `_0, _1, …` for positional args and the source label for named
-/// args.
+/// Tuple-literal special case routed from `check_constructor_iter`: a
+/// `named_tuple` whose fields are `_1, _2, …` for positional args and the
+/// source label for named args — `Unit` for none.
 fn check_tuple_literal_constructor(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
@@ -17,11 +16,6 @@ fn check_tuple_literal_constructor(
     expected: Option<Value>,
     occ: &Rc<NodeOccurrence>,
 ) -> Result<TypeResult, TypeError> {
-    if pos_results.is_empty() && named_results.is_empty() {
-        let unit_ty = kb.make_sort_ref_by_name("anthill.prelude.Unit");
-        return Ok(TypeResult::pure(unit_ty, env.clone(), Rc::clone(occ)));
-    }
-
     // WI-714 (proposal 052) — the tuple a distribute-dot `r.(f1, f2)` desugared into is a
     // PROJECTION of `r`, not a tuple of `r`'s columns. Recognized by the mark `convert.rs`
     // left on it (WI-762), since the desugared term is identical to the hand-written tuple;

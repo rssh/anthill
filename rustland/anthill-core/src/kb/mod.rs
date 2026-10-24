@@ -5759,7 +5759,7 @@ impl KnowledgeBase {
     /// MISS: stored, just not collapsed — never unsound) and everything else keys.
     fn value_fact_dedup_key(&self, head: &crate::eval::value::Value) -> Option<term_view::GoalKey> {
         let key = term_view::goal_fingerprint(self, head, &subst::Substitution::new());
-        (key.is_opaque_free() && key.has_named_functors()).then_some(key)
+        key.is_opaque_free().then_some(key)
     }
 
     /// Assert a fact `functor(pos…, named…)` from carrier-agnostic `Value`
@@ -11031,6 +11031,20 @@ impl KnowledgeBase {
         self.symbols.lookup(name)
     }
 
+    /// The symbol of the positional label `_{index + 1}`, if it was ever interned.
+    pub fn positional_label_symbol(&self, index: usize) -> Option<Symbol> {
+        self.symbols.positional_label_symbol(index)
+    }
+
+    /// Intern the positional labels `_1` … `_{width}`, each one not yet held.
+    pub fn intern_positional_labels(&mut self, width: usize) {
+        for index in 0..width {
+            if self.positional_label_symbol(index).is_none() {
+                self.intern(&crate::intern::positional_label(index));
+            }
+        }
+    }
+
     /// Look up a resolved symbol by qualified name.
     pub fn try_resolve_symbol(&self, name: &str) -> Option<Symbol> {
         self.symbols.by_qualified_name.get(name).copied()
@@ -14388,12 +14402,10 @@ mod tests {
             "duplicate-label heads must not collapse into one fact"
         );
 
-        // (3) ANONYMOUS FUNCTOR. `Value::Unit` and an EMPTY `Value::Tuple` both head
-        //     as `Functor{None, 0, 0}` and key as one payload-BEARING token
-        //     `Open(None, 0, 0)` — so `is_opaque_free` cannot see the collision, and
-        //     the old key refused them outright (`value_to_term` returned `Err` for
-        //     `Unit` / `Tuple`). Dedup must not start admitting what its predecessor
-        //     rejected. Backing out `has_named_functors` fails this arm.
+        // (3) A NATIVE TUPLE. `Value::Unit` and an EMPTY `Value::Tuple` are one value,
+        //     `()`, and read as its rule twin `TupleLiteral()` (WI-20261011-7G99A): one
+        //     key, under a named functor, so dedup keys them as one fact. A tuple of
+        //     components keys as its `TupleLiteral` twin, its order kept.
         let unit_key = term_view::goal_fingerprint(&kb, &Value::Unit, &sigma);
         let empty_tuple = Value::Tuple {
             pos: Rc::from(Vec::<Value>::new()),
@@ -14402,16 +14414,28 @@ mod tests {
         assert_eq!(
             unit_key,
             term_view::goal_fingerprint(&kb, &empty_tuple, &sigma),
-            "Unit and an empty Tuple are indistinguishable through the view — the hazard",
+            "Unit and an empty Tuple are one value",
         );
         assert!(
-            unit_key.is_opaque_free(),
-            "and opaque-freedom cannot see it"
+            kb.value_fact_dedup_key(&Value::Unit).is_some()
+                && kb.value_fact_dedup_key(&empty_tuple).is_some(),
+            "and it keys under the tuple's functor",
         );
-        assert!(
-            kb.value_fact_dedup_key(&Value::Unit).is_none()
-                && kb.value_fact_dedup_key(&empty_tuple).is_none(),
-            "so an anonymous functor must get no dedup key",
+        let native = |named: Vec<(Symbol, Value)>| Value::Tuple {
+            pos: Rc::from(Vec::<Value>::new()),
+            named: Rc::from(named),
+        };
+        let n1 = native(vec![(x, one.clone()), (y, two.clone())]);
+        let n2 = native(vec![(y, two.clone()), (x, one.clone())]);
+        assert_eq!(
+            term_view::goal_fingerprint(&kb, &n1, &sigma),
+            term_view::goal_fingerprint(&kb, &tuple(vec![(x, one.clone()), (y, two.clone())]), &sigma),
+            "a native tuple keys as its `TupleLiteral` twin",
+        );
+        assert_ne!(
+            term_view::goal_fingerprint(&kb, &n1, &sigma),
+            term_view::goal_fingerprint(&kb, &n2, &sigma),
+            "and its component order is its identity",
         );
     }
 
@@ -15463,6 +15487,8 @@ mod tests {
         use term::Var;
 
         let mut kb = KnowledgeBase::new();
+        crate::kb::load::register_prelude(&mut kb);
+        kb.intern_positional_labels(2);
         let pr = kb.intern("pr");
         let marker = kb.intern("marker");
         let mk = kb.intern("mk");
@@ -15765,6 +15791,8 @@ mod tests {
         use crate::eval::value::Value;
 
         let mut kb = KnowledgeBase::new();
+        crate::kb::load::register_prelude(&mut kb);
+        kb.intern_positional_labels(2);
         let pair = kb.intern("Pair");
         let inner = kb.intern("Inner");
         let leaf = kb.intern("Leaf");

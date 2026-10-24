@@ -875,25 +875,9 @@ fn substitute_ref_terms_value_rec(
                 named: std::rc::Rc::from(named),
             }
         }
-        // A functor-LESS aggregate with children — a native `Value::Tuple`: rebuild a
-        // `Value::Tuple`, substituting each child, so a σ-parameter nested in a tuple
-        // operand grounds exactly as the term-side walk recurses through a tuple
-        // `Term::Fn`. A childless `Functor{None}` (`Value::Unit` / empty tuple) has no
-        // parameter to ground and rides the verbatim `_` arm below.
-        ViewHead::Functor {
-            functor: None,
-            pos_arity,
-            named_arity,
-        } if pos_arity + named_arity > 0 => {
-            let pos = subst_view_pos(kb, v, pos_arity, map, var_ref_sym);
-            let named = subst_view_named(kb, v, map, var_ref_sym);
-            Value::Tuple {
-                pos: std::rc::Rc::from(pos),
-                named: std::rc::Rc::from(named),
-            }
-        }
-        // A childless aggregate (Unit / empty tuple), literal, var, bottom, or opaque
-        // head carries no σ-substitutable reference — keep it verbatim.
+        // A literal, var, bottom, or opaque head carries no σ-substitutable reference —
+        // keep it verbatim. (A tuple value reads as its `TupleLiteral` twin and is rebuilt
+        // by the application arm above.)
         _ => v.clone(),
     }
 }

@@ -56,7 +56,9 @@ pub(super) fn visit_type(
         // matched on; an operation body writes each as a constructor. Where the text is
         // written as an operation body is, the constructor is what is typed, and what
         // the typed tree keeps ([`literal_as_constructor`]); in a rule's own term the
-        // three literal arms below type the node.
+        // three literal arms below type the node. What this decides is the node the typed
+        // tree keeps: eval constructs the constructor and has no case for the literal, and
+        // a clause is matched on the literal. `()` is `Unit` on either node.
         Expr::ListLit(_) | Expr::SetLit(_) | Expr::TupleLit { .. }
             if env.written_as_an_operation_body() =>
         {

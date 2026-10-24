@@ -45,9 +45,9 @@ pub enum ViewHead {
     Var(Var),
     /// Literal constant.
     Const(Literal),
-    /// Function / constructor application. Used for both `Term::Fn` and
-    /// `Value::Entity` / `Value::Tuple`, distinguished by whether `functor`
-    /// is `Some`.
+    /// Function / constructor application: a `Term::Fn`, a `Value::Entity`, and a tuple
+    /// value, which reads as its `TupleLiteral(_1: …)` twin. No carrier reads with a
+    /// `None` functor.
     Functor {
         functor: Option<Symbol>,
         pos_arity: usize,
@@ -531,6 +531,31 @@ fn set_literal_functor(kb: &KnowledgeBase) -> Option<Symbol> {
 
 fn tuple_literal_functor(kb: &KnowledgeBase) -> Option<Symbol> {
     kb.try_resolve_symbol(dt::qualified(dt::TUPLE_LITERAL))
+}
+
+/// A tuple VALUE — `Value::Tuple`, and `Value::Unit`, the tuple of no components — reads as
+/// the term a rule writes for the same text, `TupleLiteral(_1: …, name: …)`: all named, a
+/// positional component under its `_N` label. So a tuple an operation built matches the
+/// tuple of a fact or a goal, as an entity it built does. `register_prelude` defines the
+/// entity, and every load runs it.
+fn tuple_value_head(kb: &KnowledgeBase, pos: usize, named: usize) -> ViewHead {
+    let functor = tuple_literal_functor(kb)
+        .expect("tuple view: `TupleLiteral` is not defined — the KB was never given its prelude");
+    functor_view_head(functor, 0, pos + named)
+}
+
+/// The `_N` key of a tuple's positional component `i`, the symbol a rule's tuple term
+/// carries there. Eval interns the labels of every tuple it builds, and the typer and the
+/// loader those of every tuple they type or store, so a value that reaches here without
+/// its label was built by hand.
+fn tuple_positional_key(kb: &KnowledgeBase, i: usize) -> Symbol {
+    kb.positional_label_symbol(i).unwrap_or_else(|| {
+        panic!(
+            "tuple view: positional label `{}` not interned — a tuple value of that width \
+             was built outside eval, the typer and the loader",
+            crate::intern::positional_label(i)
+        )
+    })
 }
 
 // ── Lambda ↔ `lambda_expr` term isomorphism (WI-814) ────────────
@@ -1631,13 +1656,13 @@ fn occ_named_keys(occ: &NodeOccurrence, kb: &KnowledgeBase) -> Vec<Symbol> {
         Some(Expr::TupleLit { positional, named }) => {
             let mut keys: Vec<Symbol> = named.iter().map(|(s, _)| *s).collect();
             for i in 0..positional.len() {
-                keys.push(kb.lookup_symbol(&crate::intern::positional_label(i)).unwrap_or_else(
-                    || panic!(
+                keys.push(kb.positional_label_symbol(i).unwrap_or_else(|| {
+                    panic!(
                         "TupleLiteral view: positional label `{}` not interned — the \
                          KB holds a tuple-literal occurrence but never built its twin",
                         crate::intern::positional_label(i),
-                    ),
-                ));
+                    )
+                }));
             }
             keys
         }
@@ -2329,30 +2354,6 @@ impl GoalKey {
         self.0.iter().all(Self::token_bears_payload)
     }
 
-    /// True when no token is an ANONYMOUS functor — `Open(None, ..)`, the head of a
-    /// functor-less aggregate (`Value::Unit`, `Value::Tuple`).
-    ///
-    /// Such a token names no constructor, so two DIFFERENT functor-less carriers of
-    /// the same arity are indistinguishable: `Value::Unit` and
-    /// `Value::Tuple{pos: [], named: []}` both head as `Functor{None, 0, 0}` and key
-    /// as the single token `Open(None, 0, 0)`. Payload-BEARING (it carries both
-    /// arities), so [`Self::is_opaque_free`] cannot see it — a separate question,
-    /// separately named.
-    ///
-    /// Only fact dedup asks: `value_to_term` used to return `Err` for `Unit` /
-    /// `Tuple`, so the old key refused them outright, and dedup must not silently
-    /// start admitting what its predecessor rejected (over-dedup DROPS a fact). The
-    /// query cache does NOT ask — a functor-less goal is still keyed distinctly by
-    /// its children, and excluding it would only lose caching. `discrim::view_is_indexable`
-    /// rejects these heads for the third, adjacent reason: they carry no
-    /// discrimination key.
-    pub fn has_named_functors(&self) -> bool {
-        !self
-            .0
-            .iter()
-            .any(|t| matches!(t, StructToken::Open(None, _, _)))
-    }
-
     /// True when this key may safely index the resolver's per-query cache. Two
     /// conditions, both restoring exactly what the former hash-consed `TermId`
     /// cache key guaranteed:
@@ -2911,16 +2912,8 @@ impl TermView for Value {
             Value::Float(f) => ViewHead::Const(Literal::Float(ordered_float::OrderedFloat(*f))),
             Value::Bool(b) => ViewHead::Const(Literal::Bool(*b)),
             Value::Str(s) => ViewHead::Const(Literal::String(s.clone())),
-            Value::Unit => ViewHead::Functor {
-                functor: None,
-                pos_arity: 0,
-                named_arity: 0,
-            },
-            Value::Tuple { pos, named, .. } => ViewHead::Functor {
-                functor: None,
-                pos_arity: pos.len(),
-                named_arity: named.len(),
-            },
+            Value::Unit => tuple_value_head(kb, 0, 0),
+            Value::Tuple { pos, named, .. } => tuple_value_head(kb, pos.len(), named.len()),
             Value::Entity {
                 functor,
                 pos,
@@ -2982,7 +2975,6 @@ impl TermView for Value {
                 Term::Fn { pos_args, .. } => pos_args.get(i).copied().map(ViewItem::Term),
                 _ => None,
             },
-            Value::Tuple { pos, .. } => pos.get(i).map(ViewItem::Value),
             Value::Entity { pos, .. } => pos.get(i).map(ViewItem::Value),
             Value::Node(occ) => occ_view_pos_arg(occ, kb, i),
             _ => None,
@@ -2998,10 +2990,13 @@ impl TermView for Value {
                     .map(|(_, t)| ViewItem::Term(*t)),
                 _ => None,
             },
-            Value::Tuple { named, .. } => named
-                .iter()
-                .find(|(s, _)| *s == sym)
-                .map(|(_, v)| ViewItem::Value(v)),
+            Value::Tuple { pos, named } => {
+                if let Some((_, v)) = named.iter().find(|(s, _)| *s == sym) {
+                    return Some(ViewItem::Value(v));
+                }
+                let idx = crate::intern::positional_label_index(kb.local_name_of(sym))?;
+                pos.get(idx).map(ViewItem::Value)
+            }
             Value::Entity { named, .. } => named
                 .iter()
                 .find(|(s, _)| *s == sym)
@@ -3081,7 +3076,15 @@ impl TermView for Value {
                 Term::Fn { named_args, .. } => named_args.iter().map(|(s, _)| *s).collect(),
                 _ => Vec::new(),
             },
-            Value::Tuple { named, .. } => named.iter().map(|(s, _)| *s).collect(),
+            // Positional first: eval keeps a leading run of `_N`-labelled components
+            // positional and the rest named (`classify_ctor_arg`), so this is the order
+            // they were written in, the order the rule's term holds them in.
+            Value::Tuple { pos, named } => {
+                let mut keys: Vec<Symbol> =
+                    (0..pos.len()).map(|i| tuple_positional_key(kb, i)).collect();
+                keys.extend(named.iter().map(|(s, _)| *s));
+                keys
+            }
             Value::Entity { named, .. } => named.iter().map(|(s, _)| *s).collect(),
             Value::Node(occ) => occ_view_named_keys(occ, kb),
             // WI-1019 — the SAME shape the head counted and `named_arg` resolves

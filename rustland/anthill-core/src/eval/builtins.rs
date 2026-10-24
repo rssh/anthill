@@ -4647,10 +4647,10 @@ fn term_field(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
     // rejected.
     //
     // THE REFUSED SET is the one `value_to_term` calls its honest residue: an opaque
-    // runtime handle, and a functor-LESS aggregate (`Value::Unit` / `Value::Tuple` read
-    // as `Functor { functor: None }`, so a bare `Functor { .. }` test lets them
-    // through). Asked shallowly and on purpose: a field is readable off an entity whose
-    // OTHER field holds a closure.
+    // runtime handle, and a tuple value (`Value::Unit` / `Value::Tuple`, which reads as
+    // its `TupleLiteral` twin, so a bare `Functor { .. }` test lets it through — it has
+    // no `value_functor`). Asked shallowly and on purpose: a field is readable off an
+    // entity whose OTHER field holds a closure.
     if !reads_as_term(interp.kb(), &term_arg) {
         return Err(type_mismatch("Term", &term_arg, None));
     }
@@ -7257,6 +7257,15 @@ mod tests {
         Interpreter::new(crate::kb::KnowledgeBase::new())
     }
 
+    /// A tuple is read through the KB's `TupleLiteral`, which the prelude defines, its
+    /// positional components under `_N` labels the KB holds.
+    fn dummy_for_tuples() -> Interpreter {
+        let mut kb = crate::kb::KnowledgeBase::new();
+        crate::kb::load::register_prelude(&mut kb);
+        kb.intern_positional_labels(1);
+        Interpreter::new(kb)
+    }
+
     /// WI-881 — every `host_fn_by_key` entry's declared ARITY is the arity its function
     /// actually accepts.
     ///
@@ -7492,7 +7501,7 @@ mod tests {
 
     #[test]
     fn eq_on_equal_tuples_is_true() {
-        let kb = crate::kb::KnowledgeBase::new();
+        let mut interp = dummy_for_tuples();
         let a = Value::Tuple {
             pos: vec![Value::Int(1)].into(),
             named: Vec::new().into(),
@@ -7501,13 +7510,13 @@ mod tests {
             pos: vec![Value::Int(1)].into(),
             named: Vec::new().into(),
         };
-        let r = builtin_eq(&mut dummy(), &[a, b]).unwrap();
-        assert_eq!(r.literal_bool(&kb), Some(true));
+        let r = builtin_eq(&mut interp, &[a, b]).unwrap();
+        assert_eq!(r.literal_bool(interp.kb()), Some(true));
     }
 
     #[test]
     fn eq_on_different_tuples_is_false() {
-        let kb = crate::kb::KnowledgeBase::new();
+        let mut interp = dummy_for_tuples();
         let a = Value::Tuple {
             pos: vec![Value::Int(1)].into(),
             named: Vec::new().into(),
@@ -7516,8 +7525,8 @@ mod tests {
             pos: vec![Value::Int(2)].into(),
             named: Vec::new().into(),
         };
-        let r = builtin_eq(&mut dummy(), &[a, b]).unwrap();
-        assert_eq!(r.literal_bool(&kb), Some(false));
+        let r = builtin_eq(&mut interp, &[a, b]).unwrap();
+        assert_eq!(r.literal_bool(interp.kb()), Some(false));
     }
 
     #[test]

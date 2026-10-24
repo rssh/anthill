@@ -1880,6 +1880,9 @@ fn is_body_emittable(
         let short = short_name_of(&qualified);
         return Ok(resolve_type_mapping(kb, ctx, &[short], None)?.is_some());
     }
+    if matches!(extract_type(kb, ty), TypeExtractor::NamedTuple(fields) if fields.is_empty()) {
+        return Ok(unit_mapping(kb, ctx)?.is_some());
+    }
     let Some((base_sym, binding_values)) = unpack_parameterized(kb, ty) else {
         return Ok(false);
     };
@@ -5148,6 +5151,14 @@ fn lower_type(
             arity,
             ..
         } => lower_arrow_type(kb, ctx, &param, &result, arity),
+        TypeExtractor::NamedTuple(fields) if fields.is_empty() => match unit_mapping(kb, ctx)? {
+            Some(hit) => Ok(hit.host_type),
+            None => Err(CppCodegenError {
+                message: "`Unit`, the tuple of no components, has no `TypeMapping` in this \
+                          profile"
+                    .into(),
+            }),
+        },
         TypeExtractor::NamedTuple(fields) => {
             ctx.requested_includes
                 .borrow_mut()
@@ -5633,6 +5644,15 @@ fn query_type_mappings(
 /// highest-priority overlay present — the one query that backs BOTH
 /// declared-signature host-type lowering (reads `host_type`) and value-level
 /// marshalling (reads `lift` / `lower`).
+/// The profile's mapping for `Unit`, the tuple of no components (`void` in `cpp_std`):
+/// the one answer [`lower_type`] lowers it by and [`is_body_emittable`] asks.
+fn unit_mapping(
+    kb: &mut KnowledgeBase,
+    ctx: &CodegenContext,
+) -> Result<Option<TypeMappingHit>, CppCodegenError> {
+    resolve_type_mapping(kb, ctx, &["Unit"], None)
+}
+
 fn resolve_type_mapping(
     kb: &mut KnowledgeBase,
     ctx: &CodegenContext,

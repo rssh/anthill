@@ -5193,6 +5193,9 @@ impl Interpreter {
         let value = if Some(ctor_sym) == self.reflect.list_literal {
             self.build_list_value(pos, &named)?
         } else if is_tuple_literal {
+            // A tuple reads as its rule twin, a positional component under its `_N`
+            // label (`term_view`): the label is a symbol of the KB the value is read in.
+            self.kb.intern_positional_labels(pos.len());
             Value::Tuple {
                 pos: pos.into(),
                 named: named.into(),

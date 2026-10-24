@@ -228,9 +228,9 @@ fn two_genuinely_different_bindings_are_two_answers() {
 }
 
 /// The **transitive** guard, and the ONLY test that drives it: a structural
-/// carrier holding an OPAQUE child. `Value::Tuple{pos: [Closure]}` heads as
-/// `Functor{None, 1, 0}` — so the σ-wide shallow scan sees a shape and lets it
-/// through — while its key is `[Open(None,1,0), Opaque]` for BOTH closures. Two
+/// carrier holding an OPAQUE child. `Value::Tuple{pos: [Closure]}` heads as its
+/// `TupleLiteral(_1: …)` twin — so the σ-wide shallow scan sees a shape and lets it
+/// through — while its key is the tuple's token and `Opaque` for BOTH closures. Two
 /// genuinely distinct answers, one key.
 ///
 /// The old by-carrier list covered this by accident, by excluding every compound
@@ -274,7 +274,7 @@ fn an_opaque_child_inside_a_structural_carrier_disables_dedup() {
         // guard. `Cell` needs no KB, so the two carriers cross KBs safely here —
         // unlike a `Symbol`/`TermId`, an arena handle names the same slot anywhere.
         assert!(
-            matches!(a.head(kb), ViewHead::Functor { functor: None, .. }),
+            matches!(a.head(kb), ViewHead::Functor { functor: Some(_), .. }),
             "premise: a Tuple presents a shape to the shallow scan",
         );
         let Value::Tuple { pos, .. } = &a else {
@@ -296,7 +296,7 @@ fn an_opaque_child_inside_a_structural_carrier_disables_dedup() {
 /// makes the σ scan transitive rather than a head test: an opaque nested inside a
 /// structural carrier, bound to a rule-LOCAL var the goal never mentions.
 ///
-/// A shallow σ scan passes it (`Value::Tuple` heads `Functor{None,1,0}`) and the
+/// A shallow σ scan passes it (`Value::Tuple` heads as its `TupleLiteral` twin) and the
 /// key never sees it (not goal-reachable), so BOTH guards would wave it through
 /// and the second answer would be dropped. This is a hole the WI-1023 widening
 /// INTRODUCED — the list it replaced excluded `Tuple` wholesale — and it is why

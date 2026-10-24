@@ -1153,16 +1153,15 @@ impl<'a, V: PrintView + ?Sized> TermPrinter<'a, V> {
             ViewHead::Ident(sym) => buf.push_str(self.view.sym_name(sym)),
             // A closure, a stream: nothing with a surface to print.
             ViewHead::Opaque => buf.push_str("<opaque>"),
-            // A tuple a substitution rebuilt (`Value::Tuple`); a term's tuple has a functor.
-            ViewHead::Functor {
-                functor: None,
-                pos_arity,
-                ..
-            } => {
-                buf.push('(');
-                self.write_args(item, pos_arity, buf);
-                buf.push(')');
+            // No carrier reads functor-less: a tuple value reads as its `TupleLiteral` twin.
+            ViewHead::Functor { functor: None, .. } => {
+                unreachable!("print: a functor-less application")
             }
+            ViewHead::Functor {
+                functor: Some(f),
+                pos_arity: 0,
+                named_arity: 0,
+            } if self.is_tuple_literal(f) => buf.push_str("()"),
             ViewHead::Functor {
                 functor: Some(f),
                 pos_arity: 0,
@@ -1253,6 +1252,10 @@ impl<'a, V: PrintView + ?Sized> TermPrinter<'a, V> {
         // `wi1099_list_literal_twin_test::a_persisted_literal_is_still_retractable` left the
         // fact on disk). The cost is narrow: a user's own `entity ListLiteral` prints as `[…]`
         // here though the loader would not lower it.
+        if self.is_tuple_literal(f) && pos_arity == 0 {
+            self.write_tuple(item, buf);
+            return;
+        }
         if dt::is(fname, dt::LIST_LITERAL) && named_arity == 0 && !self.reload_faithful {
             buf.push('[');
             self.write_positional(item, pos_arity, buf);
@@ -1319,6 +1322,42 @@ impl<'a, V: PrintView + ?Sized> TermPrinter<'a, V> {
                 None => buf.push('?'),
             }
         }
+    }
+
+    /// Is `f` the reflect `TupleLiteral` — asked of its QUALIFIED name, so a user's own
+    /// entity of that short name is the application it is.
+    fn is_tuple_literal(&self, f: Symbol) -> bool {
+        let qname = self.view.qualified_name(f);
+        qname == dt::TUPLE_LITERAL || qname == dt::qualified(dt::TUPLE_LITERAL)
+    }
+
+    /// A tuple as DATA, written as its literal: `(1, 2)`, `(a: 1, b: 2)`. A rule's tuple term
+    /// and the tuple an operation built read alike, every component under its label. A
+    /// positional component goes without its `_N` label, except as the only one, where
+    /// `(x)` would be grouping. The tuple of no components is written `()` where its head is
+    /// read.
+    fn write_tuple(&self, item: &V::Item, buf: &mut String) {
+        let keys = self.view.named_keys(item);
+        let positional = keys.len() > 1
+            && keys
+                .iter()
+                .enumerate()
+                .all(|(i, k)| is_positional_label_at(self.view.sym_name(*k), i));
+        buf.push('(');
+        for (i, key) in keys.into_iter().enumerate() {
+            if i > 0 {
+                buf.push_str(", ");
+            }
+            if !positional {
+                buf.push_str(self.view.sym_name(key));
+                buf.push_str(": ");
+            }
+            match self.view.named_arg(item, key) {
+                Some(c) => self.write_item(&c, buf),
+                None => buf.push('?'),
+            }
+        }
+        buf.push(')');
     }
 
     fn write_positional(&self, item: &V::Item, pos_arity: usize, buf: &mut String) {
@@ -1682,7 +1721,7 @@ impl<'a, V: PrintView + ?Sized> TermPrinter<'a, V> {
                         None => self.named_tuple_arity(&p) != 1,
                     };
                 if slot_is_the_list {
-                    self.write_type_item(&p, buf);
+                    self.write_tuple_components(&p, buf);
                 } else {
                     buf.push('(');
                     self.write_type_item(&p, buf);
@@ -1733,8 +1772,19 @@ impl<'a, V: PrintView + ?Sized> TermPrinter<'a, V> {
     }
 
     /// WI-173: `named_tuple(fields)` → `(<f1>, <f2>, …)`. A positional field (name `_N`) prints
-    /// as the bare type; a named field as `n: T`.
+    /// as the bare type; a named field as `n: T`. The tuple of no components is `Unit`, the
+    /// prelude's name for it.
     fn write_named_tuple_type(&self, item: &V::Item, buf: &mut String) {
+        if self.child(item, "fields").is_some_and(|f| self.list_elements(&f).is_empty()) {
+            buf.push_str("Unit");
+        } else {
+            self.write_tuple_components(item, buf);
+        }
+    }
+
+    /// A named tuple's components in parentheses — a tuple type of one or more, and an
+    /// arrow's parameter list of any count, `()` for none.
+    fn write_tuple_components(&self, item: &V::Item, buf: &mut String) {
         buf.push('(');
         if let Some(fields) = self.child(item, "fields") {
             for (i, elem) in self.list_elements(&fields).iter().enumerate() {

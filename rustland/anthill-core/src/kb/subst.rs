@@ -885,7 +885,10 @@ mod tests {
     #[test]
     fn bind_value_nested_entity_equal_not_contradiction() {
         let mut s = Substitution::new();
-        let kb = KnowledgeBase::new();
+        let mut kb = KnowledgeBase::new();
+        crate::kb::load::register_prelude(&mut kb);
+        kb.intern_positional_labels(2);
+        let kb = kb;
         let v = vid(1);
         let make = || Value::Entity {
             functor: Symbol::from_raw(7),

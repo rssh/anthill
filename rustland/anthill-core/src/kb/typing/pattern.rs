@@ -1152,7 +1152,7 @@ fn tuple_outside_position(
     pattern: &NodeOccurrence,
 ) -> Option<TypeError> {
     if arity == 0 {
-        let unit = Value::term(kb.make_sort_ref_by_name("anthill.prelude.Unit"));
+        let unit = Value::term(kb.make_named_tuple_type(&[]));
         return pattern_outside_position(
             kb,
             WrittenPattern::Tuple,

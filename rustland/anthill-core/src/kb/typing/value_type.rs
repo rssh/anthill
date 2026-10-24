@@ -638,8 +638,8 @@ fn constructor_value_type(
 }
 
 /// WI-578 — the type-term of an anonymous aggregate (a tuple / `Unit`) from its
-/// children's types: `Unit` for the empty case, else a `named_tuple` with positional
-/// components under the `_1.._n` convention (WI-442) plus any named components. The
+/// children's types: a `named_tuple` with positional components under the `_1.._n`
+/// convention (WI-442) plus any named components — `Unit` for none. The
 /// synthetic span is unused unless a child type is a `Value::Node` (denoted-poisoned),
 /// which a runtime tuple's ground component types are not.
 pub(super) fn tuple_value_type(
@@ -647,9 +647,6 @@ pub(super) fn tuple_value_type(
     pos_types: Vec<Value>,
     named_types: Vec<(Symbol, Value)>,
 ) -> Value {
-    if pos_types.is_empty() && named_types.is_empty() {
-        return Value::term(kb.make_sort_ref_by_name("Unit"));
-    }
     let mut fields: Vec<(Symbol, Value)> = Vec::with_capacity(pos_types.len() + named_types.len());
     for (i, cty) in pos_types.into_iter().enumerate() {
         let name = kb.intern(&positional_label(i));
@@ -911,15 +908,10 @@ fn value_type_term_d(
             let named_types = child_types_named(kb, subst, v, depth + 1);
             constructor_value_type(kb, functor, &pos_types, &named_types)
         }
-        // An anonymous aggregate: `Unit` (0-ary) or a tuple → named_tuple type.
-        ViewHead::Functor {
-            functor: None,
-            pos_arity,
-            ..
-        } => {
-            let pos_types = child_types_pos(kb, subst, v, pos_arity, depth + 1);
-            let named_types = child_types_named(kb, subst, v, depth + 1);
-            tuple_value_type(kb, pos_types, named_types)
+        // No carrier reads functor-less: a tuple value reads as its `TupleLiteral` twin,
+        // which `constructor_value_type` types as the tuple.
+        ViewHead::Functor { functor: None, .. } => {
+            unreachable!("value type: a functor-less application")
         }
         // Bare identifier / bottom / opaque handle — no structural type to read.
         ViewHead::Ident(_) | ViewHead::Bottom | ViewHead::Opaque => fresh_type_var(kb),

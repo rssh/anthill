@@ -11,7 +11,7 @@ use anthill_core::intern::Symbol;
 use anthill_core::kb::node_occurrence::value_to_term;
 use anthill_core::kb::subst::Substitution;
 use anthill_core::kb::term::{Term, Var, VarId};
-use anthill_core::kb::typing::{sort_functor_of_view, value_type_term};
+use anthill_core::kb::typing::{extract_type, sort_functor_of_view, value_type_term, TypeExtractor};
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse::desugar_target as dt;
 
@@ -248,8 +248,8 @@ fn value_type_term_of_set_literal_is_set_of_int() {
 }
 
 /// WI-578 (review item A) — the empty `TupleLiteral` (the `()` unit literal) types as
-/// `Unit`, NOT `Ref(TupleLiteral)`: `constructor_value_type` routes it to the aggregate
-/// path (`tuple_value_type`) exactly as the occurrence-typer's
+/// `Unit`, the tuple of no components, NOT `Ref(TupleLiteral)`: `constructor_value_type`
+/// routes it to the aggregate path (`tuple_value_type`) exactly as the occurrence-typer's
 /// `check_tuple_literal_constructor` does.
 #[test]
 fn value_type_term_of_empty_tuple_literal_is_unit() {
@@ -257,8 +257,10 @@ fn value_type_term_of_empty_tuple_literal_is_unit() {
     let subst = Substitution::new();
     let lit = literal_value(&kb, dt::qualified(dt::TUPLE_LITERAL), vec![]);
     let ty = value_type_term(&mut kb, &subst, &lit);
-    let head = sort_functor_of_view(&kb, &ty).expect("() has a sort head");
-    assert_sort_named(&kb, head, "Unit");
+    assert!(
+        matches!(extract_type(&kb, &ty), TypeExtractor::NamedTuple(fields) if fields.is_empty()),
+        "() types as the tuple of no components",
+    );
 }
 
 /// WI-595 — an UNDER-DETERMINED bound value's type is REFINED by the carrier

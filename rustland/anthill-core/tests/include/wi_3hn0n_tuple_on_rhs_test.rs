@@ -16,43 +16,32 @@
 //! @[simp]` loaded clean and every call died in eval, `internal evaluator error: unhandled
 //! Expr variant`. The same for a set (`<=> {?a, 5}`) and for a list its position does not
 //! lower to a spine. An empty tuple did not get that far: it was typed as a tuple of no
-//! components where the body-written `()` is `Unit`, and the load was refused.
+//! components where the body-written `()` was the sort `Unit`, and the load was refused.
+//! Since WI-20261011-7G99A `Unit` is the tuple of no components, so the two nodes are typed
+//! alike.
 //!
 //! EVERY ROW HAS ITS OWN SOURCE: a row that shares a fixture with another measures the
 //! fixture.
 //!
-//! CONTROLS — measured with the reading backed out of `visit_type`.
+//! CONTROLS — measured with the reading backed out of `visit_type`, again on the tree of
+//! WI-20261011-7G99A.
 //!
 //!   FAIL, each loading clean and dying in eval on the literal's node:
 //!     a_positional_tuple_on_the_right_hand_side_runs
 //!     a_named_tuple_on_the_right_hand_side_runs
 //!     a_tuple_under_a_constructor_runs
-//!     a_rewritten_positional_tuple_is_the_body_written_value
-//!     a_rewritten_named_tuple_is_the_body_written_value
-//!     a_rewritten_tuple_under_a_constructor_is_the_body_written_value
-//!     a_tuple_in_a_tuple_is_the_body_written_value
 //!     a_distributed_projection_is_the_body_written_value
 //!     a_set_on_the_right_hand_side_is_the_body_written_set
-//!     a_set_in_a_field_is_the_body_written_set
 //!     a_list_named_by_its_constructor_is_the_body_written_list
 //!     a_list_where_another_collection_is_declared_is_the_body_written_list
 //!     a_tuple_handed_to_a_call_on_the_right_hand_side_runs
-//!     a_rewritten_tuple_is_destructured_by_a_pattern
-//!     the_components_of_a_rewritten_tuple_keep_their_order
-//!     a_tuple_named_by_its_constructor_is_the_body_written_value
 //!     a_const_holds_a_rewritten_tuple
 //!     a_sorts_equation_reached_by_a_dot_runs
 //!     a_generic_operations_tuple_runs
 //!     a_lambda_in_an_operation_body_returns_a_rewritten_tuple
 //!     a_lambda_with_an_untyped_binder_returns_a_rewritten_tuple
-//!     an_if_condition_reads_a_rewritten_tuple
 //!     a_match_guard_reads_a_rewritten_tuple
 //!     a_match_arm_reads_a_rewritten_tuple
-//!     a_tuple_a_guard_took_from_a_fact_runs
-//!     a_tuple_a_guard_built_runs
-//!   FAIL, refused at load, `expected Unit, got ()`:
-//!     an_empty_tuple_on_the_right_hand_side_is_unit
-//!     a_lambda_in_a_rule_body_returns_the_unit_an_equation_leaves
 //!   FAIL, the query dying where the resolver hands the lambda to eval:
 //!     a_lambda_in_a_rule_body_returns_a_rewritten_tuple
 //!     a_lambda_with_an_untyped_binder_in_a_rule_body_returns_a_rewritten_tuple
@@ -66,15 +55,32 @@
 //!     a_lambda_a_rule_body_writes_returns_its_own_tuple — the loader builds what stands
 //!       under a lambda as it builds an operation body
 //!     a_tuple_in_a_goal_is_matched_as_written
-//!     a_rule_bodys_own_empty_tuple_is_typed_as_before
+//!     a_rule_bodys_own_empty_tuple_is_unit — both nodes type `()` as `Unit`
+//!   PASS either way since 7G99A, which made `()` `Unit` on either node and a tuple one
+//!   value on either carrier:
+//!     an_empty_tuple_on_the_right_hand_side_is_unit
+//!     a_lambda_in_a_rule_body_returns_the_unit_an_equation_leaves
+//!     a_rewritten_positional_tuple_is_the_body_written_value — with the reading backed
+//!       out, eval hands the literal's node back, and it reads as the tuple the body
+//!       builds; the rows that read a component are the control
+//!     a_rewritten_named_tuple_is_the_body_written_value — likewise
+//!     a_rewritten_tuple_under_a_constructor_is_the_body_written_value — likewise
+//!     a_tuple_in_a_tuple_is_the_body_written_value — likewise
+//!     a_tuple_named_by_its_constructor_is_the_body_written_value — likewise
+//!     a_tuple_a_guard_took_from_a_fact_runs — likewise
+//!     a_tuple_a_guard_built_runs — likewise
+//!   PASS either way already on 7G99A's parent:
+//!     a_rewritten_tuple_is_destructured_by_a_pattern
+//!     a_set_in_a_field_is_the_body_written_set
+//!     an_if_condition_reads_a_rewritten_tuple
+//!     the_components_of_a_rewritten_tuple_keep_their_order
 //!
 //!   THE RULE BODY'S OWN TERM. The reading stops at the rule's own term — measured with
 //!   it made everywhere the typer meets the node. FAIL:
-//!     a_rule_bodys_own_empty_tuple_is_typed_as_before — the goal loads clean, its `()`
-//!       typed `Unit`
 //!     wi285_unrec_test::collection_literal_frames_assemble_types — the type is no longer
 //!       on the node the rule wrote
-//!   Every other row of this file, and of the workspace, passes either way.
+//!   Every other row of this file passes either way (re-measured on 7G99A's tree; the
+//!   workspace was measured with the reading's change).
 //!
 //!   NOT A ROW. The C++ generator lowers the literal's node as it lowers the constructor:
 //!   a header generated for a sort whose operation calls `both` is the same text before
@@ -83,7 +89,7 @@
 use anthill_core::eval::{self, Interpreter, Value};
 use anthill_core::kb::term_view::views_structurally_equal;
 
-use crate::common::{assert_refused_naming, load_errors_of, load_kb_with, query_unary, run_int64};
+use crate::common::{load_kb_with, query_unary, run_int64};
 
 /// `test.<name>`, holding `body`, with the prelude names the rows use.
 fn ns(name: &str, body: &str) -> String {
@@ -547,17 +553,12 @@ fn a_tuple_in_a_goal_is_matched_as_written() {
     assert!(none.is_empty(), "{none:?}");
 }
 
-/// `()` written in a goal is the rule's own term, typed as it was before: a tuple of no
-/// components, which a `Unit` field refuses. The same `()` in a fact is refused too, so
-/// what a rule's text writes for `Unit` is one question, and not this ticket's.
+/// `()` written in a goal is the rule's own term, and a tuple of no components: `Unit`, as
+/// the body-written `()` is. It meets the `Unit` field of the fact it matches.
 #[test]
-fn a_rule_bodys_own_empty_tuple_is_typed_as_before() {
-    let errs = load_errors_of(
-        "namespace test.hn0nrunit\n  import anthill.prelude.{Int64, Unit}\n  sort U\n    entity u(v: Unit, n: Int64)\n  end\n  rule value(?r) :- U.u(v: (), n: ?r)\nend\n",
-    );
-    assert_refused_naming(
-        &errs,
-        &["u.v", "expected Unit", "got ()"],
-        "a goal's `()` at a `Unit` field",
+fn a_rule_bodys_own_empty_tuple_is_unit() {
+    assert_answers_four(
+        "namespace test.hn0nrunit\n  import anthill.prelude.{Int64, Unit}\n  sort U\n    entity u(v: Unit, n: Int64)\n  end\n  fact U.u(v: (), n: 4)\n  rule value(?r) :- U.u(v: (), n: ?r)\nend\n",
+        "test.hn0nrunit.value",
     );
 }

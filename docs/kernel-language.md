@@ -785,6 +785,8 @@ compared as one.
 | `(1, "hello")` | `(_1: 1, _2: "hello")` |
 | `()` | `()` (unit, no fields) |
 
+**`Unit` is the tuple of no components.** The prelude declares `sort Unit = ()`, so `()` and `Unit` written as types are one type, and the literal `()` is its one value wherever it is written: an operation body, a fact, a goal, a rule's own term. Over `entity u(v: Unit, n: Int64)`, `fact u(v: (), n: 4)` loads and the goal `u(v: (), n: ?r)` answers `4`.
+
 **Representation:** Tuple literals are represented as `TupleLiteral(...)` terms with named args, analogous to `SetLiteral(...)` for sets. The `TupleLiteral` entity is defined in `anthill.reflect`.
 
 **Examples:**
