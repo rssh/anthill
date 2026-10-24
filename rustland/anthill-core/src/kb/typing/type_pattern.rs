@@ -664,11 +664,8 @@ pub(crate) enum HostRaiseType {
     Projected,
     /// `Error` labels the clauses do not answer: one written `Error[X]` with no `requires
     /// TypeValue[T = X]`, or more than one label (a bare `Error` among them), of which a raise
-    /// would have to say which it is; or `Error[T = ?]` written out (`open`), which the typer
-    /// lets a boundary at a specific type discharge, where the bare `Error` it means is
-    /// refused there (user, 2026-10-24) — so a host raise under it would pass a boundary the
-    /// typer counted on.
-    Unanswered { written: Vec<Value>, bare: bool, open: bool },
+    /// would have to say which it is.
+    Unanswered { written: Vec<Value>, bare: bool },
     /// No operation of that name is declared: nothing states what it raises.
     NoDeclaration,
 }
@@ -688,16 +685,14 @@ pub(crate) fn host_raise_type(kb: &mut KnowledgeBase, op: Symbol) -> HostRaiseTy
     };
     let mut written: Vec<Value> = Vec::new();
     let mut bare = false;
-    let mut open = false;
     let mut projected = false;
     for e in &info.effects {
         let guarded = guarded_effect_label(kb, e);
         let label = guarded.as_ref().unwrap_or(e);
         if effect_label_names_sort(kb, label, error) {
+            // `Error[T = ?]` is the bare `Error` once lowered: an identical substitution is
+            // not written (§8.1).
             match extract_type_param(kb, label, "T") {
-                Some(t) if matches!(t.head(kb), crate::kb::term_view::ViewHead::Var(_)) => {
-                    open = true
-                }
                 Some(payload) => written.push(payload),
                 None => bare = true,
             }
@@ -708,24 +703,13 @@ pub(crate) fn host_raise_type(kb: &mut KnowledgeBase, op: Symbol) -> HostRaiseTy
             projected = true;
         }
     }
-    if open {
-        return HostRaiseType::Unanswered {
-            written,
-            bare,
-            open,
-        };
-    }
     let payload = match (written.as_slice(), bare) {
         ([payload], false) => payload.clone(),
         ([], true) => return HostRaiseType::Unknown,
         ([], false) if projected => return HostRaiseType::Projected,
         ([], false) => return HostRaiseType::Unknown,
         _ => {
-            return HostRaiseType::Unanswered {
-                written,
-                bare,
-                open,
-            }
+            return HostRaiseType::Unanswered { written, bare }
         }
     };
     let chain = op_dict_entries(kb, op);
@@ -738,20 +722,42 @@ pub(crate) fn host_raise_type(kb: &mut KnowledgeBase, op: Symbol) -> HostRaiseTy
         None => HostRaiseType::Unanswered {
             written: vec![payload],
             bare: false,
-            open: false,
         },
     }
 }
 
 /// `a` and `b` are one written type: structurally, a sort named by two of its symbols
-/// (an alias, a re-export) being the one sort.
+/// (an alias, a re-export) being the one sort, and a type parameter by its two spellings — a
+/// row holds an operation's own parameter as its variable (`Error[P]`), a clause as its name
+/// (`requires TypeValue[T = P]`).
 fn same_type(kb: &KnowledgeBase, a: &Value, b: &Value) -> bool {
     if crate::kb::term_view::views_structurally_equal(kb, a, b) {
         return true;
     }
+    if let (Some(x), Some(y)) = (named_type_param(kb, a), named_type_param(kb, b)) {
+        return kb.canonical_sym(x) == kb.canonical_sym(y);
+    }
     match (type_head(kb, a), type_head(kb, b)) {
         (TypeHead::SortRef(x), TypeHead::SortRef(y)) => same_sort_canonical(kb, x, y),
         _ => false,
+    }
+}
+
+/// A payload of a host operation's row as its author writes it: a type parameter by its name
+/// (`P`, where the row holds its variable), anything else as displayed.
+pub(crate) fn host_raise_payload_display(kb: &KnowledgeBase, v: &Value) -> String {
+    match named_type_param(kb, v) {
+        Some(param) => type_param_display_name(kb, param),
+        None => type_display_name_value(kb, v),
+    }
+}
+
+/// The type parameter `v` is, by its name or by its variable.
+fn named_type_param(kb: &KnowledgeBase, v: &Value) -> Option<Symbol> {
+    match type_head(kb, v) {
+        TypeHead::SortRef(sym) | TypeHead::TypeVar(sym) if is_sort_param_symbol(kb, sym) => Some(sym),
+        TypeHead::FlexVar(vid) => kb.type_param_of_canonical_var(vid),
+        _ => None,
     }
 }
 

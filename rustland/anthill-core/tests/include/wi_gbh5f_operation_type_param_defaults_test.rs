@@ -150,7 +150,8 @@ end
 /// one naming a later parameter or its own (defaults are ordered, so a chain of them ends
 /// at a slot something else decides); one of the wrong kind — a type for a parameter the
 /// signature uses as an effect row; and a default holding a variable that is no parameter
-/// (`[T = List[T = ?]]`), a slot it would leave open.
+/// (`[T = List[T = ?x]]`), or leaving a slot out (`[T = List]`, which `[T = List[T = ?]]` is),
+/// a slot it would leave open.
 ///
 /// FAILS with `Loader::record_operation_type_param_defaults`' refusals taken out: each
 /// program loads (the order and stray-variable ones then type a call against a default
@@ -176,9 +177,26 @@ fn a_default_that_cannot_mean_anything_is_refused_at_the_declaration() {
         ),
         (
             "a variable that is no parameter",
-            "operation holeInside[T = List[T = ?]](x: Int64) -> Int64 = x",
-            "the default of `T` (`T = List[T = ?_]`) holds a type variable that names no \
+            "operation holeInside[T = List[T = ?x]](x: Int64) -> Int64 = x",
+            "the default of `T` (`T = List[T = ?x]`) holds a type variable that names no \
              earlier parameter",
+        ),
+        // `List[T = ?]` is `List`, a `?` at a slot that declares no default being the slot
+        // left out (WI-20261024-DK83Q), and both leave the slot open.
+        (
+            "a slot left out",
+            "operation holeOut[T = List](x: Int64) -> Int64 = x",
+            "the default of `T` (`T = List`) leaves a slot open",
+        ),
+        (
+            "a slot written `?`",
+            "operation holeInside[T = List[T = ?]](x: Int64) -> Int64 = x",
+            "the default of `T` (`T = List`) leaves a slot open",
+        ),
+        (
+            "a slot left out, nested",
+            "operation holeDeep[T = Option[T = List]](x: Int64) -> Int64 = x",
+            "the default of `T` (`T = Option[T = List]`) leaves a slot open",
         ),
     ] {
         let errs = load_errors_of(&format!(

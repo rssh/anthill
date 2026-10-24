@@ -644,7 +644,9 @@ fn a_result_carriers_row_is_read_off_the_expected_type() {
 /// fixes `Car.make`'s `EC`, so its row is not read whole, and `Mk.make[E = R]()` keeps the row
 /// its bracket wrote — refused declaring `{}`, loads declaring `{R}`. Replaced by an override
 /// row that resolved to nothing, the call was charged nothing; it LOADED declaring `{}` before
-/// this ticket as well, the close dropping the bracket's rigid.
+/// this ticket as well, the close dropping the bracket's rigid. `Car[EC = ?]` is `Car`
+/// (WI-20261024-DK83Q): FAILS with the `let` annotation handed to the value as written, its
+/// slot left out unbound — "missing `requires Mk[E = …]`" declaring `{R}`.
 #[test]
 fn an_override_row_left_open_keeps_the_spec_row() {
     assert_refused_naming(

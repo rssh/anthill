@@ -1758,8 +1758,6 @@ pub enum LoadError {
         payloads: Vec<String>,
         /// A bare `Error` label beside them.
         bare: bool,
-        /// `Error[T = ?]` written out, which the typer reads otherwise than the bare `Error`.
-        open: bool,
         /// Where the operation is declared.
         span: Span,
     },
@@ -3423,12 +3421,11 @@ impl LoadError {
                 op,
                 payloads,
                 bare,
-                open,
                 span,
             } => format!(
                 "{}: {}",
                 loc.format_start(*span),
-                host_raise_without_type_value_message(op, payloads, *bare, *open)
+                host_raise_without_type_value_message(op, payloads, *bare)
             ),
             LoadError::OperationWithoutDefinition {
                 op,
@@ -4978,12 +4975,11 @@ impl std::fmt::Display for LoadError {
                 op,
                 payloads,
                 bare,
-                open,
                 span,
             } => write!(
                 f,
                 "{} at {}..{}",
-                host_raise_without_type_value_message(op, payloads, *bare, *open),
+                host_raise_without_type_value_message(op, payloads, *bare),
                 span.start,
                 span.end
             ),
@@ -16288,21 +16284,7 @@ fn host_implemented_with_body_message(op: &str) -> String {
 }
 
 /// Proposal 071 §1.3 — the ONE wording of [`LoadError::HostRaiseWithoutTypeValue`].
-fn host_raise_without_type_value_message(
-    op: &str,
-    payloads: &[String],
-    bare: bool,
-    open: bool,
-) -> String {
-    if open {
-        return format!(
-            "host operation `{op}` raises `Error[T = ?]`. A raise carries the type of its \
-             payload, which a boundary catches by, and `Error[T = ?]` states none while a \
-             boundary at a specific type may discharge it. Write `Error`, which a host \
-             function raises at the unknown type, or name the payload as `Error[X]` with \
-             `requires TypeValue[T = X]`."
-        );
-    }
+fn host_raise_without_type_value_message(op: &str, payloads: &[String], bare: bool) -> String {
     match payloads {
         [payload] if !bare => format!(
             "host operation `{op}` raises `Error[{payload}]` and does not require \
@@ -20230,24 +20212,19 @@ fn check_host_raise_types(kb: &mut KnowledgeBase) -> Vec<LoadError> {
         if !claimed.contains(&kb.canonical_sym(op)) {
             continue;
         }
-        let super::typing::HostRaiseType::Unanswered {
-            written,
-            bare,
-            open,
-        } =
+        let super::typing::HostRaiseType::Unanswered { written, bare } =
             super::typing::host_raise_type(kb, op)
         else {
             continue;
         };
         let payloads = written
             .iter()
-            .map(|p| super::typing::type_display_name_value(kb, p))
+            .map(|p| super::typing::host_raise_payload_display(kb, p))
             .collect();
         let error = LoadError::HostRaiseWithoutTypeValue {
             op: kb.qualified_name_of(op).to_string(),
             payloads,
             bare,
-            open,
             span: site.span,
         };
         errors.push(error.located_in_kb_source(kb, site.source));
@@ -38212,6 +38189,17 @@ impl<'a> Loader<'a> {
         }
     }
 
+    /// Does the written binding `key = bound` of an application of `head` leave its parameter
+    /// as it is — `?` alone, at a slot that declares no default? Such a binding is the slot
+    /// left out, and is not written (§8.1): `Error[T = ?]` and `Error[?]` are the type `Error`
+    /// is, in every position a type is written in, an effect label's included. At a defaulted
+    /// slot leaving it out takes the default, so the `?` is written there. `?_` and `?name` are
+    /// variables of the declaration, and tie the places they are written in.
+    fn leaves_its_slot_as_it_is(&self, head: Symbol, key: Symbol, bound: &TypeExpr) -> bool {
+        matches!(bound, TypeExpr::Variable { fresh: true, .. })
+            && !super::typing::slot_declares_default(self.kb, head, key)
+    }
+
     /// WI-20260929-AAQT5 — the KEY each written argument of a type application binds under,
     /// in source order, or `None` for an argument that binds nothing: reported here, once
     /// per application, and left out of the type the caller builds. The one reading of a
@@ -38840,7 +38828,8 @@ impl<'a> Loader<'a> {
     }
 
     /// WI-201 / WI-20260923-ZBWMC: could an operation signature HERE spell `t` — is it a
-    /// type the bare-spec sugar may narrow to? No logic variable anywhere in it, no
+    /// type the bare-spec sugar may narrow to (and leaves no slot open — the caller asks
+    /// [`super::typing::leaves_a_slot_open`])? No logic variable anywhere in it, no
     /// operation named in it, and a type PARAMETER in it only when that parameter is in
     /// scope here — the providing sort's own `T`, never another sort's abstract member.
     ///
@@ -38992,14 +38981,22 @@ impl<'a> Loader<'a> {
         }
         seen.into_iter()
             .map(|(key, values)| {
+                let (spec, member) = key;
                 let binding = match values.as_slice() {
                     // A VALUE bound at the root (`Sized[WIS, 3]`'s `N = 3`) is no type a
                     // signature could spell — `x: 3` does not parse — so it narrows nothing
                     // (kernel-language §5.4). Beneath an applied type (`Buf[T = Int64, N =
                     // 3]`) it is spelled with its type, which `is_nameable_carrier` admits.
+                    // A slot left out is a family, as a `?` is: `State = List` is `State =
+                    // List[T = ?]` — but at a higher-kinded member a constructor is unapplied.
                     [one]
                         if !super::typing::is_denoted_type(&self.kb, &TermIdView(*one))
-                            && self.is_nameable_carrier(*one) =>
+                            && self.is_nameable_carrier(*one)
+                            && (super::typing::slot_is_higher_kinded(self.kb, spec, member)
+                                || !super::typing::leaves_a_slot_open(
+                                    self.kb,
+                                    &crate::eval::value::Value::term(*one),
+                                )) =>
                     {
                         BlockMemberBinding::Carrier(*one)
                     }
@@ -39240,17 +39237,6 @@ impl<'a> Loader<'a> {
             self.expr_occ_results.push(child);
             named_keys.push(fill.key);
         }
-    }
-
-    /// Is `key` a HIGHER-KINDED parameter of `head`'s sort — one declaring parameters of
-    /// its own (`F` of `sort Tagged[F[T], A]`)?
-    fn is_higher_kinded_slot(&self, head: Symbol, key: Symbol) -> bool {
-        let Some(sort) = self.kb.type_arg_owner(head) else {
-            return false;
-        };
-        self.kb
-            .type_param_sym_of(sort, self.kb.local_name_of(key))
-            .is_some_and(|param| !self.kb.type_param_syms_of(param).is_empty())
     }
 
     /// Proposal 069 §2 — complete a written application of `head` (its `bindings`, as
@@ -39630,12 +39616,14 @@ impl<'a> Loader<'a> {
                     // resource is threaded as a parameter (a zero-argument operation's
                     // result is refused too, `PlaceType::Ambient`).
                     let unapplied = matches!(b.bound, TypeExpr::Simple(_))
-                        && key.is_some_and(|k| self.is_higher_kinded_slot(sort_sym, k));
+                        && key.is_some_and(|k| super::typing::slot_is_higher_kinded(self.kb, sort_sym, k));
                     let saved_hk = std::mem::replace(&mut self.hk_slot, unapplied);
                     let bound_child = self.type_expr_to_child(&b.bound, span, owner);
                     self.hk_slot = saved_hk;
                     if let Some(key) = key {
-                        child_bindings.push((key, bound_child));
+                        if !self.leaves_its_slot_as_it_is(sort_sym, key, &b.bound) {
+                            child_bindings.push((key, bound_child));
+                        }
                     }
                 }
                 self.fill_parameter_defaults(sort_sym, &mut child_bindings, span, owner);
@@ -39780,6 +39768,7 @@ impl<'a> Loader<'a> {
             TypeExpr::Variable {
                 term_id,
                 descriptions,
+                ..
             } => {
                 // A logic Var is always ground (no denoted) — convert the term
                 // and emit its descriptions, yielding the ground hash-consed form.
@@ -40088,11 +40077,14 @@ impl<'a> Loader<'a> {
                 let named: Vec<(Symbol, Value)> = fixed
                     .iter()
                     .map(|&(p, t)| (p, Value::term(t)))
-                    .chain(
-                        keys.into_iter()
-                            .zip(bounds)
-                            .filter_map(|(key, bound)| Some((key?, bound))),
-                    )
+                    .chain(keys.into_iter().zip(bounds).zip(bindings).filter_map(
+                        |((key, bound), b)| {
+                            let key = key?;
+                            // As in a type position: `Effect[T = Error[?]]` binds `Error`.
+                            (!self.leaves_its_slot_as_it_is(base_sym, key, &b.bound))
+                                .then_some((key, bound))
+                        },
+                    ))
                     .collect();
                 // WI-835: a container written as a binding VALUE inside a `requires` /
                 // `provides` clause (`requires Iterable[C = Map[K = Float]]`) is a use
@@ -41155,7 +41147,8 @@ impl<'a> Loader<'a> {
     /// one of the wrong kind — a row (`{}`, `{Error}`, or an earlier row parameter) for a
     /// parameter the signature uses as a type, a type for one it uses as a row
     /// ([`Self::op_type_param_is_row`]); one holding a value; and one holding a variable no
-    /// parameter is (`[T = List[T = ?]]`), a slot the default would leave open. `[T = ?]`
+    /// parameter is, or leaving a slot out (`[T = List]`, which `[T = List[T = ?]]` is), a slot
+    /// the default would leave open. `[T = ?]`
     /// alone is the bare `T` and reaches here as no default (the converter). A default may
     /// name the enclosing sort's parameters, as a parameter type may.
     fn record_operation_type_param_defaults(
@@ -41281,6 +41274,16 @@ impl<'a> Loader<'a> {
                     self,
                     "holds a type variable that names no earlier parameter; a default is a type \
                      with every slot written, or an earlier parameter"
+                        .to_owned(),
+                );
+                continue;
+            }
+            // A slot left out is open as a `?` is: `List` is `List[T = ?]`.
+            if super::typing::leaves_a_slot_open(self.kb, &crate::eval::value::Value::term(term)) {
+                refuse(
+                    self,
+                    "leaves a slot open; a default is a type with every slot written, or an \
+                     earlier parameter"
                         .to_owned(),
                 );
                 continue;

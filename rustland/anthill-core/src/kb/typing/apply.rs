@@ -1725,8 +1725,12 @@ pub(super) fn check_apply_iter(
         // return is the use-site check on `resolved_ret`, not this unify's discarded boolean,
         // and that check still sees the contradicting slot. What changed is that the sibling
         // fills are now the SAME set however the `expected` type's slots were spelled.
+        // A slot `expected` leaves out is a variable of this call, as a `?` written there is
+        // (§8.1): `let c: Car = Mk.make[E = R]()` lets the dispatch fix `Car`'s row by the
+        // bracket. Fresh per call, so two calls meeting one expected type are not tied.
         if let Some(exp) = &expected {
-            unify_types(kb, &mut subst, &proj_return_type, exp);
+            let exp = expand_sorts_deep(kb, exp, SlotVar::Flexible);
+            unify_types(kb, &mut subst, &proj_return_type, &exp);
         }
 
         // WI-20261001-80ZV8 — a SIBLING call the bracket, the arguments and `expected` left
@@ -1766,14 +1770,12 @@ pub(super) fn check_apply_iter(
         // and is rigidified at the CALL. One rule, two polarities — and the two sites now
         // differ only in [`SlotPosition`] and in the filler.
         //
-        // AFTER the `expected` seeding above, deliberately, and the reason is the SECOND half
-        // of this sentence rather than the first. For an OMITTED slot seeding cannot reach it
-        // either way — a missing binding is width-ignored by `unify_parameterized_view`, so
-        // there is nothing there to bind — but a slot written `?` is a live flexible var that
-        // seeding CAN bind, and the opening then replaces it and discards that binding, which
-        // is the intended verdict but not a no-op. What forces the order is that running the
-        // opening first would hand `unify_types` a rigid against the caller's concrete demand,
-        // and a FAILED unify may leave `subst` marked contradictory for every reader below.
+        // AFTER the `expected` seeding above, deliberately. A slot the return leaves out —
+        // a `?` written there is one (§8.1) — is width-ignored by `unify_parameterized_view`,
+        // so seeding binds nothing there for the opening to discard. What forces the order is
+        // that running the opening first would hand `unify_types` a rigid against the caller's
+        // concrete demand, and a FAILED unify may leave `subst` marked contradictory for every
+        // reader below.
         //
         // `return_owner`, not `fn_sym`: see its declaration above.
         //

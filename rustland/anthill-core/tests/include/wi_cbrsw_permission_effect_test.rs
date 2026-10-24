@@ -582,35 +582,38 @@ fn a_grant_is_an_ordinary_handler_and_discharges_the_label() {
 }
 
 #[test]
-fn a_variable_argument_in_a_lacks_constraint_constrains_nothing() {
-    // 064 OPEN QUESTION 1 — "does a lacks-constraint admit a VARIABLE argument?" — and
-    // this row RECORDS A TRAP rather than a capability. `-Permission[?]` parses, loads,
-    // and forbids NOTHING: the pair (`Permission[?]`, `Permission[GptModel]`) is
-    // undecided, so the directional verdict withholds, exactly as it does for a row
-    // parameter. A reader who writes it gets the general denial they wanted in
-    // appearance only.
+fn a_question_mark_argument_in_a_lacks_constraint_is_the_bare_denial() {
+    // 064 OPEN QUESTION 1 — "does a lacks-constraint admit a VARIABLE argument?". A `?`
+    // written at `Permission`'s slot leaves the slot as it is, and is not written: `-Permission[?]`
+    // and `-Permission[T = ?]` are the bare `-Permission`, the general denial
+    // (`a_bare_permission_denial_forbids_every_capability`), and are refused against
+    // `Permission[GptModel]` as it is (WI-20261024-DK83Q). This row recorded the spelling as a
+    // trap that constrained nothing — the pair (`Permission[?]`, `Permission[GptModel]`)
+    // undecided — until a `?` in a written type was read as the slot left out.
     //
-    // THE WORKING SPELLING IS THE BARE ONE, which is the actual answer to the question:
-    // `-Permission` subsumes every application of the label
-    // (`a_bare_permission_denial_forbids_every_capability`), so the general denial needs
-    // no variable in a lacks-constraint at all, and assumes neither a capability order
-    // nor a root. Closing the variable spelling means telling an ANONYMOUS wildcard
-    // apart from a rigid type parameter (`-Error[T]`, where an undecided argument must
-    // stay undecided) inside 045's row algebra — a question about every label, not about
-    // `Permission`, and not one this ticket measured a population for.
+    // A TYPE PARAMETER is not a `?`, and is not read as the bare denial: `-Permission[P]` at
+    // `P = Fs` loads beside `Permission[GptModel]`, which the bare one refuses. (What a denial
+    // over a bound parameter decides is WI-20260909-V4RVX's: measured 2026-10-24, it loads at
+    // `P = GptModel` too.)
     //
-    // PASSES EITHER WAY. It is here so that a later change which DOES close the variable
-    // spelling trips this row and reads the note, rather than quietly widening a
-    // constraint nobody had measured.
-    let errs = load_errors(&denial(
-        "Permission[?]",
-        "{Permission[GptModel]}",
-        "mints_sub",
-    ));
-    expect_clean(
-        &errs,
-        "a variable-argument lacks constraint (INERT — see this row's note)",
-    );
+    // BACK-OUT: with a written `?` kept as a variable (`Loader::leaves_its_slot_as_it_is`
+    // answering no), both spellings load clean; the `P` row passes either way by design.
+    for lacked in ["Permission[?]", "Permission[T = ?]"] {
+        let errs = load_errors(&denial(lacked, "{Permission[GptModel]}", "mints_sub"));
+        expect_refusal(
+            &errs,
+            &["lacks-constraint", "Permission"],
+            &format!("`-{lacked}` against an acquired `Permission[GptModel]`"),
+        );
+    }
+    let named = denial("Permission[P]", "{Permission[GptModel]}", "mints_sub")
+        .replace("operation guarded[Rho]", "operation guarded[Rho, P]")
+        .replace(
+            "guarded[Rho = {Permission[GptModel]}]",
+            "guarded[Rho = {Permission[GptModel]}, P = Fs]",
+        );
+    let errs = load_errors(&named);
+    expect_clean(&errs, "`-Permission[P]` at `P = Fs` against `Permission[GptModel]`");
 }
 
 // ── 8. The program RUNS ─────────────────────────────────────────────────────────────

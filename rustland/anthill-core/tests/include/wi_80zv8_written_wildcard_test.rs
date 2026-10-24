@@ -311,7 +311,8 @@ fn a_provision_at_a_wildcard_is_provided_at_every_instance() {
         &load_errors(&src),
         // S7YF5 reads the provision during inference too, so T is already
         // Car[V = ?] and the incompatible second argument is named directly.
-        &["both.o (op-arg): expected Car[V = ?_], got Other"],
+        // `Car[V = ?]` is `Car` (WI-20261024-DK83Q), and prints its slot as one left out.
+        &["both.o (op-arg): expected Car[V = ?V], got Other"],
         "an argument that is no `Car`",
     );
 }
@@ -684,34 +685,45 @@ end
 /// loaded (MEASURED). The self-receiver path never had the hole — its receiver is checked
 /// against `Sp[T = …]` after the argument has said `T`. CONTROL — an `Other` of any element
 /// type runs.
+///
+/// THE BARE `B = Other` IS THE SAME BINDING, and is held the same way (WI-20261024-DK83Q):
+/// `Other[W = ?]` is `Other`, a `?` at a slot that declares no default being the slot left
+/// out. The bare spelling had the hole until then — a ref-shaped leaf, left for the late pass,
+/// so `Rel.mix(c, 5)` loaded behind it (MEASURED) — and it is bound now as the instance it is
+/// (`bind_spec_params_from_carrier_param`'s `leaves_a_slot_open` arm). BACK-OUT: that arm
+/// answering no, and both spellings load the `Int64` and the `Car`.
 #[test]
 fn a_wildcard_binding_holds_its_argument_to_the_sort_it_names() {
     let member = "[M](a: Self, b: Other[W = M])";
-    for (ns, second, got) in [
-        ("wi80zv8q.w1", "5", "Int64"),
-        ("wi80zv8q.w2", "car(v: \"s\")", "Car[V = String]"),
-    ] {
-        let src = carrier_param_program(ns, "Other[W = ?]", member, second);
-        assert_refused_naming(
-            &load_errors(&src),
-            &[&format!("mix.b (op-arg): expected Other[W = ?_], got {got}")],
-            second,
+    for binding in ["Other[W = ?]", "Other"] {
+        for (ns, second, got) in [
+            ("wi80zv8q.w1", "5", "Int64"),
+            ("wi80zv8q.w2", "car(v: \"s\")", "Car[V = String]"),
+        ] {
+            let src = carrier_param_program(ns, binding, member, second);
+            assert_refused_naming(
+                &load_errors(&src),
+                &[&format!("mix.b (op-arg): expected Other[W = ?W], got {got}")],
+                &format!("{binding}: {second}"),
+            );
+        }
+        for (ns, second) in [("wi80zv8q.w3", "other(w: \"s\")"), ("wi80zv8q.w4", "other(w: x)")] {
+            // `x` is the generic operation's own parameter; `go` has none, so it passes a literal.
+            let second_in_go = if second.contains("x)") { "other(w: true)" } else { second };
+            let src = carrier_param_program(ns, binding, member, second).replace(
+                &format!("Rel.mix(c, {second}) + 1"),
+                &format!("Rel.mix(c, {second_in_go}) + 1"),
+            );
+            assert_eq!(run_src(&src, &format!("{ns}.go")), Ok(42), "{binding}: {second}");
+        }
+        // …and the `?` is fresh at each call: one body, two calls, two instances. Bound as the
+        // provision's own variable, the first call would have said what the second may pass.
+        let twice = carrier_param_program("wi80zv8q.w5", binding, member, "other(w: 1)").replace(
+            "Rel.mix(c, other(w: 1)) + 1",
+            "Rel.mix(c, other(w: \"s\")) + Rel.mix(c, other(w: true)) - 40",
         );
+        assert_eq!(run_src(&twice, "wi80zv8q.w5.go"), Ok(42), "{binding}");
     }
-    for (ns, second) in [("wi80zv8q.w3", "other(w: \"s\")"), ("wi80zv8q.w4", "other(w: x)")] {
-        // `x` is the generic operation's own parameter; `go` has none, so it passes a literal.
-        let second_in_go = if second.contains("x)") { "other(w: true)" } else { second };
-        let src = carrier_param_program(ns, "Other[W = ?]", member, second)
-            .replace(&format!("Rel.mix(c, {second}) + 1"), &format!("Rel.mix(c, {second_in_go}) + 1"));
-        assert_eq!(run_src(&src, &format!("{ns}.go")), Ok(42), "{second}");
-    }
-    // …and the `?` is fresh at each call: one body, two calls, two instances. Bound as the
-    // provision's own variable, the first call would have said what the second may pass.
-    let twice = carrier_param_program("wi80zv8q.w5", "Other[W = ?]", member, "other(w: 1)").replace(
-        "Rel.mix(c, other(w: 1)) + 1",
-        "Rel.mix(c, other(w: \"s\")) + Rel.mix(c, other(w: true)) - 40",
-    );
-    assert_eq!(run_src(&twice, "wi80zv8q.w5.go"), Ok(42));
 }
 
 /// A BINDING RESTING ON THE CALLER'S OWN TYPE PARAMETER IS KNOWN, AND IS BOUND. Behind `B =

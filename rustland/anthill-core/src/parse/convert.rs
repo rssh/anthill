@@ -916,6 +916,7 @@ impl<'a> Converter<'a> {
                 TypeExpr::Variable {
                     term_id,
                     descriptions,
+                    fresh: self.text(var_node) == "?",
                 }
             }
             "variable" => {
@@ -923,6 +924,7 @@ impl<'a> Converter<'a> {
                 TypeExpr::Variable {
                     term_id,
                     descriptions: Vec::new(),
+                    fresh: self.text(node) == "?",
                 }
             }
             "tuple_type" => self.convert_tuple_type(node),
@@ -4441,6 +4443,7 @@ impl<'a> Converter<'a> {
         TypeExpr::Variable {
             term_id: tid,
             descriptions: Vec::new(),
+            fresh: true,
         }
     }
 

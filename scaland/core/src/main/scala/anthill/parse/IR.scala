@@ -284,6 +284,17 @@ enum TypeExpr:
     * `TypeExpr::EffectGuarded`. */
   case EffectGuarded(label: TypeExpr, guard: IndexedSeq[TermId])
 
+object TypeExpr:
+  /** Is `te` the anonymous `?` alone — a variable of that occurrence, which the parser names
+    * `?` (`AnthillParser.freshAnonymousVar`)? `?_` and `?name` are variables of the
+    * declaration. `[T = ?]` is the bare `T` (proposal 042's explicit form), and `Error[T = ?]`
+    * the bare `Error` (kernel-language §8.1). */
+  def isBareHole(te: TypeExpr, terms: SimpleTermStore, symbols: SymbolTable): Boolean = te match
+    case TypeExpr.Variable(tid, _) => terms.get(tid) match
+      case Term.Var(v) => symbols.name(v.varId.name) == "?"
+      case _           => false
+    case _ => false
+
 case class SortBinding(param: Option[Name], bound: TypeExpr)
 
 // ── Literal (parse-time) ────────────────────────────────────────

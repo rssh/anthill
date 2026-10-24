@@ -1656,9 +1656,11 @@ pub(super) fn sort_application_parts(
     ty: &Value,
 ) -> Option<(Symbol, Vec<(Symbol, Value)>)> {
     if let Some(s) = extract_sort_ref_sym(kb, ty) {
-        // A parametric sort is never an alias: a non-empty memoized param set
-        // (WI-424 cache) skips the alias-shape fact scans on the hot path.
-        if !sort_type_params_as_pairs(kb, s).is_empty() {
+        // A parametric sort is never an alias: a non-empty declared param set skips the
+        // alias-shape fact scans on the hot path. The declaration's names, not the canonical
+        // variables (`sort_type_params_as_pairs`), so the loader may ask it too — a refused
+        // declaration's parameter has no variable published, and that reader asserts one.
+        if !kb.type_param_syms_of(s).is_empty() {
             return Some((s, vec![]));
         }
         match resolve_alias_shape(kb, s) {

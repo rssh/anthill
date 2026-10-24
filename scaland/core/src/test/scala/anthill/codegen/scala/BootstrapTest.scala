@@ -525,6 +525,29 @@ class BootstrapTest extends munit.FunSuite:
       refused.getMessage)
   }
 
+  // WI-20261024-DK83Q: `Error[T = ?]` and `Error[?]` are `Error` — a `?` alone at a slot
+  // that declares no default is the slot left out — so each emits what the bare label does.
+  // FAILS with `OpGen.isBareHole` answering false: the `?` reached `TypeGen.render`, which
+  // refuses a type variable, where the bare label emits `Either[Throwable, …]`.
+  test("WI-DK83Q: an Error label written with `?` emits as the bare label") {
+    def emitted(label: String): String =
+      val source =
+        s"""namespace demo.dk
+           |  import anthill.prelude.{Int64, Error}
+           |  sort Runner
+           |    operation run(n: Int64) -> Int64 effects {$label}
+           |  end
+           |end
+           |""".stripMargin
+      val files = gen(parseSource(source, "dk.anthill"))
+      files.find(_.relPath.endsWith("/Runner.scala"))
+        .getOrElse(fail(s"expected Runner.scala in: ${files.map(_.relPath)}")).contents
+    val bare = emitted("Error")
+    assert(bare.contains("Either[Throwable,"), bare)
+    for label <- Seq("Error[T = ?]", "Error[?]") do
+      assertEquals(emitted(label), bare, label)
+  }
+
   test("WI-1055 A3: a sort's own name is not rewritten through the prelude type map") {
     // WI-1021's headline, fixed by the same mechanism and therefore pinned here.
     // `mapPrelude` rewrote `Pair` to `Tuple2` unconditionally, INCLUDING inside

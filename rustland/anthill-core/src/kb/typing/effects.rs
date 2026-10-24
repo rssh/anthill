@@ -2080,7 +2080,19 @@ pub(super) fn pair_present_labels(
     a_present: &[Value],
     b_present: &[Value],
 ) -> (Vec<Value>, Vec<Value>) {
-    match_present_labels(kb, subst, a_present, b_present, true)
+    match_present_labels(kb, subst, a_present, b_present, true, false)
+}
+
+/// [`pair_present_labels`] where `a_present` is the ACTUAL row's and `b_present` the declared
+/// one's: an actual label written bare pairs with no written label of its sort
+/// ([`bare_against_written`]).
+pub(super) fn pair_actual_present_labels(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    a_present: &[Value],
+    b_present: &[Value],
+) -> (Vec<Value>, Vec<Value>) {
+    match_present_labels(kb, subst, a_present, b_present, true, true)
 }
 
 /// WI-326 subtype variant of [`pair_present_labels`] — existential
@@ -2113,19 +2125,22 @@ pub(super) fn cover_present_labels(
     a_present: &[Value],
     b_present: &[Value],
 ) -> (Vec<Value>, Vec<Value>) {
-    match_present_labels(kb, subst, a_present, b_present, false)
+    match_present_labels(kb, subst, a_present, b_present, false, false)
 }
 
 /// The one greedy walk behind [`pair_present_labels`] and [`cover_present_labels`].
 /// `one_to_one` decides exactly one thing: whether a `b` label that has already been
 /// matched may be tried again — never, for unification's 1-to-1 pairing; always, for
-/// WI-326's existential covering.
+/// WI-326's existential covering. `a_is_actual` says the caller knows `a` is the actual row,
+/// which a bare label of it may then not pair through a written one of `b`
+/// ([`bare_against_written`]); a unification's two rows have no such side.
 fn match_present_labels(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
     a_present: &[Value],
     b_present: &[Value],
     one_to_one: bool,
+    a_is_actual: bool,
 ) -> (Vec<Value>, Vec<Value>) {
     // WI-338 F11: each unify_types attempt may bind variables in `subst`
     // *before* it determines it can't complete the unification (partial
@@ -2161,6 +2176,9 @@ fn match_present_labels(
             if one_to_one && b_matched[i] {
                 continue;
             }
+            if a_is_actual && bare_against_written(kb, al, bl) {
+                continue;
+            }
             let snapshot = subst.clone();
             if unify_types(kb, subst, al, bl) {
                 b_matched[i] = true;
@@ -2193,6 +2211,21 @@ fn match_present_labels(
         }
     }
     (only_a, only_b)
+}
+
+/// Is the ACTUAL label `a` its sort written bare and the expected `b` the same sort applied
+/// (`Error` against `Error[Boom]`)? A label is compared as written (§8.1): the bare one raises at
+/// a type not known, which a boundary at `Boom` does not catch, so it pairs with no specific
+/// label and stays for the row's tail. The other way about it pairs: an expected `Error` takes
+/// a label at any payload (`E = Error` takes `{Error[Bool]}`).
+fn bare_against_written(kb: &KnowledgeBase, a: &Value, b: &Value) -> bool {
+    let TypeHead::SortRef(s) = type_head(kb, a) else {
+        return false;
+    };
+    if kb.type_param_syms_of(s).is_empty() {
+        return false;
+    }
+    matches!(type_head(kb, b), TypeHead::Parameterized { base } if same_sort_canonical(kb, base, s))
 }
 
 /// Are two labels of one row equal under `subst`, walked deep — a binding made inside an

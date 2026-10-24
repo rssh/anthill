@@ -437,6 +437,9 @@ pub enum TypeExpr {
     Variable {
         term_id: TermId,
         descriptions: Vec<String>,
+        /// Written `?` alone: a variable of this occurrence, tying it to nothing. `?_` and
+        /// `?name` are variables of the declaration, the same one wherever they are written.
+        fresh: bool,
     },
     /// Tuple type: `(Int, String)` or `(name: String, age: Int)`.
     /// Always named; converter fills _1, _2 for positional.
