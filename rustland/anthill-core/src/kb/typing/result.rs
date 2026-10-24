@@ -385,7 +385,7 @@ pub(super) fn entity_type_on_builders(kb: &mut KnowledgeBase, v: &Value) -> Resu
     match extract_type(kb, v) {
         TypeExtractor::Parameterized { base, bindings } if is_sort_view_functor(kb, base) => {
             let ViewHead::Functor {
-                functor: Some(functor),
+                functor,
                 pos_arity,
                 ..
             } = v.head(kb)

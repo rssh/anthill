@@ -46,10 +46,9 @@ pub enum ViewHead {
     /// Literal constant.
     Const(Literal),
     /// Function / constructor application: a `Term::Fn`, a `Value::Entity`, and a tuple
-    /// value, which reads as its `TupleLiteral(_1: …)` twin. No carrier reads with a
-    /// `None` functor.
+    /// value, which reads as its `TupleLiteral(_1: …)` twin.
     Functor {
-        functor: Option<Symbol>,
+        functor: Symbol,
         pos_arity: usize,
         named_arity: usize,
     },
@@ -73,14 +72,14 @@ impl ViewHead {
     /// spelling and not the other — see [`functor_view_head`].
     pub(crate) fn nullary(functor: Symbol) -> ViewHead {
         ViewHead::Functor {
-            functor: Some(functor),
+            functor,
             pos_arity: 0,
             named_arity: 0,
         }
     }
 
-    /// The head's functor symbol (WI-436), or `None` for a functor-less aggregate /
-    /// var / const / opaque head.
+    /// The head's functor symbol (WI-436), or `None` for a var / const / ident / bottom /
+    /// opaque head.
     ///
     /// WI-20260902-CZJ2N: it no longer has a `Ref` arm to fold in — a bare name is a
     /// nullary `Functor` head now, so this is a plain read. Kept because 40-odd readers
@@ -89,9 +88,7 @@ impl ViewHead {
     /// collide with a same-named user sort).
     pub(crate) fn functor_sym(&self) -> Option<Symbol> {
         match self {
-            ViewHead::Functor {
-                functor: Some(s), ..
-            } => Some(*s),
+            ViewHead::Functor { functor, .. } => Some(*functor),
             _ => None,
         }
     }
@@ -123,7 +120,7 @@ impl ViewHead {
 /// after a load-time registration (the order-sensitivity WI-436's own note recorded).
 fn functor_view_head(functor: Symbol, pos_arity: usize, named_arity: usize) -> ViewHead {
     ViewHead::Functor {
-        functor: Some(functor),
+        functor,
         pos_arity,
         named_arity,
     }
@@ -812,7 +809,7 @@ fn wrapped_expr_head(expr: &Expr, kb: &KnowledgeBase) -> Option<ViewHead> {
     // WI-815 made a soundness surface.
     let f = reflect_ctor_sym(kb, qname, qname.rsplit('.').next().unwrap_or(qname));
     Some(ViewHead::Functor {
-        functor: Some(f),
+        functor: f,
         pos_arity: 0,
         named_arity: keys.len(),
     })
@@ -1286,7 +1283,7 @@ fn occ_head(occ: &NodeOccurrence, kb: &KnowledgeBase) -> ViewHead {
         // (`requirement-channel.md` §9) — a `TermId`, a `Value` and a
         // `NodeOccurrence` spelling one dictionary must not present three heads.
         Some(Expr::Dictionary { subs, .. }) => ViewHead::Functor {
-            functor: Some(dictionary_ctor_sym(kb)),
+            functor: dictionary_ctor_sym(kb),
             pos_arity: subs.len(),
             named_arity: 1,
         },
@@ -1783,7 +1780,7 @@ fn type_node_head(tn: &TypeNode, kb: &KnowledgeBase) -> ViewHead {
     };
     match functor {
         Some(f) => ViewHead::Functor {
-            functor: Some(f),
+            functor: f,
             pos_arity: 0,
             named_arity,
         },
@@ -1917,7 +1914,7 @@ fn effect_expr_head(en: &EffectExprNode, kb: &KnowledgeBase) -> ViewHead {
     };
     match effect_functor_sym(kb, short) {
         Some(f) => ViewHead::Functor {
-            functor: Some(f),
+            functor: f,
             pos_arity: 0,
             named_arity,
         },
@@ -2164,8 +2161,7 @@ pub trait TermView {
     /// to a constant `false`.
     ///
     /// Mirrors [`crate::kb::discrim::view_is_indexable`]'s recursion — the same
-    /// walk, a different verdict (that one additionally rejects a functor-less
-    /// aggregate, which keys here perfectly well).
+    /// walk.
     fn bears_opaque(&self, kb: &KnowledgeBase) -> bool {
         match self.head(kb) {
             ViewHead::Opaque => true,
@@ -2280,12 +2276,11 @@ pub fn views_structurally_equal<A: TermView, B: TermView>(
 }
 
 /// A single node of a [`GoalKey`] — a kb-free structural token. `Const` carries
-/// the literal value, `Open` the functor (or `None` for a functor-less
-/// aggregate) plus arities, the rest a leaf symbol/var. Derives `Hash`/`Eq`, so
+/// the literal value, `Open` the functor plus arities, the rest a leaf symbol/var. Derives `Hash`/`Eq`, so
 /// a `Vec<StructToken>` is self-contained — no `kb` needed to compare or hash.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum StructToken {
-    Open(Option<Symbol>, usize, usize),
+    Open(Symbol, usize, usize),
     NamedKey(Symbol),
     Const(Literal),
     Ref(Symbol),
@@ -2897,7 +2892,7 @@ impl OpRefHalves {
 
 fn opref_head(present: OpRefHalves, kb: &KnowledgeBase) -> ViewHead {
     ViewHead::Functor {
-        functor: Some(reflect_ctor_sym(kb, OPREF_QNAME, "OpRef")),
+        functor: reflect_ctor_sym(kb, OPREF_QNAME, "OpRef"),
         pos_arity: 0,
         named_arity: opref_shape(present).len(),
     }
@@ -3478,7 +3473,7 @@ impl TermView for ReflectedExpr {
             // arg, no positionals.
             Some(Expr::Const(lit)) => match self.lit_functor(lit) {
                 Some(f) => ViewHead::Functor {
-                    functor: Some(f),
+                    functor: f,
                     pos_arity: 0,
                     named_arity: 1,
                 },
@@ -3628,7 +3623,7 @@ mod nullary_head_tests {
         ] {
             assert!(matches!(
                 h,
-                ViewHead::Functor { functor: Some(s), pos_arity: 0, named_arity: 0 } if s == red
+                ViewHead::Functor { functor: s, pos_arity: 0, named_arity: 0 } if s == red
             ));
             assert_eq!(h.functor_sym(), Some(red));
         }
@@ -3665,7 +3660,7 @@ mod nullary_head_tests {
         );
         assert!(matches!(
             plain_fn.head(&kb),
-            ViewHead::Functor { functor: Some(s), pos_arity: 0, named_arity: 0 } if s == plain
+            ViewHead::Functor { functor: s, pos_arity: 0, named_arity: 0 } if s == plain
         ));
         assert!(views_structurally_equal(&kb, &plain_ref, &plain_fn));
     }
@@ -3755,7 +3750,7 @@ mod wi520_tests {
 
         let av = Value::Node(Rc::clone(&a));
         // Head is the SAME `Functor` head its term twin produces — NOT `Opaque`.
-        assert!(matches!(av.head(&kb), ViewHead::Functor { functor: Some(s), .. } if s == foo));
+        assert!(matches!(av.head(&kb), ViewHead::Functor { functor: s, .. } if s == foo));
         let twin = occurrence_to_term(&mut kb, &a);
         assert_eq!(av.head(&kb).functor_sym(), twin.head(&kb).functor_sym());
 
@@ -3823,7 +3818,7 @@ mod wi520_tests {
             assert!(
                 matches!(
                     occ.head(&kb),
-                    ViewHead::Functor { functor: Some(f), pos_arity: 0, named_arity: 2 } if f == pair
+                    ViewHead::Functor { functor: f, pos_arity: 0, named_arity: 2 } if f == pair
                 ),
                 "{:?}",
                 occ.head(&kb)

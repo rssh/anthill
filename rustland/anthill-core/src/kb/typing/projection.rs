@@ -189,7 +189,7 @@ fn bare_field_access(kb: &KnowledgeBase, receiver: &Value) -> Option<(Value, Sym
     let dot_sym = kb.try_resolve_symbol(dt::qualified(dt::DOT_APPLY))?;
     if !matches!(
         receiver.head(kb),
-        ViewHead::Functor { functor: Some(f), .. } if f == dot_sym
+        ViewHead::Functor { functor: f, .. } if f == dot_sym
     ) {
         return None;
     }
@@ -201,7 +201,7 @@ fn bare_field_access(kb: &KnowledgeBase, receiver: &Value) -> Option<(Value, Sym
             (a.head(kb), nil_sym),
             (
                 ViewHead::Functor {
-                    functor: Some(r),
+                    functor: r,
                     pos_arity: 0,
                     named_arity: 0,
                 },
@@ -1468,7 +1468,7 @@ fn eliminate_spec_view(
     cx: &Discharge,
 ) -> Result<Option<Value>, TypeError> {
     let ViewHead::Functor {
-        functor: Some(functor),
+        functor,
         pos_arity,
         ..
     } = ty.head(kb)
@@ -3190,7 +3190,7 @@ pub(super) fn push_op_requires_clause(
     }
     match clause.head(kb) {
         ViewHead::Functor {
-            functor: Some(f),
+            functor: f,
             pos_arity,
             ..
         } if kb.local_name_of(f) == "conjunction" => {
@@ -3202,9 +3202,9 @@ pub(super) fn push_op_requires_clause(
         }
         // Match the ground `push_op_requires_clause_term` exactly: a FUNCTOR head at
         // any arity — the bare spelling included, since WI-20260902-CZJ2N — becomes an
-        // entry; an `Ident` (or functor-less) head is skipped (WI-662).
+        // entry; an `Ident` head is skipped (WI-662).
         ViewHead::Functor {
-            functor: Some(f), ..
+            functor: f, ..
         } => {
             out.push(RequiresEntry {
                 required_sort: f,

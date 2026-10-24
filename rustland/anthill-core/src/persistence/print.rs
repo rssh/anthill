@@ -226,7 +226,7 @@ impl PrintView for ParsedFile {
                 pos_args,
                 named_args,
             } => ViewHead::Functor {
-                functor: Some(*functor),
+                functor: *functor,
                 pos_arity: pos_args.len(),
                 named_arity: named_args.len(),
             },
@@ -715,6 +715,14 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                 pos_args,
                 named_args,
             } => self.write_type_value(*head, pos_args, named_args, true, buf),
+            // The body-written `(…)` is a constructor over `TupleLiteral`
+            // (`literal_as_constructor`), and prints as the literal, as `Expr::TupleLit` does.
+            Expr::Constructor {
+                name,
+                pos_args,
+                named_args,
+                ..
+            } if self.is_tuple_literal(*name) => self.write_occ_tuple(pos_args, named_args, buf),
             Expr::Constructor {
                 name,
                 pos_args,
@@ -845,11 +853,7 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
             }
             Expr::ListLit(es) => self.write_occ_seq('[', ']', es, buf),
             Expr::SetLit(es) => self.write_occ_seq('{', '}', es, buf),
-            Expr::TupleLit { positional, named } => {
-                buf.push('(');
-                self.write_occ_inner(positional, named, buf);
-                buf.push(')');
-            }
+            Expr::TupleLit { positional, named } => self.write_occ_tuple(positional, named, buf),
             Expr::RequirementAtSort { chain, slot } => {
                 buf.push_str("requirement_at_sort(");
                 self.write_occurrence(chain, buf);
@@ -1030,6 +1034,37 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
         }
     }
 
+    /// A tuple occurrence as its literal. Components named `_1`, `_2`, … in their own slots,
+    /// two or more, are written without their labels, and a lone positional one with its
+    /// label, as [`Self::write_tuple`] writes a tuple value.
+    fn write_occ_tuple(
+        &self,
+        pos: &[Rc<NodeOccurrence>],
+        named: &[(Symbol, Rc<NodeOccurrence>)],
+        buf: &mut String,
+    ) {
+        let unlabelled = pos.is_empty()
+            && named.len() > 1
+            && named
+                .iter()
+                .enumerate()
+                .all(|(i, (s, _))| is_positional_label_at(self.view.sym_name(*s), i));
+        buf.push('(');
+        if unlabelled {
+            let components: Vec<Rc<NodeOccurrence>> =
+                named.iter().map(|(_, c)| Rc::clone(c)).collect();
+            self.write_occ_inner(&components, &[], buf);
+        } else if let ([only], []) = (pos, named) {
+            // `(x)` alone is grouping: a lone positional component keeps its label.
+            buf.push_str(&crate::intern::positional_label(0));
+            buf.push_str(": ");
+            self.write_occurrence(only, buf);
+        } else {
+            self.write_occ_inner(pos, named, buf);
+        }
+        buf.push(')');
+    }
+
     fn write_occ_seq(&self, open: char, close: char, es: &[Rc<NodeOccurrence>], buf: &mut String) {
         buf.push(open);
         for (i, e) in es.iter().enumerate() {
@@ -1095,7 +1130,7 @@ impl<'a, V: PrintView + ?Sized> TermPrinter<'a, V> {
     fn application(&self, item: &V::Item) -> Option<(Symbol, usize, usize)> {
         match self.view.head(item) {
             ViewHead::Functor {
-                functor: Some(f),
+                functor: f,
                 pos_arity,
                 named_arity,
             } => Some((f, pos_arity, named_arity)),
@@ -1109,7 +1144,7 @@ impl<'a, V: PrintView + ?Sized> TermPrinter<'a, V> {
         match self.view.head(item) {
             ViewHead::Ident(s)
             | ViewHead::Functor {
-                functor: Some(s),
+                functor: s,
                 pos_arity: 0,
                 named_arity: 0,
             } => Some(s),
@@ -1153,22 +1188,18 @@ impl<'a, V: PrintView + ?Sized> TermPrinter<'a, V> {
             ViewHead::Ident(sym) => buf.push_str(self.view.sym_name(sym)),
             // A closure, a stream: nothing with a surface to print.
             ViewHead::Opaque => buf.push_str("<opaque>"),
-            // No carrier reads functor-less: a tuple value reads as its `TupleLiteral` twin.
-            ViewHead::Functor { functor: None, .. } => {
-                unreachable!("print: a functor-less application")
-            }
             ViewHead::Functor {
-                functor: Some(f),
+                functor: f,
                 pos_arity: 0,
                 named_arity: 0,
             } if self.is_tuple_literal(f) => buf.push_str("()"),
             ViewHead::Functor {
-                functor: Some(f),
+                functor: f,
                 pos_arity: 0,
                 named_arity: 0,
             } => self.write_bare_name(item, f, buf),
             ViewHead::Functor {
-                functor: Some(f),
+                functor: f,
                 pos_arity,
                 named_arity,
             } => self.write_application(item, f, pos_arity, named_arity, buf),
@@ -1559,7 +1590,7 @@ impl<'a, V: PrintView + ?Sized> TermPrinter<'a, V> {
         match self.view.head(item) {
             ViewHead::Ident(s)
             | ViewHead::Functor {
-                functor: Some(s),
+                functor: s,
                 pos_arity: 0,
                 named_arity: 0,
             } => match self.view.qualified_name(s) {
@@ -1570,7 +1601,7 @@ impl<'a, V: PrintView + ?Sized> TermPrinter<'a, V> {
                 _ => buf.push_str(self.view.sym_name(s)),
             },
             ViewHead::Functor {
-                functor: Some(f),
+                functor: f,
                 pos_arity,
                 ..
             } => match self.source_name(item, f) {
@@ -1962,7 +1993,7 @@ pub fn print_fact_omitting<V: PrintView + ?Sized>(
     let item = view.term_item(term);
     let (functor, pos_arity) = match view.head(&item) {
         ViewHead::Functor {
-            functor: Some(f),
+            functor: f,
             pos_arity,
             ..
         } => (f, pos_arity),

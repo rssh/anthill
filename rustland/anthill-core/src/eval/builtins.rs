@@ -743,7 +743,7 @@ fn reflect_field_access(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
     // variant.
     let receiver_functor = match receiver.head(interp.kb()) {
         ViewHead::Functor {
-            functor: Some(f), ..
+            functor: f, ..
         } => Some(f),
         _ => None,
     };
@@ -4647,10 +4647,8 @@ fn term_field(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
     // rejected.
     //
     // THE REFUSED SET is the one `value_to_term` calls its honest residue: an opaque
-    // runtime handle, and a tuple value (`Value::Unit` / `Value::Tuple`, which reads as
-    // its `TupleLiteral` twin, so a bare `Functor { .. }` test lets it through — it has
-    // no `value_functor`). Asked shallowly and on purpose: a field is readable off an
-    // entity whose OTHER field holds a closure.
+    // runtime handle. Asked shallowly and on purpose: a field is readable off an entity
+    // whose OTHER field holds a closure.
     if !reads_as_term(interp.kb(), &term_arg) {
         return Err(type_mismatch("Term", &term_arg, None));
     }
@@ -4727,13 +4725,18 @@ fn reflect_term_to_string(interp: &mut Interpreter, args: &[Value]) -> Result<Va
 ///
 /// THE SECOND HALF DEFERS TO [`crate::eval::eval::value_functor`] rather than
 /// re-deriving it, because the set is subtler than "has a functor": `Value::OpRef`
-/// heads as `Functor { functor: Some(_) }` but that head names its reflect ENCODING
+/// heads as `Functor { functor: _ }` but that head names its reflect ENCODING
 /// rather than a referent, so a hand-rolled `ViewHead` test admits it and hands a
 /// dictionary's internals back as readable fields. `value_functor` is the one owner of
-/// that distinction (WI-1024) and excludes `OpRef` and the functor-less aggregates
-/// together. Caught by /code-review.
+/// that distinction (WI-1024). Caught by /code-review. A tuple value is asked first: it
+/// is a term, and names no sort.
 fn reads_as_term(kb: &crate::kb::KnowledgeBase, v: &Value) -> bool {
     use crate::kb::term_view::{TermView, ViewHead};
+    // A tuple value is the `TupleLiteral(_1: …)` term a rule writes for it, which
+    // `value_to_term` lowers it to; it names no sort, so `value_functor` does not answer.
+    if matches!(v.carried(), Value::Unit | Value::Tuple { .. }) {
+        return true;
+    }
     match v.head(kb) {
         ViewHead::Const(_) | ViewHead::Var(_) | ViewHead::Ident(_) | ViewHead::Bottom => true,
         ViewHead::Functor { .. } => crate::eval::eval::value_functor(kb, v).is_some(),
@@ -4763,7 +4766,7 @@ pub(super) fn view_list_items(kb: &crate::kb::KnowledgeBase, v: &Value) -> Optio
     loop {
         let (functor, pos_arity, named_arity) = match cur.head(kb) {
             ViewHead::Functor {
-                functor: Some(f),
+                functor: f,
                 pos_arity,
                 named_arity,
             } => (f, pos_arity, named_arity),
@@ -5006,7 +5009,7 @@ fn materialize_entity(interp: &mut Interpreter, v: &Value) -> Option<Value> {
     let (functor, pos_args, named_args): (Symbol, Vec<Value>, Vec<(Symbol, Value)>) = {
         let kb = &interp.kb;
         let ViewHead::Functor {
-            functor: Some(functor),
+            functor,
             pos_arity,
             ..
         } = v.head(kb)
@@ -5181,12 +5184,12 @@ fn handle_to_native(interp: &mut Interpreter, v: &Value) -> Value {
         // nullary `Functor` now — and it keeps `TryRef`'s cheap field-less build
         // instead of routing a name through `materialize_entity`.
         ViewHead::Functor {
-            functor: Some(f),
+            functor: f,
             pos_arity: 0,
             named_arity: 0,
         } => Decision::TryRef(f),
         ViewHead::Functor {
-            functor: Some(f), ..
+            functor: f, ..
         } => Decision::TryFn(f),
         ViewHead::Var(var) => Decision::Var(var),
         _ => Decision::AsIs,
@@ -5898,7 +5901,7 @@ fn meta_term_operand(interp: &Interpreter, v: &Value, op: &'static str) -> Resul
     use crate::kb::term_view::{TermView, ViewHead};
     let is_meta = match v.head(&interp.kb) {
         ViewHead::Functor {
-            functor: Some(f),
+            functor: f,
             pos_arity: 0,
             ..
         } => interp.kb.local_name_of(f) == "meta",

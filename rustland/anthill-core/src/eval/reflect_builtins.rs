@@ -575,7 +575,7 @@ fn repr_functor(
     use crate::kb::term_view::{TermView, ViewHead};
     match v.head(kb) {
         ViewHead::Functor {
-            functor: Some(f), ..
+            functor: f, ..
         } => Ok(f),
         _ => Err(EvalError::TypeMismatch {
             expected,
@@ -926,7 +926,7 @@ fn denotes_a_sort_candidate(
     }
     match v.head(kb) {
         ViewHead::Const(_) | ViewHead::Bottom => Ok(false),
-        ViewHead::Opaque | ViewHead::Functor { functor: None, .. } => {
+        ViewHead::Opaque => {
             let tid = expect_term(kb, v, op)?;
             Ok(!matches!(
                 kb.get_term(tid),
@@ -1000,7 +1000,7 @@ pub(super) fn resolve_sort_instantiation_param(
     // (WI-20260923-9R5HN) — it read a hash-consed `Term::Fn` only.
     match inst.head(kb) {
         ViewHead::Functor {
-            functor: Some(_), ..
+            functor: _, ..
         } => inst
             .named_arg(kb, param_sym)
             .map(|c| c.to_value())

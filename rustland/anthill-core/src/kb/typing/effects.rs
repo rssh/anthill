@@ -20,7 +20,7 @@ pub(super) fn effects_rows_inner<V: TermView>(kb: &KnowledgeBase, v: &V) -> Opti
     let er = kb.try_resolve_symbol("anthill.prelude.TypeExtractor.EffectsRows")?;
     match v.head(kb) {
         ViewHead::Functor {
-            functor: Some(f), ..
+            functor: f, ..
         } if f == er => view_child_value(kb, v, "effects_expr"),
         _ => None,
     }
@@ -815,7 +815,7 @@ fn substitute_ref_terms_value_rec(
         // child, which would corrupt the wrapper). An unmapped `var_ref` stays
         // intact: the open-world parameter the resolver flounders on.
         ViewHead::Functor {
-            functor: Some(f), ..
+            functor: f, ..
         } if f == var_ref_sym => {
             match view_var_ref_name(kb, v) {
                 Some(s) => map
@@ -847,7 +847,7 @@ fn substitute_ref_terms_value_rec(
             .map(|&t| Value::term(t))
             .unwrap_or_else(|| v.clone()),
         ViewHead::Functor {
-            functor: Some(s),
+            functor: s,
             pos_arity: 0,
             named_arity: 0,
         } => map
@@ -862,7 +862,7 @@ fn substitute_ref_terms_value_rec(
         // sensitive discrimination tree matches against, which a non-entity-functor
         // Node goal's source-order named children would otherwise violate.
         ViewHead::Functor {
-            functor: Some(f),
+            functor: f,
             pos_arity,
             ..
         } => {
@@ -1197,7 +1197,7 @@ pub(super) fn drop_refuted_guarded_labels(
 pub(crate) fn is_value_precondition_clause(kb: &KnowledgeBase, clause: &Value) -> bool {
     match clause.head(kb) {
         ViewHead::Functor {
-            functor: Some(f), ..
+            functor: f, ..
         } => !kb.is_type_value_head(f),
         _ => false,
     }
@@ -1216,7 +1216,7 @@ pub(crate) fn clause_conjuncts(kb: &KnowledgeBase, clause: &Value) -> Vec<Value>
     // `Node`, or `Entity` `conjunction(g1, …, gn)` decomposes identically into its
     // goal `Value`s (each carrier-faithful — a `Node` conjunct stays an occurrence).
     if let ViewHead::Functor {
-        functor: Some(f),
+        functor: f,
         pos_arity,
         ..
     } = clause.head(kb)
@@ -1261,7 +1261,7 @@ fn view_references_any<V: TermView>(kb: &KnowledgeBase, view: &V, syms: &[Symbol
         // falling through would answer `false` for the very shape this looks for.
         // The doc's "a functor SYMBOL is not a reference" still holds — at arity > 0.
         ViewHead::Functor {
-            functor: Some(s),
+            functor: s,
             pos_arity: 0,
             named_arity: 0,
         } => syms.contains(&s),
@@ -1782,7 +1782,7 @@ pub(super) fn value_is_row_shaped(kb: &KnowledgeBase, v: &impl TermView) -> bool
     }
     matches!(
         v.head(kb),
-        ViewHead::Functor { functor: Some(sym), .. }
+        ViewHead::Functor { functor: sym, .. }
             if kb.qualified_name_of(sym) == "anthill.prelude.TypeExtractor.EffectsRows"
     )
 }
@@ -1904,7 +1904,7 @@ pub(super) fn map_row_present_labels(
 /// carrier.
 fn with_named_child(kb: &mut KnowledgeBase, v: &Value, key: Symbol, child: Value) -> Value {
     let ViewHead::Functor {
-        functor: Some(f),
+        functor: f,
         pos_arity,
         ..
     } = v.head(kb)

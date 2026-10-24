@@ -380,7 +380,7 @@ pub(super) fn declared_type_param_vid(kb: &KnowledgeBase, pty: &Value) -> Option
     match pty.head(kb) {
         ViewHead::Ident(s) => type_param_global_var(kb, s),
         ViewHead::Functor {
-            functor: Some(s),
+            functor: s,
             pos_arity: 0,
             named_arity: 0,
         } => type_param_global_var(kb, s),
@@ -535,7 +535,7 @@ pub(super) fn witness_instantiation(
         .iter()
         .find(|(p, _)| type_param_vid_in_sort(kb, spec_sort, *p) == Some(carrier_pvid))?;
     let ViewHead::Functor {
-        functor: Some(functor),
+        functor,
         named_arity,
         ..
     } = carrier_val.head(kb)
@@ -610,7 +610,7 @@ fn witness_param_vid_of_occurrence<V: TermView>(
         // not one of this witness's own parameters resolves to `None` and substitutes
         // nothing, which is the correct answer for it.
         ViewHead::Functor {
-            functor: Some(sym),
+            functor: sym,
             pos_arity: 0,
             named_arity: 0,
         } => witness_params

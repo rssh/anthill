@@ -1108,7 +1108,7 @@ fn extract_params(kb: &KnowledgeBase, head: &Value) -> Vec<(Symbol, Value)> {
 fn view_ref_sym(kb: &KnowledgeBase, item: ViewItem) -> Option<Symbol> {
     match item.head(kb) {
         ViewHead::Functor {
-            functor: Some(s),
+            functor: s,
             pos_arity: 0,
             named_arity: 0,
         } => Some(s),

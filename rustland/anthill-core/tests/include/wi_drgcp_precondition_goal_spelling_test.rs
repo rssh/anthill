@@ -332,6 +332,17 @@ fn term_to_string_prints_an_entity_without_interning() {
          {call_growth}: `term_to_string` is lowering its argument"
     );
 
-    let refused = interp.call("anthill.reflect.term_to_string", &[Value::Unit]);
+    // `Unit` is the tuple of no components, a term (WI-20261011-7G99A); an operation
+    // reference has no term reading, and raises.
+    let printed = text(interp.call("anthill.reflect.term_to_string", &[Value::Unit]));
+    assert_eq!(printed, "()");
+    let op_ref = Value::OpRef {
+        op_reqs: None,
+        spread_labels: None,
+        op: mk,
+        dict: None,
+        named: None,
+    };
+    let refused = interp.call("anthill.reflect.term_to_string", &[op_ref]);
     assert!(refused.is_err(), "a value with no term reading raises: {refused:?}");
 }

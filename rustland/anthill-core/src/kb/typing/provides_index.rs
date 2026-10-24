@@ -1396,7 +1396,7 @@ fn binding_value_key<V: TermView>(kb: &KnowledgeBase, value: &V) -> String {
         ViewHead::Ident(functor) => (sort_name(functor), 0),
         ViewHead::Functor {
             functor, pos_arity, ..
-        } => (functor.map_or_else(String::new, sort_name), pos_arity),
+        } => (sort_name(functor), pos_arity),
         ViewHead::Var(var) => return format!("?{var:?}"),
         ViewHead::Const(literal) => return format!("={literal:?}"),
         ViewHead::Bottom => return "⊥".to_string(),

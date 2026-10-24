@@ -292,7 +292,7 @@ fn dictionary_impl(kb: &KnowledgeBase, v: &anthill_core::eval::Value) -> Option<
         .into_iter()
         .find(|k| kb.local_name_of(*k) == "impl")?;
     match v.named_arg(kb, key)?.to_value().head(kb) {
-        ViewHead::Ident(s) | ViewHead::Functor { functor: Some(s), .. } => {
+        ViewHead::Ident(s) | ViewHead::Functor { functor: s, .. } => {
             Some(kb.local_name_of(s).to_string())
         }
         _ => None,

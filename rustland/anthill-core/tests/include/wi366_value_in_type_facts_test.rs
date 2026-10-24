@@ -477,7 +477,7 @@ fn query_pattern_written_empty_effect_row_lowers() {
         .expect("E binding present (not dropped) in query pattern term");
     let e = TermView::named_arg(&term, &kb, e_sym).expect("E child readable");
     assert!(
-        matches!(TermView::head(&e, &kb), ViewHead::Functor { functor: Some(f), .. }
+        matches!(TermView::head(&e, &kb), ViewHead::Functor { functor: f, .. }
             if kb.qualified_name_of(f) == "anthill.prelude.TypeExtractor.EffectsRows"),
         "query `Stream[E = {{}}]` must lower E to an `effects_rows` Type (not drop it \
          or panic); got: {:?}",
@@ -689,24 +689,31 @@ fn positioned_is_a_structural_term() {
 }
 
 /// WI-390 (f): `value_to_term` returns `Err` for a term-less residue (the honest
-/// signal) rather than panicking or lowering to a lossy term. `Unit` / an anonymous
-/// `Tuple` (no functor) take the same `Err` arm as the opaque runtime handles
-/// (`Cell`/`Closure`/…) — none of which appear in a spec/cache position.
+/// signal) rather than panicking or lowering to a lossy term — an opaque runtime handle
+/// (`Cell`/`Closure`/`Relation`/…), none of which appear in a spec/cache position. A
+/// tuple is no residue (WI-20261011-7G99A): `Unit` and `(1)` lower to the
+/// `TupleLiteral(…)` term a rule writes for them.
 #[test]
 fn value_to_term_errors_on_term_less_residue() {
     use anthill_core::kb::node_occurrence::value_to_term;
     let mut kb = KnowledgeBase::new();
     load::register_prelude(&mut kb);
+    let relation = Value::Relation {
+        query: std::rc::Rc::new(Value::Unit),
+        columns: std::rc::Rc::from(vec![]),
+    };
     assert!(
-        value_to_term(&mut kb, &Value::Unit).is_err(),
-        "`Unit` has no term form → Err residue",
+        value_to_term(&mut kb, &relation).is_err(),
+        "a relation has no term form → Err residue",
     );
+    let printed = |kb: &mut KnowledgeBase, v: &Value| {
+        let t = value_to_term(kb, v).expect("a tuple lowers");
+        anthill_core::persistence::print::TermPrinter::new(kb).print_term(t)
+    };
+    assert_eq!(printed(&mut kb, &Value::Unit), "()");
     let tup = Value::Tuple {
         pos: vec![Value::Int(1)].into(),
         named: Vec::new().into(),
     };
-    assert!(
-        value_to_term(&mut kb, &tup).is_err(),
-        "an anonymous Tuple (no functor) has no term form → Err residue",
-    );
+    assert_eq!(printed(&mut kb, &tup), "(_1: 1)");
 }

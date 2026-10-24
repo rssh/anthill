@@ -1945,7 +1945,7 @@ fn settle_head_bounds(
 fn parameters_by_their_variable(kb: &mut KnowledgeBase, ty: &Value) -> Value {
     let leaf = |kb: &mut KnowledgeBase, v: &Value| -> Option<Value> {
         let ViewHead::Functor {
-            functor: Some(name),
+            functor: name,
             pos_arity: 0,
             named_arity: 0,
         } = v.head(kb)

@@ -59,7 +59,7 @@ fn walk_named_keys<V: TermView + ?Sized>(
     functor: Symbol,
 ) -> Vec<Symbol> {
     let mut keys = view.named_keys(kb);
-    kb.sort_named_keys_for_matching(Some(functor), &mut keys);
+    kb.sort_named_keys_for_matching(functor, &mut keys);
     keys
 }
 
@@ -196,14 +196,14 @@ impl<L> SubstTree<L> {
 }
 
 /// Whether [`SubstTree::insert_pattern`] can index `view` without tripping its
-/// functor-less / `Opaque` panic — i.e. every head along the whole structure is
-/// a concrete key (`Functor{Some}` / `Const` / `Ident` / `Bottom`) or a
-/// variable (which routes to a var-edge). Mirrors the [`SubstTree::insert_walk`]
+/// `Opaque` panic — i.e. every head along the whole structure is a concrete key
+/// (`Functor` / `Const` / `Ident` / `Bottom`) or a variable (which routes to a
+/// var-edge). Mirrors the [`SubstTree::insert_walk`]
 /// recursion, so it is the authoritative pre-check.
 ///
 /// The proposal-050 (WI-537) Γ overlay uses this to SKIP a non-indexable fact —
-/// a raw `if`-condition occurrence carrying an elaborated / `Opaque` (or
-/// functor-less tuple/unit) sub-part. Such a fact could never unify with a
+/// a raw `if`-condition occurrence carrying an elaborated / `Opaque` sub-part.
+/// Such a fact could never unify with a
 /// clean goal-shaped membership query, so excluding it is lossless; and it
 /// spares the strict rule-head invariant `insert_pattern` rightly enforces
 /// (loud panic) rather than weakening that invariant for the overlay's sake.
@@ -214,7 +214,7 @@ pub(crate) fn view_is_indexable<V: TermView>(kb: &KnowledgeBase, view: &V) -> bo
     }
     match view.head(kb) {
         ViewHead::Functor {
-            functor: Some(_),
+            functor: _,
             pos_arity,
             ..
         } => {
@@ -227,7 +227,7 @@ pub(crate) fn view_is_indexable<V: TermView>(kb: &KnowledgeBase, view: &V) -> bo
             })
         }
         ViewHead::Const(_) | ViewHead::Ident(_) | ViewHead::Bottom => true,
-        ViewHead::Functor { functor: None, .. } | ViewHead::Opaque => false,
+        ViewHead::Opaque => false,
         // Routed to a var-edge by `index_var` above; unreachable, treated as ok.
         ViewHead::Var(_) => true,
     }
@@ -325,7 +325,7 @@ impl<L: Clone> SubstTree<L> {
         }
         match view.head(kb) {
             ViewHead::Functor {
-                functor: Some(functor),
+                functor,
                 pos_arity,
                 named_arity,
             } => {
@@ -337,8 +337,7 @@ impl<L: Clone> SubstTree<L> {
             ViewHead::Const(lit) => make_mut_child(&mut node.concrete, DiscrimKey::Lit(lit)),
             ViewHead::Ident(sym) => make_mut_child(&mut node.concrete, DiscrimKey::Ident(sym)),
             ViewHead::Bottom => make_mut_child(&mut node.concrete, DiscrimKey::Bottom),
-            // Functor-less aggregates (tuple / unit) and Opaque heads
-            // (closures, streams, post-elaboration forms …) carry no concrete
+            // Opaque heads (closures, streams, post-elaboration forms …) carry no concrete
             // discrimination key. A leaf attached at the current node would be
             // unreachable by exact query — the query walk follows only var-edges
             // for these heads — and would collide with every other such head in
@@ -346,10 +345,10 @@ impl<L: Clone> SubstTree<L> {
             // (Global / Rigid / DeBruijn) do NOT reach here — `index_var` routes
             // them to a var-edge above, for every carrier including occurrence
             // value heads (WI-373). No fact/rule form in use today produces a
-            // functor-less / opaque stored head; fail loudly rather than silently
+            // opaque stored head; fail loudly rather than silently
             // mis-index (Phase A review guard #1/#2).
-            ViewHead::Functor { functor: None, .. } | ViewHead::Opaque => panic!(
-                "discrim insert: functor-less / opaque head carries no \
+            ViewHead::Opaque => panic!(
+                "discrim insert: opaque head carries no \
                  discrimination key — value-fact keying is unimplemented \
                  (WI-348 Phase B/C)"
             ),
@@ -415,7 +414,7 @@ impl<L: Clone> SubstTree<L> {
         }
         match view.head(kb) {
             ViewHead::Functor {
-                functor: Some(functor),
+                functor,
                 pos_arity,
                 named_arity,
             } => {
@@ -448,8 +447,8 @@ impl<L: Clone> SubstTree<L> {
             // Mirror of `insert_walk`'s guard: such a head can never have been
             // inserted (insert panics on it), so retracting one is a logic
             // error (Phase A review guard #1/#2).
-            ViewHead::Functor { functor: None, .. } | ViewHead::Opaque => panic!(
-                "discrim remove: functor-less / opaque head carries no \
+            ViewHead::Opaque => panic!(
+                "discrim remove: opaque head carries no \
                  discrimination key — value-fact keying is unimplemented \
                  (WI-348 Phase B/C)"
             ),
@@ -550,7 +549,7 @@ impl<L: Clone> SubstTree<L> {
         }
         match view.head(kb) {
             ViewHead::Functor {
-                functor: Some(functor),
+                functor,
                 pos_arity,
                 named_arity,
             } => {
@@ -595,8 +594,8 @@ impl<L: Clone> SubstTree<L> {
             // Mirror of `insert_walk_args`' guard: such an arg can never have
             // been inserted, so encountering one on remove is a logic error
             // (Phase A review guard #1/#2).
-            ViewHead::Functor { functor: None, .. } | ViewHead::Opaque => panic!(
-                "discrim remove: functor-less / opaque arg carries no \
+            ViewHead::Opaque => panic!(
+                "discrim remove: opaque arg carries no \
                  discrimination key — value-fact keying is unimplemented \
                  (WI-348 Phase B/C)"
             ),
@@ -801,32 +800,30 @@ impl<L: Clone> SubstTree<L> {
                 named_arity,
             } => {
                 let arity = pos_arity + named_arity;
-                if let Some(fsym) = functor {
-                    if let Some(n1) = node.concrete.get(&DiscrimKey::Functor(fsym)) {
-                        if let Some(n2) = n1.concrete.get(&DiscrimKey::Arity(arity as u16)) {
-                            let named_keys = walk_named_keys(kb, query, fsym);
-                            let collect_leaves = |node: &DiscrimNode<L>, subst: SmallSubst, results: &mut Vec<(L, SmallSubst)>| {
-                                for leaf in &node.leaves {
-                                    results.push((leaf.clone(), subst.clone()));
-                                }
-                            };
-                            // `path` is the prefix to this head's args — root at
-                            // the top level; the args' own paths extend it.
-                            Self::query_args(
-                                n2,
-                                kb,
-                                query,
-                                0,
-                                pos_arity,
-                                &named_keys,
-                                0,
-                                &path,
-                                subst.clone(),
-                                match_mode,
-                                results,
-                                &collect_leaves,
-                            );
-                        }
+                if let Some(n1) = node.concrete.get(&DiscrimKey::Functor(functor)) {
+                    if let Some(n2) = n1.concrete.get(&DiscrimKey::Arity(arity as u16)) {
+                        let named_keys = walk_named_keys(kb, query, functor);
+                        let collect_leaves = |node: &DiscrimNode<L>, subst: SmallSubst, results: &mut Vec<(L, SmallSubst)>| {
+                            for leaf in &node.leaves {
+                                results.push((leaf.clone(), subst.clone()));
+                            }
+                        };
+                        // `path` is the prefix to this head's args — root at
+                        // the top level; the args' own paths extend it.
+                        Self::query_args(
+                            n2,
+                            kb,
+                            query,
+                            0,
+                            pos_arity,
+                            &named_keys,
+                            0,
+                            &path,
+                            subst.clone(),
+                            match_mode,
+                            results,
+                            &collect_leaves,
+                        );
                     }
                 }
                 for (tree_var, child) in &node.var_edges {
@@ -1019,33 +1016,31 @@ impl<L: Clone> SubstTree<L> {
                 named_arity,
             } => {
                 let arity = pos_arity + named_arity;
-                if let Some(fsym) = functor {
-                    if let Some(n1) = node.concrete.get(&DiscrimKey::Functor(fsym)) {
-                        if let Some(n2) = n1.concrete.get(&DiscrimKey::Arity(arity as u16)) {
-                            let inner_named_keys = walk_named_keys(kb, &arg, fsym);
-                            let nested_cont = |node: &DiscrimNode<L>, subst: SmallSubst, results: &mut Vec<(L, SmallSubst)>| {
-                                Self::query_args(
-                                    node, kb, outer, pos_idx, pos_total, named_keys, named_idx,
-                                    prefix, subst, match_mode, results, on_done,
-                                );
-                            };
-                            // Descend with `arg_path` as the nested container's
-                            // prefix — nested vars extend it, not restart at root.
+                if let Some(n1) = node.concrete.get(&DiscrimKey::Functor(functor)) {
+                    if let Some(n2) = n1.concrete.get(&DiscrimKey::Arity(arity as u16)) {
+                        let inner_named_keys = walk_named_keys(kb, &arg, functor);
+                        let nested_cont = |node: &DiscrimNode<L>, subst: SmallSubst, results: &mut Vec<(L, SmallSubst)>| {
                             Self::query_args(
-                                n2,
-                                kb,
-                                &arg,
-                                0,
-                                pos_arity,
-                                &inner_named_keys,
-                                0,
-                                &arg_path,
-                                subst.clone(),
-                                match_mode,
-                                results,
-                                &nested_cont,
+                                node, kb, outer, pos_idx, pos_total, named_keys, named_idx,
+                                prefix, subst, match_mode, results, on_done,
                             );
-                        }
+                        };
+                        // Descend with `arg_path` as the nested container's
+                        // prefix — nested vars extend it, not restart at root.
+                        Self::query_args(
+                            n2,
+                            kb,
+                            &arg,
+                            0,
+                            pos_arity,
+                            &inner_named_keys,
+                            0,
+                            &arg_path,
+                            subst.clone(),
+                            match_mode,
+                            results,
+                            &nested_cont,
+                        );
                     }
                 }
                 for (tree_var, child) in &node.var_edges {

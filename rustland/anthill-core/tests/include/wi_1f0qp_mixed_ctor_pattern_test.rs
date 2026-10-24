@@ -358,7 +358,7 @@ fn entity_shape(kb: &KnowledgeBase, v: &anthill_core::eval::Value) -> String {
     use anthill_core::kb::term_view::{TermView, ViewHead};
     let functor = match v.head(kb) {
         ViewHead::Functor {
-            functor: Some(s), ..
+            functor: s, ..
         } => s,
         other => return format!("<not an entity: {other:?}>"),
     };

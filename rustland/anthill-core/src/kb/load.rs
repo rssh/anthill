@@ -18846,7 +18846,7 @@ fn resolve_requires_bindings(kb: &mut KnowledgeBase) {
             continue;
         };
         let ViewHead::Functor {
-            functor: Some(functor),
+            functor,
             pos_arity,
             ..
         } = spec.head(kb)
@@ -21961,7 +21961,7 @@ fn check_induction_axiom_names(kb: &KnowledgeBase) -> Vec<LoadError> {
             continue;
         }
         let lhs = kb.rule_head_value(rid).pos_arg(kb, 0).map(|lhs| lhs.head(kb));
-        if let Some(ViewHead::Functor { functor: Some(f), .. }) = lhs {
+        if let Some(ViewHead::Functor { functor: f, .. }) = lhs {
             let f = kb.canonical_sym(f);
             if kb.induction_axioms.contains(&f) {
                 equations.entry(f).or_insert(rid);
@@ -22682,13 +22682,13 @@ pub(crate) fn provides_spec_base_sym_view<V: TermView>(
     }
     match spec.head(kb) {
         ViewHead::Functor {
-            functor: Some(functor),
+            functor,
             ..
         } => {
             if super::typing::is_sort_view_functor(kb, functor) {
                 match spec.pos_arg(kb, 0)?.head(kb) {
                     ViewHead::Functor {
-                        functor: Some(base),
+                        functor: base,
                         ..
                     }
                     | ViewHead::Ident(base) => Some(base),

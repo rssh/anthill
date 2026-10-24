@@ -2758,7 +2758,7 @@ mod wi621_carrier_neutral_goal_subst {
         // Structurally `eq(5, 0)`.
         match grounded.head(&kb) {
             ViewHead::Functor {
-                functor: Some(f),
+                functor: f,
                 pos_arity,
                 ..
             } => {
@@ -2799,7 +2799,7 @@ mod wi621_carrier_neutral_goal_subst {
         let out = substitute_ref_terms(&mut kb, &goal, &sigma);
         match out.pos_arg(&kb, 0).expect("operand 0").head(&kb) {
             ViewHead::Functor {
-                functor: Some(f), ..
+                functor: f, ..
             } => {
                 assert_eq!(
                     f, var_ref_sym,
@@ -2941,7 +2941,7 @@ mod wi621_carrier_neutral_goal_subst {
         assert!(
             matches!(
                 tuple_out.head(&kb),
-                ViewHead::Functor { functor: Some(f), pos_arity: 0, named_arity: 2 } if f == tuple_literal
+                ViewHead::Functor { functor: f, pos_arity: 0, named_arity: 2 } if f == tuple_literal
             ),
             "operand stays a tuple",
         );

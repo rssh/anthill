@@ -430,7 +430,7 @@ fn the_ir_construction_node_and_the_value_share_one_constructor() {
     );
     match value_head {
         ViewHead::Functor {
-            functor: Some(f),
+            functor: f,
             pos_arity,
             named_arity,
         } => {

@@ -3277,7 +3277,7 @@ pub(super) fn sort_sym_of_view<V: TermView>(kb: &KnowledgeBase, v: &V) -> Option
         // bare `Ref` handled above via `extract_sort_ref_sym` (WI-361); `Ident` here.
         ViewHead::Ident(s) => Some(s),
         ViewHead::Functor {
-            functor: Some(functor),
+            functor,
             pos_arity,
             named_arity,
         } if pos_arity + named_arity > 0 => Some(functor),

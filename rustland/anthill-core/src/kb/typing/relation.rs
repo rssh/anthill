@@ -1854,7 +1854,7 @@ fn sort_domain_route(
     let ty = walk_type_deep_value(kb, subst, ty);
     let head = match ty.head(kb) {
         ViewHead::Functor {
-            functor: Some(f), ..
+            functor: f, ..
         } => Some(f),
         ViewHead::Ident(s) => Some(s),
         _ => None,

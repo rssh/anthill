@@ -218,7 +218,7 @@ fn value_functor_answers_by_what_the_head_denotes() {
             matches!(
                 spliced.head(interp.kb()),
                 ViewHead::Functor {
-                    functor: Some(_),
+                    functor: _,
                     ..
                 }
             ),
@@ -228,7 +228,7 @@ fn value_functor_answers_by_what_the_head_denotes() {
             matches!(
                 node(Expr::Ref(sym)).head(interp.kb()),
                 ViewHead::Functor {
-                    functor: Some(f),
+                    functor: f,
                     pos_arity: 0,
                     named_arity: 0,
                 } if f == sym
@@ -239,7 +239,7 @@ fn value_functor_answers_by_what_the_head_denotes() {
             matches!(
                 applied_node(sym, string_sym).head(interp.kb()),
                 ViewHead::Functor {
-                    functor: Some(_),
+                    functor: _,
                     ..
                 }
             ),
@@ -321,7 +321,7 @@ fn a_carrier_with_a_functor_head_is_routed_or_deliberately_excluded() {
             let has_functor_head = matches!(
                 v.head(interp.kb()),
                 ViewHead::Functor {
-                    functor: Some(_),
+                    functor: _,
                     ..
                 }
             );

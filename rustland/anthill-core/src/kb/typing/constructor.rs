@@ -858,7 +858,7 @@ fn param_leaves_belong_to_sort<V: TermView>(kb: &KnowledgeBase, t: &V, own_param
     match t.head(kb) {
         ViewHead::Ident(sym) => belongs(kb, sym),
         ViewHead::Functor {
-            functor: Some(functor),
+            functor,
             pos_arity,
             ..
         } => {

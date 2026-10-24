@@ -5413,8 +5413,9 @@ pub fn value_functor(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
         // answers `Dictionary` through the arm above — the same answer its σ-built
         // twin already gave, which is what one representation means.)
         Value::OpRef { .. } => None,
-        // No name to give: a scalar, a functor-less aggregate, an opaque runtime
-        // handle, a logic variable. Listed rather than defaulted so a new `Value`
+        // No name to give: a scalar, a tuple (whose `TupleLiteral` head is its
+        // representation, not a sort's constructor), an opaque runtime handle, a logic
+        // variable. Listed rather than defaulted so a new `Value`
         // variant must decide here (the `runtime_carrier_sort` discipline).
         Value::Int(_)
         | Value::BigInt(_)

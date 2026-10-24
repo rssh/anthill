@@ -389,7 +389,7 @@ fn constructor_sub_values(
     let scrutinee = scrutinee.carried();
     let (functor, pos_arity) = match scrutinee.head(kb) {
         ViewHead::Functor {
-            functor: Some(f),
+            functor: f,
             pos_arity,
             ..
         } => (f, pos_arity),

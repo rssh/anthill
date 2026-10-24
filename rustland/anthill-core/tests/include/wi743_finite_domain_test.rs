@@ -181,7 +181,7 @@ fn declaration_order_is_the_answer_order() {
             let v = kb.reify(x, &s.subst);
             match TermView::head(&v, &kb) {
                 ViewHead::Functor {
-                    functor: Some(f), ..
+                    functor: f, ..
                 } => kb.local_name_of(f).to_string(),
                 other => panic!("a domain row must be a constructor, got {other:?}"),
             }
@@ -604,7 +604,7 @@ fn spine_depth(
     loop {
         match TermView::head(&cur, kb) {
             ViewHead::Functor {
-                functor: Some(f), ..
+                functor: f, ..
             } if kb.local_name_of(f) == ctor => {
                 cur = cur
                     .named_arg(kb, field)

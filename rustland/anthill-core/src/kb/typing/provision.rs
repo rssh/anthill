@@ -334,15 +334,13 @@ pub(crate) fn collect_sorts_written_as_types<V: TermView>(
             pos_arity,
             named_arity,
         } => {
-            if let Some(f) = functor {
-                if crate::parse::desugar_target::is(
-                    kb.qualified_name_of(f),
-                    crate::parse::desugar_target::FIELD_ACCESS,
-                ) {
-                    return;
-                }
-                out.push(f);
+            if crate::parse::desugar_target::is(
+                kb.qualified_name_of(functor),
+                crate::parse::desugar_target::FIELD_ACCESS,
+            ) {
+                return;
             }
+            out.push(functor);
             for i in 0..pos_arity {
                 if let Some(a) = ty.pos_arg(kb, i) {
                     collect_sorts_written_as_types(kb, &a, out);
@@ -1826,7 +1824,7 @@ pub(super) fn view_contains_type_param<V: TermView>(kb: &KnowledgeBase, v: &V) -
         ViewHead::Functor {
             functor, pos_arity, ..
         } => {
-            if functor.is_some_and(|f| is_sort_param_symbol(kb, f)) {
+            if is_sort_param_symbol(kb, functor) {
                 return true;
             }
             view_any_child(kb, v, pos_arity, |a| view_contains_type_param(kb, a))
@@ -1855,7 +1853,7 @@ pub(super) fn view_contains_type_param_except<V: TermView>(
         ViewHead::Functor {
             functor, pos_arity, ..
         } => {
-            if functor.is_some_and(|f| is_sort_param_symbol(kb, f) && !own.syms.contains(&f)) {
+            if is_sort_param_symbol(kb, functor) && !own.syms.contains(&functor) {
                 return true;
             }
             view_any_child(kb, v, pos_arity, |a| view_contains_type_param_except(kb, a, own))

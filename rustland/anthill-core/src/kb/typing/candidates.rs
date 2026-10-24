@@ -1013,7 +1013,7 @@ pub(super) fn spec_view_bindings_value(
     }
     let is_view = matches!(
         spec.head(kb),
-        ViewHead::Functor { functor: Some(f), .. } if is_sort_view_functor(kb, f)
+        ViewHead::Functor { functor: f, .. } if is_sort_view_functor(kb, f)
     );
     if is_view {
         view_named_children(kb, spec)
@@ -1589,7 +1589,7 @@ fn view_names_param<V: TermView>(kb: &KnowledgeBase, v: &V, param: Symbol, var: 
         ViewHead::Functor {
             functor, pos_arity, ..
         } => {
-            functor.is_some_and(|f| kb.canonical_sym(f) == param)
+            kb.canonical_sym(functor) == param
                 || view_any_child(kb, v, pos_arity, |a| view_names_param(kb, a, param, var))
         }
         _ => false,
@@ -1940,7 +1940,7 @@ pub(super) fn impl_param_ref<V: TermView>(
 ) -> Option<Symbol> {
     let sym = match value.head(kb) {
         ViewHead::Functor {
-            functor: Some(s),
+            functor: s,
             pos_arity: 0,
             named_arity: 0,
         }
@@ -1982,7 +1982,7 @@ pub(super) fn parametric_view_parts<V: TermView>(
     value: &V,
 ) -> Option<(Symbol, SmallVec<[(Symbol, Value); 2]>)> {
     let ViewHead::Functor {
-        functor: Some(functor),
+        functor,
         ..
     } = value.head(kb)
     else {
@@ -1992,7 +1992,7 @@ pub(super) fn parametric_view_parts<V: TermView>(
     if is_sort_view_functor(kb, functor) {
         let base = value.pos_arg(kb, 0).and_then(|p| match p.head(kb) {
             ViewHead::Functor {
-                functor: Some(s), ..
+                functor: s, ..
             }
             | ViewHead::Ident(s) => Some(s),
             _ => None,

@@ -805,7 +805,7 @@ fn bound_dict_impl(kb: &anthill_core::kb::KnowledgeBase, v: &Value) -> Option<St
     let child = v.named_arg(kb, impl_key)?.to_value();
     match child.head(kb) {
         ViewHead::Functor {
-            functor: Some(sym),
+            functor: sym,
             pos_arity: 0,
             named_arity: 0,
         } => Some(kb.qualified_name_of(sym).to_string()),

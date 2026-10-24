@@ -402,7 +402,7 @@ pub(super) fn for_each_head_symbol<V: TermView>(
 ) {
     let head = ty.head(kb);
     if let ViewHead::Functor {
-        functor: Some(f), ..
+        functor: f, ..
     }
     | ViewHead::Ident(f) = head
     {
@@ -492,7 +492,7 @@ fn mentioned_unknowns<V: TermView>(
     match head {
         ViewHead::Var(Var::Rigid(vid)) => rigids.push(vid),
         ViewHead::Functor {
-            functor: Some(f),
+            functor: f,
             pos_arity: 0,
             named_arity: 0,
         }
@@ -738,10 +738,8 @@ fn type_display_name_view<V: TermView>(kb: &KnowledgeBase, v: &V, spelling: Spel
         // A carrier with no structure to read — a closure, a stream. Not a type and not
         // nameable as one; `?` is what the occurrence renderer already answered.
         ViewHead::Opaque => "?".to_string(),
-        // No carrier reads functor-less: a tuple value reads as its `TupleLiteral` twin.
-        ViewHead::Functor { functor: None, .. } => unreachable!("display: a functor-less application"),
         ViewHead::Functor {
-            functor: Some(f),
+            functor: f,
             pos_arity,
             named_arity: _,
         } => {
@@ -979,7 +977,7 @@ fn collect_row_parts<V: TermView>(
 ) {
     let form = match part.head(kb) {
         ViewHead::Functor {
-            functor: Some(f), ..
+            functor: f, ..
         } => kb
             .qualified_name_of(f)
             .strip_prefix("anthill.prelude.EffectExpression."),
@@ -1125,7 +1123,7 @@ pub(crate) fn effect_atom_order_key(kb: &KnowledgeBase, t: TermId) -> String {
 fn effect_atom_order_key_of<V: TermView>(kb: &KnowledgeBase, v: &V) -> String {
     match v.head(kb) {
         ViewHead::Functor {
-            functor: Some(f),
+            functor: f,
             pos_arity,
             ..
         } => type_application_display(kb, v, f, pos_arity, NamedOrder::Stored, Spelling::Meaning),
@@ -1271,7 +1269,7 @@ pub(super) fn view_ref_symbol<V: TermView>(kb: &KnowledgeBase, v: &V) -> Option<
     match v.head(kb) {
         ViewHead::Ident(s) => Some(s),
         ViewHead::Functor {
-            functor: Some(f),
+            functor: f,
             pos_arity: 0,
             named_arity: 0,
         } => Some(f),

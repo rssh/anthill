@@ -2098,14 +2098,14 @@ fn open_name_in_type<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Option<String> 
         ViewHead::Var(Var::Global(v)) => Some(kb.local_name_of(v.name()).to_string()),
         ViewHead::Ident(s) => param_name(s),
         ViewHead::Functor {
-            functor: Some(s),
+            functor: s,
             pos_arity: 0,
             named_arity: 0,
         } => param_name(s),
         ViewHead::Functor { pos_arity, .. } => {
             if let TypeExtractor::ExprCarried { value, member } = extract_type(kb, ty) {
                 let receiver = match value.head(kb) {
-                    ViewHead::Ident(s) | ViewHead::Functor { functor: Some(s), .. } => {
+                    ViewHead::Ident(s) | ViewHead::Functor { functor: s, .. } => {
                         short_name_of(kb.local_name_of(s)).to_string()
                     }
                     _ => "…".to_string(),

@@ -283,10 +283,8 @@ fn is_scoping_marker(kb: &KnowledgeBase, f: Symbol) -> bool {
 fn head_calls(kb: &KnowledgeBase, v: &Value, out: &mut Vec<Symbol>) {
     match v.head(kb) {
         ViewHead::Functor { functor, pos_arity, .. } => {
-            if let Some(f) = functor {
-                if operation_is_declared(kb, f) {
-                    out.push(f);
-                }
+            if operation_is_declared(kb, functor) {
+                out.push(functor);
             }
             let mut children: Vec<Value> =
                 (0..pos_arity).filter_map(|i| v.pos_arg(kb, i).map(|a| a.to_value())).collect();
@@ -384,7 +382,7 @@ fn census(kb: &KnowledgeBase, belongs: &dyn Fn(&str) -> bool) -> Census {
         if !found.is_empty() {
             let line = sites.line(&path, span.span.start);
             let head_sym = match head.head(kb) {
-                ViewHead::Functor { functor: Some(f), .. } => Some(f),
+                ViewHead::Functor { functor: f, .. } => Some(f),
                 _ => None,
             };
             let hf = head_sym.map(|f| kb.qualified_name_of(f).to_string()).unwrap_or("?".into());

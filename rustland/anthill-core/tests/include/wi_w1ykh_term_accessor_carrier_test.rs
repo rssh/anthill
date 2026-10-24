@@ -334,21 +334,32 @@ fn a_leaf_term_answers_none_rather_than_raising() {
 fn a_non_term_carrier_raises_rather_than_answering_none() {
     // THE OTHER HALF: a value that is no term at all must RAISE, never be spelled as
     // `none()` / `[]` — W1YKH's acceptance ("no accessor answers `none()` for a carrier
-    // it simply did not recognise"). Driven through `Unit`, which reads as
-    // `ViewHead::Functor { functor: None }` and so slips past a bare `Functor { .. }`
-    // test — the exact hole /code-review found in the first guard.
+    // it simply did not recognise"). Driven through an operation reference, which heads
+    // as a `Functor` naming its reflect ENCODING and so slips past a bare
+    // `Functor { .. }` test — the hole /code-review found in the first guard. (It was
+    // driven through `Unit` until `Unit` became the tuple of no components, a term,
+    // WI-20261011-7G99A.)
     let mut interp = crate::common::interp_for(FIXTURE);
-    let unit = anthill_core::eval::Value::Unit;
+    let op_ref = anthill_core::eval::Value::OpRef {
+        op_reqs: None,
+        spread_labels: None,
+        op: interp
+            .kb()
+            .try_resolve_symbol("anthill.prelude.Int64")
+            .expect("Int64 resolves"),
+        dict: None,
+        named: None,
+    };
     for op in ["anthill.reflect.term_field", "anthill.reflect.term_list_items"] {
         let args: Vec<anthill_core::eval::Value> = if op.ends_with("term_field") {
-            vec![unit.clone(), anthill_core::eval::Value::Str("x".into())]
+            vec![op_ref.clone(), anthill_core::eval::Value::Str("x".into())]
         } else {
-            vec![unit.clone()]
+            vec![op_ref.clone()]
         };
         let r = interp.call(op, &args);
         assert!(
             r.is_err(),
-            "`{op}` on a functor-less aggregate must RAISE, not answer: {r:?}"
+            "`{op}` on an operation reference must RAISE, not answer: {r:?}"
         );
     }
 }

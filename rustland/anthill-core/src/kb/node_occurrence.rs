@@ -5780,10 +5780,11 @@ pub(crate) fn with_written_annotations(
 /// [`try_occurrence_to_term`] (so a denoted-bearing type round-trips), an `Entity`
 /// recurses through `value_to_term` (a nested `Node` lowers, not errors), and the
 /// scalar / `Term` / `Var` leaves reuse [`KnowledgeBase::alloc_from_value`].
+/// A tuple value lowers to its `TupleLiteral(_1: …)` term
+/// ([`KnowledgeBase::tuple_value_term`]), its components through this function.
 /// `Err` for the opaque runtime handles (`Closure`/`Stream`/`Map`/`Cell`/
-/// `Substitution`/`Requirement`), the term-less `Unit`/`Tuple`, and an occurrence
-/// with no term form (a lambda, an `if`, a `let`, a `match`) — the honest
-/// residue, never a panic or a lossy term. Unlike `alloc_from_value` (which
+/// `Substitution`/`Requirement`) and an occurrence with no term form (a lambda, an
+/// `if`, a `let`, a `match`) — the honest residue, never a panic or a lossy term. Unlike `alloc_from_value` (which
 /// rejects *every* `Node`), this is `Node`-aware: it is the one converter to use
 /// where a value-in-type may ride (e.g. a `requires`/`provides` spec).
 pub fn value_to_term(
@@ -5853,7 +5854,10 @@ pub fn value_to_term(
                 named_args,
             }))
         }
-        // Scalars / Term / Var convert; opaque + Unit + Tuple error — identical to
+        // Through `value_to_term` (NOT alloc_from_value), so a `Node` component lowers.
+        Value::Unit => kb.tuple_value_term(&[], &[], value_to_term),
+        Value::Tuple { pos, named } => kb.tuple_value_term(pos, named, value_to_term),
+        // Scalars / Term / Var convert; the opaque handles error — identical to
         // alloc_from_value, and none of these carry a Node, so reuse it.
         other => kb.alloc_from_value(other),
     }
@@ -5884,9 +5888,8 @@ pub fn value_to_term(
 /// and any carrier added later are handled by the same three lines, and a caller
 /// that needs a CALL still tests the shape it got (both hooks match `Expr::Apply` /
 /// `ApplyWithin` and fall through otherwise, their pre-existing no-answer outcome
-/// for an unrecognized goal). A `Tuple` heads `functor: None`, so it takes the leaf
-/// tail and stays `Spliced` — unchanged, and now by the view's own answer rather
-/// than by omission from a list.
+/// for an unrecognized goal). A tuple value heads as its `TupleLiteral` twin, so it
+/// becomes that application, as a rule writes it.
 ///
 /// THE `Entity` ARM DOES NOT GO THROUGH [`value_to_term`], and that is the whole
 /// design decision. That pair (`value_to_term` + `materialize_from_handle`) would
@@ -5937,7 +5940,7 @@ pub fn value_as_occurrence(kb: &mut KnowledgeBase, v: &Value) -> Rc<NodeOccurren
         _ => {}
     }
     let ViewHead::Functor {
-        functor: Some(functor),
+        functor,
         pos_arity,
         named_arity: _,
     } = v.head(kb)
@@ -6061,7 +6064,7 @@ fn param_occurrence(kb: &KnowledgeBase, src: &Src, span: SourceSpan) -> Rc<NodeO
     // behaviour.
     let functor = match src.head(kb) {
         ViewHead::Functor {
-            functor: Some(f), ..
+            functor: f, ..
         } => f,
         // Logical Var in pattern position → reflection meta-var.
         ViewHead::Var(v) => return NodeOccurrence::new_expr(Expr::Var(v), span, None),
@@ -6230,13 +6233,13 @@ fn expr_leaf_occ(kb: &KnowledgeBase, src: &Src, span: SourceSpan) -> Rc<NodeOccu
         ViewHead::Var(v) => NodeOccurrence::new_expr(Expr::Var(v), span, None),
         ViewHead::Const(lit) => NodeOccurrence::new_expr(Expr::Const(lit), span, None),
         ViewHead::Functor {
-            functor: Some(s),
+            functor: s,
             pos_arity: 0,
             named_arity: 0,
         } if src.is_ref(kb) => NodeOccurrence::new_expr(Expr::Ref(s), span, None),
         ViewHead::Ident(s) => NodeOccurrence::new_expr(Expr::Ident(s), span, None),
         ViewHead::Functor {
-            functor: Some(functor),
+            functor,
             ..
         } => {
             // Surface a type-position application as an Expr::Apply with NO
@@ -6281,12 +6284,12 @@ fn expr_leaf_occ(kb: &KnowledgeBase, src: &Src, span: SourceSpan) -> Rc<NodeOccu
 fn pattern_as_expr_occ(kb: &KnowledgeBase, src: &Src, span: SourceSpan) -> Rc<NodeOccurrence> {
     match src.head(kb) {
         ViewHead::Functor {
-            functor: Some(s),
+            functor: s,
             pos_arity: 0,
             named_arity: 0,
         } if src.is_ref(kb) => NodeOccurrence::new_expr(Expr::Ref(s), span, None),
         ViewHead::Functor {
-            functor: Some(functor),
+            functor,
             ..
         } => {
             let pos: Vec<Rc<NodeOccurrence>> = src
@@ -6327,7 +6330,7 @@ fn pattern_child_as_occ(kb: &KnowledgeBase, src: &Src, span: SourceSpan) -> Rc<N
     let span = src.span_or(span);
     match src.head(kb) {
         ViewHead::Functor {
-            functor: Some(f),
+            functor: f,
             pos_arity,
             named_arity,
         } => {
@@ -7547,7 +7550,7 @@ impl Src {
     fn ref_symbol(&self, kb: &KnowledgeBase) -> Option<Symbol> {
         match self.head(kb) {
             ViewHead::Functor {
-                functor: Some(s),
+                functor: s,
                 pos_arity: 0,
                 named_arity: 0,
             } if self.is_ref(kb) => Some(s),

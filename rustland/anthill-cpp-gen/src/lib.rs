@@ -3235,7 +3235,8 @@ fn collect_type_refs<V: TermView>(
             let keys = ty.named_keys(kb);
             if pos_arity == 0 && keys.is_empty() {
                 // A bare name: its own constructor applied to nothing.
-                if let Some(s) = functor.map(Symbol::plain).filter(|s| in_band.contains(s)) {
+                let s = functor.plain();
+                if in_band.contains(&s) {
                     out.insert(s);
                 }
                 return;
@@ -4245,7 +4246,7 @@ fn effect_kind_short<V: TermView>(kb: &KnowledgeBase, label: &V) -> Option<Strin
     match label.head(kb) {
         ViewHead::Ident(s)
         | ViewHead::Functor {
-            functor: Some(s), ..
+            functor: s, ..
         } => Some(short_of(s)),
         _ => None,
     }
@@ -5177,12 +5178,12 @@ fn lower_type(
             // a `Ref` / `Ident` term always was.
             ViewHead::Ident(sym)
             | ViewHead::Functor {
-                functor: Some(sym),
+                functor: sym,
                 pos_arity: 0,
                 named_arity: 0,
             } => sort_to_cpp(kb, ctx, sym),
             ViewHead::Functor {
-                functor: Some(functor),
+                functor,
                 ..
             } => {
                 let qualified = kb.qualified_name_of(functor);
@@ -5855,7 +5856,7 @@ fn receiver_short_name(kb: &KnowledgeBase, v: &Value) -> Option<String> {
         // instead of dropping the row as nameless.
         other => match other.head(kb) {
             anthill_core::kb::term_view::ViewHead::Functor {
-                functor: Some(f), ..
+                functor: f, ..
             } => Some(short_name_of(kb.qualified_name_of(f)).to_string()),
             _ => None,
         },

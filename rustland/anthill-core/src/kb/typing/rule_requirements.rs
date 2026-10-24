@@ -2134,7 +2134,7 @@ fn witness_carriers_of(kb: &KnowledgeBase, spec_sort: Symbol) -> Vec<Symbol> {
 /// (WI-662): one discriminant for a ground `Value::Term` spec and a denoted `Value::Entity`
 /// spec carrier alike.
 pub(super) fn view_is_sort_view(kb: &KnowledgeBase, spec: &impl TermView) -> bool {
-    matches!(spec.head(kb), ViewHead::Functor { functor: Some(f), .. } if is_sort_view_functor(kb, f))
+    matches!(spec.head(kb), ViewHead::Functor { functor: f, .. } if is_sort_view_functor(kb, f))
 }
 
 /// The head symbol NAME of a type-argument term (`Ref(T)` / `Ident(T)` / `T[…]` → `"T"`).
@@ -2143,7 +2143,7 @@ fn spec_arg_head_name<'k>(kb: &'k KnowledgeBase, arg: &Value) -> Option<&'k str>
     match arg.head(kb) {
         ViewHead::Ident(s)
         | ViewHead::Functor {
-            functor: Some(s), ..
+            functor: s, ..
         } => Some(kb.local_name_of(s)),
         _ => None,
     }
@@ -2617,7 +2617,7 @@ fn check_value_eq_override_backing(
     let mut stack: Vec<Value> = vec![query.clone()];
     while let Some(v) = stack.pop() {
         let ViewHead::Functor {
-            functor: Some(functor),
+            functor,
             pos_arity,
             ..
         } = v.head(kb)

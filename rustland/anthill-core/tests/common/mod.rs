@@ -1838,7 +1838,7 @@ pub fn sort_provisions_all(kb: &KnowledgeBase) -> Vec<(String, String)> {
     fn name_of<V: TermView>(kb: &KnowledgeBase, v: &V, field: &str) -> String {
         match v.head(kb) {
             ViewHead::Functor {
-                functor: Some(s), ..
+                functor: s, ..
             }
             | ViewHead::Ident(s) => kb.qualified_name_of(s).to_string(),
             other => panic!("SortProvidesInfo.{field} is not name-like: {other:?}"),
@@ -1936,7 +1936,7 @@ pub fn sort_alias_backing_var(
             // The NAME through the view, either spelling: a sort's nullary application is
             // its bare `Ref` since the two are one term (WI-20260902-JB6RS).
             use anthill_core::kb::term_view::{TermIdView, TermView, ViewHead};
-            let ViewHead::Functor { functor: Some(name), .. } = TermIdView(*pos_args.first()?).head(kb)
+            let ViewHead::Functor { functor: name, .. } = TermIdView(*pos_args.first()?).head(kb)
             else {
                 return None;
             };
@@ -2050,7 +2050,7 @@ pub fn entity_functor(kb: &KnowledgeBase, v: &eval::Value) -> Option<anthill_cor
     use anthill_core::kb::term_view::{TermView, ViewHead};
     match v.head(kb) {
         ViewHead::Functor {
-            functor: Some(s), ..
+            functor: s, ..
         } => Some(s),
         _ => None,
     }
@@ -2639,7 +2639,7 @@ pub fn query_pattern_functor(
     // carrier change (an `Ident`/`Ref`/var/literal head still panics, as before).
     match TermView::head(&t, kb) {
         ViewHead::Functor {
-            functor: Some(f), ..
+            functor: f, ..
         } => f,
         other => panic!("query pattern `{pattern}` is not an application: {other:?}"),
     }

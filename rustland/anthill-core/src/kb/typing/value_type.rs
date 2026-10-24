@@ -404,7 +404,7 @@ fn view_mentions_a_written_parameter<V: TermView>(
         ViewHead::Functor {
             functor, pos_arity, ..
         } => {
-            functor.is_some_and(|f| is_sort_param_symbol(kb, f))
+            is_sort_param_symbol(kb, functor)
                 || view_any_child(kb, ty, pos_arity, |c| {
                     view_mentions_a_written_parameter(kb, c, written)
                 })
@@ -900,18 +900,13 @@ fn value_type_term_d(
         // 0 since WI-20260902-CZJ2N, where `constructor_value_type(kb, c, &[], &[])`
         // is exactly what its own arm computed.
         ViewHead::Functor {
-            functor: Some(functor),
+            functor,
             pos_arity,
             ..
         } => {
             let pos_types = child_types_pos(kb, subst, v, pos_arity, depth + 1);
             let named_types = child_types_named(kb, subst, v, depth + 1);
             constructor_value_type(kb, functor, &pos_types, &named_types)
-        }
-        // No carrier reads functor-less: a tuple value reads as its `TupleLiteral` twin,
-        // which `constructor_value_type` types as the tuple.
-        ViewHead::Functor { functor: None, .. } => {
-            unreachable!("value type: a functor-less application")
         }
         // Bare identifier / bottom / opaque handle — no structural type to read.
         ViewHead::Ident(_) | ViewHead::Bottom | ViewHead::Opaque => fresh_type_var(kb),
@@ -1424,7 +1419,7 @@ pub(crate) fn simp_requires_guard_holds(
 ) -> bool {
     let (functor, pos_arity) = match redex.head(kb) {
         ViewHead::Functor {
-            functor: Some(f),
+            functor: f,
             pos_arity,
             ..
         } => (f, pos_arity),

@@ -1071,9 +1071,8 @@ pub(super) fn type_mentions_type_var<V: TermView>(kb: &KnowledgeBase, v: &V) -> 
         ViewHead::Functor {
             functor, pos_arity, ..
         } => {
-            functor.is_some_and(|f| {
-                kb.qualified_name_of(f) == "anthill.prelude.TypeExtractor.TypeVar"
-            }) || view_any_child(kb, v, pos_arity, |c| type_mentions_type_var(kb, c))
+            kb.qualified_name_of(functor) == "anthill.prelude.TypeExtractor.TypeVar"
+                || view_any_child(kb, v, pos_arity, |c| type_mentions_type_var(kb, c))
         }
         _ => false,
     }

@@ -1999,7 +1999,7 @@ impl SearchStream {
         clauses_only: bool,
     ) -> Option<Option<StepResult>> {
         let ViewHead::Functor {
-            functor: Some(f),
+            functor: f,
             pos_arity,
             ..
         } = goal_val.head(kb)
@@ -2247,7 +2247,7 @@ impl SearchStream {
         // handlers are term-structured, so reify only when one of them matches.
         let is_marker = match goal_val.head(kb) {
             ViewHead::Functor {
-                functor: Some(f),
+                functor: f,
                 pos_arity,
                 ..
             } => is_scoping_marker(kb, f, pos_arity),
@@ -3345,7 +3345,7 @@ impl SearchStream {
     fn is_forall_impl(kb: &KnowledgeBase, goal: &Value) -> bool {
         matches!(
             goal.head(kb),
-            ViewHead::Functor { functor: Some(f), .. }
+            ViewHead::Functor { functor: f, .. }
                 if kb.builtin_of(f) == Some(BuiltinTag::ForallImpl)
         )
     }
@@ -3469,7 +3469,7 @@ impl SearchStream {
     fn bounded_quant_kind(kb: &KnowledgeBase, goal: &Value) -> Option<bool> {
         match goal.head(kb) {
             ViewHead::Functor {
-                functor: Some(f), ..
+                functor: f, ..
             } => match kb.builtin_of(f) {
                 Some(BuiltinTag::ForallIn) => Some(true),
                 Some(BuiltinTag::SomeIn) => Some(false),
@@ -3878,7 +3878,7 @@ impl SearchStream {
     ) -> Option<TermId> {
         let pos_arity = match goal.head(kb) {
             ViewHead::Functor {
-                functor: Some(f),
+                functor: f,
                 pos_arity,
                 ..
             } if kb.local_name_of(f) == dt::short(dt::HO_APPLY) => pos_arity,
@@ -3925,7 +3925,7 @@ impl SearchStream {
         // shape, unwidened.
         let pred_sym = match pred.head(kb) {
             ViewHead::Functor {
-                functor: Some(s),
+                functor: s,
                 pos_arity: 0,
                 named_arity: 0,
             } => s,
@@ -4131,7 +4131,7 @@ impl SearchStream {
     fn pop_assumption_arg(kb: &KnowledgeBase, goal: &impl TermView) -> Option<usize> {
         match goal.head(kb) {
             ViewHead::Functor {
-                functor: Some(f),
+                functor: f,
                 pos_arity: 1,
                 named_arity: 0,
             } if kb.builtin_of(f) == Some(BuiltinTag::PopAssumption) => {
@@ -5593,7 +5593,7 @@ impl HeadCheck {
             },
             HeadCheck::BodiedOpCall => match head {
                 ViewHead::Functor {
-                    functor: Some(f), ..
+                    functor: f, ..
                     // WI-20260826-VPEWK — BODY-ONLY, and the reason is measured rather
                     // than assumed. This gate does NOT choose the split SUBJECT (that is
                     // `op_call_as_occ`, which needs a body and is guarded there); its one
@@ -5636,7 +5636,6 @@ impl HeadCheck {
                     // structural shortcut on a value the gate never looked inside.
                     Some(f) if kb.partial_transparent_carriers.contains(&f) => HeadVerdict::Recurse,
                     Some(_) => HeadVerdict::Stop(false),
-                    // A functor-less aggregate (tuple/unit) has no sort to key on.
                     None => HeadVerdict::Recurse,
                 }
             }
@@ -6512,7 +6511,7 @@ impl KnowledgeBase {
                 let (is_sk, pos) = match other.head(self) {
                     ViewHead::Functor {
                         functor, pos_arity, ..
-                    } => (functor.is_some_and(|f| skolems.contains(&f)), pos_arity),
+                    } => (skolems.contains(&functor), pos_arity),
                     _ => (false, 0),
                 };
                 if is_sk {
@@ -7344,7 +7343,7 @@ impl KnowledgeBase {
         }
         let (functor, pos_arity) = match v.head(self) {
             ViewHead::Functor {
-                functor: Some(f),
+                functor: f,
                 pos_arity,
                 ..
             } => (f, pos_arity),
@@ -7429,7 +7428,7 @@ impl KnowledgeBase {
         match impl_item.to_value().head(self) {
             ViewHead::Ident(s)
             | ViewHead::Functor {
-                functor: Some(s),
+                functor: s,
                 pos_arity: 0,
                 ..
             } => Ok(s),
@@ -7449,10 +7448,10 @@ impl KnowledgeBase {
         *functor == ctor
             && pos.iter().all(|sub| match sub.head(self) {
                 ViewHead::Functor {
-                    functor: Some(f), ..
+                    functor: f, ..
                 } if f == ctor => self.is_built_dictionary(sub, ctor),
                 ViewHead::Functor {
-                    functor: Some(f), ..
+                    functor: f, ..
                 } => self.builtin_of(f) != Some(BuiltinTag::DomainSub),
                 // A variable is handed on only WALKED — the construction path reads it.
                 ViewHead::Var(_) => false,
@@ -7476,7 +7475,7 @@ impl KnowledgeBase {
             Err(not_yet) => return not_yet,
         };
         let dictionary = crate::kb::term_view::dictionary_view_syms(self).filter(|&(ctor, _)| {
-            matches!(inner.head(self), ViewHead::Functor { functor: Some(f), .. } if f == ctor)
+            matches!(inner.head(self), ViewHead::Functor { functor: f, .. } if f == ctor)
         });
         let sub = match dictionary {
             Some((_, impl_key)) => {
@@ -7502,7 +7501,7 @@ impl KnowledgeBase {
     fn normalize_domain_sub(&mut self, sub: Value, subst: &Substitution) -> Value {
         let is_expression = match sub.head(self) {
             ViewHead::Functor {
-                functor: Some(f), ..
+                functor: f, ..
             } => {
                 self.builtin_of(f) == Some(BuiltinTag::DomainSub)
                     || crate::kb::term_view::dictionary_view_syms(self).is_some_and(|(c, _)| c == f)
@@ -7522,7 +7521,7 @@ impl KnowledgeBase {
     fn domain_evidence_of_type(&mut self, ty: Value, subst: &Substitution) -> DomainEvidence {
         let head = match ty.head(self) {
             ViewHead::Functor {
-                functor: Some(f), ..
+                functor: f, ..
             } => f,
             ViewHead::Ident(s) => s,
             ViewHead::Var(_) => return DomainEvidence::NotYet(None),
@@ -7596,7 +7595,7 @@ impl KnowledgeBase {
             // test below is what keeps the bare spelling on the "itself" branch now
             // that it heads as a nullary `Functor` (WI-20260902-CZJ2N).
             ViewHead::Functor {
-                functor: Some(functor),
+                functor,
                 pos_arity,
                 ..
             } => {
@@ -8146,10 +8145,10 @@ impl KnowledgeBase {
     /// one decides what matches, the other what dedups.
     pub(crate) fn sort_named_keys_for_matching(
         &self,
-        functor: Option<Symbol>,
+        functor: Symbol,
         keys: &mut [Symbol],
     ) {
-        if keys.len() > 1 && !functor.is_some_and(|f| self.is_ordered_product_functor(f)) {
+        if keys.len() > 1 && !self.is_ordered_product_functor(functor) {
             keys.sort_unstable_by_key(|s| s.to_bits());
         }
     }
@@ -8614,7 +8613,7 @@ impl KnowledgeBase {
     pub(crate) fn sem_eq_dispatch_target(&self, v: &Value) -> Option<Symbol> {
         let functor = match v.head(self) {
             ViewHead::Functor {
-                functor: Some(s), ..
+                functor: s, ..
             } => s,
             _ => return None,
         };
@@ -9142,7 +9141,7 @@ impl KnowledgeBase {
             match v.head(kb) {
                 ViewHead::Ident(s) => Some(s),
                 ViewHead::Functor {
-                    functor: Some(s), ..
+                    functor: s, ..
                 } => Some(s),
                 _ => None,
             }
@@ -10092,7 +10091,7 @@ impl KnowledgeBase {
             }
             .to_string(),
             ViewHead::Functor {
-                functor: Some(f), ..
+                functor: f, ..
             } => self.local_name_of(f).to_string(),
             _ => v.type_name().to_string(),
         }
@@ -10122,12 +10121,12 @@ impl KnowledgeBase {
     fn no_order_message(
         &self,
         cause: OrdVerdict,
-        functor: Option<Symbol>,
+        functor: Symbol,
         a: &Value,
         b: &Value,
     ) -> String {
         let (la, lb) = (self.operand_label(a), self.operand_label(b));
-        let name = functor.map_or("<comparison>", |f| self.qualified_name_of(f));
+        let name = self.qualified_name_of(functor);
         match cause {
             OrdVerdict::SortMismatch => format!(
                 "`{name}` compares {la} against {lb} — two DIFFERENT literal \
@@ -10725,7 +10724,7 @@ impl KnowledgeBase {
             ViewHead::Const(Literal::String(s)) => Some(s),
             ViewHead::Ident(s) => Some(self.symbols.local_name(s).to_owned()),
             ViewHead::Functor {
-                functor: Some(s), ..
+                functor: s, ..
             } => Some(self.symbols.local_name(s).to_owned()),
             _ => None,
         }
@@ -10769,7 +10768,7 @@ impl KnowledgeBase {
             // both: this asks "does the value NAME a symbol", and `some(?x)` does
             // not.
             ViewHead::Functor {
-                functor: Some(s),
+                functor: s,
                 pos_arity: 0,
                 named_arity: 0,
             } => Some(s),
@@ -10804,7 +10803,7 @@ impl KnowledgeBase {
         match v.head(self) {
             ViewHead::Ident(s) => Some(s),
             ViewHead::Functor {
-                functor: Some(s), ..
+                functor: s, ..
             } => Some(s),
             _ => None,
         }
@@ -11280,7 +11279,7 @@ impl KnowledgeBase {
     /// producer (`weave_calls`) writes to. Nothing here narrows that.
     fn op_call_occurrence_to_reduce(&mut self, v: &Value) -> Option<Rc<NodeOccurrence>> {
         let ViewHead::Functor {
-            functor: Some(f),
+            functor: f,
             pos_arity,
             named_arity,
         } = v.head(self)
@@ -11978,7 +11977,7 @@ impl KnowledgeBase {
         {
             ViewHead::Ident(s) => s,
             ViewHead::Functor {
-                functor: Some(s),
+                functor: s,
                 pos_arity: 0,
                 ..
             } => s,
@@ -12581,7 +12580,7 @@ impl KnowledgeBase {
         }
         match v.head(self) {
             ViewHead::Functor {
-                functor: Some(f),
+                functor: f,
                 pos_arity,
                 named_arity,
             } => pos_arity + named_arity > 0 && self.functor_leaves_an_unreduced_op_call(f),
@@ -12727,7 +12726,7 @@ impl KnowledgeBase {
             // hand that function a callee it cannot expand.
             _ => {
                 let ViewHead::Functor {
-                    functor: Some(f), ..
+                    functor: f, ..
                 } = v.head(self)
                 else {
                     return None;
@@ -14446,7 +14445,7 @@ impl KnowledgeBase {
             // is not refutable here.
             let (functor, pos_arity) = match walked.head(self) {
                 ViewHead::Functor {
-                    functor: Some(f),
+                    functor: f,
                     pos_arity,
                     ..
                 } => (f, pos_arity),
@@ -14932,7 +14931,7 @@ fn goal_call_head(kb: &KnowledgeBase, goal: &Value) -> Option<(Symbol, usize, us
     }
     match goal.head(kb) {
         ViewHead::Functor {
-            functor: Some(f),
+            functor: f,
             pos_arity,
             named_arity,
         } => Some((f, pos_arity, named_arity)),
@@ -15020,7 +15019,7 @@ pub(crate) enum DomainEvidence {
 fn within_requirements_inner(kb: &KnowledgeBase, goal: &Value) -> Option<Value> {
     match goal.head(kb) {
         ViewHead::Functor {
-            functor: Some(f),
+            functor: f,
             pos_arity,
             ..
         } if pos_arity >= 2 && kb.builtin_of(f) == Some(BuiltinTag::WithinRequirements) => {
@@ -15033,7 +15032,7 @@ fn within_requirements_inner(kb: &KnowledgeBase, goal: &Value) -> Option<Value> 
 /// The cited relation and the captured dictionaries of a [`WITHIN_REQUIREMENTS`] marker.
 fn within_requirements_args(kb: &KnowledgeBase, goal: &Value) -> Option<(Symbol, Vec<Value>)> {
     let ViewHead::Functor {
-        functor: Some(f),
+        functor: f,
         pos_arity,
         ..
     } = goal.head(kb)
@@ -15049,7 +15048,7 @@ fn within_requirements_args(kb: &KnowledgeBase, goal: &Value) -> Option<(Symbol,
     let relation = match goal.pos_arg(kb, 1)?.head(kb) {
         ViewHead::Ident(s)
         | ViewHead::Functor {
-            functor: Some(s),
+            functor: s,
             pos_arity: 0,
             ..
         } => s,

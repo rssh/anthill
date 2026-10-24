@@ -2978,7 +2978,7 @@ fn dep_completed_at_carrier(kb: &mut KnowledgeBase, dep: &RequiresEntry) -> Opti
     // a type that holds a value, and what its provision says of an unwritten parameter may
     // be one too (a row that names a cell).
     let ViewHead::Functor {
-        functor: Some(functor),
+        functor,
         pos_arity,
         ..
     } = dep.spec.head(kb)
@@ -4395,7 +4395,7 @@ fn holds_scope_parameter<V: TermView>(kb: &KnowledgeBase, v: &V) -> bool {
         ViewHead::Functor {
             functor, pos_arity, ..
         } => {
-            functor.is_some_and(|f| is_sort_param_symbol(kb, f))
+            is_sort_param_symbol(kb, functor)
                 || view_any_child(kb, v, pos_arity, |c| holds_scope_parameter(kb, c))
         }
         _ => false,

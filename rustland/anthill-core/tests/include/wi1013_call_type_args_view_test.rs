@@ -286,7 +286,7 @@ fn a_bracket_free_call_keys_and_matches_as_before() {
             pos_arity,
             named_arity,
         } => {
-            assert_eq!(functor, Some(f));
+            assert_eq!(functor, f);
             assert_eq!(
                 (pos_arity, named_arity),
                 (1, 0),

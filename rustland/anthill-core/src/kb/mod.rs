@@ -632,7 +632,7 @@ pub(crate) fn head_functor_and_arity<V: term_view::TermView + ?Sized>(
 ) -> Option<(Symbol, usize)> {
     match head.head(kb) {
         term_view::ViewHead::Functor {
-            functor: Some(f),
+            functor: f,
             pos_arity,
             named_arity,
         } => Some((f, pos_arity + named_arity)),
@@ -5738,8 +5738,7 @@ impl KnowledgeBase {
     /// MISS the `TermId` key did not have.
     ///
     /// A THIRD PREDICATE ANSWERS A NEIGHBOURING QUESTION — `discrim::view_is_indexable`,
-    /// "does this head carry a discrimination key?", which also rejects `Opaque` but
-    /// additionally rejects functor-less aggregates that key here perfectly well. It
+    /// "does this head carry a discrimination key?", which also rejects `Opaque`. It
     /// is not shared because the two failure modes differ: an unindexable head is
     /// REFUSED (the discrim insert walk panics), whereas an unkeyable head must only
     /// DEGRADE — WI-348's contract is that a head this function cannot key is stored
@@ -5930,7 +5929,7 @@ impl KnowledgeBase {
     fn goal_head_sym_arity<V: term_view::TermView>(&self, view: &V) -> Option<(Symbol, usize)> {
         match term_view::TermView::head(view, self) {
             term_view::ViewHead::Functor {
-                functor: Some(s),
+                functor: s,
                 pos_arity,
                 ..
             } => Some((s, pos_arity)),
@@ -6182,7 +6181,7 @@ impl KnowledgeBase {
         // (`Fn{S, [], []}` for a `Sort`-kind name, which `nullary_canon` does not fold)
         // — a distinction that measures nothing here in either direction.
         if let term_view::ViewHead::Functor {
-            functor: Some(functor),
+            functor,
             pos_arity,
             ..
         } = term_view::TermView::head(view, self)
@@ -6303,7 +6302,7 @@ impl KnowledgeBase {
         view: &'a V,
     ) -> Vec<term_view::ViewItem<'a>> {
         let term_view::ViewHead::Functor {
-            functor: Some(functor),
+            functor,
             pos_arity,
             ..
         } = term_view::TermView::head(view, self)
@@ -6493,7 +6492,7 @@ impl KnowledgeBase {
         item: term_view::ViewItem<'a>,
     ) -> Vec<term_view::ViewItem<'a>> {
         if let term_view::ViewHead::Functor {
-            functor: Some(f),
+            functor: f,
             pos_arity,
             ..
         } = term_view::TermView::head(&item, self)
@@ -7472,7 +7471,7 @@ impl KnowledgeBase {
         // reach here as different heads.
         let sub_sym = match sub.head(self) {
             term_view::ViewHead::Functor {
-                functor: Some(s),
+                functor: s,
                 pos_arity: 0,
                 named_arity: 0,
             } => s,
@@ -7489,7 +7488,7 @@ impl KnowledgeBase {
             // `red` of `red†` as `Foo` of `Foo†`. Before the faces both held because the
             // two were one term (the structural arm above); this keeps the answer.
             term_view::ViewHead::Functor {
-                functor: Some(s),
+                functor: s,
                 pos_arity: 0,
                 named_arity: 0,
             } => s.plain() == parent_sym || s.plain() == sub_sym.plain(),
@@ -10595,7 +10594,7 @@ impl KnowledgeBase {
         // never `eq`-headed — falls through to `false` as it always should.
         match term_view::TermView::head(&entry.head, self) {
             term_view::ViewHead::Functor {
-                functor: Some(functor),
+                functor,
                 pos_arity,
                 ..
             } => self.is_equality_connective_functor(functor) && pos_arity == 2,
@@ -10691,15 +10690,15 @@ impl KnowledgeBase {
         //    A `Value::Entity{ctor, [scalar…]}` operand (the common eq-bridge
         //    case) now fires the rule correctly instead of being dropped.
         //  - A carrier with NO faithful term form — an opaque runtime handle
-        //    (`Closure`/`Stream`/`Map`/`Cell`/`Substitution`/`Requirement`), a
-        //    term-less `Unit`/`Tuple`, or an `Entity` carrying one — cannot enter
-        //    the TermId `body_rename` machinery, so the rule candidate simply can't
-        //    fire over this match: DROP it (mark `contradiction`, exactly like the
-        //    occurs-check drop below and the resolver's `tree_subst`-contradiction
-        //    drop). This IS reachable on real input — the WI-625 eval→SLD
-        //    `eq`/`neq` bridge feeds raw ground operands (`Value::Entity{ctor,
-        //    [Value::Tuple…]}`) into a rule-backed `eq`'s head match — so a
-        //    process-aborting panic here would crash on legitimate user code.
+        //    (`Closure`/`Stream`/`Map`/`Cell`/`Substitution`/`Relation`), or an
+        //    `Entity` carrying one — cannot enter the TermId `body_rename`
+        //    machinery, so the rule candidate simply can't fire over this match:
+        //    DROP it (mark `contradiction`, exactly like the occurs-check drop
+        //    below and the resolver's `tree_subst`-contradiction drop). This IS
+        //    reachable on real input — the WI-625 eval→SLD `eq`/`neq` bridge feeds
+        //    raw ground operands into a rule-backed `eq`'s head match — so a
+        //    process-aborting panic here would crash on legitimate user code. (A
+        //    tuple is no such carrier: it lowers to its `TupleLiteral(_1: …)` term.)
         //    Dropping the candidate makes `eq` fall back to its structural verdict
         //    (what it already does when no override can decide), not a silent
         //    unbound-var wrong answer. Reifying the operand at the producer (the
@@ -13358,7 +13357,7 @@ impl KnowledgeBase {
     pub fn get_builtin_view<V: term_view::TermView>(&self, goal: &V) -> Option<BuiltinTag> {
         match goal.head(self) {
             term_view::ViewHead::Functor {
-                functor: Some(sym), ..
+                functor: sym, ..
             } => self.builtin_of(sym),
             _ => None,
         }
@@ -14748,7 +14747,7 @@ mod tests {
     /// stores through `push_value_head_entry`, whose discrimination-tree insert
     /// walks EVERY positional and named child (`insert_walk_args`) and PANICS on an
     /// `Opaque` head — a deliberate loud refusal that predates WI-815 ("no fact/rule
-    /// form in use today produces a functor-less / opaque stored head; fail loudly
+    /// form in use today produces an opaque stored head; fail loudly
     /// rather than silently mis-index"). So the refusal that actually fires is
     /// louder than the dedup guard — though NOT earlier: `assert_fact_value` calls
     /// `value_fact_dedup_key` first and only then `push_value_head_entry`, so the
@@ -14767,7 +14766,7 @@ mod tests {
     /// head becomes storable, which is exactly when
     /// `wi815_a_lossy_key_degrades_to_no_dedup` should grow its fact-level half.
     #[test]
-    #[should_panic(expected = "functor-less / opaque head")]
+    #[should_panic(expected = "opaque head")]
     fn wi815_an_opaque_bearing_head_cannot_be_stored_at_all() {
         let mut kb = KnowledgeBase::new();
         crate::kb::load::register_prelude(&mut kb);
@@ -15419,9 +15418,10 @@ mod tests {
         // WI-625 eq/neq bridge routes a `Value::Entity{ctor, [Value::Tuple…]}`
         // operand here) and must NOT be silently dropped into an unbound-var wrong
         // answer. Instead the candidate is dropped (`contradiction`), so eq falls
-        // back to its structural verdict. Feed `mk(tuple(1, 2))` — an Entity
-        // carrying a term-less `Value::Tuple`, the exact reachable shape — and
-        // assert the returned links are a contradiction (candidate dropped).
+        // back to its structural verdict. Feed `mk(<a relation>)` — an Entity
+        // carrying a term-less child (it was a `Value::Tuple` until a tuple became
+        // the `TupleLiteral(_1: …)` term, WI-20261011-7G99A) — and assert the
+        // returned links are a contradiction (candidate dropped).
         use crate::eval::value::Value;
         use std::rc::Rc;
         use term::Var;
@@ -15448,15 +15448,15 @@ mod tests {
         let body_nodes = kb.term_body_to_nodes(&[body_q]);
         let rid = kb.assert_rule_debruijn_with_nodes(head, body_nodes, sort, domain, None);
 
-        // A term-less Tuple nested in an Entity — value_to_term recurses into the
-        // Tuple child and errors, so the whole candidate is dropped.
-        let tuple = Value::Tuple {
-            pos: Rc::from(vec![Value::Int(1), Value::Int(2)]),
-            named: Rc::from(Vec::<(crate::intern::Symbol, Value)>::new()),
+        // A term-less child nested in an Entity — value_to_term recurses into it
+        // and errors, so the whole candidate is dropped.
+        let relation = Value::Relation {
+            query: Rc::new(Value::Unit),
+            columns: Rc::from(vec![]),
         };
         let entity = Value::Entity {
             functor: mk,
-            pos: Rc::from(vec![tuple]),
+            pos: Rc::from(vec![relation]),
             named: Rc::from(Vec::<(crate::intern::Symbol, Value)>::new()),
         };
         let mut tree_subst = subst::Substitution::new();
@@ -15474,13 +15474,16 @@ mod tests {
     }
 
     #[test]
-    fn prove_rule_predicate_no_panic_on_entity_tuple_operand() {
+    fn prove_rule_predicate_no_panic_on_an_unreifiable_operand() {
         // WI-636 end-to-end: this replicates the reachable path the WI-625 eq/neq
         // bridge drives — `prove_rule_predicate` builds an Entity goal from raw
         // ground operands and resolves it through `with_fresh_vars`. An operand
-        // that is a `Value::Entity` carrying a term-less `Value::Tuple` used to
-        // panic (aborting the process); it must now resolve without crashing, the
-        // rule candidate dropping so the predicate is simply unproved (`Refuted`).
+        // that is a `Value::Entity` carrying a term-less child used to panic
+        // (aborting the process); it must now resolve without crashing, the rule
+        // candidate dropping so the predicate is simply unproved (`Refuted`). The
+        // child was a `Value::Tuple` until a tuple became the `TupleLiteral(_1: …)`
+        // term a rule writes for it (WI-20261011-7G99A): an operand carrying one now
+        // reifies, and the predicate holds.
         use crate::eval::value::Value;
         use crate::kb::resolve::PredicateProof;
         use std::rc::Rc;
@@ -15514,22 +15517,33 @@ mod tests {
         let body_nodes = kb.term_body_to_nodes(&[marker_t]);
         kb.assert_rule_debruijn_with_nodes(head, body_nodes, sort, domain, None);
 
-        // Operand `mk(tuple(1, 2))`: an Entity carrying a term-less Tuple.
+        let under_mk = |child: Value| Value::Entity {
+            functor: mk,
+            pos: Rc::from(vec![child]),
+            named: Rc::from(Vec::<(crate::intern::Symbol, Value)>::new()),
+        };
+
+        // Operand `mk(<a relation>)`: an Entity carrying a term-less child. No panic;
+        // the candidate drops, so the predicate is unproved.
+        let relation = Value::Relation {
+            query: Rc::new(Value::Unit),
+            columns: Rc::from(vec![]),
+        };
+        let proof = kb.prove_rule_predicate(pr, vec![under_mk(relation), Value::Int(0)]);
+        assert!(
+            matches!(proof, PredicateProof::Refuted),
+            "un-reifiable operand → dropped candidate → Refuted (no crash)",
+        );
+
+        // Operand `mk((1, 2))`: the tuple reifies, and `pr(?a, ?b) :- marker` holds.
         let tuple = Value::Tuple {
             pos: Rc::from(vec![Value::Int(1), Value::Int(2)]),
             named: Rc::from(Vec::<(crate::intern::Symbol, Value)>::new()),
         };
-        let entity = Value::Entity {
-            functor: mk,
-            pos: Rc::from(vec![tuple]),
-            named: Rc::from(Vec::<(crate::intern::Symbol, Value)>::new()),
-        };
-
-        // No panic; the candidate drops, so the predicate is unproved.
-        let proof = kb.prove_rule_predicate(pr, vec![entity, Value::Int(0)]);
+        let proof = kb.prove_rule_predicate(pr, vec![under_mk(tuple), Value::Int(0)]);
         assert!(
-            matches!(proof, PredicateProof::Refuted),
-            "un-reifiable operand → dropped candidate → Refuted (no crash)",
+            matches!(proof, PredicateProof::Proved),
+            "a tuple operand reifies: {proof:?}",
         );
     }
 
@@ -16025,7 +16039,7 @@ mod tests {
         );
 
         let functor_of = |h: &ViewHead| match h {
-            ViewHead::Functor { functor, .. } => *functor,
+            ViewHead::Functor { functor, .. } => Some(*functor),
             _ => None,
         };
 

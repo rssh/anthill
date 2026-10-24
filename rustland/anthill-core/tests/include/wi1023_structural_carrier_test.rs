@@ -274,7 +274,7 @@ fn an_opaque_child_inside_a_structural_carrier_disables_dedup() {
         // guard. `Cell` needs no KB, so the two carriers cross KBs safely here —
         // unlike a `Symbol`/`TermId`, an arena handle names the same slot anywhere.
         assert!(
-            matches!(a.head(kb), ViewHead::Functor { functor: Some(_), .. }),
+            matches!(a.head(kb), ViewHead::Functor { functor: _, .. }),
             "premise: a Tuple presents a shape to the shallow scan",
         );
         let Value::Tuple { pos, .. } = &a else {

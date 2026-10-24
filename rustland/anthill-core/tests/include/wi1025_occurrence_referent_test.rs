@@ -98,7 +98,7 @@ fn a_parameterized_type_occurrence_names_its_base_sort() {
     {
         use anthill_core::kb::term_view::{TermView, ViewHead};
         assert!(
-            matches!(occ_type.head(interp.kb()), ViewHead::Functor { functor: Some(f), .. } if f == sym),
+            matches!(occ_type.head(interp.kb()), ViewHead::Functor { functor: f, .. } if f == sym),
             "premise: a parameterized type occurrence heads as its base sort (WI-361)",
         );
     }

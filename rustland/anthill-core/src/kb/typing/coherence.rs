@@ -531,7 +531,7 @@ fn provision_requirement_errors(
         // The view's RAW arguments, not `row.bindings`: σ takes its positionals too.
         let view = &row.spec_view;
         if let ViewHead::Functor {
-            functor: Some(functor),
+            functor,
             pos_arity,
             ..
         } = view.head(kb)
@@ -1132,7 +1132,7 @@ pub(crate) fn check_use_site_requires_eq(
                 }
                 let carrier = match val.head(kb) {
                     ViewHead::Functor {
-                        functor: Some(functor),
+                        functor,
                         ..
                     }
                     | ViewHead::Ident(functor) => functor,

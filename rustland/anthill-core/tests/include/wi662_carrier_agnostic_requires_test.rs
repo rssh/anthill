@@ -231,7 +231,7 @@ end
     .expect("Foo spec carries an X binding");
     // Read through the view: the binding is `Int64` on whichever carrier it rides.
     let x_head = match x_binding.head(&kb) {
-        ViewHead::Functor { functor, .. } => functor,
+        ViewHead::Functor { functor, .. } => Some(functor),
         ViewHead::Ident(s) => Some(s),
         _ => None,
     };

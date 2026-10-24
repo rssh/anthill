@@ -316,7 +316,7 @@ fn is_empty_row<V: TermView>(kb: &KnowledgeBase, v: &V) -> bool {
     };
     matches!(
         expression.head(kb),
-        ViewHead::Functor { functor: Some(f), .. }
+        ViewHead::Functor { functor: f, .. }
             if kb.qualified_name_of(f) == "anthill.prelude.EffectExpression.empty_row"
     )
 }

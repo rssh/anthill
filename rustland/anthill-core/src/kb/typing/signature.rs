@@ -1864,7 +1864,7 @@ pub(super) fn referenced_param_vars<V: TermView>(
     match view.head(kb) {
         ViewHead::Ident(s)
         | ViewHead::Functor {
-            functor: Some(s),
+            functor: s,
             pos_arity: 0,
             named_arity: 0,
         } => out.extend(type_param_global_var(kb, s)),
@@ -5007,7 +5007,7 @@ fn collect_row_bindings_in_goal(
         return;
     }
     let ViewHead::Functor {
-        functor: Some(base),
+        functor: base,
         ..
     } = v.head(kb)
     else {
@@ -5882,7 +5882,7 @@ fn type_ctor_view(
             return Some((sym, Vec::new(), Vec::new()));
         }
         let ViewHead::Functor {
-            functor: Some(functor),
+            functor,
             pos_arity,
             ..
         } = ty.head(kb)

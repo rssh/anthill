@@ -143,7 +143,7 @@ fn sort_alias_head_slots(kb: &KnowledgeBase, rid: RuleId) -> Option<(Symbol, Ter
     let head = kb.rule_head_value(rid);
     let src_functor = match head.pos_arg(kb, 0)?.head(kb) {
         ViewHead::Functor {
-            functor: Some(s), ..
+            functor: s, ..
         } => s,
         _ => return None,
     };

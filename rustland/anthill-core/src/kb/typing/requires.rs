@@ -1319,7 +1319,7 @@ fn normalize_op_requires_entry(kb: &mut KnowledgeBase, entry: &RequiresEntry) ->
     // fix `goal_from_op_requires_entry`'s doc names) passes straight through here.
     if matches!(
         entry.spec.head(kb),
-        ViewHead::Functor { functor: Some(f), .. } if is_sort_view_functor(kb, f)
+        ViewHead::Functor { functor: f, .. } if is_sort_view_functor(kb, f)
     ) {
         return entry.clone();
     }
@@ -2362,7 +2362,7 @@ pub(crate) fn spec_base_functor(kb: &KnowledgeBase, spec: &impl TermView) -> Opt
     match spec.head(kb) {
         ViewHead::Functor { pos_arity, .. } if pos_arity > 0 => {
             match spec.pos_arg(kb, 0)?.head(kb) {
-                ViewHead::Functor { functor, .. } => functor,
+                ViewHead::Functor { functor, .. } => Some(functor),
                 _ => None,
             }
         }
@@ -2370,7 +2370,7 @@ pub(crate) fn spec_base_functor(kb: &KnowledgeBase, spec: &impl TermView) -> Opt
             functor,
             pos_arity: 0,
             named_arity: 0,
-        } => functor,
+        } => Some(functor),
         _ => None,
     }
 }
@@ -3067,15 +3067,9 @@ pub(super) fn rewrite_type_leaves(
             changed = true;
         }
     }
-    changed.then(|| match functor {
-        Some(f) => {
-            order_rebuilt_bindings(kb, f, &mut named);
-            kb.fn_value(f, pos, named)
-        }
-        None => Value::Tuple {
-            pos: Rc::from(pos),
-            named: Rc::from(named),
-        },
+    changed.then(|| {
+        order_rebuilt_bindings(kb, functor, &mut named);
+        kb.fn_value(functor, pos, named)
     })
 }
 
@@ -3233,16 +3227,8 @@ pub(super) fn try_rewrite_type_terms(
     if !changed {
         return Some(v.clone());
     }
-    Some(match functor {
-        Some(f) => {
-            order_rebuilt_bindings(kb, f, &mut named);
-            kb.fn_value(f, pos, named)
-        }
-        None => Value::Tuple {
-            pos: Rc::from(pos),
-            named: Rc::from(named),
-        },
-    })
+    order_rebuilt_bindings(kb, functor, &mut named);
+    Some(kb.fn_value(functor, pos, named))
 }
 
 /// [`ref_or_nullary_name`] through the view, where a bare reference and the nullary
@@ -3250,7 +3236,7 @@ pub(super) fn try_rewrite_type_terms(
 pub(super) fn ref_or_nullary_name_view<V: TermView>(kb: &KnowledgeBase, v: &V) -> Option<Symbol> {
     match v.head(kb) {
         ViewHead::Functor {
-            functor: Some(s),
+            functor: s,
             pos_arity: 0,
             named_arity: 0,
         } => Some(s),

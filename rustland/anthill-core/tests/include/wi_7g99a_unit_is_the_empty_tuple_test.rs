@@ -42,6 +42,21 @@
 //!       `TupleLiteral(_1: 1, _2: 2)`
 //!     a_refusal_names_the_empty_tuple_unit — `expected (), got Int64`
 //!
+//!   FAIL with one mechanism backed out (a tuple value read and printed as a term):
+//!     reflection_reads_a_tuple_value — `reads_as_term` refusing a tuple value
+//!       (`expected Term`); passes with the lowering backed out, which it never asks
+//!     a_written_tuple_at_a_term_slot_prints_as_its_literal — the printer writing a
+//!       `TupleLiteral` constructor occurrence by its name, `TupleLiteral(_1: 1, _2: 2)`;
+//!       and a lone positional component without its label, `(7)`
+//!     persistence_builtins_test::a_fact_holding_an_operation_built_tuple_is_persisted —
+//!       `value_to_term` refusing a tuple, as on the parent (`UnsupportedVariant`)
+//!     a_raised_tuple_is_named_as_its_literal — the payload renderer naming a tuple by
+//!       its head, `TupleLiteral(_1: 1, _2: 2)`
+//!     a_tuple_holding_nan_is_not_equal_to_itself — the tuple left out of the
+//!       partial-transparent carriers: `(n, 1) = (n, 1)` answered true once a tuple
+//!       value read as `TupleLiteral(…)`. It passes on the parent, where a tuple value
+//!       had no functor and was walked.
+//!
 //!   PASS with the change backed out, by design — what it must not move:
 //!     what_an_equation_leaves_in_a_rule_body_is_unit — delivered with proposal 068's
 //!       rule-body typing
@@ -379,6 +394,86 @@ fn an_entity_named_like_the_tuple_prints_as_itself() {
         panic!("{answers:?}");
     };
     assert_eq!(TermPrinter::new(&kb).print_value(v), "TupleLiteral(a: 1)");
+}
+
+/// What `term_to_string` / `term_field` answer for `t`, called on a fresh interpreter.
+fn reflect_answer(name: &str, body: &str, entry: &str) -> String {
+    let src = format!(
+        "namespace test.{name}\n  import anthill.prelude.{{Int64, String, Option, Unit}}\n  import anthill.reflect.{{term_to_string, term_field, Term}}\n{body}\nend\n"
+    );
+    let mut interp = crate::common::interp_for(&src);
+    let v = interp
+        .call(&format!("test.{name}.{entry}"), &[])
+        .unwrap_or_else(|e| panic!("{entry}: {e:?}"));
+    match v {
+        Value::Str(s) => s,
+        other => TermPrinter::new(interp.kb()).print_value(&other),
+    }
+}
+
+/// A tuple value is a term: the `TupleLiteral(_1: …)` a rule writes for it. Reflection
+/// reads it, and prints it as its literal.
+#[test]
+fn reflection_reads_a_tuple_value() {
+    let body = "  operation mp(a: Int64) -> (Int64, Int64) = (a, 2)\n  operation s() -> String =\n    let t = mp(1)\n    term_to_string(t)\n  operation f() -> Option[T = Term] =\n    let t = mp(1)\n    term_field(t, \"_1\")";
+    assert_eq!(reflect_answer("g99arefl", body, "s"), "(1, 2)");
+    assert_eq!(reflect_answer("g99arefl", body, "f"), "some(value: 1)");
+}
+
+/// The tuple an operation body writes is a constructor over `TupleLiteral`, and a rule
+/// body's call hands a `Term` slot that node: it is printed as the literal it was written
+/// as, as a `(…)` node is.
+#[test]
+fn a_written_tuple_at_a_term_slot_prints_as_its_literal() {
+    let src = "namespace test.g99areflw\n  import anthill.prelude.{Int64, String}\n  import anthill.reflect.{term_to_string, TupleLiteral}\n  operation mp() -> (Int64, Int64) = (1, 2)\n  operation s() -> String = term_to_string(mp())\n  operation su() -> String = term_to_string(())\n  operation s1() -> String = term_to_string(TupleLiteral(7))\n  rule vs(?r) :- ?r <=> s()\n  rule vu(?r) :- ?r <=> su()\n  rule v1(?r) :- ?r <=> s1()\nend\n";
+    let mut kb = load_kb_with(src);
+    // A lone positional component keeps its label: `(7)` would be grouping.
+    for (rule, printed) in [("vs", "(1, 2)"), ("vu", "()"), ("v1", "(_1: 7)")] {
+        let answers = query_unary(&mut kb, &format!("test.g99areflw.{rule}"));
+        assert!(
+            matches!(answers.as_slice(), [(Value::Str(s), true)] if s == printed),
+            "{rule}: {answers:?}"
+        );
+    }
+}
+
+/// A tuple holding `NaN` is not equal to itself: its equality is its components', as a
+/// parametric composite's is, and `Float`'s `=` is partial.
+#[test]
+fn a_tuple_holding_nan_is_not_equal_to_itself() {
+    assert_runs(
+        &ns(
+            "g99anan",
+            "  import anthill.prelude.Float\n  operation nan() -> Float = 0.0 / 0.0\n  operation go() -> Int64 =\n    let n = nan()\n    if (n, 1) = (n, 1) then 0 else 4",
+        ),
+        "test.g99anan.go",
+        4,
+    );
+    assert_runs(
+        &ns(
+            "g99anano",
+            "  import anthill.prelude.Float\n  operation go() -> Int64 = if (1.5, 1) = (1.5, 1) then 4 else 0",
+        ),
+        "test.g99anano.go",
+        4,
+    );
+}
+
+/// A raised payload holding a tuple names it as its literal, `(1, 2)`, and `()` as `()`.
+#[test]
+fn a_raised_tuple_is_named_as_its_literal() {
+    let src = "namespace test.g99araise\n  import anthill.prelude.{Int64, Unit, Error}\n  sort Boom\n    entity boom(at: (Int64, Int64), u: Unit)\n  end\n  operation fail() -> Int64 effects {Error[Boom]} = Error.raise(boom(at: (1, 2), u: ()))\nend\n";
+    let mut interp = crate::common::interp_for(src);
+    let err = interp
+        .call("test.g99araise.fail", &[])
+        .expect_err("the raise escapes");
+    let anthill_core::eval::EvalError::Raised { payload, .. } = err else {
+        panic!("expected a raise, got {err:?}");
+    };
+    assert_eq!(
+        anthill_core::eval::error::render_raised_payload(interp.kb(), &payload),
+        "boom(at: (1, 2), u: ())"
+    );
 }
 
 // ── a fact's field is checked at its tuple type ─────────────────────────────
