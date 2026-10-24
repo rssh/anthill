@@ -270,9 +270,9 @@ end
 
 const KEYED: &str = r#"
 namespace test.r5.keyedreq
-  import anthill.prelude.{Int64, Float, Type, Error, Result, ErrorTag}
+  import anthill.prelude.{Int64, Float, Type, Error, Result}
   import anthill.prelude.Result.{ok, err}
-  import anthill.reflect.{TypeValue}
+  import anthill.reflect.{TypeValue, TypePattern}
   sort Desc
     sort T = ?
     operation describe(x: T) -> Int64
@@ -287,30 +287,31 @@ namespace test.r5.keyedreq
     entity keyed(k: K)
   end
   operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = TypeValue.type_value[T = B]()
-  operation catchIt[P](x: P) -> Int64 requires ErrorTag[T = P] =
+  operation catchIt[P](x: P) -> Int64 requires TypePattern[T = P] =
     match Error.reify(lambda () -> Error.raise(x))
       case ok(v) -> 1
       case err(e) -> 2
 "#;
 
 /// A LIBRARY SPEC'S REQUIREMENT THAT FAILS AT ANOTHER SPEC'S GOAL IS REPAIRED AS THAT GOAL IS.
-/// `TypeValue[T = Keyed[K = Float]]` and `ErrorTag[T = Keyed[K = Float]]` fail because
-/// `Keyed`'s own `requires Desc[T = K]` holds nowhere at `Float`; the refusal names `Desc`, and a
-/// `Desc` row at `Float` makes both answer. They were told no row of the library's spec answers
-/// and to pass a value of a sort that is no spec, which `Keyed[K = Float]` is; the `ErrorTag` one
-/// also to write a row of `ErrorTag`, which breaks the boundary.
+/// `TypeValue[T = Keyed[K = Float]]` and `TypePattern[T = Keyed[K = Float]]` (`ErrorTag` until
+/// WI-20261016-YM8HD) fail because `Keyed`'s own `requires Desc[T = K]` holds nowhere at
+/// `Float`; the refusal names `Desc`, and a `Desc` row at `Float` makes both answer. They were
+/// told no row of the library's spec answers and to pass a value of a sort that is no spec,
+/// which `Keyed[K = Float]` is; the `ErrorTag` one also to write a row of `ErrorTag`, which
+/// broke the boundary.
 #[test]
 fn a_library_requirement_failing_at_another_spec_is_told_that_spec() {
     for (shape, call) in [
         ("TypeValue", "  operation ask(x: Keyed[K = Float]) -> Type = tyOf(x)\nend\n"),
-        ("ErrorTag", "  operation ask(x: Keyed[K = Float]) -> Int64 = catchIt(x)\nend\n"),
+        ("TypePattern", "  operation ask(x: Keyed[K = Float]) -> Int64 = catchIt(x)\nend\n"),
     ] {
         let errs = load_errors_of(&format!("{KEYED}{call}"));
         assert_refused_naming(&errs, &["no impl provides test.r5.keyedreq.Desc"], shape);
         for wrong in [
             "no row of `anthill.reflect.TypeValue` answers here",
-            "no row of `anthill.prelude.ErrorTag` answers here",
-            "provides anthill.prelude.ErrorTag",
+            "no row of `anthill.reflect.TypePattern` answers here",
+            "provides anthill.reflect.TypePattern",
         ] {
             assert!(errs.iter().all(|e| !e.contains(wrong)), "{shape}: {errs:#?}");
         }
@@ -495,9 +496,10 @@ namespace test.r5.contract
 // ── E. the forward of a parameter held inside a type ─────────────────────────────────────
 
 /// AN `Error.reify` OF A RAISE AT AN APPLICATION HOLDING THE CALLER'S PARAMETER IS REFUSED AT
-/// LOAD, and the clause it names answers: `Error.raise(some(x))` over `x: C`. `ErrorTag`'s one
-/// row is at a parameter, so the reading asked for a row of `ErrorTag` at the application's sort
-/// and found none: the program loaded and died "entered with no `ErrorTag` evidence". The
+/// LOAD, and the clause it names answers: `Error.raise(some(x))` over `x: C`. The boundary's
+/// spec (`ErrorTag` then, `TypePattern` since WI-20261016-YM8HD) has its one row at a
+/// parameter, so the reading asked for a row of it at the application's sort and found none:
+/// the program loaded and died "entered with no `ErrorTag` evidence". The
 /// parameter's order in the spec does not decide it either: `Spec2` with `T` before `A` and after.
 #[test]
 fn a_parameter_inside_an_application_is_forwarded_for_every_spec() {
@@ -521,7 +523,7 @@ end
             "its carrier `anthill.prelude.Option[T = C]` holds `C`",
             "Declare `requires anthill.reflect.TypeValue[T = C]` on `test.r5.boundary.g`",
         ],
-        "an ErrorTag boundary",
+        "a reify boundary",
     );
     // The account names its repair; "pin the element at the call site" is advice for an
     // element left open, and this one the caller pinned to its own parameter.

@@ -1096,15 +1096,14 @@ end
 
 /// A BODY-LESS CALLEE IS HELD TO THE REFUSAL TOO (user, 2026-10-16).
 ///
-/// `Error.reify` declares `requires ErrorTag[T = T1]` and has NO anthill body on purpose:
-/// the boundary is a frame the interpreter installs by symbol. It was exempt, its host
-/// catching WIDE where the evidence was missing, on the reading that the row guarantees
-/// what it may catch. MEASURED false for a row holding a second `Error` label: `tupOp(7)`
-/// below caught `other(n: 7)` as the tuple's `err`, past a boundary at `Other` around it.
-/// So a reify at a tuple payload is refused at the call, as a requirement at any former
-/// is, and the repair it names is a value of a sort: a written `ErrorTag` row carries no
-/// `TypeValue`, and the boundary refuses to run on one
-/// (`wi_9wvt7_error_reify_test::evidence_that_names_no_payload_sort_is_refused`).
+/// `Error.reify` declares `requires TypePattern[T = T1]` (`ErrorTag[T = T1]` until
+/// WI-20261016-YM8HD) and has NO anthill body on purpose: the boundary is a frame the
+/// interpreter installs by symbol. It was exempt, its host catching WIDE where the evidence
+/// was missing, on the reading that the row guarantees what it may catch. MEASURED false for
+/// a row holding a second `Error` label: `tupOp(7)` below caught `other(n: 7)` as the
+/// tuple's `err`, past a boundary at `Other` around it. So a reify at a tuple payload is
+/// refused at the call, as a requirement at any former is, and the repair it names is a
+/// sort: no row of `TypePattern` may be written.
 ///
 /// BACK-OUT: `former_carrier`'s `op_body_node` guard put back, and both programs load
 /// clean — the exemption this row was the control of, inverted.
@@ -1148,9 +1147,10 @@ end
         let errs = load_errors(src);
         assert_eq!(errs.len(), 1, "{shape}: exactly one refusal, got {errs:#?}");
         for want in [
-            "anthill.prelude.ErrorTag",
+            "anthill.reflect.TypePattern[T = (a: Int64, b: String)]",
             "a STRUCTURAL FORMER",
-            "Raise, in the thunk, a value whose type is a sort",
+            "Name a sort with no tuple or arrow among its type arguments — for an \
+             `Error.reify`, raise a value of one in the thunk",
         ] {
             assert!(errs[0].contains(want), "{shape}: expected {want:?}; got {:?}", errs[0]);
         }
@@ -1160,9 +1160,10 @@ end
 /// A REQUIREMENT OF THE LIBRARY'S TWO SPECS AT A SORT HOLDING A FORMER is refused as one
 /// at the former itself, naming the same repair. A sort's `TypeValue` instance holds only
 /// where each of its type arguments has one, so `Option[T = (a: Int64, b: String)]` has
-/// none, and `Error`'s `ErrorTag` row, conditioned on it, does not answer there either. The
-/// refusal advised a `provides TypeValue[…]` row, which is refused at load, and a `provides
-/// ErrorTag[…]` row, which loads and which no boundary reads.
+/// none, and `TypePattern`'s one row, conditioned on it, does not answer there either. The
+/// refusal advised a `provides TypeValue[…]` row, which is refused at load, and (when the
+/// boundary required `ErrorTag`, before WI-20261016-YM8HD) a `provides ErrorTag[…]` row,
+/// which loaded and which no boundary read.
 ///
 /// BACK-OUT: `former_carrier`'s walk into a binding (`FormerCarrier::Within`) taken out, and
 /// both fail on the former: they are refused without it, by the library's no-row text below.
@@ -1186,7 +1187,7 @@ end
             "Pass a value whose type is a sort with no tuple or arrow among its type arguments",
         ),
         (
-            "ErrorTag",
+            "TypePattern",
             r#"
 namespace test.n31xx.withintag
   import anthill.prelude.{Error, Int64, Option, Result, String}
@@ -1199,8 +1200,8 @@ namespace test.n31xx.withintag
     Error.reify(lambda () -> raisesOpt())
 end
 "#,
-            "Raise, in the thunk, a value whose type is a sort with no tuple or arrow among its \
-             type arguments",
+            "Name a sort with no tuple or arrow among its type arguments — for an \
+             `Error.reify`, raise a value of one in the thunk",
         ),
     ] {
         let errs = load_errors(src);
@@ -1216,7 +1217,7 @@ end
 }
 
 /// The advice a library spec's refusal must not give: a written row, which is refused at
-/// load (`TypeValue`) or read by no boundary (`ErrorTag`), and a `requires` in scope, which
+/// load (`TypeValue`, `TypePattern`), and a `requires` in scope, which
 /// hands the same refusal to the caller, every element being written.
 const ROW_ADVICE: [&str; 3] = [
     "declare `provides",
@@ -1337,7 +1338,8 @@ namespace test.n31xx.libtag
       case err(_) -> 0
 end
 "#,
-            "no row of `anthill.prelude.ErrorTag` answers here, and a written one is no repair",
+            "every type argument of it written — for an `Error.reify`, raise a value of one in \
+             the thunk",
         ),
     ] {
         let errs = load_errors(src);

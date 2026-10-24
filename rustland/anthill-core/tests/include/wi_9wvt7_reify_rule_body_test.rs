@@ -18,8 +18,9 @@
 //!       that install `Error.reify`'s boundary, so it found no body
 //!       (`OperationBodyMissing`). It now installs the boundary as they do: the one frame
 //!       the run owns is the boundary, the thunk runs above it, and the boundary's
-//!       `ok` / `err` is the run's value. The payload's `ErrorTag` evidence is the one the
-//!       typer stamped on the call. Entering the thunk is the run's FIRST STEP (`run_from`),
+//!       `ok` / `err` is the run's value. The payload's `TypePattern` evidence is the one the
+//!       typer stamped on the call (`ErrorTag` until WI-20261016-YM8HD). Entering the
+//!       thunk is the run's FIRST STEP (`run_from`),
 //!       read by the loop as every step is: an error there leaves the run truncated to its
 //!       floor, and a raise there would meet the boundary as any later raise does — though
 //!       nothing reaches that with a payload the boundary can read: a source program reads a
@@ -31,16 +32,20 @@
 //!       is reported as a fault of the goal whatever it is — a `load_failed` too, which
 //!       elsewhere means "no answer yet" — and the message names the boundary's reason
 //!       instead of advising a `reify` around the call that is one.
-//!   (d) AN `ErrorTag` SLOT A RULE BODY CANNOT FILL IS REFUSED (user, 2026-10-15). With no
-//!       evidence the boundary has no payload sort to catch and refuses to run — it caught
+//!   (d) A PATTERN SLOT A RULE BODY CANNOT FILL IS REFUSED (user, 2026-10-15). With no
+//!       evidence the boundary has no pattern to catch by and refuses to run — it caught
 //!       every payload, including the `Error[Other]` its thunk's row leaves to the caller,
-//!       until the second review of this ticket — and a rule-body call's `ErrorTag` is no
+//!       until the second review of this ticket — and a rule-body call's slot is no
 //!       condition its clause can be handed (until 060's S7, WI-20260911-5G28A). The typer
 //!       refuses the call at load (`build_op_scoped_dicts`) when the call builds no
 //!       evidence — a payload type that is a rule variable's or none, a collection whose
-//!       element is open, a tuple — and the bridge keeps an `ErrorTag` slot its arguments
-//!       cannot pin as an absence the boundary's read refuses, for a generic operation that
-//!       reifies at its own `P` and is cited from a rule.
+//!       element is open, a tuple. Since WI-20261016-YM8HD the slot is `TypePattern`'s, a
+//!       spec with a member, so the refusal is the rule-body gate's for every such spec (a
+//!       tuple getting the structural former's account, as in an operation body); until
+//!       then it was `ErrorTag`'s, a marker spec, refused by a gate keyed on its name. A
+//!       generic operation that reifies at its own `P` and is cited from a rule whose
+//!       arguments do not pin `P` reaches the boundary with no evidence, and the boundary
+//!       refuses to run.
 //!
 //! WHAT FAILS UNDER WHICH BACK-OUT — MEASURED, each switched off alone in one build:
 //!
@@ -57,13 +62,16 @@
 //!     (the boundary's frame is left on the stack).
 //!   * (c) backed out → `a_payload_the_boundary_declines_is_a_fault` (the generic advice; the
 //!     declined `load_failed` silent).
-//!   * (d)'s load refusal backed out → `an_unfilled_error_tag_is_refused_where_it_is_written`:
-//!     its programs load clean, and the bridge's absence faults `either(7, 7, ?r)` when it
-//!     runs. With both of (d)'s halves backed out it is still undecided, the boundary
-//!     refusing evidence that names no payload sort.
-//!   * (d)'s bridge absence backed out → `a_generic_catcher_cited_from_a_rule_faults` and
-//!     `an_unpinned_host_entry_is_refused_and_leaves_no_frame`: each is still refused, by the
-//!     boundary's own refusal of no evidence, which names no unpinned slot.
+//!   * (d)'s load refusal backed out (measured on the `ErrorTag` gate, before
+//!     WI-20261016-YM8HD) → `an_unfilled_pattern_slot_is_refused_where_it_is_written`: its
+//!     programs load clean, and `either(7, 7, ?r)` is undecided at every query, the boundary
+//!     refusing to run with no evidence.
+//!   * the boundary's refusal of no evidence backed out (the boundary installed, catching
+//!     nothing) → `a_generic_catcher_cited_from_a_rule_faults` (`useA` raises past the
+//!     boundary instead) and `an_unpinned_host_entry_is_refused_and_leaves_no_frame`. Until
+//!     WI-20261016-YM8HD the bridge kept the slot as an absence marker for both, read by a
+//!     gate keyed on `ErrorTag`; that refusal named the unpinned slot, and this one names
+//!     the two routes that hand none.
 //!
 //! The rows that reached an effectful thunk through a rule-body reify (`printing`, and the
 //! clock routes of `wi_9wvt7_clock_handler_test`) are refused at load since WI-20261013-R1W5A,
@@ -241,13 +249,12 @@ fn an_effectful_thunk_is_refused_at_load() {
     }
 }
 
-/// A HOST CALL whose `ErrorTag` slot its arguments do not pin is refused where the boundary
-/// reads its payload, before the thunk is entered: an operation reference carries no type
+/// A HOST CALL whose pattern slot its arguments do not pin is refused where the boundary
+/// takes its pattern, before the thunk is entered: an operation reference carries no type
 /// the bridge's pinning reads (it views as the runtime sort `OpRef`, not as its arrow), so
-/// the slot is an absence, as at a rule body's generic catcher above. The refusal leaves no
-/// frame behind — entering is the run's first
-/// step, read by the loop, so the run truncates to its floor — and the interpreter answers
-/// its next call.
+/// no slot is derived, as at a rule body's generic catcher below. The refusal leaves no
+/// frame behind — entering is the run's first step, read by the loop, so the run truncates
+/// to its floor — and the interpreter answers its next call.
 #[test]
 fn an_unpinned_host_entry_is_refused_and_leaves_no_frame() {
     let kb = crate::common::try_load_kb_prepared(HOST_PROGRAM, |kb| {
@@ -272,10 +279,10 @@ fn an_unpinned_host_entry_is_refused_and_leaves_no_frame() {
         op_reqs: None,
     };
     match interp.call("anthill.prelude.Error.reify", &[thunk]) {
-        Err(e @ anthill_core::eval::EvalError::UnpinnedRequirement { .. }) => {
-            assert!(e.to_string().contains("pins no provider"), "{e}")
+        Err(e @ anthill_core::eval::EvalError::ReifyPayloadUnread { .. }) => {
+            assert!(e.to_string().contains("its caller had none to hand"), "{e}")
         }
-        other => panic!("the unpinned payload is refused at the boundary's read, got {other:?}"),
+        other => panic!("the unpinned payload is refused at the boundary, got {other:?}"),
     }
     assert_eq!(interp.activation_depth(), 0, "the refused entry leaves no frame");
     let v = interp
@@ -284,9 +291,9 @@ fn an_unpinned_host_entry_is_refused_and_leaves_no_frame() {
     assert_eq!(crate::common::scalar_int(interp.kb(), &v), Some(42));
 }
 
-/// The shapes whose `ErrorTag` slot the call builds no evidence for, each its own load so
-/// one refusal cannot stand for another.
-const UNFILLED_ERROR_TAG_PROGRAMS: [(&str, &str); 6] = [
+/// The shapes whose pattern slot the call builds no evidence for, each its own load so one
+/// refusal cannot stand for another.
+const UNFILLED_PATTERN_PROGRAMS: [(&str, &str); 7] = [
     (
         "a rule variable's type beside a second label",
         r#"
@@ -340,6 +347,20 @@ end
 "#,
     ),
     (
+        "a spec as the payload",
+        r#"
+namespace test.rrbo
+  import anthill.prelude.{Error, Int64, Result}
+  sort Shape
+    sort T = ?
+    operation area(s: T) -> Int64
+  end
+  operation declaresShape() -> Int64 effects {Error[Shape]} = 1
+  rule specPayload(?r) :- Error.reify(lambda () -> declaresShape(), ?r)
+end
+"#,
+    ),
+    (
         "a thunk that raises no `Error` label",
         r#"
 namespace test.rrbo
@@ -364,36 +385,57 @@ end
     ),
 ];
 
-/// A rule-body call whose `ErrorTag` slot it builds no evidence for is refused where it is
-/// written. The boundary reads what it catches out of that evidence, and with none it refuses
-/// to run, so the call can never answer: with both of (d)'s halves backed out the programs
-/// load and `either(7, 7, ?r)` is undecided at every query. Before the boundary refused
-/// such evidence it caught every payload, and `either(7, 7, ?r)` answered `err(other(n: 7))`,
+/// A rule-body call whose pattern slot it builds no evidence for is refused where it is
+/// written. The boundary catches by that evidence, and with none it refuses to run, so the
+/// call can never answer: with (d)'s load refusal backed out the programs load and
+/// `either(7, 7, ?r)` is undecided at every query. Before the boundary refused to run with
+/// no evidence it caught every payload, and `either(7, 7, ?r)` answered `err(other(n: 7))`,
 /// the `Other` the thunk's row leaves to the caller.
+///
+/// THE ACCOUNT IS THE RULE-BODY GATE'S, the one any spec with a member gets, where the call
+/// leaves an element open (WI-20261016-YM8HD). "Pin the element at this call" is not a
+/// bracket — a rule-body goal reads none — but a payload whose type the clause knows, which
+/// `the_advised_repairs_answer` drives. Where the call pins every element it is the account
+/// an operation body gives: a tuple, the structural former's; a collection whose element is
+/// open, or a spec, which has no `TypeValue`, that no row of `TypePattern` answers. FAILS
+/// with the rule-body gate's two pinned arms backed out: those three shapes are told "this
+/// call pins no element".
 #[test]
-fn an_unfilled_error_tag_is_refused_where_it_is_written() {
-    for (shape, src) in UNFILLED_ERROR_TAG_PROGRAMS {
+fn an_unfilled_pattern_slot_is_refused_where_it_is_written() {
+    for (shape, src) in UNFILLED_PATTERN_PROGRAMS {
         let errs = crate::common::load_errors_of(src);
         assert!(!errs.is_empty(), "{shape}: refused, got a clean load");
-        crate::common::assert_refused_naming(
-            &errs,
+        let wants: &[&str] = if shape == "a tuple" {
             &[
-                "anthill.prelude.ErrorTag[T = ",
-                "its carrier is the payload sort an `Error.reify` boundary catches",
-                "is no condition its clause can be handed",
-            ],
-            shape,
-        );
+                "anthill.reflect.TypePattern[T = (_1: Int64, _2: Int64)]",
+                "a STRUCTURAL FORMER",
+                "Name a sort with no tuple or arrow among its type arguments",
+            ]
+        } else if shape == "a collection whose element is open" || shape == "a spec as the payload" {
+            &[
+                "anthill.reflect.TypePattern[T = ",
+                "no row of `anthill.reflect.TypePattern` answers here, and none may be written",
+                "for an `Error.reify`, raise a value of one in the thunk",
+            ]
+        } else {
+            &[
+                "anthill.reflect.TypePattern[T = ",
+                "nothing in the clause determines which `anthill.reflect.TypePattern` instance",
+                "Pin the element at this call",
+            ]
+        };
+        crate::common::assert_refused_naming(&errs, wants, shape);
     }
 }
 
-/// A GENERIC operation that reifies at its own `P` (`requires ErrorTag[T = P]`), cited from a
-/// rule whose arguments do not pin `P`, has its slot kept as an absence the boundary's read
-/// refuses: a fault, where the boundary caught every payload. With a value of `P` among the
-/// arguments the bridge pins it and the boundary narrows.
+/// A GENERIC operation that reifies at its own `P` (`requires TypePattern[T = P]`), cited from
+/// a rule whose arguments do not pin `P`, reaches the boundary with no evidence, and the
+/// boundary refuses to run: a fault, where the boundary caught every payload. With a value of
+/// `P` among the arguments the bridge pins it and the boundary narrows.
 const GENERIC_CATCHER: &str = r#"
 namespace test.rrbg
-  import anthill.prelude.{Int64, String, Error, Result, ErrorTag}
+  import anthill.prelude.{Int64, String, Error, Result}
+  import anthill.reflect.{TypePattern}
   sort Boom
     entity boom(why: String)
   end
@@ -403,10 +445,10 @@ namespace test.rrbg
   operation raiseEither[P](p: P, n: Int64) -> Int64 effects {Error[P], Error[Other]} =
     if n < 0 then Error.raise(p) else Error.raise(other(n))
   operation catchAll[P, R](body: () -> Int64 @ {Error[P], R}) -> Result[E = P, T = Int64]
-      effects {R} requires ErrorTag[T = P] =
+      effects {R} requires TypePattern[T = P] =
     Error.reify(body)
   operation catchWith[P, R](p: P, body: () -> Int64 @ {Error[P], R}) -> Result[E = P, T = Int64]
-      effects {R} requires ErrorTag[T = P] =
+      effects {R} requires TypePattern[T = P] =
     Error.reify(body)
   rule eitherA(?p, ?n, ?r) :- catchAll(lambda () -> raiseEither(?p, ?n), ?r)
   rule useA(?r) :- eitherA(boom("b"), 7, ?r)
@@ -421,8 +463,8 @@ fn a_generic_catcher_cited_from_a_rule_faults() {
     let mut kb = crate::common::load_kb_with(GENERIC_CATCHER);
     let errors = faults(&mut kb, "test.rrbg.useA");
     assert!(
-        errors.iter().any(|e| e.contains("pins no provider")),
-        "the unpinned slot is refused at its read: {errors:?}"
+        errors.iter().any(|e| e.contains("its caller had none to hand")),
+        "the unpinned slot reaches the boundary as no evidence, refused there: {errors:?}"
     );
     let errors = faults(&mut kb, "test.rrbg.useW");
     assert!(
@@ -434,10 +476,10 @@ fn a_generic_catcher_cited_from_a_rule_faults() {
     assert_eq!(crate::common::constructor_qn(&kb, &payload), "test.rrbg.Boom.boom");
 }
 
-/// The repairs the refusal names, each driven: the payload raised as a value of a sort the
-/// call names — a constructor's, or a rule variable's whose type is written — the thunk bound
-/// by a call whose result says what it raises, and an operation named bare written as a lambda
-/// that calls it.
+/// The repairs the refusal names, each driven. "Pin the element at this call": the payload
+/// raised as a value of a sort the call names — a constructor's, or a rule variable's whose
+/// type is written — the thunk bound by a call whose result says what it raises, and an
+/// operation named bare written as a lambda that calls it.
 ///
 /// THE THUNK A GOAL BINDS is typed by that goal's result column since WI-20261013-WF14Z:
 /// `mkThunk(?f)` makes `?f` a `() -> Int64 @ {Error[Boom]}`, so the boundary reads `Boom`.

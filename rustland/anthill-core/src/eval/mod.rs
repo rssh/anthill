@@ -321,98 +321,113 @@ pub(crate) enum FrameReqFailure {
     NoDictionarySort,
 }
 
-/// Proposal 027.4 — the `Error` monad layer's three symbols: the `reify`
-/// operation the dispatch arms intercept, and the two `Result` constructors its
-/// boundary delivers.
+/// Proposal 027.4 — the `Error` monad layer: the `reify` operation the dispatch arms
+/// intercept, the two `Result` constructors its boundary delivers, and what the boundary
+/// catches by (proposal 071 §1.4) — the slot its `requires TypePattern[T = T1]` fills, the
+/// spec operation `admits`, and the one row's provider and member.
 ///
 /// Resolved once at construction, like [`ReflectSymbols`], for both of the
 /// reasons that pattern exists: an operation's meaning is its `Symbol` and never
 /// its name (WI-897), and the dispatch test sits on the per-call path, where it
 /// must cost one comparison rather than a qualified-name lookup.
 ///
-/// ALL THREE OR NONE — the whole struct rides an `Option`, and the fields inside
-/// it do not. A half-resolved layer would be a state where `reify` dispatches,
-/// the thunk RUNS (console output, cell writes, KB layers), and only at delivery
-/// does a missing `Result` constructor surface — discarding the `Raised` payload
-/// on the way out. That is the "prefer a loud error over a silent skip" rule read
-/// backwards: the check would fire long after the point of no return. Resolved
-/// together, the boundary is either armed or not present, and the dispatch test
-/// is the whole guard.
+/// ALL OR NONE, AND NONE ONLY WHERE THERE IS NO `reify` — the whole struct rides an
+/// `Option`, and the fields inside it do not. A half-resolved layer would be a state where
+/// `reify` dispatches, the thunk RUNS (console output, cell writes, KB layers), and only at
+/// delivery does a missing `Result` constructor surface — discarding the `Raised` payload
+/// on the way out. A KB without the prelude declares no `reify`, and the layer is `None`.
+/// One that declares it and disagrees with this layer about the rest — a `Result`
+/// constructor, `TypePattern`'s operation or row, the clause `reify` requires — is a
+/// standard library this evaluator was not written for, and constructing an interpreter
+/// over it PANICS, naming what is missing: as `None`, `Error.reify` would be a body-less
+/// operation, which the SLD bridge reads as a goal not decided yet, in silence (found by
+/// /code-review).
 pub(crate) struct ErrorLayer {
     pub reify: Symbol,
     pub result_ok: Symbol,
     pub result_err: Symbol,
-    /// WI-20260921-28TAT — the FRAME SLOT NAME `Error.reify`'s own
-    /// `requires ErrorTag[T = T1]` fills, i.e. `__req_errortag`. The boundary reads the
-    /// payload sort out of THAT dictionary now, off the requirement channel, in place of
-    /// the frame type-argument channel this ticket removes.
+    /// The FRAME SLOT NAME `Error.reify`'s own `requires TypePattern[T = T1]` fills
+    /// (proposal 071 §1.4; WI-20260921-28TAT put the boundary's evidence on the
+    /// requirement channel). The boundary takes the pattern it catches by out of THAT
+    /// dictionary.
     ///
-    /// RESOLVED HERE rather than spelled at the boundary, and the reason is sharper than
-    /// it was for the `T1` parameter symbol this replaces: the slot name is DERIVED from
-    /// the required spec's name
-    /// (`op_dict_entries(reify).names()`), so it changes if the clause is rewritten or
-    /// removed. Read ad hoc at the boundary, a clause deleted from
+    /// RESOLVED HERE rather than spelled at the boundary: the slot name is DERIVED from
+    /// the required spec's name (`op_dict_entries(reify).names()`), so it changes if the
+    /// clause is rewritten or removed. Read ad hoc at the boundary, a clause deleted from
     /// `stdlib/anthill/prelude/effects.anthill` would make every boundary in the program
     /// refuse to run, naming its caller for evidence the caller was never asked for.
-    /// Resolved at construction, the whole layer is `None` and `Error.reify` fails loudly
-    /// as an unimplemented body-less operation.
     pub reify_payload_slot: Symbol,
-    /// WI-20260921-28TAT — WHICH SUB-DICTIONARY of that slot carries the payload sort.
-    ///
-    /// `Error.reify requires ErrorTag[T = T1]`, and `ErrorTag` is supplied by
-    /// `Error provides ErrorTag[T = T] :- TypeValue[T = T]` — a provision universal in
-    /// the payload. So the ErrorTag dictionary's OWN `impl` is `Error`, the provider,
-    /// for every payload alike: the tag carries no payload information of its own and
-    /// ALL of it is in the `TypeValue` evidence it is conditioned on. Reading
-    /// `impl_sort()` directly narrowed every boundary in the program to `Error` —
-    /// measured, and it made a `Boom` raise escape a boundary typed at `Boom`.
-    ///
-    /// RESOLVED FROM THE LAYOUT, not written as `0`. The sub index is the position of
-    /// the `TypeValue` entry in `provider_dict_entries(Error, ErrorTag)` — the same
-    /// chain the dictionary was BUILT from — so a sort-level `requires` added to `Error`
-    /// later, or a second condition on the provision, moves both together. Written as a
-    /// literal it would silently read the wrong sub.
-    pub reify_payload_sub: usize,
+    /// `anthill.reflect.TypePattern.admits`, the API of what the boundary requires: a raise
+    /// is caught where the boundary's dictionary answers it yes for the raised type
+    /// ([`Interpreter::boundary_admits`]).
+    pub admits: Symbol,
+    /// `anthill.reflect.TypeValuePattern`, the provider of `TypePattern`'s ONE row. No other
+    /// row of the spec may be written (071 §1.2), so a dictionary is a `TypePattern`
+    /// instance exactly when this is its `impl` (`Interpreter::enter_reify_boundary`). A
+    /// transitive "provides `TypePattern`" is not that: a sort that writes `provides
+    /// TypeValuePattern[T = P]` provides `TypePattern` through it, and its own `admits`
+    /// would have decided every catch (found by /code-review).
+    pub pattern_provider: Symbol,
+    /// The row's member that answers `admits` — the dispatch a body's
+    /// `TypePattern.admits[T = T1](t)` makes through the row's dictionary
+    /// (`resolve_op_target`), made once here: every boundary's dictionary has this `impl`.
+    pub admits_member: Symbol,
 }
 
 impl ErrorLayer {
     /// `None` for a KB without the prelude — such a program declares no `reify`
-    /// to call, so the boundary is simply absent rather than broken.
+    /// to call, so the boundary is simply absent rather than broken. See the type's doc for
+    /// why a prelude that declares `reify` and disagrees with the rest panics.
     fn resolve(kb: &mut KnowledgeBase) -> Option<Self> {
-        // Every NAME resolved first, so the `&KnowledgeBase` closure is done before the
-        // two chain reads below take `&mut` (`op_dict_entries` / `provider_dict_entries`
-        // memoize, so they need it).
-        let (reify, result_ok, result_err, error_sort, tag, tv) = {
-            let r = |qn: &str| kb.try_resolve_symbol(qn);
-            (
-                kb.reify_operation()?,
-                r("anthill.prelude.Result.ok")?,
-                r("anthill.prelude.Result.err")?,
-                r("anthill.prelude.Error")?,
-                r("anthill.prelude.ErrorTag")?,
-                r("anthill.reflect.TypeValue")?,
+        let reify = kb.reify_operation()?;
+        let disagree = |what: &str| -> ! {
+            panic!(
+                "the standard library declares `anthill.prelude.Error.reify`, and this \
+                 evaluator's error layer finds {what}: the library and the evaluator disagree \
+                 (eval/mod.rs, `ErrorLayer`)"
             )
         };
+        let r = |kb: &KnowledgeBase, qn: &str| {
+            kb.try_resolve_symbol(qn)
+                .unwrap_or_else(|| disagree(&format!("no `{qn}`")))
+        };
+        let result_ok = r(kb, "anthill.prelude.Result.ok");
+        let result_err = r(kb, "anthill.prelude.Result.err");
+        let pattern = r(kb, "anthill.reflect.TypePattern");
+        let admits = r(kb, "anthill.reflect.TypePattern.admits");
+        let pattern_provider = r(kb, "anthill.reflect.TypeValuePattern");
+        // The op half's SOLE slot. `op_entries()` is `reify`'s own `requires` chain; exactly
+        // one clause is declared, and taking it positionally rather than by spelling the
+        // `__req_*` name keeps this in step with whatever `op_dict_entries` names it. Its
+        // spec is checked: a clause rewritten to another spec would hand `admits` a
+        // dictionary of something else.
+        let reify_payload_slot = {
+            let chain = crate::kb::typing::op_dict_entries(kb, reify);
+            let sort_len = chain.sort_len();
+            let [entry] = chain.op_entries() else {
+                disagree("a `requires` other than the one clause `TypePattern[T = T1]`")
+            };
+            if kb.canonical_sort_sym(entry.required_sort) != kb.canonical_sort_sym(pattern) {
+                disagree("a `requires` of a spec other than `anthill.reflect.TypePattern`")
+            }
+            chain
+                .names(kb)
+                .get(sort_len)
+                .copied()
+                .unwrap_or_else(|| disagree("no slot name for its `requires`"))
+        };
+        let admits_member = crate::kb::typing::resolve_op_target(kb, pattern_provider, admits);
+        if admits_member == admits {
+            disagree("no member of `anthill.reflect.TypeValuePattern` that answers `admits`");
+        }
         Some(Self {
             reify,
             result_ok,
             result_err,
-            // The op half's SOLE slot. `op_entries()` is `reify`'s own `requires`
-            // chain; exactly one clause is declared, and taking it positionally rather
-            // than by spelling the `__req_*` name keeps this in step with whatever
-            // `op_dict_entries` names it.
-            reify_payload_slot: {
-                let chain = crate::kb::typing::op_dict_entries(kb, reify);
-                let sort_len = chain.sort_len();
-                chain.names(kb).get(sort_len).copied()?
-            },
-            reify_payload_sub: {
-                let tv_canon = kb.canonical_sort_sym(tv);
-                let chain = crate::kb::typing::provider_dict_entries(kb, error_sort, Some(tag));
-                chain
-                    .iter()
-                    .position(|e| kb.canonical_sort_sym(e.required_sort) == tv_canon)?
-            },
+            reify_payload_slot,
+            admits,
+            pattern_provider,
+            admits_member,
         })
     }
 }

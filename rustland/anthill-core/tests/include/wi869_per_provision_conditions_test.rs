@@ -789,8 +789,10 @@ fn a_conditional_provisions_goals_answer_a_reflect_query() {
     // was DEMAND-GATED and the stdlib asked for `TypeValue` nowhere, and it said in so
     // many words that it "will move to twelve of its own accord" once something required
     // it. WI-20260921-28TAT is that: `Error.reify requires ErrorTag[T = T1]`, whose
-    // provision `Error provides ErrorTag[T = T] :- TypeValue[T = T]` is a standing
-    // demand in the PRELUDE, so the gate is open for every program.
+    // provision `Error provides ErrorTag[T = T] :- TypeValue[T = T]` was a standing
+    // demand in the PRELUDE, so the gate is open for every program. (Since
+    // WI-20261016-YM8HD the demand is `TypeValuePattern provides TypePattern[T = T] :-
+    // TypeValue[T = T]`, proposal 071, and `ErrorTag` is retired.)
     //
     // Still asserted as a COUNT and not `!is_empty()`, for the original reason: a rule
     // that dropped the `provided` join would still answer, and would answer the same

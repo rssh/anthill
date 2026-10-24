@@ -286,13 +286,14 @@ pub enum EvalError {
     ScopedKbOutlivesCall {
         raised: Option<String>,
     },
-    /// Proposal 027.4 — `Error.reify` was entered without evidence that names the payload
-    /// sort it catches: no `ErrorTag` slot in the call's requirement channel (a host entry
-    /// that hands none), or a dictionary for it that carries no `TypeValue` (a written
-    /// `provides ErrorTag[…]`, which `Error`'s own provision is not). Read as "cannot
-    /// narrow", it would catch every payload, including a label the thunk's row leaves to
-    /// the caller. `detail` is pre-rendered at the boundary. A PROGRAM limit, not an
-    /// evaluator invariant, so not [`Self::Internal`].
+    /// Proposal 027.4 — `Error.reify` was entered without the pattern it catches by: no
+    /// `TypePattern` slot in the call's requirement channel (proposal 071 §1.4) — a host
+    /// entry that hands none, or a call entered from argument values that do not pin the
+    /// payload — or a dictionary there that is no `TypePattern` instance, such as the
+    /// stand-in a host entry seeds for a sort-level `requires`. Read as "cannot narrow", it
+    /// would catch every payload, including a label the thunk's row leaves to the caller.
+    /// `detail` is pre-rendered at the boundary. A PROGRAM limit, not an evaluator
+    /// invariant, so not [`Self::Internal`].
     ReifyPayloadUnread {
         detail: String,
     },

@@ -3065,9 +3065,11 @@ pub(crate) fn any_requirement_names_one_of(kb: &KnowledgeBase, specs: &[Symbol])
         }
     }
     // WI-20260921-28TAT — THE THIRD SPELLING: a PROVISION CONDITION,
-    // `provides ErrorTag[T = T] :- TypeValue[T = T]`. A condition is a requirement in
-    // every sense that matters here — it is a goal the resolver must discharge to select
-    // the instance — but it rides a `ProvidesConditionInfo` fact and so is named by
+    // `TypeValuePattern provides TypePattern[T = T] :- TypeValue[T = T]` (proposal 071; it
+    // was `Error provides ErrorTag[T = T] :- TypeValue[T = T]` until WI-20261016-YM8HD
+    // retired `ErrorTag`, and the measurement below is of that row). A condition is a
+    // requirement in every sense that matters here — it is a goal the resolver must
+    // discharge to select the instance — but it rides a `ProvidesConditionInfo` fact and so is named by
     // NEITHER relation above: not `SortRequiresInfo` (it is not the sort's own clause)
     // and not `OperationInfo.requires` (no operation declares it).
     //
@@ -3105,8 +3107,8 @@ pub(crate) fn any_requirement_names_one_of(kb: &KnowledgeBase, specs: &[Symbol])
 /// provision condition arrives in `SortView` shape, whose head functor is
 /// `anthill.reflect.SortView` and whose spec sits at positional 0. MEASURED: read with
 /// the bare-application reader, all 21 stdlib condition facts answered
-/// `anthill.reflect.SortView` — including `Error provides ErrorTag :- TypeValue` — so
-/// the leg was present, ran, and matched nothing.
+/// `anthill.reflect.SortView` — including the then `Error provides ErrorTag :- TypeValue`
+/// — so the leg was present, ran, and matched nothing.
 ///
 /// A CONJUNCTION (`:- Eq[T], TypeValue[T]`) lowers to one `conjunction(..)` value whose
 /// own functor would hide both specs, so it is flattened rather than shape-tested.

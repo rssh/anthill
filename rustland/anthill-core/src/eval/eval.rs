@@ -139,9 +139,9 @@ impl Interpreter {
     /// [`Self::enter_reify_boundary`] suspends it and enters the thunk above it, and the
     /// run's floor sits beneath it. So the boundary's `ok` / `err` is the run's value, and a
     /// payload it declines leaves the run as the raise it is. The requirement channel is the
-    /// call's — at a rule body, the `ErrorTag` evidence the typer stamped on the call, which
-    /// the bridge hands to `call_op_bridged_stamped` — and it is read, not installed: the
-    /// boundary frame carries none, as the thunk enters with its own.
+    /// call's — at a rule body, the `TypePattern` evidence the typer stamped on the call,
+    /// which the bridge hands to `call_op_bridged_stamped` — and it is read, not installed:
+    /// the boundary frame carries none, as the thunk enters with its own.
     pub(super) fn invoke_reify_boundary(
         &mut self,
         reify: Symbol,
@@ -4205,8 +4205,8 @@ impl Interpreter {
     /// WHAT IS DELIBERATELY DROPPED: the call's `requirements`. The channel is keyed by
     /// `Error.reify`'s own op-scoped symbols and the thunk is a separate operation with its
     /// own, so FORWARDING it to the thunk would install the wrong parameters. Its one slot,
-    /// `requires ErrorTag[T = T1]`, is READ here instead — it is what the boundary is typed
-    /// at.
+    /// `requires TypePattern[T = T1]`, is KEPT on the boundary instead — it is the pattern
+    /// the boundary catches by.
     fn enter_reify_boundary(
         &mut self,
         arg_values: &[Value],
@@ -4233,77 +4233,105 @@ impl Interpreter {
                 got: body.type_name().to_string(),
             });
         }
-        // `T1`, THE PAYLOAD SORT THIS BOUNDARY DISCHARGES — read out of the DICTIONARY
-        // that `Error.reify`'s own `requires ErrorTag[T = T1]` put in this call's
-        // requirement channel. No grounding walk and no per-frame type-argument channel:
-        // the evidence travels the way every other requirement does, which is what lets
-        // it cross a GENERIC caller — `catchIt[P]` declares `requires ErrorTag[T = P]`
-        // and its own call sites fill that slot, one hop per level.
+        // THE PATTERN THIS BOUNDARY CATCHES BY — the DICTIONARY `Error.reify`'s own
+        // `requires TypePattern[T = T1]` put in this call's requirement channel (proposal
+        // 071 §1.4). No grounding walk and no per-frame type-argument channel: the evidence
+        // travels the way every other requirement does, which is what lets it cross a
+        // GENERIC caller — `catchIt[P]` declares `requires TypePattern[T = P]` and its own
+        // call sites fill that slot, one hop per level. It is KEPT, not read: a raise asks
+        // its `admits` ([`Self::boundary_admits`]), the API of the spec the boundary
+        // requires, so no sub-dictionary is read by position and whichever row of
+        // `TypePattern` the dictionary is answers for itself.
         //
-        // TWO HOPS, NOT ONE, and the second is not decoration. `ErrorTag` is supplied by
-        // `Error provides ErrorTag[T = T] :- TypeValue[T = T]`, a provision UNIVERSAL in
-        // the payload — so the tag dictionary's own `impl` is `Error` for every payload
-        // alike and carries no payload information at all. The answer is in the
-        // `TypeValue` evidence it is conditioned on, at `reify_payload_sub`. Reading
-        // `impl_sort()` off the tag directly narrowed every boundary in the program to
-        // `Error`: measured, and it made a `Boom` raise escape a boundary typed at `Boom`.
+        // KEYED BY THE SLOT THE LAYER RESOLVED ONCE (`reify_payload_slot`), never by
+        // spelling `__req_typepattern` or `0` here. Read by name or position, a clause
+        // renamed in `effects.anthill` would read as a call that handed no evidence, and
+        // every boundary in the program would refuse to run naming its caller. Resolved at
+        // layer construction it is a missing symbol, the layer is `None`, and `Error.reify`
+        // fails loudly as a body-less operation instead.
         //
-        // KEYED BY SYMBOLS THE LAYER RESOLVED ONCE (`reify_payload_slot`,
-        // `reify_payload_sub`), never by spelling `__req_errortag` or `0` here. Read by
-        // name or position, a clause renamed in `effects.anthill` would read as a call
-        // that handed no evidence, and every boundary in the program would refuse to run
-        // naming its caller. Resolved at layer construction it is a missing symbol, the
-        // layer is `None`, and `Error.reify` fails loudly as a body-less operation instead.
-        //
-        // A TYPED CALL ARRIVES WITH ITS EVIDENCE: since WI-20260921-28TAT a `reify` whose
-        // `T1` has no `ErrorTag` evidence is a LOAD ERROR naming the clause to add — in an
-        // operation body, and in a rule body since WI-20260908-9WVT7
-        // (`build_op_scoped_dicts`, at a rule body's unfilled `ErrorTag` slot), where no
-        // clause can be added and the payload type must be fixed at the call; and a tuple
-        // or arrow payload, which has no instance, is refused at the call in both
-        // (`former_carrier`). (`Error.reify` is body-less and implemented by THIS function;
-        // since WI-20260921-3G1YT every parked refusal is reported, so there is no longer a
-        // body walk that could withhold this one for having no body to walk.) What is
-        // refused below is evidence no typer built.
-        let Some((slot, sub)) = self
+        // A TYPED CALL ARRIVES WITH ITS EVIDENCE: a `reify` whose `T1` has no `TypePattern`
+        // evidence is a LOAD ERROR naming the clause to add — in an operation body, and in a
+        // rule body (`build_op_scoped_dicts`, whose rule-body gate refuses a slot of a spec
+        // with an abstract member that the provider facts do not determine); and a tuple or
+        // arrow payload, which has no instance, is refused at the call in both
+        // (`former_carrier`). What is refused below is evidence no typer built.
+        let Some((slot, admits, pattern_provider, target)) = self
             .error_layer
             .as_ref()
-            .map(|l| (l.reify_payload_slot, l.reify_payload_sub))
+            .map(|l| (l.reify_payload_slot, l.admits, l.pattern_provider, l.admits_member))
         else {
             return Err(EvalError::Internal(
                 "enter_reify_boundary: entered with no error layer".into(),
             ));
         };
-        // NO EVIDENCE IS NO BOUNDARY. Each way the payload's sort can be missing is refused
-        // here, before anything is installed, and none is read as "cannot narrow", which
-        // would catch every payload, including a label the thunk's row leaves to the caller.
-        let Some((_, dict)) = requirements.iter().find(|(n, _)| *n == slot) else {
+        // NO EVIDENCE IS NO BOUNDARY. Each way the pattern can be missing is refused here,
+        // before anything is installed, and none is read as "cannot narrow", which would
+        // catch every payload, including a label the thunk's row leaves to the caller.
+        //
+        // TWO ROUTES ARRIVE WITH NONE, and the account names both: a host entry that hands
+        // none, and a call entered from its argument VALUES — the SLD bridge running a
+        // generic catcher a rule body cites — whose arguments do not pin the payload, so
+        // nothing derived the slot and the catcher forwarded none. (Until WI-20261016-YM8HD
+        // the bridge kept that slot as an absence marker, read by a gate keyed on the spec
+        // `ErrorTag`; the boundary's own refusal is what remains.)
+        let Some((_, pattern)) = requirements.iter().find(|(n, _)| *n == slot) else {
             return Err(EvalError::ReifyPayloadUnread {
-                detail: "`anthill.prelude.Error.reify` was entered with no `ErrorTag` evidence \
-                         of the payload sort it catches — a host entry that hands none; call \
-                         it from an operation, or with arguments that pin the payload"
+                detail: "`anthill.prelude.Error.reify` was entered with no `TypePattern` \
+                         evidence of the payload type it catches: its caller had none to \
+                         hand — a host entry, or a call whose arguments do not pin the \
+                         payload. Call it from an operation, or with arguments that pin the \
+                         payload"
                     .to_owned(),
             });
         };
-        // The ABSENCE MARKER — the bridge's, for an `ErrorTag` its arguments could not pin —
-        // is refused as every marker is.
-        if let Err(detail) = crate::kb::typing::marker_refusal(&self.kb, dict.impl_sort()) {
+        // THE EVIDENCE MUST BE A `TypePattern` INSTANCE, and that is asked HERE, before the
+        // thunk runs: asked only at the first raise, the refusal would come after the thunk
+        // had done its work.
+        //
+        // An ABSENCE MARKER first, with the account its mint filed, as every marker is
+        // refused. Then the `impl`: the one row's provider, `TypeValuePattern`, for no other
+        // row of `TypePattern` may be written (071 §1.2). MEASURED, two things that are not:
+        // a host entry into an operation of a sort that declares `requires TypePattern[T =
+        // P]` hands the stand-in it seeds for the sort's chain (`seed_entry_requirements`),
+        // and the raise died `OperationBodyMissing: anthill.reflect.TypePattern.admits` past
+        // a thunk that had run; and where that sort also writes `provides
+        // TypeValuePattern[T = P]`, so that it provides `TypePattern` through it, its own
+        // `admits` was dispatched to and decided every catch (found by /code-review). The
+        // member the row's dictionary dispatches `admits` to is the layer's, resolved once.
+        //
+        // WHAT IS NOT ASKED HERE is the evidence beneath the `impl` — the `TypeValue` of `T`
+        // the row's member reads. It is read when a raise asks, and a stand-in or a marker
+        // there fails at that raise.
+        let provider = pattern.impl_sort();
+        if let Err(detail) = crate::kb::typing::marker_refusal(&self.kb, provider) {
             return Err(EvalError::UnpinnedRequirement {
                 detail,
-                marker: dict.impl_sort(),
+                marker: provider,
             });
         }
-        let Some(payload) = dict.sub(sub).map(|tv| tv.impl_sort()) else {
+        if self.kb.canonical_sort_sym(provider) != self.kb.canonical_sort_sym(pattern_provider) {
             return Err(EvalError::ReifyPayloadUnread {
                 detail: format!(
-                    "the `ErrorTag` evidence `anthill.prelude.Error.reify` was handed, `{}`'s \
-                     provision, carries no `TypeValue` of the payload, so it names no sort to \
-                     catch: the boundary reads the payload's sort from `Error`'s own \
-                     provision (`provides ErrorTag[T = T] :- TypeValue[T = T]`) — raise a \
-                     value whose type is a sort",
-                    self.kb.qualified_name_of(dict.impl_sort())
+                    "`anthill.prelude.Error.reify` was handed `{}`'s dictionary as its \
+                     `TypePattern` evidence, which is no instance of `TypePattern`, so it is no \
+                     pattern to catch by — a stand-in a host entry seeds for a sort-level \
+                     `requires`. Call it from an operation, which hands the evidence its \
+                     caller built",
+                    self.kb.qualified_name_of(provider),
                 ),
             });
+        }
+        if self.builtins.contains_key(&target) || self.cached_operation_body(target).is_none() {
+            return Err(EvalError::Internal(format!(
+                "enter_reify_boundary: `{}` answers `TypePattern.admits` with no anthill body; \
+                 the boundary enters it as an operation",
+                self.kb.qualified_name_of(target)
+            )));
+        }
+        let pattern = super::frame::BoundaryPattern {
+            admits: target,
+            requirements: self.expand_dispatching_dict(admits, target, pattern)?,
         };
 
         // The profiler counts this the way `enter_operation` counts an ordinary
@@ -4324,7 +4352,7 @@ impl Interpreter {
         // frame by PUSHING instead of replacing, that surfaces as a loud
         // `Internal` rather than as a boundary answering its own placeholder.
         self.suspend_and_push(
-            AwaitState::ReifyBoundary { payload },
+            AwaitState::ReifyBoundary { pattern },
             crate::kb::node_occurrence::bottom_node(),
         )?;
         self.apply_callable_value(body, Vec::new(), SmallVec::new())
@@ -4358,10 +4386,11 @@ impl Interpreter {
     /// AND IT CATCHES ONLY WHAT THE BOUNDARY IS TYPED AT. A body declaring
     /// `{Error[Boom], Error[Other]}` reified at `T1 = Boom` has the second label left in
     /// the CALLER's row by the typer, and this is where the runtime says the same: the
-    /// scan takes the innermost boundary that ACCEPTS the payload, and a raise no
-    /// boundary accepts propagates out of the run carrying its own payload. Every
-    /// boundary judges: one that could not be narrowed is refused where it would be
-    /// installed ([`super::frame::AwaitState::ReifyBoundary`]'s `payload`).
+    /// scan takes the innermost boundary whose pattern ADMITS the payload
+    /// ([`Self::boundary_admits`]), and a raise no boundary admits propagates out of the
+    /// run carrying its own payload. Every boundary judges: one with no pattern is refused
+    /// where it would be installed ([`super::frame::AwaitState::ReifyBoundary`]'s
+    /// `pattern`).
     ///
     /// On success the boundary frame is left on TOP and no longer awaiting, so
     /// the caller delivers the returned `err(payload)` FROM it: `deliver` pops
@@ -4378,19 +4407,54 @@ impl Interpreter {
         let Some(err_ctor) = self.error_layer.as_ref().map(|l| l.result_err) else {
             return Err(e);
         };
-        // The innermost boundary that ACCEPTS this payload — not simply the innermost.
+        // The innermost boundary that ADMITS this payload — not simply the innermost.
         // A `reify` typed at `Boom` does not discharge `Error[Other]`; the row says so
         // (the label stays in the caller's, and the typer refuses a caller that omits
         // it), and this is where the runtime says the same. A raise the boundary
         // declines travels past it, exactly as it would past a frame that is not a
         // boundary at all.
+        //
+        // The candidates' indices are collected before any is asked: asking runs anthill
+        // code (`admits`) on this stack — where the raise's frames were, those discarded
+        // first — and the scan must not hold the stack while it does.
+        //
+        // THE TYPE ASKED ABOUT IS THE RAISED VALUE'S HEAD SORT, built once per raise, as a type
+        // with its arguments left out, until 071's stage (d) has a raise carry its type. A
+        // value records the sort its constructor belongs to and none of the type arguments it
+        // was built at, and an argument left out admits, so a boundary at `Box[V = Int64]`
+        // accepts a raised `Box[V = String]` — as the head-sort comparison this replaced did
+        // (WI-20260911-3MV2C, which stage (d) delivers).
+        //
+        // A RAISED VALUE WHOSE SORT CANNOT BE READ IS ADMITTED BY NO BOUNDARY, and the
+        // alternative was tried and is WRONG: a boundary has been told what it discharges,
+        // and the row told the OUTER boundary about everything else. MEASURED on a fixture
+        // that loaded clean at the time — `innerAtBoom` at `T1 = Boom` declaring a tuple
+        // label as escaping, wrapped in a `reify` typed at that tuple — catching gave `ok` at
+        // the outer boundary and `err(Tuple{…})` at the inner: the inner stole a label the
+        // row had assigned to the outer. No boundary is typed at a tuple now (a structural
+        // former has no `TypePattern` row, and the call is refused), so a raised tuple
+        // leaves the run as the raise it is, which is what its row says.
         let raised = payload.clone();
-        let accepted = self
-            .stack
-            .reify_boundaries(floor)
-            .into_iter()
-            .find(|(_, declared)| self.payload_matches(*declared, &raised));
-        let Some((idx, _)) = accepted else {
+        let Some(head) = runtime_carrier_sort(&self.kb, &raised) else {
+            return Err(e);
+        };
+        let raised_type = Value::term(self.kb.make_sort_ref(head));
+        let mut accepted = None;
+        for idx in self.stack.reify_boundaries(floor) {
+            let Some(pattern) = self.stack.boundary_pattern(idx).cloned() else {
+                return Err(EvalError::Internal(format!(
+                    "recover_at_reify_boundary: frame {idx} is no boundary"
+                )));
+            };
+            // The frames above this boundary are the raise's, dead whichever boundary takes
+            // it; they go before the question, which runs anthill code on this stack.
+            self.stack.discard_above_boundary(idx);
+            if self.boundary_admits(pattern, &raised_type)? {
+                accepted = Some(idx);
+                break;
+            }
+        }
+        let Some(idx) = accepted else {
             return Err(e);
         };
         let caught = self.build_result_arm(err_ctor, raised)?;
@@ -4398,53 +4462,40 @@ impl Interpreter {
         Ok(caught)
     }
 
-    /// Is `raised` a value of the sort a boundary was typed at?
+    /// Does the boundary whose pattern is `pattern` admit `raised_type`? Proposal 071 §1.4:
+    /// the boundary asks `TypePattern.admits` of the dictionary it requires — the member and
+    /// frame resolved from it where the boundary was installed
+    /// (`Interpreter::enter_reify_boundary`), the dispatch a body's
+    /// `TypePattern.admits[T = T1](t)` makes — so the answer is the API's, and no
+    /// sub-dictionary is read by position. `TypePattern`'s one row is `TypeValuePattern`'s,
+    /// whose `admits` asks `anthill.reflect.type_admits` with `T` read as a value.
     ///
-    /// NOMINAL, on the payload sort, through [`sort_sym_compatible`] — canonical
-    /// identity, the entity→parent climb, and `requires`-refinement — rather than a
-    /// reimplementation of those three legs here.
+    /// A WIDER BOUNDARY ADMITS A NARROWER RAISE: `type_admits` climbs what a sort refines
+    /// through `requires`, which is the direction `labels_match_by_subsumption` applies to
+    /// the ROW, `Error`'s payload being declared `Covariant` (`anthill.reflect.typing`).
+    /// If the runtime declined such a raise it would escape an operation the typer has
+    /// already typed effect-free.
     ///
-    /// IT IS NOT FULL PARITY WITH THE TYPER, and claiming so would be false twice over.
-    /// The typer's sort-against-sort arm is `bare_sort_compatible`, which adds
-    /// `sort_provides_admissibly` / `witness_provides_admissibly` and an alias
-    /// re-dispatch; and label discharge does not run through `types_compatible` at all,
-    /// it runs through `labels_match_aligned`. Both extra legs were driven by the review
-    /// and both programs are REFUSED at load today, so nothing escapes through the gap —
-    /// but that is containment, not agreement.
-    ///
-    /// A WIDER BOUNDARY ADMITS A NARROWER RAISE, and the direction is not chosen here —
-    /// it is the one `labels_match_by_subsumption` applies to the ROW. THE ROW READS A
-    /// FACT AND THIS DOES NOT: `labels_match_by_subsumption` picks its direction from
-    /// `declared_variance(Error, T)`, satisfied by `fact Covariant(sort: Error, param: T)`
-    /// in `anthill.reflect.typing`. Edit that one line to `Contravariant` and the typer
-    /// stops discharging where this keeps catching, with no Rust change to notice it.
-    /// `Error`'s payload is declared `Covariant` (`anthill.reflect.typing`), so a caller
-    /// whose body raises `Error[Narrow]` conforms to a `reify` typed at `Error[Wide]`
-    /// when `sort Narrow requires Wide` — the typer DISCHARGES that label. If the
-    /// runtime then declined the raise it would escape an operation the typer has
-    /// already typed effect-free, so equality alone would be unsound, not merely strict.
-    ///
-    /// A BOUNDARY DECLINES A PAYLOAD WHOSE SORT IT CANNOT READ, and the alternative was
-    /// tried and is WRONG: a boundary has been told what it discharges, and the row told
-    /// the OUTER boundary about everything else. MEASURED on a fixture that loaded clean
-    /// at the time — `innerAtBoom` at `T1 = Boom` declaring a tuple label as escaping,
-    /// wrapped in a `reify` typed at that tuple — catching gave `ok` at the outer
-    /// boundary and `err(Tuple{…})` at the inner: the inner stole a label the row had
-    /// assigned to the outer, which is the exact defect this narrowing exists to close.
-    /// No boundary is typed at a tuple now (a structural former has no `TypeValue`, and
-    /// the call is refused), so a raised tuple is declined by every boundary and leaves
-    /// the run as the raise it is, which is what its row says.
-    ///
-    /// THE TYPE-ARGUMENT AXIS IS NOT DECIDED HERE, and that is a PRE-EXISTING hole this
-    /// narrowing neither opens nor closes: a value's runtime sort is its head, so a
-    /// boundary at `Box[V = Int64]` accepts a `Box[V = String]` — as every boundary did
-    /// before, when none of them judged at all. Deciding it needs the raised value's type
-    /// ARGUMENTS, which the runtime does not reconstruct. Recorded on WI-20260908-9WVT7.
-    fn payload_matches(&self, declared: Symbol, raised: &Value) -> bool {
-        let Some(got) = runtime_carrier_sort(&self.kb, raised) else {
-            return false;
-        };
-        crate::kb::typing::sort_sym_compatible(&self.kb, got, declared)
+    /// An `admits` that does not answer — a pair `type_admits` does not judge — is that
+    /// error, propagated: a raise that no boundary can be asked about is not one a boundary
+    /// declined.
+    fn boundary_admits(
+        &mut self,
+        pattern: super::frame::BoundaryPattern,
+        raised_type: &Value,
+    ) -> Result<bool, EvalError> {
+        let answer = self.invoke_op_with_requirements(
+            pattern.admits,
+            std::slice::from_ref(raised_type),
+            pattern.requirements,
+        )?;
+        crate::kb::term_view::TermView::literal_bool(&answer, &self.kb).ok_or_else(|| {
+            EvalError::Internal(format!(
+                "boundary_admits: `{}` answered `{}`, not a Bool",
+                self.kb.qualified_name_of(pattern.admits),
+                answer.type_name(),
+            ))
+        })
     }
 
     /// [`match_pattern`] with 068 §2's third answer: a pattern that would TEST one of the

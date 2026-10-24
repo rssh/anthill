@@ -91,15 +91,6 @@ namespace anthill.prelude
     provides Effect[T = Modify[?]]
   end
 
-  -- ErrorTag[T]: the EVIDENCE a reify boundary discharges its payload sort with —
-  -- WI-20260921-28TAT, proposal 065 §3's open note ("whether ErrorTag IS TypeValue or
-  -- refines it is 3MV2C's to decide"). It rides on the Error MARKER rather than being
-  -- derived for every sort, and `TypeValue` underneath is what makes the payload
-  -- READABLE.
-  sort ErrorTag
-    sort T = ?
-  end
-
   -- Error[T]: failure carrying a payload of type T, and the boundary that
   -- catches it. `raise` and `reify` are Filinski's pair at `M = Result`
   -- (proposal 047 §3, 027.4): `raise(x)` REFLECTS `err(x)` into direct-style
@@ -108,10 +99,9 @@ namespace anthill.prelude
   -- rather than a try/catch — the caught value is ordinary data.
   sort Error
     import anthill.prelude.{Nothing, Result}
-    import anthill.reflect.{TypeValue}
+    import anthill.reflect.{TypePattern}
     sort T = ?
     provides Effect[T = Error[?]]
-    provides ErrorTag[T = T] :- TypeValue[T = T]
     operation raise(error: T) -> Nothing effects Error[T] @[host_implemented]
 
     -- THE BOUNDARY. Runs `body`; a raise inside it aborts HERE and becomes
@@ -144,28 +134,30 @@ namespace anthill.prelude
     -- `Error` labels reified at one of them discharges only that one; the other
     -- stays in the CALLER's row, which the typer already requires it to declare.
     --
-    -- `requires ErrorTag[T = T1]` IS WHAT MAKES THAT DECIDABLE, and it replaced a
-    -- catch-WIDE fallback (WI-20260921-28TAT). The boundary reads the payload SORT
-    -- out of the dictionary this clause puts in the call's requirement channel;
-    -- before it, the sort came off a per-frame type-argument channel, and where that
-    -- channel could not ground `T1` the boundary silently caught every payload —
-    -- swallowing a label its own row had left to its caller. A call whose `T1`
-    -- has no `ErrorTag` evidence is refused at load. A call whose evidence is
-    -- taken from its arguments when it runs — a host's, or a generic
-    -- operation's that a rule body calls — refuses to run where they do not
-    -- fix `T1`.
+    -- `requires TypePattern[T = T1]` IS WHAT MAKES THAT DECIDABLE (proposal 071
+    -- §1.4). A raise reaching the boundary is caught when the `admits` of the
+    -- pattern this clause puts in the call's requirement channel answers yes for
+    -- the raised value's type; the boundary calls that API and reads no dictionary
+    -- by position. Until 071's stage (d) a raise carries no type, and the type
+    -- asked about is the raised value's head sort. Before WI-20260921-28TAT there
+    -- was no evidence at all, and where the type-argument channel could not ground
+    -- `T1` the boundary silently caught every payload — swallowing a label its own
+    -- row had left to its caller. A call whose `T1` has no `TypePattern` evidence
+    -- is refused at load. A call whose evidence is taken from its arguments when
+    -- it runs — a host's, or a generic operation's that a rule body calls —
+    -- refuses to run where they do not fix `T1`.
     --
     -- SO A GENERIC BOUNDARY DECLARES IT. An operation reifying at its OWN type
-    -- parameter writes `requires ErrorTag[T = P]`, and its callers supply the
-    -- evidence — the ordinary requirement route, one hop per generic level. A
-    -- tuple payload, or a sort with one among its type arguments, has no derived
-    -- `TypeValue` instance, so a call at one is refused, as a requirement at a
-    -- structural former with no provider is; and a boundary whose evidence names
-    -- no payload sort refuses to run, so none catches every payload. 027.4
-    -- carries the measurements.
+    -- parameter writes `requires TypePattern[T = P]`, and its callers supply the
+    -- evidence — the ordinary requirement route, one hop per generic level. The
+    -- one row of `TypePattern` answers wherever `T1` has a `TypeValue`, and a tuple
+    -- payload, or a sort with one among its type arguments, has none, so a call at
+    -- one is refused, as a requirement at a structural former with no provider is.
+    -- No row of `TypePattern` may be written, so no boundary catches by a forged
+    -- `admits`. 027.4 and 071 carry the measurements.
     operation reify[Rho, X, T1](body: () -> X @ {Error[T1], Rho}) -> Result[E = T1, T = X]
       effects {Rho}
-      requires ErrorTag[T = T1]
+      requires TypePattern[T = T1]
   end
 
   sort Suspension

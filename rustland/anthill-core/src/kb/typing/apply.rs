@@ -2302,8 +2302,8 @@ pub(super) fn check_apply_iter(
         // it recorded — what each of the callee's `[T_i]` resolves to at THIS call — is
         // now carried by the requirement channel wherever it is still needed: a value
         // read of a rigid dispatches through its `TypeValue` slot (WI-20260919-N31XX),
-        // and the reify boundary reads its payload sort out of the dictionary
-        // `Error.reify requires ErrorTag[T = T1]` supplies.
+        // and the reify boundary asks the `admits` of the dictionary
+        // `Error.reify requires TypePattern[T = T1]` supplies (proposal 071).
 
         // WI-844 (058 §5.3 / §4.7): a NAMED requirement slot IS a type parameter, so
         // the chosen provider rides in the TYPE — and an argument carrying that type

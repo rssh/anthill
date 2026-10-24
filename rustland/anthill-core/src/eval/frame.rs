@@ -21,9 +21,9 @@ use super::value::Value;
 // run time" by carrying the typer's per-call-site binding down every apply path and
 // grounding it against the calling frame. Proposal 065 §1 answers that question through
 // the REQUIREMENT channel instead: a value read of a rigid dispatches through its
-// `TypeValue` slot (WI-20260919-N31XX), and the reify boundary reads its payload sort
-// out of the dictionary `Error.reify requires ErrorTag[T = T1]` puts in the call's
-// requirement channel. With both migrated the channel had no readers — only its own
+// `TypeValue` slot (WI-20260919-N31XX), and the reify boundary takes the pattern it
+// catches by out of the dictionary `Error.reify requires TypePattern[T = T1]` puts in the
+// call's requirement channel. With both migrated the channel had no readers — only its own
 // maintenance and a test that asserted it got filled.
 
 /// State a frame is in while waiting for a child frame to produce a value.
@@ -195,10 +195,10 @@ pub enum AwaitState {
     /// `UnhandledEffect` and the rest pass through: a reify boundary handles the
     /// `Error` EFFECT, not interpreter faults.
     ReifyBoundary {
-        /// The payload SORT this boundary discharges — `Boom` for a `reify` typed at
-        /// `Error[Boom]`, read at the call site out of the dictionary `Error.reify requires
-        /// ErrorTag[T = T1]` puts in the requirement channel (WI-20260921-28TAT; it used to
-        /// come off the per-frame type-argument channel, which that ticket removed).
+        /// The PATTERN this boundary catches by — what answers `TypePattern.admits` for the
+        /// dictionary of `TypePattern[T = T1]` that `Error.reify`'s own `requires` puts in
+        /// the requirement channel (proposal 071 §1.4). A raise is caught where it answers
+        /// yes for the raised type (`Interpreter::boundary_admits`).
         ///
         /// CARRIED BECAUSE THE TYPE SYSTEM ALREADY DRAWS THIS LINE AND THE RUNTIME MUST
         /// TOO. `reify`'s row shares its tail: a body raising `{Error[Boom],
@@ -210,23 +210,37 @@ pub enum AwaitState {
         /// legally be there. Measured, before this: `caughtBoom(7)` answered
         /// `match_failed(scrutinee: other(n: 7))`.
         ///
-        /// A `Symbol` AND NOT THE TYPE TERM: the narrowing is a question about a
-        /// value's SORT, which is all `runtime_carrier_sort` can answer, so resolving
-        /// `T1` to that sort once at INSTALL keeps the catch path total.
+        /// THE API OF THE DICTIONARY, NOT A SORT READ OUT OF IT: the boundary calls what it
+        /// requires. Until WI-20261016-YM8HD it read the payload sort out of `ErrorTag`'s
+        /// evidence, a sub-dictionary by position, and any other row of that spec put
+        /// another sort there (071 §"The problem", finding F1).
         ///
         /// NOT AN `Option`: EVERY BOUNDARY IS NARROWED. A boundary that could not be
         /// narrowed used to catch WIDE, on the reading that the row guarantees what it may
         /// catch — MEASURED false for a thunk whose row holds a second `Error` label, whose
         /// raise the wide boundary took from the caller it was left to. The shapes that
         /// reached it are refused instead: a `T1` with no evidence at load, in an operation
-        /// body (a generic caller is told the `requires ErrorTag[T = P]` to add) and in a
+        /// body (a generic caller is told the `requires TypePattern[T = P]` to add) and in a
         /// rule body; a TUPLE or arrow payload at load, since a structural former has no
-        /// derived `TypeValue`; and evidence that names no sort when the boundary is entered
-        /// (`Interpreter::enter_reify_boundary`) — a host entry that hands none, a written
-        /// `provides ErrorTag[…]`, or the bridge's absence where the arguments do not pin
-        /// `T1` (user, 2026-10-16, WI-20260908-9WVT7).
-        payload: Symbol,
+        /// `TypePattern` row; and evidence that is no `TypePattern` instance, or none, when
+        /// the boundary is entered (`Interpreter::enter_reify_boundary`) — an absence
+        /// marker, a host entry's stand-in, a host entry or a call from argument values that
+        /// hands none (user, 2026-10-16, WI-20260908-9WVT7).
+        pattern: BoundaryPattern,
     },
+}
+
+/// What a reify boundary catches by: the member that answers `TypePattern.admits` for the
+/// pattern the boundary was handed, and the frame that member is entered with. RESOLVED
+/// ONCE, where the boundary is installed (`Interpreter::enter_reify_boundary`), by the
+/// dispatch a body's `TypePattern.admits[T = T1](t)` makes — so the check made there and the
+/// call a raise makes are one resolution, and a raise pays for neither.
+#[derive(Debug, Clone)]
+pub struct BoundaryPattern {
+    /// The member: `TypeValuePattern`'s `admits`, the one row's.
+    pub admits: Symbol,
+    /// Its frame's requirement channel, expanded from the pattern's dictionary.
+    pub requirements: SmallVec<[(Symbol, crate::eval::value::Dictionary); 2]>,
 }
 
 /// A single activation.
@@ -343,8 +357,9 @@ impl ActivationStack {
         self.depth_cap = cap;
     }
 
-    /// Proposal 027.4 — every [`AwaitState::ReifyBoundary`] at or above `floor`,
-    /// INNERMOST FIRST, paired with the payload type each was typed at.
+    /// Proposal 027.4 — the index of every [`AwaitState::ReifyBoundary`] at or above
+    /// `floor`, INNERMOST FIRST. What each catches by is read at its index
+    /// ([`Self::boundary_pattern`]), for the boundary a raise asks and no other.
     ///
     /// A LIST AND NOT THE TOPMOST, because a boundary may DECLINE: a raise is caught
     /// by the innermost boundary whose payload type it matches, and travels past the
@@ -359,17 +374,24 @@ impl ActivationStack {
     /// `Result` back as the inner call's value. (`deliver` popping past the base was the
     /// wider defect of the same shape; WI-20260913-2858G made the success path stop at
     /// the floor too.)
-    pub fn reify_boundaries(&self, floor: usize) -> SmallVec<[(usize, Symbol); 2]> {
+    pub fn reify_boundaries(&self, floor: usize) -> SmallVec<[usize; 2]> {
         self.frames
             .iter()
             .enumerate()
             .skip(floor)
             .rev()
-            .filter_map(|(i, f)| match &f.awaiting {
-                Some(AwaitState::ReifyBoundary { payload }) => Some((i, *payload)),
-                _ => None,
+            .filter_map(|(i, f)| {
+                matches!(f.awaiting, Some(AwaitState::ReifyBoundary { .. })).then_some(i)
             })
             .collect()
+    }
+
+    /// What the boundary at `idx` catches by, or `None` where `idx` is no boundary.
+    pub(crate) fn boundary_pattern(&self, idx: usize) -> Option<&BoundaryPattern> {
+        match &self.frames.get(idx)?.awaiting {
+            Some(AwaitState::ReifyBoundary { pattern }) => Some(pattern),
+            _ => None,
+        }
     }
 
     /// Drop back to `depth` frames, discarding everything above.
@@ -383,6 +405,21 @@ impl ActivationStack {
         if self.frames.len() > depth {
             self.frames.truncate(depth);
         }
+    }
+
+    /// Discard every frame above the boundary at `idx`, which STAYS AWAITING: the frames of a
+    /// raise looking for its boundary, dead whichever boundary takes it, since every
+    /// candidate is at or below `idx` ([`Self::reify_boundaries`] is innermost first). Done
+    /// before the boundary is asked, so asking — anthill code, `admits` — runs where the
+    /// raise's frames were: MEASURED, a raise at the depth cap's last frame was otherwise
+    /// lost to a `DepthExceeded` of the question. `idx` must come from
+    /// [`Self::reify_boundaries`], for the reason [`Self::unwind_to_boundary`] gives.
+    pub(crate) fn discard_above_boundary(&mut self, idx: usize) {
+        debug_assert!(matches!(
+            self.frames.get(idx).map(|f| &f.awaiting),
+            Some(Some(AwaitState::ReifyBoundary { .. }))
+        ));
+        self.frames.truncate(idx + 1);
     }
 
     /// Discard every frame above `idx` and leave the boundary there no longer
@@ -500,6 +537,14 @@ mod tests {
         }
     }
 
+    /// A boundary's pattern for a test of the stack alone, which only carries one.
+    fn test_pattern() -> BoundaryPattern {
+        BoundaryPattern {
+            admits: Symbol::from_raw(1),
+            requirements: SmallVec::new(),
+        }
+    }
+
     /// Proposal 027.4 — THE FLOOR, driven directly. A nested `run()` (a builtin's
     /// `interp.call`, the SLD bridge's `bridge_op_to_eval`) pushes its frames on top of
     /// its caller's; the scan must stop at the frames THIS run owns, or an inner run
@@ -515,7 +560,7 @@ mod tests {
         let boundary = || {
             let mut f = dummy_frame();
             f.awaiting = Some(AwaitState::ReifyBoundary {
-                payload: Symbol::from_raw(1),
+                pattern: test_pattern(),
             });
             f
         };
@@ -525,9 +570,7 @@ mod tests {
         s.push(boundary()).unwrap(); // 2 — this run's boundary
         s.push(dummy_frame()).unwrap(); // 3 — the thunk
 
-        let idx = |v: SmallVec<[(usize, Symbol); 2]>| -> Vec<usize> {
-            v.into_iter().map(|(i, _)| i).collect()
-        };
+        let idx = |v: SmallVec<[usize; 2]>| -> Vec<usize> { v.into_iter().collect() };
         // A run whose floor is 2 sees only its own.
         assert_eq!(idx(s.reify_boundaries(2)), vec![2]);
         // A run entered ABOVE both must not reach down for one.
@@ -551,13 +594,13 @@ mod tests {
         s.push(dummy_frame()).unwrap();
         let mut b = dummy_frame();
         b.awaiting = Some(AwaitState::ReifyBoundary {
-            payload: Symbol::from_raw(1),
+            pattern: test_pattern(),
         });
         s.push(b).unwrap();
         s.push(dummy_frame()).unwrap();
         s.push(dummy_frame()).unwrap();
 
-        let (idx, _) = s.reify_boundaries(0)[0];
+        let idx = s.reify_boundaries(0)[0];
         s.unwind_to_boundary(idx);
 
         assert_eq!(s.depth(), 2, "every frame above the boundary is discarded");
