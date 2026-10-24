@@ -3,9 +3,9 @@
 - id: WI-20261023-GBH5F-proposal-069-stage-2-operation
 - created: 2026-10-23T05:45:40Z
 
-- status: Claimed
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-10-24T04:33:13Z
+- status_at: 2026-10-24T07:55:00Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -46,4 +46,22 @@ CORRECTION to the 2026-10-24 decision note, measured: within a clause the defaul
 ### 2026-10-24T07:19:35Z — feedback — user
 
 /code-review round 3 (2026-10-24), what each finding became. FIXED: the construction's default moved from the construction to the unannotated `let` (`fill_inferred_defaults`) — installed at the construction, `some(tag(n: 1))` under an annotation, a constructor field, an Option-coerced slot and a generic slot a sibling fixes were all refused (measured); the construction hint removed with it. A row parameter used as the value of a sort's effect-row slot (`Stream[T = Int64, E = E]`, `Function[Int64, Int64, E]`) and a default naming the enclosing sort's `effects E` were refused as of the wrong kind (measured) — the classifier is now `Loader::op_type_param_is_row`, reading a sort's declared row slots off its own requires facts (`declared_effect_row_params`, no cache filled during the load). A spec call threaded to its override (`concrete_override_threaded`) refused a defaulted parameter as unconstrained (measured: `Sp.pick2(a, b)` over `pick2[W = Int64]`); it now installs the default of exactly the parameters it would refuse and threads again, the expected result still read first (an annotation at `B = String` wins). A described hole `[T = ? {< … >}?]` was refused as a stray variable; the converter reads the `variable` token (scaland's type parser has no described-variable form in any type position, a parity gap that predates this). Loud internal errors for a default with no parameter symbol or variable; the debug_assert removed; the unused `op` threading in the converter removed; the quote rendered only for a refusal. NO CHANGE, MEASURED: a default naming the enclosing sort's parameter already renders by name in the refusal and the reflect row and is read at the call's instance (row added); a literal default `[T = 3]` is what a call's bracket may write (`pick[T = 3]()` loads). PRE-EXISTING, MEASURED: a rule-body default is observable by no verdict (a rule body judges no call's row, refuses no open parameter, and weaves a callee's requirement from argument values — `?t <=> which(none())` aborts at the bridge with and without `[T = String]`; RYDNV); the bare zero-arg reading `let o = pick` settles no type parameter at all — no default, no unconstrained refusal, no requirement dictionary (`bare() -> Type = typeOf` over `typeOf[T]() requires TypeValue[T = T]` loads and aborts at eval, `typeOf()` is refused) — on the parent tree too; filed as WI-20261024-97QN7 (user, 2026-10-24). Cpp-gen default template arguments: emitted without, as decided.
+
+### 2026-10-24T07:54:57Z — feedback — user
+
+Delivered 2026-10-24 (b7f68f7e, merged with origin/main in 42e5cdd3). Proposal 069 stage 2: an operation's type parameter may declare a default (`operation which[T = String](o: Option[T])`), and a construction's free sort parameter takes its sort's default.
+
+AT A CALL: bracket, then inference (arguments, requirements, receiver, expected result), then the default, then WI-270's refusal. Installed once, in declaration order, where the call's inference is done (`install_type_param_defaults`, typing/apply.rs), so every later check reads it through σ; in a rule body too (user); in the projection-elimination fallback (`concrete_override_threaded`) for exactly the parameters it would refuse, the override threaded again. A default naming an earlier parameter is read at what the call has there; one naming the enclosing sort's parameter at the call's instance. A call written as an argument meets its slot's type first; an unannotated `let` is the boundary.
+
+AT THE DECLARATION (`Loader::record_operation_type_param_defaults`): filed in `KnowledgeBase::op_type_param_defaults` and reflected as `anthill.reflect.OperationTypeParamDefault(op, param, default)`; refused where it names itself or a later parameter, is of the wrong kind (an operation parameter's kind is its use — a row element, or the value of a sort's effect-row slot; `Loader::op_type_param_is_row`, `declared_effect_row_params`), holds a value, or holds a variable that is no parameter. A refusal quotes the default as the type it lowered to (WI-951's rows carried). Grammar: the default is `_common_type_expr`, so a row default is written `{}`; `[T = ?]` (a described hole too) is the bare `T`. WI-850's converter refusal removed; scaland parses and carries the default.
+
+A CONSTRUCTION'S PARAMETER: left free at the construction, filled at the unannotated `let` (`fill_inferred_defaults`, typing/build.rs) — installed at the construction, four consumers' evidence was refused (review round 3, measured).
+
+DECIDED WITH THE USER (2026-10-24): WI-951 rejected, superseded here; a rule-body call installs the default (1a); code generation emits the parameter without its default; `[T = ?]` is the bare `T`; the grammar admits `{}`; the spec text (kernel-language §5.2, §5.4; proposal 042 OQ3 honoured; proposal 069's stage-2 decisions); the bare zero-arg call filed as WI-20261024-97QN7.
+
+REVIEW: three /code-review rounds; round 3's dispositions are in the note above.
+
+ROWS: rustland/anthill-core/tests/include/wi_gbh5f_operation_type_param_defaults_test.rs (14), wi850_type_param_default_test (driven rows), parse_test, wi_v25n3's default row, the tree-sitter corpus (2 cases), scaland ParseTest/DiagnosticLocationTest; anthill-cli's wi852 rows retargeted to WI-808's duplicate field (they used WI-850's refusal as their converter diagnostic). BACK-OUTS, each alone, over gbh5f/wi850/v25n3/qv5w5, measured: the call installation (9 rows), the fallback installation (1), the declaration record (14), the order (2), kind (4), stray (1) and reflect (2) refusals/filing, the sort-slot and enclosing-row classifiers (1 each), the bare-hole filter and its token reading (1 each), the `let` fill (2) — every row the test header names, the header corrected where the kind and reflect back-outs reached two more.
+
+RUNS: before the merge — rustland/scripts/test.sh: anthill-core and every crate green except anthill-cli's two wi852 rows (retargeted, 8/8); scripts/families.sh holds; scaland sbt testFull 745 + 47 + 1 passed, 0 failed; tree-sitter 238/238. On the merged tree — rustland/scripts/test.sh 10674 passed, 0 failed; scripts/families.sh holds, no verdict moved; tree-sitter 238/238; scaland unchanged by the merge.
 
