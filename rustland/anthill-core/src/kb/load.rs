@@ -24007,6 +24007,8 @@ pub(crate) fn parameter_default_fills(
 trait TypeArgChild: Sized {
     /// The type this child writes, or `None` where it writes none a default could name.
     fn type_of(kb: &mut KnowledgeBase, child: &Self) -> Option<Value>;
+    /// The child on its own carrier, for a reader that reads any.
+    fn as_value(child: &Self) -> Value;
     /// The child holding the type `value`.
     fn holding(kb: &mut KnowledgeBase, value: &Value) -> Self;
 }
@@ -24014,6 +24016,9 @@ trait TypeArgChild: Sized {
 impl TypeArgChild for TermId {
     fn type_of(_kb: &mut KnowledgeBase, child: &Self) -> Option<Value> {
         Some(Value::term(*child))
+    }
+    fn as_value(child: &Self) -> Value {
+        Value::term(*child)
     }
     fn holding(kb: &mut KnowledgeBase, value: &Value) -> Self {
         match value {
@@ -24027,6 +24032,9 @@ impl TypeArgChild for TermId {
 impl TypeArgChild for Rc<NodeOccurrence> {
     fn type_of(kb: &mut KnowledgeBase, child: &Self) -> Option<Value> {
         node_occurrence::try_occurrence_to_term(kb, child).map(Value::term)
+    }
+    fn as_value(child: &Self) -> Value {
+        Value::Node(Rc::clone(child))
     }
     fn holding(kb: &mut KnowledgeBase, value: &Value) -> Self {
         let term = match value {
@@ -24059,6 +24067,13 @@ fn normalize_type_args<C: TypeArgChild>(
             named.extend(bound.into_iter().zip(pos.drain(..)));
         }
     }
+    // A substitution that leaves its parameter as it is is not written: a `?` at a slot that
+    // declares no default is the slot left out (§8.1), so `P[T = ?]` is the term `P` is. At a
+    // defaulted slot it is not — leaving that slot out takes the default — and stays.
+    named.retain(|(key, child)| {
+        !super::typing::value_is_anonymous_wildcard(kb, &C::as_value(child))
+            || super::typing::slot_declares_default(kb, sort, *key)
+    });
     if pos.is_empty() && declares_parameter_defaults(kb, sort) {
         // Every argument of a type application reads as a type; one that did not would be
         // taken for a slot left out, and given its default.

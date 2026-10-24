@@ -1192,7 +1192,7 @@ fn value_flex_var_id(kb: &KnowledgeBase, v: &Value) -> Option<VarId> {
 /// * `fresh_anon_type_var`, which interns `_` for the DEFINITION of `sort T = ?`. That
 ///   definition reaches a type slot as the sort's canonical `SortAlias` target, not as this
 ///   carrier — a written sort parameter arrives resolved, and its tie survives.
-pub(super) fn value_is_anonymous_wildcard(kb: &KnowledgeBase, v: &Value) -> bool {
+pub(crate) fn value_is_anonymous_wildcard(kb: &KnowledgeBase, v: &Value) -> bool {
     // BOTH SPELLINGS THROUGH ONE BOUNDARY (WI-1079). The `_` arm used to write the parser's
     // two carriers out by hand and so missed the third — a `Value::Node` occurrence carrying
     // `Expr::Var(Global)`, which heads as `ViewHead::Var` and is a flexible variable like any

@@ -157,6 +157,7 @@ pub use display::*;
 use dot_rule::*;
 pub(crate) use effects::*;
 use elaborate::*;
+pub(crate) use elaborate::value_is_anonymous_wildcard;
 pub use env::*;
 pub use error::*;
 pub(crate) use eta::*;

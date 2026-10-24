@@ -11,7 +11,10 @@
 //! - MARK: the alias's recorded type is its term, which cannot say a slot was left out
 //!   (`KnowledgeBase::alias_types` as it was);
 //! - OPEN: an alias's `?` at a defaulted slot is left unwritten in a value position, as at a
-//!   slot with no default.
+//!   slot with no default;
+//! - IDENTICAL: a clause's or a query's bracket keeps a `?` at a slot with no default;
+//! - ALIAS-IDENTICAL: an alias as a value drops every variable its definition writes or a
+//!   default is instantiated at, and keeps a `?` at a slot with no default for the fill.
 
 use crate::common::{assert_refused_naming, load_errors_of, load_kb_with, run_int64};
 
@@ -228,7 +231,7 @@ fn an_alias_written_as_a_value_takes_the_default() {
 /// bracket written out does: `TQ[L = String]` over `sort TQ = Two[R = ?]` holds any `R`, and
 /// an operation body's `idt(TQ[L = String])` is `Two[L = String]`, as `idt(Two[L = String, R
 /// = ?])` is. Binding that slot again is two values for one parameter, as in a type position.
-/// OPEN: the fact holds `R = Int64` only (and, measured on the parent with the CLI, the body's
+/// OPEN, and ALIAS-IDENTICAL: the fact holds `R = Int64` only (and, measured on the parent with the CLI, the body's
 /// value is `Two[L = String, R = Int64]` and the rebinding loads). Passes under ALIAS-FILL by
 /// design: nothing is filled into a written `?`.
 #[test]
@@ -361,4 +364,95 @@ fn a_clause_binding_written_through_the_alias_takes_the_default() {
         &["`kpbvx.req.Show[T = kpbvx.req.MyBox (kpbvx.req.Box[T = anthill.prelude.Int64])]` cannot be supplied"],
         "a provision at another element type",
     );
+}
+
+const IDENTICAL: &str = "\
+namespace kpbvx.identical
+  import anthill.prelude.{Int64, String, Type, List}
+  sort P
+    sort T = ?
+    entity p(x: T)
+  end
+  sort AP[T1, T2 = T1]
+    operation tag() -> Int64 = 1
+  end
+  sort Index[K, Values = List[T = K]]
+    entity ix(k: K, vs: Values)
+  end
+  sort Def[T = Int64]
+    entity dv(v: T)
+  end
+  sort PQ = P[T = ?]
+  sort APQ = AP[T1 = ?]
+  sort IQ = Index[K = ?]
+  sort LD = List[T = Def[T = ?]]
+  sort LP = List[T = P[T = ?]]
+  fact nestedAlias(IQ)
+  fact nestedAlias(LD)
+  fact nestedAlias(LP)
+  fact nestedWritten(Index[K = ?])
+  fact nestedWritten(List[T = Def[T = ?]])
+  fact nestedWritten(List[T = P[T = ?]])
+  fact holeP(P[T = ?])
+  fact bareP(P)
+  fact aliasP(PQ)
+  fact holeAP(AP[T1 = ?])
+  fact aliasAP(APQ)
+{extra}end
+";
+
+/// A substitution that leaves its parameter as it is is not written (user, 2026-10-24): a `?`
+/// at a slot that declares no default is the slot left out, so in a clause and a query `P[T =
+/// ?]` is the term `P` is, and an alias of it too; a `?` at a defaulted slot stays (the `TQ`
+/// row above). A default that names such a slot ties the two as the bracket written out does:
+/// `APQ` over `AP[T1 = ?]` is `AP[T1 = ?a, T2 = ?a]`, and in an operation body both are
+/// refused as a variable tying two places. One bracket down the rule is the same: `IQ` keeps
+/// the variable its `Values` default ties to `K`, `LD` the `?` at `Def`'s defaulted slot, and
+/// `LP` drops the one at `P`'s, each as the bracket written out does. IDENTICAL: `holeP` holds
+/// `P[T = ?_]`, and the first count is 0. ALIAS-IDENTICAL: `aliasAP` holds `AP` and answers 0
+/// (and, measured with the CLI on ce1e37d9, `idt(APQ)` loads). NESTED (a nested variable
+/// dropped wherever it is, as before): `IQ` holds `Values = List` and `LD` `List[T = Def]`, so
+/// their `nestedAlias` rows answer 0.
+#[test]
+fn an_identical_substitution_is_not_written() {
+    let mut kb = load_kb_with(&IDENTICAL.replace("{extra}", ""));
+    let p = "kpbvx.identical.P";
+    for (q, n) in [
+        (format!("kpbvx.identical.holeP({p})"), 1),
+        (format!("kpbvx.identical.bareP({p}[T = ?])"), 1),
+        (format!("kpbvx.identical.aliasP({p})"), 1),
+        (format!("kpbvx.identical.holeP({p}[T = anthill.prelude.Int64])"), 0),
+    ] {
+        assert_eq!(answers(&mut kb, &q), n, "{q}");
+    }
+    let ap = |a: &str, b: &str| {
+        format!("kpbvx.identical.AP[T1 = anthill.prelude.{a}, T2 = anthill.prelude.{b}]")
+    };
+    for fact in ["holeAP", "aliasAP"] {
+        let q = |a, b| format!("kpbvx.identical.{fact}({})", ap(a, b));
+        assert_eq!(answers(&mut kb, &q("Int64", "Int64")), 1, "{fact}");
+        assert_eq!(answers(&mut kb, &q("Int64", "String")), 0, "{fact}");
+    }
+    let (int, string) = ("anthill.prelude.Int64", "anthill.prelude.String");
+    let (list, ix) = ("anthill.prelude.List", "kpbvx.identical.Index");
+    let (def, p) = ("kpbvx.identical.Def", "kpbvx.identical.P");
+    for rel in ["nestedAlias", "nestedWritten"] {
+        for (at, n) in [
+            (format!("{ix}[K = {int}, Values = {list}[T = {int}]]"), 1),
+            (format!("{ix}[K = {int}, Values = {list}[T = {string}]]"), 0),
+            (format!("{list}[T = {def}[T = {string}]]"), 1),
+            (format!("{list}[T = {p}]"), 1),
+            (format!("{list}[T = {p}[T = {int}]]"), 0),
+        ] {
+            let q = format!("kpbvx.identical.{rel}({at})");
+            assert_eq!(answers(&mut kb, &q), n, "{q}");
+        }
+    }
+    for written in ["APQ", "AP[T1 = ?]"] {
+        let errs = load_errors_of(&IDENTICAL.replace(
+            "{extra}",
+            &format!("  operation idt(t: Type) -> Type = t\n  operation v() -> Type = idt({written})\n"),
+        ));
+        assert_refused_naming(&errs, &["it is one variable tying the places"], written);
+    }
 }

@@ -985,12 +985,10 @@ pub(crate) fn alias_receiver_type(kb: &mut KnowledgeBase, alias: Symbol) -> Opti
 #[derive(Clone, Debug)]
 pub(crate) enum ValueAlias {
     /// The sort the alias stands for and the bindings it fixes, in the canon a data slot is
-    /// written in: a type parameter as `Ref(param)`, each key a parameter's declared name. A
-    /// slot the definition leaves open with `?` is left unwritten, as a type value written
-    /// without it leaves it: `sort Some = Box[V = ?]` is the value `Box`. Except a slot
-    /// whose parameter declares a default, where leaving it out takes the default and `?`
-    /// does not: that `?` is kept, a variable of this use alone, as the bracket written out
-    /// holds it — `sort TQ = Two[R = ?]` is the value `Two[R = ?]` is.
+    /// written in: a type parameter as `Ref(param)`, each key a parameter's declared name,
+    /// each variable one of this use alone. An identical substitution is left unwritten at
+    /// every level, as in a bracket written out (§5.4): `sort Some = Box[V = ?]` is the value
+    /// `Box`, while `sort TQ = Two[R = ?]` under `sort Two[L, R = Int64]` keeps its `?`.
     ///
     /// `defaults` are the slots a definition that APPLIES its sort leaves out, neither
     /// written nor `?`, each holding its parameter's default as that bracket written as a
@@ -1043,34 +1041,53 @@ pub(crate) fn value_alias(
     if names_a_parameter && !within_declaring_scope {
         return None;
     }
-    let mut defaults = SmallVec::new();
-    if bare && crate::kb::load::alias_chain_applies(kb, sym) {
-        let written: Vec<(Symbol, Value)> =
-            bindings.iter().map(|&(key, value)| (key, Value::term(value))).collect();
-        for fill in crate::kb::load::parameter_default_fills(kb, base, &written) {
-            let ty = crate::kb::node_occurrence::value_to_term(kb, &fill.value)
-                .expect("a default instantiated over terms is a term");
-            // A default instantiated at a `?` the definition writes is left unwritten, as
-            // that `?` is.
-            if let Some(ty) = written_type_value(kb, ty) {
-                defaults.push((fill.key, ty));
+    // Each variable the definition writes is one of this use alone, as a written `?` is.
+    let mut fresh = crate::kb::subst::Substitution::new();
+    for (_, value) in &bindings {
+        for v in kb.collect_vars(&TermIdView(*value)) {
+            if !kb.is_canonical_type_param_var(v) && fresh.resolve_as_value(v).is_none() {
+                let anon = kb.intern("_");
+                let new = kb.fresh_var(anon);
+                let new = kb.alloc(Term::Var(Var::Global(new)));
+                fresh.bind_term(kb, v, new);
             }
         }
     }
-    let declaring = kb.type_arg_owner(base);
-    let fixed = bindings
+    let bindings: SmallVec<[(Symbol, TermId); 2]> = bindings
         .into_iter()
-        .filter_map(|(key, value)| {
-            let defaulted = declaring
-                .and_then(|sort| kb.type_param_sym_of(sort, kb.local_name_of(key)))
-                .is_some_and(|param| kb.sort_param_defaults.contains_key(&param));
-            if defaulted && matches!(kb.get_term(value), Term::Var(_)) {
-                let anon = kb.intern("_");
-                let fresh = kb.fresh_var(anon);
-                return Some((key, kb.alloc(Term::Var(Var::Global(fresh)))));
-            }
-            written_type_value(kb, value).map(|v| (key, v))
+        .map(|(key, value)| {
+            let (value, _) =
+                crate::kb::node_occurrence::subst_value_type(kb, &Value::term(value), &fresh);
+            (key, value.expect_term())
         })
+        .collect();
+    // What the definition writes, its identical substitutions left out, and what a bare
+    // reading adds: the defaults of the slots it leaves out, filled as a bracket's are.
+    let mut kept: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+    let named_once = occurrences_once(kb, bindings.iter().map(|(_, v)| *v));
+    for (key, value) in bindings {
+        if !identical_substitution(kb, base, key, value, &named_once) {
+            kept.push((key, value));
+        }
+    }
+    let mut fills: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+    if bare && crate::kb::load::alias_chain_applies(kb, sym) {
+        let written: Vec<(Symbol, Value)> =
+            kept.iter().map(|&(key, value)| (key, Value::term(value))).collect();
+        for fill in crate::kb::load::parameter_default_fills(kb, base, &written) {
+            let ty = crate::kb::node_occurrence::value_to_term(kb, &fill.value)
+                .expect("a default instantiated over terms is a term");
+            fills.push((fill.key, ty));
+        }
+    }
+    let named_once = occurrences_once(kb, kept.iter().chain(fills.iter()).map(|(_, v)| *v));
+    let fixed = kept
+        .into_iter()
+        .map(|(key, value)| (key, written_type_value(kb, value, &named_once)))
+        .collect();
+    let defaults = fills
+        .into_iter()
+        .map(|(key, value)| (key, written_type_value(kb, value, &named_once)))
         .collect();
     Some(ValueAlias::Sort {
         base,
@@ -1099,32 +1116,79 @@ fn names_a_type_parameter(kb: &KnowledgeBase, ty: TermId) -> bool {
     false
 }
 
-/// A binding's value as a type value writes it: `None` for a slot left open (`?`), and a
-/// sort application with its own open slots left unwritten, its other bindings in their
-/// order.
-fn written_type_value(kb: &mut KnowledgeBase, value: TermId) -> Option<TermId> {
+/// A binding's value as a type value writes it: a sort application with its identical
+/// substitutions left out ([`identical_substitution`]), at every level, its other bindings in
+/// their order; anything else as it is.
+fn written_type_value(kb: &mut KnowledgeBase, value: TermId, named_once: &[VarId]) -> TermId {
     match kb.get_term(value).clone() {
-        Term::Var(_) => None,
         Term::Fn {
             functor,
             pos_args,
             named_args,
         } if pos_args.is_empty() && kb.has_kind(functor, crate::intern::SymbolKind::Sort) => {
-            let kept: SmallVec<[(Symbol, TermId); 2]> = named_args
-                .iter()
-                .filter_map(|(k, v)| written_type_value(kb, *v).map(|v| (*k, v)))
-                .collect();
-            if kept.is_empty() {
-                return Some(kb.make_sort_ref(functor));
+            let mut kept: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+            for (key, v) in named_args.iter().copied() {
+                if !identical_substitution(kb, functor, key, v, named_once) {
+                    kept.push((key, written_type_value(kb, v, named_once)));
+                }
             }
-            Some(kb.alloc(Term::Fn {
+            if kept.is_empty() {
+                return kb.make_sort_ref(functor);
+            }
+            kb.alloc(Term::Fn {
                 functor,
                 pos_args: SmallVec::new(),
                 named_args: kept,
-            }))
+            })
         }
-        _ => Some(value),
+        _ => value,
     }
+}
+
+/// Does the binding `key = value` of an application of `head` leave its parameter as it is
+/// — a variable nothing else in the type names, at a slot that declares no default? Such a
+/// binding is the slot left out, and is not written (§5.4); at a defaulted slot leaving it
+/// out takes the default, so the variable is written there.
+fn identical_substitution(
+    kb: &KnowledgeBase,
+    head: Symbol,
+    key: Symbol,
+    value: TermId,
+    named_once: &[VarId],
+) -> bool {
+    matches!(kb.get_term(value), Term::Var(Var::Global(v)) if named_once.contains(v))
+        && !slot_declares_default(kb, head, key)
+}
+
+/// Does the parameter `key` of `head`'s sort declare a default (proposal 069 §1.4)?
+pub(crate) fn slot_declares_default(kb: &KnowledgeBase, head: Symbol, key: Symbol) -> bool {
+    kb.type_arg_owner(head)
+        .and_then(|sort| kb.type_param_sym_of(sort, short_name_of(kb.local_name_of(key))))
+        .is_some_and(|param| kb.sort_param_defaults.contains_key(&param))
+}
+
+/// The global variables that occur exactly once across `types`.
+fn occurrences_once(kb: &KnowledgeBase, types: impl Iterator<Item = TermId>) -> Vec<VarId> {
+    let mut seen: Vec<(VarId, usize)> = Vec::new();
+    let mut stack: Vec<TermId> = types.collect();
+    while let Some(t) = stack.pop() {
+        match kb.get_term(t) {
+            Term::Var(Var::Global(v)) => match seen.iter_mut().find(|(s, _)| s == v) {
+                Some((_, n)) => *n += 1,
+                None => seen.push((*v, 1)),
+            },
+            Term::Fn {
+                pos_args,
+                named_args,
+                ..
+            } => {
+                stack.extend(pos_args.iter().copied());
+                stack.extend(named_args.iter().map(|(_, v)| *v));
+            }
+            _ => {}
+        }
+    }
+    seen.into_iter().filter(|(_, n)| *n == 1).map(|(v, _)| v).collect()
 }
 
 /// Does `sym` own a declaration's members — anything pass 1 defined inside it? A sort
