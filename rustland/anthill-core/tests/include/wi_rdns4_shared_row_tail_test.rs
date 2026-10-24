@@ -41,9 +41,11 @@
 //! 4. A CALL'S WALKED ROW IS READ THROUGH THE VIEW (both readers wrapping it as an `effects_rows`
 //!    term or occurrence again). 1 FAILS: [`a_callback_with_an_open_row_beside_a_writing_one`],
 //!    a panic — and its `gen`-first program panics on the tree before this ticket too.
-//! 5. A TAIL NAMED ANYWHERE BUT IN THE CALLBACK SLOTS' ROWS IS NOT LEFT TO THE PASS
-//!    (`tail_named_outside_callback_rows`). 1 FAILS:
-//!    [`a_tail_a_nested_callback_names_is_unified_as_before`], refused "(a closed row)".
+//! 5. A TAIL NAMED ANYWHERE BUT IN THE ROWS OF THE CALLBACKS A PARAMETER HOLDS IS NOT LEFT TO
+//!    THE PASS (`outside_callback_rows`). 1 FAILS:
+//!    [`a_tail_a_callbacks_own_parameter_names_is_unified_as_before`] on the wording, refused at
+//!    the writer in place of the callback that applies its parameter. Its witness was a callback
+//!    in an option until the pass read those (`wi_rdns4_nested_callback_row_test`).
 //! 6. AN ENTITY-CARRIED ROW WRAPPED ON ITS SPINE (`wrap_bare_effect_expr_as_row`'s `Value::Entity`
 //!    arm panicking again). 1 FAILS here: [`a_function_result_at_the_shared_row_is_applied`], a
 //!    panic on every build before it; and `ctd6d_row_carrier_tests::an_entity_carried_bare_row_wraps_on_its_spine`
@@ -127,6 +129,9 @@ namespace {ns}
 
   operation two_opt[Rho](a: Option[T = () -> Int64 @ {{Rho}}], b: () -> Int64 @ {{Rho}}) -> Int64 effects {{Rho}} =
     b()
+
+  operation two_p[Rho](a: (g: () -> Int64 @ {{Rho}}) -> Int64, b: () -> Int64 @ {{Rho}}) -> Int64 effects {{Rho}} =
+    a(b)
 
   operation mk[Rho](a: () -> Int64 @ {{Rho}}, b: () -> Int64 @ {{Rho}}, f: Function[A = Int64, B = Int64, E = Rho]) -> Function[A = Int64, B = Int64, E = Rho] =
     f
@@ -427,19 +432,26 @@ fn a_callback_with_an_open_row_beside_a_writing_one() {
     );
 }
 
-/// A TAIL A NESTED CALLBACK NAMES TOO is met by unification as the arguments are, not left to
-/// the pass: `two_opt[Rho](a: Option[T = () -> Int64 @ {Rho}], b: () -> Int64 @ {Rho})` with the
-/// writer `b` first unifies `Rho = {Modify[r]}` there, and the pure callback in the option
-/// conforms — `two_opt` answers `b`'s 4: 414, as on the build before this ticket. Left to the pass, `b` was
-/// refused "(a closed row)": the option's unification closed the row before the pass ran. The
-/// other order is refused on every build (the option, unified first, closes the row; a nested
-/// callback is no slot the pass reads).
+/// A TAIL A CALLBACK'S OWN PARAMETER NAMES is met by unification as the arguments are, not left
+/// to the pass: in `two_p[Rho](a: (g: () -> Int64 @ {Rho}) -> Int64, b: () -> Int64 @ {Rho})`
+/// the row of `a`'s parameter is no row of a callback the call passes. `a`, a pure slot,
+/// applies its `g` and so raises whatever `Rho` holds; a writing `b` needs `Rho` to hold the
+/// write. No `Rho` does: refused in either order, and with the writer written first at `a`, the
+/// callback that cannot hold it — left to the pass, the writer was blamed, against a row `a`'s
+/// unification closed. A pure `b` runs: 3.
 #[test]
-fn a_tail_a_nested_callback_names_is_unified_as_before() {
-    assert_eq!(
-        runs("opt_writer_first", "Modify[r]", "    two_opt(b: lambda () -> put(r, 4), a: some(lambda () -> 3))"),
-        Ok(414),
+fn a_tail_a_callbacks_own_parameter_names_is_unified_as_before() {
+    assert_refused_naming(
+        &refused("own_param_writer_first", "Modify[r]", "    two_p(b: lambda () -> put(r, 4), a: lambda (g) -> g())"),
+        &["type mismatch in two_p.a (op-arg)", "Modify[T = r]"],
+        "the writer written first",
     );
+    assert_refused_naming(
+        &refused("own_param_writer_second", "Modify[r]", "    two_p(lambda (g) -> g(), lambda () -> put(r, 4))"),
+        &["type mismatch in two_p.b (op-arg)", "Modify[T = r]"],
+        "the writer written second",
+    );
+    assert_eq!(runs("own_param_pure", "", "    two_p(lambda (g) -> g(), lambda () -> 3)"), Ok(312));
 }
 
 /// A `Function` RESULT WHOSE ROW IS THE SHARED TAIL, open at a tail an open callback row left

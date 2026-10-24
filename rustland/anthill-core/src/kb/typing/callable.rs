@@ -242,18 +242,42 @@ pub(super) fn arrow_parts<V: TermView>(
 /// `E`; its parameters, result and binders as they were. `None` for a type that is no callable,
 /// and for a `Function` that writes no `E`, whose row is no part of it to replace.
 pub(super) fn callable_with_row(kb: &mut KnowledgeBase, ty: &Value, row: &Value) -> Option<Value> {
+    callable_with(kb, ty, None, Some(row))
+}
+
+/// … and with `result` for its result — the arrow's, the `Function`'s `B`.
+pub(super) fn callable_with_result(kb: &mut KnowledgeBase, ty: &Value, result: &Value) -> Option<Value> {
+    callable_with(kb, ty, Some(result), None)
+}
+
+/// The callable `ty` rebuilt on the form it was written in, `result` and `row` in place of its
+/// own where given.
+fn callable_with(kb: &mut KnowledgeBase, ty: &Value, result: Option<&Value>, row: Option<&Value>) -> Option<Value> {
     let (sp, owner) = site_of(ty);
     match extract_callable_type(kb, ty) {
         TypeExtractor::Arrow {
             param,
-            result,
+            result: own_result,
+            effects,
             arity,
             binders,
-            ..
-        } => Some(arrow_value(kb, &param, &result, row, arity, binders, sp, owner)),
+        } => Some(arrow_value(
+            kb,
+            &param,
+            result.unwrap_or(&own_result),
+            row.unwrap_or(&effects),
+            arity,
+            binders,
+            sp,
+            owner,
+        )),
         TypeExtractor::Parameterized { base, mut bindings } if is_function_spec(kb, base) => {
-            let e = bindings.iter_mut().find(|(p, _)| kb.local_name_of(*p) == "E")?;
-            e.1 = row.clone();
+            for (key, value) in [("B", result), ("E", row)] {
+                if let Some(value) = value {
+                    let b = bindings.iter_mut().find(|(p, _)| kb.local_name_of(*p) == key)?;
+                    b.1 = value.clone();
+                }
+            }
             let base_ref = kb.make_sort_ref(base);
             Some(parameterized_value(kb, base_ref, &bindings, sp, owner))
         }

@@ -7518,7 +7518,9 @@ end
 /// result` and never walks `effects`, so two arrows differing only in their effect row are
 /// indistinguishable to it — the exact shape of the WI-795 defect, in a different child.
 /// WI-20261001-89WZR found the checker route to it and named the cause for a TOP-LEVEL
-/// pair; the same pair one level down is what keeps this guard driven.
+/// pair, and the same pair one level down is printed with its rows too (an option of a
+/// callback the checker refuses for its row). What keeps this guard driven is a hand-built
+/// pair no spelling tells apart: one sort written as a name and as an application.
 ///
 /// Doubles as the only coverage of `TypeError::format`, which WI-795 routed through
 /// the shared pair renderer so the two rendering paths cannot drift.
@@ -7580,9 +7582,7 @@ fn wi795_identical_rendering_is_reported_rather_than_printed_as_a_tautology() {
         "a named cause is not also reported as an unnamed one; got: {msg}"
     );
 
-    // THE BACKSTOP IS STILL LIVE, one level down: the same two arrows as a `List`'s
-    // element render alike — the named cause reads the pair it is handed, not an arrow
-    // nested in one — and that is still said rather than printed as a tautology.
+    // ONE LEVEL DOWN the rows are printed as well: the same two arrows as a `List`'s element.
     let list_ref = kb.make_sort_ref_by_name("anthill.prelude.List");
     let t = kb.intern("T");
     let nested = TypeError::TypeMismatch {
@@ -7597,6 +7597,28 @@ fn wi795_identical_rendering_is_reported_rather_than_printed_as_a_tautology() {
         site: TypeError::here(),
     };
     let msg = nested.format(&kb);
+    assert!(
+        msg.contains("Int64 @ {}]")
+            && msg.contains("Int64 @ {anthill.prelude.Console}]")
+            && !msg.contains("render alike but are not the same type"),
+        "two types holding arrows that differ only in their row are shown with the rows; got: {msg}"
+    );
+
+    // THE BACKSTOP IS STILL LIVE: `Int64` as a name and as an application render alike in
+    // every spelling, and that is said rather than printed as a tautology.
+    let int_ident = kb.alloc(Term::Ident(int_sym));
+    let alike = TypeError::TypeMismatch {
+        span: None,
+        context: TypeErrorContext::OperationArgument {
+            op_name: kb.intern("apply"),
+            param: kb.intern("xs"),
+        },
+        expected: Value::term(kb.make_parameterized_type(list_ref, &[(t, int_ty)])),
+        actual: Value::term(kb.make_parameterized_type(list_ref, &[(t, int_ident)])),
+        denoted: None,
+        site: TypeError::here(),
+    };
+    let msg = alike.format(&kb);
     assert!(
         msg.contains("render alike but are not the same type"),
         "a pair that renders identically must say so rather than print `expected X, got X`; \

@@ -4732,10 +4732,17 @@ pub(super) fn infer_discharged_row_tails(
     if op.type_params.is_empty() || pairs.is_empty() {
         return Ok(());
     }
-    let declared_at = |i: usize| -> &Value {
-        let (param, written, _) = &pairs[i];
-        read.get(param).unwrap_or(written)
-    };
+    // Each callback the arguments hold, beside the arrow its parameter holds at its position —
+    // the parameter itself, or an arrow inside it ([`map_held_arrows`]).
+    let mut arrows: Vec<(Symbol, Value, Value)> = Vec::new();
+    for (param, written, actual) in pairs {
+        let declared = read.get(param).unwrap_or(written);
+        let mut held: Vec<(Value, Value)> = Vec::new();
+        nested_callable_pairs(kb, subst, declared, actual, true, &mut held);
+        arrows.extend(held.into_iter().map(|(d, a)| (*param, d, a)));
+    }
+    let pairs = arrows;
+    let declared_at = |i: usize| -> &Value { &pairs[i].1 };
     // The pairs the pass reads, each beside its slot row: their labels first, all together.
     let mut unread: Vec<usize> = Vec::new();
     let mut label_rows: Vec<(Symbol, SlotRow)> = Vec::new();
@@ -5101,26 +5108,30 @@ fn slot_row(kb: &mut KnowledgeBase, subst: &Substitution, declared: &Value, actu
 }
 
 /// Does a call record its argument at a parameter of type `param_type` for
-/// [`infer_discharged_row_tails`] — a CALLABLE parameter of an operation that declares type
-/// parameters, the population a row tail can live in? So an ordinary call allocates nothing.
+/// [`infer_discharged_row_tails`] — a parameter that is or holds a CALLABLE, of an operation that
+/// declares type parameters, the population a row tail can live in? So an ordinary call
+/// allocates nothing.
 pub(super) fn callback_pair_recorded(kb: &KnowledgeBase, op: &OperationInfoFull, param_type: &Value) -> bool {
-    !op.type_params.is_empty() && type_head_is_callable(kb, param_type)
+    !op.type_params.is_empty() && type_contains_callable(kb, param_type)
 }
 
-/// The slot a call's argument loops unify the callback `actual` with, at `op`'s parameter
-/// `param`: `declared` with `actual`'s own row in place of its row, where
+/// The slot a call's argument loops unify the argument `actual` with, at `op`'s parameter
+/// `param`: `declared` with each callback it holds — itself, or an arrow inside it
+/// ([`map_held_arrows`]) — at `actual`'s own row in place of its row, where
 /// [`infer_discharged_row_tails`] solves that row ([`slot_row`]) — so the unification relates the
 /// two functions' parameters and results and leaves the row to the pass, which reads every
 /// argument naming the tail. A unification of the rows closed the tail at the first argument's
-/// least row ([`infer_discharged_row_tails`] has the measurement). `None`: the slot as written.
+/// least row ([`infer_discharged_row_tails`] has the measurement), for a callback in an option
+/// as for one passed bare: `opt2[Rho](a: Option[T = () -> Int64 @ {Rho}], b: Option[T = () ->
+/// Int64 @ {Rho}])` at `some` of a pure callback and `some` of a writing one was refused with
+/// the pure one first (MEASURED, once the row of a callback in an option was read at all). `None`:
+/// the slot as written.
 ///
-/// Only where the pass reads every place the tail is named: the rows of the call's callback
-/// slots. A tail a parameter names anywhere else — a callback inside an `Option`, a slot's own
-/// parameter or result — is met there by unification as the arguments are, which closes it, so
-/// a slot left to the pass beside it would be judged against a row its own argument never took
-/// part in: `two_opt[Rho](a: Option[T = () -> Int64 @ {Rho}], b: () -> Int64 @ {Rho})` at a
-/// `{Clock}` `b` written first and a pure `a` was refused at `b` (MEASURED), where unifying `b`
-/// first had made the row `{Clock}`.
+/// Only where the pass reads every place the tail is named: the rows of the callbacks the call's
+/// parameters hold. A tail a parameter names anywhere else — a callback's own parameter, a type
+/// argument no callback holds — is met there by unification as the arguments are, which closes
+/// it, so a slot left to the pass beside it would be judged against a row its own argument never
+/// took part in.
 pub(super) fn slot_at_argument_row(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
@@ -5132,48 +5143,45 @@ pub(super) fn slot_at_argument_row(
     if !callback_pair_recorded(kb, op, declared) {
         return None;
     }
-    let SlotRow { tails, actual_row, .. } = slot_row(kb, subst, declared, actual)?;
-    for tail in tails {
-        if tail_named_outside_callback_rows(kb, subst, op, param, declared, tail) {
+    // What the parameters name outside the callbacks' rows, read once a row the pass solves asks.
+    let mut outside: Option<Option<Vec<Value>>> = None;
+    map_held_arrows(kb, subst, declared, Some(actual), true, &mut |kb, d, a| {
+        let SlotRow { tails, actual_row, .. } = slot_row(kb, subst, d, a?)?;
+        let outside = outside
+            .get_or_insert_with(|| outside_callback_rows(kb, subst, op, param, declared))
+            .as_ref()?;
+        let named_outside = tails.iter().any(|t| match *kb.get_term(*t) {
+            Term::Var(tail_var) => outside.iter().any(|ty| kb.mentions_var(ty, &|v| v == tail_var)),
+            _ => false,
+        });
+        if named_outside {
             return None;
         }
-    }
-    callable_with_row(kb, declared, &actual_row)
+        callable_with_row(kb, d, &actual_row)
+    })
 }
 
-/// Is `tail` named by one of `op`'s parameters other than in the row of a callback slot — the
-/// slot `param` (typed `declared` at this call) or another the call records? A callback slot's
-/// own parameters and result count as elsewhere. Read through σ, so a tail that is a row
-/// variable's continuation (`Rho := {| ?f}`) is found where `Rho` is written.
-fn tail_named_outside_callback_rows(
+/// Each of `op`'s parameter types — `param`'s as `declared` at this call — with the row of every
+/// callback it holds emptied ([`map_held_arrows`]), read through σ: where a tail is named in
+/// them, it is named outside the callbacks' rows. A callback's own parameters count as outside.
+/// Read through σ, so a tail that is a row variable's continuation (`Rho := {| ?f}`) is found
+/// where `Rho` is written. `None` in a KB with no empty row to empty them with.
+fn outside_callback_rows(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
     op: &OperationInfoFull,
     param: Symbol,
     declared: &Value,
-    tail: TermId,
-) -> bool {
-    let Term::Var(tail_var) = *kb.get_term(tail) else {
-        return false;
-    };
+) -> Option<Vec<Value>> {
+    let empty = Value::term(kb.try_make_empty_effects_rows()?);
+    let mut out = Vec::with_capacity(op.params.len());
     for (p, written) in &op.params {
         let ty = if *p == param { declared } else { written };
-        let parts: SmallVec<[Value; 2]> = if callback_pair_recorded(kb, op, ty) {
-            match arrow_parts(kb, ty) {
-                Some((params, result, _)) => params.into_iter().chain([result]).collect(),
-                None => SmallVec::from_elem(ty.clone(), 1),
-            }
-        } else {
-            SmallVec::from_elem(ty.clone(), 1)
-        };
-        for part in parts {
-            let walked = walk_type_deep_value(kb, subst, &part);
-            if kb.mentions_var(&walked, &|v| v == tail_var) {
-                return true;
-            }
-        }
+        let emptied = map_held_arrows(kb, subst, ty, None, true, &mut |kb, d, _| callable_with_row(kb, d, &empty))
+            .unwrap_or_else(|| ty.clone());
+        out.push(walk_type_deep_value(kb, subst, &emptied));
     }
-    false
+    Some(out)
 }
 
 /// The refusal of a call that leaves `open`, a type parameter of `fn_sym`, unfixed: the

@@ -31,13 +31,16 @@ enum Spelling {
     /// every application's bindings in the order of their keys' names — the text a proof
     /// record's name is made of ([`type_qualified_text`]).
     Qualified,
+    /// The type as [`Spelling::Meaning`] writes it, every arrow with its row: what a mismatch
+    /// shows where the two sides differ in a row and in nothing that spelling prints.
+    Rows,
 }
 
 impl Spelling {
     /// The name a sort — or whatever else a type names by symbol — is written by.
     fn name_of(self, kb: &KnowledgeBase, sym: Symbol) -> &str {
         match self {
-            Spelling::Meaning | Spelling::Written => kb.local_name_of(sym),
+            Spelling::Meaning | Spelling::Written | Spelling::Rows => kb.local_name_of(sym),
             Spelling::Qualified => kb.qualified_name_of(sym),
         }
     }
@@ -45,7 +48,7 @@ impl Spelling {
     /// The order an application's own named arguments are written in.
     fn named_order(self) -> NamedOrder {
         match self {
-            Spelling::Meaning | Spelling::Written => NamedOrder::Declared,
+            Spelling::Meaning | Spelling::Written | Spelling::Rows => NamedOrder::Declared,
             Spelling::Qualified => NamedOrder::ByName,
         }
     }
@@ -295,6 +298,15 @@ fn render_mismatch_pair_as_types(
         // keeps its rendering, so no other diagnostic moves.
         if let Some((expected_row, actual_row)) = arrow_rows_that_differ(kb, expected, actual) {
             return (format!("{e} @ {expected_row}"), format!("{a} @ {actual_row}"));
+        }
+        // … and two types holding such arrows below their top — an option's payload, a callback's
+        // own parameter — written with every arrow's row.
+        let (expected_rows, actual_rows) = (
+            value_display(kb, expected, Spelling::Rows),
+            value_display(kb, actual, Spelling::Rows),
+        );
+        if expected_rows != actual_rows {
+            return (expected_rows, actual_rows);
         }
         if let Some((expected_qn, actual_qn)) = short_name_sort_collision(kb, expected, actual) {
             return (
@@ -769,7 +781,7 @@ fn type_display_name_view<V: TermView>(kb: &KnowledgeBase, v: &V, spelling: Spel
             // its row, below; a guarded effect atom with its guard
             // ([`qualified_form_display`]).
             let form = match spelling {
-                Spelling::Meaning | Spelling::Written => kb.local_name_of(f),
+                Spelling::Meaning | Spelling::Written | Spelling::Rows => kb.local_name_of(f),
                 Spelling::Qualified => match type_head(kb, v) {
                     TypeHead::Arrow => "Arrow",
                     TypeHead::TypeVar(_) => "TypeVar",
@@ -803,7 +815,7 @@ fn type_display_name_view<V: TermView>(kb: &KnowledgeBase, v: &V, spelling: Spel
                     // A name has no pair to compare: the row is part of it, always.
                     match spelling {
                         Spelling::Meaning | Spelling::Written => arrow,
-                        Spelling::Qualified => {
+                        Spelling::Qualified | Spelling::Rows => {
                             format!("{arrow} @ {}", named_child_display(kb, v, "effects", spelling))
                         }
                     }
@@ -837,7 +849,7 @@ fn type_display_name_view<V: TermView>(kb: &KnowledgeBase, v: &V, spelling: Spel
                     // qualified text keeps `()`: a name there tells sorts apart, and a sort
                     // declared at the top level as `Unit` is named `Unit`.
                     match spelling {
-                        Spelling::Meaning | Spelling::Written if parts.is_empty() => {
+                        Spelling::Meaning | Spelling::Written | Spelling::Rows if parts.is_empty() => {
                             "Unit".to_string()
                         }
                         _ => format!("({})", parts.join(", ")),
