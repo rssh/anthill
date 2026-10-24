@@ -46,11 +46,10 @@
 //!    [`a_slot_read_off_a_receiver_takes_no_label_over_the_callbacks_parameter`].
 //!
 //! PASS EITHER WAY, BY DESIGN: [`the_row_parameter_said_whole_binds_as_before`] — the control,
-//! the slot `@ {EffP}` and the bracket `run[EffP = {R}]`;
-//! [`a_label_over_the_callbacks_own_parameter_is_not_taken`] — the residual never carries a
-//! label the slot's row parameter lacks; and
-//! [`a_second_argument_that_bound_the_row_first_decides_it`] — a tail an argument already
-//! bound is not the pass's (WI-20260820-RDNS4).
+//! the slot `@ {EffP}` and the bracket `run[EffP = {R}]` —
+//! and [`a_label_over_the_callbacks_own_parameter_is_not_taken`] — the residual never carries a
+//! label the slot's row parameter lacks. [`a_row_two_slots_share_takes_both_callbacks_rows`]
+//! is WI-20260820-RDNS4's, and fails under its back-out.
 
 use crate::common::{assert_refused_naming, load_errors_of, run_int64};
 
@@ -429,12 +428,13 @@ fn a_slot_read_off_a_receiver_takes_no_label_over_the_callbacks_parameter() {
     assert_eq!(run_int64(&src, &format!("{ns}.go")), Ok(4615));
 }
 
-/// A SECOND ARGUMENT THAT BOUND THE ROW FIRST DECIDES IT: `g` at the slot `@ {EffP}` raises
-/// `Q` and binds `EffP := {Q}` as the arguments are unified; the pass runs after them and
-/// leaves a bound tail alone, so `f`, raising `R`, is refused at its slot. The union `{R, Q}`
-/// is WI-20260820-RDNS4's question. Passes either way by design.
+/// A ROW PARAMETER TWO SLOTS SHARE TAKES WHAT EACH CALLBACK RAISES BEYOND ITS SLOT'S LABELS: `f`
+/// at `@ {Error[String], EffP}` raises `R`, `g` at `@ {EffP}` raises `Q`, and `EffP` is `{R, Q}`
+/// — 41 + 2. `g` used to bind `EffP := {Q}` as the arguments were unified, and the pass after
+/// them left a bound tail alone, so `f` was refused at its slot (WI-20260820-RDNS4). FAILS with
+/// that ticket's argument loops relating the rows again.
 #[test]
-fn a_second_argument_that_bound_the_row_first_decides_it() {
+fn a_row_two_slots_share_takes_both_callbacks_rows() {
     let src = r#"
 namespace wi6mpn2.bound_first
   import anthill.prelude.{Int64, String, Error}
@@ -444,9 +444,5 @@ namespace wi6mpn2.bound_first
   operation go() -> Int64 effects {Error[String]} = use(lambda (n: Int64) -> n + 40, lambda (n: Int64) -> n)
 end
 "#;
-    assert_refused_naming(
-        &load_errors_of(src),
-        &["type mismatch in run2.f (op-arg)"],
-        "a callback raising `R` where an earlier binding made the row `{Q}`",
-    );
+    assert_eq!(run_int64(src, "wi6mpn2.bound_first.go"), Ok(43));
 }

@@ -786,11 +786,17 @@ pub(super) fn check_apply_iter(
                     };
                     if !deferred {
                         let before = subst.clone();
+                        let arg_ty = at_slot.as_ref().unwrap_or(&arg_result.ty);
+                        // A callback slot whose row tail the discharge inference solves is
+                        // unified at the argument's own row: the row is that pass's, which
+                        // reads every argument naming the tail.
+                        let slot =
+                            slot_at_argument_row(kb, &subst, &op, *param_sym, param_type, arg_ty);
                         let unified = unify_arg_with_param(
                             kb,
                             &mut subst,
-                            at_slot.as_ref().unwrap_or(&arg_result.ty),
-                            param_type,
+                            arg_ty,
+                            slot.as_ref().unwrap_or(param_type),
                             receiverless_sort,
                         );
                         // WI-20260904-50B2K part (c) — REPORT HERE, not at a return.
@@ -806,10 +812,8 @@ pub(super) fn check_apply_iter(
                         param_to_arg_type.insert(*param_sym, arg_result.ty.clone());
                     }
                     // WI-329: the (declared, actual) pairs the discharge inference reads
-                    // after BOTH loops. Recorded only for a CALLABLE parameter of an op
-                    // that declares type params — the population a row tail can live in —
-                    // so an ordinary call allocates nothing.
-                    if !op.type_params.is_empty() && type_head_is_callable(kb, param_type) {
+                    // after BOTH loops ([`callback_pair_recorded`]).
+                    if callback_pair_recorded(kb, &op, param_type) {
                         callback_pairs.push((
                             *param_sym,
                             param_type.clone(),
@@ -851,11 +855,15 @@ pub(super) fn check_apply_iter(
                     };
                     if !deferred {
                         let before = subst.clone();
+                        let arg_ty = at_slot.as_ref().unwrap_or(&arg_result.ty);
+                        // See the positional loop.
+                        let slot =
+                            slot_at_argument_row(kb, &subst, &op, *param_sym, param_type, arg_ty);
                         let unified = unify_arg_with_param(
                             kb,
                             &mut subst,
-                            at_slot.as_ref().unwrap_or(&arg_result.ty),
-                            param_type,
+                            arg_ty,
+                            slot.as_ref().unwrap_or(param_type),
                             receiverless_sort,
                         );
                         // WI-20260904-50B2K part (c) — REPORT HERE, not at a return.
@@ -871,7 +879,7 @@ pub(super) fn check_apply_iter(
                         param_to_arg_type.insert(*param_sym, arg_result.ty.clone());
                     }
                     // WI-329 — see the positional loop.
-                    if !op.type_params.is_empty() && type_head_is_callable(kb, param_type) {
+                    if callback_pair_recorded(kb, &op, param_type) {
                         callback_pairs.push((
                             *param_sym,
                             (*param_type).clone(),
@@ -1006,7 +1014,10 @@ pub(super) fn check_apply_iter(
                         .and_then(|_| {
                             callback_at_slot(kb, env, &mut subst, *param_sym, &eff, arg_ty)
                         });
-                    unify_types(kb, &mut subst, at_slot.as_ref().unwrap_or(arg_ty), &eff);
+                    let arg_ty = at_slot.as_ref().unwrap_or(arg_ty);
+                    // The row is the discharge inference's, as in the argument loops.
+                    let slot = slot_at_argument_row(kb, &subst, &op, *param_sym, &eff, arg_ty);
+                    unify_types(kb, &mut subst, arg_ty, slot.as_ref().unwrap_or(&eff));
                     // The discharge inference reads the callback as this slot reads it: the
                     // argument loops deferred this parameter, and recorded it as written.
                     let pair = callback_pairs.iter_mut().find(|(p, _, _)| p == param_sym);
@@ -2201,12 +2212,11 @@ pub(super) fn check_apply_iter(
             // one opaque label in the enclosing lambda's row, and the outer handler's
             // callback-row check rejected it. Flatten the bare form here, at the
             // producer, so every reader of this flat atom list sees atoms.
-            // Row-shaped means WRAPPED — there is no carrier the wrapper cannot hold,
-            // because a row is a `Value::Term` or a `Value::Node` and nothing else
-            // (WI-20260820-CTD6D; [`wrap_bare_effect_expr_as_row`]'s doc carries the
-            // census that settles it, and the wrapper is total accordingly). The
-            // pre-CTD6D `.flatten()` here declassified any other carrier back to a
-            // plain atom, silently undoing this very flatten.
+            // The bare form is read through the view on whatever carrier the walk left it
+            // — an entity spine where a tail is bound to an occurrence row among them
+            // ([`wrap_bare_effect_expr_as_row`]'s doc). The pre-CTD6D `.flatten()` here
+            // declassified any other carrier back to a plain atom, silently undoing this
+            // very flatten.
             let incurred = push_effect_with_guard_discharge(
                 kb,
                 flow,

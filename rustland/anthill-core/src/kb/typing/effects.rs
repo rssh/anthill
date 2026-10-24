@@ -2074,7 +2074,7 @@ pub(super) fn labels_match_by_subsumption(kb: &KnowledgeBase, a: &Value, e: &Val
 /// practice the typer wraps unification calls in higher-level error
 /// reporting, so the failed unification produces a top-level type error
 /// rather than silent corruption. Backtracking is a v1b nicety.
-fn pair_present_labels(
+pub(super) fn pair_present_labels(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
     a_present: &[Value],
@@ -2703,8 +2703,8 @@ fn relate_effect_rows<EA: TermView, EB: TermView>(
     // slot's row holds `R` beside a label or a second row (WI-20261013-450KA, MEASURED: the
     // shared tail was asked to take the expected row's extra labels, and two tails against one
     // were no equal sets). Said here wherever a tail is rigid. FLEXIBLE tails keep their arms:
-    // a lone one is closed by its own (WI-20260820-RDNS4 is that arm's question), and a union
-    // of them is the multi-tail arm's to refuse (`subtype_rejects_malformed_multi_tail_row`).
+    // a lone one is closed by its own, and a union of them is the multi-tail arm's to refuse
+    // (`subtype_rejects_malformed_multi_tail_row`).
     if directional && only_a.is_empty() {
         let b_rigid = rigid_row_tails(kb, subst, &b_tails);
         if !b_rigid.is_empty()
@@ -2763,14 +2763,13 @@ fn relate_effect_rows<EA: TermView, EB: TermView>(
             // does not leak bindings on refusal (the discipline `pair_present_labels`
             // states for the same reason).
             //
-            // THE SUCCESS PATH BELOW HAS THE SAME PROBLEM AND IS NOT FIXED HERE —
-            // WI-20260820-RDNS4. `bind_row_tail(…, &[])` CLOSES the tail, so even when
-            // this arm succeeds the first argument commits its least solution as if it
-            // were the only constraint: the same `two[Rho]` at an ERRORING `a`, and a
-            // `two_plain[Rho](a: @{Rho}, b: @{Rho})` with no handled label at all, are
-            // both refused — before and after WI-329 alike, so it is pre-existing and not
-            // about handlers. `infer_discharged_row_tails` cannot repair it either: it
-            // fires only for tails still UNBOUND after both arg loops.
+            // THE SUCCESS PATH BELOW CLOSES THE TAIL (`bind_row_tail(…, &[])`) at the least
+            // row this one pair needs, which is the equality's answer and the wrong one for
+            // a tail two callback slots share: the first argument decided it, and the same
+            // `two[Rho]` at an ERRORING `a`, or with no handled label at all, was refused
+            // (WI-20260820-RDNS4). So a call's argument loops do not bring a callback's row
+            // here where the discharge inference solves the slot's tail
+            // ([`slot_at_argument_row`]).
             if !directional && !only_b.is_empty() {
                 return false;
             }

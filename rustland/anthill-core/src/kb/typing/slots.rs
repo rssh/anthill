@@ -4668,55 +4668,45 @@ fn selection_witness_sym(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
     sort_functor_of_view(kb, value)
 }
 
-/// WI-329 (proposal 045 §5.6) — HANDLER DISCHARGE, the inference half: bind each of the
-/// callee's still-unbound flexible row tails to the RESIDUAL its callback arguments
-/// force, once every argument has been unified.
+/// WI-329 (proposal 045 §5.6), WI-20260820-RDNS4 — A CALLBACK SLOT'S ROW TAIL IS SOLVED HERE,
+/// from every argument naming it at once: each flexible row tail of the callee's callback slots
+/// is bound to the UNION of what the arguments passed there raise beyond their slots' labels —
+/// the least row each of them is a subset of. The verdict of a callback against its slot is
+/// SUBTYPING (`validate_arg_against_param`), which reads the row bound here.
 ///
-/// A handler is `(body: () -> X @ {K, ρ}) -> X @ {ρ}`, so the call's row IS `ρ` and `ρ`
-/// must come out as `body`'s row minus `K`. Ordinary unification already delivers that
-/// whenever the body DOES perform `K`: the declared row's extras are then empty and
-/// `unify_effect_rows`' closed/open arm binds `ρ := only_a`. It delivers nothing when the
-/// body does NOT perform `K` — a pure body, or the outer of two handlers for the same
-/// label — because the declared `K` has no counterpart in the actual row, which is not an
-/// EQUALITY, and that arm refuses without binding. Callback conformance is SUBTYPING, not
-/// equality (`validate_arg_against_param` owns the verdict; the arg loops discard unify's
-/// boolean), so such a call is admissible and `ρ` is simply underdetermined by that one
-/// argument.
+/// The argument loops leave such a row alone ([`slot_at_argument_row`]): they relate a
+/// callback's parameters and result to its slot's, and nothing in the row. A unification of the
+/// two rows bound the tail to the least row ONE argument needs, CLOSED, and the loops unify in
+/// parameter order, so the first argument decided the tail and a later one was refused:
+/// `two[Rho](a: () -> Int64 @ {Rho}, b: () -> Int64 @ {Rho})` at a pure `a` and a `{Clock}` `b`
+/// was refused at `b`, and loaded with the two arguments the other way round (MEASURED); so was
+/// the same `two` with `a` at `@ {Error[Int64], Rho}` raising `Error[Int64]`.
 ///
-/// WHY THIS IS A SEPARATE PASS AND NOT A BINDING INSIDE THAT ARM. `ρ` is constrained by
-/// EVERY parameter that mentions it, and the answer is their UNION. Binding per-argument
-/// inside the relation takes the first argument's least solution and CLOSES the tail, so
-/// a later argument with a real contribution is refused — measured on `two[Rho](a: () ->
-/// Int64 @ {Error[Int64], Rho}, b: () -> Int64 @ {Rho})` at a pure `a` and a `{Clock}`
-/// `b`, which stopped loading. Running once, after both arg loops, makes the result
-/// order-independent and leaves `unify_effect_rows` a clean equality that does not leak
-/// bindings on refusal.
+/// A HANDLER needs no second argument to go wrong: `(body: () -> X @ {K, ρ}) -> X @ {ρ}`, so the
+/// call's row IS `ρ` and `ρ` must come out as `body`'s row minus `K`. A body that does NOT perform
+/// `K` — a pure body, or the outer of two handlers for the same label — has no counterpart for the
+/// declared `K`, which is no equality, and unification refused without binding.
 ///
-/// DELIBERATELY NARROW — every skip below leaves the tail unbound, which is the
-/// pre-existing behavior (`first_unconstrained_type_param` then reports it), never a
-/// wrong binding:
-///   * a tail already bound by unification, or a RIGID one (a forall-Skolem is not ours
-///     to solve — WI-336);
-///   * a declared row with no flexible tail (closed, or holding the caller's own rows
-///     alone: nothing to infer) or with TWO (a row UNION, `{E, EffP}` — which lower bound
-///     belongs to which tail is not decidable here; WI-20260820-RDNS4 carries that question
-///     one level up);
-///   * an actual row that is itself OPEN — a tail of it a flexible variable — or carries
-///     `- e` absents: those are the shapes the unify/subtype arms reason about with their
-///     own tail machinery.
+/// Which pairs are solved here, [`slot_row`] says; the loops' unification relates every other
+/// pair's rows as before. A tail left unbound — rigid (a forall-Skolem is not ours to solve,
+/// WI-336), bound already, or one whose binding is refused below — is the pre-existing behavior
+/// (`first_unconstrained_type_param` then reports it), never a wrong binding.
 ///
-/// The residual is [`cover_present_labels`]'s `only_a`: the actual's present labels that
-/// no declared present label covers. That is exactly "the body's row minus the handled
-/// labels", computed by the same relation the subtype path uses, so the two cannot drift.
+/// The residual is [`pair_present_labels`]' `only_a`: the actual's present labels that pair
+/// with no declared present label, one to one — "the body's row minus the handled labels", as
+/// the call's unification of the two rows paired them. Not the subtype path's covering
+/// ([`cover_present_labels`]), which lets one declared label take several actual ones by
+/// unifying them: `{Error[P], Error[Other]}` under `@ {Error[T1], Rho}` made a rule variable's
+/// type `P` be `Other` and left `Rho` empty, so `Error.reify` caught a payload it was not
+/// typed at (MEASURED, `wi_9wvt7_reify_rule_body_test`). What pairs is covered, so the
+/// conformance check after the pass admits each callback against the row bound here.
 ///
 /// AND THE ACTUAL'S RIGID ROWS the declared row does not hold. A row whose every tail is
 /// rigid — the caller's own row parameter, `h(5)` inside `use[R](h: (n: Int64) -> Int64 @
 /// {R})` — is not open: it is what the callback raises beside its labels, and the residual
-/// holds it. Unification binds the declared tail to it only where the declared row presents
-/// nothing the actual does not: against `@ {Error[String], EffP}` the rigid tail is asked to
-/// take `Error[String]`, which it cannot, and the arm refuses without binding — so `EffP` was
-/// left unconstrained where the slot `@ {EffP}` gave `{R}` (WI-20261014-6MPN2, MEASURED).
-/// Two callbacks raising two of the caller's rows give their union. A residual the declared
+/// holds it (WI-20261014-6MPN2: against `@ {Error[String], EffP}` unification asked the rigid
+/// tail to take `Error[String]` and refused, leaving `EffP` unconstrained, MEASURED). Two
+/// callbacks raising two of the caller's rows give their union. A residual the declared
 /// row's own absences deny is no lower bound, and a declared row is read as the call reads it
 /// (`read`, by parameter, where the call made it so): `@ {EffP, -s.E}` over `s.E = {Error[Foo],
 /// R}` lacks `R`. The absences are those of every slot naming the tail, read against the union.
@@ -4728,17 +4718,6 @@ pub(super) fn infer_discharged_row_tails(
     read: &HashMap<Symbol, Value>,
 ) {
     if op.type_params.is_empty() || pairs.is_empty() {
-        return;
-    }
-    // Cheap gate: nothing to solve unless some declared type param is still a bare var.
-    // (The same probe `first_unconstrained_type_param` makes, so the pass runs only on
-    // the calls that would otherwise be refused for an unconstrained parameter.)
-    let any_unbound = op.type_params.iter().any(|(_, var)| {
-        let t = type_param_var_term(kb, *var);
-        let resolved = walk_view(kb, subst, &TermIdView(t));
-        resolved_var(kb, &resolved).is_some()
-    });
-    if !any_unbound {
         return;
     }
 
@@ -4753,48 +4732,23 @@ pub(super) fn infer_discharged_row_tails(
     let mut lower: Vec<Lower> = Vec::new();
     for (param, written, actual) in pairs {
         let declared = read.get(param).unwrap_or(written);
-        if !type_head_is_callable(kb, declared) {
-            continue;
-        }
-        let Some((_, _, Some(d_eff))) = arrow_parts(kb, declared) else {
-            continue;
-        };
-        let d_row = canonical_effects_row(kb, &d_eff);
-        let Some((d_present, d_tails, d_absent)) = decompose_effect_row(kb, subst, &d_row) else {
-            continue;
-        };
-        // The one flexible tail the pass binds. A rigid tail beside it is the caller's own
-        // row, which holds itself and takes nothing.
-        let d_rigid = rigid_row_tails(kb, subst, &d_tails);
-        let mut flexible = d_tails
-            .iter()
-            .map(|t| walk_type(kb, subst, *t))
-            .filter(|t| !d_rigid.contains(t));
-        let (Some(tail), None) = (flexible.next(), flexible.next()) else {
+        let Some(SlotRow {
+            tail,
+            present: d_present,
+            absent: d_absent,
+            rigid: d_rigid,
+            actual_present: a_present,
+            actual_rigid: a_rigid,
+            ..
+        }) = slot_row(kb, subst, declared, actual)
+        else {
             continue;
         };
-        if !matches!(kb.get_term(tail), Term::Var(Var::Global(_))) {
-            continue;
-        }
-        let Some((_, _, Some(a_eff))) = arrow_parts(kb, actual) else {
-            continue;
-        };
-        let a_row = canonical_effects_row(kb, &a_eff);
-        let Some((a_present, a_tails, a_absent)) = decompose_effect_row(kb, subst, &a_row) else {
-            continue;
-        };
-        let a_rigid = rigid_row_tails(kb, subst, &a_tails);
-        let all_rigid = a_tails
-            .iter()
-            .all(|t| a_rigid.contains(&walk_type(kb, subst, *t)));
-        if !all_rigid || !a_absent.is_empty() {
-            continue;
-        }
         let rows: SmallVec<[TermId; 2]> = a_rigid
             .into_iter()
             .filter(|r| !d_rigid.contains(r))
             .collect();
-        let (only_a, _) = cover_present_labels(kb, subst, &a_present, &d_present);
+        let (only_a, _) = pair_present_labels(kb, subst, &a_present, &d_present);
         match lower.iter().position(|l| l.tail == tail) {
             Some(i) => {
                 for l in only_a {
@@ -4829,15 +4783,15 @@ pub(super) fn infer_discharged_row_tails(
         denied,
     } in lower
     {
-        // Re-read: `cover_present_labels` unifies as it pairs, so an earlier iteration
+        // Re-read: `pair_present_labels` unifies as it pairs, so an earlier iteration
         // may already have bound this tail. Binding a second time would contradict.
         let t = walk_type(kb, subst, tail);
         if !matches!(kb.get_term(t), Term::Var(Var::Global(_))) {
             continue;
         }
         // A residual a slot naming the tail denies is no lower bound: the callback is refused
-        // at its slot, by the check that names the absence. Unification may have stopped
-        // before it registered them on the tail (`{R}` against `{EffP, -R}`).
+        // at its slot, by the check that names the absence. The slots' absences are read here,
+        // not off the tail: no unification of these rows registered them there.
         if row_violates_lacks(kb, subst, &labels, &rows, &denied) {
             continue;
         }
@@ -4852,6 +4806,145 @@ pub(super) fn infer_discharged_row_tails(
         // wrong: the pass never claims a residual it could not bind.
         bind_row_tail(kb, subst, t, &labels, &rows);
     }
+}
+
+/// A callback slot's row beside the row of the argument passed there, as
+/// [`infer_discharged_row_tails`] reads the two: the slot's one flexible tail, which that pass
+/// binds, and the parts of both rows it binds it from.
+struct SlotRow {
+    tail: TermId,
+    present: Vec<Value>,
+    absent: Vec<Value>,
+    /// The slot's rigid tails — the caller's own rows, which hold themselves and take nothing.
+    rigid: SmallVec<[TermId; 2]>,
+    actual_present: Vec<Value>,
+    actual_rigid: SmallVec<[TermId; 2]>,
+    /// The argument's row, canonical.
+    actual_row: Value,
+}
+
+/// The pair `declared` (a slot) and `actual` (its argument's type) whose row
+/// [`infer_discharged_row_tails`] solves — `None` where it solves none: the slot is no callable
+/// or states no row (`Function[A, B]`); its row has no flexible tail (closed, or holding the
+/// caller's own rows alone: nothing to infer) or TWO (a row UNION, `{E, EffP}` — which lower
+/// bound belongs to which tail is not decidable here); or the argument's row is OPEN — a tail of
+/// it a flexible variable — or states an absence: those are the shapes the unify and subtype
+/// arms reason about with their own tail machinery.
+fn slot_row(kb: &mut KnowledgeBase, subst: &Substitution, declared: &Value, actual: &Value) -> Option<SlotRow> {
+    if !type_head_is_callable(kb, declared) {
+        return None;
+    }
+    let (_, _, Some(d_eff)) = arrow_parts(kb, declared)? else {
+        return None;
+    };
+    let d_row = canonical_effects_row(kb, &d_eff);
+    let (present, d_tails, absent) = decompose_effect_row(kb, subst, &d_row)?;
+    let rigid = rigid_row_tails(kb, subst, &d_tails);
+    let mut flexible = d_tails
+        .iter()
+        .map(|t| walk_type(kb, subst, *t))
+        .filter(|t| !rigid.contains(t));
+    let (Some(tail), None) = (flexible.next(), flexible.next()) else {
+        return None;
+    };
+    if !matches!(kb.get_term(tail), Term::Var(Var::Global(_))) {
+        return None;
+    }
+    let (_, _, Some(a_eff)) = arrow_parts(kb, actual)? else {
+        return None;
+    };
+    let a_row = canonical_effects_row(kb, &a_eff);
+    let (actual_present, a_tails, a_absent) = decompose_effect_row(kb, subst, &a_row)?;
+    let actual_rigid = rigid_row_tails(kb, subst, &a_tails);
+    let all_rigid = a_tails
+        .iter()
+        .all(|t| actual_rigid.contains(&walk_type(kb, subst, *t)));
+    if !all_rigid || !a_absent.is_empty() {
+        return None;
+    }
+    Some(SlotRow {
+        tail,
+        present,
+        absent,
+        rigid,
+        actual_present,
+        actual_rigid,
+        actual_row: a_row,
+    })
+}
+
+/// Does a call record its argument at a parameter of type `param_type` for
+/// [`infer_discharged_row_tails`] — a CALLABLE parameter of an operation that declares type
+/// parameters, the population a row tail can live in? So an ordinary call allocates nothing.
+pub(super) fn callback_pair_recorded(kb: &KnowledgeBase, op: &OperationInfoFull, param_type: &Value) -> bool {
+    !op.type_params.is_empty() && type_head_is_callable(kb, param_type)
+}
+
+/// The slot a call's argument loops unify the callback `actual` with, at `op`'s parameter
+/// `param`: `declared` with `actual`'s own row in place of its row, where
+/// [`infer_discharged_row_tails`] solves that row ([`slot_row`]) — so the unification relates the
+/// two functions' parameters and results and leaves the row to the pass, which reads every
+/// argument naming the tail. A unification of the rows closed the tail at the first argument's
+/// least row ([`infer_discharged_row_tails`] has the measurement). `None`: the slot as written.
+///
+/// Only where the pass reads every place the tail is named: the rows of the call's callback
+/// slots. A tail a parameter names anywhere else — a callback inside an `Option`, a slot's own
+/// parameter or result — is met there by unification as the arguments are, which closes it, so
+/// a slot left to the pass beside it would be judged against a row its own argument never took
+/// part in: `two_opt[Rho](a: Option[T = () -> Int64 @ {Rho}], b: () -> Int64 @ {Rho})` at a
+/// `{Clock}` `b` written first and a pure `a` was refused at `b` (MEASURED), where unifying `b`
+/// first had made the row `{Clock}`.
+pub(super) fn slot_at_argument_row(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    op: &OperationInfoFull,
+    param: Symbol,
+    declared: &Value,
+    actual: &Value,
+) -> Option<Value> {
+    if !callback_pair_recorded(kb, op, declared) {
+        return None;
+    }
+    let SlotRow { tail, actual_row, .. } = slot_row(kb, subst, declared, actual)?;
+    if tail_named_outside_callback_rows(kb, subst, op, param, declared, tail) {
+        return None;
+    }
+    callable_with_row(kb, declared, &actual_row)
+}
+
+/// Is `tail` named by one of `op`'s parameters other than in the row of a callback slot — the
+/// slot `param` (typed `declared` at this call) or another the call records? A callback slot's
+/// own parameters and result count as elsewhere. Read through σ, so a tail that is a row
+/// variable's continuation (`Rho := {| ?f}`) is found where `Rho` is written.
+fn tail_named_outside_callback_rows(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    op: &OperationInfoFull,
+    param: Symbol,
+    declared: &Value,
+    tail: TermId,
+) -> bool {
+    let Term::Var(tail_var) = *kb.get_term(tail) else {
+        return false;
+    };
+    for (p, written) in &op.params {
+        let ty = if *p == param { declared } else { written };
+        let parts: SmallVec<[Value; 2]> = if callback_pair_recorded(kb, op, ty) {
+            match arrow_parts(kb, ty) {
+                Some((params, result, _)) => params.into_iter().chain([result]).collect(),
+                None => SmallVec::from_elem(ty.clone(), 1),
+            }
+        } else {
+            SmallVec::from_elem(ty.clone(), 1)
+        };
+        for part in parts {
+            let walked = walk_type_deep_value(kb, subst, &part);
+            if kb.mentions_var(&walked, &|v| v == tail_var) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// The refusal of a call that leaves `open`, a type parameter of `fn_sym`, unfixed: the

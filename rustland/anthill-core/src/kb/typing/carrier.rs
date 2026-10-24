@@ -3489,16 +3489,12 @@ pub(super) fn push_effect_with_guard_discharge(
     walked: Value,
     out: &mut Vec<Value>,
 ) -> bool {
-    let (bare_row, walked) = if value_is_bare_row_expr(kb, &walked) {
-        (true, wrap_bare_effect_expr_as_row(kb, &walked))
-    } else {
-        (false, walked)
-    };
-    if bare_row || matches!(type_head(kb, &walked), TypeHead::EffectsRows) {
-        // A WRITTEN row wrapper: flatten to its present labels, then — WI-067 — drop the
-        // label of any guarded atom inside whose σ(guard) refutes from Γ. The flatten
-        // leaves a guarded atom's label conservatively present (WI-478); discharge
-        // removes only the proven-dropped ones.
+    if value_is_bare_row_expr(kb, &walked) || matches!(type_head(kb, &walked), TypeHead::EffectsRows) {
+        // A ROW — a written wrapper, or the bare expression a bound row variable walks to,
+        // read as it stands on whatever carrier the walk left it: flatten to its present
+        // labels, then — WI-067 — drop the label of any guarded atom inside whose σ(guard)
+        // refutes from Γ. The flatten leaves a guarded atom's label conservatively present
+        // (WI-478); discharge removes only the proven-dropped ones.
         let mut present = effect_row_present_values(kb, &walked);
         if has_guarded {
             drop_refuted_guarded_labels(kb, flow, subst, guard_sigma, &walked, &mut present);

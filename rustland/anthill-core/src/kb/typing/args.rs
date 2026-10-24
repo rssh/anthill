@@ -1974,14 +1974,13 @@ pub(super) fn reorder_named_args_in_apply(
 /// Wrap a BARE `EffectExpression` node (`merge(…)` / `present(…)` / `open(…)` /
 /// `empty_row`, the shape a BOUND row-tail var walks to) into the canonical
 /// `effects_rows(…)` wrapper the row machinery consumes. Carrier-preserving: a
-/// ground expression stays ground, an occurrence stays an occurrence.
+/// ground expression stays ground, an occurrence stays an occurrence, and an entity spine
+/// stays one — every reader takes the wrapper through the view.
 ///
-/// TOTAL, because A ROW HAS EXACTLY TWO CARRIERS — there is no third case to fall back
-/// from. That is WI-20260820-CTD6D's verdict, which asked whether a `Value::Entity`-carried
+/// THE ROW IR MINTS TWO CARRIERS. WI-20260820-CTD6D asked whether a `Value::Entity`-carried
 /// row is REACHABLE (give the wrapper an `Entity` constructor and drive the flatten) or
 /// UNREACHABLE BY CONSTRUCTION (say which producers can mint an effect-row `Value`, then
-/// make the case loud). It is the second, and the reason is in the row IR itself rather
-/// than in a reachability argument about who calls this:
+/// make the case loud), and answered the second from the row IR itself:
 ///
 ///  * EVERY row-structural position in the occurrence IR is a
 ///    [`TypeChild`](crate::kb::node_occurrence::TypeChild) — `TypeNode::EffectsRows
@@ -2004,22 +2003,25 @@ pub(super) fn reorder_named_args_in_apply(
 ///    invariant in the same breath, as `unreachable!("a param type is Term or Node")`. The
 ///    NARROWING direction says it too: [`value_to_type_child`], where a `Value` enters the
 ///    row IR, calls a scalar / `Var` / `Entity` in that slot "a typer bug";
-///  * everything between those producers and here PRESERVES the carrier —
-///    `walk_type_deep_value_g`, `substitute_ref_syms_value` and `rekey_resource_value` each
-///    end `other => other.clone()`, and `merge_effects_into` only clones — and the σ surfacing
-///    [`walk_value_to_resolved`] can only hand back what a bind put in: `bind_row_tail`
-///    binds a `TermId`, the multi-tail absorb binds another row's own inner expression,
-///    and WI-375's alias threading is gated on `matches!(value, Value::Node(_))`.
 ///
-/// TWO CARRIERS ESCAPE THE IR ARGUMENT, and they need their own census — found by review of
-/// this ticket, not by the four bullets above, which is why they are stated separately
-/// rather than folded in. The classifier keys on `head(kb).functor_sym()`, and WI-436 makes
-/// a 0-ARY row constructor read as a bare [`ViewHead::Ref`]: `empty_row` is one (it is by
-/// volume the most common row shape reaching here — 27 621 of the 97 799 probed calls). A
-/// `Value::SymbolRef(empty_row)` and a nullary `Value::Entity { functor: empty_row }` BOTH
-/// answer `ViewHead::Ref(empty_row)` — `functor_view_head` canonicalizes the second — so
-/// either would classify as a bare row WITHOUT ever passing through the row IR. Neither is
-/// reachable, for a producer reason rather than a structural one:
+/// AND σ MINTS A THIRD, outside the IR. The deep walk splices a binding the term walk cannot
+/// hold into the term's spine through `fn_value` (`splice_non_term_bindings`,
+/// WI-20260929-0RP29), so a term row open at a tail bound to an occurrence row — `open(?f)`,
+/// `?f := {Modify[c]}` — comes back as a `Value::Entity`, a type on the entity carrier like any
+/// other σ spine. It reaches here as a `Function` type's `E` read off a call's walked result
+/// (`mk(gen, lambda () -> put(c, 4), …)` over `-> Function[…, E = Rho]`, `gen[E]() effects {E}`
+/// beside a writer sharing `Rho`), and the readers of a walked call row met it too: each
+/// panicked in the arm below (MEASURED, WI-20260820-RDNS4). It is wrapped on its spine; those
+/// readers take the bare expression through the view and wrap nothing.
+///
+/// ONE CARRIER ESCAPES THE IR ARGUMENT, and needs its own census — found by review of
+/// CTD6D, not by the bullets above. The classifier keys on `head(kb).functor_sym()`, and
+/// WI-436 makes a 0-ARY row constructor read as a bare [`ViewHead::Ref`]: `empty_row` is one
+/// (it is by volume the most common row shape reaching here — 27 621 of the 97 799 probed
+/// calls). A `Value::SymbolRef(empty_row)` answers `ViewHead::Ref(empty_row)`, so it would
+/// classify as a bare row WITHOUT ever passing through the row IR. It is not reachable, for a
+/// producer reason rather than a structural one (a nullary `Value::Entity { functor:
+/// empty_row }` answers the same, and is wrapped as every entity is):
 ///
 ///  * `Value::SymbolRef` has exactly FOUR producers. Three are at its evaluator minter
 ///    (`symbol_value`, eval/builtins.rs): `Dictionary.impl`, `OpRef.op`, `OpRef.named`.
@@ -2028,25 +2030,21 @@ pub(super) fn reorder_named_args_in_apply(
 ///    or operation symbol the KB already holds; none can be an `EffectExpression`
 ///    constructor. The count is stated rather than the reason alone because it is what
 ///    licenses the panic arm below, and a census outside the evaluator is exactly the kind
-///    a later reader would not think to look for;
-///  * a nullary `Value::Entity` over `empty_row` is what the EVALUATOR would mint for a
-///    program writing `empty_row()`. That is a runtime value, and the typer's effect stream
-///    is built by the loader and by the typer's own row extraction — never fed from the
-///    evaluator.
+///    a later reader would not think to look for.
 ///
 /// `ctd6d_row_carrier_tests` drives the `SymbolRef` case directly, so this verdict is pinned
 /// rather than only argued.
 ///
-/// MEASURED as well as argued. A probe here and at both callers, over the whole workspace
-/// suite (5353 tests over 35 binaries), logged 969 760 row-position values: every one was
-/// `Value::Term` or `Value::Node` and the third arm never fired. A corpus run is only a
+/// MEASURED as well as argued, before σ's splice. A probe here and at both callers, over the
+/// whole workspace suite (5353 tests over 35 binaries), logged 969 760 row-position values:
+/// every one was `Value::Term` or `Value::Node` and the third arm never fired. A corpus run is only a
 /// lower bound — which is why the verdict rests on the IR above and the run is only what
 /// says nothing reachable contradicts it. The same run measured something the corpus DOES
 /// leave uncovered: all 97 799 values that reached THIS function were `Value::Term`, so the
 /// `Value::Node` arm is never taken by any program in the suite. `ctd6d_row_carrier_tests`
 /// drives it directly for that reason.
 ///
-/// The third arm is an OR-PATTERN over every remaining `Value` variant with NO `_`, so a new
+/// The last arm is an OR-PATTERN over every remaining `Value` variant with NO `_`, so a new
 /// carrier is a COMPILE ERROR here and its author has to decide, instead of inheriting a
 /// silent fallback. It PANICS rather than taking [`value_to_type_child`]'s softer
 /// `debug_assert!`-plus-fallback on the same invariant, and the difference is that that site
@@ -2062,10 +2060,6 @@ pub(super) fn reorder_named_args_in_apply(
 /// ([`value_is_bare_row_expr`] reads `head(kb).functor_sym()`, which every carrier answers)
 /// while only the carrier decided whether the wrap happened.
 ///
-/// Shared by the two sites that must turn a walked row VALUE back into a row:
-/// [`explode_incurred_effect_row`] (the op-boundary reader) and the call-site
-/// effect-contribution loop (WI-329) — so the wrapping cannot drift between the
-/// producer of a call's incurred effects and the reader that checks them.
 pub(super) fn wrap_bare_effect_expr_as_row(kb: &mut KnowledgeBase, expr: &Value) -> Value {
     match expr {
         Value::Term { id: t, .. } => Value::term(kb.make_effects_rows_type(*t)),
@@ -2074,6 +2068,12 @@ pub(super) fn wrap_bare_effect_expr_as_row(kb: &mut KnowledgeBase, expr: &Value)
             occ.span,
             occ.owner,
         )),
+        // σ's splice spine (see the doc), wrapped on it.
+        Value::Entity { .. } => {
+            let effects_rows = kb.resolve_symbol("anthill.prelude.TypeExtractor.EffectsRows");
+            let expr_key = kb.intern("effects_expr");
+            kb.fn_value(effects_rows, Vec::new(), vec![(expr_key, expr.clone())])
+        }
         // No `_`: see the doc above. A new `Value` variant lands here as a compile error.
         Value::Int(_)
         | Value::BigInt(_)
@@ -2082,7 +2082,6 @@ pub(super) fn wrap_bare_effect_expr_as_row(kb: &mut KnowledgeBase, expr: &Value)
         | Value::Str(_)
         | Value::Unit
         | Value::Tuple { .. }
-        | Value::Entity { .. }
         | Value::Closure(_)
         | Value::OpRef { .. }
         | Value::Stream(_)
@@ -2094,10 +2093,9 @@ pub(super) fn wrap_bare_effect_expr_as_row(kb: &mut KnowledgeBase, expr: &Value)
         | Value::Var(_)
         | Value::SymbolRef(_)
         | Value::Relation { .. } => unreachable!(
-            "effect row on a THIRD carrier: row-shaped by functor head, but neither \
-             `Value::Term` nor `Value::Node` — and those are the only two the row IR \
-             can mint, since every row-structural position is a `TypeChild` \
-             (WI-20260820-CTD6D; this fn's doc carries the census): {expr:?}"
+            "effect row on a carrier no row rides: row-shaped by functor head, but not a \
+             `Value::Term` or `Value::Node` the row IR mints, nor a `Value::Entity` spine σ \
+             splices (WI-20260820-CTD6D; this fn's doc carries the census): {expr:?}"
         ),
     }
 }
@@ -2117,51 +2115,6 @@ pub(super) fn explode_incurred_effect_row(
     effect: &Value,
 ) -> Option<Vec<Value>> {
     explode_declared_effect_row(kb, effect).map(|(atoms, _absent)| atoms)
-}
-
-/// IS THIS EFFECT VALUE A ROW, and if so what is it as a canonical `effects_rows(…)`?
-/// `None` for an ordinary label (`Modify[c]`, `Error`, a bare row var), which its
-/// callers compare atom-to-atom.
-///
-/// Split out of [`explode_incurred_effect_row`] by WI-20260830-APWM3 so the DECLARED
-/// side ([`explode_declared_effect_row`]) classifies by exactly the same predicate the
-/// INCURRED side does. The two are compared against each other, so a shape one calls a
-/// row and the other calls a label is precisely the mismatch this pair exists to avoid
-/// — the same argument [`wrap_bare_effect_expr_as_row`]'s doc makes for sharing the
-/// WRAP between a call's effect producer and its reader.
-///
-/// Row-shaped = the `effects_rows` wrapper OR a bare `EffectExpression` node
-/// (`merge`/`present`/`absent`/`open`/`empty_row`), matched by QUALIFIED functor so a
-/// user sort that merely shares the short name `merge` is not misclassified. A bound
-/// row var walks to the bare form.
-pub(super) fn effect_value_as_row(kb: &mut KnowledgeBase, effect: &Value) -> Option<Value> {
-    let is_rows_wrapper = matches!(type_dispatch_name_view(kb, effect), Some("effects_rows"));
-    // WI-436: `empty_row` is a 0-ary constructor → bare `Ref` head; read the
-    // functor symbol off either spelling so the empty row is still recognized
-    // as row-shaped (not leaked as an undeclared `empty_row` effect label).
-    let head_is_row_expr = effect.head(kb).functor_sym().is_some_and(|sym| {
-        matches!(
-            kb.qualified_name_of(sym)
-                .strip_prefix("anthill.prelude.EffectExpression."),
-            // WI-478: a bare `guarded(…)` atom is row-shaped (it explodes via
-            // `decompose_effect_row`'s guarded arm → its label, conservatively
-            // present) — without it, a guarded incurred effect surfaces whole.
-            Some("merge" | "present" | "guarded" | "absent" | "open" | "empty_row")
-        )
-    });
-    if !is_rows_wrapper && !head_is_row_expr {
-        return None;
-    }
-    if is_rows_wrapper {
-        return Some(effect.clone());
-    }
-    // Wrap the bare EffectExpression so `decompose_effect_row` sees the
-    // canonical `effects_rows(…)` shape. Infallible: `head_is_row_expr` above
-    // already says this IS a row, and a row has two carriers (WI-20260820-CTD6D
-    // — [`wrap_bare_effect_expr_as_row`]'s doc carries the census). The `None`
-    // this arm used to be able to produce was read by the caller as "not a row",
-    // which is the pre-WI-441 leak.
-    Some(wrap_bare_effect_expr_as_row(kb, effect))
 }
 
 /// WI-20260830-APWM3 — the DECLARED twin of [`explode_incurred_effect_row`]: flatten one
@@ -2201,9 +2154,11 @@ pub(super) fn explode_declared_effect_row(
     kb: &mut KnowledgeBase,
     effect: &Value,
 ) -> Option<(Vec<Value>, Vec<Value>)> {
-    let row = effect_value_as_row(kb, effect)?;
+    if !effect_value_is_row_shaped(kb, effect) {
+        return None;
+    }
     let subst = Substitution::new();
-    let (present, tails, absent) = decompose_effect_row(kb, &subst, &row)?;
+    let (present, tails, absent) = decompose_effect_row(kb, &subst, effect)?;
     let mut atoms = present;
     for t in tails {
         atoms.push(Value::term(t));

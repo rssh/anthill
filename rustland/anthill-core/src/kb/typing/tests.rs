@@ -5876,7 +5876,10 @@ end
 /// that site rather than a silent inheritance of the old fallback.
 #[cfg(test)]
 mod ctd6d_row_carrier_tests {
-    use super::super::{type_head, value_is_bare_row_expr, wrap_bare_effect_expr_as_row, TypeHead};
+    use super::super::{
+        decompose_effect_row, type_head, value_is_bare_row_expr, wrap_bare_effect_expr_as_row, TypeHead,
+    };
+    use crate::kb::subst::Substitution;
     use crate::eval::value::Value;
     use crate::kb::load::register_prelude;
     use crate::kb::node_occurrence::TypeChild;
@@ -5919,10 +5922,10 @@ mod ctd6d_row_carrier_tests {
         ))
     }
 
-    /// The SAME `merge(left, right)` on a THIRD carrier — an ordinary `Value::Entity` over
-    /// the prelude's `EffectExpression.merge` functor. Nothing in the kernel mints this
-    /// (that is the ticket's verdict), so the test mints it by hand: no producer is being
-    /// asserted to exist, only that the wrapper answers loudly if one ever does.
+    /// The SAME `merge(left, right)` on a THIRD carrier — a `Value::Entity` over the prelude's
+    /// `EffectExpression.merge` functor, the spine σ's splice builds around a binding the term
+    /// walk cannot hold (WI-20260820-RDNS4 measured it reaching the wrapper). Minted by hand
+    /// here, as the splice builds it.
     fn entity_bare_row(kb: &mut KnowledgeBase) -> Value {
         let merge = kb.resolve_symbol("anthill.prelude.EffectExpression.merge");
         let left_key = kb.intern("left");
@@ -5947,13 +5950,13 @@ mod ctd6d_row_carrier_tests {
         Value::SymbolRef(kb.resolve_symbol("anthill.prelude.EffectExpression.empty_row"))
     }
 
-    /// THE PREMISE, not the fix — passes with the change backed out. `value_is_bare_row_expr`
-    /// reads only `head(kb).functor_sym()`, and a `Value::Entity` answers that as readily as
-    /// a term does, so the Entity-carried `merge(…)` IS classified as a row and IS handed to
-    /// the wrapper. That is what made the old `_ => None` a silent declassification rather
-    /// than an unreachable arm.
+    /// THE PREMISE — passes either way. `value_is_bare_row_expr` reads only
+    /// `head(kb).functor_sym()`, and a `Value::Entity` answers that as readily as a term does,
+    /// so the Entity-carried `merge(…)` IS classified as a row and IS handed to the wrapper.
+    /// That is what made the old `_ => None` a silent declassification rather than an
+    /// unreachable arm.
     #[test]
-    fn the_classifier_admits_a_third_carrier_the_wrapper_must_refuse() {
+    fn the_classifier_admits_an_entity_carried_row() {
         let mut kb = kb_with_prelude();
         let entity = entity_bare_row(&mut kb);
         assert!(
@@ -5975,7 +5978,7 @@ mod ctd6d_row_carrier_tests {
     /// verdict is the same — no producer of `SymbolRef` mints an `EffectExpression` symbol —
     /// but it is a PRODUCER census, not a structural one, so it is pinned here.
     #[test]
-    #[should_panic(expected = "THIRD carrier")]
+    #[should_panic(expected = "a carrier no row rides")]
     fn a_zero_ary_row_on_the_symbolref_carrier_is_refused_loudly() {
         let mut kb = kb_with_prelude();
         let sref = symbolref_bare_row(&mut kb);
@@ -5986,16 +5989,26 @@ mod ctd6d_row_carrier_tests {
         let _ = wrap_bare_effect_expr_as_row(&mut kb, &sref);
     }
 
-    /// THE DELIVERABLE — fails on the back-out. A row-shaped value on a carrier the row IR
-    /// cannot mint is a kernel invariant violation, and it is now reported at the site with
-    /// the offending value named, instead of being answered `None` and carried whole into
-    /// the enclosing row as one opaque atom.
+    /// AN ENTITY-CARRIED ROW WRAPS ON ITS SPINE, and reads as the row through the view: the
+    /// wrapper is `effects_rows(…)` and its one label decomposes. It panicked "effect row on
+    /// a THIRD carrier" until WI-20260820-RDNS4 found σ's splice minting one, and fails so
+    /// with the `Value::Entity` arm backed out.
     #[test]
-    #[should_panic(expected = "THIRD carrier")]
-    fn a_row_shaped_value_on_a_third_carrier_is_refused_loudly() {
+    fn an_entity_carried_bare_row_wraps_on_its_spine() {
         let mut kb = kb_with_prelude();
         let entity = entity_bare_row(&mut kb);
-        let _ = wrap_bare_effect_expr_as_row(&mut kb, &entity);
+        let wrapped = wrap_bare_effect_expr_as_row(&mut kb, &entity);
+        assert!(
+            matches!(wrapped, Value::Entity { .. }),
+            "an entity spine stays one, got {wrapped:?}",
+        );
+        assert!(
+            matches!(type_head(&kb, &wrapped), TypeHead::EffectsRows),
+            "and reads as `effects_rows(…)` through the view",
+        );
+        let (present, tails, absent) = decompose_effect_row(&mut kb, &Substitution::new(), &wrapped)
+            .expect("the wrapped row decomposes");
+        assert_eq!((present.len(), tails.len(), absent.len()), (1, 0, 0), "its one label: {present:?}");
     }
 
     /// A LIVE arm — passes either way. A ground row wraps to a ground `effects_rows(…)`.
