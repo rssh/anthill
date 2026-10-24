@@ -823,8 +823,10 @@ pub enum TypeError {
     ///
     /// `op` is the operation, `sort` its sort, `sort_param` the parameter used (`V`) and
     /// `param` the operation's parameter that is the sort at an open `sort_param` (`c`) —
-    /// or, `nested`, holds one (`xs: List[T = Cell]`). `defaulted` when the slot was left
-    /// out and holds its parameter's default (proposal 069 §2) rather than an open `?`.
+    /// or, `nested`, holds one (`xs: List[T = Cell]`). `through` is the alias that
+    /// application is written through (`c: MyCell`), for the message. `defaulted` when the
+    /// slot was left out and holds its parameter's default (proposal 069 §2) rather than an
+    /// open `?`.
     /// The check and its scope are [`check_sort_parameter_carriers`]'s.
     SortParamWithoutCarrier {
         span: Option<Span>,
@@ -833,6 +835,7 @@ pub enum TypeError {
         sort_param: Symbol,
         param: Symbol,
         nested: bool,
+        through: Option<Symbol>,
         defaulted: bool,
     },
     /// WI-828: a cross-sort call (direct or op-as-function-value) to an
@@ -1153,17 +1156,24 @@ fn sort_param_without_carrier_detail(
     sort_param: Symbol,
     param: Symbol,
     nested: bool,
+    through: Option<Symbol>,
     defaulted: bool,
 ) -> (String, String) {
     let s = short_name_of(kb.local_name_of(sort));
     let v = short_name_of(kb.local_name_of(sort_param));
     let c = kb.local_name_of(param);
     let me = crate::intern::SELF_TYPE_NAME;
-    let (holds, is) = if defaulted {
-        (format!("holds a `{s}` at `{v}`'s default"), format!("is a `{s}` at `{v}`'s default"))
+    let what = if defaulted {
+        format!("a `{s}` at `{v}`'s default")
     } else {
-        (format!("holds any `{s}`"), format!("is any `{s}`"))
+        format!("any `{s}`")
     };
+    // Through an alias, the name written first: `b: MyBox` is "a `MyBox`, a `Box` at …".
+    let what = match through {
+        Some(alias) => format!("a `{}`, {what}", short_name_of(kb.local_name_of(alias))),
+        None => what,
+    };
+    let (holds, is) = (format!("holds {what}"), format!("is {what}"));
     let left = if defaulted { "left out" } else { "left to a `?`" };
     let (is, repair) = if nested {
         (
@@ -2140,6 +2150,7 @@ impl TypeError {
                 sort_param,
                 param,
                 nested,
+                through,
                 defaulted,
                 ..
             } => {
@@ -2149,6 +2160,7 @@ impl TypeError {
                     *sort_param,
                     *param,
                     *nested,
+                    *through,
                     *defaulted,
                 );
                 format!(
@@ -2912,6 +2924,7 @@ impl TypeError {
                 sort_param,
                 param,
                 nested,
+                through,
                 defaulted,
                 ..
             } => {
@@ -2921,6 +2934,7 @@ impl TypeError {
                     *sort_param,
                     *param,
                     *nested,
+                    *through,
                     *defaulted,
                 );
                 LoadError::TypeMismatch {

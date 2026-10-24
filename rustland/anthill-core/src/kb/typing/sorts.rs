@@ -700,13 +700,20 @@ fn check_operation_signatures(kb: &KnowledgeBase) -> Vec<TypeError> {
 /// to the enclosing sort left out, following an alias OF the sort to do it, so the sort's own
 /// name is what stood here for the first two; with that fill deleted `get(p: MyPair) -> L`
 /// LOADED (MEASURED), the alias being a sort of another name. The last two loaded before it
-/// and after, and are refused with the rest now.
+/// and after, and are refused with the rest now. A slot the alias's definition LEFT OUT is
+/// left out here as in a type written out: the alias's recorded type keeps the default's mark
+/// ([`KnowledgeBase::alias_types`]), so `p: MyCell` under `sort Cell[V = Int64]` is not this
+/// cell either.
 ///
 /// ONE REFUSAL PER OPERATION, at the first parameter of the sort that leaves the slot open.
 fn check_sort_parameter_carriers(kb: &KnowledgeBase) -> Vec<TypeError> {
+    /// One application of the sort in a parameter's type: whether it is nested, the alias it
+    /// is written through, and the bindings it writes.
+    type Application = (bool, Option<Symbol>, Vec<(Symbol, Value)>);
     /// Every application of `sort` in `ty`, as the bindings it writes (none for the bare
-    /// name) and whether it is NESTED in the type rather than the whole of it. `expanding`
-    /// is the aliases being read through, so one that names itself in its own definition —
+    /// name), whether it is NESTED in the type rather than the whole of it, and the alias it
+    /// is written through, if any (`MyBox` of `b: MyBox`), for the message. `expanding` is
+    /// the aliases being read through, so one that names itself in its own definition —
     /// which has no finite expansion — is read once.
     fn applications_of(
         kb: &KnowledgeBase,
@@ -714,11 +721,15 @@ fn check_sort_parameter_carriers(kb: &KnowledgeBase) -> Vec<TypeError> {
         sort: Symbol,
         nested: bool,
         expanding: &mut Vec<Symbol>,
-        out: &mut Vec<(bool, Vec<(Symbol, Value)>)>,
+        out: &mut Vec<Application>,
     ) {
+        let through = match ty {
+            Value::Node(occ) => crate::kb::node_occurrence::written_alias(kb, occ),
+            _ => None,
+        };
         match extract_type(kb, ty) {
             TypeExtractor::SortRef(s) if kb.canonical_sort_sym(s) == sort => {
-                out.push((nested, Vec::new()));
+                out.push((nested, through, Vec::new()));
             }
             TypeExtractor::SortRef(s) if !expanding.contains(&s) => {
                 expanding.push(s);
@@ -730,7 +741,7 @@ fn check_sort_parameter_carriers(kb: &KnowledgeBase) -> Vec<TypeError> {
                             applications_of(kb, v, sort, true, expanding, out);
                         }
                         if kb.canonical_sort_sym(base) == sort {
-                            out.push((nested, bindings));
+                            out.push((nested, Some(s), bindings));
                         }
                     }
                     Some(AliasExpansion::NotASort(shape)) => {
@@ -747,7 +758,7 @@ fn check_sort_parameter_carriers(kb: &KnowledgeBase) -> Vec<TypeError> {
                     applications_of(kb, v, sort, true, expanding, out);
                 }
                 if kb.canonical_sort_sym(base) == sort {
-                    out.push((nested, bindings));
+                    out.push((nested, through, bindings));
                 }
             }
             TypeExtractor::NamedTuple(fields) => {
@@ -790,15 +801,11 @@ fn check_sort_parameter_carriers(kb: &KnowledgeBase) -> Vec<TypeError> {
         }
         // The operation's parameters that are, or hold, its own sort — nearly every
         // operation stops at this list being empty.
-        let mut refs: Vec<(Symbol, bool, Vec<(Symbol, Value)>)> = Vec::new();
+        let mut refs: Vec<(Symbol, Application)> = Vec::new();
         for (name, ty) in &params {
             let mut found = Vec::new();
             applications_of(kb, ty, sort, false, &mut Vec::new(), &mut found);
-            refs.extend(
-                found
-                    .into_iter()
-                    .map(|(nested, bindings)| (*name, nested, bindings)),
-            );
+            refs.extend(found.into_iter().map(|application| (*name, application)));
         }
         if refs.is_empty() {
             continue;
@@ -834,7 +841,7 @@ fn check_sort_parameter_carriers(kb: &KnowledgeBase) -> Vec<TypeError> {
                     .find(|(k, _)| same_label(kb, *k, *sort_param))
                     .map(|(_, v)| v.clone())
             };
-            let carried = refs.iter().any(|(_, _, bindings)| {
+            let carried = refs.iter().any(|(_, (_, _, bindings))| {
                 slot(bindings).is_some_and(|v| {
                     declared_type_param_vid(kb, &v).map(|h| h.raw()) == Some(vid.raw())
                 })
@@ -844,14 +851,14 @@ fn check_sort_parameter_carriers(kb: &KnowledgeBase) -> Vec<TypeError> {
             }
             // A slot holding its parameter's default was LEFT OUT, and is read as such
             // (proposal 069 §2): `p: Box` under `sort Box[T = Int64]` is not this box.
-            let open = refs.iter().find(|(_, _, bindings)| match slot(bindings) {
+            let open = refs.iter().find(|(_, (_, _, bindings))| match slot(bindings) {
                 None => true,
                 Some(v) => {
                     crate::kb::node_occurrence::is_default_fill(&v)
                         || value_is_anonymous_wildcard(kb, &v)
                 }
             });
-            if let Some((param, nested, bindings)) = open {
+            if let Some((param, (nested, through, bindings))) = open {
                 let defaulted = slot(bindings)
                     .is_some_and(|v| crate::kb::node_occurrence::is_default_fill(&v));
                 errors.push(TypeError::SortParamWithoutCarrier {
@@ -861,6 +868,7 @@ fn check_sort_parameter_carriers(kb: &KnowledgeBase) -> Vec<TypeError> {
                     sort_param: *sort_param,
                     param: *param,
                     nested: *nested,
+                    through: *through,
                     defaulted,
                 });
                 break;

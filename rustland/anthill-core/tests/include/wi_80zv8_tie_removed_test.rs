@@ -338,9 +338,9 @@ end
 #[test]
 fn a_sort_parameter_beside_an_alias_of_the_sort_needs_a_carrier() {
     for (n, get, lacks) in [
-        ("a1", "operation get(p: MyPair) -> L", "`L` used with no carrier: `p` is any `Pair`"),
-        ("a2", "operation get(p: IntPair) -> R", "`R` used with no carrier: `p` is any `Pair`"),
-        ("a5", "operation get(p: AnyPair) -> L", "`L` used with no carrier: `p` is any `Pair`"),
+        ("a1", "operation get(p: MyPair) -> L", "`L` used with no carrier: `p` is a `MyPair`, any `Pair`"),
+        ("a2", "operation get(p: IntPair) -> R", "`R` used with no carrier: `p` is a `IntPair`, any `Pair`"),
+        ("a5", "operation get(p: AnyPair) -> L", "`L` used with no carrier: `p` is a `AnyPair`, any `Pair`"),
         ("a6", "operation get(p: Pairs) -> L", "`L` used with no carrier: `p` holds any `Pair`"),
     ] {
         let ns = format!("wi80zv8e.{n}");

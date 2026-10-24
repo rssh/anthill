@@ -1707,16 +1707,23 @@ pub struct KnowledgeBase {
     /// stdlib load, one of them an alias, against ~165 spec clauses asking.
     pub(crate) alias_targets: HashMap<Symbol, TermId>,
 
-    /// Each type alias's TYPE, as its declaration lowered it — the target its `SortAlias`
-    /// fact holds — for the readers that ask while files still load: an alias written
-    /// where a type is (`Loader::bare_alias_type`) and as a clause binding's value
-    /// (`Loader::clause_alias_type`). Recorded beside [`Self::alias_targets`], which
-    /// holds the same alias as a CLAUSE spells it; the two differ at a type parameter.
+    /// Each type alias's TYPE, as its declaration lowered it, for the readers that ask
+    /// while files still load: an alias written where a type is (`Loader::bare_alias_type`)
+    /// and as a clause binding's value (`Loader::clause_alias_type`). Recorded beside
+    /// [`Self::alias_targets`], which holds the same alias as a CLAUSE spells it; the two
+    /// differ at a type parameter.
+    ///
+    /// Lowered as a declaration's written type is, so it says what was written as well as
+    /// what the type is: a slot the definition left out rides its default's
+    /// [`node_occurrence::TypeNode::Defaulted`], an alias it names its
+    /// [`node_occurrence::TypeNode::Aliased`]. Its term is the target the `SortAlias` fact
+    /// holds. `sort MyBox = Box` under `sort Box[T = Int64]` is `Box[T = Int64]` with `T`
+    /// left out, so `b: MyBox` is no more `Box`'s carrier than `b: Box` is.
     ///
     /// An alias only, as there: not a `sort T = ?` parameter or an opaque sort. O(1),
     /// where reading the fact before the type check builds [`Self::sort_alias_index`] is a
     /// scan of every `SortAlias` fact, once per use of an alias.
-    pub(crate) alias_types: HashMap<Symbol, TermId>,
+    pub(crate) alias_types: HashMap<Symbol, crate::eval::value::Value>,
 
     /// Proposal 069 §1.4 — each type or effect-row PARAMETER's declared default, keyed by
     /// the parameter's symbol, as its declaration lowered it in the declaring sort's

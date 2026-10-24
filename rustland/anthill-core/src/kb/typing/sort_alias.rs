@@ -987,10 +987,22 @@ pub(crate) enum ValueAlias {
     /// The sort the alias stands for and the bindings it fixes, in the canon a data slot is
     /// written in: a type parameter as `Ref(param)`, each key a parameter's declared name. A
     /// slot the definition leaves open with `?` is left unwritten, as a type value written
-    /// without it leaves it: `sort Some = Box[V = ?]` is the value `Box`.
+    /// without it leaves it: `sort Some = Box[V = ?]` is the value `Box`. Except a slot
+    /// whose parameter declares a default, where leaving it out takes the default and `?`
+    /// does not: that `?` is kept, a variable of this use alone, as the bracket written out
+    /// holds it — `sort TQ = Two[R = ?]` is the value `Two[R = ?]` is.
+    ///
+    /// `defaults` are the slots a definition that APPLIES its sort leaves out, neither
+    /// written nor `?`, each holding its parameter's default as that bracket written as a
+    /// value does: the alias written bare is `fixed` and these, so `TS` over `sort TS =
+    /// Two[L = String]` under `sort Two[L, R = Int64]` is `Two[L = String, R = Int64]`. None
+    /// for a bare link (`sort DB = Def`), which writes the sort's name, and for an
+    /// application of the alias (`TS[R = Bool]`), which fills what it leaves out itself
+    /// ([`value_alias`]'s `bare`).
     Sort {
         base: Symbol,
         fixed: SmallVec<[(Symbol, TermId); 2]>,
+        defaults: SmallVec<[(Symbol, TermId); 2]>,
     },
     /// A tuple, an arrow or a row: the type itself, the value a bracket's entry writing it
     /// is ([`KnowledgeBase::alias_types`]).
@@ -1003,15 +1015,21 @@ pub(crate) enum ValueAlias {
 /// it where `within_declaring_scope` is false — outside that sort the parameter is
 /// nobody's. A tuple, an arrow or a row naming a parameter is read as written inside the
 /// sort too: nothing gives such a type its parameter's value at run time.
+///
+/// `bare` where the alias is written without a bracket of its own, the one reading that
+/// takes the defaults its definition leaves out (`ValueAlias::Sort`'s `defaults`).
 pub(crate) fn value_alias(
     kb: &mut KnowledgeBase,
     sym: Symbol,
     within_declaring_scope: bool,
+    bare: bool,
 ) -> Option<ValueAlias> {
     let (base, bindings) = match alias_expansion(kb, sym)? {
         AliasExpansion::Sort { base, bindings } => (base, bindings),
         AliasExpansion::NotASort(_) => {
-            let ty = *kb.alias_types.get(&sym.plain())?;
+            let ty = kb.alias_types.get(&sym.plain())?.clone();
+            let ty = crate::kb::node_occurrence::value_to_term(kb, &ty)
+                .expect("an alias's type is recorded only where its term is");
             let names_a_parameter = kb
                 .collect_vars(&TermIdView(ty))
                 .into_iter()
@@ -1025,11 +1043,40 @@ pub(crate) fn value_alias(
     if names_a_parameter && !within_declaring_scope {
         return None;
     }
+    let mut defaults = SmallVec::new();
+    if bare && crate::kb::load::alias_chain_applies(kb, sym) {
+        let written: Vec<(Symbol, Value)> =
+            bindings.iter().map(|&(key, value)| (key, Value::term(value))).collect();
+        for fill in crate::kb::load::parameter_default_fills(kb, base, &written) {
+            let ty = crate::kb::node_occurrence::value_to_term(kb, &fill.value)
+                .expect("a default instantiated over terms is a term");
+            // A default instantiated at a `?` the definition writes is left unwritten, as
+            // that `?` is.
+            if let Some(ty) = written_type_value(kb, ty) {
+                defaults.push((fill.key, ty));
+            }
+        }
+    }
+    let declaring = kb.type_arg_owner(base);
     let fixed = bindings
         .into_iter()
-        .filter_map(|(key, value)| written_type_value(kb, value).map(|v| (key, v)))
+        .filter_map(|(key, value)| {
+            let defaulted = declaring
+                .and_then(|sort| kb.type_param_sym_of(sort, kb.local_name_of(key)))
+                .is_some_and(|param| kb.sort_param_defaults.contains_key(&param));
+            if defaulted && matches!(kb.get_term(value), Term::Var(_)) {
+                let anon = kb.intern("_");
+                let fresh = kb.fresh_var(anon);
+                return Some((key, kb.alloc(Term::Var(Var::Global(fresh)))));
+            }
+            written_type_value(kb, value).map(|v| (key, v))
+        })
         .collect();
-    Some(ValueAlias::Sort { base, fixed })
+    Some(ValueAlias::Sort {
+        base,
+        fixed,
+        defaults,
+    })
 }
 
 /// Does the clause-canon type `ty` name a type parameter anywhere — a `Ref(param)` leaf?

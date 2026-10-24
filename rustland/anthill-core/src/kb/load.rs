@@ -13687,7 +13687,7 @@ fn resolve_alias_dependent_work(
 }
 
 /// Does any link of `alias`'s chain APPLY its target ([`KnowledgeBase::aliases_applying`])?
-fn alias_chain_applies(kb: &KnowledgeBase, alias: Symbol) -> bool {
+pub(crate) fn alias_chain_applies(kb: &KnowledgeBase, alias: Symbol) -> bool {
     let mut cur = alias;
     let mut seen: Vec<Symbol> = Vec::new();
     loop {
@@ -24088,17 +24088,30 @@ fn value_alias_term(
     within_declaring_scope: bool,
     structural: bool,
 ) -> Option<TermId> {
-    match super::typing::value_alias(kb, sym, within_declaring_scope)? {
-        super::typing::ValueAlias::Sort { base, fixed } if fixed.is_empty() => {
+    match super::typing::value_alias(kb, sym, within_declaring_scope, true)? {
+        super::typing::ValueAlias::Sort { base, fixed, defaults }
+            if fixed.is_empty() && defaults.is_empty() =>
+        {
             Some(kb.make_sort_ref(base))
         }
         // As the alias's definition is recorded, its bindings in their order: a data slot
-        // holds the term as written.
-        super::typing::ValueAlias::Sort { base, fixed } => Some(kb.alloc(Term::Fn {
-            functor: base,
-            pos_args: SmallVec::new(),
-            named_args: fixed,
-        })),
+        // holds the term as written. The slots it leaves out hold their defaults, in the
+        // order the bracket written out has them ([`normalize_type_args`]).
+        super::typing::ValueAlias::Sort {
+            base,
+            mut fixed,
+            defaults,
+        } => {
+            if !defaults.is_empty() {
+                fixed.extend(defaults);
+                kb.canonicalize_record_named_args(base, &mut fixed);
+            }
+            Some(kb.alloc(Term::Fn {
+                functor: base,
+                pos_args: SmallVec::new(),
+                named_args: fixed,
+            }))
+        }
         super::typing::ValueAlias::Structural(ty) => structural.then_some(ty),
     }
 }
@@ -24387,8 +24400,8 @@ fn convert_query_term_expecting(
                 && parse_terms.is_type_application(parse_id)
                 && kb.has_kind(kb_functor, SymbolKind::Sort)
             {
-                if let Some(super::typing::ValueAlias::Sort { base, fixed }) =
-                    super::typing::value_alias(kb, kb_functor, false)
+                if let Some(super::typing::ValueAlias::Sort { base, fixed, .. }) =
+                    super::typing::value_alias(kb, kb_functor, false, false)
                 {
                     let mut given: SmallVec<[(Symbol, Rc<NodeOccurrence>); 2]> = SmallVec::new();
                     for (key, value) in fixed {
@@ -26107,18 +26120,6 @@ impl ClauseHead {
                     && replacement.start() <= at.start()
                     && at.end() <= replacement.end())
         })
-    }
-}
-
-/// `t` with each `Var::Global` named in `renames` replaced by the term beside it.
-fn rename_global_vars(kb: &mut KnowledgeBase, t: TermId, renames: &[(VarId, TermId)]) -> TermId {
-    match kb.get_term(t).clone() {
-        Term::Var(Var::Global(vid)) => renames
-            .iter()
-            .find(|(old, _)| *old == vid)
-            .map_or(t, |(_, new)| *new),
-        Term::Fn { .. } => kb.map_fn_children(t, |kb, child| rename_global_vars(kb, child, renames)),
-        _ => t,
     }
 }
 
@@ -31205,7 +31206,7 @@ impl<'a> Loader<'a> {
                     && !self.in_quoted_term
                     && self.kb.has_kind(new_functor, SymbolKind::Sort)
                 {
-                    if let Some(super::typing::ValueAlias::Sort { base, fixed }) =
+                    if let Some(super::typing::ValueAlias::Sort { base, fixed, .. }) =
                         self.value_alias_here(new_functor)
                     {
                         let written: SmallVec<[Symbol; 2]> =
@@ -35437,10 +35438,10 @@ impl<'a> Loader<'a> {
     }
 
     /// [`super::typing::value_alias`] of `sym` as this walk reads it: inside the sort that
-    /// declares it, or outside.
+    /// declares it, or outside, and applied.
     fn value_alias_here(&mut self, sym: Symbol) -> Option<super::typing::ValueAlias> {
         let within = self.within_declaring_scope_of(sym);
-        super::typing::value_alias(self.kb, sym, within)
+        super::typing::value_alias(self.kb, sym, within, false)
     }
 
     /// The type value the bare name `head`, classified as one, denotes: its own
@@ -35486,7 +35487,7 @@ impl<'a> Loader<'a> {
         site: SourceSpan,
         owner: Option<Symbol>,
     ) -> (Symbol, Vec<(Symbol, Rc<NodeOccurrence>)>) {
-        let Some(super::typing::ValueAlias::Sort { base, fixed }) = self.value_alias_here(written)
+        let Some(super::typing::ValueAlias::Sort { base, fixed, .. }) = self.value_alias_here(written)
         else {
             return (written, Vec::new());
         };
@@ -37360,10 +37361,13 @@ impl<'a> Loader<'a> {
         else {
             return (written, SmallVec::new());
         };
-        let mut values: SmallVec<[TermId; 2]> = fixed.iter().map(|(_, t)| *t).collect();
+        let mut values: SmallVec<[crate::eval::value::Value; 2]> = fixed
+            .iter()
+            .map(|(_, t)| crate::eval::value::Value::term(*t))
+            .collect();
         self.open_slots_anew(&mut values);
         for ((_, slot), value) in fixed.iter_mut().zip(values) {
-            *slot = value;
+            *slot = value.expect_term();
         }
         (base, fixed)
     }
@@ -37401,10 +37405,20 @@ impl<'a> Loader<'a> {
             // (`typing::resolved_var`, `leaf_held_as_term`, the σ chain end). Wrapped in
             // a node it was a variable none of them saw — MEASURED: `own(x: OS) -> S = x`
             // refused, "expected ?S, got ?S".
-            Some(ty) if matches!(self.kb.get_term(ty), Term::Var(_)) => {
+            Some(crate::eval::value::Value::Term { id: ty, .. })
+                if matches!(self.kb.get_term(ty), Term::Var(_)) =>
+            {
                 return TypeChild::Interned(ty)
             }
-            Some(ty) => TypeChild::Interned(ty),
+            // As written where the written name is kept, as its term where it is not — the
+            // form a type written out in full takes in either.
+            Some(ty) if self.alias_nodes => {
+                super::typing::value_to_type_child_at(self.kb, &ty, span, owner)
+            }
+            Some(ty) => TypeChild::Interned(
+                node_occurrence::value_to_term(self.kb, &ty)
+                    .expect("an alias's type is recorded only where its term is"),
+            ),
             // The node-carrier control: a sort that is no alias rides the node too,
             // standing for itself. A type PARAMETER's own name is left alone, as an alias
             // of one is above.
@@ -37461,11 +37475,11 @@ impl<'a> Loader<'a> {
     ///
     /// …AND THAT SLOT IS OPEN ANEW AT EACH USE, as each written `?` is
     /// ([`Self::open_slots_anew`]).
-    fn bare_alias_type(&mut self, written: Symbol) -> Option<TermId> {
-        let stands_for = *self.kb.alias_types.get(&written)?;
+    fn bare_alias_type(&mut self, written: Symbol) -> Option<crate::eval::value::Value> {
+        let stands_for = self.kb.alias_types.get(&written)?.clone();
         let names_a_parameter = self
             .kb
-            .collect_vars(&TermIdView(stands_for))
+            .collect_vars(&stands_for)
             .into_iter()
             .any(|v| self.kb.is_canonical_type_param_var(v));
         if names_a_parameter && !self.within_declaring_scope_of(written) {
@@ -37473,7 +37487,8 @@ impl<'a> Loader<'a> {
         }
         let mut at_this_use = [stands_for];
         self.open_slots_anew(&mut at_this_use);
-        Some(at_this_use[0])
+        let [at_this_use] = at_this_use;
+        Some(at_this_use)
     }
 
     /// The types ONE use of an alias has, from the ones its declaration recorded: each
@@ -37485,10 +37500,10 @@ impl<'a> Loader<'a> {
     /// takes both (MEASURED).
     ///
     /// A type parameter's own variable is not such a slot and stays the parameter's.
-    fn open_slots_anew(&mut self, types: &mut [TermId]) {
+    fn open_slots_anew(&mut self, types: &mut [crate::eval::value::Value]) {
         let mut open: Vec<VarId> = Vec::new();
-        for &t in types.iter() {
-            for v in self.kb.collect_vars(&TermIdView(t)) {
+        for t in types.iter() {
+            for v in self.kb.collect_vars(t) {
                 if !self.kb.is_canonical_type_param_var(v) && !open.contains(&v) {
                     open.push(v);
                 }
@@ -37497,15 +37512,14 @@ impl<'a> Loader<'a> {
         if open.is_empty() {
             return;
         }
-        let anew: Vec<(VarId, TermId)> = open
-            .into_iter()
-            .map(|v| {
-                let fresh = self.kb.fresh_var(v.name());
-                (v, self.kb.alloc(Term::Var(Var::Global(fresh))))
-            })
-            .collect();
+        let mut anew = crate::kb::subst::Substitution::new();
+        for v in open {
+            let fresh = self.kb.fresh_var(v.name());
+            let fresh = self.kb.alloc(Term::Var(Var::Global(fresh)));
+            anew.bind_term(self.kb, v, fresh);
+        }
         for t in types.iter_mut() {
-            *t = rename_global_vars(self.kb, *t, &anew);
+            *t = node_occurrence::subst_value_type(self.kb, t, &anew).0;
         }
     }
 
@@ -40177,8 +40191,9 @@ impl<'a> Loader<'a> {
     /// WI-20260924-F8PYZ — record a TYPE ALIAS for the reader that asks while files still
     /// load (`KnowledgeBase::alias_targets`, read by `typing::alias_expansion`): a spec
     /// clause reads the alias as the spec it stands for. And, beside it, the TYPE the
-    /// alias stands for (`stands_for`, the target its `SortAlias` fact was just given),
-    /// for an alias written where a type is (`KnowledgeBase::alias_types`).
+    /// alias stands for (`stands_for`, as written, its term the target its `SortAlias`
+    /// fact was just given), for an alias written where a type is
+    /// (`KnowledgeBase::alias_types`).
     ///
     /// Recorded as a clause's BINDING is lowered (`sort_binding_to_value`), not as the type
     /// the `SortAlias` fact holds, because that is what the reader splices into a clause.
@@ -40202,7 +40217,7 @@ impl<'a> Loader<'a> {
         &mut self,
         sort_term: TermId,
         definition: &TypeExpr,
-        stands_for: Option<TermId>,
+        stands_for: Option<crate::eval::value::Value>,
     ) {
         let source = self.kb.name_term_sym(sort_term);
         if super::typing::is_sort_param_symbol(self.kb, source) {
@@ -40813,21 +40828,22 @@ impl<'a> Loader<'a> {
         // becomes a value fact carrying the occurrence; a ground target (the
         // universal case — a `Var` for `sort T = ?`, a `sort_ref` for `sort T = Int64`)
         // keeps the hash-consed `Term::Fn` head, byte-identical to the prior build.
-        let target_value = match &s.definition {
+        // An alias's definition is lowered as a declaration's written type is, so the type
+        // it records says what was written ([`KnowledgeBase::alias_types`]).
+        let written = match &s.definition {
             TypeExpr::Variable { term_id, .. } => {
                 crate::eval::value::Value::term(self.convert_term(*term_id))
             }
-            _ => self.type_expr_to_value(&s.definition),
+            _ => self.written_type_to_value(&s.definition),
         };
         // WI-390: lower a denoted-bearing alias target (value-in-type, e.g.
         // `sort T = Vector[Int64, 3]`) to a `TermId` so the SortAlias head stays a
         // hash-consed `Term::Fn`.
-        let target_value = self.lower_value_or_gate(target_value, "sort alias", &s.definition);
+        let target_value =
+            self.lower_value_or_gate(written.clone(), "sort alias", &s.definition);
         // SortAlias is positional: `SortAlias(sort_ref, target)`.
-        let stands_for = match &target_value {
-            crate::eval::value::Value::Term { id, .. } => Some(*id),
-            _ => None,
-        };
+        let stands_for = matches!(target_value, crate::eval::value::Value::Term { .. })
+            .then_some(written);
         self.assert_sort_alias(sort_term, target_value, domain);
         if !matches!(s.definition, TypeExpr::Variable { .. }) {
             self.record_alias_target(sort_term, &s.definition, stands_for);
@@ -45728,6 +45744,8 @@ impl<'a> Loader<'a> {
     /// member takes less than every `S` the provision covers (MEASURED).
     fn clause_alias_type(&mut self, sym: Symbol) -> Option<TermId> {
         let stands_for = self.bare_alias_type(sym)?;
+        let stands_for = node_occurrence::value_to_term(self.kb, &stands_for)
+            .expect("an alias's type is recorded only where its term is");
         Some(node_occurrence::type_in_clause_canon(self.kb, stands_for))
     }
 

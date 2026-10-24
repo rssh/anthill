@@ -5585,8 +5585,9 @@ The kernel enforces a **structural type system**:
 
   An alias carries a declaration default as the direct application does: `sort F = Function[A, B]`
   is the pure function type `Function[A, B]` is, and an alias that writes the slot (`Function[A, B,
-  ?]`, `Function[A, B, {IO}]`) keeps what it wrote. *Not yet:* the carrier rule (§5.2) reads a slot
-  an alias's definition left out, and a default filled, as written (WI-20261003-KPBVX).
+  ?]`, `Function[A, B, {Error}]`) keeps what it wrote. A slot the definition left out is left out
+  for the carrier rule (§5.2) too: under `sort MyBox = Box`, `b: MyBox` is no carrier of `Box`'s
+  parameter, as `b: Box` is not.
 - **Sorts with constructors** (`sort S { entity C₁(...), entity C₂(...) }`) introduce closed algebraic data types. All constructors are enumerated; pattern matching in rules is exhaustive.
 - **Operations** have typed signatures: `operation op(x: A, y: B) -> C`. Parameters are named bindings; the kernel type-checks that actual arguments match declared types.
 - **Terms** are typed: `Const` carries its type, `Var` declares its type, `Fn` has the type of its sort's constructor, `Ref` refers to a named type.

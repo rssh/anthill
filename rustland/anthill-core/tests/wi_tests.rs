@@ -35,6 +35,8 @@ mod wi_r653s_paren_less_dot_test;
 mod wi_tcsgt_structural_bracket_entry_test;
 #[path = "include/wi_qv5w5_sort_parameter_defaults_test.rs"]
 mod wi_qv5w5_sort_parameter_defaults_test;
+#[path = "include/wi_kpbvx_alias_carries_default_test.rs"]
+mod wi_kpbvx_alias_carries_default_test;
 #[path = "include/wi_12nkg_arrow_and_tuple_cover_test.rs"]
 mod wi_12nkg_arrow_and_tuple_cover_test;
 #[path = "include/wi_0gyw1_arrow_provision_labels_test.rs"]

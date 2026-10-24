@@ -1097,7 +1097,7 @@ impl KnowledgeBase {
             sort_domain_declined: plain(&self.sort_domain_declined),
             sort_alias_index: plain(&self.sort_alias_index),
             alias_targets: plain(&self.alias_targets),
-            alias_types: plain(&self.alias_types),
+            alias_types: self.alias_types.iter().map(|(alias, ty)| (plain(alias), c.value(ty))).collect(),
             sort_param_defaults: plain(&self.sort_param_defaults),
             op_type_param_defaults: plain(&self.op_type_param_defaults),
             alias_heads: plain(&self.alias_heads),
