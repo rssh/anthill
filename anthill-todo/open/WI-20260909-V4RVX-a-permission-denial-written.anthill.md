@@ -33,3 +33,9 @@ ACCEPTANCE: a driven escalation fixture in `wi_cbrsw_permission_effect_test.rs` 
 
 REFERENCE: WI-CBRSW (the effect and its entailment rule), proposal 064, WI-9WVT7 (the `e_absent` resolve and the measurement above), stdlib/anthill/prelude/permission.anthill (the header that states both directions).
 
+## Changes
+
+### 2026-10-24T21:17:22Z — feedback — claude
+
+Measured 2026-10-24, during WI-20261024-DK83Q. (1) `-Permission[?]` is now the bare `-Permission`, the general denial: a `?` at a slot that declares no default is the slot left out in every written type (kernel-language §8.1, §5.5). So this ticket's acceptance item "the anonymous `-Permission[?]` row pinned as still inert" no longer holds; `wi_cbrsw_permission_effect_test::a_question_mark_argument_in_a_lacks_constraint_is_the_bare_denial` pins it refused. (2) A denial over a BRACKET-bound parameter decides nothing even at the exact match: `operation guarded[Rho, P](f: () -> Unit @ {Rho, -Permission[P]}) -> Unit = ()` called `guarded[Rho = {Permission[GptModel]}, P = GptModel](mints_sub)`, `mints_sub` acquiring `Permission[GptModel]`, LOADS on 05ee1554 and on 2f9c0750 (DK83Q) alike. The route this ticket's description records as fixed by WI-9WVT7 binds the parameter through an argument (`cap: C`); the bracket route is not covered, and the exact match is open there, not only the entailment leg.
+
