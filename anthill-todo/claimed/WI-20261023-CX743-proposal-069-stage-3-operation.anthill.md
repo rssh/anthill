@@ -41,3 +41,7 @@ RUNS: rustland/scripts/test.sh 10754 passed, 0 failed; scripts/families.sh holds
 
 2026-10-24, the rule-body bracket refusal (user): a call's bracket in a rule body should work and is not implemented yet. It waits on WI-20261013-RYDNV — the typer reads a rule-body call's bracket, the requirement weave reads the argument values — and lifting it, for a written bracket and for a default that writes one, is WI-20261024-TC54R (depends on RYDNV). Until then CX743 keeps the refusal, so the default is not dropped in silence.
 
+### 2026-10-24T18:48:36Z — feedback — claude
+
+DECIDED (user, 2026-10-24): a default for a parameter the signature reads — an effect over it (`Modify[c]`), a projection off it (`-> b.V`), a value in a type — stays refused at the declaration. Letting it work would make the call type the default before its own inference, the order 069 §2 reverses; the complexity is not worth it.
+
