@@ -3,9 +3,9 @@
 - id: WI-20260820-RDNS4-row-tail-inference-is-per
 - created: 2026-08-20T18:22:51Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-08-20T18:22:51Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-10-24T11:41:53Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
