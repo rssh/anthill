@@ -2256,3 +2256,7 @@ mod rule_goal_sort_bracket_refused_test;
 mod wi_76kzn_constraint_goal_reading_test;
 #[path = "include/wi_edpf6_arrow_records_its_binders_test.rs"]
 mod wi_edpf6_arrow_records_its_binders_test;
+#[path = "include/wi_rdns4_shared_row_tail_test.rs"]
+mod wi_rdns4_shared_row_tail_test;
+#[path = "include/wi_rdns4_nested_callback_row_test.rs"]
+mod wi_rdns4_nested_callback_row_test;

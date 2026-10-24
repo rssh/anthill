@@ -308,8 +308,8 @@ typed=field,row=own-open,applied=call,does=nothing,declares=all	refused TypeMism
 typed=field,row=own-open,applied=call,does=nothing,declares=none	refused TypeMismatch/op-effects+UnresolvedName
 typed=field,row=own-open,applied=call,does=raises,declares=all	refused TypeMismatch/op-effects+UnresolvedName
 typed=field,row=own-open,applied=call,does=raises,declares=none	refused TypeMismatch/op-effects+UnresolvedName
-typed=field,row=own-open,applied=call,does=writes-own,declares=all	refused TypeMismatch/op-effects+UnresolvedName
-typed=field,row=own-open,applied=call,does=writes-own,declares=none	refused TypeMismatch/op-effects+UnresolvedName
+typed=field,row=own-open,applied=call,does=writes-own,declares=all	refused TypeMismatch/entity-field+UnresolvedName
+typed=field,row=own-open,applied=call,does=writes-own,declares=none	refused TypeMismatch/entity-field+UnresolvedName
 typed=field,row=own-open,applied=call,does=writes-scope,declares=all	refused TypeMismatch/op-effects+UnresolvedName
 typed=field,row=own-open,applied=call,does=writes-scope,declares=none	refused TypeMismatch/op-effects+UnresolvedName
 typed=field,row=own-open,applied=call,does=raises-callers,declares=all	refused TypeMismatch/op-effects+UnresolvedName
@@ -318,8 +318,8 @@ typed=field,row=own-open,applied=alias,does=nothing,declares=all	refused TypeMis
 typed=field,row=own-open,applied=alias,does=nothing,declares=none	refused TypeMismatch/op-effects+UnresolvedName
 typed=field,row=own-open,applied=alias,does=raises,declares=all	refused TypeMismatch/op-effects+UnresolvedName
 typed=field,row=own-open,applied=alias,does=raises,declares=none	refused TypeMismatch/op-effects+UnresolvedName
-typed=field,row=own-open,applied=alias,does=writes-own,declares=all	refused TypeMismatch/op-effects+UnresolvedName
-typed=field,row=own-open,applied=alias,does=writes-own,declares=none	refused TypeMismatch/op-effects+UnresolvedName
+typed=field,row=own-open,applied=alias,does=writes-own,declares=all	refused TypeMismatch/entity-field+UnresolvedName
+typed=field,row=own-open,applied=alias,does=writes-own,declares=none	refused TypeMismatch/entity-field+UnresolvedName
 typed=field,row=own-open,applied=alias,does=writes-scope,declares=all	refused TypeMismatch/op-effects+UnresolvedName
 typed=field,row=own-open,applied=alias,does=writes-scope,declares=none	refused TypeMismatch/op-effects+UnresolvedName
 typed=field,row=own-open,applied=alias,does=raises-callers,declares=all	refused TypeMismatch/op-effects+UnresolvedName
@@ -328,8 +328,8 @@ typed=field,row=own-open,applied=slot,does=nothing,declares=all	refused TypeMism
 typed=field,row=own-open,applied=slot,does=nothing,declares=none	refused TypeMismatch/op-effects+UnresolvedName
 typed=field,row=own-open,applied=slot,does=raises,declares=all	refused TypeMismatch/op-effects+UnresolvedName
 typed=field,row=own-open,applied=slot,does=raises,declares=none	refused TypeMismatch/op-effects+UnresolvedName
-typed=field,row=own-open,applied=slot,does=writes-own,declares=all	refused TypeMismatch/op-effects+UnresolvedName
-typed=field,row=own-open,applied=slot,does=writes-own,declares=none	refused TypeMismatch/op-effects+UnresolvedName
+typed=field,row=own-open,applied=slot,does=writes-own,declares=all	refused TypeMismatch/entity-field+UnresolvedName
+typed=field,row=own-open,applied=slot,does=writes-own,declares=none	refused TypeMismatch/entity-field+UnresolvedName
 typed=field,row=own-open,applied=slot,does=writes-scope,declares=all	refused TypeMismatch/op-effects+UnresolvedName
 typed=field,row=own-open,applied=slot,does=writes-scope,declares=none	refused TypeMismatch/op-effects+UnresolvedName
 typed=field,row=own-open,applied=slot,does=raises-callers,declares=all	refused TypeMismatch/op-effects+UnresolvedName
@@ -338,8 +338,8 @@ typed=field,row=own-open,applied=slot-own,does=nothing,declares=all	refused Type
 typed=field,row=own-open,applied=slot-own,does=nothing,declares=none	refused TypeMismatch/op-effects+UnresolvedName
 typed=field,row=own-open,applied=slot-own,does=raises,declares=all	refused TypeMismatch/op-effects+UnresolvedName
 typed=field,row=own-open,applied=slot-own,does=raises,declares=none	refused TypeMismatch/op-effects+UnresolvedName
-typed=field,row=own-open,applied=slot-own,does=writes-own,declares=all	refused TypeMismatch/op-effects+UnresolvedName
-typed=field,row=own-open,applied=slot-own,does=writes-own,declares=none	refused TypeMismatch/op-effects+UnresolvedName
+typed=field,row=own-open,applied=slot-own,does=writes-own,declares=all	refused TypeMismatch/entity-field+UnresolvedName
+typed=field,row=own-open,applied=slot-own,does=writes-own,declares=none	refused TypeMismatch/entity-field+UnresolvedName
 typed=field,row=own-open,applied=slot-own,does=writes-scope,declares=all	refused TypeMismatch/op-effects+UnresolvedName
 typed=field,row=own-open,applied=slot-own,does=writes-scope,declares=none	refused TypeMismatch/op-effects+UnresolvedName
 typed=field,row=own-open,applied=slot-own,does=raises-callers,declares=all	refused TypeMismatch/op-effects+UnresolvedName

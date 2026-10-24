@@ -118,12 +118,14 @@ pub(super) fn validate_arg_against_param(
         resolved_type_is_determined(kb, &actual_g) && resolved_type_is_determined(kb, &declared_g);
     // Groundness (cheap, and the verdict on a measured 69% of calls) is tested FIRST, so a
     // conforming concrete argument never pays for the walk or the callable scan.
+    let mut holds_callable = false;
     let (actual_g, declared_g) = if both_ground {
         (actual_g, declared_g)
     } else {
         let deep_a = walk_type_deep_value(kb, subst, &actual_g);
         let deep_d = walk_type_deep_value(kb, subst, &declared_g);
         if type_contains_callable(kb, &deep_a) || type_contains_callable(kb, &deep_d) {
+            holds_callable = true;
             (actual_g, declared_g)
         } else {
             both_ground = resolved_type_is_determined(kb, &deep_a)
@@ -132,6 +134,13 @@ pub(super) fn validate_arg_against_param(
         }
     };
     if !both_ground {
+        // The arrows the pair holds are judged here, where the pair is withheld from the
+        // whole-type relation ([`callback_rows_error`]).
+        if holds_callable {
+            if let Some(err) = callback_rows_error(kb, subst, &declared_g, &actual_g, span, &context, actual_node) {
+                return ArgValidation::Fail(err);
+            }
+        }
         // WI-469: a denoted-bearing arrow callback param whose EFFECTS row is
         // non-ground (it carries the op's `EffP` type-param and a binder-relative
         // `-Modify[x]`) makes the WHOLE arrow non-ground, so the gate above would
@@ -261,6 +270,9 @@ fn some_coercion(
                 ArgValidation::Ok => ArgValidation::WrapSome {
                     declared: declared_g,
                 },
+                // A callback's row refused at the payload names its own cause, which the outer
+                // pair would hide (`expected Option[T = () -> Int64], got () -> Int64`).
+                ArgValidation::Fail(err @ TypeError::Other { .. }) => ArgValidation::Fail(err),
                 // WrapSome: the value is bare at BOTH depths of a nested
                 // Option — a single wrap cannot repair it; demand the
                 // explicit inner `some(...)` rather than silently
@@ -1974,14 +1986,13 @@ pub(super) fn reorder_named_args_in_apply(
 /// Wrap a BARE `EffectExpression` node (`merge(…)` / `present(…)` / `open(…)` /
 /// `empty_row`, the shape a BOUND row-tail var walks to) into the canonical
 /// `effects_rows(…)` wrapper the row machinery consumes. Carrier-preserving: a
-/// ground expression stays ground, an occurrence stays an occurrence.
+/// ground expression stays ground, an occurrence stays an occurrence, and an entity spine
+/// stays one — every reader takes the wrapper through the view.
 ///
-/// TOTAL, because A ROW HAS EXACTLY TWO CARRIERS — there is no third case to fall back
-/// from. That is WI-20260820-CTD6D's verdict, which asked whether a `Value::Entity`-carried
+/// THE ROW IR MINTS TWO CARRIERS. WI-20260820-CTD6D asked whether a `Value::Entity`-carried
 /// row is REACHABLE (give the wrapper an `Entity` constructor and drive the flatten) or
 /// UNREACHABLE BY CONSTRUCTION (say which producers can mint an effect-row `Value`, then
-/// make the case loud). It is the second, and the reason is in the row IR itself rather
-/// than in a reachability argument about who calls this:
+/// make the case loud), and answered the second from the row IR itself:
 ///
 ///  * EVERY row-structural position in the occurrence IR is a
 ///    [`TypeChild`](crate::kb::node_occurrence::TypeChild) — `TypeNode::EffectsRows
@@ -2004,22 +2015,25 @@ pub(super) fn reorder_named_args_in_apply(
 ///    invariant in the same breath, as `unreachable!("a param type is Term or Node")`. The
 ///    NARROWING direction says it too: [`value_to_type_child`], where a `Value` enters the
 ///    row IR, calls a scalar / `Var` / `Entity` in that slot "a typer bug";
-///  * everything between those producers and here PRESERVES the carrier —
-///    `walk_type_deep_value_g`, `substitute_ref_syms_value` and `rekey_resource_value` each
-///    end `other => other.clone()`, and `merge_effects_into` only clones — and the σ surfacing
-///    [`walk_value_to_resolved`] can only hand back what a bind put in: `bind_row_tail`
-///    binds a `TermId`, the multi-tail absorb binds another row's own inner expression,
-///    and WI-375's alias threading is gated on `matches!(value, Value::Node(_))`.
 ///
-/// TWO CARRIERS ESCAPE THE IR ARGUMENT, and they need their own census — found by review of
-/// this ticket, not by the four bullets above, which is why they are stated separately
-/// rather than folded in. The classifier keys on `head(kb).functor_sym()`, and WI-436 makes
-/// a 0-ARY row constructor read as a bare [`ViewHead::Ref`]: `empty_row` is one (it is by
-/// volume the most common row shape reaching here — 27 621 of the 97 799 probed calls). A
-/// `Value::SymbolRef(empty_row)` and a nullary `Value::Entity { functor: empty_row }` BOTH
-/// answer `ViewHead::Ref(empty_row)` — `functor_view_head` canonicalizes the second — so
-/// either would classify as a bare row WITHOUT ever passing through the row IR. Neither is
-/// reachable, for a producer reason rather than a structural one:
+/// AND σ MINTS A THIRD, outside the IR. The deep walk splices a binding the term walk cannot
+/// hold into the term's spine through `fn_value` (`splice_non_term_bindings`,
+/// WI-20260929-0RP29), so a term row open at a tail bound to an occurrence row — `open(?f)`,
+/// `?f := {Modify[c]}` — comes back as a `Value::Entity`, a type on the entity carrier like any
+/// other σ spine. It reaches here as a `Function` type's `E` read off a call's walked result
+/// (`mk(gen, lambda () -> put(c, 4), …)` over `-> Function[…, E = Rho]`, `gen[E]() effects {E}`
+/// beside a writer sharing `Rho`), and the readers of a walked call row met it too: each
+/// panicked in the arm below (MEASURED, WI-20260820-RDNS4). It is wrapped on its spine; those
+/// readers take the bare expression through the view and wrap nothing.
+///
+/// ONE CARRIER ESCAPES THE IR ARGUMENT, and needs its own census — found by review of
+/// CTD6D, not by the bullets above. The classifier keys on `head(kb).functor_sym()`, and
+/// WI-436 makes a 0-ARY row constructor read as a bare [`ViewHead::Ref`]: `empty_row` is one
+/// (it is by volume the most common row shape reaching here — 27 621 of the 97 799 probed
+/// calls). A `Value::SymbolRef(empty_row)` answers `ViewHead::Ref(empty_row)`, so it would
+/// classify as a bare row WITHOUT ever passing through the row IR. It is not reachable, for a
+/// producer reason rather than a structural one (a nullary `Value::Entity { functor:
+/// empty_row }` answers the same, and is wrapped as every entity is):
 ///
 ///  * `Value::SymbolRef` has exactly FOUR producers. Three are at its evaluator minter
 ///    (`symbol_value`, eval/builtins.rs): `Dictionary.impl`, `OpRef.op`, `OpRef.named`.
@@ -2028,25 +2042,21 @@ pub(super) fn reorder_named_args_in_apply(
 ///    or operation symbol the KB already holds; none can be an `EffectExpression`
 ///    constructor. The count is stated rather than the reason alone because it is what
 ///    licenses the panic arm below, and a census outside the evaluator is exactly the kind
-///    a later reader would not think to look for;
-///  * a nullary `Value::Entity` over `empty_row` is what the EVALUATOR would mint for a
-///    program writing `empty_row()`. That is a runtime value, and the typer's effect stream
-///    is built by the loader and by the typer's own row extraction — never fed from the
-///    evaluator.
+///    a later reader would not think to look for.
 ///
 /// `ctd6d_row_carrier_tests` drives the `SymbolRef` case directly, so this verdict is pinned
 /// rather than only argued.
 ///
-/// MEASURED as well as argued. A probe here and at both callers, over the whole workspace
-/// suite (5353 tests over 35 binaries), logged 969 760 row-position values: every one was
-/// `Value::Term` or `Value::Node` and the third arm never fired. A corpus run is only a
+/// MEASURED as well as argued, before σ's splice. A probe here and at both callers, over the
+/// whole workspace suite (5353 tests over 35 binaries), logged 969 760 row-position values:
+/// every one was `Value::Term` or `Value::Node` and the third arm never fired. A corpus run is only a
 /// lower bound — which is why the verdict rests on the IR above and the run is only what
 /// says nothing reachable contradicts it. The same run measured something the corpus DOES
 /// leave uncovered: all 97 799 values that reached THIS function were `Value::Term`, so the
 /// `Value::Node` arm is never taken by any program in the suite. `ctd6d_row_carrier_tests`
 /// drives it directly for that reason.
 ///
-/// The third arm is an OR-PATTERN over every remaining `Value` variant with NO `_`, so a new
+/// The last arm is an OR-PATTERN over every remaining `Value` variant with NO `_`, so a new
 /// carrier is a COMPILE ERROR here and its author has to decide, instead of inheriting a
 /// silent fallback. It PANICS rather than taking [`value_to_type_child`]'s softer
 /// `debug_assert!`-plus-fallback on the same invariant, and the difference is that that site
@@ -2062,10 +2072,6 @@ pub(super) fn reorder_named_args_in_apply(
 /// ([`value_is_bare_row_expr`] reads `head(kb).functor_sym()`, which every carrier answers)
 /// while only the carrier decided whether the wrap happened.
 ///
-/// Shared by the two sites that must turn a walked row VALUE back into a row:
-/// [`explode_incurred_effect_row`] (the op-boundary reader) and the call-site
-/// effect-contribution loop (WI-329) — so the wrapping cannot drift between the
-/// producer of a call's incurred effects and the reader that checks them.
 pub(super) fn wrap_bare_effect_expr_as_row(kb: &mut KnowledgeBase, expr: &Value) -> Value {
     match expr {
         Value::Term { id: t, .. } => Value::term(kb.make_effects_rows_type(*t)),
@@ -2074,6 +2080,12 @@ pub(super) fn wrap_bare_effect_expr_as_row(kb: &mut KnowledgeBase, expr: &Value)
             occ.span,
             occ.owner,
         )),
+        // σ's splice spine (see the doc), wrapped on it.
+        Value::Entity { .. } => {
+            let effects_rows = kb.resolve_symbol("anthill.prelude.TypeExtractor.EffectsRows");
+            let expr_key = kb.intern("effects_expr");
+            kb.fn_value(effects_rows, Vec::new(), vec![(expr_key, expr.clone())])
+        }
         // No `_`: see the doc above. A new `Value` variant lands here as a compile error.
         Value::Int(_)
         | Value::BigInt(_)
@@ -2082,7 +2094,6 @@ pub(super) fn wrap_bare_effect_expr_as_row(kb: &mut KnowledgeBase, expr: &Value)
         | Value::Str(_)
         | Value::Unit
         | Value::Tuple { .. }
-        | Value::Entity { .. }
         | Value::Closure(_)
         | Value::OpRef { .. }
         | Value::Stream(_)
@@ -2094,10 +2105,9 @@ pub(super) fn wrap_bare_effect_expr_as_row(kb: &mut KnowledgeBase, expr: &Value)
         | Value::Var(_)
         | Value::SymbolRef(_)
         | Value::Relation { .. } => unreachable!(
-            "effect row on a THIRD carrier: row-shaped by functor head, but neither \
-             `Value::Term` nor `Value::Node` — and those are the only two the row IR \
-             can mint, since every row-structural position is a `TypeChild` \
-             (WI-20260820-CTD6D; this fn's doc carries the census): {expr:?}"
+            "effect row on a carrier no row rides: row-shaped by functor head, but not a \
+             `Value::Term` or `Value::Node` the row IR mints, nor a `Value::Entity` spine σ \
+             splices (WI-20260820-CTD6D; this fn's doc carries the census): {expr:?}"
         ),
     }
 }
@@ -2117,51 +2127,6 @@ pub(super) fn explode_incurred_effect_row(
     effect: &Value,
 ) -> Option<Vec<Value>> {
     explode_declared_effect_row(kb, effect).map(|(atoms, _absent)| atoms)
-}
-
-/// IS THIS EFFECT VALUE A ROW, and if so what is it as a canonical `effects_rows(…)`?
-/// `None` for an ordinary label (`Modify[c]`, `Error`, a bare row var), which its
-/// callers compare atom-to-atom.
-///
-/// Split out of [`explode_incurred_effect_row`] by WI-20260830-APWM3 so the DECLARED
-/// side ([`explode_declared_effect_row`]) classifies by exactly the same predicate the
-/// INCURRED side does. The two are compared against each other, so a shape one calls a
-/// row and the other calls a label is precisely the mismatch this pair exists to avoid
-/// — the same argument [`wrap_bare_effect_expr_as_row`]'s doc makes for sharing the
-/// WRAP between a call's effect producer and its reader.
-///
-/// Row-shaped = the `effects_rows` wrapper OR a bare `EffectExpression` node
-/// (`merge`/`present`/`absent`/`open`/`empty_row`), matched by QUALIFIED functor so a
-/// user sort that merely shares the short name `merge` is not misclassified. A bound
-/// row var walks to the bare form.
-pub(super) fn effect_value_as_row(kb: &mut KnowledgeBase, effect: &Value) -> Option<Value> {
-    let is_rows_wrapper = matches!(type_dispatch_name_view(kb, effect), Some("effects_rows"));
-    // WI-436: `empty_row` is a 0-ary constructor → bare `Ref` head; read the
-    // functor symbol off either spelling so the empty row is still recognized
-    // as row-shaped (not leaked as an undeclared `empty_row` effect label).
-    let head_is_row_expr = effect.head(kb).functor_sym().is_some_and(|sym| {
-        matches!(
-            kb.qualified_name_of(sym)
-                .strip_prefix("anthill.prelude.EffectExpression."),
-            // WI-478: a bare `guarded(…)` atom is row-shaped (it explodes via
-            // `decompose_effect_row`'s guarded arm → its label, conservatively
-            // present) — without it, a guarded incurred effect surfaces whole.
-            Some("merge" | "present" | "guarded" | "absent" | "open" | "empty_row")
-        )
-    });
-    if !is_rows_wrapper && !head_is_row_expr {
-        return None;
-    }
-    if is_rows_wrapper {
-        return Some(effect.clone());
-    }
-    // Wrap the bare EffectExpression so `decompose_effect_row` sees the
-    // canonical `effects_rows(…)` shape. Infallible: `head_is_row_expr` above
-    // already says this IS a row, and a row has two carriers (WI-20260820-CTD6D
-    // — [`wrap_bare_effect_expr_as_row`]'s doc carries the census). The `None`
-    // this arm used to be able to produce was read by the caller as "not a row",
-    // which is the pre-WI-441 leak.
-    Some(wrap_bare_effect_expr_as_row(kb, effect))
 }
 
 /// WI-20260830-APWM3 — the DECLARED twin of [`explode_incurred_effect_row`]: flatten one
@@ -2201,9 +2166,11 @@ pub(super) fn explode_declared_effect_row(
     kb: &mut KnowledgeBase,
     effect: &Value,
 ) -> Option<(Vec<Value>, Vec<Value>)> {
-    let row = effect_value_as_row(kb, effect)?;
+    if !effect_value_is_row_shaped(kb, effect) {
+        return None;
+    }
     let subst = Substitution::new();
-    let (present, tails, absent) = decompose_effect_row(kb, &subst, &row)?;
+    let (present, tails, absent) = decompose_effect_row(kb, &subst, effect)?;
     let mut atoms = present;
     for t in tails {
         atoms.push(Value::term(t));
@@ -2567,12 +2534,31 @@ pub(super) fn validate_callback_effect_row(
     actual: &Value,
     span: Option<Span>,
 ) -> Option<TypeError> {
+    let at = CallbackAt::Parameter {
+        op: fn_sym,
+        param: param_sym,
+        occ: arg_occ,
+        env,
+    };
+    callback_row_error(kb, subst, &at, declared, actual, span)
+}
+
+/// [`validate_callback_effect_row`]'s verdict for a callback standing `at` any position: the
+/// callback `actual` against the declared arrow `declared`.
+pub(super) fn callback_row_error(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    at: &CallbackAt<'_>,
+    declared: &Value,
+    actual: &Value,
+    span: Option<Span>,
+) -> Option<TypeError> {
     // Cheap head gate before `arrow_parts` (which interns its child keys on
     // every call): most arguments land in non-callable param slots.
     if !type_head_is_callable(kb, declared) {
         return None;
     }
-    let subject = |kb: &KnowledgeBase| callback_actual_subject(kb, arg_occ);
+    let subject = |kb: &KnowledgeBase| at.subject(kb);
     // WI-705 (was WI-700): the self-contradictory-instantiation reject moved OUT of
     // here to the SIGNATURE-altitude `check_signature_self_contradiction` (run after
     // the arg-unify loops, before this per-arg validation) — actual-agnostic,
@@ -2624,15 +2610,11 @@ pub(super) fn validate_callback_effect_row(
         return Some(TypeError::Other {
             site: TypeError::here(),
             span,
-            context: TypeErrorContext::OperationArgument {
-                op_name: fn_sym,
-                param: param_sym,
-            },
+            context: at.context(),
             expected: format!(
-                "callback for parameter `{}` of `{}` to lack the row `{held}` (its `-…` \
+                "callback for {} to lack the row `{held}` (its `-…` \
                  lacks-constraint)",
-                kb.local_name_of(param_sym),
-                kb.qualified_name_of(fn_sym),
+                at.slot(kb),
             ),
             actual: format!("{} raises the row `{held}` itself", subject(kb)),
         });
@@ -2659,15 +2641,11 @@ pub(super) fn validate_callback_effect_row(
         return Some(TypeError::Other {
             site: TypeError::here(),
             span,
-            context: TypeErrorContext::OperationArgument {
-                op_name: fn_sym,
-                param: param_sym,
-            },
+            context: at.context(),
             expected: format!(
-                "callback for parameter `{}` of `{}` to lack the row `{row}` (its `-…` \
+                "callback for {} to lack the row `{row}` (its `-…` \
                  lacks-constraint), which is the enclosing operation's own and unknown here",
-                kb.local_name_of(param_sym),
-                kb.qualified_name_of(fn_sym),
+                at.slot(kb),
             ),
             actual: format!(
                 "{} {what}, which cannot be shown outside that row — a callback typed by the \
@@ -2731,14 +2709,10 @@ pub(super) fn validate_callback_effect_row(
             return Some(TypeError::Other {
                 site: TypeError::here(),
                 span,
-                context: TypeErrorContext::OperationArgument {
-                    op_name: fn_sym,
-                    param: param_sym,
-                },
+                context: at.context(),
                 expected: format!(
-                    "callback effects admitted by parameter `{}` of `{}` ({row_kind})",
-                    kb.local_name_of(param_sym),
-                    kb.qualified_name_of(fn_sym),
+                    "callback effects admitted by {} ({row_kind})",
+                    at.slot(kb),
                 ),
                 actual: format!(
                     "{} raises the row `{row}`, the enclosing operation's own and unknown here, \
@@ -2762,8 +2736,7 @@ pub(super) fn validate_callback_effect_row(
     // positionally. An eta'd op contributes its `arg_places` (all real); a lambda contributes
     // its top-level binder slots (`None` for a `_`/literal position, which occupies a slot so
     // arity stays aligned but names nothing an effect place could reference).
-    let declared_places: SmallVec<[Symbol; 4]> =
-        kb.symbols.arg_places(param_sym).iter().copied().collect();
+    let declared_places: SmallVec<[Symbol; 4]> = at.declared_places(kb);
     // Positional alignment is meaningful only for EQUAL arities — a mismatch
     // (which the generic arg validation rejects on the param type) must not
     // silently truncate the map and mis-align the surviving places.
@@ -2916,14 +2889,10 @@ pub(super) fn validate_callback_effect_row(
             return Some(TypeError::Other {
                 site: TypeError::here(),
                 span,
-                context: TypeErrorContext::OperationArgument {
-                    op_name: fn_sym,
-                    param: param_sym,
-                },
+                context: at.context(),
                 expected: format!(
-                    "callback for parameter `{}` of `{}` to lack `{}` (its `-…` lacks-constraint)",
-                    kb.local_name_of(param_sym),
-                    kb.qualified_name_of(fn_sym),
+                    "callback for {} to lack `{}` (its `-…` lacks-constraint)",
+                    at.slot(kb),
                     type_display_name_value(kb, viol),
                 ),
                 // WI-706: the diagnostic subject — the offending op by name, or "the
@@ -2944,15 +2913,11 @@ pub(super) fn validate_callback_effect_row(
             return Some(TypeError::Other {
                 site: TypeError::here(),
                 span,
-                context: TypeErrorContext::OperationArgument {
-                    op_name: fn_sym,
-                    param: param_sym,
-                },
+                context: at.context(),
                 expected: format!(
-                    "callback effects admitted by parameter `{}` of `{}`, whose row holds `{}` \
+                    "callback effects admitted by {}, whose row holds `{}` \
                      only under a guard",
-                    kb.local_name_of(param_sym),
-                    kb.qualified_name_of(fn_sym),
+                    at.slot(kb),
                     type_display_name_value(kb, guarded),
                 ),
                 actual: format!(
@@ -2978,23 +2943,19 @@ pub(super) fn validate_callback_effect_row(
                 return Some(TypeError::Other {
                     site: TypeError::here(),
                     span,
-                    context: TypeErrorContext::OperationArgument {
-                        op_name: fn_sym,
-                        param: param_sym,
-                    },
+                    context: at.context(),
                     expected: format!(
-                        "callback effects admitted by parameter `{}` of `{}` — a `Function[…]` \
-                         slot names no parameter, so its row cannot say which value the callback \
-                         is given",
-                        kb.local_name_of(param_sym),
-                        kb.qualified_name_of(fn_sym),
+                        "callback effects admitted by {} — {}, so its row cannot say which value \
+                         the callback is given",
+                        at.slot(kb),
+                        at.no_place_for_own_parameter().0,
                     ),
                     actual: format!(
-                        "{} declares `{}` on its own parameter `{}`; type the slot as an arrow \
-                         that names it (`(x: …) -> … @ {{…[x]}}`)",
+                        "{} declares `{}` on its own parameter `{}`{}",
                         subject(kb),
                         type_display_name_value(kb, la),
                         kb.local_name_of(own),
+                        at.no_place_for_own_parameter().1,
                     ),
                 });
             }
@@ -3010,7 +2971,7 @@ pub(super) fn validate_callback_effect_row(
         // where the declared row speaks of one of ITS binders in the same effect, admitting
         // and denying both turn on a correspondence nobody states, and the call is refused for
         // that — not passed, and not refused for a row the callback might well satisfy.
-        if let Some(binder) = unplaced_binder(kb, env, &place_map, la) {
+        if let Some(binder) = at.env().and_then(|env| unplaced_binder(kb, env, &place_map, la)) {
             let speaks_of_a_binder = e_present.iter().chain(e_absent.iter()).any(|le| {
                 extract_effect_resource_sym(kb, le)
                     .is_some_and(|e| declared_places.contains(&e))
@@ -3020,15 +2981,11 @@ pub(super) fn validate_callback_effect_row(
                 return Some(TypeError::Other {
                     site: TypeError::here(),
                     span,
-                    context: TypeErrorContext::OperationArgument {
-                        op_name: fn_sym,
-                        param: param_sym,
-                    },
+                    context: at.context(),
                     expected: format!(
-                        "a callback for parameter `{}` of `{}` whose row names values in \
+                        "a callback for {} whose row names values in \
                          scope and its own parameters",
-                        kb.local_name_of(param_sym),
-                        kb.qualified_name_of(fn_sym),
+                        at.slot(kb),
                     ),
                     actual: format!(
                         "{} declares `{}`, and `{}` is a binder out of scope here, which \
@@ -3045,14 +3002,10 @@ pub(super) fn validate_callback_effect_row(
             return Some(TypeError::Other {
                 site: TypeError::here(),
                 span,
-                context: TypeErrorContext::OperationArgument {
-                    op_name: fn_sym,
-                    param: param_sym,
-                },
+                context: at.context(),
                 expected: format!(
-                    "callback effects admitted by parameter `{}` of `{}` ({row_kind})",
-                    kb.local_name_of(param_sym),
-                    kb.qualified_name_of(fn_sym),
+                    "callback effects admitted by {} ({row_kind})",
+                    at.slot(kb),
                 ),
                 actual: format!(
                     "{} declares `{}`, which {the_row} does not admit",
@@ -3063,6 +3016,310 @@ pub(super) fn validate_callback_effect_row(
         }
     }
     None
+}
+
+
+/// A CALLBACK'S ROW IS JUDGED WHEREVER THE CALLBACK STANDS, not only at an operation's callback
+/// parameter. A pair holding a callable that is not ground is withheld from the whole-type
+/// relation ([`validate_arg_against_param`]), and the row's own check ran at a callback parameter
+/// alone, so a callback reached a closed row through an option's payload, a list's element, a
+/// result, a tuple, an entity field, a function value's parameter or the `some(…)` an option's
+/// slot wraps a bare one in, and a pure operation ran its effect: `run_opt(some(lambda () ->
+/// put(r, 4)))` over `o: Option[T = () -> Int64 @ {}]`, `run_opt(lambda () -> put(r, 4))`, and
+/// `holder(lambda () -> put(r, 5))` over `entity holder(f: () -> Int64 @ {})` wrote the cell
+/// (MEASURED). Each arrow `declared` holds opposite an arrow of `actual` ([`map_held_arrows`]) is
+/// judged as a callback parameter's is ([`callback_row_error`]): below the top always, and the
+/// top where the site hands the value written there (`node`) — an operation's callback parameter
+/// judges its own first, with its places and its scope ([`validate_callback_effect_row`]), and a
+/// pair no value stands behind (a member's signature against its spec's, a result column) is no
+/// callback passed.
+pub(super) fn callback_rows_error(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    declared: &Value,
+    actual: &Value,
+    span: Option<Span>,
+    context: &TypeErrorContext,
+    node: Option<&Rc<NodeOccurrence>>,
+) -> Option<TypeError> {
+    let top = match node {
+        Some(node) if type_head_is_callable(kb, declared) && type_head_is_callable(kb, actual) => {
+            Some(CallbackAt::Top { context, node })
+        }
+        _ => None,
+    };
+    if let Some(at) = &top {
+        if let Some(err) = callback_row_error(kb, subst, at, declared, actual, span) {
+            return Some(err);
+        }
+    }
+    let mut pairs: Vec<(Value, Value)> = Vec::new();
+    nested_callable_pairs(kb, subst, declared, actual, false, &mut pairs);
+    let at = CallbackAt::Nested { context };
+    pairs
+        .iter()
+        .find_map(|(d, a)| callback_row_error(kb, subst, &at, d, a, span))
+}
+
+/// The arrows `declared` holds, each beside the arrow `actual` holds at the same position
+/// ([`map_held_arrows`]). `top`: the pair itself too, where both are callables.
+pub(super) fn nested_callable_pairs(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    declared: &Value,
+    actual: &Value,
+    top: bool,
+    out: &mut Vec<(Value, Value)>,
+) {
+    map_held_arrows(kb, subst, declared, Some(actual), top, &mut |_, d, a| {
+        if let Some(a) = a {
+            out.push((d.clone(), a.clone()));
+        }
+        None
+    });
+}
+
+/// THE POSITIONS A CALLBACK'S ROW IS READ AT IN A TYPE, one walk for every reader of them: the
+/// check that holds a callback to its declared row ([`callback_rows_error`]), the slot the
+/// call's argument loops unify an argument with and the pairs the call's row inference reads
+/// ([`slot_at_argument_row`], [`infer_discharged_row_tails`]). Below an application of one sort
+/// at each parameter it declares `Covariant` or no variance for — a value widens through the one
+/// and must be the same at the other, so the callback's row is held to the declared one at both;
+/// a tuple's component; an arrow's result. Not a contravariant or bivariant parameter, nor an
+/// effect-row slot, which holds a row, nor an arrow's parameter.
+///
+/// `declared` rebuilt with each arrow it holds there replaced by what `f` answers for it — handed
+/// the arrow `actual` holds at the same position, where `actual` is given, and asked of an arrow
+/// after its own result — or kept; a position `actual` holds no counterpart for is not visited.
+/// `top`: `declared` itself too. `None`: nothing replaced, so an unchanged type keeps its carrier.
+///
+/// Read through σ, and a variable is not read again inside its own binding: an argument's types
+/// can leave σ cyclic where the occurs check is the call's to report, and `two[A, B](f: (x: A) ->
+/// B, g: (y: B) -> A)` given `lambda (x) -> [x]` twice made `A` a list of lists of itself — the
+/// walk down the results followed it for ever (MEASURED, a stack overflow where the call ran).
+pub(super) fn map_held_arrows(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    declared: &Value,
+    actual: Option<&Value>,
+    top: bool,
+    f: &mut dyn FnMut(&mut KnowledgeBase, &Value, Option<&Value>) -> Option<Value>,
+) -> Option<Value> {
+    map_held_arrows_on(kb, subst, declared, actual, top, f, &mut SmallVec::new())
+}
+
+/// [`map_held_arrows`] below the variables `entered` names, on the path to `declared`.
+fn map_held_arrows_on(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    declared: &Value,
+    actual: Option<&Value>,
+    top: bool,
+    f: &mut dyn FnMut(&mut KnowledgeBase, &Value, Option<&Value>) -> Option<Value>,
+    entered: &mut SmallVec<[VarId; 4]>,
+) -> Option<Value> {
+    let var = match resolved_var(kb, declared) {
+        Some(vid) if entered.contains(&vid) => return None,
+        Some(vid) => {
+            entered.push(vid);
+            Some(vid)
+        }
+        None => None,
+    };
+    let out = map_held_arrows_at(kb, subst, declared, actual, top, f, entered);
+    if var.is_some() {
+        entered.pop();
+    }
+    out
+}
+
+/// [`map_held_arrows`] at one position: `declared` against `actual`, read through σ.
+fn map_held_arrows_at(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    declared: &Value,
+    actual: Option<&Value>,
+    top: bool,
+    f: &mut dyn FnMut(&mut KnowledgeBase, &Value, Option<&Value>) -> Option<Value>,
+    entered: &mut SmallVec<[VarId; 4]>,
+) -> Option<Value> {
+    let d = walk_view(kb, subst, declared);
+    let a = actual.map(|a| walk_view(kb, subst, a));
+    let (sp, owner) = site_of(&d);
+    if type_head_is_callable(kb, &d) {
+        if a.as_ref().is_some_and(|a| !type_head_is_callable(kb, a)) {
+            return None;
+        }
+        let rebuilt = match arrow_parts(kb, &d) {
+            Some((_, d_result, _)) => {
+                let a_result = a.as_ref().and_then(|a| arrow_parts(kb, a)).map(|(_, r, _)| r);
+                match (&a, &a_result) {
+                    (Some(_), None) => None,
+                    _ => map_held_arrows_on(kb, subst, &d_result, a_result.as_ref(), true, f, entered)
+                        .and_then(|r| callable_with_result(kb, &d, &r)),
+                }
+            }
+            None => None,
+        };
+        if !top {
+            return rebuilt;
+        }
+        let node = rebuilt.clone().unwrap_or_else(|| d.clone());
+        return f(kb, &node, a.as_ref()).or(rebuilt);
+    }
+    if let Some((d_base, d_bindings)) = nominal_head_parts(kb, &d) {
+        let a_bindings = match &a {
+            Some(a) => match nominal_head_parts(kb, a) {
+                Some((a_base, a_bindings)) if same_sort_canonical(kb, d_base, a_base) => Some(a_bindings),
+                _ => return None,
+            },
+            None => None,
+        };
+        let mut changed = false;
+        let mut out: Vec<(Symbol, Value)> = Vec::with_capacity(d_bindings.len());
+        for (label, dv) in d_bindings {
+            let short = short_name_of(kb.local_name_of(label)).to_owned();
+            let held = !matches!(
+                declared_variance(kb, d_base, label),
+                Variance::Contravariant | Variance::Bivariant
+            ) && !sort_param_is_effect_row(kb, d_base, &short);
+            let av = match &a_bindings {
+                Some(bs) => bs.iter().find(|(l, _)| same_label(kb, *l, label)).map(|(_, v)| v.clone()),
+                None => Some(dv.clone()),
+            };
+            let mapped = match (held, &av, &a_bindings) {
+                (true, Some(av), Some(_)) => map_held_arrows_on(kb, subst, &dv, Some(av), true, f, entered),
+                (true, Some(_), None) => map_held_arrows_on(kb, subst, &dv, None, true, f, entered),
+                _ => None,
+            };
+            changed |= mapped.is_some();
+            out.push((label, mapped.unwrap_or(dv)));
+        }
+        return changed.then(|| {
+            let base_ref = kb.make_sort_ref(d_base);
+            parameterized_value(kb, base_ref, &out, sp, owner)
+        });
+    }
+    if let TypeExtractor::NamedTuple(d_fields) = extract_type(kb, &d) {
+        let a_fields = match &a {
+            Some(a) => match extract_type(kb, a) {
+                TypeExtractor::NamedTuple(fields) => Some(fields),
+                _ => return None,
+            },
+            None => None,
+        };
+        let mut changed = false;
+        let mut out: Vec<(Symbol, Value)> = Vec::with_capacity(d_fields.len());
+        for (name, dv) in d_fields {
+            let mapped = match &a_fields {
+                Some(fields) => match fields.iter().find(|(n, _)| *n == name) {
+                    Some((_, av)) => map_held_arrows_on(kb, subst, &dv, Some(av), true, f, entered),
+                    None => None,
+                },
+                None => map_held_arrows_on(kb, subst, &dv, None, true, f, entered),
+            };
+            changed |= mapped.is_some();
+            out.push((name, mapped.unwrap_or(dv)));
+        }
+        return changed.then(|| named_tuple_value(kb, &out, sp, owner));
+    }
+    None
+}
+
+/// Where a callback stands whose row [`callback_row_error`] judges: what a refusal names it by,
+/// and which places the declared row names the callback's own binders by.
+pub(super) enum CallbackAt<'a> {
+    /// An operation's callback parameter, with the places it registered and the argument written
+    /// there.
+    Parameter {
+        op: Symbol,
+        param: Symbol,
+        occ: &'a Rc<NodeOccurrence>,
+        env: &'a TypingEnv,
+    },
+    /// The arrow a site checks the value written there against: an entity field's, a collection
+    /// element's, a function value's parameter, an option's payload a bare callback is wrapped
+    /// in. An operation's callback parameter registered places, which the row names its binders
+    /// by; anywhere else none are registered, and the row names values only.
+    Top {
+        context: &'a TypeErrorContext,
+        node: &'a Rc<NodeOccurrence>,
+    },
+    /// An arrow a checked type holds below its top (an option's payload): no places there.
+    Nested { context: &'a TypeErrorContext },
+}
+
+impl CallbackAt<'_> {
+    fn context(&self) -> TypeErrorContext {
+        match self {
+            CallbackAt::Parameter { op, param, .. } => TypeErrorContext::OperationArgument {
+                op_name: *op,
+                param: *param,
+            },
+            CallbackAt::Top { context, .. } | CallbackAt::Nested { context } => (*context).clone(),
+        }
+    }
+
+    /// The declared arrow, as a refusal names it: `parameter `f` of `m.apply``.
+    fn slot(&self, kb: &KnowledgeBase) -> String {
+        match self {
+            CallbackAt::Parameter { op, param, .. } => format!(
+                "parameter `{}` of `{}`",
+                kb.local_name_of(*param),
+                kb.qualified_name_of(*op)
+            ),
+            CallbackAt::Top { .. } => "the declared arrow".to_string(),
+            CallbackAt::Nested { .. } => "an arrow inside the declared type".to_string(),
+        }
+    }
+
+    /// The callback, as a refusal names it: an argument where it is one.
+    fn subject(&self, kb: &KnowledgeBase) -> String {
+        match self {
+            CallbackAt::Parameter { occ, .. } => callback_actual_subject(kb, occ),
+            CallbackAt::Top { context, node } => match context {
+                TypeErrorContext::OperationArgument { .. } => callback_actual_subject(kb, node),
+                _ => match node.as_expr() {
+                    Some(Expr::Lambda { .. }) => "the lambda".to_string(),
+                    _ if extract_var_ref_sym_node(node).is_some() => callback_actual_subject(kb, node),
+                    _ => "the value".to_string(),
+                },
+            },
+            CallbackAt::Nested { .. } => "a callback inside the value".to_string(),
+        }
+    }
+
+    fn declared_places(&self, kb: &KnowledgeBase) -> SmallVec<[Symbol; 4]> {
+        match self {
+            CallbackAt::Parameter { param, .. } => kb.symbols.arg_places(*param).iter().copied().collect(),
+            CallbackAt::Top {
+                context: TypeErrorContext::OperationArgument { param, .. },
+                ..
+            } => kb.symbols.arg_places(*param).iter().copied().collect(),
+            CallbackAt::Top { .. } | CallbackAt::Nested { .. } => SmallVec::new(),
+        }
+    }
+
+    /// Why a label over the callback's own parameter cannot be judged against the declared
+    /// row, and what to write instead where something can be.
+    fn no_place_for_own_parameter(&self) -> (&'static str, &'static str) {
+        match self {
+            CallbackAt::Parameter { .. } => (
+                "a `Function[…]` slot names no parameter",
+                "; type the slot as an arrow that names it (`(x: …) -> … @ {…[x]}`)",
+            ),
+            CallbackAt::Top { .. } | CallbackAt::Nested { .. } => ("its row names no parameter of its own here", ""),
+        }
+    }
+
+    /// The call's scope, where a label may name a binder out of it: only a parameter's row
+    /// names the callback's binders, so only there can a binder be told from a value.
+    fn env(&self) -> Option<&TypingEnv> {
+        match self {
+            CallbackAt::Parameter { env, .. } => Some(env),
+            CallbackAt::Top { .. } | CallbackAt::Nested { .. } => None,
+        }
+    }
 }
 
 /// The place an effect label names that is a BINDER OUT OF SCOPE at the call and no parameter

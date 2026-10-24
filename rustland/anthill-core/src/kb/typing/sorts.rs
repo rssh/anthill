@@ -1032,21 +1032,19 @@ pub(super) fn eliminate_declared_row_projections(
         .collect()
 }
 
-/// Is this declared effect element a ROW (rather than one label)? The `&KnowledgeBase`
-/// twin of [`effect_value_as_row`]'s classification, for a caller that only needs the
-/// question answered — [`declared_row_labels_read_through`]'s fast path, which must not
-/// take the `&mut` wrap just to decide it has nothing to do.
+/// Is this effect element a ROW (rather than one label)? The `effects_rows` wrapper OR a bare
+/// `EffectExpression` node ([`value_is_bare_effect_expr`], matched by QUALIFIED functor so a
+/// user sort that merely shares the short name `merge` is not misclassified); a bound row
+/// var walks to the bare form. `false` for an ordinary label (`Modify[c]`, `Error`, a bare
+/// row var), compared atom-to-atom.
+///
+/// ONE CLASSIFICATION for the declared side and the incurred side
+/// ([`explode_declared_effect_row`], WI-20260830-APWM3): the two are compared against each
+/// other, so a shape one calls a row and the other a label is the mismatch this exists to
+/// avoid. A row so classified is decomposed as it stands, on whatever carrier it rides.
 pub(super) fn effect_value_is_row_shaped(kb: &KnowledgeBase, effect: &Value) -> bool {
-    if matches!(type_dispatch_name_view(kb, effect), Some("effects_rows")) {
-        return true;
-    }
-    effect.head(kb).functor_sym().is_some_and(|sym| {
-        matches!(
-            kb.qualified_name_of(sym)
-                .strip_prefix("anthill.prelude.EffectExpression."),
-            Some("merge" | "present" | "guarded" | "absent" | "open" | "empty_row")
-        )
-    })
+    matches!(type_dispatch_name_view(kb, effect), Some("effects_rows"))
+        || value_is_bare_effect_expr(kb, effect)
 }
 
 /// WI-701 / proposal 054 §"`Branch` and `External`": a `Branch` region may not

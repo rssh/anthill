@@ -99,6 +99,29 @@ fn collect(
     }
 }
 
+/// What `declared`, met by `actual`, gives each of `candidates`, read as
+/// [`join_repeated_type_params`] reads one argument ([`collect`]): `(variable, invariant, type)`
+/// for each determined contribution — `invariant` where the variable occurs under a parameter of
+/// no declared variance. A contravariant or bivariant occurrence gives nothing, nor does one under
+/// a head the two do not share. For a reader that pairs the two itself, a callback slot's label
+/// with an argument's (`fix_label_type_params`).
+pub(super) fn contributions_to(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    candidates: &[(Symbol, VarId)],
+    param: Symbol,
+    declared: &Value,
+    actual: &Value,
+) -> Vec<(VarId, bool, Value)> {
+    let mut out = Contributions::new();
+    let mut opaque: Vec<VarId> = Vec::new();
+    collect(kb, subst, Some(candidates), param, Polarity::Covariant, declared, actual, &mut out, &mut opaque);
+    out.into_iter()
+        .filter(|(vid, _, _, ty)| !opaque.contains(vid) && resolved_type_is_determined(kb, ty))
+        .map(|(vid, _, pol, ty)| (vid, pol == Polarity::Invariant, ty))
+        .collect()
+}
+
 /// THE ARGUMENT RELATES TO THE PARAMETER THROUGH SOMETHING THIS PASS DOES NOT READ — a
 /// provision (`List[T = Shape]` for `s: Stream[T = A]`), a conversion, a subtype with another
 /// head — so what it gives each variable in `declared` is not known here. Every such variable

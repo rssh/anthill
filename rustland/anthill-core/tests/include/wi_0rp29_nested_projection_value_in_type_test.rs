@@ -3923,9 +3923,11 @@ fn the_fallbacks_return_pins_each_spec_type_parameter_control() {
 /// reference as an operation, whose places it then looked up; a `let`-, pattern- or lambda-
 /// bound name, a `Function[…]`-typed parameter and a `const` have none, which "disagreed" in
 /// arity with every slot declaring one, and the check returned before its label and closed-row
-/// halves. So `let g = mk()` then `two(inc, g)` — `inc` closes the shared row — passed a
+/// halves. So `let g = mk()` then `two(inc, g)` — `inc` closed the shared row — passed a
 /// callback raising `Error[Foo]`, and a `main` typed pure died "error: foo(n: 9)", where
-/// `two(inc, mk())` was refused (MEASURED on every build). FAILS under ledger part 61.
+/// `two(inc, mk())` was refused (MEASURED on every build). The row is closed by the bracket
+/// here: since WI-20260820-RDNS4 no argument closes it for another, `two(inc, g)` charges the
+/// call `Error[Foo]` and is refused at `go`'s own effects. FAILS under ledger part 61.
 #[test]
 fn a_callback_held_in_a_variable_is_judged() {
     let src = r#"
@@ -3940,7 +3942,7 @@ namespace wi0rp29.cbv_let
   operation two[EffP](a: (x: Int64) -> Int64 @ {EffP}, b: (x: Int64) -> Int64 @ {EffP}) -> Int64 effects {EffP} = a(1) + b(1)
   operation go() -> Int64 =
     let g = mk()
-    two(inc, g)
+    two[EffP = {}](inc, g)
 end
 "#;
     assert_refused_naming(
@@ -3952,22 +3954,28 @@ end
         ],
         "a raising callback held in a let",
     );
+    // Unbracketed, the row is the union and the pure `go` is refused at its own effects.
+    assert_refused_naming(
+        &load_errors(&src.replace("two[EffP = {}](inc, g)", "two(inc, g)")),
+        &["type mismatch in go.effects (op-effects)", "undeclared effect: Error[T = Foo]"],
+        "a raising callback held in a let, the row unbracketed",
+    );
 }
 
 /// … AND ONE BOUND BY A PATTERN, OR A PARAMETER TYPED `Function[…]`: `case holder(g) -> two(inc,
 /// g)` and `via(g: Function[A = Int64, B = Int64, E = {Error[Foo]}]) = two(inc, g)` each passed
 /// the raising callback, and a `main` typed pure died "error: foo(n: 9)" (MEASURED on the tree
-/// the eighth review saw). FAILS under ledger part 61.
+/// the eighth review saw). The row closed by the bracket, as above. FAILS under ledger part 61.
 #[test]
 fn a_callback_bound_by_a_pattern_or_typed_function_is_judged() {
     let shapes = [
         (
             "pat",
-            "operation go() -> Int64 =\n    match holder(f: boom)\n      case holder(g) -> two(inc, g)",
+            "operation go() -> Int64 =\n    match holder(f: boom)\n      case holder(g) -> two[EffP = {}](inc, g)",
         ),
         (
             "fn",
-            "operation via(g: Function[A = Int64, B = Int64, E = {Error[Foo]}]) -> Int64 = two(inc, g)\n  \
+            "operation via(g: Function[A = Int64, B = Int64, E = {Error[Foo]}]) -> Int64 = two[EffP = {}](inc, g)\n  \
              operation go() -> Int64 = via(boom)",
         ),
     ];
@@ -3999,6 +4007,12 @@ end
                 "the callback `g` declares `Error[T = Foo]`, which the closed row does not admit",
             ],
             tag,
+        );
+        // Unbracketed, the row is the union, refused at the effects of the operation calling.
+        assert_refused_naming(
+            &load_errors(&src.replace("two[EffP = {}](inc, g)", "two(inc, g)")),
+            &["effects (op-effects)", "undeclared effect: Error[T = Foo]"],
+            &format!("{tag}, the row unbracketed"),
         );
     }
 }
@@ -4357,10 +4371,11 @@ end
 /// A ROW VARIABLE OF THE CALLBACK IS JUDGED UNDER A ROW THAT IS CLOSED once the call's type
 /// arguments are applied: a RIGID one — the enclosing operation's own row — cannot be shown
 /// empty. The label checks were skipped for every actual row holding a variable, and a
-/// callable's row is read by nothing else: `two(pure1, g)` over `g: … @ {Q}` — `pure1` closes
+/// callable's row is read by nothing else: `two(pure1, g)` over `g: … @ {Q}` — `pure1` closed
 /// the shared row — let `use(boom)` raise out of a `main` typed pure, where `two(g, pure1)` was
-/// refused (MEASURED on every build: the verdict turned on the order of the arguments). FAILS
-/// under ledger part 66.
+/// refused (MEASURED on every build: the verdict turned on the order of the arguments). The row
+/// is closed by the bracket here: since WI-20260820-RDNS4 it is `{Q}` in either order, refused
+/// at `use`'s own effects as the mirror below is. FAILS under ledger part 66.
 #[test]
 fn a_callbacks_own_row_variable_is_not_admitted_by_a_closed_row() {
     let src = r#"
@@ -4378,7 +4393,7 @@ namespace wi0rp29.cbv_tail
   operation pure1(x: Int64) -> Bool = true
   operation boom(x: Int64) -> Bool effects {Error[Foo]} = Error.raise(foo(n: 9))
   operation use[Q](g: (x: Int64) -> Bool @ {Q}) -> Bool =
-    two(pure1, g)
+    two[EffP = {}](pure1, g)
   operation go() -> Int64 =
     if use(boom) then 1 else 2
 end
@@ -4393,11 +4408,17 @@ end
         ],
         "a callback raising the caller's own row into a row an earlier argument closed",
     );
+    // Unbracketed, the row is `{Q}`, refused at the pure `use`'s own effects as the mirror is.
+    assert_refused_naming(
+        &load_errors(&src.replace("two[EffP = {}](pure1, g)", "two(pure1, g)")),
+        &["type mismatch in use.effects (op-effects)", "undeclared effect: ?Q"],
+        "a callback raising the caller's own row, the row unbracketed",
+    );
 }
 
 /// … AND ITS MIRROR, refused as it always was — the row is then `{Q}`, which the pure `use`
 /// does not declare. Passes either way by design: it is the order the earlier builds already
-/// refused.
+/// refused, and since WI-20260820-RDNS4 the unbracketed `two(pure1, g)` is refused the same way.
 #[test]
 fn a_callbacks_own_row_variable_is_not_admitted_by_a_closed_row_mirror() {
     let src = r#"

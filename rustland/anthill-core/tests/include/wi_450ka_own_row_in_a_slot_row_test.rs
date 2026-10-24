@@ -41,7 +41,9 @@
 //!    [`a_label_is_refused_at_a_bracket_holding_only_the_callers_own_row`],
 //!    [`another_own_row_is_refused_at_a_bracket_holding_one`],
 //!    [`a_function_slot_at_the_callers_own_row_admits_that_row_alone`],
-//!    [`a_row_an_earlier_argument_bound_to_the_callers_own_admits_that_row_alone`],
+//!    `a_row_an_earlier_argument_bound_to_the_callers_own_admits_that_row_alone` (since
+//!    WI-20260820-RDNS4 [`a_row_two_callbacks_share_holds_both_of_the_callers_own_rows`], whose
+//!    row is the union and whose refusals are at `use`'s effects),
 //!    [`a_sorts_own_row_in_a_member_body_admits_that_row_alone`],
 //!    [`a_dispatched_call_at_the_receivers_own_row_admits_that_row_alone`] and
 //!    [`the_refusal_names_the_row_and_what_it_admits`].
@@ -276,33 +278,35 @@ fn a_function_slot_at_the_callers_own_row_admits_that_row_alone() {
     }
 }
 
-/// AN EARLIER ARGUMENT SAYS THE ROW: `two[Rho](a: … @ {Rho}, b: … @ {Rho})`, and `h` binds
-/// `Rho` to `use`'s own `R`. A raising `b` is then no part of it, nor is `i`, row `Q`:
-/// refused. `two(h, lambda … raise)` loaded and raised out of a pure `go`, where the same two
-/// arguments the other way round were refused (MEASURED: the verdict turned on the order).
-/// FAILS under part 2.
+/// TWO CALLBACKS SHARING ONE ROW PARAMETER GIVE IT BOTH THEIR ROWS: `two[Rho](a: … @ {Rho}, b:
+/// … @ {Rho})` at `h` (row `R`) and `i` (row `Q`) is `Rho = {R, Q}`, in either order — 41 + 72
+/// and 71 + 42, no cell written: 11312, as the bracket `two[Rho = {R, Q}]` gives. A raising
+/// callback beside `h` makes it `{Error[String], R}`, which `use` does not declare: refused at
+/// `use`'s own effects, in either order.
 ///
-/// The row said whole in the bracket runs, in either order: 41 + 72 and 72 + 41, no cell
-/// written — 11312.
+/// It was the first argument that said the row (WI-20260820-RDNS4): `h` bound `Rho` to `R`, and
+/// `i` and the raising lambda were refused at `b` — while `two(h, lambda … raise)` loaded and
+/// raised out of a pure `go` before this ticket, and the same two arguments the other way round
+/// were refused (MEASURED: the verdict turned on the order).
 #[test]
-fn a_row_an_earlier_argument_bound_to_the_callers_own_admits_that_row_alone() {
+fn a_row_two_callbacks_share_holds_both_of_the_callers_own_rows() {
     let two = "  operation two[Rho](a: (n: Int64) -> Int64 @ {Rho}, b: (n: Int64) -> Int64 @ {Rho}) -> Int64 effects {Rho} = a(1) + b(2)";
     let boom = "lambda (n: Int64) -> Error.raise(\"boom\")";
-    for (tag, call, names) in [
-        ("h_boom", format!("two(h, {boom})"), "Error[T = String]"),
-        ("boom_h", format!("two({boom}, h)"), "raises the row `?R`"),
-        ("h_i", "two(h, i)".to_string(), "raises the row `?Q`"),
-        ("i_h", "two(i, h)".to_string(), "raises the row `?R`"),
-    ] {
+    for (tag, call) in [("h_boom", format!("two(h, {boom})")), ("boom_h", format!("two({boom}, h)"))] {
         let src = program(&format!("wi450ka.two_{tag}"), two, "R, Q", &format!("    {call}"), "");
         assert_refused_naming(
             &load_errors_of(&src),
-            &["type mismatch in two.b (op-arg)", names],
+            &["type mismatch in use.effects (op-effects)", "undeclared effect: Error[T = String]"],
             &format!("`{call}`"),
         );
     }
-    for (tag, call) in [("h_i", "two[Rho = {R, Q}](h, i)"), ("i_h", "two[Rho = {R, Q}](i, h)")] {
-        let ns = format!("wi450ka.two_whole_{tag}");
+    for (tag, call) in [
+        ("h_i", "two(h, i)"),
+        ("i_h", "two(i, h)"),
+        ("whole_h_i", "two[Rho = {R, Q}](h, i)"),
+        ("whole_i_h", "two[Rho = {R, Q}](i, h)"),
+    ] {
+        let ns = format!("wi450ka.two_{tag}");
         let src = program(&ns, two, "R, Q", &format!("    {call}"), "");
         assert_eq!(run_int64(&src, &format!("{ns}.go")), Ok(11312), "`{call}`");
     }

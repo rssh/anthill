@@ -238,6 +238,53 @@ pub(super) fn arrow_parts<V: TermView>(
     arrow_parts_extracted(kb, &extracted)
 }
 
+/// The callable `ty` with `row` for its effect row — the arrow's `effects`, the `Function`'s
+/// `E`; its parameters, result and binders as they were. `None` for a type that is no callable,
+/// and for a `Function` that writes no `E`, whose row is no part of it to replace.
+pub(super) fn callable_with_row(kb: &mut KnowledgeBase, ty: &Value, row: &Value) -> Option<Value> {
+    callable_with(kb, ty, None, Some(row))
+}
+
+/// … and with `result` for its result — the arrow's, the `Function`'s `B`.
+pub(super) fn callable_with_result(kb: &mut KnowledgeBase, ty: &Value, result: &Value) -> Option<Value> {
+    callable_with(kb, ty, Some(result), None)
+}
+
+/// The callable `ty` rebuilt on the form it was written in, `result` and `row` in place of its
+/// own where given.
+fn callable_with(kb: &mut KnowledgeBase, ty: &Value, result: Option<&Value>, row: Option<&Value>) -> Option<Value> {
+    let (sp, owner) = site_of(ty);
+    match extract_callable_type(kb, ty) {
+        TypeExtractor::Arrow {
+            param,
+            result: own_result,
+            effects,
+            arity,
+            binders,
+        } => Some(arrow_value(
+            kb,
+            &param,
+            result.unwrap_or(&own_result),
+            row.unwrap_or(&effects),
+            arity,
+            binders,
+            sp,
+            owner,
+        )),
+        TypeExtractor::Parameterized { base, mut bindings } if is_function_spec(kb, base) => {
+            for (key, value) in [("B", result), ("E", row)] {
+                if let Some(value) = value {
+                    let b = bindings.iter_mut().find(|(p, _)| kb.local_name_of(*p) == key)?;
+                    b.1 = value.clone();
+                }
+            }
+            let base_ref = kb.make_sort_ref(base);
+            Some(parameterized_value(kb, base_ref, &bindings, sp, owner))
+        }
+        _ => None,
+    }
+}
+
 /// WI-798: classify a value that is about to be read AS A CALLABLE. The
 /// pre-intern is the reason this exists rather than a bare [`extract_type`]:
 /// `extract_type` reads an `arrow`'s param/result/effects children and a
@@ -1030,12 +1077,12 @@ pub(super) fn effect_row_present_values(kb: &mut KnowledgeBase, row: &impl TermV
     match row.as_bind_value() {
         // Ground carrier: the established flat-list walk (exact pre-WI-361
         // behavior; its non-wrapper fallback also handles a legacy `List[Type]`
-        // Function.E binding pre-WI-331).
-        BindValue::Term(t) => effects_rows_to_flat_list(kb, t)
-            .into_iter()
-            .map(Value::term)
-            .collect(),
-        _ => occurrence_row_present_values(kb, row),
+        // Function.E binding pre-WI-331). A bare row expression is no list, and is read
+        // through the view as on any other carrier.
+        BindValue::Term(t) if !value_is_bare_effect_expr(kb, &TermIdView(t)) => {
+            effects_rows_to_flat_list(kb, t).into_iter().map(Value::term).collect()
+        }
+        _ => row_present_values_by_view(kb, row),
     }
 }
 
@@ -1081,17 +1128,25 @@ pub(super) fn callable_effect_present_values(
     effect_row_present_values(kb, &canonical)
 }
 
-/// An occurrence (`Value::Node`) effects row's present labels plus its open-row tails, the
-/// occurrence never re-grounded (WI-341) — matching the former
-/// `extract_function_type_parts_value`.
-fn occurrence_row_present_values(kb: &mut KnowledgeBase, row: &impl TermView) -> Vec<Value> {
+/// A row's present labels plus its open-row tails, read through the view on any carrier — an
+/// `effects_rows` wrapper or the bare expression a bound row variable walks to; an occurrence's
+/// labels are never re-grounded (WI-341).
+///
+/// The labels as written, an uninhabitable row's (`{e, -e}`) too: that row is refused where it
+/// is stated, and its labels are not dropped from what applying it incurs. A row that does not
+/// decompose — an unknown functor in the algebra — is a construction bug, loud in a debug build
+/// as the term walk's is ([`effects_rows_to_flat_list`]).
+fn row_present_values_by_view(kb: &mut KnowledgeBase, row: &impl TermView) -> Vec<Value> {
     let subst = Substitution::new();
-    match decompose_effect_row(kb, &subst, row) {
+    match decompose_effect_row_raw(kb, &subst, row) {
         Some((mut present, tails, _absent)) => {
             present.extend(tails.into_iter().map(Value::term));
             present
         }
-        None => Vec::new(),
+        None => {
+            debug_assert!(false, "an effect row that does not decompose");
+            Vec::new()
+        }
     }
 }
 
