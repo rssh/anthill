@@ -1880,6 +1880,14 @@ pub(super) fn check_apply_iter(
             _ => proj_return_type,
         };
 
+        // Proposal 069 §2 steps 4–5 — a type parameter the bracket, the arguments, the
+        // expected result and the receiver left unbound takes its declared default HERE,
+        // where that inference is done and before anything below reads the parameter: the
+        // effect row, a named requirement slot inferred at it, the return type and WI-270's
+        // check, which then refuses only a parameter with no default. In a rule body too
+        // (user, 2026-10-24).
+        install_type_param_defaults(kb, &mut subst, &op);
+
         // Apply param-name substitution to op.effects (WI-209), then
         // walk each through `walk_type_deep` so type-var bindings from
         // arg-unification propagate into nested positions in the effect

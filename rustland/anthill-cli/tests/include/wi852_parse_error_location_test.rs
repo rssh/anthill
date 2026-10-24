@@ -5,8 +5,8 @@
 //! were left on `ParseError`'s `Display`, which is that byte offset — so which
 //! STAGE found a fault decided whether the author got a clickable location or a
 //! number to count to, a distinction they cannot predict. It widens as
-//! converter-stage refusals multiply: WI-805, WI-808, WI-809 and WI-850 are all
-//! reported as parse errors.
+//! converter-stage refusals multiply: WI-805, WI-808 and WI-809 are all reported as
+//! parse errors, and so was WI-850 until WI-20261023-GBH5F gave its form a meaning.
 //!
 //! These tests pin the RENDERED STRING, not the exit code — the defect was
 //! entirely in the rendering, so a test that only asserts "it failed" passes
@@ -70,22 +70,24 @@ fn assert_every_mention_is_located(out: &Output, path: &Path) {
     }
 }
 
-/// A converter-stage refusal (WI-850's type-parameter default) is the case the
-/// ticket was found on: the message named the file and the operation, then
-/// pointed at bytes 86..95.
+/// A converter-stage refusal: WI-808's repeated entity field, located at the second `x`.
+/// The ticket was found on WI-850's type-parameter default, whose message named the file
+/// and the operation, then pointed at bytes 86..95; that refusal was this row's until
+/// WI-20261023-GBH5F gave the default a meaning.
 #[test]
 fn a_converter_diagnostic_renders_path_line_col() {
-    let path = fixture("type-param-default.anthill");
+    let path = fixture("duplicate-field.anthill");
     let out = anthill(&["check", path.to_str().unwrap()]);
 
     assert_eq!(out.code, 1, "the check must block; stderr:\n{}", out.stderr);
     let line = located_error(&out, &path);
     assert!(
-        line.starts_with(&format!("error: {}:3:17: ", path.display())),
-        "expected the location of `T` in `operation foo[T = Int64]` (line 3, col 17); got:\n{line}"
+        line.starts_with(&format!("error: {}:3:23: ", path.display())),
+        "expected the location of the second `x` in `entity mk(x: Int64, x: Int64)` (line 3, \
+         col 23); got:\n{line}"
     );
     assert!(
-        line.contains("type parameter `T` carries a default"),
+        line.contains("duplicate entity field `x`"),
         "the location must not cost the diagnostic; got:\n{line}"
     );
     assert_every_mention_is_located(&out, &path);
@@ -113,9 +115,9 @@ fn a_syntax_error_renders_path_line_col() {
 /// error (both render through `span::render_located`).
 #[test]
 fn stage_does_not_change_the_rendering() {
-    let path = fixture("type-param-default.anthill");
+    let path = fixture("duplicate-field.anthill");
     let p = path.to_str().unwrap();
-    let expected = format!("error: {}:3:17: ", path.display());
+    let expected = format!("error: {}:3:23: ", path.display());
 
     // `--dry-run` writes nothing, so `--output-dir` keeps its default and no
     // directory is created.

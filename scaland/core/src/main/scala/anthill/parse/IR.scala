@@ -478,7 +478,13 @@ case class Param(name: TermSymbol, ty: TypeExpr, rest: Boolean, span: Span)
 case class TypeParam(
   name: TermSymbol,
   span: Span,
-  requirementSlot: Option[Int] = None
+  requirementSlot: Option[Int] = None,
+  /** Proposal 069 §1.3 (stage 2, WI-20261023-GBH5F) — the type a call takes for this
+    * parameter where its inference leaves it unbound (`operation decode[T = String](…)`):
+    * the PARSED type, never a source capture. WI-850 refused the form until rustland's
+    * stage 2 gave it a reader; scaland carries it for the generator, which emits a method's
+    * type parameter without it (Scala admits no default type parameter on a method). */
+  default: Option[TypeExpr] = None
 )
 
 // ── Const (proposal 039 / WI-084) ───────────────────────────────

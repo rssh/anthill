@@ -5169,19 +5169,41 @@ fn effect_row_params_of_spec(kb: &mut KnowledgeBase, spec: Symbol) -> Vec<Symbol
     // nothing in it).
     direct_requires_chain(kb, spec)
         .iter()
-        .filter(|entry| same_sort_canonical(kb, entry.required_sort, anchor))
-        .filter_map(|entry| {
-            let key = *entry
-                .spec
-                .named_keys(kb)
-                .iter()
-                .find(|k| kb.local_name_of(**k) == "Effects")?;
-            let bound = named_child_value(kb, &entry.spec, key)?;
-            match type_head(kb, &bound) {
-                TypeHead::SortRef(s) | TypeHead::Parameterized { base: s } => Some(s),
-                _ => None,
-            }
-        })
+        .filter_map(|entry| effects_anchor_row(kb, entry, anchor))
+        .collect()
+}
+
+/// The row parameter one `requires` entry names, when the entry is the
+/// `EffectsRuntime[Effects = E]` anchor `effects E = ?` lowers to.
+fn effects_anchor_row(kb: &KnowledgeBase, entry: &RequiresEntry, anchor: Symbol) -> Option<Symbol> {
+    if !same_sort_canonical(kb, entry.required_sort, anchor) {
+        return None;
+    }
+    let key = *entry
+        .spec
+        .named_keys(kb)
+        .iter()
+        .find(|k| kb.local_name_of(**k) == "Effects")?;
+    let bound = named_child_value(kb, &entry.spec, key)?;
+    match type_head(kb, &bound) {
+        TypeHead::SortRef(s) | TypeHead::Parameterized { base: s } => Some(s),
+        _ => None,
+    }
+}
+
+/// Proposal 069 stage 2 — the effect-row parameters `sort` DECLARES (`effects E = ?`),
+/// read off its own `requires` facts, for the loader's kind check of an operation type
+/// parameter's default (`Loader::op_type_param_is_row`). Unlike
+/// [`effect_row_params_of_spec`] it fills no cache: the loader asks while the load's
+/// requirement facts are still being completed, and a chain memoized then would be read
+/// by the passes after it. A row a sort only inherits is not one of its slots.
+pub(crate) fn declared_effect_row_params(kb: &KnowledgeBase, sort: Symbol) -> Vec<Symbol> {
+    let Some(anchor) = effects_runtime_sym(kb) else {
+        return Vec::new();
+    };
+    direct_requires(kb, sort)
+        .iter()
+        .filter_map(|entry| effects_anchor_row(kb, entry, anchor))
         .collect()
 }
 

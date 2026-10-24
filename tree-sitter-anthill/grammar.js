@@ -547,14 +547,14 @@ module.exports = grammar({
       ']',
     ),
 
-    // WI-850: the `default` field is parsed but NOT part of the language — the
-    // converter refuses `[T = Int64]` naming the operation, the parameter and the
-    // type written (kernel spec §5.4: `TypeParam ::= Name`). Kept in the grammar
-    // deliberately: dropping it here would turn a defaulted declaration into an
-    // unexpected-`=` syntax error pointing at a token instead of the diagnostic.
+    // Proposal 069 §1.3 (stage 2, WI-20261023-GBH5F): `[T = Int64]` declares the type a
+    // call takes for `T` where its inference leaves `T` unbound. WI-850 kept the field
+    // parsed but refused it at the converter until the default had a reader. Its value is
+    // a type argument's (`_common_type_expr`), as a sort parameter's default is, so a row
+    // parameter's is written `{}` (user, 2026-10-24); `[T = ?]` is the bare `T`.
     operation_type_param: $ => seq(
       field('name', $.identifier),
-      optional(seq('=', field('default', $._type))),
+      optional(seq('=', field('default', $._common_type_expr))),
     ),
 
     // WI-727 (proposal 056): an optional leading `...` marks a VARIADIC CAPTURE

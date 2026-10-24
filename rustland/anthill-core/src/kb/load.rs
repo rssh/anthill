@@ -15238,6 +15238,15 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
     );
     let sort_param_default_fields = vec![kb.intern("param"), kb.intern("default")];
     kb.register_entity_fields(sort_param_default, sort_param_default_fields);
+    let op_type_param_default = kb.symbols.define(
+        "OperationTypeParamDefault",
+        "anthill.reflect.OperationTypeParamDefault",
+        SymbolKind::Entity,
+        reflect_scope,
+    );
+    let op_type_param_default_fields =
+        vec![kb.intern("op"), kb.intern("param"), kb.intern("default")];
+    kb.register_entity_fields(op_type_param_default, op_type_param_default_fields);
 
     // MemberInfo is emitted while loading arbitrary source, including the small
     // bootstrap/test KBs that do not load reflect.anthill. Pre-register its enum
@@ -40315,6 +40324,331 @@ impl<'a> Loader<'a> {
         self.file_parameter_default(owner, param, term);
     }
 
+    /// Proposal 069 §1.3 — does the operation `o` use its bracket parameter `name` as an
+    /// EFFECT ROW? An operation's type parameter declares no kind (a sort's `effects E = ?`
+    /// does), so its uses in the signature are its kind, which a default must agree with
+    /// ([`Self::record_operation_type_param_defaults`]): an element of the operation's own
+    /// `effects`, of an arrow's row or of a row written as a type argument, or the value of
+    /// a sort's effect-row slot (`Stream[T = Int64, E = E]`, `Function[A, B, E]`). A
+    /// `requires` clause is not read: a parameter used only there is a type parameter here,
+    /// and a row default for it is refused as of the wrong kind, loudly.
+    fn op_type_param_is_row(&self, o: &Operation, name: Symbol) -> bool {
+        fn is_element(te: &TypeExpr, name: Symbol) -> bool {
+            match te {
+                TypeExpr::Simple(n) => n.segments.len() == 1 && n.segments[0] == name,
+                TypeExpr::EffectAbsent(inner) => is_element(inner, name),
+                TypeExpr::EffectGuarded { label, .. } => is_element(label, name),
+                _ => false,
+            }
+        }
+        fn in_row(this: &Loader<'_>, elements: &[TypeExpr], name: Symbol) -> bool {
+            elements.iter().any(|e| is_element(e, name) || within(this, e, name))
+        }
+        fn within(this: &Loader<'_>, te: &TypeExpr, name: Symbol) -> bool {
+            match te {
+                TypeExpr::Arrow {
+                    params,
+                    return_type,
+                    effects,
+                } => {
+                    in_row(this, effects, name)
+                        || params.iter().any(|(_, t)| within(this, t, name))
+                        || within(this, return_type, name)
+                }
+                TypeExpr::EffectRow(elements) => in_row(this, elements, name),
+                TypeExpr::Parameterized {
+                    name: sort,
+                    bindings,
+                } => {
+                    this.binds_a_row_slot(sort, bindings, name)
+                        || bindings.iter().any(|b| within(this, &b.bound, name))
+                }
+                TypeExpr::Tuple(fields) => fields.iter().any(|(_, t)| within(this, t, name)),
+                TypeExpr::EffectAbsent(inner) => within(this, inner, name),
+                TypeExpr::EffectGuarded { label, .. } => within(this, label, name),
+                _ => false,
+            }
+        }
+        o.effects
+            .iter()
+            .any(|e| is_element(&e.type_expr, name) || within(self, &e.type_expr, name))
+            || o.params.iter().any(|p| within(self, &p.ty, name))
+            || within(self, &o.return_type, name)
+    }
+
+    /// Does the written application `sort[bindings]` give the bracket parameter `name` to
+    /// one of the sort's effect-row slots ([`declared_effect_row_params`])? A slot is keyed
+    /// by its name, or by its position among the positional bindings.
+    fn binds_a_row_slot(&self, sort: &Name, bindings: &[SortBinding], name: Symbol) -> bool {
+        let written = join_segments(&self.parsed.symbols, &sort.segments);
+        let ResolveResult::Found(sort) = resolve_name_in_kb(self.kb, &written, self.current_scope)
+        else {
+            return false;
+        };
+        let rows = crate::kb::typing::declared_effect_row_params(self.kb, sort);
+        if rows.is_empty() {
+            return false;
+        }
+        let params = self.kb.type_param_syms_of(sort);
+        let mut positional = 0;
+        bindings.iter().any(|b| {
+            let slot = match &b.param {
+                Some(key) => key.segments.last().map(|s| self.parsed.symbols.local_name(*s)),
+                None => {
+                    positional += 1;
+                    params.get(positional - 1).map(|p| self.kb.local_name_of(*p))
+                }
+            };
+            matches!(&b.bound, TypeExpr::Simple(n) if n.segments.len() == 1 && n.segments[0] == name)
+                && slot.is_some_and(|slot| rows.iter().any(|r| self.kb.local_name_of(*r) == slot))
+        })
+    }
+
+    /// Does the one-segment name `segments`, read in the operation's scope, name an
+    /// effect-row parameter of an enclosing sort (`effects E = ?`)? The sort whose
+    /// parameter it resolves to, innermost first, says its kind.
+    fn names_enclosing_row_param(&self, segments: &[Symbol], op_scope: ScopeId) -> bool {
+        let short = self.parsed.symbols.local_name(segments[0]);
+        let ResolveResult::Found(param) = resolve_name_in_kb(self.kb, short, op_scope) else {
+            return false;
+        };
+        let mut seen = HashSet::new();
+        let mut frontier = vec![op_scope];
+        while let Some(scope) = frontier.pop() {
+            if !seen.insert(scope) {
+                continue;
+            }
+            let owner = scope.owner();
+            if self.kb.type_param_sym_of(owner, short) == Some(param) {
+                return crate::kb::typing::declared_effect_row_params(self.kb, owner)
+                    .iter()
+                    .any(|r| self.kb.local_name_of(*r) == short);
+            }
+            let Some(data) = self.kb.symbols.scope(scope) else {
+                continue;
+            };
+            frontier.extend(
+                data.parents.iter().filter(|inc| inc.is_enclosing).map(|inc| inc.parent_scope),
+            );
+        }
+        false
+    }
+
+    /// Proposal 069 §1.3 (stage 2, WI-20261023-GBH5F) — record the defaults of an
+    /// operation's bracket parameters (`operation decode[T = String](…)`), each lowered in
+    /// the operation's scope, `vars` the parameters' variables in bracket order: an earlier
+    /// parameter a default names is that parameter's variable, as a parameter type writes
+    /// it. Filed in [`KnowledgeBase::op_type_param_defaults`], keyed by the parameter's
+    /// variable, and reflected as an `anthill.reflect.OperationTypeParamDefault` row.
+    ///
+    /// Refused at the default, and not recorded, as a sort parameter's default is
+    /// ([`Self::record_parameter_default`]): one naming its own parameter or a later one;
+    /// one of the wrong kind — a row (`{}`, `{Error}`, or an earlier row parameter) for a
+    /// parameter the signature uses as a type, a type for one it uses as a row
+    /// ([`Self::op_type_param_is_row`]); one holding a value; and one holding a variable no
+    /// parameter is (`[T = List[T = ?]]`), a slot the default would leave open. `[T = ?]`
+    /// alone is the bare `T` and reaches here as no default (the converter). A default may
+    /// name the enclosing sort's parameters, as a parameter type may.
+    fn record_operation_type_param_defaults(
+        &mut self,
+        o: &Operation,
+        op: Symbol,
+        op_scope: ScopeId,
+        vars: &[TermId],
+    ) {
+        if o.type_params.iter().all(|tp| tp.default.is_none()) {
+            return;
+        }
+        let var_of = |kb: &KnowledgeBase, t: TermId| match kb.get_term(t) {
+            Term::Var(Var::Global(v)) => Some(*v),
+            _ => None,
+        };
+        for (i, tp) in o.type_params.iter().enumerate() {
+            let Some(default) = &tp.default else {
+                continue;
+            };
+            let short = self.parsed.symbols.local_name(tp.name).to_owned();
+            let site = SourceSpan::from_span(self.source_id, tp.span);
+            // The scan registered every bracket parameter (`scan_operation_params`) and the
+            // minting above gave each a variable; a default with neither has nowhere to be
+            // filed, which is an invariant broken, reported rather than dropped.
+            let Some(param) = self.kb.symbols.type_param_sym(op_scope, &short) else {
+                self.errors.push(LoadError::Other {
+                    message: format!(
+                        "{}: the default of `{short}` has no parameter to be filed under (the \
+                         scan registered none) — an internal error",
+                        render_decl_site(self.kb, site),
+                    ),
+                });
+                continue;
+            };
+            // Lowered first, so every refusal below quotes the default as the TYPE it is —
+            // never its source text, whose interior comments and line breaks are trivia
+            // (WI-951, carried to this stage).
+            let value = self.type_expr_to_value(default);
+            let lowered = node_occurrence::value_to_term(&mut self.kb, &value).ok();
+            // Rendered only for a refusal: the bracket's parameters, and the enclosing
+            // sort's, by the names the author wrote, not as variables.
+            let refuse = |this: &mut Self, why: String| {
+                let shown = match lowered {
+                    Some(term) => {
+                        let by_name = this.op_type_params_by_name(o, op_scope, vars);
+                        let named = this.kb.apply_subst(term, &by_name);
+                        crate::kb::typing::type_display_name_value(this.kb, &Value::term(named))
+                    }
+                    None => crate::kb::typing::type_display_name_value(this.kb, &value),
+                };
+                this.errors.push(LoadError::Other {
+                    message: format!(
+                        "{}: the default of `{short}` (`{short} = {shown}`) {why}",
+                        render_decl_site(this.kb, site),
+                    ),
+                });
+            };
+            let is_row_param = self.op_type_param_is_row(o, tp.name);
+            let default_is_row = match default {
+                TypeExpr::EffectRow(_) => Some(true),
+                TypeExpr::Simple(name) => Some(
+                    name.segments.len() == 1
+                        && match o.type_params[..i].iter().find(|e| e.name == name.segments[0]) {
+                            Some(earlier) => self.op_type_param_is_row(o, earlier.name),
+                            None => self.names_enclosing_row_param(&name.segments, op_scope),
+                        },
+                ),
+                TypeExpr::Variable { .. } => None,
+                _ => Some(false),
+            };
+            if default_is_row.is_some_and(|row| row != is_row_param) {
+                let (param_kind, expected) = if is_row_param {
+                    ("an effect-row parameter", "an effect row (`{}`, `{Error}`) or a row parameter")
+                } else {
+                    ("a type parameter", "a type")
+                };
+                let op_name = self.kb.qualified_name_of(op).to_owned();
+                refuse(
+                    self,
+                    format!(
+                        "is of the wrong kind: `{short}` is {param_kind} of `{op_name}`, so its \
+                         default is {expected}"
+                    ),
+                );
+                continue;
+            }
+            let Some(term) = lowered else {
+                refuse(self, "holds a value; a type parameter's default is a type".to_owned());
+                continue;
+            };
+            // Declaration order: this parameter and every later one may not be named.
+            let mentioned = self.kb.collect_vars(&term);
+            let names_var = |kb: &KnowledgeBase, t: TermId| {
+                var_of(kb, t).is_some_and(|v| mentioned.iter().any(|m| m.raw() == v.raw()))
+            };
+            if let Some(j) = (i..vars.len()).find(|&j| names_var(self.kb, vars[j])) {
+                let why = if j == i {
+                    format!("names `{short}` itself")
+                } else {
+                    format!(
+                        "names `{}`, which is declared after it",
+                        self.parsed.symbols.local_name(o.type_params[j].name)
+                    )
+                };
+                refuse(
+                    self,
+                    format!(
+                        "{why}: defaults are ordered, and a default may name only the \
+                         parameters declared before it"
+                    ),
+                );
+                continue;
+            }
+            // A variable that is no parameter — an earlier bracket parameter's, or the
+            // enclosing sort's canonical one — is the `?` of no slot.
+            let stray = mentioned.iter().any(|m| {
+                !vars[..i].iter().any(|&t| var_of(self.kb, t).is_some_and(|v| v.raw() == m.raw()))
+                    && self.kb.type_param_of_canonical_var(*m).is_none()
+            });
+            if stray {
+                refuse(
+                    self,
+                    "holds a type variable that names no earlier parameter; a default is a type \
+                     with every slot written, or an earlier parameter"
+                        .to_owned(),
+                );
+                continue;
+            }
+            let Some(vid) = var_of(self.kb, vars[i]) else {
+                self.errors.push(LoadError::Other {
+                    message: format!(
+                        "{}: the default of `{short}` has no variable to be filed under — an \
+                         internal error",
+                        render_decl_site(self.kb, site),
+                    ),
+                });
+                continue;
+            };
+            self.kb.op_type_param_defaults.insert(vid, term);
+            self.file_operation_type_param_default(o, op, op_scope, param, vars, term);
+        }
+    }
+
+    /// The `anthill.reflect.OperationTypeParamDefault` row of `param`'s default `default`,
+    /// an earlier bracket parameter it names standing by reference (its symbol in the
+    /// operation's scope), as `SortParamDefault` names one.
+    fn file_operation_type_param_default(
+        &mut self,
+        o: &Operation,
+        op: Symbol,
+        op_scope: ScopeId,
+        param: Symbol,
+        vars: &[TermId],
+        default: TermId,
+    ) {
+        let by_name = self.op_type_params_by_name(o, op_scope, vars);
+        let written = self.kb.apply_subst(default, &by_name);
+        let functor = self.kb.resolve_symbol("anthill.reflect.OperationTypeParamDefault");
+        let op_field = self.kb.intern("op");
+        let param_field = self.kb.intern("param");
+        let default_field = self.kb.intern("default");
+        let op_term = self.kb.make_name_term_from_sym(op);
+        let param_term = self.kb.make_name_term_from_sym(param);
+        let fact = self.kb.alloc(Term::Fn {
+            functor,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[
+                (op_field, op_term),
+                (param_field, param_term),
+                (default_field, written),
+            ]),
+        });
+        let domain = self.current_domain();
+        self.kb.assert_metadata_fact(fact, ClauseKind::Sort, domain, None);
+    }
+
+    /// Each of `o`'s bracket parameters' variable (`vars`, in bracket order) bound to the
+    /// parameter's name in the operation's scope: a default as its author wrote it, for
+    /// its reflect row and for a refusal that quotes it.
+    fn op_type_params_by_name(
+        &mut self,
+        o: &Operation,
+        op_scope: ScopeId,
+        vars: &[TermId],
+    ) -> crate::kb::subst::Substitution {
+        let mut by_name = crate::kb::subst::Substitution::new();
+        for (tp, &var) in o.type_params.iter().zip(vars) {
+            let short = self.parsed.symbols.local_name(tp.name).to_owned();
+            let vid = match self.kb.get_term(var) {
+                Term::Var(Var::Global(vid)) => Some(*vid),
+                _ => None,
+            };
+            if let (Some(sym), Some(vid)) = (self.kb.symbols.type_param_sym(op_scope, &short), vid)
+            {
+                let named = self.kb.make_name_term_from_sym(sym);
+                by_name.bind_term(self.kb, vid, named);
+            }
+        }
+        by_name
+    }
+
     /// `param`'s default names `named`, itself or a parameter declared after it: refused, as
     /// defaults are ordered.
     fn refuse_default_out_of_order(&mut self, param: Symbol, named: Symbol, site: SourceSpan) {
@@ -43234,6 +43568,9 @@ impl<'a> Loader<'a> {
             }
             type_param_var_terms.push(var_tid);
         }
+        // Proposal 069 §1.3 — the defaults the bracket declares, lowered here, where the
+        // operation's scope is current and its parameters' variables are minted.
+        self.record_operation_type_param_defaults(o, functor, op_scope, &type_param_var_terms);
 
         // WI-20260911-VNQTR — the THIRD family: a variable the signature writes in a
         // PARAMETER type (`via(b: Box[?t])`), which §5.4 quantifies as it does an `[A]`

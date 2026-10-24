@@ -220,9 +220,10 @@ private class AnthillParserImpl(
     * that FAILS drops the refusals recorded under it, along with the rest of its
     * output.
     *
-    * Three productions refuse from inside a `.map` — the WI-639 projection-label
-    * checks, the braced-`operation`-block visibility refusal, the WI-850 type-param
-    * default. A `.map` runs when ITS production succeeds, which is not the same as
+    * Productions refuse from inside a `.map` — the WI-639 projection-label checks and
+    * the braced-`operation`-block visibility refusal (the WI-850 type-param default was a
+    * third until WI-20261023-GBH5F gave it a meaning). A `.map` runs when ITS production
+    * succeeds, which is not the same as
     * the enclosing parse accepting that text: fastparse may backtrack out of the
     * alternative afterwards. In a flat shared buffer the refusal outlived the
     * backtrack, and since `AnthillParser.parse` returns `Left` whenever the buffer
@@ -2528,7 +2529,7 @@ private class AnthillParserImpl(
       operationClauses ~ ("=" ~/ exprBody).? ~ metaBlock.?
     )).map { case ((vis, n, tps, params, retType, clauses, opBody, trailingMeta), span) =>
       Operation(vis, n,
-        refuseTypeParamDefaults(n, tps.getOrElse(IndexedSeq.empty)) ++ clauses.slotBinders,
+        tps.getOrElse(IndexedSeq.empty) ++ clauses.slotBinders,
         params.toIndexedSeq, retType, clauses.requires, clauses.ensures, clauses.effects,
         opBody, trailingMeta, span)
     }
@@ -2538,118 +2539,31 @@ private class AnthillParserImpl(
     * coincide: this declares operation-local logical variables, not
     * bindings of sort parameters at an instantiation site. Mirrors
     * rustland's `operation_type_param_list`. */
-  private def operationTypeParamList[$: P]: P[IndexedSeq[WrittenTypeParam]] =
+  private def operationTypeParamList[$: P]: P[IndexedSeq[TypeParam]] =
     P("[" ~ operationTypeParam.rep(1, sep = ",") ~ "]").map(_.toIndexedSeq)
 
-  /** A type parameter plus the DEFAULT as written, if any. The default is carried
-    * only as far as `refuseTypeParamDefaults`, which reports it and drops it —
-    * `TypeParam` has no field to store it in (WI-850). */
-  private case class WrittenTypeParam(param: TypeParam, writtenDefault: Option[TypeExpr])
-
-  private def operationTypeParam[$: P]: P[WrittenTypeParam] =
-    // The default is carried as the parsed `TypeExpr`, NOT as a `.!` source capture:
-    // the refusal quotes it back to the author, and a capture spans whatever trivia
-    // was written inside the type — a comment, a line break, or (because an anthill
-    // identifier may contain `-`) a `my--type` whose `--` reads as a line comment to
-    // anything that re-lexes the slice. `renderTypeExpr` reads the tree instead, so
-    // there is nothing to re-lex (WI-950).
-    // WI-970: this was `mkSpan(idx, idx)` — a zero-WIDTH span at the parameter's first
-    // character, so the WI-850 refusal below pointed at a position with nothing to
-    // underline. [[located]] spans the identifier TOKEN, which is what the refusal is
-    // about. The START is unchanged (both capture `Index` before the ident), so the
-    // refusal renders at the same `line:col` as before — only the end moved.
-    P(located(ident) ~ ("=" ~/ typeExpr).?).map { case (n, span, default) =>
-      WrittenTypeParam(TypeParam(n, span), default)
+  /** One parameter of an operation's `[…]` bracket, with the DEFAULT its declaration may
+    * give it (proposal 069 §1.3): the parsed `TypeExpr`, NOT a `.!` source capture — a
+    * capture spans the trivia written inside the type, and a reader that strips it has to
+    * re-lex the slice, which an identifier like `my--type` defeats (WI-950/WI-951).
+    * WI-850 refused the form here until rustland's stage 2 (WI-20261023-GBH5F) gave it a
+    * meaning. WI-970: [[located]] spans the identifier TOKEN. */
+  private def operationTypeParam[$: P]: P[TypeParam] =
+    // A type argument's value (`commonTypeExpr`), as a sort parameter's default is, so a
+    // row parameter's is written `{}`; `[T = ?]` is the bare `T` (user, 2026-10-24).
+    P(located(ident) ~ ("=" ~/ commonTypeExpr).?).map { case (n, span, default) =>
+      TypeParam(n, span, default = default.filterNot(isBareHole))
     }
-
-  /** WI-850: a declared type-param DEFAULT (`operation foo[T = Int64](…)`) is
-    * REFUSED. The production above parses it so the refusal can name the operation
-    * and the parameter, instead of failing as an unexpected `=` pointing at a token.
-    *
-    * It has no semantics anywhere: the loader mints a fresh var per parameter from
-    * its NAME alone, so `[T = Int64]` loaded EXACTLY as `[T]` and the default was
-    * dropped in silence. The kernel spec's production is `TypeParam ::= Name` (§5.4).
-    * Refused HERE rather than in the loader because the verdict is decidable from the
-    * surface form alone, and this is the one point both declaration spellings
-    * (`singleOperation` and a braced block's `operationEntry`) reach — mirroring
-    * rustland, which refuses in the converter for the same reason. */
-  private def refuseTypeParamDefaults(op: Name, tps: IndexedSeq[WrittenTypeParam]): IndexedSeq[TypeParam] =
-    for wtp <- tps; writtenType <- wtp.writtenDefault do
-      val opName = op.segments.map(symbols.name).mkString(".")
-      val pName = symbols.name(wtp.param.name)
-      val written = renderTypeExpr(writtenType)
-      errors += ParseError(
-        s"operation `$opName`: type parameter `$pName` carries a default " +
-        s"(`$pName = $written`), which nothing reads — the declaration means exactly " +
-        s"`$pName`, and the default would be dropped in silence. Declare it bare and " +
-        s"let the call bind it, either from the arguments or explicitly " +
-        s"(`$opName[$pName = $written](…)`)", wtp.param.span)
-    tps.map(_.param)
-
-  /** Render a parsed `TypeExpr` back as anthill surface syntax, for the refusal
-    * above — the ONE diagnostic that has to show the author a type they wrote.
-    *
-    * Rendering the TREE rather than normalising a `.!` source capture is what keeps
-    * this honest (WI-950): a capture spans the trivia written inside the type, and
-    * anything that strips that trivia has to re-lex the slice — which needs the whole
-    * token model, not just the comment forms (an anthill identifier may contain `-`,
-    * so `my--type` is ONE token whose `--` is not a line comment). These matches are
-    * exhaustive over sealed types, so a new `TypeExpr` / `Term` / `Literal` case is a
-    * COMPILE error here rather than a silently mis-rendered diagnostic.
-    *
-    * The spelling is canonical, not verbatim: interior trivia is gone (the point),
-    * and a term written infix inside an effect guard renders as the functor call it
-    * desugared to. Both are what the author's declaration MEANS, which is what the
-    * message is about. */
-  private def renderTypeExpr(te: TypeExpr): String = te match
-    case TypeExpr.Simple(n)              => renderName(n)
-    case TypeExpr.Parameterized(n, bs)   => s"${renderName(n)}[${bs.map(renderSortBinding).mkString(", ")}]"
-    // The `descriptions` a `{< … >}` doc block attaches are trivia by nature — the
-    // very thing this rendering exists to leave out.
-    case TypeExpr.Variable(tid, _)       => renderTerm(tid)
-    case TypeExpr.TupleType(fields)      =>
-      // `tupleTypeArg` labels an unnamed component `_`; render those bare.
-      s"(${fields.map((n, t) =>
-        if symbols.name(n) == "_" then renderTypeExpr(t)
-        else s"${symbols.name(n)}: ${renderTypeExpr(t)}").mkString(", ")})"
-    case TypeExpr.Arrow(ps, ret, effs)   =>
-      val base = s"(${ps.map(renderTypeExpr).mkString(", ")}) -> ${renderTypeExpr(ret)}"
-      if effs.isEmpty then base else s"$base @ {${effs.map(renderTypeExpr).mkString(", ")}}"
-    case TypeExpr.Denoted(v)             => renderTerm(v)
-    case TypeExpr.EffectRow(effs)        => s"{${effs.map(renderTypeExpr).mkString(", ")}}"
-    case TypeExpr.EffectGuarded(l, g)    =>
-      s"${renderTypeExpr(l)} :- ${g.map(renderTerm).mkString(", ")}"
 
   private def renderName(n: Name): String = n.segments.map(symbols.name).mkString(".")
 
-  private def renderSortBinding(b: SortBinding): String = b.param match
-    case Some(p) => s"${renderName(p)} = ${renderTypeExpr(b.bound)}"
-    case None    => renderTypeExpr(b.bound)
-
-  /** Render a parse-time term as surface syntax. Reached from `renderTypeExpr` only,
-    * for a value-in-type (`Vector[Int64, 3]`) or an effect guard's goals. */
-  private def renderTerm(tid: TermId): String = terms.get(tid) match
-    case Term.Const(lit)  => Parser.renderLiteral(lit)
-    case Term.Var(v)      => v match
-      // The parser only ever builds `Global`; `DeBruijn` is the loader's canonical
-      // form for a STORED rule and `Rigid` is resolution's, so neither can reach here.
-      case Var.Global(id)   => s"?${symbols.name(id.name)}"
-      case Var.Rigid(id)    => s"?${symbols.name(id.name)}"
-      case Var.DeBruijn(i)  => s"?_$i"
-    case Term.Bottom      => "⊥"
-    case Term.Ref(s)      => symbols.name(s)
-    case Term.Ident(s)    => symbols.name(s)
-    // A WRITTEN BRACKET is printed as one (WI-20261020-80VNX; rustland's printer, JB6RS
-    // step 6): `Foo[]` is a type, and `Foo()` would be another term — and, over a sort, a
-    // spelling the loader refuses.
-    case fn: Term.Fn if terms.isTypeApplication(tid) =>
-      val pos = fn.posArgs.map(renderTerm)
-      val named = fn.namedArgs.map((k, v) => s"${symbols.name(k)} = ${renderTerm(v)}")
-      s"${symbols.name(fn.functor)}[${(pos ++ named).mkString(", ")}]"
-    case fn: Term.Fn      =>
-      val pos = fn.posArgs.map(renderTerm)
-      val named = fn.namedArgs.map((k, v) => s"${symbols.name(k)}: ${renderTerm(v)}")
-      s"${symbols.name(fn.functor)}(${(pos ++ named).mkString(", ")})"
+  /** Is `te` the anonymous `?` alone — `[T = ?]`, the bare `T` (proposal 042's explicit
+    * form; user, 2026-10-24)? Anonymous by its name, which [[freshAnonymousVar]] mints. */
+  private def isBareHole(te: TypeExpr): Boolean = te match
+    case TypeExpr.Variable(tid, _) => terms.get(tid) match
+      case Term.Var(v) => symbols.name(v.varId.name) == "?"
+      case _           => false
+    case _ => false
 
   /** The accumulated operation clauses. `slotBinders` (WI-840) are the NAMED
     * requirement slots found in the `requires` lists — each becomes an operation type

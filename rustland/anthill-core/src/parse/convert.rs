@@ -3927,6 +3927,7 @@ impl<'a> Converter<'a> {
                 type_params.push(TypeParam {
                     name: self.intern(self.text(binder)),
                     span: self.span(binder),
+                    default: None,
                     requirement_slot: Some(slot),
                 });
                 continue;
@@ -4826,11 +4827,9 @@ impl<'a> Converter<'a> {
         // `convert_operation_block`), so both spellings are covered once.
         let descriptions = self.declaration_descriptions(node);
 
-        // The name AS WRITTEN, for diagnostics that must quote the declaration
-        // (WI-850's type-param-default refusal).
         // `mut`: a NAMED requirement slot in a `requires` clause is a type parameter
         // too (WI-840 / 058 §4.7), appended by `convert_requires_body` below.
-        let mut type_params = self.convert_operation_type_params(node, self.text(name_node));
+        let mut type_params = self.convert_operation_type_params(node);
 
         let params = self
             .children_by_kind(node, "param")
@@ -4926,64 +4925,45 @@ impl<'a> Converter<'a> {
         })
     }
 
-    /// `op` is the enclosing operation's name as written — carried in for the WI-850
-    /// diagnostic below, from the caller that already has it.
-    fn convert_operation_type_params(&mut self, node: Node, op: &str) -> Vec<TypeParam> {
+    fn convert_operation_type_params(&mut self, node: Node) -> Vec<TypeParam> {
         let Some(list) = self.child_by_kind(node, "operation_type_param_list") else {
             return Vec::new();
         };
         self.children_by_kind(list, "operation_type_param")
             .into_iter()
-            .map(|p| self.convert_operation_type_param(p, op))
+            .map(|p| self.convert_operation_type_param(p))
             .collect()
     }
 
-    /// WI-850: a declared type-param DEFAULT (`operation foo[T = Int64](…)`) is
-    /// REFUSED here — the grammar parses it (`operation_type_param`'s optional
-    /// `default` field) so the refusal can name the operation and the parameter
-    /// instead of failing as an unexpected `=`.
-    ///
-    /// It has no semantics anywhere: the loader mints a fresh var per parameter from
-    /// its NAME alone, so `[T = Int64]` loaded EXACTLY as `[T]` and the default was
-    /// dropped in silence — and worse than inert, since an otherwise-unconstrained
-    /// call then raised `UnconstrainedTypeParam` telling the author to pin `T` with
-    /// `foo[T = …]` when they had written that pin on the DECLARATION. The kernel
-    /// spec's production is `TypeParam ::= Name` (§5.4); proposal 042 OQ3 admitted
-    /// the form grammatically and left the semantics unadopted pending a driver.
-    ///
-    /// Refused at the CONVERTER, not at the loader, because the verdict is decidable
-    /// from the surface form alone — no scope, no types, no KB — and this is the one
-    /// producer both declaration spellings reach (`operation_declaration` and an
-    /// `operation { … }` block's `operation_entry`). A load-time check would leave
-    /// `generate_rust`, which takes a `&ParsedFile` and never loads a KB, silently
-    /// dropping the default exactly as before. Same reasoning as WI-809's
-    /// duplicate-named-argument rule.
-    fn convert_operation_type_param(&mut self, node: Node, op: &str) -> TypeParam {
+    /// One parameter of an operation's `[…]` bracket, with the DEFAULT its declaration
+    /// may give it (`operation foo[T = Int64](…)`, proposal 069 §1.3): the converted type,
+    /// so every reader — the loader, a generator working from the parsed file, a
+    /// diagnostic quoting the default — reads the type and never the CST text, whose
+    /// interior comments and line breaks are trivia (WI-951, carried to WI-20261023-GBH5F).
+    /// WI-850 refused the form here until stage 2 gave it a meaning.
+    fn convert_operation_type_param(&mut self, node: Node) -> TypeParam {
         let span = self.span(node);
         let written_name = self
             .field(node, "name")
             .map(|n| self.text(n))
             .unwrap_or("?");
         let name = self.intern(written_name);
-        if let Some(default) = self.field(node, "default") {
-            let written = self.text(default);
-            self.err(
-                format!(
-                    "operation `{op}`: type parameter `{written_name}` carries a default \
-                     (`{written_name} = {written}`), which nothing reads — the \
-                     declaration means exactly `{written_name}`, and the default would \
-                     be dropped in silence. Declare it bare and let the call bind it, \
-                     either from the arguments or explicitly \
-                     (`{op}[{written_name} = {written}](…)`)"
-                ),
-                node,
-            );
-        }
+        // `[T = ?]` is the bare `T` (proposal 042's explicit form; user, 2026-10-24): a
+        // parameter with no default, not one whose default is a variable. Read off the
+        // `variable` token, so a described hole (`? {< … >}?`) is one too.
+        let default = self
+            .field(node, "default")
+            .filter(|d| {
+                !(d.kind() == "variable_term"
+                    && self.child_by_kind(*d, "variable").is_some_and(|v| self.text(v) == "?"))
+            })
+            .map(|d| self.convert_type(d));
         // WI-840: a bracket-declared parameter names no requirement slot; only the
         // `requires <name>: Spec[…]` binder does (`convert_requires_body`).
         TypeParam {
             name,
             span,
+            default,
             requirement_slot: None,
         }
     }

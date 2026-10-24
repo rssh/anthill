@@ -1201,6 +1201,18 @@ namespace anthill.reflect
     default : Term
   )
 
+  -- OperationTypeParamDefault: the declared default of an operation's type parameter
+  -- (`operation decode[T = String](…)`, proposal 069 §1.3), one row per defaulted
+  -- parameter. `op` is the operation; `param` is the parameter, by its name in the
+  -- operation's scope (`<operation>.T`); `default` is the type a call takes for it where
+  -- nothing the call writes or infers binds it, an earlier parameter it names standing by
+  -- reference.
+  entity OperationTypeParamDefault(
+    op      : Symbol,
+    param   : Symbol,
+    default : Term
+  )
+
   -- ================================================================
   -- Substitution: variable bindings from query/unification
   -- ================================================================

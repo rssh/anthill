@@ -96,3 +96,51 @@ end
           param: (name (identifier))
           type: (effect_row
             (simple_type (name (identifier)))))))))
+
+=====================================
+operation type params with defaults
+=====================================
+
+operation decode[T = List[T = String], U](x: U) -> T
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name (identifier))
+    (operation_type_param_list
+      (operation_type_param
+        name: (identifier)
+        default: (application
+          name: (name (identifier))
+          (sort_binding
+            param: (name (identifier))
+            type: (simple_type (name (identifier))))))
+      (operation_type_param
+        name: (identifier)))
+    (param
+      name: (identifier)
+      type: (simple_type (name (identifier))))
+    return_type: (simple_type (name (identifier)))))
+
+=====================================
+operation row param default and a bare hole
+=====================================
+
+operation tick[E = {}, T = ?]() -> Int64 effects E
+
+---
+
+(source_file
+  (operation_declaration
+    name: (name (identifier))
+    (operation_type_param_list
+      (operation_type_param
+        name: (identifier)
+        default: (effect_row))
+      (operation_type_param
+        name: (identifier)
+        default: (variable_term (variable))))
+    return_type: (simple_type (name (identifier)))
+    (operation_clause
+      (effects_clause (simple_type (name (identifier)))))))

@@ -993,6 +993,10 @@ pub(super) fn build_type(
                     unroll_annotation_with_inferred(kb, &ann, &vty, occ.span, occ.owner)
                         .unwrap_or(ann),
                 ),
+                // Proposal 069 §2 — an unannotated `let` finalizes the value's inferred type:
+                // a slot a construction left free takes its sort's default here
+                // ([`fill_inferred_defaults`]).
+                (None, Some(vty)) => Some(fill_inferred_defaults(kb, &vty)),
                 (ann, vty) => ann.or(vty),
             };
             // WI-20260904-50B2K part (c), step 3 — GENERALIZE AT THE BINDING, the half of the
@@ -2564,17 +2568,42 @@ pub(super) fn concrete_override_threaded(
             return Ok(None);
         }
         let related = DeclarationsRelated::new(kb, op, &impl_info);
-        let open = op.type_params.iter().copied().find(|(_, v)| {
-            matches!(v, Var::Global(u)
-                if unbound_in_return.iter().any(|&w| related.stands_at(kb, w, *u))
-                    && resolved_var(kb, &walk_view(kb, call_subst, &Value::Var(*v))).is_some())
-        });
-        return match open {
-            Some(open) => Err(unconstrained_type_param_error(
-                kb, call_subst, fn_sym, open, span,
-            )),
-            None => Ok(None),
+        let open_in = |kb: &mut KnowledgeBase, subst: &Substitution| -> Vec<(Symbol, Var)> {
+            op.type_params
+                .iter()
+                .copied()
+                .filter(|(_, v)| {
+                    matches!(v, Var::Global(u)
+                        if unbound_in_return.iter().any(|&w| related.stands_at(kb, w, *u))
+                            && resolved_var(kb, &walk_view(kb, subst, &Value::Var(*v))).is_some())
+                })
+                .collect()
         };
+        let open = open_in(kb, call_subst);
+        if open.is_empty() {
+            return Ok(None);
+        }
+        // Proposal 069 §2: the bracket, the arguments and the expected result (which σ above
+        // read through `call`) left these open, so each takes its declared default, as the
+        // spec's own path takes it below this fallback (`install_type_param_defaults`), and
+        // the override is threaded again at them. Only one with no default is the call's
+        // error — and one whose default did not take, which threading again would not move.
+        let mut defaulted = call_subst.clone();
+        install_type_param_defaults_of(kb, &mut defaulted, &open);
+        if let Some(&still) = open_in(kb, &defaulted).first() {
+            return Err(unconstrained_type_param_error(kb, call_subst, fn_sym, still, span));
+        }
+        return concrete_override_threaded(
+            kb,
+            op,
+            fn_sym,
+            self_recv_spec,
+            call,
+            &defaulted,
+            arg_syms,
+            eff_rekey,
+            span,
+        );
     }
     let Some(effs) = impl_info
         .effects

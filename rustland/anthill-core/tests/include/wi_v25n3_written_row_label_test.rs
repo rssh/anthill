@@ -539,18 +539,17 @@ end
     );
 }
 
-/// AN OPERATION TYPE-PARAMETER DEFAULT — the one census position NOT covered, with its
-/// reason MEASURED rather than assumed.
+/// AN OPERATION TYPE-PARAMETER DEFAULT is a written position like any other since proposal
+/// 069 stage 2 (WI-20261023-GBH5F), and a row it writes is judged as a parameter type's is.
 ///
-/// `operation f[T = Spec[E = {Beep}]](…)` is refused BEFORE any row can be judged: a
-/// default on an operation's bracket parameter is a load error in its own right, because
-/// nothing reads it. So the position exists in the grammar and carries no program for a
-/// row-label gate to have a verdict about.
-///
-/// Asserted here rather than left as prose so the exemption expires loudly: if that
-/// refusal is ever lifted, this test reds and the position needs covering.
+/// Until that stage `operation f[T = Spec[E = {Beep}]](…)` was refused before any row could
+/// be judged — a bracket parameter's default was a load error in its own right (WI-850),
+/// and this row asserted that refusal "so the exemption expires loudly". It expired: the
+/// default is lowered in the operation's scope by the lowering a parameter type takes, so
+/// its type application is a recorded site and its unregistered `BeepDf` is refused naming
+/// the row parameter, as at every other position of the census.
 #[test]
-fn an_operation_type_parameter_default_is_refused_before_a_row_is_judged() {
+fn an_operation_type_parameter_default_may_not_name_an_unregistered_kind() {
     let src = r#"
 namespace test.v25n3.dflt
   import anthill.prelude.{Error, String, EffectsRuntime}
@@ -564,11 +563,14 @@ namespace test.v25n3.dflt
     effects {Error} = out(v: p)
 end
 "#;
-    let err = anthill_core::parse::parse(src).expect_err("a bracket-param default is refused");
-    let rendered = format!("{err:?}");
-    assert!(
-        rendered.contains("carries a default") && rendered.contains("which nothing reads"),
-        "expected the bracket-param-default refusal; got: {rendered}"
+    expect_refused(
+        "an unregistered kind in an operation type parameter's default",
+        &[
+            "is not a REGISTERED effect kind",
+            "effect-row parameter `E`",
+            "test.v25n3.spec.Spec",
+        ],
+        &[OUT, SPEC, src],
     );
 }
 

@@ -4873,6 +4873,151 @@ pub(super) fn unconstrained_type_param_error(
     )
 }
 
+/// Proposal 069 §2 steps 4–5 (stage 2, WI-20261023-GBH5F) — bind each of `op`'s type
+/// parameters this call's inference left unbound to its declared default
+/// ([`KnowledgeBase::op_type_param_defaults`]), in declaration order, under the call's
+/// substitution: a default naming an earlier parameter reads what the call has there,
+/// its default included, being installed after it. Called where the call's inference is
+/// done — its bracket, its arguments, its expected result, its receiver — so a default
+/// fills silence and never overrides evidence (`identity[T = String](42)` is `Int64`); the
+/// return type, the effect row and every check below read the parameter through σ, which
+/// is the second solving phase. [`first_unconstrained_type_param`] then finds a defaulted
+/// parameter bound, and refuses only one with no default.
+///
+/// In a RULE BODY too (user, 2026-10-24): a type default is context-free (069 §2). The
+/// clause types a variable from all of its goals before its calls, so the clause's other
+/// goals are evidence read before the default, which reaches only a call nothing in the
+/// clause fixes. NO VERDICT READS IT THERE TODAY (MEASURED 2026-10-24, so no row drives it):
+/// a rule body judges no call's row and refuses no open parameter (WI-622), and a callee's
+/// requirement there is woven from the argument values, not from σ — `?t <=> which(none())`
+/// over `which[T = String]` aborts at the bridge for want of the dictionary exactly as over
+/// `which[T]` (WI-20261013-RYDNV).
+///
+/// A default that does not unify with the parameter's variable under the call's σ — one
+/// naming an earlier parameter the call made share a variable with this one, so that the
+/// binding would hold itself — is not installed: the parameter stays unbound, and WI-270's
+/// refusal names it.
+pub(super) fn install_type_param_defaults(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    op: &OperationInfoFull,
+) {
+    install_type_param_defaults_of(kb, subst, &op.type_params);
+}
+
+/// [`install_type_param_defaults`] for the parameters `params` alone, in their order — the
+/// ones a reading of the call found open where the rest of the call is still to be read
+/// (`concrete_override_threaded`).
+pub(super) fn install_type_param_defaults_of(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    params: &[(Symbol, Var)],
+) {
+    if kb.op_type_param_defaults.is_empty() {
+        return;
+    }
+    for (_, var) in params {
+        let Var::Global(vid) = var else {
+            continue;
+        };
+        let Some(&default) = kb.op_type_param_defaults.get(vid) else {
+            continue;
+        };
+        let var_term = type_param_var_term(kb, *var);
+        let resolved = walk_view(kb, subst, &TermIdView(var_term));
+        if resolved_var(kb, &resolved).is_none() {
+            continue;
+        }
+        let _ = unify_types(kb, subst, &Value::term(var_term), &Value::term(default));
+    }
+}
+
+/// Proposal 069 §2 steps 4–5 (stage 2, moved from stage 1) — `ty`, an INFERRED type a `let`
+/// binds with no annotation, with each slot of a sort that declares a default for it filled
+/// where the inference left it — left out, or a variable nothing bound: under `sort Tag[T =
+/// Int64]`, `let t = tag(n: 1)` binds a `Tag[T = Int64]`. Read through stage 1's
+/// [`crate::kb::load::parameter_default_fills`], the one reading of a default at a use, so a
+/// default naming an earlier parameter (`T2 = T1`) is that slot as the type has it.
+///
+/// AT THE `let`, AND NOT AT THE CONSTRUCTION. A construction's parameter flows out of it
+/// free, to whatever consumes the value — a call's parameter, a field, an annotation, a
+/// coerced slot, a generic slot a sibling argument fixes — and each of those is evidence the
+/// default must not come before (069 §2). MEASURED with the default installed at the
+/// construction: `some(tag(n: 1))` under `Option[T = Tag[T = String]]`, `holder(t: tag(n:
+/// 1))` over `entity holder(t: Tag[T = String])`, `wantO(tag(n: 1))` over an `Option` slot
+/// and `both(tag(n: 1), "s")` over `both[X](t: Tag[T = X], x: X)` were all refused (found by
+/// /code-review). A `let` with no annotation is where the inferred type is finalized for
+/// every later read — the binding's slot would otherwise open as its projection (`t.T`).
+///
+/// Read through the term carrier, where the type has one: a type on the occurrence carrier
+/// that converts (a construction's argument types often ride it) is filled as its term, and
+/// one that holds a value (a denoted-bearing type) is returned as it is, no default reaching
+/// a slot of it. A type nothing is filled in keeps the carrier it came on.
+pub(super) fn fill_inferred_defaults(kb: &mut KnowledgeBase, ty: &Value) -> Value {
+    if kb.sort_param_defaults.is_empty() {
+        return ty.clone();
+    }
+    let id = match ty {
+        Value::Term { id } => *id,
+        other => match crate::kb::node_occurrence::value_to_term(kb, other) {
+            Ok(id) => id,
+            Err(_) => return ty.clone(),
+        },
+    };
+    let filled = fill_term_defaults(kb, id);
+    if filled == id {
+        ty.clone()
+    } else {
+        Value::term(filled)
+    }
+}
+
+fn fill_term_defaults(kb: &mut KnowledgeBase, t: TermId) -> TermId {
+    let (head, named): (Symbol, Vec<(Symbol, TermId)>) = match kb.get_term(t).clone() {
+        Term::Ref(s) => (s, Vec::new()),
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } if pos_args.is_empty() && kb.type_arg_owner(functor).is_some() => {
+            (functor, named_args.to_vec())
+        }
+        _ => return t,
+    };
+    if kb.type_arg_owner(head).is_none() {
+        return t;
+    }
+    // The arguments' own slots first, then this application's: a slot holding a variable
+    // nothing bound is left out for the fill, as one the type does not write.
+    let mut written: Vec<(Symbol, Value)> = Vec::with_capacity(named.len());
+    let mut kept: Vec<(Symbol, TermId)> = Vec::with_capacity(named.len());
+    for (key, arg) in named {
+        let arg = fill_term_defaults(kb, arg);
+        // An inference variable is a slot nothing bound; a skolem is the body's own
+        // parameter, written, and keeps its place.
+        if matches!(
+            type_head(kb, &Value::term(arg)),
+            TypeHead::TypeVar(_) | TypeHead::FlexVar(_)
+        ) {
+            continue;
+        }
+        written.push((key, Value::term(arg)));
+        kept.push((key, arg));
+    }
+    let fills = crate::kb::load::parameter_default_fills(kb, head, &written);
+    if fills.is_empty() {
+        return t;
+    }
+    for fill in fills {
+        let Ok(term) = crate::kb::node_occurrence::value_to_term(kb, &fill.value) else {
+            return t;
+        };
+        kept.push((fill.key, term));
+    }
+    let base = kb.make_sort_ref(head);
+    kb.make_parameterized_type(base, &kept)
+}
+
 /// WI-270 — after seeding from `[bindings]`, expected, and arg
 /// unification, every declared type-param must resolve to a non-Var
 /// term. An unresolved Var means the caller can't recover the return
