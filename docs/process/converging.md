@@ -1,20 +1,46 @@
 # Converging — does the base stabilize?
 
 Notes on the ticket-generation dynamics of this project, and the open questions they raise.
-A running series, measured 2026-08-02 and re-measured 2026-08-06, 2026-09-02 and 2026-10-05 over the
-`anthill-todo` tracker's git history. Each sitting appends rather than overwrites, so the drift is
-readable. Numbers rot — and so did the method: the tracker changed layout on 2026-08-17, §5 has been
+A running series, measured 2026-08-02 and re-measured 2026-08-06, 2026-09-02, 2026-10-05 and
+2026-10-25 over the `anthill-todo` tracker's git history. Each sitting appends rather than
+overwrites, so the drift is readable. Numbers rot — and so did the method: the tracker changed layout on 2026-08-17, §5 has been
 rewritten to span both regimes, and the 2026-08-02 recipe now produces a wrong answer *silently*.
 On 2026-10-05 the same thing was found one level down: a third of the events the recipe counted in
-its newest window never happened, so §5 carries a second recipe and §3.1 reports both. §3.9 is that
-sitting's reading of the whole.
+its newest window never happened, so §5 carries a second recipe and §3.1 reports both. §3.9 and §3.10
+are the last two sittings' readings of the whole.
+
+The table below is the one part of this file that is replaced at each sitting instead of appended
+to. Start there; every row points to the section that holds its series and its caveats.
+
+## State at the latest sitting (2026-10-25)
+
+| series | 2026-10-05 | **2026-10-25** | § |
+|---|---|---|---|
+| items closed per day (own parents) | 4.3 | **6.5** | 3.1 |
+| tickets filed per day | 5.6 | **8.6** | 3.1 |
+| b, co-filed only | 0.36 | **0.35** | 3.1 |
+| every ticket filed ÷ closed | 1.30 | **1.32** | 3.1 |
+| Open + PreOpened + Claimed | 231 | **267** | 3.3 |
+| the same outside the parked set, in weeks of closing | 5.8 | **5.1** | 3.3 |
+| September cohort delivered | 60% | **70%** | 3.4 |
+| `carrier` in new ticket descriptions | 49% | **26%** | 3.5 |
+| parked set | 45 | **42** | 3.6 |
+| production code lines added per day | 788 | **1,584** | 3.7 |
+| typer share of production code | 33% | **38%** | 3.7 |
+| src lines deleted ÷ added, moves excluded | 20% | **21%** | 3.7 |
+| full test run on this machine | 16:36 | **2:49** | 3.8 |
+| numbered proposals that repair the base, since Aug 21 | 10 | **13** | 4 q15 |
+| WI-1126, the freeze gate | no note | **no note** | 3.6 |
+
+Rates in the Oct 5 column are over Sep 3 – Oct 5, in the Oct 25 column over the twenty days since
+that sitting's commit, `cc948805`; counts are as of each sitting.
 
 ## 1. The policy this measures
 
 Work is not started on a parked front (scaland resync, Cell runtime, staging brackets, effect rows)
 until the base is stable. 42 pre-June work items sat Open under that rule on 2026-08-02 — deliberately
 parked, not neglected — and 47 do on 2026-09-02 (§3.6 for why those two are on different definitions).
-45 do on 2026-10-05.
+45 do on 2026-10-05, 42 on 2026-10-25.
 
 The rule is only safe while the base actually converges. If base work generates work faster than it
 retires it, the gate never opens and the parked fronts wait forever. **The branching factor is what
@@ -52,7 +78,7 @@ fixed inside its parent, where no ticket records it, or filed afterwards in a `t
 own, which closes nothing. b counts neither. The definition is unchanged; what it catches is the
 residue, and §3.1 brackets what it misses.
 
-## 3. Measurements (2026-08-02, re-measured 2026-08-06, 2026-09-02 and 2026-10-05)
+## 3. Measurements (2026-08-02, re-measured 2026-08-06, 2026-09-02, 2026-10-05 and 2026-10-25)
 
 ### 3.1 b is drifting toward 1
 
@@ -340,6 +366,65 @@ August rate again. The first fortnight's residue is not a plan waiting its turn:
 the 25 from the two review batches above — is where the next sitting sees whether that fortnight was
 an episode or the level.
 
+#### Re-measured 2026-10-25 — closing rose by half, and filing rose with it
+
+Twenty days, on the second recipe. Every week through W40 reproduces to the digit, and so does the
+first recipe's every week through W40 — 46 / 72, 50 / 30, 27 / 5, 77 / 55, 33 / 9.
+
+| week | closed | spinoffs | **b** | created | log order: closed |
+|---|---|---|---|---|---|
+| W37–W40 | 125 | 42 | 0.34 | 157 | 187 |
+| W41 (Oct 5–11) | 44 | 6 | 0.14 | 49 | 69 |
+| W42 (Oct 12–18) | 45 | 31 | 0.69 | 81 | 66 |
+| W43 (Oct 19–25) | 43 | 9 | 0.21 | 41 | 83 |
+| **W41–W43** | **132** | **46** | **0.35** | **171** | **218** |
+
+Lifetime 1,376 close events over 1,371 items ever closed — still the same five closed twice — and
+b = 0.567. The first recipe reports 1,706 close events: **39% of its close events in these three
+weeks never happened**, against 34% in the window before, as merges went from 7.4% of commits to
+14.3% (70 of 488 since the Oct 5 sitting).
+
+Closes per week went from 21–39 to 43–45, the most since W35 — and it is a step, between W40 and
+W41, where §3.8 has the suite falling from sixteen minutes to three. Filing rose with it, so the
+bracket did not move. Over the twenty days since that sitting's commit:
+
+| | Sep 3 – Oct 5 | since the Oct 5 sitting |
+|---|---|---|
+| closed | 142 (4.3 a day) | 130 (6.5 a day) |
+| co-filed only — b as defined | 51 → **0.36** | 46 → **0.35** |
+| + tickets whose filing commit is not a planned stage | 105 → 0.74 | 148 → 1.14 |
+| every ticket filed | 185 → **1.30** | 171 → **1.32** |
+
+The middle row is a different cut from the one beside it. Read on Oct 5 from subject lines that call
+a ticket a follow-up, it is read here the other way round: the 125 tickets filed in commits that
+close nothing came from 64 commits, and 23 of those tickets are planned work by their commit's
+subject — the 050.1 sequence with library proposal 001-map's tickets (8), proposal 069's stage
+tickets (4), the decisions of 037's implementation plan (3), three test-suite tickets, the stdlib as
+its own load (2), two planned passes of A3 and WI-20261016-9AR9F. The other 102 say they were found
+in other work: `found while delivering`, `the third review's fixes`, `filed from SQZPQ's reviews`,
+`depends on what it found`. So the two windows' middle rows are a lower and an upper bound and are
+not to be compared; the outer rows are. **Four deliveries in five still file nothing in their own
+commit (§3.2); what the work finds is filed in commits of its own — 102 tickets against 130 closes.**
+
+Time-to-close, all cohorts on today's tree (the first six rows' n moved by up to two tickets, see
+§5):
+
+| born | spinoff n / closed | same-day | ≤7d | injected n / closed | same-day | ≤7d | **all born: closed ≤7d** |
+|---|---|---|---|---|---|---|---|
+| through Jun | 283 / 249 | 62% | 80% | 316 / 286 | 36% | 71% | 67% |
+| Jul | 171 / 160 | 53% | 83% | 139 / 129 | 43% | 82% | 77% |
+| Aug 1–6 | 73 / 68 | 63% | 90% | 44 / 40 | 52% | 78% | 79% |
+| Aug 7–31 | 120 / 108 | 61% | 87% | 130 / 100 | 49% | 86% | 72% |
+| Sep | 68 / 49 | 47% | 84% | 118 / 82 | 38% | 78% | 56% |
+| Oct 1–5 | 3 / 2 | — | — | 28 / 15 | 13% | 33% | **23%** |
+| Oct 6–18 | 37 / 20 | 50% | 90% | 87 / 49 | 43% | 88% | **49%** |
+
+The Oct 1–5 cohort that was "where the next sitting sees whether that fortnight was an episode or
+the level" answers *the level, and lower*: 23% of it closed within a week. Nineteen of its 31 came
+from the two review batches of Oct 2–3; 17 of the 31 are Delivered today and 13 still Open. The
+cohort after it, born while closing ran at its fastest, reaches 49% — under every cohort before
+September.
+
 ### 3.2 The multiplier lives in a minority of deliveries
 
 Over 743 commits that closed at least one item:
@@ -396,6 +481,10 @@ deliveries in five file nothing**, and the piles are filed on their own — 10, 
 four commits that close nothing (§3.1). This section's title has become wrong in an instructive way:
 the multiplier no longer lives in a minority of deliveries. It lives outside deliveries.
 
+**2026-10-25.** Same cut, 125 closing commits since the Oct 5 sitting: no spinoff 102 (81.6%), one
+13 (10.4%), two 7 (5.6%), 3–4 1 (0.8%), `>4` 2 (1.6%). The Sep 3 – Oct 5 column above reproduces
+exactly. The regime holds.
+
 ### 3.3 The open count is not a health metric
 
 Open oscillated 126 (Jun 15) → 63 (Jul 15) → 123 (Aug 2) **straight through** the drift from b=0.45
@@ -448,6 +537,25 @@ Creation against closure, each commit against its own parents: W20–W31 735 cre
 **1.13**; W32–W35 344 / 301, **1.14**; W36–W40 218 / 161, **1.35**. The ratio that "has not moved all
 summer" had not. It has now. (On the published recipe the three read 1.07, 1.04 and 1.42 — the last
 inflated on both sides by re-entering branches.)
+
+**2026-10-25.** Open 201 → **240**, PreOpened 24 → **26**, Claimed 5 → **1**, closed 1239 → **1369**
+(1330 Delivered + 39 Verified), plus 14 Rejected, 2 ProposalRejected, 4 Stale — **1656** total.
+`anthill-todo list --status open --unblocked` answers **189** (163 on Oct 5).
+
+```
+Oct  4  231    Oct 11  237    Oct 18  271    Oct 25  267
+```
+
++36 in three weeks, inside the +7 to +13 a week it has climbed since late August, through the three
+weeks in which closing ran at half as much again. In weeks of work the unparked set reads **225
+against 44 closes a week — 5.1**, down from 5.8 only because the divisor grew. Creation against
+closure, each commit against its own parents: W41–W43 171 / 132, **1.30** (1.35 for W36–W40; 1.41 on
+the published recipe).
+
+Where it sits, by birth month of what is Open today: 94 born in October, 51 in September, 40 in
+August, 21 in June and July, 34 before June. Half of the Open set carries a tag (120 of 240): 66
+`typing`, 18 `proposal-068`, 7 `proposal-055`, 6 `proposal-050.1`, 5 `proposal-037`, 5 `effects`, 5
+`resolver`. The 40 with a `proposal-…` tag are the stages of repairs already decided (§4 q15).
 
 ### 3.4 Spinoffs are absorbed, not accumulated
 
@@ -506,6 +614,24 @@ September and 20 in October, against 8 from June and 17 from July.
 
 The born column sums to 1487 against 1485 in the tracker. The second extra is **WI-874**, closed on
 2026-09-16 by deleting its file rather than moving it: born in git, in no status directory today.
+
+**2026-10-25**, keyed on the second recipe's birth (the first commit that creates a ticket, §5),
+which moves one ticket from August to May against the rows above:
+
+```
+2026-03  born  38  done  32  (84%)
+2026-04  born 110  done  91  (83%)
+2026-05  born 204  done 178  (87%)
+2026-06  born 247  done 234  (95%)
+2026-07  born 310  done 289  (93%)
+2026-08  born 367  done 316  (86%)   77% → 83% → 86% over its second and third months
+2026-09  born 186  done 131  (70%)   60% three weeks ago
+2026-10  born 196  done  98  (50%)   twenty-five days old
+```
+
+September gained ten points in three weeks, faster than August gained in its second month, and is
+still the first cohort behind: July stood at 88% and August at 83% one month after their end. The
+born column sums to 1,658 — the tracker's 1,656 and the two deleted items.
 
 ### 3.5 The drift is one subsystem
 
@@ -628,6 +754,43 @@ names, and the reason a review pass over it does not converge.
 
 The prediction §4 q3 has asked for since Aug 2 is registered there, at this sitting.
 
+**2026-10-25 — the requirement cluster's words halved, and the instrument needs a second column.**
+Same method; the Sep 3 – Oct 5 column reproduces on today's tree in eleven of thirteen rows, `dispatch`
+and `effect` one ticket off. New window: the 171 births since the Oct 5 sitting.
+
+| term | Sep 3–Oct 5 | **since Oct 5** | per 1,000 words, Sep 3–Oct 5 | **per 1,000 words, since** |
+|---|---|---|---|---|
+| **carrier** | 49.2% | **26.3%** | 3.51 | **1.73** |
+| requirement | 24.3% | 18.1% | 0.95 | 1.37 |
+| **dispatch** | 28.6% | **13.5%** | 0.89 | **0.45** |
+| dictionary | 26.5% | 11.1% | 1.19 | 0.91 |
+| witness | 18.9% | 8.2% | | |
+| rigid | 14.6% | 4.1% | | |
+| typer | 26.5% | 23.4% | 0.71 | 0.88 |
+| effect | 18.9% | 14.0% | 0.81 | 0.57 |
+| label | 8.6% | 12.3% | 0.31 | 0.69 |
+| **proof** | 3.2% | **12.9%** | 0.07 | **1.31** |
+| resolve | 20.5% | 8.8% | 0.48 | 0.22 |
+| **scope** | 32.4% | **28.1%** | 0.92 | **1.69** |
+
+The second pair of columns is new, because **the descriptions got shorter**: median 505 words over
+Sep 3 – Oct 5, 357 since, 282 in the last ten days. A share-of-descriptions count falls with length
+for every word at once — `acceptance` went from 93% of descriptions to 55% and `must` from 59% to
+16% — so the share alone cannot say a subject retired. Occurrences per thousand words of
+description can.
+
+Read with both: `carrier` and `dispatch` halved on both measures. That is "settling a question
+retires its generation" for the third time, now on the cluster §3.9 called the one not converging. `requirement` did not retire — its share fell and its density rose.
+`scope` is the opposite of what its share says: at 28% it is under the registered 30%, while per
+word it nearly doubled; the scope tickets are new ones, about what an operation's signature
+declares and where that is visible (WI-20261023-GJVVW, WI-20261025-TGAAD). And `proof` rose from
+nothing to one ticket in eight: fourteen defects of the SMT lowering of `by z3` and structured proofs,
+filed Oct 11–14 (a predicate of several clauses read as its first, an inlined rule's variables taken
+for its caller's, a field read as a constant by its short name), and two on SLD `forall`, Oct 24.
+The fourteen came in chains, each delivery's commit filing the next (S8CYD → BVG8M → ZZ7PH →
+BR7P3; CDHSQ → KF2SD → PR8SP and CDHSQ → 1P005 → VVRHJ): §3.5's opening sentence — discovered
+one delivery at a time — on a subsystem that had not been read this closely before.
+
 ### 3.6 The parked set is five chains with ready heads
 
 42 pre-June Open: **8** blocked by an open dep, **14** with all declared deps closed, **20** with no
@@ -720,6 +883,30 @@ The prose gates, closed out:
   adding the edge.
 - **WI-266** is Delivered (above). **WI-128** is the one left: Open, its prerequisite still without
   a ticket.
+
+**2026-10-25.** Parked set 45 → **42**. Four left it: WI-059 Delivered (each test starts from a copy
+of one loaded stdlib — part of §3.8's bend), WI-200 Delivered (step 1 of proposal 037's plan:
+`ModifyRuntime` and the generic `Modify` handler retired), WI-330 Rejected as superseded by
+WI-20261016-9AR9F (the typing-pass spec as an executable alternative implementation, PreOpened behind
+WI-1126 and WI-010), WI-354 Stale. One joined: WI-078, proposal 027's landing, a claim idle since
+July 3 and reopened on Oct 17 behind 037's step 2.
+
+| head | waits on |
+|---|---|
+| WI-020 (guard analysis) | WI-556, PreOpened |
+| WI-156 (scaland resync) | WI-1126, WI-069, WI-070, WI-152, WI-153 |
+| WI-188 (`.copy` → staging brackets) | proposal 069's stages 3 and 4 (WI-20261023-CX743, WI-20261023-FHT5Z) |
+| WI-207 (acyclic_cell) | nothing — ready |
+
+The staging chain's prerequisite moved with 069's staging: it waited on the whole proposal and now
+waits on its last two stages. One of the five chains left the table, WI-330's, by its head being
+superseded rather than started.
+
+**WI-1126 has no note and no commit since 2026-08-19**, ten weeks after it was filed. The population
+it has to triage is now 80 numbered files (050.1, 071, 072 added) and its premise, "the base type
+system is written", was stated over 28,450 lines of `kb/typing`; there are 65,404 (§3.7).
+PreOpened 24 → 26: three born there in the window (050.1's sixth stage, 9AR9F, a variance-aware
+dispatch question), WI-059 left it.
 
 ### 3.7 Code size — the tickets are producing prose faster than code
 
@@ -981,6 +1168,91 @@ are producing net-new production code at a steady 4:1" is no longer the whole de
 
 **Examples.** `guardians` 5,803 → 7,053; `classic-mini` 403 → 734; the other three within 30 lines.
 
+#### 2026-10-25 — twice the growth, and no lighter items
+
+The classifier now reproduces every cell of the Sep 2 and Oct 5 tables, the subsystem split
+included, and is written down in §5 so that it need not be recovered again.
+
+| | Oct 5 | Oct 15 | **Oct 25** | Oct 5 → Oct 25 |
+|---|---|---|---|---|
+| production code | 141,510 | 157,095 | **173,196** | +22.4% |
+| production doc-comment | 69,479 | 75,621 | **79,646** | +14.6% |
+| production `//` comment | 44,754 | 46,070 | **47,608** | +6.4% |
+| test code | 243,681 | 282,178 | **305,424** | +25.3% |
+| test doc + comment | 100,751 | 113,740 | **121,692** | +20.8% |
+| blank (both) | 32,733 | 36,889 | **39,298** | |
+| **all rustland Rust** | 632,908 | 711,593 | **766,864** | +21.2% |
+
+134 thousand lines in twenty days, against 145 thousand in the thirty-three before: **production
+code grew 1,584 lines a day, twice the 788 of Sep 2 → Oct 5**, and test code 3,087. Two commits in the
+window touch a hundred `.rs` files or more — `ebe92670` (180 test files, each test's stdlib load
+routed through one recipe) and `60cbd8ca` (109 files, +2,332 / −778, WI-20260909-M8QWJ's refusal
+of an operation nothing can run and the fixtures it moved) — and neither is a reformat or a
+move.
+
+Prose went the other way. It is 29% of the production lines added — half of them in the window
+before — and 42.4% of all non-blank production lines, down from 44.7%, the first fall in the series; in the typer it went from a line of
+prose per line of code to 0.82.
+
+**Per item closed** (130 items between the two sittings' commits; 77 to Oct 15, 53 after):
+
+| window | items closed | prod code / item | prod prose / item | test code / item |
+|---|---|---|---|---|
+| Sep 20 → Oct 5 | 67 | 231 | 144 | 485 |
+| Oct 5 → Oct 15 | 77 | 202 | 97 | 500 |
+| Oct 15 → Oct 25 | 53 | 304 | 105 | 439 |
+| **Oct 5 → Oct 25** | **130** | **244** | **100** | **475** |
+
+Against the fortnight before the last sitting the weight of a closed item held — about 240 lines of
+production code and 475 of test — while items closed half as fast again. Against the whole window
+before it (183 and 406 per item) the weight rose by a third as well. **Either way the doubled growth
+is mostly the faster closing, and nothing the cheaper cycle bought went into smaller items.**
+
+**Where.** Production code lines:
+
+| | Oct 5 | **Oct 25** | share of the growth | prose per line of code |
+|---|---|---|---|---|
+| `kb/typing` | 47,139 | **65,404** | **58%** | 0.82 |
+| `kb/load` | 21,272 | 27,230 | 19% | 0.73 |
+| `kb/resolve` | 7,463 | 7,998 | 2% | 0.98 |
+| `eval` | 11,584 | 12,205 | 2% | 0.80 |
+| everything else | 54,052 | 60,359 | 20% | |
+
+The typer is **38%** of production code (17% on Jun 7, 27% on Aug 2, 33% on Oct 5) and grew **913
+lines a day** — 823 to Oct 15 and 1,004 after — against a previous peak of 574. It took a third of
+the growth over August, half over Sep 2 → Oct 5, and 58% now. The resolver, which §3.5 reads as settled, grew by 535
+lines in twenty days. Two files hold most of the rest of the core: `kb/load.rs` is one file of 49,771
+lines, `kb/resolve.rs` one of 20,455.
+
+**Surface, in step with lines again:** `fn` 5,586 → 6,875 (+23%), `pub fn` 2,393 → 2,941, match arms
+10,108 → 12,033 (+19%), `if` / `else if` 5,842 → 7,242 (+24%), `struct` / `enum` 786 → 973 (+24%);
+lines per `fn` 25.2, per arm 14.4. 1,289 functions in twenty days, 64 a day — 29 a day in the window
+before.
+
+**Addition or rework — the second sign did not come.** Multiset difference of non-blank lines, src
+paths:
+
+| window | src added | src deleted | del/add | test added | test deleted | del/add |
+|---|---|---|---|---|---|---|
+| Sep 20 → Oct 5 | 36,683 | 11,415 | 31.1% | 47,960 | 2,553 | 5.3% |
+| Oct 5 → Oct 15 | 30,937 | 6,927 | 22.4% | 56,019 | 5,500 | 9.8% |
+| Oct 15 → Oct 25 | 29,176 | 6,503 | 22.3% | 33,433 | 3,244 | 9.7% |
+
+Above the 14–19% of June to mid-September, under the fortnight that §4 q17 asked about — and
+level with the whole window before it: Sep 2 → Oct 5 reads 65,706 / 12,843, 19.5%. The 31% was
+that window's last fortnight. Mechanisms
+did retire — `ErrorTag` and the gates that read it (proposal 071 stage c), `ModifyRuntime` and the
+generic `Modify` handler (WI-200), the per-interpreter table of the runtime's raises, the split
+between a call bracket's scopes — but at a rate that leaves nearly five lines added for each
+removed.
+
+**Tests.** 170 test files added in the twenty days and none removed; 812 of the 1,059 test files
+are named by the work item or review that added them (`wi_9wvt7_review6_test.rs`), and they hold
+three quarters of the test lines. The suite is organized by history.
+
+**Examples** moved by 72 lines in all; no new program. `scaland` 33,489 → 39,144 lines of Scala, 35
+commits.
+
 ### 3.8 Test execution time on this machine
 
 Local, machine-specific, and not in git: `rustland/scripts/test.sh` prefixes every line with elapsed
@@ -1067,6 +1339,44 @@ minutes of the working span and on Oct 4 every 69, and a run takes 16. With the 
 cycle, it is growing, and it is not where the factor of two went. That is in §3.7 — four times the
 code per closed item — and in §3.1's ten passes.
 
+**2026-10-25 — a build setting took four fifths of it away in one commit.** The day table, by the
+same rules, which give back all nine rows above; the last column here is the full runs' hours only.
+
+| date | tests | wall clock | ms/test | full runs | hours in full runs |
+|---|---|---|---|---|---|
+| 2026-10-05 | 8,620 | 16:18 | 114 | 12 | 3.3 |
+| 2026-10-06 | 8,694 | 16:14 | 112 | 8 | 2.0 |
+| **2026-10-07** | 8,757 | **3:09** | **22** | 16 | 0.8 |
+| 2026-10-09 | 8,940 | 2:41 | 18 | **95** | 4.8 |
+| 2026-10-13 | 9,759 | 2:04 | 13 | 71 | 2.4 |
+| 2026-10-17 | 10,120 | 2:24 | 14 | 20 | 0.8 |
+| 2026-10-22 | 10,455 | 2:31 | 14 | 64 | 2.6 |
+| **2026-10-25** | **10,926** | **2:49** | **15** | 11 | 0.5 |
+
+`529bc87f` (WI-20261006-ZVV24, Oct 6) builds anthill-core at opt-level 2 and the two tree-sitter
+crates at 3 for a full run, and keeps the plain dev profile for a selected one. Wall clock fell 5.2×
+overnight. Between Oct 8 and Oct 11 it went on from 3:25 to 2:17; WI-059 (Oct 9: each test
+starts from a copy of one loaded stdlib) is in that span, and these logs do not separate its share
+from the other commits'. What nothing changed is the slope: from 2:17 on Oct 11 to 2:49 today, with tests +17%,
+is the 46-day doubling again, from a sixth of the height. Projected on it: four minutes in
+mid-November, five at the end of it.
+
+**The prediction was wrong in the right direction, and the cause was not the one named.** §4 q3's
+fifth prediction said 24–28 minutes and named the 2026-09-27 rule as the candidate if it came in under 22. It came in
+at under three, and the cause was the question §4 q12 has asked since Sep 2 and never measured —
+what each test pays — answered by compiling it faster rather than by making it pay less.
+
+**And the capacity reading got its experiment.** §3.8 bounded the suite's part of the closing rate
+at a fifth to a third more cycles for a suite as fast as August's. The same arithmetic for the suite
+as it is now — Oct 3's and Oct 4's cycles less thirteen minutes each — gives 1.24 to 1.40 times the
+cycles. Closes went from 4.3 a day to 6.5 (§3.1), 1.51 times. **The suite was about the capacity
+factor it was estimated to be, and that factor is now spent**: halving a three-minute run saves less
+than a minute and a half per cycle. What the saving bought was
+not banked as idle time either. Full runs went from 3–20 a day to 9–95, and a delivery's note now
+records a matrix — the workspace, the generated families on both carriers, anthill-core under the
+fresh-load, two-step and node-carrier recipes, and under the provision oracle on the shared base and
+two-step (WI-20260908-9WVT7's notes, Oct 17).
+
 ### 3.9 What the 2026-10-05 sitting adds up to
 
 Kept apart from the sections above because it is reading, not measurement, and is meant to be argued
@@ -1135,6 +1445,72 @@ more examples (§3.1).
 §3.8's time budget bounds the suite's part of *capacity* at a factor of 1.2 to 1.35 in a fall that is
 more than twofold; the other part — how many design decisions a day can be taken — cannot be read
 from a repository. Between the first two readings nothing here decides. §4 q3 registers what would.
+
+### 3.10 What the 2026-10-25 sitting adds up to
+
+Reading, not measurement, as §3.9 was.
+
+**1. Capacity was tested, and it is not what decides convergence.** The suite fell from sixteen
+minutes to under three (§3.8). Closing rose by half, filing rose by half, and tickets filed per item
+closed went 1.30 → 1.32 (§3.1). The stock climbed at its old rate (§3.3), code grew twice as fast at
+no lighter weight per item (§3.7). More cycles bought more of the same: each closed item still
+brings 1.3 tickets and about 240 lines of production code. Of §3.9's three readings, *capacity* is
+the one now answered, and the answer is that it sets the speed and not the direction.
+
+**2. The cluster that was not converging is retiring its tickets, and others opened.** `carrier`
+and `dispatch` halved per word of new descriptions — the third time a cluster's share has fallen
+after its questions were settled (§3.5). In the same twenty days: fourteen proof-lowering defects in
+one lineage, the scope of an operation's own names, memory through `let` (050.1), constructor
+contracts (072), Error's boundary evidence (071), and 18 Open tickets of rule-body evaluation (068).
+Each front measured so far fell back within weeks of rising. None has run out before the next one
+opened, which is why the stock does not fall.
+
+**3. Inside a ticket the method change held where it was applied.** The tickets in the generated
+families' rules after E1WN0 landed closed in one or two passes; WI-20260908-9WVT7, outside every
+family, reached its seventh `/code-review` in three days — the four whose count its notes record each
+at the cap of fifteen findings — and is Open with 27 notes (§4 q3, sixth prediction). Five families
+cover a handful of typer rules; the typer holds 38% of the production code.
+
+**4. Nothing is getting smaller.** 1,584 production lines and 3,087 test lines a day, five added for
+each one removed, 58% of it in the typer; 170 test files added and none removed; 40 Open tickets that
+are stages of repairs already decided; WI-1126 untouched for ten weeks.
+
+**Is it time to reorganize?** (Asked by the user at this sitting; §4 q18.) This document's reading is
+yes, and its measurements say which reorganization comes first.
+
+Two levers have been observed to change these series. A *settled question* retires a cluster's
+tickets (`simp` in August; `scope`, `resolve` and `host` in September; `carrier` and `dispatch` now).
+A *generated family* bounds the review passes of the tickets in its rules (§4 q3, sixth
+prediction). Neither has been applied to the whole. There is no list of the questions 0.1.0 needs settled, and there are five
+families.
+
+- **The list first: WI-1126's first part.** A verdict on each of the 80 numbered proposals; the base's
+  open holes, which the spec's 17 open citations give only in part; the base constructs no program
+  has used, `Suspension` the plainest. Then the 240 Open tickets sorted into what 0.1.0 needs and
+  what moves to PreOpened. That turns the stock into a count that can go down and gives §1's gate a
+  date. It costs decisions, not
+  code, and it is the one item that has waited ten weeks.
+- **Then one answer per question, under families.** Where two parts of the implementation answer one
+  question by different rules, one program gets two verdicts: E1WN0 counted a third of the eighth
+  pass's findings as one program judged two ways by two spellings or two readers. The largest such
+  pair, a rule body against an operation body, is proposal 068's (§3: typed as in an operation
+  body; WI-20260926-7D48J, one rule-clause typing; WI-20261015-ZPETZ, one dispatch), and is decided.
+  Outside it the pairs are filed one at a time. WI-20261025-ZAWX9, run on this sitting's tree: one
+  call of a spec operation with a default answers 7 written by name, where the typer picks the
+  supplier, and 1 through a `requires` dictionary, where the evaluator picks it by another rule.
+  Families first, because without them such a merge is reviewed the way 0RP29 and 9WVT7 were. Its
+  measures are already here: deleted over added above 25% with the typer's lines per day falling
+  (§4 q17).
+- **Tests by subject, only where the second step touches them.** Three quarters of the test lines sit
+  in files named by the ticket that added them.
+
+What would show this reading wrong: the Open stock turning down at the current way of working. It
+has dipped for single weeks (Aug 16, Sep 20, Oct 25), and since Aug 16 no reading has been lower
+than the one two weeks before it.
+
+This file has the same shape as the code it measures: 2,200 lines appended at five sittings, a
+correction stacked on a correction. The table at its top is the first step of its own reorganization;
+moving the dated addenda to a history file would be the second.
 
 ## 4. Questions for review
 
@@ -1205,6 +1581,28 @@ from a repository. Between the first two readings nothing here decides. §4 q3 r
       one test file). Scored by where the next numbered proposals land, and by whether the first
       real Suspension program is followed by one.
 
+   **INTERIM SCORE 2026-10-25**, twenty days into the thirty-one. The final score stays due at about
+   2026-11-05.
+
+   1. *Holds as registered*: `scope` 28.1%, `resolve` 8.8%. But the instrument was confounded: the
+      descriptions got a third shorter, and per thousand words `scope` nearly doubled (§3.5).
+   2. *Half holds*: three numbered repairs were committed (050.1 on Oct 15, 071 on Oct 16, 072 on
+      Oct 17), and `carrier` fell to 26%. Neither branch as written. The repairs kept arriving at about
+      the rate of September, and they left the carrier vocabulary.
+   3. *On track*: 267.
+   4. *On track*: 70%.
+   5. *Refuted*: 2:49. Something bent it, and it was not the rule named — a build setting (§3.8).
+   6. *The first leg is borne out, not tested.* E1WN0 landed on Oct 13 with four families, a fifth
+      (`e-applied-arrow`) on Oct 14. The tickets in those rules after it closed in one or two passes —
+      WI-20261013-450KA and WI-20261013-1TJQH the day they were filed, WI-20260820-RDNS4 after "a
+      second pass over the fixes", WI-20261014-EDPF6. Outside them, WI-20260908-9WVT7 reached its
+      seventh review in three days with every recorded pass at the cap. Small tickets inside a family
+      against a large one outside: the comparison the prediction wanted, with a size difference it did
+      not control.
+   7. *Partly*: two of the three new repairs are in effects — 071 in `Error`'s boundary, 050.1 in
+      `Modify` through a `let` — and none in `Suspension`, which still has no program (0 example
+      files, 1 test file).
+
 4. ~~**Is W31 signal or noise?**~~ **ANSWERED 2026-08-06 (§3.1).** Signal, but not a level shift: W32
    is 0.88 — below 1, above every prior block. The series is 0.45 → 0.51 → 0.70 → 0.88 and the
    question is no longer "was the breach real" but "what bends the trend". Successor question:
@@ -1273,6 +1671,11 @@ from a repository. Between the first two readings nothing here decides. §4 q3 r
    **2026-10-05.** Still no area tag. §3.5's term shares stand in for it, and they now disagree with
    the global figure in exactly the way this question predicted: the global b halved while one
    cluster's share of new tickets rose by half and two others' fell by a quarter.
+
+   **2026-10-25. The tag exists now.** 78% of October's births carry one, 54% of September's, half of
+   the Open set (§3.3); `typing` and the `proposal-NNN` stage tags are most of it. What it can measure
+   is the stock and the closing rate per area. b per area it cannot, since b itself no longer can
+   (§3.1).
 
 8. **Does the reopen rate matter?** 70 items were closed and later reopened (861 close events vs 779
    closed items). That is a second convergence signal — work that did not stay done — and it is not
@@ -1349,6 +1752,12 @@ from a repository. Between the first two readings nothing here decides. §4 q3 r
     them go into each closed item, and a suite as fast as August's would buy a fifth to a third more
     cycles. Worth doing; not the factor of two.
 
+    **ANSWERED 2026-10-25 (§3.8).** A build setting bent it: anthill-core at opt-level 2 in the gate,
+    filed and delivered on Oct 6 (WI-20261006-ZVV24), 16:14 → 3:09 overnight, and 2:17 by Oct 11 (WI-059's shared
+    stdlib copy is in that span, its share not separated). The per-test cost was never measured; it was compiled faster. The
+    slope is unchanged at a 46-day doubling from a sixth of the height, and closing rose by the share
+    the cycle arithmetic allowed — the question's "worth doing; not the factor of two", confirmed.
+
 13. **Should a ticket record where it came from?** (§3.1, new.) Fan-out was readable off the
     history while a follow-up was filed in its parent's closing commit. It no longer is: the
     bracket is [0.36, 1.30]. An optional `origin: WI-…` attribute, written when a ticket is filed
@@ -1362,6 +1771,9 @@ from a repository. Between the first two readings nothing here decides. §4 q3 r
     *do*. With q15 answered there is a fourth, and it is the one closest to §1's own words: **a
     month in which no new proposal has to repair the base's design.** There has not been one since
     the repairs began in August.
+
+    **2026-10-25.** All four read as they did: WI-1126 untouched; 5.1 weeks; September behind; three
+    repairs in twenty days. §3.10 turns the first into a proposal for how to spend time, q18.
 
 15. **Are proposals 059–070 the base, or a front?** (§3.5, §3.9.) If the base, it is by
     construction not stable until they stop, and §1 is waiting on a decision rather than a
@@ -1418,11 +1830,31 @@ from a repository. Between the first two readings nothing here decides. §4 q3 r
     is WI-1126's first part. Written, it turns §1's "until the base is stable" into a count that
     goes down.
 
+    **2026-10-25.** The series, extended:
+
+    ```
+    050.1       Oct 15          repair        memory through a `let`: a write the binder drops
+    071         Oct 16          repair        Error's boundary evidence (`ErrorTag` → `TypePattern`)
+    072         Oct 17          repair        constructor contracts, asked for while 037 was revised
+    ```
+
+    Thirteen since Aug 21; 037 was revised on Oct 17 as well, and 069 split into five stages on
+    Oct 23. Three in twenty days is four or five a month, against seven a month over the six weeks
+    before. The spec grew from 6,862 lines to 7,566. It cites 351 tickets, 17 of them still open,
+    against 21; two of the 17 are the Suspension and Branch effects, WI-069 and WI-070, Open since
+    April. The effects table is unchanged in its example column — no example program was written in the
+    window — and `Modify`'s test files went 73 → 103, `Error`'s 153 → 223, where the two repairs were.
+
 16. **Can the inside of a ticket be measured?** (§3.1.) Passes per ticket and regressions per pass
     are now where the branching is, and the only record is prose in ticket notes — 0RP29's "eight
     passes, fourteen of fifteen" survives because someone wrote the sentence. E1WN0's committed
     verdict files would turn the second into a diff. Until then this document cannot see the
     process it was written to watch.
+
+    **2026-10-25.** E1WN0's verdict files are committed (Oct 13), and a moved verdict is now a diff
+    in the families' directory — eight of them blessed on Oct 22 after one delivery moved them. For
+    the rows outside the families the record is still prose: WI-20260908-9WVT7's passes are counted
+    here from the sentences of its notes, and three of its seven do not state a finding count.
 
 17. **Is the last fortnight's deletion the start of consolidation, or four coincidences?** (§3.7.)
     Deleted-to-added on moved-line-proof counts ran 14–19% for four months and is 30% since Sep 20,
@@ -1430,6 +1862,33 @@ from a repository. Between the first two readings nothing here decides. §4 q3 r
     lines-per-day falls, the code has started retiring alternatives instead of accreting them —
     which is what §3.7 was set up to detect and is the first thing in this series that would look
     like the base stabilizing from the inside.
+
+    **ANSWERED 2026-10-25 (§3.7): an episode.** Deleted over added fell back to 22% in each half of
+    the window while the typer's lines per day rose from 569 to 913. Mechanisms kept retiring —
+    `ErrorTag`, `ModifyRuntime` and the generic `Modify` handler, the runtime's raise table — at
+    nearly five lines added for each line removed. The test is kept for the next sitting
+    unchanged; §3.10 proposes making it a goal rather than waiting for it.
+
+18. **Should time be spent reorganizing instead of repairing?** (Asked by the user, 2026-10-25;
+    §3.10.) The capacity reading was tested and spent (§3.8): a sixth of the suite bought half as
+    many closes again and the same 1.3 filings per close. Two levers have been seen to change the
+    series — a settled question retires a cluster's tickets, and a generated family bounds the review
+    passes of its rules — and neither has been applied to the whole. §3.10's reading: the list
+    first (WI-1126's verdicts and the 0.1.0 sort of the Open set), then one answer per question
+    under families — 068 for the rule body, the pairs outside it such as ZAWX9's — and tests by
+    subject where that touches them. Scored by the series already here: the Open
+    stock turning down; deleted over added above 25% with the typer's lines per day falling; review
+    passes per ticket in the consolidated rules at three or fewer.
+
+    **2026-10-25, later the same day — the first two maps.** *Which implementation runs a call*
+    (`docs/design/supplier-question-map.md`): seven readers, and 18 of 112 programs contradict
+    §8.7 — one loads clean and dies. WI-20261025-ZAWX9, delivered the same afternoon from another
+    session, gave the defaulted path one answer and took five of the 18; the 13 left are all
+    body-less, filed as WI-20261025-7K84M and guarded by the family `f-supplier-routes`. *May A stand where B is expected* (`docs/design/compatibility-question-
+    map.md`): the typer's six positions are one answer over 20 pairs, and provision lookup and
+    `type_admits` are two more implementations of the relation, each disagreeing with it in its
+    own rows. Copied code is 5% of the typer's lines; repeated decisions are where the
+    duplication is.
 
 ## 5. Method (reproduce)
 
@@ -1709,3 +2168,97 @@ Added 2026-10-05:
 - **Read the field before the prose.** §3.6 carried "real prerequisite, no edge" for WI-294 across
   two sittings while `depends_on` held the edge. A statement here about what the tracker does *not*
   record must be checked against the attribute, not the description.
+
+Added 2026-10-25:
+
+- **A share-of-descriptions count moves with description length.** Median descriptions went from
+  505 words to 357 in this window, and every word's share fell with it — `acceptance` from 93% to
+  55%. §3.5 now prints occurrences per thousand words of description beside the share; a term has
+  retired only where both fall.
+- **A ticket created on two branches has two births, and the topological order picks one.** 30 ids
+  are created in two parallel commits (a ticket filed on two branches), and for 15 of them one
+  commit also closes something and the other does not. `--topo-order` can order two parallel
+  commits differently once later merges join them, so a cohort's spinoff and injected counts can
+  trade a ticket or two between sittings with nothing in the tracker changed: through June 282 / 317
+  became 283 / 316, Aug 7–31 118 / 132 became 120 / 130. The cohort totals do not move.
+- **The id key is the file's stem, slug included.** A renamed slug would be a deletion and a
+  creation. None has happened: 1,658 stems over 1,657 ids, the one pair being two items, WI-052 and
+  WI-052b.
+- **The scheme of §3.7 reproduces to the digit as written.** The classifier below was written from
+  the definitions above on this sitting and gave back every cell of the Sep 2 and Oct 5 tables,
+  subsystems included, on its first run.
+
+```python
+#!/usr/bin/env python3
+# §3.7 line kinds, surface and subsystems over one commit's rustland/*.rs. Run from the repo root:
+#   python3 lines.py <commit>
+import collections, re, subprocess, sys
+sha = sys.argv[1]
+git = lambda *a, inp=None: subprocess.run(["git", *a], input=inp, capture_output=True, check=True).stdout
+files = [(m.split()[2], p) for m, p in (l.split("\t") for l in git("ls-tree", "-r", sha, "--", "rustland/").decode().splitlines())
+         if p.endswith(".rs")]
+out, i, blobs = git("cat-file", "--batch", inp="".join(f"{b}\n" for b, _ in files).encode()), 0, []
+for _ in files:
+    nl = out.index(b"\n", i); n = int(out[i:nl].split()[2])
+    blobs.append(out[nl + 1:nl + 1 + n].decode("utf-8", "replace")); i = nl + 2 + n
+FN = re.compile(r"^\s*(pub(\([^)]*\))?\s+)?fn\s+\w"); PUBFN = re.compile(r"^\s*pub(\([^)]*\))?\s+fn\s")
+IF = re.compile(r"^\s*(\}\s*)?(else\s+)?if\b"); SE = re.compile(r"^\s*(pub(\([^)]*\))?\s+)?(struct|enum)\s+\w")
+MOD = re.compile(r"^\s*(pub(\([^)]*\))?\s+)?mod\s+\w+\s*(;|\{)")
+SUB = re.compile(r"rustland/anthill-core/src/(kb/typing|kb/load|kb/resolve|eval)(/|\.rs|_)")
+def kind(lines):
+    ks, block = [], False
+    for ln in lines:
+        s = ln.strip()
+        if block: ks.append("comment"); block = "*/" not in s
+        elif not s: ks.append("blank")
+        elif s.startswith(("///", "//!")): ks.append("doc")
+        elif s.startswith("//"): ks.append("comment")
+        elif s.startswith("/*"): ks.append("comment"); block = "*/" not in s[2:]
+        else: ks.append("code")
+    return ks
+def test_lines(lines):                     # #[cfg(test)] on a mod: brace-matched, or two lines for `mod x;`
+    mask, j = [False] * len(lines), 0
+    while j < len(lines):
+        if lines[j].strip().startswith("#[cfg(test)]"):
+            k = j + 1
+            while k < len(lines) and (lines[k].strip().startswith("#[") or not lines[k].strip()): k += 1
+            m = MOD.match(lines[k]) if k < len(lines) else None
+            if m and m.group(3) == ";": mask[j] = mask[k] = True; j = k + 1; continue
+            if m:
+                depth, e = 0, k
+                while e < len(lines):
+                    depth += lines[e].count("{") - lines[e].count("}")
+                    if depth <= 0 and e > k: break
+                    e += 1
+                for x in range(j, min(e, len(lines) - 1) + 1): mask[x] = True
+                j = e + 1; continue
+        j += 1
+    return mask
+tot, surf, sub, blank = collections.Counter(), collections.Counter(), collections.Counter(), 0
+for (_, path), text in zip(files, blobs):
+    lines = text.split("\n")[:-1] if text.endswith("\n") else text.split("\n")
+    mask = [True] * len(lines) if "test" in path else test_lines(lines)
+    m = SUB.match(path); area = m.group(1) if m else "other"
+    for ln, k, t in zip(lines, kind(lines), mask):
+        if k == "blank": blank += 1; continue
+        side = "test" if t else "prod"; tot[side, k] += 1
+        if side == "prod": sub[area, k] += 1
+        if side == "prod" and k == "code":
+            surf.update(x for x, r in (("fn", FN), ("pub fn", PUBFN), ("if", IF), ("struct/enum", SE)) if r.match(ln))
+            surf["=>"] += "=>" in ln
+print(sha[:8], {f"{s} {k}": n for (s, k), n in sorted(tot.items())}, "blank", blank)
+print("surface", dict(surf), "code", tot["prod", "code"])
+for a in ("kb/typing", "kb/load", "kb/resolve", "eval", "other"):
+    print(f"  {a:10} code={sub[a, 'code']} prose/code={(sub[a, 'doc'] + sub[a, 'comment']) / sub[a, 'code']:.2f}")
+```
+
+The add-and-delete table's move-proof rows are `Counter` differences over the stripped non-blank
+lines of the same blobs, split by `"test" in path`: `sum((new - old).values())` added,
+`sum((old - new).values())` deleted.
+
+- **The suite's day table** (§3.8), as the 2026-10-05 rule states it: strip `ESC[…m` and `ESC(B`
+  first, sum `N passed; M failed` over the `test result:` lines of each log, take the last
+  `[ Ns]` prefix as its wall clock; a full run is one whose passed plus failed reach 97% of the
+  day's largest passed count; report the median of the full runs, their number, and the summed
+  elapsed of all runs. It reproduces the nine-row table of 2026-10-05 exactly. `rustland/target/`
+  is 123 GB on this machine today and still holds every log since 2026-09-24.
