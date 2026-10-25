@@ -1656,28 +1656,35 @@ impl SymbolTable {
             return true;
         }
         // Unresolved/unknown — nothing to hide.
-        let Some(decl_scope) = self.declaring_scope(sym) else {
-            return true;
+        self.declaring_scope(sym).is_none() || self.written_within_declaring_scope(sym, from_scope)
+    }
+
+    /// Is `scope` the scope `sym` is declared in, or one it encloses — where a name
+    /// written takes the reading of its declaring scope? `false` for an unresolved symbol.
+    pub fn written_within_declaring_scope(&self, sym: Symbol, scope: ScopeId) -> bool {
+        self.declaring_scope(sym)
+            .is_some_and(|declared| declared == scope || self.encloses(declared, scope))
+    }
+
+    /// Is `sym` a name an operation's signature declares — a parameter, a type
+    /// parameter, the operation's `result`, a callback's place? Each is in scope in its
+    /// operation only (kernel-language.md §8.6). A sort that shares its name with an
+    /// operation is one symbol, so its scope holds the sort's members beside the
+    /// operation's places; of those, the value places are the operation's.
+    pub fn is_operation_place(&self, sym: Symbol) -> bool {
+        let Some(scope) = self.declaring_scope(sym) else {
+            return false;
         };
-        // Walk the enclosing-parent chain up from `from_scope`.
-        let mut stack = vec![from_scope];
-        let mut visited = HashSet::new();
-        while let Some(s) = stack.pop() {
-            if s == decl_scope {
-                return true;
-            }
-            if !visited.insert(s) {
-                continue;
-            }
-            if let Some(scope) = self.scopes.get(&s) {
-                for p in &scope.parents {
-                    if p.is_enclosing {
-                        stack.push(p.parent_scope);
-                    }
-                }
-            }
-        }
-        false
+        let owner = self.get(scope.owner());
+        owner.has_kind(SymbolKind::Operation)
+            && (!owner.has_kind(SymbolKind::Sort)
+                || self.get(sym).kinds().intersects(KindSet::VALUE_PLACES))
+    }
+
+    /// Is `sym` visible from `from_scope` as an operation's place is — from the
+    /// operation's own scope and the scopes it encloses? Every other name is.
+    pub fn operation_place_visible_from(&self, sym: Symbol, from_scope: ScopeId) -> bool {
+        !self.is_operation_place(sym) || self.written_within_declaring_scope(sym, from_scope)
     }
 
     /// Mark a name as exposed from a scope to its enclosing scope via the
@@ -2760,20 +2767,26 @@ impl SymbolTable {
     /// (the loader then probes [`Self::resolve_in_scope_ignoring_internal`] to
     /// emit a precise `ForbiddenInternalAccess`); an ambiguity keeps only its
     /// visible candidates, so an `internal` name never shadows a visible peer.
+    /// An operation's place is dropped the same way outside its operation
+    /// ([`Self::operation_place_visible_from`]).
     fn filter_internal_visibility(&self, r: ResolveResult, from_scope: ScopeId) -> ResolveResult {
+        self.filter_resolved(r, |s| {
+            self.internal_visible_from(s, from_scope) && self.operation_place_visible_from(s, from_scope)
+        })
+    }
+
+    /// The matched symbols of `r` that `keep` admits.
+    fn filter_resolved(&self, r: ResolveResult, keep: impl Fn(Symbol) -> bool) -> ResolveResult {
         match r {
             ResolveResult::Found(sym) => {
-                if self.internal_visible_from(sym, from_scope) {
+                if keep(sym) {
                     ResolveResult::Found(sym)
                 } else {
                     ResolveResult::NotFound
                 }
             }
             ResolveResult::Ambiguous(cands, contested) => {
-                let kept: Vec<Symbol> = cands
-                    .into_iter()
-                    .filter(|&s| self.internal_visible_from(s, from_scope))
-                    .collect();
+                let kept: Vec<Symbol> = cands.into_iter().filter(|&s| keep(s)).collect();
                 match kept.len() {
                     0 => ResolveResult::NotFound,
                     1 => ResolveResult::Found(kept[0]),

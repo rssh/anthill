@@ -2045,6 +2045,9 @@ mod wi_brt4y_host_implemented_test;
 mod wi_6wvjb_one_arity_per_name_test;
 #[path = "include/wi_jbhqc_plain_import_of_a_predicate_test.rs"]
 mod wi_jbhqc_plain_import_of_a_predicate_test;
+
+#[path = "include/wi_gjvvw_import_reaches_no_parameter_test.rs"]
+mod wi_gjvvw_import_reaches_no_parameter_test;
 #[path = "include/wi_9r5hn_reflect_set_test.rs"]
 mod wi_9r5hn_reflect_set_test;
 

@@ -6489,6 +6489,10 @@ file's text.
   importable by its short name.
 - `import a.b.*` — include `a.b` as a non-enclosing parent (every visible name).
 
+A name an operation's signature declares — a parameter, a type parameter, `result` — is
+in scope in that operation only: no import names it, and no path names it from outside
+the operation.
+
 **A clause opens what it names, and not the module around it** (WI-1089,
 WI-20260825-N2865, WI-20260906-6BX85). The parent walk of step 3 above does not
 leave such a parent through that scope's *enclosing* links, and stays stopped

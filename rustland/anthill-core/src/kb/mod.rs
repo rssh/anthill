@@ -17071,6 +17071,11 @@ mod wi913_host_name_ladder_tests {
     /// symbol. This asserts that residue: a name that goes missing for any other
     /// reason is a capability the routing dropped silently.
     ///
+    /// An operation's place is a third reason (WI-20261023-GJVVW): a parameter, a type
+    /// parameter, `result` or a callback's place is named by a path inside its operation
+    /// only, and `<global>` is inside none. MEASURED 2026-10-25: of 3013 dotted names,
+    /// 474 fields, 14 `internal`, 1208 operation places.
+    ///
     /// Deliberately not asserting the counts themselves — the stdlib grows, and a
     /// count would fail for the wrong reason. The claim is the CLASSIFICATION.
     #[test]
@@ -17105,7 +17110,8 @@ mod wi913_host_name_ladder_tests {
                 crate::intern::ResolveResult::NotFound => {
                     let is_field = kb.has_kind(*expected, SymbolKind::Field);
                     let visible = kb.symbols.internal_visible_from(*expected, global);
-                    if !is_field && visible {
+                    let is_place = kb.symbols.is_operation_place(*expected);
+                    if !is_field && visible && !is_place {
                         unexplained.push(format!("{name} kinds={:?}", kb.kinds(*expected)));
                     }
                 }
@@ -17121,7 +17127,8 @@ mod wi913_host_name_ladder_tests {
         assert!(
             unexplained.is_empty(),
             "a dotted name is unreachable at <global> for a reason other than being a \
-             field or `internal` — the host-name positions lost it silently: \
+             field, `internal` or an operation's place — the host-name positions lost it \
+             silently: \
              {unexplained:?}",
         );
     }

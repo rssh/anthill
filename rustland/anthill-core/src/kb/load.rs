@@ -13143,7 +13143,8 @@ fn parent_scope_of(kb: &KnowledgeBase, sym: Symbol, admits: &[SymbolKind]) -> Op
 ///     enum E { entity parse_ok(...) }
 ///   end
 /// has qualified name `ns.E.parse_ok`, not `ns.parse_ok`. An import
-/// `ns.{parse_ok}` should still bind it.
+/// `ns.{parse_ok}` should still bind it. An operation's parameter one scope
+/// below (`ns.op.parse_ok`) is no match: it is in scope in its operation only.
 fn nested_scope_matches(
     kb: &KnowledgeBase,
     base_path: &str,
@@ -13154,7 +13155,7 @@ fn nested_scope_matches(
         // Require exactly one intermediate segment between base and short:
         // base.<intermediate>.short. Keeps the search to immediate children
         // of the base scope (enums and named sub-scopes), not deeper trees.
-        if is_one_scope_below(qname, base_path, short) {
+        if is_one_scope_below(qname, base_path, short) && !kb.symbols.is_operation_place(*sym) {
             matches.push(*sym);
         }
     }
@@ -14301,7 +14302,14 @@ fn process_one_import(
             OwnedImportKind::Plain => {
                 // `import anthill.prelude.List` → make "List" resolvable locally
                 // and add the target scope as a parent for accessing its contents.
-                let found = kb.symbols.by_qualified_name.get(&path).copied();
+                // An operation's place is in scope in its operation only, and no import
+                // reaches it ([`crate::intern::SymbolTable::is_operation_place`]).
+                let found = kb
+                    .symbols
+                    .by_qualified_name
+                    .get(&path)
+                    .copied()
+                    .filter(|&sym| !kb.symbols.is_operation_place(sym));
                 if let Some(original_sym) = found {
                     let short = last_segment(&path);
                     // WI-369: a plain import of an `internal` name across scopes
@@ -14420,11 +14428,13 @@ fn process_one_import(
                 for (short, name_span) in names {
                     let short = short.clone();
                     let qualified = format!("{}.{}", path, short);
+                    // No rung lands on an operation's place, as no plain import does.
                     let direct = kb
                         .symbols
                         .by_qualified_name
                         .get(&qualified)
                         .copied()
+                        .filter(|&sym| !kb.symbols.is_operation_place(sym))
                         .or_else(|| {
                             base_scope.and_then(|bs| {
                                 match kb.symbols.resolve_below_import(&short, bs) {
@@ -14432,6 +14442,9 @@ fn process_one_import(
                                     _ => None,
                                 }
                             })
+                            // The base's own scope sees its operation's places, which
+                            // the importing scope does not.
+                            .filter(|&sym| !kb.symbols.is_operation_place(sym))
                         });
                     // The nested-scope rung, scanned once: its one match binds, and whether
                     // it had any is what a deferral of this name keeps (WI-20261022-JBHQC).
@@ -24328,9 +24341,7 @@ fn open_slots_anew(kb: &mut KnowledgeBase, types: &mut [crate::eval::value::Valu
 /// Is `scope` the scope `sym` is declared in, or inside it — the reading a name written
 /// there takes (`Loader::within_declaring_scope_of`)?
 pub(crate) fn written_within_declaring_scope(kb: &KnowledgeBase, sym: Symbol, scope: ScopeId) -> bool {
-    kb.symbols
-        .declaring_scope(sym)
-        .is_some_and(|declared_in| declared_in == scope || kb.symbols.encloses(declared_in, scope))
+    kb.symbols.written_within_declaring_scope(sym, scope)
 }
 
 /// The type value the bare name `head` denotes, as `Loader::bare_type_value_occ` builds it:
@@ -25831,8 +25842,14 @@ enum DottedVisibility {
     /// an answer, carrying a precise diagnostic that re-reading the name some other way
     /// would bury. Two callers want this: [`Loader::qualified_name_resolves`] (the
     /// dot-call re-route gate, whose documented job is exactly that question) and the
-    /// diagnostic pass a resolver runs after `VisibleOnly` came up empty.
+    /// diagnostic pass a resolver runs after `VisibleOnly` came up empty. An operation's
+    /// place named from outside its operation is no answer in either reading: no path
+    /// names it there, so there is nothing hidden to diagnose.
     Any,
+    /// Accept every hit, an operation's place outside its operation too — for the one
+    /// question such a place answers: whether a path names one, so a reference position
+    /// reports it ([`Loader::resolve_dotted_reported`]).
+    WithPlaces,
 }
 
 /// **THE dotted-name ladder** (WI-752) — the ONE definition of what a DOTTED name
@@ -25978,9 +25995,15 @@ fn resolve_dotted_in_kb_with(
     vis: DottedVisibility,
     aliases: AliasReading,
 ) -> ResolveResult {
+    // An operation's place is named by a path inside its operation only, in either
+    // reading: it is not hidden by `internal`, so no diagnostic reports it as hidden.
     let admits = |sym: &Symbol| match vis {
-        DottedVisibility::VisibleOnly => kb.symbols.internal_visible_from(*sym, scope),
-        DottedVisibility::Any => true,
+        DottedVisibility::VisibleOnly => {
+            kb.symbols.operation_place_visible_from(*sym, scope)
+                && kb.symbols.internal_visible_from(*sym, scope)
+        }
+        DottedVisibility::Any => kb.symbols.operation_place_visible_from(*sym, scope),
+        DottedVisibility::WithPlaces => true,
     };
     // A FIELD is not nameable by PATH, in EITHER reading. Entity fields are registered
     // under the constructor's qualified name (`<ns>.Sort.entity.field`), so both a
@@ -26311,8 +26334,9 @@ const PROVISION_HEAD_ADMITS: &[SymbolKind] = &[SymbolKind::Sort];
 /// may not see would turn one usable answer into a reported ambiguity (found by
 /// `/code-review`, driven: one `internal` route and one public one reported `ambiguous
 /// symbol 'Mid.b' … ["lib.L.b", "lib.R.b"]` and withheld the reachable answer). Under
-/// [`DottedVisibility::Any`] the gate passes everything, which is what lets
-/// `Loader::resolve_dotted_reported` come back for the precise `internal` diagnostic.
+/// [`DottedVisibility::Any`] the gate passes every `internal` name — an operation's place
+/// outside its operation still not — which is what lets `Loader::resolve_dotted_reported`
+/// come back for the precise `internal` diagnostic.
 ///
 /// # Depth, and what an AMBIGUITY means here
 ///
@@ -27977,7 +28001,10 @@ impl<'a> Loader<'a> {
             scope_name: self.scope_display_name(),
             span,
         });
-        self.kb.symbols.intern(name)
+        // The hidden symbol, not `intern(name)`: for a qualified `name` that is a second
+        // symbol of the same FQN, which a stored head trips WI-581's assert on, as
+        // [`Self::push_ambiguous_symbol`] says. The load has failed either way.
+        sym
     }
 
     /// WI-369: NotFound-arm helper for the resolvers — if `name` is a forbidden
@@ -28680,8 +28707,25 @@ impl<'a> Loader<'a> {
             // Split from the resolving read — rather than gating each rung in place, as
             // WI-369's `accept_qualified_hit` did — because a hidden hit must not
             // TERMINATE the descent (see [`DottedVisibility::VisibleOnly`]).
-            ResolveResult::NotFound => hidden_dotted_internal(self.kb, name, self.current_scope)
-                .map(|hidden| self.push_forbidden_internal(hidden, name, span)),
+            ResolveResult::NotFound => {
+                if let Some(hidden) = hidden_dotted_internal(self.kb, name, self.current_scope) {
+                    return Some(self.push_forbidden_internal(hidden, name, span));
+                }
+                // A path to an operation's place from outside the operation names nothing
+                // here (kernel-language.md §8.6). Reported, and the place handed back
+                // rather than a bare intern of the same FQN, for the reason above.
+                match self.resolve_dotted(name, DottedVisibility::WithPlaces) {
+                    ResolveResult::Found(place) if self.kb.symbols.is_operation_place(place) => {
+                        self.errors.push(LoadError::UnresolvedName {
+                            name: name.to_owned(),
+                            span,
+                            scope_name: self.scope_display_name(),
+                        });
+                        Some(place)
+                    }
+                    _ => None,
+                }
+            }
         }
     }
 
