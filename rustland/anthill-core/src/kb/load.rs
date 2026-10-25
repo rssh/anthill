@@ -7373,8 +7373,9 @@ fn scan_operation_params(
     // op frame's scope, minted once for the param, type-param and result mints
     // below. WI-1028 — from the op SYMBOL; it used to round-trip through the op's
     // nullary name term, whose only consumer was the projection straight back to
-    // its own functor.
-    let op_scope = kb.symbols.scope_id(op_sym);
+    // its own functor. The operation's own scope, not the one a sort of its name opens
+    // (`SymbolTable::operation_scope`).
+    let op_scope = kb.symbols.operation_scope(op_sym);
     kb.symbols.add_parent(
         op_scope,
         ScopeInclusion {
@@ -7528,10 +7529,14 @@ fn register_callback_places(
         register_callback_places(kb, parse_sym, inner, inner_ret, op_scope, prefix, &res_path);
     }
     // Publish the ordered arg places on this callback's symbol (`<op>.<rel_path>`).
-    let self_qn = make_qualified(prefix, rel_path);
-    if let Some(self_sym) = kb.symbols.by_qualified_name.get(&self_qn).copied() {
-        kb.symbols.set_arg_places(self_sym, cb_arg_places);
-    }
+    // Read off the operation's scope: a sort of the operation's name can hold the path.
+    // The callback's own place is defined before its places are (by the caller, or above
+    // for a nested one), under `rel_path` in that scope.
+    let self_sym = kb
+        .symbols
+        .operation_place(op_scope.owner(), rel_path)
+        .unwrap_or_else(|| panic!("callback `{rel_path}` has no place in its operation's scope"));
+    kb.symbols.set_arg_places(self_sym, cb_arg_places);
 }
 
 /// Sub-pass 1: define all names, record exposed variants and type params.
@@ -10148,7 +10153,7 @@ impl ScopePass for DefinePass<'_> {
                 }
                 // Reuse existing sort symbol if already defined (e.g. by register_prelude)
                 let (sym, is_new) =
-                    if let Some(&existing) = kb.symbols.by_qualified_name.get(qualified) {
+                    if let Some(existing) = kb.symbols.declaration_at(qualified) {
                         (existing, false)
                     } else {
                         (
@@ -10191,10 +10196,15 @@ impl ScopePass for DefinePass<'_> {
                 // `anthill.prelude.List` with `Sort` before stdlib's `sort List … end`
                 // reuses it) is unaffected. Exactly the fix the `Item::Entity` arm
                 // below already carries, for exactly the same two-arm shape.
+                // An operation declared first under this name opened its own scope, not
+                // this one (`SymbolTable::operation_scope`), so the sort's needs the link.
+                let declared_by_an_operation = !is_new
+                    && kb.symbols.get(sym).has_kind(SymbolKind::Operation)
+                    && !kb.symbols.get(sym).has_kind(SymbolKind::Sort);
                 kb.symbols.add_kind(sym, SymbolKind::Sort);
                 record_internal(kb, sym, s.visibility);
                 let sort_scope = kb.symbols.scope_id(sym);
-                if is_new {
+                if is_new || declared_by_an_operation {
                     // Implicit parent: the enclosing scope is visible from within the sort
                     kb.symbols.add_parent(
                         sort_scope,
@@ -10252,7 +10262,8 @@ impl ScopePass for DefinePass<'_> {
                 // is present, not supply a missing one. The single shape it genuinely
                 // gates out is `entity X` + `sort X`, where a free-standing `entity`
                 // built no scope at all; that is the wiring 059 R1 refuses (WI-997).
-                // Pinned in `wi979_declaration_order_test`.
+                // Pinned in `wi979_declaration_order_test`. An `operation X` written
+                // before `sort X` is let through: its scope is not the sort's.
                 //
                 // `add_parent` is idempotent (WI-994) — required here, not incidental:
                 // `load_all` into a live KB re-scans files already in the KB, so an un-gated
@@ -10417,7 +10428,7 @@ impl ScopePass for DefinePass<'_> {
                 let eponymous = eponymous_sort_symbol(kb, actual_scope, &name, &short);
                 let entity_sym = if let Some(sym) = eponymous {
                     sym
-                } else if let Some(&existing) = kb.symbols.by_qualified_name.get(&qualified) {
+                } else if let Some(existing) = kb.symbols.declaration_at(&qualified) {
                     // Reuse existing entity symbol if already defined (e.g. by register_prelude)
                     existing
                 } else {
@@ -13221,7 +13232,7 @@ fn type_expr_base_name(parse_sym: &crate::intern::SymbolTable, ty: &TypeExpr) ->
 /// WI-1028 — a [`ScopeId`], never the scope's nullary `Fn` term: the owner
 /// projection is total off the symbol and was not off the term.
 fn find_scope_by_name(kb: &KnowledgeBase, qualified: &str) -> Option<ScopeId> {
-    let sym = *kb.symbols.by_qualified_name.get(qualified)?;
+    let sym = kb.symbols.declaration_at(qualified)?;
     parent_scope_of(kb, sym, IMPORT_PARENT_ADMITS)
 }
 
@@ -13277,7 +13288,8 @@ fn parent_scope_of(kb: &KnowledgeBase, sym: Symbol, admits: &[SymbolKind]) -> Op
 ///     enum E { entity parse_ok(...) }
 ///   end
 /// has qualified name `ns.E.parse_ok`, not `ns.parse_ok`. An import
-/// `ns.{parse_ok}` should still bind it.
+/// `ns.{parse_ok}` should still bind it. An operation's parameter one scope
+/// below (`ns.op.parse_ok`) is no match: it is in scope in its operation only.
 fn nested_scope_matches(
     kb: &KnowledgeBase,
     base_path: &str,
@@ -13288,7 +13300,7 @@ fn nested_scope_matches(
         // Require exactly one intermediate segment between base and short:
         // base.<intermediate>.short. Keeps the search to immediate children
         // of the base scope (enums and named sub-scopes), not deeper trees.
-        if is_one_scope_below(qname, base_path, short) {
+        if is_one_scope_below(qname, base_path, short) && !kb.symbols.is_operation_place(*sym) {
             matches.push(*sym);
         }
     }
@@ -14435,7 +14447,14 @@ fn process_one_import(
             OwnedImportKind::Plain => {
                 // `import anthill.prelude.List` → make "List" resolvable locally
                 // and add the target scope as a parent for accessing its contents.
-                let found = kb.symbols.by_qualified_name.get(&path).copied();
+                // An operation's place is in scope in its operation only, and no import
+                // reaches it ([`crate::intern::SymbolTable::is_operation_place`]).
+                let found = kb
+                    .symbols
+                    .by_qualified_name
+                    .get(&path)
+                    .copied()
+                    .filter(|&sym| !kb.symbols.is_operation_place(sym));
                 if let Some(original_sym) = found {
                     let short = last_segment(&path);
                     // WI-369: a plain import of an `internal` name across scopes
@@ -14554,11 +14573,13 @@ fn process_one_import(
                 for (short, name_span) in names {
                     let short = short.clone();
                     let qualified = format!("{}.{}", path, short);
+                    // No rung lands on an operation's place, as no plain import does.
                     let direct = kb
                         .symbols
                         .by_qualified_name
                         .get(&qualified)
                         .copied()
+                        .filter(|&sym| !kb.symbols.is_operation_place(sym))
                         .or_else(|| {
                             base_scope.and_then(|bs| {
                                 match kb.symbols.resolve_below_import(&short, bs) {
@@ -14566,6 +14587,9 @@ fn process_one_import(
                                     _ => None,
                                 }
                             })
+                            // The base's own scope sees its operation's places, which
+                            // the importing scope does not.
+                            .filter(|&sym| !kb.symbols.is_operation_place(sym))
                         });
                     // The nested-scope rung, scanned once: its one match binds, and whether
                     // it had any is what a deferral of this name keeps (WI-20261022-JBHQC).
@@ -14618,12 +14642,14 @@ fn process_one_import(
                         },
                         origin,
                     );
-                } else if let Some(&sym) = kb.symbols.by_qualified_name.get(&path) {
+                } else if let Some(sym) = kb.symbols.declaration_at(&path) {
                     // WI-993: the path DOES name something — it just names something
                     // with no contents. Two different repairs, so two different
                     // diagnostics: this one names the kind it got, where
                     // `UnresolvedImport` below would send the author looking for a
-                    // typo in a path that resolved perfectly well.
+                    // typo in a path that resolved perfectly well. A path to an
+                    // operation's place names nothing an import reaches, as the plain
+                    // import's does not.
                     errors.push(LoadError::WildcardImportOfNonScope {
                         path: path.clone(),
                         kind: kb.symbols.get(sym).written_kind(),
@@ -24495,9 +24521,7 @@ fn open_slots_anew(kb: &mut KnowledgeBase, types: &mut [crate::eval::value::Valu
 /// Is `scope` the scope `sym` is declared in, or inside it — the reading a name written
 /// there takes (`Loader::within_declaring_scope_of`)?
 pub(crate) fn written_within_declaring_scope(kb: &KnowledgeBase, sym: Symbol, scope: ScopeId) -> bool {
-    kb.symbols
-        .declaring_scope(sym)
-        .is_some_and(|declared_in| declared_in == scope || kb.symbols.encloses(declared_in, scope))
+    kb.symbols.written_within_declaring_scope(sym, scope)
 }
 
 /// The type value the bare name `head` denotes, as `Loader::bare_type_value_occ` builds it:
@@ -25998,8 +26022,14 @@ enum DottedVisibility {
     /// an answer, carrying a precise diagnostic that re-reading the name some other way
     /// would bury. Two callers want this: [`Loader::qualified_name_resolves`] (the
     /// dot-call re-route gate, whose documented job is exactly that question) and the
-    /// diagnostic pass a resolver runs after `VisibleOnly` came up empty.
+    /// diagnostic pass a resolver runs after `VisibleOnly` came up empty. An operation's
+    /// place named from outside its operation is no answer in either reading: no path
+    /// names it there, so there is nothing hidden to diagnose.
     Any,
+    /// Accept every hit, an operation's place outside its operation too — for the one
+    /// question such a place answers: whether a path names one, so a reference position
+    /// reports it ([`Loader::resolve_dotted_reported`]).
+    WithPlaces,
 }
 
 /// **THE dotted-name ladder** (WI-752) — the ONE definition of what a DOTTED name
@@ -26145,9 +26175,15 @@ fn resolve_dotted_in_kb_with(
     vis: DottedVisibility,
     aliases: AliasReading,
 ) -> ResolveResult {
+    // An operation's place is named by a path inside its operation only, in either
+    // reading: it is not hidden by `internal`, so no diagnostic reports it as hidden.
     let admits = |sym: &Symbol| match vis {
-        DottedVisibility::VisibleOnly => kb.symbols.internal_visible_from(*sym, scope),
-        DottedVisibility::Any => true,
+        DottedVisibility::VisibleOnly => {
+            kb.symbols.operation_place_visible_from(*sym, scope)
+                && kb.symbols.internal_visible_from(*sym, scope)
+        }
+        DottedVisibility::Any => kb.symbols.operation_place_visible_from(*sym, scope),
+        DottedVisibility::WithPlaces => true,
     };
     // A FIELD is not nameable by PATH, in EITHER reading. Entity fields are registered
     // under the constructor's qualified name (`<ns>.Sort.entity.field`), so both a
@@ -26478,8 +26514,9 @@ const PROVISION_HEAD_ADMITS: &[SymbolKind] = &[SymbolKind::Sort];
 /// may not see would turn one usable answer into a reported ambiguity (found by
 /// `/code-review`, driven: one `internal` route and one public one reported `ambiguous
 /// symbol 'Mid.b' … ["lib.L.b", "lib.R.b"]` and withheld the reachable answer). Under
-/// [`DottedVisibility::Any`] the gate passes everything, which is what lets
-/// `Loader::resolve_dotted_reported` come back for the precise `internal` diagnostic.
+/// [`DottedVisibility::Any`] the gate passes every `internal` name — an operation's place
+/// outside its operation still not — which is what lets `Loader::resolve_dotted_reported`
+/// come back for the precise `internal` diagnostic.
 ///
 /// # Depth, and what an AMBIGUITY means here
 ///
@@ -28144,7 +28181,10 @@ impl<'a> Loader<'a> {
             scope_name: self.scope_display_name(),
             span,
         });
-        self.kb.symbols.intern(name)
+        // The hidden symbol, not `intern(name)`: for a qualified `name` that is a second
+        // symbol of the same FQN, which a stored head trips WI-581's assert on, as
+        // [`Self::push_ambiguous_symbol`] says. The load has failed either way.
+        sym
     }
 
     /// WI-369: NotFound-arm helper for the resolvers — if `name` is a forbidden
@@ -28847,8 +28887,25 @@ impl<'a> Loader<'a> {
             // Split from the resolving read — rather than gating each rung in place, as
             // WI-369's `accept_qualified_hit` did — because a hidden hit must not
             // TERMINATE the descent (see [`DottedVisibility::VisibleOnly`]).
-            ResolveResult::NotFound => hidden_dotted_internal(self.kb, name, self.current_scope)
-                .map(|hidden| self.push_forbidden_internal(hidden, name, span)),
+            ResolveResult::NotFound => {
+                if let Some(hidden) = hidden_dotted_internal(self.kb, name, self.current_scope) {
+                    return Some(self.push_forbidden_internal(hidden, name, span));
+                }
+                // A path to an operation's place from outside the operation names nothing
+                // here (kernel-language.md §8.6). Reported, and the place handed back
+                // rather than a bare intern of the same FQN, for the reason above.
+                match self.resolve_dotted(name, DottedVisibility::WithPlaces) {
+                    ResolveResult::Found(place) if self.kb.symbols.is_operation_place(place) => {
+                        self.errors.push(LoadError::UnresolvedName {
+                            name: name.to_owned(),
+                            span,
+                            scope_name: self.scope_display_name(),
+                        });
+                        Some(place)
+                    }
+                    _ => None,
+                }
+            }
         }
     }
 
@@ -38586,28 +38643,39 @@ impl<'a> Loader<'a> {
                 // members. A SORT parent's chain is the sort-level `requires` facts; an
                 // OPERATION parent (an op type-param `getV.T`, WI-383) lends them through
                 // the operation's own `requires` clause — `resolve_rigid_projection`
-                // reads `OperationInfo.requires` for that case.
-                if (self.kb.symbols.get(decl_sort).has_kind(SymbolKind::Sort)
-                    || self
-                        .kb
-                        .symbols
-                        .get(decl_sort)
-                        .has_kind(SymbolKind::Operation))
-                    && self
-                        .kb
-                        .type_params_of_sort(decl_sort)
-                        .iter()
-                        .any(|p| p == &head_short)
+                // reads `OperationInfo.requires` for that case. The operation's own
+                // parameter is asked of the operation: a sort of its name answers for the
+                // path (`KnowledgeBase::type_param_syms_of`), and may declare a parameter
+                // of the same name, which then holds the qualified name too.
+                let op_param = self.kb.operation_type_param_sym(decl_sort, &head_short)
+                    == Some(head_resolved);
+                if op_param
+                    || (self.kb.symbols.get(decl_sort).has_kind(SymbolKind::Sort)
+                        || self
+                            .kb
+                            .symbols
+                            .get(decl_sort)
+                            .has_kind(SymbolKind::Operation))
+                        && self
+                            .kb
+                            .type_params_of_sort(decl_sort)
+                            .iter()
+                            .any(|p| p == &head_short)
                 {
                     // Subject = the param's LOGICAL registration (`ns.W.P`), so every
                     // spelling of `P.Key` hash-conses to one term regardless of which
-                    // registration the head resolution landed on.
-                    let subject_sym = *self
-                        .kb
-                        .symbols
-                        .by_qualified_name
-                        .get(sort_qn.as_str())
-                        .unwrap_or(&head_resolved);
+                    // registration the head resolution landed on. An operation's
+                    // parameter has the one.
+                    let subject_sym = if op_param {
+                        head_resolved
+                    } else {
+                        *self
+                            .kb
+                            .symbols
+                            .by_qualified_name
+                            .get(sort_qn.as_str())
+                            .unwrap_or(&head_resolved)
+                    };
                     let member_sym = self.kb.intern(member_name);
                     let subject = self.kb.alloc(Term::Ref(subject_sym));
                     let proj = self
@@ -42201,7 +42269,7 @@ impl<'a> Loader<'a> {
         // fields, a const, a nested sort) is no predicate, and the axiom's clause is filed
         // under its symbol as before.
         let induction_sym =
-            if let Some(&existing) = self.kb.symbols.by_qualified_name.get(&induction_name) {
+            if let Some(existing) = self.kb.symbols.declaration_at(&induction_name) {
                 existing
             } else {
                 self.kb.symbols.define(
@@ -44475,7 +44543,7 @@ impl<'a> Loader<'a> {
         // `result` name is resolvable in effects / ensures positions
         // (proposal 041).
         let prev_scope = self.current_scope;
-        let op_scope = self.kb.symbols.scope_id(functor);
+        let op_scope = self.kb.symbols.operation_scope(functor);
         self.current_scope = op_scope;
 
         // WI-201: arm the bare-spec-member sugar for this operation's SIGNATURE. A bare
@@ -44634,10 +44702,11 @@ impl<'a> Loader<'a> {
             .iter()
             .map(|p| {
                 let param_name_str = self.parsed.symbols.local_name(p.name).to_owned();
-                // Register field symbol for parameter
+                // Register field symbol for parameter — the place the scan defined, read
+                // off the operation's scope: a sort of its name can hold the path.
                 let field_qualified = format!("{}.{}", op_qualified, param_name_str);
-                let field_sym = if let Some(&existing) =
-                    self.kb.symbols.by_qualified_name.get(&field_qualified)
+                let field_sym = if let Some(existing) =
+                    self.kb.symbols.operation_place(functor, &param_name_str)
                 {
                     existing
                 } else {
@@ -49097,7 +49166,13 @@ end
         let interp = interp();
         let kb = interp.kb();
         let sees = |from: &str, name: &str, member: &str| {
-            let scope = kb.symbols.scope_id(sym(kb, from));
+            let from = sym(kb, from);
+            // An operation is read in the scope it opens; none of these is also a sort.
+            let scope = if kb.has_kind(from, SymbolKind::Operation) {
+                kb.symbols.operation_scope(from)
+            } else {
+                kb.symbols.scope_id(from)
+            };
             let target = sym(kb, member);
             match kb.symbols.resolve_in_scope(name, scope) {
                 ResolveResult::Found(s) if s == target => Yes,

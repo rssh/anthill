@@ -3391,12 +3391,12 @@ pub(super) fn resolve_rigid_projection(
     // the operation's OWN `requires Spec[C = T]` clause (on `OperationInfo.requires`),
     // NOT a sort-level `SortRequiresInfo` chain — so consult the op's requires there.
     //
-    // WI-974: a sort and an operation of one name (WI-751) are one symbol with ONE scope, so
-    // either's bound may name a parameter declared there, and both chains are read. Whose
-    // parameter it IS, the scope cannot say — the operation's `[U]` is registered into it
-    // beside the sort's own — so the operation's own declaration list does
-    // ([`op_bracket_declares`]): one its bracket declares is the operation's, read as WI-383
-    // reads it. Asking for the keyword written first read the pair by source order.
+    // WI-974: a sort and an operation of one name (WI-751) are one symbol, so `decl_sort`
+    // names both, and both chains are read. Whose parameter the subject IS, the symbol
+    // cannot say — each declares its own in a scope of its own (WI-20261025-TGAAD) — so the
+    // operation's own declaration list does ([`op_bracket_declares`]): one its bracket
+    // declares is the operation's, read as WI-383 reads it. Asking for the keyword written
+    // first read the pair by source order.
     let decl_is_op = kb.has_kind(decl_sort, crate::intern::SymbolKind::Operation);
     let decl_is_sort = kb.has_kind(decl_sort, crate::intern::SymbolKind::Sort);
     let op_param = decl_is_op && (!decl_is_sort || op_bracket_declares(kb, decl_sort, key));

@@ -1615,11 +1615,10 @@ pub(super) fn assume_call_ensures(
         return flow;
     }
     // σ: callee params ↦ actual arg terms, plus `result` ↦ var_ref(binder). The
-    // reserved `result` resolves under the op scope as `<op>.result` (proposal 041).
+    // reserved `result` is the op scope's (proposal 041).
     let pos_params = positional_param_indices(kb, &rec.params, pos_args.len(), &named_args);
     let mut sigma = build_call_guard_sigma(kb, &rec.params, &pos_params, &pos_args, &named_args);
-    let op_qn = kb.qualified_name_of(functor).to_string();
-    if let Some(result_sym) = kb.try_resolve_symbol(&format!("{}.result", op_qn)) {
+    if let Some(result_sym) = crate::kb::region::resolve_op_result_sym(kb, functor) {
         let binder_term = kb.make_var_ref_term(binder);
         sigma.insert(result_sym, binder_term);
     }

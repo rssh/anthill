@@ -938,10 +938,7 @@ fn no_such_member_message(kb: &KnowledgeBase, recv_ty: &Value, field_name: &str)
 pub(super) fn written_scope(kb: &KnowledgeBase, env: &TypingEnv, occ: &NodeOccurrence) -> ScopeId {
     match occ.rewritten_by() {
         Some(rule) => kb.symbols.scope_id(kb.rule_domain(rule)),
-        None => match env.referencing_scope() {
-            Some(s) => kb.symbols.scope_id(s),
-            None => kb.global_scope(),
-        },
+        None => env.referencing_scope(kb).unwrap_or_else(|| kb.global_scope()),
     }
 }
 

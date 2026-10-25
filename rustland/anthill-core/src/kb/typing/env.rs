@@ -630,10 +630,11 @@ impl TypingEnv {
     /// in-scope counterpart by `a_rule_inside_the_declaring_sort_sees_its_internal_field`.
     /// Migration risk measured: one `internal entity` exists across `stdlib/`,
     /// `examples/` and `anthill-todo/`, projected only inside its own sort.
-    pub(super) fn referencing_scope(&self) -> Option<Symbol> {
-        self.enclosing_op
-            .or(self.rule_scope)
-            .or(self.enclosing_sort)
+    pub(super) fn referencing_scope(&self, kb: &KnowledgeBase) -> Option<ScopeId> {
+        match self.enclosing_op {
+            Some(op) => Some(kb.symbols.operation_scope(op)),
+            None => self.rule_scope.or(self.enclosing_sort).map(|s| kb.symbols.scope_id(s)),
+        }
     }
 
     /// WI-977 — see [`Self::rule_scope`]. Set once per rule by the rule-body sweep.

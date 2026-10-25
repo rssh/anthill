@@ -2103,7 +2103,7 @@ pub(super) struct OwnTypeParams {
 
 impl OwnTypeParams {
     pub(super) fn of(kb: &KnowledgeBase, op: Symbol, type_params: &[(Symbol, Var)]) -> Self {
-        let scope = kb.symbols.scope_id(op);
+        let scope = kb.symbols.operation_scope(op);
         OwnTypeParams {
             vars: type_params.iter().map(|(_, v)| *v).collect(),
             syms: type_params

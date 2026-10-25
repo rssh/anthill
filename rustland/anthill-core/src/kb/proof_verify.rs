@@ -611,8 +611,7 @@ fn discharge_contract_proof(
         .expect("body_node present (checked above)");
     let body_term = super::node_occurrence::occurrence_to_term(kb, body_occ);
     let body_sub = substitute_ref_terms_term(kb, body_term, &sigma);
-    let op_qn = kb.qualified_name_of(op_sym).to_string();
-    if let Some(result_sym) = kb.try_resolve_symbol(&format!("{op_qn}.result")) {
+    if let Some(result_sym) = super::region::resolve_op_result_sym(kb, op_sym) {
         sigma.insert(result_sym, body_sub);
     }
 

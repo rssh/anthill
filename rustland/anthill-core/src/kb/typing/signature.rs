@@ -3265,8 +3265,8 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
                 TypeParamSignature::of(&impl_info),
                 TypeParamSignature::of(&spec_info),
             );
-            let impl_scope = kb.symbols.scope_id(impl_op);
-            let spec_scope = kb.symbols.scope_id(spec_op);
+            let impl_scope = kb.symbols.operation_scope(impl_op);
+            let spec_scope = kb.symbols.operation_scope(spec_op);
             // `None` for a parameter no bracket declares, and not a skipped case worth
             // reporting for one it does: `type_param_sym` reads the set `add_type_param`
             // filled, so a parameter it does not know is one no clause reference could have
