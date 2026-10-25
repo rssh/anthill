@@ -2559,13 +2559,8 @@ private class AnthillParserImpl(
 
   private def renderName(n: Name): String = n.segments.map(symbols.name).mkString(".")
 
-  /** Is `te` the anonymous `?` alone — `[T = ?]`, the bare `T` (proposal 042's explicit
-    * form; user, 2026-10-24)? Anonymous by its name, which [[freshAnonymousVar]] mints. */
-  private def isBareHole(te: TypeExpr): Boolean = te match
-    case TypeExpr.Variable(tid, _) => terms.get(tid) match
-      case Term.Var(v) => symbols.name(v.varId.name) == "?"
-      case _           => false
-    case _ => false
+  /** [[TypeExpr.isBareHole]] over this file's terms and symbols. */
+  private def isBareHole(te: TypeExpr): Boolean = TypeExpr.isBareHole(te, terms, symbols)
 
   /** The accumulated operation clauses. `slotBinders` (WI-840) are the NAMED
     * requirement slots found in the `requires` lists — each becomes an operation type

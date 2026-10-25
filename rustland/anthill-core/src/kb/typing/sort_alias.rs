@@ -328,6 +328,69 @@ pub(super) fn expand_sorts_deep(kb: &mut KnowledgeBase, ty: &Value, slot: SlotVa
     expand_slots(kb, ty, how).unwrap_or_else(|| ty.clone())
 }
 
+/// Is `key` a HIGHER-KINDED parameter of `head`'s sort — one declaring parameters of its own
+/// (`F` of `sort Tagged[F[T], A]`), whose binding is a constructor unapplied?
+pub(crate) fn slot_is_higher_kinded(kb: &KnowledgeBase, head: Symbol, key: Symbol) -> bool {
+    let Some(sort) = kb.type_arg_owner(head) else {
+        return false;
+    };
+    kb.type_param_sym_of(sort, short_name_of(kb.local_name_of(key)))
+        .is_some_and(|param| !kb.type_param_syms_of(param).is_empty())
+}
+
+/// Does `ty` leave a slot of a sort application open — a declared slot it does not write,
+/// which [`expand_sorts_deep`] mints a variable for — at any depth that expansion reaches?
+/// `List`, `Pair[A = Int64]` and `Option[T = List]` do; `List[T = Int64]` does not, and
+/// neither does an effect row's label, which is compared as written (§8.1). The slots are
+/// matched as [`mint_unwritten_slots`] matches them.
+pub(crate) fn leaves_a_slot_open(kb: &mut KnowledgeBase, ty: &Value) -> bool {
+    if value_is_bare_effect_expr(kb, ty) {
+        return false;
+    }
+    match extract_type(kb, ty) {
+        TypeExtractor::SortRef(_) | TypeExtractor::Parameterized { .. } => {
+            let Some((base, written)) = sort_application_parts(kb, ty) else {
+                return false;
+            };
+            if is_sort_view_functor(kb, base) || effect_expr_form(kb, base).is_some() {
+                return false;
+            }
+            // The declaration's names, which the loader may ask before a refused one's
+            // variables are published. A slot that declares a default takes it, and is not
+            // open (proposal 069).
+            let unwritten = kb.type_param_syms_of(base).iter().any(|q| {
+                let short = kb.local_name_of(*q);
+                !written.iter().any(|(k, _)| kb.local_name_of(*k) == short)
+                    && !kb.sort_param_defaults.contains_key(q)
+            });
+            if unwritten {
+                return true;
+            }
+            // The rows the sort declares, read without filling the requirement-chain cache:
+            // the loader asks this while a load's requirement facts are still arriving.
+            let rows = declared_effect_row_params(kb, base);
+            for (k, v) in &written {
+                // A higher-kinded slot takes a constructor unapplied (`F = List`); a row
+                // slot's labels are compared as written.
+                let short = short_name_of(kb.local_name_of(*k));
+                let row_slot = rows.iter().any(|r| short_name_of(kb.local_name_of(*r)) == short);
+                if row_slot || slot_is_higher_kinded(kb, base, *k) {
+                    continue;
+                }
+                if leaves_a_slot_open(kb, v) {
+                    return true;
+                }
+            }
+            false
+        }
+        TypeExtractor::NamedTuple(fields) => fields.iter().any(|(_, v)| leaves_a_slot_open(kb, v)),
+        TypeExtractor::Arrow { param, result, .. } => {
+            leaves_a_slot_open(kb, &param) || leaves_a_slot_open(kb, &result)
+        }
+        _ => false,
+    }
+}
+
 /// [`expand_sorts_deep`] reaching the LABELS of the effect rows a type holds — a row
 /// slot's (`x: Strm[E = Error]`, `x: Strm[E = {Error}]`), an arrow's own (`f: (x: Int64) -> Int64
 /// @ {Error}`), a row that IS the type (a row parameter's binding), and those an ALIAS's shape

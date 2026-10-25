@@ -141,8 +141,8 @@ end
 /// THE CARRIER'S BARE NAME IN ITS OWN PROVISION IS ANY INSTANCE — AND STILL A `Car`. Behind
 /// `B = Car` a second instance runs (6 + 1), and an `Int64` is refused by name: `B` is bound
 /// at the call to the carrier at a slot of its own. The written `?` and the alias say the
-/// same; only what the open slot prints differs (`?V` for one left out, `?_` for one
-/// written).
+/// same, and print the same: a `?` at a slot that declares no default is the slot left out
+/// (WI-20261024-DK83Q; it printed `?_` while it was written).
 ///
 /// The loader used to write the `?` into the bare name, which made it the written spelling.
 /// With nothing written the binder read the bare name as a ref-shaped leaf and left it for
@@ -154,7 +154,7 @@ fn a_bare_carrier_binding_is_any_instance_and_still_the_carrier() {
     for (n, binding, open) in [
         ("b1", "Car", "?V"),
         ("b2", "MyCar", "?V"),
-        ("b3", "Car[V = ?]", "?_"),
+        ("b3", "Car[V = ?]", "?V"),
     ] {
         let refused = carrier_binding_program(&format!("wi80zv8e.{n}x"), binding, "5");
         assert_refused_naming(

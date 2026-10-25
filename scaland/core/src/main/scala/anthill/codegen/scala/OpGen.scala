@@ -225,9 +225,12 @@ object OpGen:
       case TypeExpr.Parameterized(n, _) => sym.name(n.last) == "Error"
       case _ => false
 
+  /** `Error[T = ?]` and `Error[?]` are `Error` (kernel-language §8.1): a `?` alone at the
+    * slot is the slot left out, and the label's channel is the bare label's. */
   private def errorTypeOf(e: Effect, scope: TypeScope, sym: SymbolTable): String =
     e.typeExpr match
-      case TypeExpr.Parameterized(_, bindings) if bindings.length == 1 =>
+      case TypeExpr.Parameterized(_, bindings)
+          if bindings.length == 1 && !TypeExpr.isBareHole(bindings.head.bound, scope.terms, sym) =>
         TypeGen.render(sym, bindings.head.bound, scope)
       case _ => "Throwable"
 

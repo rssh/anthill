@@ -39,8 +39,8 @@
 //! * The runtime's accounts raised at the unknown type (`RaiseBy::Account`):
 //!   `a_failed_match_is_caught_at_its_sort`.
 //! * The load rule (`check_host_raise_types`): `a_host_operation_that_raises_states_what_it_raises`;
-//!   so do a bare `Error` not counted beside a written label, `Error[T = ?]` written out not
-//!   refused, and the sort-level clause not searched (`host_raise_type`) — the second also `a_host_raise_carries_the_type_its_caller_threads`,
+//!   so do a bare `Error` not counted beside a written label and the sort-level clause not
+//!   searched (`host_raise_type`) — the second also `a_host_raise_carries_the_type_its_caller_threads`,
 //!   whose `Thing` has a sort-level `requires`, so that an index over the op half alone reads
 //!   another slot.
 //! * A projected row's raise typed as unknown rather than refused (`HostRaiseType::Projected`):
@@ -250,8 +250,8 @@ end
 /// A HOST OPERATION THAT RAISES STATES WHAT IT RAISES: `@[host_implemented]` with a row
 /// raising `Error[X]` and no `requires TypeValue[T = X]` is refused at load, naming the
 /// clause; with the clause it loads, and so does one whose row says only `Error`
-/// (`Error[T = ?]`), which states no payload type. Two written labels are refused: a raise
-/// would have to say which it is.
+/// (`Error[T = ?]`, `Error[?]` — one type), which states no payload type. Two written labels
+/// are refused: a raise would have to say which it is.
 #[test]
 fn a_host_operation_that_raises_states_what_it_raises() {
     let program = |row: &str| {
@@ -306,18 +306,30 @@ end
             row,
         );
     }
-    // `Error[T = ?]` written out: the typer lets a boundary at `Boom` discharge it, where it
-    // refuses the bare `Error` there, so a host raise under it — of the unknown type — would
-    // pass a boundary the typer counted on (user, 2026-10-24).
-    crate::common::assert_refused_naming(
-        &crate::common::load_errors_of(&program("effects {Error[T = ?]}")),
-        &["host operation `test.c5load.Host.go` raises `Error[T = ?]`", "Write `Error`"],
-        "an open payload written out",
-    );
-    for row in ["effects {Error[Boom]} requires TypeValue[T = Boom]", "effects {Error}"] {
+    // `Error[T = ?]` and `Error[?]` written out are the bare `Error` (WI-20261024-DK83Q).
+    for row in [
+        "effects {Error[Boom]} requires TypeValue[T = Boom]",
+        "effects {Error}",
+        "effects {Error[T = ?]}",
+        "effects {Error[?]}",
+    ] {
         let errs = crate::common::load_errors_of(&program(row));
         assert!(errs.is_empty(), "{row}: loads clean, got {errs:#?}");
     }
+    // A raise at the operation's own type parameter is a written payload, answered by its
+    // clause — not an open one: before DK83Q any variable payload was read as `?`, and this
+    // row was refused as raising `Error[T = ?]` with its clause written.
+    let generic = program("effects {Error[P]} requires TypeValue[T = P]")
+        .replace("operation go()", "operation go[P](p: P)");
+    let errs = crate::common::load_errors_of(&generic);
+    assert!(errs.is_empty(), "a raise at `P` with its clause loads clean, got {errs:#?}");
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(
+            &program("effects {Error[P]}").replace("operation go()", "operation go[P](p: P)"),
+        ),
+        &["host operation `test.c5load.Host.go` raises `Error[P]`", "requires TypeValue[T = P]"],
+        "a raise at `P` without its clause",
+    );
     // The clause may be the operation's SORT's, over its own parameter (§5.4).
     let sort_level = r#"
 namespace test.c5sl

@@ -4812,7 +4812,7 @@ fn solve_slot_rows(kb: &mut KnowledgeBase, subst: &mut Substitution, slot_rows: 
             .into_iter()
             .filter(|r| !d_rigid.contains(r))
             .collect();
-        let (only_a, _) = pair_present_labels(kb, subst, &a_present, &d_present);
+        let (only_a, _) = pair_actual_present_labels(kb, subst, &a_present, &d_present);
         match lower.iter().position(|l| l.tail == tail) {
             Some(i) => {
                 for l in only_a {

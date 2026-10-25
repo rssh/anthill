@@ -2688,6 +2688,15 @@ pub(super) fn bind_spec_params_from_carrier_param(
                         let recv_term = kb.alloc(Term::Ref(arg_sym));
                         Some(Value::term(kb.make_expr_carried(recv_term, member)))
                     }),
+                // A sort that leaves a slot open (`B = Other`, which `Other[W = ?]` is) is an
+                // instance the argument fills, bound expanded as a ground binding is below.
+                // Left to the late pass, the argument had bound the parameter first and was
+                // compared with nothing: `Rel.mix(c, 5)` loaded behind `B = Other`.
+                None if !slot_is_higher_kinded(kb, spec_sort, spec_param_sym)
+                    && leaves_a_slot_open(kb, &binding) =>
+                {
+                    Some(expand_sorts_deep(kb, &binding, SlotVar::Flexible))
+                }
                 // A ref-shaped CONCRETE leaf (`Int64`) that is not one of the carrier's
                 // params: skip here — WI-383 reserves ground value-params to the late pass.
                 None => None,

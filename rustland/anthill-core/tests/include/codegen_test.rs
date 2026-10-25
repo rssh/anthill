@@ -157,6 +157,34 @@ fn effects_reads_to_self_result() {
     assert!(out2.contains("Result<Vec<Term>, Error>"), "output:\n{out2}");
 }
 
+/// `Error[T = ?]` AND `Error[?]` ARE `Error` (WI-20261024-DK83Q): a `?` at a slot that declares
+/// no default is the slot left out, so each spelling generates what the bare label does — the
+/// effects clause's `Result<_, Error>`, and in a type-argument slot the bare `Error`. FAILS with
+/// `leaves_every_slot` answering no: the effects clause dropped the label, generating no
+/// `Result`, and the slot rendered `T`.
+#[test]
+fn an_error_label_written_with_a_question_mark_generates_the_bare_label() {
+    let src = |label: &str| {
+        format!(
+            r#"namespace demo
+  sort Runner
+    import anthill.prelude.{{Stream, Int64, Term, List}}
+    operation retrieve(r: Runner, pattern: Term) -> List[T = Term]
+      effects {label}
+    operation run(r: Runner) -> Stream[T = Int64, E = {label}]
+  end
+  entity Holder(s: Stream[T = Int64, E = {label}])
+end
+"#
+        )
+    };
+    let bare = gen(&src("Error"));
+    assert!(bare.contains("Result<Vec<Term>, Error>"), "the bare label's control:\n{bare}");
+    for label in ["Error[T = ?]", "Error[?]"] {
+        assert_eq!(gen(&src(label)), bare, "{label} generates as `Error`");
+    }
+}
+
 // ── Test 10: Prelude type mappings ───────────────────────────────
 
 #[test]

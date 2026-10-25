@@ -284,6 +284,11 @@ const PINNED: &[(&str, usize, &str)] = &[
         "registers host functions before the load, whose raises carry the type their callers thread",
     ),
     (
+        "include/wi_dk83q_identical_substitution_test.rs",
+        1,
+        "registers a host function before the load, raising under a row written `Error[T = ?]` and one at a type parameter",
+    ),
+    (
         "include/wi_ee0ep_param_dictionary_test.rs",
         1,
         "one row's fixture provides the stdlib's `WeakOrd` at the stdlib's own types, more \

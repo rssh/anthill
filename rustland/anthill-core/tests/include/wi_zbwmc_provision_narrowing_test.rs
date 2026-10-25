@@ -366,7 +366,9 @@ fn the_specs_own_member_keeps_the_generic_reading() {
 /// ... a FAMILY (`List[T = ?]`), a variable no operation's `type_params` holds. The old
 /// head-only test took it and refused `idAny(s: Store.State) -> Store.State = s` as
 /// returning another `List` than it took (MEASURED: `expected List[T = ?_], got List[T =
-/// s.T]`), where the generic reading loads.
+/// s.T]`), where the generic reading loads. `List[T = ?]` is `List` (WI-20261024-DK83Q), a
+/// slot left out: FAILS with the scan's `leaves_a_slot_open` answering no, the bare `List`
+/// then narrowing `Store.State`.
 #[test]
 fn a_family_keeps_the_generic_reading() {
     assert_generic(&unspellable("family", "List[T = ?]"), "List[T = ?]");

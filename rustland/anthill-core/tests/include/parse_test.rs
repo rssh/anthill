@@ -2331,8 +2331,10 @@ fn parse_operation_with_variable_types() {
                 TypeExpr::Variable {
                     term_id,
                     descriptions,
+                    fresh,
                 } => {
                     assert!(descriptions.is_empty());
+                    assert!(!fresh, "`?T` is the declaration's variable");
                     // Verify it's a named variable (not anonymous)
                     match parsed.terms.get(*term_id) {
                         Term::Var(Var::Global(vid)) => {

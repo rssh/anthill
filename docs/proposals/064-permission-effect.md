@@ -207,7 +207,12 @@ spec; `provides` is the is-a) and writes nothing else.
    `a_bare_permission_denial_forbids_every_capability` drives it.
 
    The variable spelling stays a TRAP, and is pinned as one
-   (`a_variable_argument_in_a_lacks_constraint_constrains_nothing`). Closing it
+   (`a_variable_argument_in_a_lacks_constraint_constrains_nothing`). *Closed for `?`
+   (2026-10-24, WI-20261024-DK83Q): a `?` at a slot that declares no default is that slot
+   left out in every written type, so `-Permission[?]` is the bare `-Permission`, the general
+   denial (`a_question_mark_argument_in_a_lacks_constraint_is_the_bare_denial`); a type
+   parameter's argument (`-Permission[P]`) still decides nothing, which is
+   WI-20260909-V4RVX's.* Closing it
    means telling an ANONYMOUS wildcard apart from a rigid type parameter
    (`-Error[T]`, where an undecided argument must stay undecided) inside 045's row
    algebra — a question about every label rather than about this one, with no

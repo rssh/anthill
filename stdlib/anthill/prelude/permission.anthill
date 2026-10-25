@@ -72,8 +72,8 @@
 --
 -- A BARE `-Permission` is the general denial *acquires no authority whatsoever* — it
 -- forbids every capability at once and assumes neither a capability order nor a root.
--- A VARIABLE argument (`-Permission[?]`) is NOT that and constrains nothing: an
--- undecided argument leaves the pair undecided.
+-- `-Permission[?]` is the same atom: a `?` at the slot is the slot left out. A type
+-- parameter's argument (`-Permission[P]`) is not that, and decides nothing.
 --
 -- A ROW MAY NOT BOTH ADMIT AND LACK ONE LABEL. `{Permission[X], -Permission[X]}` is
 -- uninhabitable and refused at LOAD (for every label, not just this one — kernel-

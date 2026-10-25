@@ -835,6 +835,7 @@ impl<'a> RustCodegen<'a> {
                     // `Result<_, P>`). Keeping the wrapper here gave one channel two Rust
                     // types — `execute`'s own `Err` was `P`, its stream's `E` was
                     // `Error<P>` — and the host `Error` takes no generics.
+                    "Error" if leaves_every_slot(bindings) => "Error".to_owned(),
                     "Error" if bindings.len() == 1 => self.type_to_rust(&bindings[0].bound),
                     _ => {
                         let args: Vec<String> = bindings
@@ -945,6 +946,7 @@ impl<'a> RustCodegen<'a> {
                         format!("Option<{inner}>")
                     }
                     // WI-20260911-8Y5BE — same strip as `type_to_rust`, see there.
+                    "Error" if leaves_every_slot(bindings) => "Error".to_owned(),
                     "Error" if bindings.len() == 1 => self.type_to_rust_in_sort(
                         &bindings[0].bound,
                         sort_name,
@@ -2061,6 +2063,15 @@ struct EffectInfo {
     errors_type: Option<String>,
 }
 
+/// Is every binding written `?` alone — the application its bare name is (`Error[T = ?]` is
+/// `Error`, kernel-language §8.1)? Read for the `Error` label, which maps by its spelling.
+fn leaves_every_slot(bindings: &[SortBinding]) -> bool {
+    !bindings.is_empty()
+        && bindings
+            .iter()
+            .all(|b| matches!(b.bound, TypeExpr::Variable { fresh: true, .. }))
+}
+
 fn analyze_effects(
     effects: &[Effect],
     symbols: &SymbolTable,
@@ -2072,7 +2083,15 @@ fn analyze_effects(
     };
 
     for effect in effects {
-        match &effect.type_expr {
+        let written_bare;
+        let label = match &effect.type_expr {
+            TypeExpr::Parameterized { name, bindings } if leaves_every_slot(bindings) => {
+                written_bare = TypeExpr::Simple(name.clone());
+                &written_bare
+            }
+            other => other,
+        };
+        match label {
             TypeExpr::Parameterized { name, bindings } => {
                 let kind = symbols.local_name(name.last());
                 // Extract target from first binding's bound value
