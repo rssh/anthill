@@ -974,19 +974,23 @@ pub(crate) struct ProvisionAbout {
 pub(crate) fn provisions_about(kb: &KnowledgeBase, spec_sort: Symbol) -> Vec<ProvisionAbout> {
     let carrier_param = spec_carrier_param_or_sole(kb, spec_sort);
     provides_rows_of_spec(kb, spec_sort)
-        .map(|row| {
-            let view = row.spec_view.clone();
-            let about = carrier_param
-                .filter(|_| view_is_sort_view(kb, &view))
-                .and_then(|param| provision_binding_at_param(kb, param, &view))
-                .map_or(row.provider, |(_, base)| base);
-            ProvisionAbout {
-                row: row.rid,
-                provider: row.provider,
-                about: kb.canonical_sort_sym(about),
-            }
+        .map(|row| ProvisionAbout {
+            row: row.rid,
+            provider: row.provider,
+            about: row_about(kb, carrier_param, &row),
         })
         .collect()
+}
+
+/// The sort ONE provision is about, canonical: the base of what it binds to `carrier_param`
+/// (the spec's [`spec_carrier_param_or_sole`]), or its provider where it binds none there.
+/// [`provisions_about`]'s reading, and [`spec_op_suppliers_of_provider`]'s.
+fn row_about(kb: &KnowledgeBase, carrier_param: Option<Symbol>, row: &ProvidesRow) -> Symbol {
+    let about = carrier_param
+        .filter(|_| view_is_sort_view(kb, &row.spec_view))
+        .and_then(|param| provision_binding_at_param(kb, param, &row.spec_view))
+        .map_or(row.provider, |(_, base)| base);
+    kb.canonical_sort_sym(about)
 }
 
 /// WI-837 — how a spec op's impl reaches a carrier. The three routes are written in
@@ -1128,40 +1132,55 @@ pub(crate) fn collect_spec_op_suppliers_by_carrier(
     out: &mut std::collections::HashMap<Symbol, SmallVec<[SpecOpSupplier; 2]>>,
 ) {
     for row in provides_rows_of_spec(kb, spec_sort) {
-        let Some((carrier_canon, supplier)) = provision_supplier(
-            kb,
-            spec_sort,
-            spec_op,
-            op_short_sym,
-            row.provider,
-            &row.spec_view,
-            &row.bindings(kb),
-        ) else {
+        let (carrier_canon, suppliers) =
+            provision_supplier(kb, spec_sort, spec_op, op_short_sym, &row, &|_| true);
+        if suppliers.is_empty() {
             continue;
-        };
-        push_supplier_deduped(kb, out.entry(carrier_canon).or_default(), supplier);
+        }
+        let bucket = out.entry(carrier_canon).or_default();
+        for supplier in suppliers {
+            push_supplier_deduped(kb, bucket, supplier);
+        }
     }
 }
 
 /// WI-837 — how ONE provision supplies spec op `spec_op`, and to WHICH canonical
-/// dispatch carrier. `None` when that provision supplies no impl of the op.
+/// dispatch carrier: the carrier always, the supplier where the provision supplies one.
 ///
-/// The ONE OWNER of the per-provision classification, read by both multi-candidate
-/// walks: [`collect_spec_op_suppliers_by_carrier`] (all carriers at once, for the
-/// load-time eq index) and [`spec_op_suppliers_for_carrier`] (one carrier, for the
-/// per-call value-directed dispatch). Extracted at WI-842 rather than copied: the
-/// two walks answering "who supplies this" differently is the shape that produced
-/// WI-838's cross-kind blind spot, and the criterion has three delicate legs.
+/// The ONE OWNER of the per-provision classification, read by every multi-candidate
+/// walk: [`collect_spec_op_suppliers_by_carrier`] (all carriers at once, for the
+/// load-time eq index), [`spec_op_suppliers_for_carrier`] (one carrier, for the
+/// per-call value-directed dispatch) and [`spec_op_suppliers_of_provider`] (one
+/// provider, for a dictionary). Extracted at WI-842 rather than copied: the walks
+/// answering "who supplies this" differently is the shape that produced WI-838's
+/// cross-kind blind spot, and the criterion has three delicate legs.
+///
+/// WI-20261025-ZAWX9 — `runnable` is the READER's test of a supplier, asked of each text
+/// the provision writes, so a reader that cannot use one leaves the other standing: the
+/// coherence readers pass a test that holds of every supplier. And a WITNESS that writes
+/// BOTH — its own member and a binding in this provision — supplies both, which a reader
+/// counts as two. It took the member first and the binding only where there was none: a
+/// member the interpreter cannot run hid the binding (`sort W provides Desc[T = Leaf,
+/// describe = otherDescribe]` beside a clause-defined `W.describe` answered the default's 1
+/// by name and through a dictionary), and a member it can run hid it silently where the
+/// same program over a receiver-less operation — whose provision is read as the witness's
+/// own, its member route 1 — was refused as two (found by /code-review).
+///
+/// The carrier is returned beside a provision that supplies nothing.
 pub(super) fn provision_supplier(
     kb: &KnowledgeBase,
     spec_sort: Symbol,
     spec_op: Symbol,
     op_short_sym: Symbol,
-    provider: Symbol,
-    spec_t: &Value,
-    bindings: &[(Symbol, Value)],
-) -> Option<(Symbol, SpecOpSupplier)> {
+    row: &ProvidesRow,
+    runnable: &dyn Fn(Symbol) -> bool,
+) -> (Symbol, SmallVec<[SpecOpSupplier; 2]>) {
     let op_short = kb.local_name_of(op_short_sym);
+    let provider = row.provider;
+    let bound = || {
+        instance_fact_op_in_bindings(kb, &row.bindings(kb), op_short).filter(|&t| runnable(t))
+    };
+    let mut out: SmallVec<[SpecOpSupplier; 2]> = SmallVec::new();
     // KIND 2 — WITNESS SORT (WI-450): the dispatch carrier is what the provision
     // binds to the spec's carrier param, not the provider. `witness_dispatch_carrier`
     // is the ONE owner of what counts as a witness, shared with the load-time
@@ -1172,38 +1191,33 @@ pub(super) fn provision_supplier(
     // provision's own `sort_ref`. The loader DERIVES a namespace-level
     // `fact Spec[T = Carrier, …]`'s `sort_ref` from the carrier binding, so this
     // covers both that shape and a carrier's own `provides Spec[…, eq = op]` block.
-    match witness_dispatch_carrier(kb, spec_sort, provider, spec_t) {
+    match witness_dispatch_carrier(kb, spec_sort, provider, &row.spec_view) {
         // A WITNESS may name the impl EITHER WAY, so both legs are read: usually
         // as its own MEMBER (`sort W provides Spec[T = C]` with `W.op`), but
         // `sort W provides Spec[T = C, op = f]` also loads today and BINDS it.
         // Reading only the member leg dropped that provision on a silent
         // `continue` — its written `op = f` never keyed the index and equality
         // answered structurally with no diagnostic from anywhere.
-        Some(c) => carrier_own_op(kb, provider, spec_op, op_short_sym)
-            .or_else(|| instance_fact_op_in_bindings(kb, bindings, op_short))
-            .map(|target| {
-                (
-                    c,
-                    SpecOpSupplier {
-                        target,
-                        route: SupplyRoute::Witness(provider),
-                    },
-                )
-            }),
+        Some(c) => {
+            let route = SupplyRoute::Witness(provider);
+            let own = carrier_own_op(kb, provider, spec_op, op_short_sym).filter(|&t| runnable(t));
+            for target in own.into_iter().chain(bound()) {
+                push_supplier_deduped(kb, &mut out, SpecOpSupplier { target, route });
+            }
+            (c, out)
+        }
         // A carrier-keyed provision supplies only what it BINDS. Its
         // `carrier_own_op` is the CARRIER's own member — route 1's business, and
         // attributing it to the provision here would let a `provides Spec[T = C]`
         // block shadow a sibling `fact Spec[T = C, op = f]`'s binding, hiding the
         // very second candidate this walk exists to surface.
-        None => instance_fact_op_in_bindings(kb, bindings, op_short).map(|target| {
-            (
-                kb.canonical_sort_sym(provider),
-                SpecOpSupplier {
-                    target,
-                    route: SupplyRoute::Fact,
-                },
-            )
-        }),
+        None => {
+            out.extend(bound().map(|target| SpecOpSupplier {
+                target,
+                route: SupplyRoute::Fact,
+            }));
+            (kb.canonical_sort_sym(provider), out)
+        }
     }
 }
 
@@ -1257,33 +1271,192 @@ pub(crate) fn spec_op_suppliers_for_carrier(
     spec_op: Symbol,
     op_short_sym: Symbol,
 ) -> SmallVec<[SpecOpSupplier; 2]> {
+    spec_op_suppliers_for_carrier_where(kb, spec_sort, carrier, spec_op, op_short_sym, &|_| true)
+}
+
+/// [`spec_op_suppliers_for_carrier`] with the reader's test of a supplier, which
+/// [`provision_supplier`] asks of a witness's own member before its binding (WI-20261025-ZAWX9).
+pub(crate) fn spec_op_suppliers_for_carrier_where(
+    kb: &KnowledgeBase,
+    spec_sort: Symbol,
+    carrier: Symbol,
+    spec_op: Symbol,
+    op_short_sym: Symbol,
+    runnable: &dyn Fn(Symbol) -> bool,
+) -> SmallVec<[SpecOpSupplier; 2]> {
     let carrier_canon = kb.canonical_sort_sym(carrier);
-    let mut out: SmallVec<[SpecOpSupplier; 2]> = SmallVec::new();
     // ROUTE 1 — the carrier's OWN member, the genuine override (WI-616).
-    if let Some(target) = carrier_own_op(kb, carrier, spec_op, op_short_sym) {
-        out.push(SpecOpSupplier {
-            target,
-            route: SupplyRoute::Own,
-        });
-    }
+    let mut out: SmallVec<[SpecOpSupplier; 2]> =
+        own_member_supplier(kb, carrier, spec_op, op_short_sym, runnable).into_iter().collect();
     // ROUTES 2 and 3 — a provision supplies it (instance fact / witness sort).
     for row in provides_rows_of_spec(kb, spec_sort) {
-        let Some((c, supplier)) = provision_supplier(
-            kb,
-            spec_sort,
-            spec_op,
-            op_short_sym,
-            row.provider,
-            &row.spec_view,
-            &row.bindings(kb),
-        ) else {
-            continue;
-        };
+        let (c, suppliers) =
+            provision_supplier(kb, spec_sort, spec_op, op_short_sym, &row, runnable);
         if c == carrier_canon {
-            push_supplier_deduped(kb, &mut out, supplier);
+            for supplier in suppliers {
+                push_supplier_deduped(kb, &mut out, supplier);
+            }
         }
     }
     out
+}
+
+/// Route 1 of both walkers: `carrier`'s own member for `spec_op` ([`carrier_own_op`]), where
+/// the reader can use it.
+fn own_member_supplier(
+    kb: &KnowledgeBase,
+    carrier: Symbol,
+    spec_op: Symbol,
+    op_short_sym: Symbol,
+    runnable: &dyn Fn(Symbol) -> bool,
+) -> Option<SpecOpSupplier> {
+    carrier_own_op(kb, carrier, spec_op, op_short_sym)
+        .filter(|&target| runnable(target))
+        .map(|target| SpecOpSupplier {
+            target,
+            route: SupplyRoute::Own,
+        })
+}
+
+/// WI-20261025-ZAWX9 — what ONE PROVIDER supplies for a spec operation, read by a
+/// dictionary, which names its provider and nothing else (`Dictionary(…, impl: P)`).
+pub(crate) enum ProviderSupply {
+    /// The same suppliers at every application the provider provides the spec at — one
+    /// application, in every program the suite holds. `carrier` is the sort it is about:
+    /// the provider for a provision about itself, another sort for a witness's.
+    Uniform {
+        carrier: Symbol,
+        suppliers: SmallVec<[SpecOpSupplier; 2]>,
+    },
+    /// The provider provides the spec at several applications and supplies the operation
+    /// differently at them. A dictionary of the provider is one of them, and does not say
+    /// which.
+    PerApplication(SmallVec<[ProvisionApplication; 2]>),
+}
+
+/// One application a provider provides a spec at, with what it supplies there.
+pub(crate) struct ProvisionApplication {
+    /// The sort the application is about, canonical — the base of `binding`.
+    pub(crate) about: Symbol,
+    /// What the provision binds to the spec's carrier parameter or sole one, which is the
+    /// application's identity: `Box[E = Int64]` and `Box[E = String]` are two. `None` for a
+    /// provision binding none there.
+    pub(crate) binding: Option<Value>,
+    pub(crate) suppliers: SmallVec<[SpecOpSupplier; 2]>,
+}
+
+/// WI-20261025-ZAWX9 — the suppliers of `spec_op` that `provider` writes, by the sort each
+/// of its provisions is about: the PROVIDER dual of [`spec_op_suppliers_for_carrier_where`],
+/// for a reader that holds a dictionary. Resolution chose the provider (or refused), so a
+/// rival provision of the same carrier is not a candidate here.
+///
+/// The same legs, through the same owners: each provision `provider` writes of `spec_sort`,
+/// read by [`provision_supplier`], and route 1, `provider`'s own member, which supplies at
+/// every sort the provider provides the spec at — it is the carrier's own member where the
+/// provision is about the provider, and the witness's where it is about another sort, as the
+/// witness leg reads it. A provider with no provision of the spec of its own (the spec
+/// reached through another it provides, `Int64` for `PartialOrd` through `Ord`) answers for
+/// itself, by route 1.
+///
+/// GROUPED BY THE APPLICATION A PROVISION IS ABOUT — what it binds to the spec's carrier
+/// parameter or its sole one ([`same_application`]), with its sort ([`row_about`]) — and not by
+/// [`provision_supplier`]'s carrier: for a spec no operation of which
+/// receives on its parameter — `Desc { operation name() }` — that is the provider for every
+/// provision, the carrier-as-artifact limit of WI-450. A witness may provide one spec at
+/// several sorts (`sort W provides Holds[T = Int64]` and `Holds[T = Money]`), each provision
+/// binding the operation its own way; pooled, a dictionary at `A` ran the binding written for
+/// `B` (found by /code-review), and grouped by the base sort alone, one at `Box[E = String]`
+/// answered at `Box[E = Int64]` (found by the second). A spec with several parameters and
+/// none it receives on still reads as one application.
+pub(crate) fn spec_op_suppliers_of_provider(
+    kb: &KnowledgeBase,
+    spec_sort: Symbol,
+    provider: Symbol,
+    spec_op: Symbol,
+    op_short_sym: Symbol,
+    runnable: &dyn Fn(Symbol) -> bool,
+) -> ProviderSupply {
+    let provider_canon = kb.canonical_sort_sym(provider);
+    let spec_canon = kb.canonical_sort_sym(spec_sort);
+    let carrier_param = spec_carrier_param_or_sole(kb, spec_sort);
+    let own_target = carrier_own_op(kb, provider, spec_op, op_short_sym).filter(|&t| runnable(t));
+    let seed = |about: Symbol| -> SmallVec<[SpecOpSupplier; 2]> {
+        own_target
+            .map(|target| SpecOpSupplier {
+                target,
+                route: if about == provider_canon {
+                    SupplyRoute::Own
+                } else {
+                    SupplyRoute::Witness(provider)
+                },
+            })
+            .into_iter()
+            .collect()
+    };
+    let mut applications: SmallVec<[ProvisionApplication; 2]> = SmallVec::new();
+    for row in provides_rows_of_provider(kb, provider) {
+        if kb.canonical_sort_sym(row.spec_base) != spec_canon {
+            continue;
+        }
+        let about = row_about(kb, carrier_param, &row);
+        let binding = carrier_param
+            .filter(|_| view_is_sort_view(kb, &row.spec_view))
+            .and_then(|param| provision_binding_value_at_param(kb, param, &row.spec_view));
+        let at = match applications
+            .iter()
+            .position(|a| a.about == about && same_application(kb, &a.binding, &binding))
+        {
+            Some(at) => at,
+            None => {
+                applications.push(ProvisionApplication {
+                    about,
+                    binding,
+                    suppliers: seed(about),
+                });
+                applications.len() - 1
+            }
+        };
+        let (_, suppliers) =
+            provision_supplier(kb, spec_sort, spec_op, op_short_sym, &row, runnable);
+        for supplier in suppliers {
+            push_supplier_deduped(kb, &mut applications[at].suppliers, supplier);
+        }
+    }
+    if applications.is_empty() {
+        applications.push(ProvisionApplication {
+            about: provider_canon,
+            binding: None,
+            suppliers: seed(provider_canon),
+        });
+    }
+    let same_targets = |a: &[SpecOpSupplier], b: &[SpecOpSupplier]| {
+        a.len() == b.len()
+            && a.iter()
+                .all(|x| b.iter().any(|y| kb.canonical_sym(x.target) == kb.canonical_sym(y.target)))
+    };
+    if applications
+        .iter()
+        .all(|a| same_targets(&a.suppliers, &applications[0].suppliers))
+    {
+        let first = applications.swap_remove(0);
+        ProviderSupply::Uniform {
+            carrier: first.about,
+            suppliers: first.suppliers,
+        }
+    } else {
+        ProviderSupply::PerApplication(applications)
+    }
+}
+
+/// Are two provisions' bindings at the carrier parameter ONE application? By
+/// [`provision_bindings_agree`], the comparator `check_provision_binding_agreement` buckets
+/// applications with — conservative, so two spellings of one parameterized type read as two.
+pub(crate) fn same_application(kb: &KnowledgeBase, a: &Option<Value>, b: &Option<Value>) -> bool {
+    match (a, b) {
+        (Some(x), Some(y)) => provision_bindings_agree(kb, x, y),
+        (None, None) => true,
+        _ => false,
+    }
 }
 
 /// WI-652 — op symbols that have an EQUATIONAL definition `op(args) = rhs`

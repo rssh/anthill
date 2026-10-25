@@ -1571,11 +1571,9 @@ impl Interpreter {
         fn_sym: Symbol,
         dispatching_dict: &super::value::Dictionary,
     ) -> Result<Symbol, EvalError> {
-        crate::kb::typing::resolve_op_target_checked(&self.kb, dispatching_dict.impl_sort(), fn_sym)
-            .map_err(|detail| EvalError::UnpinnedRequirement {
-                detail,
-                marker: dispatching_dict.impl_sort(),
-            })
+        let impl_sort = dispatching_dict.impl_sort();
+        crate::kb::typing::resolve_op_target_checked(&self.kb, impl_sort, fn_sym)
+            .map_err(|refusal| EvalError::dispatch_refused(&self.kb, fn_sym, impl_sort, refusal))
     }
 
     /// WI-350 — value-directed dispatch for a body-less spec op the typer
@@ -1641,7 +1639,9 @@ impl Interpreter {
     ///
     /// WI-1012 — this is now the tree's only VALUE-DIRECTED construction of
     /// `AmbiguousSpecOpDispatch`, not its only construction: the typer raises the same
-    /// refusal at LOAD for a statically concrete carrier. What kept that third site
+    /// refusal at LOAD for a statically concrete carrier, and a dictionary dispatch raises
+    /// it for a provider's two (WI-20261025-ZAWX9; both eval faces build it through
+    /// [`EvalError::ambiguous_spec_op_dispatch`]). What kept that third site
     /// from re-introducing the copy is that the parts a half-edit would desynchronize
     /// moved to owners both call —
     /// [`crate::kb::typing::render_suppliers`] for the candidate list,
@@ -1666,20 +1666,12 @@ impl Interpreter {
             ValueDirectedDispatch::Tie {
                 carrier,
                 candidates,
-            } => {
-                let op_qn = self.kb.qualified_name_of(spec_op);
-                let op_short = crate::kb::typing::short_name_of(op_qn);
-                Err(EvalError::AmbiguousSpecOpDispatch {
-                    op: op_qn.to_string(),
-                    carrier: self.kb.qualified_name_of(carrier).to_string(),
-                    candidates: crate::kb::typing::render_suppliers(
-                        &self.kb,
-                        &candidates,
-                        op_short,
-                    ),
-                    repair: crate::kb::typing::supplier_tie_repair(&self.kb, spec_op, &candidates),
-                })
-            }
+            } => Err(EvalError::ambiguous_spec_op_dispatch(
+                &self.kb,
+                spec_op,
+                carrier,
+                &candidates,
+            )),
         }
     }
 

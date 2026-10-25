@@ -38,7 +38,8 @@
 //! |---|---|---|---|
 //! | `a_covered_call_dispatches_through_the_clause_dictionary` | FAILS (load) | FAILS (`[]`) | ~~FAILS (`1`)~~ — see below |
 //! | `the_same_clause_without_require_dispatches_by_value` | ok | ok | ok |
-//! | `a_two_supplier_carrier_dispatches_silently_through_the_dictionary` | FAILS (load) | FAILS | **FAILS (`[]`)** — the CONTROL |
+//! | `a_two_supplier_carrier_has_no_reading_through_the_dictionary_either` | — | — | ok — see below |
+//! | `a_carrier_less_defaulted_call_answers_through_the_clause_dictionary` | — | — | **FAILS (`1`)** — the CONTROL |
 //! | `every_covered_call_in_the_clause_is_woven` | FAILS (load) | FAILS | **FAILS (`[]`)** |
 //! | `the_named_spelling_binds_the_dictionary_by_hand` | FAILS (load) | **FAILS (`[]`)** | ok |
 //! | `a_require_with_no_anchor_is_refused_at_typing` | **FAILS** | ok | ok |
@@ -58,6 +59,13 @@
 //! dictionary answers: `a_two_supplier_carrier_dispatches_silently_through_the_-
 //! dictionary` was documented "PASSES EITHER WAY by design" and is now the live
 //! control for the whole weave. Each affected test says so at its own site.
+//!
+//! **WI-20261025-ZAWX9 MOVED IT AGAIN.** A dictionary now refuses a provider's two
+//! suppliers as the call by name does, so the two-supplier fixture has no answer woven
+//! or not, and is renamed for what it asserts. The weave's control is a CARRIER-LESS
+//! defaulted call, which no value can direct: woven it answers the carrier's `7`, and
+//! its un-woven twin, asserted at the site, the default's `1`. The two `—` columns of
+//! these rows were not re-measured.
 //!
 //! ## WHICH CALLS ARE WOVEN — a narrower population than "every covered call"
 //!
@@ -104,13 +112,14 @@
 //!    false — the carried type it used to read was a shared spec parameter, not a type
 //!    of anything at the call — so the clause now yields one INDEFINITE residual. It
 //!    still reaches no DEFINITE answer when the carrier binds only in a LATER goal.
-//!  * **`a_two_supplier_carrier_dispatches_silently_through_the_dictionary`** —
-//!    acceptance (e). Channel doc §4 says a runtime tie is unreachable because
-//!    overlap is refused at typing/load. TRUE for a `provides` overlap; FALSE for
-//!    two SUPPLIERS of one op at one carrier (WI-1012/WI-1026/WI-1035's refusal),
-//!    which the pinned path refuses at load and the dictionary path resolves
-//!    silently, because `resolve_op_target_checked` reads a single sort-ops entry
-//!    and never consults `spec_op_suppliers_for_carrier` (WI-842).
+//!  * **Acceptance (e) is CLOSED, by WI-20261025-ZAWX9** —
+//!    `a_two_supplier_carrier_has_no_reading_through_the_dictionary_either`. Channel doc
+//!    §4 says a runtime tie is unreachable because overlap is refused at typing/load:
+//!    TRUE for a `provides` overlap, FALSE for two SUPPLIERS of one op at one carrier
+//!    (WI-1012/WI-1026/WI-1035's refusal). The pinned path refuses that at load, and the
+//!    dictionary path resolved it silently to the carrier's own member, reading a single
+//!    sort-ops entry. It reads the provider's suppliers now and refuses the second, so
+//!    the woven clause, like its un-woven twin, reaches no answer.
 
 use anthill_core::eval::Value;
 
@@ -255,11 +264,11 @@ fn a_covered_call_dispatches_through_the_clause_dictionary() {
 /// WI-444/WI-1010's rule ("defaults fill GAPS, they do not SHADOW") says it must not.
 ///
 /// **WHERE THE HEADLINE'S DISCRIMINATION WENT:**
-/// [`a_two_supplier_carrier_dispatches_silently_through_the_dictionary`], which this
-/// file documented as "PASSES EITHER WAY by design" and which is now a LIVE control —
-/// value-directed classification REFUSES a two-supplier carrier (058 §4.9), so on that
-/// fixture the weave is the only thing that answers at all. The header table's first
-/// row is updated accordingly.
+/// [`a_carrier_less_defaulted_call_answers_through_the_clause_dictionary`], since
+/// WI-20261025-ZAWX9. It was the two-supplier fixture until a dictionary refused a
+/// provider's two suppliers as value direction refuses them (058 §4.9); a call with no
+/// operand is one no value can direct, so there the weave is still the only thing that
+/// reaches the carrier's member. The header table says which rows moved.
 #[test]
 fn the_same_clause_without_require_dispatches_by_value() {
     let ns = "test.wi1040.control";
@@ -644,21 +653,21 @@ fn a_nested_require_is_refused_at_parse() {
 }
 
 /// §4 — a runtime tie is UNREACHABLE, not refused: overlap between provider heads
-/// is decided at typing/load. Pinned here so that a change which lets one through
-/// to run time has to come and edit this test.
+/// is decided at typing/load. TRUE for a `provides` overlap and FALSE for two SUPPLIERS
+/// of one op at one carrier, which this row pinned: the same program with a GROUND
+/// receiver is refused at load (WI-1026/WI-1035), and through the dictionary it
+/// answered the carrier's own member silently, because `resolve_op_target_checked`
+/// read one sort-ops entry.
 ///
-/// **WI-1044 MADE THIS THE FILE'S LIVE CONTROL FOR THE WEAVE**, and it used to pass
-/// EITHER WAY by design. Its assertion is unchanged; what changed is what happens when
-/// the weave is backed out. Value-directed classification refuses a two-supplier
-/// carrier (058 §4.9), so the un-woven call now answers NOTHING here — while the
-/// dictionary still answers `7`, because `resolve_op_target_checked` reads one
-/// sort-ops entry and never consults `spec_op_suppliers_for_carrier`. That is the same
-/// boundary the assertion below already named, seen from the other side: the two
-/// derivations of one dispatch DISAGREE about this program, and only one of them
-/// notices. It is the one fixture in this file on which the weave is the difference
-/// between an answer and none.
+/// **WI-20261025-ZAWX9 CLOSED IT.** The dictionary reads the suppliers its provider
+/// writes, and two of them are refused at the dispatch (`DispatchRefusal::Tie`), which on
+/// this path, as for value direction's refusal, leaves the call unreduced: the clause
+/// reaches no answer, woven or not. FAILS with the provider's set backed out — the woven
+/// clause answers `7` again. It was the file's live control for the weave (WI-1044) and
+/// no longer discriminates it; that is
+/// [`a_carrier_less_defaulted_call_answers_through_the_clause_dictionary`].
 #[test]
-fn a_two_supplier_carrier_dispatches_silently_through_the_dictionary() {
+fn a_two_supplier_carrier_has_no_reading_through_the_dictionary_either() {
     let ns = "test.wi1040.tie";
     // `clause` is the rule-body prefix under test — the WHOLE difference between the
     // subject and its control, so the control cannot drift into a different program.
@@ -697,8 +706,8 @@ end
     // THE CONTROL, MEASURED AT THE SITE rather than predicted in the header: the same
     // program with `require[…]` deleted answers NOTHING. Value-directed classification
     // (WI-1044) sees two suppliers for `Leaf` and declines to reduce the call, so the
-    // WI-938 hook has nothing to `unify` the result column with. That `7` below is
-    // therefore the dictionary's and no other path's.
+    // WI-938 hook has nothing to `unify` the result column with. The woven clause below
+    // now agrees with it.
     let without = answers(
         &format!("{ns}.control"),
         &tie_program(&format!("{ns}.control"), ""),
@@ -712,15 +721,61 @@ end
          {without:?}",
     );
     let src = tie_program(ns, "require[Desc[T]], ");
+    let with = answers(ns, &src);
+    assert!(
+        !with
+            .iter()
+            .any(|(v, definite)| *definite && matches!(v, Value::Int(_))),
+        "the dictionary's provider supplies `describe` twice — its own `7` and the \
+         binding's `9` — and a dictionary refuses the second as value direction does \
+         (WI-20261025-ZAWX9); it answered the carrier's own `7`, silently. Got {with:?}",
+    );
+}
+
+/// THE WEAVE'S LIVE CONTROL. A CARRIER-LESS defaulted call — `Desc.name()` takes no
+/// operand — beside a carrier-bearing one that anchors `require[Desc[T]]` at `Leaf`. No
+/// value can direct it, so value direction runs the spec's default `1`, and only the
+/// clause dictionary reaches `Leaf`'s own `7`. The un-woven twin is asserted here, at
+/// the site, as the control: it is the identical clause with the `require` deleted.
+///
+/// ADDED BY WI-20261025-ZAWX9, when the two-supplier row stopped discriminating. Its `7`
+/// does not depend on that ticket: `Leaf`'s own member answers through the dictionary on
+/// either side of it.
+#[test]
+fn a_carrier_less_defaulted_call_answers_through_the_clause_dictionary() {
+    let ns = "test.wi1040.carrierless";
+    let src = |ns: &str, clause: &str| {
+        program(
+            ns,
+            &format!(
+                "  rule via(?x, ?r) :- {clause}Desc.describe(?x, ?t), Desc.name(?r)\n  \
+                   rule answer(?r) :- via(leaf(), ?r)\n"
+            ),
+        )
+        .replace(
+            "    operation describe(x: T) -> Int64 = 1\n",
+            "    operation describe(x: T) -> Int64 = 1\n    operation name() -> Int64 = 1\n",
+        )
+        .replace(
+            "    operation describe(x: Leaf) -> Int64 = 7\n",
+            "    operation describe(x: Leaf) -> Int64 = 7\n    operation name() -> Int64 = 7\n",
+        )
+    };
+    let control_ns = format!("{ns}.control");
+    let control = src(&control_ns, "");
+    assert!(
+        control.contains("operation name() -> Int64 = 7"),
+        "fixture guard: both members must have been added"
+    );
     assert_eq!(
-        answer(ns, &src),
+        answer(&control_ns, &control),
+        1,
+        "the un-woven twin: a call with no operand is one value direction cannot direct"
+    );
+    assert_eq!(
+        answer(ns, &src(ns, "require[Desc[T]], ")),
         7,
-        "PINS a boundary, and CORRECTS channel doc \u{00a7}4's \"a runtime tie is \
-         unreachable\": true for a `provides` overlap, FALSE for two SUPPLIERS of one \
-         op at one carrier. The same program with a GROUND receiver is refused at \
-         load (WI-1026/WI-1035); through the dictionary it answers the carrier's own \
-         member silently, because `resolve_op_target_checked` reads one sort-ops \
-         entry and never consults `spec_op_suppliers_for_carrier` (WI-842)",
+        "the clause dictionary is what reaches `Leaf`'s own `name`",
     );
 }
 

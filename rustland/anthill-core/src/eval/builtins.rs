@@ -6241,9 +6241,8 @@ fn dict_resolve_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Ev
     // a dispatch face, and letting it hand back an `OpRef` on the spec op is the
     // silent fall-through the marker exists to prevent.
     let target = resolve_op_target_checked(&interp.kb, h.impl_sort(), spec_op_sym)
-        .map_err(|detail| EvalError::UnpinnedRequirement {
-            detail,
-            marker: h.impl_sort(),
+        .map_err(|refusal| {
+            EvalError::dispatch_refused(&interp.kb, spec_op_sym, h.impl_sort(), refusal)
         })?;
     // WI-857: `target` is the RESOLVED member; `h` is a dictionary for the spec
     // `spec_op_sym` belongs to, whose layout has that spec's chain as its prefix.
@@ -6270,6 +6269,15 @@ fn dict_resolve_op(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Ev
 /// is put through the SAME [`resolve_op_target`] as `resolveOp` — so the two
 /// faces agree (an inherited instance-fact placeholder resolves to its bound
 /// impl op, not the placeholder) — then wrapped as `OpRef { op, dict: Some(d) }`.
+/// An entry that is the provider's own member of a defaulted spec operation, and not that
+/// operation's answer, is put through it AS that operation (WI-20261025-ZAWX9), which is what
+/// `resolveOp` is asked.
+///
+/// An operation the dictionary cannot answer — its provider supplies it twice, or differently
+/// at the sorts it provides the spec at — fails the whole enumeration, as `resolveOp` fails on
+/// it: a list without it would read as a dictionary that has no such operation. And the
+/// entries are the PROVIDER's table, whatever spec `d` is a dictionary of, which `d` does not
+/// record: an entry of another spec the provider provides is listed too, as it always was.
 ///
 /// Returned as an EAGER `List` value: `List provides FiniteStream`, so it
 /// satisfies the declared `FiniteStream[OpRef]` return, whereas a bare
@@ -6293,28 +6301,39 @@ fn dict_ops(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError
             marker: impl_sym,
         });
     }
-    let elems: Vec<Value> = interp
-        .kb
-        .sort_ops_for_impl(impl_sym)
-        .into_iter()
-        .map(|target| {
-            resolve_op_target_checked(&interp.kb, impl_sym, target)
-                .map(|resolved| Value::OpRef {
-                    // WI-1087 / WI-1091: not an eta site — see the sibling mint above
-                    // for both halves.
-                    spread_labels: None,
-                    op: resolved,
-                    dict: Some(h.clone()),
-                    // The table row IS the op named here, pre-resolution.
-                    named: Some(target),
-                    op_reqs: None,
-                })
-                .map_err(|detail| EvalError::UnpinnedRequirement {
-                    detail,
-                    marker: impl_sym,
-                })
-        })
-        .collect::<Result<Vec<Value>, EvalError>>()?;
+    let rows = interp.kb.sort_ops_for_impl(impl_sym);
+    let mut elems: Vec<Value> = Vec::with_capacity(rows.len());
+    let resolve = |interp: &Interpreter, op: crate::intern::Symbol| {
+        resolve_op_target_checked(&interp.kb, impl_sym, op)
+            .map_err(|refusal| EvalError::dispatch_refused(&interp.kb, op, impl_sym, refusal))
+    };
+    for row in rows {
+        // WI-20261025-ZAWX9 — a row that is the provider's OWN member of a DEFAULTED spec
+        // operation answers what `resolveOp` answers for that operation: the member is one
+        // of its suppliers, not the answer. Asked by the row, a member the interpreter
+        // cannot run was handed back where `resolveOp` answers the provision's binding.
+        // Where the member IS the answer the row stays as it was, `named` included: which
+        // spec `d` is a dictionary of is not written on it, and a row's spec operation
+        // would measure `d` against that spec's layout.
+        let backed = crate::kb::typing::defaulted_spec_op_backed_by(&interp.kb, impl_sym, row)
+            .map(|spec_op| resolve(interp, spec_op).map(|answer| (spec_op, answer)))
+            .transpose()?;
+        let (named, resolved) = match backed {
+            Some((spec_op, answer)) if answer != row => (spec_op, answer),
+            _ => (row, resolve(interp, row)?),
+        };
+        elems.push(Value::OpRef {
+            // WI-1087 / WI-1091: not an eta site — see the sibling mint above for both
+            // halves.
+            spread_labels: None,
+            op: resolved,
+            dict: Some(h.clone()),
+            // The op named here, pre-resolution: the table row, or the spec operation it
+            // backs.
+            named: Some(named),
+            op_reqs: None,
+        });
+    }
     build_value_list(interp, elems)
 }
 

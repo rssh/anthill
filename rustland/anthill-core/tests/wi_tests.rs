@@ -1294,6 +1294,8 @@ mod wi1010_defaulted_op_instance_fact_test;
 
 #[path = "include/wi1012_static_supplier_tie_test.rs"]
 mod wi1012_static_supplier_tie_test;
+#[path = "include/wi_zawx9_defaulted_dictionary_dispatch_test.rs"]
+mod wi_zawx9_defaulted_dictionary_dispatch_test;
 
 #[path = "include/wi1013_call_type_args_view_test.rs"]
 mod wi1013_call_type_args_view_test;

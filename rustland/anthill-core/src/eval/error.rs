@@ -235,6 +235,12 @@ pub enum EvalError {
         candidates: Vec<String>,
         repair: crate::kb::typing::SupplierTieRepair,
     },
+    /// WI-20261025-ZAWX9 — a dictionary dispatch of a defaulted spec operation whose
+    /// provider provides the spec at several sorts and supplies the operation differently at
+    /// them: the dictionary names the provider, not the sort, so no one of them is the
+    /// answer. A PROGRAM error, the sibling of [`Self::AmbiguousSpecOpDispatch`]; `detail` is
+    /// `kb::typing::per_application_supply`'s sentence, which the load face quotes too.
+    UndeterminedDictionaryDispatch { detail: String },
     /// WI-757 — the WI-722 macro contract's DIAGNOSTIC channel for a HOST macro:
     /// it read its argument occurrences, found them definitively untranslatable,
     /// and says why. An anthill-written macro reaches the same channel by
@@ -408,6 +414,67 @@ pub enum BridgeDisposition {
 }
 
 impl EvalError {
+    /// [`Self::AmbiguousSpecOpDispatch`] for a tie between `candidates` at `carrier`, built
+    /// in ONE place for its two readers: the value-directed dispatch
+    /// (`Interpreter::sole_supplier_by_value`) and a dictionary's
+    /// ([`Self::dispatch_refused`]).
+    pub(crate) fn ambiguous_spec_op_dispatch(
+        kb: &crate::kb::KnowledgeBase,
+        spec_op: crate::intern::Symbol,
+        carrier: crate::intern::Symbol,
+        candidates: &[crate::kb::typing::SpecOpSupplier],
+    ) -> EvalError {
+        let op_qn = kb.qualified_name_of(spec_op);
+        EvalError::AmbiguousSpecOpDispatch {
+            op: op_qn.to_string(),
+            carrier: kb.qualified_name_of(carrier).to_string(),
+            candidates: crate::kb::typing::render_suppliers(
+                kb,
+                candidates,
+                crate::kb::typing::short_name_of(op_qn),
+            ),
+            repair: crate::kb::typing::supplier_tie_repair(kb, spec_op, candidates),
+        }
+    }
+
+    /// What a dispatch through a dictionary whose provider is `impl_sort` raises where
+    /// [`crate::kb::typing::resolve_op_target_checked`] refuses it: the dictionary names
+    /// no provider, or its provider supplies `spec_op` twice (WI-20261025-ZAWX9).
+    pub(crate) fn dispatch_refused(
+        kb: &crate::kb::KnowledgeBase,
+        spec_op: crate::intern::Symbol,
+        impl_sort: crate::intern::Symbol,
+        refusal: crate::kb::typing::DispatchRefusal,
+    ) -> EvalError {
+        match refusal {
+            crate::kb::typing::DispatchRefusal::Unpinned(detail) => {
+                EvalError::UnpinnedRequirement {
+                    detail,
+                    marker: impl_sort,
+                }
+            }
+            crate::kb::typing::DispatchRefusal::Supply(
+                crate::kb::typing::ProviderSupplyRefusal::Tie {
+                    carrier,
+                    candidates,
+                },
+            ) => Self::ambiguous_spec_op_dispatch(kb, spec_op, carrier, &candidates),
+            crate::kb::typing::DispatchRefusal::Supply(
+                crate::kb::typing::ProviderSupplyRefusal::PerApplication {
+                    provider,
+                    applications,
+                },
+            ) => EvalError::UndeterminedDictionaryDispatch {
+                detail: crate::kb::typing::per_application_supply(
+                    kb,
+                    spec_op,
+                    provider,
+                    &applications,
+                ),
+            },
+        }
+    }
+
     /// WI-20260911-0V0F7 — which [`BridgeDisposition`] this error has when it escapes
     /// the SLD→eval bridge. See that enum for why each side exists.
     ///
@@ -498,6 +565,7 @@ impl EvalError {
             | EvalError::AmbiguousRequirement { .. }
             | EvalError::UnpinnedRequirement { .. }
             | EvalError::AmbiguousSpecOpDispatch { .. }
+            | EvalError::UndeterminedDictionaryDispatch { .. }
             | EvalError::MacroRejected { .. }
             | EvalError::UnboundTypeParam { .. }
             | EvalError::KbReadFailed(_)
@@ -739,6 +807,9 @@ impl std::fmt::Display for EvalError {
                     op, carrier, candidates, *repair,
                 ),
             ),
+            EvalError::UndeterminedDictionaryDispatch { detail } => {
+                write!(f, "cannot dispatch through the dictionary: {detail}")
+            }
             // WI-757: the same sentence the typer renders into a load error, so a
             // macro invoked at runtime and one expanded at compile time report the
             // rejection identically (only the location wrapper differs).

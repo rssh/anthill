@@ -2948,7 +2948,9 @@ pub(super) fn check_apply_iter(
                 // ([`defaulted_call_target`]). Suppliers are found by the exact carrier, so such
                 // a member was found by nothing, and the default body ran in its place.
                 if let Some(tree) = default_tree {
-                    if let Some(target) = defaulted_call_target(kb, spec_sort, fn_sym, &tree) {
+                    if let Some((target, with_instance)) =
+                        defaulted_call_target(kb, spec_sort, fn_sym, &tree, span)?
+                    {
                         if target != fn_sym {
                             effects = effects_of_pinned_call(
                                 kb,
@@ -2972,7 +2974,7 @@ pub(super) fn check_apply_iter(
                             fn_sym,
                             target,
                             env.enclosing_sort(),
-                            Some(tree),
+                            with_instance.then_some(tree),
                             Some(&OpSupplyCtx {
                                 subst: &subst,
                                 caller_requires: env.enclosing_frame_chain(),
@@ -3055,10 +3057,12 @@ pub(super) fn check_apply_iter(
                         let another = tree
                             .impl_sort()
                             .is_some_and(|p| !same_sort_canonical(kb, p, spec_sort));
-                        if let Some(target) = another
-                            .then(|| defaulted_call_target(kb, spec_sort, fn_sym, &tree))
-                            .flatten()
-                        {
+                        let target = if another {
+                            defaulted_call_target(kb, spec_sort, fn_sym, &tree, span)?
+                        } else {
+                            None
+                        };
+                        if let Some((target, with_instance)) = target {
                             if target != fn_sym {
                                 effects = effects_of_pinned_call(
                                     kb,
@@ -3082,7 +3086,7 @@ pub(super) fn check_apply_iter(
                                 fn_sym,
                                 target,
                                 env.enclosing_sort(),
-                                Some(tree),
+                                with_instance.then_some(tree),
                                 Some(&OpSupplyCtx {
                                     subst: &subst,
                                     caller_requires: env.enclosing_frame_chain(),
@@ -4342,11 +4346,13 @@ pub(super) fn check_apply_iter(
                                 None,
                                 &op.params,
                             ));
+                    // A body-less operation: `resolve_op_target` refuses only a DEFAULTED one,
+                    // so nothing is refused here.
                     let through_spec_op = impl_op_sym == fn_sym
                         && reads_the_instance
                         && !kb.is_reify_operation(kb.canonical_sym(fn_sym))
                         && resolved_tree.as_ref().and_then(|tree| tree.impl_sort()).is_some_and(
-                            |provider| resolve_op_target(kb, provider, fn_sym) == fn_sym,
+                            |provider| resolve_op_target(kb, provider, fn_sym).is_ok_and(|t| t == fn_sym),
                         );
                     if (impl_op_sym != fn_sym && op_has_runnable_body(kb, impl_op_sym))
                         || through_spec_op
@@ -5729,26 +5735,65 @@ fn defaulted_call_at_non_instance(
     unprovided_spec_at_carrier(kb, goal, carrier, fn_sym, span)
 }
 
-/// What a call of a defaulted spec operation runs at the instance `tree`: the default body
-/// (`fn_sym` itself) where the instance's provider writes no member for it, and the
-/// provider's own member where it writes one, entered with the instance's dictionary,
-/// which must cover it. `None` for a member inherited from a third sort — a `FiniteCollection`
-/// instance at a carrier whose `filter` is `Iterable`'s (WI-1091) — which the instance says
-/// nothing about.
+/// What a call of a defaulted spec operation runs at the instance `tree`, and whether the
+/// instance's dictionary is handed to it (the `bool`): the default body (`fn_sym` itself)
+/// where the instance's provider supplies nothing for it, and what it supplies where it does —
+/// its own member, or its provision's binding. The SAME answer eval's dispatch through that
+/// dictionary reaches, because it is the same [`resolve_op_target`], told here which
+/// application the instance is for ([`tree_application`]); what the provider supplies twice is
+/// refused here, as the call by name refuses it.
+///
+/// THE DEFAULT IS ENTERED WITHOUT THE DICTIONARY where the dictionary alone cannot answer:
+/// a provider supplying the operation differently at the applications it provides the spec
+/// at, whose instance here supplies nothing. Handed the dictionary, eval dispatches the
+/// operation through it again with no application to read, and refuses; the call by name
+/// at that application loaded and answered the default before WI-20261025-ZAWX9, and still
+/// does (found by /code-review). A default body that reads the instance then raises at the
+/// read, naming the frame.
+///
+/// A BINDING THE DICTIONARY DOES NOT COVER is refused: an operation of another sort whose
+/// `requires` the instance carries no slot for. Eval's dispatch through the same dictionary
+/// cannot fill its frame and raises (`expand_dispatching_dict`); left `None` here, the call
+/// fell through and ran the default in silence. The provider's OWN member uncovered keeps
+/// that `None`, the answer WI-1091 gave a member whose frame the instance does not lay out.
+/// `None` is also the answer for a tree that names no provider.
 fn defaulted_call_target(
     kb: &mut KnowledgeBase,
     spec_sort: Symbol,
     fn_sym: Symbol,
     tree: &ResolvedRequiresNode,
-) -> Option<Symbol> {
-    let provider = tree.impl_sort()?;
-    let target = resolve_op_target(kb, provider, fn_sym);
+    span: Option<Span>,
+) -> Result<Option<(Symbol, bool)>, TypeError> {
+    let Some(provider) = tree.impl_sort() else {
+        return Ok(None);
+    };
+    let application = tree_application(kb, tree);
+    let target = resolve_op_target_at(kb, provider, fn_sym, application.as_ref())
+        .map_err(|refusal| refusal.type_error(kb, fn_sym, span))?;
     if target == fn_sym {
-        return Some(fn_sym);
+        let dictionary_answers = resolve_op_target(kb, provider, fn_sym).is_ok();
+        return Ok(Some((fn_sym, dictionary_answers)));
     }
-    let own = impl_parent_of_op(kb, target).is_some_and(|owner| same_sort_canonical(kb, owner, provider));
-    (own && op_is_interpretable(kb, target) && dictionary_covers_target(kb, spec_sort, provider, target))
-        .then_some(target)
+    if dictionary_covers_target(kb, spec_sort, provider, target) {
+        return Ok(Some((target, true)));
+    }
+    let owner = impl_parent_of_op(kb, target).unwrap_or(target);
+    if same_sort_canonical(kb, owner, provider) {
+        return Ok(None);
+    }
+    Err(TypeError::DictionaryCannotAnswer {
+        span,
+        op: fn_sym,
+        detail: format!(
+            "`{}`, which `{}` supplies for it, reads the requirements of `{}`, and a \
+             dictionary of `{}` at `{}` carries no slot for them",
+            kb.qualified_name_of(target),
+            kb.qualified_name_of(provider),
+            kb.qualified_name_of(owner),
+            kb.qualified_name_of(spec_sort),
+            kb.qualified_name_of(provider),
+        ),
+    })
 }
 
 /// Each argument a call supplies that was typed, with the parameter it fills: `(parameter,

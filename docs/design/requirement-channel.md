@@ -101,7 +101,11 @@ None of these is a typing operation. Three consequences:
   condition — **whether the carried type is readable** is (§4).
 - **A runtime tie is unreachable, not refused.** Overlap between provider heads is
   decided at typing/load (the 058 coherence machinery); if run time ever finds two
-  table entries for one carried type, that is a loud defect, not a semantics.
+  table entries for one carried type, that is a loud defect, not a semantics. Two
+  SUPPLIERS of one operation at one provider — its own member and its provision's
+  binding — are not a `provides` overlap and reach run time where the call that
+  dispatches them is not typed at the carrier; the dispatch refuses them there, as the
+  call by name refuses them at load (WI-20261025-ZAWX9).
 - **No runtime sub-search over `provides`** — a table fetch cannot truncate, so the
   WI-628 truncation discipline does not apply here.
 

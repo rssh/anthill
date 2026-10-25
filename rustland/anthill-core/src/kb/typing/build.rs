@@ -2110,21 +2110,29 @@ pub(crate) fn classify_pin_or_apply_within(
     // fails its own purpose there, so it declines: `PinNow` is what such a call has today.
     // Read with `same_sort_canonical`, unlike the `inherits` test below, because two
     // interned copies of one sort are one sort for this question (WI-864).
-    let threads_instance = impl_sort.is_some_and(|parent| {
-        if enclosing_sort.is_some_and(|encl| same_sort_canonical(kb, parent, encl)) {
-            return false;
+    // A provider that gives the operation no single implementation (WI-20261025-ZAWX9) is
+    // refused here, where the call is typed: eval would refuse the same dispatch at the call.
+    // NO PROGRAM REACHES THE REFUSAL, argued and measured (its back-out fails no row): every
+    // arm that hands this a defaulted spec operation with a resolved instance asked the same
+    // resolution first and refused there (`defaulted_call_target`), and a supplier the typer
+    // pinned is no defaulted operation the provider supplies twice. It is the loud form of
+    // an answer that would otherwise be read as "do not thread".
+    let threads_instance_at = impl_sort
+        .filter(|&parent| !enclosing_sort.is_some_and(|encl| same_sort_canonical(kb, parent, encl)))
+        .and_then(|parent| {
+            let tree = resolved_tree.as_ref()?;
+            let provider = tree.impl_sort().filter(|&p| !same_sort_canonical(kb, p, parent))?;
+            Some((tree, provider))
+        });
+    let threads_instance = match threads_instance_at {
+        Some((tree, provider)) => {
+            let spec = dispatch_spec_of_op(kb, fn_sym).or_provider(provider);
+            let entered = resolve_op_target_at(kb, provider, impl_op, tree_application(kb, tree).as_ref())
+                .map_err(|refusal| refusal.type_error(kb, fn_sym, Some(occ.span.span)))?;
+            dictionary_covers_target(kb, spec, provider, entered)
         }
-        resolved_tree.as_ref().is_some_and(|tree| {
-            tree.impl_sort().is_some_and(|provider| {
-                if same_sort_canonical(kb, provider, parent) {
-                    return false;
-                }
-                let spec = dispatch_spec_of_op(kb, fn_sym).or_provider(provider);
-                let entered = resolve_op_target(kb, provider, impl_op);
-                dictionary_covers_target(kb, spec, provider, entered)
-            })
-        })
-    });
+        None => false,
+    };
     let class = if needs_reqs || has_op_slots || threads_instance {
         // WI-829: a CROSS-SORT spec-op dispatch that CONSTRUCTS its callee's
         // requirement dictionary (a `resolved_tree` with a `FromScope` — the

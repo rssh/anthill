@@ -3597,7 +3597,18 @@ pub(super) fn operation_has_no_body(kb: &KnowledgeBase, op_sym: Symbol) -> bool 
 /// `body = none` (a spec-level declaration / derived op) is NOT a valid
 /// static-dispatch rewrite target — the runtime resolves those via a
 /// registered builtin or the spec's own derived rule. WI-237.
+///
+/// WI-20261025-ZAWX9 — the record's fast path is read in place: a cached signature is
+/// what makes [`crate::kb::op_info::lookup_operation_info`] answer from the record, and
+/// its body is that record's, so the answer is the same without building an
+/// `OpInfoRecord` (which clones every field) to read one `is_some()`. Eval asks this per
+/// dictionary dispatch of a defaulted operation, twice.
 pub(crate) fn op_has_runnable_body(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
+    if let Some(rec) = kb.op_record(op_sym) {
+        if rec.signature.is_some() {
+            return rec.body.is_some();
+        }
+    }
     match crate::kb::op_info::lookup_operation_info(kb, op_sym) {
         Some(rec) => rec.body_node.is_some(),
         None => false,

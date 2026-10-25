@@ -440,7 +440,10 @@ impl ErrorLayer {
         let match_failed_type = account(kb, "anthill.prelude.MatchFailed");
         let relation_floundered_type = account(kb, "anthill.prelude.RelationFloundered");
         let resolve_stream_failure_type = account(kb, "anthill.reflect.ResolveStreamFailure");
-        let admits_member = crate::kb::typing::resolve_op_target(kb, pattern_provider, admits);
+        let admits_member = crate::kb::typing::resolve_op_target(kb, pattern_provider, admits)
+            .unwrap_or_else(|_| {
+                disagree("no single member of `anthill.reflect.TypeValuePattern` that answers `admits`")
+            });
         if admits_member == admits {
             disagree("no member of `anthill.reflect.TypeValuePattern` that answers `admits`");
         }

@@ -467,6 +467,16 @@ pub enum TypeError {
         spec: Symbol,
         carrier: Symbol,
     },
+    /// WI-20261025-ZAWX9 — a call of the defaulted operation `op` whose instance's
+    /// dictionary cannot answer it: its provider supplies `op` differently at the sorts it
+    /// provides the spec at and the dictionary names no sort (`detail` is
+    /// [`per_application_supply`]'s sentence, which `EvalError::UndeterminedDictionaryDispatch`
+    /// quotes too), or what it supplies reads requirements that dictionary carries no slot for.
+    DictionaryCannotAnswer {
+        span: Option<Span>,
+        op: Symbol,
+        detail: String,
+    },
     /// A call, in an operation body, of a member of a sort that may be provided, with no
     /// receiver, that fixes none of the sort's parameters — by its bracket, its arguments or
     /// the type expected of its result — and that no single provision answers. A `requires`
@@ -1778,6 +1788,9 @@ impl TypeError {
                      `{body}` a body",
                 )
             }
+            TypeError::DictionaryCannotAnswer { op, detail, .. } => {
+                format!("a call of `{}` that no dictionary can answer: {detail}", kb.qualified_name_of(*op))
+            }
             TypeError::CarrierSuppliesNoMember {
                 op, spec, carrier, ..
             } => {
@@ -2389,6 +2402,7 @@ impl TypeError {
             | TypeError::CallOfClauseDefinedOperation { span, .. }
             | TypeError::CallOfUnselectableSpecOperation { span, .. }
             | TypeError::CarrierSuppliesNoMember { span, .. }
+            | TypeError::DictionaryCannotAnswer { span, .. }
             | TypeError::CallNamesNoInstance { span, .. }
             | TypeError::AmbiguousRequirementKey { span, .. }
             | TypeError::SelectionValueNotASort { span, .. }
@@ -2716,6 +2730,7 @@ impl TypeError {
             TypeError::CallOfClauseDefinedOperation { op, .. }
             | TypeError::CallOfUnselectableSpecOperation { op, .. }
             | TypeError::CarrierSuppliesNoMember { op, .. }
+            | TypeError::DictionaryCannotAnswer { op, .. }
             | TypeError::CallNamesNoInstance { op, .. } => LoadError::TypeMismatch {
                 origin: None,
                 entity_name: kb.qualified_name_of(*op).to_string(),

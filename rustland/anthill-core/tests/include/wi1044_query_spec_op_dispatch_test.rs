@@ -69,8 +69,10 @@
 //! hook built" would have needed a flag threaded from one caller — a gate keyed on
 //! WHERE the call was written, which is the shape this whole cluster exists to delete.
 //! Both WI-1040 tests are re-aimed at their sites, and the discrimination the headline
-//! lost is picked up by `a_two_supplier_carrier_dispatches_silently_through_the_-
-//! dictionary`, which was documented "PASSES EITHER WAY" and is now a live control.
+//! lost was picked up by `a_two_supplier_carrier_dispatches_silently_through_the_-
+//! dictionary`, which was documented "PASSES EITHER WAY" and became a live control —
+//! until WI-20261025-ZAWX9 made the dictionary refuse that tie as well, and the control
+//! moved to `a_carrier_less_defaulted_call_answers_through_the_clause_dictionary`.
 //!
 //! ## What fails when each piece is backed out — MEASURED, one revert each
 //!

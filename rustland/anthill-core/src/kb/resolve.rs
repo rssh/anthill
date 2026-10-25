@@ -11956,6 +11956,11 @@ impl KnowledgeBase {
     /// `None` — the caller leaves the call un-reduced — when the variable is still
     /// unbound, when the channel is not a single dictionary, or when the table has
     /// no member. Never a fallback to the spec op itself: that is the wrong answer.
+    /// And when the dictionary's provider gives a DEFAULTED operation no single
+    /// implementation (two suppliers, or a different one at each sort it provides the spec
+    /// at — WI-20261025-ZAWX9): the call is unreduced as value direction leaves one it
+    /// refuses (`UnstampedDispatch::Refused`), this function having no error channel to
+    /// raise it on, and the clause reaches no definite answer.
     ///
     /// **THE PAIR'S SECOND HALF IS ITS OWN `Option`, and the nesting is the point**
     /// (WI-20260909-NAR1X). The MEMBER is what this function has always answered, off
