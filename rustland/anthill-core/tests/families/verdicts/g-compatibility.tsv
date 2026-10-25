@@ -35,7 +35,7 @@ pair=param-spec,position=return	loads; drive refused NotAdmitted
 pair=param-spec,position=field	loads; drive refused NotAdmitted
 pair=param-spec,position=list-element	loads; drive refused NotAdmitted
 pair=param-spec,position=lambda-argument	loads; drive refused NotAdmitted
-pair=param-spec,position=provision	UNSOUND runs 1
+pair=param-spec,position=provision	runs 1
 pair=param-spec,position=type-admits	loads; drive refused NotAdmitted
 pair=refinement,position=argument	runs 1
 pair=refinement,position=let	runs 1

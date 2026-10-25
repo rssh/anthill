@@ -1,6 +1,6 @@
 # May a value of type A stand where B is expected — the readers of one question
 
-## Status: measurement, 2026-10-25, on `d6a28558`; unchanged, every one of its 153 programs, on `1373e04f`. The second map of "one answer per question" (`docs/process/converging.md` §3.10, q18), after `supplier-question-map.md`. Tracked by WI-20261025-27050 (C2, C5, C6); guarded by the family `g-compatibility`. Nothing here is implemented.
+## Status: measurement, 2026-10-25, on `d6a28558`; unchanged, every one of its 153 programs, on `1373e04f`. The second map of "one answer per question" (`docs/process/converging.md` §3.10, q18), after `supplier-question-map.md`. Tracked by WI-20261025-27050 (C5, C6) and WI-20261025-053QV (the typing positions' half of C2's row); guarded by the family `g-compatibility`. Nothing here is implemented.
 
 ## The question
 
@@ -34,7 +34,7 @@ cell contradicts the spec.
 | sort-to-variant | no | no | no | no | no | no | no | no | — ² |
 | sibling-variant | no | no | no | no | no | no | no | no | — ² |
 | self-carrier | yes | yes | yes | yes | yes | yes | yes | yes | **no** |
-| param-spec | no | no | no | no | no | no | no | **yes** | no |
+| param-spec | yes ⁴ | **no** | **no** | **no** | **no** | **no** | **no** | yes | **no** |
 | refinement | yes | yes | yes | yes | yes | yes | yes | **no** | yes |
 | refinement-other-args | no | **yes** | **yes** | **yes** | **yes** | **yes** | **yes** | no | no |
 | open-slot | yes | yes | yes | yes | yes | yes | yes | yes | yes |
@@ -58,23 +58,27 @@ them unjudged by design.
 ³ `Box` declares no variance, and every typing position reads it as invariant; provision lookup
 reads the whole head covariantly — the question of WI-20261017-DYX5E (PreOpened).
 
+⁴ Decided by the user on 2026-10-25, after this matrix was first read as "no" by §8.2: a value whose
+own sort provides an instance of a spec over a parameter is admitted where the spec is written, and
+is a value of the spec's type there, not of the carrier (WI-20261025-053QV).
+
 `refinement`: `sort Narrow { requires Wide[W = Int64]; entity narrow }`, with `WP provides
 Wide[W = Int64]`; `refinement-other-args` asks `Narrow` at `Wide[W = String]`.
 
 ## What it says
 
 **The typer's six positions are one answer.** Every row agrees across argument, `let`, return,
-field, list element and lambda argument; the one wrong row is wrong in all six alike
-(`refinement-other-args`, WI-20261020-G37HS: the typer's refinement through `requires` ignores
-the clause's arguments).
+field, list element and lambda argument. Two rows are wrong in all six alike:
+`refinement-other-args` (WI-20261020-G37HS: the typer's refinement through `requires` ignores the
+clause's arguments), and, by the user's decision of 2026-10-25, `param-spec` (⁴, WI-20261025-053QV).
 
 **The two other readers disagree with it, each in its own way.**
 
 - **Provision lookup** (`match_candidate_against_goal`):
-  - **C2 — a provision at a spec over a parameter answers its provider.** A provision at `Tagger`
-    answers `Desc.d(mkA())` at `Bk`, where `Bk provides Tagger[C = Bk]`, and its member `d(x:
-    Tagger)` receives a value §8.2 says is no `Tagger` — a rule that holds for "a member that
-    backs a spec operation" by name. No open ticket.
+  - **C2 — a provision at a spec over a parameter answers its provider** — first read as a defect,
+    since §8.2 said a `Bk` is no `Tagger`; the user decided the other way on 2026-10-25 (⁴), so
+    provision lookup is the reader that is right here, and the typing positions and `type_admits`
+    are what move (WI-20261025-053QV, and 27050's C5).
   - **C3 — type arguments are not compared.** A provision at `Box[V = String]` answers a call at
     `Box[V = Int64]`: WI-20260929-05ZQE. A provision at `Box[V = Colour]` answers one at `Box[V =
     Colour.red]`: DYX5E (³).
@@ -116,8 +120,9 @@ the clause's arguments).
 
 So the subtype relation has three implementations: the typer's, provision lookup's and the type
 pattern's, sharing the head climb and nothing below it. Unlike the supplier question, the typer's
-own positions do not disagree — the consolidation this question asks for is of the other two
-into the typer's relation, where the spec gives them the same one, and only there: provision
+own positions do not disagree — the consolidation this question asks for is of the three readers
+into one relation, where the spec gives them the same one, and only there. Mostly the other two
+move to the typer's; at `param-spec` the typer moves to provision lookup's (⁴): provision
 lookup keeps its own rule for tuples and arrows, which the spec states, and its variance is
 DYX5E's open question.
 
@@ -127,7 +132,8 @@ DYX5E's open question.
 `scripts/families.sh g`) is this matrix less the CLI: the six typing positions, the provision at
 a sort-headed pair and `type_admits` are one question; at a tuple or an arrow the provision is an
 option of its own, held to §5.2's rule. Its judge reads an answer as admitted or not. Its
-exceptions are C2, C5 and C6 under WI-20261025-27050, and the known rows under G37HS, 05ZQE and
+exceptions are C5 and C6 under WI-20261025-27050, the `param-spec` row's typing positions under
+WI-20261025-053QV and its `type_admits` under 27050, and the known rows under G37HS, 05ZQE and
 DYX5E; run without them it names exactly those programs. Green on both carriers.
 
 ## Reproduce

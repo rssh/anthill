@@ -33,7 +33,8 @@
 //! every `provision-by-parts` program ([`Program::refused`]).
 //!
 //! CONTROL: run with [`EXCEPTIONS`] empty, the family names exactly the programs they cover —
-//! measured when it was written (2026-10-25, `1373e04f`).
+//! measured when it was written and again after the `param-spec` decision (2026-10-25,
+//! `1373e04f`): 13 findings, over the six rows the exceptions name.
 
 use super::{opt, spelt, Exception, Family, Hole, Picks, Program, Property, Verdict};
 
@@ -43,7 +44,10 @@ const PAIRS: &[(&str, &str, &str, &str, Spec)] = &[
     ("sort-to-variant", "Colour", "red(v: 1)", "Colour.red", Spec::No),
     ("sibling-variant", "Colour.blue", "blue(v: 2)", "Colour.red", Spec::No),
     ("self-carrier", "List[T = Int64]", "[1, 2]", "Stream[T = Int64, E = {}]", Spec::Yes),
-    ("param-spec", "Bk", "bk(k: 0)", "Tagger", Spec::No),
+    // A provider of a spec over a parameter at the spec: admitted by the user's decision of
+    // 2026-10-25, ahead of §8.2's text, which says a `Bk` is no `Tagger` until WI-20261025-053QV
+    // rewords it.
+    ("param-spec", "Bk", "bk(k: 0)", "Tagger", Spec::Yes),
     ("refinement", "Narrow", "narrow()", "Wide[W = Int64]", Spec::Yes),
     ("refinement-other-args", "Narrow", "narrow()", "Wide[W = String]", Spec::No),
     ("open-slot", "Box[V = Int64]", "box(v: 1)", "Box", Spec::Yes),
@@ -136,6 +140,7 @@ pub static FAMILY: Family = Family {
 };
 
 const TICKET_27050: &str = "WI-20261025-27050";
+const TICKET_053QV: &str = "WI-20261025-053QV";
 const TICKET_G37HS: &str = "WI-20261020-G37HS";
 const TICKET_05ZQE: &str = "WI-20260929-05ZQE";
 const TICKET_DYX5E: &str = "WI-20261017-DYX5E";
@@ -155,18 +160,51 @@ const EXCEPTIONS: &[Exception] = &[
         ticket: TICKET_G37HS,
         why: "the six typing positions admit what the provision and `type_admits` do not",
     },
-    // C2 — a provision at a spec over a parameter answers its provider.
+    // A value whose own sort provides the spec's instance is admitted at the spec. Provision
+    // lookup does so already and is held; the typing positions (WI-20261025-053QV) and
+    // `type_admits` (27050's C5) refuse it. P4 calls each of these live while any spelling of the
+    // row still differs, so they come off together once both tickets have landed.
     Exception {
-        property: Property::Sound,
-        when: &["pair=param-spec", "position=provision"],
-        ticket: TICKET_27050,
-        why: "a provision at `Tagger` answers a call at `Bk`, which is no `Tagger` (§8.2)",
+        property: Property::OneVerdict,
+        when: &["pair=param-spec", "position=argument"],
+        ticket: TICKET_053QV,
+        why: "a `Bk` is refused at `Tagger`, which provision lookup admits",
     },
     Exception {
         property: Property::OneVerdict,
-        when: &["pair=param-spec", "position=provision"],
+        when: &["pair=param-spec", "position=let"],
+        ticket: TICKET_053QV,
+        why: "a `Bk` is refused at `Tagger`, which provision lookup admits",
+    },
+    Exception {
+        property: Property::OneVerdict,
+        when: &["pair=param-spec", "position=return"],
+        ticket: TICKET_053QV,
+        why: "a `Bk` is refused at `Tagger`, which provision lookup admits",
+    },
+    Exception {
+        property: Property::OneVerdict,
+        when: &["pair=param-spec", "position=field"],
+        ticket: TICKET_053QV,
+        why: "a `Bk` is refused at `Tagger`, which provision lookup admits",
+    },
+    Exception {
+        property: Property::OneVerdict,
+        when: &["pair=param-spec", "position=list-element"],
+        ticket: TICKET_053QV,
+        why: "a `Bk` is refused at `Tagger`, which provision lookup admits",
+    },
+    Exception {
+        property: Property::OneVerdict,
+        when: &["pair=param-spec", "position=lambda-argument"],
+        ticket: TICKET_053QV,
+        why: "a `Bk` is refused at `Tagger`, which provision lookup admits",
+    },
+    Exception {
+        property: Property::OneVerdict,
+        when: &["pair=param-spec", "position=type-admits"],
         ticket: TICKET_27050,
-        why: "provision lookup admits what every typing position refuses",
+        why: "`type_admits(Tagger, Bk)` answers no; a pattern admits a provider (C5)",
     },
     // C6 — a `requires` refinement with written arguments is not climbed.
     Exception {
