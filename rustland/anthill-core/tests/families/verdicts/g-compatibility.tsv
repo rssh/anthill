@@ -1,0 +1,152 @@
+# g-compatibility — a value of type A where B is expected, at every position that asks
+# 150 programs: name, tab, verdict. Written by `scripts/families.sh bless`; a changed line is a changed verdict.
+pair=variant-to-sort,position=argument	runs 1
+pair=variant-to-sort,position=let	runs 1
+pair=variant-to-sort,position=return	runs 1
+pair=variant-to-sort,position=field	runs 1
+pair=variant-to-sort,position=list-element	runs 1
+pair=variant-to-sort,position=lambda-argument	runs 1
+pair=variant-to-sort,position=provision	runs 1
+pair=sort-to-variant,position=argument	loads; drive refused NotAdmitted
+pair=sort-to-variant,position=let	loads; drive refused NotAdmitted
+pair=sort-to-variant,position=return	loads; drive refused NotAdmitted
+pair=sort-to-variant,position=field	loads; drive refused NotAdmitted
+pair=sort-to-variant,position=list-element	loads; drive refused NotAdmitted
+pair=sort-to-variant,position=lambda-argument	loads; drive refused NotAdmitted
+pair=sort-to-variant,position=provision	loads; drive refused NotAdmitted
+pair=sibling-variant,position=argument	loads; drive refused NotAdmitted
+pair=sibling-variant,position=let	loads; drive refused NotAdmitted
+pair=sibling-variant,position=return	loads; drive refused NotAdmitted
+pair=sibling-variant,position=field	loads; drive refused NotAdmitted
+pair=sibling-variant,position=list-element	loads; drive refused NotAdmitted
+pair=sibling-variant,position=lambda-argument	loads; drive refused NotAdmitted
+pair=sibling-variant,position=provision	loads; drive refused NotAdmitted
+pair=self-carrier,position=argument	runs 1
+pair=self-carrier,position=let	runs 1
+pair=self-carrier,position=return	runs 1
+pair=self-carrier,position=field	runs 1
+pair=self-carrier,position=list-element	runs 1
+pair=self-carrier,position=lambda-argument	runs 1
+pair=self-carrier,position=provision	runs 1
+pair=self-carrier,position=type-admits	loads; drive refused NotAdmitted
+pair=param-spec,position=argument	loads; drive refused NotAdmitted
+pair=param-spec,position=let	loads; drive refused NotAdmitted
+pair=param-spec,position=return	loads; drive refused NotAdmitted
+pair=param-spec,position=field	loads; drive refused NotAdmitted
+pair=param-spec,position=list-element	loads; drive refused NotAdmitted
+pair=param-spec,position=lambda-argument	loads; drive refused NotAdmitted
+pair=param-spec,position=provision	UNSOUND runs 1
+pair=param-spec,position=type-admits	loads; drive refused NotAdmitted
+pair=refinement,position=argument	runs 1
+pair=refinement,position=let	runs 1
+pair=refinement,position=return	runs 1
+pair=refinement,position=field	runs 1
+pair=refinement,position=list-element	runs 1
+pair=refinement,position=lambda-argument	runs 1
+pair=refinement,position=provision	loads; drive refused NotAdmitted
+pair=refinement,position=type-admits	runs 1
+pair=refinement-other-args,position=argument	UNSOUND runs 1
+pair=refinement-other-args,position=let	UNSOUND runs 1
+pair=refinement-other-args,position=return	UNSOUND runs 1
+pair=refinement-other-args,position=field	UNSOUND runs 1
+pair=refinement-other-args,position=list-element	UNSOUND runs 1
+pair=refinement-other-args,position=lambda-argument	UNSOUND runs 1
+pair=refinement-other-args,position=provision	loads; drive refused NotAdmitted
+pair=refinement-other-args,position=type-admits	loads; drive refused NotAdmitted
+pair=open-slot,position=argument	runs 1
+pair=open-slot,position=let	runs 1
+pair=open-slot,position=return	runs 1
+pair=open-slot,position=field	runs 1
+pair=open-slot,position=list-element	runs 1
+pair=open-slot,position=lambda-argument	runs 1
+pair=open-slot,position=provision	runs 1
+pair=open-slot,position=type-admits	runs 1
+pair=slot-mismatch,position=argument	loads; drive refused NotAdmitted
+pair=slot-mismatch,position=let	loads; drive refused NotAdmitted
+pair=slot-mismatch,position=return	loads; drive refused NotAdmitted
+pair=slot-mismatch,position=field	loads; drive refused NotAdmitted
+pair=slot-mismatch,position=list-element	loads; drive refused NotAdmitted
+pair=slot-mismatch,position=lambda-argument	loads; drive refused NotAdmitted
+pair=slot-mismatch,position=provision	UNSOUND runs 1
+pair=slot-mismatch,position=type-admits	loads; drive refused NotAdmitted
+pair=alias,position=argument	runs 1
+pair=alias,position=let	runs 1
+pair=alias,position=return	runs 1
+pair=alias,position=field	runs 1
+pair=alias,position=list-element	runs 1
+pair=alias,position=lambda-argument	runs 1
+pair=alias,position=provision	runs 1
+pair=alias,position=type-admits	runs 1
+pair=alias-reverse,position=argument	runs 1
+pair=alias-reverse,position=let	runs 1
+pair=alias-reverse,position=return	runs 1
+pair=alias-reverse,position=field	runs 1
+pair=alias-reverse,position=list-element	runs 1
+pair=alias-reverse,position=lambda-argument	runs 1
+pair=alias-reverse,position=provision	runs 1
+pair=alias-reverse,position=type-admits	runs 1
+pair=tuple-width,position=argument	runs 1
+pair=tuple-width,position=let	runs 1
+pair=tuple-width,position=return	runs 1
+pair=tuple-width,position=field	runs 1
+pair=tuple-width,position=list-element	runs 1
+pair=tuple-width,position=lambda-argument	runs 1
+pair=tuple-width,position=provision-by-parts	loads; drive refused NotAdmitted
+pair=tuple-permutation,position=argument	runs 1
+pair=tuple-permutation,position=let	runs 1
+pair=tuple-permutation,position=return	runs 1
+pair=tuple-permutation,position=field	runs 1
+pair=tuple-permutation,position=list-element	runs 1
+pair=tuple-permutation,position=lambda-argument	runs 1
+pair=tuple-permutation,position=provision-by-parts	loads; drive refused NotAdmitted
+pair=tuple-order,position=argument	loads; drive refused NotAdmitted
+pair=tuple-order,position=let	loads; drive refused NotAdmitted
+pair=tuple-order,position=return	loads; drive refused NotAdmitted
+pair=tuple-order,position=field	loads; drive refused NotAdmitted
+pair=tuple-order,position=list-element	loads; drive refused NotAdmitted
+pair=tuple-order,position=lambda-argument	loads; drive refused NotAdmitted
+pair=tuple-order,position=provision-by-parts	loads; drive refused NotAdmitted
+pair=covariant-list,position=argument	runs 1
+pair=covariant-list,position=let	runs 1
+pair=covariant-list,position=return	runs 1
+pair=covariant-list,position=field	runs 1
+pair=covariant-list,position=list-element	runs 1
+pair=covariant-list,position=lambda-argument	runs 1
+pair=covariant-list,position=provision	runs 1
+pair=covariant-list,position=type-admits	runs 1
+pair=no-variance-fact,position=argument	loads; drive refused NotAdmitted
+pair=no-variance-fact,position=let	loads; drive refused NotAdmitted
+pair=no-variance-fact,position=return	loads; drive refused NotAdmitted
+pair=no-variance-fact,position=field	loads; drive refused NotAdmitted
+pair=no-variance-fact,position=list-element	loads; drive refused NotAdmitted
+pair=no-variance-fact,position=lambda-argument	loads; drive refused NotAdmitted
+pair=no-variance-fact,position=provision	runs 1
+pair=no-variance-fact,position=type-admits	loads; drive refused NotAdmitted
+pair=arrow-parameter-wider,position=argument	runs 1
+pair=arrow-parameter-wider,position=let	runs 1
+pair=arrow-parameter-wider,position=return	runs 1
+pair=arrow-parameter-wider,position=field	runs 1
+pair=arrow-parameter-wider,position=list-element	runs 1
+pair=arrow-parameter-wider,position=lambda-argument	runs 1
+pair=arrow-parameter-wider,position=provision-by-parts	loads; drive refused NotAdmitted
+pair=arrow-parameter-narrower,position=argument	loads; drive refused NotAdmitted
+pair=arrow-parameter-narrower,position=let	loads; drive refused NotAdmitted
+pair=arrow-parameter-narrower,position=return	loads; drive refused NotAdmitted
+pair=arrow-parameter-narrower,position=field	loads; drive refused NotAdmitted
+pair=arrow-parameter-narrower,position=list-element	loads; drive refused NotAdmitted
+pair=arrow-parameter-narrower,position=lambda-argument	loads; drive refused NotAdmitted
+pair=arrow-parameter-narrower,position=provision-by-parts	loads; drive refused NotAdmitted
+pair=arrow-fewer-effects,position=argument	runs 1
+pair=arrow-fewer-effects,position=let	runs 1
+pair=arrow-fewer-effects,position=return	runs 1
+pair=arrow-fewer-effects,position=field	runs 1
+pair=arrow-fewer-effects,position=list-element	runs 1
+pair=arrow-fewer-effects,position=lambda-argument	runs 1
+pair=arrow-fewer-effects,position=provision-by-parts	loads; drive refused NotAdmitted
+pair=arrow-more-effects,position=argument	loads; drive refused NotAdmitted
+pair=arrow-more-effects,position=let	loads; drive refused NotAdmitted
+pair=arrow-more-effects,position=return	loads; drive refused NotAdmitted
+pair=arrow-more-effects,position=field	loads; drive refused NotAdmitted
+pair=arrow-more-effects,position=list-element	loads; drive refused NotAdmitted
+pair=arrow-more-effects,position=lambda-argument	loads; drive refused NotAdmitted
+pair=arrow-more-effects,position=provision-by-parts	loads; drive refused NotAdmitted

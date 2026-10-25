@@ -9,6 +9,8 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
+- tags: proposal-068
+
 ## Description
 
 A RULE BODY NEVER CHECKS AN OPERATION CALL'S ARGUMENTS AGAINST ITS SIGNATURE — `?x <=> needs_int("s")` loads and answers a String from an operation declared `-> Int64`. Measured 2026-10-17 on ce868fe4.

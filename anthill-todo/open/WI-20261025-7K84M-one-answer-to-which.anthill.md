@@ -1,0 +1,34 @@
+## Attributes
+
+- id: WI-20261025-7K84M-one-answer-to-which
+- created: 2026-10-25T11:01:42Z
+
+- status: Open
+- status_agent: claude
+- status_at: 2026-10-25T11:01:42Z
+
+- acceptance: cargo-test, scaland-sbt-test
+
+- tags: typing
+
+## Description
+
+ONE ANSWER TO "WHICH IMPLEMENTATION RUNS THIS CALL" ON THE BODY-LESS PATH TOO — a spec operation with no default body still has its supplier chosen by readers with rules of their own, and the supplier matrix (docs/design/supplier-question-map.md) has 13 of its 112 programs contradicting kernel-language §8.7 (Operation override; Backing is executable; One carrier declaring one spec twice), every one of them body-less. Measured 2026-10-25 on d6a28558 and again on 1373e04f, after WI-20261025-ZAWX9 (3657c39d) gave the DEFAULTED path one answer: `resolve_op_target_at` reads the provider's suppliers over every route there, refuses a tie and narrows to what runs. Its two D-rows, the default over a binding and a silent tie through a dictionary, are gone for a defaulted operation.
+
+WHAT IS LEFT (each program is a row of the map's matrix and of the family below):
+  D1 — a supplier tie (the carrier's own member beside an instance binding) of a BODY-LESS operation runs the own member through a `requires` dictionary, both shapes; with no receiver the call by name does too (`Desc.name[T = Leaf]()` answers 2 where the tie is due).
+  D3 — a body-less operation with no receiver, supplied by a binding alone, LOADS CLEAN AND DIES when called by name: `Desc.name[T = Leaf]()` over `Leaf provides Desc[T = Leaf, name = other]` exits 1 with `operation has no body: Desc.name`; through a dictionary it answers 3.
+  D5 — a binding written in `namespace Leaf` does not back the body-less provision written in `Leaf`'s body: `backs no operation` on every route, where §8.7 merges agreeing provisions into one view and dispatch does (the defaulted twin answers 3 on every route).
+
+MECHANISM, as read (not traced). `resolve_op_target_at`'s body-less branch is still the first-match chain `own.or_else(binding)`, with no tie (D1). `dispatch_spec_op_cached` pins a body-less call by name and reads no binding (apply.rs, its comment at the `instance_fact_op_binding` site says so); with a receiver eval re-dispatches by the value and recovers, with none nothing does (D3). The backing check reads one provision row's bindings (coherence.rs, `instance_fact_op_in_bindings(kb, &bindings, …)` for row `p`) (D5). The fork is the default itself: `op_body_node(spec_op).and_then(defaulted_spec_op_parent)` takes the new path, `lookup_spec_op_dispatch` (body-less only, 18 callers) the old one.
+
+WHAT. The body-less path asks what the defaulted path now asks — the suppliers over the three routes, narrowed to what runs, one runs, two are a tie — so the default decides only what fills an empty set, as §8.7 says, and not which path a call takes. The call by name of a body-less operation pins its supplier as the defaulted one does, binding included. The backing check reads the merged provision view and refuses only "nothing runs". The per-application question of a dictionary is WI-20261025-MS797's; the rule-body route is proposal 068's (§3).
+
+ACCEPTANCE: the generated family `f-supplier-routes` (rustland/anthill-core/tests/families/supplier_routes.rs): the exceptions it lists under this ticket cleared, each such cell at §8.7's answer, and no other verdict moved — D5's body-less `binding-both` rows, a refusal no property sees, move from `refused UnbackedProviderOperation` to `runs 3` in its verdict file; the full gate green; the families green on both carriers.
+
+## Changes
+
+### 2026-10-25T12:19:53Z — feedback — claude
+
+Measured by the family's judge once it was narrowed to the receiver route (2026-10-25, 1373e04f): since WI-20261025-ZAWX9 a DEFAULTED tie through a dictionary is refused, but only when the call runs — `gen(leaf())` over `gen[A](x: A) requires Desc[T = A] = Desc.describe(x)` loads clean and dies `AmbiguousSpecOpDispatch` (both shapes), where the call by name refuses the same tie at load. §8.7 refuses a tie at load where the carrier is statically known, and `gen(leaf())` names `Leaf` at load. It is this ticket's question — who answers, and when — and is listed on the family under it (Sound and OneVerdict, default=defaulted, supplied=own+binding, route=dictionary).
+

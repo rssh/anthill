@@ -58,9 +58,11 @@ use std::time::{Duration, Instant};
 
 mod applied_arrow;
 mod callback_row;
+mod compatibility;
 mod declaration_rule;
 mod mutual_callbacks;
 mod projected_call;
+mod supplier_routes;
 
 /// Every family, in the order they run.
 fn families() -> Vec<&'static Family> {
@@ -70,6 +72,8 @@ fn families() -> Vec<&'static Family> {
         &callback_row::FAMILY,
         &mutual_callbacks::FAMILY,
         &applied_arrow::FAMILY,
+        &supplier_routes::FAMILY,
+        &compatibility::FAMILY,
     ]
 }
 
