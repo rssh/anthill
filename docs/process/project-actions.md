@@ -15,9 +15,9 @@ Method: `one-answer-per-question.md`.
 
 | question | map | tickets | family | next step |
 |---|---|---|---|---|
-| which implementation runs a call | `docs/design/supplier-question-map.md` | WI-20261025-7K84M (the body-less path; a defaulted tie through a dictionary refused only when it runs) | `f-supplier-routes` | fix 7K84M |
+| which implementation runs a call | `docs/design/supplier-question-map.md` | WI-20261025-7K84M, delivered 2026-10-25 | `f-supplier-routes` (no exceptions) | done; the rule-body route stays proposal 068's |
 | may A stand where B is expected | `docs/design/compatibility-question-map.md` | WI-20261025-053QV (a spec over a parameter admits its provider at a typed position), WI-20261025-27050 (provision lookup and type patterns ask the one relation), and known: G37HS, 05ZQE, DYX5E | `g-compatibility` | review the draft §8.2 wording in 053QV; word 27050's `TypePattern` change (065 §2, 071 §1.2) |
-| what a name refers to | — | 1Y96B, FTV0Q (to read first) | — | map, after 7K84M's fix has gone through the whole loop |
+| what a name refers to | — | 1Y96B, FTV0Q (to read first) | — | map — next |
 | what effect row a call has | — | — | — | map |
 
 ## 2. The work list — WI-1126's first part

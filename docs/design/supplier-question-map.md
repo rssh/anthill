@@ -1,6 +1,6 @@
 # Who supplies a call — the readers of one question
 
-## Status: measurement, 2026-10-25, on `d6a28558`, re-measured on `1373e04f` after WI-20261025-ZAWX9 (`3657c39d`) gave the defaulted path one answer. The first map of "one answer per question" (`docs/process/converging.md` §3.10, q18). What is left — D1, D3 and D5, all on the body-less path — is WI-20261025-7K84M; D2 was ZAWX9; guarded by the family `f-supplier-routes`. Nothing here is implemented.
+## Status: measured 2026-10-25 on `d6a28558`, re-measured on `1373e04f` after WI-20261025-ZAWX9 (`3657c39d`) gave the defaulted path one answer, and DELIVERED by WI-20261025-7K84M the same day: every cell of the matrix is §8.7's answer, one cell aside that is another ticket's (footnote 2). The first map of "one answer per question" (`docs/process/converging.md` §3.10, q18); guarded by the family `f-supplier-routes`, which lists no exceptions. The tables below are the measurement as it was; [What one answer took](#what-one-answer-took) is the delivery.
 
 ## The question
 
@@ -89,10 +89,13 @@ operation"). The other routes give the second alone.
 ² A bracket on a call in a rule body is refused ("call-site type arguments … are not supported"),
 WI-20261024-TC54R, proposal 068's ground. Not a supplier answer.
 
-Of 112 cells, 13 contradict §8.7, every one for a body-less operation. On `d6a28558`, before
-ZAWX9's delivery, 18 did: the five more were the defaulted `own+binding` through a dictionary in
-both shapes (it ran the own member) and the defaulted `name()` through a dictionary with a binding
-in any position (it ran the default).
+Of 112 cells, 13 contradicted §8.7 on `1373e04f`, every one for a body-less operation. On
+`d6a28558`, before ZAWX9's delivery, 18 did: the five more were the defaulted `own+binding`
+through a dictionary in both shapes (it ran the own member) and the defaulted `name()` through a
+dictionary with a binding in any position (it ran the default). After WI-20261025-7K84M none does.
+One cell the table cannot show: the dictionary's "tie refused", defaulted since ZAWX9 and body-less
+since 7K84M's first step, was refused only when the call ran. It is refused at load now, where the
+dictionary is built (below).
 
 ## The divergences
 
@@ -134,11 +137,14 @@ defaulted twin answers 3 on every route, so dispatch reads the two provisions as
 
 (D4 was the double refusal of footnote 1; it is a message, not an answer, and is left out.)
 
-D1, D3 and D5 are WI-20261025-7K84M; D2 was ZAWX9.
+D1, D3 and D5 were WI-20261025-7K84M; D2 was ZAWX9.
 
 ## The readers
 
-Each row answers the question for some route, by its own rule.
+Each row answers the question for some route, by its own rule — as measured on `1373e04f`. Since
+WI-20261025-7K84M, `resolve_op_target_at` has one rule for both halves, `dispatch_spec_op_cached`
+projects through it, `instance_fact_op_binding` is deleted, and the backing check reads the merged
+view ([What one answer took](#what-one-answer-took)).
 
 | reader | where | routes it sees | default | tie | can-it-run filter | used by |
 |---|---|---|---|---|---|---|
@@ -173,22 +179,44 @@ first-match chain was deleted "so the first-match … read cannot come back", an
 The first-match reader still standing on a route is the body-less branch of
 `resolve_op_target_at`, and the fork between its two branches is the default.
 
-## What one answer would take
+## What one answer took
 
-One function, asked by every route: the suppliers of an operation for a carrier, read from the
-merged provision view over all three routes, filtered to what can run, then arbitrated — the one
-supplier runs, a default fills an empty set, two suppliers are a tie, an empty set with no default
-is "nothing runs". The routes keep only the choice of *when* to ask: at load where the typer has
-the carrier (the call by name, the dot, a pinned bracket), at the call where only a value or a
-dictionary has it (eval by value, eval through a dictionary, reflect), and the backing check asks
-it of every provision at load and refuses "nothing runs". The rule-body route is proposal 068's,
-which already types a rule-body call as an operation body's (§3, WI-20260926-7D48J,
-WI-20261015-ZPETZ).
+WI-20261025-7K84M, in four parts, each a reader of the table above made to ask the one function:
 
-That removes the body-less branch of `resolve_op_target_at`, `dispatch_spec_op_cached`'s supplier role and the
-backing check's row-local read, and makes `lookup_spec_op_dispatch`'s body-less gate a question
-about what the default does rather than which path a call takes. It is measured by this matrix:
-every bold cell turns to what §8.7 says, and every plain cell stays.
+- **`resolve_op_target_at` has one rule for both halves.** A body-less operation is resolved
+  through the provider's suppliers (`spec_op_suppliers_of_provider`), as the defaulted one is:
+  one runs, two are a tie. What differs is only what fills an empty set: the default for a
+  defaulted operation, and the provider's inherited table row for a body-less one. The
+  interpretability filter stays the defaulted half's, since only that half has a fallback. The
+  first-match chain `own.or_else(binding)` is gone, and with it `instance_fact_op_binding`, the
+  last reader of the binding alone. The higher-kinded arm of `check_apply_iter` and
+  `resolve_nullary_result_carrier` read the same function.
+- **The dispatch's projection asks it.** `resolve_at_goal` maps the provider it resolved to that
+  provider's supplier for the called operation, through `resolve_op_target_at` and told the
+  application the instance is for, where it took the provider's table row (`sort_ops_lookup`),
+  which reads no binding. A tie comes back as `DispatchOutcome::Unsupplied`, refused at the call.
+  That covers D3 (the binding is pinned at load) and D1 by name with no receiver (the tie is
+  refused). `SupplyRoute::Fact` is now weighed by the provision arbitration, as the guard's
+  coupling note required.
+- **The backing check reads the merged view.** `check_provider_operations` reads the bindings of
+  every provision the provider writes of the spec at the same application
+  (`merged_provision_bindings`), which is D5.
+- **A dictionary built at a call is refused over a tie (D1 through a dictionary).** Where a
+  call's requirement is constructed from a resolved instance (`build_dep_projection`, Strategy 3),
+  an operation a provider in that instance supplies twice (`instance_supplier_tie`) refuses the
+  call at load, as the same supplier tie the call by name gives. This was decided by the user on
+  2026-10-25: the tie is no error where provisions are written, since a carrier may supply a spec
+  several ways and `default provides` chooses between them. It is refused where the dictionary
+  is resolved, and a default cannot choose between two texts of one provider (WI-861).
+
+- **And the readers the map had not listed.** `Dictionary.ops` asks an own-member row by the
+  spec operation it backs for both halves (`spec_op_backed_by`), so it agrees with
+  `Dictionary.resolveOp` on a tie. Semantic equality keeps the table's answer in the
+  projection, because its builtin dispatches itself: pinned to a provision's `eq = loopEq`, a
+  circular binding never returned where the builtin's bridge refuses it at its re-entry cap.
+
+The rule-body route is still proposal 068's, and the bracket on a rule-body call is
+WI-20261024-TC54R's (footnote 2).
 
 ## Reproduce
 
@@ -202,8 +230,9 @@ python3 docs/design/supplier-question-map/table.py /tmp/supplier
 
 About fifteen seconds on 24 cores, over the CLI. The same matrix, less the rule-body route, is the
 generated family `f-supplier-routes` (`rustland/anthill-core/tests/families/supplier_routes.rs`,
-84 programs, `scripts/families.sh f`): D1 and D3 are its listed exceptions, under
-WI-20261025-7K84M — D2's, under ZAWX9, came off when ZAWX9 landed, the family naming the five
-verdicts it moved — and D5 — a refusal the rule does not make, which no property sees — is in
-its verdict file. Its judge reads a tie refused at load and one refused when the call runs as one
-verdict, since §8.7 lets the route choose.
+84 programs, `scripts/families.sh f`). D2's exceptions, under ZAWX9, came off when ZAWX9
+landed, and the family named the five verdicts it moved. D1's and D3's, under WI-20261025-7K84M,
+came off with 7K84M, which moved thirteen. D5 was a refusal the rule does not make, which no
+property sees, and its verdict file held it. Its judge reads a tie refused at load and one
+refused when the call runs as one verdict on the receiver route alone, where only a value names
+the carrier.

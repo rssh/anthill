@@ -221,6 +221,52 @@ pub struct RequirementRefusal {
     pub(super) untied: Option<UntiedForward>,
 }
 
+/// WI-20261025-7K84M — why a call's requirement dictionaries were not built: a requirement no
+/// strategy supplied, or one whose dictionary WAS built, from an instance whose provider gives
+/// an operation of its spec two implementations ([`instance_supplier_tie`]). The second is
+/// raised as the tie itself, as the call by name raises it, naming the requirement.
+#[derive(Debug)]
+pub(crate) enum DictRefusal {
+    Unsupplied(Box<RequirementRefusal>),
+    SupplierTie {
+        /// The requirement, rendered ([`render_requires_entry`]).
+        dep_text: String,
+        /// The operation the provider supplies twice.
+        op: Symbol,
+        tie: UnsuppliedDispatch,
+    },
+}
+
+impl From<Box<RequirementRefusal>> for DictRefusal {
+    fn from(refusal: Box<RequirementRefusal>) -> Self {
+        DictRefusal::Unsupplied(refusal)
+    }
+}
+
+impl DictRefusal {
+    /// The refusal at a call of `op`, whose requirement it is.
+    pub(crate) fn into_type_error(
+        self,
+        span: Option<Span>,
+        op: Symbol,
+        callee_sort: Symbol,
+        usage: RequirementUse,
+    ) -> TypeError {
+        match self {
+            DictRefusal::Unsupplied(refusal) => TypeError::UnsatisfiableRequirement {
+                span,
+                op,
+                callee_sort,
+                usage,
+                refusal,
+            },
+            DictRefusal::SupplierTie { dep_text, op: tied, tie } => {
+                tie.type_error(tied, span, Some(dep_text))
+            }
+        }
+    }
+}
+
 /// WI-1102 — a fully-pinned requirement, and the CARRIER the call named for it.
 ///
 /// Carried as SYMBOLS rather than a pre-rendered string because [`RequirementRefusal`]
@@ -1010,7 +1056,7 @@ fn build_dispatching_dict_from_chain(
     // `None` from the req-insertion path, which passes `require_complete = false` and
     // so never reaches this arm at all.
     mut unsuppliable: Option<&mut Option<Box<RequirementRefusal>>>,
-) -> Result<Option<TermId>, Box<RequirementRefusal>> {
+) -> Result<Option<TermId>, DictRefusal> {
     // Hoist Strategy 2's per-slot direct-requires walk out of the dep loop:
     // it depends only on `caller_requires`, not on the current dep, so the
     // worst-case cost drops from O(deps × slots × |SortRequiresInfo|) to
@@ -1045,7 +1091,7 @@ fn build_dispatching_dict_from_chain(
                         proj_terms.push(t);
                         continue;
                     }
-                    Some(Err(refusal)) => return Err(refusal),
+                    Some(Err(refusal)) => return Err(refusal.into()),
                     None => {}
                 }
             }
@@ -1074,7 +1120,7 @@ fn build_dispatching_dict_from_chain(
                     continue;
                 }
                 NamedForward::Refused(account) => {
-                    return Err(Box::new(refused_by_name(kb, dep, account)));
+                    return Err(Box::new(refused_by_name(kb, dep, account)).into());
                 }
                 NamedForward::Unsaid => {}
             }
@@ -1085,7 +1131,8 @@ fn build_dispatching_dict_from_chain(
         // and the account is what makes it say more than "it did not work".
         let s3_slot = (require_complete && (disambig.is_some() || pinned_witness.is_some()))
             .then_some(&mut s3_failure);
-        match build_dep_projection(
+        let mut tie: Option<(Symbol, UnsuppliedDispatch)> = None;
+        let projected = build_dep_projection(
             kb,
             dep,
             caller_requires,
@@ -1093,11 +1140,22 @@ fn build_dispatching_dict_from_chain(
             syms,
             disambig,
             s3_slot,
+            // WI-20261025-7K84M — a call site's construction, which refuses the tie of a
+            // dictionary it built.
+            disambig.is_some().then_some(&mut tie),
             pin,
             // WI-861 — `callee_spec_sort` OWNS this chain, so it is the sort whose named
             // slots decide whether a default may answer this dep.
             rung_for_dep(kb, callee_spec_sort, dep.required_sort),
-        ) {
+        );
+        if let Some((op, tie)) = tie {
+            return Err(DictRefusal::SupplierTie {
+                dep_text: render_requires_entry(kb, dep),
+                op,
+                tie,
+            });
+        }
+        match projected {
             Some(t) => proj_terms.push(t),
             None if require_complete => {
                 // WI-841: the call NAMED a provider for this dep and it did not land.
@@ -1125,7 +1183,7 @@ fn build_dispatching_dict_from_chain(
                         // sent to write a `provides` line on the carrier.
                         unprovided: None,
                         untied: None,
-                    }));
+                    }).into());
                 }
                 // WI-20260921-3G1YT — THE OBLIGATION IS HELD, by a `require[Spec[…]]`
                 // bracket the clause declares: the clause itself saying which instance
@@ -1222,7 +1280,7 @@ fn build_dispatching_dict_from_chain(
                             unconstrained,
                             callee_op,
                             holder,
-                        )));
+                        )).into());
                     }
                 }
                 // WI-828: with a σ in hand, a refusal-signature failure (a
@@ -1239,7 +1297,7 @@ fn build_dispatching_dict_from_chain(
                         s3_failure.clone(),
                     )
                 }) {
-                    return Err(Box::new(refusal));
+                    return Err(Box::new(refusal).into());
                 }
                 // WI-945 — §5.2's THIRD signature, and the one that had no reader:
                 // "a requirement element left genuinely unconstrained at the call …
@@ -1591,7 +1649,7 @@ pub(super) fn build_concrete_dispatch_dict(
     // A caller that passes `None` accepts today's silent no-dict for an unconstrained
     // element — the eta site does, because its own `Ok(None)` arm is already loud.
     unsuppliable: Option<&mut Option<Box<RequirementRefusal>>>,
-) -> Result<Option<TermId>, Box<RequirementRefusal>> {
+) -> Result<Option<TermId>, DictRefusal> {
     // WI-418: a SAME-SORT call inherits the enclosing frame's requirements at
     // eval (`start_apply_same_sort` checks `inherit` — callee parent == caller
     // sort — first), so any dict built here would be ignored. Skip it. Every
@@ -1744,13 +1802,7 @@ pub(super) fn stamp_op_scoped_dicts(
         usage,
     )
     // WI-1091: a TIE in the op half is a load refusal, as the sort half's is.
-    .map_err(|refusal| TypeError::UnsatisfiableRequirement {
-        span,
-        op: callee_op,
-        callee_sort: callee_op,
-        usage,
-        refusal,
-    })?;
+    .map_err(|refusal| refusal.into_type_error(span, callee_op, callee_op, usage))?;
     // EMPTY IS NOT WRITTEN, and the asymmetry is deliberate rather than an
     // optimization: `carry_typer_stamps_from` reads an empty cell as "unstamped" and
     // leaves the destination's alone, so writing an empty vector over a carried stamp
@@ -1960,7 +2012,7 @@ pub(super) fn build_op_scoped_dicts(
     held: &[HeldSpecView],
     // How the callee is used at `park`'s site, which a parked refusal says.
     usage: RequirementUse,
-) -> Result<SmallVec<[Option<TermId>; 2]>, Box<RequirementRefusal>> {
+) -> Result<SmallVec<[Option<TermId>; 2]>, DictRefusal> {
     // THE NORMALIZED entries, off the very chain whose slots these dictionaries fill
     // ([`op_dict_entries`]) — not the raw `op_requires_chain_rc`, whose bare-application
     // spec every predicate below reads as binding-free. Same list, same order, same
@@ -2116,7 +2168,7 @@ pub(super) fn build_op_scoped_dicts(
                     pinned: None,
                     unprovided: None,
                     untied: None,
-                }));
+                }).into());
             }
         }
         let dep = RequiresEntry {
@@ -2153,7 +2205,7 @@ pub(super) fn build_op_scoped_dicts(
                 }
                 Some(Err(refusal)) => {
                     kb.unsuppliable_requirements.truncate(parked_mark);
-                    return Err(refusal);
+                    return Err(refusal.into());
                 }
                 None => {}
             }
@@ -2222,7 +2274,7 @@ pub(super) fn build_op_scoped_dicts(
                         pinned: None,
                         unprovided: None,
                         untied: None,
-                    }));
+                    }).into());
                 }
                 match param_slot_witness(kb, param_arg_types, param, binder) {
                     Some((witness, witness_value)) => {
@@ -2306,10 +2358,11 @@ pub(super) fn build_op_scoped_dicts(
             }
             NamedForward::Refused(account) => {
                 kb.unsuppliable_requirements.truncate(parked_mark);
-                return Err(Box::new(refused_by_name(kb, &dep, account)));
+                return Err(Box::new(refused_by_name(kb, &dep, account)).into());
             }
             NamedForward::Unsaid => {}
         }
+        let mut tie: Option<(Symbol, UnsuppliedDispatch)> = None;
         let projected = build_dep_projection(
             kb,
             &dep,
@@ -2318,11 +2371,23 @@ pub(super) fn build_op_scoped_dicts(
             &syms,
             Some(&disambig),
             Some(&mut s3_failure),
+            Some(&mut tie),
             pin,
             // WI-861 — an OP-scoped chain: `callee_op` is the declaration that owns
             // these slots, so it is the one whose named slots decide.
             rung_for_dep(kb, callee_op, dep.required_sort),
         );
+        // WI-20261025-7K84M — a dictionary built from an instance whose provider supplies an
+        // operation twice is refused here, as the sort half refuses it: a verdict, like the
+        // tie below, and not a slot left absent.
+        if let Some((op, tie)) = tie {
+            kb.unsuppliable_requirements.truncate(parked_mark);
+            return Err(DictRefusal::SupplierTie {
+                dep_text: render_requires_entry(kb, &dep),
+                op,
+                tie,
+            });
+        }
         if projected.is_none() {
             // WI-20260921-3G1YT — THE OBLIGATION IS HELD, by a `require[…]` bracket the
             // clause declares. The OP half's copy of the arm
@@ -2394,7 +2459,7 @@ pub(super) fn build_op_scoped_dicts(
                     pinned: None,
                     unprovided: None,
                     untied: None,
-                }));
+                }).into());
             }
             // TWO PARKED VERDICTS, DECIDED BY ONE `match` so a slot cannot be reported
             // twice. They are disjoint by construction — WI-1102's needs every element
@@ -2471,7 +2536,7 @@ pub(super) fn build_op_scoped_dicts(
                 if let Some(former) = former_carrier(kb, &dep)
                     .filter(|former| former_is_the_cause(kb, &dep, former, s3_failure.as_ref()))
                 {
-                    return Err(Box::new(former_refusal(kb, &dep, &former)));
+                    return Err(Box::new(former_refusal(kb, &dep, &former)).into());
                 }
                 if let Some(nomatch @ ResolutionResult::NoMatch { .. }) = &s3_failure {
                     if let Some(unprovided) =
@@ -2488,7 +2553,7 @@ pub(super) fn build_op_scoped_dicts(
                             pinned: None,
                             unprovided: Some(unprovided),
                             untied: None,
-                        }));
+                        }).into());
                     }
                 }
                 let dep_text = render_requires_entry(kb, &dep);
@@ -2499,7 +2564,7 @@ pub(super) fn build_op_scoped_dicts(
                     Vec::new(),
                     callee_op,
                     None,
-                )));
+                )).into());
             }
             if let Some(site) = park.filter(|s| s.enclosing_op.is_some()) {
                 // WI-1102 (058 §3.10) — the use-site discharge: this call PINNED a

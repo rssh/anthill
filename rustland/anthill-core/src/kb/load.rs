@@ -1307,6 +1307,9 @@ pub enum LoadError {
         /// like [`Self::UnselectedInstance`]'s [`super::typing::TieRepair`]; see
         /// [`super::typing::SupplierTieRepair`].
         repair: super::typing::SupplierTieRepair,
+        /// WI-20261025-7K84M — the requirement whose dictionary the call was building, where
+        /// that is where the tie was met.
+        in_dictionary: Option<String>,
         span: Option<Span>,
     },
     /// WI-843 (proposal 058 §4.1 **tier 3**) — the refusal that REPLACED the
@@ -3709,10 +3712,15 @@ impl LoadError {
                 carrier,
                 candidates,
                 repair,
+                in_dictionary,
                 span,
             } => {
                 let msg = super::typing::ambiguous_spec_op_dispatch_message(
-                    op, carrier, candidates, *repair,
+                    op,
+                    carrier,
+                    candidates,
+                    *repair,
+                    in_dictionary.as_deref(),
                 );
                 match span {
                     Some(sp) => format!("{}: {}", loc.format_start(*sp), msg),
@@ -5339,10 +5347,15 @@ impl std::fmt::Display for LoadError {
                 carrier,
                 candidates,
                 repair,
+                in_dictionary,
                 span,
             } => {
                 let msg = super::typing::ambiguous_spec_op_dispatch_message(
-                    op, carrier, candidates, *repair,
+                    op,
+                    carrier,
+                    candidates,
+                    *repair,
+                    in_dictionary.as_deref(),
                 );
                 match span {
                     Some(sp) => write!(f, "{} at {}..{}", msg, sp.start, sp.end),

@@ -380,6 +380,14 @@ impl BuiltinTag {
     pub(crate) fn answers_from_its_dictionary(self) -> bool {
         matches!(self, BuiltinTag::TypeValueOf)
     }
+
+    /// Is this builtin SEMANTIC EQUALITY, which dispatches itself — reflexivity, the
+    /// carrier's `eq` through the equality index and the eval→SLD bridge's re-entry cap,
+    /// structure ([`KnowledgeBase::sem_eq_core`]) — rather than leaving the choice of an
+    /// implementation to the call's dispatch?
+    pub(crate) fn dispatches_through_carrier_equality(self) -> bool {
+        matches!(self, BuiltinTag::SemEq | BuiltinTag::SemNeq)
+    }
 }
 
 /// A fault the resolver DETECTED but could not previously report — the payload of
@@ -11956,9 +11964,10 @@ impl KnowledgeBase {
     /// `None` — the caller leaves the call un-reduced — when the variable is still
     /// unbound, when the channel is not a single dictionary, or when the table has
     /// no member. Never a fallback to the spec op itself: that is the wrong answer.
-    /// And when the dictionary's provider gives a DEFAULTED operation no single
-    /// implementation (two suppliers, or a different one at each sort it provides the spec
-    /// at — WI-20261025-ZAWX9): the call is unreduced as value direction leaves one it
+    /// And when the dictionary's provider gives the operation no single implementation (two
+    /// suppliers, or a different one at each sort it provides the spec at — WI-20261025-ZAWX9
+    /// for a defaulted operation, WI-20261025-7K84M for a body-less one): the call is
+    /// unreduced as value direction leaves one it
     /// refuses (`UnstampedDispatch::Refused`), this function having no error channel to
     /// raise it on, and the clause reaches no definite answer.
     ///

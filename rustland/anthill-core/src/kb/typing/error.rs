@@ -343,6 +343,10 @@ pub enum TypeError {
         candidates: Vec<String>,
         /// Whether any rival can be NAMED — see [`SupplierTieRepair`].
         repair: SupplierTieRepair,
+        /// WI-20261025-7K84M — the requirement, rendered, whose dictionary the call was
+        /// building when the tie was met ([`RequirementRefusal::into_type_error`]): the call
+        /// names the callee, and the tied operation may be one the callee never calls.
+        in_dictionary: Option<String>,
     },
     /// `op[bindings](args)` named a binding key that doesn't correspond
     /// to any of the op's declared type-parameters. Replaces the
@@ -1650,12 +1654,14 @@ impl TypeError {
                 carrier,
                 candidates,
                 repair,
+                in_dictionary,
                 ..
             } => ambiguous_spec_op_dispatch_message(
                 kb.qualified_name_of(*op),
                 kb.qualified_name_of(*carrier),
                 candidates,
                 *repair,
+                in_dictionary.as_deref(),
             ),
             TypeError::NoSuchTypeParam { op, name, .. } => {
                 format!(
@@ -2647,12 +2653,14 @@ impl TypeError {
                 carrier,
                 candidates,
                 repair,
+                in_dictionary,
                 ..
             } => LoadError::AmbiguousSpecOpDispatch {
                 op: kb.qualified_name_of(*op).to_string(),
                 carrier: kb.qualified_name_of(*carrier).to_string(),
                 candidates: candidates.clone(),
                 repair: *repair,
+                in_dictionary: in_dictionary.clone(),
                 span: self.span(kb),
             },
             TypeError::NoSuchTypeParam { op, name, .. } => LoadError::TypeMismatch {

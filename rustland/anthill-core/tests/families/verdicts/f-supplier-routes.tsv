@@ -26,7 +26,7 @@ shape=receiver,default=defaulted,supplied=witness-only,route=dictionary	runs 4
 shape=receiver,default=defaulted,supplied=witness-only,route=receiver	runs 4
 shape=receiver,default=defaulted,supplied=own+binding,route=by-name	loads; drive refused AmbiguousSpecOpDispatch
 shape=receiver,default=defaulted,supplied=own+binding,route=dot	loads; drive refused AmbiguousSpecOpDispatch
-shape=receiver,default=defaulted,supplied=own+binding,route=dictionary	loads; drive fails AmbiguousSpecOpDispatch
+shape=receiver,default=defaulted,supplied=own+binding,route=dictionary	loads; drive refused AmbiguousSpecOpDispatch
 shape=receiver,default=defaulted,supplied=own+binding,route=receiver	loads; drive refused AmbiguousSpecOpDispatch
 shape=receiver,default=body-less,supplied=default-only,route=by-name	refused UnbackedProviderOperation
 shape=receiver,default=body-less,supplied=default-only,route=dot	refused UnbackedProviderOperation
@@ -44,17 +44,17 @@ shape=receiver,default=body-less,supplied=binding-in-entry,route=by-name	runs 3
 shape=receiver,default=body-less,supplied=binding-in-entry,route=dot	runs 3
 shape=receiver,default=body-less,supplied=binding-in-entry,route=dictionary	runs 3
 shape=receiver,default=body-less,supplied=binding-in-entry,route=receiver	runs 3
-shape=receiver,default=body-less,supplied=binding-both,route=by-name	refused UnbackedProviderOperation
-shape=receiver,default=body-less,supplied=binding-both,route=dot	refused UnbackedProviderOperation
-shape=receiver,default=body-less,supplied=binding-both,route=dictionary	refused UnbackedProviderOperation
-shape=receiver,default=body-less,supplied=binding-both,route=receiver	refused UnbackedProviderOperation
+shape=receiver,default=body-less,supplied=binding-both,route=by-name	runs 3
+shape=receiver,default=body-less,supplied=binding-both,route=dot	runs 3
+shape=receiver,default=body-less,supplied=binding-both,route=dictionary	runs 3
+shape=receiver,default=body-less,supplied=binding-both,route=receiver	runs 3
 shape=receiver,default=body-less,supplied=witness-only,route=by-name	runs 4
 shape=receiver,default=body-less,supplied=witness-only,route=dot	runs 4
 shape=receiver,default=body-less,supplied=witness-only,route=dictionary	runs 4
 shape=receiver,default=body-less,supplied=witness-only,route=receiver	runs 4
 shape=receiver,default=body-less,supplied=own+binding,route=by-name	loads; drive refused AmbiguousSpecOpDispatch
 shape=receiver,default=body-less,supplied=own+binding,route=dot	loads; drive refused AmbiguousSpecOpDispatch
-shape=receiver,default=body-less,supplied=own+binding,route=dictionary	UNSOUND runs 2
+shape=receiver,default=body-less,supplied=own+binding,route=dictionary	loads; drive refused AmbiguousSpecOpDispatch
 shape=receiver,default=body-less,supplied=own+binding,route=receiver	loads; drive refused AmbiguousSpecOpDispatch
 shape=nullary,default=defaulted,supplied=default-only,route=by-name	runs 1
 shape=nullary,default=defaulted,supplied=default-only,route=dictionary	runs 1
@@ -69,18 +69,18 @@ shape=nullary,default=defaulted,supplied=binding-both,route=dictionary	runs 3
 shape=nullary,default=defaulted,supplied=witness-only,route=by-name	runs 4
 shape=nullary,default=defaulted,supplied=witness-only,route=dictionary	runs 4
 shape=nullary,default=defaulted,supplied=own+binding,route=by-name	loads; drive refused AmbiguousSpecOpDispatch
-shape=nullary,default=defaulted,supplied=own+binding,route=dictionary	loads; drive fails AmbiguousSpecOpDispatch
+shape=nullary,default=defaulted,supplied=own+binding,route=dictionary	loads; drive refused AmbiguousSpecOpDispatch
 shape=nullary,default=body-less,supplied=default-only,route=by-name	refused UnbackedProviderOperation
 shape=nullary,default=body-less,supplied=default-only,route=dictionary	refused UnbackedProviderOperation
 shape=nullary,default=body-less,supplied=own,route=by-name	runs 2
 shape=nullary,default=body-less,supplied=own,route=dictionary	runs 2
-shape=nullary,default=body-less,supplied=binding-in-body,route=by-name	loads; drive fails OperationBodyMissing
+shape=nullary,default=body-less,supplied=binding-in-body,route=by-name	runs 3
 shape=nullary,default=body-less,supplied=binding-in-body,route=dictionary	runs 3
-shape=nullary,default=body-less,supplied=binding-in-entry,route=by-name	loads; drive fails OperationBodyMissing
+shape=nullary,default=body-less,supplied=binding-in-entry,route=by-name	runs 3
 shape=nullary,default=body-less,supplied=binding-in-entry,route=dictionary	runs 3
-shape=nullary,default=body-less,supplied=binding-both,route=by-name	refused UnbackedProviderOperation
-shape=nullary,default=body-less,supplied=binding-both,route=dictionary	refused UnbackedProviderOperation
+shape=nullary,default=body-less,supplied=binding-both,route=by-name	runs 3
+shape=nullary,default=body-less,supplied=binding-both,route=dictionary	runs 3
 shape=nullary,default=body-less,supplied=witness-only,route=by-name	runs 4
 shape=nullary,default=body-less,supplied=witness-only,route=dictionary	runs 4
-shape=nullary,default=body-less,supplied=own+binding,route=by-name	UNSOUND runs 2
-shape=nullary,default=body-less,supplied=own+binding,route=dictionary	UNSOUND runs 2
+shape=nullary,default=body-less,supplied=own+binding,route=by-name	loads; drive refused AmbiguousSpecOpDispatch
+shape=nullary,default=body-less,supplied=own+binding,route=dictionary	loads; drive refused AmbiguousSpecOpDispatch

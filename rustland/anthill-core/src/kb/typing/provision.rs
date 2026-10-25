@@ -884,33 +884,6 @@ pub(super) fn provision_bindings(
         .unwrap_or_default()
 }
 
-/// WI-431 dispatch: the operation backing spec op `op_short` for `carrier`
-/// through an instance fact `SortProvidesInfo(carrier, Spec[…, op_short = op])`.
-/// The dispatch fallback when `carrier` owns no `op_short` of its own — a
-/// retroactive instance binds the op in the fact instead of on the carrier.
-///
-/// STILL SINGLE-ROUTE after WI-842's §4.9 sweep, and deliberately so at both of its
-/// remaining callers — the value-directed chain that used to head them left for
-/// [`spec_op_suppliers_for_carrier`]:
-///   * [`resolve_op_target`] resolves an op WITHIN a dictionary's own functor — a
-///     provider already selected by `resolve_inner` → `pick_most_specific`, the one
-///     consumer that CAN raise a use-site ambiguity. It selects an op, not a provider,
-///     so §4.9's rule does not reach it;
-///   * `check_apply`'s higher-kinded arm reads only the FACT route for a carrier it
-///     has just discharged. Two op-binding facts for one carrier are
-///     [`crate::kb::load::LoadError::AmbiguousInstanceFact`] at load and STAY so under
-///     phase 3b, whose coexistence is gated on every candidate being NAMEABLE (§4.3)
-///     and an instance fact has no name.
-pub(crate) fn instance_fact_op_binding(
-    kb: &KnowledgeBase,
-    carrier: Symbol,
-    spec_sort: Symbol,
-    op_short: &str,
-) -> Option<Symbol> {
-    let bindings = provider_spec_view_bindings(kb, carrier, spec_sort)?;
-    instance_fact_op_in_bindings(kb, &bindings, op_short)
-}
-
 /// WI-1098 — every CARRIER any provision of `spec_sort` names, canonical.
 ///
 /// NOT [`sort_provides`], and the difference is the whole reason this exists (WI-1069:
@@ -1029,16 +1002,16 @@ impl SupplyRoute {
     ///     provisions say), so it is never a distinguishable candidate. It can still WIN,
     ///     by being what the lookup returns when the chosen provision is carrier-keyed —
     ///     winning without ever having been weighed is exactly the defect.
-    ///   * [`Self::Fact`] — FALSE, and for a different reason worth keeping apart: the
-    ///     provision IS weighed, but `collect_provides_candidates` drops op-valued
-    ///     bindings and the `sort_ops_lookup` projection returns a same-named member of
-    ///     the carrier in preference to the binding. Lossy projection, not absence. If
-    ///     that projection is ever taught to consult the binding, this arm becomes TRUE
-    ///     and must be changed with it.
+    ///   * [`Self::Fact`] — TRUE since WI-20261025-7K84M. The provision is weighed, and
+    ///     the projection now reads what its provider supplies ([`resolve_op_target_at`],
+    ///     from `resolve_at_goal`), its binding included, where it took the provider's
+    ///     table row and lost the binding to a same-named member of the carrier. A
+    ///     binding beside that member is a tie the projection itself refuses
+    ///     ([`DispatchOutcome::Unsupplied`]).
     pub(crate) fn weighed_by_provision_arbitration(&self) -> bool {
         match self {
-            SupplyRoute::Witness(_) => true,
-            SupplyRoute::Own | SupplyRoute::Fact => false,
+            SupplyRoute::Witness(_) | SupplyRoute::Fact => true,
+            SupplyRoute::Own => false,
         }
     }
 }
@@ -1106,10 +1079,10 @@ impl SpecOpSupplier {
 /// provision NAMES, not an input to reading it. Asking per carrier re-walks every
 /// provision per sort, which MEASURED as this ticket's entire first-cut cost.
 ///
-/// The multi-candidate dual of the SELECTING reader [`instance_fact_op_binding`]
-/// (carrier-keyed, first fact wins). Proposal 058 §4.9's hardening rule is that a
-/// read which SELECTS goes loud on the second candidate, and that one cannot: it
-/// stops at its first hit and never sees the witness kind at all. Consumer: the
+/// The multi-candidate dual of the selecting reader `instance_fact_op_binding` that
+/// WI-20261025-7K84M deleted (carrier-keyed, first fact wins). Proposal 058 §4.9's
+/// hardening rule is that a read which SELECTS goes loud on the second candidate, and that
+/// one could not: it stopped at its first hit and never saw the witness kind. Consumer: the
 /// semantic-eq dispatch index ([`crate::kb::load::EqDispatchIndex`]) — the one reader
 /// with no later site to complain from, since equality dispatches from unification
 /// where no instance can be selected — so it consumes this and refuses at LOAD.
@@ -1399,9 +1372,7 @@ pub(crate) fn spec_op_suppliers_of_provider(
             continue;
         }
         let about = row_about(kb, carrier_param, &row);
-        let binding = carrier_param
-            .filter(|_| view_is_sort_view(kb, &row.spec_view))
-            .and_then(|param| provision_binding_value_at_param(kb, param, &row.spec_view));
+        let binding = application_binding(kb, carrier_param, &row.spec_view);
         let at = match applications
             .iter()
             .position(|a| a.about == about && same_application(kb, &a.binding, &binding))
@@ -1446,6 +1417,53 @@ pub(crate) fn spec_op_suppliers_of_provider(
     } else {
         ProviderSupply::PerApplication(applications)
     }
+}
+
+/// What a provision binds to the spec's carrier parameter or sole one (`carrier_param`), which
+/// is the application it is: [`spec_op_suppliers_of_provider`]'s grouping, and
+/// [`merged_provision_bindings`]'.
+fn application_binding(
+    kb: &KnowledgeBase,
+    carrier_param: Option<Symbol>,
+    spec_view: &Value,
+) -> Option<Value> {
+    carrier_param
+        .filter(|_| view_is_sort_view(kb, spec_view))
+        .and_then(|param| provision_binding_value_at_param(kb, param, spec_view))
+}
+
+/// WI-20261025-7K84M — the bindings of `provider`'s one VIEW of `spec_sort` at the application
+/// the provision `row` is (§8.7, *One carrier declaring one spec twice*: provisions that agree
+/// are merged into one view): `row`'s own first, then those of every other provision of the
+/// spec `provider` writes at the same application, grouped as
+/// [`spec_op_suppliers_of_provider`] groups them. The backing check reads it, so a binding
+/// written in a `namespace Leaf` entry backs the provision written in `Leaf`'s body, as the
+/// dispatch through either reads it. It read `row`'s own bindings, and refused that pair
+/// "backs no operation" on every route.
+pub(super) fn merged_provision_bindings(
+    kb: &KnowledgeBase,
+    provider: Symbol,
+    spec_sort: Symbol,
+    row: crate::kb::RuleId,
+    spec_view: &Value,
+) -> SmallVec<[(Symbol, Value); 2]> {
+    let mut out = provision_bindings(kb, spec_view);
+    let spec_canon = kb.canonical_sort_sym(spec_sort);
+    let carrier_param = spec_carrier_param_or_sole(kb, spec_sort);
+    let at = application_binding(kb, carrier_param, spec_view);
+    for other in provides_rows_of_provider(kb, provider) {
+        if other.rid != row
+            && kb.canonical_sort_sym(other.spec_base) == spec_canon
+            && same_application(
+                kb,
+                &application_binding(kb, carrier_param, &other.spec_view),
+                &at,
+            )
+        {
+            out.extend(provision_bindings(kb, &other.spec_view));
+        }
+    }
+    out
 }
 
 /// Are two provisions' bindings at the carrier parameter ONE application? By

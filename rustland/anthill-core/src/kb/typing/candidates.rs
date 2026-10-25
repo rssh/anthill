@@ -42,7 +42,6 @@ pub(super) fn resolve_nullary_result_carrier(
     kb: &mut KnowledgeBase,
     spec_sort: Symbol,
     spec_op_sym: Symbol,
-    op_short_sym: Symbol,
     resolved_ret: &Value,
 ) -> Option<DispatchOutcome> {
     let spec_canon = kb.canonical_sort_sym(spec_sort);
@@ -54,11 +53,17 @@ pub(super) fn resolve_nullary_result_carrier(
         if !is_sort_param_symbol(kb, base) {
             let carrier = kb.canonical_sort_sym(base);
             if carrier != spec_canon {
-                return if sort_provides(kb, carrier, spec_sort) {
-                    nullary_carrier_impl_op(kb, carrier, spec_op_sym, op_short_sym)
-                        .map(DispatchOutcome::Unique)
-                } else {
-                    None
+                if !sort_provides(kb, carrier, spec_sort) {
+                    return None;
+                }
+                // What the carrier supplies, read as a dictionary of it is (WI-20261025-7K84M):
+                // its own member, or its provision's binding, and two of them refused.
+                return match resolve_op_target(kb, carrier, spec_op_sym) {
+                    Ok(impl_op) => nullary_carrier_impl_op(kb, impl_op, spec_op_sym)
+                        .map(DispatchOutcome::Unique),
+                    Err(refusal) => Some(DispatchOutcome::Unsupplied(
+                        refusal.rendered(kb, spec_op_sym),
+                    )),
                 };
             }
         }
@@ -82,9 +87,9 @@ pub(super) fn resolve_nullary_result_carrier(
     }
 }
 
-/// WI-508 helper: a carrier's RUNNABLE override of a nullary spec op, usable via
-/// a plain PinNow redirect. `None` when the carrier does not override the op
-/// (the body-less spec op is returned), or when the resolved op's OWN defining
+/// WI-508 helper: `impl_op`, what a carrier supplies for a nullary spec op, where it is a
+/// RUNNABLE override usable via a plain PinNow redirect. `None` when the carrier does not
+/// override the op (the body-less spec op is returned), or when the resolved op's OWN defining
 /// sort declares `requires` — such an op would be classified `ConcreteApplyWithin`
 /// (needing a dispatch dict) by the `Unique` arm, which this nullary path does
 /// not build; it falls through to the caller's existing diagnostic rather than
@@ -99,11 +104,9 @@ pub(super) fn resolve_nullary_result_carrier(
 /// carrier-only check and reach a dict-less `ConcreteApplyWithin`.
 fn nullary_carrier_impl_op(
     kb: &mut KnowledgeBase,
-    carrier: Symbol,
+    impl_op: Symbol,
     spec_op_sym: Symbol,
-    op_short_sym: Symbol,
 ) -> Option<Symbol> {
-    let impl_op = kb.sort_ops_lookup(carrier, op_short_sym)?;
     if impl_op == spec_op_sym || !op_has_runnable_body(kb, impl_op) {
         return None;
     }

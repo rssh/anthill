@@ -762,8 +762,8 @@ pub(crate) enum DispatchRefusal {
     Supply(ProviderSupplyRefusal),
 }
 
-/// WI-20261025-ZAWX9 — why a dictionary's provider gives a DEFAULTED spec operation no
-/// single implementation ([`resolve_op_target`]).
+/// WI-20261025-ZAWX9 — why a dictionary's provider gives a spec operation no single
+/// implementation ([`resolve_op_target`]).
 pub(crate) enum ProviderSupplyRefusal {
     /// TWO SUPPLIERS at the application `carrier`: the provider's own member and its
     /// provision's binding (`provides Desc[T = Leaf, name = otherName]` beside a runnable
@@ -791,19 +791,81 @@ impl ProviderSupplyRefusal {
     /// The refusal as the typer raises it at a call it types: the supplier tie in the words
     /// the call by name uses for it ([`supplier_tie_error`]), and the per-application case in
     /// its own.
-    pub(crate) fn type_error(self, kb: &KnowledgeBase, spec_op: Symbol, span: Option<Span>) -> TypeError {
+    pub(crate) fn type_error(
+        self,
+        kb: &KnowledgeBase,
+        spec_op: Symbol,
+        span: Option<Span>,
+    ) -> TypeError {
+        self.rendered(kb, spec_op).type_error(spec_op, span, None)
+    }
+
+    /// The refusal with its suppliers rendered, as a dispatch carries it.
+    pub(crate) fn rendered(self, kb: &KnowledgeBase, spec_op: Symbol) -> UnsuppliedDispatch {
         match self {
             ProviderSupplyRefusal::Tie {
                 carrier,
                 candidates,
-            } => supplier_tie_error(kb, spec_op, carrier, &candidates, span),
+            } => UnsuppliedDispatch::Tie {
+                carrier,
+                candidates: render_suppliers(
+                    kb,
+                    &candidates,
+                    short_name_of(kb.qualified_name_of(spec_op)),
+                ),
+                repair: supplier_tie_repair(kb, spec_op, &candidates),
+            },
             ProviderSupplyRefusal::PerApplication {
                 provider,
                 applications,
-            } => TypeError::DictionaryCannotAnswer {
+            } => UnsuppliedDispatch::PerApplication {
+                detail: per_application_supply(kb, spec_op, provider, &applications),
+            },
+        }
+    }
+}
+
+/// WI-20261025-7K84M — a [`ProviderSupplyRefusal`] rendered, which is what
+/// [`DispatchOutcome::Unsupplied`] carries: the provider the dispatch resolved gives the called
+/// operation two implementations, or one per application where the instance names none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UnsuppliedDispatch {
+    /// Two suppliers at `carrier`, each rendered by its route ([`render_suppliers`]).
+    Tie {
+        carrier: Symbol,
+        candidates: Vec<String>,
+        repair: SupplierTieRepair,
+    },
+    /// [`per_application_supply`]'s sentence.
+    PerApplication { detail: String },
+}
+
+impl UnsuppliedDispatch {
+    /// The refusal at the call of `spec_op`, or at a call building the dictionary of the
+    /// requirement `in_dictionary` names.
+    pub(crate) fn type_error(
+        self,
+        spec_op: Symbol,
+        span: Option<Span>,
+        in_dictionary: Option<String>,
+    ) -> TypeError {
+        match self {
+            UnsuppliedDispatch::Tie {
+                carrier,
+                candidates,
+                repair,
+            } => TypeError::AmbiguousSpecOpDispatch {
                 span,
                 op: spec_op,
-                detail: per_application_supply(kb, spec_op, provider, &applications),
+                carrier,
+                candidates,
+                repair,
+                in_dictionary,
+            },
+            UnsuppliedDispatch::PerApplication { detail } => TypeError::DictionaryCannotAnswer {
+                span,
+                op: spec_op,
+                detail,
             },
         }
     }
@@ -941,13 +1003,13 @@ pub(crate) fn marker_refusal(kb: &KnowledgeBase, functor: Symbol) -> Result<(), 
     Err(format!("{head} — {detail}"))
 }
 
-/// Resolve `spec_op` against a dispatching impl sort to its concrete target op —
-/// the load-time `sort_ops_table[impl_sym][op_short]` (WI-240): the impl's own
-/// `S.<op>` override when it has one (filtering the body-less spec-op
-/// placeholder), else the RETROACTIVE-INSTANCE-FACT binding
-/// (`fact HasZero[T = Tag, zero = tagZero]`, WI-431), else `spec_op` itself (a
-/// genuine spec rewrite-rule / builtin default, or a Pin-now / already-concrete
-/// op the dict carries no row for).
+/// Resolve `spec_op` against a dispatching impl sort to its concrete target op: the one
+/// implementation the provider supplies for it — its own member, a provision's binding
+/// (`fact HasZero[T = Tag, zero = tagZero]`, WI-431) or a witness's member — `Err` where it
+/// supplies two, and where it supplies none, the spec's default for a defaulted operation
+/// and what the provider's table inherits (WI-240) for a body-less one — `spec_op` itself
+/// when that is nothing (a builtin, or a Pin-now / already-concrete op the dict carries no
+/// row for).
 ///
 /// The single source for dict-threaded op resolution: the interpreter's
 /// `Interpreter::dispatch_via_sort_ops_table` and the reflect
@@ -995,16 +1057,19 @@ pub(crate) fn marker_refusal(kb: &KnowledgeBase, functor: Symbol) -> Result<(), 
 /// a carrier whose row is `Iterable.filter`), and that row is what a dictionary call of
 /// the defaulted operation used to enter — an operation of another contract, chosen by
 /// the order the provisions were read in. It runs the dispatched operation's default
-/// now, as the call by name does. A BODY-LESS operation still takes the row, as before;
-/// its own dispatch is not this ticket's.
+/// now, as the call by name does. A BODY-LESS operation the provider supplies nothing for
+/// still takes the row, as before: it has no default to run instead.
 ///
 /// COST, MEASURED (optimized build, 20 000 dictionary calls against a plain call in the
 /// same process, four runs of each build at CPU_Speed_Limit 100): a defaulted dispatch's
 /// overhead went from 3.7–5.3 µs to 5.0–6.5 µs — the provider walk, which the old table
-/// read skipped on its first hit — and a body-less one stayed at 3.5–4.1 µs. Answered per
-/// call and not held at load: what the provider supplies depends on bodies and host
-/// mappings a load is still setting while its typer asks this (`defaulted_call_target`), so
-/// a table filled then would have to be forgotten where each of those is written.
+/// read skipped on its first hit — and a body-less one stayed at 3.5–4.1 µs. WI-20261025-7K84M
+/// gave the body-less one the walk too: MEASURED, the anthill-core build the gate runs, 200 000
+/// calls through `requires` of a body-less operation the provider's own member answers,
+/// against the call by name, four runs each, the overhead went from about 1.65 µs to 2.5 µs.
+/// Answered per call and not held at load: what the provider supplies depends on bodies and
+/// host mappings a load is still setting while its typer asks this (`defaulted_call_target`),
+/// so a table filled then would have to be forgotten where each of those is written.
 pub(crate) fn resolve_op_target(
     kb: &KnowledgeBase,
     impl_sym: Symbol,
@@ -1037,60 +1102,131 @@ pub(crate) fn resolve_op_target_at(
     let Some(op_short_sym) = kb.lookup_symbol(op_short) else {
         return Ok(spec_op);
     };
+    // What the provider's table holds under the short name other than `spec_op` itself: its
+    // own member, or one it inherits from another sort it provides.
+    let inherited = || {
+        kb.sort_ops_lookup(impl_sym, op_short_sym)
+            .filter(|&op| op != spec_op)
+            .unwrap_or(spec_op)
+    };
     // The body read first: it is one map probe, and it is false for every body-less
     // operation, which is most of what a dictionary dispatches. `defaulted_spec_op_parent`
     // reads the same body through a whole `OpInfoRecord`.
-    if let Some(spec_sort) = kb
+    let defaulted = kb
         .op_body_node(spec_op)
-        .and_then(|_| defaulted_spec_op_parent(kb, spec_op))
-    {
-        let (carrier, suppliers) =
-            match provider_override_suppliers(kb, spec_sort, impl_sym, spec_op, op_short_sym) {
-                ProviderSupply::Uniform { carrier, suppliers } => (carrier, suppliers),
-                ProviderSupply::PerApplication(mut applications) => {
-                    let asked = application.cloned();
-                    match application.and_then(|_| {
-                        applications
-                            .iter()
-                            .position(|a| a.binding.is_some() && same_application(kb, &a.binding, &asked))
-                    }) {
-                        Some(at) => {
-                            let app = applications.swap_remove(at);
-                            (app.about, app.suppliers)
-                        }
-                        None => {
-                            return Err(ProviderSupplyRefusal::PerApplication {
-                                provider: impl_sym,
-                                applications,
-                            })
-                        }
-                    }
+        .and_then(|_| defaulted_spec_op_parent(kb, spec_op));
+    let supply = match defaulted {
+        Some(spec_sort) => {
+            provider_override_suppliers(kb, spec_sort, impl_sym, spec_op, op_short_sym)
+        }
+        // WI-20261025-7K84M — A BODY-LESS OPERATION IS RESOLVED BY THE SAME SUPPLIERS: the
+        // provider's own member, its provisions' bindings, a witness's member — two of them
+        // a tie — where this used to take the first of `own.or_else(binding)`, so a carrier's
+        // member beside its provision's `describe = other` ran through a dictionary where
+        // every other route refused the pair. With no default to fall back on, a member the
+        // interpreter cannot run is still a supplier ([`carrier_override_suppliers`] has
+        // why), and a provider writing none answers what it inherits, as before.
+        None => match lookup_spec_op_dispatch(kb, spec_op) {
+            Some(spec_sort) => spec_op_suppliers_of_provider(
+                kb,
+                spec_sort,
+                impl_sym,
+                spec_op,
+                op_short_sym,
+                &|_| true,
+            ),
+            None => return Ok(inherited()),
+        },
+    };
+    let (carrier, suppliers) = match supply {
+        ProviderSupply::Uniform { carrier, suppliers } => (carrier, suppliers),
+        ProviderSupply::PerApplication(mut applications) => {
+            let asked = application.cloned();
+            match application.and_then(|_| {
+                applications
+                    .iter()
+                    .position(|a| a.binding.is_some() && same_application(kb, &a.binding, &asked))
+            }) {
+                Some(at) => {
+                    let app = applications.swap_remove(at);
+                    (app.about, app.suppliers)
                 }
-            };
-        return match suppliers.as_slice() {
-            [] => Ok(spec_op),
-            [only] => Ok(only.target),
-            _ => Err(ProviderSupplyRefusal::Tie {
-                carrier,
-                candidates: suppliers,
-            }),
-        };
+                None => {
+                    return Err(ProviderSupplyRefusal::PerApplication {
+                        provider: impl_sym,
+                        applications,
+                    })
+                }
+            }
+        }
+    };
+    match suppliers.as_slice() {
+        [] if defaulted.is_some() => Ok(spec_op),
+        [] => Ok(inherited()),
+        [only] => Ok(only.target),
+        _ => Err(ProviderSupplyRefusal::Tie {
+            carrier,
+            candidates: suppliers,
+        }),
     }
-    // The carrier's own table entry: a real override (`S.<op>` with a body), or
-    // the spec op itself — which is EITHER a genuine spec rewrite-rule / builtin
-    // default (runnable) OR, for a RETROACTIVE INSTANCE FACT, the inherited
-    // body-less placeholder with no impl. Filter that placeholder so it doesn't
-    // mask the instance-fact binding below; a genuine default still rides the
-    // `spec_op` fall-through (its rewrite rule / builtin runs).
-    let own = kb
-        .sort_ops_lookup(impl_sym, op_short_sym)
-        .filter(|&op| op != spec_op);
-    Ok(own
-        .or_else(|| {
-            let spec = lookup_spec_op_dispatch(kb, spec_op)?;
-            instance_fact_op_binding(kb, impl_sym, spec, op_short)
-        })
-        .unwrap_or(spec_op))
+}
+
+/// WI-20261025-7K84M — an operation a provider in the instance `tree` gives two implementations,
+/// read as a dispatch through a dictionary built from it reads it ([`resolve_op_target_at`], at
+/// the application each node is for): the instance's own provider, or one an instance its
+/// conditions resolved to. A call that builds such a dictionary is refused there, at load
+/// (§8.7): the provider is chosen, a default names a provider and so cannot choose between
+/// two texts of one (WI-861), and the call by name refuses the same pair. Through the
+/// dictionary it was refused only when the call ran.
+///
+/// Asked of the operations a provision of the provider BINDS, since the one other text a
+/// provider writes for an operation is its member. A provider that supplies an operation
+/// differently at its applications, where a node names none, is the dispatch's to refuse when
+/// the call runs ([`ProviderSupplyRefusal::PerApplication`]).
+pub(crate) fn instance_supplier_tie(
+    kb: &KnowledgeBase,
+    tree: &ResolvedRequiresNode,
+) -> Option<(Symbol, UnsuppliedDispatch)> {
+    let (provider, subs) = match tree {
+        ResolvedRequiresNode::Leaf { impl_sort, .. } => (*impl_sort, &[][..]),
+        ResolvedRequiresNode::Conditional {
+            impl_sort,
+            sub_resolutions,
+            ..
+        } => (*impl_sort, sub_resolutions.as_slice()),
+        ResolvedRequiresNode::FromScope { .. } => return None,
+    };
+    let spec = tree.spec_sort();
+    let spec_canon = kb.canonical_sort_sym(spec);
+    let spec_qn = kb.qualified_name_of(spec);
+    // The spec operations the provider's provisions bind, each once: two provisions of one
+    // view may bind the same one.
+    let mut bound: SmallVec<[Symbol; 2]> = SmallVec::new();
+    for row in provides_rows_of_provider(kb, provider) {
+        if kb.canonical_sort_sym(row.spec_base) != spec_canon {
+            continue;
+        }
+        for (key, value) in provision_bindings(kb, &row.spec_view) {
+            if binding_op_symbol(kb, &value).is_none() || is_type_param_binding(kb, key, spec_qn) {
+                continue;
+            }
+            let spec_op = kb
+                .lookup_symbol(short_name_of(kb.qualified_name_of(key)))
+                .and_then(|short| kb.sort_ops_lookup(spec, short));
+            if let Some(spec_op) = spec_op.filter(|op| !bound.contains(op)) {
+                bound.push(spec_op);
+            }
+        }
+    }
+    let application = tree_application(kb, tree);
+    for spec_op in bound {
+        if let Err(tie @ ProviderSupplyRefusal::Tie { .. }) =
+            resolve_op_target_at(kb, provider, spec_op, application.as_ref())
+        {
+            return Some((spec_op, tie.rendered(kb, spec_op)));
+        }
+    }
+    subs.iter().find_map(|sub| instance_supplier_tie(kb, sub))
 }
 
 /// WI-20261025-ZAWX9 — the application an instance `tree` is FOR: its head's binding at the
@@ -1110,17 +1246,21 @@ pub(crate) fn tree_application(kb: &KnowledgeBase, tree: &ResolvedRequiresNode) 
         .map(|(_, value)| value.clone())
 }
 
-/// WI-20261025-ZAWX9 — the DEFAULTED spec operation that `member`, an own member of
-/// `provider`, backs for a spec `provider` provides: what `Dictionary.ops` asks
-/// [`resolve_op_target`] for such a table row, so that it answers what
-/// `Dictionary.resolveOp` answers for the operation. `None` for a row that is no own member
-/// of `provider`, that backs no defaulted operation, or that backs two different ones
-/// (two provided specs with one short name, WI-1042) — such a row is asked as itself.
+/// WI-20261025-ZAWX9 — the spec operation that `member`, an own member of `provider`, backs
+/// for a spec `provider` provides: what `Dictionary.ops` asks [`resolve_op_target`] for such a
+/// table row, so that it answers what `Dictionary.resolveOp` answers for the operation. `None`
+/// for a row that is no own member of `provider`, that backs no spec operation, or that backs
+/// two different ones (two provided specs with one short name, WI-1042) — such a row is asked
+/// as itself.
+///
+/// A DEFAULTED operation or a BODY-LESS one, the two halves `resolve_op_target_at` reads by
+/// one rule (WI-20261025-7K84M): asked of the defaulted half alone, a body-less member beside
+/// its provision's binding was listed by `ops` where `resolveOp` refuses the two.
 ///
 /// The operation is read off each provided spec's own table row for the short name, and
 /// the member is confirmed as its backing by [`carrier_own_op`], the relation the
 /// resolution itself reads.
-pub(crate) fn defaulted_spec_op_backed_by(
+pub(crate) fn spec_op_backed_by(
     kb: &KnowledgeBase,
     provider: Symbol,
     member: Symbol,
@@ -1136,7 +1276,8 @@ pub(crate) fn defaulted_spec_op_backed_by(
         let Some(spec_op) = kb.sort_ops_lookup(row.spec_base, short_sym) else {
             continue;
         };
-        if defaulted_spec_op_parent(kb, spec_op).is_none()
+        if (defaulted_spec_op_parent(kb, spec_op).is_none()
+            && lookup_spec_op_dispatch(kb, spec_op).is_none())
             || carrier_own_op(kb, provider, spec_op, short_sym)
                 .is_none_or(|o| kb.canonical_sym(o) != member_canon)
         {
@@ -1601,6 +1742,10 @@ pub enum DispatchOutcome {
     /// Two or more candidates match and the call selected none — 058 §4.1 tier 3.
     /// The payload is the tie itself, forwarded from the level that observed it.
     Ambiguous(InstanceTie),
+    /// WI-20261025-7K84M — one candidate, whose provider gives the operation no single
+    /// implementation: two suppliers (its own member and its provision's binding), or one
+    /// per application. The provider is chosen, so no bracket breaks it (§8.7).
+    Unsupplied(UnsuppliedDispatch),
     /// WI-221 (defer-to-requirement, open-bound trigger): spec sort
     /// reached via the enclosing sort's `requires` chain. Impl varies
     /// per requirement value at runtime, so Pin-now rewrite is skipped.

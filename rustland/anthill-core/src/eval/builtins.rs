@@ -6308,14 +6308,15 @@ fn dict_ops(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError
             .map_err(|refusal| EvalError::dispatch_refused(&interp.kb, op, impl_sym, refusal))
     };
     for row in rows {
-        // WI-20261025-ZAWX9 — a row that is the provider's OWN member of a DEFAULTED spec
-        // operation answers what `resolveOp` answers for that operation: the member is one
-        // of its suppliers, not the answer. Asked by the row, a member the interpreter
-        // cannot run was handed back where `resolveOp` answers the provision's binding.
+        // WI-20261025-ZAWX9 — a row that is the provider's OWN member of a spec operation
+        // (defaulted or, since WI-20261025-7K84M, body-less) answers what `resolveOp` answers
+        // for that operation: the member is one of its suppliers, not the answer. Asked by
+        // the row, a member the interpreter cannot run was handed back where `resolveOp`
+        // answers the provision's binding, and a member beside a binding where it refuses.
         // Where the member IS the answer the row stays as it was, `named` included: which
         // spec `d` is a dictionary of is not written on it, and a row's spec operation
         // would measure `d` against that spec's layout.
-        let backed = crate::kb::typing::defaulted_spec_op_backed_by(&interp.kb, impl_sym, row)
+        let backed = crate::kb::typing::spec_op_backed_by(&interp.kb, impl_sym, row)
             .map(|spec_op| resolve(interp, spec_op).map(|answer| (spec_op, answer)))
             .transpose()?;
         let (named, resolved) = match backed {

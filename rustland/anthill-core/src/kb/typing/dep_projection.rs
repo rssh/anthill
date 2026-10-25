@@ -49,6 +49,10 @@ pub fn build_dep_projection(
     // and does not resolve; left `None` on success or when an earlier
     // strategy served the dep.
     s3_failure_out: Option<&mut Option<ResolutionResult>>,
+    // WI-20261025-7K84M: when present, receives the operation a provider in Strategy 3's
+    // instance supplies twice ([`instance_supplier_tie`]) — a dictionary the construction
+    // BUILT, which the caller refuses. Left `None` when an earlier strategy served the dep.
+    tie_out: Option<&mut Option<(Symbol, UnsuppliedDispatch)>>,
     // WI-841 (058 §4.5): the call site's explicit provider selection FOR THIS DEP. A dep
     // the bracket PINNED skips Strategies 1 & 2 outright — those FORWARD the caller's own
     // dictionary, and explicit selection outranks a forward exactly as it outranks a
@@ -273,6 +277,9 @@ pub fn build_dep_projection(
     };
     match resolve_opening_unwritten_slots(kb, &goal, &scope, rung) {
         ResolutionResult::Resolved(tree) => {
+            if let Some(out) = tie_out {
+                *out = instance_supplier_tie(kb, &tree);
+            }
             emit_tree_as_projection(kb, caller_requires, &tree, syms)
         }
         failure => {

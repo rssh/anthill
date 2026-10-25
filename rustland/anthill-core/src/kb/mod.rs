@@ -6331,6 +6331,7 @@ impl KnowledgeBase {
                                 typing::short_name_of(&op_qn),
                             ),
                             typing::supplier_tie_repair(self, functor, &candidates),
+                            None,
                         ));
                     }
                 }

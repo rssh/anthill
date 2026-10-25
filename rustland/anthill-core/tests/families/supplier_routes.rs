@@ -21,23 +21,30 @@
 //! which takes no receiver.
 //!
 //! SOUNDNESS (P3): the rule refuses two suppliers for one carrier, and a body-less
-//! operation nothing supplies ([`Program::refused`]). A refusal the rule does not make —
-//! the body-less `binding-both`, where §8.7 merges the two provisions and the backing check
-//! does not (WI-20261025-7K84M's D5) — is no property's to see: the verdict file holds it.
+//! operation nothing supplies ([`Program::refused`]). A refusal the rule does not make is
+//! no property's to see, and the verdict file holds it: the body-less `binding-both` was
+//! one until WI-20261025-7K84M, where §8.7 merges the two provisions and the backing check
+//! read one.
 //!
 //! A TIE IS ONE VERDICT WHERE §8.7 LETS THE ROUTE CHOOSE WHEN ([`judge`]): two suppliers are
 //! refused at load where the carrier is static and at the call where only a value names it.
 //! The receiver spelling is the one route where only a value names it, so its refusal when
 //! the call runs is read as the call refused; on every other route a tie that reaches the
-//! run is a P3 violation, as any program that loads and does not run is.
+//! run is a P3 violation, as any program that loads and does not run is. Through a
+//! dictionary the carrier is static where the dictionary is built, `gen(leaf())`, and the
+//! tie is refused there (the user, 2026-10-25).
 //!
-//! CONTROL, measured on `1373e04f`: run with [`EXCEPTIONS`] empty, the family names exactly
-//! the programs they cover; run with [`judge`] as plain `judge_program`, it names the
-//! receiver spelling of both `own+binding` rows too, and nothing else. And it saw
-//! WI-20261025-ZAWX9's delivery (`3657c39d`), which landed while it was being written: five
-//! verdicts moved, and the three exceptions listed for ZAWX9 excused nothing.
+//! NO EXCEPTIONS since WI-20261025-7K84M (`resolve_op_target_at`, `resolve_at_goal`'s
+//! projection, the backing check's merged view and the construction's tie, one answer for
+//! both halves), which took off the nine it listed, moving thirteen verdicts. CONTROL, measured
+//! there: run with [`judge`] as plain `judge_program`, the family names both `own+binding` rows
+//! of the receiving shape and nothing else — their receiver spelling against P2 and P3, and the
+//! row against P4. Each of 7K84M's four parts backed out alone moves verdicts of this family
+//! (`wi_7k84m_one_supplier_answer_test`'s header). It saw WI-20261025-ZAWX9's delivery
+//! (`3657c39d`) too, which landed while it was being written: five verdicts moved, and the
+//! three exceptions listed for ZAWX9 excused nothing.
 
-use super::{opt, spelt, Exception, Family, Hole, Picks, Program, Property, Verdict};
+use super::{opt, spelt, Exception, Family, Hole, Picks, Program, Verdict};
 
 pub static FAMILY: Family = Family {
     name: "f-supplier-routes",
@@ -79,69 +86,7 @@ pub static FAMILY: Family = Family {
     exceptions: EXCEPTIONS,
 };
 
-const TICKET_7K84M: &str = "WI-20261025-7K84M";
-
-const EXCEPTIONS: &[Exception] = &[
-    // D1 — through a dictionary the carrier's own member runs over a binding beside it, for a
-    // body-less operation (the defaulted one is refused as a tie since WI-20261025-ZAWX9).
-    Exception {
-        property: Property::Sound,
-        when: &["default=body-less", "supplied=own+binding", "route=dictionary"],
-        ticket: TICKET_7K84M,
-        why: "`resolve_op_target` takes the first supplier and sees no tie",
-    },
-    Exception {
-        property: Property::OneVerdict,
-        when: &["default=body-less", "supplied=own+binding", "route=dictionary"],
-        ticket: TICKET_7K84M,
-        why: "the dictionary runs the own member where the other routes refuse the tie",
-    },
-    // D1's defaulted half since WI-20261025-ZAWX9: the tie is refused, but only when the call
-    // runs, where `gen(leaf())` names the carrier at load and §8.7 refuses it there.
-    Exception {
-        property: Property::Sound,
-        when: &["default=defaulted", "supplied=own+binding", "route=dictionary"],
-        ticket: TICKET_7K84M,
-        why: "loads clean and dies `AmbiguousSpecOpDispatch`: the tie is seen only when the dictionary is asked",
-    },
-    Exception {
-        property: Property::OneVerdict,
-        when: &["default=defaulted", "supplied=own+binding", "route=dictionary"],
-        ticket: TICKET_7K84M,
-        why: "the dictionary refuses the tie when the call runs, the call by name at load",
-    },
-    // D3 — by name, a body-less operation with no receiver does not reach a binding.
-    Exception {
-        property: Property::Sound,
-        when: &["shape=nullary", "default=body-less", "supplied=binding-in-body", "route=by-name"],
-        ticket: TICKET_7K84M,
-        why: "loads clean and dies `OperationBodyMissing`: the binding is not read",
-    },
-    Exception {
-        property: Property::Sound,
-        when: &["shape=nullary", "default=body-less", "supplied=binding-in-entry", "route=by-name"],
-        ticket: TICKET_7K84M,
-        why: "loads clean and dies `OperationBodyMissing`: the binding is not read",
-    },
-    Exception {
-        property: Property::Sound,
-        when: &["shape=nullary", "default=body-less", "supplied=own+binding", "route=by-name"],
-        ticket: TICKET_7K84M,
-        why: "the binding is not read, so the own member runs where the tie is due",
-    },
-    Exception {
-        property: Property::OneVerdict,
-        when: &["shape=nullary", "default=body-less", "supplied=binding-in-body", "route=by-name"],
-        ticket: TICKET_7K84M,
-        why: "by name it dies where the dictionary runs the binding",
-    },
-    Exception {
-        property: Property::OneVerdict,
-        when: &["shape=nullary", "default=body-less", "supplied=binding-in-entry", "route=by-name"],
-        ticket: TICKET_7K84M,
-        why: "by name it dies where the dictionary runs the binding",
-    },
-];
+const EXCEPTIONS: &[Exception] = &[];
 
 /// The receiver spelling's call: the one route where only the value names the carrier.
 const RECEIVER_CALL: &str = "viaShape(leaf())";

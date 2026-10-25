@@ -927,12 +927,8 @@ fn construction_meets_sort_requires(
     } else {
         caller_requires
     };
-    let refused = |refusal| TypeError::UnsatisfiableRequirement {
-        span,
-        op: ctor_sym,
-        callee_sort: sort,
-        usage: RequirementUse::Construction,
-        refusal,
+    let refused = |refusal: DictRefusal| {
+        refusal.into_type_error(span, ctor_sym, sort, RequirementUse::Construction)
     };
     let mut unsuppliable: Option<Box<RequirementRefusal>> = None;
     // No held bracket: a `require[…]` is a rule clause's, not a value definition's.
@@ -951,7 +947,7 @@ fn construction_meets_sort_requires(
         Some(&mut unsuppliable),
     )
     .map_err(refused)?;
-    unsuppliable.map_or(Ok(()), |refusal| Err(refused(refusal)))
+    unsuppliable.map_or(Ok(()), |refusal| Err(refused(refusal.into())))
 }
 
 /// The type an entity FIELD's supplied argument is INFERRED from (WI-594).

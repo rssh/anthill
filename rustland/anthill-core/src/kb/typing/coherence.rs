@@ -1229,7 +1229,8 @@ pub(crate) fn check_use_site_requires_eq(
 ///   - **builtin**: an op mapped to a resolver builtin (`PartialEq.eq`, `Numeric.add`).
 ///   - **instance-fact op binding** (WI-431, checked by the caller): a
 ///     provision that BINDS the op (`fact Spec[X, op = boundOp]`) backs it with
-///     the bound operation.
+///     the bound operation — any provision of the provider's one view of the spec at
+///     the same application, as dispatch reads it (§8.7, WI-20261025-7K84M).
 ///
 /// A RULE does not back an operation (WI-818, reversing WI-363's original
 /// reading): an equational law (`rule op(args) <=> rhs`) or a relational clause
@@ -1383,7 +1384,7 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
         let Some(spec_ops) = own_ops.get(&p.spec) else {
             continue;
         };
-        let bindings = provision_bindings(kb, &p.spec_view);
+        let bindings = merged_provision_bindings(kb, p.carrier, p.spec, p.rid, &p.spec_view);
         for &spec_op in spec_ops {
             // An operation answered from its dictionary is backed by no carrier's member
             // ([`answered_by_its_dictionary`]), so a carrier's operation of its name is no
@@ -1490,6 +1491,12 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
             // carrier owning it or the spec defaulting it. A type-only provision
             // (`provides Stream[T = X]`) has no op-valued binding, so this never
             // matches and pre-WI-431 coverage is unchanged.
+            //
+            // WI-20261025-7K84M — the bindings are the provider's merged VIEW of the spec at
+            // this provision's application ([`merged_provision_bindings`]), as dispatch reads
+            // them: `provides Desc[T = Leaf]` in `Leaf`'s body is backed by the `describe =
+            // other` of a `namespace Leaf` entry. Read off this row alone, the pair was
+            // refused "backs no operation" on every route while its defaulted twin ran `other`.
             if bound.is_some() {
                 continue;
             }

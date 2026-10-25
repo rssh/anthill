@@ -804,7 +804,7 @@ impl std::fmt::Display for EvalError {
                 f,
                 "{}",
                 crate::kb::typing::ambiguous_spec_op_dispatch_message(
-                    op, carrier, candidates, *repair,
+                    op, carrier, candidates, *repair, None,
                 ),
             ),
             EvalError::UndeterminedDictionaryDispatch { detail } => {

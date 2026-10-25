@@ -4709,22 +4709,53 @@ pub(super) fn resolve_at_goal(
         ResolutionResult::Resolved(tree) => match &tree {
             ResolvedRequiresNode::Leaf { impl_sort, .. }
             | ResolvedRequiresNode::Conditional { impl_sort, .. } => {
-                // WI-240 — direct table lookup. The load-time
-                // `build_sort_ops_table` already resolved impl-override
-                // vs spec-default for `(impl_sort, op_short)`; no
-                // string concatenation, no try/catch fallback here.
+                // WI-20261025-7K84M — WHAT THE PROVIDER SUPPLIES FOR THE OPERATION, by the
+                // one reader a dictionary of it is dispatched through ([`resolve_op_target_at`],
+                // told the application the instance is for). It was the provider's table row
+                // for the short name (WI-240), which reads no provision's binding: a body-less
+                // `Desc.name[T = Leaf]()` over `Leaf provides Desc[T = Leaf, name = other]` was
+                // left the spec operation and died "operation has no body", and with `Leaf`'s
+                // own `name` beside the binding it ran the member where the tie is due.
                 //
-                // Except for an operation that answers from its dictionary
-                // ([`answered_by_its_dictionary`]): the spec's own, at every provider.
-                // Through the table, `sort Door { … operation type_value(n: Int64) -> String }`
-                // pinned `TypeValue.type_value[T = Door]()` to `Door`'s member, which died
-                // at the call "expected 1 args, got 0" (MEASURED).
-                let dictionary_answer = kb
-                    .sort_ops_lookup(goal.spec_sort, op_short_sym)
-                    .filter(|&op| answered_by_its_dictionary(kb, op));
-                match dictionary_answer.or_else(|| kb.sort_ops_lookup(*impl_sort, op_short_sym)) {
-                    Some(s) => (DispatchOutcome::Unique(s), Some(tree)),
-                    None => (DispatchOutcome::NoMatch { unmet: None }, None),
+                // An operation that answers from its dictionary
+                // ([`answered_by_its_dictionary`]) is the spec's own at every provider, which
+                // that reader answers first. Through the table, `sort Door { … operation
+                // type_value(n: Int64) -> String }` pinned `TypeValue.type_value[T = Door]()` to
+                // `Door`'s member, which died at the call "expected 1 args, got 0" (MEASURED).
+                let Some(spec_op) = kb.sort_ops_lookup(goal.spec_sort, op_short_sym) else {
+                    return (DispatchOutcome::NoMatch { unmet: None }, None);
+                };
+                // SEMANTIC EQUALITY KEEPS THE TABLE'S ANSWER: its builtin dispatches itself
+                // ([`BuiltinTag::dispatches_through_carrier_equality`]), and two suppliers of
+                // a carrier's `eq` are refused at load by the equality index
+                // (`AmbiguousEqDispatch`). Pinned here to a provision's `eq = loopEq`, a
+                // circular `loopEq(x, y) = eq(x, y)` never returned, where the builtin's
+                // bridge refuses it at its re-entry cap (MEASURED,
+                // `wi625_eval_semantic_eq_test::eval_undecidable_instance_fact_eq_is_loud_not_false`).
+                if kb
+                    .builtin_of(spec_op)
+                    .is_some_and(|tag| tag.dispatches_through_carrier_equality())
+                {
+                    return match kb.sort_ops_lookup(*impl_sort, op_short_sym) {
+                        Some(s) => (DispatchOutcome::Unique(s), Some(tree)),
+                        None => (DispatchOutcome::NoMatch { unmet: None }, None),
+                    };
+                }
+                // A provider whose table holds no row for the short name — no member, no
+                // inherited default, not the spec's own — has nothing a call could reach, and
+                // is no match, as the table read answered it.
+                if !answered_by_its_dictionary(kb, spec_op)
+                    && kb.sort_ops_lookup(*impl_sort, op_short_sym).is_none()
+                {
+                    return (DispatchOutcome::NoMatch { unmet: None }, None);
+                }
+                let application = tree_application(kb, &tree);
+                match resolve_op_target_at(kb, *impl_sort, spec_op, application.as_ref()) {
+                    Ok(target) => (DispatchOutcome::Unique(target), Some(tree)),
+                    Err(refusal) => (
+                        DispatchOutcome::Unsupplied(refusal.rendered(kb, spec_op)),
+                        None,
+                    ),
                 }
             }
             ResolvedRequiresNode::FromScope { .. } => (DispatchOutcome::Deferred, None),

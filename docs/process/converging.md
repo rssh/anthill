@@ -1890,6 +1890,21 @@ moving the dated addenda to a history file would be the second.
     own rows. Copied code is 5% of the typer's lines; repeated decisions are where the
     duplication is.
 
+    **2026-10-25, evening — the first map through the whole loop.** WI-20261025-7K84M: every
+    cell of the supplier matrix at §8.7's answer, one aside that is TC54R's. The family moved 13
+    verdicts and lists no exceptions. One reader deleted (`instance_fact_op_binding`, the last
+    first-match chain); five route through `resolve_op_target_at` now: the dispatch's projection,
+    the dictionary, the higher-kinded arm, the result-only carrier, and the construction's tie
+    check. The backing check reads the merged provision view. One question went to the user,
+    when a tie through a dictionary is refused, and the answer was: where the dictionary is
+    built — and §8.7 now says so. Probing found two readers the map had not listed (the
+    higher-kinded arm, the result-only carrier), each with a wrong answer of its own, and one
+    the change must leave alone: semantic equality, whose builtin dispatches itself. Review
+    found a third, `Dictionary.ops`. Production code +379 −164 lines (comments aside), so the
+    first consolidation added more than it removed: the deleted chain was short, and the
+    decided rule needed a refusal path of its own. Eight back-outs measured, every part driven
+    by a row (`wi_7k84m_one_supplier_answer_test`).
+
 ## 5. Method (reproduce)
 
 Both series come from ID-set diffs between consecutive commits touching the tracker, so a status

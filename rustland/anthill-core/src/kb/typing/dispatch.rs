@@ -851,19 +851,16 @@ pub(super) fn statically_pinned_carrier(
 ///     IS the carrier, so `sort_ops_lookup` returns the carrier's own member and route 1
 ///     wins by riding on someone else's provision, never having been weighed. That is
 ///     fixture 2 below answering 7.
-///   * [`SupplyRoute::Fact`] IS weighed as a provision, but its op-valued BINDING is not
-///     what `sort_ops_lookup` returns, so the projection is lossy exactly where it matters
-///     — a provision the arbitration DID select still loses its binding to a same-named
-///     member of the carrier.
+///   * [`SupplyRoute::Fact`] IS weighed as a provision, and since WI-20261025-7K84M its
+///     binding is too: `resolve_at_goal` projects the provision it selected through what
+///     its provider supplies ([`resolve_op_target_at`]), where it took the provider's table
+///     row and the binding lost to a same-named member of the carrier. That member beside
+///     the binding is the dispatch's own refusal now ([`DispatchOutcome::Unsupplied`]),
+///     raised before this guard is asked.
 ///
 /// **COUPLING, stated because nothing else enforces it.** The `Fact` leg is a property of
-/// two lines elsewhere, not of the route: `collect_provides_candidates` drops op-valued
-/// bindings, and `resolve_at_goal` projects through `sort_ops_lookup`. Make the `Unique`
-/// resolution consult the resolved provision's own op binding — the natural deeper fix for
-/// fixture 2, and a plausible future ticket — and `Fact` becomes arbitrated, at which
-/// point [`SupplyRoute::weighed_by_provision_arbitration`] must say so or this refusal
-/// starts firing on a legitimate selection. That is why the classification is a method on
-/// the route with its mechanism in its doc, and not a `matches!` here.
+/// the projection, not of the route, which is why the classification is a method on the
+/// route with its mechanism in its doc, and not a `matches!` here.
 ///
 /// MEASURED, the three fixtures, before any of this existed
 /// (`wi1027_bodyless_supplier_tie_test`): an own member DECLARED-but-unrunnable beside a
@@ -1324,14 +1321,11 @@ pub(crate) fn supplier_tie_error(
     cands: &[SpecOpSupplier],
     span: Option<Span>,
 ) -> TypeError {
-    let op_qn = kb.qualified_name_of(spec_op).to_string();
-    TypeError::AmbiguousSpecOpDispatch {
-        span,
-        op: spec_op,
+    ProviderSupplyRefusal::Tie {
         carrier,
-        candidates: render_suppliers(kb, cands, short_name_of(&op_qn)),
-        repair: supplier_tie_repair(kb, spec_op, cands),
+        candidates: cands.iter().copied().collect(),
     }
+    .type_error(kb, spec_op, span)
 }
 
 /// WI-1012 — the one message body for "several texts supply one spec op's
@@ -1357,9 +1351,15 @@ pub(crate) fn ambiguous_spec_op_dispatch_message(
     carrier: &str,
     candidates: &[String],
     repair: SupplierTieRepair,
+    // WI-20261025-7K84M — the requirement whose dictionary the call was building, where
+    // that is where the tie was met.
+    in_dictionary: Option<&str>,
 ) -> String {
+    let within = in_dictionary
+        .map(|dep| format!(", in the dictionary this call builds for `{dep}`"))
+        .unwrap_or_default();
     let head = format!(
-        "ambiguous dispatch of `{op}` on carrier `{carrier}`: {} implementations are \
+        "ambiguous dispatch of `{op}` on carrier `{carrier}`{within}: {} implementations are \
          supplied for that carrier ({}) and nothing here selects one",
         candidates.len(),
         candidates.join(", "),

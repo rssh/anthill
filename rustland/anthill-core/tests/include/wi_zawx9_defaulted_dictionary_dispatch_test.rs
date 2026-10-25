@@ -19,15 +19,17 @@
 //! The dictionary now reads the suppliers its PROVIDER writes, through the owners the call by
 //! name reads (`spec_op_suppliers_of_provider`, the provider dual of
 //! `spec_op_suppliers_for_carrier`), by the sort each provision is about, narrowed to what the
-//! interpreter runs: the default where none is left, the tie refused at the call where two
-//! are, and a provider supplying differently at the applications it provides the spec at
+//! interpreter runs: the default where none is left, the tie refused where two are (at
+//! load where the dictionary is built since WI-20261025-7K84M), and a provider supplying differently at the applications it provides the spec at
 //! refused, the dictionary not saying which it is for. The typer's `defaulted_call_target`
 //! reads the same resolution, told the application by the instance it resolved, so a binding
 //! reached through the subtype relation is pinned at load — its effects with it — and what
 //! the provider supplies twice is refused there.
 //!
 //! BACK-OUTS, MEASURED over this file and `wi1040_require_clause_dictionary_test`, each alone,
-//! on an optimized temporary binary:
+//! on an optimized temporary binary, at ZAWX9's delivery. WI-20261025-7K84M gave the body-less
+//! branch the same walk, so M1 no longer backs it out; its own back-outs are in
+//! `wi_7k84m_one_supplier_answer_test`.
 //!
 //!  * M1 — `resolve_op_target`'s defaulted branch never taken (the table read for every op);
 //!  * M2 — the interpretability test not handed to the provider walk;
@@ -49,7 +51,7 @@
 //! | `a_binding_answers_a_receiverless_call_through_the_dictionary` | M1 M9 |
 //! | `an_unrunnable_own_member_gives_way_to_the_binding_through_the_dictionary` | M1 M2 M9 |
 //! | `a_receiving_call_reaches_the_binding_past_an_unrunnable_member` | M1 M2 |
-//! | `an_own_member_beside_a_binding_is_refused_through_the_dictionary` | M1 M8 M9 |
+//! | `an_own_member_beside_a_binding_is_refused_where_the_dictionary_is_built` | M1 M8 M9 |
 //! | `a_same_named_operation_of_another_spec_is_no_supplier` | M1 |
 //! | `dictionary_ops_and_resolve_op_agree` | M1 M2 M7 M9 |
 //! | `a_witness_binding_reached_through_the_subtype_relation_answers_every_spelling` | M1 M9 |
@@ -213,14 +215,16 @@ fn a_carrier_nothing_supplies_runs_the_default_on_both_routes() {
 
 /// THE TIE. An own member that runs beside the provision's binding: the call by name is
 /// refused at load (WI-1012). The program here writes only the call through the dictionary,
-/// so it loads, and the CALL is refused in the same words, naming both texts — it answered the
-/// own member's 5.
+/// and that call is refused in the same words, naming both texts — it answered the own
+/// member's 5.
 ///
-/// AT THE CALL AND NOT AT LOAD: nothing at the call site of `viaDict` knows which operations
-/// its body dispatches through the dictionary, and the provider's two implementations are not
-/// an error until one is dispatched (the by-name refusal is a call's too).
+/// AT LOAD, WHERE THE DICTIONARY IS BUILT (WI-20261025-7K84M; the user, 2026-10-25). This
+/// row refused it at the CALL, on the ground that nothing at `viaDict`'s call site knows which
+/// operations its body dispatches. But the dictionary is resolved there, and it answers every
+/// operation of its spec: the provider is chosen, and no default chooses between two texts of
+/// one provider (WI-861).
 #[test]
-fn an_own_member_beside_a_binding_is_refused_through_the_dictionary() {
+fn an_own_member_beside_a_binding_is_refused_where_the_dictionary_is_built() {
     for receiving in [false, true] {
         let ns = format!("test.zawx9.tie{}", receiving as u8);
         let member = if receiving {
@@ -229,22 +233,15 @@ fn an_own_member_beside_a_binding_is_refused_through_the_dictionary() {
             "    operation name() -> Int64 = 5\n"
         };
         let src = program(&ns, receiving, member, binding(receiving), false);
-        let err = crate::common::interp_for(&src)
-            .call(&format!("{ns}.throughDictionary"), &[])
-            .expect_err("two implementations at the dictionary's provider — refuse at the call");
-        let EvalError::AmbiguousSpecOpDispatch {
-            carrier,
-            candidates,
-            ..
-        } = &err
-        else {
-            panic!("expected AmbiguousSpecOpDispatch, got {err:?}");
-        };
-        assert!(carrier.ends_with(".Leaf"), "the provider: {carrier}");
-        assert!(
-            candidates.iter().any(|c| c.contains("the carrier's own member"))
-                && candidates.iter().any(|c| c.contains("an instance fact binding")),
-            "both texts, by route: {candidates:?}",
+        let op = if receiving { "describe" } else { "name" };
+        crate::common::assert_refused_naming(
+            &crate::common::load_errors_of(&src),
+            &[
+                &format!("ambiguous dispatch of `{ns}.Desc.{op}` on carrier `{ns}.Leaf`"),
+                "the carrier's own member",
+                "an instance fact binding",
+            ],
+            &format!("two implementations at the dictionary's provider, receiving: {receiving}"),
         );
     }
 }

@@ -615,13 +615,12 @@ pub(super) fn attach_eta_dispatch_dict(
         // construction of an unconstrained element) names WHY the eta is
         // unsatisfiable — the bare WI-420 error below told the author neither
         // the refused entry nor the unconstrained element.
-        Err(refusal) => Err(TypeError::UnsatisfiableRequirement {
-            span: Some(occ.span.span),
-            op: sym,
-            callee_sort: parent,
-            usage: RequirementUse::FunctionValue,
-            refusal,
-        }),
+        Err(refusal) => Err(refusal.into_type_error(
+            Some(occ.span.span),
+            sym,
+            parent,
+            RequirementUse::FunctionValue,
+        )),
         Ok(None) => {
             // Cross-sort op with a non-empty direct `requires` chain that we
             // could resolve neither concretely (no `fact`) nor by forwarding

@@ -3277,33 +3277,32 @@ pub(super) fn check_apply_iter(
                 // DISPATCH to the instance's bound impl (`unit ↦ optionUnit`). The
                 // result-carrier `unit` has no carrier VALUE to value-direct on (F is
                 // only in the return), so the typer-resolved dispatch is the route; the
-                // arg-carrier shares it. A spec-DEFAULT op (not bound in the fact) keeps
-                // its body. `dispatch_spec_op_cached`'s SLD does not read instance-fact
-                // op-bindings (WI-431 inc 2), so the impl is read straight from the fact.
-                if let Some(impl_op) =
-                    instance_fact_op_binding(kb, c, spec_sort, short_name_of(&op_qn))
-                {
+                // arg-carrier shares it. What `C` supplies is read as a dictionary of it is
+                // (WI-20261025-7K84M): its own member or its provision's binding, and two of
+                // them refused. It read the binding alone, so a member beside it was not
+                // seen. Where `C` supplies nothing the call stays the spec operation.
+                let impl_op = resolve_op_target(kb, c, fn_sym)
+                    .map_err(|refusal| refusal.type_error(kb, fn_sym, span))?;
+                if impl_op != fn_sym {
                     // WI-453 effect soundness (the WI-365 dual): surface the impl's real
                     // effects — the instance signature validator checks arity/param/return
                     // but NOT effects, so an effectful impl bound to a pure-declared spec
                     // op would otherwise mask its effect at the consumption site.
-                    if impl_op != fn_sym {
-                        effects = effects_of_pinned_call(
-                            kb,
-                            flow,
-                            impl_op,
-                            None,
-                            &op,
-                            &call_view,
-                            &subst,
-                            span,
-                            RowAtPin {
-                                op_effects: &substituted_op_effects,
-                                arg_effects: &arg_effects,
-                                before: effects,
-                            },
-                        )?;
-                    }
+                    effects = effects_of_pinned_call(
+                        kb,
+                        flow,
+                        impl_op,
+                        None,
+                        &op,
+                        &call_view,
+                        &subst,
+                        span,
+                        RowAtPin {
+                            op_effects: &substituted_op_effects,
+                            arg_effects: &arg_effects,
+                            before: effects,
+                        },
+                    )?;
                     // PinNow, or ConcreteApplyWithin when the impl's OWN sort declares
                     // `requires` (so its dict threads) — the Unique-arm discipline. Only
                     // a runnable impl is rewritten (a body-less one stays the spec op).
@@ -3730,14 +3729,13 @@ pub(super) fn check_apply_iter(
             // (a generic consumer over `requires MutableCollection`) already
             // took the Deferred path in `dispatch_spec_op_cached`, so this only
             // fires for the concrete / standalone call.
-            let outcome = if op.params.is_empty()
-                && matches!(outcome, DispatchOutcome::NoCandidates)
-            {
-                resolve_nullary_result_carrier(kb, spec_sort, fn_sym, op_short_sym, &resolved_ret)
-                    .unwrap_or(DispatchOutcome::NoCandidates)
-            } else {
-                outcome
-            };
+            let outcome =
+                if op.params.is_empty() && matches!(outcome, DispatchOutcome::NoCandidates) {
+                    resolve_nullary_result_carrier(kb, spec_sort, fn_sym, &resolved_ret)
+                        .unwrap_or(DispatchOutcome::NoCandidates)
+                } else {
+                    outcome
+                };
             // A MEMBER THAT NAMES ITS SORT IN ITS RESULT ALONE, at a sort with parameters,
             // where the dispatch found nothing or landed on the member itself — the call's
             // carrier is the sort (kernel-language.md §5.4), whose own member runs nothing.
@@ -3758,6 +3756,7 @@ pub(super) fn check_apply_iter(
                 }
                 DispatchOutcome::Deferred
                 | DispatchOutcome::Ambiguous(_)
+                | DispatchOutcome::Unsupplied(_)
                 | DispatchOutcome::NoMatch { .. } => false,
             };
             if env.in_evaluated_body()
@@ -3842,7 +3841,9 @@ pub(super) fn check_apply_iter(
             // `Candidate` field), so `collect_provides_candidates` now collapses them to
             // one and the conflict arrives HERE, where the routes can be named.
             let outcome_raises_on_its_own_account = match outcome {
-                DispatchOutcome::Ambiguous(_) | DispatchOutcome::NoMatch { .. } => true,
+                DispatchOutcome::Ambiguous(_)
+                | DispatchOutcome::Unsupplied(_)
+                | DispatchOutcome::NoMatch { .. } => true,
                 DispatchOutcome::NoCandidates
                 | DispatchOutcome::Unique(_)
                 | DispatchOutcome::Deferred => false,
@@ -4510,6 +4511,11 @@ pub(super) fn check_apply_iter(
                         tie,
                     });
                 }
+                // The provider is chosen and supplies the operation twice: no slot or bracket
+                // can break that, since either names the same provider.
+                DispatchOutcome::Unsupplied(refusal) => {
+                    return Err(refusal.type_error(fn_sym, span, None));
+                }
                 DispatchOutcome::Deferred => {
                     // Fallback: the WI-239 pre-check above already caught
                     // every spec reachable via `find_requires_location`
@@ -4779,13 +4785,7 @@ pub(super) fn check_apply_iter(
                         env.enclosing_op().is_some().then_some(&mut unsuppliable),
                     )
                     .map_err(|refusal| {
-                        TypeError::UnsatisfiableRequirement {
-                            span,
-                            op: fn_sym,
-                            callee_sort: parent_sym,
-                            usage: RequirementUse::Call,
-                            refusal,
-                        }
+                        refusal.into_type_error(span, fn_sym, parent_sym, RequirementUse::Call)
                     })?;
                     // WI-945 — §5.2's unconstrained-element refusal, PARKED for the
                     // pass that runs once every body is typed. A gate with a mechanism
