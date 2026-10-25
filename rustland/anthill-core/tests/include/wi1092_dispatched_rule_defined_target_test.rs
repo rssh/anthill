@@ -16,7 +16,9 @@
 //!
 //! It is now the `OperationBodyMissing` §5.3 states for exactly this case, on every eval
 //! face; the resolver, which has no error channel, leaves the goal undecided instead of
-//! deciding it wrongly.
+//! deciding it wrongly. Since WI-885 this fixture does not reach eval at all: an `eq` of a
+//! sort with constructors that has no clause is refused at its declaration, and the run-time
+//! verdict stands for the `eq` of a sort that may be provided, which no declaration judges.
 
 use anthill_core::eval::{EvalError, Value};
 
@@ -118,7 +120,8 @@ fn a_rule_defined_eq_decides_the_dictionary_route_and_the_named_one() {
 /// silently does nothing is worse than no example, so it is driven here.
 ///
 /// WHAT MAKES THIS A DRIVE and not a load check: the DICTIONARY route on a carrier
-/// whose `eq` has no definition RAISES (the test below), so `Ok` here is the whole
+/// whose `eq` has no definition RAISES (`a_witness_eq_with_no_clause_is_loud_on_every_route`,
+/// below; a carrier with constructors is refused at load instead), so `Ok` here is the whole
 /// assertion — it is reachable only because the clauses are indexed under `ceq` and
 /// the provision points the carrier's equality at it. Both rows are needed: the `0`
 /// row would also be `0` from structural equality, and the `1` row from the
@@ -173,43 +176,92 @@ end
 
 /// THE FIX. A `ceq` that is DECLARED and nowhere DEFINED is unrunnable, and says so.
 ///
-/// FAILS WHEN THE CHANGE IS BACKED OUT: every assertion here returned `Ok(Int(0))`
-/// before — a silent wrong answer on a program that loads clean and raises nothing.
+/// WI-1092 made it loud at RUN TIME: every comparison through it returned `Ok(Int(0))`
+/// before — a silent wrong answer on a program that loads clean and raises nothing — and
+/// raised `OperationBodyMissing` after. WI-885 moved the verdict to LOAD, at `ceq`'s
+/// declaration: `check_operations_have_a_definition` counted every operation a carrier's
+/// equality dispatches to as defined, clauses or not, which is what let this program load.
+/// `Color` has constructors, so nothing can supply `ceq` but `Color` itself, and the
+/// answer is one for every comparison.
 ///
 /// The fixture is the one from WI-1092's filing, and its rules are the reason: an
 /// untagged `<=>` equation is inert (spec §5.3, WI-881), and its clause is indexed
 /// under the connective, so `ceq` ends up with a signature and no definition of any
-/// kind — no clause, no body, no host mapping. `@[simp]` does not change that here
-/// (WI-885: no dictionary entry can be built from a rewrite, and a spelled
-/// `PartialEq.eq` call is not a redex of `ceq`), which is why the tagged spelling is
-/// driven too.
+/// kind — no clause, no body, no host mapping. `@[simp]` does not change that here (no
+/// dictionary entry can be built from a rewrite, and a spelled `PartialEq.eq` call is not
+/// a redex of `ceq`), so the tagged spelling is refused the same way.
+///
+/// FAILS WHEN WI-885 IS BACKED OUT (the declaration's `eq` skip restored): both spellings
+/// load. The run-time half is still `OperationBodyMissing`, for an `eq` of a sort that may
+/// be provided — the declaration does not judge one — and eval's message is unchanged.
 #[test]
-fn a_declared_but_undefined_eq_is_loud_on_every_route() {
+fn a_declared_but_undefined_eq_is_refused_at_its_declaration() {
     let untagged = "    rule ceq(red, red) <=> true\n    rule ceq(blue, blue) <=> true\n    \
                     rule ceq(red, blue) <=> false\n    rule ceq(blue, red) <=> false";
     let tagged = "    rule ceq(red, red) <=> true @[simp]\n    \
                   rule ceq(red, blue) <=> false @[simp]";
 
-    for (spelling, rules) in [("untagged", untagged), ("@[simp]-tagged", tagged)] {
-        // The DICTIONARY route: `Holder.same` resolves `eq` to `Color.ceq` correctly,
-        // and then there is nothing to run.
-        for call in ["Holder.same(red(), red())", "Holder.same(red(), blue())"] {
-            let got = drive(&program(rules, call));
-            assert!(
-                matches!(&got, Err(EvalError::OperationBodyMissing { name, .. })
-                         if name == "wi1092.ruledef.Color.ceq"),
-                "{spelling} `{call}`: `Color.ceq` is declared and nothing defines it, so \
-                 the call is unrunnable — the WI-818 verdict, not `false`; got {got:?}"
+    for (spelling, rules, equations) in [("untagged", untagged, 4), ("@[simp]-tagged", tagged, 2)] {
+        for call in ["Holder.same(red(), blue())", "PartialEq.eq(red(), blue())"] {
+            crate::common::assert_refused_naming(
+                &crate::common::load_errors_of(&program(rules, call)),
+                &[
+                    "operation `wi1092.ruledef.Color.ceq` has no definition",
+                    "it is the `eq` a carrier's equality dispatches to",
+                    &format!(
+                        "{equations} equations with `wi1092.ruledef.Color.ceq` as their subject \
+                         are indexed under the connective"
+                    ),
+                ],
+                &format!("{spelling} `{call}`"),
             );
         }
-        // The NAMED route, on operands the structural fast path does NOT settle: the
-        // `eq` builtin dispatches to the same `ceq` and reports the same verdict.
-        let named = drive(&program(rules, "PartialEq.eq(red(), blue())"));
+    }
+}
+
+/// THE RUN-TIME VERDICT, where it still stands: an `eq` supplied by a WITNESS — a sort that
+/// may be provided, so no declaration judges its `eq` (WI-885 judges a sort with
+/// constructors at the declaration) — with no clause. It loads, and every comparison that
+/// reaches it raises `OperationBodyMissing` rather than answering `false`, on the
+/// dictionary route and on the named one.
+///
+/// PASSES WITH OR WITHOUT WI-885, by design: it is WI-1092's verdict, driven on the one
+/// shape that still reaches eval since WI-885 moved the other fixture's to load.
+#[test]
+fn a_witness_eq_with_no_clause_is_loud_on_every_route() {
+    let src = r#"
+namespace wi1092.witness
+  import anthill.prelude.{Bool, Int64, PartialEq}
+  sort Color
+    entity red
+    entity blue
+  end
+  sort ColorEq
+    provides PartialEq[T = Color]
+    operation eq(a: Color, b: Color) -> Bool
+    rule eq(red, red) <=> true
+  end
+  sort Holder
+    sort HT = ?
+    requires PartialEq[T = HT]
+    operation same(a: HT, b: HT) -> Bool = PartialEq.eq(a, b)
+  end
+  sort Driver
+    operation drive(n: Int64) -> Int64 = if CALL then 1 else 0
+  end
+end
+"#;
+    for call in ["Holder.same(red(), blue())", "PartialEq.eq(red(), blue())"] {
+        let got = {
+            let program = src.replace("CALL", call);
+            let mut interp = crate::common::interp_for(&program);
+            interp.call("wi1092.witness.Driver.drive", &[Value::Int(0)])
+        };
         assert!(
-            matches!(&named, Err(EvalError::OperationBodyMissing { name, .. })
-                     if name == "wi1092.ruledef.Color.ceq"),
-            "{spelling} named route: the carrier named `ceq` as its equality, so a \
-             structural answer would report a verdict it disowned; got {named:?}"
+            matches!(&got, Err(EvalError::OperationBodyMissing { name, .. })
+                     if name == "wi1092.witness.ColorEq.eq"),
+            "`{call}`: the witness's `eq` is declared and nothing defines it, so the comparison \
+             is unrunnable — not `false`; got {got:?}"
         );
     }
 }

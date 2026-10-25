@@ -367,15 +367,22 @@ end
 
 /// THE INTERPRETABILITY FILTER's own control — the one thing
 /// `carrier_override_suppliers` adds on top of the shared owner it delegates to.
-/// `Leaf.describe` has no body — only a `@[simp]` equation defines it, since WI-20260909-M8QWJ
-/// refuses a member of a sort with constructors that nothing defines — so the interpreter's
-/// dispatch cannot run it; a fact binds a runnable `otherDescribe`. Dropping the unrunnable
-/// member BEFORE the count leaves ONE supplier and the call answers 7.
+/// `Leaf.describe` has no body — only CLAUSES define it, which answer a goal and not a call
+/// (WI-20261011-CR6GD) — so the interpreter's dispatch cannot run it; a fact binds a
+/// runnable `otherDescribe`. Dropping the unrunnable member BEFORE the count leaves ONE
+/// supplier and the call answers 7.
+///
+/// THE MEMBER IS CLAUSE-DEFINED because the two shapes it had before are load errors now:
+/// a declared-only member of a sort with constructors (WI-20260909-M8QWJ) and a member
+/// defined by a `@[simp]` equation alone where a provision supplies it (WI-885). A
+/// clause-defined member of a spec operation's name is the one left, and it is the
+/// same-short-name collision the filter exists for.
 ///
 /// MEASURED both ways, on the declared-only member this fixture had before
-/// WI-20260909-M8QWJ and again on the `@[simp]` one (2026-10-17): with the filter removed
-/// this row fails, where it is not "7 from the other candidate" — a refusal caused entirely
-/// by a member nothing can call. What this does NOT pin is the filter's PLACEMENT: pushing it down
+/// WI-20260909-M8QWJ, on the `@[simp]` one (2026-10-17) and on the clause-defined one
+/// (2026-10-25): with the filter removed this row fails, where it is not "7 from the other
+/// candidate" — a refusal caused entirely by a member nothing can call. What this does NOT
+/// pin is the filter's PLACEMENT: pushing it down
 /// into `spec_op_suppliers_for_carrier` keeps the whole suite green, because the tree
 /// holds no cpp-mapped rival that would make the body-less path's coherence count
 /// diverge. That argument is stated at `carrier_override_suppliers` and guarded by
@@ -386,7 +393,7 @@ fn an_unrunnable_own_member_is_not_a_supplier() {
     let src = program(
         ns,
         "    provides Desc[T = Leaf]\n    operation describe(x: Leaf) -> Int64\n    \
-         rule describe(?x) <=> 3 @[simp]\n",
+         rule describe(?x, 3) :- true\n",
         "\n  operation otherDescribe(x: Leaf) -> Int64 = 7\n\n  \
          namespace Leaf\n    \
          provides Desc[T = Leaf, describe = otherDescribe]\n  end\n",

@@ -405,6 +405,21 @@ pub(super) fn equation_clause_census(kb: &KnowledgeBase, functor: Symbol) -> Cla
     census
 }
 
+/// WI-885 — the canonical SUBJECT of every `@[simp]` equation: each functor a firing
+/// site would rewrite. [`equation_clause_census`]'s `simp_tagged > 0` for every functor
+/// at once, for a caller on the SUCCESS path (`check_provider_operations`, every load).
+/// It reads the firing bucket ([`KnowledgeBase::simp_equation_rids`]) the census must
+/// not, because a tagged equation is never unindexed (WI-139 unindexes the untagged
+/// ones), and applies the firing sites' own predicates unchanged.
+pub(super) fn simp_equation_subjects(kb: &mut KnowledgeBase) -> std::collections::HashSet<Symbol> {
+    kb.simp_equation_rids()
+        .into_iter()
+        .filter(|&rid| is_simp_equation(kb, rid))
+        .filter_map(|rid| stored_lhs_functor(kb, rid))
+        .map(|functor| kb.canonical_sym(functor))
+        .collect()
+}
+
 /// WI-1058 — the LHS SHAPE (positional arity + named-argument labels) of every live
 /// equation defining `functor`, or `None` if any of them has a shape this cannot read.
 ///
