@@ -1065,12 +1065,13 @@ fn list_items_strict(kb: &KnowledgeBase, v: &Value) -> Option<Vec<Value>> {
 /// [`effects_of_head`] (WI-341 Stage A).
 ///
 /// A `FieldInfo` holds the parameter's name as written; its symbol is the operation's
-/// field `<operation>.<name>`, the one the loader defines beside the record.
+/// field `<operation>.<name>`, the one the loader defines beside the record — read off the
+/// operation's scope, where a sort of the operation's name can hold the qualified name.
 fn extract_params(kb: &KnowledgeBase, head: &Value) -> Vec<(Symbol, Value)> {
     let Some(owner) = head_field(kb, head, "name").and_then(|n| view_ref_sym(kb, n)) else {
         return Vec::new();
     };
-    let owner = kb.qualified_name_of(owner).to_owned();
+    let owner = kb.canonical_sym(owner);
     let params_field = head_field(kb, head, "params");
     let items: Vec<Value> = match params_field {
         Some(ViewItem::Term(t)) => list_to_vec(kb, t).into_iter().map(Value::term).collect(),
@@ -1088,12 +1089,13 @@ fn extract_params(kb: &KnowledgeBase, head: &Value) -> Vec<(Symbol, Value)> {
             else {
                 return None;
             };
-            let field = kb.symbols.by_qualified_name.get(&format!("{owner}.{name}")).copied();
+            let field = kb.symbols.operation_place(owner, &name);
             // The loader defines the field beside the record it writes; a name naming none is
             // a record the loader did not write, whose parameter this decode cannot place.
             debug_assert!(
                 field.is_some(),
-                "`{owner}`'s parameter `{name}` names no field `{owner}.{name}`"
+                "`{}`'s parameter `{name}` names no field in its scope",
+                kb.qualified_name_of(owner)
             );
             let name = field?;
             let ptype = head_field_value(kb, &fi, "type_name")?;

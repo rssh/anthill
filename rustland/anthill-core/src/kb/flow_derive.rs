@@ -534,10 +534,16 @@ impl<'a> Deriver<'a> {
                 }
             }
         }
-        let cb_qn = self.kb.qualified_name_of(cb).to_owned();
+        // `f.result`, beside `f` in the operation's scope.
         let val = self
             .kb
-            .try_resolve_symbol(&format!("{}.result", cb_qn))
+            .symbols
+            .declaring_scope(cb)
+            .filter(|scope| scope.is_operation())
+            .and_then(|scope| {
+                let result = format!("{}.result", self.kb.local_name_of(cb));
+                self.kb.symbols.operation_place(scope.owner(), &result)
+            })
             .filter(|&r| self.kb.kinds(r).is_place(SymbolKind::CallbackResult))
             .map(|r| Origin {
                 kind: Fk::Direct,

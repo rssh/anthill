@@ -25,10 +25,11 @@
 //! hands back its own symbol for the same reason: `fact lib.secret(2)` over an
 //! `internal` operation aborted the load on that assert before this change.
 //!
-//! Not this file's: a sort that shares its name with an operation still gives the
-//! operation's parameters and type parameters the sort's scope, so a rule in the sort's
-//! body reads the operation's parameter, an import reaches its type parameter, and the
-//! sort accepts the operation's type parameter in a bracket.
+//! Not this file's: a sort that shares its name with an operation gave the operation's
+//! parameters and type parameters the sort's scope, so a rule in the sort's body read the
+//! operation's parameter. Each operation's scope is its own since WI-20261025-TGAAD
+//! (`wi_tgaad_operation_scope_is_its_own_test`), and the wildcard and `requires` row below
+//! holds by that as well as by the visibility filter.
 //!
 //! ── WHICH ROWS FAIL WHEN THE CHANGE IS BACKED OUT ─────────────────────────────
 //!

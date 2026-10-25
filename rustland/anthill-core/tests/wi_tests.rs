@@ -2051,6 +2051,8 @@ mod wi_jbhqc_plain_import_of_a_predicate_test;
 
 #[path = "include/wi_gjvvw_import_reaches_no_parameter_test.rs"]
 mod wi_gjvvw_import_reaches_no_parameter_test;
+#[path = "include/wi_tgaad_operation_scope_is_its_own_test.rs"]
+mod wi_tgaad_operation_scope_is_its_own_test;
 #[path = "include/wi_9r5hn_reflect_set_test.rs"]
 mod wi_9r5hn_reflect_set_test;
 

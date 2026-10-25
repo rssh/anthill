@@ -292,8 +292,9 @@ fn a_bracket_requirement_on_a_sort_named_operation_is_the_requirement_in_both_or
 
 /// `{Sort, Operation}` and an operation's OWN type parameter: `F[U]`'s `U.Elem` with no
 /// `requires` on `U` is self-licensed (WI-383) beside a same-named sort as it is alone,
-/// whichever is written first. The two share one scope, and the operation's bracket — not
-/// the scope — says `U` is its own. The CONTROL is the operation alone, whose one refusal —
+/// whichever is written first. The two are one symbol, and the operation's bracket — not
+/// the symbol — says `U` is its own: the operation's scope is not the sort's
+/// (WI-20261025-TGAAD), and the path `F` names both. The CONTROL is the operation alone, whose one refusal —
 /// a body-less operation in a namespace has no definition — every order must match.
 #[test]
 fn an_operations_own_parameter_projects_beside_a_same_named_sort_in_both_orders() {

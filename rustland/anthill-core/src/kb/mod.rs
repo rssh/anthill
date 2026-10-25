@@ -4430,6 +4430,11 @@ impl KnowledgeBase {
     /// bracket parameters when `sort_sym` is an operation. Empty for anything that
     /// declares none.
     ///
+    /// A SORT THAT SHARES ITS NAME WITH AN OPERATION answers as the sort: the two are one
+    /// symbol (§4.4), and each declares its parameters in a scope of its own
+    /// ([`ScopeId`]). Code that reads the operation's own parameters there asks
+    /// [`Self::operation_type_param_sym`].
+    ///
     /// Source order, not alphabetical: positional bindings rely on it (`Map[String,
     /// Int]` maps index 0 → `K`, 1 → `V` by the order they were declared).
     ///
@@ -4453,8 +4458,7 @@ impl KnowledgeBase {
     /// positional bindings would have stopped mapping. `canonical_sym` is keyed on
     /// exactly the string the old scan used, so the bridge is the same one.
     pub fn type_param_syms_of(&self, sort_sym: Symbol) -> &[Symbol] {
-        let owner = self.canonical_sort_sym(sort_sym);
-        self.symbols.type_param_syms(self.symbols.scope_id(owner))
+        self.symbols.type_param_syms(self.type_param_scope(sort_sym))
     }
 
     /// The symbol `owner` declares for its type parameter named `short`, or `None` if
@@ -4463,11 +4467,28 @@ impl KnowledgeBase {
     /// owner's name ended (`<ns>.<Sort>.<op>.<T>` has two plausible owners) and could
     /// reach a declaration in another scope entirely. Canonicalized for
     /// [`Self::type_param_syms_of`]' reason — a twin copy of the owner names the same
-    /// declarations.
+    /// declarations — and the sort's for a sort of an operation's name, for its reason.
     pub fn type_param_sym_of(&self, owner: Symbol, short: &str) -> Option<Symbol> {
-        let owner = self.canonical_sort_sym(owner);
-        self.symbols
-            .type_param_sym(self.symbols.scope_id(owner), short)
+        self.symbols.type_param_sym(self.type_param_scope(owner), short)
+    }
+
+    /// The scope [`Self::type_param_syms_of`] reads `sym`'s parameters from: the sort's when
+    /// `sym` declares a sort, the operation's when it declares an operation and no sort.
+    fn type_param_scope(&self, sym: Symbol) -> ScopeId {
+        let owner = self.canonical_sort_sym(sym);
+        let def = self.symbols.get(owner);
+        if def.has_kind(SymbolKind::Operation) && !def.has_kind(SymbolKind::Sort) {
+            self.symbols.operation_scope(owner)
+        } else {
+            self.symbols.scope_id(owner)
+        }
+    }
+
+    /// The symbol the operation `op`'s bracket declares for its type parameter named `short` —
+    /// its own, also where a sort shares its name ([`Self::type_param_syms_of`]).
+    pub fn operation_type_param_sym(&self, op: Symbol, short: &str) -> Option<Symbol> {
+        let op = self.canonical_sym(op).plain();
+        self.symbols.type_param_sym(self.symbols.operation_scope(op), short)
     }
 
     /// [`Self::type_param_syms_of`] as short NAMES — what the many callers that only
@@ -8472,6 +8493,11 @@ impl KnowledgeBase {
     /// constructor — a fact headed by `Foo†` is filed under `Foo†`, and the WI-581
     /// guardrail compares a head with its canonical image.
     pub(crate) fn canonical_sym(&self, sym: Symbol) -> Symbol {
+        // A name an operation's signature declares is its own image: the map can hold a
+        // sort member of the same qualified name for it (`SymbolTable::define`).
+        if self.symbols.is_operation_place(sym) {
+            return sym;
+        }
         let qn = self.qualified_name_of(sym);
         let canon = self
             .symbols

@@ -1370,9 +1370,13 @@ fn forwarded_binder(
     // A named slot's binder IS a type parameter of its owner (the loader splices it and
     // publishes its variable), so a miss here is a loader invariant broken, and reading
     // it as "not a forward" would hand the dep to the spec-keyed search in silence
-    // (found by `/code-review`).
-    let var = kb
-        .type_param_sym_of(owner, &short)
+    // (found by `/code-review`). An operation's slot (no `of_base`) is its bracket's,
+    // also where a sort shares its name.
+    let declared = match slot.of_base {
+        None => kb.operation_type_param_sym(owner, &short),
+        Some(_) => kb.type_param_sym_of(owner, &short),
+    };
+    let var = declared
         .and_then(|param| kb.canonical_type_param_var(param))
         .unwrap_or_else(|| {
             panic!(

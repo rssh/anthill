@@ -138,6 +138,16 @@ impl std::fmt::Debug for Symbol {
 /// an operation frame or the top-level `<global>` opens, identified by THE SYMBOL
 /// THAT OWNS IT.
 ///
+/// AN OPERATION'S SCOPE IS ITS OWN (WI-20261025-TGAAD). The names an operation's
+/// signature declares — its parameters, type parameters, `result`, a callback's places —
+/// are in scope in that operation only (kernel-language.md §8.6), and a sort that shares
+/// its name with the operation is the same symbol (§4.4). So one symbol can own two
+/// scopes: the one [`SymbolTable::scope_id`] mints, which a `sort` body or a `namespace`
+/// opens, and the one [`SymbolTable::operation_scope`] mints, which the operation opens.
+/// Both answer the same [`Self::owner`]. Every operation's names are in the second, not
+/// only a sort-named one's: which symbol is also a sort is not known until every
+/// declaration of a load is read.
+///
 /// IT WRAPS THE SYMBOL, NOT THE TERM, and that is the whole design. Scope keys
 /// used to be the `TermId` raw of the owner's nullary name term, which made the
 /// owner projection a QUERY — fetch the term, match a nullary `Term::Fn`, answer
@@ -227,14 +237,24 @@ impl std::fmt::Debug for Symbol {
 /// assert_eq!(st.declaring_scope(x).map(|s| s.owner()), Some(owner));
 /// ```
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct ScopeId(Symbol);
+pub struct ScopeId {
+    owner: Symbol,
+    /// The scope an operation opens for the names its signature declares, and not the
+    /// one the same symbol opens as a sort.
+    operation: bool,
+}
 
 impl ScopeId {
     /// The symbol that OWNS this scope — `Tank` for the scope `Tank.fill` is
     /// declared in. A TOTAL projection: no fetch, no match, no `Option`. The
-    /// reason this newtype wraps the symbol.
+    /// reason this type wraps the symbol.
     pub fn owner(self) -> Symbol {
-        self.0
+        self.owner
+    }
+
+    /// Is this the scope an operation opens ([`SymbolTable::operation_scope`])?
+    pub fn is_operation(self) -> bool {
+        self.operation
     }
 }
 
@@ -1260,7 +1280,10 @@ impl SymbolTable {
     pub fn new() -> Self {
         let global_owner = Symbol(0);
         let mut st = Self {
-            global: ScopeId(global_owner),
+            global: ScopeId {
+                owner: global_owner,
+                operation: false,
+            },
             defs: Vec::new(),
             intern_map: HashMap::new(),
             by_qualified_name: HashMap::new(),
@@ -1346,9 +1369,10 @@ impl SymbolTable {
         self.global
     }
 
-    /// WI-984 — mint the [`ScopeId`] of the scope `owner` opens. THE ONLY
-    /// constructor: a scope cannot be built from a raw integer, a `TermId`, or an
-    /// arbitrary index, and that refusal is a compile error rather than a comment.
+    /// WI-984 — mint the [`ScopeId`] of the scope `owner` opens as a `namespace` or a
+    /// `sort`. With [`Self::operation_scope`], THE ONLY constructors: a scope cannot be
+    /// built from a raw integer, a `TermId`, or an arbitrary index, and that refusal is a
+    /// compile error rather than a comment.
     ///
     /// The bound check is the one provenance guard Rust affords here, and it is
     /// LOAD-BEARING rather than defensive: every reader indexes `defs` by the
@@ -1357,16 +1381,35 @@ impl SymbolTable {
     /// direction where the FOREIGN table is the larger one — see [`ScopeId`] for
     /// what that leaves open and why Rust cannot close it.
     pub fn scope_id(&self, owner: Symbol) -> ScopeId {
+        ScopeId {
+            owner: self.issued_owner(owner, "scope_id"),
+            operation: false,
+        }
+    }
+
+    /// The scope the operation `op` opens: where its parameters, type parameters, `result`
+    /// and callbacks' places are declared, and where its signature and body are read. Not
+    /// the scope [`Self::scope_id`] mints for the same symbol, which a sort of the same
+    /// name opens.
+    pub fn operation_scope(&self, op: Symbol) -> ScopeId {
+        ScopeId {
+            owner: self.issued_owner(op, "operation_scope"),
+            operation: true,
+        }
+    }
+
+    /// `owner`, plain, after [`Self::scope_id`]'s bound check.
+    fn issued_owner(&self, owner: Symbol, mint: &str) -> Symbol {
         assert!(
             (owner.index() as usize) < self.defs.len(),
-            "scope_id: Symbol({}) was never issued by this SymbolTable (it holds {} \
+            "{mint}: Symbol({}) was never issued by this SymbolTable (it holds {} \
              symbols) — a scope owner from another table cannot name a scope here",
             owner.index(),
             self.defs.len(),
         );
         // A scope is opened by a DECLARATION, and a type face is not one: `Foo†` and
         // `Foo` own the same scope (WI-20260902-JB6RS), so the owner is always plain.
-        ScopeId(owner.plain())
+        owner.plain()
     }
 
     /// Intern a name, returning a Symbol. Creates an Unresolved entry
@@ -1448,8 +1491,42 @@ impl SymbolTable {
             arg_places: None,
         });
         scope_data.locals.insert(local_name.to_owned(), sym);
-        self.set_canonical(qualified_name, sym);
+        // A name an operation's signature declares is named by no path (kernel-language.md
+        // §8.6), so it does not take its qualified name from a declaration that holds it:
+        // `ns.Pos.c` stays the member `c` of `sort Pos` beside `operation Pos(c: …)`,
+        // whichever is declared first. Inside the operation the place is read through its
+        // scope ([`Self::operation_place`]).
+        let held_by_a_declaration = scope.is_operation()
+            && self
+                .by_qualified_name
+                .get(qualified_name)
+                .is_some_and(|&held| !self.is_operation_place(held));
+        if !held_by_a_declaration {
+            self.set_canonical(qualified_name, sym);
+        }
         sym
+    }
+
+    /// The declaration the path `qualified_name` names, for a declaring site to add its
+    /// role to: its canonical symbol, unless that is a name an operation's signature
+    /// declares, which no path names (§8.6) and which a member of a sort of the
+    /// operation's name declared later does not join.
+    pub fn declaration_at(&self, qualified_name: &str) -> Option<Symbol> {
+        self.by_qualified_name
+            .get(qualified_name)
+            .copied()
+            .filter(|&sym| !self.is_operation_place(sym))
+    }
+
+    /// The name `local_name` the operation `op`'s signature declares — a parameter, a type
+    /// parameter, `result`, or a callback's place spelled from the operation (`f.result`).
+    /// Read off the operation's own scope, not by qualified name: a member of a sort of the
+    /// operation's name can hold that ([`Self::define`]).
+    pub fn operation_place(&self, op: Symbol, local_name: &str) -> Option<Symbol> {
+        self.scope(self.operation_scope(op))?
+            .locals
+            .get(local_name)
+            .copied()
     }
 
     /// WI-20261022-JBHQC — the symbol a rule head of the load being scanned WILL mint as
@@ -1668,17 +1745,10 @@ impl SymbolTable {
 
     /// Is `sym` a name an operation's signature declares — a parameter, a type
     /// parameter, the operation's `result`, a callback's place? Each is in scope in its
-    /// operation only (kernel-language.md §8.6). A sort that shares its name with an
-    /// operation is one symbol, so its scope holds the sort's members beside the
-    /// operation's places; of those, the value places are the operation's.
+    /// operation only (kernel-language.md §8.6), and declared in the scope the operation
+    /// opens ([`Self::operation_scope`]).
     pub fn is_operation_place(&self, sym: Symbol) -> bool {
-        let Some(scope) = self.declaring_scope(sym) else {
-            return false;
-        };
-        let owner = self.get(scope.owner());
-        owner.has_kind(SymbolKind::Operation)
-            && (!owner.has_kind(SymbolKind::Sort)
-                || self.get(sym).kinds().intersects(KindSet::VALUE_PLACES))
+        self.declaring_scope(sym).is_some_and(ScopeId::is_operation)
     }
 
     /// Is `sym` visible from `from_scope` as an operation's place is — from the

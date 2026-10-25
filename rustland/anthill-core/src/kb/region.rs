@@ -347,8 +347,10 @@ fn push_effect_dedup(kb: &KnowledgeBase, out: &mut Vec<Value>, effect: Value) {
 /// pass needs the same symbol to align a spec op's result binder with an override's
 /// (contract clauses over `result` are otherwise incomparable — the two binders are
 /// distinct symbols). One resolver rather than two spellings of the same `format!`.
+/// Read off the operation's scope, not by `<op>.result`: a member of a sort of the
+/// operation's name can hold that qualified name.
 pub(crate) fn resolve_op_result_sym(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
-    let sym = kb.try_resolve_symbol(&format!("{}.result", kb.qualified_name_of(op_sym)))?;
+    let sym = kb.symbols.operation_place(kb.canonical_sym(op_sym), "result")?;
     // The NAME is not the property; the KIND is. `<op>.<param>.result` is minted
     // for a callback's result with kind `CallbackResult`, and a type parameter
     // spelled `result` merges into the same symbol via `define`'s add_kind path,
