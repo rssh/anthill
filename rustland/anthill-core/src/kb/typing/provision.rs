@@ -821,7 +821,7 @@ fn written_spec_binds_param(
 /// op-discriminator `load::spec_binding_texts` uses); a type-valued binding
 /// (`F = Option`, a `Sort`) yields `None`, so a plain type-only provision
 /// (`provides Stream[T = X]`) never matches.
-fn instance_fact_op_in_bindings(
+pub(super) fn instance_fact_op_in_bindings(
     kb: &KnowledgeBase,
     bindings: &[(Symbol, Value)],
     op_short: &str,
@@ -872,17 +872,16 @@ pub(super) fn provision_binds_any_op(kb: &KnowledgeBase, spec_view: &Value) -> b
     }
 }
 
-/// WI-431 loader coverage: true iff the provision's spec view binds `op_short`
-/// to an operation — the instance-fact backing for that spec op.
-pub(super) fn op_bound_in_instance_fact(
+/// WI-431 loader coverage: the bindings of a provision's spec view, decoded once, for
+/// [`instance_fact_op_in_bindings`] to ask per spec operation — the instance-fact
+/// backing for that op. Empty for a view this cannot unwrap.
+pub(super) fn provision_bindings(
     kb: &KnowledgeBase,
     spec_view: &Value,
-    op_short: &str,
-) -> bool {
-    match unwrap_spec_view_value(kb, spec_view) {
-        Some((_, bindings)) => instance_fact_op_in_bindings(kb, &bindings, op_short).is_some(),
-        None => false,
-    }
+) -> SmallVec<[(Symbol, Value); 2]> {
+    unwrap_spec_view_value(kb, spec_view)
+        .map(|(_, bindings)| bindings)
+        .unwrap_or_default()
 }
 
 /// WI-431 dispatch: the operation backing spec op `op_short` for `carrier`
@@ -1483,6 +1482,65 @@ pub(super) fn op_backed(
     // NonMonotonicStore[ZzNotAStore]` has no `Implementation` fact, so `host_realized`
     // is false and the spec mapping is not offered to it.
     host_realized && kb.is_host_mapped_op(spec_op)
+}
+
+/// WI-885 — is `op`, supplied by a provision for a spec operation, defined by `@[simp]`
+/// equations and by nothing a dispatch can run? The equation rewrites a call that NAMES
+/// the member where the carrier is known (§5.3); a dispatch invokes no equation.
+///
+/// `simp_subjects` is [`simp_equation_subjects`](crate::kb::simp_rewrite::simp_equation_subjects),
+/// built once per check: this runs on the success path of every load, and asking it first
+/// keeps every member no `@[simp]` equation rewrites to one hash probe. `host_claimed` is
+/// the `@[host_implemented]` set, built on first use as the declaration check builds it.
+///
+/// Runnable is a body, a resolver builtin, a host mapping or `Error.reify`'s frame — and,
+/// for the `eq` a carrier's equality dispatches to, its CLAUSES, which the eval→SLD bridge
+/// proves (WI-625). Two members have a refusal of their own, which this does not repeat:
+/// one whose body the loader refused (WI-605) and one claimed `@[host_implemented]` whose
+/// mapping is missing (`HostImplementedUnsupplied`) — "give it a body" would contradict
+/// either. And an `eq` with no clause whose owner cannot be provided (a namespace, a sort
+/// with constructors), declared in THIS load, is refused at its declaration, `@[simp]` or
+/// not (`check_operations_have_a_definition`); one an earlier load declared is not judged
+/// there again — it was not an `eq` dispatch target until a later provision bound it — so
+/// it is judged here.
+///
+/// Anything else is left alone, deliberately: a member merely declared, or defined by
+/// clauses, is what WI-876's gate reads as absent — the same-short-name collision (`sub`
+/// ↔ `Numeric.sub`) — and a member nothing defines is the declaration check's. That
+/// includes an `eq` slot no host implements yet, `Map.eq`, whose comparisons
+/// `check_eq_override_backing` refuses where they are written.
+pub(super) fn defined_by_simp_alone(
+    kb: &KnowledgeBase,
+    op: Symbol,
+    simp_subjects: &std::collections::HashSet<Symbol>,
+    host_claimed: &mut Option<std::collections::HashSet<Symbol>>,
+) -> bool {
+    let canon = kb.canonical_sym(op);
+    if !simp_subjects.contains(&canon) {
+        return false;
+    }
+    // Both spellings: the side tables are keyed by the symbol a declaration landed on,
+    // and a binding or a sort-ops lookup may hand back another interning of it.
+    let backed_or_refused = |s: Symbol| {
+        kb.op_body_node(s).is_some()
+            || kb.op_bodies_refused.contains(&s)
+            || kb.is_builtin(s)
+            || kb.is_host_mapped_op(s)
+    };
+    if backed_or_refused(op) || backed_or_refused(canon) || kb.is_reify_operation(canon) {
+        return false;
+    }
+    if kb.is_eq_dispatch_target(op) {
+        let clauses = kb.has_clauses_under(op) || kb.has_clauses_under(canon);
+        let declared_in_this_load =
+            kb.op_decl_sites.contains_key(&op) || kb.op_decl_sites.contains_key(&canon);
+        if clauses || (declared_in_this_load && spec_op_parent_sort(kb, op).is_none()) {
+            return false;
+        }
+    }
+    !host_claimed
+        .get_or_insert_with(|| crate::kb::op_info::host_implemented_operations(kb))
+        .contains(&canon)
 }
 
 /// Top functor symbol of a term head — a `Fn` functor, or a bare `Ref`/`Ident`.

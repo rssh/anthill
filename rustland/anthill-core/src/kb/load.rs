@@ -303,6 +303,54 @@ fn unbacked_provider_operation_detail(
     )
 }
 
+/// WI-885 — the ONE wording of [`LoadError::SimpDefinedProviderOperation`], for both faces.
+fn simp_defined_provider_operation_message(
+    member: &str,
+    provider: &str,
+    spec: &str,
+    op: &str,
+    spec_default: bool,
+    carrier_eq: bool,
+    derived_from: Option<&str>,
+) -> String {
+    let default = if spec_default {
+        format!(
+            " `{spec}.{op}` has a default body, and a call through `{spec}` would run it in \
+             `{member}`'s place, so one call would answer differently by the name it was \
+             written with."
+        )
+    } else {
+        String::new()
+    };
+    let (runs, repair) = if carrier_eq {
+        (
+            "a body, a host mapping, a builtin, or — for the `eq` a carrier's equality \
+             dispatches to — the clauses the bridge proves",
+            format!(
+                "Define `{member}` by cases with predicate-headed clauses (`rule {name}(…) :- \
+                 true`), or give it a body; the equation may stay.",
+                name = last_segment(member),
+            ),
+        )
+    } else {
+        (
+            "a body, a host mapping or a builtin",
+            format!(
+                "Give `{member}` a body: it may keep the equation, which still rewrites the \
+                 calls that name it."
+            ),
+        )
+    };
+    format!(
+        "`{member}` is what `{provider}`'s `provides {spec}[…]` supplies for `{spec}.{op}`, \
+         and nothing a dispatch can run defines it — a `@[simp]` equation does. The equation \
+         rewrites a call that names `{member}` where the carrier is known; a call through \
+         `{spec}` runs what the provision's dictionary holds — {runs} — and no dictionary \
+         entry is built from an equation (kernel-language.md §5.3).{default} {repair}{}",
+        derived_row_clause(spec, derived_from)
+    )
+}
+
 /// WI-20260831-V25N3 — ONE rendering for [`LoadError::WrittenEffectRowLabel`], shared by
 /// the located and the bare face so the two cannot drift. `origin` completes "written in
 /// …" and `detail` carries the rule-specific half; both are built by the pass, which is
@@ -932,6 +980,36 @@ pub enum LoadError {
         /// Without it the two cases render identically and the author is sent looking
         /// for a `provides` clause that is not in their file.
         derived_from: Option<String>,
+    },
+    /// WI-885 — the member a provision puts where a spec operation's implementation goes
+    /// (the provider's own member of that name, or the operation an instance fact binds)
+    /// is defined by a `@[simp]` equation and by nothing a dispatch can run. The equation
+    /// rewrites a call written at a carrier the typer knows; a call through the spec runs
+    /// what the dictionary holds, and no dictionary entry is built from an equation
+    /// (kernel-language.md §5.3). Without this the program loaded clean and one call
+    /// answered three ways: the equation's answer where the member was named, the spec's
+    /// default where the spec was, and `OperationBodyMissing` through a dictionary.
+    SimpDefinedProviderOperation {
+        /// The member, qualified.
+        member: String,
+        /// The provider whose provision supplies it, qualified — the carrier's own sort,
+        /// a witness sort, or the sort an instance fact is written in.
+        provider: String,
+        /// The provided spec, qualified.
+        spec: String,
+        /// The spec operation's own name.
+        op: String,
+        /// The spec operation has a default BODY — what a call through the spec ran in the
+        /// member's place before the refusal.
+        spec_default: bool,
+        /// The member is the `eq` a carrier's equality dispatches to, which runs by the
+        /// clauses the eval→SLD bridge proves — so clauses are a repair beside a body.
+        carrier_eq: bool,
+        /// WI-1109 — the spec the author wrote, when `spec` is a row the loader DERIVED
+        /// from it, as on `UnbackedProviderOperation`.
+        derived_from: Option<String>,
+        /// Where the member is declared, when THIS load phase declared it.
+        span: Option<Span>,
     },
     /// WI-658: a carrier provides BOTH `Eq` (lawful, reflexive equality) and
     /// `NonEq` (a WITNESSED non-reflexive equality — `nonEqRefl()` exhibits a
@@ -1730,9 +1808,14 @@ pub enum LoadError {
         op: String,
         /// Why no provider can supply it.
         owner: UnprovidableOwner,
-        /// Bodyless equations whose subject is the operation and that carry no
-        /// `@[simp]` tag — inert (§5.3), and the likeliest intended definition.
-        untagged_equations: usize,
+        /// Bodyless equations whose subject is the operation and that cannot define it:
+        /// those with no `@[simp]` tag — inert (§5.3), and the likeliest intended
+        /// definition — and, for a carrier's `eq`, every one (`carrier_eq`).
+        inert_equations: usize,
+        /// WI-885 — the operation is the `eq` a carrier's equality dispatches to. Its
+        /// definition is the clauses the eval→SLD bridge proves (§5.3), and an equation,
+        /// tagged or not, is indexed under its connective and gives the bridge nothing.
+        carrier_eq: bool,
         /// Where the operation is declared.
         span: Span,
     },
@@ -3084,6 +3167,7 @@ impl LoadError {
             | LoadError::HostMappingUnclaimed { span, .. }
             | LoadError::HostMappingOnBodiedOperation { span, .. }
             | LoadError::HostMappingDuplicate { span, .. }
+            | LoadError::SimpDefinedProviderOperation { span, .. }
             | LoadError::InvalidTypeArgument { span, .. } => *span,
             LoadError::Located { inner, .. } => inner.user_span(),
             _ => None,
@@ -3430,12 +3514,13 @@ impl LoadError {
             LoadError::OperationWithoutDefinition {
                 op,
                 owner,
-                untagged_equations,
+                inert_equations,
+                carrier_eq,
                 span,
             } => format!(
                 "{}: {}",
                 loc.format_start(*span),
-                operation_without_definition_message(op, owner, *untagged_equations)
+                operation_without_definition_message(op, owner, *inert_equations, *carrier_eq)
             ),
             LoadError::HostMappingUnclaimed {
                 op,
@@ -3506,6 +3591,30 @@ impl LoadError {
                 op,
                 derived_from,
             } => unbacked_provider_operation_detail(carrier, spec, op, derived_from.as_deref()),
+            LoadError::SimpDefinedProviderOperation {
+                member,
+                provider,
+                spec,
+                op,
+                spec_default,
+                carrier_eq,
+                derived_from,
+                span,
+            } => {
+                let msg = simp_defined_provider_operation_message(
+                    member,
+                    provider,
+                    spec,
+                    op,
+                    *spec_default,
+                    *carrier_eq,
+                    derived_from.as_deref(),
+                );
+                match span {
+                    Some(sp) => format!("{}: {}", loc.format_start(*sp), msg),
+                    None => msg,
+                }
+            }
             LoadError::IncompatibleEqNonEq { carrier } => {
                 format!("'{}' provides both 'Eq' and 'NonEq', which are mutually exclusive: a carrier's `eq` cannot be both lawful (reflexive) and non-reflexive. A partial carrier (e.g. IEEE Float) provides PartialEq + NonEq; a lawful carrier provides PartialEq + Eq — drop whichever is wrong.",
                     carrier)
@@ -4986,12 +5095,13 @@ impl std::fmt::Display for LoadError {
             LoadError::OperationWithoutDefinition {
                 op,
                 owner,
-                untagged_equations,
+                inert_equations,
+                carrier_eq,
                 span,
             } => write!(
                 f,
                 "{} at {}..{}",
-                operation_without_definition_message(op, owner, *untagged_equations),
+                operation_without_definition_message(op, owner, *inert_equations, *carrier_eq),
                 span.start,
                 span.end
             ),
@@ -5100,6 +5210,30 @@ impl std::fmt::Display for LoadError {
                     "{}",
                     unbacked_provider_operation_message(carrier, spec, op, derived_from.as_deref())
                 )
+            }
+            LoadError::SimpDefinedProviderOperation {
+                member,
+                provider,
+                spec,
+                op,
+                spec_default,
+                carrier_eq,
+                derived_from,
+                span,
+            } => {
+                let msg = simp_defined_provider_operation_message(
+                    member,
+                    provider,
+                    spec,
+                    op,
+                    *spec_default,
+                    *carrier_eq,
+                    derived_from.as_deref(),
+                );
+                match span {
+                    Some(sp) => write!(f, "{} at {}..{}", msg, sp.start, sp.end),
+                    None => write!(f, "{}", msg),
+                }
             }
             LoadError::IncompatibleEqNonEq { carrier } => {
                 write!(f, "'{}' provides both 'Eq' and 'NonEq', which are mutually exclusive (a partial carrier provides PartialEq + NonEq; a lawful one PartialEq + Eq)",
@@ -16249,7 +16383,8 @@ pub enum UnprovidableOwner {
 fn operation_without_definition_message(
     op: &str,
     owner: &UnprovidableOwner,
-    untagged_equations: usize,
+    inert_equations: usize,
+    carrier_eq: bool,
 ) -> String {
     let why = match owner {
         UnprovidableOwner::Namespace(ns) => format!(
@@ -16264,7 +16399,32 @@ fn operation_without_definition_message(
              (kernel-language.md §5.1)"
         ),
     };
-    let equations = match untagged_equations {
+    if carrier_eq {
+        // WI-885 — a `@[simp]` tag is no repair here, so the hint must not offer one.
+        let equations = match inert_equations {
+            0 => String::new(),
+            n => format!(
+                " {n} equation{s} with `{op}` as {subject} {verb} indexed under the \
+                 connective, not under `{op}`, whether tagged `@[simp]` or not, and give{s1} \
+                 the bridge nothing to prove.",
+                s = if n == 1 { "" } else { "s" },
+                subject = if n == 1 { "its subject" } else { "their subject" },
+                verb = if n == 1 { "is" } else { "are" },
+                s1 = if n == 1 { "s" } else { "" },
+            ),
+        };
+        let name = last_segment(op);
+        return format!(
+            "operation `{op}` has no definition: no body, no `@[host_implemented]` claim, no \
+             builtin and no clause defines it, and it is the `eq` a carrier's equality \
+             dispatches to, which runs by proving the clauses indexed under it \
+             (kernel-language.md §5.3, §8.7). Nothing can supply one either — {why}. A \
+             comparison that reaches it fails when it runs.{equations} Define it by cases \
+             with predicate-headed clauses (`rule {name}(…) :- true`, one per equal pair), or \
+             give it a body."
+        );
+    }
+    let equations = match inert_equations {
         0 => String::new(),
         n => format!(
             " {n} equation{s} with `{op}` as {subject} {verb} no `@[simp]` tag, and an \
@@ -20372,7 +20532,8 @@ fn check_host_implemented_claims(kb: &KnowledgeBase, phase_first_rule: usize) ->
 /// ([`op_is_executable`](super::typing::op_is_executable)), the `@[host_implemented]`
 /// claim (whose missing mapping [`check_host_implemented_claims`] refuses on its own), a
 /// `@[simp]` defining equation, clauses (a goal's definition — the call side is
-/// `clause_defined_own_operation`'s), the `eq` a carrier's equality dispatches to, and
+/// `clause_defined_own_operation`'s — and the one call they run, the `eq` a carrier's
+/// equality dispatches to, for which a `@[simp]` equation is no definition, WI-885), and
 /// `Error.reify`'s frame — and a PROVIDER, for a member of a sort that may be provided.
 ///
 /// WHY THE DECLARATION AND NOT THE CALL. Only the provider route depends on what is
@@ -20407,7 +20568,6 @@ fn check_operations_have_a_definition(kb: &KnowledgeBase) -> Vec<LoadError> {
             || kb.is_host_mapped_op(op)
             || kb.has_clauses_under(canon)
             || kb.has_clauses_under(op)
-            || kb.is_eq_dispatch_target(op)
             || kb.is_reify_operation(canon)
         {
             continue;
@@ -20429,15 +20589,22 @@ fn check_operations_have_a_definition(kb: &KnowledgeBase) -> Vec<LoadError> {
         {
             continue;
         }
+        // WI-885 — the `eq` a carrier's equality dispatches to runs by its CLAUSES (the
+        // bridge, WI-625), which the legs above already admit; with none it runs nothing,
+        // and a `@[simp]` equation does not change that: the comparison dispatches, it is
+        // not a redex of the member. It was skipped here as a route of its own, clauses or
+        // not, and loaded clean to die at the first comparison (WI-1092's fixture).
+        let carrier_eq = kb.is_eq_dispatch_target(op);
         let census = super::simp_rewrite::equation_clause_census(kb, canon);
-        if census.simp_tagged > 0 {
+        if census.simp_tagged > 0 && !carrier_eq {
             continue;
         }
         errors.push(
             LoadError::OperationWithoutDefinition {
                 op: kb.qualified_name_of(op).to_string(),
                 owner,
-                untagged_equations: census.defining,
+                inert_equations: census.defining,
+                carrier_eq,
                 span: site.span,
             }
             .located_in_kb_source(kb, site.source),

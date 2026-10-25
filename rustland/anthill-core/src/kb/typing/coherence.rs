@@ -1238,6 +1238,14 @@ pub(crate) fn check_use_site_requires_eq(
 /// loaded clean and then died at run time (`UnknownOperation`). See
 /// [`op_backed`].
 ///
+/// Nor does a `@[simp]` equation (WI-885): it inlines a call that names the operation,
+/// and a dispatch runs no equation. A member the provision supplies that one defines
+/// ALONE is refused as [`SimpDefinedProviderOperation`] ([`defined_by_simp_alone`]), even
+/// where a spec default backs the operation, since that default would otherwise run in
+/// the member's place.
+///
+/// [`SimpDefinedProviderOperation`]: crate::kb::load::LoadError::SimpDefinedProviderOperation
+///
 /// SCOPE: the provisions whose provider a call can reach with nothing behind it —
 /// one with constructors (`sorts_with_constructors`), a host-realized carrier, and a
 /// witness provision ([`provider_owes_operations`], WI-20260909-M8QWJ). A
@@ -1336,6 +1344,12 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
 
     let mut errors = Vec::new();
     check_member_blocks_have_one_clause(kb, &mut errors);
+    // WI-885 — read by `defined_by_simp_alone`, below: the `@[simp]` subjects once per check,
+    // the `@[host_implemented]` set on first use, and the members already refused, so a
+    // member two rows supply (a written provision and one derived from it) is one refusal.
+    let simp_subjects = crate::kb::simp_rewrite::simp_equation_subjects(kb);
+    let mut host_claimed: Option<std::collections::HashSet<Symbol>> = None;
+    let mut simp_refused: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
     for p in &provisions {
         if Some(p.spec) == effects_runtime {
             continue;
@@ -1369,6 +1383,7 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
         let Some(spec_ops) = own_ops.get(&p.spec) else {
             continue;
         };
+        let bindings = provision_bindings(kb, &p.spec_view);
         for &spec_op in spec_ops {
             // An operation answered from its dictionary is backed by no carrier's member
             // ([`answered_by_its_dictionary`]), so a carrier's operation of its name is no
@@ -1402,6 +1417,62 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
                 });
                 continue;
             }
+            // WI-885 — A `@[simp]` EQUATION IS NO DICTIONARY ENTRY. What this provision
+            // puts where `spec_op`'s implementation goes — the provider's own member of
+            // this name (a witness's too: the witness IS the provider here), and the
+            // operation an instance fact binds — must be something a dispatch can run.
+            // One defined by a `@[simp]` equation alone is not: the equation rewrites a
+            // call that NAMES the member where the carrier is known, while a call through
+            // the spec invokes the dictionary's symbol (§5.3). Asked BEFORE `op_backed`,
+            // which a spec default satisfies — and then the default ran in the member's
+            // place. MEASURED, one program that loaded clean: `C.f(c)` answered the
+            // equation's 2, `Sp.f(c)` the default's 1, and the call through a requirement
+            // died `OperationBodyMissing`. Without a default it was `UnbackedProviderOperation`,
+            // whose text said `C` has no own `f`.
+            let op_short_sym = kb.intern(&op_short);
+            let own = carrier_own_op(kb, p.carrier, spec_op, op_short_sym);
+            let bound = instance_fact_op_in_bindings(kb, &bindings, &op_short);
+            let own_canon = own.map(|o| kb.canonical_sym(o));
+            let simp_alone: SmallVec<[Symbol; 2]> = own
+                .into_iter()
+                .chain(bound.filter(|&b| Some(kb.canonical_sym(b)) != own_canon))
+                .filter(|&m| defined_by_simp_alone(kb, m, &simp_subjects, &mut host_claimed))
+                .collect();
+            if !simp_alone.is_empty() {
+                // A default BODY is what ran in the member's place. A builtin spec op is not
+                // one: `PartialEq.eq`'s builtin dispatches to the carrier's `eq`, and reached it.
+                let spec_default = op_has_runnable_body(kb, spec_op);
+                // WI-1109's channel, as on `UnbackedProviderOperation` below: a row the
+                // loader derived is not named as if the author wrote it.
+                let derived_from = kb
+                    .derived_provision_origin_of(p.rid)
+                    .map(|origin| kb.qualified_name_of(origin).to_string());
+                for member in simp_alone {
+                    if !simp_refused.insert(kb.canonical_sym(member)) {
+                        continue;
+                    }
+                    let site = kb
+                        .op_decl_sites
+                        .get(&member)
+                        .and_then(|sites| sites.first())
+                        .copied();
+                    let error = LoadError::SimpDefinedProviderOperation {
+                        member: kb.qualified_name_of(member).to_string(),
+                        provider: carrier_qn.clone(),
+                        spec: kb.qualified_name_of(p.spec).to_string(),
+                        op: op_short.clone(),
+                        spec_default,
+                        carrier_eq: kb.is_eq_dispatch_target(member),
+                        derived_from: derived_from.clone(),
+                        span: site.map(|s| s.span),
+                    };
+                    errors.push(match site {
+                        Some(s) => error.located_in_kb_source(kb, s.source),
+                        None => error,
+                    });
+                }
+                continue;
+            }
             if op_backed(
                 kb,
                 p.carrier,
@@ -1419,7 +1490,7 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
             // carrier owning it or the spec defaulting it. A type-only provision
             // (`provides Stream[T = X]`) has no op-valued binding, so this never
             // matches and pre-WI-431 coverage is unchanged.
-            if op_bound_in_instance_fact(kb, &p.spec_view, &op_short) {
+            if bound.is_some() {
                 continue;
             }
             errors.push(LoadError::UnbackedProviderOperation {

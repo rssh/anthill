@@ -959,6 +959,11 @@ pub(crate) fn carrier_own_op(
 /// The gate still excludes what it was built to exclude: a member that is merely
 /// DECLARED, or backed only by rules, which the interpreter cannot invoke (and which
 /// a same-short-name collision — `sub` ↔ `Numeric.sub` — would otherwise capture).
+/// A `@[simp]` equation is such a rule: it rewrites a call that names the member and
+/// gives a dispatch nothing to invoke. A member defined by one ALONE does not reach
+/// this gate — the provision that would make it an override is refused at load
+/// (WI-885, `check_provider_operations`) — so excluding it is never what makes the
+/// spec's default run in its place.
 /// The predicate is [`op_is_interpretable`], not the `op_is_executable` this paragraph
 /// named before WI-886 split the two: a cpp `operation_map` entry is a real
 /// implementation that THIS interpreter cannot call, so counting it would select a
