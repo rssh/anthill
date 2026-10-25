@@ -3,9 +3,9 @@
 - id: WI-20261025-7K84M-one-answer-to-which
 - created: 2026-10-25T11:01:42Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-10-25T11:01:42Z
+- status_at: 2026-10-25T19:49:26Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -31,4 +31,8 @@ ACCEPTANCE: the generated family `f-supplier-routes` (rustland/anthill-core/test
 ### 2026-10-25T12:19:53Z — feedback — claude
 
 Measured by the family's judge once it was narrowed to the receiver route (2026-10-25, 1373e04f): since WI-20261025-ZAWX9 a DEFAULTED tie through a dictionary is refused, but only when the call runs — `gen(leaf())` over `gen[A](x: A) requires Desc[T = A] = Desc.describe(x)` loads clean and dies `AmbiguousSpecOpDispatch` (both shapes), where the call by name refuses the same tie at load. §8.7 refuses a tie at load where the carrier is statically known, and `gen(leaf())` names `Leaf` at load. It is this ticket's question — who answers, and when — and is listed on the family under it (Sound and OneVerdict, default=defaulted, supplied=own+binding, route=dictionary).
+
+### 2026-10-25T19:49:25Z — feedback — claude
+
+Delivered (56059e50). One answer for both halves: resolve_op_target_at resolves a body-less operation through the provider's suppliers as it resolves a defaulted one (one runs, two are a tie; the default fills an empty set, and a body-less op with none answers the table's inherited row); instance_fact_op_binding deleted. The readers that answered it by rules of their own now ask it — resolve_at_goal's projection (D3: the binding pinned at load; D1 by name with no receiver: refused), the higher-kinded arm, resolve_nullary_result_carrier, Dictionary.ops (spec_op_backed_by) — and the backing check reads the provider's merged view (D5). Semantic equality keeps the table's answer in the projection: pinned to a provision's eq = loopEq, wi625's circular binding never returned. D1 through a dictionary: the user decided (2026-10-25) the tie is refused where the dictionary is resolved, at load — not at the provisions, since default provides chooses between providers but not between two texts of one — so a call that builds a dictionary from an instance whose provider supplies an operation of the spec twice is refused there, naming the requirement, whichever operation the callee dispatches and in an instance a condition resolved to; kernel-language §8.7 says so (wording approved by the user). Acceptance: family f-supplier-routes lists no exceptions, 13 verdicts moved and blessed; all families green on both carriers; gate 10882 passed, 0 failed; scaland testFull 766 passed. Rows: wi_7k84m_one_supplier_answer_test (13), back-outs K1-K7 and the equality clause measured in its header. Cost: a body-less dictionary dispatch about 0.85 us more, optimized (1.65 to 2.5 us). Found, not changed: a carrier's OWN circular eq member (eq(x, y) = PartialEq.eq(x, y)) still never returns, before and after — it is pinned at load as it always was.
 
