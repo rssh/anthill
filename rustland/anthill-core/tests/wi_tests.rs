@@ -1298,6 +1298,8 @@ mod wi1012_static_supplier_tie_test;
 mod wi_zawx9_defaulted_dictionary_dispatch_test;
 #[path = "include/wi_7k84m_one_supplier_answer_test.rs"]
 mod wi_7k84m_one_supplier_answer_test;
+#[path = "include/wi_tsys6_own_eq_decides_test.rs"]
+mod wi_tsys6_own_eq_decides_test;
 
 #[path = "include/wi1013_call_type_args_view_test.rs"]
 mod wi1013_call_type_args_view_test;

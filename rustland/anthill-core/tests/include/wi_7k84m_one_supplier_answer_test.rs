@@ -457,23 +457,26 @@ fn the_reflect_faces_agree_on_a_bodyless_tie() {
 }
 
 /// SEMANTIC EQUALITY IS LEFT TO ITS BUILTIN, which dispatches itself: `PartialEq.eq(lp(v: 1),
-/// lp(v: 1))` beside `provides PartialEq[T = Loop, eq = neverEq]` is answered by the builtin's
-/// reflexivity, as before. MEASURED with `resolve_at_goal`'s equality clause backed out: the
+/// lp(v: 1))` beside `provides Eq[T = Loop, eq = neverEq]` is answered by the builtin's
+/// reflexivity, `Eq`'s law. MEASURED with `resolve_at_goal`'s equality clause backed out: the
 /// call was pinned to `neverEq` and answered 0 — and a circular binding never returned
 /// (`wi625_eval_semantic_eq_test::eval_undecidable_instance_fact_eq_is_loud_not_false`), which
-/// this row reports as a failure where that one hangs.
+/// this row reports as a failure where that one hangs. The type provides `Eq`: one providing
+/// only `PartialEq` has its binding asked on identical operands too (WI-20261025-TSYS6), and
+/// answers 0 either way.
 #[test]
 fn semantic_equality_is_left_to_its_builtin() {
     let ns = "test.k84m.eq";
     let src = format!(
         r#"namespace {ns}
-  import anthill.prelude.{{Int64, Bool, PartialEq}}
+  import anthill.prelude.{{Int64, Bool, PartialEq, Eq}}
   sort Loop
     entity lp(v: Int64)
   end
   operation neverEq(x: Loop, y: Loop) -> Bool = false
   namespace Loop
     provides PartialEq[T = Loop, eq = neverEq]
+    provides Eq[T = Loop, eq = neverEq]
   end
   operation go() -> Int64 = if PartialEq.eq(lp(v: 1), lp(v: 1)) then 1 else 0
 end

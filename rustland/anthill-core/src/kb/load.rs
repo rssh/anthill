@@ -21573,7 +21573,18 @@ pub fn build_eq_dispatch_index(kb: &mut KnowledgeBase) -> Vec<LoadError> {
     // supply routes, one member over. Collected first so it is reported even when a
     // carrier is also ambiguous in its `eq`.
     let mut refusals = neq_supplier_refusals(kb, &carriers, &eq_index);
-    let mut entries: Vec<(Symbol, Symbol)> = Vec::new();
+    // WI-20261025-TSYS6 — which carriers provide `Eq`, by a provision of their own (and the
+    // specs it provides, `sort_provides`) or a witness's about them (`provisions_about`). One
+    // that does not is `PartialEq`'s alone, and its own `eq` decides identical operands too.
+    let eq_spec = kb.try_resolve_symbol("anthill.prelude.Eq");
+    let eq_about: std::collections::HashSet<Symbol> = eq_spec
+        .map(|e| super::typing::provisions_about(kb, e).into_iter().map(|p| p.about).collect())
+        .unwrap_or_default();
+    let lawful = |kb: &KnowledgeBase, sort: Symbol| {
+        eq_about.contains(&kb.canonical_sort_sym(sort))
+            || eq_spec.is_some_and(|e| super::typing::sort_provides(kb, sort, e))
+    };
+    let mut entries: Vec<(Symbol, Symbol, bool)> = Vec::new();
     // Collected rather than built into `LoadError`s as we go: `carriers` comes from
     // two `HashMap` walks, so this loop visits carriers in an arbitrary order, and a
     // program with two erroring carriers must report them the same way on every load. Sorted
@@ -21599,8 +21610,9 @@ pub fn build_eq_dispatch_index(kb: &mut KnowledgeBase) -> Vec<LoadError> {
         // reader returns nothing for it and its values would be headed by a functor
         // the index never keyed (WI-856). For a `sort … end` carrier the two agree —
         // the sort symbol itself carries no field schema.
+        let partial = !lawful(kb, sort_sym);
         for ctor in kb.field_constructors_of_sort(sort_sym) {
-            entries.push((ctor, target));
+            entries.push((ctor, target, partial));
         }
         let sort_canon = kb.canonical_sort_sym(sort_sym);
         for &op_sym in sort_ops.get(&sort_sym).into_iter().flatten() {
@@ -21615,7 +21627,7 @@ pub fn build_eq_dispatch_index(kb: &mut KnowledgeBase) -> Vec<LoadError> {
                 .map(|h| kb.canonical_sort_sym(h) == sort_canon)
                 .unwrap_or(false);
             if self_returning {
-                entries.push((op_sym, target));
+                entries.push((op_sym, target, partial));
             }
         }
     }
@@ -21623,11 +21635,11 @@ pub fn build_eq_dispatch_index(kb: &mut KnowledgeBase) -> Vec<LoadError> {
     // probe side (`eq_dispatch_target`) reads a goal-head functor raw (O(1),
     // no per-probe canonicalization), and one qualified name can be interned
     // under several Symbols.
-    for (functor, target) in entries {
+    for (functor, target, partial) in entries {
         let canon = kb.canonical_sym(functor);
-        kb.insert_eq_dispatch(functor, target);
+        kb.insert_eq_dispatch(functor, target, partial);
         if canon != functor {
-            kb.insert_eq_dispatch(canon, target);
+            kb.insert_eq_dispatch(canon, target, partial);
         }
     }
     ambiguous.sort_by(|(a, _), (b, _)| a.cmp(b));

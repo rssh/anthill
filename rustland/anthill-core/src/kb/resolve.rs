@@ -8415,7 +8415,9 @@ impl KnowledgeBase {
     ///
     /// 1. **Reflexivity** — structurally identical operands are equal under any
     ///    lawful `Eq` instance: verdict with no lookups (the hot path, and
-    ///    exactly the pre-WI-616 answer).
+    ///    exactly the pre-WI-616 answer). NOT for an operand of a carrier whose own
+    ///    `eq` provides no `Eq` (WI-20261025-TSYS6): that `eq` decides identical
+    ///    operands too, and the call goes to dispatch.
     /// 2. **Dispatch** — an operand whose head functor keys the load-time
     ///    eq-dispatch index ([`KnowledgeBase::eq_dispatch_target`]: the carrier
     ///    sort declares its OWN `eq` override — `Set.eq`/`Map.eq`, the
@@ -8473,9 +8475,18 @@ impl KnowledgeBase {
         // WI-664: a composite reaching an UNSHIELDED partial (Float) carrier
         // compares FIELD-WISE, not by the structural reflexivity shortcut below
         // (which would launder a nested NaN). Mirrors eval's `semantic_equal`; a
-        // lawful-Eq boundary (`TotalFloat`/`Set`/`Map`, own eq) is not a partial
-        // carrier and is untouched.
-        if self.value_reaches_partial_carrier(&a) || self.value_reaches_partial_carrier(&b) {
+        // carrier with its own eq (`TotalFloat`/`Set`/`Map`) is not a partial carrier
+        // for that walk and is untouched — one that provides no `Eq` is the head gate's
+        // below, and buried in a carrier with no eq of its own is still read as a
+        // boundary.
+        // WI-20261025-TSYS6 — an operand of a carrier whose own `eq` decides identical operands
+        // too (one that provides no `Eq`) goes to that `eq`, past the field-wise compare and
+        // reflexivity (§8.3: reflexivity is `Eq`'s law, not `PartialEq`'s).
+        let own_eq_decides = self.has_partial_eq_dispatch()
+            && (self.sem_eq_partial_head(&a) || self.sem_eq_partial_head(&b));
+        if !own_eq_decides
+            && (self.value_reaches_partial_carrier(&a) || self.value_reaches_partial_carrier(&b))
+        {
             if let Some(result) = self.composite_field_wise_sem_eq(&a, &b, subst, positive) {
                 return result;
             }
@@ -8483,7 +8494,7 @@ impl KnowledgeBase {
         }
         // (2) Reflexivity — structurally-identical operands (sound here: no
         // unshielded partial carrier reaches this point).
-        if self.values_equal(&a, &b) {
+        if !own_eq_decides && self.values_equal(&a, &b) {
             return sem_verdict(true, positive);
         }
         // (3) No carrier overrides eq at all (the common KB): straight to
@@ -8626,6 +8637,16 @@ impl KnowledgeBase {
             _ => return None,
         };
         self.eq_dispatch_target(functor)
+    }
+
+    /// WI-20261025-TSYS6 — is `v` headed by a carrier whose own `eq` decides identical
+    /// operands too ([`KnowledgeBase::eq_dispatch_is_partial`])? Then neither reflexivity nor
+    /// a field-wise compare answers for it: its `eq` does.
+    pub(crate) fn sem_eq_partial_head(&self, v: &Value) -> bool {
+        match v.head(self) {
+            ViewHead::Functor { functor, .. } => self.eq_dispatch_is_partial(functor),
+            _ => false,
+        }
     }
 
     /// WI-616 — prove the dispatched carrier equality `target(a, b)` by a
@@ -16025,7 +16046,7 @@ mod tests {
             named_args: SmallVec::new(),
         });
         kb.assert_rule(myeq_head, vec![myeq_body], sort, domain, None);
-        kb.insert_eq_dispatch(box_sym, myeq);
+        kb.insert_eq_dispatch(box_sym, myeq, false);
 
         // `eq(box(1), box(2))` — two DISTINCT ground `box` operands (no reflexivity
         // shortcut), so dispatch fires `myeq(box(1), box(2))`, which truncates.
@@ -16070,7 +16091,7 @@ mod tests {
         // and the outer truncated flag must stay clear.
         let myeq0 = kb.intern("myeq0");
         let box0_sym = kb.intern("box0");
-        kb.insert_eq_dispatch(box0_sym, myeq0);
+        kb.insert_eq_dispatch(box0_sym, myeq0, false);
         let mk_box0 = |kb: &mut KnowledgeBase, n: i64| {
             let lit = kb.alloc(Term::Const(Literal::Int(n)));
             kb.alloc(Term::Fn {
@@ -16209,7 +16230,7 @@ mod tests {
             named_args: SmallVec::new(),
         });
         kb.assert_rule(head, vec![body_eq], sort, domain, None);
-        kb.insert_eq_dispatch(box_f, myeq_f);
+        kb.insert_eq_dispatch(box_f, myeq_f, false);
 
         let mk_box = |kb: &mut KnowledgeBase, n: i64| {
             let lit = kb.alloc(Term::Const(Literal::Int(n)));

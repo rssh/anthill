@@ -1421,7 +1421,8 @@ fn builtin_neq(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> 
 ///    `-0.0 == +0.0`), decided BEFORE the structural reflexivity shortcut
 ///    (which would read `nan == nan` through `OrderedFloat`).
 /// 2. **Reflexivity** — structurally identical operands are equal under any
-///    lawful `Eq`; the pre-WI-616 answer, and the hot path.
+///    lawful `Eq`; the pre-WI-616 answer, and the hot path. Not for an operand of a
+///    carrier whose own `eq` provides no `Eq` (WI-20261025-TSYS6), which goes to step 4.
 /// 3. **No override anywhere** — a KB with no eq-dispatch entries takes the
 ///    structural verdict directly (one flag read; the pre-WI-616 behaviour).
 /// 4. **Head-carrier override** — an operand headed by an eq-overriding carrier
@@ -1446,11 +1447,21 @@ fn semantic_equal(i: &mut Interpreter, a: &Value, b: &Value) -> Result<bool, Eva
     // WI-664: a composite reaching an UNSHIELDED partial (Float) carrier compares
     // FIELD-WISE, not by the structural reflexivity shortcut below (which would
     // launder a nested NaN): `eq(Point(nan,_), Point(nan,_)) = eq(nan,nan) ∧ … =
-    // false`, matching the field-wise C++ `operator==`. A lawful-Eq boundary
-    // (`TotalFloat`/`Set`/`Map`, own `eq`) is NOT a partial carrier, so its
+    // false`, matching the field-wise C++ `operator==`. A carrier with its own `eq`
+    // (`TotalFloat`/`Set`/`Map`) is NOT a partial carrier for that walk, so its
     // structural / dispatch equality is untouched (`eq(TotalFloat(nan), …)` stays
-    // true). Comes BEFORE the reflexivity shortcut.
-    if i.kb().value_reaches_partial_carrier(a) || i.kb().value_reaches_partial_carrier(b) {
+    // true). Comes BEFORE the reflexivity shortcut. One of them that provides no `Eq`
+    // is the head gate's below, and only at the head: buried in a carrier with no `eq`
+    // of its own it is still read as a boundary, and reflexivity answers at the top.
+    // WI-20261025-TSYS6 — an operand of a carrier whose own `eq` decides identical operands
+    // too (one that provides no `Eq`) goes to that `eq`, past the field-wise compare and
+    // reflexivity (§8.3: reflexivity is `Eq`'s law, not `PartialEq`'s). The resolver's twin
+    // is in `sem_eq_values`.
+    let own_eq_decides = i.kb().has_partial_eq_dispatch()
+        && (i.kb().sem_eq_partial_head(a) || i.kb().sem_eq_partial_head(b));
+    if !own_eq_decides
+        && (i.kb().value_reaches_partial_carrier(a) || i.kb().value_reaches_partial_carrier(b))
+    {
         if let Some(v) = composite_field_wise_eq(i, a, b)? {
             return Ok(v);
         }
@@ -1458,7 +1469,7 @@ fn semantic_equal(i: &mut Interpreter, a: &Value, b: &Value) -> Result<bool, Eva
         // mismatch the structural verdict answers `false`): fall through.
     }
     // 2. Reflexivity.
-    if crate::kb::term_view::views_structurally_equal(i.kb(), a, b) {
+    if !own_eq_decides && crate::kb::term_view::views_structurally_equal(i.kb(), a, b) {
         return Ok(true);
     }
     // 3. No carrier overrides eq at all (the common KB): structural verdict.
@@ -1606,7 +1617,25 @@ fn semantic_equal(i: &mut Interpreter, a: &Value, b: &Value) -> Result<bool, Eva
             };
         }
         // Non-ground operand: `=` never binds — fall through to the structural
-        // verdict (the resolver Delays; eval keeps its pre-WI-625 answer).
+        // verdict (the resolver Delays; eval keeps its pre-WI-625 answer). EXCEPT where
+        // the carrier's own `eq` decides identical operands too (WI-20261025-TSYS6): no
+        // structural verdict is that `eq`'s answer, so the comparison is undecided, and
+        // says so rather than read as unequal.
+        if own_eq_decides {
+            let detail = format!(
+                "semantic eq over `{}` could not be decided: an operand is not ground, and \
+                 the carrier's own `eq` decides even identical operands",
+                i.kb().local_name_of(target),
+            );
+            return Err(if i.bridge_mode() {
+                EvalError::Suspended {
+                    detail,
+                    truncated: false,
+                }
+            } else {
+                EvalError::Internal(detail)
+            });
+        }
     }
     // 5. Structural verdict — but a carrier override BURIED under non-overriding
     // structure (`some({1,2})` vs `some({2,1})`) makes it membership-wrong. Under

@@ -778,6 +778,11 @@ pub(crate) struct SortOpsTable {
     /// path (`resolve.rs` `sem_eq_dispatch_target`) — one hash probe, no
     /// string hashing, no KB scans.
     eq_dispatch: HashMap<Symbol, Symbol>,
+    /// WI-20261025-TSYS6 — the keys of [`Self::eq_dispatch`] whose carrier provides no
+    /// `Eq`: its own `eq` decides even identical operands, reflexivity being `Eq`'s law
+    /// (`eq_refl`) and not `PartialEq`'s (kernel-language.md §8.3). Written with each entry,
+    /// so a later load that gives the carrier `Eq` takes its key out.
+    eq_dispatch_partial: HashSet<Symbol>,
 }
 
 // ── KnowledgeBase ───────────────────────────────────────────────
@@ -8313,9 +8318,28 @@ impl KnowledgeBase {
     }
 
     /// WI-616 — record a `value-head functor → carrier's eq` dispatch
-    /// entry. Called only by `load::build_eq_dispatch_index`.
-    pub(crate) fn insert_eq_dispatch(&mut self, functor: Symbol, target: Symbol) {
+    /// entry. Called only by `load::build_eq_dispatch_index`. `partial`: the carrier
+    /// provides no `Eq` ([`Self::eq_dispatch_is_partial`]).
+    pub(crate) fn insert_eq_dispatch(&mut self, functor: Symbol, target: Symbol, partial: bool) {
         self.sort_ops.eq_dispatch.insert(functor, target);
+        if partial {
+            self.sort_ops.eq_dispatch_partial.insert(functor);
+        } else {
+            self.sort_ops.eq_dispatch_partial.remove(&functor);
+        }
+    }
+
+    /// WI-20261025-TSYS6 — is a value headed by `functor` of a carrier whose own `eq` decides
+    /// identical operands too — one with an `eq` of its own that provides no `Eq`? O(1).
+    pub(crate) fn eq_dispatch_is_partial(&self, functor: Symbol) -> bool {
+        self.sort_ops.eq_dispatch_partial.contains(&functor)
+    }
+
+    /// WI-20261025-TSYS6 — does any carrier's own `eq` decide identical operands
+    /// ([`Self::eq_dispatch_is_partial`])? One read that keeps semantic equality's hot path
+    /// free of head probes in a KB with none, which is nearly every KB.
+    pub(crate) fn has_partial_eq_dispatch(&self) -> bool {
+        !self.sort_ops.eq_dispatch_partial.is_empty()
     }
 
     /// WI-616 — the carrier `eq` override a value headed by `functor`
