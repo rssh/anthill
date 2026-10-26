@@ -63,11 +63,10 @@
 //! (`KnowledgeBase::partial_transparent_carriers`), so `some(nan)` is compared
 //! field-wise. WI-20260919-9KYPA closes the last leg: a parametric sort derives the
 //! CONDITIONAL `NonEq` row itself ([`derive_conditional_noneq`], `NonEq[List] :-
-//! NonEq[T]`), and `check_use_site_requires_eq` RESOLVES a goal against it instead of
-//! reading the key's own provisions, so `Map[K = List[T = Float]]` is refused where the
-//! type is written while `Map[K = List[T = Int64]]` loads. What remains out of scope is a
-//! NAMED TUPLE key (`Map[K = (a: Float)]`), which has no sort to carry a provision at
-//! all.
+//! NonEq[T]`). The use-site key check (`check_use_site_requires_eq`) asks the positive
+//! goal `Eq[T = key]` at the whole written key, so it reads the conditional `Eq` row
+//! rather than this one: `Map[K = List[T = Float]]` is refused where the type is written
+//! while `Map[K = List[T = Int64]]` loads, and a tuple key is read by its components.
 
 use std::collections::HashSet;
 
@@ -932,10 +931,9 @@ pub(crate) fn assert_derived_provision(
 
 /// WI-20260919-9KYPA — the CONDITIONAL `NonEq` mirror of [`derive_conditional_eq`]:
 /// `provides NonEq[List] :- NonEq[T]`, so `List[T = Float]` is a WITNESSED `NonEq`
-/// carrier and `Set[T = List[T = Float]]` is refused where the type is written
-/// (`check_use_site_requires_eq`, which resolves the goal rather than reading the key's
-/// own provisions). Without it that check looked `List` up, found no `NonEq`, and let an
-/// unlawful key through — the gap §8.3 names.
+/// carrier. It was what refused `Set[T = List[T = Float]]` where the type is written,
+/// while that check asked `NonEq`; it asks `Eq` now (`check_use_site_requires_eq`) and
+/// reads [`derive_conditional_eq`]'s row.
 ///
 /// ONE CLAUSE PER PARAMETER, where the `Eq` half emits one clause holding every
 /// parameter. That asymmetry is the logic, not a shortcut: a parametric application is

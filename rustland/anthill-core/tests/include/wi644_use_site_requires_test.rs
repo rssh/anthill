@@ -112,9 +112,8 @@ end
     );
 }
 
-/// An ALL-`Eq` composite key loads — it is lawfully `Eq` (WI-664 does not derive
-/// `NonEq` for it), so the negative check does not fire (it would over-reject under
-/// a positive "must provide Eq" check, since no `Eq` fact is derived for it).
+/// An ALL-`Eq` composite key loads: `Eq` is derived for a composite whose fields are all
+/// lawful, so the key provides `Eq`.
 #[test]
 fn map_with_all_eq_composite_key_loads() {
     assert_loads_clean(

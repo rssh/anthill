@@ -1211,7 +1211,6 @@ namespace capmatrix_routes
   operation take_int(v: Int64) -> Int64 = v
   operation apply_it(o: Option[T = Function[A = Int64, B = Int64]], v: Int64) -> Int64 = v
   operation head_apply(fs: List[T = Function[A = Int64, B = Int64]], v: Int64) -> Int64 = v
-  operation set_apply(fs: Set[T = Function[A = Int64, B = Int64]], v: Int64) -> Int64 = v
   operation takes_list(s: List[T = Int64]) -> Int64 = 1
   operation takes_set(s: Set[T = Int64]) -> Int64 = 1
 {body}
@@ -1219,6 +1218,9 @@ end
 "#
     )
 }
+
+/// The element type the set-literal routes would need, which `Set`'s `requires Eq` refuses.
+const SET_OF_FUNCTIONS: &str = "Set[T = Function[A = Int64, B = Int64]]";
 
 /// Run a slice-2 table — [`run_with`] over [`route_program`].
 fn run_routes(cells: Vec<(String, String, Verdict)>) {
@@ -1279,9 +1281,11 @@ fn a_bare_operation_name_across_its_routes() {
             Verdict::Loads,
         ),
         (
-            "7 inside a SET literal".into(),
-            "  operation c() -> Int64 = set_apply({inc}, 41)".into(),
-            Verdict::Loads,
+            // A SET of functions is refused at its type, so this route has no program:
+            // `Set` requires `Eq` of its element, and a function provides none.
+            "7 inside a SET literal — refused at the set's type".into(),
+            format!("  operation set_apply(fs: {SET_OF_FUNCTIONS}, v: Int64) -> Int64 = v\n  operation c() -> Int64 = set_apply({{inc}}, 41)"),
+            Verdict::RefusesLocated("does not provide `Eq`"),
         ),
         (
             // THE CONTROL FOR 6 AND 7. While they were red it said their refusal was a
@@ -1444,9 +1448,9 @@ fn a_lambda_inside_a_list_literal() {
         (
             // A set literal's elements are still `_term` (the `rule { _term • , }`
             // conflict), so the parenthesized spelling is the only one that reaches one.
-            "7' lambda inside a SET literal, parenthesized (the only spelling)".into(),
-            "  operation c() -> Int64 = set_apply({(lambda x -> 7)}, 41)".into(),
-            Verdict::Loads,
+            "7' lambda inside a SET literal, parenthesized — refused at the set's type".into(),
+            format!("  operation set_apply(fs: {SET_OF_FUNCTIONS}, v: Int64) -> Int64 = v\n  operation c() -> Int64 = set_apply({{(lambda x -> 7)}}, 41)"),
+            Verdict::RefusesLocated("does not provide `Eq`"),
         ),
         (
             "NEGATIVE — the element type is CHECKED, not overwritten".into(),

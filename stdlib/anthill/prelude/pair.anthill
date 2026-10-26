@@ -13,8 +13,8 @@
 -- WHY IT CANNOT BE A SORT-LEVEL `requires` CHAIN — measured twice, both directions.
 -- A sort's chain is shared by every provision it makes AND threaded WHOLESALE at
 -- every dispatch through the carrier. With an `Eq` chain `Pair[A = Float, B = Int64]`
--- was a LOAD ERROR (WI-835's use-site check refuses a `NonEq` carrier at a parameter
--- whose sort `requires Eq`) — `Pair` stopped being a general PRODUCT. With an
+-- was a LOAD ERROR (the use-site check refuses a type that does not provide `Eq` at a
+-- parameter whose sort `requires Eq`) — `Pair` stopped being a general PRODUCT. With an
 -- `Ord` chain `PartialEq.eq(pair(fst: 1.5, snd: 1), …)` became the load error
 -- *"PartialEq.eq.dispatch: … no impl matches"* — an ORDERING requirement broke
 -- EQUALITY. So the chain had to carry the WEAKEST condition, and every stronger

@@ -328,7 +328,7 @@ end
         .unwrap_or_default();
     let refusals = errs
         .iter()
-        .filter(|e| e.contains("NonEq") && e.contains("Map"))
+        .filter(|e| e.contains("does not provide `Eq`") && e.contains("Map"))
         .count();
     assert_eq!(
         refusals,
@@ -400,24 +400,22 @@ end
     );
 }
 
-/// A NAMED TUPLE key whose unlawfulness lives in its argument is STILL not caught (see
-/// `check_use_site_requires_eq`'s non-scope item 2, and kernel-language.md §8.3). It is a
-/// genuinely unlawful key — `(a: nan)` is not equal to itself — so this pins a KNOWN GAP,
-/// not desired behaviour.
-///
-/// WI-20260919-9KYPA left it deliberately: a tuple functor has no SORT to carry a
-/// provision at all, so neither the derived conditional `NonEq` nor the goal that reads it
-/// reaches this key. Closing it needs the structural reading WI-644's enumeration leaves
-/// open, not another provision row.
+/// A tuple key whose unlawfulness lives in a component is refused: a tuple provides `Eq`
+/// when each component's type does, and `Float` does not. FAILS with the positive check
+/// backed out — it loaded clean, the gap this row used to pin.
 #[test]
-fn known_gap_a_tuple_key_over_float_still_loads() {
-    assert_loads_clean(
-        r#"
+fn a_tuple_key_over_float_is_refused() {
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(
+            r#"
 namespace test.wi835.gaptuple
   import anthill.prelude.{Map, Float, Int64}
   operation m() -> Map[K = (a: Float), V = Int64] = Map.empty()
 end
 "#,
+        ),
+        &["anthill.prelude.Map", "`K = (a: Float)`", "does not provide `Eq`"],
+        "a tuple key over Float",
     );
 }
 
@@ -433,5 +431,124 @@ namespace test.wi835.abstract
   operation m[A]() -> Map[K = A, V = Int64] = Map.empty()
 end
 "#,
+    );
+}
+
+// ── A key must provide `Eq` (user, 2026-10-26) ──────────────────────────────
+//
+// The check is POSITIVE: the written key type must provide `Eq`, where it used to refuse
+// only a witnessed `NonEq`. A tuple provides `Eq` when each component's type does.
+//
+// CONTROLS — measured with each half backed out:
+//   FAIL with the positive check backed out (the negative one restored), loading clean:
+//     a_dictionary_reference_is_no_key, a_function_is_no_key, a_set_of_functions_is_refused,
+//     an_entity_holding_a_function_is_no_key, a_tuple_key_over_float_is_refused (above);
+//     and outside this file wi_9kypa's a_tuple_key_over_float_is_refused, wi858's
+//     a_pair_of_floats_loads_and_is_no_lawful_key, wi_5nszy's
+//     the_set_literal_spelling_is_refused_at_the_sets_type, and the capability matrix's
+//     set-literal cells.
+//   FAIL with the tuple rule backed out (a tuple asked the `Eq` goal like any type):
+//     a_tuple_of_lawful_components_is_a_key, a_nested_tuple_is_a_key, the_unit_is_a_key;
+//     and every row of wi_qj6x1_a_builtin_judges_the_value_test, whose shared fixture
+//     writes `Map[K = (Int64, Int64)]`.
+//   FAIL with `Symbol`'s `Eq` provision backed out (reflect.anthill): a_symbol_is_a_key
+//   FAIL with a tie between two `Eq` providers counted as no `Eq`:
+//     a_key_whose_eq_two_providers_give_is_a_key
+//   PASS either way, by design: a_lawful_entity_is_a_key,
+//     a_parametric_key_is_a_key_at_a_lawful_argument, a_term_is_no_key
+
+/// `n` as a program with one operation over `ty`.
+fn key_program(n: &str, ty: &str) -> String {
+    format!(
+        "namespace test.wi835.pos{n}\n  import anthill.prelude.{{Map, Set, List, Option, Int64, Bool, String, Float, Function, Unit}}\n  import anthill.realization.runtime.{{OpRef}}\n  import anthill.reflect.{{Symbol, Term}}\n  sort Box\n    entity bx(v: Int64)\n  end\n  sort Holder\n    entity h(f: Function[A = Int64, B = Int64])\n  end\n  operation m(s: {ty}) -> Int64 = 1\nend\n"
+    )
+}
+
+#[test]
+fn a_dictionary_reference_is_no_key() {
+    let errs = errors_for(&key_program("opref", "Map[K = OpRef, V = Int64]"));
+    assert_non_eq_key_error(&errs, "Map", "K", "OpRef");
+}
+
+#[test]
+fn a_function_is_no_key() {
+    let errs = errors_for(&key_program(
+        "fn",
+        "Map[K = Function[A = Int64, B = Int64], V = Int64]",
+    ));
+    assert_non_eq_key_error(&errs, "Map", "K", "Function");
+}
+
+#[test]
+fn a_set_of_functions_is_refused() {
+    let errs = errors_for(&key_program("setfn", "Set[T = Function[A = Int64, B = Int64]]"));
+    assert_non_eq_key_error(&errs, "Set", "T", "Function");
+}
+
+/// An entity whose field has no equality derives none, so it is no key either.
+#[test]
+fn an_entity_holding_a_function_is_no_key() {
+    let errs = errors_for(&key_program("holder", "Map[K = Holder, V = Int64]"));
+    assert_non_eq_key_error(&errs, "Map", "K", "Holder");
+}
+
+#[test]
+fn a_tuple_of_lawful_components_is_a_key() {
+    assert_loads_clean(&key_program("tup", "Map[K = (Int64, Bool), V = Int64]"));
+    assert_loads_clean(&key_program("ntup", "Map[K = (a: Int64, b: String), V = Int64]"));
+}
+
+#[test]
+fn a_nested_tuple_is_a_key() {
+    assert_loads_clean(&key_program("nest", "Map[K = ((Int64, Bool), String), V = Int64]"));
+}
+
+#[test]
+fn the_unit_is_a_key() {
+    assert_loads_clean(&key_program("unit", "Map[K = Unit, V = Int64]"));
+}
+
+/// The controls of the positive reading: a composite whose fields are lawful derives `Eq`,
+/// and a parametric sort's conditional `Eq` holds at a lawful argument.
+#[test]
+fn a_lawful_entity_is_a_key() {
+    assert_loads_clean(&key_program("box", "Map[K = Box, V = Int64]"));
+}
+
+#[test]
+fn a_parametric_key_is_a_key_at_a_lawful_argument() {
+    assert_loads_clean(&key_program("list", "Map[K = List[T = Int64], V = Int64]"));
+}
+
+/// A symbol's equality is its identity, which is lawful.
+#[test]
+fn a_symbol_is_a_key() {
+    assert_loads_clean(&key_program("sym", "Map[K = Symbol, V = Int64]"));
+    assert_loads_clean(&key_program("symopt", "Set[T = Option[T = Symbol]]"));
+}
+
+/// A term's `=` is IEEE for a `Float` it holds, so a term holding `nan` is not equal to
+/// itself: no lawful key.
+#[test]
+fn a_term_is_no_key() {
+    let errs = errors_for(&key_program("term", "Map[K = Term, V = Int64]"));
+    assert_non_eq_key_error(&errs, "Map", "K", "Term");
+}
+
+/// A type two witnesses give `Eq` provides it: the tie is the question of a call that
+/// dispatches `Eq` there, which reports it naming both providers.
+#[test]
+fn a_key_whose_eq_two_providers_give_is_a_key() {
+    let src = "namespace test.wi835.postie\n  import anthill.prelude.{Map, Int64, Eq, PartialEq, Function}\n  sort Opq\n    entity op(f: Function[A = Int64, B = Int64])\n  end\n  sort W1\n    provides PartialEq[T = Opq]\n    provides Eq[T = Opq]\n  end\n  sort W2\n    provides PartialEq[T = Opq]\n    provides Eq[T = Opq]\n  end\n  operation m(s: Map[K = Opq, V = Int64]) -> Int64 = 1\n  operation needEq[X](x: X) -> Int64 requires Eq[T = X] = 1\n  operation c(o: Opq) -> Int64 = needEq(o)\nend\n";
+    let errs = errors_for(src);
+    assert!(
+        !errs.iter().any(|e| e.contains("does not provide `Eq`")),
+        "the key provides `Eq`, twice: {errs:?}"
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("ambiguous among providers")
+            && e.contains("test.wi835.postie.W1")
+            && e.contains("test.wi835.postie.W2")),
+        "the call that requires `Eq` reports the tie: {errs:?}"
     );
 }

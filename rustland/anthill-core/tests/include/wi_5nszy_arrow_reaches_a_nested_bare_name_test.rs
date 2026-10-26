@@ -131,15 +131,11 @@ end
     );
 }
 
-/// THE SET SURFACE of the same route. A set literal's elements are `_term`s, so this is the
-/// other half of the capability matrix's routes 6 and 7 and not a restatement of the row
-/// above. Load-asserted rather than driven: `Set` has no `cons`-shaped destructuring to
-/// apply the head through, so what this shape can honestly witness is that the arrow
-/// ARRIVES — the row above drives the value.
-///
-/// BACKED OUT: `inc.function-value (op-as-fn-value)`.
+/// THE SET SURFACE of the same route has no program: `Set` requires `Eq` of its element
+/// and a function provides none, so the set of functions the route needs is refused at its
+/// type. Asserted so the route is known closed rather than untested.
 #[test]
-fn the_set_literal_spelling_reaches_it_too() {
+fn the_set_literal_spelling_is_refused_at_the_sets_type() {
     let src = r#"
 namespace wi5nszy.setlit
   import anthill.prelude.{Int64, Set, Function}
@@ -148,7 +144,11 @@ namespace wi5nszy.setlit
   operation lit() -> Int64 = set_apply({inc}, 41)
 end
 "#;
-    assert_eq!(eval_int(src, "wi5nszy.setlit.lit"), 41);
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(src),
+        &["anthill.prelude.Set", "does not provide `Eq`"],
+        "a set of functions",
+    );
 }
 
 /// THE HEADLINE, DRIVEN. The ticket's own program: the arrow is pinned on `apply_it`'s

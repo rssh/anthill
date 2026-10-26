@@ -595,15 +595,11 @@ fn pair_equality_is_componentwise() {
 /// sibling floor in `wi869_per_provision_conditions_test`, where the same shape
 /// refuses `WeakOrd.compare` on a float pair naming `Ord[Float]`.
 ///
-/// `Set[T = Pair[Float, Int64]]` STILL LOADS, for a different and now-measured
-/// reason: there is NO POSITIVE use-site check for `requires Eq`. The only refusal at
-/// a written type site is the `NonEq` one below, and `Pair` provides no `NonEq` — so
-/// does `Set[T = <a sort that provides nothing at all>]`, which MEASURED loads clean
-/// too. The remaining halves are therefore the composite `NonEq` derivation
-/// `eq.anthill` calls a follow-up, and a positive use-site discharge; neither is
-/// about the provision's condition any more.
+/// `Set[T = Pair[Float, Int64]]` IS REFUSED: a key must provide `Eq` where it is
+/// written, and `Eq[Pair[Float, Int64]]` does not resolve. It loaded while the use-site
+/// check refused only a witnessed `NonEq`, which `Pair` does not provide.
 #[test]
-fn a_pair_of_floats_loads_and_that_has_a_recorded_cost() {
+fn a_pair_of_floats_loads_and_is_no_lawful_key() {
     loads_clean(
         &program(
             "wi858.float",
@@ -627,35 +623,17 @@ fn a_pair_of_floats_loads_and_that_has_a_recorded_cost() {
          sort Use\n    operation tag(s: Set[T = Float]) -> Int64 = 1\n  end",
     );
     assert!(
-        load_errs(&direct).iter().any(|e| e.contains("NonEq")),
-        "the CONTROL: `Float` itself is refused as a lawful key, so the arm below is \
-         about the PAIR hiding it and not about `Set` accepting anything",
+        load_errs(&direct).iter().any(|e| e.contains("does not provide `Eq`")),
+        "the CONTROL: `Float` itself is refused as a lawful key",
     );
-    // THE SECOND CONTROL, added at WI-869 because it is what re-attributed the gap: a
-    // key that provides NOTHING is accepted too. So `Set` is not consulting whether
-    // `Eq[key]` HOLDS at all — the only written-site refusal is the `NonEq` one above
-    // — and the pair below is not a special case of over-claiming, it is the general
-    // absence of a positive discharge.
-    loads_clean(
-        &program(
-            "wi858.opaquekey",
-            "  import anthill.prelude.{Set}\n  \
-             sort Opaque\n    entity opaque\n  end\n  \
-             sort Use\n    operation tag(s: Set[T = Opaque]) -> Int64 = 1\n  end",
-        ),
-        "a key providing NEITHER `Eq` nor `NonEq` is accepted, which is what makes \
-         the pair arm below a case of the missing positive check and not of `Pair`",
+    assert!(
+        load_errs(&as_key)
+            .iter()
+            .any(|e| e.contains("Pair[A = anthill.prelude.Float, B = anthill.prelude.Int64]")
+                && e.contains("does not provide `Eq`")),
+        "a NaN-bearing pair is no lawful key: {:?}",
+        load_errs(&as_key)
     );
-    if crate::common::try_load_kb_with(&as_key).is_err() {
-        panic!(
-            "RECORDED COST FIXED: a NaN-bearing pair is no longer accepted as a lawful \
-             key. That is the wanted behaviour — delete this arm and the opaque-key \
-             control beside it. WI-869 closed the provision half (the `Eq[Pair]` \
-             provision is conditioned now); what remains is the composite `NonEq` \
-             derivation and a positive use-site discharge, so whichever of those lands \
-             is what this reports."
-        );
-    }
 }
 
 /// NESTED PAIRS, all three slot arrangements — the WI-871 matrix, now passing.

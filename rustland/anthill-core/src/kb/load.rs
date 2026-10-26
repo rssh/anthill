@@ -1095,11 +1095,11 @@ pub enum LoadError {
     /// instantiated — ANYWHERE the type is written: an entity field, an operation
     /// parameter or return type, a `const` type, a sort alias, a body `let`
     /// annotation, a typed lambda binder, or nested inside any of those — with
-    /// `param` bound to a carrier that provides `NonEq`, a non-reflexive equality
-    /// (IEEE `Float`). Such a carrier is not a lawful `Eq` key, so the instantiation
-    /// is a load error (`Map[K = Float]`), not a silent wrong answer. Use a lawful
-    /// key type (`TotalFloat` for floats). Load-blocking.
-    NonEqKeyRequiresLawfulEq {
+    /// `param` bound to a type that does not provide `Eq`: a non-reflexive equality
+    /// (IEEE `Float`) or none at all (`OpRef`, a function). Such a type is not a lawful
+    /// key, so the instantiation is a load error (`Map[K = Float]`), not a silent wrong
+    /// answer. Use a lawful key type (`TotalFloat` for floats). Load-blocking.
+    KeyWithoutEq {
         /// The parametric sort being instantiated (`anthill.prelude.Map`).
         container: String,
         /// `container`'s own parameter carrying the requirement (`K`) — the one the
@@ -3160,7 +3160,7 @@ impl LoadError {
             | LoadError::IncompleteConstruction { span, .. }
             | LoadError::BareMemberCall { span, .. }
             | LoadError::UnreducedEquationFunctor { span, .. }
-            | LoadError::NonEqKeyRequiresLawfulEq { span, .. }
+            | LoadError::KeyWithoutEq { span, .. }
             | LoadError::WrittenEffectRowLabel { span, .. }
             | LoadError::UnselectedInstance { span, .. }
             | LoadError::ChangesSealedCode { span, .. }
@@ -3630,14 +3630,14 @@ impl LoadError {
                 format!("a `provides anthill.reflect.TypePattern[…]` is written for '{}', but `TypePattern` has one row, `TypeValuePattern`'s, and no other may be written: a written `admits` would make what a type pattern admits a claim instead of a fact. Delete the clause: a type with a `TypeValue` instance is already a pattern.",
                     provider)
             }
-            LoadError::NonEqKeyRequiresLawfulEq {
+            LoadError::KeyWithoutEq {
                 container,
                 param,
                 spec,
                 carrier,
                 span,
             } => {
-                let msg = format!("'{}' requires `{}` at its parameter `{}`, but `{} = {}` binds a carrier that provides `NonEq` (its equality is not reflexive — e.g. IEEE `nan != nan`), so it is not a lawful key. Bind `{}` to a lawful key type (`TotalFloat` for floats) instead of '{}'.",
+                let msg = format!("'{}' requires `{}` at its parameter `{}`, but `{} = {}` binds a type that does not provide `Eq` (its equality is not lawful — IEEE `nan != nan` — or there is none), so it is not a lawful key. Bind `{}` to a type that provides `Eq` (`TotalFloat` for floats) instead of '{}'.",
                     container, spec, param, param, carrier, param, carrier);
                 match span {
                     Some(sp) => format!("{}: {}", loc.format_start(*sp), msg),
@@ -5247,7 +5247,7 @@ impl std::fmt::Display for LoadError {
                 write!(f, "'{}' provides both 'Eq' and 'NonEq', which are mutually exclusive (a partial carrier provides PartialEq + NonEq; a lawful one PartialEq + Eq)",
                     carrier)
             }
-            LoadError::NonEqKeyRequiresLawfulEq {
+            LoadError::KeyWithoutEq {
                 container,
                 param,
                 spec,
@@ -5266,7 +5266,7 @@ impl std::fmt::Display for LoadError {
                 // `wi835_use_site_requires_scope_test`'s
                 // `one_refusal_per_site_including_across_files_at_equal_offsets` is the
                 // row that measures it, and it fails if EITHER key drops the file.
-                let msg = format!("'{}' requires `{}` at `{}`, but `{} = {}` provides `NonEq` (non-reflexive equality) — not a lawful key; use `TotalFloat` for floats",
+                let msg = format!("'{}' requires `{}` at `{}`, but `{} = {}` does not provide `Eq` — not a lawful key; use `TotalFloat` for floats",
                     container, spec, param, param, carrier);
                 match span {
                     Some(sp) => write!(f, "{} at {}..{}", msg, sp.start, sp.end),

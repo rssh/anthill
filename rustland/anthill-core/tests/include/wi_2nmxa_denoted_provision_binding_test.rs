@@ -991,7 +991,7 @@ end
     ] {
         assert_refused_naming(
             &load_errors_of(&program(&format!("wi2nmxa.key.{tag}"), written)),
-            &["requires `anthill.prelude.Eq` at its parameter", key, "provides `NonEq`"],
+            &["requires `anthill.prelude.Eq` at its parameter", key, "does not provide `Eq`"],
             &format!("`{written}`"),
         );
     }

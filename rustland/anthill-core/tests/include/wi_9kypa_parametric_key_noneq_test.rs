@@ -39,8 +39,8 @@
 //! every parametric carrier in the stdlib), and a check that merely stopped refusing would
 //! pass the admission row and fail this one.
 //!
-//! PASS EITHER WAY BY DESIGN: `a_tuple_key_is_still_the_open_gap` (no sort, so no
-//! provision — out of scope both before and after, pinned so it stays documented).
+//! FAILS with the use-site check made negative again: `a_tuple_key_over_float_is_refused`
+//! (a tuple is read by its components; the negative check let it load).
 
 fn refusals(src: &str) -> Vec<String> {
     crate::common::try_load_kb_with(src).err().unwrap_or_default()
@@ -219,15 +219,13 @@ fn a_parametric_carrier_holds_a_conditional_pair() {
     );
 }
 
-/// PASSES EITHER WAY BY DESIGN — the remaining gap, pinned so it stays documented. A named
-/// TUPLE key has no sort to carry a provision, so neither the derived row nor the goal
-/// that reads it reaches it. `wi835_use_site_requires_scope_test` owns the same pin at the
-/// `Map` return position; this one is here so the gap is stated beside the leg that closed.
+/// A named TUPLE key is read by its components, so a tuple over `Float` is refused like
+/// `List[T = Float]` is. FAILS with the positive check backed out, where it was the open gap.
 #[test]
-fn a_tuple_key_is_still_the_open_gap() {
-    assert_eq!(
-        refusals(&key_program("tup", "Map[K = (a: Float), V = Int64]")),
-        Vec::<String>::new(),
-        "a named-tuple key is out of scope; see kernel-language.md §8.3"
+fn a_tuple_key_over_float_is_refused() {
+    let errs = refusals(&key_program("tup", "Map[K = (a: Float), V = Int64]"));
+    assert!(
+        errs.iter().any(|e| e.contains("does not provide `Eq`")),
+        "a tuple key over Float must be refused: {errs:?}"
     );
 }

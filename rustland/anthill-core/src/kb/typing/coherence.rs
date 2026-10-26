@@ -960,37 +960,40 @@ pub fn check_eq_noneq_exclusive(kb: &mut KnowledgeBase) -> Vec<crate::kb::load::
         .collect()
 }
 
-/// WI-20260919-9KYPA — is the written type `ty` a PROVABLY unlawful (`NonEq`) carrier?
-/// Resolved as the goal `NonEq[T = ty]` through the canonical instance resolver, the same
-/// one `spec_resolves_at_bindings` runs for a field's declared spec — so an unconditional
-/// provision (`Float`, a `Partial` composite) and a conditional one (`NonEq[List] :-
-/// NonEq[T]`, derived by `eq_derive::derive_conditional_noneq`) are answered by one
-/// question, and the conditional one descends into `ty`'s own argument.
+/// Does the written type `ty` provide `Eq`? A tuple does when each of its components'
+/// types does, and the unit always: a tuple has no sort to carry a provision, so it is read
+/// by its components. Any other type is asked the goal `Eq[T = ty]` through the canonical
+/// instance resolver, the one `spec_resolves_at_bindings` runs for a field's declared spec,
+/// so an unconditional provision (`Int64`, a composite whose fields are all lawful) and a
+/// conditional one (`Eq[List] :- Eq[T]`) are answered by one question, the conditional one
+/// at `ty`'s own argument.
 ///
-/// NEGATIVE, like its caller: a `false` here is "not provably unlawful", not "lawful".
-/// A named-tuple key (`Map[K = (a: Float)]`) has no sort to carry a provision at all, so
-/// it answers `false` and stays the structural-reading gap WI-644's enumeration leaves
-/// open (`check_use_site_requires_eq`'s non-scope item 2, and §8.3).
-fn noneq_holds_at(kb: &mut KnowledgeBase, noneq_sym: Symbol, ty: &Value) -> bool {
-    matches!(resolve_spec_at(kb, noneq_sym, ty), Some(ResolutionResult::Resolved(_)))
+/// A TIE between two providers is an `Eq` the type has: which one a call dispatches to is
+/// that call's question, and a call that requires `Eq` there reports the tie, naming both.
+fn eq_holds_at(kb: &mut KnowledgeBase, eq_sym: Symbol, ty: &Value) -> bool {
+    if let Some(fields) = schema_fields(kb, ty) {
+        return fields.iter().all(|(_, field)| eq_holds_at(kb, eq_sym, field));
+    }
+    matches!(
+        resolve_spec_at(kb, eq_sym, ty),
+        Some(ResolutionResult::Resolved(_) | ResolutionResult::Ambiguous { .. })
+    )
 }
 
 /// WI-644 / WI-835 — USE-SITE `requires Eq` enforcement. A parametric sort with a
 /// `requires Eq[param]` clause (`Map requires Eq[T = K]`, `Set requires Eq[T]`),
-/// instantiated with `param` bound to a CONCRETE carrier that provides `NonEq`
-/// (IEEE `Float`, or a Float-containing composite via WI-664), is a load error: a
-/// raw `Float` key is not lawful (`nan != nan`), so `Map[K = Float]` is rejected
-/// rather than silently misdeciding; `Map[K = TotalFloat]` / `Map[K = Int64]` load.
+/// instantiated with `param` bound to a CONCRETE type that does not provide `Eq`, is a load
+/// error: `Map[K = Float]` (IEEE `nan != nan`), `Map[K = OpRef]` and `Set[T = Function[…]]`
+/// (no equality at all) are refused; `Map[K = TotalFloat]`, `Map[K = Int64]` and
+/// `Map[K = (Int64, Bool)]` load (kernel-language.md, the `=` paragraph).
 ///
-/// NEGATIVE by design — fire ONLY on a provably-`NonEq` binding. A positive "the
-/// binding must provide `Eq`" check would be (a) VACUOUS: `spec_resolves_at_
-/// bindings` treats structural eq as a universal `Eq` instance (WI-616), which is
-/// exactly why `Map[K = Float]` loaded clean before WI-644; and (b) OVER-REJECTING:
-/// WI-664 derives `NonEq` facts for partial composites but NOT `Eq` facts for lawful
-/// all-`Eq` composites, so `sort_provides(Point, Eq)` is false for a perfectly
-/// lawful key — and an abstract type-param binding provides nothing either.
-/// Checking `NonEq` avoids both: only a carrier that GENUINELY lacks lawful Eq
-/// (the proposal-004 §Motivation carriers) is rejected.
+/// POSITIVE: the bound type must provide `Eq` ([`eq_holds_at`]). It was negative — it
+/// refused only a witnessed `NonEq` — while the resolver counted structural equality as a
+/// universal `Eq` instance and a lawful composite derived no `Eq`; neither holds now (a
+/// call requiring `Eq[T = OpRef]` is refused, and `eq_derive` derives `Eq` for a lawful
+/// composite and `Eq[S] :- Eq[T]` for a parametric one), and the negative check let a key
+/// with no equality at all load (user, 2026-10-26). An ABSTRACT binding (a type
+/// parameter) is not checked here: it is the requirement of the code that binds it.
 ///
 /// SCOPE (WI-835) — EVERY written parameterized type instantiation, wherever the
 /// type is written. The sites are recorded at the type LOWERINGS (see
@@ -1025,20 +1028,8 @@ fn noneq_holds_at(kb: &mut KnowledgeBase, noneq_sym: Symbol, ty: &Value) -> bool
 /// stdlib key containers (`Map`/`Set`/`Lattice`/`Ord`) all `requires Eq`
 /// directly.
 ///
-/// (2) A NAMED TUPLE key whose unlawfulness is in its ARGUMENT — `Map[K = (a: Float)]`
-/// loads. A tuple functor has no SORT to carry a provision, so neither the derived
-/// conditional `NonEq` nor the goal that reads it reaches it; closing it needs a
-/// STRUCTURAL reading, not another provision row. It is a genuinely unlawful key (a tuple
-/// of `nan` is not equal to itself), so this is a real gap. Carried over from WI-644's
-/// non-scope list — a rewrite of this comment dropped it once, which is how a known gap
-/// becomes an unknown one.
-///
-/// WI-20260919-9KYPA CLOSED THE PARAMETRIC HALF of what this item used to cover.
-/// `Map[K = List[T = Float]]` was here too, on the reasoning that the check "reads the
-/// key's own provisions and `List` provides no `NonEq`" — both halves of which have since
-/// changed: `eq_derive::derive_conditional_noneq` derives `NonEq[List] :- NonEq[T]`, and
-/// [`noneq_holds_at`] resolves the goal at the whole written key rather than reading an
-/// edge.
+/// (2) — closed. A tuple key whose unlawfulness is in a component (`Map[K = (a: Float)]`)
+/// is refused: [`eq_holds_at`] reads a tuple by its components.
 ///
 /// (3) A container type the author never WRITES — one the typer infers at a call
 /// site — has no written instantiation to record; the declared signature it flows
@@ -1048,10 +1039,7 @@ pub(crate) fn check_use_site_requires_eq(
     sites: &[crate::kb::ParameterizedSite],
 ) -> Vec<crate::kb::load::LoadError> {
     use crate::kb::load::LoadError;
-    let (Some(eq_sym), Some(noneq_sym)) = (
-        kb.try_resolve_symbol("anthill.prelude.Eq"),
-        kb.try_resolve_symbol("anthill.prelude.NonEq"),
-    ) else {
+    let Some(eq_sym) = kb.try_resolve_symbol("anthill.prelude.Eq") else {
         return Vec::new();
     };
     let eq_canon = kb.canonical_sort_sym(eq_sym);
@@ -1138,19 +1126,11 @@ pub(crate) fn check_use_site_requires_eq(
                     | ViewHead::Ident(functor) => functor,
                     _ => continue,
                 };
-                // WI-20260919-9KYPA — RESOLVE `NonEq` AT THE WHOLE BOUND TYPE, where this
-                // read the head carrier's own provisions. `sort_provides(List, NonEq)` is
-                // an edge in the `SortProvidesInfo` graph and says nothing about the
-                // ARGUMENT, so once `eq_derive` derives the conditional row it answers
-                // true for `List[T = Int64]` as readily as for `List[T = Float]` — it
-                // would turn the gap into a blanket refusal of every parametric key. The
-                // goal is what distinguishes them: it descends the conditional row's
-                // `:- NonEq[T]` through the written argument and fails at `Int64`.
-                //
-                // Not a fast path plus a goal, for that same reason: an unconditional
-                // `NonEq[Float]` resolves through this goal too, so a `sort_provides`
-                // pre-check could only ADD the verdict the goal exists to refuse.
-                if !noneq_holds_at(kb, noneq_sym, val) {
+                // At the WHOLE bound type, not the head carrier's own provisions: an edge
+                // `sort_provides(List, Eq)` says nothing about the argument, and the
+                // conditional row's `:- Eq[T]` is what tells `List[T = Int64]` from
+                // `List[T = Float]`.
+                if eq_holds_at(kb, eq_sym, val) {
                     continue;
                 }
                 // The container's own parameter, from the raw clause. A clause that
@@ -1178,17 +1158,16 @@ pub(crate) fn check_use_site_requires_eq(
                     param,
                     site_span,
                 )) {
-                    let err = LoadError::NonEqKeyRequiresLawfulEq {
+                    let err = LoadError::KeyWithoutEq {
                         container: kb.qualified_name_of(base).to_string(),
                         param: kb.local_name_of(param).to_string(),
                         spec: kb.qualified_name_of(goal.spec_sort).to_string(),
                         // WI-20260919-9KYPA — the WHOLE bound type, not its head sort.
-                        // Now that `NonEq` is decided at the argument, naming the head
-                        // would print "`anthill.prelude.List` binds a carrier that
-                        // provides `NonEq`" — a claim about `List` that is FALSE (it is
-                        // `List[T = Int64]`-lawful) and that points the author at a
-                        // container they have no reason to stop using. The refusal is
-                        // about `List[T = Float]`; say that.
+                        // `Eq` is decided at the argument, so naming the head would print
+                        // "`anthill.prelude.List` does not provide `Eq`" — a claim about
+                        // `List` that is FALSE (it is `List[T = Int64]`-lawful) and that
+                        // points the author at a container they have no reason to stop
+                        // using. The refusal is about `List[T = Float]`; say that.
                         //
                         // `format_term_for_goal`, not `type_display_name`: this message
                         // has always printed QUALIFIED carrier names, and that renderer

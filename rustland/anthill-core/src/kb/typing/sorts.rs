@@ -1953,7 +1953,7 @@ fn check_value_against_parameterized(
 ///
 /// WI-20260829-7QVD5 — A BINDING VALUE IS TAKEN IN WHATEVER SPELLING ITS PRODUCER HAS.
 /// Three producers feed this (declared-field validation, the witness leg
-/// [`witness_provides_admissibly`], and `coherence::noneq_holds_at`), and only the first
+/// [`witness_provides_admissibly`], and `coherence::eq_holds_at`), and only the first
 /// used to canonicalize — so a bare sort spelled as the nullary `Fn{S}` rather than
 /// `Ref(S)` answered differently depending on which one asked. No producer owes a normal
 /// form, because every reader of a goal value in the candidate matcher classifies it
