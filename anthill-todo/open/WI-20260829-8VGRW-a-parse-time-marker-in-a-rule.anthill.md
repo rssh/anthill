@@ -48,3 +48,7 @@ AND REFUSING WOULD REACH `lambda` TOO, which has been admissible in these positi
 
 OPTION (a) REMAINS THE BETTER ANSWER if the diagnosis is small, and nothing here changes that: two textually identical markers building two different terms is a bug whichever way the design question is settled.
 
+### 2026-10-26T16:23:21Z — feedback — claude
+
+MEASURED 2026-10-26 (found delivering WI-20261011-2S5FP, the same on its parent 030aec34): THE REFLECT SPELLING ALSO MATCHES NOTHING AS A RULE BODY GOAL'S ARGUMENT — the spelling option (c) would make the only one. Over `rule id2(?x, ?y) :- ?y <=> ?x`: `rule viaIf(?r) :- id2(anthill.reflect.Expr.if_expr(cond: true, then_branch: 1, else_branch: 2), ?r)` and `rule viaLambda(?r) :- id2(anthill.reflect.Expr.lambda_expr(param: 1, body: 2), ?r)` answer NOTHING, silently, beside `rule viaEntity(?r) :- id2(bx(v: 1), ?r)` answering `?r = bx(v: 1)`; the same goal typed as a CLI query, `id2(anthill.reflect.Expr.if_expr(…), ?r)`, answers `?r = if true then 1 else 2`. Bound by `<=>` in a rule body the constructor is data and destructures (`?y <=> if_expr(…), if_expr(cond: ?c, then_branch: ?r, else_branch: ?e) <=> ?y` answers 1), so it is the goal-argument route that loses it. Since 2S5FP the rule body builds the constructor and the `if` syntax as one `Expr::If` node told apart by `NodeKind::Expr.compound_syntax`, the syntax evaluated and the constructor data.
+
