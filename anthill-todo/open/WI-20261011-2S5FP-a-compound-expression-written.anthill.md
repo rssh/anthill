@@ -23,3 +23,9 @@ WHAT. A compound expression in a value slot denotes its value, as it does in an 
 
 CONTROLS. A row per program: (1) answers 10, 6 and 100; (2) holds, and its `not` answers nothing; (3) answers 11; (4) answers 4. Each fails today as measured above — (2)'s `not` row answers a falsehood and (4) kills the process. Pass either way: the operation-body `if`, and the lambda rows of wi_3hn0n_tuple_on_rhs_test. WHEN THIS LANDS: `TypingEnv::under` is asked at `dispatch_calls_in_occ`'s descent under a note that no row drives it, an `if` of a rule body not being evaluated (WI-20261011-3HN0N) — give it its row: a collection literal an equation leaves under a rule-body `if` that is then evaluated.
 
+## Changes
+
+### 2026-10-26T12:52:12Z — feedback — claude
+
+CARRIED FROM WI-20261023-Y2HFK (user, 2026-10-26: Y2HFK rejected as superseded by this ticket, whose `let` case it is; WI-20261013-R1W5A depends on this ticket in its place). Its rows, measured 2026-10-23 on 38a260a6, over `operation idI(x: Int64) -> Int64 = x`: `rule letPure(?v) :- ?v <=> (let x = 3  x + 1)` and `rule letInArg(?v) :- ?v <=> idI(let x = 3  x + 1)` each answer the term `let x = 3 in add(x, 1)` — owed: 4, definite. The cell twin `?v <=> (let c = Cell.new(3)  Cell.get(c))` loads (R1W5A's typing masks the `let`'s own cell) and its value is never computed — owed: 3.
+

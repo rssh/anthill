@@ -9,7 +9,7 @@
 
 - acceptance: cargo-test
 
-- depends_on: WI-20261013-WF14Z-068-c1b-a-rule-variable-is, WI-20261023-2F9HY-bare-at-a-side-of-in-a-rule, WI-20261023-GJVVW-import-ns-c-resolves-to-an, WI-20261023-X5SB4-soundness-a-guarded-effect-on, WI-20261023-W2JP7-a-closure-handed-to-another, WI-20261023-Y6QW2-a-lambda-written-in-a-query, WI-20261023-6Q43W-in-a-query-pattern-a-nullary, WI-20261023-Y2HFK-a-let-in-a-rule-body-s-value, WI-20261023-76KZN-a-constraint-s-goal-is-not, WI-20261023-HH0HT-a-call-written-under-an-arrow
+- depends_on: WI-20261013-WF14Z-068-c1b-a-rule-variable-is, WI-20261023-2F9HY-bare-at-a-side-of-in-a-rule, WI-20261023-GJVVW-import-ns-c-resolves-to-an, WI-20261023-X5SB4-soundness-a-guarded-effect-on, WI-20261023-W2JP7-a-closure-handed-to-another, WI-20261023-Y6QW2-a-lambda-written-in-a-query, WI-20261023-6Q43W-in-a-query-pattern-a-nullary, WI-20261023-76KZN-a-constraint-s-goal-is-not, WI-20261023-HH0HT-a-call-written-under-an-arrow, WI-20261011-2S5FP-a-compound-expression-written
 
 - tags: proposal-068, typing
 
