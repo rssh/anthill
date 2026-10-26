@@ -449,8 +449,7 @@ end
 /// Evaluate a nullary operation and render the type value it delivers.
 fn eval_type(interp: &mut anthill_core::eval::Interpreter, op: &str) -> String {
     match interp.call(&format!("test.rs2g4e.{op}"), &[]) {
-        Ok(Value::Term { id, .. }) => TermPrinter::new(interp.kb()).print_term(id),
-        Ok(other) => panic!("{op}: expected a term-carried type, got {other:?}"),
+        Ok(ty) => TermPrinter::new(interp.kb()).print_value(&ty),
         Err(e) => panic!("{op}: {e:?}"),
     }
 }
@@ -604,8 +603,8 @@ end
     );
     let mut interp = interp_for(&written);
     let got = match interp.call("test.rs2g4x.w_written", &[]) {
-        Ok(Value::Term { id, .. }) => TermPrinter::new(interp.kb()).print_term(id),
-        other => panic!("{other:?}"),
+        Ok(ty) => TermPrinter::new(interp.kb()).print_value(&ty),
+        Err(e) => panic!("{e:?}"),
     };
     assert_eq!(got, "Box[T = List[T = Int64]]");
 }

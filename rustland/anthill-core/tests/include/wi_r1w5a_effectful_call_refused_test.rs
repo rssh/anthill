@@ -296,9 +296,10 @@ const REFUSED: [(&str, &str, &str); 36] = [
         "the call `test.r1w5a.eff.id`",
         "Clock",
     ),
+    // An `if` is typed whole, as a `let` and a `match` are (WI-20261011-2S5FP).
     (
         "rule viaIf(?r) :- ?r <=> (if 1 < 2 then plainStamp() else \"x\")",
-        "the call `test.r1w5a.eff.plainStamp`",
+        "this expression",
         "Clock",
     ),
     (

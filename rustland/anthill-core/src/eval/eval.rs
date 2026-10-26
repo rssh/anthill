@@ -1151,7 +1151,7 @@ impl Interpreter {
     /// frames, its reify-boundary scan and its depth cap never see the parent's. The shared `step_count` / `step_cap`
     /// still bound the work, so a non-terminating const body surfaces as
     /// `StepsExhausted`. The depth cap is carried over from the live config.
-    fn eval_node_isolated(
+    pub(crate) fn eval_node_isolated(
         &mut self,
         op: Symbol,
         node: &Rc<NodeOccurrence>,
@@ -5095,9 +5095,10 @@ impl Interpreter {
             });
         }
 
-        let mut bindings: Vec<(Symbol, TermId)> = Vec::with_capacity(pos.len() + named.len());
-        for (n, v) in &named {
-            bindings.push((*n, self.expect_type_arg(sort_sym, v)?));
+        let mut bindings: Vec<(Symbol, Value)> = Vec::with_capacity(pos.len() + named.len());
+        for (n, v) in named {
+            self.expect_type_arg(sort_sym, &v)?;
+            bindings.push((n, v));
         }
 
         // Each positional binds the next declared param not already given by name —
@@ -5106,11 +5107,11 @@ impl Interpreter {
         // one has a slot.
         let slots = crate::kb::KnowledgeBase::positional_param_slots(
             &declared,
-            |d| named.iter().any(|(n, _)| self.kb.local_name_of(*n) == d),
+            |d| bindings.iter().any(|(n, _)| self.kb.local_name_of(*n) == d),
             pos.len(),
         );
-        for (v, slot) in pos.iter().zip(slots) {
-            let term = self.expect_type_arg(sort_sym, v)?;
+        for (v, slot) in pos.into_iter().zip(slots) {
+            self.expect_type_arg(sort_sym, &v)?;
             let Some(i) = slot else {
                 return Err(EvalError::Internal(format!(
                     "finish_sort_type: `{}` ran out of declared type params for a \
@@ -5119,29 +5120,44 @@ impl Interpreter {
                 )));
             };
             let param = self.kb.intern(&declared[i]);
-            bindings.push((param, term));
+            bindings.push((param, v));
         }
 
-        let base = self.kb.make_sort_ref(sort_sym);
-        let tid = self.kb.make_parameterized_type(base, &bindings);
-        Ok(StepOutcome::Deliver(Value::term(tid)))
+        // A sort with no argument is the sort itself (`List[]` is `List`).
+        if bindings.is_empty() {
+            return Ok(StepOutcome::Deliver(Value::term(self.kb.make_sort_ref(sort_sym))));
+        }
+        // The application holds each argument on the carrier it arrived on, its keys in
+        // the order the interned twin takes (`make_parameterized_type`), so it reads as
+        // that type on every reading; nothing is interned.
+        let functor = self.kb.type_context_face(sort_sym);
+        self.kb.canonicalize_record_named_args(functor, &mut bindings);
+        Ok(StepOutcome::Deliver(Value::Entity {
+            functor,
+            pos: Rc::from(Vec::new()),
+            named: Rc::from(bindings),
+        }))
     }
 
-    /// WI-707: a type argument must denote a TYPE — a `Term`-carried type value.
-    /// Loud (never a silent drop) so a `Cell[V = <not a type>]` cannot quietly build
-    /// a malformed type term.
-    fn expect_type_arg(&self, sort_sym: Symbol, v: &Value) -> Result<TermId, EvalError> {
-        match v {
-            Value::Term { id, .. } => Ok(*id),
-            other => Err(EvalError::TypeMismatch {
-                expected: "Type (a type argument)",
-                got: format!(
-                    "{} (in a type argument of `{}[…]`)",
-                    other.type_name(),
-                    self.kb.qualified_name_of(sort_sym),
-                ),
-            }),
+    /// WI-707: a type argument must denote a TYPE. Loud (never a silent drop) so a
+    /// `Cell[V = <not a type>]` cannot quietly build a malformed type.
+    ///
+    /// Read through the view, whatever carries it: a type a substitution rebuilt — a rule
+    /// body's `Box[V = (?a) -> Int64]` once `?a` is bound — is a transient spine, and is
+    /// the type it reads as.
+    fn expect_type_arg(&self, sort_sym: Symbol, v: &Value) -> Result<(), EvalError> {
+        use crate::kb::typing::{extract_type, TypeExtractor};
+        if !matches!(extract_type(&self.kb, v), TypeExtractor::Error) {
+            return Ok(());
         }
+        Err(EvalError::TypeMismatch {
+            expected: "Type (a type argument)",
+            got: format!(
+                "{} (in a type argument of `{}[…]`)",
+                v.type_name(),
+                self.kb.qualified_name_of(sort_sym),
+            ),
+        })
     }
 
     fn finish_constructor(

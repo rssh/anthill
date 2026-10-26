@@ -30,12 +30,15 @@ fn an_answer_rebuilt_over_a_type_is_written_as_the_type() {
     );
 }
 
+/// The `if` is its reflect constructor, written as a call: data, which the rule binds. The
+/// syntax `(if … then … else …)` would be evaluated (WI-20261011-2S5FP).
 #[test]
 fn an_answer_holding_an_expression_is_written_as_its_source() {
     let path = write_temp(
         "drgcp_expr_answer.anthill",
         "namespace t\n  import anthill.prelude.{Int64, String}\n  sort Box\n    sort V = ?\n  end\n  \
-         rule pick(?t) :- ?t <=> (if true then Box[V = Int64] else Box[V = String])\nend\n",
+         rule pick(?t) :- ?t <=> anthill.reflect.Expr.if_expr(cond: true, \
+         then_branch: Box[V = Int64], else_branch: Box[V = String])\nend\n",
     );
     let out = anthill(&["query", "--path", path.to_str().unwrap(), "t.pick(?t)"]);
     assert_eq!(out.code, 0, "stderr:\n{}", out.stderr);

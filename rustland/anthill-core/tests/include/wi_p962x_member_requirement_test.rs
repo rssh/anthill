@@ -51,10 +51,8 @@ fn unnamed_member_in_a_clause_is_refused() {
 fn eval_type(src: &str) -> String {
     let mut interp = crate::common::interp_for(src);
     match interp.call("memberReq.main", &[]) {
-        Ok(anthill_core::eval::Value::Term { id, .. }) => {
-            anthill_core::persistence::print::TermPrinter::new(interp.kb()).print_term(id)
-        }
-        other => panic!("expected a type, got {other:?}"),
+        Ok(ty) => anthill_core::persistence::print::TermPrinter::new(interp.kb()).print_value(&ty),
+        Err(e) => panic!("expected a type, got {e:?}"),
     }
 }
 #[test]

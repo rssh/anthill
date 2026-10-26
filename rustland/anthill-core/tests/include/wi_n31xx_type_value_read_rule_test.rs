@@ -71,8 +71,7 @@ fn load_errors(src: &str) -> Vec<String> {
 fn eval_type(src: &str, op: &str) -> String {
     let mut interp = interp_for(src);
     match interp.call(op, &[]) {
-        Ok(Value::Term { id, .. }) => TermPrinter::new(interp.kb()).print_term(id),
-        Ok(other) => panic!("{op}: expected a term-carried type, got {other:?}"),
+        Ok(ty) => TermPrinter::new(interp.kb()).print_value(&ty),
         Err(e) => panic!("{op}: {e:?}"),
     }
 }

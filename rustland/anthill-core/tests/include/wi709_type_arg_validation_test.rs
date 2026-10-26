@@ -23,7 +23,7 @@
 //! `rule bad(?x) :- eq(?x, is_modifiable(Cell[W = Int64]))` still loads and resolves with
 //! the stray `W` in the term. Filed as WI-710.
 
-use anthill_core::eval::Value;
+use anthill_core::kb::term_view::views_structurally_equal;
 
 use crate::common::{interp_for, try_load_kb_with};
 
@@ -148,25 +148,21 @@ end
 "#;
     let mut interp = interp_for(src);
 
-    let term_of = |interp: &mut anthill_core::eval::Interpreter, op: &str| match interp
-        .call(&format!("test.wi709.ok.{op}"), &[])
-        .unwrap_or_else(|e| panic!("{op}: {e:?}"))
-    {
-        Value::Term { id, .. } => id,
-        other => {
-            panic!("{op}: a type application must evaluate to a Term-carried type, got {other:?}")
-        }
+    let value_of = |interp: &mut anthill_core::eval::Interpreter, op: &str| {
+        interp
+            .call(&format!("test.wi709.ok.{op}"), &[])
+            .unwrap_or_else(|e| panic!("{op}: {e:?}"))
     };
-
-    assert_eq!(
-        term_of(&mut interp, "named"),
-        term_of(&mut interp, "positional"),
-        "`Cell[Int64]` binds the declared param `V`, so it is the same term as `Cell[V = Int64]`"
+    let (named, positional) = (value_of(&mut interp, "named"), value_of(&mut interp, "positional"));
+    assert!(
+        views_structurally_equal(interp.kb(), &named, &positional),
+        "`Cell[Int64]` binds the declared param `V`, so it is the same type as `Cell[V = Int64]`: \
+         {named:?} vs {positional:?}"
     );
-    assert_eq!(
-        term_of(&mut interp, "mixed_value"),
-        term_of(&mut interp, "both_named"),
+    let (mixed, both) = (value_of(&mut interp, "mixed_value"), value_of(&mut interp, "both_named"));
+    assert!(
+        views_structurally_equal(interp.kb(), &mixed, &both),
         "in `Map[K = String, Int64]` the positional binds the next param not already \
-         given by name (`V`), so it is `Map[K = String, V = Int64]`"
+         given by name (`V`), so it is `Map[K = String, V = Int64]`: {mixed:?} vs {both:?}"
     );
 }

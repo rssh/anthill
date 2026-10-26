@@ -182,10 +182,8 @@ end
 
 fn eval(op: &str) -> Result<String, EvalError> {
     let mut interp = interp_for(SRC);
-    match interp.call(&format!("test.r541x.{op}"), &[])? {
-        Value::Term { id, .. } => Ok(TermPrinter::new(interp.kb()).print_term(id)),
-        other => panic!("{op}: expected a term-carried type, got {other:?}"),
-    }
+    let ty = interp.call(&format!("test.r541x.{op}"), &[])?;
+    Ok(TermPrinter::new(interp.kb()).print_value(&ty))
 }
 
 fn eval_type(op: &str) -> String {
@@ -321,10 +319,7 @@ fn two_clauses_over_one_spec_are_refused_at_load() {
     );
     let mut i = interp_for(&with_call("TypeTerm.valueOf[T = Q]()"));
     let v = i.call("test.r541x.d1", &[]).expect("the bracketed call runs");
-    let Value::Term { id, .. } = v else {
-        panic!("a Type term, got {v:?}")
-    };
-    assert_eq!(TermPrinter::new(i.kb()).print_term(id), "Boom");
+    assert_eq!(TermPrinter::new(i.kb()).print_value(&v), "Boom");
 }
 
 /// (D)'s CHANNEL half, NOW REFUSED AT LOAD — WI-20260919-N31XX (proposal 065).

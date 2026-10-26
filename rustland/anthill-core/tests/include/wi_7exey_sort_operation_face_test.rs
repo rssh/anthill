@@ -46,10 +46,11 @@
 use anthill_core::eval::Value;
 use anthill_core::kb::load::{self, LoadOptions};
 use anthill_core::kb::term::Term;
+use anthill_core::kb::term_view::{TermView, ViewHead};
 
 use crate::common::{
     interp_for, load_errors_of, load_errors_of_files, load_in_a_later_call, load_kb_with,
-    query_unary, rendered_load_errors, run_int64,
+    query_unary, rendered_load_errors, run_int64, type_application,
 };
 
 /// The spec, its provision, a caller that requires it, and the entry `goF`.
@@ -255,13 +256,12 @@ fn an_unmarked_bracket_builds_the_type_in_eval() {
         };
         let stored = pos_args[0];
         match interp.run_with_requirements(stored, Default::default()) {
-            Ok(Value::Term { id, .. }) => assert!(
-                matches!(interp.kb().get_term(id), Term::Fn { functor, .. }
+            Ok(ty) => assert!(
+                matches!(ty.head(interp.kb()), ViewHead::Functor { functor, .. }
                     if functor.is_type_face() && functor.plain() == positive),
-                "{order}: the type, named by the face: {:?}",
-                interp.kb().get_term(id),
+                "{order}: the type, named by the face: {ty:?}",
             ),
-            other => panic!("{order}: expected the type as a term, got {other:?}"),
+            Err(e) => panic!("{order}: expected the type, got {e:?}"),
         }
     }
 }
@@ -295,15 +295,16 @@ fn a_bracket_binding_is_the_type_in_every_body_in_both_orders() {
         }
         let mut interp = interp_for(&src);
         let positive = interp.kb().try_resolve_symbol("test.x7exey.Positive").expect("resolves");
-        let Ok(Value::Term { id, .. }) = interp.call("test.x7exey.theBox", &[]) else {
+        let Ok(the_box) = interp.call("test.x7exey.theBox", &[]) else {
             panic!("{order}: `theBox` returns the type");
         };
-        let Term::Fn { named_args, .. } = interp.kb().get_term(id) else {
-            panic!("{order}: `Box[V = …]` is an application");
+        let Some((_, named)) = type_application(interp.kb(), &the_box) else {
+            panic!("{order}: `Box[V = …]` is an application: {the_box:?}");
         };
-        let bound = interp.kb().get_term(named_args[0].1).clone();
+        let bound = named[0].1.head(interp.kb());
         assert!(
-            matches!(bound, Term::Ref(s) if s.plain() == positive && s.is_type_face() == face),
+            matches!(bound, ViewHead::Ident(s) | ViewHead::Functor { functor: s, pos_arity: 0, named_arity: 0 }
+                if s.plain() == positive && s.is_type_face() == face),
             "{order}: the binding is the type — {}: {bound:?}",
             if face { "the face" } else { "the sort" },
         );

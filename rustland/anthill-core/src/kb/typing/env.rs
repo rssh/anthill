@@ -411,13 +411,15 @@ impl TypingEnv {
         self.rule_body_dispatch == Some(RuleText::Fragment)
     }
 
-    /// The env the children of `expr` are typed in, where it is not this one: `expr` is
-    /// a compound expression in a rule body's own term, or in a call of it. Asked at
-    /// each descent into a rule body's node — the typer's visit, and the walk that hands
-    /// a rule body's calls to the typer one at a time.
-    pub(super) fn under(&self, expr: &Expr) -> Option<TypingEnv> {
+    /// The env the children of `occ` are typed in, where it is not this one: `occ` is a
+    /// compound expression written with its syntax ([`NodeOccurrence::is_compound_syntax`])
+    /// in a rule body's own term, or in a call of it. Its reflect constructor written as a
+    /// call is the rule's data, and its children stay the rule's text. Asked at each
+    /// descent of the typer's visit; the walk that hands a rule body's calls to the typer
+    /// hands it such an expression whole.
+    pub(super) fn under(&self, occ: &NodeOccurrence) -> Option<TypingEnv> {
         if !matches!(self.rule_body_dispatch, Some(RuleText::Term | RuleText::Fragment))
-            || !is_compound_expression(expr)
+            || !occ.is_compound_syntax()
         {
             return None;
         }
@@ -1009,9 +1011,9 @@ impl Env {
         }
     }
 
-    /// This env for the children of `expr` ([`TypingEnv::under`]).
-    pub(super) fn under(self, expr: &Expr) -> Self {
-        match self.types.under(expr) {
+    /// This env for the children of `occ` ([`TypingEnv::under`]).
+    pub(super) fn under(self, occ: &NodeOccurrence) -> Self {
+        match self.types.under(occ) {
             Some(types) => self.with_types(types),
             None => self,
         }

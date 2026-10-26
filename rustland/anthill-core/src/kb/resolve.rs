@@ -12114,6 +12114,7 @@ impl KnowledgeBase {
         // `Error.reify` or any other call: a declined effect is not one a boundary repairs.
         // Read off the payload's constructor: `evaluation_failure` is an account of the
         // runtime's, which no program constructs ([`super::RuntimeAccount`]).
+        let form = evaluate::form_keyword(self, op);
         let (detail, repair) = match e {
             EvalError::Raised { payload, .. } => (
                 format!("raised {}", crate::eval::render_raised_payload(self, payload)),
@@ -12124,6 +12125,9 @@ impl KnowledgeBase {
                 } else if self.is_reify_operation(op) {
                     " The boundary catches the payload it is typed at, which this is not; a \
                      boundary typed at this payload catches it."
+                } else if form.is_some() {
+                    " Handle it inside the expression — `Error.reify` turns a raise into a \
+                     `Result` the rule can read."
                 } else {
                     " Handle it inside the operation — `Error.reify` turns a raise into a \
                      `Result` the rule can read."
@@ -12159,10 +12163,13 @@ impl KnowledgeBase {
             }
             other => (other.to_string(), ""),
         };
+        let subject = match form {
+            Some(keyword) => format!("the `{keyword}` written in a rule body"),
+            None => format!("`{}`", self.qualified_name_of(op)),
+        };
         format!(
-            "`{}` could not be evaluated by the resolver: {detail}. An empty answer set \
+            "{subject} could not be evaluated by the resolver: {detail}. An empty answer set \
              here is NOT a refutation — the call produced no value.{repair}",
-            self.qualified_name_of(op),
         )
     }
 
@@ -12302,13 +12309,57 @@ impl KnowledgeBase {
             None => (None, &[][..], None),
         };
         let unknowns: Rc<[VarId]> = Rc::from(unknowns);
-        let Some(outcome) = self.run_in_bridge_interp(|interp| {
+        let outcome = self.run_in_bridge_interp(|interp| {
             interp.bridge_unknowns = unknowns;
             match stamped {
                 Some(stamps) => interp.call_op_bridged_stamped(op, &args, stamps),
                 None => interp.call_op_bridged(op, &args, dispatched_through, supplied_slots),
             }
-        }) else {
+        });
+        self.bridged_value(op, outcome, faults)
+    }
+
+    /// 068 §1 — a compound expression a rule body writes in a value slot (an `if`, a
+    /// `let`, a `match`: [`evaluate::evaluated_form`]) run as an operation body runs it: σ
+    /// applied to the form, which a scratch interpreter then evaluates in a frame of its
+    /// own, under [`Self::bridge_op_to_eval`]'s gates and reporting. `Some` only when the
+    /// run decided a value.
+    ///
+    /// Run only when every variable the form names is bound. An unbound one would be read
+    /// in the interpreter by its NAME, where a binder of the form spelled the same answers
+    /// for it, so it cannot be handed over as an unknown the way a call's argument is.
+    fn bridge_form_to_eval(
+        &mut self,
+        form: &Value,
+        subst: &Substitution,
+        faults: &mut ReduceFaults,
+    ) -> Option<Value> {
+        let applied = self.reify_value(form, subst);
+        if !self.value_deep_ground(&applied, subst) {
+            return None;
+        }
+        let Value::Node(node) = &applied else {
+            unreachable!("σ applied to an occurrence is an occurrence (`substitute_occurrence`)");
+        };
+        // The frame's `op` names what runs, for an error raised inside it; the form is
+        // named by its reflected functor.
+        let op = applied
+            .head(self)
+            .functor_sym()
+            .expect("a compound expression heads as its reflected form");
+        let outcome = self.run_in_bridge_interp(|interp| interp.eval_node_isolated(op, node));
+        self.bridged_value(op, outcome, faults)
+    }
+
+    /// The value a bridged run of `op` decided, or `None` with what the stream is told of
+    /// a run that decided none ([`Self::note_bridge_error`]).
+    fn bridged_value(
+        &mut self,
+        op: Symbol,
+        outcome: Option<Result<Value, EvalError>>,
+        faults: &mut ReduceFaults,
+    ) -> Option<Value> {
+        let Some(outcome) = outcome else {
             // WI-20260911-0V0F7 — THE RE-ENTRY CAP IS A TRUNCATION, and the `?` that
             // stood here swallowed it. `run_in_bridge_interp` answers `None` when the
             // eval↔SLD ping-pong hits [`BRIDGE_REENTRY_CAP`]: a branch was CUT SHORT, so
@@ -12351,7 +12402,7 @@ impl KnowledgeBase {
         // resolution. It answers `Fault` below, so release builds now NAME it too.
         debug_assert!(
             !matches!(e, EvalError::Internal(_)),
-            "bridge_op_to_eval: internal evaluator error bridging `{}`: {e}",
+            "bridged_value: internal evaluator error bridging `{}`: {e}",
             self.qualified_name_of(op),
         );
         self.note_bridge_error(op, &e, disposition, faults);

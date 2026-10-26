@@ -95,13 +95,13 @@ pub(super) fn dispatch_calls_in_occ(
     // but not walked, is impossible. It answers WHICH shape, because the error tail
     // below is not the same for all of them (WI-1043).
     //
-    // WI-20260903-FC2X4 — that pairing is why `CallDispatch::BinderForm` was added THERE
+    // WI-20260903-FC2X4 — that pairing is why `CallDispatch::CompoundExpression` was added THERE
     // rather than as an arm of the `match` below. A first cut short-circuited a binder
     // form in this function alone, which left the pre-scan answering `true` for a body
     // whose only dispatch-shaped node sits inside a lambda while this walk did nothing —
     // the "acted on but not walked" case the sentence above says cannot happen. Raised by
     // `/code-review`.
-    let shape = occ.as_expr().and_then(|e| call_dispatch_shape(kb, e, pos));
+    let shape = call_dispatch_shape(kb, occ, pos);
     // WI-1043 — a BODY-LESS spec-op call is walked INTO as well as decided, so every
     // node beneath it keeps the decision and the error policy it had before this
     // ticket; the shape was admitted for a DISPATCH VERDICT, not to take the subtree
@@ -128,20 +128,9 @@ pub(super) fn dispatch_calls_in_occ(
         // is never read as a call on a functor that names nothing, and a type's sort-name
         // leaves are never read as unresolved values.
         (_, _) if pos == BodyPos::Untyped => Rc::clone(occ),
-        (Some(CallDispatch::Checked | CallDispatch::BinderForm | CallDispatch::Fragment), _)
+        (Some(CallDispatch::Checked | CallDispatch::CompoundExpression | CallDispatch::Fragment), _)
         | (_, None) => Rc::clone(occ),
         (_, Some(expr)) => {
-            // The children of a compound expression are written as an operation body
-            // is, and are typed as that text whichever descent reaches them
-            // ([`TypingEnv::under`]). This walk enters an `if` and an in-body proof
-            // itself; a lambda, a `let` and a `match` it hands to the typer whole.
-            //
-            // NO ROW DRIVES THIS LINE. An `if` written in a rule body is bound as it is
-            // written and is not evaluated, so what the typer leaves under one is read
-            // by nothing that tells the two texts apart. It is here so that the text
-            // under an `if` is one text, as under the other four.
-            let entered = env.under(expr);
-            let env = entered.as_ref().unwrap_or(env);
             // Collect child clones first so the immutable borrow on `occ` ends
             // before the mutable-`kb` recursion below.
             let mut children: Vec<Rc<NodeOccurrence>> = Vec::new();
@@ -172,11 +161,11 @@ pub(super) fn dispatch_calls_in_occ(
     };
     // A function handed to a relation is applied, if at all, in a clause of that relation,
     // where nothing says whose it is: the clause that hands it over is held to its row.
-    if let (BodyPos::Goal(commit) | BodyPos::GoalTuple(commit), Some(expr)) = (pos, walked.as_expr()) {
+    if let (BodyPos::Goal(commit) | BodyPos::GoalTuple(commit), Some(_)) = (pos, walked.as_expr()) {
         // At a checked position the walk's own shape answers; at a tolerated one it says
         // nothing of a relation goal, so it is asked as if checked.
         let relation = shape == Some(CallDispatch::Subgoal)
-            || (!commit.checked() && relation_goal(kb, expr, pos));
+            || (!commit.checked() && relation_goal(kb, &walked, pos));
         if relation {
             refuse_handed_functions(kb, env, &walked, rule_sym, mark, errors);
         }
@@ -374,10 +363,10 @@ pub(super) fn dispatch_calls_in_occ(
             match shape {
                 // Owns its whole subtree and does not recurse, so `mark` is its own
                 // start and there is nothing beneath it to have reported already.
-                // WI-20260903-FC2X4 — `BinderForm` shares this arm and shares its reason:
+                // WI-20260903-FC2X4 — `CompoundExpression` shares this arm and shares its reason:
                 // it does not recurse either, so `mark` is its own start and there is
                 // nothing beneath it to have reported already.
-                CallDispatch::Checked | CallDispatch::BinderForm | CallDispatch::Fragment => {
+                CallDispatch::Checked | CallDispatch::CompoundExpression | CallDispatch::Fragment => {
                     debug_assert_eq!(
                         mark,
                         errors.len(),
@@ -689,7 +678,7 @@ pub(super) fn child_body_positions(
 ///
 /// **IT ADDS NO REWRITING, and that is worth saying because WI-1058's third reason is a
 /// rewrite.** A hint is consumed only by a child this walk hands to `type_check_node_at`
-/// — a `Checked` dot, a `BodyLessSpecOp`/`Call` atom, a `BinderForm` — and three of those
+/// — a `Checked` dot, a `BodyLessSpecOp`/`Call` atom, a `CompoundExpression` — and three of those
 /// four already STORE the re-typed node ([`dispatch_calls_in_occ`]'s `Ok(result) if shape
 /// != CallDispatch::Call`), hint or no hint. A `DataTerm` and a `Subgoal` never reach the
 /// typer at all, so the hint computed for them is dropped. What an expectation can change
@@ -1007,7 +996,7 @@ fn already_reported(kb: &KnowledgeBase, reported_beneath: &[TypeError], leaf: &T
 /// WI-1043 — WHICH shape [`dispatch_calls_in_occ`] is deciding: it governs whether the
 /// walk RECURSES into the node before deciding it, whether it is type-checked at all, and
 /// how a failure is reported. Five shapes reach `type_check_node` — `Checked` and
-/// `BodyLessSpecOp` (WI-282 / WI-1026 / WI-1043), `Call` (WI-1058), `BinderForm`
+/// `BodyLessSpecOp` (WI-282 / WI-1026 / WI-1043), `Call` (WI-1058), `CompoundExpression`
 /// (WI-20260903-FC2X4) and `Fragment` (068 C1c); the two WI-1058 added for a goal and a
 /// data term do NOT reach it — they are CHECKED, not typed.
 ///
@@ -1051,12 +1040,12 @@ pub(super) enum CallDispatch {
     /// NAMES something ([`data_functor_error`]); never type-checked, for three measured
     /// reasons stated at [`call_dispatch_shape`].
     DataTerm,
-    /// WI-20260903-FC2X4 — a BINDER FORM (`lambda` / `let` / `match`), whose children are
-    /// not readable without it. Same policy as [`Self::Checked`]: does NOT recurse —
-    /// `type_check_node`'s own `Expr::Lambda` / `Expr::Let` / `Expr::Match` arms bind the
+    /// WI-20260903-FC2X4 — a COMPOUND EXPRESSION (`lambda` / `let` / `match` / `if`),
+    /// typed whole as the operation body it is evaluated as. Same policy as
+    /// [`Self::Checked`]: does NOT recurse — `type_check_node`'s own arms bind a binder's
     /// pattern into Γ (`bind_and_label_pattern`) and type the subtree under it, which is
     /// the one place in the typer that knows how — and reports leaf by leaf.
-    BinderForm,
+    CompoundExpression,
     /// An operation's application in a value slot, or the goal that is an operation's
     /// call: a fragment (068 §3), typed whole as an operation body is, equations on, and
     /// stored rewritten (068-implementation §6.2, decision 4). Same policy as
@@ -1362,12 +1351,12 @@ fn value_type_in_clause(env: &TypingEnv, value: &Rc<NodeOccurrence>) -> Option<V
 
 /// Is `expr`, at the goal position `pos`, a goal on a relation — an atom the resolver
 /// proves against clauses — whether or not this walk checks its shape there?
-fn relation_goal(kb: &KnowledgeBase, expr: &Expr, pos: BodyPos) -> bool {
+fn relation_goal(kb: &KnowledgeBase, occ: &NodeOccurrence, pos: BodyPos) -> bool {
     let checked = match pos {
         BodyPos::GoalTuple(_) => BodyPos::GoalTuple(GoalCommit::Top),
         _ => BodyPos::Goal(GoalCommit::Top),
     };
-    call_dispatch_shape(kb, expr, checked) == Some(CallDispatch::Subgoal)
+    call_dispatch_shape(kb, occ, checked) == Some(CallDispatch::Subgoal)
 }
 
 /// A rule body hands no function that performs an effect to a relation: each value in the
@@ -1659,9 +1648,10 @@ fn operation_application(kb: &KnowledgeBase, functor: Symbol) -> bool {
 /// nested `p(bogus(?x))` is refused, which is the population WI-1034's walk never reaches.
 pub(super) fn call_dispatch_shape(
     kb: &KnowledgeBase,
-    expr: &Expr,
+    occ: &NodeOccurrence,
     pos: BodyPos,
 ) -> Option<CallDispatch> {
+    let expr = occ.as_expr()?;
     if pos == BodyPos::Untyped || rule_body_type_term(kb, expr) {
         return None;
     }
@@ -1695,7 +1685,15 @@ pub(super) fn call_dispatch_shape(
         // Derived from [`pattern_child_indices`] rather than re-listing the forms: that
         // function is the one place every binding constructor is enumerated, and its own
         // doc says a missing row there is silent.
-        _ if !pattern_child_indices(expr).is_empty() => Some(CallDispatch::BinderForm),
+        //
+        // An `if` binds nothing and is decided as a unit as well: a compound expression is
+        // evaluated whole, as the operation body it is written as (kernel-language §5.9),
+        // so it is typed as that body — its condition a `Bool`, its branches one type. Its
+        // reflect constructor written as a call builds the same node and is data
+        // ([`NodeOccurrence::is_compound_syntax`]).
+        _ if !pattern_child_indices(expr).is_empty() || occ.is_compound_syntax() => {
+            Some(CallDispatch::CompoundExpression)
+        }
         Expr::Apply {
             functor,
             pos_args,
@@ -2014,7 +2012,7 @@ pub(super) fn occ_needs_call_dispatch(kb: &KnowledgeBase, occ: &Rc<NodeOccurrenc
         vec![(Rc::clone(occ), BodyPos::Goal(GoalCommit::Top))];
     while let Some((o, pos)) = stack.pop() {
         if let Some(expr) = o.as_expr() {
-            if call_dispatch_shape(kb, expr, pos).is_some() {
+            if call_dispatch_shape(kb, &o, pos).is_some() {
                 return true;
             }
             let mut children: SmallVec<[Rc<NodeOccurrence>; 8]> = SmallVec::new();

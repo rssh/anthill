@@ -378,11 +378,22 @@ end
         .map(|atom| TermPrinter::new(&kb).print_occurrence(atom))
         .collect::<Vec<_>>()
         .join(" || ");
+    // The nested `Stream[{}]` and its lowered effect row both survive in the rule body (no
+    // panic, no drop): read through the view, `List[T = Stream[T = <row>]]` with the row the
+    // effect-rows form, and printed as it was written.
+    let atom = Value::Node(std::rc::Rc::clone(&kb.rule_body_nodes(rid)[0]));
+    let (_, list) = crate::common::type_application(&kb, &atom)
+        .unwrap_or_else(|| panic!("`List[T = …]` survives; got: {body}"));
+    let (stream, row) = crate::common::type_application(&kb, &list[0].1)
+        .unwrap_or_else(|| panic!("`Stream[…]` survives; got: {body}"));
+    assert_eq!(kb.local_name_of(stream), "Stream", "got: {body}");
+    use anthill_core::kb::term_view::{TermView, ViewHead};
     assert!(
-        body.contains("Stream") && body.contains("EffectsRows"),
-        "the nested `Stream[{{}}]` and its lowered effect-row must both survive in the \
-         rule body (no panic/drop); got: {body}",
+        matches!(row[0].1.head(&kb), ViewHead::Functor { functor, .. }
+            if kb.qualified_name_of(functor) == "anthill.prelude.TypeExtractor.EffectsRows"),
+        "the lowered effect row survives; got: {body}",
     );
+    assert!(body.contains("Stream[T = {}]"), "printed as written; got: {body}");
 }
 
 /// Regression (WI-366 B1): a written effect-row in an OP-BODY type-expression

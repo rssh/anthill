@@ -59,7 +59,7 @@ use anthill_core::kb::term::Term;
 use anthill_core::parse;
 use anthill_core::parse::ir::Item;
 
-use crate::common::interp_for;
+use crate::common::{bare_sort_name, interp_for, type_application};
 
 /// The refusal's own words, so the rows below assert the SAME error and a reworded
 /// message is one edit.
@@ -428,19 +428,12 @@ end
         let v = interp
             .call(&format!("test.bad3v.{op}"), &[])
             .unwrap_or_else(|e| panic!("{op}: {e:?}"));
-        let id = match v {
-            Value::Term { id, .. } => id,
-            other => panic!("{op}: expected a Term-carried type, got {other:?}"),
-        };
-        let named = match interp.kb().get_term(id).clone() {
-            Term::Fn { named_args, .. } => named_args,
-            other => panic!("{op}: expected `Cell[V = …]`, got {other:?}"),
+        let Some((_, named)) = type_application(interp.kb(), &v) else {
+            panic!("{op}: expected `Cell[V = …]`, got {v:?}");
         };
         assert_eq!(named.len(), 1, "{op}: one type argument (V)");
-        match interp.kb().get_term(named[0].1).clone() {
-            Term::Ref(s) | Term::Ident(s) => interp.kb().local_name_of(s).to_string(),
-            other => panic!("{op}: V must bind a sort ref, got {other:?}"),
-        }
+        bare_sort_name(interp.kb(), &named[0].1)
+            .unwrap_or_else(|| panic!("{op}: V must bind a sort, got {:?}", named[0].1))
     };
 
     assert_eq!(

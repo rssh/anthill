@@ -514,12 +514,30 @@ impl NodeOccurrence {
         dot_chain: bool,
         paren_less: bool,
     ) -> Rc<Self> {
+        Self::new_source_expr(expr, span, owner, dot_chain, paren_less, false)
+    }
+
+    /// A compound expression the loader built from its syntax (see the `compound_syntax`
+    /// field).
+    pub(crate) fn new_compound_syntax(expr: Expr, span: SourceSpan) -> Rc<Self> {
+        Self::new_source_expr(expr, span, None, false, false, true)
+    }
+
+    fn new_source_expr(
+        expr: Expr,
+        span: SourceSpan,
+        owner: Option<Symbol>,
+        dot_chain: bool,
+        paren_less: bool,
+        compound_syntax: bool,
+    ) -> Rc<Self> {
         Rc::new(NodeOccurrence {
             kind: NodeKind::Expr {
                 expr,
                 origin: OccurrenceOrigin::Source,
                 dot_chain,
                 paren_less,
+                compound_syntax,
                 classification: RefCell::new(None),
                 op_dicts: RefCell::new(SmallVec::new()),
                 inferred_type: RefCell::new(None),
@@ -548,6 +566,18 @@ impl NodeOccurrence {
             &self.kind,
             NodeKind::Expr {
                 paren_less: true,
+                ..
+            }
+        )
+    }
+
+    /// Is this compound expression the one its syntax wrote? See the `compound_syntax`
+    /// field.
+    pub fn is_compound_syntax(&self) -> bool {
+        matches!(
+            &self.kind,
+            NodeKind::Expr {
+                compound_syntax: true,
                 ..
             }
         )
@@ -610,6 +640,7 @@ impl NodeOccurrence {
                     // fixed for at WI-502.
                     dot_chain: self.is_dot_chain(),
                     paren_less: self.is_paren_less(),
+                    compound_syntax: self.is_compound_syntax(),
                     classification: RefCell::new(None),
                     op_dicts: RefCell::new(SmallVec::new()),
                     inferred_type: RefCell::new(None),
@@ -618,12 +649,13 @@ impl NodeOccurrence {
                 span: self.span,
                 owner: self.owner,
             }),
-            _ => NodeOccurrence::new_expr_written(
+            _ => NodeOccurrence::new_source_expr(
                 expr,
                 self.span,
                 self.owner,
                 self.is_dot_chain(),
                 self.is_paren_less(),
+                self.is_compound_syntax(),
             ),
         };
         rebuilt.carry_typer_stamps_from(self);
@@ -770,6 +802,7 @@ impl NodeOccurrence {
                 // WI-20260902-4NEKZ: carried, for the reason `rebuilt_expr` states.
                 dot_chain: self.is_dot_chain(),
                 paren_less: self.is_paren_less(),
+                compound_syntax: self.is_compound_syntax(),
                 classification: RefCell::new(None),
                 op_dicts: RefCell::new(SmallVec::new()),
                 inferred_type: RefCell::new(None),
@@ -798,6 +831,7 @@ impl NodeOccurrence {
                 },
                 dot_chain: self.is_dot_chain(),
                 paren_less: self.is_paren_less(),
+                compound_syntax: self.is_compound_syntax(),
                 classification: RefCell::new(None),
                 op_dicts: RefCell::new(SmallVec::new()),
                 inferred_type: RefCell::new(None),
@@ -891,6 +925,7 @@ impl NodeOccurrence {
                 // be decided about rather than silently skipped.
                 dot_chain: _,
                 paren_less: _,
+                compound_syntax: _,
                 classification: dst_class,
                 op_dicts: dst_op_dicts,
                 inferred_type: dst_ty,
@@ -901,6 +936,7 @@ impl NodeOccurrence {
                 origin: _,
                 dot_chain: _,
                 paren_less: _,
+                compound_syntax: _,
                 classification: src_class,
                 op_dicts: src_op_dicts,
                 inferred_type: src_ty,
@@ -961,6 +997,7 @@ impl NodeOccurrence {
                 // it is not the dot the author wrote even when it expands one.
                 dot_chain: false,
                 paren_less,
+                compound_syntax: false,
                 classification: RefCell::new(None),
                 op_dicts: RefCell::new(SmallVec::new()),
                 inferred_type: RefCell::new(None),
@@ -1349,6 +1386,14 @@ pub enum NodeKind {
         /// by every rebuild, as `dot_chain` is; a synthesized node takes it only where
         /// its builder passes it on (the call a dot on a sort-denoting receiver makes).
         paren_less: bool,
+        /// Was this `if` / `let` / `match` / lambda / in-body proof built by the loader
+        /// from the compound expression's SYNTAX, rather than from its reflect constructor
+        /// written as a call (`anthill.reflect.Expr.if_expr(cond: …, …)`)? In a rule body
+        /// both build the same node, and they mean different things: the syntax is code,
+        /// evaluated where it is written (kernel-language §5.9), and the constructor is
+        /// data. The parse store's mint, carried, as `dot_chain` is; `false` on every node
+        /// built from a term and on every synthesized one.
+        compound_syntax: bool,
         /// Typer-attached classification (WI-231). Mutable because the
         /// typer writes after construction while other walkers may hold
         /// shared `Rc` references to this occurrence.
@@ -7675,8 +7720,11 @@ impl Src {
 pub(crate) enum BuildFrame {
     /// Empty / missing slot — push a synthesized Bottom occurrence.
     Bottom,
+    /// `syntax` on the five compound forms: built by the loader from the syntax (the
+    /// `compound_syntax` field), not from a term.
     If {
         span: SourceSpan,
+        syntax: bool,
     },
     /// WI-819: NO `type_annotation`. A `let`'s `: T` is attached to the PATTERN
     /// TERM by the loader (`Loader::annotate_let_pattern`) before this frame is
@@ -7692,10 +7740,12 @@ pub(crate) enum BuildFrame {
     Let {
         span: SourceSpan,
         pattern: Src,
+        syntax: bool,
     },
     Lambda {
         span: SourceSpan,
         param: Src,
+        syntax: bool,
     },
     /// In-body / control-flow proof (WI-538). Children on the result
     /// stack are `[body, conclude?]`; the resolved target / strategy /
@@ -7706,10 +7756,12 @@ pub(crate) enum BuildFrame {
         strategy: Option<Symbol>,
         using: Vec<Symbol>,
         has_conclude: bool,
+        syntax: bool,
     },
     Match {
         span: SourceSpan,
         branches: Vec<BranchMeta>,
+        syntax: bool,
     },
     Apply {
         span: SourceSpan,
@@ -7915,7 +7967,7 @@ fn visit_fn(
             let cond = src.field(kb, "cond");
             let then_b = src.field(kb, "then_branch");
             let else_b = src.field(kb, "else_branch");
-            work.push(WorkOp::Build(BuildFrame::If { span }));
+            work.push(WorkOp::Build(BuildFrame::If { span, syntax: false }));
             push_visit_or_bottom(work, else_b);
             push_visit_or_bottom(work, then_b);
             push_visit_or_bottom(work, cond);
@@ -7940,14 +7992,14 @@ fn visit_fn(
             // Deleting THAT would drop every let annotation.
             let value = src.field(kb, "value");
             let body = src.field(kb, "body");
-            work.push(WorkOp::Build(BuildFrame::Let { span, pattern }));
+            work.push(WorkOp::Build(BuildFrame::Let { span, pattern, syntax: false }));
             push_visit_or_bottom(work, body);
             push_visit_or_bottom(work, value);
         }
         "lambda_expr" => {
             let param = src.field(kb, "param").unwrap_or_else(|| src.clone());
             let body = src.field(kb, "body");
-            work.push(WorkOp::Build(BuildFrame::Lambda { span, param }));
+            work.push(WorkOp::Build(BuildFrame::Lambda { span, param, syntax: false }));
             push_visit_or_bottom(work, body);
         }
         "proof_stmt" => {
@@ -7995,6 +8047,7 @@ fn visit_fn(
                         strategy,
                         using,
                         has_conclude: conclude.is_some(),
+                        syntax: false,
                     }));
                     if let Some(c) = conclude {
                         push_visit_or_bottom(work, Some(c));
@@ -8038,7 +8091,7 @@ fn visit_fn(
                     child_visits.push(visit_or_bottom_op(body));
                 }
             }
-            work.push(WorkOp::Build(BuildFrame::Match { span, branches }));
+            work.push(WorkOp::Build(BuildFrame::Match { span, branches, syntax: false }));
             // Branches first (in reverse so pops in order), then scrutinee last (pops first).
             for v in child_visits.into_iter().rev() {
                 work.push(v);
@@ -8440,6 +8493,15 @@ fn visit_or_bottom_op(slot: Option<Src>) -> WorkOp {
     }
 }
 
+/// A compound expression's node: built from its syntax by the loader, or from a term.
+fn compound_node(expr: Expr, span: SourceSpan, syntax: bool) -> Rc<NodeOccurrence> {
+    if syntax {
+        NodeOccurrence::new_compound_syntax(expr, span)
+    } else {
+        NodeOccurrence::new_expr(expr, span, None)
+    }
+}
+
 pub(crate) fn build_frame(
     kb: &KnowledgeBase,
     frame: BuildFrame,
@@ -8447,7 +8509,7 @@ pub(crate) fn build_frame(
 ) {
     match frame {
         BuildFrame::Bottom => results.push(bottom_node()),
-        BuildFrame::If { span } => {
+        BuildFrame::If { span, syntax } => {
             // results stack (top → bottom after Visits):
             //   else_branch, then_branch, condition
             let else_branch = results.pop().expect("if: missing else_branch");
@@ -8458,9 +8520,13 @@ pub(crate) fn build_frame(
                 then_branch,
                 else_branch,
             };
-            results.push(NodeOccurrence::new_expr(expr, span, None));
+            results.push(compound_node(expr, span, syntax));
         }
-        BuildFrame::Let { span, pattern } => {
+        BuildFrame::Let {
+            span,
+            pattern,
+            syntax,
+        } => {
             // WI-318: build the Pattern-kind pattern occurrence from the
             // TermId carried in the BuildFrame, same as BuildFrame::Lambda.
             // WI-819: the `: T` annotation rides the pattern TERM and lands on the
@@ -8473,9 +8539,13 @@ pub(crate) fn build_frame(
                 value,
                 body,
             };
-            results.push(NodeOccurrence::new_expr(expr, span, None));
+            results.push(compound_node(expr, span, syntax));
         }
-        BuildFrame::Lambda { span, param } => {
+        BuildFrame::Lambda {
+            span,
+            param,
+            syntax,
+        } => {
             // WI-318: build the Pattern-kind param occurrence from the
             // TermId carried in the BuildFrame. `term_to_param_occurrence` reads
             // the loader-emitted var_pattern / constructor_pattern /
@@ -8486,7 +8556,7 @@ pub(crate) fn build_frame(
                 param: param_occ,
                 body,
             };
-            results.push(NodeOccurrence::new_expr(expr, span, None));
+            results.push(compound_node(expr, span, syntax));
         }
         BuildFrame::Proof {
             span,
@@ -8494,6 +8564,7 @@ pub(crate) fn build_frame(
             strategy,
             using,
             has_conclude,
+            syntax,
         } => {
             // WI-538: results stack (top → bottom): conclude?, body.
             let conclude = if has_conclude {
@@ -8509,9 +8580,13 @@ pub(crate) fn build_frame(
                 conclude,
                 body,
             };
-            results.push(NodeOccurrence::new_expr(expr, span, None));
+            results.push(compound_node(expr, span, syntax));
         }
-        BuildFrame::Match { span, mut branches } => {
+        BuildFrame::Match {
+            span,
+            mut branches,
+            syntax,
+        } => {
             // results stack contents (top → bottom):
             //   bN_guard?, bN_body, bN-1_guard?, bN-1_body, ..., b0_guard?, b0_body, scrutinee
             // Pop branches in REVERSE source order.
@@ -8540,7 +8615,7 @@ pub(crate) fn build_frame(
                 scrutinee,
                 branches: built_branches,
             };
-            results.push(NodeOccurrence::new_expr(expr, span, None));
+            results.push(compound_node(expr, span, syntax));
         }
         BuildFrame::Apply {
             span,

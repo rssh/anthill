@@ -69,6 +69,8 @@ mod wi_cr6gd_clause_defined_call_test;
 mod wi_12vzb_constructor_named_out_of_order_test;
 #[path = "include/wi_12vzb_match_guard_stored_as_typed_test.rs"]
 mod wi_12vzb_match_guard_stored_as_typed_test;
+#[path = "include/wi_2s5fp_compound_expression_in_a_rule_body_test.rs"]
+mod wi_2s5fp_compound_expression_in_a_rule_body_test;
 #[path = "include/wi_2qz3f_const_declared_once_test.rs"]
 mod wi_2qz3f_const_declared_once_test;
 #[path = "include/wi_2qz3f_const_dotted_name_test.rs"]

@@ -50,7 +50,7 @@ pub(super) fn visit_type(
     };
     // The children of a compound expression are written as an operation body is, in a
     // rule body too.
-    let env = env.under(expr);
+    let env = env.under(&occ);
     match expr {
         // A rule's own term keeps a list, a set and a tuple as the node a clause is
         // matched on; an operation body writes each as a constructor. Where the text is

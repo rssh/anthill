@@ -126,10 +126,11 @@
 
 use anthill_core::eval::Value;
 use anthill_core::intern::SymbolKind;
-use anthill_core::kb::term::{Term, TermId};
 use anthill_core::kb::KnowledgeBase;
 
-use crate::common::{interp_for, list_heads, load_kb_with, try_load_kb_with};
+use crate::common::{
+    bare_sort_name, interp_for, list_heads, load_kb_with, try_load_kb_with, type_application,
+};
 
 /// The matrix fixture: one operation per §3 family, each written twice where the family
 /// admits both faces — a BARE `Cell` and an APPLIED `Cell[V = Int64]`.
@@ -197,43 +198,32 @@ namespace test.q0093
 end
 "#;
 
-/// `Ref(Cell)` — what a BARE nominal type evaluates to. Proposal 055 §7: the two faces are
-/// structurally different terms, and this is not the empty application.
+/// `Cell` — what a BARE nominal type evaluates to, read through the view. Proposal 055 §7:
+/// the bare sort, not an application with bindings.
 fn assert_bare_cell(kb: &KnowledgeBase, v: &Value, what: &str) {
-    match kb.get_term(term_id(v, what)).clone() {
-        Term::Ref(s) => assert_eq!(kb.local_name_of(s), "Cell", "{what}: the denoted sort"),
-        other => panic!("{what}: expected the bare `Ref(Cell)`, got {other:?}"),
-    }
+    assert_eq!(
+        bare_sort_name(kb, v).as_deref(),
+        Some("Cell"),
+        "{what}: expected the bare sort `Cell`, got {v:?}"
+    );
 }
 
-/// `Cell(V: Ref(Int64))` — the canonical parameterized type term an APPLIED nominal type
-/// evaluates to, argument included (the argument is classified by the same loader rule, so
-/// a row that stopped at the head would not notice it going back to a var-ref).
+/// `Cell[V = Int64]` — the parameterized type an APPLIED nominal type evaluates to, read
+/// through the view, argument included (the argument is classified by the same loader rule,
+/// so a row that stopped at the head would not notice it going back to a var-ref).
 fn assert_applied_cell(kb: &KnowledgeBase, v: &Value, what: &str) {
-    match kb.get_term(term_id(v, what)).clone() {
-        Term::Fn {
-            functor,
-            pos_args,
-            named_args,
-        } => {
-            assert_eq!(kb.local_name_of(functor), "Cell", "{what}: the head sort");
-            assert!(pos_args.is_empty(), "{what}: `Cell[V = …]` binds V by name");
-            assert_eq!(named_args.len(), 1, "{what}: one type argument");
-            assert_eq!(kb.local_name_of(named_args[0].0), "V", "{what}: the label");
-            match kb.get_term(named_args[0].1).clone() {
-                Term::Ref(s) => assert_eq!(kb.local_name_of(s), "Int64", "{what}: V binds"),
-                other => panic!("{what}: V must bind `Ref(Int64)`, got {other:?}"),
-            }
-        }
-        other => panic!("{what}: expected `Cell(V: Int64)`, got {other:?}"),
-    }
-}
-
-fn term_id(v: &Value, what: &str) -> TermId {
-    match v {
-        Value::Term { id, .. } => *id,
-        other => panic!("{what}: expected a `Type` value on the Term carrier, got {other:?}"),
-    }
+    let Some((functor, named)) = type_application(kb, v) else {
+        panic!("{what}: expected `Cell[V = Int64]`, got {v:?}");
+    };
+    assert_eq!(kb.local_name_of(functor), "Cell", "{what}: the head sort");
+    assert_eq!(named.len(), 1, "{what}: one type argument");
+    assert_eq!(kb.local_name_of(named[0].0), "V", "{what}: the label");
+    assert_eq!(
+        bare_sort_name(kb, &named[0].1).as_deref(),
+        Some("Int64"),
+        "{what}: V binds Int64, got {:?}",
+        named[0].1
+    );
 }
 
 // ── DRIVING ROWS, one per §3 family ────────────────────────────────────────────
@@ -1245,23 +1235,14 @@ end
         let bare = interp
             .call(&format!("test.q0093ord{ns}.f"), &[])
             .unwrap_or_else(|e| panic!("{what}, bare: {e:?}"));
-        match interp.kb().get_term(term_id(&bare, what)).clone() {
-            Term::Ref(s) => assert_eq!(interp.kb().local_name_of(s), "Box", "{what}"),
-            other => panic!("{what}: expected `Ref(Box)`, got {other:?}"),
-        }
+        assert_eq!(bare_sort_name(interp.kb(), &bare).as_deref(), Some("Box"), "{what}: {bare:?}");
         let applied = interp
             .call(&format!("test.q0093ord{ns}.g"), &[])
             .unwrap_or_else(|e| panic!("{what}, applied: {e:?}"));
-        match interp.kb().get_term(term_id(&applied, what)).clone() {
-            Term::Fn {
-                functor,
-                named_args,
-                ..
-            } => {
-                assert_eq!(interp.kb().local_name_of(functor), "Box", "{what}");
-                assert_eq!(named_args.len(), 1, "{what}: `Box[V = Int64]` binds V");
-            }
-            other => panic!("{what}: expected `Box(V: Int64)`, got {other:?}"),
-        }
+        let Some((functor, named)) = type_application(interp.kb(), &applied) else {
+            panic!("{what}: expected `Box[V = Int64]`, got {applied:?}");
+        };
+        assert_eq!(interp.kb().local_name_of(functor), "Box", "{what}");
+        assert_eq!(named.len(), 1, "{what}: `Box[V = Int64]` binds V");
     }
 }

@@ -143,6 +143,10 @@ through goal connectives, predicate atoms, entity constructors and tuples, and n
 In `C.bpick(?c) = box(v: C.tag(red()))` the fragments are `C.bpick(?c)` and `C.tag(red())`;
 `box(…)` is data.
 
+*Amended 2026-10-26* (WI-20261011-2S5FP): an `if` is a fragment root as well — a compound
+expression is evaluated where it is written (kernel-language §5.9) — and a lambda's value is
+the function. An in-body proof is refused in a rule body (kernel-language §5.10).
+
 *Amended 2026-10-21* (WI-20261013-GGXCX; `docs/design/068-implementation.md` §6.2): data is
 typed, not evaluated. An entity construction in a rule or a fact has each argument checked
 against its field and its type given to its position, and the clause's variables are typed as

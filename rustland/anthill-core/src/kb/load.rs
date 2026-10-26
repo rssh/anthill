@@ -2448,6 +2448,12 @@ pub enum LoadError {
         ctor: String,
         span: Span,
     },
+    /// An in-body proof written in a rule body (kernel-language.md §5.10): it stands in an
+    /// operation or const body's control flow, and a rule is proved by a proof
+    /// declaration. The span is the proof's.
+    ProofInClause {
+        span: Span,
+    },
     /// WI-797 / proposal 057 §"Mounts": a source-file `fact` or `rule` whose head
     /// functor is owned by a mounted [`ExtentSource`](crate::kb::extent) (`kb.extents`).
     /// The extent virtualizes that functor's reads through its store, so a resident
@@ -3111,6 +3117,7 @@ impl LoadError {
             | LoadError::BareArrowInLogicPosition { span, .. }
             | LoadError::LambdaInTermPosition { span }
             | LoadError::RuntimeAccountInClause { span, .. }
+            | LoadError::ProofInClause { span }
             | LoadError::AggregationConstraintUnsupported { span, .. }
             | LoadError::UnsupportedConstraintForm { span, .. }
             | LoadError::UnresolvedTypeName { span, .. }
@@ -4096,6 +4103,9 @@ impl LoadError {
             }
             LoadError::RuntimeAccountInClause { ctor, span } => {
                 format!("{}: {}", loc.format_start(*span), runtime_account_in_clause_msg(ctor))
+            }
+            LoadError::ProofInClause { span } => {
+                format!("{}: {}", loc.format_start(*span), PROOF_IN_CLAUSE_MSG)
             }
             LoadError::AggregationConstraintUnsupported { label, span } => {
                 format!("{}: aggregation constraint{} is not yet enforced (the guard engine cannot evaluate count/sum/min/max)", loc.format_start(*span), label_suffix(label))
@@ -5662,6 +5672,9 @@ impl std::fmt::Display for LoadError {
                     span.start,
                     span.end
                 )
+            }
+            LoadError::ProofInClause { span } => {
+                write!(f, "{} at {}..{}", PROOF_IN_CLAUSE_MSG, span.start, span.end)
             }
             LoadError::AggregationConstraintUnsupported { label, span } => {
                 write!(
@@ -8628,6 +8641,11 @@ fn subject_introduces<'a>(subject: Cow<'a, str>) -> Result<&'a str, NoIntroducti
     };
     Ok(name)
 }
+
+/// The one message body for `LoadError::ProofInClause`, shared by both renderings.
+const PROOF_IN_CLAUSE_MSG: &str =
+    "an in-body proof stands in an operation or const body; a rule body is itself a \
+     derivation, and a rule is proved by a proof declaration (`proof <rule> by …`)";
 
 /// The sentence of [`LoadError::RuntimeAccountInClause`], one owner for its two renderings.
 fn runtime_account_in_clause_msg(ctor: &str) -> String {
@@ -27025,6 +27043,10 @@ struct Loader<'a> {
     /// `wi618_bare_arrow_logic_test::lambda_binder_under_inner_arrow_still_loads`, the one
     /// row this ticket's first cut moved.
     lowering_rule_compound_expr: bool,
+    /// Building a `@[simp]` equation's right-hand side ([`Self::equation_rhs_occurrence`]):
+    /// text that is spliced into the bodies the equation rewrites, an operation's among
+    /// them, and so no clause body — an in-body proof is admitted there.
+    lowering_equation_rhs: bool,
     /// WI-20260903-FC2X4 — the occurrence [`Loader::compound_expression_occurrence`] built
     /// for a compound-expression marker parse node, so the two walks that can reach one
     /// such node (a `@[simp]` head's term conversion and its RHS occurrence) delegate to
@@ -27694,6 +27716,7 @@ impl<'a> Loader<'a> {
             term_map: HashMap::new(),
             compound_expr_occ: HashMap::new(),
             lowering_rule_compound_expr: false,
+            lowering_equation_rhs: false,
             entity_slot_origin: HashMap::new(),
             descs_emitted_by_convert: false,
             sym_map: HashMap::new(),
@@ -32601,6 +32624,13 @@ impl<'a> Loader<'a> {
                         self.push_leaf_occ(parse_id, kb_id);
                     }
                     Some("proof_stmt") => {
+                        // A rule body is itself a derivation; a rule is proved by a proof
+                        // declaration (kernel-language §5.10).
+                        if self.lowering_rule_compound_expr && !self.lowering_equation_rhs {
+                            self.errors.push(LoadError::ProofInClause {
+                                span: self.parsed.terms.span(parse_id),
+                            });
+                        }
                         // WI-538: pos_args are [body, conclude?]. The
                         // proof binds no value names, so the body sees
                         // the same scope (no scope frame). Visit body
@@ -34031,7 +34061,11 @@ impl<'a> Loader<'a> {
                     let branches = self.expr_match_metas.split_off(n - branch_count);
                     node_occurrence::build_frame(
                         self.kb,
-                        node_occurrence::BuildFrame::Match { span, branches },
+                        node_occurrence::BuildFrame::Match {
+                            span,
+                            branches,
+                            syntax: true,
+                        },
                         &mut self.expr_occ_results,
                     );
                 }
@@ -34108,7 +34142,7 @@ impl<'a> Loader<'a> {
                     );
                     node_occurrence::build_frame(
                         self.kb,
-                        node_occurrence::BuildFrame::If { span },
+                        node_occurrence::BuildFrame::If { span, syntax: true },
                         &mut self.expr_occ_results,
                     );
                 }
@@ -34151,7 +34185,11 @@ impl<'a> Loader<'a> {
                     let pattern = self.pattern_src(pattern, span, written_ann);
                     node_occurrence::build_frame(
                         self.kb,
-                        node_occurrence::BuildFrame::Let { span, pattern },
+                        node_occurrence::BuildFrame::Let {
+                            span,
+                            pattern,
+                            syntax: true,
+                        },
                         &mut self.expr_occ_results,
                     );
                 }
@@ -34177,7 +34215,11 @@ impl<'a> Loader<'a> {
                     let param = self.pattern_src(param, span, None);
                     node_occurrence::build_frame(
                         self.kb,
-                        node_occurrence::BuildFrame::Lambda { span, param },
+                        node_occurrence::BuildFrame::Lambda {
+                            span,
+                            param,
+                            syntax: true,
+                        },
                         &mut self.expr_occ_results,
                     );
                 }
@@ -34275,6 +34317,7 @@ impl<'a> Loader<'a> {
                             strategy,
                             using,
                             has_conclude,
+                            syntax: true,
                         },
                         &mut self.expr_occ_results,
                     );
@@ -35669,7 +35712,9 @@ impl<'a> Loader<'a> {
         };
         let saved_descs = self.descs_emitted_by_convert;
         self.descs_emitted_by_convert = true;
+        let saved_rhs = std::mem::replace(&mut self.lowering_equation_rhs, true);
         let occ = self.lowered_child_occurrence(rhs_pid, kb_rhs);
+        self.lowering_equation_rhs = saved_rhs;
         self.descs_emitted_by_convert = saved_descs;
         Some(occ)
     }
@@ -37278,6 +37323,19 @@ impl<'a> Loader<'a> {
     fn load_var_ref(&mut self, parse_id: TermId) -> TermId {
         let parse_term = self.parsed.terms.get(parse_id).clone();
         if let Term::Ident(sym) = parse_term {
+            // A sigil-free parameter of the rule's head, read in a compound expression the
+            // rule writes, is the clause's variable, as in the rule's own term; a binder of
+            // the form spelled the same shadows it.
+            if self.lowering_rule_compound_expr {
+                let name = self.parsed.symbols.local_name(sym);
+                if self.lookup_local_name(name).is_none() {
+                    if let Some(&vid) = self.rule_param_vars.get(name) {
+                        let kb_id = self.kb.alloc(Term::Var(Var::Global(vid)));
+                        self.term_map.insert(parse_id.raw(), kb_id);
+                        return kb_id;
+                    }
+                }
+            }
             let kb_sym = self.remap_symbol(sym, self.parsed.terms.span(parse_id));
             self.mk_var_ref(kb_sym)
         } else {
@@ -37412,7 +37470,13 @@ impl<'a> Loader<'a> {
         // `?x.peek()` reports an unresolved sort. Resolved per occurrence (like the
         // param case below): the parser shares one parse `vid` across scopes, so a
         // `vid`-keyed cache would leak a shadowed sibling's identity (WI-487).
-        if let Some(local) = self.lookup_local_name(&name) {
+        // In a compound expression a RULE writes, `?x` is the clause's variable, whatever
+        // the form binds: a binder is spelled without the sigil. Read as the binder there,
+        // it was neither — a variable of its own, never bound.
+        if let Some(local) = self
+            .lookup_local_name(&name)
+            .filter(|_| !self.lowering_rule_compound_expr)
+        {
             let kb_vid = self.kb.fresh_var(local);
             let kb_id = self.kb.alloc(Term::Var(Var::Global(kb_vid)));
             self.term_map.insert(parse_id.raw(), kb_id);

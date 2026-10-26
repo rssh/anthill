@@ -12,10 +12,7 @@
 //! WI-206 bare-sort arm and delivered a dangling `Ref(T)` instead of the binding. This
 //! pins that a body type-param read now carries its binding.
 
-use anthill_core::eval::Value;
-use anthill_core::kb::term::Term;
-
-use crate::common::interp_for;
+use crate::common::{bare_sort_name, interp_for, type_application};
 
 /// The WI-708 reproducer: `ty[T = Int64]()` must evaluate to `Cell[V = Int64]`, not the
 /// dangling `Cell[V = Ref(T)]`. The explicit `[T = Int64]` binding rides the WI-272
@@ -36,18 +33,8 @@ end
     let v = interp
         .call("test.wi708.ty_int", &[])
         .unwrap_or_else(|e| panic!("ty_int: {e:?}"));
-    let id = match v {
-        Value::Term { id, .. } => id,
-        other => panic!("expected a Term-carried type, got {other:?}"),
-    };
-
-    let (functor, named) = match interp.kb().get_term(id).clone() {
-        Term::Fn {
-            functor,
-            named_args,
-            ..
-        } => (functor, named_args),
-        other => panic!("expected a parameterized `Fn` type term (`Cell[V = …]`), got {other:?}"),
+    let Some((functor, named)) = type_application(interp.kb(), &v) else {
+        panic!("expected a parameterized type (`Cell[V = …]`), got {v:?}");
     };
     assert_eq!(
         interp.kb().local_name_of(functor),
@@ -63,16 +50,12 @@ end
 
     // The V binding must be `Int64` — the type argument `T` was bound to. Before the
     // fix it was the op-scoped `Ref(T)` (a dangling self-reference to the param name).
-    match interp.kb().get_term(named[0].1).clone() {
-        Term::Ref(s) | Term::Ident(s) => assert_eq!(
-            interp.kb().local_name_of(s),
-            "Int64",
-            "the type param `T` must read as its binding `Int64`, not a dangling `Ref(T)`"
-        ),
-        other => panic!(
-            "V must bind the resolved `Int64`, not a dangling param reference; got {other:?}"
-        ),
-    }
+    assert_eq!(
+        bare_sort_name(interp.kb(), &named[0].1).as_deref(),
+        Some("Int64"),
+        "the type param `T` must read as its binding `Int64`, not a dangling `Ref(T)`; got {:?}",
+        named[0].1
+    );
 }
 
 /// The same read through a SECOND, differently-bound instantiation proves the channel is
@@ -95,18 +78,11 @@ end
         let v = interp
             .call(&format!("test.wi708b.{op}"), &[])
             .unwrap_or_else(|e| panic!("{op}: {e:?}"));
-        let id = match v {
-            Value::Term { id, .. } => id,
-            other => panic!("{op}: got {other:?}"),
+        let Some((_, named)) = type_application(interp.kb(), &v) else {
+            panic!("{op}: expected a parameterized type, got {v:?}");
         };
-        let named = match interp.kb().get_term(id).clone() {
-            Term::Fn { named_args, .. } => named_args,
-            other => panic!("{op}: expected Fn, got {other:?}"),
-        };
-        match interp.kb().get_term(named[0].1).clone() {
-            Term::Ref(s) | Term::Ident(s) => interp.kb().local_name_of(s).to_string(),
-            other => panic!("{op}: expected a sort ref binding, got {other:?}"),
-        }
+        bare_sort_name(interp.kb(), &named[0].1)
+            .unwrap_or_else(|| panic!("{op}: expected a sort binding, got {:?}", named[0].1))
     };
 
     assert_eq!(arg_sort(&mut interp, "ty_int"), "Int64");
@@ -158,18 +134,11 @@ end
     let v = interp
         .call("test.wi708coll.callProbe", &[])
         .unwrap_or_else(|e| panic!("callProbe: {e:?}"));
-    let id = match v {
-        Value::Term { id, .. } => id,
-        other => panic!("got {other:?}"),
+    let Some((_, named)) = type_application(interp.kb(), &v) else {
+        panic!("expected a `Cell[V = …]` type, got {v:?}");
     };
-    let named = match interp.kb().get_term(id).clone() {
-        Term::Fn { named_args, .. } => named_args,
-        other => panic!("expected a `Cell[V = …]` Fn, got {other:?}"),
-    };
-    let arg = match interp.kb().get_term(named[0].1).clone() {
-        Term::Ref(s) | Term::Ident(s) => interp.kb().local_name_of(s).to_string(),
-        other => panic!("expected a sort ref binding, got {other:?}"),
-    };
+    let arg = bare_sort_name(interp.kb(), &named[0].1)
+        .unwrap_or_else(|| panic!("expected a sort binding, got {:?}", named[0].1));
     assert_eq!(
         arg, "State",
         "the body read of `State` must be the top-level sort — a bare-spec carrier of the \
@@ -210,20 +179,15 @@ end
         let v = interp
             .call(&format!("test.wi708c.{op}"), &[])
             .unwrap_or_else(|e| panic!("{op}: {e:?}"));
-        let id = match v {
-            Value::Term { id, .. } => id,
-            other => panic!("{op}: got {other:?}"),
+        let Some((_, named)) = type_application(interp.kb(), &v) else {
+            panic!("{op}: expected a parameterized type, got {v:?}");
         };
-        let named = match interp.kb().get_term(id).clone() {
-            Term::Fn { named_args, .. } => named_args,
-            other => panic!("{op}: expected Fn, got {other:?}"),
-        };
-        match interp.kb().get_term(named[0].1).clone() {
-            Term::Ref(s) | Term::Ident(s) => interp.kb().local_name_of(s).to_string(),
-            other => panic!(
-                "{op}: `V` must bind a resolved sort, not a dangling type variable; got {other:?}"
-            ),
-        }
+        bare_sort_name(interp.kb(), &named[0].1).unwrap_or_else(|| {
+            panic!(
+                "{op}: `V` must bind a resolved sort, not a dangling type variable; got {:?}",
+                named[0].1
+            )
+        })
     };
 
     assert_eq!(arg_sort(&mut interp, "direct"), "Int64");

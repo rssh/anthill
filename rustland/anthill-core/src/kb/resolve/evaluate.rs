@@ -504,6 +504,9 @@ impl KnowledgeBase {
     /// On a carrier with no occurrence (a query's term, a σ-rebuilt `Entity`) a nullary
     /// application and a bare name are one term (the nullary canon), so there only an
     /// application WITH arguments is a call — as `reduce_op_value` reads it.
+    ///
+    /// A compound expression that computes ([`evaluated_form`]) is one too: it denotes its
+    /// value, as the same text does in an operation body (kernel-language §5.9).
     pub(super) fn is_written_call(&self, v: &Value) -> bool {
         if self.is_qualified_name(v) {
             return false;
@@ -513,6 +516,7 @@ impl KnowledgeBase {
                 Some(Expr::ApplyWithin { .. }) => return true,
                 Some(Expr::Apply { functor, .. }) => return self.names_a_computation(*functor),
                 Some(Expr::Ref(_)) => return false,
+                Some(_) if evaluated_form(o).is_some() => return true,
                 _ => {}
             }
         }
@@ -564,6 +568,11 @@ impl KnowledgeBase {
         faults: &mut ReduceFaults,
         depth: usize,
     ) -> Result<Value, Stuck> {
+        if let Value::Node(o) = &call {
+            if evaluated_form(o).is_some() {
+                return self.evaluate_form(&call, subst, faults);
+            }
+        }
         let call = self.evaluate_call_args(call, subst, faults, depth)?;
         let functor = self.call_functor(&call);
         let no_provider_before = faults.no_provider_count();
@@ -605,6 +614,24 @@ impl KnowledgeBase {
             // provider answers at these arguments: no value, as `div(1, 0)` has none.
             None if faults.no_provider_count() > no_provider_before => Err(Stuck::Absent),
             None => Err(self.stuck_state(&call, functor, subst)),
+        }
+    }
+
+    /// A compound expression in a value slot ([`evaluated_form`]), run as the same text
+    /// runs in an operation body ([`Self::bridge_form_to_eval`]). `Err` is why it did not
+    /// run: a variable it names that nothing has bound yet makes it SUSPENDED, whatever it
+    /// reads — coarse, as a call's blockers are (design D1).
+    fn evaluate_form(
+        &mut self,
+        form: &Value,
+        subst: &Substitution,
+        faults: &mut ReduceFaults,
+    ) -> Result<Value, Stuck> {
+        let no_provider_before = faults.no_provider_count();
+        match self.bridge_form_to_eval(form, subst, faults) {
+            Some(value) => Ok(value),
+            None if faults.no_provider_count() > no_provider_before => Err(Stuck::Absent),
+            None => Err(self.stuck_state(form, None, subst)),
         }
     }
 
@@ -1043,6 +1070,33 @@ enum Implementation {
 /// The reflected expression forms' namespace — the twins a lambda, `let`, `match`, `if`,
 /// an unresolved dot and a binder reference read as through [`TermView`].
 const REFLECT_EXPR_PREFIX: &str = "anthill.reflect.Expr.";
+
+/// The keyword of a compound expression a rule body writes that is evaluated where it is
+/// written — an `if`, a `let`, a `match` (kernel-language §5.9), built from its syntax
+/// ([`NodeOccurrence::is_compound_syntax`]). A lambda is not among them: its value is the
+/// function, run where it is applied. An in-body proof never stands in a rule body (§5.10).
+pub(super) fn evaluated_form(o: &NodeOccurrence) -> Option<&'static str> {
+    // The reflect constructor written as a call builds the same node, and is data.
+    if !o.is_compound_syntax() {
+        return None;
+    }
+    match o.as_expr()? {
+        Expr::If { .. } => Some("if"),
+        Expr::Let { .. } => Some("let"),
+        Expr::Match { .. } => Some("match"),
+        _ => None,
+    }
+}
+
+/// The keyword of the [`evaluated_form`] whose reflected functor is `f` — the `op` a
+/// bridged run of the form reports under ([`KnowledgeBase::bridge_form_to_eval`]).
+pub(super) fn form_keyword(kb: &KnowledgeBase, f: Symbol) -> Option<&'static str> {
+    let name = kb.qualified_name_of(f);
+    [(dt::IF_EXPR, "if"), (dt::LET_EXPR, "let"), (dt::MATCH_EXPR, "match")]
+        .into_iter()
+        .find(|(form, _)| dt::qualified(form) == name)
+        .map(|(_, keyword)| keyword)
+}
 
 /// The number of operands a value-returning builtin takes before its result column, or
 /// `None` for a builtin that has no result column (a goal-only builtin: `eq`, `not`, …).

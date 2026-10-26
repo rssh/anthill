@@ -684,16 +684,15 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                     self.write_occ_seq('[', ']', pos_args, buf);
                     return;
                 }
-                // WHAT IS STILL NOT MIRRORED, said rather than left to be rediscovered:
-                // `write_term`'s `is_type_functor` → `write_type_term` surface rendering
-                // (`(A) -> B @ {E}` for `TypeExtractor.Arrow`, and its siblings). It
-                // cannot be delegated — `write_type_term` takes a `TermId` and this side
-                // has no term to hand it — so mirroring it means an occurrence-side type
-                // writer, which is its own piece of work. What reaches it is narrow: a
-                // NodeKind::Type occurrence is already rendered structurally above, and
-                // an `Expr::Apply` headed by a type functor needs the author to have
-                // written `anthill.prelude.TypeExtractor.Arrow(…)` by name — the `[…]`
-                // and `{}` surfaces both land elsewhere.
+                // (c) A TYPE FORM (`TypeExtractor.Arrow` and its siblings) in its surface
+                //     syntax, `(A) -> B @ {E}`, as the term walk writes it: a structural type
+                //     a rule writes as data, its variables bound, is such an application —
+                //     `holder(t: Box[V = (?a) -> Int64])` read back with `?a = String`.
+                if self.is_type_form(*functor) {
+                    let item = ViewItem::Node(Rc::clone(occ));
+                    self.write_type_application(&item, *functor, pos_args.len(), buf);
+                    return;
+                }
                 self.write_occ_fn(fname, pos_args, named_args, buf);
             }
             Expr::ApplyWithin {

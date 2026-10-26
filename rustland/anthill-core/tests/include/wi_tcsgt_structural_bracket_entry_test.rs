@@ -520,6 +520,34 @@ fn the_three_walks_build_one_value() {
     assert_eq!(ints("tcsgtwalksne", body), [0]);
 }
 
+/// A structural entry a rule writes as DATA prints as the type it is once its variable is
+/// bound. The rule's term holds the entry as the application of its type form, which the
+/// occurrence printer writes in the type spelling, as the term walk does. On the parent each
+/// was written as that application: `Box[V = Arrow(param: String, …)]`,
+/// `Box[V = NamedTuple(fields: […])]`.
+#[test]
+fn an_entry_in_a_rules_data_prints_as_the_type() {
+    for (tag, entry, printed) in [
+        ("arrow", "(?a) -> Int64", "(String) -> Int64"),
+        ("named", "(a: ?a, b: Int64)", "(a: String, b: Int64)"),
+        ("nested", "((?a) -> Int64) -> String", "((String) -> Int64) -> String"),
+    ] {
+        let ns = format!("tcsgtdataprint{tag}");
+        let body = format!(
+            "  entity holder(t: Type)\n  fact pick(String)\n  \
+             rule r(?x) :- pick(?a), ?x <=> holder(t: Box[V = {entry}])"
+        );
+        let mut kb = load_kb_with(&source(&ns, "x: Int64", &body));
+        let got = answers(&mut kb, &ns);
+        assert_eq!(got.len(), 1, "{ns}: {got:?}");
+        assert_eq!(
+            anthill_core::persistence::print::TermPrinter::new(&kb).print_value(&got[0]),
+            format!("holder(t: Box[V = {printed}])"),
+            "{ns}"
+        );
+    }
+}
+
 /// Under a rule's `let` and `if` — written as an operation body is, typed as one — the
 /// bracket loads with a structural entry as it does with a nominal one, and a variable of
 /// the clause inside the entry is the clause's.
@@ -534,8 +562,10 @@ fn an_entry_under_a_rules_let_and_if_is_the_type() {
         let body = format!("  rule r(?x) :- ?t <=> (if true then {b} else Box[V = Int64]), ?x <=> 1");
         assert_eq!(ints(&ns, &body), [1], "{ns}");
     }
-    // The clause's variable inside the entry is bound where the rule fires: the answer
-    // holds the type the earlier goal gave it, and no variable.
+    // The clause's variable inside the entry is bound where the rule fires: the answer is
+    // the type the `if` evaluates to (WI-20261011-2S5FP), holding the type the earlier goal
+    // gave the variable, and no variable. A substitution rebuilt the entry over the bound
+    // variable, and the interpreter reads that carrier as the type it is.
     let mut kb = load_kb_with(&source(
         "tcsgtrulevar",
         "x: Int64",
@@ -543,16 +573,20 @@ fn an_entry_under_a_rules_let_and_if_is_the_type() {
     ));
     let got = answers(&mut kb, "tcsgtrulevar");
     assert_eq!(got.len(), 1, "{got:?}");
-    let printed = match &got[0] {
-        Value::Node(occ) => anthill_core::persistence::print::TermPrinter::new(&kb).print_occurrence(occ),
-        other => panic!("expected the expression the clause holds, got {other:?}"),
-    };
-    // The entry is printed as the type it is (WI-20261022-DRGCP): a substitution rebuilt it
-    // over the bound variable, and that carrier used to be written as the application
-    // `Arrow(param: String, …)`, which this row read the parameter off.
-    assert!(printed.contains("(String) -> Int64"), "{printed}");
-    assert!(!printed.contains('?'), "{printed}");
-    assert!(!printed.contains("<spliced>"), "{printed}");
+    let printed = anthill_core::persistence::print::TermPrinter::new(&kb).print_value(&got[0]);
+    assert_eq!(printed, "Box[V = (String) -> Int64]");
+    // An answer that holds the expression — a lambda, a value — prints the entry the
+    // substitution rebuilt as the type it is (WI-20261022-DRGCP), not as the application
+    // `Arrow(param: String, …)`.
+    let mut kb = load_kb_with(&source(
+        "tcsgtrulevarlam",
+        "x: Int64",
+        "  fact pick(String)\n  rule r(?x) :- pick(?a), ?x <=> (lambda (y: Int64) -> Box[V = (?a) -> Int64])",
+    ));
+    let got = answers(&mut kb, "tcsgtrulevarlam");
+    assert_eq!(got.len(), 1, "{got:?}");
+    let printed = anthill_core::persistence::print::TermPrinter::new(&kb).print_value(&got[0]);
+    assert_eq!(printed, "(y: Int64) => Box[V = (String) -> Int64]");
 }
 
 /// A `match` operation called with its scrutinee unbound is unfolded arm by arm, and an

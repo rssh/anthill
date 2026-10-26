@@ -2195,8 +2195,8 @@ pub fn undecided_causes(
         .collect()
 }
 
-/// A row value as `.anthill` text: a LITERAL on any carrier through `write_literal`, an
-/// occurrence or a term through `TermPrinter`, any other carrier by its `Debug` form.
+/// A row value as `.anthill` text: a LITERAL on any carrier through `write_literal`, any
+/// other value through `TermPrinter::print_value`, which reads every carrier through the view.
 ///
 /// The literal row comes first and reads carrier-neutrally, as the CLI's `render_value`
 /// does (WI-20260907-VM9Q7): an answered literal folds to its NATIVE carrier, and this
@@ -2210,11 +2210,7 @@ pub fn show_value(kb: &KnowledgeBase, v: &eval::Value) -> String {
         write_literal(&lit, &mut buf);
         return buf;
     }
-    match v {
-        eval::Value::Node(occ) => TermPrinter::new(kb).print_occurrence(occ),
-        eval::Value::Term { id, .. } => TermPrinter::new(kb).print_term(*id),
-        other => format!("{other:?}"),
-    }
+    TermPrinter::new(kb).print_value(v)
 }
 
 /// The answers of the unary relation `qn` ([`query_unary`]), each rendered ([`show_value`])
@@ -2953,4 +2949,54 @@ pub fn dict_term(
         pos_args: subs.iter().copied().collect(),
         named_args: smallvec::SmallVec::from_slice(&[(impl_key, impl_ref)]),
     })
+}
+
+/// A type application read through the view, whatever carries it: its base sort and its
+/// bindings, each `(parameter, argument)` — `Cell[V = Int64]` is `(Cell, [(V, Int64)])`.
+/// `None` for a value that is no application with bindings.
+#[allow(dead_code)]
+pub fn type_application(
+    kb: &KnowledgeBase,
+    v: &eval::Value,
+) -> Option<(anthill_core::intern::Symbol, Vec<(anthill_core::intern::Symbol, eval::Value)>)> {
+    use anthill_core::kb::term_view::{TermView, ViewHead};
+    let ViewHead::Functor {
+        functor,
+        pos_arity: 0,
+        named_arity,
+    } = v.head(kb)
+    else {
+        return None;
+    };
+    if named_arity == 0 {
+        return None;
+    }
+    let bindings = v
+        .named_keys(kb)
+        .into_iter()
+        .map(|k| {
+            let arg = v
+                .named_arg(kb, k)
+                .expect("a view reports a child for every key it lists")
+                .to_value();
+            (k, arg)
+        })
+        .collect();
+    Some((functor, bindings))
+}
+
+/// The short name of the sort a value names bare, read through the view — `Int64` for the
+/// type `Int64` on any carrier. `None` for anything else.
+#[allow(dead_code)]
+pub fn bare_sort_name(kb: &KnowledgeBase, v: &eval::Value) -> Option<String> {
+    use anthill_core::kb::term_view::{TermView, ViewHead};
+    match v.head(kb) {
+        ViewHead::Ident(s)
+        | ViewHead::Functor {
+            functor: s,
+            pos_arity: 0,
+            named_arity: 0,
+        } => Some(kb.local_name_of(s).to_string()),
+        _ => None,
+    }
 }

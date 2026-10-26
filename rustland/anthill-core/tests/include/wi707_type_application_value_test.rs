@@ -18,9 +18,9 @@
 //! pass in both worlds — the answers did not move, the decision did.
 
 use anthill_core::eval::Value;
-use anthill_core::kb::term::Term;
+use anthill_core::kb::term_view::views_structurally_equal;
 
-use crate::common::{interp_for, try_load_kb_with};
+use crate::common::{bare_sort_name, interp_for, try_load_kb_with, type_application};
 
 /// The WI-206 acceptance line, now reachable FROM SOURCE: a parameterized instance
 /// of a modifiable sort is modifiable, and a `List[T = Int64]` is not. The op answers
@@ -82,86 +82,53 @@ end
         .expect("facts_of with a parameterized type");
 }
 
-/// The assembled value is the SAME hash-consed type term the loader builds for a
-/// type WRITTEN in type position — both go through `make_parameterized_type`. Pinned
-/// by identity (`TermId`), not just shape: a hand-rolled `Term::Fn` would diverge on
-/// named-arg canonical ORDER and on the empty-bindings case, and the divergence would
-/// be invisible to any consumer that only reads the head sort.
+/// The assembled value is the type the loader builds for a type WRITTEN in type position
+/// (`make_parameterized_type`): read through the view, whatever carries it, it has that
+/// type's head, its keys and its arguments, so the two are one type. A hand-rolled
+/// application would diverge on a binding's key (`V` read off the declaration) and on the
+/// empty-bindings case, which a consumer reading only the head sort would not see.
 ///
 /// The POSITIONAL spelling binds the sort's declared type params in order, so
-/// `Cell[Int64]` is that same term too — the loader's rule.
+/// `Cell[Int64]` is that same type too — the loader's rule.
 #[test]
-fn an_evaluated_type_is_the_same_term_as_a_written_one() {
+fn an_evaluated_type_is_the_written_one() {
     let src = r#"
 namespace test.wi707c
   import anthill.prelude.{Cell, Int64, Type}
 
   operation named_form() -> Type = Cell[V = Int64]
   operation positional_form() -> Type = Cell[Int64]
-
-  -- The SAME type, written in TYPE position: the loader lowers this annotation with
-  -- the canonical builder, so the evaluated forms above must hash-cons to it.
-  operation written(c: Cell[V = Int64]) -> Int64 = 0
 end
 "#;
     let mut interp = interp_for(src);
-
-    let term_of = |interp: &mut anthill_core::eval::Interpreter, op: &str| {
-        let v = interp
+    let value_of = |interp: &mut anthill_core::eval::Interpreter, op: &str| {
+        interp
             .call(&format!("test.wi707c.{op}"), &[])
-            .unwrap_or_else(|e| panic!("{op}: {e:?}"));
-        match v {
-            Value::Term { id, .. } => id,
-            other => panic!(
-                "{op}: a type application must evaluate to a Term-carried type, got {other:?}"
-            ),
-        }
+            .unwrap_or_else(|e| panic!("{op}: {e:?}"))
     };
-    let named_id = term_of(&mut interp, "named_form");
-    let positional_id = term_of(&mut interp, "positional_form");
-
-    assert_eq!(
-        named_id, positional_id,
-        "`Cell[Int64]` must bind the declared type param `V`, making it the SAME \
-         hash-consed term as `Cell[V = Int64]` — the loader's rule for positionals"
+    let named_form = value_of(&mut interp, "named_form");
+    let positional_form = value_of(&mut interp, "positional_form");
+    assert!(
+        views_structurally_equal(interp.kb(), &named_form, &positional_form),
+        "`Cell[Int64]` must bind the declared type param `V`, making it the SAME type as \
+         `Cell[V = Int64]` — the loader's rule for positionals: {named_form:?} vs \
+         {positional_form:?}"
     );
 
     // Shape: the base sort is the functor, the binding is keyed by the type-param name.
-    let (functor, named) = match interp.kb().get_term(named_id).clone() {
-        Term::Fn {
-            functor,
-            named_args,
-            ..
-        } => (functor, named_args),
-        other => panic!("expected a parameterized `Fn` type term, got {other:?}"),
+    let Some((functor, named)) = type_application(interp.kb(), &named_form) else {
+        panic!("expected a parameterized type, got {named_form:?}");
     };
-    assert_eq!(
-        interp.kb().local_name_of(functor),
-        "Cell",
-        "the base sort is the functor"
-    );
+    assert_eq!(interp.kb().local_name_of(functor), "Cell", "the base sort is the functor");
     assert_eq!(named.len(), 1, "one type argument");
+    assert_eq!(interp.kb().local_name_of(named[0].0), "V", "keyed by the declared type-param name");
     assert_eq!(
-        interp.kb().local_name_of(named[0].0),
-        "V",
-        "keyed by the declared type-param name"
+        bare_sort_name(interp.kb(), &named[0].1).as_deref(),
+        Some("Int64"),
+        "the type argument is Int64"
     );
-    match interp.kb().get_term(named[0].1).clone() {
-        Term::Ref(s) | Term::Ident(s) => {
-            assert_eq!(
-                interp.kb().local_name_of(s),
-                "Int64",
-                "the type argument is Int64"
-            )
-        }
-        other => panic!("expected the argument to be a sort reference, got {other:?}"),
-    }
 
-    // Identity against the CANONICAL builder — `make_parameterized_type` is what the
-    // loader lowers a written type with, so an evaluated type must hash-cons to the
-    // very same TermId. This is what a hand-rolled `Term::Fn` in eval would break
-    // (diverging on named-arg canonical order, and on the empty-bindings case), and
-    // the divergence is invisible to any consumer that only reads the head sort.
+    // The type the CANONICAL builder makes — what the loader lowers a written type with.
     let canonical = {
         let kb = interp.kb_mut();
         let cell = kb.try_resolve_symbol("anthill.prelude.Cell").expect("Cell");
@@ -171,12 +138,12 @@ end
         let v = kb.intern("V");
         let base = kb.make_sort_ref(cell);
         let int_ref = kb.make_sort_ref(int64);
-        kb.make_parameterized_type(base, &[(v, int_ref)])
+        Value::term(kb.make_parameterized_type(base, &[(v, int_ref)]))
     };
-    assert_eq!(
-        canonical, named_id,
-        "an evaluated `Cell[V = Int64]` must be the SAME hash-consed term the canonical \
-         builder (and so the loader, for a written annotation) produces"
+    assert!(
+        views_structurally_equal(interp.kb(), &canonical, &named_form),
+        "an evaluated `Cell[V = Int64]` must be the type the canonical builder (and so the \
+         loader, for a written annotation) produces: {named_form:?}"
     );
 }
 

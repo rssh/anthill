@@ -40,9 +40,10 @@
 use anthill_core::eval::Value;
 use anthill_core::kb::node_occurrence::{Expr, NodeOccurrence};
 use anthill_core::kb::term::Term;
+use anthill_core::kb::term_view::{TermView, ViewHead};
 use anthill_core::kb::KnowledgeBase;
 
-use crate::common::{interp_for, load_kb_with, try_load_kb_with};
+use crate::common::{bare_sort_name, interp_for, load_kb_with, try_load_kb_with, type_application};
 
 const SRC: &str = r#"
 namespace test.wahb6
@@ -155,34 +156,20 @@ fn a_type_argument_is_itself_classified() {
 /// the reading no longer depends on the position.
 ///
 /// This row also DRIVES the value, so it says more than "it loads": the `let` binding is
-/// returned and must be the canonical parameterized type term.
+/// returned and must be the parameterized type `Cell[V = Int64]`.
 #[test]
 fn an_unannotated_let_denotes_and_evaluates() {
     let mut interp = interp_for(SRC);
     let v = interp
         .call("test.wahb6.via_let", &[])
         .unwrap_or_else(|e| panic!("via_let: {e:?}"));
-    let Value::Term { id, .. } = v else {
-        panic!("expected a Term-carried type, got {v:?}")
+    let Some((functor, named)) = type_application(interp.kb(), &v) else {
+        panic!("expected the parameterized `Cell[V = …]` type, got {v:?}");
     };
-    match interp.kb().get_term(id).clone() {
-        Term::Fn {
-            functor,
-            named_args,
-            ..
-        } => {
-            assert_eq!(interp.kb().local_name_of(functor), "Cell");
-            assert_eq!(named_args.len(), 1);
-            assert_eq!(interp.kb().local_name_of(named_args[0].0), "V");
-            match interp.kb().get_term(named_args[0].1).clone() {
-                Term::Ref(s) | Term::Ident(s) => {
-                    assert_eq!(interp.kb().local_name_of(s), "Int64")
-                }
-                other => panic!("V must bind Int64, got {other:?}"),
-            }
-        }
-        other => panic!("expected the parameterized `Cell[V = …]` term, got {other:?}"),
-    }
+    assert_eq!(interp.kb().local_name_of(functor), "Cell");
+    assert_eq!(named.len(), 1);
+    assert_eq!(interp.kb().local_name_of(named[0].0), "V");
+    assert_eq!(bare_sort_name(interp.kb(), &named[0].1).as_deref(), Some("Int64"), "V binds Int64");
 }
 
 /// The bare face of the row above, and it pins the OTHER half of proposal 055 §7: a bare
@@ -229,22 +216,23 @@ namespace test.wahb6c
 end
 "#;
     let mut interp = interp_for(src);
-    // The APPLIED surface constructs.
+    let leaf = interp
+        .kb()
+        .try_resolve_symbol("test.wahb6c.Leaf")
+        .expect("Leaf resolves");
+    // The APPLIED surface constructs: the instance, headed by the constructor itself.
     let built = interp
         .call("test.wahb6c.build", &[])
         .unwrap_or_else(|e| panic!("build: {e:?}"));
     assert!(
-        !matches!(built, Value::Term { .. }),
+        matches!(built.head(interp.kb()), ViewHead::Functor { functor, .. }
+            if functor == leaf && !functor.is_type_face()),
         "`Leaf(name: …)` must construct a value, not denote a type; got {built:?}",
     );
     // The constructor's TYPE is its bracket, `Leaf[]` — its bare name is its instance, an
     // incomplete construction here (kernel-language.md §4.4, WI-20260902-JB6RS; until then
     // this row pinned only that `-> Type = Leaf` LOADED). The type is a value naming the
     // constructor by its type face, never the instance.
-    let leaf = interp
-        .kb()
-        .try_resolve_symbol("test.wahb6c.Leaf")
-        .expect("Leaf resolves");
     let ty = interp
         .call("test.wahb6c.as_type", &[])
         .unwrap_or_else(|e| panic!("as_type: {e:?}"));

@@ -338,6 +338,38 @@ driven by `wi_cynpe_waiting_goals_test` (back-outs stated at its sites):
   machine, so a coarse bound). A SYMBOLIC call in a delayed goal is re-evaluated per rotation —
   CYNPE's blockers make that cheap.
 
+### 5.2 A compound expression in a value slot (WI-20261011-2S5FP, 2026-10-26)
+
+An `if`, a `let` or a `match` a rule body writes is a written call to the strategy
+(`evaluate::evaluated_form`, read by `is_written_call`), run whole by the scratch interpreter
+(`bridge_form_to_eval`: σ applied, then `eval_node_isolated`; its faults reported as a call's,
+naming the form). Decided with the user: `if` is a fragment root beside `let` / `match`; a lambda
+stays a value; an in-body proof in a clause is a load error (`LoadError::ProofInClause`).
+
+- **Coarse, as D1.** A form that still names an unbound variable is not run: SUSPENDED, a hole
+  where a value is built. An unbound `?x` would be read inside the run by NAME, where a binder
+  of the form spelled the same answers for it, so it is not handed over as a call's unknown is.
+- **Typed whole.** `call_dispatch_shape` hands an `if` to the operation-body typer as it hands a
+  `let` and a `match`; the walk no longer descends into a compound expression, and its
+  `TypingEnv::under` call went with that.
+- **Syntax, not shape.** A rule body builds one `Expr::If` for `(if c then a else b)` and for
+  `anthill.reflect.Expr.if_expr(cond: c, …)` written as a call; the second is an entity
+  construction, data. `NodeKind::Expr.compound_syntax` carries the parse store's mint (set by
+  the loader's marker frames, carried by every rebuild, as `dot_chain` is); the evaluator, the
+  typed-whole shape and `TypingEnv::under` ask it.
+- **The proof refusal** is the rule body's: an equation's right-hand side, spliced into the
+  bodies it rewrites, may hold a proof.
+- **Found and fixed on the way.** Under a binder `x`, a rule's `?x` was read as the binder
+  (WI-550's operation-body reading) and became a variable of its own; it is the clause's. A
+  sigil-free head parameter was an unresolved name inside a form; it is the clause's variable,
+  a binder of the form spelled the same shadowing it. And the interpreter took a type argument
+  only on the term carrier, so a type a substitution rebuilt (`Box[V = (?a) -> Int64]`) was
+  refused once the form ran: it reads the argument through the view now, and builds the
+  applied type as an entity holding its arguments on their own carriers; the test helpers
+  that unpacked a type as `Value::Term` read it through the view. And the occurrence printer
+  wrote a type form a rule writes as data (`holder(t: Box[V = (?a) -> Int64])`, answered) as
+  the application `Arrow(param: String, …)`; it writes the type spelling, as the term walk.
+
 ## 6. 7D48J and DSEXA
 
 Their tickets hold their design questions: 7D48J — the clause environment, how far data is typed

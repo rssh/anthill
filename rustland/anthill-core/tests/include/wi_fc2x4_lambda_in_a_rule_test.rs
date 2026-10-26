@@ -62,12 +62,14 @@
 //! **AXIS 1 — THE LOADER DELEGATION.** `Loader::compound_expression_occurrence` made to
 //! answer `None`, so a marker goes back to the term round-trip. Fells 7 of the 9.
 //!
-//! **AXIS 2 — THE TYPER'S BINDER SHAPE.** The `CallDispatch::BinderForm` arm removed from
+//! **AXIS 2 — THE TYPER'S BINDER SHAPE.** The `CallDispatch::CompoundExpression` arm removed from
 //! `typing::call_dispatch_shape`, so `dispatch_calls_in_occ` descends into a lambda / let
 //! body with no Γ to put the binder in. Fells every rule-body row with
 //! `x.name` / `a.name`: `expected resolved name, got unresolved`, AT THE BODY'S OWN SPAN.
-//! The `if` / `match` / `proof` arms of the surfaces row stay green — they bind no name
-//! their children read — which is what says this axis is the SCOPE and not the shape.
+//! The `if` / `match` / `proof` arms of the surfaces row stayed green — they bind no name
+//! their children read — which is what said this axis is the SCOPE and not the shape. (Since
+//! WI-20261011-2S5FP an `if` is typed whole by the same arm, and a proof is refused in a
+//! rule body.)
 //!
 //! **AXIS 3 — THE APPLY-SITE CLOSURE.** The `Value::Node` arm of
 //! `eval::dispatch_call_with_requirements_inner`'s local-callable lookup removed, so a
@@ -234,15 +236,32 @@ fn tags(occ: &Rc<NodeOccurrence>, out: &mut Vec<String>) {
     }
 }
 
-/// The node a `?y <=> <compound>` rule binds, as its tag list.
-fn bound_node_tags(ns: &str, body: &str, qn: &str) -> Vec<String> {
-    let mut kb = load(ns, body);
-    let v = only_value(&mut kb, qn).unwrap_or_else(|| panic!("{qn}: no definite answer"));
-    let Value::Node(occ) = v else {
-        panic!("{qn}: expected an occurrence-carried value, got {v:?}");
+/// The compound expression a `?y <=> <compound>` rule stores: the right operand of its one
+/// goal, read off the stored clause. What `?y` is bound to is the form's VALUE, since a form
+/// in a value slot is evaluated (WI-20261011-2S5FP).
+fn stored_form(kb: &KnowledgeBase, qn: &str) -> Rc<NodeOccurrence> {
+    let sym = kb
+        .try_resolve_symbol(qn)
+        .unwrap_or_else(|| panic!("{qn} does not resolve"));
+    let rid = kb
+        .rules_by_functor(sym)
+        .first()
+        .copied()
+        .unwrap_or_else(|| panic!("{qn} has no clause"));
+    let [goal] = kb.rule_body_nodes(rid) else {
+        panic!("{qn}: expected one goal");
     };
+    let Some(Expr::Apply { pos_args, .. }) = goal.as_expr() else {
+        panic!("{qn}: expected the `<=>` goal, got {:?}", goal.kind);
+    };
+    Rc::clone(&pos_args[1])
+}
+
+/// The form a `?y <=> <compound>` rule stores, as its tag list.
+fn stored_form_tags(ns: &str, body: &str, qn: &str) -> Vec<String> {
+    let kb = load(ns, body);
     let mut out = Vec::new();
-    tags(&occ, &mut out);
+    tags(&stored_form(&kb, qn), &mut out);
     out
 }
 
@@ -336,15 +355,15 @@ fn the_same_call_in_an_operation_body_is_the_yardstick() {
 /// **C — THE SILENT HALF.** The four compound surfaces that are not a lambda bound a
 /// `⊥`-filled node and said nothing; each now carries what was written.
 ///
-/// The assertion is `BOTTOM` NOWHERE plus one shape fact per surface, because these rows
-/// answer either way — what changed is WHAT they answer, and a solution count cannot see
-/// it. RED on axis 1 for all four (the `if` arm loses its condition, `match` its
-/// branches, `proof` its body, `let` all three of pattern / value / body); RED on axis 2
-/// for the `let` arm only, as a load refusal naming its binder.
+/// The assertion is `BOTTOM` NOWHERE plus one shape fact per surface, read off the stored
+/// clause. RED on axis 1 (the `if` arm loses its condition, `match` its branches, `let` all
+/// three of pattern / value / body); RED on axis 2 for the `let` arm only, as a load refusal
+/// naming its binder. The fourth surface, an in-body proof, is refused in a rule body since
+/// WI-20261011-2S5FP (kernel-language §5.10).
 #[test]
 fn the_other_compound_surfaces_carry_what_was_written() {
     // `if` — the condition and both branches are the written ones.
-    let t = bound_node_tags(
+    let t = stored_form_tags(
         "zzfc2x4.iff",
         "  rule value(?y) :- ?y <=> (if 1 = 1 then 10 else 20)\n",
         "zzfc2x4.iff.value",
@@ -360,7 +379,7 @@ fn the_other_compound_surfaces_carry_what_was_written() {
     );
 
     // `let` — a real binder, its value, and a body that reads it.
-    let t = bound_node_tags(
+    let t = stored_form_tags(
         "zzfc2x4.lett",
         "  rule value(?y) :- ?y <=> (let a = 5  a + 1)\n",
         "zzfc2x4.lett.value",
@@ -377,7 +396,7 @@ fn the_other_compound_surfaces_carry_what_was_written() {
     );
 
     // `match` — the scrutinee and BOTH branches, each with its own pattern.
-    let t = bound_node_tags(
+    let t = stored_form_tags(
         "zzfc2x4.matt",
         "  rule value(?y) :- ?y <=> (match 1 case 1 -> 100 case _ -> 200)\n",
         "zzfc2x4.matt.value",
@@ -398,18 +417,6 @@ fn the_other_compound_surfaces_carry_what_was_written() {
         ],
         "two branches with their own patterns — the branch LIST was empty",
     );
-
-    // `proof` — its continuation body.
-    let t = bound_node_tags(
-        "zzfc2x4.prf",
-        "  rule q(1) :- 1 = 1\n  rule value(?y) :- ?y <=> (proof q by derivation end 7)\n",
-        "zzfc2x4.prf.value",
-    );
-    assert!(
-        !t.contains(&"BOTTOM".to_string()),
-        "`proof` still carries ⊥: {t:?}"
-    );
-    assert_eq!(t, vec!["Proof", "Const"], "the proof's continuation body");
 }
 
 /// **THE BINDER IS ONE IDENTITY.** A `let` in a rule body binds a name its body REFERS
@@ -424,13 +431,11 @@ fn the_other_compound_surfaces_carry_what_was_written() {
 /// RED on axes 1 and 2 (a load refusal, before any tree exists to compare).
 #[test]
 fn a_let_binder_in_a_rule_body_is_the_symbol_its_body_reads() {
-    let mut kb = load(
+    let kb = load(
         "zzfc2x4.binder",
         "  rule value(?y) :- ?y <=> (let a = 5  a + 1)\n",
     );
-    let Some(Value::Node(occ)) = only_value(&mut kb, "zzfc2x4.binder.value") else {
-        panic!("no occurrence-carried answer");
-    };
+    let occ = stored_form(&kb, "zzfc2x4.binder.value");
     let Some(Expr::Let { pattern, body, .. }) = occ.as_expr() else {
         panic!("expected an Expr::Let, got {:?}", occ.kind);
     };
@@ -473,7 +478,7 @@ fn a_let_binder_in_a_rule_body_is_the_symbol_its_body_reads() {
 /// depends on.
 #[test]
 fn a_written_reflect_expression_form_is_not_re_lowered() {
-    let t = bound_node_tags(
+    let t = stored_form_tags(
         "zzfc2x4.written",
         "  rule value(?y) :- ?y <=> anthill.reflect.Expr.lambda_expr(param: 1, body: 2)\n",
         "zzfc2x4.written.value",
@@ -502,7 +507,7 @@ fn a_written_reflect_expression_form_is_not_re_lowered() {
 ///
 /// **THE PROGRAM IS STILL REFUSED, and for an accurate reason.** A lambda body is a VALUE
 /// expression and `(t -> t)` is an arrow TERM, so the typer — which now types a binder
-/// form as a unit (`CallDispatch::BinderForm`) — reports that `arrow` names no operation.
+/// form as a unit (`CallDispatch::CompoundExpression`) — reports that `arrow` names no operation.
 /// What this row pins is WHICH sentence: not the self-contradictory advice. (Before this
 /// ticket the program "loaded" with a `⊥` body, i.e. meaning nothing. Reading an arrow
 /// term inside a rule-body lambda AS A TYPE is a design question this ticket does not
@@ -560,7 +565,7 @@ fn an_arrow_inside_a_rule_body_lambda_is_not_read_as_a_keyword_typo() {
 /// loader change makes that subtree real code for the first time, so an undispatched
 /// `Expr::DotApply` inside it reached eval as a pre-dispatch form and died
 /// `unhandled Expr variant in eval` — a `debug_assert` in debug, and in release a rule that
-/// silently answers 0. The repair is `CallDispatch::BinderForm`: the node does not recurse
+/// silently answers 0. The repair is `CallDispatch::CompoundExpression`: the node does not recurse
 /// and IS handed to `type_check_node`, whose `Expr::Lambda` / `Let` / `Match` arms bind the
 /// pattern into Γ (`bind_and_label_pattern`) — the one place in the typer that knows how.
 ///

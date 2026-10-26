@@ -110,13 +110,10 @@ end
 
 fn eval_type(op: &str) -> String {
     let mut interp = interp_for(SRC);
-    match interp
+    let ty = interp
         .call(&format!("test.h20yy.{op}"), &[])
-        .unwrap_or_else(|e| panic!("{op}: {e:?}"))
-    {
-        Value::Term { id, .. } => TermPrinter::new(interp.kb()).print_term(id),
-        other => panic!("{op}: expected a term-carried type, got {other:?}"),
-    }
+        .unwrap_or_else(|e| panic!("{op}: {e:?}"));
+    TermPrinter::new(interp.kb()).print_value(&ty)
 }
 
 /// THE HEADLINE ROW: the provider's override, reached through an OPERATION-scoped slot.

@@ -4604,6 +4604,10 @@ continuation expression after `end`. `conclude` supplies a local proposition
 when no named rule supplies the goal; successful derivation feeds the conclusion
 back into that continuation's context.
 
+A rule body may not hold one: it is itself a derivation, and a rule is proved by a
+proof declaration. An in-body proof written in a rule body is a load error. An
+equation's right-hand side may hold one, since it is spliced into the bodies it rewrites.
+
 `provides` has two surfaces. A clause on a sort claims a spec, optionally under
 per-provision spec conditions (proposal 058 / WI-869). A standalone host block
 records realization artifacts and name mappings (proposal 025):
@@ -5880,6 +5884,8 @@ The other face is the **relation** (proposal 052): `Relation[T]` is an unordered
 A call that RAISES has no value either, and its error propagates rather than failing the goal: a zero divisor (`Int64.div(1, 0)`, `Int64.rem(1, 0)`), an `Error` a host function returns, a raise in a body. The resolver reports it, the answer set is marked incomplete, and `not(...)` over the call proves nothing — `?r <=> div(1, 0)`, `div(1, 0) = 3`, `p(div(1, 0))` and `div(1, 0, ?r)` answer nothing, and `not(div(1, 0) = 3)` is undecided. A rule that means to skip a zero divisor tests it first, `?b != 0`.
 
 A goal-only builtin written as data (`prove(eq(?x, 1))`) and a dotted NAME in a data slot (`holds(ns.rel)`, `stored(Box.zero)`) are not computations and stay the terms they spell.
+
+A compound expression in a value slot — an `if`, a `let`, a `match` (§5.9) — is a computation too: it is typed and evaluated as the same text is in an operation body, once every variable it names is bound, and until then it is SUSPENDED. So `?r <=> (if ?c then 1 else 2)` waits for `?c`, and `p((let a = 5  a + 1))` meets `fact p(6)`. A lambda is a value; it runs where it is applied. Inside the form `?x` is still the clause's variable, also under a binder spelled `x`: `?x <=> 10, ?r <=> (let x = 3  x + ?x)` gives `?r = 13`.
 
 A body-less spec operation at a ground carrier **dispatches** in a value slot as in a goal (`WeakOrd.compare(1, 5) = -1` holds). Heads stay patterns and are never evaluated; `@[simp]` does not fire inside this evaluation (it fires at resolve time, as before). One consequence is stated so it is not rediscovered: `Set`'s symbolic `insert` / `empty` algebra has no implementation, so a comparison over an `insert` chain is undecided rather than answered by matching the unevaluated terms (WI-20260926-QCJ0B owns `Set`'s route).
 

@@ -3,9 +3,9 @@
 - id: WI-20261011-2S5FP-a-compound-expression-written
 - created: 2026-10-11T20:14:56Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-10-11T20:14:56Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-10-26T16:15:38Z
 
 - acceptance: cargo-test
 
@@ -28,4 +28,16 @@ CONTROLS. A row per program: (1) answers 10, 6 and 100; (2) holds, and its `not`
 ### 2026-10-26T12:52:12Z — feedback — claude
 
 CARRIED FROM WI-20261023-Y2HFK (user, 2026-10-26: Y2HFK rejected as superseded by this ticket, whose `let` case it is; WI-20261013-R1W5A depends on this ticket in its place). Its rows, measured 2026-10-23 on 38a260a6, over `operation idI(x: Int64) -> Int64 = x`: `rule letPure(?v) :- ?v <=> (let x = 3  x + 1)` and `rule letInArg(?v) :- ?v <=> idI(let x = 3  x + 1)` each answer the term `let x = 3 in add(x, 1)` — owed: 4, definite. The cell twin `?v <=> (let c = Cell.new(3)  Cell.get(c))` loads (R1W5A's typing masks the `let`'s own cell) and its value is never computed — owed: 3.
+
+### 2026-10-26T13:14:28Z — feedback — claude
+
+DECIDED (user, 2026-10-26), the first-decide question. (1) `if` is evaluated as `let` and `match` are: kernel-language §5.9 already says a compound expression (`if`, `let`, `match`, `lambda`) is evaluated wherever it is written, even inside a clause. (2) A lambda stays a value, run where it is applied (WI-20261013-R1W5A, 2026-10-23). (3) AN IN-BODY PROOF IS REFUSED IN A RULE BODY, at load: a rule body is a derivation, and a rule is proved by a proof declaration (namespace, sort, enum, provides). Today `?r <=> (proof trivial by derivation end 7)` answers the proof term, where the operation-body twin answers 7. The refusal is the loader's, not the grammar's: the compound forms share `_expr_body` between operation bodies and rule-body values, so a grammar rule would need a proof-free copy of all four forms. A proof nested in an operation-body expression (`inc(proof trivial by derivation end 7)`, 8 today) is left as it is — the user: allowing or denying it does not matter. kernel-language §5.10: an operation/const body may put a proof in control flow; a rule body may not. wi_fc2x4_lambda_in_a_rule_test's `proof` row turns into the refusal.
+
+### 2026-10-26T16:15:36Z — feedback — claude
+
+DECIDED (user, 2026-10-26): inside a compound expression a rule writes, `?x` is the clause's variable, also under a binder spelled `x` — `?x <=> 10, ?r <=> (let x = 3  x + ?x)` gives 13, not the binder (WI-550's operation-body reading, 6). On the parent it was neither: a variable of its own, never bound. kernel-language §8.3 states it.
+
+### 2026-10-26T16:15:37Z — feedback — claude
+
+DELIVERED (2026-10-26). A COMPOUND EXPRESSION A RULE BODY WRITES — an `if`, a `let`, a `match` — IS EVALUATED WHERE IT IS WRITTEN AND TYPED WHOLE AS THE OPERATION BODY IT IS. `evaluate::evaluated_form` makes it a written call to 068 §1.1's strategy, run by `bridge_form_to_eval` (σ applied, the scratch interpreter's `eval_node_isolated`, faults reported naming the form); a form that still names an unbound variable waits, coarse as design D1. `call_dispatch_shape` hands an `if` to the operation-body typer as it hands a `let` and a `match`, so a non-Bool condition and disagreeing branches are refused at load. The ticket's programs: (1) 10, 6, 100; (2) the comparisons hold and `not` over them answers nothing; (3) 11; (4) 4, no panic. Y2HFK's rows: 4, 4, 3. An in-body proof in a rule body is a load error (`LoadError::ProofInClause`); an equation's right-hand side keeps it. FOUND AND FIXED ON THE WAY: (a) a reflect constructor written as a call (`anthill.reflect.Expr.if_expr(…)`) builds the node the syntax builds, and is data — `NodeKind::Expr.compound_syntax` carries the parse store's mint, read by the evaluator, the typed-whole shape and `TypingEnv::under`; (b) `?x` under a binder, as decided above; (c) a sigil-free head parameter was an unresolved name inside a form; (d) `expect_type_arg` took a type argument on the term carrier only, so a type a substitution rebuilt (`Box[V = (?a) -> Int64]`) was refused once the form ran — it reads through the view, and the interpreter builds an applied type as an entity holding its arguments (user, 2026-10-26, option B), the test helpers of 18 files that unpacked `Value::Term` rewritten through the view (`common::show_value`, `type_application`, `bare_sort_name`); (e) the occurrence printer wrote a type form a rule writes as data as its application (`Box[V = Arrow(param: String, …)]`) — it writes the type spelling. MOVED BY DESIGN: FC2X4's surfaces and binder rows read the stored form; R1W5A's `viaIf` refusal names the expression, as `viaLet` does; DRGCP's CLI row binds the reflect constructor; TCSGT's rule-variable row asserts the evaluated type, with a lambda answer for the printer; WI-366's effect-row row reads the structure. ROWS: wi_2s5fp_compound_expression_in_a_rule_body_test (48), back-out ledger at its end; TCSGT an_entry_in_a_rules_data_prints_as_the_type. SPEC: kernel-language §8.3 and §5.10; proposal 068 §1 amendment; design §5.2. GATE: scripts/test.sh full, 10989 passed, 0 failed; families green, no verdict moved; /code-review xhigh, 10 findings, 5 fixed. LEFT, each measured the same on the parent: a relation in a form's condition is refused naming an unknown functor (the `let` twin too); a goal's argument written as a reflect constructor answers nothing, and a CLI query writes a compound form as its positional marker (8VGRW's family).
 
