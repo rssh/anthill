@@ -602,7 +602,7 @@ validated either way (`wi_5g28a_paren_less_citation_test.rs`).
 | probe | today |
 |---|---|
 | `?x <=> wrap(?v), Score.score(?v, 3)` — the call's argument still unbound | no solutions, SILENTLY (bound first: `3`) — **WI-20260924-35E14** |
-| `?d = require[Score[T]], Score.score(red(), ?r)` — the only provider a WITNESS sort | no solutions, SILENTLY (no `require`: `3`; a carrier providing its own spec: answers) — **WI-20260924-DG57J** |
+| `?d = require[Score[T]], Score.score(red(), ?r)` — the only provider a WITNESS sort | ~~no solutions, SILENTLY (no `require`: `3`; a carrier providing its own spec: answers)~~ `3`, `?d`'s impl `ByHeat`, since WI-20260925-P7VP4 — **WI-20260924-DG57J** |
 
 The first is why demo2 answered `0` before S2: the typed head's generator is APPENDED (§7), so the
 body's `Score.score(?v, 3)` runs before anything binds `?v`. (S2 weaves that call, so it now waits
@@ -612,7 +612,10 @@ late(x: Colour) :- Score.score(x, 3)`, with `Colour` providing `Score` itself, a
 where the generator-first twin answers `blue`. kernel-language.md's `Bool`-view passage records
 the same fall-through ("making that case *delay* instead is open follow-up work"). The second
 fails in the check-only form too — `requires(Score[T])` answers nothing — so it is the
-rule-body resolution missing a witness provision, not the read.
+rule-body resolution missing a witness provision, not the read. CLOSED by WI-20260925-P7VP4
+(`18cca07a`), whose guard core asks a provision filed for the carrier by another sort as well as
+the carrier's own (`carrier_provides_spec`); two rival witnesses and nothing selecting one are
+refused at load (kernel-language §5.4), not delayed (`wi_dg57j_witness_only_requirement_test.rs`).
 
 ### Delivered 2026-09-24 — a dictionary is an ordinary rule argument, and its subtree projects
 
@@ -975,7 +978,7 @@ own; S7 is the channel's general case.
 | **S3b** | PARAMETERISED SORTS. The derived `domain` of a parametric sort reads ITS OWN dictionary as its one implicit parameter and recurses through it: `List.domain(?x) :- <?self = SortDomain[T = List[T = T]]>, ?x <=> nil() \| (?x <=> cons(head: ?h, tail: ?t), apply_domain(?self, ?t), ?e <=> Dictionary.sub(?self, 0), apply_domain(?e, ?h))` — the element's domain is the condition's slot, projected; no head argument (060 §5), and the tail needs no rule→rule channel because it recurses through `apply_domain` on the dictionary in hand. That IS S4's parameterised value face, so S4 folds in. The sweep then gives a parameterised bound the implicit read too — built at load for a ground one, routed or derived for a variable-bearing one. | `kb/load.rs`, `typing/rules.rs` | CONCRETE — `Wrap[T = Colour].dom.takeN(5)` = 3; `List[T = Letter].domain.takeN(5)` = 5. CONTROL: alphabet-words, tiny-sat, wi743 keep their answers |
 | **S3c** | (e) WHAT `domain_member(?x, T)` BECOMES once S3b moves the parametric clauses: its readers are then the derived `S.domain` clauses' bottom and a user's 2-ary spelling (no `.anthill` file in the corpus writes it; three test files do). Decided with the user. | — | — |
 | **S4** | W1 — WT8WG's parameterised value face: `emit_domain_value_face` derives `<Sort>.domain` for a parameterised sort; `domain_value_face_refusal` loses its parameterised arm. | `kb/load.rs`, `typing/relation.rs` | `List[T = Letter].domain.takeN(5)` = 5; bare `List.domain` refused by S1's rule |
-| **S5** | THE TWO DEFECTS ABOVE, filed 2026-09-24 and not 5G28A's: a rule-body operation call whose argument is unbound WAITS (delays) instead of answering nothing — **WI-20260924-35E14**; a clause's `require` whose only provider is a witness sort is found — **WI-20260924-DG57J**. | `kb/resolve.rs` | demo2 needs both |
+| **S5** | THE TWO DEFECTS ABOVE, filed 2026-09-24 and not 5G28A's: a rule-body operation call whose argument is unbound WAITS (delays) instead of answering nothing — **WI-20260924-35E14**; a clause's `require` whose only provider is a witness sort is found — **WI-20260924-DG57J**, closed by P7VP4. | `kb/resolve.rs` | demo2 needs both |
 | **S6** | demo2 end to end. | — | `demo2_the_count_flounders` → `1`; `demo2_the_projected_spelling_loads_and_flounders` → `wrap(red())` under `ByHeat`, `wrap(blue())` under `ByName` |
 | **S7** | RULE → RULE implicit arguments (op-to-rule §7 step 2): every goal carries its implicit arguments through the seven goal-list constructions, written by the typer at the body edge. The 06:17 plan's row (g) — `rule again(?y) :- dom(?y)` inside `Wrap`, cited as `Wrap[T = Colour].again` — and op-to-rule §1's `a(3, nil())`. | `kb/resolve.rs`, `typing/` | — |
 

@@ -411,6 +411,14 @@ impl TypingEnv {
         self.rule_body_dispatch == Some(RuleText::Fragment)
     }
 
+    /// Is the text typed here a rule body's own term, or a call of it ([`RuleText::Term`],
+    /// [`RuleText::Fragment`]) — not an operation body, nor what stands under a compound
+    /// expression? A call written there has no type bracket: the loader refuses one
+    /// (`LoadError::CallTypeArgsNotSupportedHere`).
+    pub(super) fn in_rule_own_term(&self) -> bool {
+        matches!(self.rule_body_dispatch, Some(RuleText::Term | RuleText::Fragment))
+    }
+
     /// The env the children of `occ` are typed in, where it is not this one: `occ` is a
     /// compound expression written with its syntax ([`NodeOccurrence::is_compound_syntax`])
     /// in a rule body's own term, or in a call of it. Its reflect constructor written as a
@@ -418,9 +426,7 @@ impl TypingEnv {
     /// descent of the typer's visit; the walk that hands a rule body's calls to the typer
     /// hands it such an expression whole.
     pub(super) fn under(&self, occ: &NodeOccurrence) -> Option<TypingEnv> {
-        if !matches!(self.rule_body_dispatch, Some(RuleText::Term | RuleText::Fragment))
-            || !occ.is_compound_syntax()
-        {
+        if !self.in_rule_own_term() || !occ.is_compound_syntax() {
             return None;
         }
         let mut env = self.clone();

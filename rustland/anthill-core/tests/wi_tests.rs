@@ -2292,3 +2292,5 @@ mod wi_5cdn5_raise_carries_its_type_test;
 mod wi_dk83q_identical_substitution_test;
 #[path = "include/wi_qpc89_empty_scope_resolution_memo_test.rs"]
 mod wi_qpc89_empty_scope_resolution_memo_test;
+#[path = "include/wi_dg57j_witness_only_requirement_test.rs"]
+mod wi_dg57j_witness_only_requirement_test;

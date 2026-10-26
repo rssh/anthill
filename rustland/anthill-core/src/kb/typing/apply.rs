@@ -4509,6 +4509,7 @@ pub(super) fn check_apply_iter(
                         span,
                         op: fn_sym,
                         tie,
+                        bracket: BracketChannel::of_call(env, occ),
                     });
                 }
                 // The provider is chosen and supplies the operation twice: no slot or bracket

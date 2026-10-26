@@ -461,7 +461,7 @@ fn the_named_spelling_binds_the_dictionary_by_hand() {
 /// `(head functor, impl_functor)` of a dictionary value, as qualified names.
 /// Panics on any other shape — a test whose subject is "what did `?d` bind to" may
 /// not shrug at an unexpected carrier.
-fn dictionary_parts(kb: &anthill_core::kb::KnowledgeBase, v: &Value) -> (String, String) {
+pub(crate) fn dictionary_parts(kb: &anthill_core::kb::KnowledgeBase, v: &Value) -> (String, String) {
     use anthill_core::kb::term_view::{TermView, ViewHead};
     // Read CARRIER-NEUTRALLY, through the same view an eval `RequirementHandle`
     // answers under. That is the assertion: one shape, whichever side built it.

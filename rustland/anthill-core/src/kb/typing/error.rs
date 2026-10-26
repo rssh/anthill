@@ -277,6 +277,8 @@ pub enum TypeError {
         /// [`InstanceTie`] for why both matter. Rendering (and the concreteness
         /// scan it needs) happens at `format` / `to_load_error`, not here.
         tie: InstanceTie,
+        /// Where this call can carry the bracket the repair names; see [`render_call_tie`].
+        bracket: BracketChannel,
     },
     /// WI-1012 — the STATIC face of [`crate::eval::EvalError::AmbiguousSpecOpDispatch`]:
     /// a statically CONCRETE carrier has two or more runnable suppliers of one spec op
@@ -1637,8 +1639,8 @@ impl TypeError {
                     render_unmet(unmet),
                 )
             }
-            TypeError::DispatchAmbiguous { op, tie, .. } => {
-                let (candidates, repair) = render_instance_tie(kb, tie);
+            TypeError::DispatchAmbiguous { op, tie, bracket, .. } => {
+                let (candidates, repair) = render_call_tie(kb, tie, *op, *bracket);
                 unselected_instance_message(
                     kb.qualified_name_of(*op),
                     kb.qualified_name_of(tie.spec),
@@ -2633,8 +2635,8 @@ impl TypeError {
             // said which to run), and the "expected X, got Y" frame has no room
             // for the candidate list and the repair syntax that make a use-site
             // refusal actionable.
-            TypeError::DispatchAmbiguous { op, tie, .. } => {
-                let (candidates, repair) = render_instance_tie(kb, tie);
+            TypeError::DispatchAmbiguous { op, tie, bracket, .. } => {
+                let (candidates, repair) = render_call_tie(kb, tie, *op, *bracket);
                 LoadError::UnselectedInstance {
                     op: kb.qualified_name_of(*op).to_string(),
                     spec: kb.qualified_name_of(tie.spec).to_string(),

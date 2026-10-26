@@ -337,6 +337,16 @@ pub enum TieRepair {
     /// label and a QUALIFIED one is refused rather than resolved (§4.2), so echoing
     /// the qualified spec would print advice that does not load.
     Bracket(String),
+    /// [`Self::Bracket`]'s bracket, for a call that cannot carry it as written
+    /// ([`BracketChannel`]). MEASURED, each with the bracket advised in the call's list and
+    /// the program so written refused: `Score.score(red(), ?r)` over two witness sorts, a
+    /// rule's own term (`CallTypeArgsNotSupportedHere`), and `red().score()`, a dot.
+    BracketElsewhere {
+        /// What to write: the bracket, or for a dot the applicative call that takes it
+        /// (`Score.score[Score = ns.ByHeat]`).
+        write: String,
+        channel: BracketChannel,
+    },
     /// Every candidate is a CONCRETE provider, where §4.4 check 3 refuses an explicit
     /// witness because the VALUE decides — and a call that reached here has no value
     /// that does. MEASURED on `wi822_op_scoped_supply_test`'s receiver-less
@@ -476,6 +486,56 @@ pub(super) fn render_instance_tie(
     (candidates, repair)
 }
 
+/// How the call a tie is refused at ([`TypeError::DispatchAmbiguous`]) was written, which
+/// decides where the bracket that selects a provider can go — what the loader decides
+/// when it reads or refuses a written bracket, asked of the call the typer holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BracketChannel {
+    /// Written as a dot, which takes no bracket; its applicative spelling does. Read off the
+    /// call the dot is replaced by, whose source is the dot.
+    pub dot: bool,
+    /// A rule's own term ([`TypingEnv::in_rule_own_term`]), where neither spelling takes
+    /// one; inside a `let`, or in an operation's body, the call does.
+    pub rule_own_term: bool,
+}
+
+impl BracketChannel {
+    pub(super) fn of_call(env: &TypingEnv, occ: &NodeOccurrence) -> Self {
+        Self {
+            dot: occ
+                .synthesized_from()
+                .is_some_and(|from| matches!(from.as_expr(), Some(Expr::DotApply { .. }))),
+            rule_own_term: env.in_rule_own_term(),
+        }
+    }
+}
+
+/// [`render_instance_tie`] for a tie at a call the typer refuses, whose [`BracketChannel`]
+/// decides where the bracket the repair names can be written.
+pub(super) fn render_call_tie(
+    kb: &KnowledgeBase,
+    tie: &InstanceTie,
+    op: Symbol,
+    channel: BracketChannel,
+) -> (Vec<String>, TieRepair) {
+    let (candidates, repair) = render_instance_tie(kb, tie);
+    let repair = match repair {
+        TieRepair::Bracket(bracket) if channel.dot => TieRepair::BracketElsewhere {
+            write: format!(
+                "{}.{}{bracket}",
+                short_name_of(kb.qualified_name_of(tie.spec)),
+                short_name_of(kb.qualified_name_of(op)),
+            ),
+            channel,
+        },
+        TieRepair::Bracket(bracket) if channel.rule_own_term => {
+            TieRepair::BracketElsewhere { write: bracket, channel }
+        }
+        repair => repair,
+    };
+    (candidates, repair)
+}
+
 /// WI-843 — the one message body for a dispatch that several instances answer and
 /// the call selects none (058 §4.1 tier 3), shared by [`TypeError::format`] and
 /// [`crate::kb::load::LoadError`]'s two renderings so the wording cannot drift (the
@@ -537,6 +597,25 @@ pub(super) fn tie_repair_advice(spec: &str, repair: &TieRepair) -> String {
             " — they may coexist, so say which: write `{bracket}` (or another of \
              them) in the call's bracket list"
         ),
+        TieRepair::BracketElsewhere { write, channel } => {
+            let (call, what) = if channel.dot {
+                ("a dot call", format!("write it applicatively, as `{write}(…)`"))
+            } else {
+                ("a call", format!("write `{write}` on it"))
+            };
+            let (position, place) = if channel.rule_own_term {
+                (
+                    " written as a rule's own term",
+                    ", inside a `let` or in an operation's body that the rule calls",
+                )
+            } else {
+                ("", "")
+            };
+            format!(
+                " — they may coexist, so say which; {call}{position} has no bracket list, \
+                 so {what}{place} (or name another of them)"
+            )
+        }
         TieRepair::ValueDirected => ", and none can be named here: each is a CONCRETE \
              provider, where an explicit witness is refused because the VALUE decides the \
              dispatch — and this call has no value that does. Pin the carrier through the \

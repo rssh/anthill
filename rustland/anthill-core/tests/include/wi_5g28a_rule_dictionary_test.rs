@@ -536,8 +536,8 @@ fn demo2_the_projected_spelling_loads_and_flounders() {
 /// BODY variable, so only the bracket `Score[T]`, written with `Wrap`'s own `T`, says which
 /// instance it is, and S2 routes a read from its witness's column; reading the bracket
 /// under the citation's σ is observable only once S3(d) lets a clause typed at the sort's
-/// parameter answer at all; and a `require` whose only provider is a WITNESS sort answers
-/// nothing (WI-20260924-DG57J).
+/// parameter answer at all. (A `require` whose only provider is a WITNESS sort answered
+/// nothing, WI-20260924-DG57J; that is closed, `wi_dg57j_witness_only_requirement_test`.)
 #[test]
 fn demo2_the_count_flounders() {
     for entry in ["countHeat", "countName"] {
