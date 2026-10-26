@@ -2257,7 +2257,6 @@ fn check_late_clauses(
 /// just the first hop. WI-407 made the loader emit edges for non-parametric
 /// `fact <Spec>` declarations so this closure has something to chase.
 pub(crate) fn sort_provides(kb: &KnowledgeBase, carrier: Symbol, spec: Symbol) -> bool {
-    let mut visited: SmallVec<[Symbol; 8]> = SmallVec::new();
     // WI-864 — CANONICALIZE ONCE PER WALK, not once per comparison. `same_sort_canonical`
     // is `a == b || canonical(a) == canonical(b)`, and `a == b` implies the canonical
     // equality, so the predicate IS `canonical(a) == canonical(b)` — which means the walk
@@ -2267,7 +2266,7 @@ pub(crate) fn sort_provides(kb: &KnowledgeBase, carrier: Symbol, spec: Symbol) -
     let (carrier_canon, spec_canon) = (kb.canonical_sort_sym(carrier), kb.canonical_sort_sym(spec));
     // A sort provides itself, by its own operations (kernel-language.md §5.3). The
     // relation holds no row for it, so the walk below would answer no.
-    carrier_canon == spec_canon || sort_provides_reach(kb, carrier_canon, spec_canon, &mut visited)
+    carrier_canon == spec_canon || provides_reaches(kb, carrier_canon, spec_canon)
 }
 
 /// WI-660/WI-672 — the spec-base targets of the `SortProvidesInfo` edges OUT of `node` (the
@@ -2332,38 +2331,32 @@ pub(super) fn provides_out_edges_decoded(
         .collect()
 }
 
-/// Transitive-reachability worker for [`sort_provides`]: from `carrier_canon`, follow each
-/// provides edge out of it — succeed if its target IS `spec_canon`, else recurse on the
-/// target. `visited` is a cycle guard against a cyclic `provides` declaration (a sort
-/// that transitively provides itself), so the walk terminates and stays
-/// O(reachable × bucket).
+/// The canonical specs `carrier_canon` provides through one or more provides edges — what
+/// [`sort_provides`] asks of the relation, for every spec at once: a walk of the edges out
+/// of each sort reached ([`provides_out_edges`]), each sort expanded once, so a cyclic
+/// `provides` declaration (a sort that transitively provides itself) ends it. Held per
+/// carrier by the provider index ([`provides_reaches`]).
 ///
-/// WI-864 — BOTH ENDS ARE CANONICAL, and so is everything `visited` holds. `sort_provides`
-/// converts once at the entry and the walk stays in canonical space, so every comparison
-/// here is a raw `Symbol` equality rather than a `same_sort_canonical` (two
-/// `qualified_name_of` reads and two `HashMap<String, _>` probes). The two are the same
-/// predicate — `same_sort_canonical(a, b)` is `a == b || canonical(a) == canonical(b)`, and
-/// `a == b` implies the right disjunct, so the relation IS canonical equality.
-pub(super) fn sort_provides_reach(
-    kb: &KnowledgeBase,
-    carrier_canon: Symbol,
-    spec_canon: Symbol,
-    visited: &mut SmallVec<[Symbol; 8]>,
-) -> bool {
-    if visited.contains(&carrier_canon) {
-        return false;
-    }
-    visited.push(carrier_canon);
-    for dst_canon in provides_out_edges(kb, carrier_canon) {
-        // Direct hop, then the transitive chain through the intermediate spec. WI-672
-        // canonical: `spec` may be a `required_sort` (via `check_provider_requires` /
-        // `check_requires_shadows`), but those are resolved (stdlib qualified; top-level
-        // user specs self-consistent — see `entries_cover`), so canonical is exact.
-        if dst_canon == spec_canon || sort_provides_reach(kb, dst_canon, spec_canon, visited) {
-            return true;
+/// WI-864 — BOTH ENDS ARE CANONICAL, and so is everything the set holds: `sort_provides`
+/// converts once at the entry and the walk stays in canonical space, so the set is asked by
+/// raw `Symbol` equality rather than by `same_sort_canonical` (two `qualified_name_of` reads
+/// and two `HashMap<String, _>` probes). The two are the same predicate —
+/// `same_sort_canonical(a, b)` is `a == b || canonical(a) == canonical(b)`, and `a == b`
+/// implies the right disjunct, so the relation IS canonical equality. WI-672 canonical: the
+/// spec asked may be a `required_sort` (via `check_provider_requires` /
+/// `check_requires_shadows`), but those are resolved (stdlib qualified; top-level user specs
+/// self-consistent — see `entries_cover`), so canonical is exact.
+pub(super) fn provides_reach_walk(kb: &KnowledgeBase, carrier_canon: Symbol) -> HashSet<Symbol> {
+    let mut reached: HashSet<Symbol> = HashSet::new();
+    let mut pending: SmallVec<[Symbol; 8]> = SmallVec::from_elem(carrier_canon, 1);
+    while let Some(node) = pending.pop() {
+        for dst_canon in provides_out_edges(kb, node) {
+            if reached.insert(dst_canon) {
+                pending.push(dst_canon);
+            }
         }
     }
-    false
+    reached
 }
 
 /// Check if a constructor's parent sort matches the declared type symbol.

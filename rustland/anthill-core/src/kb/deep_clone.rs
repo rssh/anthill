@@ -51,7 +51,8 @@
 //! error, not a copy that is quietly missing something ([`DeepCloneError`]).
 //!
 //! The memo caches whose rows hold an `Rc` (`requires_chain_cache` and its eight
-//! siblings, `resolve_cache`, and the two rule-goal memos: twelve) START EMPTY in the copy.
+//! siblings, `resolve_cache` and `empty_scope_resolve_cache`, and the two rule-goal memos:
+//! thirteen) START EMPTY in the copy.
 //! Each memoizes an answer computed from the declarations, each already has an invalidation
 //! the load calls (`invalidate_requires_chain_cache`, `invalidate_resolve_cache`,
 //! `invalidate_rule_goal_columns`), so "empty" is a
@@ -1185,6 +1186,7 @@ impl KnowledgeBase {
             spec_self_representing_cache: plain(&self.spec_self_representing_cache),
             witness_admissibility_in_flight: RefCell::new(HashSet::new()),
             resolve_cache: RefCell::new(HashMap::new()),
+            empty_scope_resolve_cache: RefCell::new(HashMap::new()),
             rule_goal_columns_memo: RefCell::new(HashMap::new()),
             rule_goal_cycle_memo: RefCell::new(HashMap::new()),
             rule_goal_columns_in_flight: RefCell::new(HashSet::new()),

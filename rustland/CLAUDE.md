@@ -125,7 +125,8 @@ provisions and is a cache of its own, cleared by hand. What a new READER owes is
 through the keyed readers (`provides_rows_of_spec`, `provides_rows_of_provider`,
 `provision_conditions`, `sort_provides`): a scan of the relation per question is what
 this removed, 39 % of a later load. What a new memo INSIDE the index owes is to be
-forgotten where a row is filed (the witness carriers are the one there is). A new way
+forgotten where a row is filed (the witness carriers and the provides reach are the two
+there are). A new way
 to change a stored clause's fact-ness, or its head, or to take a clause out of
 `rules_by_functor`, owes the index the same (`KnowledgeBase::clause_became_bodied`,
 `unindex_functor`). And the keys are canonical symbols, so the index follows the NAME

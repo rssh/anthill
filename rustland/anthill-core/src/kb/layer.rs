@@ -274,6 +274,7 @@ kb_scoped_fields!(
     spec_carrier_param_cache,
     spec_self_representing_cache,
     resolve_cache,
+    empty_scope_resolve_cache,
     rule_goal_columns_memo,
     rule_goal_cycle_memo,
 );
@@ -544,6 +545,7 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         spec_carrier_param_cache: _,
         spec_self_representing_cache: _,
         resolve_cache: _,
+        empty_scope_resolve_cache: _,
         rule_goal_columns_memo: _,
         rule_goal_cycle_memo: _,
 

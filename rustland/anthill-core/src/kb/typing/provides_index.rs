@@ -239,6 +239,18 @@ pub(crate) struct ProvidesIndex {
     /// where the `Option` this index used to be dropped it with everything else, and a
     /// load is what declares the operations an entry is read from.
     pub(super) witness_carriers: std::cell::RefCell<HashMap<Symbol, Rc<[Symbol]>>>,
+    /// [`provides_reach_walk`] per canonical carrier, memoized: every spec the carrier
+    /// provides through one or more of `carrier_edges`, so that [`sort_provides`] is a set
+    /// read. It is asked once per provision row a dispatch goal is matched against
+    /// (`types_compatible`'s provider leg, where the row's type is no spec the goal's
+    /// carrier provides), and the walk re-read the carrier's whole tower each time
+    /// (MEASURED: 30 % of a run-time dictionary derivation, `WeakOrd[T = Int64]`, and 7 ms of
+    /// a 166 ms stdlib load).
+    ///
+    /// FILLED LAZILY, per carrier asked. A function of `carrier_edges` alone, so forgotten
+    /// where an edge can move — a provision row filed with one, or unfiled; the keys
+    /// computed again ([`keyed`]) build a new index, and with it an empty memo.
+    pub(super) reach: std::cell::RefCell<HashMap<Symbol, HashSet<Symbol>>>,
 }
 
 impl ProvidesIndex {
@@ -257,6 +269,7 @@ impl ProvidesIndex {
             carrier_edges,
             conditions_by_carrier,
             witness_carriers,
+            reach,
         } = self;
         ProvidesIndex {
             keyed_at: plain(keyed_at),
@@ -271,6 +284,7 @@ impl ProvidesIndex {
                     .map(|(carrier, witnesses)| (plain(carrier), copier.symbols(witnesses)))
                     .collect(),
             ),
+            reach: plain(reach),
         }
     }
 }
@@ -279,6 +293,14 @@ impl ProvidesIndex {
     /// Forget the witness-carrier memo — see the field for the events that owe this.
     fn forget_witness_carriers(&self) {
         self.witness_carriers.borrow_mut().clear();
+    }
+
+    /// Forget the reach memo — an edge was filed or unfiled.
+    fn forget_reach(&self) {
+        let mut reach = self.reach.borrow_mut();
+        if !reach.is_empty() {
+            reach.clear();
+        }
     }
 
     /// The index a walk of the two relations AS THEY STAND files, keyed by the name
@@ -303,7 +325,7 @@ impl ProvidesIndex {
 
     /// Where the filed index and `scanned` — [`Self::from_scan`] of the same KB — differ,
     /// one line a bucket, saying what each side has that the other has not; empty when
-    /// they are one index. The witness memo is not compared: it is filled by what was
+    /// they are one index. The two memos are not compared: each is filled by what was
     /// asked, and a read of it is held to its own definition.
     #[cfg(any(test, debug_assertions))]
     pub(crate) fn differences_from(&self, kb: &KnowledgeBase, scanned: &ProvidesIndex) -> Vec<String> {
@@ -375,6 +397,7 @@ impl ProvidesIndex {
                     self.by_carrier.insert(carrier, rid);
                     if let Some(edge) = edge {
                         self.carrier_edges.entry(carrier).or_default().push((rid, edge));
+                        self.forget_reach();
                     }
                 }
             }
@@ -412,6 +435,7 @@ impl ProvidesIndex {
                     edges.retain(|(r, _)| *r != rid);
                     !edges.is_empty()
                 });
+                self.forget_reach();
             }
             ProvisionRelation::Condition => self.conditions_by_carrier.remove(rid),
         }
@@ -511,6 +535,7 @@ pub(crate) fn file_provision_fact(
     // ([`keyed`]), this row's among them, and until a read nothing looks.
     let filing = Filing::of(kb, relation, rid);
     kb.provides_index.get_mut().file(rid, filing);
+    kb.invalidate_empty_scope_resolve_cache();
 }
 
 /// The other half: the fact `rid` of `relation` is no longer a row. Called where a
@@ -524,6 +549,7 @@ pub(crate) fn unfile_provision_fact(
     rid: crate::kb::RuleId,
 ) {
     kb.provides_index.get_mut().unfile(relation, rid);
+    kb.invalidate_empty_scope_resolve_cache();
 }
 
 /// THE LOAD'S OWN CHECK of the filed index, in a build with debug assertions: it is the
@@ -894,6 +920,33 @@ pub(super) fn remembered_witness_carriers(
 /// Remember `carriers` as `spec_sort`'s witness carriers.
 pub(super) fn remember_witness_carriers(kb: &KnowledgeBase, spec_sort: Symbol, carriers: Rc<[Symbol]>) {
     keyed(kb).witness_carriers.borrow_mut().insert(spec_sort, carriers);
+}
+
+/// Does `carrier_canon` provide `spec_canon` through one or more provides edges — both
+/// canonical ([`sort_provides`] converts them). Read from [`ProvidesIndex`]'s `reach`,
+/// walked ([`provides_reach_walk`]) the first time a carrier is asked.
+pub(super) fn provides_reaches(kb: &KnowledgeBase, carrier_canon: Symbol, spec_canon: Symbol) -> bool {
+    let remembered = keyed(kb).reach.borrow().get(&carrier_canon).map(|r| r.contains(&spec_canon));
+    if let Some(hit) = remembered {
+        // The memo held to its definition, under the index's control.
+        if agreement_on() {
+            let walked = provides_reach_walk(kb, carrier_canon).contains(&spec_canon);
+            assert!(
+                hit == walked,
+                "ANTHILL_PROVIDES_INDEX_AGREEMENT: the reach remembered for `{}` says it {} \
+                 `{}`, and its provides edges say it {}",
+                kb.qualified_name_of(carrier_canon),
+                if hit { "provides" } else { "does not provide" },
+                kb.qualified_name_of(spec_canon),
+                if walked { "does" } else { "does not" },
+            );
+        }
+        return hit;
+    }
+    let reached = provides_reach_walk(kb, carrier_canon);
+    let hit = reached.contains(&spec_canon);
+    keyed(kb).reach.borrow_mut().insert(carrier_canon, reached);
+    hit
 }
 
 /// WI-20260923-32XFQ — ONE `anthill.reflect.SortProvidesInfo` fact, decoded: THE row reader

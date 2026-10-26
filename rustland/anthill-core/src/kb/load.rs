@@ -26583,7 +26583,7 @@ const PROVISION_HEAD_ADMITS: &[SymbolKind] = &[SymbolKind::Sort];
 /// shape `algebra.anthill` records as the benign one — the base declares the operation
 /// once and both branches only provide — and reporting it as contested would refuse a
 /// program the library itself is built on. The same set guards a cyclic `provides` (a sort
-/// transitively providing itself), as `typing::sort_provides_reach` does, so the walk
+/// transitively providing itself), as `typing::provides_reach_walk` does, so the walk
 /// terminates.
 fn dotted_by_provision(
     kb: &KnowledgeBase,

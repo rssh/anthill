@@ -1210,8 +1210,8 @@ full workspace runs once per increment. The census fixtures of §1.1 are the sta
 
 ## 8. Open
 
-1. Cost: `run_in_bridge_interp` builds an interpreter per call, and a run-time dictionary
-   derivation is re-resolved on every call (WI-20260926-QPC89). Measure before and after K4JGC —
+1. Cost: `run_in_bridge_interp` builds an interpreter per call (a run-time dictionary
+   derivation is memoized per ground goal since WI-20260926-QPC89). Measure before and after K4JGC —
    including D3's scan of every goal bound for candidate selection, which decides whether the
    load-time flag is needed.
 2. Precise blockers (D1's later half).

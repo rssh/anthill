@@ -2605,6 +2605,24 @@ pub struct KnowledgeBase {
         >,
     >,
 
+    // WI-20260926-QPC89 — memoized resolutions of a GROUND goal in an EMPTY scope
+    // (`typing::resolve_in_empty_scope`), keyed by the goal and the rung it was asked at.
+    // Those are the routes that hold argument values and no caller dictionary: a rule
+    // body's requirement read derives `WeakOrd[T = Int64]` from `cmp(1, 5, ?c)`'s `1`,
+    // and a bridged call its frame, and each derived it again at every query (MEASURED:
+    // 90 % of such a query). The answer is read off the declarations and the provisions,
+    // so it is dropped with the resolve cache at the start of a typer run, and wherever a
+    // provision row is filed or unfiled (`typing::file_provision_fact`) — the one way a
+    // run changes what a goal resolves to. And at every retract: a key holds `TermId`s it
+    // keeps no reference to, and a retract can free a slot that a later term reuses, so a
+    // kept key could come to name another goal.
+    pub(crate) empty_scope_resolve_cache: RefCell<
+        HashMap<
+            (crate::kb::typing::SortGoal, crate::kb::typing::DefaultRung),
+            crate::kb::typing::ResolutionResult,
+        >,
+    >,
+
     // WI-20261013-WF14Z — the columns a goal on each relation reads
     // (`typing::rule_goal_columns`), and the cycle of relations each relation is in
     // (`typing::same_rule_goal_cycle`). Read off the clauses as they stand, so dropped with
@@ -3041,6 +3059,7 @@ impl KnowledgeBase {
             spec_self_representing_cache: RefCell::new(HashMap::new()),
             witness_admissibility_in_flight: RefCell::new(std::collections::HashSet::new()),
             resolve_cache: RefCell::new(HashMap::new()),
+            empty_scope_resolve_cache: RefCell::new(HashMap::new()),
             rule_goal_columns_memo: RefCell::new(HashMap::new()),
             rule_goal_cycle_memo: RefCell::new(HashMap::new()),
             rule_goal_columns_in_flight: RefCell::new(std::collections::HashSet::new()),
@@ -3096,10 +3115,25 @@ impl KnowledgeBase {
 
     /// Drop the memoized spec-op SLD dispatch results. Called when a
     /// new `SortProvidesInfo` fact is asserted after the cache filled.
-    /// WI-226.
+    /// WI-226. And the memoized empty-scope resolutions, for the same reason.
     #[allow(dead_code)]
     pub fn invalidate_resolve_cache(&self) {
         self.resolve_cache.borrow_mut().clear();
+        self.invalidate_empty_scope_resolve_cache();
+    }
+
+    /// WI-20260926-QPC89 — drop the memoized empty-scope resolutions
+    /// ([`Self::empty_scope_resolve_cache`]).
+    pub(crate) fn invalidate_empty_scope_resolve_cache(&self) {
+        let mut cache = self.empty_scope_resolve_cache.borrow_mut();
+        if !cache.is_empty() {
+            cache.clear();
+        }
+    }
+
+    /// WI-20260926-QPC89 — how many empty-scope resolutions are memoized. Test inspector.
+    pub fn empty_scope_resolve_cache_len(&self) -> usize {
+        self.empty_scope_resolve_cache.borrow().len()
     }
 
     /// WI-20261013-WF14Z — drop what [`Self::rule_goal_columns_memo`] and
@@ -7286,6 +7320,7 @@ impl KnowledgeBase {
     /// Mark a rule/fact as retracted. Removes from active indexes, decrements refcounts.
     pub fn retract(&mut self, id: RuleId) {
         self.invalidate_rule_goal_columns();
+        self.invalidate_empty_scope_resolve_cache();
         let entry = &mut self.rules[id.index()];
         if entry.retracted {
             return;

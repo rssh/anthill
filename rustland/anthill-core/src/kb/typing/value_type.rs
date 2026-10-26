@@ -2071,13 +2071,7 @@ fn fetch_built_dictionary(
     from_carried_types: bool,
     rung: DefaultRung,
 ) -> FindDictFetch {
-    let scope = ResolutionScope {
-        available_requires: &[],
-        sigma: None,
-        pin: None,
-        sub_goal_requires: &[],
-    };
-    match resolve_with_rung(kb, &goal, &scope, rung) {
+    match resolve_in_empty_scope(kb, &goal, rung) {
         ResolutionResult::Resolved(tree) => match dictionary_of_tree(kb, &tree) {
             Some(d) => FindDictFetch::Fetched(d.into_value()),
             None => FindDictFetch::Undecided {

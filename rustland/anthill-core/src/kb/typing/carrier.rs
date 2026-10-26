@@ -724,7 +724,7 @@ pub(crate) fn directly_provided_specs(
 /// provider wins unchanged (returns `value_sort` itself — the `iterator`-on-a-
 /// `List`, `Eq`-on-`Int64` hot path). Otherwise walk the specs `value_sort`
 /// provides, depth-first, first match wins; `visited` guards a cyclic
-/// `provides` chain (cf. [`sort_provides_reach`]).
+/// `provides` chain (cf. [`provides_reach_walk`]).
 fn transitive_carrier_for_param(
     kb: &KnowledgeBase,
     spec_sort: Symbol,

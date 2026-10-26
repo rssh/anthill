@@ -462,7 +462,7 @@ impl ResolutionResult {
 /// erasing program over a carrier with a single `Ord` provider loads clean today). That
 /// is the pre-existing half of the same hazard, it is not this ticket's to widen or to
 /// close, and **WI-1094** owns it.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum DefaultRung {
     /// The goal is an UNSELECTED dispatch, or an ANONYMOUS `requires` slot — which
     /// "fixes nothing about the type" (§3.4), so no value carries a competing choice.
@@ -549,6 +549,52 @@ pub fn resolve_with_rung(
 ) -> ResolutionResult {
     let mut stack: Vec<SortGoal> = Vec::new();
     resolve_inner(kb, goal, scope, &mut stack, None, None, rung, &mut None)
+}
+
+/// WI-20260926-QPC89 — [`resolve_with_rung`] in an EMPTY scope: no caller frame, no
+/// call-site σ, no selection, so a slot resolves by construction only. The scope of the
+/// routes that hold argument values and no caller dictionary — a rule body's requirement
+/// read ([`fetch_dictionary`]) and a bridged call's frame ([`resolve_bridge_requirements`]).
+///
+/// MEMOIZED FOR A GROUND GOAL ([`KnowledgeBase::empty_scope_resolve_cache`]): with nothing
+/// in scope, the answer is read off the goal, the declarations and the provisions alone,
+/// and every query of `cmp(1, 5, ?c)` asks `WeakOrd[T = Int64]` again. A goal is held only
+/// where each binding — the carrier's arguments too — is a hash-consed term with no
+/// variable in it, the identity `dispatch_spec_op_cached` keys on: an occurrence is
+/// identified by its allocation, so its entry would be written and never read, and a
+/// variable is one a later step may still bind. Only a held goal can be found, so the
+/// walk for a variable is made where a goal is held, not where one is looked up.
+pub(crate) fn resolve_in_empty_scope(
+    kb: &mut KnowledgeBase,
+    goal: &SortGoal,
+    rung: DefaultRung,
+) -> ResolutionResult {
+    let scope = ResolutionScope {
+        available_requires: &[],
+        sigma: None,
+        pin: None,
+        sub_goal_requires: &[],
+    };
+    let bindings = || {
+        goal.bindings
+            .iter()
+            .chain(goal.carrier.iter().flat_map(|c| c.args.iter()))
+            .map(|(_, v)| v)
+    };
+    if !bindings().all(|v| matches!(v, Value::Term { .. })) {
+        return resolve_with_rung(kb, goal, &scope, rung);
+    }
+    let key = (goal.clone(), rung);
+    if let Some(hit) = kb.empty_scope_resolve_cache.borrow().get(&key) {
+        return hit.clone();
+    }
+    let result = resolve_with_rung(kb, goal, &scope, rung);
+    if bindings().all(|v| type_is_ground(kb, v)) {
+        kb.empty_scope_resolve_cache
+            .borrow_mut()
+            .insert(key, result.clone());
+    }
+    result
 }
 
 /// WI-20260918-CKD4J / WI-20260925-4ZZKZ — the first scope entry whose `requires` chain,

@@ -25,7 +25,7 @@
 //! axis.
 //!
 //! THE CAUSE — one relation, two readers, disagreeing on transitivity. The bare-spec arms
-//! reach `sort_provides_admissibly` → `sort_provides` → `sort_provides_reach`, which WALKS
+//! reach `sort_provides_admissibly` → `sort_provides` → `provides_reach_walk`, which WALKS
 //! the provision chain. The bindings-carrying arms read `provider_spec_view_bindings`,
 //! which matches a single DIRECT `SortProvidesInfo` fact. Both subtype sites now go through
 //! `transitive_provider_spec_view_bindings`, the composer that already existed for exactly

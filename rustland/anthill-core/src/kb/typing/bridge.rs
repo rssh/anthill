@@ -609,7 +609,7 @@ pub(crate) fn resolve_bridge_requirements_supplied(
                 }
             }
         };
-        let result = resolve_with_rung(kb, &goal, &scope, rung);
+        let result = resolve_in_empty_scope(kb, &goal, rung);
         // WI-20260922-ATFGH — A TIE AT A TYPE-CARRIED SLOT IS WI-456'S CASE, NOT WI-855'S:
         // several providers answer the goal, and the value carries no type argument to
         // say which one its construction chose, so the tie says only that the arguments
