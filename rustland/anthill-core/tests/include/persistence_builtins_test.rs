@@ -406,6 +406,120 @@ fn update_via_builtin_replaces_a_mirrored_row_and_returns_a_fresh_reference() {
     );
 }
 
+/// A store with a `FileStore` mirrored under `root`, over a `Bar(value: Int64)` declared
+/// `non_monotone`, and the function that builds `Bar(value: n)`.
+fn non_monotone_bar_store(root: &std::path::Path, ns: &str) -> (Interpreter, Value) {
+    let src = format!(
+        "namespace test.{ns}\n  \
+        import anthill.reflect.{{fact_monotonicity, non_monotone}}\n  \
+        entity Bar(value: Int64)\n  \
+        rule fact_monotonicity(Bar) <=> non_monotone() @[simp]\nend\n"
+    );
+    let mut interp = interp_for(&src);
+    let store_val = filestore_value(&mut interp, root.to_str().unwrap());
+    let key = interp.store_canonical_key(&store_val).expect("canonical key");
+    interp
+        .register_mirror(
+            key,
+            Box::new(FileStore::new(root.to_path_buf(), FileConvention::Flat)),
+            &[],
+        )
+        .expect("a file store declares no intrinsic policy, so nothing is resolved");
+    (interp, store_val)
+}
+
+fn bar_of(interp: &mut Interpreter, ns: &str, n: i64) -> Value {
+    let bar = interp
+        .kb()
+        .try_resolve_symbol(&format!("test.{ns}.Bar"))
+        .expect("declared Bar resolves");
+    let value = interp.kb_mut().intern("value");
+    Value::Entity {
+        functor: bar,
+        pos: Vec::new().into(),
+        named: vec![(value, Value::Int(n))].into(),
+    }
+}
+
+/// A row persisted and retracted before one flush is not written: the retract names the
+/// row by its content, and the buffered write is that content. FAILS on the parent, where
+/// the retract was applied to the file before the buffered write was appended, so the row
+/// was written.
+#[test]
+fn a_row_persisted_and_retracted_in_one_flush_is_not_written() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (mut interp, store) = non_monotone_bar_store(dir.path(), "onefluret");
+    let row = bar_of(&mut interp, "onefluret", 1);
+    let stored = interp
+        .call("anthill.persistence.Store.persist", &[store.clone(), row, Value::Unit])
+        .expect("persist");
+    let reference = stored_reference(&mut interp, &stored);
+    let retracted = interp
+        .call("anthill.persistence.NonMonotonicStore.retract", &[store.clone(), reference])
+        .expect("retract");
+    assert!(matches!(retracted, Value::Bool(true)));
+    interp
+        .call("anthill.persistence.Store.flush", &[store, Value::Unit])
+        .expect("flush");
+    let text = std::fs::read_to_string(dir.path().join("facts.anthill")).unwrap_or_default();
+    assert!(!text.contains("Bar(value: 1)"), "the retracted row was written:\n{text}");
+}
+
+/// An update in the flush that persisted its row replaces that row. FAILS on the parent,
+/// where both rows were written.
+#[test]
+fn an_update_in_the_flush_that_persisted_its_row_replaces_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (mut interp, store) = non_monotone_bar_store(dir.path(), "oneflupd");
+    let row = bar_of(&mut interp, "oneflupd", 1);
+    let stored = interp
+        .call("anthill.persistence.Store.persist", &[store.clone(), row, Value::Unit])
+        .expect("persist");
+    let reference = stored_reference(&mut interp, &stored);
+    let replacement = bar_of(&mut interp, "oneflupd", 2);
+    interp
+        .call(
+            "anthill.persistence.NonMonotonicStore.update",
+            &[store.clone(), reference, replacement],
+        )
+        .expect("update");
+    interp
+        .call("anthill.persistence.Store.flush", &[store, Value::Unit])
+        .expect("flush");
+    let text = std::fs::read_to_string(dir.path().join("facts.anthill")).expect("read facts");
+    assert!(
+        text.contains("Bar(value: 2)") && !text.contains("Bar(value: 1)"),
+        "got:\n{text}"
+    );
+}
+
+/// The control: a row on disk before the flush that retracts it is dropped, and one
+/// persisted again after its retract is written once. Passes on the parent, by design.
+#[test]
+fn a_row_retracted_then_persisted_again_is_written_once() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (mut interp, store) = non_monotone_bar_store(dir.path(), "retagain");
+    let row = bar_of(&mut interp, "retagain", 1);
+    let stored = interp
+        .call("anthill.persistence.Store.persist", &[store.clone(), row.clone(), Value::Unit])
+        .expect("persist");
+    interp
+        .call("anthill.persistence.Store.flush", &[store.clone(), Value::Unit])
+        .expect("flush");
+    let reference = stored_reference(&mut interp, &stored);
+    interp
+        .call("anthill.persistence.NonMonotonicStore.retract", &[store.clone(), reference])
+        .expect("retract");
+    interp
+        .call("anthill.persistence.Store.persist", &[store.clone(), row, Value::Unit])
+        .expect("persist again");
+    interp
+        .call("anthill.persistence.Store.flush", &[store, Value::Unit])
+        .expect("flush");
+    let text = std::fs::read_to_string(dir.path().join("facts.anthill")).expect("read facts");
+    assert_eq!(text.matches("Bar(value: 1)").count(), 1, "got:\n{text}");
+}
+
 #[test]
 fn store_canonical_key_is_stable() {
     // Two anthill values that should hash to the same store handle —

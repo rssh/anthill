@@ -854,8 +854,7 @@ impl KnowledgeBase {
     ) -> Result<Option<StoredRow>, ExtentError> {
         self.check_fact_mutation_target(&row)
             .map_err(|e| ExtentError::Backend(e.to_string()))?;
-        let term = self
-            .alloc_from_value(&row)
+        let term = crate::kb::node_occurrence::value_to_term(self, &row)
             .map_err(|e| ExtentError::Backend(format!("persistent assert: lower row: {e:?}")))?;
         let sort = self.fact_trigger_sort(&row).or(sort_hint).ok_or_else(|| {
             ExtentError::Backend(
@@ -1168,8 +1167,7 @@ impl KnowledgeBase {
         }
         self.check_fact_mutation_target(&row)
             .map_err(|e| ExtentError::Backend(e.to_string()))?;
-        let term = self
-            .alloc_from_value(&row)
+        let term = crate::kb::node_occurrence::value_to_term(self, &row)
             .map_err(|e| ExtentError::Backend(format!("persistent assert: lower row: {e:?}")))?;
         let (clause_kind, domain) = self.resident_fact_keys(functor);
         let rule = self.assert_fact(term, clause_kind, domain, None);
@@ -1259,8 +1257,7 @@ impl KnowledgeBase {
         }
         self.check_fact_mutation_target(&row)
             .map_err(|e| ExtentError::Backend(e.to_string()))?;
-        let term = self
-            .alloc_from_value(&row)
+        let term = crate::kb::node_occurrence::value_to_term(self, &row)
             .map_err(|e| ExtentError::Backend(format!("persistent persist: lower row: {e:?}")))?;
         // The SAME pair the mirror is handed and the resident shadow is asserted under,
         // so the durable write and the in-memory one agree by construction.
@@ -1328,7 +1325,7 @@ impl KnowledgeBase {
                 .map_err(|e| ExtentError::Backend(e.to_string()))?;
             self.check_fact_mutation_target(&new)
                 .map_err(|e| ExtentError::Backend(e.to_string()))?;
-            let term = self.alloc_from_value(&new).map_err(|e| {
+            let term = crate::kb::node_occurrence::value_to_term(self, &new).map_err(|e| {
                 ExtentError::Backend(format!("persistent update: lower row: {e:?}"))
             })?;
             let clause_kind = self.rule_clause_kind(rule);

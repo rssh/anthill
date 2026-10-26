@@ -428,16 +428,17 @@ namespace anthill.reflect
   -- carrier is never spelled as `[]` (WI-20260827-W1YKH).
   operation term_list_items(t: Term) -> List[T = Term] @[host_implemented]
 
-  -- Materialize a `Term::Fn` whose functor is a known constructor into a
+  -- Materialize an application of a known constructor into a
   -- typed `Value::Entity`, using the KB's `entity_field_types` index to
   -- recover the declared fields. Literal field values become typed scalars
   -- (`Value::Int`/`Str`/`Bool`/`Float`); nested constructor terms recurse;
   -- unhandled shapes (variables, refs to non-constructors) stay as
   -- `Value::Term` so the caller can drill in further.
   --
-  -- Returns `none()` when `t` is not a `Fn`, when its functor isn't a
-  -- registered constructor, or when no field-types entry exists for that
-  -- functor.
+  -- Returns `none()` when `t` is not an application, when its functor isn't a
+  -- registered constructor, when no field-types entry exists for that
+  -- functor, when `t` carries an argument the constructor does not declare,
+  -- or when `t` is a tuple. `t` is read on whatever carrier it rides.
   --
   -- The return parameter `E` is the caller-side expected entity sort; this
   -- builtin doesn't type-check that the recovered entity matches `E`. The
@@ -496,7 +497,7 @@ namespace anthill.reflect
   -- occurrences — a reused argument, a lambda body — cannot be a `Term`.
   operation make_apply(name: String, args: List[NodeOccurrence], from: NodeOccurrence) -> NodeOccurrence @[host_implemented]
 
-  -- Return a fresh Term::Fn cloned from `t` with the named arg whose
+  -- Return the application `t` with the named arg whose
   -- short name matches `name` replaced by `value`. Used by status-
   -- transition commands to swap one field on a WorkItem (e.g. `status`)
   -- without re-stating every other field on the anthill side.

@@ -177,9 +177,12 @@ end
         );
     }
 
+    let handle = interp
+        .call("anthill.prelude.Map.empty", &[])
+        .expect("Map.empty");
     assert!(
         interp
-            .call("anthill.reflect.term_as_entity", &[Value::Unit])
+            .call("anthill.reflect.term_as_entity", &[handle])
             .is_err(),
         "a value with no term reading is a caller mistake, not an absent entity"
     );

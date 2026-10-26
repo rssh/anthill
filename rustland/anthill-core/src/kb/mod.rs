@@ -17361,8 +17361,8 @@ end
             assert_ne!(face_ref, fn0(&mut kb, c), "{qn}");
             assert!(!term_view::views_structurally_equal(&kb, &face_ref, &c_ref), "{qn}: comparator");
             assert_ne!(
-                MapKey::try_from_value(&kb, &Value::term(face_ref)),
-                MapKey::try_from_value(&kb, &Value::term(c_ref)),
+                MapKey::of_value(&kb, &Value::term(face_ref)),
+                MapKey::of_value(&kb, &Value::term(c_ref)),
                 "{qn}: map key"
             );
 

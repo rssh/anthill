@@ -48,6 +48,9 @@ pub enum FileConvention {
 struct PendingWrite {
     path: PathBuf,
     text: String,
+    /// The written fact — what a later retract in the same flush names it by. A term is
+    /// hash-consed, so its id is its content.
+    fact: TermId,
 }
 
 struct PendingRetract {
@@ -118,7 +121,7 @@ impl Store for FileStore {
     ) -> Result<(), PersistenceError> {
         let path = self.fact_path(kb, clause_kind, domain);
         let text = print::print_fact(kb, fact, meta);
-        self.pending_writes.push(PendingWrite { path, text });
+        self.pending_writes.push(PendingWrite { path, text, fact });
         Ok(())
     }
 
@@ -131,6 +134,11 @@ impl Store for FileStore {
         let domain = kb.rule_domain(id);
         let path = self.fact_path(kb, clause_kind, domain);
         let head_canonical = print::TermPrinter::new(kb).print_term(head);
+        // A retract names a row by its content, so it removes a write of that content
+        // buffered earlier in this flush too: the flush applies retracts to the file
+        // and appends the writes after, which would otherwise write the retracted row.
+        self.pending_writes
+            .retain(|w| w.path != path || w.fact != head);
         self.pending_retracts.push(PendingRetract {
             path,
             head_canonical,

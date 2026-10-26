@@ -136,36 +136,14 @@ end
         )
         .expect("replace_named_arg");
 
-    let new_term_id = match result {
-        Value::Term { id: tid, .. } => tid,
-        other => panic!("expected Term, got {other:?}"),
+    // Read the result on whatever carrier it rides: `snd` is now 99, `fst` still 1.
+    use anthill_core::kb::term_view::TermView;
+    let field = |name: &str| {
+        result
+            .named_field(interp.kb(), name)
+            .and_then(|f| f.to_value().literal_int64(interp.kb()))
+            .unwrap_or_else(|| panic!("{name}: no Int64 field in {result:?}"))
     };
-
-    // Walk the new term and confirm `snd` is now 99 while `fst` still 1.
-    let term = interp.kb().get_term(new_term_id).clone();
-    match term {
-        Term::Fn { named_args, .. } => {
-            let snd = named_args
-                .iter()
-                .find(|(s, _)| interp.kb().local_name_of(*s) == "snd")
-                .map(|(_, t)| *t)
-                .expect("snd field");
-            let fst = named_args
-                .iter()
-                .find(|(s, _)| interp.kb().local_name_of(*s) == "fst")
-                .map(|(_, t)| *t)
-                .expect("fst field");
-            assert!(
-                matches!(interp.kb().get_term(snd), Term::Const(Literal::Int(99))),
-                "snd should be 99, got {:?}",
-                interp.kb().get_term(snd)
-            );
-            assert!(
-                matches!(interp.kb().get_term(fst), Term::Const(Literal::Int(1))),
-                "fst should still be 1, got {:?}",
-                interp.kb().get_term(fst)
-            );
-        }
-        other => panic!("expected Fn term, got {other:?}"),
-    }
+    assert_eq!(field("snd"), 99, "snd should be 99");
+    assert_eq!(field("fst"), 1, "fst should still be 1");
 }

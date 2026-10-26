@@ -1956,6 +1956,8 @@ mod wi_p7vp4_rule_body_requirements_test;
 mod wi_0rrqp_clause_typed_through_constructor_test;
 #[path = "include/wi_wf14z_clause_typed_as_a_whole_test.rs"]
 mod wi_wf14z_clause_typed_as_a_whole_test;
+#[path = "include/wi_qj6x1_a_builtin_judges_the_value_test.rs"]
+mod wi_qj6x1_a_builtin_judges_the_value_test;
 #[path = "include/wi_r1w5a_call_typed_as_an_operation_body_test.rs"]
 mod wi_r1w5a_call_typed_as_an_operation_body_test;
 #[path = "include/wi_r1w5a_effectful_call_refused_test.rs"]

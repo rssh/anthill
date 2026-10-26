@@ -4956,47 +4956,29 @@ fn term_as_int(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalEr
 }
 
 /// `anthill.reflect.term_as_entity(t: Term) -> Option[T = ?E]`.
-/// Decodes a `Term::Fn` whose functor is a registered constructor into a
-/// typed `Value::Entity`, using `KnowledgeBase::entity_field_types` to
-/// recover declared fields. Pairs with `term_as_string` / `term_as_sort`
-/// as the entity-decoder side of the family.
+/// Decodes a term whose functor is a registered constructor into a typed
+/// `Value::Entity`, using `KnowledgeBase::entity_field_types` to recover declared
+/// fields. Pairs with `term_as_string` / `term_as_sort` as the entity-decoder side of
+/// the family.
 ///
-/// Returns `none()` when `t` is not a `Fn`, when its functor isn't a
-/// registered constructor, or when no field-types entry exists for the
-/// functor. A `Value::Entity` input is the identity case — both
-/// representations inhabit the abstract `reflect.Term` via `TermView`.
+/// Returns `none()` when `t` is not an application, when its functor isn't a
+/// registered constructor, or when no field-types entry exists for the functor.
+///
+/// JUDGED BY THE VALUE: every carrier with a term reading ([`reads_as_term`]) is
+/// decoded by the one reader, [`materialize_entity`], which reads through `TermView` —
+/// an entity an operation built, a tuple, a literal, a name, a variable, a fact's term
+/// or an occurrence alike, so a tuple answers `none()` as a literal does. A value with
+/// no term reading (a closure, a runtime handle) is refused loudly rather than answered
+/// `none()`: it is a caller mistake, not an absent entity.
 fn term_as_entity(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [arg] = expect_args::<1>("term_as_entity", args)?;
     let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
     let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
     let value_key = interp.kb.intern("value");
-
-    // A `Value::Node` occurrence is admitted alongside `Value::Term` — this doc's
-    // own claim ("both representations inhabit the abstract `reflect.Term` via
-    // `TermView`") that the carrier match used to contradict, and which
-    // `materialize_entity` can now honour because it reads through `TermView`
-    // (WI-20260827-2YHZ3). A NATIVE scalar is admitted since WI-20260907-VM9Q7, because
-    // an answered literal now arrives on one: `Substitution.lookup` of a fact-bound `?x`
-    // hands out `Value::Int(7)` where it handed out the hash-consed `Term::Const(7)`, and
-    // the two must answer the same `none()`. Named variant by variant rather than judged
-    // by `reads_as_term`: that predicate also admits a `Var` and a `SymbolRef` and
-    // refuses an `Opaque`-headed occurrence, which would move this op's contract in
-    // directions nothing asked for. A carrier that is NOT a term still refuses LOUDLY
-    // rather than falling through to `none()`: a closure is a caller mistake, not an
-    // absent entity.
-    let materialized: Option<Value> = match arg {
-        Value::Entity { .. } => Some(arg),
-        Value::Term { .. }
-        | Value::Node(_)
-        | Value::Int(_)
-        | Value::BigInt(_)
-        | Value::Float(_)
-        | Value::Bool(_)
-        | Value::Str(_) => materialize_entity(interp, &arg),
-        other => return Err(type_mismatch("Term", &other, None)),
-    };
-
-    Ok(match materialized {
+    if !reads_as_term(&interp.kb, &arg) {
+        return Err(type_mismatch("Term", &arg, None));
+    }
+    Ok(match materialize_entity(interp, &arg) {
         Some(value) => Value::Entity {
             functor: some_sym,
             pos: Vec::new().into(),
@@ -5064,33 +5046,29 @@ fn materialize_entity(interp: &mut Interpreter, v: &Value) -> Option<Value> {
             .collect();
         (functor, pos, named)
     };
-    // Resolve `functor` to the canonical Symbol that owns the
-    // `entity_field_types` entry. Free-standing entities (declared at
-    // namespace level rather than `sort … { entity X(...) }`) register
-    // fields but no `entity_parent` — `WorkItem` in
-    // `anthill-todo/domain.anthill` is the prototypical case — so the
-    // probe keys off `entity_field_types`, not `strict_parent_sort`.
-    // The last-resort scan covers a functor that is still an unqualified
-    // short name.
-    let canonical = if interp.kb.entity_field_types(functor).is_some() {
-        functor
-    } else {
-        let short_name = interp.kb.local_name_of(functor).to_string();
-        interp
-            .kb
-            .symbols
-            .by_qualified_name
-            .iter()
-            .find(|(qname, &sym)| {
-                qname.rsplit('.').next() == Some(short_name.as_str())
-                    && interp.kb.entity_field_types(sym).is_some()
-            })
-            .map(|(_, &sym)| sym)?
-    };
+    // A TUPLE IS NO ENTITY. `TupleLiteral` is declared as the reflect form a tuple
+    // reads as, with no fields, so decoding one would answer `some(TupleLiteral())`
+    // and drop its components.
+    if interp.kb.is_ordered_product_functor(functor) {
+        return None;
+    }
+    // The probe keys off `entity_field_types`, not `strict_parent_sort`: a free-standing
+    // entity (declared at namespace level rather than in a `sort`) registers fields but no
+    // `entity_parent` — `WorkItem` in `anthill-todo/domain.anthill` is the prototypical
+    // case. A functor with no entry is no entity.
     // WI-342: field types are carrier-agnostic `Value`. Eval only inspects them
     // to default optional fields (see `is_option_type` below); a denoted-bearing
     // (Value::Node) field type is never an `Option`.
-    let field_types: Vec<(Symbol, Value)> = interp.kb.entity_field_types(canonical)?.to_vec();
+    let field_types: Vec<(Symbol, Value)> = interp.kb.entity_field_types(functor)?.to_vec();
+    // An argument the entity does not declare makes the application another term, not
+    // this entity: decoding it would drop that argument without a word.
+    if pos_args.len() > field_types.len()
+        || named_args
+            .iter()
+            .any(|(k, _)| !field_types.iter().any(|(f, _)| f == k))
+    {
+        return None;
+    }
     // Default missing `Option[T = …]` fields to `none()` — on-disk facts
     // omit optional named args (a `WorkItem` fact skips
     // `context`/`generates`/`requires_capability`) but the field index
@@ -5149,7 +5127,7 @@ fn materialize_entity(interp: &mut Interpreter, v: &Value) -> Option<Value> {
     }
 
     Some(Value::Entity {
-        functor: canonical,
+        functor,
         pos: Vec::new().into(),
         named: named.into(),
     })
@@ -5385,10 +5363,28 @@ fn refuse_runtime_account(
     })
 }
 
+/// A builder's `Term` argument: a value with a term reading ([`reads_as_term`]) that
+/// holds no opaque value at any depth, since what is built from it is a term. Read
+/// through the view, not lowered, so the argument stays on its own carrier.
+fn expect_term_operand(
+    kb: &crate::kb::KnowledgeBase,
+    v: &Value,
+    op: &'static str,
+) -> Result<(), EvalError> {
+    use crate::kb::term_view::TermView;
+    if reads_as_term(kb, v) && !v.bears_opaque(kb) {
+        return Ok(());
+    }
+    Err(EvalError::TypeMismatch {
+        expected: "Term",
+        got: format!("{} (passed to `{op}`)", v.type_name()),
+    })
+}
+
 /// `anthill.reflect.make_fn(name: String, args: List[Term]) -> Term`.
-/// Build a `Term::Fn { functor, pos_args, named_args = [] }` whose functor
-/// is resolved through [`resolve_host_name`]. Companion to `fresh_var`: anthill
-/// code constructs pattern goals like `claimable(?id, ?desc)` by
+/// Build the application `functor(args…)` whose functor is resolved through
+/// [`resolve_host_name`]. Companion to `fresh_var`: anthill code constructs pattern
+/// goals like `claimable(?id, ?desc)` by
 /// `make_fn("anthill.stage0.workflow.claimable", cons(id_var, cons(desc_var, nil())))`.
 ///
 /// The expression-level alternative — writing the constructor call inline
@@ -5396,40 +5392,52 @@ fn refuse_runtime_account(
 /// Rule-head functors aren't (rule heads are not scanned as definitions),
 /// which is why the `cmd_next` port has to construct its goal through this
 /// builtin rather than calling `claimable(...)` directly.
+///
+/// THE ARGUMENTS ARE READ, NOT LOWERED: the application is a `Value::Entity` holding
+/// each argument on the carrier it arrived on, so an entity or a tuple an operation
+/// built is an argument as its fact-read twin is, and nothing is interned.
+///
+/// A DECLARED CONSTRUCTOR'S ARGUMENTS ARE NAMED by its fields, in order, as the loader
+/// and the `Value → Term` boundary name them, so `make_fn("…Box.bx", [1])` is the value
+/// `Box.bx(1)` builds, on every reading. More arguments than the constructor declares is
+/// a type error, not a term no reader decodes. A functor with no fields (a rule head's)
+/// keeps its arguments positional.
 fn reflect_make_fn(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    use crate::kb::term::{Term, TermId};
+    use crate::kb::resolve::PositionalPlan;
     let [name_arg, args_arg] = expect_args::<2>("make_fn", args)?;
     let name = str_operand(interp.kb(), &name_arg)?.into_owned();
     let functor = resolve_host_name(interp, "make_fn", &name)?;
     refuse_runtime_account(interp, "make_fn", functor)?;
 
     let elems: Vec<Value> = reflect_cons_to_vec(interp, args_arg, "make_fn", "List[Term]", Ok)?;
-    let mut pos_vec: Vec<TermId> = Vec::with_capacity(elems.len());
-    for v in elems {
-        pos_vec.push(match v {
-            Value::Term { id, .. } => id,
-            // WI-20260907-VM9Q7 — a NATIVE scalar is a `Term::Const`'s twin, and since
-            // VM9Q7 it is how an answered literal arrives: `Substitution.lookup` of a
-            // fact-bound var hands out `Value::Str("alice")` where it handed out the
-            // hash-consed `Term::Const`, and building a follow-up goal from it must not
-            // become a type error. Lowered through `alloc_from_value`'s leaf arms.
-            Value::Int(_) | Value::BigInt(_) | Value::Float(_) | Value::Bool(_) | Value::Str(_) => {
-                interp.kb.alloc_from_value(&v).map_err(|e| EvalError::TypeMismatch {
-                    expected: "Term",
-                    got: format!("{} (passed to `make_fn`: {e:?})", v.type_name()),
-                })?
-            }
-            other => return Err(type_mismatch("Term", &other, None)),
-        });
+    for v in &elems {
+        expect_term_operand(interp.kb(), v, "make_fn")?;
     }
-
-    let pos_args = smallvec::SmallVec::from_vec(pos_vec);
-    let tid = interp.kb.alloc(Term::Fn {
+    let (pos, named): (Vec<Value>, Vec<(crate::intern::Symbol, Value)>) =
+        match interp.kb.positional_to_named_plan(functor, &[], elems.len()) {
+            PositionalPlan::Skip => (elems, Vec::new()),
+            PositionalPlan::Assign(fields) => (Vec::new(), fields.into_iter().zip(elems).collect()),
+            PositionalPlan::OverArity { declared, .. } => {
+                return Err(EvalError::TypeMismatch {
+                    expected: "no more arguments than the constructor declares",
+                    got: format!(
+                        "{} arguments passed to `make_fn` for `{name}`, which declares {} ({})",
+                        elems.len(),
+                        declared.len(),
+                        declared
+                            .iter()
+                            .map(|s| interp.kb.local_name_of(*s).to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                })
+            }
+        };
+    Ok(Value::Entity {
         functor,
-        pos_args,
-        named_args: smallvec::SmallVec::new(),
-    });
-    Ok(Value::term(tid))
+        pos: pos.into(),
+        named: named.into(),
+    })
 }
 
 /// WI-722 (proposal 043.1) — `anthill.reflect.make_apply(name: String,
@@ -5660,64 +5668,72 @@ fn reflect_reject(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Eva
 }
 
 /// `anthill.reflect.replace_named_arg(t: Term, name: String, value: Term)
-/// -> Term`. Return a fresh `Term::Fn` cloned from `t` with the named arg
-/// matching `name` replaced by `value`. If `t` has no such named arg the
-/// result is structurally equal to `t`.
+/// -> Term`. Return the application `t` with the named arg matching `name` replaced by
+/// `value`. If `t` has no such named arg the result is structurally equal to `t`.
 ///
 /// Used by status-transition commands to swap one field on a WorkItem
 /// fact (e.g. `status`) without re-typing every other field on the
 /// anthill side. Field-name comparison is string-based — the loader may
 /// qualify field symbols, but the canonical short name is what callers
 /// pass in.
+///
+/// `t` IS READ THROUGH THE VIEW and the result is a `Value::Entity` holding every
+/// argument on its own carrier, so an entity an operation built, a fact's term and an
+/// occurrence are each replaced in, and nothing is interned. A `t` that is no
+/// application — a literal, a variable — is a type error; an unresolved identifier
+/// has no arguments and comes back as itself.
 fn reflect_replace_named_arg(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    use crate::kb::term::Term;
+    use crate::kb::term_view::{TermView, ViewHead};
     let [term_arg, name_arg, value_arg] = expect_args::<3>("replace_named_arg", args)?;
-    let tid = match &term_arg {
-        Value::Term { id: t, .. } => *t,
-        other => return Err(type_mismatch("Term", other, None)),
-    };
+    expect_term_operand(interp.kb(), &term_arg, "replace_named_arg")?;
+    expect_term_operand(interp.kb(), &value_arg, "replace_named_arg")?;
     let name = str_operand(interp.kb(), &name_arg)?.into_owned();
-    let new_val_tid = interp
-        .kb
-        .alloc_from_value(&value_arg)
-        .map_err(|e| EvalError::Internal(format!("replace_named_arg: lower value: {e:?}")))?;
 
-    let (functor, pos_args, mut named_args) = match interp.kb.get_term(tid) {
-        Term::Fn {
-            functor,
-            pos_args,
-            named_args,
-        } => (*functor, pos_args.clone(), named_args.clone()),
-        // WI-20260902-CZJ2N — a NULLARY application is stored bare, and this
-        // function's own contract covers it: "if `t` has no such named arg the result
-        // is structurally equal to `t`". A term with NO named args trivially has no
-        // such arg, so the answer is `t` — not an `Internal` error. `reflect_make_fn`
-        // is a live producer (an empty `List[Term]` of named args), so this is
-        // reachable from anthill code and not only from the canon.
-        Term::Ref(s) | Term::Ident(s) => (
-            *s,
-            smallvec::SmallVec::new(),
-            smallvec::SmallVec::<[(crate::intern::Symbol, crate::kb::term::TermId); 2]>::new(),
-        ),
+    let kb = interp.kb();
+    let (functor, pos_arity) = match term_arg.head(kb) {
+        ViewHead::Functor {
+            functor, pos_arity, ..
+        } => (functor, pos_arity),
+        ViewHead::Ident(_) => return Ok(term_arg),
         _ => {
-            return Err(EvalError::Internal(format!(
-                "replace_named_arg: expected an application term, got {:?}",
-                interp.kb.get_term(tid)
-            )))
+            return Err(EvalError::TypeMismatch {
+                expected: "an application term",
+                got: format!("{} (passed to `replace_named_arg`)", term_arg.type_name()),
+            })
         }
     };
-    refuse_runtime_account(interp, "replace_named_arg", functor)?;
-    for entry in named_args.iter_mut() {
-        if interp.kb.local_name_of(entry.0) == name {
-            entry.1 = new_val_tid;
-        }
+    let mut pos: Vec<Value> = Vec::with_capacity(pos_arity);
+    for i in 0..pos_arity {
+        let arg = term_arg.pos_arg(kb, i).ok_or_else(|| {
+            EvalError::Internal(format!(
+                "replace_named_arg: positional argument {i} of {pos_arity} does not read back"
+            ))
+        })?;
+        pos.push(arg.to_value());
     }
-    let new_term = interp.kb.alloc(Term::Fn {
+    let mut named: Vec<(crate::intern::Symbol, Value)> = Vec::new();
+    for key in term_arg.named_keys(kb) {
+        let arg = if kb.local_name_of(key) == name {
+            value_arg.clone()
+        } else {
+            term_arg
+                .named_arg(kb, key)
+                .ok_or_else(|| {
+                    EvalError::Internal(format!(
+                        "replace_named_arg: named argument `{}` does not read back",
+                        kb.local_name_of(key)
+                    ))
+                })?
+                .to_value()
+        };
+        named.push((key, arg));
+    }
+    refuse_runtime_account(interp, "replace_named_arg", functor)?;
+    Ok(Value::Entity {
         functor,
-        pos_args,
-        named_args,
-    });
-    Ok(Value::term(new_term))
+        pos: pos.into(),
+        named: named.into(),
+    })
 }
 
 /// `anthill.prelude.Int64.to_string(n: Int64) -> String`. Decimal repr, no
@@ -6587,22 +6603,15 @@ pub(crate) fn option_none(none_sym: crate::intern::Symbol) -> Value {
 
 /// The `MapKey` a builtin's key argument addresses, or the loud type error.
 ///
-/// One owner for the four `Map` builtins, which all ask the same question and
-/// used to spell it two different ways (one `ok_or_else`, three four-line
-/// `match`es). WI-1016 had to thread a `&KnowledgeBase` through every one of
-/// them — the reader canonicalizes the two carriers of a symbol — which is
-/// the second time this sequence was edited in lockstep.
-///
-/// WI-20260827-3ZNBC took the `&mut`, so a structural OCCURRENCE key can be interned
-/// to the term it denotes and address the SAME slot its `Value::Term` twin does. See
-/// [`MapKey::of_value_interning`](super::map_arena::MapKey::of_value_interning) for
-/// why that is not a store write on any path that used to work.
+/// One owner for the four `Map` builtins, which all ask the same question. The key is
+/// read through the view ([`MapKey::of_value`](super::map_arena::MapKey::of_value)), so
+/// one value addresses one slot on every carrier and nothing is interned.
 fn map_key(
-    kb: &mut crate::kb::KnowledgeBase,
+    kb: &crate::kb::KnowledgeBase,
     v: &Value,
 ) -> Result<super::map_arena::MapKey, EvalError> {
-    super::map_arena::MapKey::of_value_interning(kb, v).ok_or_else(|| EvalError::TypeMismatch {
-        expected: "Map key (Int / Bool / String / Symbol / Term)",
+    super::map_arena::MapKey::of_value(kb, v).ok_or_else(|| EvalError::TypeMismatch {
+        expected: "Map key (a value with a structure, not a variable or a runtime handle)",
         got: v.type_name().to_string(),
     })
 }
@@ -6619,7 +6628,7 @@ fn map_put(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError>
         Value::Map(h) => h,
         other => return Err(type_mismatch("Map", &other, None)),
     };
-    let key = map_key(&mut interp.kb, &k_arg)?;
+    let key = map_key(&interp.kb, &k_arg)?;
     let mut body = handle.clone_body();
     body.insert(key, v_arg);
     let new_handle = interp.alloc_map(body);
@@ -6635,7 +6644,7 @@ fn map_get(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError>
         Value::Map(h) => h,
         other => return Err(type_mismatch("Map", &other, None)),
     };
-    let key = map_key(&mut interp.kb, &k_arg)?;
+    let key = map_key(&interp.kb, &k_arg)?;
     let found: Option<Value> = handle.with_body(|b| b.get(&key).cloned());
     Ok(match found {
         Some(v) => option_some(some_sym, value_key, v),
@@ -6649,7 +6658,7 @@ fn map_contains(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalE
         Value::Map(h) => h,
         other => return Err(type_mismatch("Map", &other, None)),
     };
-    let key = map_key(&mut interp.kb, &k_arg)?;
+    let key = map_key(&interp.kb, &k_arg)?;
     let present = handle.with_body(|b| b.contains_key(&key));
     Ok(Value::Bool(present))
 }
@@ -6660,7 +6669,7 @@ fn map_remove(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
         Value::Map(h) => h,
         other => return Err(type_mismatch("Map", &other, None)),
     };
-    let key = map_key(&mut interp.kb, &k_arg)?;
+    let key = map_key(&interp.kb, &k_arg)?;
     let mut body = handle.clone_body();
     // `shift_remove` preserves the order of the remaining entries — matches
     // anthill's user-visible semantics that iteration order reflects insertion
@@ -7001,10 +7010,9 @@ fn persistence_persist(interp: &mut Interpreter, args: &[Value]) -> Result<Value
     let [store_val, fact_val, _meta_val] = expect_args::<3>("persist", args)?;
     let key = interp.store_canonical_key(&store_val)?;
 
-    let fact_term = interp
-        .kb
-        .alloc_from_value(&fact_val)
-        .map_err(|e| EvalError::Internal(format!("persist: lower fact: {e:?}")))?;
+    // The store keeps a TERM, so the fact is lowered here — through the one total
+    // boundary, which reads every carrier a fact can arrive on, an occurrence included.
+    let fact_term = rb::expect_term(&mut interp.kb, &fact_val, "persist")?;
 
     // Proposal 053: refuse asserting a `constant` functor (loud). A monotone
     // (default) or non_monotone functor asserts freely. A fact head must have a
@@ -7288,10 +7296,8 @@ fn persistence_retrieve(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
     let [store_val, pattern_val] = expect_args::<2>("retrieve", args)?;
     let key = interp.store_canonical_key(&store_val)?;
 
-    let pattern_term = interp
-        .kb
-        .alloc_from_value(&pattern_val)
-        .map_err(|e| EvalError::Internal(format!("retrieve: lower pattern: {e:?}")))?;
+    // The store matches a TERM; lowered as `persist` lowers its fact.
+    let pattern_term = rb::expect_term(&mut interp.kb, &pattern_val, "retrieve")?;
 
     let outcome = {
         let store = interp.kb.mirror(&key).ok_or_else(|| {

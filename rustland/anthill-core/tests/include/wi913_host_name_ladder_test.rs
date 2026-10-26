@@ -48,9 +48,13 @@ use crate::common::{interp_for, load_kb_with};
 
 const FIXTURE: &str = r#"
 namespace test.wi913
+  import anthill.prelude.Int64
   sort Color
     entity red
     entity green
+  end
+  sort Mark
+    entity mark(v: Int64)
   end
 end
 "#;
@@ -82,14 +86,12 @@ fn sld_lookup_symbol(kb: &mut KnowledgeBase, name: &str) -> Option<String> {
     Some(kb.qualified_name_of(sym).to_string())
 }
 
-/// The functor symbol of a `Value::Term` holding a `Term::Fn`, by qualified name.
+/// The functor of an application, by qualified name, read on whatever carrier it rides.
 fn term_fn_functor_name(interp: &Interpreter, v: &Value) -> String {
-    let Value::Term { id, .. } = v else {
-        panic!("expected a Value::Term, got {v:?}");
-    };
-    match interp.kb().get_term(*id) {
-        Term::Fn { functor, .. } => interp.kb().qualified_name_of(*functor).to_string(),
-        other => panic!("expected a Term::Fn, got {other:?}"),
+    use anthill_core::kb::term_view::{TermView, ViewHead};
+    match v.head(interp.kb()) {
+        ViewHead::Functor { functor, .. } => interp.kb().qualified_name_of(functor).to_string(),
+        other => panic!("expected an application, got {other:?} for {v:?}"),
     }
 }
 
@@ -235,12 +237,12 @@ fn make_fn_still_resolves_a_qualified_functor() {
     let built = interp
         .call(
             "anthill.reflect.make_fn",
-            &[Value::Str("test.wi913.Color.red".into()), args],
+            &[Value::Str("test.wi913.Mark.mark".into()), args],
         )
         .expect("make_fn accepts a qualified name");
     assert_eq!(
         term_fn_functor_name(&interp, &built),
-        "test.wi913.Color.red",
+        "test.wi913.Mark.mark",
     );
 }
 
@@ -257,22 +259,30 @@ fn make_fn_takes_a_native_literal_as_its_term_twin() {
         let built = interp
             .call(
                 "anthill.reflect.make_fn",
-                &[Value::Str("test.wi913.Color.red".into()), args],
+                &[Value::Str("test.wi913.Mark.mark".into()), args],
             )
             .unwrap_or_else(|e| panic!("{native:?} is a term's literal, not a refusal: {e}"));
-        let Value::Term { id, .. } = built else {
-            panic!("make_fn builds a Value::Term, got {built:?}");
-        };
-        let arg = match interp.kb().get_term(id) {
-            Term::Fn { pos_args, .. } if pos_args.len() == 1 => pos_args[0],
-            other => panic!("expected a one-argument Term::Fn, got {other:?}"),
-        };
         let want = match &native {
             Value::Str(s) => Term::Const(Literal::String(s.clone())),
             Value::Int(n) => Term::Const(Literal::Int(*n)),
             _ => unreachable!(),
         };
-        assert_eq!(interp.kb().get_term(arg), &want, "{native:?} lowers to its Term::Const");
+        let twin = Value::term(interp.kb_mut().alloc(want));
+        let twin_args = one_arg_list(&mut interp, twin);
+        let built_from_twin = interp
+            .call(
+                "anthill.reflect.make_fn",
+                &[Value::Str("test.wi913.Mark.mark".into()), twin_args],
+            )
+            .expect("make_fn takes the Term::Const twin");
+        assert!(
+            anthill_core::kb::term_view::views_structurally_equal(
+                interp.kb(),
+                &built,
+                &built_from_twin
+            ),
+            "{native:?} builds the term its Term::Const twin builds: {built:?} vs {built_from_twin:?}"
+        );
     }
 }
 
