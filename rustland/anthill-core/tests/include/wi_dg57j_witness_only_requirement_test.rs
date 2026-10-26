@@ -123,7 +123,8 @@ fn the_tie_refusal(src: &str) -> String {
 /// The refusal's repair, whichever witness it names: `write` is what it says to write,
 /// cut where the provider's name starts.
 fn assert_advises(err: &str, opening: &str, write: &str, place: &str) {
-    let advice = format!("{opening} has no bracket list, so {write}dg57j.two.By");
+    let advice =
+        format!("{opening} cannot carry call-site type arguments, so {write}dg57j.two.By");
     assert!(err.contains(&advice) && err.contains(place), "expected `{advice}…{place}`: {err}");
 }
 

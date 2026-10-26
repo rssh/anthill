@@ -612,8 +612,8 @@ pub(super) fn tie_repair_advice(spec: &str, repair: &TieRepair) -> String {
                 ("", "")
             };
             format!(
-                " — they may coexist, so say which; {call}{position} has no bracket list, \
-                 so {what}{place} (or name another of them)"
+                " — they may coexist, so say which; {call}{position} cannot carry \
+                 call-site type arguments, so {what}{place} (or name another of them)"
             )
         }
         TieRepair::ValueDirected => ", and none can be named here: each is a CONCRETE \
