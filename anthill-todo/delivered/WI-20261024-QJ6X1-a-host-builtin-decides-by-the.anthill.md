@@ -3,9 +3,9 @@
 - id: WI-20261024-QJ6X1-a-host-builtin-decides-by-the
 - created: 2026-10-24T06:48:31Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-10-24T06:48:31Z
+- status_at: 2026-10-26T08:53:38Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
