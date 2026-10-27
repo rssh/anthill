@@ -333,7 +333,11 @@ pub(super) fn clause_defined_own_operation(kb: &KnowledgeBase, op_sym: Symbol) -
 ///     one either. A higher-kinded carrier is such a parameter: `sort Monad[M[T]]`'s
 ///     `map(m: M[A], …)` stands at `M` in no form [`signature_names_no_carrier`] reads, and
 ///     the value of `m` directs the dispatch (MEASURED: without this leg, every
-///     `Monad.map` over a `Result` was refused);
+///     `Monad.map` over a `Result` was refused). Only an argument at such a parameter
+///     directs it, and only to a provider, so a signature applying none, or a sort nothing
+///     provides, is held to this whatever the signature's own type parameters: a user
+///     effect's `Err2.reify[Rho, X, T1](body: () -> X @ {Err2[T1], Rho})` loaded and died
+///     `OperationBodyMissing`, with a provider of `Err2` declared and without;
 ///   * or its signature names the sort in its result alone, as the sort itself
 ///     ([`SignatureCarrier::ResultOnly`]): `Mon.unit(x: Int64) -> Self` in a `sort Mon`
 ///     with no parameter. `Self` in a sort is that sort, so the result names no provider
@@ -382,7 +386,13 @@ pub(super) fn unselectable_spec_operation_call(
         SignatureCarrier::NamesNone => false,
         SignatureCarrier::ResultOnly => true,
     };
-    if (dispatched || !result_only) && !signature_is_ground(kb, op_sym) {
+    let provided = spec_has_any_providers(kb, spec);
+    let directed = if result_only {
+        dispatched
+    } else {
+        provided && applies_higher_kinded_param(kb, op_sym, spec)
+    };
+    if directed && !signature_is_ground(kb, op_sym) {
         return None;
     }
     let spec_canon = kb.canonical_sort_sym(spec);
@@ -402,7 +412,35 @@ pub(super) fn unselectable_spec_operation_call(
         reached,
         clauses: kb.has_clauses_under(reached_canon) || kb.has_clauses_under(reached),
         result_only,
+        provided,
     })
+}
+
+/// Does a parameter or the result of `op` apply a higher-kinded parameter of `sort` — one with
+/// parameters of its own, `M` of `sort Monad[M[T]]` — anywhere in its type (`m: M[A]`, `ms:
+/// List[T = M[A]]`, `-> M[A]`), so that an argument's value, or the type expected of the
+/// result, can direct the call to a provider? MEASURED: `Cnt.count([some(1)])` over
+/// `count[A](ms: List[T = M[A]])` answers through `Option`'s provision.
+fn applies_higher_kinded_param(kb: &KnowledgeBase, op: Symbol, sort: Symbol) -> bool {
+    let Some(rec) = crate::kb::op_info::lookup_operation_info(kb, op) else {
+        return false;
+    };
+    let higher_kinded = |head: Symbol| {
+        let head = kb.canonical_sym(head);
+        kb.type_param_syms_of(sort).iter().any(|param| {
+            kb.canonical_sym(*param) == head && !kb.type_param_syms_of(*param).is_empty()
+        })
+    };
+    let probe = |te: &TypeExtractor| match te {
+        TypeExtractor::Parameterized { base, .. } | TypeExtractor::SortRef(base)
+            if higher_kinded(*base) =>
+        {
+            Some(true)
+        }
+        _ => None,
+    };
+    let applies = |ty: &Value| type_any_part(kb, ty, &probe);
+    rec.params.iter().any(|(_, ty)| applies(ty)) || applies(&rec.return_type)
 }
 
 /// WI-20260909-M8QWJ — nothing where a call of a member of `spec` is written supplies
@@ -454,6 +492,8 @@ pub(super) struct Unselectable {
     pub(super) reached: Symbol,
     pub(super) clauses: bool,
     pub(super) result_only: bool,
+    /// Some sort provides `spec`: where none does, no bracket names an instance either.
+    pub(super) provided: bool,
 }
 
 /// A CALL THAT NOTHING ELSE NAMES THE INSTANCE OF NAMES IT ITSELF (user, 2026-10-17):

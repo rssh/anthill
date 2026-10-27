@@ -181,7 +181,8 @@ fn a_host_mapped_namespace_operation_loads_and_runs() {
 const MYSPEC: &str = "  sort MySpec\n    sort T = ?\n    operation ping() -> Int64\n  end\n";
 
 /// (b) A body-less member of a sort that may be provided, called with no carrier and no
-/// `requires`: nothing can select a provider, so the call reaches `MySpec.ping` itself.
+/// `requires`: nothing can select a provider, so the call reaches `MySpec.ping` itself. With
+/// nothing providing `MySpec` the refusal says so, and no bracket is advised.
 #[test]
 fn a_spec_call_no_provider_can_be_selected_for_is_refused_at_the_call() {
     let errs = load_errors_of(&format!(
@@ -192,7 +193,7 @@ fn a_spec_call_no_provider_can_be_selected_for_is_refused_at_the_call() {
         &errs,
         &[
             "a call of `m8b.MySpec.ping` that nothing can run",
-            "no `requires m8b.MySpec[…]` is in scope",
+            "nothing provides `m8b.MySpec`",
         ],
         "an unselectable spec call",
     );

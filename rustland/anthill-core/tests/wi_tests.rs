@@ -2302,3 +2302,5 @@ mod wi_8k7w0_dot_call_type_args_test;
 mod slot_closed_at_a_name_is_the_written_type_test;
 #[path = "include/error_row_admits_what_a_boundary_catches_test.rs"]
 mod error_row_admits_what_a_boundary_catches_test;
+#[path = "include/wi_9wvt7_user_layer_reify_test.rs"]
+mod wi_9wvt7_user_layer_reify_test;

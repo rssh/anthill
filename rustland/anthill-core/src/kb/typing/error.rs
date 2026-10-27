@@ -473,6 +473,8 @@ pub enum TypeError {
         /// ([`SignatureCarrier::ResultOnly`]): no argument names a provider of such a
         /// member, and the repair is the provider's own member.
         result_only: bool,
+        /// Some sort provides `spec`; where none does, the repair is a provider.
+        provided: bool,
     },
     /// A call, in an operation body, of a body-less member `op` of `spec` whose carrier is
     /// a sort other than `spec`, known at load — `carrier` — which supplies no member for
@@ -1748,6 +1750,7 @@ impl TypeError {
                 reached,
                 clauses,
                 result_only,
+                provided,
                 ..
             } => {
                 let qn = kb.qualified_name_of(*op);
@@ -1777,6 +1780,14 @@ impl TypeError {
                     .map(|p| format!("{p} = …"))
                     .collect::<Vec<_>>()
                     .join(", ");
+                if !*provided {
+                    return format!(
+                        "a call of `{qn}` that nothing can run: nothing provides `{spec_qn}`, so \
+                         no provider can be selected and the call reaches `{qn}` itself, and \
+                         {own}. Declare a sort that provides `{spec_qn}` and supplies \
+                         `{short}`, and call it at that instance, or give `{body}` a body"
+                    );
+                }
                 // A sort with no parameter has no instance a bracket could name: the repair
                 // is a provider's own member, as for a result-only member.
                 if params.is_empty() && !*result_only {

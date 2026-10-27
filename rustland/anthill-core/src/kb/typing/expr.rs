@@ -1248,6 +1248,7 @@ pub(super) fn check_bare_ref(
                 reached,
                 clauses,
                 result_only,
+                provided,
             }) = unselectable_spec_operation_call(kb, env, sym, false, false)
             {
                 return Err(TypeError::CallOfUnselectableSpecOperation {
@@ -1257,6 +1258,7 @@ pub(super) fn check_bare_ref(
                     reached,
                     clauses,
                     result_only,
+                    provided,
                 });
             }
         }

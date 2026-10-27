@@ -520,6 +520,7 @@ pub(super) fn check_apply_iter(
                 reached,
                 clauses,
                 result_only,
+                provided,
             }) = unselectable_spec_operation_call(
                 kb,
                 env,
@@ -534,6 +535,7 @@ pub(super) fn check_apply_iter(
                     reached,
                     clauses,
                     result_only,
+                    provided,
                 });
             }
         }
@@ -3774,6 +3776,7 @@ pub(super) fn check_apply_iter(
                     reached: fn_sym,
                     clauses: kb.has_clauses_under(canon) || kb.has_clauses_under(fn_sym),
                     result_only: true,
+                    provided: spec_has_any_providers(kb, spec_sort),
                 });
             }
             // A CARRIER THAT SUPPLIES NO MEMBER, where the member called runs nothing

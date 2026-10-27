@@ -187,18 +187,18 @@ fn a_threaded_label_is_still_enforced_at_the_sink() {
 }
 
 /// Passes either way BY DESIGN, and it is the row that keeps the arm above honest: the SAME
-/// two flows through a BODY-LESS label-preserving middle, which never reaches the body check
-/// at all. So "the label is enforced at the sink" is pinned independently of anything this
-/// ticket changed — if the arm above ever went green by weakening the label rather than by
-/// threading it, this row would say so. The middle is a member of a sort without
-/// constructors: since WI-20260909-M8QWJ a body-less NAMESPACE operation is refused at its
-/// declaration, and a spec's member is where a body-less operation still loads.
+/// two flows through a label-preserving middle whose body is the hole `todo()`, so its
+/// signature alone says what it does with the label. So "the label is enforced at the sink"
+/// is pinned independently of anything this ticket changed — if the arm above ever went
+/// green by weakening the label rather than by threading it, this row would say so. The
+/// middle was body-less, a member of a sort nothing provides; a call of such a member is
+/// refused, since the call would die.
 #[test]
 fn control_a_label_is_enforced_through_a_body_less_middle() {
     let err = sole_error(&label_program(
         "flow_spec_leak",
         "  sort Lib
-    operation summarize(t: Text[L = ?l]) -> Text[L = ?l]
+    operation summarize(t: Text[L = ?l]) -> Text[L = ?l] = todo()
   end
   operation send(body: Text[L = Public]) -> Unit = ()
   operation leak(t: Text[L = Untrusted]) -> Unit = send(Lib.summarize(t))",
@@ -212,7 +212,7 @@ fn control_a_label_is_enforced_through_a_body_less_middle() {
     loads_clean(&label_program(
         "flow_spec_pub",
         "  sort Lib
-    operation summarize(t: Text[L = ?l]) -> Text[L = ?l]
+    operation summarize(t: Text[L = ?l]) -> Text[L = ?l] = todo()
   end
   operation send(body: Text[L = Public]) -> Unit = ()
   operation ok(t: Text[L = Public]) -> Unit = send(Lib.summarize(t))",
@@ -290,16 +290,18 @@ end
 /// THE TICKET'S OWN CONTROL, and the row that makes the two failures mean something: the
 /// IDENTICAL delegation with a GROUND caller. So the failure was about the caller's
 /// polymorphism — not about delegation, not arity, not the sort. Passes either way. The
-/// callee stays body-less as a member of a sort without constructors (WI-20260909-M8QWJ
-/// refuses a body-less namespace operation), so no body check of its own is in play.
+/// callee's body is the hole `todo()`, which conforms to any signature, so no body check of
+/// its own is in play (a body-less callee nothing implements is refused at the call, since
+/// WI-20260909-M8QWJ for a namespace operation and since a sort nothing provides is held to
+/// it too for a member).
 #[test]
 fn control_a_ground_caller_delegates_the_same_way() {
     let src = format!(
         "{}namespace tv_ground
-  import anthill.prelude.{{Int64}}
+  import anthill.prelude.{{Int64, todo}}
   import tv_ground.{{Box}}
   sort Lib
-    operation id(b: Box[?t]) -> Box[?t]
+    operation id(b: Box[?t]) -> Box[?t] = todo()
   end
   operation via_ground(b: Box[T = Int64]) -> Box[T = Int64] = Lib.id(b)
 end

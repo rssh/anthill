@@ -32,24 +32,23 @@
 //!     `the_deep_resolve_is_not_error_specific` fail with
 //!     "callback effects admitted by parameter `body` … (a closed row)";
 //!     `an_unused_spec_parameter_demands_no_requires` still PASSES.
-//!   * back out (b) → `an_unused_spec_parameter_demands_no_requires` and
-//!     `a_callback_row_label_resolves_its_type_argument` fail with
-//!     "missing `requires Err2[T = …]` on enclosing sort";
-//!     `the_deep_resolve_is_not_error_specific` still passes.
+//!   * back out (b) → nothing here fails (re-measured 2026-10-27). These rows' `reify` had no
+//!     body, and a call of a body-less member of a sort nothing provides is refused at the
+//!     call since then, before (b)'s loop runs: the program could only die when it ran
+//!     ("operation has no body"). Each `reify` here has the hole `todo()` for its body, which
+//!     keeps the signature the rows type against, and a bodied member does not reach (b).
+//!     (b) is driven by `wi508_nullary_carrier_dispatch_test::
+//!     wi508_one_provider_does_not_pin_the_carrier`.
+//!   * back out (a) → also `a_wrong_payload_annotation_is_still_refused` (its own doc says
+//!     why).
 //!
-//! `a_callback_row_label_resolves_its_type_argument` therefore fails under EITHER back-out
-//! — its program needs both repairs — so it does not separate them. The two that do are
-//! `the_deep_resolve_is_not_error_specific` (fix (a) alone: a `Permission[C]` label with no
-//! spec-member call in sight) and `an_unused_spec_parameter_demands_no_requires` (fix (b)
-//! alone: a CONCRETE label `Err2[Boom]`, which needs no deep resolve, on an operation that
-//! still never mentions `Err2.T`). Written that way deliberately — a suite where every row
-//! reds under both changes cannot say which change it is measuring.
+//! `the_deep_resolve_is_not_error_specific` separates (a) from any `reify`: a `Permission[C]`
+//! label with no spec-member call in sight.
 //!
 //! PASS EITHER WAY BY DESIGN, and each is here because it is what makes its repair
 //! non-vacuous rather than a blanket loosening:
 //!
-//!   * `an_abstract_carrier_param_still_demands_a_requires` (below) is the only row here
-//!     that survives both back-outs.
+//!   * `an_abstract_carrier_param_still_demands_a_requires` (below) survives both back-outs.
 //!   * `an_abstract_carrier_param_still_demands_a_requires` — (b)'s first attempt tested
 //!     `occurs_in_view` on the parameter's alias VAR, which missed the SYMBOL spelling a
 //!     declared parameter type uses (`Ref(MySpec.T)`); this row went RED under it, which is
@@ -114,12 +113,12 @@ namespace test.wi9wvt7
   end
 
   sort Err2
-    import anthill.prelude.{{Nothing, Effect}}
+    import anthill.prelude.{{Nothing, Effect, todo}}
     import test.wi9wvt7.{{Result}}
     sort T = ?
     operation raise(error: T) -> Nothing effects Err2[T]
     operation reify[Rho, X, T1](body: () -> X @ {{Err2[T1], Rho}}) -> Result[E = T1, T = X]
-      effects {{Rho}}
+      effects {{Rho}} = todo()
     provides Effect[T = Self]
   end
 
@@ -196,16 +195,13 @@ end
 
 // ── Fix (b): an unused spec parameter demands no `requires` ───────────────────────
 
-/// THE ARM FOR (b), ISOLATED FROM (a). The callback row's label is CONCRETE
-/// (`Err2[Boom]`), so no type argument needs resolving through σ and fix (a) is not on this
-/// path — measured: with (a) neutralised this source still loads. What it does still need
-/// is (b): `reifyConcrete` names `Err2.T` nowhere in its signature, so the enclosing sort's
-/// parameter is not what any dispatch turns on and no `requires` could cover it. FAILS when
-/// (b) is backed out, with "missing `requires Err2[T = …]` on enclosing sort".
-///
-/// The 027.4 signature proper (a type-parameter payload) needs BOTH repairs and is driven
-/// by [`a_callback_row_label_resolves_its_type_argument`]; that test cannot separate them,
-/// which is why this one exists beside it.
+/// (b)'s program, ISOLATED FROM (a). The callback row's label is CONCRETE (`Err2[Boom]`), so
+/// no type argument needs resolving through σ and fix (a) is not on this path — measured:
+/// with (a) neutralised this source still loads. `reifyConcrete` names `Err2.T` nowhere in
+/// its signature, so the enclosing sort's parameter is not what any dispatch turns on and no
+/// `requires` could cover it. It failed with (b) backed out ("missing `requires Err2[T =
+/// …]` on enclosing sort") while `reifyConcrete` had no body; it passes either way since the
+/// hole `todo()` became its body (the file's header says why).
 #[test]
 fn an_unused_spec_parameter_demands_no_requires() {
     expect_load(
@@ -225,12 +221,12 @@ namespace test.wi9wvt7.unused
   end
 
   sort Err2
-    import anthill.prelude.{Nothing, Effect}
+    import anthill.prelude.{Nothing, Effect, todo}
     import test.wi9wvt7.unused.{Result, Boom}
     sort T = ?
     operation raise(error: T) -> Nothing effects Err2[T]
     operation reifyConcrete[Rho, X](body: () -> X @ {Err2[Boom], Rho}) -> Result[E = Boom, T = X]
-      effects {Rho}
+      effects {Rho} = todo()
     provides Effect[T = Self]
   end
 
@@ -351,8 +347,8 @@ end
 /// body"; WI-20260909-M8QWJ moved it from eval to LOAD (`CallOfUnselectableSpecOperation`),
 /// and the property this row pins survives the move: ONE verdict in both namespaces. It
 /// no longer measures (b) itself — the call check refuses this call before the WI-325 loop
-/// is reached, so (b) backed out changes neither half; (b)'s own rows above are what fail
-/// then.
+/// is reached, so (b) backed out changes neither half; `wi508_nullary_carrier_dispatch_test::
+/// wi508_one_provider_does_not_pin_the_carrier` is what fails then.
 #[test]
 fn one_program_has_one_verdict_in_both_namespaces() {
     let fixture = |ns: &str| {
