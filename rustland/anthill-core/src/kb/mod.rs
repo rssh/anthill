@@ -12525,14 +12525,11 @@ impl KnowledgeBase {
         self.make_entity_term(named_tuple_sym, SmallVec::new(), named_args)
     }
 
-    /// nothing — bottom type.
+    /// The bottom type: the declared sort `anthill.prelude.Nothing`, the one term a written
+    /// `Nothing` is, so a bottom the typer puts in a type compares equal to a written one.
     pub fn make_nothing_type(&mut self) -> TermId {
-        let nothing_sym = self.resolve_symbol("anthill.prelude.TypeExtractor.Nothing");
-        self.alloc(Term::Fn {
-            functor: nothing_sym,
-            pos_args: SmallVec::new(),
-            named_args: SmallVec::new(),
-        })
+        let nothing_sym = self.resolve_symbol("anthill.prelude.Nothing");
+        self.alloc(Term::Ref(nothing_sym))
     }
 
     // ── Name-level substitution ──────────────────────────────────

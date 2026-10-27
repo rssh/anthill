@@ -15107,15 +15107,33 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
         },
     );
 
+    // anthill.prelude.Nothing sort — the bottom type. Pre-registered so
+    // `make_nothing_type` builds at bootstrap the term a written `Nothing` resolves to;
+    // `nothing.anthill` re-declares it idempotently.
+    let nothing_sort_sym = kb.symbols.define(
+        "Nothing",
+        "anthill.prelude.Nothing",
+        SymbolKind::Sort,
+        prelude_scope,
+    );
+    let nothing_sort_scope = kb.symbols.scope_id(nothing_sort_sym);
+    kb.symbols.add_parent(
+        nothing_sort_scope,
+        ScopeInclusion {
+            parent_scope: prelude_scope,
+            is_enclosing: true,
+        },
+    );
+
     // anthill.prelude.TypeExtractor sort — the STRUCTURAL type forms the engine
     // builds as the term backing of a `Type` (WI-361). `make_arrow_type` /
     // `make_denoted` / `make_effects_rows_type` / `make_type_var` /
-    // `make_named_tuple_type` / `make_nothing_type` resolve these functors
-    // BEFORE stdlib load (at bootstrap), so they are pre-registered here; the
-    // stdlib `enum TypeExtractor` re-declares them idempotently. SortRef /
-    // Parameterized / Error are COMPUTED-ONLY (a bare sort is `Ref(S)`, a
-    // parameterized type `Fn{S, named}`), never built by the engine, so they
-    // need no pre-registration here — only the `extract` builtin mints them,
+    // `make_named_tuple_type` resolve these functors BEFORE stdlib load (at
+    // bootstrap), so they are pre-registered here; the stdlib `enum TypeExtractor`
+    // re-declares them idempotently. SortRef / Parameterized / Nothing / Error are
+    // COMPUTED-ONLY (a bare sort is `Ref(S)`, a parameterized type `Fn{S, named}`,
+    // the bottom the sort `anthill.prelude.Nothing`), never built by the engine, so
+    // they need no pre-registration here — only the `extract` builtin mints them,
     // post-load, resolving against the stdlib declaration.
     let type_extractor_sort_sym = kb.symbols.define(
         "TypeExtractor",
@@ -15146,12 +15164,6 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
     kb.symbols.define(
         "NamedTuple",
         "anthill.prelude.TypeExtractor.NamedTuple",
-        SymbolKind::Entity,
-        type_extractor_sort_scope,
-    );
-    kb.symbols.define(
-        "Nothing",
-        "anthill.prelude.TypeExtractor.Nothing",
         SymbolKind::Entity,
         type_extractor_sort_scope,
     );

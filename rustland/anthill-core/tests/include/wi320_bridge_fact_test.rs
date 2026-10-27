@@ -124,14 +124,7 @@ fn build_effects_rows_wrapping(
 }
 
 fn build_nothing(kb: &mut KnowledgeBase) -> anthill_core::kb::term::TermId {
-    let nothing_sym = kb
-        .try_resolve_symbol("anthill.prelude.TypeExtractor.Nothing")
-        .expect("Nothing entity symbol pre-registered");
-    kb.alloc(Term::Fn {
-        functor: nothing_sym,
-        pos_args: SmallVec::new(),
-        named_args: SmallVec::new(),
-    })
+    kb.make_nothing_type()
 }
 
 #[test]

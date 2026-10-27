@@ -275,12 +275,13 @@ pub(super) fn type_head<V: TermView>(kb: &KnowledgeBase, ty: &V) -> TypeHead {
         // exist for one concept: `anthill.prelude.Nothing` is the stdlib's
         // declared bottom SORT (nothing.anthill — what `Error.raise`'s declared
         // return resolves to via `import anthill.prelude.{Nothing}`), while
-        // `TypeExtractor.Nothing` is the typer/reflect extractor tag
-        // (register_prelude's scoped define + `make_nothing_type`). Without
-        // this arm a body ending in a raise never typed (`Nothing <: s.T`
-        // failed), which is why `Stream.head` stayed body-less from WI-567
-        // until WI-818. Collapsing the two spellings into ONE symbol is the
-        // deeper fix (they still differ for structural-identity readers).
+        // `TypeExtractor.Nothing` is the reflect extractor's tag (what `extract`
+        // answers for the bottom). Without this arm a body ending in a raise
+        // never typed (`Nothing <: s.T` failed), which is why `Stream.head`
+        // stayed body-less from WI-567 until WI-818. The typer's own bottom
+        // (`make_nothing_type`) is the declared sort, the term a written
+        // `Nothing` is, so a structural reader sees one bottom; the tag stays
+        // a second spelling only for a value `extract` built.
         "anthill.prelude.Nothing" => TypeHead::Nothing,
         "anthill.prelude.TypeExtractor.Denoted" => TypeHead::Denoted,
         "anthill.prelude.TypeExtractor.ExprCarried" => TypeHead::ExprCarried,

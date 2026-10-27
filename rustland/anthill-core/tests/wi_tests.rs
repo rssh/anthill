@@ -2298,3 +2298,5 @@ mod wi_qpc89_empty_scope_resolution_memo_test;
 mod wi_dg57j_witness_only_requirement_test;
 #[path = "include/wi_8k7w0_dot_call_type_args_test.rs"]
 mod wi_8k7w0_dot_call_type_args_test;
+#[path = "include/slot_closed_at_a_name_is_the_written_type_test.rs"]
+mod slot_closed_at_a_name_is_the_written_type_test;

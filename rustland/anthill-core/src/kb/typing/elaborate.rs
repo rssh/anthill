@@ -299,7 +299,10 @@ pub(super) fn rigidify_unwritten_sort_params(
         } else {
             fill.mint(kb, *param, span)
         };
-        bindings.push((*param, filled));
+        // Keyed as a written slot is (the bare label), so a slot filled here and the same
+        // slot written by hand are one term to a structural reader.
+        let key = kb.intern(&short_name_of(kb.local_name_of(*param)).to_owned());
+        bindings.push((key, filled));
         changed = true;
     }
     if !changed {
