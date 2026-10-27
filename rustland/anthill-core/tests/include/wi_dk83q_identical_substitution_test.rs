@@ -153,8 +153,10 @@ end
 }
 
 /// A CALLBACK SLOT WRITTEN `@ {Error[?]}` IS THE SLOT `@ {Error}`: it takes a callback raising
-/// `Error` and refuses one raising `Error[Boom]`, as the bare one does (027.4's measured table
-/// had the `[?]` slot take both). BACK-OUT: the `?` slots take the `Boom` callback.
+/// `Error`, and one raising `Error[Boom]` — the bare label is the pattern `?`, and a row admits
+/// what a boundary at it catches (user, 2026-10-27; it refused the `Boom` callback before).
+/// BACK-OUT: with a declared bare `Error` admitting no written payload in the callback check
+/// (`labels_match_by_subsumption`), all three slots refuse the `Boom` callback.
 #[test]
 fn a_callback_slot_reads_its_label_as_written_bare() {
     for slot in ["Error", "Error[?]", "Error[T = ?]"] {
@@ -175,11 +177,9 @@ end
         };
         let errs = crate::common::load_errors_of(&src("lambda () -> g()"));
         assert!(errs.is_empty(), "@ {{{slot}}} given an `Error` callback: loads clean, got {errs:#?}");
-        crate::common::assert_refused_naming(
-            &crate::common::load_errors_of(&src(r#"lambda () -> Error.raise(boom(why: "x"))"#)),
-            &["h.f", "callback effects admitted by parameter `f`"],
-            &format!("@ {{{slot}}} given an `Error[Boom]` callback"),
-        );
+        let errs =
+            crate::common::load_errors_of(&src(r#"lambda () -> Error.raise(boom(why: "x"))"#));
+        assert!(errs.is_empty(), "@ {{{slot}}} given an `Error[Boom]` callback: loads clean, got {errs:#?}");
     }
 }
 

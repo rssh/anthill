@@ -4281,7 +4281,10 @@ yes for the raised type, and travels past it otherwise — so a label the bounda
 discharge reaches the boundary its row leaves it to, as the row says.
 
 The typer discharges a label of the thunk's row exactly where that pattern admits its payload,
-by the same test. An unwritten `T1` is the least pattern that admits every `Error` label of the
+by the same test. An `Error` label of a row means the same: `Error[X]` admits a label wherever a
+boundary at `X` would discharge it, and `-Error[X]` denies it there. So `effects {Error[Wide]}`
+admits a raise of `Narrow`, and the bare `Error`, the pattern `?`, admits a label at any payload.
+An unwritten `T1` is the least pattern that admits every `Error` label of the
 thunk's row: over `Error[Boom[Reason = String]]` and `Error[Boom[Reason = Int64]]` it is
 `Boom`, open at `Reason`, and catches both; over `Error[Narrow]` and `Error[Wide]`, where
 `sort Narrow requires Wide`, it is `Wide`; over the bare `Error` alone it is `?`, which admits

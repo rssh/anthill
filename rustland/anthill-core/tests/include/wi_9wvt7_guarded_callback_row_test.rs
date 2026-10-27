@@ -369,10 +369,10 @@ end
 
 /// A slot denying `Error` refuses a division callback. Before (1) the guarded atom was a
 /// label named `guarded(…)`, which no denial names, so the program loaded (MEASURED). The
-/// refusal is the unconstrained row variable: binding `Rho` to the division's label is
-/// what the denial forbids, as for an unguarded raiser. Without the denial the same call
-/// loads — the control that the denial is what refuses. A denial of the label itself is
-/// named in its own refusal.
+/// refusal names the denial: the bare `-Error` denies a label at any payload, as a boundary
+/// at `?` catches it (it was the unconstrained row variable `Rho` before a denial was read
+/// so). Without the denial the same call loads — the control that the denial is what
+/// refuses. A denial of the label itself is named in its own refusal.
 #[test]
 fn a_slot_denying_error_refuses_a_division_callback() {
     let denies = |row: &str| {
@@ -390,8 +390,9 @@ end
     assert_refused_naming(
         &crate::common::load_errors_of(&denies("{Rho, -Error}")),
         &[
-            "run5.type_arg",
-            "expected a type for 'Rho', got unconstrained",
+            "run5.f",
+            "to lack `Error` (its `-…` lacks-constraint)",
+            "declares `Error[T = DivisionByZero]`",
         ],
         "a slot denying Error",
     );

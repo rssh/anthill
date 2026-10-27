@@ -1213,33 +1213,43 @@ fn undeclared_effects(
             // compare on a path already failing, and dropping it would
             // refuse `Stream.head` outright if any decline path exists that
             // this reading missed.
-            let declared = declared_canon.iter().any(|d| {
+            let written = declared_canon.iter().any(|d| {
                 views_structurally_equal(kb, &comp_key, d)
                     || guarded_effect_label(kb, d).is_some_and(|lbl| {
                         views_structurally_equal(kb, &comp_key, &lbl)
                     })
             });
-            if !declared {
-                // WI-20260825-CBRSW: a DENIED effect first. The verdict is
-                // [`label_violates_absence`], so the closure holds here too
-                // — a body minting `Permission[GptModel]` under a declared
-                // `-Permission[Model]` names the denial it broke rather than
-                // a label the row never mentioned.
-                // The op's OWN rigidify subst, not an empty one — the same
-                // one every neighbouring comparison in this block uses.
-                // `walk_type_deep_value` does not rewrite inside occurrence
-                // carriers (the WI-441 note above), so a `Value::Node`-carried
-                // label still holds its Global var here; resolving through
-                // the rigidify is what maps it to the Rigid the declared atom
-                // became. With an empty subst that pair silently degraded to
-                // the generic "undeclared effect" wording — the failure this
-                // branch exists to avoid. (Found by review.)
-                // Each absence read through its aliases as the labels above are; the
-                // message keeps the spelling.
-                let denied = declared_absent.iter().find(|a| {
-                    let a = dealiased(kb, a);
-                    label_violates_absence(kb, &canon_subst, &comp_key, &a)
-                });
+            if written {
+                continue;
+            }
+            // WI-20260825-CBRSW: a DENIED effect first. The verdict is
+            // [`label_violates_absence`], so the closure holds here too
+            // — a body minting `Permission[GptModel]` under a declared
+            // `-Permission[Model]` names the denial it broke rather than
+            // a label the row never mentioned.
+            // The op's OWN rigidify subst, not an empty one — the same
+            // one every neighbouring comparison in this block uses.
+            // `walk_type_deep_value` does not rewrite inside occurrence
+            // carriers (the WI-441 note above), so a `Value::Node`-carried
+            // label still holds its Global var here; resolving through
+            // the rigidify is what maps it to the Rigid the declared atom
+            // became. With an empty subst that pair silently degraded to
+            // the generic "undeclared effect" wording — the failure this
+            // branch exists to avoid. (Found by review.)
+            // Each absence read through its aliases as the labels above are; the
+            // message keeps the spelling.
+            let denied = declared_absent.iter().find(|a| {
+                let a = dealiased(kb, a);
+                label_violates_absence(kb, &canon_subst, &comp_key, &a)
+            });
+            // An `Error` label is declared where a boundary at a declared payload catches it
+            // ([`error_label_admits`]): `Error[Wide]` admits a raise of `Narrow`, unless the
+            // row denies it (`{Error, -Error[Wide]}`).
+            let admitted = denied.is_none()
+                && declared_canon
+                    .iter()
+                    .any(|d| error_label_admits(kb, &canon_subst, d, &comp_key));
+            if !admitted {
                 let actual = match denied {
                     Some(a) => format!(
                         "denied effect: {} — the row DECLARES `-{}`, so this \

@@ -308,6 +308,11 @@ pub(super) fn label_violates_absence(
     if views_structurally_equal(kb, &p, &a) {
         return true;
     }
+    // A denied `Error` label denies what a boundary at its payload catches, as a declared one
+    // admits it.
+    if error_label_admits(kb, subst, &a, &p) {
+        return true;
+    }
     permission_entails(kb, subst, &p, &a)
 }
 
@@ -2010,7 +2015,12 @@ pub(super) fn labels_match_by_subsumption(kb: &KnowledgeBase, a: &Value, e: &Val
         let (ga, ge) = (guarded_effect_label(kb, a), guarded_effect_label(kb, e));
         let (a, e) = (ga.as_ref().unwrap_or(a), ge.as_ref().unwrap_or(e));
         if effect_label_names_sort(kb, a, error) && effect_label_names_sort(kb, e, error) {
-            if let Some(ev) = extract_type_param(kb, e, "T").filter(|ev| type_is_determined(kb, ev)) {
+            let declared = extract_type_param(kb, e, "T");
+            // A declared bare `Error` is the pattern `?`, which admits a label at any payload.
+            if declared.is_none() {
+                return true;
+            }
+            if let Some(ev) = declared.filter(|ev| type_is_determined(kb, ev)) {
                 let admitted = match extract_type_param(kb, a, "T") {
                     Some(av) => pattern_discharges(kb, &ev, &av),
                     // A bare `Error`, raised at a type not known: the pattern `?` alone.
@@ -2050,10 +2060,10 @@ pub(super) fn labels_match_by_subsumption(kb: &KnowledgeBase, a: &Value, e: &Val
     for p in params {
         let variance = declared_variance(kb, e_base, p);
         let name = kb.local_name_of(p);
-        // A label whose argument is UNWRITTEN on either side decides nothing here. Bare
-        // `Error` is `Error[T = ?]`, an undecided payload, and letting it match through
-        // this leg would answer a question 027.4 records as open — whether an undecided
-        // argument satisfies a decided demand — in passing and in the loose direction.
+        // A label whose argument is UNWRITTEN on either side decides nothing here. An `Error`
+        // label is answered above, by the boundary's test; for any other sort, letting an
+        // undecided argument match through this leg would decide whether it satisfies a
+        // decided demand in passing, and in the loose direction.
         let (Some(av), Some(ev)) = (arg_sort(a, name), arg_sort(e, name)) else {
             return false;
         };
@@ -2271,13 +2281,8 @@ pub(super) fn error_labels_discharged(
     declared: &Value,
 ) -> Option<bool> {
     let error = kb.error_sort_sym?;
-    let payload_of = |kb: &KnowledgeBase, label: &Value| {
-        let guarded = guarded_effect_label(kb, label);
-        let label = guarded.as_ref().unwrap_or(label);
-        effect_label_names_sort(kb, label, error).then(|| extract_type_param(kb, label, "T"))
-    };
-    let pattern = payload_of(kb, declared)??;
-    let raised = payload_of(kb, actual)?;
+    let pattern = error_payload(kb, error, declared)??;
+    let raised = error_payload(kb, error, actual)?;
     let pattern = walk_type_deep_value(kb, subst, &pattern);
     if !type_is_determined(kb, &pattern) {
         return None;
@@ -2294,6 +2299,36 @@ pub(super) fn error_labels_discharged(
             pattern_discharges(kb, &pattern, &raised)
         }
     })
+}
+
+/// The payload of an `Error` label, a guarded one read as its label: `None` where `label` is
+/// no `Error` label, `Some(None)` for the bare `Error`.
+fn error_payload(kb: &KnowledgeBase, error: Symbol, label: &Value) -> Option<Option<Value>> {
+    let guarded = guarded_effect_label(kb, label);
+    let label = guarded.as_ref().unwrap_or(label);
+    effect_label_names_sort(kb, label, error).then(|| extract_type_param(kb, label, "T"))
+}
+
+/// Does a row that declares `declared` admit the label `incurred`? For an `Error` label it
+/// does where a boundary at the declared payload catches the incurred one (071 §1.5): the
+/// declared payload read as a type pattern, the bare `Error` being the pattern `?`, which
+/// admits a label at any payload. `false` for every other label.
+pub(super) fn error_label_admits(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    declared: &Value,
+    incurred: &Value,
+) -> bool {
+    let Some(error) = kb.error_sort_sym else {
+        return false;
+    };
+    match (error_payload(kb, error, declared), error_payload(kb, error, incurred)) {
+        (Some(None), Some(_)) => true,
+        (Some(Some(_)), Some(_)) => {
+            error_labels_discharged(kb, subst, incurred, declared) == Some(true)
+        }
+        _ => false,
+    }
 }
 
 /// Is the ACTUAL label `a` its sort written bare and the expected `b` the same sort applied

@@ -2910,16 +2910,19 @@ pub(super) fn callback_row_error(
         }
     }
     for la in &a_present {
-        if e_admitting
+        // A denial wins over an atom that admits the label: `@ {Error, -Error[Wide]}` refuses a
+        // callback raising `Narrow`, which the bare `Error` alone admits.
+        let denied = e_absent
             .iter()
-            .any(|le| labels_match_aligned(kb, subst, &place_map, la, le))
+            .find(|le| labels_match_aligned(kb, subst, &place_map, la, le));
+        if denied.is_none()
+            && e_admitting
+                .iter()
+                .any(|le| labels_match_aligned(kb, subst, &place_map, la, le))
         {
             continue;
         }
-        if let Some(viol) = e_absent
-            .iter()
-            .find(|le| labels_match_aligned(kb, subst, &place_map, la, le))
-        {
+        if let Some(viol) = denied {
             return Some(TypeError::Other {
                 site: TypeError::here(),
                 span,

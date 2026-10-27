@@ -325,8 +325,10 @@ end
 }
 
 /// The `Error[EmptyStream]` ROW is present on a `.head` call against a relation:
-/// declaring only `effects Error` is REFUSED AT LOAD, and the refusal is the
-/// ONLY load error the fixture produces.
+/// a row that admits every other `Error` and denies that one, `effects {Error,
+/// -Error[EmptyStream]}`, is REFUSED AT LOAD, and the refusal is the ONLY load error
+/// the fixture produces. (The bare `effects Error` it declared before admits the
+/// label since a row means what a boundary at it catches.)
 ///
 /// WHAT THIS DOES NOT SAY. It is tempting to read this as "the guard stays
 /// because the carrier is lazy, unlike `head(cons(h, t))` on a `List`".
@@ -364,7 +366,7 @@ end
 fn wi733_head_guard_does_not_discharge_on_a_relation() {
     let src = r#"
 namespace test.wi733guard
-  import anthill.prelude.{String, Int64, Option, List, Bool}
+  import anthill.prelude.{String, Int64, Option, List, Bool, Error, EmptyStream}
 
   sort Person
     entity person(name: String, age: Int64)
@@ -373,15 +375,15 @@ namespace test.wi733guard
 
   rule one_name(?name) :- person(name: ?name, age: 30)
 
-  operation underDeclared() -> (name: String) effects Error =
+  operation underDeclared() -> (name: String) effects {Error, -Error[EmptyStream]} =
     one_name.head
 end
 "#;
     expect_load_errors(
         try_load_kb_with(src),
         &[
-            "type mismatch in underDeclared.effects (op-effects): expected declared: [Error], \
-           got undeclared effect: Error[T = EmptyStream]",
+            "type mismatch in underDeclared.effects (op-effects): expected declared: [Error, \
+           -Error[T = EmptyStream]], got denied effect: Error[T = EmptyStream]",
         ],
     );
 }
@@ -413,7 +415,7 @@ end
 fn wi733_guarded_relation_head_still_does_not_discharge() {
     let src = r#"
 namespace test.wi733gguard
-  import anthill.prelude.{String, Int64, Option, List, Bool}
+  import anthill.prelude.{String, Int64, Option, List, Bool, Error, EmptyStream}
 
   sort Person
     entity person(name: String, age: Int64)
@@ -422,15 +424,15 @@ namespace test.wi733gguard
 
   rule one_name(?name) :- person(name: ?name, age: 30)
 
-  operation underDeclared() -> (name: String) effects Error =
+  operation underDeclared() -> (name: String) effects {Error, -Error[EmptyStream]} =
     if not(one_name.isEmpty) then one_name.head else (name: "none")
 end
 "#;
     expect_load_errors(
         try_load_kb_with(src),
         &[
-            "type mismatch in underDeclared.effects (op-effects): expected declared: [Error], \
-           got undeclared effect: Error[T = EmptyStream]",
+            "type mismatch in underDeclared.effects (op-effects): expected declared: [Error, \
+           -Error[T = EmptyStream]], got denied effect: Error[T = EmptyStream]",
         ],
     );
 }
