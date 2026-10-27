@@ -633,15 +633,49 @@ pub enum SupplierTieRepair {
     /// call-site bracket — in an operation's body, under a compound expression — written
     /// applicatively or as a dot: the bracket goes on it.
     SelectAtTheCall,
+    /// [`Self::SelectAtTheCall`] at a dot whose carrier's own member takes the spec's label
+    /// as a key of its own call — a type parameter of that name, or an anonymous requirement
+    /// on the spec — so a bracket on the dot binds the member, and the selection is written
+    /// on the call applicatively. A rule's own term keeps [`Self::NameableWitness`]: the
+    /// operation it routes the call through gives this repair there.
+    SelectApplicatively,
+}
+
+/// Where the call a supplier tie refuses can write the bracket that selects a witness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SelectionSite {
+    /// Not on the call: a call written as a rule's own term, or a defaulted operation's,
+    /// which has no dispatch slot a bracket binds.
+    Elsewhere,
+    /// In the call's bracket list.
+    TheCall,
+    /// On the call written applicatively ([`SupplierTieRepair::SelectApplicatively`]).
+    TheApplicativeCall,
+}
+
+impl SelectionSite {
+    /// The site of a call written where a call-site bracket is read, or not.
+    pub(super) fn of_call(takes_bracket: bool) -> Self {
+        if takes_bracket {
+            SelectionSite::TheCall
+        } else {
+            SelectionSite::Elsewhere
+        }
+    }
 }
 
 impl SupplierTieRepair {
-    /// The repair at a call that takes a call-site bracket, where a nameable witness is
-    /// selected on the call itself.
-    fn at_a_call_taking_a_bracket(self) -> Self {
-        match self {
-            SupplierTieRepair::NameableWitness => SupplierTieRepair::SelectAtTheCall,
-            repair => repair,
+    /// The repair at `site`, where a nameable witness is selected on the call itself when
+    /// the call takes a bracket.
+    fn at(self, site: SelectionSite) -> Self {
+        match (self, site) {
+            (SupplierTieRepair::NameableWitness, SelectionSite::TheCall) => {
+                SupplierTieRepair::SelectAtTheCall
+            }
+            (SupplierTieRepair::NameableWitness, SelectionSite::TheApplicativeCall) => {
+                SupplierTieRepair::SelectApplicatively
+            }
+            (repair, _) => repair,
         }
     }
 }
@@ -965,7 +999,7 @@ pub(super) fn arbitrate_unarbitrated_supplier_tie(
     carrier: Symbol,
     spec_op: Symbol,
     op_short_sym: Symbol,
-    call_takes_bracket: bool,
+    site: SelectionSite,
     span: Option<Span>,
 ) -> Result<Option<Symbol>, TypeError> {
     let cands = spec_op_suppliers_for_carrier(kb, spec_sort, carrier, spec_op, op_short_sym);
@@ -980,7 +1014,7 @@ pub(super) fn arbitrate_unarbitrated_supplier_tie(
     }
     match default_among_suppliers(kb, spec_sort, carrier, &cands) {
         Some(i) => Ok(Some(cands[i].target)),
-        None => Err(supplier_tie_error(kb, spec_op, carrier, &cands, call_takes_bracket, span)),
+        None => Err(supplier_tie_error(kb, spec_op, carrier, &cands, site, span)),
     }
 }
 
@@ -1054,7 +1088,7 @@ pub(super) fn arbitrate_defaulted_supplier_tie<'a>(
         many => match default_among_suppliers(kb, spec_sort, carrier, many) {
             Some(i) => Ok(Some(&many[i])),
             // A defaulted operation has no dispatch slot a bracket selects, at any call.
-            None => Err(supplier_tie_error(kb, spec_op, carrier, cands, false, span)),
+            None => Err(supplier_tie_error(kb, spec_op, carrier, cands, SelectionSite::Elsewhere, span)),
         },
     }
 }
@@ -1156,7 +1190,9 @@ pub(super) enum DotMember {
 /// member's call does not take, so the dot is that call ([`dot_bracket_selects_spec`]) and
 /// neither half below arbitrates: the selection decides, as it does for the call written
 /// applicatively. `call_takes_bracket` is whether the dot is written where a bracket is
-/// read, which decides the repair a tie names ([`SupplierTieRepair::SelectAtTheCall`]).
+/// read, which decides the repair a tie names: the bracket on the dot
+/// ([`SupplierTieRepair::SelectAtTheCall`]), or on the call written applicatively where the
+/// member takes the spec's label itself ([`SupplierTieRepair::SelectApplicatively`]).
 ///
 /// TIER 2 IS WHY THE BODY-LESS HALF DELEGATES RATHER THAN COUNTING: no dispatch runs on
 /// this path, so there is no `DispatchOutcome` to defer to, and a bare count would refuse
@@ -1294,14 +1330,22 @@ pub(super) fn dot_member_dispatch_decision(
     // `check_apply_iter` frame went from five reaches to four, enumerated at that site.
     if defaulted_spec_op_parent(kb, spec_op).is_none() {
         // BODY-LESS — a different question with a different condition; see
-        // [`arbitrate_unarbitrated_supplier_tie`].
+        // [`arbitrate_unarbitrated_supplier_tie`]. A tie's selection is written on the dot,
+        // unless its own member takes the spec's label for a key of its own call — then
+        // that bracket binds the member.
+        let site = match SelectionSite::of_call(call_takes_bracket) {
+            SelectionSite::TheCall if own_call_takes_spec_label(kb, own_member, spec_sort) => {
+                SelectionSite::TheApplicativeCall
+            }
+            site => site,
+        };
         let broke_a_tie = arbitrate_unarbitrated_supplier_tie(
             kb,
             spec_sort,
             carrier,
             spec_op,
             op_short_sym,
-            call_takes_bracket,
+            site,
             span,
         )?;
         return Ok(dot_takes_or_reroutes(kb, own_member, spec_op, broke_a_tie));
@@ -1321,8 +1365,7 @@ pub(super) fn dot_member_dispatch_decision(
 }
 
 /// Does the bracket a dot writes name the spec `spec_sort` its own member backs — a key the
-/// spec's label is, which the member takes no binding at (neither a type parameter of it or
-/// of its sort, nor one of its anonymous requirements on that spec)?
+/// spec's label is, which the member takes no binding at ([`OwnCallKeys`])?
 fn dot_bracket_selects_spec(
     kb: &mut KnowledgeBase,
     own_member: Symbol,
@@ -1338,21 +1381,48 @@ fn dot_bracket_selects_spec(
     if keys.is_empty() {
         return false;
     }
-    let declared: Vec<Symbol> = match lookup_operation_info_full(kb, own_member) {
-        Some(info) => call_bracket_scopes(kb, &info, own_member)
+    let own = OwnCallKeys::of(kb, own_member);
+    keys.iter().any(|&key| !own.takes(kb, key))
+}
+
+/// Does the dot's own member take the label of the spec `spec_sort` it backs as a key of its
+/// own call, so that `[Spec = …]` written on the dot binds the member?
+fn own_call_takes_spec_label(kb: &mut KnowledgeBase, own_member: Symbol, spec_sort: Symbol) -> bool {
+    let short = short_name_of(&kb.qualified_name_of(spec_sort)).to_owned();
+    let label = kb.intern(&short);
+    OwnCallKeys::of(kb, own_member).takes(kb, label)
+}
+
+/// The keys a dot's own member's call takes, read by the two rungs that call reads them by
+/// (`resolve_call_type_arg_targets`): a declared parameter, the member's or its sort's, by
+/// its symbol, and an anonymous requirement by its spec's label.
+struct OwnCallKeys {
+    declared: Vec<Symbol>,
+    anonymous_specs: Vec<Symbol>,
+}
+
+impl OwnCallKeys {
+    fn of(kb: &mut KnowledgeBase, own_member: Symbol) -> Self {
+        let declared = match lookup_operation_info_full(kb, own_member) {
+            Some(info) => call_bracket_scopes(kb, &info, own_member)
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect(),
+            None => Vec::new(),
+        };
+        let anonymous_specs = callee_requirement_slots(kb, own_member)
             .into_iter()
-            .map(|(name, _)| name)
-            .collect(),
-        None => Vec::new(),
-    };
-    let slots = callee_requirement_slots(kb, own_member);
-    // The two rungs a key of the member's own call is read by, asked as that call asks them
-    // (`resolve_call_type_arg_targets`): a declared parameter by its symbol, an anonymous
-    // requirement by its spec's label.
-    keys.iter().any(|&key| {
-        !declared.contains(&key)
-            && !slots.iter().any(|slot| !slot.named && same_label(kb, key, slot.spec))
-    })
+            .filter(|slot| !slot.named)
+            .map(|slot| slot.spec)
+            .collect();
+        OwnCallKeys { declared, anonymous_specs }
+    }
+
+    /// `key`, a bare label, is one of them.
+    fn takes(&self, kb: &KnowledgeBase, key: Symbol) -> bool {
+        self.declared.contains(&key)
+            || self.anonymous_specs.iter().any(|&spec| same_label(kb, key, spec))
+    }
 }
 
 /// WI-861 — WHAT A DOT DOES WITH ITS MEMBER once 058 §3.2's rung 2a has spoken, for BOTH
@@ -1404,14 +1474,14 @@ fn dot_takes_or_reroutes(
 /// interpretability filter is the defaulted half's own (WI-1010), so the two lists are
 /// deliberately not the same query.
 ///
-/// `call_takes_bracket`: the call is written where a call-site bracket is read, so a
-/// nameable witness is selected on it ([`SupplierTieRepair::SelectAtTheCall`]).
-pub(crate) fn supplier_tie_error(
+/// `site`: where the call can write the bracket that selects a nameable witness
+/// ([`SupplierTieRepair::at`]).
+pub(super) fn supplier_tie_error(
     kb: &KnowledgeBase,
     spec_op: Symbol,
     carrier: Symbol,
     cands: &[SpecOpSupplier],
-    call_takes_bracket: bool,
+    site: SelectionSite,
     span: Option<Span>,
 ) -> TypeError {
     let mut refusal = ProviderSupplyRefusal::Tie {
@@ -1419,10 +1489,8 @@ pub(crate) fn supplier_tie_error(
         candidates: cands.iter().copied().collect(),
     }
     .type_error(kb, spec_op, span);
-    if let (true, TypeError::AmbiguousSpecOpDispatch { repair, .. }) =
-        (call_takes_bracket, &mut refusal)
-    {
-        *repair = repair.at_a_call_taking_a_bracket();
+    if let TypeError::AmbiguousSpecOpDispatch { repair, .. } = &mut refusal {
+        *repair = repair.at(site);
     }
     refusal
 }
@@ -1479,6 +1547,11 @@ pub(crate) fn ambiguous_spec_op_dispatch_message(
         SupplierTieRepair::SelectAtTheCall => format!(
             "{head} — keep exactly one and delete the rest, or write `[Spec = Witness]` in \
              the call's bracket list, naming a witness sort among them"
+        ),
+        SupplierTieRepair::SelectApplicatively => format!(
+            "{head} — keep exactly one and delete the rest, or write the call \
+             applicatively, `{op}[Spec = Witness](…)`, naming a witness sort among them: \
+             on the dot, the carrier's own member takes that key for its own call"
         ),
     }
 }

@@ -3867,7 +3867,7 @@ pub(super) fn check_apply_iter(
                         pinned_carrier,
                         fn_sym,
                         op_short_sym,
-                        !env.in_rule_own_term(),
+                        SelectionSite::of_call(!env.in_rule_own_term()),
                         span,
                     )?;
                 }

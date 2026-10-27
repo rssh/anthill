@@ -16,8 +16,13 @@
 //! bracket instead. `dot_bracket_selects_spec` answering false fails the own-member
 //! selection alone. Each refusal of a dot that makes no call, backed out on its own, fails
 //! the row of its kind; the supplier tie keeping its bracket-less advice at a call that
-//! takes a bracket fails the own-member tie's advice. The rule's own term rows and the
-//! controls pass under every back-out by design.
+//! takes a bracket fails the own-member tie's advice, and `own_call_takes_spec_label`
+//! answering false fails the advice of the own member that takes the spec's label, whose
+//! applicative repair answers either way. The printer writing no call's bracket fails the
+//! printer row — an application's, a construction's and a dot's, each on its own; a woven
+//! call's fails nothing, no row printing one — and writing no companion receiver fails its
+//! `comp` and `mkOn` calls; that row passes under every other back-out. The rule's own term rows and the controls pass
+//! under every back-out by design.
 
 use crate::common::{interp_for, load_errors_of, load_kb_with, one_definite_int};
 
@@ -326,6 +331,46 @@ fn a_dot_selects_a_witness_over_its_own_member() {
     );
 }
 
+/// An own member that takes the spec's label for its own call — a type parameter `Desc`,
+/// or an anonymous requirement on `Desc` — binds `[Desc = Rival]` written on the dot, and
+/// the two still tie. The selection is written on the call applicatively, which answers.
+#[test]
+fn an_own_member_taking_the_spec_label_sends_the_selection_applicative() {
+    let ns = "k7.own";
+    for member in [
+        "    operation describe[Desc](x: Leaf) -> Int64 = 7\n",
+        "    operation describe(x: Leaf) -> Int64 requires Desc[T = Leaf] = 7\n",
+    ] {
+        let program = |tail: &str| {
+            crate::wi1035_dot_member_supplier_tie_test::body_less(
+                ns,
+                member,
+                crate::wi1027_bodyless_supplier_tie_test::RIVAL_WITNESS,
+                tail,
+            )
+        };
+        for call in ["leaf().describe()", "leaf().describe[Desc = Rival]()"] {
+            let err = the_refusal(&program(&format!(
+                "  sort Driver\n    operation dot() -> Int64 = {call}\n  end\n"
+            )));
+            assert!(
+                err.contains("ambiguous dispatch of `k7.own.Desc.describe` on carrier `k7.own.Leaf`")
+                    && err.contains(
+                        "or write the call applicatively, \
+                         `k7.own.Desc.describe[Spec = Witness](…)`, naming a witness sort"
+                    ),
+                "{member} {call}: {err}",
+            );
+        }
+        let advised = program(
+            "  sort Driver\n    \
+               operation app() -> Int64 = Desc.describe[Desc = Rival](leaf())\n  \
+             end\n",
+        );
+        assert_eq!(call_int(&advised, "k7.own.Driver.app"), 9, "{member}: `Rival`'s `describe`");
+    }
+}
+
 /// A qualified key selects nothing — rung 2 refuses one — so the dot is not rerouted on it,
 /// and the tie stands. Asked by short name, it panicked in a debug build (`same_label`'s
 /// assertion on two qualified names with one short name), measured.
@@ -342,3 +387,64 @@ fn a_qualified_key_selects_no_witness_on_a_dot() {
         "{err}",
     );
 }
+
+/// The text the printer writes for an operation's stored body.
+fn printed_body(kb: &anthill_core::kb::KnowledgeBase, qn: &str) -> String {
+    let op = kb.try_resolve_symbol(qn).unwrap_or_else(|| panic!("{qn} is declared"));
+    let body = kb.op_body_node(op).unwrap_or_else(|| panic!("{qn} has a body"));
+    anthill_core::persistence::print::TermPrinter::new(kb).print_occurrence(body)
+}
+
+/// The printer writes a call's bracket, its entries in the type spelling: on the stored
+/// body, where the typer has replaced the dot by the call it resolves to, on the body as the
+/// loader built it, and in a rule's body. A bracket with no arguments keeps its
+/// parentheses, and a companion receiver's instantiation is written before the member; a
+/// construction's are written as a call's. A woven call (`apply_within`) writes its bracket
+/// too, and no row prints one: the weave reaches the calls of a rule's own term, which take
+/// no bracket (WI-20261024-TC54R).
+#[test]
+fn the_printer_writes_a_calls_bracket() {
+    let src = two(
+        "  sort Driver\n    \
+           operation idt[W](x: W) -> W = x\n    \
+           operation zero[W]() -> Int64 = 0\n    \
+           operation app() -> Int64 = Score.score[Score = ByHeat](red())\n    \
+           operation dot() -> Int64 = red().score[Score = ByName]()\n    \
+           operation pos() -> Int64 = Driver.idt[Int64](Driver.idt(3))\n    \
+           operation bare() -> Int64 = Driver.zero[W = List[T = Colour]]()\n    \
+           operation comp() -> Map[K = String, V = Int64] = Map[K = String, V = Int64].empty()\n    \
+           operation mkAt() -> Box[V = Int64] = Box.mk[V = Int64](v: 5)\n    \
+           operation mkOn() -> Box[V = Int64] = Box[V = Int64].mk(v: 5)\n  \
+         end\n  \
+         sort Box\n    sort V = ?\n    entity mk(v: V)\n  end\n  \
+         rule viaDot(?r) :- ?r <=> (let s = red().score[Score = ByHeat]()  s + 0)\n",
+    )
+    .replace("import anthill.prelude.{Int64}", "import anthill.prelude.{Int64, List, Map, String}");
+    let kb = load_kb_with(&src);
+    for (qn, printed) in [
+        ("app", "score[Score = ByHeat](red)"),
+        ("dot", "score[Score = ByName](red)"),
+        ("pos", "idt[Int64](idt(3))"),
+        ("bare", "zero[W = List[T = Colour]]()"),
+        ("comp", "].empty()"),
+        ("mkAt", "mk[V = Int64](v: 5)"),
+        ("mkOn", "Box[V = Int64].mk(v: 5)"),
+    ] {
+        let got = printed_body(&kb, &format!("k7.two.Driver.{qn}"));
+        assert!(got.ends_with(printed), "{qn}: `{got}`");
+    }
+    let comp = printed_body(&kb, "k7.two.Driver.comp");
+    assert!(
+        comp.starts_with("Map[") && comp.contains("K = String") && comp.contains("V = Int64"),
+        "the receiver's instantiation: `{comp}`",
+    );
+    let [rule] = kb.rule_ids_by_qn("k7.two.viaDot")[..] else {
+        panic!("one clause of viaDot");
+    };
+    let rule = anthill_core::persistence::print::TermPrinter::new(&kb).print_rule(rule);
+    assert!(rule.contains("let s = score[Score = ByHeat](red) in"), "{rule}");
+
+    let untyped = crate::common::try_load_kb_untyped_with(&src).expect("loads untyped");
+    assert_eq!(printed_body(&untyped, "k7.two.Driver.dot"), "red.score[Score = ByName]()");
+}
+

@@ -602,7 +602,8 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                 functor,
                 pos_args,
                 named_args,
-                ..
+                type_args,
+                recv_type,
             } => {
                 let fname = self.view.sym_name(*functor);
                 // Round-trip the forall_impl encoding to surface syntax — the
@@ -693,15 +694,17 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                     self.write_type_application(&item, *functor, pos_args.len(), buf);
                     return;
                 }
-                self.write_occ_fn(fname, pos_args, named_args, buf);
+                self.write_occ_call_at(recv_type.as_ref(), fname, type_args, pos_args, named_args, buf);
             }
             Expr::ApplyWithin {
                 functor,
                 args,
                 named_args,
+                type_args,
                 ..
             } => {
-                self.write_occ_fn(self.view.sym_name(*functor), args, named_args, buf);
+                let fname = self.view.sym_name(*functor);
+                self.write_occ_call(fname, type_args, args, named_args, false, buf);
             }
             // Proposal 055 — a nominal type value round-trips to its own SURFACE, and
             // it needs its own writer twice over. `write_occ_fn` would print
@@ -726,9 +729,14 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                 name,
                 pos_args,
                 named_args,
+                recv_type,
+                type_args,
                 ..
+            } => {
+                let ctor = self.view.sym_name(*name);
+                self.write_occ_call_at(recv_type.as_ref(), ctor, type_args, pos_args, named_args, buf);
             }
-            | Expr::Instantiation {
+            Expr::Instantiation {
                 name,
                 pos_args,
                 named_args,
@@ -741,21 +749,17 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
             } => {
                 self.write_occ_fn(self.view.sym_name(*name), pos_args, named_args, buf);
             }
-            // The bracket is not written, as an application's is not (the `Apply` arm
-            // above): this printer has no writer for a call's type arguments.
             Expr::DotApply {
                 receiver,
                 name,
                 pos_args,
                 named_args,
-                type_args: _,
+                type_args,
             } => {
                 self.write_occurrence(receiver, buf);
                 buf.push('.');
-                buf.push_str(self.view.sym_name(*name));
-                if !pos_args.is_empty() || !named_args.is_empty() {
-                    self.write_occ_args(pos_args, named_args, buf);
-                }
+                let member = self.view.sym_name(*name);
+                self.write_occ_call(member, type_args, pos_args, named_args, false, buf);
             }
             Expr::HoApply { predicate, args }
             | Expr::HoApplyWithin {
@@ -998,6 +1002,58 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
         if !pos.is_empty() || !named.is_empty() {
             self.write_occ_args(pos, named, buf);
         }
+    }
+
+    /// A call at the receiver whose instantiation it names, written before the member as the
+    /// call was — `Map[K = String].empty()`, `Box[V = Int64].mk(v: 5)` — or with none.
+    fn write_occ_call_at(
+        &self,
+        recv_type: Option<&Value>,
+        fname: &str,
+        type_args: &[(Option<Symbol>, Value)],
+        pos: &[Rc<NodeOccurrence>],
+        named: &[(Symbol, Rc<NodeOccurrence>)],
+        buf: &mut String,
+    ) {
+        if let Some(recv) = recv_type {
+            self.write_type_item(&ViewItem::Owned(recv.clone()), buf);
+            buf.push('.');
+        }
+        self.write_occ_call(fname, type_args, pos, named, recv_type.is_some(), buf);
+    }
+
+    /// A call, `f[K = T](a, k: v)`: its bracket's entries in the type spelling, and the
+    /// parentheses kept where a bracket stands without arguments — `f[K = T]` alone reads
+    /// back as a type — or where `parenthesized` says the call needs them.
+    fn write_occ_call(
+        &self,
+        fname: &str,
+        type_args: &[(Option<Symbol>, Value)],
+        pos: &[Rc<NodeOccurrence>],
+        named: &[(Symbol, Rc<NodeOccurrence>)],
+        parenthesized: bool,
+        buf: &mut String,
+    ) {
+        if type_args.is_empty() && !parenthesized {
+            return self.write_occ_fn(fname, pos, named, buf);
+        }
+        buf.push_str(fname);
+        if type_args.is_empty() {
+            return self.write_occ_args(pos, named, buf);
+        }
+        buf.push('[');
+        for (i, (key, ty)) in type_args.iter().enumerate() {
+            if i > 0 {
+                buf.push_str(", ");
+            }
+            if let Some(key) = key {
+                buf.push_str(self.view.sym_name(*key));
+                buf.push_str(" = ");
+            }
+            self.write_type_item(&ViewItem::Owned(ty.clone()), buf);
+        }
+        buf.push(']');
+        self.write_occ_args(pos, named, buf);
     }
 
     fn write_occ_args(
