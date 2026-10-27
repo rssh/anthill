@@ -2344,11 +2344,13 @@ pub(super) fn reassemble(
             name,
             pos_args,
             named_args,
+            type_args,
         } => Expr::DotApply {
             receiver: cur.take(receiver),
             name: *name,
             pos_args: cur.take_vec(pos_args),
             named_args: cur.take_named(named_args),
+            type_args: type_args.clone(),
         },
         Expr::If {
             condition,

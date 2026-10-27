@@ -2765,7 +2765,8 @@ fn relation_column_access_parts(
             name,
             pos_args,
             named_args,
-        } if pos_args.is_empty() && named_args.is_empty() => Some((
+            type_args,
+        } if pos_args.is_empty() && named_args.is_empty() && type_args.is_empty() => Some((
             Rc::clone(receiver),
             *name,
             short_name_of(kb.local_name_of(*name)).to_string(),

@@ -337,16 +337,12 @@ pub enum TieRepair {
     /// label and a QUALIFIED one is refused rather than resolved (§4.2), so echoing
     /// the qualified spec would print advice that does not load.
     Bracket(String),
-    /// [`Self::Bracket`]'s bracket, for a call that cannot carry it as written
-    /// ([`BracketChannel`]). MEASURED, each with the bracket advised in the call's list and
-    /// the program so written refused: `Score.score(red(), ?r)` over two witness sorts, a
-    /// rule's own term (`CallTypeArgsNotSupportedHere`), and `red().score()`, a dot.
-    BracketElsewhere {
-        /// What to write: the bracket, or for a dot the applicative call that takes it
-        /// (`Score.score[Score = ns.ByHeat]`).
-        write: String,
-        channel: BracketChannel,
-    },
+    /// [`Self::Bracket`]'s bracket, for a call written as a rule's own term, which cannot
+    /// carry it ([`render_call_tie`]); inside a `let`, or in an operation's body the rule
+    /// calls, the call does. MEASURED with the bracket advised in the call's list and the
+    /// program so written refused: `Score.score(red(), ?r)` over two witness sorts
+    /// (`CallTypeArgsNotSupportedHere`).
+    BracketElsewhere(String),
     /// Every candidate is a CONCRETE provider, where §4.4 check 3 refuses an explicit
     /// witness because the VALUE decides — and a call that reached here has no value
     /// that does. MEASURED on `wi822_op_scoped_supply_test`'s receiver-less
@@ -486,51 +482,18 @@ pub(super) fn render_instance_tie(
     (candidates, repair)
 }
 
-/// How the call a tie is refused at ([`TypeError::DispatchAmbiguous`]) was written, which
-/// decides where the bracket that selects a provider can go — what the loader decides
-/// when it reads or refuses a written bracket, asked of the call the typer holds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BracketChannel {
-    /// Written as a dot, which takes no bracket; its applicative spelling does. Read off the
-    /// call the dot is replaced by, whose source is the dot.
-    pub dot: bool,
-    /// A rule's own term ([`TypingEnv::in_rule_own_term`]), where neither spelling takes
-    /// one; inside a `let`, or in an operation's body, the call does.
-    pub rule_own_term: bool,
-}
-
-impl BracketChannel {
-    pub(super) fn of_call(env: &TypingEnv, occ: &NodeOccurrence) -> Self {
-        Self {
-            dot: occ
-                .synthesized_from()
-                .is_some_and(|from| matches!(from.as_expr(), Some(Expr::DotApply { .. }))),
-            rule_own_term: env.in_rule_own_term(),
-        }
-    }
-}
-
-/// [`render_instance_tie`] for a tie at a call the typer refuses, whose [`BracketChannel`]
-/// decides where the bracket the repair names can be written.
+/// [`render_instance_tie`] for a tie at a call the typer refuses. A call written as a rule's
+/// own term ([`TypingEnv::in_rule_own_term`]) takes no call-site type arguments, so the
+/// bracket the repair names goes where the call takes one; what the loader decides when it
+/// reads or refuses a written bracket, asked of the call the typer holds.
 pub(super) fn render_call_tie(
     kb: &KnowledgeBase,
     tie: &InstanceTie,
-    op: Symbol,
-    channel: BracketChannel,
+    in_rule_own_term: bool,
 ) -> (Vec<String>, TieRepair) {
     let (candidates, repair) = render_instance_tie(kb, tie);
     let repair = match repair {
-        TieRepair::Bracket(bracket) if channel.dot => TieRepair::BracketElsewhere {
-            write: format!(
-                "{}.{}{bracket}",
-                short_name_of(kb.qualified_name_of(tie.spec)),
-                short_name_of(kb.qualified_name_of(op)),
-            ),
-            channel,
-        },
-        TieRepair::Bracket(bracket) if channel.rule_own_term => {
-            TieRepair::BracketElsewhere { write: bracket, channel }
-        }
+        TieRepair::Bracket(bracket) if in_rule_own_term => TieRepair::BracketElsewhere(bracket),
         repair => repair,
     };
     (candidates, repair)
@@ -597,25 +560,11 @@ pub(super) fn tie_repair_advice(spec: &str, repair: &TieRepair) -> String {
             " — they may coexist, so say which: write `{bracket}` (or another of \
              them) in the call's bracket list"
         ),
-        TieRepair::BracketElsewhere { write, channel } => {
-            let (call, what) = if channel.dot {
-                ("a dot call", format!("write it applicatively, as `{write}(…)`"))
-            } else {
-                ("a call", format!("write `{write}` on it"))
-            };
-            let (position, place) = if channel.rule_own_term {
-                (
-                    " written as a rule's own term",
-                    ", inside a `let` or in an operation's body that the rule calls",
-                )
-            } else {
-                ("", "")
-            };
-            format!(
-                " — they may coexist, so say which; {call}{position} cannot carry \
-                 call-site type arguments, so {what}{place} (or name another of them)"
-            )
-        }
+        TieRepair::BracketElsewhere(bracket) => format!(
+            " — they may coexist, so say which; a call written as a rule's own term cannot \
+             carry call-site type arguments, so write `{bracket}` on it, inside a `let` or \
+             in an operation's body that the rule calls (or name another of them)"
+        ),
         TieRepair::ValueDirected => ", and none can be named here: each is a CONCRETE \
              provider, where an explicit witness is refused because the VALUE decides the \
              dispatch — and this call has no value that does. Pin the carrier through the \
@@ -680,6 +629,21 @@ pub enum SupplierTieRepair {
     /// did) is the mistake [`crate::kb::load::LoadError::CallTypeArgsNotSupportedHere`]
     /// carries a `position` field to avoid, mirror-imaged.
     NameableWitness,
+    /// [`Self::NameableWitness`] at a call the typer refuses where the call itself takes a
+    /// call-site bracket — in an operation's body, under a compound expression — written
+    /// applicatively or as a dot: the bracket goes on it.
+    SelectAtTheCall,
+}
+
+impl SupplierTieRepair {
+    /// The repair at a call that takes a call-site bracket, where a nameable witness is
+    /// selected on the call itself.
+    fn at_a_call_taking_a_bracket(self) -> Self {
+        match self {
+            SupplierTieRepair::NameableWitness => SupplierTieRepair::SelectAtTheCall,
+            repair => repair,
+        }
+    }
 }
 
 /// WI-1012 — classify a tie for [`ambiguous_spec_op_dispatch_message`]. Asked of the
@@ -1001,6 +965,7 @@ pub(super) fn arbitrate_unarbitrated_supplier_tie(
     carrier: Symbol,
     spec_op: Symbol,
     op_short_sym: Symbol,
+    call_takes_bracket: bool,
     span: Option<Span>,
 ) -> Result<Option<Symbol>, TypeError> {
     let cands = spec_op_suppliers_for_carrier(kb, spec_sort, carrier, spec_op, op_short_sym);
@@ -1015,7 +980,7 @@ pub(super) fn arbitrate_unarbitrated_supplier_tie(
     }
     match default_among_suppliers(kb, spec_sort, carrier, &cands) {
         Some(i) => Ok(Some(cands[i].target)),
-        None => Err(supplier_tie_error(kb, spec_op, carrier, &cands, span)),
+        None => Err(supplier_tie_error(kb, spec_op, carrier, &cands, call_takes_bracket, span)),
     }
 }
 
@@ -1063,10 +1028,8 @@ pub(crate) fn default_among_suppliers(
 /// WRONG. NOTHING ARBITRATES ON THIS PATH. Neither caller runs `dispatch_spec_op_cached`,
 /// so there is no `resolve_at_goal` and no tier-2 specificity to defer to; and
 /// `callee_requirement_slots` pushes no dispatch slot for a defaulted op, so no tier-1
-/// bracket can bind one either (at the dot site tier 1 is out for a second reason:
-/// `Expr::DotApply` carries no `type_args` field, so a dot is bracket-less by
-/// construction — the WI-842 argument). Two suppliers therefore genuinely ARE a tie. The
-/// clauses over there exist because something does.
+/// bracket can bind one either, written applicatively or on a dot. Two suppliers
+/// therefore genuinely ARE a tie. The clauses over there exist because something does.
 ///
 /// WI-861 — IT ALSO SELECTS NOW, and the two jobs are one function because they are one
 /// decision. 058 §3.2's rung 2a says an unselected dispatch takes the DEFAULT among the
@@ -1090,7 +1053,8 @@ pub(super) fn arbitrate_defaulted_supplier_tie<'a>(
         [only] => Ok(Some(only)),
         many => match default_among_suppliers(kb, spec_sort, carrier, many) {
             Some(i) => Ok(Some(&many[i])),
-            None => Err(supplier_tie_error(kb, spec_op, carrier, cands, span)),
+            // A defaulted operation has no dispatch slot a bracket selects, at any call.
+            None => Err(supplier_tie_error(kb, spec_op, carrier, cands, false, span)),
         },
     }
 }
@@ -1187,10 +1151,12 @@ pub(super) enum DotMember {
 /// moment it became a clause the dot spelling would have diverged from the qualified one
 /// on the same program — the spelling-keyed silence this ticket was opened to close.
 ///
-/// TIER 1 CANNOT APPLY HERE: `Expr::DotApply` carries no `type_args` field, so a dot is
-/// BRACKET-LESS BY CONSTRUCTION and the `!pinned_spec` clause the body-less guard's
-/// caller applies has nothing to read. That is the same argument eval's bracket-less
-/// readers make for taking the bare count (WI-842).
+/// TIER 1 IS ASKED FIRST. A bracket on the dot that selects a provider of the spec
+/// (`leaf().describe[Desc = W]()`) is a key of the spec operation's call, which the own
+/// member's call does not take, so the dot is that call ([`dot_bracket_selects_spec`]) and
+/// neither half below arbitrates: the selection decides, as it does for the call written
+/// applicatively. `call_takes_bracket` is whether the dot is written where a bracket is
+/// read, which decides the repair a tie names ([`SupplierTieRepair::SelectAtTheCall`]).
 ///
 /// TIER 2 IS WHY THE BODY-LESS HALF DELEGATES RATHER THAN COUNTING: no dispatch runs on
 /// this path, so there is no `DispatchOutcome` to defer to, and a bare count would refuse
@@ -1220,6 +1186,8 @@ pub(super) fn dot_member_dispatch_decision(
     carrier: Symbol,
     own_member: Symbol,
     short: &str,
+    type_args: &[(Option<Symbol>, Value)],
+    call_takes_bracket: bool,
     span: Option<Span>,
 ) -> Result<DotMember, TypeError> {
     // The spec op the member backs, found the same way the ladder's NEXT rung finds one
@@ -1244,6 +1212,12 @@ pub(super) fn dot_member_dispatch_decision(
     let Some(spec_sort) = spec_op_parent_sort(kb, spec_op) else {
         return Ok(DotMember::Take);
     };
+    // A bracket that selects a provider of the spec is a key of the spec operation's call
+    // (`Desc.describe[Desc = W](leaf())`), which the member's own call does not take; the
+    // dot is that call, and the selection decides what neither half below arbitrates.
+    if dot_bracket_selects_spec(kb, own_member, spec_sort, type_args) {
+        return Ok(DotMember::DispatchByValue(spec_op));
+    }
     let op_short_sym = kb.intern(short);
     // WI-608: an ABSTRACT-SPEC receiver is not a static pin — its runtime value is some
     // concrete provider — so the suppliers of the SPEC sort are not the suppliers of the
@@ -1327,6 +1301,7 @@ pub(super) fn dot_member_dispatch_decision(
             carrier,
             spec_op,
             op_short_sym,
+            call_takes_bracket,
             span,
         )?;
         return Ok(dot_takes_or_reroutes(kb, own_member, spec_op, broke_a_tie));
@@ -1343,6 +1318,41 @@ pub(super) fn dot_member_dispatch_decision(
         .then(|| chosen.map(|c| c.target))
         .flatten();
     Ok(dot_takes_or_reroutes(kb, own_member, spec_op, broke_a_tie))
+}
+
+/// Does the bracket a dot writes name the spec `spec_sort` its own member backs — a key the
+/// spec's label is, which the member takes no binding at (neither a type parameter of it or
+/// of its sort, nor one of its anonymous requirements on that spec)?
+fn dot_bracket_selects_spec(
+    kb: &mut KnowledgeBase,
+    own_member: Symbol,
+    spec_sort: Symbol,
+    type_args: &[(Option<Symbol>, Value)],
+) -> bool {
+    // A qualified key names no slot (rung 2 refuses it), so it selects nothing here either.
+    let keys: SmallVec<[Symbol; 2]> = type_args
+        .iter()
+        .filter_map(|(key, _)| *key)
+        .filter(|&key| !kb.local_name_of(key).contains('.') && same_label(kb, key, spec_sort))
+        .collect();
+    if keys.is_empty() {
+        return false;
+    }
+    let declared: Vec<Symbol> = match lookup_operation_info_full(kb, own_member) {
+        Some(info) => call_bracket_scopes(kb, &info, own_member)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect(),
+        None => Vec::new(),
+    };
+    let slots = callee_requirement_slots(kb, own_member);
+    // The two rungs a key of the member's own call is read by, asked as that call asks them
+    // (`resolve_call_type_arg_targets`): a declared parameter by its symbol, an anonymous
+    // requirement by its spec's label.
+    keys.iter().any(|&key| {
+        !declared.contains(&key)
+            && !slots.iter().any(|slot| !slot.named && same_label(kb, key, slot.spec))
+    })
 }
 
 /// WI-861 — WHAT A DOT DOES WITH ITS MEMBER once 058 §3.2's rung 2a has spoken, for BOTH
@@ -1393,18 +1403,28 @@ fn dot_takes_or_reroutes(
 /// twice, and the WI-1027 guard reads the wider [`spec_op_suppliers_for_carrier`] — the
 /// interpretability filter is the defaulted half's own (WI-1010), so the two lists are
 /// deliberately not the same query.
+///
+/// `call_takes_bracket`: the call is written where a call-site bracket is read, so a
+/// nameable witness is selected on it ([`SupplierTieRepair::SelectAtTheCall`]).
 pub(crate) fn supplier_tie_error(
     kb: &KnowledgeBase,
     spec_op: Symbol,
     carrier: Symbol,
     cands: &[SpecOpSupplier],
+    call_takes_bracket: bool,
     span: Option<Span>,
 ) -> TypeError {
-    ProviderSupplyRefusal::Tie {
+    let mut refusal = ProviderSupplyRefusal::Tie {
         carrier,
         candidates: cands.iter().copied().collect(),
     }
-    .type_error(kb, spec_op, span)
+    .type_error(kb, spec_op, span);
+    if let (true, TypeError::AmbiguousSpecOpDispatch { repair, .. }) =
+        (call_takes_bracket, &mut refusal)
+    {
+        *repair = repair.at_a_call_taking_a_bracket();
+    }
+    refusal
 }
 
 /// WI-1012 — the one message body for "several texts supply one spec op's
@@ -1455,6 +1475,10 @@ pub(crate) fn ambiguous_spec_op_dispatch_message(
              an operation that can write `[Spec = Witness]`: a witness sort among the \
              rivals IS nameable there, and this read is bracket-less, which is why it \
              has to refuse rather than pick"
+        ),
+        SupplierTieRepair::SelectAtTheCall => format!(
+            "{head} — keep exactly one and delete the rest, or write `[Spec = Witness]` in \
+             the call's bracket list, naming a witness sort among them"
         ),
     }
 }

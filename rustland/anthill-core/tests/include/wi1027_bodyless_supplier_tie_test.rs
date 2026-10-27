@@ -280,8 +280,11 @@ fn a_witness_supplier_no_longer_silently_outranks_the_carriers_member() {
         ns,
         &format!("witness sort '{ns}.Rival' (supplying '{ns}.Rival.describe')"),
     );
+    // The call is in an operation's body, which takes the bracket (WI-20261026-8K7W0);
+    // `wi_8k7w0_dot_call_type_args_test::a_dot_selects_a_witness_over_its_own_member` runs
+    // the advised `Desc.describe[Desc = Rival](leaf())` and its dot spelling: 9.
     assert!(
-        msg.contains("route the call through an operation that can write `[Spec = Witness]`"),
+        msg.contains("or write `[Spec = Witness]` in the call's bracket list"),
         "a witness rival on a BODY-LESS op is nameable at a bracket-capable call, and \
          the repair must say so rather than inherit `keep exactly one`: {msg}",
     );

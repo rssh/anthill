@@ -94,6 +94,7 @@ fn dot_occ(kb: &mut KnowledgeBase, pos_child: Rc<NodeOccurrence>) -> Rc<NodeOccu
         name: shift,
         pos_args: vec![pos_child],
         named_args: vec![(k, occ(Expr::Const(Literal::Int(2))))],
+        type_args: Vec::new(),
     })
 }
 

@@ -2889,11 +2889,13 @@ impl<'kb> Emitter<'kb> {
                 name,
                 pos_args,
                 named_args,
+                type_args,
             } => Expr::DotApply {
                 receiver: self.close_occ(receiver, env, str_env)?,
                 name: *name,
                 pos_args: self.close_all(pos_args, env, str_env)?,
                 named_args: self.close_named(named_args, env, str_env)?,
+                type_args: type_args.clone(),
             },
             Expr::If {
                 condition,
@@ -3016,7 +3018,7 @@ impl<'kb> Emitter<'kb> {
     ///     `reflect_field_access`), which WI-681's body-derived Vec3 carries.
     ///   - `Expr::DotApply { receiver, name, .. }` — the WI-278 value-receiver
     ///     dot form. Only an EMPTY arg list is a field access; a non-empty
-    ///     `pos_args`/`named_args` is a method call (returns `None`).
+    ///     `pos_args`/`named_args`, or a bracket, is a method call (returns `None`).
     fn as_field_access(&self, occ: &Rc<NodeOccurrence>) -> Option<(Rc<NodeOccurrence>, String)> {
         match occ.as_expr()? {
             Expr::DotApply {
@@ -3024,8 +3026,9 @@ impl<'kb> Emitter<'kb> {
                 name,
                 pos_args,
                 named_args,
+                type_args,
             } => {
-                if !pos_args.is_empty() || !named_args.is_empty() {
+                if !pos_args.is_empty() || !named_args.is_empty() || !type_args.is_empty() {
                     return None;
                 }
                 Some((

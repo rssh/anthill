@@ -350,6 +350,7 @@ end
                     name,
                     pos_args,
                     named_args,
+                    ..
                 },
             ..
         } => {

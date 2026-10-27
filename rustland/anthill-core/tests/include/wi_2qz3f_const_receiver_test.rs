@@ -160,11 +160,12 @@ fn a_relation_a_const_holds_is_drained_by_a_dot_on_it() {
     );
 }
 
-/// The probe's other reader: a call-site bracket on a dot call is refused as one, on a
-/// const as on a local. It was told about the flattened functor `origin.getX`, "got a
-/// callee with no type-parameter list".
+/// The probe's other reader: a call-site bracket on a dot call on a const is the bracket
+/// of the call it resolves to, as on a local (WI-20261026-8K7W0), so `getX`, which declares
+/// no `T`, refuses it as `P.getX[T = Int64](origin)` does. It was told about the flattened
+/// functor `origin.getX`, "got a callee with no type-parameter list".
 #[test]
-fn a_bracket_on_a_dot_call_on_a_const_is_refused_as_on_a_local() {
+fn a_bracket_on_a_dot_call_on_a_const_is_read_as_on_a_local() {
     for (name, decls) in [
         ("cr16", format!("{ORIGIN}  operation rd() -> Int64 = origin.getX[T = Int64]()")),
         (
@@ -173,12 +174,17 @@ fn a_bracket_on_a_dot_call_on_a_const_is_refused_as_on_a_local() {
     let origin = P.pt(9, 9)
     origin.getX[T = Int64]()".to_string(),
         ),
+        ("cr16a", format!("{ORIGIN}  operation rd() -> Int64 = P.getX[T = Int64](origin)")),
     ] {
         let errs = load_errors_of(&ns(name, &decls));
         assert_refused_naming(
             &errs,
-            &["call-site type arguments are not supported on a dot call"],
+            &["P.getX.type_arg", "unknown type-param 'T'"],
             name,
+        );
+        assert!(
+            !errs.iter().any(|e| e.contains("no type-parameter list")),
+            "{name}: {errs:?}"
         );
     }
 }

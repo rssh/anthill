@@ -11,18 +11,17 @@
 //! The ticket's second half — two rival witnesses and nothing selecting one — is refused at
 //! load, not delayed (kernel-language §5.4: a rule-body goal no route discharges is refused
 //! at load). Its refusal names a bracket the call can take where it is written
-//! (`BracketChannel`): a call of a rule's own term takes none, so it goes on the call inside
-//! a `let` or in an operation's body; a dot call takes none, so it goes on the applicative
-//! spelling. Each advised program is run here.
+//! (`render_call_tie`): a call of a rule's own term takes none, so it goes on the call inside
+//! a `let` or in an operation's body; a call there takes one, written applicatively or as a
+//! dot (WI-20261026-8K7W0). Each advised program is run here.
 //!
 //! BACK-OUTS, measured. With the guard core asking `sort_provides` alone, the three
 //! written-requirement rows answer nothing, and every row with an applicative `Score.score`
 //! call in a rule — the call-alone row, the advised repairs, the two goal refusals and the
 //! compound-expression control — fails at load on a second refusal, "`Colour` provides no
 //! `Score`", the typer's requirement check asking the same core; the own-spec carrier row and
-//! the two dot rows pass. With `BracketChannel::of_call` reading no rule's own term, the
-//! three rule-term refusal rows fail on the advice; reading no dot, the two dot refusal rows
-//! fail; every other row passes under both by design.
+//! the two dot rows pass. With `render_call_tie` reading no rule's own term, the four
+//! rule-term refusal rows fail on the advice; every other row passes by design.
 
 const ONE_WITNESS: &str = r#"
 namespace dg57j.one
@@ -188,30 +187,29 @@ fn two_witnesses_refuse_a_value_slot_call_and_send_the_bracket_elsewhere() {
     assert_advises(&err, "a call written as a rule's own term", "write `[Score = ", RULE_TERM);
 }
 
-/// A dot in a rule's own term takes the bracket in neither place, nor in its own spelling.
+/// A dot in a rule's own term is a call of it, as its applicative spelling is.
 #[test]
-fn two_witnesses_refuse_a_rule_term_dot_and_advise_the_applicative_call() {
+fn two_witnesses_refuse_a_rule_term_dot_and_send_the_bracket_elsewhere() {
     let err = the_tie_refusal(&two("  rule v(?r) :- ?r <=> red().score()"));
-    assert_advises(
-        &err,
-        "a dot call written as a rule's own term",
-        "write it applicatively, as `Score.score[Score = ",
-        RULE_TERM,
-    );
+    assert_advises(&err, "a call written as a rule's own term", "write `[Score = ", RULE_TERM);
 }
 
-/// A dot in an operation's body: the bracket goes on the applicative spelling.
+/// A dot in an operation's body takes the bracket, as the call written applicatively does.
 #[test]
-fn two_witnesses_refuse_a_dot_and_advise_the_applicative_call() {
+fn two_witnesses_refuse_a_dot_and_advise_its_own_bracket() {
     let err = the_tie_refusal(&two(
         "  sort Driver\n    operation go() -> Int64 = red().score()\n  end",
     ));
-    assert_advises(&err, "a dot call", "write it applicatively, as `Score.score[Score = ", "(…)`");
+    assert!(
+        err.contains("so say which: write `[Score = dg57j.two.By")
+            && err.contains("(or another of them) in the call's bracket list"),
+        "{err}",
+    );
     assert!(!err.contains(RULE_TERM), "an operation's body is no rule's own term: {err}");
 }
 
 /// The repairs advised, run: the applicative bracket in an operation's body, the rule
-/// calling it, and the same call under a `let` in the rule.
+/// calling it, and the same call under a `let` in the rule, applicative and as a dot.
 #[test]
 fn the_advised_repairs_select_each_witness() {
     let src = two(
@@ -223,10 +221,17 @@ fn the_advised_repairs_select_each_witness() {
          rule viaName(?r) :- ?r <=> Driver.name()\n  \
          rule viaLet(?r) :- ?r <=> (let s = Score.score[Score = ByName](red())  s + 0)\n  \
          rule viaLambda(?r) :- \
-         ?r <=> (let f = lambda (c: Colour) -> Score.score[Score = ByName](c)  f(red()))",
+         ?r <=> (let f = lambda (c: Colour) -> Score.score[Score = ByName](c)  f(red()))\n  \
+         rule viaDot(?r) :- ?r <=> (let s = red().score[Score = ByHeat]()  s + 0)",
     );
     let mut kb = crate::common::load_kb_with(&src);
-    for (qn, want) in [("viaHeat", 3), ("viaName", 1), ("viaLet", 1), ("viaLambda", 1)] {
+    for (qn, want) in [
+        ("viaHeat", 3),
+        ("viaName", 1),
+        ("viaLet", 1),
+        ("viaLambda", 1),
+        ("viaDot", 3),
+    ] {
         let got = crate::common::one_definite_int(&mut kb, &format!("dg57j.two.{qn}"));
         assert_eq!(got, Some(want), "{qn}");
     }

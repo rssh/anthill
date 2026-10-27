@@ -208,6 +208,9 @@ enum BuildFrame<'t> {
         /// Written without parentheses (`e.m`, not `e.m()`) — see
         /// `SimpleTermStore::paren_less_dots`.
         paren_less: bool,
+        /// The call-site bracket written on the member (`?x.m[T = X](…)`), embedded as
+        /// `FnTerm`'s is.
+        type_args: Vec<SortBinding>,
     },
     SetLiteral {
         node: Node<'t>,
@@ -1319,13 +1322,24 @@ impl<'a> Converter<'a> {
         }
     }
 
+    /// The call-site bracket a call's callee writes — `[T = X]` of `f[T = X](…)`, of
+    /// `recv.m[T = X](…)` — or none.
+    fn call_bracket(&mut self, name_node: Node<'_>) -> Vec<SortBinding> {
+        if !matches!(name_node.kind(), "application" | "dot_application") {
+            return Vec::new();
+        }
+        self.children_by_kind(name_node, "sort_binding")
+            .into_iter()
+            .map(|b| self.convert_sort_binding(b))
+            .collect()
+    }
+
     fn push_fn_term<'t>(&mut self, node: Node<'t>, work: &mut Vec<WorkOp<'t>>) {
         let name_node = self.field(node, "name").unwrap_or(node);
         // WI-20260829-BAD3V: a `dot_application` callee (`recv.m[T = X](…)`) IS a
         // dot callee wearing a type-arg bracket. Unwrap to the `field_access` it
         // wraps so the receiver test below asks the same question of both
-        // spellings — the bracket decides what the bindings MEAN (see below), never
-        // whether this is a dot call.
+        // spellings — the bracket never decides whether this is a dot call.
         let callee_node = if name_node.kind() == "dot_application" {
             self.field(name_node, "name").unwrap_or(name_node)
         } else {
@@ -1338,60 +1352,13 @@ impl<'a> Converter<'a> {
         if callee_node.kind() == "field_access" {
             if let Some(receiver) = self.field(callee_node, "object") {
                 if self.is_value_receiver(receiver) {
-                    // WI-20260829-BAD3V: the bracket is REFUSED on a VALUE receiver,
-                    // and refused HERE rather than dropped or forwarded. `dot_apply`
-                    // has no type-args channel — `Expr::DotApply` carries no
-                    // `type_args` field, which is the "a dot is bracket-less by
-                    // construction" premise the typer's tier-1 reasoning rests on
-                    // (WI-842, and `arbitrate_defaulted_supplier_tie`'s doc) and which
-                    // WI-443 already refused to fake by re-routing a bracketed
-                    // identifier-receiver call. So the bindings have nowhere to go, and
-                    // the two silent alternatives are both worse than a located error:
-                    // dropping them means `?xs.map[Dst = Int64](f)` quietly means
-                    // `?xs.map(f)`, and forwarding them onto the `dot_apply` term mints
-                    // a write-only channel whose first reader would have to invent what
-                    // it meant. The peer refusal is the `rest_arg` arm of
-                    // `push_dot_method_call`, on the same grounds: the dot form is not
-                    // where that syntax is read, and the message names the form that
-                    // is.
-                    if name_node.kind() == "dot_application" {
-                        let at = self
-                            .child_by_kind(name_node, "sort_binding")
-                            .unwrap_or(name_node);
-                        // `field_access` always has a `field`, so the fallback is
-                        // unreachable from the grammar — and it quotes the callee the
-                        // author wrote rather than inventing a member name, because a
-                        // repair spelled with a name that is not in the source reads as
-                        // a different call.
-                        let member =
-                            self.text(self.field(callee_node, "field").unwrap_or(callee_node));
-                        // THE MESSAGE NAMES A SHAPE, NOT A POSITION, and both halves of
-                        // that were learned the hard way. An earlier wording ended "…
-                        // `Sort.m[…](receiver, …)` in an operation body", which is the
-                        // exact defect WI-839 split `CallTypeArgsPosition` to avoid:
-                        // MEASURED on `rule dr: ?x.m[T = Int64](?y) <=> ?y @[simp]`, it
-                        // told a RULE HEAD to move into an operation body — not a move a
-                        // rule head has, and the applicative rewrite it named would be
-                        // refused there in turn (`CallTypeArgsPosition::RuleHead`). This
-                        // converter cannot see which position it is in; the loader's
-                        // `call_type_args_unsupported_detail` can and does, so WHERE the
-                        // bracket is read is its sentence to write, not this one's.
-                        // `(…)` and not `(receiver, …)` for the second half: on a
-                        // QUALIFIED companion receiver (`Map[K = String].empty[…]()`)
-                        // there is no receiver argument at all, and that spelling is one
-                        // this arm's sibling now ACCEPTS.
-                        self.err(
-                            format!(
-                                "call-site type arguments are not supported on a dot call \
-                                 — a dot carries no channel for them, so the binding \
-                                 would be parsed and then silently dropped. The \
-                                 applicative spelling `Sort.{member}[…](…)` is the form \
-                                 that can carry one"
-                            ),
-                            at,
-                        );
-                    }
-                    self.push_dot_method_call(node, callee_node, receiver, work);
+                    // A bracket on the member (`?xs.map[Dst = Int64](f)`) rides the dot to
+                    // the call the typer replaces it by, which reads it as the applicative
+                    // spelling's. Where the dot stands decides whether it is read: the
+                    // loader reads it where it reads an application's, and refuses it
+                    // elsewhere (`check_unconsumed_call_type_args`).
+                    let type_args = self.call_bracket(name_node);
+                    self.push_dot_method_call(node, callee_node, receiver, type_args, work);
                     return;
                 }
             }
@@ -1412,15 +1379,7 @@ impl<'a> Converter<'a> {
         // `convert_name` flattens to `Map.empty` exactly as it does for the
         // bracket-less `Map[K = String].empty()`; the outer bracket is then this
         // call's type arguments, the reading `Map.empty[T = Int64]()` already has.
-        let type_args: Vec<SortBinding> =
-            if matches!(name_node.kind(), "application" | "dot_application") {
-                self.children_by_kind(name_node, "sort_binding")
-                    .into_iter()
-                    .map(|b| self.convert_sort_binding(b))
-                    .collect()
-            } else {
-                Vec::new()
-            };
+        let type_args = self.call_bracket(name_node);
 
         // WI-20260829-W6JH0 — the COMPANION RECEIVER's bracket, form (3). It reaches
         // here having been ERASED from the functor: `collect_field_access_segments`
@@ -1540,6 +1499,7 @@ impl<'a> Converter<'a> {
         node: Node<'t>,
         name_node: Node<'t>,
         receiver: Node<'t>,
+        type_args: Vec<SortBinding>,
         work: &mut Vec<WorkOp<'t>>,
     ) {
         let field_node = self.field(name_node, "field").unwrap_or(name_node);
@@ -1613,6 +1573,7 @@ impl<'a> Converter<'a> {
             name_span,
             slots,
             paren_less: false,
+            type_args,
         }));
         // Args pushed reversed, then the receiver last so it pops (and lands
         // on the result stack) first — matching the DotApply build's drain.
@@ -1779,6 +1740,7 @@ impl<'a> Converter<'a> {
                 name_span: field_span,
                 slots: SmallVec::new(),
                 paren_less: true,
+                type_args: Vec::new(),
             }));
         } else {
             work.push(WorkOp::Build(BuildFrame::FieldAccess {
@@ -2517,6 +2479,7 @@ impl<'a> Converter<'a> {
                 name_span,
                 slots,
                 paren_less,
+                type_args,
             } => {
                 // Result layout (drain_start..): receiver, then one entry per
                 // slot in source order. Parse shape:
@@ -2537,6 +2500,14 @@ impl<'a> Converter<'a> {
                     }
                 }
                 results.truncate(drain_start);
+                // The bracket rides as `FnTerm`'s does (WI-271).
+                if !type_args.is_empty() {
+                    let aux =
+                        Term::ParseAux(Box::new(super::ir::ParseAux::SortBindings(type_args)));
+                    let aux_tid = self.terms.alloc(aux, span);
+                    let type_args_key = self.intern("type_args");
+                    named_args.push((type_args_key, aux_tid));
+                }
                 let functor = self.intern(dt::DOT_APPLY);
                 let tid = self.terms.alloc(
                     Term::Fn {

@@ -57,6 +57,7 @@ pub(super) fn denoted_sort_dot(
     member: Symbol,
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    type_args: &[(Option<Symbol>, Value)],
     occ: &Rc<NodeOccurrence>,
 ) -> DenotedDot {
     let Some(type_sym) = kb.try_resolve_symbol("anthill.prelude.Type") else {
@@ -68,7 +69,7 @@ pub(super) fn denoted_sort_dot(
     let Some(denotation) = denotation_of(kb, env, receiver) else {
         return DenotedDot::NotDenoting;
     };
-    written_sort_dot(kb, env, type_sym, &denotation, member, pos_args, named_args, occ)
+    written_sort_dot(kb, env, type_sym, &denotation, member, pos_args, named_args, type_args, occ)
 }
 
 /// [`denoted_sort_dot`] for the type value the receiver denotes: the call the written
@@ -81,8 +82,19 @@ fn written_sort_dot(
     member: Symbol,
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    type_args: &[(Option<Symbol>, Value)],
     occ: &Rc<NodeOccurrence>,
 ) -> DenotedDot {
+    // The bracket a dot writes is the type arguments of the call it resolves to, and what
+    // the call on a denoted sort is at is its receiver's to say; the dot's bracket is not
+    // read there.
+    if !type_args.is_empty() {
+        return DenotedDot::Refused(TypeError::DotBracketUnread {
+            span: Some(occ.span.span),
+            member,
+            reading: UnreadDotBracket::DenotedSort,
+        });
+    }
     let sort = denoted_sort(kb, denotation);
     let (head, alias, bracketed) = (sort.head, sort.alias, sort.bracketed);
     let short = short_name_of(kb.local_name_of(member)).to_string();
@@ -799,6 +811,7 @@ pub(super) fn written_type_dots_as_calls(
         name,
         pos_args,
         named_args,
+        type_args,
     }) = walked.as_expr().filter(|e| is_written_type_dot(e))
     else {
         return walked;
@@ -807,7 +820,9 @@ pub(super) fn written_type_dots_as_calls(
     let Some(type_sym) = kb.try_resolve_symbol("anthill.prelude.Type") else {
         return walked;
     };
-    match written_sort_dot(kb, env, type_sym, receiver, *name, pos_args, named_args, &walked) {
+    match written_sort_dot(
+        kb, env, type_sym, receiver, *name, pos_args, named_args, type_args, &walked,
+    ) {
         DenotedDot::Call(call) => call,
         DenotedDot::Refused(e) => {
             errors.push(e);

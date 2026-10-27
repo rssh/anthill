@@ -277,8 +277,9 @@ pub enum TypeError {
         /// [`InstanceTie`] for why both matter. Rendering (and the concreteness
         /// scan it needs) happens at `format` / `to_load_error`, not here.
         tie: InstanceTie,
-        /// Where this call can carry the bracket the repair names; see [`render_call_tie`].
-        bracket: BracketChannel,
+        /// The call is written as a rule's own term, which takes no bracket; see
+        /// [`render_call_tie`].
+        in_rule_own_term: bool,
     },
     /// WI-1012 — the STATIC face of [`crate::eval::EvalError::AmbiguousSpecOpDispatch`]:
     /// a statically CONCRETE carrier has two or more runnable suppliers of one spec op
@@ -431,6 +432,16 @@ pub enum TypeError {
     TypeArgsOnNonOperation {
         span: Option<Span>,
         callee: Symbol,
+    },
+    /// A call-site bracket on a dot (`p.x[T = Int64]()`) that the typer does not replace
+    /// by an operation call: `reading` says what it is instead. Only the call a dot
+    /// resolves to takes the bracket, as the call written applicatively would. A type
+    /// member is not among them: a bracket is written with parentheses only, and a type
+    /// member read with them is refused as a call of a type.
+    DotBracketUnread {
+        span: Option<Span>,
+        member: Symbol,
+        reading: UnreadDotBracket,
     },
     /// WI-20261011-CR6GD: a call, in an operation body, of an operation whose one
     /// definition is clauses ([`clause_defined_own_operation`]). Clauses answer a goal
@@ -1639,8 +1650,8 @@ impl TypeError {
                     render_unmet(unmet),
                 )
             }
-            TypeError::DispatchAmbiguous { op, tie, bracket, .. } => {
-                let (candidates, repair) = render_call_tie(kb, tie, *op, *bracket);
+            TypeError::DispatchAmbiguous { op, tie, in_rule_own_term, .. } => {
+                let (candidates, repair) = render_call_tie(kb, tie, *in_rule_own_term);
                 unselected_instance_message(
                     kb.qualified_name_of(*op),
                     kb.qualified_name_of(tie.spec),
@@ -1713,6 +1724,9 @@ impl TypeError {
                      call-site `[…]` bracket could bind",
                     short_name_of(kb.qualified_name_of(*callee)),
                 )
+            }
+            TypeError::DotBracketUnread { member, reading, .. } => {
+                dot_bracket_unread_message(short_name_of(kb.local_name_of(*member)), *reading)
             }
             TypeError::CallOfClauseDefinedOperation { op, arity, .. } => {
                 let qn = kb.qualified_name_of(*op);
@@ -2407,6 +2421,7 @@ impl TypeError {
             | TypeError::DuplicateCallTypeArg { span, .. }
             | TypeError::ReceiverBracketConflict { span, .. }
             | TypeError::TypeArgsOnNonOperation { span, .. }
+            | TypeError::DotBracketUnread { span, .. }
             | TypeError::CallOfClauseDefinedOperation { span, .. }
             | TypeError::CallOfUnselectableSpecOperation { span, .. }
             | TypeError::CarrierSuppliesNoMember { span, .. }
@@ -2635,8 +2650,8 @@ impl TypeError {
             // said which to run), and the "expected X, got Y" frame has no room
             // for the candidate list and the repair syntax that make a use-site
             // refusal actionable.
-            TypeError::DispatchAmbiguous { op, tie, bracket, .. } => {
-                let (candidates, repair) = render_call_tie(kb, tie, *op, *bracket);
+            TypeError::DispatchAmbiguous { op, tie, in_rule_own_term, .. } => {
+                let (candidates, repair) = render_call_tie(kb, tie, *in_rule_own_term);
                 LoadError::UnselectedInstance {
                     op: kb.qualified_name_of(*op).to_string(),
                     spec: kb.qualified_name_of(tie.spec).to_string(),
@@ -2721,6 +2736,10 @@ impl TypeError {
                     kb.local_name_of(*param),
                     type_display_name_value(kb, callee),
                 ),
+                span: self.span(kb),
+            },
+            TypeError::DotBracketUnread { .. } => LoadError::InvalidTypeArgument {
+                detail: self.format(kb),
                 span: self.span(kb),
             },
             TypeError::TypeArgsOnNonOperation { callee, .. } => LoadError::TypeMismatch {
@@ -3560,4 +3579,41 @@ fn rule_body_effect_message(
         "{what}, which performs `{}`, and a rule body performs no effect",
         type_display_name_value(kb, effect),
     )
+}
+
+/// What a dot that carries a call-site bracket was read as, where it is no operation call
+/// ([`TypeError::DotBracketUnread`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnreadDotBracket {
+    /// A field of the receiver, or a component of a named tuple.
+    Field,
+    /// A column of a relation receiver.
+    Column,
+    /// The right-hand side of a `@[simp]` dot rule of the receiver's sort.
+    DotRule,
+    /// A member of the sort the receiver denotes.
+    DenotedSort,
+}
+
+/// [`TypeError::DotBracketUnread`]'s message.
+pub(super) fn dot_bracket_unread_message(member: &str, reading: UnreadDotBracket) -> String {
+    let head = format!("call-site type arguments on the dot `.{member}[…](…)`");
+    match reading {
+        UnreadDotBracket::Field => format!(
+            "{head} bind nothing: the dot reads the field `{member}` of its receiver, which \
+             is no operation call"
+        ),
+        UnreadDotBracket::Column => format!(
+            "{head} bind nothing: the dot selects the column `{member}` of its receiver, \
+             which is no operation call"
+        ),
+        UnreadDotBracket::DotRule => format!(
+            "{head} bind nothing: the dot is rewritten by a `@[simp]` dot rule of its \
+             receiver's sort, and the rewrite takes none"
+        ),
+        UnreadDotBracket::DenotedSort => format!(
+            "{head} are not read on a receiver that denotes a sort; write the call on the \
+             sort, `Sort.{member}[…](…)`"
+        ),
+    }
 }

@@ -3867,6 +3867,7 @@ pub(super) fn check_apply_iter(
                         pinned_carrier,
                         fn_sym,
                         op_short_sym,
+                        !env.in_rule_own_term(),
                         span,
                     )?;
                 }
@@ -4509,7 +4510,7 @@ pub(super) fn check_apply_iter(
                         span,
                         op: fn_sym,
                         tie,
-                        bracket: BracketChannel::of_call(env, occ),
+                        in_rule_own_term: env.in_rule_own_term(),
                     });
                 }
                 // The provider is chosen and supplies the operation twice: no slot or bracket

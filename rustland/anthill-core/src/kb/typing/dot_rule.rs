@@ -129,7 +129,9 @@ pub(super) fn try_fire_dot_rule(
 /// `call_shape` is the synthesized call's, receiver included.
 ///
 /// Asked by the dot's default dispatch, and by a dot rule that fired on the dot: the
-/// call the rule replaces is the one this answers.
+/// call the rule replaces is the one this answers. `type_args` is the dot's bracket, which
+/// can make the dot the call of the spec operation its own member backs
+/// ([`dot_member_dispatch_decision`]).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn dot_method_operation(
     kb: &mut KnowledgeBase,
@@ -140,6 +142,7 @@ pub(super) fn dot_method_operation(
     from_scope: ScopeId,
     dot_span: Option<Span>,
     call_shape: (usize, usize),
+    type_args: &[(Option<Symbol>, Value)],
 ) -> Result<Option<Symbol>, TypeError> {
     // WI-1035: the receiver's OWN member is resolved SEPARATELY from the two
     // spec fallbacks below, because it is not merely a rung of the name ladder
@@ -162,7 +165,9 @@ pub(super) fn dot_method_operation(
             if let Some(e) = hidden_dot_member(kb, own_member, from_scope, dot_span) {
                 return Err(e);
             }
-            match dot_member_dispatch_decision(kb, s, own_member, short, dot_span)? {
+            match dot_member_dispatch_decision(
+                kb, s, own_member, short, type_args, !env.in_rule_own_term(), dot_span,
+            )? {
                 DotMember::Take => {}
                 DotMember::DispatchByValue(spec_op) => own_op = Some(spec_op),
             }
@@ -246,7 +251,10 @@ pub(super) fn dot_method_operation(
                 // identically whether it is reached through `Colour` or through
                 // `Colour.red`.
                 if let Some(own_member) = found {
-                    match dot_member_dispatch_decision(kb, parent, own_member, short, dot_span)? {
+                    match dot_member_dispatch_decision(
+                        kb, parent, own_member, short, type_args, !env.in_rule_own_term(),
+                        dot_span,
+                    )? {
                         DotMember::Take => {}
                         DotMember::DispatchByValue(spec_op) => found = Some(spec_op),
                     }

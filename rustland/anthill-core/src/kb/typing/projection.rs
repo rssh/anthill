@@ -244,7 +244,8 @@ pub(super) fn stable_receiver_path(
             name,
             pos_args,
             named_args,
-        } if pos_args.is_empty() && named_args.is_empty() => {
+            type_args,
+        } if pos_args.is_empty() && named_args.is_empty() && type_args.is_empty() => {
             let name = *name;
             let mut segs = stable_receiver_path(kb, receiver)?;
             segs.push(name);
@@ -743,8 +744,11 @@ fn placeless_arg_reason(kb: &KnowledgeBase, callee: Symbol, occ: &Rc<NodeOccurre
             name,
             pos_args,
             named_args,
+            type_args,
             ..
-        }) if pos_args.is_empty() && named_args.is_empty() => field_path(kb.local_name_of(*name)),
+        }) if pos_args.is_empty() && named_args.is_empty() && type_args.is_empty() => {
+            field_path(kb.local_name_of(*name))
+        }
         Some(Expr::DotApply { name, .. }) => {
             unnamed(format!("the call `.{}(…)`", kb.local_name_of(*name)))
         }
@@ -962,6 +966,7 @@ pub(super) fn build_projection_off(
                 name: field,
                 pos_args: Vec::new(),
                 named_args: Vec::new(),
+                type_args: Vec::new(),
             },
             span,
             None,

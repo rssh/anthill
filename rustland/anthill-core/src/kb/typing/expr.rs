@@ -235,6 +235,8 @@ pub(super) enum TypeBuildFrame {
         member: Symbol,
         pos_args: Vec<Rc<NodeOccurrence>>,
         named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
+        /// The bracket written on the dot, handed to the call it resolves to.
+        type_args: Vec<(Option<Symbol>, Value)>,
         env: Env,
         expected: Option<Value>,
         /// WI-283: fire-fuel inherited from this node's `Visit`; spent

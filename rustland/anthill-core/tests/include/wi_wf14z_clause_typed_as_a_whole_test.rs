@@ -503,9 +503,9 @@ fn a_typed_head_admits_a_value_whose_part_its_bound_fixes() {
     }
 }
 
-/// A BRACKET ON A METHOD CALL OF THE PARAMETER FORM IS REFUSED, as on any dot call, which has
-/// no channel for one — the refusal the `?p.t.m[…]()` spelling gets. Lowered with its bracket
-/// read as an argument, the call could not be built.
+/// A BRACKET ON A METHOD CALL OF THE PARAMETER FORM IS REFUSED, as on any call of a rule's own
+/// term — the refusal the `?p.t.m[…]()` spelling gets. Lowered with its bracket read as an
+/// argument, the call could not be built.
 #[test]
 fn a_bracket_on_a_parameter_forms_method_call_is_refused() {
     crate::common::assert_refused_naming(
@@ -513,8 +513,8 @@ fn a_bracket_on_a_parameter_forms_method_call_is_refused() {
             "wiwf14z.bracket",
             "  rule s(p: P, ?x) :- ?x <=> p.t.abs[T = Int64]()\n",
         )),
-        &["call-site type arguments are not supported on a dot call"],
-        "a bracket on a dot call",
+        &["call-site type arguments `p.t.abs[…](…)` are not supported here"],
+        "a bracket on a call of a rule's own term",
     );
 }
 

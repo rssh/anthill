@@ -126,9 +126,10 @@
 //! enforces: a narrowing clause added to either count must be written at both. It is said
 //! at the guard, and here, and in no third place.
 //!
-//! Tier 1 cannot apply at all: `Expr::DotApply` carries no `type_args`, so a dot is
-//! bracket-less by construction — the same reason eval's bracket-less readers take the
-//! bare count (WI-842). And an author-written `@[simp]` dot rule is not pre-empted: it
+//! Tier 1 is asked before either half: since WI-20261026-8K7W0 a dot carries the bracket
+//! of the call it resolves to, and one that selects a provider of the spec makes the dot
+//! that spec operation's call (`dot_bracket_selects_spec`). And an author-written
+//! `@[simp]` dot rule is not pre-empted: it
 //! fires earlier in the same frame and never reaches the guard, which is unchanged and
 //! is not a silent first-match — a rewrite declared in the receiver's sort is a text
 //! written for this receiver.
@@ -286,8 +287,9 @@ fn a_body_less_dot_tie_with_a_witness_rival_carries_the_witness_repair() {
     let own_no_provision = "    operation describe(x: Leaf) -> Int64 = 7\n";
     let msg = refusal(&body_less(ns, own_no_provision, RIVAL_WITNESS, DOT_OP));
     assert_supplier_tie(&msg, ns, &format!("witness sort '{ns}.Rival'"));
+    // The dot is in an operation's body, which takes the bracket (WI-20261026-8K7W0).
     assert!(
-        msg.contains("route the call through an operation that can write `[Spec = Witness]`"),
+        msg.contains("or write `[Spec = Witness]` in the call's bracket list"),
         "a witness rival on a BODY-LESS op is nameable at a bracket-capable call, and the \
          repair must say so rather than inherit `keep exactly one`: {msg}",
     );

@@ -25,18 +25,17 @@
 //!   * QUALIFIED companion receiver (`Map[K = String].empty[T = Int64]()`): the bracket
 //!     is this call's type arguments, riding the same `type_args` channel the bare
 //!     `Map.empty[T = Int64]()` spelling already fed. NEW capability, driven below.
-//!   * VALUE receiver (`?xs.map[Dst = Int64](f)`): REFUSED with a located error naming
-//!     the applicative spelling. `Expr::DotApply` carries no `type_args` field — "a dot
-//!     is bracket-less by construction" is the WI-842 premise the typer's tier-1
-//!     reasoning rests on, and WI-443 already declined to fake a channel by re-routing
-//!     a bracketed identifier-receiver call. A parse error that pointed at a
-//!     misconstrued meta block becomes an error that names the move.
+//!   * VALUE receiver (`?xs.map[Dst = Int64](f)`): refused here, with a located error
+//!     naming the applicative spelling, until WI-20261026-8K7W0 gave `Expr::DotApply` the
+//!     channel: the bracket now rides the `dot_apply` term as an application's does, and
+//!     the typer hands it to the call the dot resolves to. Its rows are
+//!     `wi_8k7w0_dot_call_type_args_test`.
 //!
 //! WHICH ROWS FAIL WHEN THE CHANGE IS BACKED OUT (grammar.js's `dot_application` +
 //! `push_fn_term`'s routing):
 //!
-//!   * `every_value_receiver_dot_shape_reaches_the_converters_refusal` — RED. Every row
-//!     goes back to `syntax error near …`.
+//!   * `every_value_receiver_dot_shape_parses_with_its_bracket` — RED. Every row goes back
+//!     to `syntax error near …`.
 //!   * `a_companion_receiver_call_reads_its_bracket_as_type_arguments` — RED (both the
 //!     parse assertion and the driven one: the fixture stops loading).
 //!   * `the_bracket_less_spellings_are_unchanged` — GREEN EITHER WAY, by design. These
@@ -54,16 +53,11 @@
 //! `dot_application` node that design has not got, so they pin THIS shape rather than
 //! arbitrating between the two. The arbitration is `a_meta_block_after_a_dot_head_is_still_a_meta_block`.
 
-use anthill_core::eval::Value;
 use anthill_core::kb::term::Term;
 use anthill_core::parse;
 use anthill_core::parse::ir::Item;
 
 use crate::common::{bare_sort_name, interp_for, type_application};
-
-/// The refusal's own words, so the rows below assert the SAME error and a reworded
-/// message is one edit.
-const DOT_REFUSAL: &str = "call-site type arguments are not supported on a dot call";
 
 fn errors_for(src: &str) -> Vec<String> {
     match parse::parse(src) {
@@ -72,12 +66,35 @@ fn errors_for(src: &str) -> Vec<String> {
     }
 }
 
+/// The `type_args` payloads the top term of a one-fact file carries.
+fn top_type_args(src: &str) -> (String, Vec<String>) {
+    let parsed = parse::parse(src).unwrap_or_else(|e| panic!("{src:?}: {e:?}"));
+    let Item::Fact(f) = &parsed.items[0] else {
+        panic!("{src:?}: expected a fact")
+    };
+    let Term::Fn {
+        functor,
+        named_args,
+        ..
+    } = parsed.terms.get(f.term)
+    else {
+        panic!("{src:?}: expected a call")
+    };
+    let type_args = named_args
+        .iter()
+        .filter(|(s, _)| parsed.symbols.local_name(*s) == "type_args")
+        .map(|(_, tid)| format!("{:?}", parsed.terms.get(*tid)))
+        .collect::<Vec<_>>();
+    (parsed.symbols.local_name(*functor).to_string(), type_args)
+}
+
 /// Rows B, C, D, E, H of the ticket's table, plus the two it did not have (a variable
 /// receiver, a literal receiver). Each is a VALUE-receiver dot call wearing a type-arg
-/// bracket: it must now REACH THE CONVERTER — the failure is the located refusal, not a
-/// syntax error — which is exactly the grammar hole the ticket is about.
+/// bracket: it must PARSE — the grammar hole the ticket is about — and the bracket rides
+/// the `dot_apply` term on the channel an application's does (WI-20261026-8K7W0); where
+/// it is read is the loader's.
 #[test]
-fn every_value_receiver_dot_shape_reaches_the_converters_refusal() {
+fn every_value_receiver_dot_shape_parses_with_its_bracket() {
     let rows: &[(&str, &str)] = &[
         ("B  chained hop", "fact xs.map(f).map[Dst = Int64](g)\n"),
         (
@@ -107,48 +124,12 @@ fn every_value_receiver_dot_shape_reaches_the_converters_refusal() {
     ];
     for (label, src) in rows {
         let errs = errors_for(src);
-        assert_eq!(
-            errs.len(),
-            1,
-            "{label}: expected exactly the converter's refusal, got {errs:?}"
-        );
-        assert!(
-            errs[0].contains(DOT_REFUSAL),
-            "{label}: expected the dot refusal, got `{}`",
-            errs[0]
-        );
-        assert!(
-            !errs[0].contains("syntax error"),
-            "{label}: the grammar must ADMIT this shape — a syntax error means the \
-             `dot_application` production did not fire; got `{}`",
-            errs[0]
-        );
-        // The message must name the move, not only the refusal: the ticket's whole
-        // complaint was a diagnostic that sent the author to a spelling the grammar
-        // would not follow. It names a SHAPE and no POSITION — see
-        // `the_refusal_prescribes_no_position` for why the position half came out.
-        assert!(
-            errs[0].contains("The applicative spelling"),
-            "{label}: the refusal must name the applicative spelling; got `{}`",
-            errs[0]
-        );
+        assert!(errs.is_empty(), "{label}: the grammar must ADMIT this shape, got {errs:?}");
+        let (functor, type_args) = top_type_args(src);
+        assert!(functor.ends_with("dot_apply"), "{label}: a value receiver's call is a dot, got {functor}");
+        assert_eq!(type_args.len(), 1, "{label}: the dot carries its bracket");
+        assert!(type_args[0].contains("SortBindings"), "{label}: {}", type_args[0]);
     }
-}
-
-/// The refusal is located ON THE BINDING, not on the whole declaration — the span the
-/// old syntax error could not produce, because it had misparsed the bracket as a
-/// `meta_block` and reported the `=` inside it.
-#[test]
-fn the_refusal_is_located_on_the_binding() {
-    let src = "fact ?xs.map[Dst = Int64](f)\n";
-    let errs = parse::parse(src).expect_err("a dot call may not carry the bracket");
-    assert_eq!(errs.len(), 1, "{errs:?}");
-    let span = errs[0].span;
-    assert_eq!(
-        &src[span.start as usize..span.end as usize],
-        "Dst = Int64",
-        "the error must point at the binding it refuses"
-    );
 }
 
 /// THE CONTROLS — the ticket's A/F/G/I plus the two spellings its corrections named
@@ -251,32 +232,20 @@ fn a_bare_bracket_off_a_call_is_still_a_syntax_error() {
         errs.iter().any(|e| e.contains("syntax error")),
         "a bracket with no call after it stays a syntax error; got {errs:?}"
     );
-    assert!(
-        !errs.iter().any(|e| e.contains(DOT_REFUSAL)),
-        "it must not reach the converter at all; got {errs:?}"
-    );
 }
 
-/// THE SECOND ROUTE TO A DOT CALL, refused in the LOADER rather than the converter.
-/// `xs.map[Dst = Int64](f)` where `xs` names a LOCAL BINDING is written with a bare NAME
-/// callee — it is never a `dot_application` node, so `push_fn_term` structurally cannot
-/// see it — and becomes a dot call only when `try_identifier_dot_call` (WI-443) resolves
-/// the head segment to a binder. Found by /code-review on the first cut of this ticket,
-/// where it was still live: the bracket made WI-443 decline the re-route, the call
-/// flattened to the functor `xs.map`, and the author read the typer's verdict on THAT —
-/// "expected an operation, which declares the type parameters a call-site `[…]` bracket
-/// binds, got a callee with no type-parameter list" — which names a callee they never
-/// wrote. That is the misleading-diagnostic class this ticket exists to close, so it is
-/// closed on this route too.
+/// THE SECOND ROUTE TO A DOT CALL. `xs.map[Dst = Int64](f)` where `xs` names a LOCAL
+/// BINDING is written with a bare NAME callee — it is never a `dot_application` node — and
+/// becomes a dot call only when `try_identifier_dot_call` (WI-443) resolves the head segment
+/// to a binder. It was refused there, in the converter route's words, until
+/// WI-20261026-8K7W0; it now carries the bracket to the call, which reads it: `[Dst =
+/// String]` over an `Int64` function is refused as the argument it no longer fits.
 ///
-/// THE CONTROL IS THE SAME PROGRAM WITHOUT THE BRACKET, and it is what makes the row
-/// measure the refusal rather than the fixture: `control` loads CLEAN, so the one error
-/// on `via_ident` is the bracket and nothing else. Backing out the loader change reddens
-/// this test twice over — the message becomes the typer's, and the count becomes 2, since
-/// dropping the re-route also leaves the flattened call to fail on its own.
+/// THE CONTROL IS THE SAME PROGRAM WITHOUT THE BRACKET, which loads either way.
 #[test]
-fn an_identifier_receiver_dot_call_is_refused_in_the_loader() {
-    let stream_ty = "MappedStream[Source = List[T = Int64], SourceElement = Int64, T = Int64,                      SourceEffects = {}, TransformEffects = {}]";
+fn an_identifier_receiver_dot_call_reads_its_bracket() {
+    let stream_ty = "MappedStream[Source = List[T = Int64], SourceElement = Int64, T = Int64, \
+                     SourceEffects = {}, TransformEffects = {}]";
     let program = |body: &str| {
         format!(
             "namespace test.bad3v_ident
@@ -291,56 +260,18 @@ end
     crate::common::expect_loaded(crate::common::try_load_kb_with(&program(
         "xs.map(lambda x -> x)",
     )));
-
-    let errs = match crate::common::try_load_kb_with(&program("xs.map[Dst = Int64](lambda x -> x)"))
-    {
-        Ok(_) => panic!("an identifier-receiver dot call may not carry the bracket"),
-        Err(es) => es.iter().map(|e| e.to_string()).collect::<Vec<_>>(),
-    };
-    assert_eq!(
-        errs.len(),
-        1,
-        "exactly the refusal — the bracket is dropped once it has been refused, so the          rest of the call still type-checks and reports nothing: {errs:?}"
+    crate::common::expect_loaded(crate::common::try_load_kb_with(&program(
+        "xs.map[Dst = Int64](lambda x -> x)",
+    )));
+    let errs = crate::common::load_errors_of(&program("xs.map[Dst = String](lambda x -> x)"));
+    assert!(
+        errs.iter().any(|e| e.contains("expected Int64 -> String, got Int64 -> Int64")),
+        "the bracket is read: {errs:?}"
     );
     assert!(
-        errs[0].contains(DOT_REFUSAL),
-        "the loader route must give the SAME sentence as the converter route: {}",
-        errs[0]
+        !errs.iter().any(|e| e.contains("no type-parameter list")),
+        "the flattened-functor diagnosis stays closed: {errs:?}"
     );
-    assert!(
-        !errs[0].contains("no type-parameter list"),
-        "the flattened-functor diagnosis is what this closes: {}",
-        errs[0]
-    );
-}
-
-/// The refusal names a SHAPE and no POSITION. An earlier wording ended "… in an operation
-/// body", which WI-839 had already learned is wrong for a rule head — it prescribes a move
-/// a rule head has not got, and the applicative rewrite it names would itself be refused
-/// there (`CallTypeArgsPosition::RuleHead`). Found by /code-review. Green either way on the
-/// grammar change; it fails against the first cut's wording.
-#[test]
-fn the_refusal_prescribes_no_position() {
-    for src in [
-        "rule dr: ?x.m[T = Int64](?y) <=> ?y @[simp]
-",
-        "fact ?x.m[T = Int64](?y)
-",
-    ] {
-        let errs = errors_for(src);
-        assert_eq!(errs.len(), 1, "{src:?}: {errs:?}");
-        assert!(errs[0].contains(DOT_REFUSAL), "{src:?}: {}", errs[0]);
-        assert!(
-            !errs[0].contains("operation body"),
-            "{src:?}: a rule/fact head has no operation body to move into: {}",
-            errs[0]
-        );
-        assert!(
-            !errs[0].contains("receiver, "),
-            "{src:?}: a companion receiver takes no receiver ARGUMENT, so the shape the              message names must not spell one: {}",
-            errs[0]
-        );
-    }
 }
 
 /// THE NEW CAPABILITY, at the parse IR. `Map[K = String, V = Int64].empty[T = Int64](x)`

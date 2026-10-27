@@ -588,11 +588,13 @@ impl Copier {
                 name,
                 pos_args,
                 named_args,
+                type_args,
             } => Expr::DotApply {
                 receiver: self.node(receiver),
                 name: plain(name),
                 pos_args: self.nodes(pos_args),
                 named_args: self.named_nodes(named_args),
+                type_args: self.keyed_values(type_args),
             },
             Expr::ListLit(items) => Expr::ListLit(self.nodes(items)),
             Expr::SetLit(items) => Expr::SetLit(self.nodes(items)),

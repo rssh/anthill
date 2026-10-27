@@ -2294,3 +2294,5 @@ mod wi_dk83q_identical_substitution_test;
 mod wi_qpc89_empty_scope_resolution_memo_test;
 #[path = "include/wi_dg57j_witness_only_requirement_test.rs"]
 mod wi_dg57j_witness_only_requirement_test;
+#[path = "include/wi_8k7w0_dot_call_type_args_test.rs"]
+mod wi_8k7w0_dot_call_type_args_test;

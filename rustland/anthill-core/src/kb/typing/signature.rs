@@ -4002,7 +4002,8 @@ fn modify_place_type(
                     name,
                     pos_args,
                     named_args,
-                }) if pos_args.is_empty() && named_args.is_empty() => {
+                    type_args,
+                }) if pos_args.is_empty() && named_args.is_empty() && type_args.is_empty() => {
                     fields.push(*name);
                     Value::Node(receiver.clone())
                 }

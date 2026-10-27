@@ -559,6 +559,7 @@ pub(super) fn build_type(
             member,
             pos_args: pos_nodes,
             named_args: named_nodes,
+            type_args,
             env,
             expected,
             fuel,
@@ -627,6 +628,7 @@ pub(super) fn build_type(
                 member,
                 &pos_nodes,
                 &named_nodes,
+                &type_args,
                 &occ,
             ) {
                 DenotedDot::NotDenoting => {}
@@ -675,13 +677,21 @@ pub(super) fn build_type(
                         &occ,
                         simp_rids,
                     ) {
+                        Ok(Some(_)) if !type_args.is_empty() => {
+                            results.push(Err(TypeError::DotBracketUnread {
+                                span: dot_span,
+                                member,
+                                reading: UnreadDotBracket::DotRule,
+                            }));
+                            return;
+                        }
                         Ok(Some((synth, rule))) => {
                             // The rule replaces the call this dot makes without it, and
                             // that call is held to the rule's effect refusal as a call
                             // the rule names is.
                             match dot_method_operation(
                                 kb, &env, recv_sort, &recv.ty, &short, from_scope, dot_span,
-                                call_shape,
+                                call_shape, &type_args,
                             ) {
                                 Ok(Some(replaced)) => {
                                     if let Some(e) = replaced_call_refusal(kb, rule, &occ, replaced) {
@@ -718,6 +728,7 @@ pub(super) fn build_type(
             // logic (functor resolved dynamically), not a writable rule.
             let op_sym = match dot_method_operation(
                 kb, &env, recv_sort, &recv.ty, &short, from_scope, dot_span, call_shape,
+                &type_args,
             ) {
                 Ok(op_sym) => op_sym,
                 Err(e) => {
@@ -746,13 +757,14 @@ pub(super) fn build_type(
                 synth_pos.push(receiver_node);
                 synth_pos.extend(pos_nodes);
                 let pass = crate::kb::simp_rewrite::simp_pass(kb);
+                // The dot's bracket is the call's, as written applicatively.
                 let synth = NodeOccurrence::synthesized_expr(
                     Expr::Apply {
                         recv_type: None,
                         functor: op_sym,
                         pos_args: synth_pos,
                         named_args: named_nodes,
-                        type_args: Vec::new(),
+                        type_args,
                     },
                     Rc::clone(&occ),
                     pass,
@@ -804,6 +816,14 @@ pub(super) fn build_type(
                             dot_span,
                             &msg,
                         )));
+                        return;
+                    }
+                    Ok(_) if !type_args.is_empty() => {
+                        results.push(Err(TypeError::DotBracketUnread {
+                            span: dot_span,
+                            member,
+                            reading: UnreadDotBracket::Field,
+                        }));
                         return;
                     }
                     Ok(m) => {
@@ -875,7 +895,15 @@ pub(super) fn build_type(
                     &[(member, member_short)],
                     &occ,
                 ) {
-                    results.push(r);
+                    results.push(if type_args.is_empty() {
+                        r
+                    } else {
+                        Err(TypeError::DotBracketUnread {
+                            span: dot_span,
+                            member,
+                            reading: UnreadDotBracket::Column,
+                        })
+                    });
                     return;
                 }
             }
@@ -886,6 +914,8 @@ pub(super) fn build_type(
             // type value. One the receiver's type leaves open names no value known here.
             if let Some(sort) = recv_sort {
                 let member_short = short_name_of(kb.local_name_of(member)).to_string();
+                // A bracket is written with parentheses only, so a bracketed dot reaching
+                // here is refused as a call of a type below, and its bracket with it.
                 if declared_type_member(kb, sort, &member_short).is_some() {
                     match type_member_as_value(
                         kb,

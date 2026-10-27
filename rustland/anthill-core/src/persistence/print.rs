@@ -741,11 +741,14 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
             } => {
                 self.write_occ_fn(self.view.sym_name(*name), pos_args, named_args, buf);
             }
+            // The bracket is not written, as an application's is not (the `Apply` arm
+            // above): this printer has no writer for a call's type arguments.
             Expr::DotApply {
                 receiver,
                 name,
                 pos_args,
                 named_args,
+                type_args: _,
             } => {
                 self.write_occurrence(receiver, buf);
                 buf.push('.');

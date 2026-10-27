@@ -1358,6 +1358,7 @@ pub(super) fn visit_type(
             name,
             pos_args,
             named_args,
+            type_args,
         } => {
             let member = *name;
             let receiver = Rc::clone(receiver);
@@ -1370,6 +1371,7 @@ pub(super) fn visit_type(
                 member,
                 pos_args: pos_args.clone(),
                 named_args: named_args.clone(),
+                type_args: type_args.clone(),
                 env: env.clone(),
                 expected,
                 fuel,

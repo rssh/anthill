@@ -370,6 +370,7 @@ mod wi_1ssxm_surviving_dot_backstop_tests {
                 name,
                 pos_args: Vec::new(),
                 named_args: Vec::new(),
+                type_args: Vec::new(),
             },
             span_at(at),
             None,

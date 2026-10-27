@@ -394,6 +394,7 @@ fn drain_expr_children(expr: &mut Expr, stack: &mut Vec<Rc<NodeOccurrence>>) {
             receiver,
             pos_args,
             named_args,
+            type_args,
             ..
         } => {
             stack.push(std::mem::replace(receiver, mk_placeholder()));
@@ -402,6 +403,11 @@ fn drain_expr_children(expr: &mut Expr, stack: &mut Vec<Rc<NodeOccurrence>>) {
             }
             for (_, c) in std::mem::take(named_args) {
                 stack.push(c);
+            }
+            for (_, v) in std::mem::take(type_args) {
+                if let Value::Node(occ) = v {
+                    stack.push(occ);
+                }
             }
         }
         Expr::ApplyWithin {
@@ -1744,6 +1750,14 @@ pub enum Expr {
         name: Symbol,
         pos_args: Vec<Rc<NodeOccurrence>>,
         named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
+        /// The call-site type arguments written on the dot — `red().score[Score =
+        /// ByHeat]()` — in [`Expr::Apply`]'s `type_args` shape. The typer hands them to
+        /// the call the dot resolves to, and refuses them where the dot resolves to no
+        /// operation call (a field, a column, a type member, a dot rule, a receiver that
+        /// denotes a sort). Set where a call's bracket is read (an operation body, a
+        /// const's value, a rule body's compound expression); empty elsewhere, where the
+        /// end-of-file sweep refuses the bracket.
+        type_args: Vec<(Option<Symbol>, Value)>,
     },
     /// List literal `[a, b, c]`.
     ListLit(Vec<Rc<NodeOccurrence>>),
@@ -2896,6 +2910,28 @@ pub fn open_debruijn_node(
                 named_args: named,
             })
         }
+        // A dot's bracket is the type channel of the call it resolves to, opened as
+        // `Apply`'s is.
+        Expr::DotApply {
+            receiver,
+            name,
+            pos_args,
+            named_args,
+            type_args,
+        } => {
+            let r = open_debruijn_node(kb, receiver, fresh);
+            let (pos, c2) = open_vec(kb, pos_args, fresh);
+            let (named, c3) = open_named(kb, named_args, fresh);
+            let (ta, c4) = open_type_args(kb, type_args, fresh);
+            let c1 = !Rc::ptr_eq(&r, receiver);
+            (c1 || c2 || c3 || c4).then(|| Expr::DotApply {
+                receiver: r,
+                name: *name,
+                pos_args: pos,
+                named_args: named,
+                type_args: ta,
+            })
+        }
         Expr::HoApply { predicate, args } => {
             let p = open_debruijn_node(kb, predicate, fresh);
             let (a, c2) = open_vec(kb, args, fresh);
@@ -3166,8 +3202,28 @@ pub fn node_to_debruijn(
                 type_args: ta,
             })
         }
+        Expr::DotApply {
+            receiver,
+            name,
+            pos_args,
+            named_args,
+            type_args,
+        } => {
+            let r = node_to_debruijn(kb, receiver, var_order);
+            let (pos, c2) = close_vec(kb, pos_args, var_order);
+            let (named, c3) = close_named(kb, named_args, var_order);
+            let (ta, c4) = close_type_args(kb, type_args, var_order);
+            let c1 = !Rc::ptr_eq(&r, receiver);
+            (c1 || c2 || c3 || c4).then(|| Expr::DotApply {
+                receiver: r,
+                name: *name,
+                pos_args: pos,
+                named_args: named,
+                type_args: ta,
+            })
+        }
         // Remaining child-bearing forms carry NO `TermId`-typed var fields
-        // (If / DotApply / collection literals / *Within without param /
+        // (If / collection literals / *Within without param /
         // RequirementAtSort / Dictionary): close their occurrence
         // children generically and reassemble, mirroring `open_debruijn_node`.
         _ => {
@@ -4501,9 +4557,9 @@ fn collect_expr_termid_field_vars(
     seen: &mut std::collections::HashSet<u32>,
 ) {
     match expr {
-        Expr::Apply { type_args, .. } | Expr::ApplyWithin { type_args, .. } => {
-            collect_type_args_vars(kb, type_args, vars, seen)
-        }
+        Expr::Apply { type_args, .. }
+        | Expr::ApplyWithin { type_args, .. }
+        | Expr::DotApply { type_args, .. } => collect_type_args_vars(kb, type_args, vars, seen),
         // WI-819: `Expr::Let` has no type-positional field any more. Its
         // annotation is an ordinary Expr-kind child of the PATTERN occurrence,
         // so the caller's `for_each_pattern_child` descent collects it — the
@@ -4899,7 +4955,8 @@ pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
             name,
             pos_args,
             named_args,
-        }) if pos_args.is_empty() && named_args.is_empty() => {
+            type_args,
+        }) if pos_args.is_empty() && named_args.is_empty() && type_args.is_empty() => {
             let recv = try_occurrence_to_term(kb, receiver)?;
             let dot_apply = kb.resolve_symbol(dt::qualified(dt::DOT_APPLY));
             let name_ref = kb.alloc(Term::Ref(*name));
@@ -6774,6 +6831,28 @@ pub fn substitute_occurrence(
                 })
             })
         }
+        Expr::DotApply {
+            receiver,
+            name,
+            pos_args,
+            named_args,
+            type_args,
+        } => {
+            let r = substitute_occurrence(kb, receiver, subst);
+            let (pos, c2) = subst_vec(kb, pos_args, subst);
+            let (named, c3) = subst_named(kb, named_args, subst);
+            let (ta, c4) = subst_type_args(kb, type_args, subst);
+            let c1 = !Rc::ptr_eq(&r, receiver);
+            (c1 || c2 || c3 || c4).then(|| {
+                occ.rebuilt_expr(Expr::DotApply {
+                    receiver: r,
+                    name: *name,
+                    pos_args: pos,
+                    named_args: named,
+                    type_args: ta,
+                })
+            })
+        }
         // WI-819: no explicit `Expr::Let` arm — it existed only to σ-apply the
         // `type_annotation` field, which `for_each_child` does not enumerate.
         // The annotation is now an Expr-kind child of the PATTERN occurrence,
@@ -7030,9 +7109,10 @@ fn rewrite_ref_expr(
                     name,
                     pos_args,
                     named_args,
+                    type_args,
                 },
             ..
-        } if pos_args.is_empty() && named_args.is_empty() => {
+        } if pos_args.is_empty() && named_args.is_empty() && type_args.is_empty() => {
             let new_recv = rewrite_ref_expr(receiver, map);
             if !Rc::ptr_eq(&new_recv, receiver) {
                 return NodeOccurrence::new_expr(
@@ -7041,6 +7121,7 @@ fn rewrite_ref_expr(
                         name: *name,
                         pos_args: Vec::new(),
                         named_args: Vec::new(),
+                        type_args: Vec::new(),
                     },
                     occ.span,
                     occ.owner,
@@ -7808,6 +7889,8 @@ pub(crate) enum BuildFrame {
         named_keys: Vec<Symbol>,
         /// Written without parentheses — see `NodeKind::Expr`'s `paren_less`.
         paren_less: bool,
+        /// The bracket written on the dot ([`Expr::DotApply`]'s `type_args`).
+        type_args: Vec<(Option<Symbol>, Value)>,
     },
     ApplyWithin {
         span: SourceSpan,
@@ -8160,6 +8243,7 @@ fn visit_fn(
                 pos_count,
                 named_keys,
                 paren_less: false,
+                type_args: Vec::new(),
             }));
             // Args first (reversed → pop in source order), receiver last so
             // it pops after the args in `build_frame`.
@@ -8676,6 +8760,7 @@ pub(crate) fn build_frame(
             pos_count,
             named_keys,
             paren_less,
+            type_args,
         } => {
             // Args are on top (pushed after the receiver Visit); pop them
             // first, then the receiver underneath.
@@ -8686,6 +8771,7 @@ pub(crate) fn build_frame(
                 name,
                 pos_args,
                 named_args,
+                type_args,
             };
             results.push(NodeOccurrence::new_expr_written(expr, span, None, false, paren_less));
         }
@@ -9176,6 +9262,7 @@ mod tests {
                 name: n,
                 pos_args,
                 named_args,
+                ..
             }) => {
                 assert_eq!(*n, name);
                 assert!(
@@ -9245,6 +9332,7 @@ mod tests {
                 name: n,
                 pos_args,
                 named_args,
+                ..
             }) => {
                 assert_eq!(*n, name);
                 assert!(named_args.is_empty());

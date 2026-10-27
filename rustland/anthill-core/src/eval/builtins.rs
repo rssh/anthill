@@ -3915,7 +3915,8 @@ fn binder_field_access(
             name,
             pos_args,
             named_args,
-        } if pos_args.is_empty() && named_args.is_empty() && is_binder_ref(receiver, binders) => {
+            type_args,
+        } if pos_args.is_empty() && named_args.is_empty() && type_args.is_empty() && is_binder_ref(receiver, binders) => {
             Some(*name)
         }
         _ => None,
