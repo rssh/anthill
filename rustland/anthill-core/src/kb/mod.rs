@@ -1089,6 +1089,11 @@ pub enum MintedParam {
     /// parameter's type (`xs: List[T = Box]`'s `Box.V`): no clause can name it. `slot` is
     /// the sort's parameter the slot is (`Box.V`).
     UnwrittenSlot { slot: Symbol },
+    /// An open slot of a boundary's type pattern (proposal 071 §1.6): a slot the labels the
+    /// pattern is read from leave open, or the whole pattern `?`. To the one test a pattern
+    /// runs (`typing::type_pattern_admits`) and to the evidence the typer builds for it, its
+    /// rigid admits every type; to every other reader it is a type not known. Printed `?`.
+    PatternSlot,
 }
 
 /// WI-20260924-SNJPR — one type alias the scan declared, awaiting its head
@@ -1619,6 +1624,14 @@ pub struct KnowledgeBase {
     /// the name only says what it is.
     unwritten_slot_names: HashMap<Symbol, Symbol>,
 
+    /// The one name a type pattern's open slot is opened under ([`Self::pattern_slot`]),
+    /// minted at the first: a slot's identity is its rigid's variable, as an unwritten slot's
+    /// is.
+    pattern_slot_name: Option<Symbol>,
+
+    /// The one open slot the run reads ([`Self::run_time_pattern_slot`]), minted at the first.
+    run_time_pattern_slot: Option<TermId>,
+
     /// WI-743, WI-20260925-SHED7 — every sort with constructors whose domain the loader
     /// derives (or found written), keyed by [`Self::canonical_sort_sym`], mapped to its
     /// declared TYPE PARAMETERS (`fill_derive::DomainParam`: the binding key, the declared
@@ -2067,6 +2080,10 @@ pub struct KnowledgeBase {
     /// [`Self::effect_member_is_error`] is asked on the resolver's per-goal gates. `None`
     /// before the prelude loads.
     error_sort_sym: Option<Symbol>,
+
+    /// `anthill.reflect.TypePattern`, cached where the connectives are: the resolver asks of
+    /// every goal whether it is a pattern's (`typing::synth`). `None` before the prelude loads.
+    type_pattern_sym: Option<Symbol>,
 
     /// The runtime's three accounts of what it could not do ([`RuntimeAccount`]), in
     /// [`RuntimeAccount::ALL`]'s order, cached where the connectives are: the bridge reads one
@@ -2982,6 +2999,8 @@ impl KnowledgeBase {
             type_param_canonical_vids: HashMap::new(),
             minted_params: HashMap::new(),
             unwritten_slot_names: HashMap::new(),
+            pattern_slot_name: None,
+            run_time_pattern_slot: None,
             domain_params: HashMap::new(),
             sort_domains: HashMap::new(),
             fill_relations: HashMap::new(),
@@ -3017,6 +3036,7 @@ impl KnowledgeBase {
             and_connective_sym: None,
             reify_operation_sym: None,
             error_sort_sym: None,
+            type_pattern_sym: None,
             runtime_account_syms: [None; 3],
             induction_axioms: HashSet::new(),
             unify_connective_sym: None,
@@ -3651,6 +3671,47 @@ impl KnowledgeBase {
         let name = self.mint_param_name(&short, MintedParam::UnwrittenSlot { slot });
         self.unwritten_slot_names.insert(slot, name);
         name
+    }
+
+    /// Proposal 071 §1.6 — a fresh open slot of a type pattern, as a type: a rigid under the
+    /// name [`MintedParam::PatternSlot`] says it is.
+    pub(crate) fn pattern_slot(&mut self) -> TermId {
+        let name = self.pattern_slot_name();
+        let fresh = self.fresh_var(name);
+        self.alloc(Term::Var(Var::Rigid(fresh)))
+    }
+
+    /// The name every type pattern's open slot is opened under ([`MintedParam::PatternSlot`]),
+    /// minted at the first ask. It is also the `impl` of the evidence the typer builds for
+    /// `TypeValue` at such a slot beneath a `TypePattern` (`typing::synth`): a dictionary
+    /// whose type is the open slot.
+    pub(crate) fn pattern_slot_name(&mut self) -> Symbol {
+        match self.pattern_slot_name {
+            Some(name) => name,
+            None => {
+                let name = self.mint_param_name("?", MintedParam::PatternSlot);
+                self.pattern_slot_name = Some(name);
+                name
+            }
+        }
+    }
+
+    /// The open slot the run asks about — the type of a raise of the unknown type, and what a
+    /// pattern's open slot names at run time: one for the KB, minted at the first ask. The run
+    /// compares no two open slots, so one term serves every interpreter and every raise, where
+    /// a term per ask grew the store at every interpreter built.
+    pub(crate) fn run_time_pattern_slot(&mut self) -> TermId {
+        if let Some(slot) = self.run_time_pattern_slot {
+            return slot;
+        }
+        let slot = self.pattern_slot();
+        self.run_time_pattern_slot = Some(slot);
+        slot
+    }
+
+    /// Is `vid` a type pattern's open slot ([`Self::pattern_slot`])?
+    pub(crate) fn is_pattern_slot(&self, vid: VarId) -> bool {
+        self.minted_param(vid.name()) == Some(MintedParam::PatternSlot)
     }
 
     /// What `name` stands for, where it was minted for a type parameter alone; `None` for
@@ -10655,6 +10716,7 @@ impl KnowledgeBase {
         self.and_connective_sym = self.try_resolve_symbol("anthill.kernel.and");
         self.reify_operation_sym = self.try_resolve_symbol("anthill.prelude.Error.reify");
         self.error_sort_sym = self.try_resolve_symbol("anthill.prelude.Error");
+        self.type_pattern_sym = self.try_resolve_symbol("anthill.reflect.TypePattern");
         self.runtime_account_syms =
             RuntimeAccount::ALL.map(|account| self.try_resolve_symbol(account.qualified_name()));
     }
@@ -13304,6 +13366,12 @@ impl KnowledgeBase {
     /// other connectives; `None` for a KB without the prelude.
     pub(crate) fn error_sort_sym(&self) -> Option<Symbol> {
         self.error_sort_sym
+    }
+
+    /// `anthill.reflect.TypePattern`, resolved once with the other connectives; `None` for a
+    /// KB without the prelude.
+    pub(crate) fn type_pattern_sym(&self) -> Option<Symbol> {
+        self.type_pattern_sym
     }
 
     /// Is `f` [`Self::reify_operation`]? One comparison: it is asked on the resolver's

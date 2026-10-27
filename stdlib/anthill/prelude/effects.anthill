@@ -124,7 +124,7 @@ namespace anthill.prelude
     -- payload, so `T1` — and hence `Result[E = T1]` — comes from nowhere else.
     --
     -- `T1`, an operation parameter, NOT the sort's `T`: the payload belongs to
-    -- this call and is inferred from the body's row, so a caller writes nothing.
+    -- this call and is read off the body's row, so a caller writes nothing.
     -- (Naming it `T` would shadow the sort's and give `Error.reify[T = …]` two
     -- targets — proposal 058 §4.2 rule 1.)
     --
@@ -139,9 +139,12 @@ namespace anthill.prelude
     -- declines is reported as a fault of the goal, and the thunk's other effects
     -- are those of any higher-order call in a rule body.
     --
-    -- IT CATCHES ITS OWN PAYLOAD AND LETS THE REST PAST. A body declaring two
-    -- `Error` labels reified at one of them discharges only that one; the other
-    -- stays in the CALLER's row, which the typer already requires it to declare.
+    -- IT CATCHES ITS OWN PAYLOAD AND LETS THE REST PAST. Unwritten, `T1` is the
+    -- least pattern that admits every `Error` label of the body's row: `Boom` over
+    -- `Boom[Reason = String]` and `Boom[Reason = Int64]`, `?` over the bare `Error`
+    -- alone. Labels no one sort heads are refused, and the call names one,
+    -- `Error.reify[T1 = Boom](…)`: it discharges the labels that pattern admits, and
+    -- the others stay in the CALLER's row, which the typer requires it to declare.
     --
     -- `requires TypePattern[T = T1]` IS WHAT MAKES THAT DECIDABLE (proposal 071
     -- §1.4). A raise reaching the boundary is caught when the `admits` of the

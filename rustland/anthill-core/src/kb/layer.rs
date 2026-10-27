@@ -233,6 +233,7 @@ kb_scoped_fields!(
     and_connective_sym,
     reify_operation_sym,
     error_sort_sym,
+    type_pattern_sym,
     runtime_account_syms,
     induction_axioms,
     tuple_literal_sym,
@@ -363,6 +364,10 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         // …and the one name per spelling an unwritten slot's unknown is opened under, which
         // is such a symbol too.
         unwritten_slot_names: _,
+        // …and the name a type pattern's open slot is opened under, likewise.
+        pattern_slot_name: _,
+        // …and the one open slot the run reads, a term of the KB's, which no discard truncates.
+        run_time_pattern_slot: _,
         // `SourceId` is an index into this registry and rides inside every `SourceSpan`.
         // An interner by another name: truncating it makes a layer-minted span report a
         // different file, or none.
@@ -512,6 +517,7 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         and_connective_sym: _,
         reify_operation_sym: _,
         error_sort_sym: _,
+        type_pattern_sym: _,
         runtime_account_syms: _,
         induction_axioms: _,
         tuple_literal_sym: _,

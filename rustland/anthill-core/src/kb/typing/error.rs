@@ -3361,7 +3361,7 @@ fn members_no_bracket_names(kb: &KnowledgeBase, op: Symbol, key: Option<Symbol>)
             let (spelling, member) = match kb.minted_param(*name)? {
                 MintedParam::Member { .. } => (member_param_spelling(kb, *name)?, true),
                 MintedParam::Inline => (type_param_display_name(kb, *name), false),
-                MintedParam::UnwrittenSlot { .. } => return None,
+                MintedParam::UnwrittenSlot { .. } | MintedParam::PatternSlot => return None,
             };
             // A key reads as one by its own name (`[E = …]`, `[c = …]`) or by its whole
             // spelling (`[Tagger.E = …]`), which is what the signature says.
@@ -3430,7 +3430,9 @@ fn unconstrained_type_param_text(
              bracket, which a call can bind"
         ),
         // An unwritten slot's unknown is a body's, never a parameter on a record.
-        None | Some(MintedParam::UnwrittenSlot { .. }) => format!("use `{op_short}[{param} = …](…)`"),
+        None | Some(MintedParam::UnwrittenSlot { .. } | MintedParam::PatternSlot) => {
+            format!("use `{op_short}[{param} = …](…)`")
+        }
         Some(MintedParam::Member { head }) => format!(
             "no bracket names a member's parameter: at a call `{param}` is fixed by the \
              provision of `{}` at a carrier the call passes, by an argument typed by it, or \

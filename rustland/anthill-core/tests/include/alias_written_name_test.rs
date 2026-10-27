@@ -530,7 +530,7 @@ fn a_row_variable_takes_a_label_written_through_an_alias() {
         if n < 0 then Error.raise(boom(\"negative\")) else if n > 100 then Error.raise(other(\"big\")) else n + 1\n  \
         operation guard[P](body: () -> Int64 @ {Error[P], Error[Oth]})\n      \
         -> Result[E = P, T = Int64] effects {Error[Other]}\n      \
-        requires TypePattern[T = P] =\n    Error.reify(body)\n  \
+        requires TypePattern[T = P] =\n    Error.reify[T1 = P](body)\n  \
         operation go() -> Int64 effects {Error[Other]} =\n    \
         match guard(lambda () -> twoWays(7))\n      case ok(n) -> n\n      case err(_) -> 0";
     assert_eq!(run("awnrow", body), 8);

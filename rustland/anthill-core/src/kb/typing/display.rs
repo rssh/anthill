@@ -1201,6 +1201,10 @@ pub(super) fn member_param_bracket_spelling(kb: &KnowledgeBase, name: Symbol) ->
 /// `format_term_for_goal` — so a parameter is not `Tagger.E` in one refusal and `?E` in
 /// the next.
 pub(super) fn type_var_display_name(kb: &KnowledgeBase, vid: VarId) -> String {
+    // A type pattern's open slot is written as a program writes one, `?`.
+    if kb.is_pattern_slot(vid) {
+        return "?".to_owned();
+    }
     member_param_spelling(kb, vid.name()).unwrap_or_else(|| variable_spelling(kb, vid.name()))
 }
 

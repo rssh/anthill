@@ -2288,6 +2288,8 @@ mod wi_rdns4_shared_row_tail_test;
 mod wi_rdns4_nested_callback_row_test;
 #[path = "include/wi_5cdn5_raise_carries_its_type_test.rs"]
 mod wi_5cdn5_raise_carries_its_type_test;
+#[path = "include/wi_bdvyw_boundary_pattern_test.rs"]
+mod wi_bdvyw_boundary_pattern_test;
 #[path = "include/wi_dk83q_identical_substitution_test.rs"]
 mod wi_dk83q_identical_substitution_test;
 #[path = "include/wi_qpc89_empty_scope_resolution_memo_test.rs"]

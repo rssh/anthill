@@ -1143,7 +1143,7 @@ namespace test.n31xx.formerhost2
 
   operation tupOp(n: Int64) -> Result[E = (a: Int64, b: String), T = Int64]
       effects {Error[Other]} =
-    Error.reify(lambda () -> raiseTup(n))
+    Error.reify[T1 = (a: Int64, b: String)](lambda () -> raiseTup(n))
 end
 "#,
         ),

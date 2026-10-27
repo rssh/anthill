@@ -3,9 +3,9 @@
 - id: WI-20261015-D2KZ5-an-unwritten-t1-is-bound-to
 - created: 2026-10-15T17:31:46Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-10-15T17:31:46Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-10-27T11:16:20Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -38,4 +38,8 @@ IN A RULE BODY THE CHOICE CANNOT BE WRITTEN, and a typed head does not make it (
   the workaround `Error.reify[T1 = Other](…)` is refused on a rule-body goal ("call-site type arguments `Error.reify[…](…)` are not supported here");
   the operation-body twin `operation pickOp(n: Int64) -> Result[E = Other, T = Int64] = Error.reify(lambda () -> twoWays(n))` is refused at load ("expected Result[E = Other, T = Int64], got Result[E = Boom, T = Int64]"), so only the rule body is silent.
 So whatever rule this ticket decides should reach the rule-body form too: the expected type the head writes (one of the three options above), or the bracket admitted at a rule-body goal.
+
+### 2026-10-27T11:16:17Z — feedback — claude
+
+Delivered with WI-20261016-BDVYW (2026-10-27), decided with the user there: an unwritten T1 is the least pattern that admits every Error label of the thunk's row, and labels no one sort heads are refused in every order (both branch orders of an if, both written orders of an eta'd callee's row), the call naming one by a bracket, [T1 = DivisionByZero]; in a rule body, whose term writes no bracket yet (WI-20261024-TC54R), the boundary goes in an operation the rule calls. Rule stated in kernel-language §8.7 and 027.4's status. Rows: wi_bdvyw_boundary_pattern_test::labels_no_one_sort_heads_are_refused_in_either_order, wi_9wvt7_reify_rule_body_test::a_rule_body_boundary_over_two_sorts_is_refused.
 

@@ -38,8 +38,9 @@
 //!       until the second review of this ticket — and a rule-body call's slot is no
 //!       condition its clause can be handed (until 060's S7, WI-20260911-5G28A). The typer
 //!       refuses the call at load (`build_op_scoped_dicts`) when the call builds no
-//!       evidence — a payload type that is a rule variable's or none, a collection whose
-//!       element is open, a tuple. Since WI-20261016-YM8HD the slot is `TypePattern`'s, a
+//!       evidence — a payload type that is a rule variable's or none, a tuple. (A collection
+//!       whose element is open is a pattern open there since proposal 071 stage (e); its
+//!       raise is refused first.) Since WI-20261016-YM8HD the slot is `TypePattern`'s, a
 //!       spec with a member, so the refusal is the rule-body gate's for every such spec (a
 //!       tuple getting the structural former's account, as in an operation body); until
 //!       then it was `ErrorTag`'s, a marker spec, refused by a gate keyed on its name. A
@@ -60,8 +61,9 @@
 //!   * (b)'s first step backed out — an error from entering the thunk returned past the run,
 //!     as the host entry first did → `an_unpinned_host_entry_is_refused_and_leaves_no_frame`
 //!     (the boundary's frame is left on the stack).
-//!   * (c) backed out → `a_payload_the_boundary_declines_is_a_fault` (the generic advice; the
-//!     declined `load_failed` silent).
+//!   * (c) is reached by no source program since proposal 071 stage (e): a rule-body
+//!     boundary over labels of two sorts is refused (`a_rule_body_boundary_over_two_sorts_is_refused`),
+//!     and its term writes no bracket to decline one (WI-20261024-TC54R).
 //!   * (d)'s load refusal backed out (measured on the `ErrorTag` gate, before
 //!     WI-20261016-YM8HD) → `an_unfilled_pattern_slot_is_refused_where_it_is_written`: its
 //!     programs load clean, and `either(7, 7, ?r)` is undecided at every query, the boundary
@@ -127,11 +129,6 @@ namespace test.rrb
   rule later(?x, ?r) :- Error.reify(lambda () -> mayFail(?x), ?r)
   rule laterNeg(?r) :- later(0 - 1, ?r)
   rule laterPos(?r) :- later(5, ?r)
-
-  -- `T1` is inferred as `Boom`, so the `Other` raised here is no payload of this boundary;
-  -- nor is the `load_failed` a failed scoped load raises.
-  rule declined(?r) :- Error.reify(lambda () -> twoWays(7), ?r)
-  rule declinedLoad(?r) :- Error.reify(lambda () -> loadOrBoom(1), ?r)
 end
 "#;
 
@@ -211,24 +208,48 @@ fn a_rule_body_reify_waits_for_its_argument() {
     assert_eq!(crate::common::result_ok_int(&kb, &r), 6);
 }
 
-/// A payload the boundary is not typed at leaves it as the raise it is, and the goal reports
-/// the fault — naming the boundary's reason rather than advising a `reify` around a call that
-/// is one; a declined `load_failed` is such a fault too.
+/// A RULE-BODY BOUNDARY OVER LABELS OF TWO SORTS IS REFUSED (proposal 071 §7 Q1, decided with
+/// the user 2026-10-27): no one pattern heads `Boom` and `Other`, nor `Boom` and `LoadFailed`,
+/// and a rule's own term writes no bracket to say which it catches (WI-20261024-TC54R), so the
+/// refusal says to write the boundary in an operation the rule calls. Until then `T1` was the
+/// first label that paired, and the other was a fault of the goal naming the boundary's reason
+/// — (c) above, which a rule-body boundary reaches again once its term writes the bracket.
+///
+/// THE ADVISED REPAIR ANSWERS: the boundary at `Boom` in an operation the rule calls catches
+/// `boom("negative")`, and the `Other` past it is a fault of the goal.
+///
+/// FAILS with the boundary's pattern read off one label (`fix_boundary_patterns` backed out):
+/// both clauses load, `T1` the first label.
 #[test]
-fn a_payload_the_boundary_declines_is_a_fault() {
-    let mut kb = crate::common::load_kb_with(PROGRAM);
-    let errors = faults(&mut kb, "test.rrb.declined");
-    assert_eq!(errors.len(), 1, "one fault: {errors:?}");
-    for token in [
-        "raised other(n: 7)",
-        "The boundary catches the payload it is typed at",
+fn a_rule_body_boundary_over_two_sorts_is_refused() {
+    for clause in [
+        "rule declined(?r) :- Error.reify(lambda () -> twoWays(7), ?r)",
+        "rule declinedLoad(?r) :- Error.reify(lambda () -> loadOrBoom(1), ?r)",
     ] {
-        assert!(errors[0].contains(token), "the fault names `{token}`: {}", errors[0]);
+        let src = crate::common::replace_in_fixture(PROGRAM, "\nend\n", &format!("\n  {clause}\nend\n"));
+        crate::common::assert_refused_naming(
+            &crate::common::load_errors_of(&src),
+            &["which no one sort heads", "in an operation the rule calls"],
+            clause,
+        );
     }
-    let errors = faults(&mut kb, "test.rrb.declinedLoad");
+    let src = crate::common::replace_in_fixture(
+        PROGRAM,
+        "\nend\n",
+        "\n  operation atBoom(n: Int64) -> Result[E = Boom, T = Int64] effects {Error[Other]} =
+    Error.reify[T1 = Boom](lambda () -> twoWays(n))
+  rule viaOperation(?n, ?r) :- atBoom(?n, ?r)
+  rule viaOperationNeg(?r) :- viaOperation(0 - 1, ?r)
+  rule viaOperationPos(?r) :- viaOperation(7, ?r)
+end\n",
+    );
+    let mut kb = crate::common::load_kb_with(&src);
+    let r = crate::common::one_definite(&mut kb, "test.rrb.viaOperationNeg");
+    assert_eq!(caught_boom(&kb, &r), "negative");
+    let errors = faults(&mut kb, "test.rrb.viaOperationPos");
     assert!(
-        errors.iter().any(|e| e.contains("raised load_failed")),
-        "a declined load_failed is a fault: {errors:?}"
+        errors.iter().any(|e| e.contains("raised other(n: 7)")),
+        "the `Other` past the operation's boundary is a fault of the goal: {errors:?}"
     );
 }
 
@@ -350,8 +371,7 @@ namespace test.rrbo
   sort Other
     entity other(n: Int64)
   end
-  operation raiseTup(n: Int64) -> Int64 effects {Error[(Int64, Int64)], Error[Other]} =
-    if n < 0 then Error.raise((n, n)) else Error.raise(other(n))
+  operation raiseTup(n: Int64) -> Int64 effects {Error[(Int64, Int64)]} = Error.raise((n, n))
   rule tupWide(?r) :- Error.reify(lambda () -> raiseTup(7), ?r)
 end
 "#,
@@ -364,6 +384,13 @@ namespace test.rrbo
   sort Shape
     sort T = ?
     operation area(s: T) -> Int64
+  end
+  -- A provision makes `Shape` a spec, which has no `TypeValue`: with none, it is a sort like
+  -- another, and the pattern `Shape[T = ?]` is answered, its slot open (proposal 071 §1.6).
+  sort Sq
+    entity sq(side: Int64)
+    provides Shape[T = Sq]
+    operation area(s: Sq) -> Int64 = 4
   end
   operation declaresShape() -> Int64 effects {Error[Shape]} = 1
   rule specPayload(?r) :- Error.reify(lambda () -> declaresShape(), ?r)
@@ -410,8 +437,9 @@ end
 /// leaves an element open (WI-20261016-YM8HD). "Pin the element at this call" is not a
 /// bracket — a rule-body goal reads none — but a payload whose type the clause knows, which
 /// `the_advised_repairs_answer` drives. Where the call pins every element it is the account
-/// an operation body gives: a tuple, the structural former's; a collection whose element is
-/// open, or a spec, which has no `TypeValue`, that no row of `TypePattern` answers. FAILS
+/// an operation body gives: a tuple, the structural former's; a spec, which has no `TypeValue`,
+/// that no row of `TypePattern` answers. A collection whose element is open is refused at its
+/// raise, the pattern open there answered since proposal 071 stage (e). FAILS
 /// with the rule-body gate's two pinned arms backed out: those three shapes are told "this
 /// call pins no element".
 #[test]
@@ -546,14 +574,10 @@ namespace test.rrbr
   sort Other
     entity other(n: Int64)
   end
-  operation raiseEither[P](p: P, n: Int64) -> Int64 effects {Error[P], Error[Other]}
-      requires TypeValue[T = P] =
-    if n < 0 then Error.raise(p) else Error.raise(other(n))
+  operation raiseAt[P](p: P) -> Int64 effects {Error[P]} requires TypeValue[T = P] = Error.raise(p)
   operation raiseNow() -> Int64 effects {Error[Boom]} = Error.raise(boom("now"))
 
-  rule eitherFixed(?n, ?r) :- Error.reify(lambda () -> raiseEither(boom("b"), ?n), ?r)
-  rule fixedBoom(?r) :- eitherFixed(0 - 1, ?r)
-  rule fixedOther(?r) :- eitherFixed(7, ?r)
+  rule fixedBoom(?r) :- Error.reify(lambda () -> raiseAt(boom("b")), ?r)
   rule lambdaFixed(?r) :- Error.reify(lambda () -> raiseNow(), ?r)
 
   operation mayFail(n: Int64) -> Int64 effects {Error[Boom]} =
@@ -581,10 +605,4 @@ fn the_advised_repairs_answer() {
     assert_eq!(why(&kb, &r), "negative");
     let r = crate::common::one_definite(&mut kb, "test.rrbr.boundPayload");
     assert_eq!(why(&kb, &r), "w");
-    // The `Other` passes the boundary typed at `Boom`: no answer, and a fault.
-    let errors = faults(&mut kb, "test.rrbr.fixedOther");
-    assert!(
-        errors.iter().any(|e| e.contains("raised other(n: 7)")),
-        "the declined raise is the fault: {errors:?}"
-    );
 }

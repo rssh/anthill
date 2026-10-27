@@ -51,9 +51,10 @@
 //! `a_host_raise_is_not_mistaken_for_the_declared_payload`,
 //! `a_reify_at_an_operations_own_type_parameter_catches` (its declining third row) and
 //! `a_declined_raise_leaves_the_interpreter_usable` (whose `expect_err` stops erring).
-//! `a_narrowed_boundary_does_not_steal_a_raise_of_unknown_type` was among them while the test
-//! was `payload_matches`; since a raise whose type is not known is declined before any
-//! boundary is asked (`recover_at_reify_boundary`), it passes under this back-out.
+//! `a_narrowed_boundary_does_not_steal_a_raise_of_unknown_type` is among them too: since
+//! proposal 071 stage (e) a raise whose type is not known is asked about as a type not known,
+//! which only a pattern at `?` admits (MEASURED); while stage (d) declined it before any
+//! boundary was asked, it passed under this back-out.
 //! Every other row is about a boundary catching its OWN payload, which both rules agree
 //! on.
 
@@ -190,7 +191,7 @@ namespace test.reify
     if n < 0 then Error.raise(boom("negative")) else Error.raise(other(n))
 
   operation innerAtBoom(n: Int64) -> Result[E = Boom, T = Int64] effects {Error[Other]} =
-    Error.reify(lambda () -> twoWays(n))
+    Error.reify[T1 = Boom](lambda () -> twoWays(n))
 
   -- NESTED AT DIFFERENT PAYLOADS. The inner boundary takes `Boom`, the outer takes the
   -- `Other` the inner declined. This is anthill's answer to a multi-catch: the row
@@ -260,7 +261,7 @@ namespace test.reify
   operation catchItEsc[P](body: () -> Int64 @ {Error[P], Error[Other]})
       -> Result[E = P, T = Int64] effects {Error[Other]}
       requires TypePattern[T = P] =
-    Error.reify(body)
+    Error.reify[T1 = P](body)
 
   operation genericDeclines() -> Result[E = Boom, T = Int64] effects {Error[Other]} =
     catchItEsc(lambda () -> twoWays(7))

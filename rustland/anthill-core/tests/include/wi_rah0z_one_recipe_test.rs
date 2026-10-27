@@ -284,6 +284,11 @@ const PINNED: &[(&str, usize, &str)] = &[
         "registers host functions before the load, whose raises carry the type their callers thread",
     ),
     (
+        "include/wi_bdvyw_boundary_pattern_test.rs",
+        1,
+        "registers a host function before the load, whose raise is of the unknown type",
+    ),
+    (
         "include/wi_dk83q_identical_substitution_test.rs",
         1,
         "registers a host function before the load, raising under a row written `Error[T = ?]` and one at a type parameter",

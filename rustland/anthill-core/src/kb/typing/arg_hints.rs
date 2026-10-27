@@ -528,7 +528,7 @@ fn op_tp_pinning_params(
 /// type rode an occurrence staged no sibling: over `each(s: Self, f: (q: T) -> Foo[T =
 /// Int64, N = 3])`, `Sp.each(Car.car(1), lambda q -> mk(q.n))` typed `q` before its
 /// receiver and was refused, "Sp.T.n: … no such member" (MEASURED).
-fn type_mentions_op_tp(kb: &KnowledgeBase, ty: &Value, tp_vars: &[VarId]) -> bool {
+pub(super) fn type_mentions_op_tp(kb: &KnowledgeBase, ty: &Value, tp_vars: &[VarId]) -> bool {
     match ty {
         Value::Term { id, .. } => type_term_mentions_op_tp(kb, *id, tp_vars),
         other => type_view_mentions_op_tp(kb, other, tp_vars),

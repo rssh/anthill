@@ -30,7 +30,7 @@
 //!   `resolve_at_goal` each fail one of its ops, as its doc says — and the override and
 //!   member checks reading it: `a_sorts_own_type_value_is_held_to_no_contract_of_it`.
 //! * The refusal of a slot call at a type with an open slot:
-//!   `a_slot_call_at_an_open_slot_is_refused_at_load`, which then loads clean; its account:
+//!   `a_type_value_call_at_an_open_slot_is_refused_at_load`, which then loads clean; its account:
 //!   that row and `an_open_slot_of_a_programs_spec_gets_the_left_out_account`.
 //! * The resolver's advice for a goal that is not ground: `a_ground_call_at_an_open_slot_advises_both_repairs`.
 //! * `TypePattern` among the library's specs (`library_instances`):
@@ -455,41 +455,26 @@ fn a_sorts_own_type_value_answers_no_type_read() {
 }
 
 /// A REQUIREMENT AT A TYPE WITH AN OPEN SLOT is answered by a provision that leaves the slot
-/// open, and not by one at an instance (kernel-language.md §8.1); the library's specs derive
-/// no row at an open slot. A call naming such a type — `[P = Boom]` over `sort Boom { sort
-/// Reason = ? }`, or `[P = Boom[Reason = ?]]` — is refused where it is written, with the
-/// account the slot inferred and left out gets: the library spec's own repair, a sort named
-/// with every type argument. BACK-OUT: no provision answered and nothing said so; the program
-/// loaded clean and the callee's read died at run time, "requirement param
-/// `__req_typepattern` not bound in caller frame"; with the account of the arm alone, the
-/// refusal said no provision answers any open slot, which a program's spec contradicts
-/// (`an_open_slot_of_a_programs_spec_gets_the_left_out_account`).
+/// open, and not by one at an instance (kernel-language.md §8.1); `TypeValue` derives no row at
+/// an open slot. A call naming such a type — `[P = Boom]` over `sort Boom { sort Reason = ? }` —
+/// is refused where it is written, with the account the slot inferred and left out gets: the
+/// library spec's own repair, a sort named with every type argument. BACK-OUT: no provision
+/// answered and nothing said so; the program loaded clean and the callee's read died at run
+/// time. A `TypePattern` at such a type is answered since proposal 071 stage (e), its evidence
+/// built with the slot open (`wi_bdvyw_boundary_pattern_test::a_slot_a_call_leaves_open_in_a_pattern_admits_every_type`).
 #[test]
-fn a_slot_call_at_an_open_slot_is_refused_at_load() {
-    for (call, says) in [
-        (
-            "open(n: Int64) -> Bool = admitsAt[P = Boom](Boom[Reason = Int64])",
-            "no row of `anthill.reflect.TypePattern` answers here, and none may be written",
-        ),
-        (
-            "open(n: Int64) -> Bool = admitsAt[P = Boom[Reason = ?]](Boom[Reason = Int64])",
-            "no row of `anthill.reflect.TypePattern` answers here, and none may be written",
-        ),
-        (
-            "open(n: Int64) -> Type = tvAt[P = Boom](0)",
-            "no row of `anthill.reflect.TypeValue` answers here, and none may be written",
-        ),
-    ] {
-        let src = program(&format!(
-            "    operation tvAt[P](n: Int64) -> Type requires TypeValue[T = P] = TypeValue.type_value[T = P]()\n    operation {call}"
-        ));
-        let errs = refusals(&src);
-        assert!(
-            errs.iter()
-                .any(|e| e.contains(says) && e.contains("every type argument of it written")),
-            "`{call}` must be refused at load for its open slot, saying `{says}`; got {errs:?}"
-        );
-    }
+fn a_type_value_call_at_an_open_slot_is_refused_at_load() {
+    let call = "open(n: Int64) -> Type = tvAt[P = Boom](0)";
+    let says = "no row of `anthill.reflect.TypeValue` answers here, and none may be written";
+    let src = program(&format!(
+        "    operation tvAt[P](n: Int64) -> Type requires TypeValue[T = P] = TypeValue.type_value[T = P]()\n    operation {call}"
+    ));
+    let errs = refusals(&src);
+    assert!(
+        errs.iter()
+            .any(|e| e.contains(says) && e.contains("every type argument of it written")),
+        "`{call}` must be refused at load for its open slot, saying `{says}`; got {errs:?}"
+    );
 }
 
 /// A PROGRAM'S SPEC AT AN OPEN SLOT: the account says what its own provisions do there. With
@@ -551,11 +536,12 @@ end
 /// THE RESOLVER'S ADVICE FOR A GOAL THAT IS NOT GROUND names both things its open part can
 /// be: a ground call naming a type with a slot open asks `TypeValue[T = Boom.Reason]`, whose
 /// `Boom.Reason` no caller holds. BACK-OUT: the advice was a `requires` in scope alone, which
-/// names a parameter no caller has.
+/// names a parameter no caller has. (Asked of `TypePattern.admits[T = Boom](t)` until proposal
+/// 071 stage (e), which answers it, the slot open.)
 #[test]
 fn a_ground_call_at_an_open_slot_advises_both_repairs() {
     let src = program(
-        "    operation ground(n: Int64) -> Bool = TypePattern.admits[T = Boom](Boom[Reason = Int64])",
+        "    operation ground(n: Int64) -> Type = TypeValue.type_value[T = Boom]()",
     );
     let errs = refusals(&src);
     assert!(

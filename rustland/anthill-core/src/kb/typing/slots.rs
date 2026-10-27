@@ -4693,7 +4693,10 @@ fn selection_witness_sym(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
 ///
 /// A type parameter several slots' LABELS name (`Error[E]` in two of them) is fixed first, by
 /// the arguments together ([`fix_label_type_params`]): pairing one argument after another, the
-/// first fixed it and the other's label went to the row.
+/// first fixed it and the other's label went to the row. A boundary's pattern variable one
+/// label names is fixed before that, at the least pattern of what the argument raises
+/// ([`fix_boundary_patterns`]), and an `Error` label of an argument is discharged where the
+/// pattern admits it ([`error_labels_discharged`]).
 ///
 /// Which pairs are solved here, [`slot_row`] says; the loops' unification relates every other
 /// pair's rows as before. The pass solves in ROUNDS: a slot whose row holds TWO flexible tails
@@ -4751,16 +4754,17 @@ pub(super) fn infer_discharged_row_tails(
     let mut unread: Vec<usize> = Vec::new();
     let mut label_rows: Vec<(Symbol, SlotRow)> = Vec::new();
     for (i, (param, _, actual)) in pairs.iter().enumerate() {
-        if let Some(row) = slot_row(kb, subst, declared_at(i), actual) {
+        if let Some(row) = slot_row(kb, subst, op, declared_at(i), actual) {
             unread.push(i);
             label_rows.push((*param, row));
         }
     }
+    fix_boundary_patterns(kb, subst, op, &label_rows)?;
     fix_label_type_params(kb, subst, op, &label_rows)?;
     // Each round solves the slot rows left one flexible tail by the rounds before it.
     loop {
         let mut slot_rows: Vec<(Symbol, SlotRow)> = Vec::new();
-        unread.retain(|&i| match slot_row(kb, subst, declared_at(i), &pairs[i].2) {
+        unread.retain(|&i| match slot_row(kb, subst, op, declared_at(i), &pairs[i].2) {
             Some(row) if row.tails.len() == 1 => {
                 slot_rows.push((pairs[i].0, row));
                 false
@@ -4876,6 +4880,310 @@ fn solve_slot_rows(kb: &mut KnowledgeBase, subst: &mut Substitution, slot_rows: 
     }
 }
 
+/// Proposal 071 §1.6, §7 Q1 (decided with the user 2026-10-27) — A BOUNDARY'S PATTERN IS THE
+/// LEAST PATTERN THAT ADMITS WHAT ITS ARGUMENT RAISES. A callee that requires `TypePattern[T =
+/// X]` catches by `X`, and an `Error` label of a callback slot naming a variable of `X` is
+/// what it catches there — `Error.reify`'s `@ {Error[T1], Rho}`. Each such variable the call
+/// leaves free is fixed here, before the slot's row is solved, at the least pattern
+/// ([`least_pattern`]) of what the argument's `Error` labels that the slot admits give it:
+/// every label where the variable is the whole payload (`T1` unwritten), and those of the
+/// written sort where a bracket wrote one with a slot left open (`[T1 = Boom]`, the slot a
+/// variable). So over `Boom[Reason = String]` and `Boom[Reason = Int64]` the pattern is
+/// `Boom`, its open slot a [`KnowledgeBase::pattern_slot`]: unified one label after another,
+/// the first fixed `T1` and the second went to the caller's row (MEASURED, `caughtWide`). Over
+/// one label it is that label; over a payload the argument raises at a type not known — a
+/// bare `Error` — alone, the pattern `?`; a slot of a written bracket nothing gives a value is
+/// open. Labels of sorts no one sort heads (`String`, `DivisionByZero`) are refused, the call
+/// asked to say which it catches: pairing in row order, the verdict followed the order of an
+/// `if`'s branches (WI-20261015-D2KZ5). A variable nothing gives a value where it is the whole
+/// payload is left as it was, and refused as unconstrained.
+///
+/// A slot whose row holds two such labels is left to the pairing: which label catches which
+/// payload is not one pattern's to say.
+fn fix_boundary_patterns(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    op: &OperationInfoFull,
+    slot_rows: &[(Symbol, SlotRow)],
+) -> Result<(), NoCommonPayload> {
+    let Some(error) = kb.error_sort_sym else {
+        return Ok(());
+    };
+    // The pattern's free variables: those its parameters stand for under σ — the parameter
+    // itself where it is free, the slot a bracket left open where it bound one.
+    let pattern_free: SmallVec<[(VarId, Symbol); 2]> = pattern_vars(kb, subst, op)
+        .into_iter()
+        .flat_map(|(name, walked)| {
+            kb.collect_vars(&walked).into_iter().map(move |v| (v, name))
+        })
+        .collect();
+    if pattern_free.is_empty() {
+        return Ok(());
+    }
+    // Each slot's `Error` labels at the pattern, and how many labels of every slot name each
+    // of the pattern's variables.
+    let mut at_pattern: Vec<Vec<Value>> = Vec::with_capacity(slot_rows.len());
+    let mut naming: Vec<(VarId, usize)> = Vec::new();
+    for (_, row) in slot_rows {
+        let mut labels: Vec<Value> = Vec::new();
+        for d in &row.present {
+            let walked = walk_type_deep_value(kb, subst, d);
+            for v in kb.collect_vars(&walked) {
+                match naming.iter_mut().find(|(w, _)| *w == v) {
+                    Some((_, n)) => *n += 1,
+                    None => naming.push((v, 1)),
+                }
+            }
+            let Some(Some(payload)) = error_payload(kb, d, error) else {
+                continue;
+            };
+            let x = walk_type_deep_value(kb, subst, &payload);
+            if kb.collect_vars(&x).iter().any(|v| pattern_free.iter().any(|(p, _)| p == v)) {
+                labels.push(x);
+            }
+        }
+        at_pattern.push(labels);
+    }
+    for (i, (_, row)) in slot_rows.iter().enumerate() {
+        let [x] = at_pattern[i].as_slice() else {
+            continue;
+        };
+        // A variable another label names too — of another slot, or another label of this one
+        // (`Log[E]` beside `Error[E]`) — is fixed by the arguments together, at §8.1's join
+        // ([`fix_label_type_params`]), as any parameter several arguments bind.
+        let shared = kb
+            .collect_vars(x)
+            .into_iter()
+            .any(|v| naming.iter().any(|(w, n)| *w == v && *n > 1));
+        if shared {
+            continue;
+        }
+        let free = kb.collect_vars(x);
+        let whole = matches!(type_head(kb, x), TypeHead::FlexVar(_));
+        // `x` with every free variable open: what the slot admits.
+        let open_x = {
+            let mut open = subst.clone();
+            for v in &free {
+                let slot = kb.pattern_slot();
+                open.bind_term(kb, *v, slot);
+            }
+            walk_type_deep_value(kb, &open, x)
+        };
+        // Each label the slot admits, as an instance of the written head; `None` for a payload
+        // of a type not known.
+        let mut views: Vec<Option<Value>> = Vec::new();
+        let mut raised: Vec<Value> = Vec::new();
+        for a in &row.actual_present {
+            let Some(payload) = error_payload(kb, a, error) else {
+                continue;
+            };
+            // A label another label of the slot takes is that label's (`guard[P](body: … @
+            // {Error[P], Error[Other]})` over a `body` raising `Boom` and `Other`). The
+            // pattern's own label holds a free variable, and is asked nothing here.
+            if row
+                .present
+                .iter()
+                .any(|d| error_labels_discharged(kb, subst, a, d) == Some(true))
+            {
+                continue;
+            }
+            let Some(y) = payload else {
+                if whole {
+                    views.push(None);
+                    raised.push(a.clone());
+                }
+                continue;
+            };
+            let y = walk_type_deep_value(kb, subst, &y);
+            if !pattern_discharges(kb, &open_x, &y) {
+                continue;
+            }
+            raised.push(a.clone());
+            // A label of a sort refining the written one is read as the one instance its
+            // clauses give it; with none or several, no one pattern heads it.
+            let view = match sort_functor_of_view(kb, x) {
+                Some(head) if !whole => instance_of_sort(kb, &y, head),
+                _ => Some(y),
+            };
+            let Some(view) = view else {
+                let type_param = free
+                    .first()
+                    .and_then(|v| pattern_free.iter().find(|(p, _)| p == v))
+                    .map(|(_, name)| *name);
+                return Err(NoCommonPayload::Pattern { type_param, raised });
+            };
+            views.push(Some(view));
+        }
+        // Nothing raised at the pattern: a written slot is opened with the others
+        // ([`open_pattern_slots`]), and `T1` itself is left unconstrained.
+        if raised.is_empty() {
+            continue;
+        }
+        let Some(least) = least_of(kb, &views) else {
+            let type_param = free
+                .first()
+                .and_then(|v| pattern_free.iter().find(|(p, _)| p == v))
+                .map(|(_, name)| *name);
+            return Err(NoCommonPayload::Pattern { type_param, raised });
+        };
+        let least = fill_open_slots(kb, &least);
+        let mut at: Vec<(VarId, Value)> = Vec::new();
+        read_at_variables(kb, x, &least, &mut at, 0);
+        for v in &free {
+            let value = match at.iter().find(|(w, _)| w == v) {
+                Some((_, value)) => value.clone(),
+                None => Value::term(kb.pattern_slot()),
+            };
+            let bound = bind_resolved(kb, subst, *v, value);
+            debug_assert!(bound, "a boundary's pattern variable binds its least pattern");
+        }
+    }
+    Ok(())
+}
+
+/// What each variable of `x` stands for in `least`, a pattern of `x`'s shape read off the
+/// labels ([`fix_boundary_patterns`]): the part of `least` at its position; an open slot where
+/// `least` is open above it, or where a variable occurs twice and the two disagree. A variable
+/// `least` does not reach is not listed.
+fn read_at_variables(kb: &mut KnowledgeBase, x: &Value, least: &Value, at: &mut Vec<(VarId, Value)>, depth: usize) {
+    let put = |kb: &mut KnowledgeBase, at: &mut Vec<(VarId, Value)>, v: VarId, value: Value| {
+        match at.iter().position(|(w, _)| *w == v) {
+            Some(i) if !views_structurally_equal(kb, &at[i].1, &value) => {
+                at[i].1 = Value::term(kb.pattern_slot());
+            }
+            Some(_) => {}
+            None => at.push((v, value)),
+        }
+    };
+    if let TypeHead::FlexVar(v) = type_head(kb, x) {
+        put(kb, at, v, least.clone());
+        return;
+    }
+    let vars = kb.collect_vars(x);
+    if vars.is_empty() {
+        return;
+    }
+    let open = |kb: &mut KnowledgeBase, at: &mut Vec<(VarId, Value)>| {
+        for v in &vars {
+            let slot = Value::term(kb.pattern_slot());
+            put(kb, at, *v, slot);
+        }
+    };
+    let same_head = matches!(
+        (sort_functor_of_view(kb, x), sort_functor_of_view(kb, least)),
+        (Some(a), Some(b)) if same_sort_canonical(kb, a, b)
+    );
+    if depth > TYPE_NESTING_LIMIT || !same_head {
+        open(kb, at);
+        return;
+    }
+    let (TypeExtractor::Parameterized { bindings: xb, .. }, least_args) =
+        (extract_type(kb, x), extract_type(kb, least))
+    else {
+        open(kb, at);
+        return;
+    };
+    let lb = match least_args {
+        TypeExtractor::Parameterized { bindings, .. } => bindings,
+        _ => Vec::new(),
+    };
+    for (key, xv) in &xb {
+        match lb.iter().find(|(k, _)| kb.local_name_of(*k) == kb.local_name_of(*key)) {
+            Some((_, lv)) => read_at_variables(kb, xv, lv, at, depth + 1),
+            None => {
+                for v in kb.collect_vars(xv) {
+                    let slot = Value::term(kb.pattern_slot());
+                    put(kb, at, v, slot);
+                }
+            }
+        }
+    }
+}
+
+/// Does `op` require a `TypePattern` — is it a boundary, which catches by it?
+fn requires_a_pattern(kb: &KnowledgeBase, op: &OperationInfoFull) -> bool {
+    kb.type_pattern_sym().is_some_and(|tp| {
+        op.requires
+            .iter()
+            .any(|r| sort_functor_of_view(kb, r).is_some_and(|s| same_sort_canonical(kb, s, tp)))
+    })
+}
+
+/// Each parameter of `op` a `requires TypePattern[T = X]` clause names inside `X`, beside what
+/// it stands for under σ.
+fn pattern_vars(kb: &mut KnowledgeBase, subst: &Substitution, op: &OperationInfoFull) -> Vec<(Symbol, Value)> {
+    let Some(type_pattern) = kb.type_pattern_sym() else {
+        return Vec::new();
+    };
+    let mut out: Vec<(Symbol, Value)> = Vec::new();
+    for r in &op.requires {
+        if !sort_functor_of_view(kb, r).is_some_and(|s| same_sort_canonical(kb, s, type_pattern)) {
+            continue;
+        }
+        let Some(binding) = extract_type_param(kb, r, "T") else {
+            continue;
+        };
+        for (name, var) in &op.type_params {
+            let Var::Global(vid) = var else {
+                continue;
+            };
+            if out.iter().any(|(n, _)| n == name) || !type_mentions_op_tp(kb, &binding, &[*vid]) {
+                continue;
+            }
+            let var_term = Value::term(type_param_var_term(kb, *var));
+            let walked = walk_type_deep_value(kb, subst, &var_term);
+            out.push((*name, walked));
+        }
+    }
+    out
+}
+
+/// Proposal 071 §1.6 — A SLOT A CALL LEAVES OPEN IN A TYPE PATTERN IS OPEN. A variable that a
+/// parameter of a `requires TypePattern[T = X]` clause holds once the call's arguments are
+/// typed — a bracket's slot nothing binds, `admitsAt[P = Boom](t)`, `Error.reify[T1 =
+/// Boom](lambda () -> 0)` — is bound to an open slot of the pattern
+/// ([`KnowledgeBase::pattern_slot`]): the call's evidence is built there, admitting every type
+/// at the slot, and no later use narrows the pattern the call was typed at. A parameter that is
+/// itself free is left to be refused as unconstrained. Before, no row answered the requirement
+/// and the call was refused at load.
+pub(super) fn open_pattern_slots(kb: &mut KnowledgeBase, subst: &mut Substitution, op: &OperationInfoFull) {
+    for (_, walked) in pattern_vars(kb, subst, op) {
+        if matches!(type_head(kb, &walked), TypeHead::FlexVar(_)) {
+            continue;
+        }
+        for v in kb.collect_vars(&walked) {
+            let slot = kb.pattern_slot();
+            subst.bind_term(kb, v, slot);
+        }
+    }
+}
+
+/// The payload of an `Error` label — `Some(None)` for the bare `Error`, raised at a type not
+/// known — or `None` where `label` is no `Error` label. A guarded label is its label.
+fn error_payload(kb: &KnowledgeBase, label: &Value, error: Symbol) -> Option<Option<Value>> {
+    let guarded = guarded_effect_label(kb, label);
+    let label = guarded.as_ref().unwrap_or(label);
+    effect_label_names_sort(kb, label, error).then(|| extract_type_param(kb, label, "T"))
+}
+
+/// The least pattern of the values a boundary's variable is given ([`fix_boundary_patterns`]):
+/// a payload of a type not known (`None`) beside no other, the pattern `?`; `None` where no
+/// one pattern heads them, a type not known beside a known one included.
+fn least_of(kb: &mut KnowledgeBase, values: &[Option<Value>]) -> Option<Value> {
+    let known: Vec<&Value> = values.iter().flatten().collect();
+    if known.is_empty() {
+        return Some(Value::term(kb.pattern_slot()));
+    }
+    if known.len() < values.len() {
+        return None;
+    }
+    let mut least = known[0].clone();
+    for v in &known[1..] {
+        least = least_pattern(kb, &least, v)?;
+    }
+    Some(least)
+}
+
 /// A TYPE PARAMETER OF THE CALLEE THAT SEVERAL CALLBACK SLOTS' LABELS NAME is fixed by the
 /// arguments together, before [`infer_discharged_row_tails`] pairs any of them, as §8.1 fixes a
 /// parameter several arguments bind: at the JOIN of what they give it where it occurs covariantly
@@ -4963,7 +5271,7 @@ fn fix_label_type_params(
             .collect();
         let slices: Vec<&[Value]> = offered.iter().map(|(_, values)| values.as_slice()).collect();
         let Some(value) = payload_every_argument_fits(kb, &slices, invariant) else {
-            return Err(NoCommonPayload(NoJoin {
+            return Err(NoCommonPayload::Join(NoJoin {
                 type_param: Some(name),
                 contributions: offered
                     .iter()
@@ -5016,15 +5324,67 @@ fn payload_every_argument_fits(kb: &mut KnowledgeBase, offered: &[&[Value]], inv
     (!values.is_empty()).then(|| values.swap_remove(least))
 }
 
-/// Several callback slots' labels name one type parameter of the callee, and no value fits what
-/// every argument offers ([`fix_label_type_params`]): `Int64 (a), String (b)`.
-pub(super) struct NoCommonPayload(NoJoin);
+/// A callee's type parameter that the callback slots' labels name has no value the arguments
+/// agree on.
+pub(super) enum NoCommonPayload {
+    /// Several slots' labels name it, and no value fits what every argument offers
+    /// ([`fix_label_type_params`]): `Int64 (a), String (b)`.
+    Join(NoJoin),
+    /// A boundary's argument raises `Error` labels that no one pattern heads
+    /// ([`fix_boundary_patterns`]): the labels, beside the boundary's parameter.
+    Pattern {
+        type_param: Option<Symbol>,
+        raised: Vec<Value>,
+    },
+}
 
 impl NoCommonPayload {
     /// The refusal of the call, at its span, in the context §8.1's disagreeing parameter takes.
-    pub(super) fn into_call_error(self, kb: &KnowledgeBase, op: Symbol, span: Option<Span>) -> TypeError {
-        let name = self
-            .0
+    /// `bracket_written_here`: the call is written where a bracket may be, which a rule's own
+    /// term is not yet (WI-20261024-TC54R).
+    pub(super) fn into_call_error(
+        self,
+        kb: &KnowledgeBase,
+        op: Symbol,
+        span: Option<Span>,
+        bracket_written_here: bool,
+    ) -> TypeError {
+        let join = match self {
+            NoCommonPayload::Join(join) => join,
+            NoCommonPayload::Pattern { type_param, raised } => {
+                let name = type_param
+                    .map(|s| type_param_display_name(kb, s))
+                    .unwrap_or_else(|| "T1".to_owned());
+                let op_short = short_name_of(kb.qualified_name_of(op));
+                let labels: Vec<String> = raised
+                    .iter()
+                    .map(|l| format!("`{}`", type_display_name_value(kb, l)))
+                    .collect();
+                let repair = if bracket_written_here {
+                    format!("say which `{op_short}` catches, `{op_short}[{name} = …](…)`")
+                } else {
+                    format!(
+                        "say which `{op_short}` catches, `{op_short}[{name} = …](…)`, in an \
+                         operation the rule calls: a rule's own term writes no bracket"
+                    )
+                };
+                return TypeError::Other {
+                    site: TypeError::here(),
+                    span,
+                    context: TypeErrorContext::OperationTypeParams { op_name: op },
+                    expected: format!(
+                        "one pattern for `{name}` that admits every `Error` label the argument \
+                         raises"
+                    ),
+                    actual: format!(
+                        "the argument raises {}, which no one sort heads: {repair}; the others \
+                         stay in the caller's row",
+                        labels.join(" and ")
+                    ),
+                };
+            }
+        };
+        let name = join
             .type_param
             .map(|s| type_param_display_name(kb, s))
             .unwrap_or_default();
@@ -5036,7 +5396,7 @@ impl NoCommonPayload {
             actual: format!(
                 "no type every argument's labels give type parameter `{name}` of `{}`: {}",
                 kb.local_name_of(op),
-                self.0.listed(kb)
+                join.listed(kb)
             ),
         }
     }
@@ -5064,7 +5424,13 @@ struct SlotRow {
 /// flexible variable — or states an absence: those are the shapes the unify and subtype arms
 /// reason about with their own tail machinery. A row with TWO flexible tails (a row UNION,
 /// `{E, EffP}`) is read too, and solved once the other slots leave it one.
-fn slot_row(kb: &mut KnowledgeBase, subst: &Substitution, declared: &Value, actual: &Value) -> Option<SlotRow> {
+fn slot_row(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    op: &OperationInfoFull,
+    declared: &Value,
+    actual: &Value,
+) -> Option<SlotRow> {
     if !type_head_is_callable(kb, declared) {
         return None;
     }
@@ -5085,8 +5451,22 @@ fn slot_row(kb: &mut KnowledgeBase, subst: &Substitution, declared: &Value, actu
         }
         tails.push(t);
     }
-    if tails.is_empty() {
+    // A boundary's closed row is solved here too where a label of it holds a variable the call
+    // binds — `catchAt[P](f: () -> Int64 @ {Error[P]})`, its pattern read off what `f` raises
+    // ([`fix_boundary_patterns`]): unified by the argument loops, one label after another fixed
+    // `P` and the next was refused at the slot. Another callee's closed row is the loops' still.
+    if tails.is_empty() && !requires_a_pattern(kb, op) {
         return None;
+    }
+    if tails.is_empty() {
+        let mut holds_a_variable = false;
+        for d in &present {
+            let d = walk_type_deep_value(kb, subst, d);
+            holds_a_variable |= !kb.collect_vars(&d).is_empty();
+        }
+        if !holds_a_variable {
+            return None;
+        }
     }
     let (_, _, Some(a_eff)) = arrow_parts(kb, actual)? else {
         return None;
@@ -5150,7 +5530,7 @@ pub(super) fn slot_at_argument_row(
     // What the parameters name outside the callbacks' rows, read once a row the pass solves asks.
     let mut outside: Option<Option<Vec<Value>>> = None;
     map_held_arrows(kb, subst, declared, Some(actual), true, &mut |kb, d, a| {
-        let SlotRow { tails, actual_row, .. } = slot_row(kb, subst, d, a?)?;
+        let SlotRow { tails, actual_row, .. } = slot_row(kb, subst, op, d, a?)?;
         let outside = outside
             .get_or_insert_with(|| outside_callback_rows(kb, subst, op, param, declared))
             .as_ref()?;

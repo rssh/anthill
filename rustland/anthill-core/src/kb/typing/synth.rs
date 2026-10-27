@@ -885,6 +885,80 @@ impl<'s> LocalProvider<'s> {
     }
 }
 
+/// Proposal 071 §1.6 — THE EVIDENCE OF A TYPE PATTERN'S OPEN SLOT IS BUILT, NOT SEARCHED FOR.
+/// `TypePattern[T = X]` is answered by its one row, whose condition is `TypeValue[T = X]`, and
+/// each sort application in `X` by its derived instance, conditioned on its arguments'; at an
+/// open slot of the pattern ([`KnowledgeBase::pattern_slot`]) the condition `TypeValue[T = ?]`
+/// is answered by a dictionary whose type is the open slot, `impl` the slot's name — only
+/// beneath a `TypePattern` goal. Anywhere else such a type is a type not known, which has no
+/// `TypeValue`: a caught payload raised again (`Error.raise(e)` over `e: Boom[Reason = ?]`)
+/// is refused as before. No instance search could answer it: an open slot written as a
+/// variable matches every instance.
+fn open_slot_beneath_pattern(
+    kb: &mut KnowledgeBase,
+    goal: &SortGoal,
+    stack: &[SortGoal],
+) -> Option<ResolutionResult> {
+    let [(_, t)] = goal.bindings.as_slice() else {
+        return None;
+    };
+    if !is_pattern_slot(kb, t) {
+        return None;
+    }
+    let type_value = type_value_spec_sym(kb)?;
+    if !same_sort_canonical(kb, goal.spec_sort, type_value) {
+        return None;
+    }
+    let pattern = kb.type_pattern_sym()?;
+    if !stack.iter().any(|g| same_sort_canonical(kb, g.spec_sort, pattern)) {
+        return None;
+    }
+    Some(ResolutionResult::Resolved(ResolvedRequiresNode::Leaf {
+        impl_sort: kb.pattern_slot_name(),
+        spec_sort: goal.spec_sort,
+        bindings: SmallVec::new(),
+    }))
+}
+
+/// A `TypePattern` goal whose type leaves a slot out, or holds a variable nothing bound there,
+/// with that slot open ([`fill_open_slots`]): a call states the pattern `Boom` by
+/// `TypePattern.admits[T = Boom](t)`, and a slot it leaves open is open, as a bracket's slot
+/// nothing fills is (proposal 071 §1.6). A call whose pattern a boundary reads off labels has
+/// its variables bound or opened in σ before this ([`open_pattern_slots`]).
+/// Searched as written, the derived instance's condition asked `TypeValue` of the slot left
+/// out and no row answered. `None` where the goal is no `TypePattern` one or leaves nothing out.
+fn pattern_goal_opened(kb: &mut KnowledgeBase, goal: &SortGoal) -> Option<SortGoal> {
+    let pattern = kb.type_pattern_sym()?;
+    if !same_sort_canonical(kb, goal.spec_sort, pattern) {
+        return None;
+    }
+    let [(key, t)] = goal.bindings.as_slice() else {
+        return None;
+    };
+    // A slot the bracket left open rides here as a variable nothing bound: an open slot too.
+    // The pattern itself a variable is a parameter left unconstrained, refused as such.
+    let vars = kb.collect_vars(t);
+    let t = if vars.is_empty() || matches!(type_head(kb, t), TypeHead::FlexVar(_)) {
+        t.clone()
+    } else {
+        let mut open = crate::kb::subst::Substitution::new();
+        for v in vars {
+            let slot = kb.pattern_slot();
+            open.bind_term(kb, v, slot);
+        }
+        walk_type_deep_value(kb, &open, t)
+    };
+    let filled = fill_open_slots(kb, &t);
+    if views_structurally_equal(kb, &filled, &goal.bindings[0].1) {
+        return None;
+    }
+    Some(SortGoal {
+        spec_sort: goal.spec_sort,
+        bindings: SmallVec::from_elem((*key, filled), 1),
+        carrier: goal.carrier.clone(),
+    })
+}
+
 pub(super) fn resolve_inner<'a>(
     kb: &mut KnowledgeBase,
     goal: &SortGoal,
@@ -961,6 +1035,12 @@ pub(super) fn resolve_inner<'a>(
             spec_sort: goal.spec_sort,
             bindings: SmallVec::new(),
         });
+    }
+    if let Some(open) = open_slot_beneath_pattern(kb, goal, stack) {
+        return open;
+    }
+    if let Some(opened) = pattern_goal_opened(kb, goal) {
+        return resolve_inner(kb, &opened, scope, stack, local_provider, slot_pin, rung, report);
     }
     // WI-841 (058 §4.5) — STEP 0. `stack.is_empty()` is exactly "this is the goal the
     // CALL made", so a selection reaches the call's own goal and no sub-goal: a

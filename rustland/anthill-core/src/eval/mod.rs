@@ -384,6 +384,9 @@ pub(crate) struct ErrorLayer {
     /// `anthill.reflect.TypeValue`: a builtin whose chain requires it keeps its argument
     /// values for its raise (`Interpreter::call_host`).
     pub type_value: Symbol,
+    /// The type a raise of the unknown type is asked about, and the type a pattern's open slot
+    /// names at run time (`KnowledgeBase::run_time_pattern_slot`).
+    pub open_slot: crate::kb::term::TermId,
 }
 
 impl ErrorLayer {
@@ -459,6 +462,7 @@ impl ErrorLayer {
             relation_floundered_type,
             resolve_stream_failure_type,
             type_value,
+            open_slot: kb.run_time_pattern_slot(),
         })
     }
 }

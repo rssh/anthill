@@ -4366,20 +4366,23 @@ impl Interpreter {
     }
 
     /// The `Type` a raise carries, built for the boundaries that ask
-    /// ([`Self::recover_at_reify_boundary`]): the type its evidence names. `None` for a raise
-    /// whose type is not known ([`super::RaisedType::Unknown`]): only a pattern at `?` would
-    /// admit it, and no boundary has one — `TypePattern` has no instance at an open slot,
-    /// and no row discharges a bare `Error` label.
-    fn raised_type_value(
-        &mut self,
-        raised_type: &super::RaisedType,
-    ) -> Result<Option<Value>, EvalError> {
+    /// ([`Self::recover_at_reify_boundary`]): the type its evidence names. For a raise whose
+    /// type is not known ([`super::RaisedType::Unknown`]), a type pattern's open slot
+    /// (`KnowledgeBase::pattern_slot`), which the pattern test reads as a type not known
+    /// where it is asked about: only a pattern open there, `?`, admits it (proposal 071
+    /// §1.6).
+    fn raised_type_value(&mut self, raised_type: &super::RaisedType) -> Result<Value, EvalError> {
         match raised_type {
             super::RaisedType::Evidence(evidence) => {
                 let t = super::builtins::type_of_dictionary(self, evidence)?;
-                Ok(Some(Value::term(t)))
+                Ok(Value::term(t))
             }
-            super::RaisedType::Unknown => Ok(None),
+            super::RaisedType::Unknown => match self.error_layer.as_ref() {
+                Some(layer) => Ok(Value::term(layer.open_slot)),
+                None => Err(EvalError::Internal(
+                    "raised_type_value: a raise reached a boundary with no error layer".into(),
+                )),
+            },
         }
     }
 
@@ -4457,9 +4460,9 @@ impl Interpreter {
         // admitted it.
         //
         // A RAISE OF THE UNKNOWN TYPE (a bare `Error` row's host function, a host handler's
-        // throw) IS CAUGHT ONLY BY A BOUNDARY WHOSE PATTERN IS `?` — none exists until 071's
-        // stage (e) builds pattern evidence at an open slot — and every other boundary lets
-        // it pass outward. Catching it at a boundary typed otherwise was measured WRONG in
+        // throw) IS CAUGHT ONLY BY A BOUNDARY WHOSE PATTERN IS `?` — the one the typer builds
+        // over a thunk whose only `Error` label is the bare one (071 §1.6) — and every other
+        // boundary lets it pass outward. Catching it at a boundary typed otherwise was measured WRONG in
         // the shape it had before stage (d), a raised value whose sort could not be read: a
         // boundary has been told what it discharges, and the row told the OUTER boundary
         // about everything else.
@@ -4473,9 +4476,7 @@ impl Interpreter {
             return Err(e);
         }
         let raised = payload.clone();
-        let Some(raised_type) = self.raised_type_value(raised_type)? else {
-            return Err(e);
-        };
+        let raised_type = self.raised_type_value(raised_type)?;
         let mut accepted = None;
         for idx in boundaries {
             let Some(pattern) = self.stack.boundary_pattern(idx).cloned() else {

@@ -1082,8 +1082,9 @@ pub(super) fn check_apply_iter(
         if let Err(no_common) =
             infer_discharged_row_tails(kb, &mut subst, &op, &callback_pairs, &effective_param_types)
         {
-            return Err(no_common.into_call_error(kb, fn_sym, span));
+            return Err(no_common.into_call_error(kb, fn_sym, span, env.written_as_an_operation_body()));
         }
+        open_pattern_slots(kb, &mut subst, &op);
 
         // WI-705: reject a call whose SIGNATURE — the op's own effect row or any
         // arrow-typed param row — an instantiation has made UNINHABITABLE (`{X, -X}`,

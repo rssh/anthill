@@ -180,9 +180,9 @@ namespace anthill.reflect
      sort admits a sort that refines it (`sort FileNotFound requires IoError`: a pattern at
      `IoError` admits `FileNotFound`). The test is `type_admits`.
 
-     Its one row is `TypeValuePattern`'s, over the instances of `TypeValue`, so it has an
-     instance where `T` has no open slot, and a call at a type with one is refused at load;
-     `type_admits` itself takes a pattern with open slots. A written `provides
+     Its one row is `TypeValuePattern`'s, over the instances of `TypeValue`. A slot a call
+     leaves open in `T` is open: the typer builds that evidence, the slot a wildcard, so
+     `TypePattern.admits[T = Boom](t)` admits every `Boom`. A written `provides
      TypePattern[…]` is a load error, as a written `provides TypeValue[…]` is. A forged
      `admits` would make the answer a claim instead of a fact.
 
@@ -196,8 +196,9 @@ namespace anthill.reflect
   {< TypeValuePattern: the one row of `TypePattern`. A type with no open slot is a pattern
      that admits its subtypes: wherever `T` has a `TypeValue` instance, `admits` reads `T`
      as a value under the row's own condition, which the `where` block puts in its scope,
-     and asks the one subtype test, `type_admits`. The row is written on a sort of its own
-     rather than on `TypeValue`, which every sort provides. >}
+     and asks the one subtype test, `type_admits`; at an open slot the condition's evidence
+     is the typer's, and `T` read there holds the slot. The row is written on a sort of its
+     own rather than on `TypeValue`, which every sort provides. >}
   sort TypeValuePattern
     sort T = ?
     provides TypePattern[T = T] :- TypeValue[T = T] where

@@ -67,8 +67,8 @@
 
 use anthill_core::eval::{EvalError, Interpreter};
 
-/// `go` declares `ROW`; `caller` reifies it at `Boom` written, `inferred` at the `T1` its
-/// declared result fixes; both declare `effects CALLER_ROW`.
+/// `go` declares `ROW`; `caller` reifies it at `Boom` written and declares `effects
+/// CALLER_ROW`; `inferred` reifies it at the `T1` its thunk's row gives, declaring no effect.
 fn reified(row: &str, caller_row: &str) -> String {
     format!(
         r#"
@@ -80,7 +80,7 @@ namespace test.dk
   operation go() -> Int64 effects {row} = 1
   operation caller() -> Result[E = Boom, T = Int64] effects {caller_row} =
     Error.reify[T1 = Boom](lambda () -> go())
-  operation inferred() -> Result[E = Boom, T = Int64] effects {caller_row} =
+  operation inferred() -> Result[T = Int64] =
     Error.reify(lambda () -> go())
 end
 "#
@@ -90,14 +90,18 @@ end
 /// THE TICKET'S TWO PROGRAMS GET ONE VERDICT, the bare `Error`'s as the user stated it
 /// (2026-10-24): `Error` raises at a type not known, which only a boundary whose pattern is `?`
 /// catches. A boundary at `Boom` does not discharge it — it is no `Error[Boom]`, and passes into
-/// the boundary's `Rho`, as an `Error[Other]` does — so the caller incurs `Error`: refused
-/// declaring `{}` ("undeclared effect: Error"), loading declaring `{Error}`, at a written `T1` and
-/// at the one the caller's result fixes, for each of the three spellings. BACK-OUT: with a bare
-/// label paired with `Error[Boom]` (`effects::bare_against_written` answering no), each is
-/// refused at the `reify` argument, "the lambda argument declares `Error`, which the closed row
-/// does not admit", the verdict this ticket found the bare `Error` given; with the written `?`
-/// kept a variable as well, `{Error[T = ?]}` loads declaring `{}`, the label discharged by
-/// `?` := `Boom`.
+/// the boundary's `Rho`, as an `Error[Other]` does — so `caller` incurs `Error`: refused declaring
+/// `{}` ("undeclared effect: Error"), loading declaring `{Error}`, for each of the three
+/// spellings. `inferred`, whose `T1` is unwritten, reifies at `?` — the pattern over a thunk
+/// whose only `Error` label is the bare one (proposal 071 §7 Q1, decided with the user
+/// 2026-10-27) — which discharges the label: it loads declaring nothing, its result `Result[E =
+/// ?]`. Until then `T1` was the `Boom` its declared result `Result[E = Boom, …]` fixed, and the
+/// caller incurred `Error` as `caller` does. BACK-OUT: with a bare label paired with
+/// `Error[Boom]` (`effects::bare_against_written` answering no), `caller` is refused at the
+/// `reify` argument, "the lambda argument declares `Error`, which the closed row does not
+/// admit", the verdict this ticket found the bare `Error` given; with the written `?` kept a
+/// variable as well, `{Error[T = ?]}` loads declaring `{}`, the label discharged by `?` :=
+/// `Boom`.
 #[test]
 fn an_open_payload_is_one_label_however_it_is_written() {
     for row in [
@@ -113,8 +117,12 @@ fn an_open_payload_is_one_label_however_it_is_written() {
             errs.iter()
                 .filter(|e| e.contains("expected declared: [], got undeclared effect: Error"))
                 .count(),
-            2,
-            "{row}: both callers incur `Error`, past the boundary at `Boom`; got {errs:#?}"
+            1,
+            "{row}: `caller` incurs `Error`, past the boundary at `Boom`; got {errs:#?}"
+        );
+        assert!(
+            errs.iter().all(|e| !e.contains("inferred")),
+            "{row}: `inferred` discharges it at `?`; got {errs:#?}"
         );
         let errs = crate::common::load_errors_of(&reified(row, "{Error}"));
         assert!(errs.is_empty(), "{row}: declaring `Error`, both load; got {errs:#?}");

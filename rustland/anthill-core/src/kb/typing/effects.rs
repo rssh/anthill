@@ -1955,6 +1955,12 @@ pub(super) fn resolved_labels_equal(
 
 /// A LABEL'S ARGUMENT IS A TYPE, AND TYPES SUBSUME — for the label sorts that say so.
 ///
+/// AN `Error` LABEL IS A BOUNDARY'S QUESTION (071 §1.5): where the declared payload is
+/// determined it is read as a type pattern, and an actual payload it admits — the test the
+/// run's `admits` asks, which is bounded and walks the two types alone ([`pattern_discharges`])
+/// — matches; a bare actual `Error`, raised at a type not known, only the pattern `?`. What
+/// it does not admit falls to the leg below, so this leg only adds matches.
+///
 /// `Error[T]`'s argument is a payload TYPE, so a boundary declared to handle `Wide`
 /// admits a body raising `Narrow` when `Narrow <: Wide`: the Java/Scala catch rule, and
 /// what makes a hierarchy of error types worth declaring. `Modify[p]`'s argument is a
@@ -1997,6 +2003,25 @@ pub(super) fn resolved_labels_equal(
 /// unlike eval's `step_cap` / `depth_cap` and the bridge's `BRIDGE_REENTRY_CAP`), not
 /// to widen this leg back onto an unbounded one.
 pub(super) fn labels_match_by_subsumption(kb: &KnowledgeBase, a: &Value, e: &Value) -> bool {
+    // An `Error` label is the boundary's question (071 §1.5): the declared payload, read as
+    // a type pattern, admits the actual one — the predicate the run asks, which is bounded
+    // and walks the two types alone ([`pattern_discharges`]).
+    if let Some(error) = kb.error_sort_sym {
+        let (ga, ge) = (guarded_effect_label(kb, a), guarded_effect_label(kb, e));
+        let (a, e) = (ga.as_ref().unwrap_or(a), ge.as_ref().unwrap_or(e));
+        if effect_label_names_sort(kb, a, error) && effect_label_names_sort(kb, e, error) {
+            if let Some(ev) = extract_type_param(kb, e, "T").filter(|ev| type_is_determined(kb, ev)) {
+                let admitted = match extract_type_param(kb, a, "T") {
+                    Some(av) => pattern_discharges(kb, &ev, &av),
+                    // A bare `Error`, raised at a type not known: the pattern `?` alone.
+                    None => is_pattern_slot(kb, &ev),
+                };
+                if admitted {
+                    return true;
+                }
+            }
+        }
+    }
     let base = |v: &Value| match type_head(kb, v) {
         TypeHead::SortRef(s) | TypeHead::Parameterized { base: s } => {
             Some(kb.canonical_sort_sym(s))
@@ -2172,6 +2197,25 @@ fn match_present_labels(
     for (ai, al) in a_present.iter().enumerate() {
         let mut paired = false;
         for (i, bl) in b_present.iter().enumerate() {
+            // An actual `Error` label against a declared one whose payload is determined is the
+            // boundary's question, asked by the one predicate the run asks
+            // ([`error_labels_discharged`]) — and a pattern admits every label it admits, a
+            // matched one included: one to one, the second `Boom` over `Boom[Reason = ?]`
+            // went to the caller's row. The subtype path's covering ([`cover_present_labels`])
+            // takes the pairs it admits and leaves the rest to unification: its two rows are
+            // not always the actual and the declared one — an invariant parameter's row is
+            // compared both ways.
+            if a_is_actual || !one_to_one {
+                match error_labels_discharged(kb, subst, al, bl) {
+                    Some(true) => {
+                        b_matched[i] = true;
+                        paired = true;
+                        break;
+                    }
+                    Some(false) if a_is_actual => continue,
+                    _ => {}
+                }
+            }
             if one_to_one && b_matched[i] {
                 continue;
             }
@@ -2210,6 +2254,46 @@ fn match_present_labels(
         }
     }
     (only_a, only_b)
+}
+
+/// Proposal 071 §1.5 — does the declared `Error` label `declared` discharge the actual
+/// `actual`? `None` where this is not the question: either is no `Error` label, or the declared
+/// payload, or the actual one, is not determined — it holds a variable the call still binds,
+/// or a parameter (`Error.T`, a row slot's label written bare), which unification pairs as
+/// before — or the declared label is the bare `Error`, which takes a label at any payload.
+/// Otherwise the boundary's answer ([`pattern_discharges`]), which is the run's: an actual
+/// payload is discharged where the declared one, read as a type pattern, admits it, and a bare
+/// actual `Error`, raised at a type not known, only by the pattern `?`.
+pub(super) fn error_labels_discharged(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    actual: &Value,
+    declared: &Value,
+) -> Option<bool> {
+    let error = kb.error_sort_sym?;
+    let payload_of = |kb: &KnowledgeBase, label: &Value| {
+        let guarded = guarded_effect_label(kb, label);
+        let label = guarded.as_ref().unwrap_or(label);
+        effect_label_names_sort(kb, label, error).then(|| extract_type_param(kb, label, "T"))
+    };
+    let pattern = payload_of(kb, declared)??;
+    let raised = payload_of(kb, actual)?;
+    let pattern = walk_type_deep_value(kb, subst, &pattern);
+    if !type_is_determined(kb, &pattern) {
+        return None;
+    }
+    Some(match raised {
+        None => is_pattern_slot(kb, &pattern),
+        Some(raised) => {
+            // A payload holding a variable the pairing binds (an eta'd `zq[Q]`'s `Error[Q]`)
+            // is unified as before.
+            let raised = walk_type_deep_value(kb, subst, &raised);
+            if !type_is_determined(kb, &raised) {
+                return None;
+            }
+            pattern_discharges(kb, &pattern, &raised)
+        }
+    })
 }
 
 /// Is the ACTUAL label `a` its sort written bare and the expected `b` the same sort applied

@@ -218,12 +218,16 @@ fn a_drain_reached_from_a_rule_names_the_effect_and_no_reify() {
     );
 }
 
-/// And through a rule-body `Error.reify` typed at another payload, the drain's failure gets no
-/// boundary advice either: `countOrBoom` drains `viaRuntime`, and a rule reifies it at `Boom`. It
-/// was told that a boundary typed at this payload catches it, which reads as a repair.
+/// And through an `Error.reify` typed at another payload, the drain's failure gets no boundary
+/// advice either: `countOrBoom` drains `viaRuntime`, an operation the rule calls reifies it at
+/// `Boom`, and the drain's `Error` passes it. It was told that a boundary typed at this payload
+/// catches it, which reads as a repair.
 ///
-/// BACK-OUT: the reify arm put ahead of the `evaluation_failure` arm in `bridge_fault_message`,
-/// and this fails on that sentence.
+/// The boundary is written in an operation since proposal 071 stage (e): a rule body's own
+/// `Error.reify` over `{Error[Boom], Error}` is refused, no one pattern heading the two, and its
+/// term writes no bracket (WI-20261024-TC54R); a rule-body boundary is where the sentence was
+/// measured, before. PASSES EITHER WAY on the reify arm's order in `bridge_fault_message` here,
+/// the raise leaving an operation's boundary rather than the rule's.
 #[test]
 fn a_drain_escaping_a_rule_body_reify_gets_no_boundary_advice() {
     let src = crate::common::replace_in_fixture(
@@ -232,7 +236,9 @@ fn a_drain_escaping_a_rule_body_reify_gets_no_boundary_advice() {
         "  rule countFromRule(?n) :- ?n <=> stampCount()\n  \
          operation countOrBoom(n: Int64) -> Int64 effects {Error[Boom], Error} =\n    \
          if n < 0 then Error.raise(boom(\"negative\")) else List.length(viaRuntime.takeN(10))\n  \
-         rule viaReifyDrain(?r) :- Error.reify(lambda () -> countOrBoom(1), ?r)\n",
+         operation atBoom(n: Int64) -> Result[E = Boom, T = Int64] effects {Error} =\n    \
+         Error.reify[T1 = Boom](lambda () -> countOrBoom(n))\n  \
+         rule viaReifyDrain(?r) :- atBoom(1, ?r)\n",
     );
     let messages = fault_messages(&src, "test.clock.viaReifyDrain(?r)");
     assert!(

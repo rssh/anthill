@@ -611,8 +611,11 @@ fn a_payload_two_slots_share_is_the_join_of_what_the_arguments_offer() {
 
 /// THE CONTROL: THE JOIN IS THE BRACKET THE CALL COULD HAVE WRITTEN, and judged as it is. With
 /// `Circle provides Shape` in place of `requires`, a handler of `Error[Shape]` does not discharge
-/// `Error[Circle]` — `two_e[E = Shape](…)` is refused at `a`, on every build — and the call that
-/// infers `E = Shape` is refused there too, in either order.
+/// `Error[Circle]`: the pattern `Shape` admits no `Circle` (a provider is no subtype), so the label
+/// stays in the caller's row and `use`, declaring nothing, is refused for it — at `two_e[E =
+/// Shape](…)` and at the call that infers `E = Shape`, in either order. Until the discharge read
+/// the boundary's own test (proposal 071 stage (e)) the pairing unified `Circle` with `Shape`
+/// through the provider and the argument was refused at `a` instead.
 #[test]
 fn a_payload_join_the_bracket_refuses_is_refused_as_the_bracket_is() {
     for (tag, call) in [
@@ -624,7 +627,7 @@ fn a_payload_join_the_bracket_refuses_is_refused_as_the_bracket_is() {
             .replace("    requires Shape\n    entity circle", "    provides Shape\n    entity circle");
         assert_refused_naming(
             &load_errors_of(&src),
-            &["type mismatch in two_e.a (op-arg)", "Error[T = Circle]"],
+            &["use.effects", "undeclared effect: Error[T = Circle]"],
             &format!("`{call}`"),
         );
     }

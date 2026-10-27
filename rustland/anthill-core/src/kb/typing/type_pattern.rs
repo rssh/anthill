@@ -19,12 +19,21 @@
 //! `bare_sort_compatible` adds (`List` where `Stream` is expected) is not one of them: the
 //! run-time boundary never read it (`payload_matches` was `sort_sym_compatible` on the head
 //! until WI-20261016-YM8HD made the boundary ask `TypePattern.admits`, which runs this
-//! test), and the label discharge reads `sort_refines`.
+//! test).
+//!
+//! ONE WALK FOR THE RUN AND FOR THE TYPER'S DISCHARGE (071 §1.5). The typer discharges an
+//! `Error` label at a boundary where the pattern admits its payload ([`pattern_discharges`]),
+//! the run's question asked of a type the typer knows less of: a slot the payload leaves out,
+//! or holds a type pattern's open slot, is the type of a value that stands there, admitted only
+//! by a pattern open at that slot; and a rigid is one type, admitted by itself. A raised type
+//! has neither, so the two answer alike on every type a raise carries. A type pattern's OPEN
+//! SLOT ([`KnowledgeBase::pattern_slot`]) admits every type on the pattern's side, at any
+//! depth and as the whole pattern `?`, and is a type not known on the side asked about — the
+//! run asks about a raise of the unknown type so.
 //!
 //! PURE, OVER AN IMMUTABLE KB, AND BOUNDED. No substitution and no `&mut`: the run time
-//! calls it from a builtin, and the typer's discharge of an `Error` label is to read the
-//! same predicate (071 §4, stage (e)) from a site already deep in the expression walk,
-//! where a full `types_compatible` descent once overflowed the stack — see
+//! calls it from a builtin, and the typer's discharge from a site already deep in the
+//! expression walk, where a full `types_compatible` descent once overflowed the stack — see
 //! [`labels_match_by_subsumption`]. The recursion follows the two type terms and nothing
 //! else, and stops at [`NESTING_LIMIT`] (MEASURED: two types nested 5 500 deep overflowed
 //! the stack of the debug build with no bound).
@@ -52,6 +61,10 @@ use super::*;
 /// How deep the walk descends into two types — and into one, to tell a type from a data
 /// value. Deeper, the pair is not judged ([`UnjudgedType::TooDeep`]).
 const NESTING_LIMIT: usize = 512;
+
+/// [`NESTING_LIMIT`], for a walk beside this one over the same two types (a boundary's pattern
+/// read at its variables, `slots::read_at_variables`).
+pub(super) const TYPE_NESTING_LIMIT: usize = NESTING_LIMIT;
 
 /// A pair of types [`type_pattern_admits`] does not judge, and why — its caller reports it
 /// as an error, rendered by [`Self::detail`]. It holds the values rather than their text:
@@ -126,7 +139,266 @@ pub(crate) fn type_pattern_admits<P: TermView, T: TermView>(
     pattern: &P,
     t: &T,
 ) -> Result<bool, UnjudgedType> {
-    below(kb, t, pattern, 0)
+    below(kb, t, pattern, Mode::RUN, 0)
+}
+
+/// Does a boundary whose pattern is `pattern` discharge an `Error` label whose payload is
+/// `payload` (071 §1.5)? The run's question, asked of a type the typer knows less of: a slot
+/// the payload leaves open, or holds a type not known, is the type of a value that stands
+/// there, and only a pattern open at that slot admits it whatever it is. A type the run
+/// asks about is a raised type, which has neither, so the two answer alike on every type a
+/// raise carries. A rigid is one type, the same rigid on both sides admitting; a pair the
+/// test does not judge is not discharged, and the label stays in the caller's row.
+pub(crate) fn pattern_discharges<P: TermView, T: TermView>(
+    kb: &KnowledgeBase,
+    pattern: &P,
+    payload: &T,
+) -> bool {
+    below(kb, payload, pattern, Mode::DISCHARGE, 0).unwrap_or(false)
+}
+
+/// Who asks [`below`] and [`equal`], and which of their two sides is the pattern.
+#[derive(Clone, Copy)]
+struct Mode {
+    /// The typer's discharge ([`pattern_discharges`]), not the run ([`type_pattern_admits`]).
+    discharge: bool,
+    /// The pattern is the first side: a contravariant argument turns the question round.
+    flipped: bool,
+}
+
+impl Mode {
+    const RUN: Mode = Mode {
+        discharge: false,
+        flipped: false,
+    };
+    const DISCHARGE: Mode = Mode {
+        discharge: true,
+        flipped: false,
+    };
+
+    fn flip(self) -> Mode {
+        Mode {
+            flipped: !self.flipped,
+            ..self
+        }
+    }
+
+    /// The answer an open slot on a side gives, where one decides: a pattern's admits every
+    /// type; a type pattern's open slot ([`MintedParam::PatternSlot`]) on the side asked
+    /// about is a type not known, which no pattern admits but an open one; an argument the
+    /// side asked about leaves out admits at run time (the reflect operation's rule, decided
+    /// 2026-10-20) and is a type not known to the discharge. `a_open`/`b_open` say which
+    /// side is open, `left_out` whether as an argument left out rather than a slot.
+    fn open(self, a_open: bool, b_open: bool, left_out: bool) -> Option<bool> {
+        let (pattern_open, asked_open) = if self.flipped {
+            (a_open, b_open)
+        } else {
+            (b_open, a_open)
+        };
+        if pattern_open {
+            Some(true)
+        } else if asked_open {
+            Some(left_out && !self.discharge)
+        } else {
+            None
+        }
+    }
+}
+
+/// Is `v` a type pattern's open slot ([`KnowledgeBase::pattern_slot`])?
+pub(crate) fn is_pattern_slot<V: TermView>(kb: &KnowledgeBase, v: &V) -> bool {
+    matches!(type_head(kb, v), TypeHead::Skolem(vid) if kb.is_pattern_slot(vid))
+}
+
+/// Is `v` a type the call states in full, its type patterns' open slots counted as stated: no
+/// variable, no parameter, and no rigid but a pattern's open slot?
+pub(crate) fn stated_but_pattern_slots(kb: &KnowledgeBase, v: &Value) -> bool {
+    fn other_rigid<V: TermView>(kb: &KnowledgeBase, v: &V, depth: usize) -> bool {
+        match v.head(kb) {
+            ViewHead::Var(Var::Rigid(vid)) => !kb.is_pattern_slot(vid),
+            ViewHead::Functor { pos_arity, .. } if depth <= NESTING_LIMIT => {
+                view_any_child(kb, v, pos_arity, |c| other_rigid(kb, c, depth + 1))
+            }
+            _ => false,
+        }
+    }
+    type_is_determined(kb, v) && !other_rigid(kb, v, 0)
+}
+
+/// [`below`] and [`equal`]'s first questions: an open slot on either side
+/// ([`Mode::open`]), and, for the discharge, one type on both.
+fn decided_before_forms<A: TermView, B: TermView>(
+    kb: &KnowledgeBase,
+    a: &A,
+    b: &B,
+    mode: Mode,
+) -> Option<bool> {
+    if let Some(answer) = mode.open(is_pattern_slot(kb, a), is_pattern_slot(kb, b), false) {
+        return Some(answer);
+    }
+    (mode.discharge && views_structurally_equal(kb, a, b)).then_some(true)
+}
+
+/// Proposal 071 §1.6, §7 Q1 (decided with the user 2026-10-27) — the LEAST PATTERN that
+/// admits both `a` and `b`, two types a boundary's argument raises at: the one type where
+/// they are one; one sort's application where both are of that sort, an argument the two
+/// disagree on open where its parameter is invariant and their least pattern where it is
+/// covariant; and the wider sort where one refines the other through `requires`, the
+/// narrower read as the instance its clause gives it. `None` where no one sort heads them —
+/// two sorts neither refines, a tuple or an arrow beside another type. An argument a side
+/// leaves out is a type not known, and the pattern is open there.
+pub(crate) fn least_pattern(kb: &mut KnowledgeBase, a: &Value, b: &Value) -> Option<Value> {
+    least_pattern_at(kb, a, b, 0)
+}
+
+fn least_pattern_at(kb: &mut KnowledgeBase, a: &Value, b: &Value, depth: usize) -> Option<Value> {
+    if depth > NESTING_LIMIT {
+        return None;
+    }
+    if is_pattern_slot(kb, a) || views_structurally_equal(kb, a, b) {
+        return Some(a.clone());
+    }
+    if is_pattern_slot(kb, b) {
+        return Some(b.clone());
+    }
+    match (type_head(kb, a), type_head(kb, b)) {
+        (TypeHead::Nothing, _) => return Some(b.clone()),
+        (_, TypeHead::Nothing) => return Some(a.clone()),
+        _ => {}
+    }
+    let (sa, sb) = (sort_head(kb, a)?, sort_head(kb, b)?);
+    let (oa, ob) = (
+        kb.type_arg_owner(sa).unwrap_or(sa),
+        kb.type_arg_owner(sb).unwrap_or(sb),
+    );
+    if same_sort_canonical(kb, oa, ob) {
+        let head = if same_sort_canonical(kb, sa, sb) { sa } else { oa };
+        return Some(joined_application(kb, a, b, head, oa, depth));
+    }
+    if sort_sym_compatible(kb, oa, ob) {
+        let a = instance_at(kb, a, sa, ob, depth)?;
+        return least_pattern_at(kb, &a, b, depth + 1);
+    }
+    if sort_sym_compatible(kb, ob, oa) {
+        let b = instance_at(kb, b, sb, oa, depth)?;
+        return least_pattern_at(kb, a, &b, depth + 1);
+    }
+    None
+}
+
+/// The head of a sort-headed type: a sort reference or an application of one.
+fn sort_head<V: TermView>(kb: &KnowledgeBase, v: &V) -> Option<Symbol> {
+    match type_head(kb, v) {
+        TypeHead::SortRef(s) | TypeHead::Parameterized { base: s } => Some(s),
+        _ => None,
+    }
+}
+
+/// `v` as an instance of the sort `target`: itself where it is one of `target`'s, the one
+/// instance its `requires` clauses give it where its sort refines `target`; `None` otherwise.
+pub(crate) fn instance_of_sort(kb: &KnowledgeBase, v: &Value, target: Symbol) -> Option<Value> {
+    let head = sort_head(kb, v)?;
+    let owner = kb.type_arg_owner(head).unwrap_or(head);
+    let target = kb.type_arg_owner(target).unwrap_or(target);
+    if same_sort_canonical(kb, owner, target) {
+        return Some(v.clone());
+    }
+    instance_at(kb, v, head, target, 0)
+}
+
+/// `v`, headed by `head`, as the one instance of `target` its `requires` clauses give it
+/// ([`instances_through_requires`]); `None` where they give none or several.
+fn instance_at(kb: &KnowledgeBase, v: &Value, head: Symbol, target: Symbol, depth: usize) -> Option<Value> {
+    let mut instances = instances_through_requires(kb, v, head, target, depth).ok()?;
+    (instances.len() == 1).then(|| instances.swap_remove(0))
+}
+
+/// `head` applied at each parameter of `owner` to what [`least_pattern`] makes of `a`'s and
+/// `b`'s arguments there ([`least_pattern`]'s argument rule), every slot no default fills
+/// written ([`fill_open_slots`]).
+fn joined_application(
+    kb: &mut KnowledgeBase,
+    a: &Value,
+    b: &Value,
+    head: Symbol,
+    owner: Symbol,
+    depth: usize,
+) -> Value {
+    let params: SmallVec<[Symbol; 4]> = kb.type_param_syms_of(owner).iter().copied().collect();
+    let variances = declared_variances(kb, owner, &params);
+    let (a_args, b_args) = (arguments(kb, a), arguments(kb, b));
+    let mut bindings: Vec<(Symbol, Value)> = Vec::with_capacity(params.len());
+    for (&param, variance) in params.iter().zip(variances) {
+        let av = binding_for_param(kb, &a_args, param, BindingKeyMatch::Label).cloned();
+        let bv = binding_for_param(kb, &b_args, param, BindingKeyMatch::Label).cloned();
+        let value = match (av, bv) {
+            (None, None) if slot_left_out(kb, owner, param) => continue,
+            (Some(x), Some(y)) if views_structurally_equal(kb, &x, &y) => fill_open_slots(kb, &x),
+            (Some(x), Some(y)) if matches!(variance, Variance::Covariant) => {
+                match least_pattern_at(kb, &x, &y, depth + 1) {
+                    Some(joined) => fill_open_slots(kb, &joined),
+                    None => Value::term(kb.pattern_slot()),
+                }
+            }
+            _ => Value::term(kb.pattern_slot()),
+        };
+        let key = kb.intern(kb.local_name_of(param).to_owned().as_str());
+        bindings.push((key, value));
+    }
+    let (span, site) = site_of(a);
+    let base = kb.make_sort_ref(head);
+    parameterized_value(kb, base, &bindings, span, site)
+}
+
+/// Is a parameter of `owner` that an application leaves out the slot's own value rather
+/// than a type not known: one that declares a default, which the slot then holds, and an
+/// effect row's, which a pattern does not judge?
+fn slot_left_out(kb: &mut KnowledgeBase, owner: Symbol, param: Symbol) -> bool {
+    kb.sort_param_defaults.contains_key(&param) || sort_param_sym_is_effect_row(kb, owner, param)
+}
+
+/// `v` with each slot it leaves out a type pattern's open slot ([`KnowledgeBase::pattern_slot`]),
+/// at every depth: a slot no default fills, of a type a boundary's pattern is read from — a
+/// slot left out is a type not known, which only an open pattern admits. `v` itself where it
+/// leaves none out.
+pub(crate) fn fill_open_slots(kb: &mut KnowledgeBase, v: &Value) -> Value {
+    fill_open_slots_at(kb, v, 0)
+}
+
+fn fill_open_slots_at(kb: &mut KnowledgeBase, v: &Value, depth: usize) -> Value {
+    let Some(head) = sort_head(kb, v).filter(|_| depth <= NESTING_LIMIT) else {
+        return v.clone();
+    };
+    let owner = kb.type_arg_owner(head).unwrap_or(head);
+    let params: SmallVec<[Symbol; 4]> = kb.type_param_syms_of(owner).iter().copied().collect();
+    if params.is_empty() {
+        return v.clone();
+    }
+    let args = arguments(kb, v);
+    let mut changed = false;
+    let mut bindings: Vec<(Symbol, Value)> = Vec::with_capacity(params.len());
+    for &param in &params {
+        let value = match binding_for_param(kb, &args, param, BindingKeyMatch::Label).cloned() {
+            Some(arg) => {
+                let filled = fill_open_slots_at(kb, &arg, depth + 1);
+                changed |= !views_structurally_equal(kb, &filled, &arg);
+                filled
+            }
+            None if slot_left_out(kb, owner, param) => continue,
+            None => {
+                changed = true;
+                Value::term(kb.pattern_slot())
+            }
+        };
+        let key = kb.intern(kb.local_name_of(param).to_owned().as_str());
+        bindings.push((key, value));
+    }
+    if !changed {
+        return v.clone();
+    }
+    let (span, site) = site_of(v);
+    let base = kb.make_sort_ref(head);
+    parameterized_value(kb, base, &bindings, span, site)
 }
 
 /// What [`below`] and [`equal`] read of one side, by [`type_head`]. An open slot is an
@@ -255,10 +527,14 @@ fn below<A: TermView, B: TermView>(
     kb: &KnowledgeBase,
     a: &A,
     b: &B,
+    mode: Mode,
     depth: usize,
 ) -> Result<bool, UnjudgedType> {
     if depth > NESTING_LIMIT {
         return Err(UnjudgedType::TooDeep);
+    }
+    if let Some(answer) = decided_before_forms(kb, a, b, mode) {
+        return Ok(answer);
     }
     if let Some(same) = two_rows(kb, a, b) {
         return same;
@@ -266,11 +542,11 @@ fn below<A: TermView, B: TermView>(
     match (form(kb, a, depth)?, form(kb, b, depth)?) {
         (Form::Bottom, _) => Ok(true),
         (_, Form::Bottom) => Ok(false),
-        (Form::Arrow(fa), Form::Arrow(fb)) => below(kb, &fa, &fb, depth + 1),
-        (Form::Arrow(fa), _) => below(kb, &fa, b, depth + 1),
-        (_, Form::Arrow(fb)) => below(kb, a, &fb, depth + 1),
+        (Form::Arrow(fa), Form::Arrow(fb)) => below(kb, &fa, &fb, mode, depth + 1),
+        (Form::Arrow(fa), _) => below(kb, &fa, b, mode, depth + 1),
+        (_, Form::Arrow(fb)) => below(kb, a, &fb, mode, depth + 1),
         (Form::Sort { head: sa, .. }, Form::Sort { head: sb, owner }) => {
-            sort_below(kb, a, sa, b, sb, owner, depth)
+            sort_below(kb, a, sa, b, sb, owner, mode, depth)
         }
         (Form::Tuple, Form::Tuple) => Err(UnjudgedType::TwoTuples {
             a: value_of(a),
@@ -323,6 +599,7 @@ fn is_empty_row<V: TermView>(kb: &KnowledgeBase, v: &V) -> bool {
 
 /// [`below`] for two sort-headed types; `owner` is the sort whose parameters `b`'s arguments
 /// bind.
+#[allow(clippy::too_many_arguments)]
 fn sort_below<A: TermView, B: TermView>(
     kb: &KnowledgeBase,
     a: &A,
@@ -330,6 +607,7 @@ fn sort_below<A: TermView, B: TermView>(
     b: &B,
     sb: Symbol,
     owner: Symbol,
+    mode: Mode,
     depth: usize,
 ) -> Result<bool, UnjudgedType> {
     // One sort, or a variant of `b`'s sort, which is that sort at the same arguments
@@ -340,7 +618,7 @@ fn sort_below<A: TermView, B: TermView>(
             .type_arg_owner(sa)
             .is_some_and(|sort| same_sort_canonical(kb, sort, sb))
     {
-        return arguments_relate(kb, a, b, owner, Relation::Below, depth);
+        return arguments_relate(kb, a, b, owner, Relation::Below, mode, depth);
     }
     if !sort_sym_compatible(kb, sa, sb) {
         return Ok(false);
@@ -361,7 +639,7 @@ fn sort_below<A: TermView, B: TermView>(
     }
     let mut unjudged: Option<UnjudgedType> = None;
     for instance in &instances {
-        match arguments_relate(kb, instance, b, owner, Relation::Below, depth + 1) {
+        match arguments_relate(kb, instance, b, owner, Relation::Below, mode, depth + 1) {
             Ok(true) => return Ok(true),
             Ok(false) => {}
             Err(e) => {
@@ -488,16 +766,18 @@ enum Relation {
 /// Two applications of one sort, `owner` — or of variants of it, whose arguments are its:
 /// each argument by `relation`, an argument left out on either side being an open slot.
 ///
-/// AN OPEN SLOT ADMITS ON BOTH SIDES. The pattern's slot is a wildcard by definition. A
-/// slot of the type asked about is the open side a branch join meets (`kernel-language.md`
-/// §5.4: "the open side, which every instance admits"); a raised type has none, since a
-/// `TypeValue` answers one type without holes.
+/// AN OPEN SLOT ADMITS ON BOTH SIDES AT RUN TIME. The pattern's slot is a wildcard by
+/// definition. A slot of the type asked about is the open side a branch join meets
+/// (`kernel-language.md` §5.4: "the open side, which every instance admits"); a raised type
+/// has none, since a `TypeValue` answers one type without holes. To the typer's discharge it
+/// is a type not known ([`Mode::open`]).
 fn arguments_relate<A: TermView, B: TermView>(
     kb: &KnowledgeBase,
     a: &A,
     b: &B,
     owner: Symbol,
     relation: Relation,
+    mode: Mode,
     depth: usize,
 ) -> Result<bool, UnjudgedType> {
     let a_args = arguments(kb, a);
@@ -509,18 +789,28 @@ fn arguments_relate<A: TermView, B: TermView>(
     };
     let mut unjudged: Option<UnjudgedType> = None;
     for (&param, variance) in params.iter().zip(variances) {
-        let (Some(av), Some(bv)) = (
+        let (av, bv) = (
             binding_for_param(kb, &a_args, param, BindingKeyMatch::Label),
             binding_for_param(kb, &b_args, param, BindingKeyMatch::Label),
-        ) else {
-            continue;
+        );
+        let (Some(av), Some(bv)) = (av, bv) else {
+            // An argument left out on a side: the side's own slot of `param`, open.
+            let other_slot = |v: Option<&Value>| v.is_some_and(|v| is_pattern_slot(kb, v));
+            let a_open = av.is_none() || other_slot(av);
+            let b_open = bv.is_none() || other_slot(bv);
+            match mode.open(a_open, b_open, true) {
+                Some(false) => return Ok(false),
+                _ => continue,
+            }
         };
         let deeper = depth + 1;
         let holds = match variance {
-            Variance::Covariant => below(kb, av, bv, deeper),
-            Variance::Contravariant => below(kb, bv, av, deeper),
-            Variance::Invariant => equal(kb, av, bv, deeper),
-            Variance::Bivariant => either(below(kb, av, bv, deeper), || below(kb, bv, av, deeper)),
+            Variance::Covariant => below(kb, av, bv, mode, deeper),
+            Variance::Contravariant => below(kb, bv, av, mode.flip(), deeper),
+            Variance::Invariant => equal(kb, av, bv, mode, deeper),
+            Variance::Bivariant => either(below(kb, av, bv, mode, deeper), || {
+                below(kb, bv, av, mode.flip(), deeper)
+            }),
         };
         match holds {
             Ok(true) => {}
@@ -555,24 +845,28 @@ fn equal<A: TermView, B: TermView>(
     kb: &KnowledgeBase,
     a: &A,
     b: &B,
+    mode: Mode,
     depth: usize,
 ) -> Result<bool, UnjudgedType> {
     if depth > NESTING_LIMIT {
         return Err(UnjudgedType::TooDeep);
+    }
+    if let Some(answer) = decided_before_forms(kb, a, b, mode) {
+        return Ok(answer);
     }
     if let Some(same) = two_rows(kb, a, b) {
         return same;
     }
     match (form(kb, a, depth)?, form(kb, b, depth)?) {
         (Form::Bottom, Form::Bottom) => Ok(true),
-        (Form::Arrow(fa), Form::Arrow(fb)) => equal(kb, &fa, &fb, depth + 1),
-        (Form::Arrow(fa), Form::Sort { .. }) => equal(kb, &fa, b, depth + 1),
-        (Form::Sort { .. }, Form::Arrow(fb)) => equal(kb, a, &fb, depth + 1),
+        (Form::Arrow(fa), Form::Arrow(fb)) => equal(kb, &fa, &fb, mode, depth + 1),
+        (Form::Arrow(fa), Form::Sort { .. }) => equal(kb, &fa, b, mode, depth + 1),
+        (Form::Sort { .. }, Form::Arrow(fb)) => equal(kb, a, &fb, mode, depth + 1),
         (Form::Sort { head: sa, .. }, Form::Sort { head: sb, owner }) => {
             if !same_sort_canonical(kb, sa, sb) {
                 return Ok(false);
             }
-            arguments_relate(kb, a, b, owner, Relation::Equal, depth)
+            arguments_relate(kb, a, b, owner, Relation::Equal, mode, depth)
         }
         (Form::Tuple, Form::Tuple) => Err(UnjudgedType::TwoTuples {
             a: value_of(a),

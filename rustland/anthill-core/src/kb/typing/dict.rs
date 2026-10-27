@@ -3905,7 +3905,8 @@ fn goal_pins_every_param(kb: &mut KnowledgeBase, goal: &SortGoal) -> bool {
 /// caller repairs it (WI-20260911-VNQTR, MEASURED). A type that has no instance whatever its
 /// slots stand for — a spec, `Shape[T = s.T]` — is pinned, and its own refusal says so.
 fn binding_is_pinned(kb: &mut KnowledgeBase, spec: Symbol, v: &Value) -> bool {
-    if !type_is_ground(kb, v) {
+    // A type pattern's open slot is a type the call states (proposal 071 §1.6).
+    if !type_is_ground(kb, v) && !stated_but_pattern_slots(kb, v) {
         return false;
     }
     if library_instances(kb, spec).is_none() || !value_contains_expr_carried(kb, v) {
@@ -5425,7 +5426,9 @@ fn resolve_var_value_via_subst(
     subst: &Substitution,
 ) -> Option<Value> {
     let val = spec_param_binding(kb, subst, vid)?;
-    if is_type_param_view(kb, &val) {
+    // A type pattern's open slot is no parameter of anyone's: it is the type the call states
+    // there, and its evidence is built (proposal 071 §1.6).
+    if is_type_param_view(kb, &val) && !is_pattern_slot(kb, &val) {
         None
     } else {
         Some(val)

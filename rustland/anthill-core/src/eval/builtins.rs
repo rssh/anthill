@@ -5864,8 +5864,8 @@ fn reflect_is_modifiable(interp: &mut Interpreter, args: &[Value]) -> Result<Val
 /// `anthill.reflect.type_admits(pattern: Type, t: Type) -> Bool` (proposal 071 §1.1,
 /// §1.5) — whether `t` is a subtype of an instance of `pattern`: the test
 /// `TypePattern.admits` runs, `TypeValuePattern`'s row asking it with its own `T` read as a
-/// value. The predicate is [`crate::kb::typing::type_pattern_admits`], one function for
-/// the run time and, at stage (e), for the typer's discharge of an `Error` label.
+/// value. The predicate is [`crate::kb::typing::type_pattern_admits`], the walk the typer's
+/// discharge of an `Error` label runs too ([`crate::kb::typing::pattern_discharges`]).
 ///
 /// Only types are asked about, at every depth: a data value standing where a type is
 /// asked for (`boom(reason: "s")`, a free-standing entity's `Point(x: 3)`, a rule body's
@@ -6181,6 +6181,15 @@ pub(crate) fn type_of_dictionary(
 ) -> Result<crate::kb::term::TermId, EvalError> {
     let head = dict.impl_sort();
     let arity = dict.arity();
+    // A type pattern's open slot (proposal 071 §1.6): the evidence the typer builds for it,
+    // beneath a `TypePattern`, names the slot itself.
+    if interp.kb().minted_param(head) == Some(crate::kb::MintedParam::PatternSlot) {
+        return interp.error_layer.as_ref().map(|layer| layer.open_slot).ok_or_else(|| {
+            EvalError::Internal(
+                "type_of_dictionary: a pattern's open slot read with no error layer".into(),
+            )
+        });
+    }
     if arity == 0 {
         // `Ref(S)`, NOT `Fn { functor: S, no args }`, and the two are not
         // interchangeable. WI-361's producer flip makes a bare sort the term `Ref(S)`
