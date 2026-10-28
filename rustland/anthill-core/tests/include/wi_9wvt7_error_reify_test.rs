@@ -51,10 +51,11 @@
 //! `a_host_raise_is_not_mistaken_for_the_declared_payload`,
 //! `a_reify_at_an_operations_own_type_parameter_catches` (its declining third row) and
 //! `a_declined_raise_leaves_the_interpreter_usable` (whose `expect_err` stops erring).
-//! `a_narrowed_boundary_does_not_steal_a_raise_of_unknown_type` is among them too: since
-//! proposal 071 stage (e) a raise whose type is not known is asked about as a type not known,
-//! which only a pattern at `?` admits (MEASURED); while stage (d) declined it before any
-//! boundary was asked, it passed under this back-out.
+//! A boundary declining a raise whose type is not known — asked about as a type not known,
+//! which only a pattern at `?` admits since proposal 071 stage (e) — is
+//! `wi_5cdn5_raise_carries_its_type_test::a_host_raise_carries_the_type_its_caller_threads`
+//! (`atBox`) now: a `Clock` handler's throw, its source here, is refused since
+//! WI-20261027-WGJFN.
 //! Every other row is about a boundary catching its OWN payload, which both rules agree
 //! on.
 
@@ -269,11 +270,9 @@ namespace test.reify
   operation genericDeclineOuter() -> Result[E = Other, T = Result[E = Boom, T = Int64]] =
     Error.reify(lambda () -> genericDeclines())
 
-  -- A RAISE OF A KNOWN AND OF AN UNKNOWN TYPE. `clockInnerAtBoom` is WRITTEN at `Boom` around
-  -- a body that raises a `Boom` or reads the clock, and its row leaves `Clock` to its caller.
-  -- A `Clock` handler that THROWS raises a value no channel typed (proposal 071 §1.3), so
-  -- the `Boom` boundary must let it leave the call. (Until stage (d) the unreadable payload
-  -- was a raised tuple, which is refused at load now: a tuple has no `TypeValue`.)
+  -- A RAISE OF A KNOWN TYPE AND A HANDLER'S THROW. `clockInnerAtBoom` is WRITTEN at `Boom`
+  -- around a body that raises a `Boom` or reads the clock, and its row leaves `Clock` to its
+  -- caller. `Time.now` declares no `Error`, so a `Clock` handler that THROWS is refused.
   operation boomOrClock(n: Int64) -> String effects {Error[Boom], Clock} =
     if n < 0 then Error.raise(boom("neg")) else Time.now()
 
@@ -840,41 +839,53 @@ fn a_generic_boundary_answers_through_a_rule_body() {
     }
 }
 
-/// A BOUNDARY DOES NOT STEAL A RAISE WHOSE TYPE IS NOT KNOWN — where "catch what you cannot
-/// read" turns out to be wrong.
+/// A `Clock` HANDLER'S THROW IS REFUSED: `Time.now` declares no `Error`, so a caller is typed
+/// as catching nothing from it (WI-20261027-WGJFN, user 2026-10-27: a handler may raise only
+/// what the raise point admits). `clockInnerAtBoom` is written `Error.reify[T1 = Boom]` around
+/// a body that raises `Boom` or reads the clock, and its row leaves only `Clock` to its caller.
+/// Thrown as a raise of the unknown type, the handler's value left the `Boom` boundary and the
+/// call. Now the run stops with a `HandlerError` naming the operation, the value and its type,
+/// and no raise.
 ///
-/// `clockInnerAtBoom` is written `Error.reify[T1 = Boom]` around a body that raises `Boom` or
-/// reads the clock, and a `Clock` handler that throws raises a value whose type no channel
-/// states (`RaisedType::Unknown`, proposal 071 §1.3). The `Boom` boundary discharged only
-/// `Boom`, so the throw leaves it, and the call, as the raise it is.
+/// That a boundary does not steal a raise of the unknown type is driven by
+/// `wi_5cdn5_raise_carries_its_type_test::a_host_raise_carries_the_type_its_caller_threads`,
+/// through a host operation whose row says only `Error`.
 ///
-/// MEASURED in the shape this had before stage (d), a raised tuple whose sort could not be
-/// read, when `payload_matches` caught it instead of declining: a boundary typed at the
-/// tuple around this one answered `ok`, and this one `err(Tuple{a: 7, b: "tup"})` — it
-/// swallowed a label the row had assigned elsewhere, which is the exact defect the narrowing
-/// exists to close. A typed raise of a tuple is refused at load now
-/// (`a_raise_at_a_former_is_refused_at_the_raise`). The `Boom` row is the control: it is
-/// the boundary's OWN payload and answers through it either way.
-///
-/// BACK-OUT: a raise of unknown type answered as a type every pattern admits
-/// (`Interpreter::raised_type_value`), and the `err` arm is the stolen throw.
+/// BACK-OUT: a handler's throw for an operation that declares no `Error` raised at the unknown
+/// type (`HostRaiseType::NoErrorLabel` read as `Unknown`), and the call is `Err(Raised)`. The
+/// `Boom` row is the control: the boundary's OWN payload answers through it either way.
 #[test]
-fn a_narrowed_boundary_does_not_steal_a_raise_of_unknown_type() {
+fn a_clock_handler_s_throw_is_refused_where_now_declares_no_error() {
     use anthill_core::eval::effects::HandlerAction;
     let mut interp = interp();
     interp
         .register_effect_handler(
             "anthill.prelude.Time.Clock",
-            Box::new(|_interp, _op, _args| Ok(HandlerAction::Throw(Value::Str("tick".into())))),
+            Box::new(|interp, _op, _args| {
+                let tick = Value::Str("tick".into());
+                let type_value = interp.type_value_of(&tick)?;
+                Ok(HandlerAction::Throw(tick, type_value))
+            }),
         )
         .expect("register a throwing Clock handler");
 
     match interp.call("test.reify.clockInnerAtBoom", &[Value::Int(7)]) {
-        Err(EvalError::Raised { payload, .. }) => assert_eq!(str_of(&interp, &payload), "tick"),
-        other => panic!(
-            "the handler's throw leaves the `Boom` boundary as the raise it is — an `err` \
-             here means the boundary stole it; got {other:?}"
-        ),
+        Err(err @ EvalError::HandlerError {
+            reason: anthill_core::eval::HandlerErrorReason::ThrowNotAdmitted {
+                raise_point: anthill_core::eval::RaisePoint::Row { label: None },
+                ..
+            },
+            ..
+        }) => {
+            let text = err.to_string();
+            assert!(
+                text.contains("anthill.prelude.Time.now")
+                    && text.contains("\"tick\"")
+                    && text.contains("row declares no `Error`"),
+                "{text}"
+            );
+        }
+        other => panic!("the Clock handler's throw is refused; got {other:?}"),
     }
 
     // The control: the boundary's OWN payload still answers through it.

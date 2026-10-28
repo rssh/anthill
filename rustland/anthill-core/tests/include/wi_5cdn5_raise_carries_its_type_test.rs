@@ -29,13 +29,13 @@
 //!   `a_raise_holding_a_closure_is_caught_under_the_standard_handlers`. The default handler
 //!   answering `Throw` of the payload instead of `Rethrow`: the second.
 //! * A raise of unknown type answered as a type every pattern admits (`raised_type_value`):
-//!   `an_error_handler_raising_its_own_value_raises_the_unknown_type`, the second half of
-//!   `an_error_handler_that_rethrows_keeps_the_raise_s_type`, and
-//!   `wi_9wvt7_error_reify_test::a_narrowed_boundary_does_not_steal_a_raise_of_unknown_type`.
+//!   `a_host_raise_carries_the_type_its_caller_threads` (`atBox`, a host operation whose row
+//!   says only `Error`).
 //! * The `Error` handler run with the invoking builtin's channel (`run_handler`):
-//!   `an_error_handler_raising_its_own_value_raises_the_unknown_type`. Another handler's
-//!   `Throw` typed as unknown instead of by the operation it performs:
-//!   `a_host_raise_carries_the_type_its_caller_threads` (`nestedT`).
+//!   `an_error_handler_raising_its_own_value_through_err_is_refused`. A handler's raise held
+//!   to the raise point (WI-20261027-WGJFN, `admitted_throw`): the same row, the second half
+//!   of `an_error_handler_that_rethrows_keeps_the_raise_s_type`, and
+//!   `a_host_raise_carries_the_type_its_caller_threads` (the `String` thrown for `tick`).
 //! * The runtime's accounts raised at the unknown type (`RaiseBy::Account`):
 //!   `a_failed_match_is_caught_at_its_sort`.
 //! * The load rule (`check_host_raise_types`): `a_host_operation_that_raises_states_what_it_raises`;
@@ -192,8 +192,9 @@ fn a_reflected_result_is_raised_at_its_type() {
 
 /// AN `Error` HANDLER THAT RETHROWS THE RAISE IT WAS HANDED keeps the raise's type: a host
 /// that registers one sees every raise, and its `Rethrow` lets the raise continue. A `Throw`
-/// of a value is the handler's own raise, of the unknown type, and a boundary at a specific
-/// type lets it pass.
+/// of a value at a type the raise's does not admit — a `String` for a raise at `Box[V =
+/// String]` — is refused, naming both: a handler may replace a raise only by a value its type
+/// admits (WI-20261027-WGJFN).
 #[test]
 fn an_error_handler_that_rethrows_keeps_the_raise_s_type() {
     use anthill_core::eval::effects::HandlerAction;
@@ -207,15 +208,22 @@ fn an_error_handler_that_rethrows_keeps_the_raise_s_type() {
     interp
         .register_effect_handler(
             "anthill.prelude.Error",
-            Box::new(|_i, _op, _args| Ok(HandlerAction::Throw(Value::Str("replaced".into())))),
+            Box::new(|i, _op, _args| {
+                let replaced = Value::Str("replaced".into());
+                let type_value = i.type_value_of(&replaced)?;
+                Ok(HandlerAction::Throw(replaced, type_value))
+            }),
         )
         .expect("register a replacing Error handler");
     match interp.call("test.c5.nestedS", &[Value::Int(5)]) {
-        Err(EvalError::Raised { payload, .. }) => assert_eq!(
-            crate::common::scalar_str(interp.kb(), &payload).as_deref(),
-            Some("replaced")
-        ),
-        other => panic!("a replaced payload is admitted by no boundary; got {other:?}"),
+        Err(EvalError::HandlerError {
+            reason: anthill_core::eval::HandlerErrorReason::ThrowNotAdmitted { thrown, thrown_type, .. },
+            ..
+        }) => {
+            assert_eq!(thrown, "\"replaced\"");
+            assert!(thrown_type.ends_with("String"), "{thrown_type}");
+        }
+        other => panic!("a String thrown for a raise at Box is refused; got {other:?}"),
     }
 }
 
@@ -372,13 +380,26 @@ namespace test.c5h
     entity host
     operation boxS() -> Int64 effects {Error[Box[V = String]]}
       requires TypeValue[T = Box[V = String]] @[host_implemented]
+    operation untyped() -> Int64 effects {Error} @[host_implemented]
+    operation silent() -> Int64 @[host_implemented]
   end
   provides Host language rust
     artifact "nowhere.rs"
     operation_map {
-      boxS: "c5h_box_s"
+      boxS: "c5h_box_s",
+      untyped: "c5h_untyped",
+      silent: "c5h_silent"
     }
   end
+  -- A RAISE OF THE UNKNOWN TYPE: `untyped`'s row says only `Error`, so its raise carries no
+  -- type, and the boundary at `Box[V = String]` lets it leave the call as the raise it is.
+  -- A HOST FUNCTION RAISING FOR AN OPERATION THAT DECLARES NO `Error`: refused where it
+  -- raises, as a handler's throw for it is.
+  operation viaSilent() -> Int64 = Host.silent()
+  operation atBox() -> String effects {Error} =
+    match Error.reify[T1 = Box[V = String]](lambda () -> Host.untyped())
+      case ok(_) -> "none"
+      case err(_) -> "stolen"
   -- A SPEC raising two labels, and a host MEMBER raising one (restating the spec's
   -- clauses, as a member does), reached through the spec's dictionary by a generic caller:
   -- the channel is built for `Parse.parse`.
@@ -502,6 +523,14 @@ fn a_host_raise_carries_the_type_its_caller_threads() {
             Err(interp.raise_error(payload))
         })
         .expect("register c5h_box_s");
+        kb.register_host_fn("c5h_untyped", 0, |interp, _| {
+            Err(interp.raise_error(Value::Str("tick".into())))
+        })
+        .expect("register c5h_untyped");
+        kb.register_host_fn("c5h_silent", 0, |interp, _| {
+            Err(interp.raise_error(Value::Str("quiet".into())))
+        })
+        .expect("register c5h_silent");
         kb.register_host_fn("c5h_box_s1", 1, |interp, _| {
             let payload = interp.call("test.c5h.mkBox", &[])?;
             Err(interp.raise_error(payload))
@@ -527,7 +556,8 @@ fn a_host_raise_carries_the_type_its_caller_threads() {
             "test.c5h.Ticker",
             Box::new(|i, _op, _args| {
                 let payload = i.call("test.c5h.mkBox", &[])?;
-                Ok(anthill_core::eval::effects::HandlerAction::Throw(payload))
+                let type_value = i.type_value_of(&payload)?;
+                Ok(anthill_core::eval::effects::HandlerAction::Throw(payload, type_value))
             }),
         )
         .expect("register the Ticker handler");
@@ -541,6 +571,78 @@ fn a_host_raise_carries_the_type_its_caller_threads() {
             .unwrap_or_else(|e| panic!("{op}: {e}"));
         assert_eq!(crate::common::scalar_str(interp.kb(), &v).as_deref(), Some("outer"), "{op}");
     }
+    // A boundary does not steal a raise of the unknown type. MEASURED in the shape this had
+    // before proposal 071 stage (d), a raised tuple whose sort could not be read, when the
+    // boundary caught it instead of declining: an inner boundary swallowed a label the row had
+    // assigned to the outer. BACK-OUT: a raise of the unknown type answered as a type every
+    // pattern admits (`Interpreter::raised_type_value`), and `atBox` answers "stolen".
+    match interp.call("test.c5h.atBox", &[]) {
+        Err(EvalError::Raised { payload, raised_type: anthill_core::eval::RaisedType::Unknown }) => {
+            assert_eq!(crate::common::scalar_str(interp.kb(), &payload).as_deref(), Some("tick"))
+        }
+        other => panic!("the raise of the unknown type leaves the boundary; got {other:?}"),
+    }
+
+    // A host function raising for `silent`, whose row declares no `Error`, is refused where it
+    // raises (WI-20261027-WGJFN's review). BACK-OUT: the raise of the unknown type, and
+    // `viaSilent` — typed as raising nothing — answers `Err(Raised)`.
+    match interp.call("test.c5h.viaSilent", &[]) {
+        Err(EvalError::RaiseTypeUnread { detail }) => {
+            assert!(detail.contains("`test.c5h.Host.silent` raised, and its row declares no `Error`"), "{detail}")
+        }
+        other => panic!("a raise from an operation declaring no Error is refused; got {other:?}"),
+    }
+
+    // A `Ticker` handler's throw is held to `tick`'s row, `Error[Box[V = String]]`: a `String`
+    // is refused (WI-20261027-WGJFN). BACK-OUT: the admission test skipped, and `nestedT`
+    // answers through a raise of a `String` at `Box`'s boundary.
+    interp
+        .register_effect_handler(
+            "test.c5h.Ticker",
+            Box::new(|i, _op, _args| {
+                let s = Value::Str("s".into());
+                let type_value = i.type_value_of(&s)?;
+                Ok(anthill_core::eval::effects::HandlerAction::Throw(s, type_value))
+            }),
+        )
+        .expect("register a Ticker handler throwing a String");
+    match interp.call("test.c5h.nestedT", &[]) {
+        Err(EvalError::HandlerError {
+            reason:
+                anthill_core::eval::HandlerErrorReason::ThrowNotAdmitted {
+                    raise_point: anthill_core::eval::RaisePoint::Row { label: Some(label) },
+                    route: anthill_core::eval::ThrowRoute::Throw,
+                    ..
+                },
+            ..
+        }) => assert!(label.contains("Box"), "{label}"),
+        other => panic!("a String thrown for `tick` is refused; got {other:?}"),
+    }
+
+    // The `Error` handler is handed the payload alone for a raise of the unknown type, which
+    // has no type value, and a throw for it is admitted at any type: the raise's pattern is
+    // open. The `String` it throws then leaves the boundary at `Box[V = String]`.
+    let handed: std::rc::Rc<std::cell::Cell<usize>> = Default::default();
+    let seen = handed.clone();
+    interp
+        .register_effect_handler(
+            "anthill.prelude.Error",
+            Box::new(move |i, _op, args| {
+                seen.set(args.len());
+                let other = Value::Str("other".into());
+                let type_value = i.type_value_of(&other)?;
+                Ok(anthill_core::eval::effects::HandlerAction::Throw(other, type_value))
+            }),
+        )
+        .expect("register an Error handler");
+    match interp.call("test.c5h.atBox", &[]) {
+        Err(EvalError::Raised {
+            payload,
+            raised_type: anthill_core::eval::RaisedType::Evidence(_),
+        }) => assert_eq!(crate::common::scalar_str(interp.kb(), &payload).as_deref(), Some("other")),
+        other => panic!("the handler's String leaves the boundary at its type; got {other:?}"),
+    }
+    assert_eq!(handed.get(), 1, "a raise of the unknown type hands the payload alone");
 }
 
 /// THE RUNTIME'S OWN RAISES ARE CAUGHT AT THEIR SORTS. `1 / 0` raises `DivisionByZero` from
@@ -750,12 +852,14 @@ fn a_division_through_a_spec_dictionary_is_caught() {
     }
 }
 
-/// AN `Error` HANDLER THAT RAISES A VALUE OF ITS OWN raises it at the unknown type: a handler
-/// is no host operation, and runs with no builtin's channel. Typed by the `Error.raise` that
-/// invoked it, the `"wrapped"` string was caught by the boundary at `Box[V = String]` — a
-/// `String` delivered inside a `Result[E = Box[V = String]]` (found by /code-review).
+/// AN `Error` HANDLER THAT RAISES A VALUE OF ITS OWN through its `Err` channel raises it at
+/// the unknown type: a handler is no host operation, and runs with no builtin's channel. Typed
+/// by the `Error.raise` that invoked it, the `"wrapped"` string was caught by the boundary at
+/// `Box[V = String]` — a `String` delivered inside a `Result[E = Box[V = String]]` (found by
+/// /code-review). Left to escape, it voided that boundary; it is held to the raise it answered
+/// as a `Throw` is, and refused (WI-20261027-WGJFN).
 #[test]
-fn an_error_handler_raising_its_own_value_raises_the_unknown_type() {
+fn an_error_handler_raising_its_own_value_through_err_is_refused() {
     let mut interp = crate::common::interp_for(NESTED);
     interp
         .register_effect_handler(
@@ -764,11 +868,20 @@ fn an_error_handler_raising_its_own_value_raises_the_unknown_type() {
         )
         .expect("register a wrapping Error handler");
     match interp.call("test.c5.nestedS", &[Value::Int(-1)]) {
-        Err(EvalError::Raised { payload, .. }) => assert_eq!(
-            crate::common::scalar_str(interp.kb(), &payload).as_deref(),
-            Some("wrapped")
-        ),
-        other => panic!("the handler's own raise is of a type not known; got {other:?}"),
+        Err(EvalError::HandlerError {
+            reason:
+                anthill_core::eval::HandlerErrorReason::ThrowNotAdmitted {
+                    raise_point: anthill_core::eval::RaisePoint::Raise { .. },
+                    route: anthill_core::eval::ThrowRoute::Err,
+                    thrown,
+                    thrown_type,
+                },
+            ..
+        }) => {
+            assert_eq!(thrown, "\"wrapped\"");
+            assert_eq!(thrown_type, "?", "a raise of the unknown type");
+        }
+        other => panic!("the handler's own raise is refused; got {other:?}"),
     }
 }
 

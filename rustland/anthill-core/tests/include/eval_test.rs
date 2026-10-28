@@ -525,11 +525,12 @@ end
     interp
         .register_effect_handler(
             "anthill.prelude.Error",
-            Box::new(move |_i, _op, args| {
+            Box::new(move |i, _op, args| {
                 *seen_h.borrow_mut() = args.first().cloned();
-                Ok(HandlerAction::Throw(
-                    args.first().cloned().unwrap_or(Value::Unit),
-                ))
+                // A re-raise: the payload, at the type value it was handed.
+                let type_value = anthill_core::eval::dictionary::Dictionary::from_value(i.kb(), &args[1])
+                    .expect("the handler is handed the raise's type value");
+                Ok(HandlerAction::Throw(args[0].clone(), type_value))
             }),
         )
         .expect("register Error handler");
@@ -1771,11 +1772,12 @@ end
     interp
         .register_effect_handler(
             "anthill.prelude.Error",
-            Box::new(move |_i, _op, args| {
+            Box::new(move |i, _op, args| {
                 *seen_h.borrow_mut() = args.first().cloned();
-                Ok(HandlerAction::Throw(
-                    args.first().cloned().unwrap_or(Value::Unit),
-                ))
+                // A re-raise: the payload, at the type value it was handed.
+                let type_value = anthill_core::eval::dictionary::Dictionary::from_value(i.kb(), &args[1])
+                    .expect("the handler is handed the raise's type value");
+                Ok(HandlerAction::Throw(args[0].clone(), type_value))
             }),
         )
         .expect("register Error handler");
@@ -2960,9 +2962,10 @@ fn m5_handler_taken_is_none() {
 
 #[test]
 fn wi389_throw_action_surfaces_as_raised() {
-    // WI-389: a handler returning HandlerAction::Throw(payload) is
+    // WI-389: a handler returning HandlerAction::Throw(payload, type_value) is
     // interpreted at the dispatch site as EvalError::Raised carrying the
-    // same payload — the substrate WI-073's Error handler builds on.
+    // same payload — the substrate WI-073's Error handler builds on. A host's
+    // direct invocation runs no operation, so nothing narrows what it raises.
     // Error-ness lives in the channel (the Throw variant), not in the
     // value: the payload is an ordinary opaque Value, preserved verbatim.
     use anthill_core::eval::effects::HandlerAction;
@@ -2973,8 +2976,9 @@ fn wi389_throw_action_surfaces_as_raised() {
     interp
         .register_effect_handler(
             "anthill.prelude.Time.Clock",
-            Box::new(move |_interp, _op_sym, _args| {
-                Ok(HandlerAction::Throw(payload_for_handler.clone()))
+            Box::new(move |interp, _op_sym, _args| {
+                let type_value = interp.type_value_of(&payload_for_handler)?;
+                Ok(HandlerAction::Throw(payload_for_handler.clone(), type_value))
             }),
         )
         .expect("register throwing handler");
@@ -3000,7 +3004,7 @@ fn wi389_fail_action_surfaces_its_reason() {
     // WI-389: Fail carries a reason (the "why" of the branch abort). Until
     // the Branch substrate (WI-075) wires the real resolver-fail path, a
     // Fail reaching the dispatch site surfaces as a loud, structured
-    // UnsupportedHandlerAction whose rendered message includes that reason.
+    // HandlerError (NotYetSupported) whose rendered message includes that reason.
     use anthill_core::eval::effects::HandlerAction;
     let mut interp = interp_for("namespace test.wi389_fail end\n");
     interp
@@ -3019,7 +3023,10 @@ fn wi389_fail_action_surfaces_its_reason() {
         .invoke_effect_handler("anthill.prelude.Time.Clock", op_sym, &[])
         .unwrap_err();
     match &err {
-        EvalError::UnsupportedHandlerAction { action, detail, .. } => {
+        EvalError::HandlerError {
+            reason: anthill_core::eval::HandlerErrorReason::NotYetSupported { action, detail, .. },
+            ..
+        } => {
             assert_eq!(*action, "Fail");
             assert!(
                 detail
@@ -3029,7 +3036,7 @@ fn wi389_fail_action_surfaces_its_reason() {
                 "the Fail reason should be carried, got {detail:?}",
             );
         }
-        other => panic!("expected UnsupportedHandlerAction, got {other:?}"),
+        other => panic!("expected HandlerError NotYetSupported, got {other:?}"),
     }
     // The rendered message says both the reason and which substrate is missing.
     let rendered = err.to_string();

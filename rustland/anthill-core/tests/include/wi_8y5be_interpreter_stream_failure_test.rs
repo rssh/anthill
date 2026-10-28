@@ -218,16 +218,29 @@ fn a_faulted_query_is_catchable_by_an_error_handler() {
     interp
         .register_effect_handler(
             "anthill.prelude.Error",
-            Box::new(move |_i, _op, args| {
-                sink.borrow_mut().extend(args.iter().cloned());
+            Box::new(move |i, _op, args| {
+                // The payload, and the type value the raise carries beside it.
+                assert_eq!(args.len(), 2, "payload and type value; got {args:?}");
+                assert!(
+                    anthill_core::eval::dictionary::Dictionary::from_value(i.kb(), &args[1]).is_some(),
+                    "the second argument is the raise's type value; got {:?}",
+                    args[1]
+                );
+                sink.borrow_mut().push(args[0].clone());
                 Ok(HandlerAction::Pure(Value::Unit))
             }),
         )
         .expect("register Error handler");
     let resumed = interp.call("test.wi8y5be.probe", &[]);
     assert!(
-        matches!(&resumed, Err(EvalError::Internal(msg)) if msg.contains("non-resumable")),
-        "a handler that resumes a raise is refused as non-resumable; got {resumed:?}"
+        matches!(
+            &resumed,
+            Err(EvalError::HandlerError {
+                reason: anthill_core::eval::HandlerErrorReason::ResumedARaise { .. },
+                ..
+            })
+        ),
+        "a handler that resumes a raise is refused: a raise does not resume; got {resumed:?}"
     );
     let payloads = seen.borrow();
     assert_eq!(payloads.len(), 1, "the handler fires exactly once; got {payloads:?}");

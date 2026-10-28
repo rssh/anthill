@@ -216,8 +216,15 @@ fn spgbp_a_failed_load_is_catchable_by_an_error_handler() {
     interp
         .register_effect_handler(
             "anthill.prelude.Error",
-            Box::new(move |_i, _op, args| {
-                sink.borrow_mut().extend(args.iter().cloned());
+            Box::new(move |i, _op, args| {
+                // The payload, and the type value the raise carries beside it.
+                assert_eq!(args.len(), 2, "payload and type value; got {args:?}");
+                assert!(
+                    anthill_core::eval::dictionary::Dictionary::from_value(i.kb(), &args[1]).is_some(),
+                    "the second argument is the raise's type value; got {:?}",
+                    args[1]
+                );
+                sink.borrow_mut().push(args[0].clone());
                 Ok(HandlerAction::Pure(Value::Unit))
             }),
         )

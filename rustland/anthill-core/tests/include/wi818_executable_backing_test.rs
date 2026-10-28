@@ -404,9 +404,12 @@ end
         .expect("register Error handler");
     let got = interp.call("wi818.resume.Use.raiser", &[]);
     match got {
-        Err(EvalError::Internal(ref msg)) => assert!(
-            msg.contains("non-resumable"),
-            "expected the non-resumable refusal; got Internal({msg})"
+        Err(ref err @ EvalError::HandlerError {
+            reason: anthill_core::eval::HandlerErrorReason::ResumedARaise { .. },
+            ..
+        }) => assert!(
+            err.to_string().contains("a raise does not resume"),
+            "expected the resume refusal; got {err}"
         ),
         other => panic!("a resuming Error handler must be refused loudly; got {other:?}"),
     }

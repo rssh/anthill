@@ -948,10 +948,13 @@ pub(crate) enum HostRaiseType {
     /// `requires TypeValue[T = X]` its one written `Error[X]` label states — the operation's
     /// own clause or its sort's: its frame slot is that chain's `names` at this index.
     Slot(usize),
-    /// Its one `Error` label is bare — `Error[T = ?]` — or there is none: what it raises is
-    /// of the unknown type (WI-20260910-6ARRN's), caught only by a boundary whose pattern is
-    /// `?`.
+    /// Its one `Error` label is bare — `Error[T = ?]`: what it raises is of the unknown type
+    /// (WI-20260910-6ARRN's), caught only by a boundary whose pattern is `?`.
     Unknown,
+    /// Its row declares no `Error`: a raise of the host function is of the unknown type, and
+    /// a handler's throw for it is refused (`HandlerErrorReason::ThrowNotAdmitted`) — a caller
+    /// is typed as catching nothing from it.
+    NoErrorLabel,
     /// No written `Error` label, and an element a call resolves — a projection (`s.E`), a row
     /// variable — which may carry one: the type of what it raises is the call's, which
     /// nothing threads to the host function, and its raise is refused at run time.
@@ -1001,7 +1004,7 @@ pub(crate) fn host_raise_type(kb: &mut KnowledgeBase, op: Symbol) -> HostRaiseTy
         ([payload], false) => payload.clone(),
         ([], true) => return HostRaiseType::Unknown,
         ([], false) if projected => return HostRaiseType::Projected,
-        ([], false) => return HostRaiseType::Unknown,
+        ([], false) => return HostRaiseType::NoErrorLabel,
         _ => {
             return HostRaiseType::Unanswered { written, bare }
         }

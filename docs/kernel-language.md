@@ -3895,7 +3895,10 @@ machinery that realises it.
 
 **`Error` is the one label whose DISCHARGE has a runtime** (proposal 027.4). (The
 effect-handler *registry* is a different mechanism — it supplies an ambient capability
-for `Console` / `Modify` and removes no label from any row.)
+for `Console` and `Clock` and removes no label from any row. A handler raises only what
+the raise point admits: the `Error` handler is handed the raise's `TypeValue`, and a value
+it raises in its place must be of a type the raise's type admits; a handler of another
+effect may raise only what the operation it performs declares.)
 `anthill.prelude.Error.reify` IS the shape above at `K = Error[T1]`, and its runtime is
 a boundary FRAME the interpreter installs by symbol — not a registered handler, because
 `raise(error: T) -> Nothing` has no value to resume with and a short-circuit needs

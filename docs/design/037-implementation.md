@@ -152,7 +152,7 @@ Read on `main` at `4f6569ac`.
   so 037 §5.3's default is present in all of them.
 - **No undo exists for a cell.** `write` returns the prior value and both callers drop it. Neither
   `register_undo` nor a snapshot hook exists, and `HandlerAction::Fail` and `Choice` are refused
-  (`UnsupportedHandlerAction`, WI-389).
+  (`HandlerError`, `NotYetSupported`; WI-389).
 
 ## 2. What each becomes
 
@@ -597,7 +597,7 @@ when the step is backed out.
    With the sort restored it loads, so the row fails when the step is backed out.
 2. The rows given new fixtures keep their verdicts, and pass with or without the step by design:
    - the registry rows: a taken handler is `UnhandledEffect` naming `Clock`, a `Throw` is `Raised`,
-     a `Fail` is `UnsupportedHandlerAction` carrying its reason;
+     a `Fail` is a `HandlerError` (`NotYetSupported`) carrying its reason;
    - the 0RP29 pair: it loads with `Modify[h]` and is refused without it, naming `Modify[T = h]`;
    - the 4GBQV typing rows.
 3. `register_standard_effect_handlers` registers five handlers, and a program that prints and reads

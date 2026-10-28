@@ -101,7 +101,7 @@ pub enum EvalError {
     },
     /// An anthill-level `Error` effect was raised (proposal 027 §Error).
     /// Produced at the effect-dispatch site from a handler's
-    /// `HandlerAction::Throw(payload)`. The payload is an ordinary opaque
+    /// `HandlerAction::Throw(payload, type_value)`. The payload is an ordinary opaque
     /// `Value` — error-ness lives in *this variant* (the channel), not in
     /// the value itself. A raise travels to the innermost `Error.reify` boundary
     /// whose pattern admits `raised_type`, and aborts evaluation if none does.
@@ -114,21 +114,16 @@ pub enum EvalError {
         /// pattern about.
         raised_type: RaisedType,
     },
-    /// A handler returned a continuation-manipulating action (`Fail`,
-    /// `Choice`, or `Suspend`) that the runtime cannot yet honor — those
-    /// need the Branch / suspend-resume substrate (WI-075). Hitting one is
-    /// a runtime-internal not-yet-implemented state, so it carries the
-    /// dispatch context (effect sort + operation) and a captured backtrace
-    /// to locate the offending call site.
-    UnsupportedHandlerAction {
-        action: &'static str,
+    /// A handler's answer the runtime does not apply: the host's handler answered wrongly,
+    /// or with an action the runtime cannot honor yet. Not a raise, so no `Error.reify`
+    /// boundary catches it, and nothing is raised in its place: it reaches the host as the
+    /// `Err` of the call.
+    HandlerError {
+        /// The effect sort the handler is registered for, qualified.
         effect: String,
+        /// The operation it answered, qualified.
         op: String,
-        /// Action-specific explanation — for `Fail`, the reason carried by
-        /// the action (the "why" of the branch abort). `None` for actions
-        /// that carry no reason payload.
-        detail: Option<String>,
-        backtrace: std::backtrace::Backtrace,
+        reason: HandlerErrorReason,
     },
     /// Proposal 039 / WI-084: a `const`'s value was demanded while it is already
     /// being forced — a dependency cycle (`const A = B + 1; const B = A + 1`).
@@ -155,7 +150,7 @@ pub enum EvalError {
     /// "interruptible" with no bespoke control flow — up to the resolver's
     /// `bridge_op_to_eval`, which turns it into a delay (the resolver's own
     /// SUSPEND). Distinct from the WI-075 effect-handler `Suspend` action
-    /// (`UnsupportedHandlerAction`). Top-level eval never sets `bridge_mode`, so
+    /// (`HandlerErrorReason::NotYetSupported`). Top-level eval never sets `bridge_mode`, so
     /// it never produces this and its structural fallback is unchanged.
     ///
     /// WI-628 — `truncated` distinguishes WHY the comparison could not decide, so
@@ -347,10 +342,55 @@ pub enum RaisedType {
     /// declines a raised `Box[V = String]`.
     Evidence(crate::eval::value::Dictionary),
     /// The payload's type is not known: the raise of an operation whose row says `Error`,
-    /// which is `Error[T = ?]`, or a host effect handler's throw. No pattern but one at `?`
-    /// admits it — the unknown type of WI-20260910-6ARRN — and no boundary has such a pattern
-    /// yet, as no row discharges a bare `Error` label.
+    /// which is `Error[T = ?]`. Only a pattern at `?` admits it — the unknown type of
+    /// WI-20260910-6ARRN.
     Unknown,
+}
+
+/// How a handler's answer was wrong ([`EvalError::HandlerError`]). The values and types are
+/// rendered where the answer is read: `Display` has no `KnowledgeBase`.
+#[derive(Debug)]
+pub enum HandlerErrorReason {
+    /// The `Error` handler answered a raise with `Pure`: a raise does not resume, as
+    /// `raise` returns `Nothing`. `returned` names the type of the value it returned.
+    ResumedARaise { returned: &'static str },
+    /// A handler raised a value at a type the raise point does not admit — by its `Throw`, or
+    /// a raise that left it through its `Err` channel (`route`). `thrown_type` is `?` for a
+    /// raise of the unknown type.
+    ThrowNotAdmitted {
+        raise_point: RaisePoint,
+        route: ThrowRoute,
+        thrown: String,
+        thrown_type: String,
+    },
+    /// A handler of an effect other than `Error` answered `Rethrow`: it answers no raise.
+    NoRaiseToRethrow,
+    /// `Fail`, `Choice` or `Suspend`, which need the Branch / suspend-resume substrate
+    /// (WI-075). `detail` is `Fail`'s reason; the backtrace locates the dispatch.
+    NotYetSupported {
+        action: &'static str,
+        detail: Option<String>,
+        backtrace: std::backtrace::Backtrace,
+    },
+}
+
+/// Where a handler's raise was judged ([`HandlerErrorReason::ThrowNotAdmitted`]).
+#[derive(Debug)]
+pub enum RaisePoint {
+    /// The raise the `Error` handler answered: its payload and the type it was raised at.
+    Raise { payload: String, ty: String },
+    /// The `Error` label of the operation a handler of another effect performs; `None` where
+    /// that operation's row declares none.
+    Row { label: Option<String> },
+}
+
+/// How a handler's raise left it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThrowRoute {
+    /// Its answer, `HandlerAction::Throw`.
+    Throw,
+    /// Its `Err` channel: a raise it made itself, or one of anthill code it called.
+    Err,
 }
 
 /// WI-20260911-0V0F7 — which of three things an [`EvalError`] escaping the SLD→eval
@@ -560,7 +600,7 @@ impl EvalError {
             // incomplete, so the truncation reading gave up the message for nothing.
             | EvalError::DepthExceeded { .. }
             | EvalError::StepsExhausted { .. }
-            | EvalError::UnsupportedHandlerAction { .. }
+            | EvalError::HandlerError { .. }
             | EvalError::ConstCycle { .. }
             | EvalError::AmbiguousRequirement { .. }
             | EvalError::UnpinnedRequirement { .. }
@@ -740,25 +780,75 @@ impl std::fmt::Display for EvalError {
                 write!(f, "no handler registered for effect `{name}`")
             }
             EvalError::Raised { .. } => write!(f, "raised error"),
-            EvalError::UnsupportedHandlerAction {
-                action,
-                effect,
-                op,
-                detail,
-                backtrace,
-            } => {
-                write!(
+            EvalError::HandlerError { effect, op, reason } => match reason {
+                HandlerErrorReason::ResumedARaise { returned } => write!(
                     f,
-                    "handler for effect `{effect}` returned the `{action}` action while \
-                     dispatching operation `{op}`, but the runtime cannot honor it yet: \
-                     `{action}` needs the Branch / suspend-resume substrate (WI-075). \
-                     This is a runtime-internal not-yet-implemented path."
-                )?;
-                if let Some(detail) = detail {
-                    write!(f, " reason: {detail}")?;
+                    "the `{effect}` handler answered a raise with `Pure` (a {returned}): a raise \
+                     does not resume — `{op}` returns `Nothing`. Answer `Rethrow`, or `Throw` a \
+                     value with its type value"
+                ),
+                HandlerErrorReason::ThrowNotAdmitted {
+                    raise_point,
+                    route,
+                    thrown,
+                    thrown_type,
+                } => {
+                    let raise = match route {
+                        ThrowRoute::Throw => format!("a throw of {thrown} at `{thrown_type}`"),
+                        ThrowRoute::Err => format!(
+                            "a raise of {thrown} at `{thrown_type}` leaving it through its error \
+                             channel"
+                        ),
+                    };
+                    match raise_point {
+                        RaisePoint::Raise { payload, ty } => write!(
+                            f,
+                            "the `{effect}` handler answered a raise of {payload} at `{ty}` with \
+                             {raise}, which `{ty}` does not admit: a handler may replace a raise \
+                             only by a value its type admits, so every boundary that would catch \
+                             the raise still catches it. Throw a value at a type `{ty}` admits, \
+                             or answer `Rethrow`"
+                        ),
+                        RaisePoint::Row { label: Some(label) } => write!(
+                            f,
+                            "the `{effect}` handler answered `{op}` with {raise}, and `{op}`'s \
+                             row raises `Error[{label}]`, which does not admit it: a handler may \
+                             raise only what the operation it performs declares. Throw a value \
+                             at a type `{label}` admits"
+                        ),
+                        RaisePoint::Row { label: None } => write!(
+                            f,
+                            "the `{effect}` handler answered `{op}` with {raise}, and `{op}`'s \
+                             row declares no `Error`: a handler may raise only what the \
+                             operation it performs declares, and a caller of `{op}` is typed as \
+                             catching nothing from it. Report a host failure through the \
+                             handler's `Err` as a fault, or declare the `Error[…]` on `{op}`"
+                        ),
+                    }
                 }
-                write!(f, "\nbacktrace:\n{backtrace}")
-            }
+                HandlerErrorReason::NoRaiseToRethrow => write!(
+                    f,
+                    "the `{effect}` handler answered `Rethrow` for `{op}`, but only the `Error` \
+                     handler, answering a raise, has a raise to rethrow"
+                ),
+                HandlerErrorReason::NotYetSupported {
+                    action,
+                    detail,
+                    backtrace,
+                } => {
+                    write!(
+                        f,
+                        "the `{effect}` handler returned the `{action}` action while dispatching \
+                         operation `{op}`, but the runtime cannot honor it yet: `{action}` needs \
+                         the Branch / suspend-resume substrate (WI-075). This is a \
+                         runtime-internal not-yet-implemented path."
+                    )?;
+                    if let Some(detail) = detail {
+                        write!(f, " reason: {detail}")?;
+                    }
+                    write!(f, "\nbacktrace:\n{backtrace}")
+                }
+            },
             EvalError::ConstCycle { name } => write!(
                 f,
                 "const `{name}` depends on itself (cycle detected while forcing its value)"

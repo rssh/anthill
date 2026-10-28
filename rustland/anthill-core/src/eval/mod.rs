@@ -27,7 +27,8 @@ use crate::kb::KnowledgeBase;
 use crate::parse::desugar_target as dt;
 
 pub use error::{
-    macro_rejection_message, render_raised_payload, BridgeDisposition, EvalError, RaisedType,
+    macro_rejection_message, render_raised_payload, BridgeDisposition, EvalError, HandlerErrorReason,
+    RaisePoint, RaisedType, ThrowRoute,
 };
 pub use eval::{type_value_decl, value_functor};
 pub use frame::{ActivationStack, Frame};

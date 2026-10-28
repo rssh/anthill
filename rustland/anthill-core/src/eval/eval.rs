@@ -4371,7 +4371,7 @@ impl Interpreter {
     /// (`KnowledgeBase::pattern_slot`), which the pattern test reads as a type not known
     /// where it is asked about: only a pattern open there, `?`, admits it (proposal 071
     /// §1.6).
-    fn raised_type_value(&mut self, raised_type: &super::RaisedType) -> Result<Value, EvalError> {
+    pub(super) fn raised_type_value(&mut self, raised_type: &super::RaisedType) -> Result<Value, EvalError> {
         match raised_type {
             super::RaisedType::Evidence(evidence) => {
                 let t = super::builtins::type_of_dictionary(self, evidence)?;
@@ -4408,7 +4408,7 @@ impl Interpreter {
     /// innermost `reify` this `run()` owns, or hand the error back untouched.
     ///
     /// ONLY [`EvalError::Raised`] is caught. `Internal`, `StepsExhausted`,
-    /// `UnhandledEffect`, `UnsupportedHandlerAction` and the rest propagate — a
+    /// `UnhandledEffect`, `HandlerError` and the rest propagate — a
     /// reify boundary handles the `Error` EFFECT, not interpreter faults.
     ///
     /// AND IT CATCHES ONLY WHAT THE BOUNDARY IS TYPED AT. A body declaring

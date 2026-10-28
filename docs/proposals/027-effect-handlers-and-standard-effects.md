@@ -78,7 +78,8 @@ A handler does **not** receive the continuation as an input parameter. Instead, 
 ```
 HandlerAction :=
   | Pure(value: Value)                            -- resume current path with this value (linear, common case)
-  | Throw(payload: Value)                         -- raise an anthill-level error
+  | Throw(payload: Value, type_value: TypeValue)  -- raise an anthill-level error at that type
+  | Rethrow                                       -- the `Error` handler: let the raise it answers continue
   | Fail                                          -- abort current branch (resolver-level fail)
   | Choice(value: Value, alts: List[AltMarker])   -- resume now with `value`; on backtrack, try alts in list order
   | Suspend(snapshot: ContSnapshot)               -- paused; runtime returns to driver; resume later via snapshot
@@ -97,7 +98,8 @@ Where `AltMarker` is an opaque value the runtime understands (typically a snapsh
 **The variants cover the canonical handler patterns:**
 
 - `Pure` — Modify, Reader, most ordinary handlers. Linear single-shot.
-- `Throw` — Error. Abort with a typed payload.
+- `Throw` — Error. Abort with a typed payload: the `TypeValue` of its type rides with it, as on every raise (proposal 071 §1.3). A throw is applied only where the raise point admits its type, by the test a boundary runs — for the `Error` handler, the raise it answers; for a handler of another effect, the `Error` label of the operation it performs, nothing where its row declares none. Otherwise the run stops with a handler error (no raise, and not the old value in its place). A raise that leaves a handler through its host error channel is held to the same test.
+- `Rethrow` — the `Error` handler only: the raise it was handed continues unchanged, with its type.
 - `Fail` — Branch.fail (search-level failure that the resolver picks up).
 - `Choice` — Branch (multi-shot via N paths). The runtime registers all `alts` as resolver choice points in trial order.
 - `Suspend` — Async, Generator, Cooperative scheduling. The handler stashes `snapshot` somewhere reachable (host async runtime, stream-pull cell, scheduler queue) before returning. The runtime returns control to its driver (e.g., `interp.call` returns "incomplete"); whoever holds the snapshot resumes it later by calling `runtime.resume_with(snapshot, value)`.
@@ -583,11 +585,13 @@ fact Effect[T = Error[?]]
 **Operations:**
 - `raise(error)` — abort the current computation with `error`. Returns `Nothing` (uninhabited), so the call never produces a value — control transfers to the handler.
 
-**Default handler:** propagates as a host-error carrying the raised payload to the embedder. The host's `interp.call(...)` (or equivalent) returns its failure idiom — `Result::Err` in Rust, `Either.Left` in Scala, the `AH_RESULT_ERROR`-tagged variant in C — carrying the reified payload.
+**Handler input:** the payload and the `TypeValue` of the type the raise was made at (none for a raise of the unknown type).
+
+**Default handler:** answers `Rethrow`; an uncaught raise propagates as a host-error carrying the raised payload to the embedder. The host's `interp.call(...)` (or equivalent) returns its failure idiom — `Result::Err` in Rust, `Either.Left` in Scala, the `AH_RESULT_ERROR`-tagged variant in C — carrying the reified payload.
 
 **Alternative handlers:**
 - *Try-catch*: install a handler scoped to a single `interp.call`, restore previous handler on return; the handler catches the value and converts to `Result[T, E]`.
-- *Logging*: handler logs and re-raises (calls the previous handler).
+- *Logging*: handler logs and re-raises — `Rethrow`, or `Throw` of the payload at the type value it was handed — so every boundary that would catch the raise still catches it. A value of another type that the raise's type does not admit is refused.
 - *Default value*: handler returns a fallback value; cast through `Nothing → T`'s coercion (impossible unless we extend the model — likely we want `Error` to be terminal and use a different effect for "produce a default").
 
 **Subtleties:**

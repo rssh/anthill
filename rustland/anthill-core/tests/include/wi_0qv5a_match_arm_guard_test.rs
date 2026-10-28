@@ -409,11 +409,12 @@ end
     interp
         .register_effect_handler(
             "anthill.prelude.Error",
-            Box::new(move |_i, _op, args| {
+            Box::new(move |i, _op, args| {
                 *seen_h.borrow_mut() = args.first().cloned();
-                Ok(HandlerAction::Throw(
-                    args.first().cloned().unwrap_or(Value::Unit),
-                ))
+                // A re-raise: the payload, at the type value it was handed.
+                let type_value = anthill_core::eval::dictionary::Dictionary::from_value(i.kb(), &args[1])
+                    .expect("the handler is handed the raise's type value");
+                Ok(HandlerAction::Throw(args[0].clone(), type_value))
             }),
         )
         .expect("register Error handler");
