@@ -96,6 +96,7 @@ fn requires_to_supertrait() {
 #[test]
 fn provision_inside_sort_to_supertrait() {
     let out = gen(r#"sort QueryableStore {
+  import anthill.reflect.{Term}
   provides Store
   operation retrieve(store: QueryableStore, pattern: Term) -> List[T = Term]
 }
@@ -112,6 +113,9 @@ fn provision_inside_sort_to_supertrait() {
 fn effects_modifies_to_mut_self_result() {
     // Modify alone → &mut self, no Result wrapping
     let out = gen(r#"sort Store {
+  import anthill.reflect.{Term}
+  import anthill.prelude.Meta.{Meta}
+  import anthill.persistence.{FactId}
   operation persist(store: Store, fact: Term, meta: Meta) -> FactId
     effects Modify[store]
 }
@@ -124,6 +128,9 @@ fn effects_modifies_to_mut_self_result() {
 
     // Modify + Error → &mut self + Result
     let out2 = gen(r#"sort Store {
+  import anthill.reflect.{Term}
+  import anthill.prelude.Meta.{Meta}
+  import anthill.persistence.{FactId}
   operation persist(store: Store, fact: Term, meta: Meta) -> FactId
     effects {Modify[store], Error}
 }
@@ -138,6 +145,7 @@ fn effects_modifies_to_mut_self_result() {
 fn effects_reads_to_self_result() {
     // No effects → &self, no Result
     let out = gen(r#"sort QueryableStore {
+  import anthill.reflect.{Term}
   operation retrieve(store: QueryableStore, pattern: Term) -> List[T = Term]
 }
 "#);
@@ -149,6 +157,7 @@ fn effects_reads_to_self_result() {
 
     // Error alone → &self + Result
     let out2 = gen(r#"sort QueryableStore {
+  import anthill.reflect.{Term}
   operation retrieve(store: QueryableStore, pattern: Term) -> List[T = Term]
     effects Error
 }
@@ -168,7 +177,8 @@ fn an_error_label_written_with_a_question_mark_generates_the_bare_label() {
         format!(
             r#"namespace demo
   sort Runner
-    import anthill.prelude.{{Stream, Int64, Term, List}}
+    import anthill.prelude.{{Stream, Int64, List}}
+    import anthill.reflect.{{Term}}
     operation retrieve(r: Runner, pattern: Term) -> List[T = Term]
       effects {label}
     operation run(r: Runner) -> Stream[T = Int64, E = {label}]
@@ -230,14 +240,43 @@ fn recursive_field_to_box() {
 #[test]
 fn namespace_to_mod_with_use() {
     let out = gen(r#"namespace banking
-  import anthill.prelude.{List, Option}
-  entity Account(id: String, balance: Int64)
+  import finance.core.{Ledger, Money}
+  entity Account(id: String, balance: Money, ledger: Ledger)
 end
 "#);
     assert!(out.contains("pub mod banking {"), "output:\n{out}");
-    assert!(out.contains("use "), "should have use statement: {out}");
-    assert!(out.contains("List"), "should import List: {out}");
-    assert!(out.contains("Option"), "should import Option: {out}");
+    assert!(
+        out.contains("use finance::core::{Ledger, Money};"),
+        "should have use statement: {out}"
+    );
+}
+
+/// K6WFS: a prelude sort written as a host type is never named by the generated code,
+/// so its import, and an import of its members, emits no `use` — the support crate
+/// exports neither (`use anthill::prelude::{Int64}` did not resolve). A prelude sort
+/// the support crate exports keeps its `use`.
+#[test]
+fn a_host_rendered_import_emits_no_use() {
+    let out = gen(r#"namespace banking
+  import anthill.prelude.{Int64, String, List, Option, Result, Pair}
+  import anthill.prelude.Option.{some, none}
+  entity Account(id: String, balance: Int64, history: List[T = Int64],
+                 last: Option[T = Pair[A = Int64, B = String]])
+end
+"#);
+    let uses: Vec<&str> = out
+        .lines()
+        .filter(|l| l.trim_start().starts_with("use "))
+        .collect();
+    assert_eq!(
+        uses,
+        ["    use anthill::prelude::{Pair};"],
+        "output:\n{out}"
+    );
+    assert!(
+        out.contains("pub last: Option<Pair<i64, String>>,"),
+        "output:\n{out}"
+    );
 }
 
 // ── Test 14: a secondary entry's provision → impl marker comment ─
@@ -810,7 +849,7 @@ end
 
 #[test]
 fn boxed_trait_objects_mode_position_aware() {
-    use anthill_core::codegen::{collect_trait_sorts, generate_rust_with_config, CodegenConfig};
+    use anthill_core::codegen::{collect_sorts, generate_rust_with_config, CodegenConfig};
 
     // `S` is a trait sort (ops, no entities); `E` is an enum with a field of
     // trait type `S`. Exercises every position: receiver, non-receiver param,
@@ -824,7 +863,7 @@ end
 "#;
     let parsed = parse::parse(src).expect("parse");
     let refs = vec![&parsed];
-    let traits = collect_trait_sorts(&refs);
+    let catalog = collect_sorts(&refs);
 
     // Flag ON → trait objects, object-safe.
     let cfg = CodegenConfig {
@@ -832,7 +871,7 @@ end
         default_pub: true,
         ..Default::default()
     };
-    let on = generate_rust_with_config(&parsed, &traits, &cfg).expect("gen on");
+    let on = generate_rust_with_config(&parsed, &catalog, &cfg).expect("gen on");
     assert!(
         on.contains("x: &dyn S"),
         "non-receiver Self param → &dyn S:\n{on}"
@@ -864,7 +903,7 @@ end
 fn emit_only_filters_to_named_items() {
     // WI-540: `emit_only` generates just the named items (here `Keep`) and omits
     // the rest (`Drop`) plus the free-op module trait. `None` emits everything.
-    use anthill_core::codegen::{collect_trait_sorts, generate_rust_with_config, CodegenConfig};
+    use anthill_core::codegen::{collect_sorts, generate_rust_with_config, CodegenConfig};
 
     let src = r#"namespace demo
   enum Keep
@@ -878,14 +917,14 @@ end
 "#;
     let parsed = parse::parse(src).expect("parse");
     let refs = vec![&parsed];
-    let traits = collect_trait_sorts(&refs);
+    let catalog = collect_sorts(&refs);
 
     let cfg = CodegenConfig {
         emit_only: Some(vec!["Keep".into()]),
         default_pub: true,
         ..Default::default()
     };
-    let out = generate_rust_with_config(&parsed, &traits, &cfg).expect("gen");
+    let out = generate_rust_with_config(&parsed, &catalog, &cfg).expect("gen");
     assert!(out.contains("enum Keep"), "Keep must be emitted:\n{out}");
     assert!(
         !out.contains("enum Drop"),
@@ -960,36 +999,36 @@ fn wi766_one_component_tuple_type_keeps_its_arity() {
 fn one_name_is_imported_once_per_file() {
     let out = gen(r#"namespace demo
   sort A
-    import anthill.prelude.{List}
-    operation one(xs: List[T = Int64]) -> Int64
+    import finance.core.{Ledger}
+    operation one(xs: Ledger) -> Int64
   end
 
   sort B
-    import anthill.prelude.{List, Option}
-    operation two(xs: List[T = Int64]) -> Int64
+    import finance.core.{Ledger, Money}
+    operation two(xs: Ledger) -> Money
   end
 end
 "#);
     assert_eq!(
-        out.matches("List").filter(|_| true).count() > 0,
+        out.matches("Ledger").filter(|_| true).count() > 0,
         true,
-        "the fixture must actually mention List:
+        "the fixture must actually mention Ledger:
 {out}"
     );
-    let list_imports = out
+    let ledger_imports = out
         .lines()
-        .filter(|l| l.trim_start().starts_with("use ") && l.contains("List"))
+        .filter(|l| l.trim_start().starts_with("use ") && l.contains("Ledger"))
         .count();
     assert_eq!(
-        list_imports, 1,
-        "`List` must be `use`d exactly once per file, got {list_imports}:
+        ledger_imports, 1,
+        "`Ledger` must be `use`d exactly once per file, got {ledger_imports}:
 {out}"
     );
     // AND THE SECOND DECLARATION'S NEW NAME SURVIVES — the filter drops repeats, not
     // the whole import. Without this the fix would "pass" by emitting nothing.
     assert!(
         out.lines()
-            .any(|l| l.trim_start().starts_with("use ") && l.contains("Option")),
+            .any(|l| l.trim_start().starts_with("use ") && l.contains("Money")),
         "the second import's NEW name must still be brought in:
 {out}"
     );
@@ -1001,19 +1040,19 @@ end
 fn a_repeated_plain_import_is_emitted_once() {
     let out = gen(r#"namespace demo
   sort A
-    import anthill.prelude.Option
-    operation one(o: Option[T = Int64]) -> Int64
+    import finance.core.Ledger
+    operation one(o: Ledger) -> Int64
   end
 
   sort B
-    import anthill.prelude.Option
-    operation two(o: Option[T = Int64]) -> Int64
+    import finance.core.Ledger
+    operation two(o: Ledger) -> Int64
   end
 end
 "#);
     let n = out
         .lines()
-        .filter(|l| l.trim_start().starts_with("use ") && l.contains("option"))
+        .filter(|l| l.trim_start().starts_with("use ") && l.contains("ledger"))
         .count();
     assert_eq!(n, 1, "a repeated plain import is emitted once, got {n}:
 {out}");
@@ -1050,7 +1089,7 @@ fn an_error_label_in_a_type_argument_slot_strips_to_its_payload() {
 end
 "#);
     assert!(
-        out.contains("fn run(&self) -> Result<Stream<i64, Boom>, Boom>"),
+        out.contains("fn run(&self) -> Result<impl Stream<i64, Boom>, Boom>"),
         "the stream's E must be the payload, matching the Err position:\n{out}"
     );
     assert!(
@@ -1227,4 +1266,264 @@ end
     assert!(out.contains("enum AP<T1, T2 = T1> {"), "output:\n{out}");
     assert!(out.contains("enum Mix<A, B> {"), "output:\n{out}");
     assert!(out.contains("impl<T> Box<T> {"), "an impl header takes no default:\n{out}");
+}
+
+// ── K6WFS: a written type is what its name resolves to ─────────────────────────
+
+/// The errors `generate_rust` refuses `source` with.
+fn gen_errors(source: &str) -> Vec<String> {
+    let parsed =
+        parse::parse(source).unwrap_or_else(|e| panic!("parse failed: {e:?}\nsource:\n{source}"));
+    match generate_rust(&parsed) {
+        Ok(out) => panic!("expected a refusal, generated:\n{out}"),
+        Err(errs) => errs.into_iter().map(|e| e.message).collect(),
+    }
+}
+
+/// K6WFS: `Result[E, T]` is std's `Result<T, E>` — the success type first, where the
+/// anthill declaration writes the payload first — and neither it nor `Int64` is `use`d:
+/// the generated code writes `Result` and `i64`, and the support crate exports neither
+/// anthill name. FAILS with the arguments in written order (`Result<Boom, i64>`), and
+/// with the imports emitted (`use anthill::prelude::{Int64, String, Option, Result};`).
+/// `either` writes the success type first, so it passes either way (the control).
+/// `anthill-stl`'s `k6wfs_generated_rust_test` compiles this program's output.
+#[test]
+fn result_is_std_result_with_the_success_type_first() {
+    let out = gen(r#"namespace test.cgres
+  import anthill.prelude.{Int64, String, Option, Result}
+  sort Boom
+    entity boom(why: String)
+  end
+  sort Api
+    operation find(n: Int64) -> Option[T = Int64]
+    operation check(n: Int64) -> Result[E = Boom, T = Int64]
+    operation either(n: Int64) -> Result[T = Option[T = Int64], E = String]
+  end
+end
+"#);
+    assert!(
+        out.contains("fn check(n: i64) -> Result<i64, Boom>;"),
+        "output:\n{out}"
+    );
+    assert!(
+        out.contains("fn either(n: i64) -> Result<Option<i64>, String>;"),
+        "output:\n{out}"
+    );
+    assert!(!out.contains("use "), "no prelude name is `use`d:\n{out}");
+}
+
+/// K6WFS: a name is looked up where it is written, so a program's own `List`, `Option`
+/// and `String` are its own sorts and not the prelude's host types. FAILS with the
+/// short-name arms: `fn all(n: i64) -> Vec<i64>` names `Vec` for the `enum List<T>`
+/// declared just above it. `name` passes either way: the host `String` and the
+/// program's own are spelled alike, which is why `List` carries the test.
+#[test]
+fn a_sort_named_like_a_prelude_one_is_its_own() {
+    let out = gen(r#"namespace test.own
+  import anthill.prelude.{Int64}
+  sort List
+    sort T = ?
+    entity one(v: T)
+  end
+  sort String
+    entity s(v: Int64)
+  end
+  sort Api
+    operation all(n: Int64) -> List[T = Int64]
+    operation name(n: Int64) -> String
+  end
+end
+"#);
+    assert!(
+        out.contains("fn all(n: i64) -> List<i64>;"),
+        "output:\n{out}"
+    );
+    assert!(out.contains("fn name(n: i64) -> String;"), "output:\n{out}");
+    assert!(out.contains("enum String {"), "output:\n{out}");
+}
+
+/// K6WFS: Rust's generics are positional, so a named application is written in the
+/// sort's DECLARATION order. FAILS with the arguments in written order:
+/// `Two[B = String, A = Int64]` came out `Two<String, i64>` against `enum Two<A, B>`,
+/// and the prelude's `Pair` alike. `q` is written in declaration order and passes
+/// either way.
+#[test]
+fn named_arguments_are_written_in_declaration_order() {
+    let out = gen(r#"namespace test.order
+  import anthill.prelude.{Int64, String, Pair}
+  sort Two
+    sort A = ?
+    sort B = ?
+    entity two(a: A, b: B)
+  end
+  sort Api
+    operation g(n: Int64) -> Two[B = String, A = Int64]
+    operation p(n: Int64) -> Pair[B = String, A = Int64]
+    operation q(n: Int64) -> Two[Int64, B = String]
+  end
+end
+"#);
+    assert!(out.contains("enum Two<A, B> {"), "output:\n{out}");
+    assert!(
+        out.contains("fn g(n: i64) -> Two<i64, String>;"),
+        "output:\n{out}"
+    );
+    assert!(
+        out.contains("fn p(n: i64) -> Pair<i64, String>;"),
+        "output:\n{out}"
+    );
+    assert!(
+        out.contains("fn q(n: i64) -> Two<i64, String>;"),
+        "output:\n{out}"
+    );
+}
+
+/// K6WFS: a prelude sort the generator has no Rust mapping for is refused naming it —
+/// the C++ generator's refusal — where it was `use`d from a support crate that does not
+/// export it (`use anthill::prelude::{Int64, Set, Option};`, no error). CONTROL: the
+/// mapped `Option` in the same file generates.
+#[test]
+fn a_prelude_sort_with_no_rust_mapping_is_refused_naming_it() {
+    let errs = gen_errors(
+        r#"namespace test.setp
+  import anthill.prelude.{Int64, Set, Option}
+  sort Api
+    operation all(n: Int64) -> Set[T = Int64]
+    operation one(n: Int64) -> Option[T = Int64]
+  end
+end
+"#,
+    );
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert!(
+        errs[0].contains("no Rust mapping for the prelude sort 'anthill.prelude.Set'"),
+        "{errs:?}"
+    );
+}
+
+/// K6WFS: a sort is ordered by its declaration, so one declared in no file of the run
+/// cannot be applied to two arguments — refused, naming it. Generated together with the
+/// file that declares it, the order is known. FAILS with written order: `Pairy<String,
+/// i64>`, generated alone or together, with no error. CONTROL: one argument needs no
+/// order.
+#[test]
+fn a_sort_from_another_file_is_ordered_when_generated_with_it() {
+    let defs = parse::parse(
+        r#"namespace test.two
+  sort Pairy
+    sort A = ?
+    sort B = ?
+    entity pairy(a: A, b: B)
+  end
+end
+"#,
+    )
+    .unwrap();
+    let user_src = r#"namespace test.ext
+  import anthill.prelude.{Int64, String}
+  import test.two.{Pairy}
+  sort Api
+    operation g(n: Int64) -> Pairy[B = String, A = Int64]
+  end
+end
+"#;
+    let alone = gen_errors(user_src);
+    assert!(
+        alone
+            .iter()
+            .any(|e| e.contains("`Pairy` is `test.two.Pairy`, which no file generated")),
+        "{alone:?}"
+    );
+
+    let user = parse::parse(user_src).unwrap();
+    let catalog = anthill_core::codegen::collect_sorts(&[&defs, &user]);
+    let out = anthill_core::codegen::generate_rust_with_context(&user, &catalog)
+        .unwrap_or_else(|e| panic!("{e:?}"));
+    assert!(
+        out.contains("fn g(n: i64) -> Pairy<i64, String>;"),
+        "output:\n{out}"
+    );
+
+    let one = gen(r#"namespace test.ext
+  import anthill.prelude.{Int64}
+  import test.two.{Boxy}
+  sort Api
+    operation g(n: Int64) -> Boxy[T = Int64]
+  end
+end
+"#);
+    assert!(one.contains("fn g(n: i64) -> Boxy<i64>;"), "output:\n{one}");
+}
+
+/// K6WFS review: a name a wildcard import of another namespace brings in is that
+/// namespace's, and Rust's `use path::*` brings it in by the same name. FAILS with the
+/// wildcard read only against the run's files: `Ledger` was refused as declared and
+/// imported nowhere. CONTROL: `Error`, a public prelude name, still reads as the label.
+#[test]
+fn a_wildcard_import_of_another_namespace_brings_its_names_in() {
+    let out = gen(r#"namespace test.wild
+  import anthill.prelude.{Int64}
+  import finance.core.*
+  sort Api
+    operation g(n: Int64) -> Ledger
+      effects Error
+  end
+end
+"#);
+    assert!(out.contains("use finance::core::*;"), "output:\n{out}");
+    assert!(
+        out.contains("fn g(n: i64) -> Result<Ledger, Error>;"),
+        "output:\n{out}"
+    );
+}
+
+/// K6WFS review: a namespace written in a sort's body is not the sort, so a name of the
+/// sort there is the sort's trait, wrapped as one. FAILS with the sort still current
+/// inside the namespace: `fn g(&self, n: i64) -> Outer;`, a bare trait in return position.
+#[test]
+fn a_namespace_in_a_sort_names_the_sort_as_a_trait() {
+    let out = gen(r#"namespace test.nest
+  import anthill.prelude.{Int64}
+  sort Outer
+    operation f(o: Outer) -> Int64
+    namespace sub
+      operation g(n: Int64) -> Outer
+    end
+  end
+end
+"#);
+    assert!(
+        out.contains("fn g(&self, n: i64) -> impl Outer;"),
+        "output:\n{out}"
+    );
+}
+
+/// K6WFS review: a prelude sort the support crate exports is written through its own
+/// template, which takes only the generics the Rust item has — anthill-stl's
+/// `LogicalStream<T>` drops the anthill `E`, and its `Modifiable` takes none. FAILS with
+/// the anthill parameters as the Rust generics: `LogicalStream<i64, ()>`, which does not
+/// compile against anthill-stl, and `Modifiable[T = Int64]` refused.
+#[test]
+fn a_support_crate_type_takes_the_generics_its_rust_item_has() {
+    let out = gen(r#"namespace test.ls
+  import anthill.prelude.{Int64, LogicalStream, Modifiable, Pair}
+  sort Api
+    operation all(n: Int64) -> LogicalStream[T = Int64, E = {}]
+    operation m(n: Int64) -> Modifiable[T = Int64]
+    operation p(n: Int64) -> Pair[B = Int64, A = Int64]
+  end
+end
+"#);
+    assert!(
+        out.contains("fn all(n: i64) -> impl LogicalStream<i64>;"),
+        "output:\n{out}"
+    );
+    assert!(
+        out.contains("fn m(n: i64) -> impl Modifiable;"),
+        "output:\n{out}"
+    );
+    assert!(
+        out.contains("use anthill::prelude::{LogicalStream, Modifiable, Pair};"),
+        "output:\n{out}"
+    );
 }

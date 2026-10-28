@@ -53,6 +53,7 @@ UE and no-STL profiles will define their own mappings for containers, strings, a
 | `fact SortName[bindings]` (entity-side) | template specialization `template<> struct SortName<EntityType> { using anthill_satisfied = std::true_type; ... };` |
 | `List[T = X]` | `std::vector<X>` |
 | `Option[T = X]` | `std::optional<X>` |
+| `Result[E = P, T = X]` | `anthill::runtime::Result<X, P>`, built by `ok(v)` / `err(e)` at the type the typer infers |
 | `String` | `std::string` |
 | `Int64` | `int64_t` |
 | `Float` | `double` |
@@ -87,7 +88,9 @@ Header filenames use the same per-segment rule, then join a dotted namespace wit
 
 Normalization is many-to-one. If two distinct Anthill spellings in one emitted C++ scope normalize to the same identifier, such as `foo-bar` and `foo_bar`, cpp-gen refuses emission with a collision diagnostic naming both spellings. It never emits two declarations and leaves a C++ compiler to discover that information was lost.
 
-Realization data is not source code and is not rewritten. Anthill-side lookup keys such as `Implementation.target`, `CarrierBinding.sort_name`, `TypeMapping.anthill_type`, and `namespace_map` keys retain their exact Anthill spelling; cpp-gen resolves those before emission. Host-side values such as `host_type`, `host_fn`, artifact paths, and `namespace_map` host values are verbatim C++/path strings. Normalizing either side of those lookups independently would turn a working binding into a silent miss.
+Realization data is not source code and is not rewritten. Anthill-side lookup keys such as `Implementation.target`, `CarrierBinding.sort_name`, `TypeMapping.anthill_type`, and `namespace_map` keys retain their exact Anthill spelling; cpp-gen resolves those before emission.
+
+A `TypeMapping` names its sort by the qualified name (`anthill.prelude.Option`) and is looked up by that name only, so a program's own `Option` is not the prelude's. Its `host_type` is a template over the sort's type parameters, each written `$Name` once: `std::map<$K, $V>`, and `anthill::runtime::Result<$T, $E>` for `Result`, whose declaration puts `E` first. Every cpp entry is checked before the first is used: one that names no sort by its qualified name, or whose template does not place each parameter exactly once, is a codegen error naming it. A `carrier` binding names the user's own template for the sort, and takes the arguments in the sort's declaration order. A mapped sort passed unapplied to a higher-kinded parameter (`Wrap[F = Option]`) stands as its template's name (`std::optional`), when the template applies that name to the parameters in declaration order; `Result` has none. `Unit` lowers to `void`, which is no template argument, so `Result[T = Unit]` is refused. Host-side values such as `host_type`, `host_fn`, artifact paths, and `namespace_map` host values are verbatim C++/path strings. Normalizing either side of those lookups independently would turn a working binding into a silent miss.
 
 ### 3.2 Sort with operations → traits-class template
 

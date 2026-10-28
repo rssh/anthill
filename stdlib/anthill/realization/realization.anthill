@@ -176,6 +176,13 @@ namespace anthill.realization
 
   -- Maps an anthill type to a host-language type. Keyed for query.
   --
+  -- `anthill_type` is the sort's qualified name ("anthill.prelude.Option"); a
+  -- reader looks a sort up by that name only. The C++ generator refuses an entry
+  -- that names no sort so, and the Scala one an entry outside the prelude. `host_type` is a template over the sort's type parameters,
+  -- each written `$Name` exactly once ("std::map<$K, $V>"), so it places the
+  -- arguments in the host's order ("Result<$T, $E>" for `Result[E, T]`); a sort
+  -- with no parameters has a template with no placeholders ("int64_t").
+  --
   -- WI-089: read by codegen via an ORDINARY KB QUERY over the
   -- discrimination tree (kb.query), NOT a Rust reader. The (lang, key)
   -- pair selects which mapping an entry belongs to:
@@ -205,8 +212,8 @@ namespace anthill.realization
   -- (The legacy nested LanguageMapping.type_map form is unconsumed —
   -- kept only for the not-yet-built rust full-codegen path.)
   entity TypeMapping(
-    anthill_type : String,                          -- e.g. "Int64" or "anthill.geometry.Vec3"
-    host_type    : String,                          -- e.g. "i64" or "const double *"
+    anthill_type : String,                          -- qualified sort name, e.g. "anthill.prelude.Int64"
+    host_type    : String,                          -- template, e.g. "int64_t", "std::vector<$T>", "const double *"
     lift         : Option[T = String],              -- foreign->anthill adapter (marshalled only)
     lower        : Option[T = String],              -- anthill->foreign adapter (marshalled only)
     lang         : Option[T = String],              -- WI-089: query key — host language ("cpp", "rust"). none = legacy/nested entry.

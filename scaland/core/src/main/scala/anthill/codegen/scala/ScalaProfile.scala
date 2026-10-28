@@ -183,10 +183,21 @@ object ScalaProfile:
             "selected by its LanguageMapping's own language and profile"))
         val anthillType = Facts.getNamedStringArg(kb, fn, "anthill_type")
           .getOrElse(bad("an entry with no `anthill_type` string literal"))
+        // `anthill_type` is the sort's QUALIFIED name, and a host scalar is a prelude
+        // sort: the table is keyed by the leaf because that is how a written name is
+        // placed against the prelude ([[ScalaTypes.hostScalar]]), and an entry naming
+        // a sort anywhere else could only be read as the prelude's of the same leaf.
+        val leaf = anthillType.stripPrefix(s"$PreludePackage.")
+        if leaf == anthillType || leaf.contains('.') then
+          bad(s"an entry for `$anthillType`, which is not a prelude sort's qualified name " +
+              s"(`$PreludePackage.<Sort>`); a host scalar is a prelude sort")
         val hostType = Facts.getNamedStringArg(kb, fn, "host_type")
           .getOrElse(bad(s"`$anthillType` mapped to no `host_type` string literal"))
-        (anthillType, hostType)
+        (leaf, hostType)
       case _ => bad("an element that is not a `TypeMapping` application")
+
+  /** The package a host scalar's sort is declared in. */
+  private val PreludePackage = "anthill.prelude"
 
   private def malformed(
     language: String, profile: String, field: String, what: String

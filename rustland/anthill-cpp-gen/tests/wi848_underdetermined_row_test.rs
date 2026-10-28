@@ -15,8 +15,9 @@
 //! non-literal var-term per its own aggregation, which this file pins:
 //!   * IncludeMapping (a probe SET): the string readers read a var-term as absent,
 //!     so the row contributes NO probe — a correct program, clean emit.
-//!   * TypeMapping (keyed, per-key unique): the under-determined row is skipped, so
-//!     the type resolves to no base — `Ok(None)`, not an error.
+//!   * TypeMapping (keyed, per-key unique): every cpp entry is checked before any is
+//!     used (K6WFS), and one without a `host_type` is refused naming its sort. It
+//!     used to be skipped, leaving the type with no base and nothing said.
 //!   * NamingConvention (single-valued): the under-determined `method_case` reads as
 //!     `None`, a pair DISTINCT from the stdlib's snake→camel, so the single-valued
 //!     selector reports it AMBIGUOUS (loud) — the difference is the reader's
@@ -98,24 +99,31 @@ fn include_mapping_rule_head_leaving_include_unconstrained_contributes_no_probe(
 // ── TypeMapping: keyed — an under-determined base maps nothing ──────────
 
 #[test]
-fn type_mapping_fact_omitting_required_host_type_maps_nothing() {
+fn type_mapping_fact_omitting_required_host_type_is_refused() {
     // `Money` gets a base TypeMapping that omits the required `host_type`. The
-    // resolved row's `host_type` is a term-var, read as absent, so no base resolves.
-    // `cpp_base_host_type` returns `Ok(None)`, never a loud error — `Money` simply
-    // has no cpp base.
+    // resolved row's `host_type` is a term-var, read as absent — and the entry is
+    // refused naming `Money`, where it used to be skipped and leave `Money` with no
+    // cpp base, said nowhere.
     let source = r#"
         namespace test.wi848.tm
           import anthill.realization.TypeMapping
           import anthill.prelude.{Bool, String}
           import anthill.prelude.Option.{some, none}
 
-          fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "Money", lift: none, lower: none)
+          sort Money end
+          fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "test.wi848.tm.Money",
+                           lift: none, lower: none)
         end
     "#;
     let mut kb = load_kb_with(source);
-    let host = cpp_base_host_type(&mut kb, "Money")
-        .expect("a TypeMapping missing `host_type` contributes no mapping, not an error");
-    assert_eq!(host, None, "an under-determined host_type maps nothing");
+    let err = cpp_base_host_type(&mut kb, "test.wi848.tm.Money")
+        .expect_err("a TypeMapping missing `host_type` is refused");
+    assert!(
+        err.message
+            .contains("TypeMapping of \"test.wi848.tm.Money\" writes no `host_type`"),
+        "{}",
+        err.message
+    );
 }
 
 // ── NamingConvention: single-valued — under-determined competes, loudly ─

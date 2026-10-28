@@ -211,6 +211,10 @@ no host name to put in the one it has, so the second half could not have lived i
 the fact without growing the schema — and a schema that could say it would only be
 restating the declaration, with nothing keeping the two in step.
 
+An entry names its sort by the qualified name (`anthill.prelude.Int64`), as every
+`TypeMapping` does. A host scalar is a prelude sort, so an entry naming a short name or a
+sort of another package is refused naming it.
+
 Deriving also settles **membership**: every sort the supplied closure promises to
 emit is indexed under its Scala package, not a hand-picked subset. Lookup first
 consults the mentioning declaration's package and its nearest dotted Anthill ancestors, then

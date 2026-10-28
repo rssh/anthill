@@ -29,14 +29,15 @@ namespace anthill.realization.rust_std
     ],
 
     type_map: [
-      TypeMapping(anthill_type: "Int64",       host_type: "i64"),
-      TypeMapping(anthill_type: "Float",     host_type: "f64"),
-      TypeMapping(anthill_type: "Bool",      host_type: "bool"),
-      TypeMapping(anthill_type: "String",    host_type: "String"),
-      TypeMapping(anthill_type: "Duration",  host_type: "std::time::Duration"),
-      TypeMapping(anthill_type: "Timestamp", host_type: "String"),
-      TypeMapping(anthill_type: "List",      host_type: "Vec"),
-      TypeMapping(anthill_type: "Option",    host_type: "Option")
+      TypeMapping(anthill_type: "anthill.prelude.Int64",     host_type: "i64"),
+      TypeMapping(anthill_type: "anthill.prelude.Float",     host_type: "f64"),
+      TypeMapping(anthill_type: "anthill.prelude.Bool",      host_type: "bool"),
+      TypeMapping(anthill_type: "anthill.prelude.String",    host_type: "String"),
+      TypeMapping(anthill_type: "anthill.prelude.Duration",  host_type: "std::time::Duration"),
+      TypeMapping(anthill_type: "anthill.prelude.Timestamp", host_type: "String"),
+      TypeMapping(anthill_type: "anthill.prelude.List",      host_type: "Vec<$T>"),
+      TypeMapping(anthill_type: "anthill.prelude.Option",    host_type: "Option<$T>"),
+      TypeMapping(anthill_type: "anthill.prelude.Result",    host_type: "Result<$T, $E>")
     ],
 
     -- Return abstract sorts via impl Trait (Rust 1.75+ supports RPITIT)

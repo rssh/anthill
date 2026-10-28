@@ -26,7 +26,7 @@
 -- the `std::` spellings' headers do; the header is copied beside every generated one.
 --
 -- NO `carrier` CLAUSE, load-bearing exactly as in `float.anthill`: `String`'s C++
--- spelling is `TypeMapping(anthill_type: "String", host_type: "std::string")` in
+-- spelling is `TypeMapping(anthill_type: "anthill.prelude.String", host_type: "std::string")` in
 -- cpp_std.anthill, the PROFILE-OVERLAYABLE channel a `cpp20-stl` overlay can remap. A
 -- `carrier { String: … }` clause is consulted ahead of that query and would silently
 -- shadow the overlay.

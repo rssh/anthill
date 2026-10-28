@@ -15,8 +15,8 @@ use common::load_kb_with;
 
 #[test]
 fn priority_ladder_binding_shadows_profile_shadows_base() {
-    // One synthetic anthill type with all three overlays asserted as ordinary
-    // facts (anthill_type is a plain String — no sort declaration needed). The
+    // One synthetic anthill sort with all three overlays asserted as ordinary
+    // facts (`anthill_type` names it by its qualified name). The
     // resolver picks by the active-key list; this exercises every rung of the
     // ladder, including the "base wins when no overlay is active" case that is
     // the declared-signature (no-binding) position.
@@ -25,14 +25,15 @@ fn priority_ladder_binding_shadows_profile_shadows_base() {
           import anthill.realization.TypeMapping
           import anthill.prelude.Option.{some, none}
 
+          sort Widget end
           fact TypeMapping(lang: some("cpp"), key: none,
-                           anthill_type: "Widget", host_type: "Base",
+                           anthill_type: "test.ladder.Widget", host_type: "Base",
                            lift: none, lower: none)
           fact TypeMapping(lang: some("cpp"), key: some("cpp20-stl"),
-                           anthill_type: "Widget", host_type: "Profile",
+                           anthill_type: "test.ladder.Widget", host_type: "Profile",
                            lift: none, lower: none)
           fact TypeMapping(lang: some("cpp"), key: some("gadget"),
-                           anthill_type: "Widget", host_type: "Bound",
+                           anthill_type: "test.ladder.Widget", host_type: "Bound",
                            lift: none, lower: none)
         end
     "#;
@@ -40,7 +41,7 @@ fn priority_ladder_binding_shadows_profile_shadows_base() {
 
     // No profile, no binding (declared-signature position) → language base.
     assert_eq!(
-        cpp_host_type(&mut kb, "Widget", None, None)
+        cpp_host_type(&mut kb, "test.ladder.Widget", None, None)
             .unwrap()
             .as_deref(),
         Some("Base")
@@ -48,7 +49,7 @@ fn priority_ladder_binding_shadows_profile_shadows_base() {
 
     // Profile active, no binding → the profile overlay shadows the base.
     assert_eq!(
-        cpp_host_type(&mut kb, "Widget", Some("cpp20-stl"), None)
+        cpp_host_type(&mut kb, "test.ladder.Widget", Some("cpp20-stl"), None)
             .unwrap()
             .as_deref(),
         Some("Profile")
@@ -57,15 +58,20 @@ fn priority_ladder_binding_shadows_profile_shadows_base() {
     // Binding active (carrier-dispatch boundary) → the binding overlay shadows
     // both the profile overlay and the base.
     assert_eq!(
-        cpp_host_type(&mut kb, "Widget", Some("cpp20-stl"), Some("gadget"))
-            .unwrap()
-            .as_deref(),
+        cpp_host_type(
+            &mut kb,
+            "test.ladder.Widget",
+            Some("cpp20-stl"),
+            Some("gadget")
+        )
+        .unwrap()
+        .as_deref(),
         Some("Bound")
     );
 
     // Binding active with no profile → binding still shadows the base.
     assert_eq!(
-        cpp_host_type(&mut kb, "Widget", None, Some("gadget"))
+        cpp_host_type(&mut kb, "test.ladder.Widget", None, Some("gadget"))
             .unwrap()
             .as_deref(),
         Some("Bound")
@@ -74,7 +80,7 @@ fn priority_ladder_binding_shadows_profile_shadows_base() {
     // A profile with no matching overlay falls through to the base — an
     // unrelated profile must not accidentally pick another profile's entry.
     assert_eq!(
-        cpp_host_type(&mut kb, "Widget", Some("cpp17-stl"), None)
+        cpp_host_type(&mut kb, "test.ladder.Widget", Some("cpp17-stl"), None)
             .unwrap()
             .as_deref(),
         Some("Base")
@@ -83,7 +89,7 @@ fn priority_ladder_binding_shadows_profile_shadows_base() {
     // A binding with no matching overlay falls through (no profile here) to the
     // base — the base sentinel is always last in the active-key list.
     assert_eq!(
-        cpp_host_type(&mut kb, "Widget", None, Some("no-such-binding"))
+        cpp_host_type(&mut kb, "test.ladder.Widget", None, Some("no-such-binding"))
             .unwrap()
             .as_deref(),
         Some("Base")
@@ -106,7 +112,7 @@ fn profile_threads_into_declared_signature_lowering() {
           entity Holder(x: Float)
 
           fact TypeMapping(lang: some("cpp"), key: some("cpp20-stl"),
-                           anthill_type: "Float", host_type: "float",
+                           anthill_type: "anthill.prelude.Float", host_type: "float",
                            lift: none, lower: none)
         end
     "#;

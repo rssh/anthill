@@ -11,6 +11,11 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+// This crate's one test binary also carries its other integration tests (a file
+// directly under `tests/` is a binary of its own; `rustland/CLAUDE.md`).
+#[path = "include/k6wfs_generated_rust_test.rs"]
+mod k6wfs_generated_rust_test;
+
 /// Collect every `.anthill` file under `dir`, returning labels of the form
 /// `<prefix>/<stem-relative-to-root>` (matching how `SOURCES` labels its
 /// entries). `dir` is the directory currently being walked; the relative stem

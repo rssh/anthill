@@ -6,7 +6,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
-use anthill_core::codegen::generate_rust;
+use anthill_core::codegen::{collect_sorts, generate_rust_with_context};
 use anthill_core::fs_util;
 use anthill_core::intern::{ResolveResult, ScopeId, GLOBAL_SCOPE_NAME};
 use anthill_core::kb::load::{self, FileSourceResolver, QueryPattern};
@@ -1008,6 +1008,9 @@ fn run_codegen_rust(args: &RustCodegenArgs) -> Result<(), i32> {
     let mut errors: Vec<String> = Vec::new();
     let mut generated = 0u32;
 
+    // Every file is parsed before any is generated: a file names the sorts of the
+    // others, and is written against their declarations (`collect_sorts`).
+    let mut parsed_files = Vec::with_capacity(files.len());
     for file in &files {
         let source = match fs::read_to_string(file) {
             Ok(s) => s,
@@ -1016,17 +1019,19 @@ fn run_codegen_rust(args: &RustCodegenArgs) -> Result<(), i32> {
                 continue;
             }
         };
-
-        let parsed = match parse::parse(&source) {
-            Ok(p) => p,
+        match parse::parse(&source) {
+            Ok(p) => parsed_files.push((file, p)),
             Err(parse_errors) => {
                 // WI-852: `path:line:col` — see `load_kb_with_stdlib`.
                 errors.extend(ParseError::all_located(&parse_errors, file, &source));
-                continue;
             }
-        };
+        }
+    }
+    let refs: Vec<_> = parsed_files.iter().map(|(_, p)| p).collect();
+    let catalog = collect_sorts(&refs);
 
-        let rust_code = match generate_rust(&parsed) {
+    for (file, parsed) in &parsed_files {
+        let rust_code = match generate_rust_with_context(parsed, &catalog) {
             Ok(code) => code,
             Err(errs) => {
                 for e in &errs {

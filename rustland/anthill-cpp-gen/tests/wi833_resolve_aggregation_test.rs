@@ -24,9 +24,9 @@ use common::load_kb_with;
 
 // ── TypeMapping ──────────────────────────────────────────────────────
 
-/// Resolve the cpp base host type for a fresh anthill type `ty` from `body`
-/// (spliced into a namespace importing the realization vocabulary). `Money` is
-/// not a stdlib type, so `body` controls every mapping for it.
+/// Resolve the cpp base host type for the sort `ty` from `body` (spliced into a
+/// namespace importing the realization vocabulary, which declares `sort Money`).
+/// `Money` is not a stdlib type, so `body` controls every mapping for it.
 fn money_base(body: &str, ty: &str) -> Result<Option<String>, String> {
     let source = format!(
         r#"
@@ -34,6 +34,7 @@ fn money_base(body: &str, ty: &str) -> Result<Option<String>, String> {
           import anthill.realization.{{TypeMapping}}
           import anthill.prelude.{{Bool, String}}
           import anthill.prelude.Option.{{some, none}}
+          sort Money end
           {body}
         end
     "#
@@ -50,11 +51,11 @@ fn type_mapping_passing_guard_applies() {
           import anthill.prelude.Option.{none, some}
           entity FastMath(on: Bool)
           fact FastMath(on: true)
-          rule TypeMapping(lang: some("cpp"), key: none, anthill_type: "Money",
+          rule TypeMapping(lang: some("cpp"), key: none, anthill_type: "test.wi833.tm.Money",
                            host_type: "float", lift: none, lower: none)
             :- FastMath(on: true)
         "#,
-        "Money",
+        "test.wi833.tm.Money",
     )
     .expect("a guarded TypeMapping resolves, never refuses");
     assert_eq!(
@@ -72,11 +73,11 @@ fn type_mapping_failing_guard_contributes_nothing() {
           import anthill.prelude.Option.{none, some}
           entity FastMath(on: Bool)
           fact FastMath(on: false)
-          rule TypeMapping(lang: some("cpp"), key: none, anthill_type: "Money",
+          rule TypeMapping(lang: some("cpp"), key: none, anthill_type: "test.wi833.tm.Money",
                            host_type: "float", lift: none, lower: none)
             :- FastMath(on: true)
         "#,
-        "Money",
+        "test.wi833.tm.Money",
     )
     .expect("a guarded TypeMapping resolves, never refuses");
     assert_eq!(host, None, "failing guard → no mapping resolves");
@@ -94,11 +95,11 @@ fn type_mapping_duplicate_answers_are_deduped_not_ambiguous() {
           fact Cond(tag: "a")
           fact Cond(tag: "b")
           -- `Cond(tag: ?t)` succeeds twice, so this resolves Money -> float twice.
-          rule TypeMapping(lang: some("cpp"), key: none, anthill_type: "Money",
+          rule TypeMapping(lang: some("cpp"), key: none, anthill_type: "test.wi833.tm.Money",
                            host_type: "float", lift: none, lower: none)
             :- Cond(tag: ?t)
         "#,
-        "Money",
+        "test.wi833.tm.Money",
     )
     .expect("identical resolved rows dedup, never ambiguous");
     assert_eq!(
@@ -115,12 +116,12 @@ fn type_mapping_competing_answers_at_one_key_are_ambiguous() {
     let err = money_base(
         r#"
           import anthill.prelude.Option.{none, some}
-          fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "Money",
+          fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "test.wi833.tm.Money",
                            host_type: "float", lift: none, lower: none)
-          fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "Money",
+          fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "test.wi833.tm.Money",
                            host_type: "double", lift: none, lower: none)
         "#,
-        "Money",
+        "test.wi833.tm.Money",
     )
     .expect_err("two competing base mappings for one key are ambiguous");
     assert!(err.contains("ambiguous"), "names the ambiguity: {err}");
@@ -149,12 +150,13 @@ fn type_mapping_guarded_overlay_shadows_base_only_when_its_guard_holds() {
               import anthill.prelude.{{Bool}}
               import anthill.prelude.Option.{{some, none}}
 
+              sort Money end
               entity FastMath(on: Bool)
               {toggle}
 
-              fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "Money",
+              fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "test.wi833.overlay.Money",
                                host_type: "Base", lift: none, lower: none)
-              rule TypeMapping(lang: some("cpp"), key: some("cpp20-stl"), anthill_type: "Money",
+              rule TypeMapping(lang: some("cpp"), key: some("cpp20-stl"), anthill_type: "test.wi833.overlay.Money",
                                host_type: "Overlay", lift: none, lower: none)
                 :- FastMath(on: true)
             end
@@ -162,7 +164,7 @@ fn type_mapping_guarded_overlay_shadows_base_only_when_its_guard_holds() {
         );
         let mut kb = load_kb_with(&source);
         // Under the cpp20-stl profile, no binding (declared-signature position).
-        cpp_host_type(&mut kb, "Money", Some("cpp20-stl"), None)
+        cpp_host_type(&mut kb, "test.wi833.overlay.Money", Some("cpp20-stl"), None)
             .expect("guarded overlay resolves")
             .expect("Money has at least a base")
     };

@@ -17,7 +17,7 @@
 -- `every_std_spelling_a_cpp_mapping_emits_has_an_include_probe` is what prevents.
 --
 -- NO `carrier` CLAUSE, and that is load-bearing rather than an omission: `Float`'s
--- C++ spelling is `TypeMapping(anthill_type: "Float", host_type: "double")` in
+-- C++ spelling is `TypeMapping(anthill_type: "anthill.prelude.Float", host_type: "double")` in
 -- `cpp_std.anthill`, which is the PROFILE-OVERLAYABLE channel — a `cpp20-stl` overlay
 -- can remap it. `CarrierTable` is consulted AHEAD of that query, so adding
 -- `carrier { Float: "double" }` here silently disables the overlay. MEASURED:

@@ -3,9 +3,9 @@
 - id: WI-20261027-K6WFS-result-has-no-host-type
 - created: 2026-10-27T20:07:12Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-10-27T20:07:12Z
+- status_at: 2026-10-28T17:55:38Z
 
 - acceptance: cargo-test, scaland-sbt-test
 

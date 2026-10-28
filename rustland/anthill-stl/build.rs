@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use anthill_core::codegen::{collect_trait_sorts, generate_rust_with_config, CodegenConfig};
+use anthill_core::codegen::{collect_sorts, generate_rust_with_config, CodegenConfig};
 use anthill_core::parse;
 
 fn main() {
@@ -133,9 +133,10 @@ fn main() {
         parsed_files.push(parsed);
     }
 
-    // Collect trait sorts across all files for cross-file impl Trait wrapping
+    // The sorts every file declares: a type one file names from another is written
+    // with its declared parameter order, and wrapped as a trait where it is one.
     let refs: Vec<_> = parsed_files.iter().collect();
-    let global_traits = collect_trait_sorts(&refs);
+    let catalog = collect_sorts(&refs);
 
     // Generate each file (reflect uses the generated-and-used reflect_config).
     for (i, (_, dst)) in files.iter().enumerate() {
@@ -144,7 +145,7 @@ fn main() {
             "stream.rs" => &stream_config,
             _ => &config,
         };
-        let code = generate_rust_with_config(&parsed_files[i], &global_traits, cfg)
+        let code = generate_rust_with_config(&parsed_files[i], &catalog, cfg)
             .unwrap_or_else(|e| panic!("codegen {}: {:?}", dst, e));
         let out_path = out_dir.join(dst);
         std::fs::write(&out_path, &code)

@@ -205,7 +205,7 @@ Prelude types have special mappings (§2.9). Non-prelude parametric sorts map di
 
 ### 2.9 Prelude Type Mappings
 
-Anthill prelude sorts map to idiomatic Rust types. These mappings are defined in the `LanguageMapping` profile (§9) as `TypeMapping` facts, not hardcoded in the codegen. The default Rust/std profile (`stdlib/anthill/realization/rust_std.anthill`) declares:
+Anthill prelude sorts map to idiomatic Rust types. The default Rust/std profile (`stdlib/anthill/realization/rust_std.anthill`) declares them as `TypeMapping` facts (§9), each naming its sort by the qualified name and giving a template over the sort's parameters:
 
 | Anthill type | Rust type |
 |---|---|
@@ -215,10 +215,13 @@ Anthill prelude sorts map to idiomatic Rust types. These mappings are defined in
 | `String` | `String` |
 | `List[T = X]` | `Vec<X>` |
 | `Option[T = X]` | `Option<X>` |
+| `Result[E = P, T = X]` | `Result<X, P>` |
 | `Duration` | `std::time::Duration` |
 | `Timestamp` | `String` |
 
 A different profile (e.g. Rust/no_std) could override these — `List` → `heapless::Vec`, `String` → `heapless::String`, etc.
+
+The bootstrap mapper (`anthill codegen rust`) reads the parse tree, not the KB, and carries this table in its own code (`RUST_STDLIB_TYPES` in `anthill-core/src/codegen/rust.rs`), with the prelude sorts the support crate `anthill-stl` exports under their own names (`Pair`, `Stream`, …); each entry is a template over the sort's parameters, which leaves out a parameter the Rust item does not take (`LogicalStream<$T>`). A written type is the sort its name resolves to where it is written: a type parameter, a sort of the files generated together, an import (a wildcard import of another namespace included), or a `public` prelude name. A program's own `List` is therefore its own sort, and a sort's arguments are written in its declaration order. A host-rendered prelude sort gets no `use`, since the generated code never names it. A prelude sort missing from the table, and a sort of two or more parameters declared in no file of the run, are refused naming them.
 
 ### 2.10 Rules → Test Stubs
 
@@ -411,7 +414,7 @@ Every sort encountered during codegen falls into one of three categories:
 
 | Category | Condition | Codegen action |
 |---|---|---|
-| **Prelude** | Sort is in `anthill.prelude` | Use Rust type from profile (§2.9, §9): `List` → `Vec`, `Option` → `Option`, etc. |
+| **Prelude** | Sort is in `anthill.prelude` | Use Rust type from profile (§2.9, §9): `List` → `Vec`, `Option` → `Option`, `Result` → `Result`, etc. |
 | **Implemented** | Has `Implementation` fact with `language: "rust"` | Skip generation, emit `use` import with types from carrier bindings |
 | **Unimplemented** | No matching `Implementation` fact | Generate skeleton |
 
@@ -1227,8 +1230,8 @@ entity ReceiverRule(
 
 ```anthill
 entity TypeMapping(
-  anthill_type : String,     -- "Int64", "List", "Option"
-  host_type    : String      -- "i64", "Vec", "Option"
+  anthill_type : String,     -- qualified sort name: "anthill.prelude.Int64"
+  host_type    : String      -- template over the sort's parameters: "i64", "Vec<$T>", "Result<$T, $E>"
 )
 ```
 
@@ -1267,14 +1270,15 @@ fact LanguageMapping(
   ],
 
   type_map: [
-    TypeMapping(anthill_type: "Int64",       host_type: "i64"),
-    TypeMapping(anthill_type: "Float",     host_type: "f64"),
-    TypeMapping(anthill_type: "Bool",      host_type: "bool"),
-    TypeMapping(anthill_type: "String",    host_type: "String"),
-    TypeMapping(anthill_type: "Duration",  host_type: "std::time::Duration"),
-    TypeMapping(anthill_type: "Timestamp", host_type: "String"),
-    TypeMapping(anthill_type: "List",      host_type: "Vec"),
-    TypeMapping(anthill_type: "Option",    host_type: "Option")
+    TypeMapping(anthill_type: "anthill.prelude.Int64",     host_type: "i64"),
+    TypeMapping(anthill_type: "anthill.prelude.Float",     host_type: "f64"),
+    TypeMapping(anthill_type: "anthill.prelude.Bool",      host_type: "bool"),
+    TypeMapping(anthill_type: "anthill.prelude.String",    host_type: "String"),
+    TypeMapping(anthill_type: "anthill.prelude.Duration",  host_type: "std::time::Duration"),
+    TypeMapping(anthill_type: "anthill.prelude.Timestamp", host_type: "String"),
+    TypeMapping(anthill_type: "anthill.prelude.List",      host_type: "Vec<$T>"),
+    TypeMapping(anthill_type: "anthill.prelude.Option",    host_type: "Option<$T>"),
+    TypeMapping(anthill_type: "anthill.prelude.Result",    host_type: "Result<$T, $E>")
   ]
 )
 ```
@@ -1326,9 +1330,9 @@ fact LanguageMapping(
     ReceiverRule(condition: "returns_same_type", receiver: ByValue)
   ],
   type_map: [
-    TypeMapping(anthill_type: "Int64",    host_type: "i32"),
-    TypeMapping(anthill_type: "List",   host_type: "heapless::Vec"),
-    TypeMapping(anthill_type: "String", host_type: "heapless::String"),
+    TypeMapping(anthill_type: "anthill.prelude.Int64",  host_type: "i32"),
+    TypeMapping(anthill_type: "anthill.prelude.List",   host_type: "heapless::Vec<$T>"),
+    TypeMapping(anthill_type: "anthill.prelude.String", host_type: "heapless::String"),
     ...
   ]
 )
@@ -1347,9 +1351,9 @@ fact LanguageMapping(
   ],
   receiver_map: [],
   type_map: [
-    TypeMapping(anthill_type: "Int64",    host_type: "Int64"),
-    TypeMapping(anthill_type: "List",   host_type: "List"),
-    TypeMapping(anthill_type: "Option", host_type: "Option"),
+    TypeMapping(anthill_type: "anthill.prelude.Int64",  host_type: "Int64"),
+    TypeMapping(anthill_type: "anthill.prelude.List",   host_type: "List[$T]"),
+    TypeMapping(anthill_type: "anthill.prelude.Option", host_type: "Option[$T]"),
     ...
   ]
 )

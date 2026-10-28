@@ -5,8 +5,10 @@
 /// implementations separately.
 ///
 /// See `docs/rust-forward-mapping.md` for the full mapping specification.
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
+use super::type_template::{parse_type_template, TypeTemplatePart};
 use crate::intern::{Symbol, SymbolTable};
 use crate::kb::term::{Literal, Term, TermId};
 use crate::parse::ir::*;
@@ -104,32 +106,18 @@ impl Default for CodegenConfig {
 }
 
 /// Generate Rust skeleton code from a parsed anthill file.
-/// Does the written type name `written` denote the sort being generated: its own name,
-/// or the reserved `Self` (proposal 070 §1.2 — the enclosing sort at its own parameters)?
-///
-/// This generator reads the PARSE tree, where `Self` is still the word the author wrote
-/// (the loader replaces it only where it lowers a type), so every place that asks "is
-/// this the sort itself" — the `Self` rendering, the boxed recursive field, the receiver
-/// — asks it here. Without the second half `entity cons(head: T, tail: Self)` was not
-/// boxed and `length(l: Self)` was no method.
-fn names_this_sort(written: &str, sort_name: &str) -> bool {
-    written == sort_name || written == crate::intern::SELF_TYPE_NAME
-}
-
 pub fn generate_rust(parsed: &ParsedFile) -> Result<String, Vec<CodegenError>> {
-    generate_rust_with_context(parsed, &HashSet::new())
+    generate_rust_with_context(parsed, &collect_sorts(&[parsed]))
 }
 
-/// Generate Rust code with cross-file sort classification context.
-///
-/// `global_trait_sorts` contains sort names known to be traits from other files.
-/// This allows correct `impl Trait` wrapping for return types defined elsewhere.
+/// Generate Rust code for one file of a run whose files declare `catalog`
+/// ([`collect_sorts`] over all of them).
 pub fn generate_rust_with_context(
     parsed: &ParsedFile,
-    global_trait_sorts: &HashSet<String>,
+    catalog: &SortCatalog,
 ) -> Result<String, Vec<CodegenError>> {
     let config = CodegenConfig::default();
-    generate_rust_with_config(parsed, global_trait_sorts, &config)
+    generate_rust_with_config(parsed, catalog, &config)
 }
 
 /// Generate Rust code with full configuration control.
@@ -138,67 +126,311 @@ pub fn generate_rust_with_context(
 /// carrier bindings, derive macros, etc.
 pub fn generate_rust_with_config(
     parsed: &ParsedFile,
-    global_trait_sorts: &HashSet<String>,
+    catalog: &SortCatalog,
     config: &CodegenConfig,
 ) -> Result<String, Vec<CodegenError>> {
-    let mut cg =
-        RustCodegen::with_context(&parsed.symbols, &parsed.terms, global_trait_sorts, config);
+    let mut cg = RustCodegen::with_context(&parsed.symbols, &parsed.terms, catalog, config);
+    cg.push_scope(String::new(), &parsed.imports, Vec::new());
     // WI-853: a file's TOP-LEVEL imports emit their `use` lines here, where a
     // namespace body's are emitted by `emit_namespace`. Both spell one anthill
     // `import` as one Rust `use`; dropping the top-level ones would generate a
     // module whose names silently do not resolve.
+    let mut wrote_use = false;
     for imp in &parsed.imports {
-        cg.emit_import(imp);
+        wrote_use |= cg.emit_import(imp);
     }
-    if !parsed.imports.is_empty() && !parsed.items.is_empty() {
+    if wrote_use && !parsed.items.is_empty() {
         cg.blank();
     }
     cg.emit_items(&parsed.items, None);
-    if cg.errors.is_empty() {
+    let errors = cg.errors.into_inner();
+    if errors.is_empty() {
         Ok(cg.output)
     } else {
-        Err(cg.errors)
+        Err(errors)
     }
 }
 
-/// Collect trait sort names across multiple parsed files.
+/// Every sort the files generated together declare, by qualified name: what a written
+/// type name resolves to when it is not a type parameter, and how its arguments are
+/// ordered and wrapped.
 ///
-/// A sort is a trait if it has operations and no entities (same heuristic
-/// used during single-file codegen). This pre-pass enables cross-file
-/// `impl Trait` wrapping.
-pub fn collect_trait_sorts(files: &[&ParsedFile]) -> HashSet<String> {
-    let mut traits = HashSet::new();
-    for file in files {
-        collect_trait_sorts_from_items(&file.items, &file.symbols, &mut traits);
-    }
-    traits
+/// A file of the run sees the sorts of every other: `sort Api` in one file returning a
+/// `Boom` declared in another renders `Boom` with `Boom`'s own parameter order. A sort
+/// declared in no file of the run has no order to render its arguments in.
+#[derive(Clone, Default)]
+pub struct SortCatalog {
+    sorts: HashMap<String, CatalogSort>,
 }
 
-fn collect_trait_sorts_from_items(
+#[derive(Clone)]
+struct CatalogSort {
+    /// The sort's type parameters, in declaration order.
+    params: Vec<String>,
+    /// Whether the sort generates as a trait: it has operations and no entities (the
+    /// same heuristic single-file emission uses), so a reference to it from another
+    /// file is wrapped as one (`impl Trait`).
+    is_trait: bool,
+}
+
+/// Collect the sorts the files of one run declare ([`SortCatalog`]).
+pub fn collect_sorts(files: &[&ParsedFile]) -> SortCatalog {
+    let mut catalog = SortCatalog::default();
+    for file in files {
+        collect_sorts_from_items(&file.items, &file.symbols, "", false, &mut catalog);
+    }
+    catalog
+}
+
+/// `in_sort` — `items` are a sort's body, whose `sort T = ?` members are its type
+/// parameters rather than sorts.
+fn collect_sorts_from_items(
     items: &[Item],
     symbols: &SymbolTable,
-    traits: &mut HashSet<String>,
+    prefix: &str,
+    in_sort: bool,
+    catalog: &mut SortCatalog,
 ) {
     for item in items {
         match item {
             Item::SortWithBody(s) => {
+                let qualified = qualify(prefix, &name_text(symbols, &s.name));
+                let params = s
+                    .items
+                    .iter()
+                    .filter_map(|i| match i {
+                        Item::AbstractSort(p) => Some(symbols.local_name(p.name.last()).to_owned()),
+                        _ => None,
+                    })
+                    .collect();
                 let has_ops = s
                     .items
                     .iter()
                     .any(|i| matches!(i, Item::Operation(_) | Item::OperationBlock(_)));
                 let has_entities = s.items.iter().any(|i| matches!(i, Item::Entity(_)));
-                if !has_entities && has_ops {
-                    traits.insert(symbols.local_name(s.name.last()).to_owned());
-                }
-                // Recurse into nested items (sub-namespaces, nested sorts)
-                collect_trait_sorts_from_items(&s.items, symbols, traits);
+                catalog.sorts.insert(
+                    qualified.clone(),
+                    CatalogSort {
+                        params,
+                        is_trait: has_ops && !has_entities,
+                    },
+                );
+                // Nested items: sub-namespaces and nested sorts.
+                collect_sorts_from_items(&s.items, symbols, &qualified, true, catalog);
+            }
+            // A sort declared at namespace level without a body. One written inside a
+            // sort's body is a type parameter of that sort, and was read above.
+            Item::AbstractSort(_) if in_sort => {}
+            Item::AbstractSort(s) => {
+                let qualified = qualify(prefix, &name_text(symbols, &s.name));
+                catalog.sorts.insert(
+                    qualified,
+                    CatalogSort {
+                        params: Vec::new(),
+                        is_trait: false,
+                    },
+                );
+            }
+            // A free-standing entity is a struct, and a type.
+            Item::Entity(e) => {
+                let qualified = qualify(prefix, &name_text(symbols, &e.name));
+                catalog.sorts.insert(
+                    qualified,
+                    CatalogSort {
+                        params: Vec::new(),
+                        is_trait: false,
+                    },
+                );
             }
             Item::Namespace(ns) => {
-                collect_trait_sorts_from_items(&ns.items, symbols, traits);
+                let qualified = qualify(prefix, &name_text(symbols, &ns.name));
+                collect_sorts_from_items(&ns.items, symbols, &qualified, false, catalog);
             }
             _ => {}
         }
     }
+}
+
+/// `name` as written, every segment joined with `.`.
+fn name_text(symbols: &SymbolTable, name: &Name) -> String {
+    name.segments
+        .iter()
+        .map(|s| symbols.local_name(*s))
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+/// `name` qualified by the scope `prefix` it is declared in (`""` at a file's top).
+fn qualify(prefix: &str, name: &str) -> String {
+    if prefix.is_empty() {
+        name.to_owned()
+    } else {
+        format!("{prefix}.{name}")
+    }
+}
+
+/// How a sort of the standard library's prelude is written in Rust: the table
+/// [`RUST_STDLIB_TYPES`] is the whole of what this generator knows about a prelude
+/// sort, and a prelude sort it does not list is refused where a type names it.
+struct RustStdlibType {
+    qualified: &'static str,
+    /// The anthill sort's type parameters, in its declaration order — what a written
+    /// application's positional arguments are placed against.
+    params: &'static [&'static str],
+    /// The Rust type, as a template over `params` (`type_template`): each `$Name` is the
+    /// argument that places `Name`, so `Result[E, T]` is `Result<$T, $E>`, and a
+    /// parameter the Rust item does not take is left out (`LogicalStream<$T>`).
+    template: &'static str,
+    rendering: StdlibRendering,
+}
+
+enum StdlibRendering {
+    /// A host type. The generated code names it and never the anthill sort, so no
+    /// `use` is emitted for the sort or for a member of it.
+    Host,
+    /// A type the support crate's `prelude` exports under the sort's own name; `use`d
+    /// like a sort of the program.
+    Support { is_trait: bool },
+}
+
+/// The prelude sorts this generator writes, and how. The support crate is `anthill-stl`
+/// (`anthill-stl/src/prelude/mod.rs` for the `Support` names).
+///
+/// `Duration` and `Timestamp` are host types here although `primitives.anthill`
+/// declares them as sorts with constructors: that is what this generator has always
+/// emitted for them, and `rust_std.anthill` says the same.
+#[rustfmt::skip]
+const RUST_STDLIB_TYPES: &[RustStdlibType] = &[
+    stdlib_host("anthill.prelude.Int64", &[], "i64"),
+    stdlib_host("anthill.prelude.BigInt", &[], "num_bigint::BigInt"),
+    stdlib_host("anthill.prelude.Float", &[], "f64"),
+    stdlib_host("anthill.prelude.Bool", &[], "bool"),
+    stdlib_host("anthill.prelude.String", &[], "String"),
+    stdlib_host("anthill.prelude.Unit", &[], "()"),
+    stdlib_host("anthill.prelude.Duration", &[], "std::time::Duration"),
+    stdlib_host("anthill.prelude.Timestamp", &[], "String"),
+    stdlib_host("anthill.prelude.List", &["T"], "Vec<$T>"),
+    stdlib_host("anthill.prelude.Option", &["T"], "Option<$T>"),
+    stdlib_host("anthill.prelude.Result", &["E", "T"], "Result<$T, $E>"),
+    stdlib_support("anthill.prelude.Pair", &["A", "B"], "Pair<$A, $B>", false),
+    stdlib_support("anthill.prelude.Stream", &["T", "E"], "Stream<$T, $E>", true),
+    stdlib_support("anthill.prelude.LogicalStream", &["T", "E"], "LogicalStream<$T>", true),
+    stdlib_support("anthill.prelude.Meta.Meta", &[], "Meta", false),
+    stdlib_support("anthill.prelude.Modifiable", &["T"], "Modifiable", true),
+    stdlib_support("anthill.prelude.Type", &[], "Type", false),
+    stdlib_support("anthill.prelude.TypeExtractor", &[], "TypeExtractor", false),
+    stdlib_support("anthill.prelude.FieldOf", &["T", "Name"], "FieldOf", false),
+];
+
+const fn stdlib_host(
+    qualified: &'static str,
+    params: &'static [&'static str],
+    template: &'static str,
+) -> RustStdlibType {
+    RustStdlibType {
+        qualified,
+        params,
+        template,
+        rendering: StdlibRendering::Host,
+    }
+}
+
+const fn stdlib_support(
+    qualified: &'static str,
+    params: &'static [&'static str],
+    template: &'static str,
+    is_trait: bool,
+) -> RustStdlibType {
+    RustStdlibType {
+        qualified,
+        params,
+        template,
+        rendering: StdlibRendering::Support { is_trait },
+    }
+}
+
+/// The namespace a bare name reaches without an import, and whose sorts this generator
+/// writes only through [`RUST_STDLIB_TYPES`].
+const PRELUDE: &str = "anthill.prelude";
+
+fn stdlib_type(qualified: &str) -> Option<&'static RustStdlibType> {
+    RUST_STDLIB_TYPES.iter().find(|t| t.qualified == qualified)
+}
+
+/// What a written type name denotes where it is written.
+enum Denoted {
+    /// The reserved `Self`.
+    SelfType,
+    /// A type parameter in scope: a sort's member, an operation's own, or one read off a
+    /// value parameter (`s.T`).
+    Param(String),
+    /// A sort declared in a file of this run, by qualified name.
+    Declared(String),
+    /// A prelude sort [`RUST_STDLIB_TYPES`] lists.
+    Stdlib(&'static RustStdlibType),
+    /// A sort outside the prelude that no file of this run declares, by qualified name.
+    External(String),
+    /// A prelude sort the table does not list, by qualified name.
+    UnmappedPrelude(String),
+    /// A bare name nothing in scope declares or imports, which as a `public` prelude
+    /// name (its qualified reading here) the table does not list either.
+    NotFound(String),
+}
+
+/// The qualified name of the `Error` effect label, which a type position writes as its
+/// payload (`Error[P]` is `P`).
+const ERROR_LABEL: &str = "anthill.prelude.Error";
+
+/// The qualified name of the `Modify` effect label.
+const MODIFY_LABEL: &str = "anthill.prelude.Modify";
+
+/// The `Error` payload an effects clause gives a signature: a written type, or a name
+/// the generator writes as it is (bare `Error`, a sort's type parameter).
+enum ErrorPayload<'t> {
+    Type(&'t TypeExpr),
+    Named(String),
+}
+
+/// A type rendered inside the sort being emitted ([`RustCodegen::type_to_rust_in_sort`]).
+struct InSort<'p> {
+    type_params: &'p [String],
+    /// The single type parameter collapses to `Self` (`should_collapse_self`).
+    collapse: bool,
+}
+
+/// The last segment of a qualified name.
+fn short_of(qualified: &str) -> &str {
+    qualified.rsplit('.').next().unwrap_or(qualified)
+}
+
+impl Denoted {
+    /// The qualified name of the sort this resolves to, when it is one.
+    fn qualified(&self) -> Option<&str> {
+        match self {
+            Denoted::Declared(q)
+            | Denoted::External(q)
+            | Denoted::UnmappedPrelude(q)
+            | Denoted::NotFound(q) => Some(q),
+            Denoted::Stdlib(t) => Some(t.qualified),
+            Denoted::SelfType | Denoted::Param(_) => None,
+        }
+    }
+}
+
+/// One scope a name is resolved in, innermost last on [`RustCodegen::scopes`]: the file's
+/// top level, a namespace, a sort, or an operation's signature.
+struct Scope {
+    /// The scope's qualified name (`""` at a file's top level, and an operation's
+    /// signature adds none).
+    prefix: String,
+    /// Short name → the qualified name it imports.
+    imports: HashMap<String, String>,
+    /// Paths imported with `.*`.
+    wildcards: Vec<String>,
+    /// Type parameters declared here.
+    params: Vec<String>,
+    /// An operation's value parameters, whose members a type may name (`s.T`).
+    value_params: Vec<String>,
 }
 
 // ── Sort analysis ────────────────────────────────────────────────
@@ -327,11 +559,20 @@ struct RustCodegen<'a> {
     terms: &'a SimpleTermStore,
     output: String,
     indent: usize,
-    /// Sort names that generate as traits (not enums/structs).
-    /// Used to wrap return types with `impl` when returning a trait.
+    /// The sorts of the run's files, which written type names resolve to.
+    catalog: &'a SortCatalog,
+    /// Qualified names of the sorts that generate as traits (not enums/structs): the
+    /// catalog's, and each one emitted as a trait. Used to wrap a trait-typed position
+    /// (`impl Trait`, `Box<dyn Trait>`).
     trait_sorts: HashSet<String>,
+    /// The scopes a written name is resolved in, innermost last.
+    scopes: Vec<Scope>,
+    /// The qualified name of the sort being emitted: a written name that resolves to it
+    /// is the sort itself (`Self`).
+    current_sort: Option<String>,
     config: &'a CodegenConfig,
-    errors: Vec<CodegenError>,
+    /// Collected rather than returned at each site: a type is rendered through `&self`.
+    errors: RefCell<Vec<CodegenError>>,
     /// Names already `use`d into THIS file, keyed by `(path, name)`.
     ///
     /// ANTHILL IMPORTS ARE PER-DECLARATION AND RUST `use` IS PER-MODULE, and this
@@ -349,7 +590,7 @@ impl<'a> RustCodegen<'a> {
     fn with_context(
         symbols: &'a SymbolTable,
         terms: &'a SimpleTermStore,
-        global_traits: &HashSet<String>,
+        catalog: &'a SortCatalog,
         config: &'a CodegenConfig,
     ) -> Self {
         Self {
@@ -357,11 +598,222 @@ impl<'a> RustCodegen<'a> {
             terms,
             output: String::new(),
             indent: 0,
-            trait_sorts: global_traits.clone(),
+            catalog,
+            trait_sorts: catalog
+                .sorts
+                .iter()
+                .filter(|(_, s)| s.is_trait)
+                .map(|(q, _)| q.clone())
+                .collect(),
+            scopes: Vec::new(),
+            current_sort: None,
             config,
-            errors: Vec::new(),
+            errors: RefCell::new(Vec::new()),
             imported: HashSet::new(),
         }
+    }
+
+    fn error(&self, message: String) {
+        self.errors.borrow_mut().push(CodegenError { message });
+    }
+
+    // ── Scopes and name resolution ───────────────────────────────
+
+    /// Enter the scope `prefix`, which declares `imports` and the type parameters
+    /// `params`. Left with [`Self::pop_scope`].
+    fn push_scope(&mut self, prefix: String, imports: &[Import], params: Vec<String>) {
+        let mut scope = Scope {
+            prefix,
+            imports: HashMap::new(),
+            wildcards: Vec::new(),
+            params,
+            value_params: Vec::new(),
+        };
+        for imp in imports {
+            let path = name_text(self.symbols, &imp.path);
+            match &imp.kind {
+                ImportKind::Plain => {
+                    let short = self.symbols.local_name(imp.path.last()).to_owned();
+                    scope.imports.insert(short, path);
+                }
+                ImportKind::Selective(names) => {
+                    for n in names {
+                        let short = self.symbols.local_name(n.last()).to_owned();
+                        scope
+                            .imports
+                            .insert(short, qualify(&path, &name_text(self.symbols, n)));
+                    }
+                }
+                ImportKind::Wildcard => scope.wildcards.push(path),
+            }
+        }
+        self.scopes.push(scope);
+    }
+
+    /// Enter an operation's signature: its own type parameters and its value
+    /// parameters, whose members a type may name.
+    fn push_operation_scope(&mut self, op: &Operation) {
+        let prefix = self
+            .scopes
+            .last()
+            .map(|s| s.prefix.clone())
+            .unwrap_or_default();
+        let params = op
+            .type_params
+            .iter()
+            .map(|tp| self.local_name_of(tp.name))
+            .collect();
+        self.push_scope(prefix, &[], params);
+        let value_params = op
+            .params
+            .iter()
+            .map(|p| self.local_name_of(p.name))
+            .collect();
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.value_params = value_params;
+        }
+    }
+
+    fn pop_scope(&mut self) {
+        self.scopes.pop();
+    }
+
+    /// The qualified name of the scope being emitted.
+    fn scope_prefix(&self) -> String {
+        self.scopes
+            .last()
+            .map(|s| s.prefix.clone())
+            .unwrap_or_default()
+    }
+
+    /// What `name` denotes where it is written: innermost scope first, each scope's type
+    /// parameters, then the sorts it declares, then its imports; then the prelude's
+    /// `public` names.
+    fn denote(&self, name: &Name) -> Denoted {
+        let written = name_text(self.symbols, name);
+        if written == crate::intern::SELF_TYPE_NAME {
+            return Denoted::SelfType;
+        }
+        let first = self.symbols.local_name(name.segments[0]);
+        let rest: Vec<&str> = name.segments[1..]
+            .iter()
+            .map(|s| self.symbols.local_name(*s))
+            .collect();
+        for (depth, scope) in self.scopes.iter().enumerate().rev() {
+            if rest.is_empty() && scope.params.iter().any(|p| p == first) {
+                return Denoted::Param(first.to_owned());
+            }
+            // `s.T`: the member `T` of the value parameter `s`'s type, which this
+            // generator writes as the parameter `T` of the sort being emitted.
+            if rest.len() == 1 && scope.value_params.iter().any(|p| p == first) {
+                return Denoted::Param(rest[0].to_owned());
+            }
+            // The scope's own declarations, then those of the namespaces its dotted
+            // name passes through (`sort anthill.prelude.Stream` sits in
+            // `anthill.prelude`) down to the next scope out.
+            let outer = depth
+                .checked_sub(1)
+                .map(|d| self.scopes[d].prefix.as_str())
+                .unwrap_or("");
+            let mut prefix = scope.prefix.as_str();
+            loop {
+                let declared = qualify(prefix, &written);
+                if self.catalog.sorts.contains_key(&declared) {
+                    return Denoted::Declared(declared);
+                }
+                if prefix == outer || prefix.is_empty() {
+                    break;
+                }
+                prefix = prefix.rsplit_once('.').map_or("", |(p, _)| p);
+            }
+            if let Some(imported) = scope.imports.get(first) {
+                let mut qualified = imported.clone();
+                for r in &rest {
+                    qualified = qualify(&qualified, r);
+                }
+                return self.denote_qualified(qualified);
+            }
+            for path in &scope.wildcards {
+                let candidate = qualify(path, &written);
+                if self.catalog.sorts.contains_key(&candidate) || stdlib_type(&candidate).is_some()
+                {
+                    return self.denote_qualified(candidate);
+                }
+            }
+        }
+        // A bare name nothing in scope declares or imports is read as a `public` name
+        // of the prelude (`Error`, `Modify`), which every scope reaches without an
+        // import (kernel-language.md §8.6) — unless this generator does not know that
+        // prelude name and a wildcard import of another namespace is in scope, which
+        // brings the name in, and Rust's `use path::*` with it. A dotted one is read
+        // from the root.
+        if !rest.is_empty() {
+            return self.denote_qualified(written);
+        }
+        let in_prelude = qualify(PRELUDE, &written);
+        let known = stdlib_type(&in_prelude).is_some()
+            || self.catalog.sorts.contains_key(&in_prelude)
+            || in_prelude == ERROR_LABEL
+            || in_prelude == MODIFY_LABEL;
+        if !known {
+            let wildcard = self
+                .scopes
+                .iter()
+                .rev()
+                .flat_map(|s| s.wildcards.iter())
+                .find(|p| p.as_str() != PRELUDE);
+            if let Some(path) = wildcard {
+                return Denoted::External(qualify(path, &written));
+            }
+        }
+        match self.denote_qualified(in_prelude) {
+            Denoted::UnmappedPrelude(q) => Denoted::NotFound(q),
+            other => other,
+        }
+    }
+
+    /// What the qualified name `qualified` denotes. The table answers for a prelude sort
+    /// before the catalog does, so a reference to `Int64` is `i64` in `int64.anthill`
+    /// too, which declares `sort Int64`.
+    fn denote_qualified(&self, qualified: String) -> Denoted {
+        if let Some(t) = stdlib_type(&qualified) {
+            return Denoted::Stdlib(t);
+        }
+        if self.catalog.sorts.contains_key(&qualified) {
+            return Denoted::Declared(qualified);
+        }
+        if qualified.starts_with(&format!("{PRELUDE}.")) {
+            return Denoted::UnmappedPrelude(qualified);
+        }
+        Denoted::External(qualified)
+    }
+
+    /// Is `name` the reserved word `Self` as written (THIS instance, never an open one)?
+    fn denotes_self_word(&self, name: &Name) -> bool {
+        matches!(self.denote(name), Denoted::SelfType)
+    }
+
+    /// Does the head of `ty` name the sort being emitted — `Self`, or a name that
+    /// resolves to it? `Self` (proposal 070 §1.2) is still the word the author wrote in
+    /// the parse tree this generator reads, so every place that asks "is this the sort
+    /// itself" — the `Self` rendering, the boxed recursive field, the receiver — asks
+    /// here. Without it `entity cons(head: T, tail: Self)` was not boxed and
+    /// `length(l: Self)` was no method.
+    fn names_current_sort(&self, ty: &TypeExpr) -> bool {
+        match ty {
+            TypeExpr::Simple(name) | TypeExpr::Parameterized { name, .. } => {
+                self.is_current_sort(&self.denote(name))
+            }
+            _ => false,
+        }
+    }
+
+    /// [`Self::names_current_sort`] for a name already resolved.
+    fn is_current_sort(&self, denoted: &Denoted) -> bool {
+        matches!(denoted, Denoted::SelfType)
+            || denoted
+                .qualified()
+                .is_some_and(|q| self.current_sort.as_deref() == Some(q))
     }
 
     // ── Output helpers ───────────────────────────────────────────
@@ -421,16 +873,14 @@ impl<'a> RustCodegen<'a> {
             return None;
         }
         match ty {
-            TypeExpr::Simple(name) => {
-                (self.resolve(name) == sort_name).then(|| sort_name.to_owned())
-            }
+            TypeExpr::Simple(name) => (!self.denotes_self_word(name)
+                && self.names_current_sort(ty))
+            .then(|| sort_name.to_owned()),
             TypeExpr::Parameterized { name, bindings } => {
-                if self.resolve(name) == sort_name {
+                if !self.denotes_self_word(name) && self.names_current_sort(ty) {
                     // Slot by slot, as the loader places them: a parameter takes the binding
                     // that NAMES it, else the next positional one — so `Pair[L = Int64,
-                    // String]` writes both slots. ([`Self::find_binding`] indexes the
-                    // positional ones by the parameter's own position, which reads that
-                    // `String` as no binding of `R`.)
+                    // String]` writes both slots.
                     let named = |p: &str| {
                         bindings.iter().find(|b| {
                             b.param
@@ -497,7 +947,7 @@ impl<'a> RustCodegen<'a> {
             // generator must not: it renders an application of the enclosing sort as `Self`
             // whatever its arguments (older than proposal 070, and recorded there), so that
             // advice would lead straight to the emission this refusal exists to prevent.
-            self.errors.push(CodegenError {
+            self.errors.borrow_mut().push(CodegenError {
                 message: format!(
                     "{what}: `{written}` is the enclosing sort `{sort_name}` with a type \
                      parameter left open — inside its own definition a sort's bare name is \
@@ -535,29 +985,6 @@ impl<'a> RustCodegen<'a> {
         );
     }
 
-    /// Find a binding by named param, falling back to positional index.
-    fn find_binding<'b>(
-        &self,
-        bindings: &'b [SortBinding],
-        param_name: &str,
-        positional_index: usize,
-    ) -> Option<&'b SortBinding> {
-        bindings
-            .iter()
-            .find(|b| {
-                b.param
-                    .as_ref()
-                    .map(|p| self.symbols.local_name(p.last()) == param_name)
-                    .unwrap_or(false)
-            })
-            .or_else(|| {
-                bindings
-                    .iter()
-                    .filter(|b| b.param.is_none())
-                    .nth(positional_index)
-            })
-    }
-
     fn local_name_of(&self, sym: Symbol) -> String {
         self.symbols.local_name(sym).to_owned()
     }
@@ -577,19 +1004,41 @@ impl<'a> RustCodegen<'a> {
 
     // ── Trait return wrapping ─────────────────────────────────────
 
-    /// True when `ty`'s outermost name (before any `<`) is a known trait sort.
-    /// Drives the WI-540 trait-object wrapping; a `Self` collapse is handled at
-    /// the call site (it is a trait by construction inside a trait method).
-    fn is_trait_type(&self, ty: &str) -> bool {
-        let base = ty.split('<').next().unwrap_or(ty).trim();
-        self.trait_sorts.contains(base)
+    /// True when `ty`'s head resolves to a sort that generates as a trait. Drives the
+    /// WI-540 trait-object wrapping; a `Self` collapse is handled at the call site (it is
+    /// a trait by construction inside a trait method).
+    fn is_trait_type(&self, ty: &TypeExpr) -> bool {
+        let name = match ty {
+            TypeExpr::Simple(name) | TypeExpr::Parameterized { name, .. } => name,
+            _ => return false,
+        };
+        // The sort being emitted renders `Self` inside its own body, and is wrapped (or
+        // not) by the `Self` handling at each site.
+        let denoted = self.denote(name);
+        if self.is_current_sort(&denoted) {
+            return false;
+        }
+        match denoted {
+            Denoted::Declared(q) => self.trait_sorts.contains(&q),
+            Denoted::Stdlib(t) => {
+                matches!(t.rendering, StdlibRendering::Support { is_trait: true })
+            }
+            _ => false,
+        }
     }
 
-    /// If the outermost type of a return type is a known trait sort, wrap it:
-    /// `Box<dyn Stream<T>>` when [`CodegenConfig::boxed_trait_objects`] (keeps
-    /// the trait object-safe), else `impl Stream<T>` (the original skeleton form).
-    fn wrap_trait_return(&self, ret: &str) -> String {
-        if self.is_trait_type(ret) {
+    /// Whether the sort being emitted generates as a trait.
+    fn current_sort_is_trait(&self) -> bool {
+        self.current_sort
+            .as_ref()
+            .is_some_and(|q| self.trait_sorts.contains(q))
+    }
+
+    /// If `ty`, rendered `ret`, is of a trait sort, wrap it: `Box<dyn Stream<T>>` when
+    /// [`CodegenConfig::boxed_trait_objects`] (keeps the trait object-safe), else
+    /// `impl Stream<T>` (the original skeleton form).
+    fn wrap_trait_return(&self, ret: &str, ty: &TypeExpr) -> String {
+        if self.is_trait_type(ty) {
             if self.config.boxed_trait_objects {
                 format!("Box<dyn {ret}>")
             } else {
@@ -605,14 +1054,15 @@ impl<'a> RustCodegen<'a> {
     /// in a trait method a `Self` return breaks object-safety, so under
     /// `boxed_trait_objects` it becomes `Box<dyn <SortName>>`. A non-trait
     /// enclosing sort (enum impl method) keeps `Self` (delegates to
-    /// [`Self::wrap_trait_return`], which leaves non-trait names untouched).
+    /// [`Self::wrap_trait_return`], which leaves non-trait types untouched).
     fn wrap_trait_return_in_sort(
         &self,
         ret: &str,
+        ty: &TypeExpr,
         sort_name: &str,
         type_params: &[String],
     ) -> String {
-        if self.config.boxed_trait_objects && self.trait_sorts.contains(sort_name) {
+        if self.config.boxed_trait_objects && self.current_sort_is_trait() {
             // The enclosing trait sort renders as `Self` (see `type_to_rust_in_sort`).
             // A `Self` return — bare OR nested (e.g. `Option<Pair<T, Self>>` from
             // `splitFirst`) — breaks object-safety, so replace EVERY whole-word
@@ -629,7 +1079,7 @@ impl<'a> RustCodegen<'a> {
                 return replaced;
             }
         }
-        self.wrap_trait_return(ret)
+        self.wrap_trait_return(ret, ty)
     }
 
     /// Parameter-position wrapping (WI-540). A non-receiver parameter of a trait
@@ -637,12 +1087,12 @@ impl<'a> RustCodegen<'a> {
     /// enclosing trait's own type (`"Self"`) → `&dyn <SortName>`, a different
     /// trait → `&dyn Trait`. Off / non-trait carriers keep the original
     /// `should_ref_param` behaviour (`&Self`, or the bare type).
-    fn wrap_trait_param(&self, ptype: &str, sort_name: &str) -> String {
+    fn wrap_trait_param(&self, ptype: &str, ty: &TypeExpr, sort_name: &str) -> String {
         if self.config.boxed_trait_objects {
-            if ptype == "Self" && self.trait_sorts.contains(sort_name) {
+            if ptype == "Self" && self.current_sort_is_trait() {
                 return format!("&dyn {sort_name}");
             }
-            if self.is_trait_type(ptype) {
+            if self.is_trait_type(ty) {
                 return format!("&dyn {ptype}");
             }
         }
@@ -657,11 +1107,11 @@ impl<'a> RustCodegen<'a> {
     /// becomes `Box<dyn Trait<…>>` under `boxed_trait_objects` (e.g.
     /// `Solution.definite(subst: Substitution)` → `subst: Box<dyn Substitution>`).
     /// A non-trait field (or the flag off) is unchanged.
-    fn wrap_trait_field(&self, ty: &str) -> String {
+    fn wrap_trait_field(&self, rendered: &str, ty: &TypeExpr) -> String {
         if self.config.boxed_trait_objects && self.is_trait_type(ty) {
-            format!("Box<dyn {ty}>")
+            format!("Box<dyn {rendered}>")
         } else {
-            ty.to_owned()
+            rendered.to_owned()
         }
     }
 
@@ -698,7 +1148,7 @@ impl<'a> RustCodegen<'a> {
                     return Some(expr.to_string());
                 }
             }
-            self.errors.push(CodegenError {
+            self.errors.borrow_mut().push(CodegenError {
                 message: format!(
                     "const `{name}`: bodyless host-supplied const has no Rust value \
                      source (only the Float IEEE specials infinity/negativeInfinity/nan \
@@ -710,7 +1160,7 @@ impl<'a> RustCodegen<'a> {
         match self.terms.get(tid) {
             Term::Const(lit) => Some(lower_literal_rust(lit, rust_ty)),
             other => {
-                self.errors.push(CodegenError {
+                self.errors.borrow_mut().push(CodegenError {
                     message: format!(
                         "const `{name}`: only literal bodies are supported by Rust \
                          codegen, got {other:?}"
@@ -757,10 +1207,7 @@ impl<'a> RustCodegen<'a> {
     /// unaffected. (Outer-name check — a trait *inside* a `List`/`Option` is not
     /// flagged; the reflect subset has none.)
     fn has_trait_object_field<'b>(&self, tys: impl Iterator<Item = &'b TypeExpr>) -> bool {
-        self.config.boxed_trait_objects
-            && tys
-                .into_iter()
-                .any(|ty| self.is_trait_type(&self.type_expr_short_name(ty)))
+        self.config.boxed_trait_objects && tys.into_iter().any(|ty| self.is_trait_type(ty))
     }
 
     /// A sort's generic parameter list as its DECLARATION writes it (`enum Box<T = i64>`):
@@ -794,15 +1241,52 @@ impl<'a> RustCodegen<'a> {
     // ── Type expression mapping ──────────────────────────────────
 
     fn type_to_rust(&self, ty: &TypeExpr) -> String {
+        self.render_type(ty, None)
+    }
+
+    /// Map a type written in the sort being emitted: a name of that sort is `Self`, and
+    /// with `collapse_type_params` so is one of its `type_params`.
+    fn type_to_rust_in_sort(
+        &self,
+        ty: &TypeExpr,
+        type_params: &[String],
+        collapse_type_params: bool,
+    ) -> String {
+        self.render_type(
+            ty,
+            Some(&InSort {
+                type_params,
+                collapse: collapse_type_params,
+            }),
+        )
+    }
+
+    fn render_type(&self, ty: &TypeExpr, in_sort: Option<&InSort>) -> String {
         match ty {
-            TypeExpr::Simple(name) => {
-                let n = self.resolve(name);
-                map_primitive_type(&n)
+            TypeExpr::Simple(name) | TypeExpr::Parameterized { name, .. } => {
+                let bindings: &[SortBinding] = match ty {
+                    TypeExpr::Parameterized { bindings, .. } => bindings,
+                    _ => &[],
+                };
+                let denoted = self.denote(name);
+                if let Some(ctx) = in_sort {
+                    if self.is_current_sort(&denoted) {
+                        return "Self".to_owned();
+                    }
+                    if let (true, [], Denoted::Param(p)) = (ctx.collapse, bindings, &denoted) {
+                        if ctx.type_params.contains(p) {
+                            return "Self".to_owned();
+                        }
+                    }
+                }
+                self.render_named(name, denoted, bindings, in_sort)
             }
             TypeExpr::Variable { .. } => "T".to_owned(),
             TypeExpr::Tuple(fields) => {
-                let parts: Vec<String> =
-                    fields.iter().map(|(_, ty)| self.type_to_rust(ty)).collect();
+                let parts: Vec<String> = fields
+                    .iter()
+                    .map(|(_, ty)| self.render_type(ty, in_sort))
+                    .collect();
                 // A 1-tuple needs the trailing comma: Rust reads `(T)` as plain `T`,
                 // which silently DROPS the tuple. Reachable since WI-766 made a
                 // one-component named tuple type writable (`-> (a: Int64)`).
@@ -812,49 +1296,16 @@ impl<'a> RustCodegen<'a> {
                     format!("({})", parts.join(", "))
                 }
             }
-            TypeExpr::Parameterized { name, bindings } => {
-                let n = self.resolve(name);
-                match n.as_str() {
-                    "List" => {
-                        let inner = self
-                            .find_binding(bindings, "T", 0)
-                            .map(|b| self.type_to_rust(&b.bound))
-                            .unwrap_or_else(|| "T".to_owned());
-                        format!("Vec<{inner}>")
-                    }
-                    "Option" => {
-                        let inner = self
-                            .find_binding(bindings, "T", 0)
-                            .map(|b| self.type_to_rust(&b.bound))
-                            .unwrap_or_else(|| "T".to_owned());
-                        format!("Option<{inner}>")
-                    }
-                    // WI-20260911-8Y5BE — an `Error[P]` label in a TYPE-ARGUMENT slot
-                    // (`Stream[T = …, E = Error[P]]`) strips to `P`, the rule the effects
-                    // clause already follows (`analyze_effects`: `effects Error[P]` is
-                    // `Result<_, P>`). Keeping the wrapper here gave one channel two Rust
-                    // types — `execute`'s own `Err` was `P`, its stream's `E` was
-                    // `Error<P>` — and the host `Error` takes no generics.
-                    "Error" if leaves_every_slot(bindings) => "Error".to_owned(),
-                    "Error" if bindings.len() == 1 => self.type_to_rust(&bindings[0].bound),
-                    _ => {
-                        let args: Vec<String> = bindings
-                            .iter()
-                            .map(|b| self.type_to_rust(&b.bound))
-                            .collect();
-                        let mapped = map_primitive_type(&n);
-                        format!("{mapped}<{}>", args.join(", "))
-                    }
-                }
-            }
             TypeExpr::Arrow {
                 params,
                 return_type,
                 ..
             } => {
-                let param_types: Vec<String> =
-                    params.iter().map(|(_, p)| self.type_to_rust(p)).collect();
-                let ret = self.type_to_rust(return_type);
+                let param_types: Vec<String> = params
+                    .iter()
+                    .map(|(_, p)| self.render_type(p, in_sort))
+                    .collect();
+                let ret = self.render_type(return_type, in_sort);
                 format!("fn({}) -> {ret}", param_types.join(", "))
             }
             // WI-302: value-in-type (value-dependent) has no direct Rust type;
@@ -874,128 +1325,209 @@ impl<'a> RustCodegen<'a> {
         }
     }
 
-    /// Map a type, but if the type name matches the enclosing sort name,
-    /// replace with `Self`.
-    fn type_to_rust_in_sort(
+    /// Render the written name `name` applied to `bindings` (none for a bare name), by
+    /// what it denotes. A name this generator cannot write is an error naming it.
+    fn render_named(
         &self,
-        ty: &TypeExpr,
-        sort_name: &str,
-        type_params: &[String],
-        collapse_type_params: bool,
+        name: &Name,
+        denoted: Denoted,
+        bindings: &[SortBinding],
+        in_sort: Option<&InSort>,
     ) -> String {
-        match ty {
-            TypeExpr::Simple(name) => {
-                let n = self.resolve(name);
-                if names_this_sort(&n, sort_name) {
-                    return "Self".to_owned();
-                }
-                if collapse_type_params && type_params.iter().any(|p| p == &n) {
-                    return "Self".to_owned();
-                }
-                map_primitive_type(&n)
-            }
-            TypeExpr::Variable { .. } => "T".to_owned(),
-            TypeExpr::Tuple(fields) => {
-                let parts: Vec<String> = fields
-                    .iter()
-                    .map(|(_, ty)| {
-                        self.type_to_rust_in_sort(ty, sort_name, type_params, collapse_type_params)
-                    })
-                    .collect();
-                // A 1-tuple needs the trailing comma: Rust reads `(T)` as plain `T`,
-                // which silently DROPS the tuple. Reachable since WI-766 made a
-                // one-component named tuple type writable (`-> (a: Int64)`).
-                if parts.len() == 1 {
-                    format!("({},)", parts[0])
-                } else {
-                    format!("({})", parts.join(", "))
-                }
-            }
-            TypeExpr::Parameterized { name, bindings } => {
-                let n = self.resolve(name);
-                if names_this_sort(&n, sort_name) {
-                    return "Self".to_owned();
-                }
-                match n.as_str() {
-                    "List" => {
-                        let inner = self
-                            .find_binding(bindings, "T", 0)
-                            .map(|b| {
-                                self.type_to_rust_in_sort(
-                                    &b.bound,
-                                    sort_name,
-                                    type_params,
-                                    collapse_type_params,
-                                )
-                            })
-                            .unwrap_or_else(|| "T".to_owned());
-                        format!("Vec<{inner}>")
-                    }
-                    "Option" => {
-                        let inner = self
-                            .find_binding(bindings, "T", 0)
-                            .map(|b| {
-                                self.type_to_rust_in_sort(
-                                    &b.bound,
-                                    sort_name,
-                                    type_params,
-                                    collapse_type_params,
-                                )
-                            })
-                            .unwrap_or_else(|| "T".to_owned());
-                        format!("Option<{inner}>")
-                    }
-                    // WI-20260911-8Y5BE — same strip as `type_to_rust`, see there.
-                    "Error" if leaves_every_slot(bindings) => "Error".to_owned(),
-                    "Error" if bindings.len() == 1 => self.type_to_rust_in_sort(
-                        &bindings[0].bound,
-                        sort_name,
-                        type_params,
-                        collapse_type_params,
-                    ),
+        let written = name_text(self.symbols, name);
+        if let Denoted::Declared(q) | Denoted::UnmappedPrelude(q) | Denoted::NotFound(q) = &denoted
+        {
+            if q == ERROR_LABEL {
+                // WI-20260911-8Y5BE — an `Error[P]` label in a TYPE-ARGUMENT slot
+                // (`Stream[T = …, E = Error[P]]`) strips to `P`, the rule the effects
+                // clause already follows (`analyze_effects`: `effects Error[P]` is
+                // `Result<_, P>`). Keeping the wrapper here gave one channel two Rust
+                // types — `execute`'s own `Err` was `P`, its stream's `E` was
+                // `Error<P>` — and the host `Error` takes no generics.
+                return match bindings {
+                    [] => "Error".to_owned(),
+                    _ if leaves_every_slot(bindings) => "Error".to_owned(),
+                    [only] => self.render_type(&only.bound, in_sort),
                     _ => {
-                        let args: Vec<String> = bindings
-                            .iter()
-                            .map(|b| {
-                                self.type_to_rust_in_sort(
-                                    &b.bound,
-                                    sort_name,
-                                    type_params,
-                                    collapse_type_params,
-                                )
-                            })
-                            .collect();
-                        let mapped = map_primitive_type(&n);
-                        format!("{mapped}<{}>", args.join(", "))
+                        self.error(format!(
+                            "`{written}` takes one payload, and is given {}",
+                            bindings.len()
+                        ));
+                        "Error".to_owned()
+                    }
+                };
+            }
+        }
+        match denoted {
+            Denoted::SelfType => "Self".to_owned(),
+            Denoted::Param(p) => match bindings {
+                [] => p,
+                [only] => format!("{p}<{}>", self.render_type(&only.bound, in_sort)),
+                _ => {
+                    self.error(format!(
+                        "`{written}` applies the type parameter `{p}` to {} arguments, and \
+                         this generator does not know the order of its parameters",
+                        bindings.len()
+                    ));
+                    p
+                }
+            },
+            Denoted::Declared(q) => {
+                let params = self.catalog.sorts[&q].params.clone();
+                self.render_applied(&written, short_of(&q), &params, bindings, in_sort)
+            }
+            Denoted::Stdlib(t) => self.render_template(&written, t, bindings, in_sort),
+            Denoted::External(q) => match bindings {
+                [] => short_of(&q).to_owned(),
+                [only] => format!(
+                    "{}<{}>",
+                    short_of(&q),
+                    self.render_type(&only.bound, in_sort)
+                ),
+                _ => {
+                    self.error(format!(
+                        "`{written}` is `{q}`, which no file generated with this one declares, \
+                         so the order of its {} arguments is unknown — generate the file that \
+                         declares it in the same run",
+                        bindings.len()
+                    ));
+                    short_of(&q).to_owned()
+                }
+            },
+            Denoted::UnmappedPrelude(q) => {
+                self.error(format!(
+                    "no Rust mapping for the prelude sort '{q}' (written `{written}`) — the \
+                     Rust generator writes a prelude sort only through its table \
+                     (`RUST_STDLIB_TYPES`), and this one is not in it. A sort declared in \
+                     another file is found when that file is generated in the same run"
+                ));
+                written
+            }
+            Denoted::NotFound(q) => {
+                self.error(format!(
+                    "type `{written}` is declared in no file generated in this run and \
+                     imported by none, and read as the prelude's `{q}` it has no Rust \
+                     mapping — generate the file that declares it in the same run"
+                ));
+                written
+            }
+        }
+    }
+
+    /// `rust_name` applied to `bindings`, placed against the sort's declared `params`
+    /// and written in that order — Rust's generics are positional. Parameters left out
+    /// at the end are left to their defaults; one left out before a written one is an
+    /// error, as Rust has no way to skip it.
+    fn render_applied(
+        &self,
+        written: &str,
+        rust_name: &str,
+        params: &[String],
+        bindings: &[SortBinding],
+        in_sort: Option<&InSort>,
+    ) -> String {
+        if bindings.is_empty() {
+            return rust_name.to_owned();
+        }
+        let Some(placed) = self.place_bindings(written, params, bindings) else {
+            return rust_name.to_owned();
+        };
+        let Some(last) = placed.iter().rposition(Option::is_some) else {
+            return rust_name.to_owned();
+        };
+        let mut args = Vec::with_capacity(last + 1);
+        for (param, binding) in params.iter().zip(&placed).take(last + 1) {
+            match binding {
+                Some(b) => args.push(self.render_type(&b.bound, in_sort)),
+                None => {
+                    self.error(format!(
+                        "`{written}` leaves out `{param}` and writes a parameter after it, \
+                         which Rust's positional generics cannot say"
+                    ));
+                    args.push("_".to_owned());
+                }
+            }
+        }
+        format!("{rust_name}<{}>", args.join(", "))
+    }
+
+    /// A prelude sort's Rust template with each `$Name` replaced by the Rust type of the
+    /// binding that places the sort's parameter `Name`.
+    fn render_template(
+        &self,
+        written: &str,
+        t: &RustStdlibType,
+        bindings: &[SortBinding],
+        in_sort: Option<&InSort>,
+    ) -> String {
+        let params: Vec<String> = t.params.iter().map(|p| p.to_string()).collect();
+        let Some(placed) = self.place_bindings(written, &params, bindings) else {
+            return t.template.to_owned();
+        };
+        let parts = match parse_type_template(t.template) {
+            Ok(parts) => parts,
+            Err(what) => {
+                self.error(format!("the Rust template of `{}` {what}", t.qualified));
+                return t.template.to_owned();
+            }
+        };
+        let mut out = String::new();
+        for part in parts {
+            match part {
+                TypeTemplatePart::Text(text) => out.push_str(&text),
+                TypeTemplatePart::Param(name) => {
+                    let slot = params.iter().position(|p| *p == name);
+                    match slot.and_then(|i| placed[i]) {
+                        Some(b) => out.push_str(&self.render_type(&b.bound, in_sort)),
+                        None => {
+                            self.error(format!(
+                                "`{written}` leaves its parameter `{name}` open, and the Rust \
+                                 type of `{}` (`{}`) needs it",
+                                t.qualified, t.template
+                            ));
+                            out.push('_');
+                        }
                     }
                 }
             }
-            TypeExpr::Arrow {
-                params,
-                return_type,
-                ..
-            } => {
-                let param_types: Vec<String> = params
-                    .iter()
-                    .map(|(_, p)| {
-                        self.type_to_rust_in_sort(p, sort_name, type_params, collapse_type_params)
-                    })
-                    .collect();
-                let ret = self.type_to_rust_in_sort(
-                    return_type,
-                    sort_name,
-                    type_params,
-                    collapse_type_params,
-                );
-                format!("fn({}) -> {ret}", param_types.join(", "))
-            }
-            TypeExpr::Denoted(_) => "()".to_owned(),
-            TypeExpr::EffectAbsent(_) => "()".to_owned(),
-            // WI-375: written effect-row — an annotation, not a Rust type.
-            TypeExpr::EffectRow(_) => "()".to_owned(),
-            // WI-478: guarded effect — an effect-position construct, not a Rust type.
-            TypeExpr::EffectGuarded { .. } => "()".to_owned(),
         }
+        out
+    }
+
+    /// Each of `params` with the binding that places it: the one that NAMES it, else the
+    /// next positional one, in declaration order — the loader's rule (`Pair[L = Int64,
+    /// String]` writes both slots). `None`, with an error recorded, when a binding places
+    /// no parameter.
+    fn place_bindings<'b>(
+        &self,
+        written: &str,
+        params: &[String],
+        bindings: &'b [SortBinding],
+    ) -> Option<Vec<Option<&'b SortBinding>>> {
+        let mut placed: Vec<Option<&SortBinding>> = vec![None; params.len()];
+        for b in bindings {
+            if let Some(n) = &b.param {
+                let pname = self.symbols.local_name(n.last());
+                let Some(i) = params.iter().position(|p| p == pname) else {
+                    self.error(format!(
+                        "`{written}` binds `{pname}`, which is no type parameter of it \
+                         (it declares {params:?})"
+                    ));
+                    return None;
+                };
+                placed[i] = Some(b);
+            }
+        }
+        for b in bindings.iter().filter(|b| b.param.is_none()) {
+            let Some(slot) = placed.iter_mut().find(|p| p.is_none()) else {
+                self.error(format!(
+                    "`{written}` is given more arguments than it declares parameters ({params:?})"
+                ));
+                return None;
+            };
+            *slot = Some(b);
+        }
+        Some(placed)
     }
 
     /// True if `name` appears in a VALUE-type position within `ty` (a simple/
@@ -1061,7 +1593,7 @@ impl<'a> RustCodegen<'a> {
                 }
                 Item::Operation(o) => {
                     let op_name = self.resolve(&o.name);
-                    self.errors.push(CodegenError {
+                    self.errors.borrow_mut().push(CodegenError {
                         message: format!(
                             "operation `{op_name}` has no enclosing namespace for module trait"
                         ),
@@ -1117,6 +1649,11 @@ impl<'a> RustCodegen<'a> {
     fn emit_namespace(&mut self, ns: &Namespace) {
         let name = to_snake_case(&self.resolve(&ns.name));
         let flatten = self.config.flatten_top_namespace && self.indent == 0;
+        let prefix = qualify(&self.scope_prefix(), &name_text(self.symbols, &ns.name));
+        self.push_scope(prefix.clone(), &ns.imports, Vec::new());
+        // A namespace nested in a sort's body is not that sort: a name of the sort in
+        // it is the sort's, not `Self`.
+        let enclosing_sort = self.current_sort.take();
 
         if !flatten {
             self.line(&format!("pub mod {name} {{"));
@@ -1124,10 +1661,11 @@ impl<'a> RustCodegen<'a> {
         }
 
         // Imports
+        let mut wrote_use = false;
         for imp in &ns.imports {
-            self.emit_import(imp);
+            wrote_use |= self.emit_import(imp);
         }
-        if !ns.imports.is_empty() && !ns.items.is_empty() {
+        if wrote_use && !ns.items.is_empty() {
             self.blank();
         }
 
@@ -1167,12 +1705,22 @@ impl<'a> RustCodegen<'a> {
         for (idx, item) in ns.items.iter().enumerate() {
             match item {
                 Item::Operation(op) => {
-                    if let Some(first_param) = op.params.first() {
-                        let first_type = self.type_expr_short_name(&first_param.ty);
-                        if body_sort_names.contains(&first_type) {
-                            sort_ops.entry(first_type).or_default().push(op);
-                            consumed_ops.insert(idx);
+                    // An operation whose first parameter is of one of this namespace's
+                    // sorts joins that sort's methods.
+                    let first_sort = op.params.first().and_then(|p| match &p.ty {
+                        TypeExpr::Simple(n) | TypeExpr::Parameterized { name: n, .. } => {
+                            match self.denote(n) {
+                                Denoted::Declared(q) => {
+                                    q.strip_prefix(&format!("{prefix}.")).map(str::to_owned)
+                                }
+                                _ => None,
+                            }
                         }
+                        _ => None,
+                    });
+                    if let Some(first_type) = first_sort.filter(|t| body_sort_names.contains(t)) {
+                        sort_ops.entry(first_type).or_default().push(op);
+                        consumed_ops.insert(idx);
                     }
                 }
                 Item::Namespace(entry) => {
@@ -1248,6 +1796,7 @@ impl<'a> RustCodegen<'a> {
                     let sname = self.resolve(&s.name);
                     let extra_ops = sort_ops.remove(&sname);
                     let extra_supers = sort_supertraits.remove(&sname).unwrap_or_default();
+                    let previous = self.current_sort.replace(qualify(&prefix, &sname));
                     if let Some(host_type) = self.config.carrier_bindings.get(&sname) {
                         // Carrier binding: emit type alias instead of struct/trait
                         if !first {
@@ -1272,6 +1821,7 @@ impl<'a> RustCodegen<'a> {
                         let vis = self.visibility_prefix(s.visibility);
                         self.line(&format!("{vis}struct {sname};"));
                     }
+                    self.current_sort = previous;
                 }
                 Item::Namespace(n) => {
                     if !first {
@@ -1343,6 +1893,8 @@ impl<'a> RustCodegen<'a> {
             self.dedent();
             self.line("}");
         }
+        self.current_sort = enclosing_sort;
+        self.pop_scope();
     }
 
     fn collect_sort_names(&self, items: &[Item]) -> Vec<String> {
@@ -1379,7 +1931,9 @@ impl<'a> RustCodegen<'a> {
     ) {
         let vis = self.visibility_prefix(sort.visibility);
         let sort_name = self.resolve(&sort.name);
-        self.trait_sorts.insert(sort_name.clone());
+        if let Some(q) = &self.current_sort {
+            self.trait_sorts.insert(q.clone());
+        }
 
         let supertrait_clause = if supertraits.is_empty() {
             String::new()
@@ -1411,15 +1965,17 @@ impl<'a> RustCodegen<'a> {
         extra_supers: &[String],
     ) {
         // Emit sort-level imports (if the sort has its own imports)
+        let mut wrote_use = false;
         for imp in &sort.imports {
-            self.emit_import(imp);
+            wrote_use |= self.emit_import(imp);
         }
-        if !sort.imports.is_empty() {
+        if wrote_use {
             self.blank();
         }
 
         let sort_name = self.resolve(&sort.name);
         let mut info = SortInfo::from_items(&sort.items, self.symbols);
+        let previous = self.enter_sort(sort, &info);
 
         // Add extra namespace-level operations and supertraits
         for op in extra_ops {
@@ -1442,11 +1998,27 @@ impl<'a> RustCodegen<'a> {
             self.blank();
             self.emit_namespace(sub_ns);
         }
+        self.leave_sort(previous);
     }
 
-    fn emit_import(&mut self, imp: &Import) {
+    /// Enter the scope of `sort`, whose type parameters `info` read, as the sort being
+    /// emitted. Returns the sort that was being emitted, for [`Self::leave_sort`].
+    fn enter_sort(&mut self, sort: &SortWithBody, info: &SortInfo) -> Option<String> {
+        let qualified = qualify(&self.scope_prefix(), &name_text(self.symbols, &sort.name));
+        self.push_scope(qualified.clone(), &sort.imports, info.type_params.clone());
+        self.current_sort.replace(qualified)
+    }
+
+    fn leave_sort(&mut self, previous: Option<String>) {
+        self.pop_scope();
+        self.current_sort = previous;
+    }
+
+    /// Emit the `use` line for `imp`, if it brings in anything the generated code
+    /// names. Returns whether a line was written.
+    fn emit_import(&mut self, imp: &Import) -> bool {
         if self.config.suppress_imports {
-            return;
+            return false;
         }
         let mut segments: Vec<String> = imp
             .path
@@ -1462,24 +2034,33 @@ impl<'a> RustCodegen<'a> {
             }
         }
 
-        // Drop what this file has already brought in — see `Self::imported`. The
+        // Drop what this file has already brought in — see `Self::imported` — and
+        // what the generated code never names (`Self::import_is_written`). The
         // filter runs BEFORE the `#[allow(unused_imports)]` line so a fully
         // redundant import emits nothing at all, attribute included.
         let path = segments.join("::");
+        let anthill_path = name_text(self.symbols, &imp.path);
         let names: Vec<String> = match &imp.kind {
             // A whole-path or wildcard import names one thing for this purpose: the
             // path itself. Repeating either is the same E0252 (or, for a wildcard,
             // a harmless but noisy second glob), and keyed this way both dedup
             // through the one table.
+            ImportKind::Plain if !self.import_is_written(&anthill_path) => Vec::new(),
             ImportKind::Plain | ImportKind::Wildcard => vec![String::new()],
-            ImportKind::Selective(names) => names.iter().map(|n| self.resolve(n)).collect(),
+            ImportKind::Selective(names) => names
+                .iter()
+                .filter(|n| {
+                    self.import_is_written(&qualify(&anthill_path, &name_text(self.symbols, n)))
+                })
+                .map(|n| self.resolve(n))
+                .collect(),
         };
         let fresh: Vec<String> = names
             .into_iter()
             .filter(|n| self.imported.insert((path.clone(), n.clone())))
             .collect();
         if fresh.is_empty() {
-            return;
+            return false;
         }
 
         if self.config.emit_fn_bodies {
@@ -1497,6 +2078,29 @@ impl<'a> RustCodegen<'a> {
                 self.line(&format!("use {path}::*;"));
             }
         }
+        true
+    }
+
+    /// Does the generated code name what the import of `qualified` brings in? Not a
+    /// prelude sort written as a host type (`Int64` is `i64`, `Result` is std's), nor a
+    /// member of one (`Option.{some}`): the support crate exports neither. In the
+    /// prelude, only what the support crate exports ([`StdlibRendering::Support`]) and
+    /// what a file of this run declares are written; a prelude sort neither covers is
+    /// refused where a type names it, and its `use` would not resolve.
+    fn import_is_written(&self, qualified: &str) -> bool {
+        let parent = qualified.rsplit_once('.').map(|(p, _)| p);
+        let host =
+            |q: &str| stdlib_type(q).is_some_and(|t| matches!(t.rendering, StdlibRendering::Host));
+        if host(qualified) || parent.is_some_and(host) {
+            return false;
+        }
+        if !qualified.starts_with(&format!("{PRELUDE}.")) {
+            return true;
+        }
+        stdlib_type(qualified).is_some()
+            || self.catalog.sorts.contains_key(qualified)
+            || parent
+                .is_some_and(|p| self.catalog.sorts.contains_key(p) && stdlib_type(p).is_none())
     }
 
     // ── Standalone entity → struct ───────────────────────────────
@@ -1515,7 +2119,7 @@ impl<'a> RustCodegen<'a> {
             self.indent();
             for field in &entity.fields {
                 let fname = to_snake_case(&self.local_name_of(field.name));
-                let ftype = self.wrap_trait_field(&self.type_to_rust(&field.ty));
+                let ftype = self.wrap_trait_field(&self.type_to_rust(&field.ty), &field.ty);
                 self.line(&format!("pub {fname}: {ftype},"));
             }
             self.dedent();
@@ -1527,15 +2131,17 @@ impl<'a> RustCodegen<'a> {
 
     fn emit_sort(&mut self, sort: &SortWithBody) {
         // Emit sort-level imports (e.g. from `sort a.b.C` with imports inside)
+        let mut wrote_use = false;
         for imp in &sort.imports {
-            self.emit_import(imp);
+            wrote_use |= self.emit_import(imp);
         }
-        if !sort.imports.is_empty() {
+        if wrote_use {
             self.blank();
         }
 
         let sort_name = self.resolve(&sort.name);
         let info = SortInfo::from_items(&sort.items, self.symbols);
+        let previous = self.enter_sort(sort, &info);
 
         if !info.entities.is_empty() {
             self.emit_sort_as_enum(sort, &sort_name, &info);
@@ -1555,6 +2161,7 @@ impl<'a> RustCodegen<'a> {
             self.blank();
             self.emit_namespace(sub_ns);
         }
+        self.leave_sort(previous);
     }
 
     /// A sort whose only members are term-level consts (WI-533): no entities
@@ -1666,7 +2273,9 @@ impl<'a> RustCodegen<'a> {
     }
 
     fn emit_sort_as_trait(&mut self, sort: &SortWithBody, sort_name: &str, info: &SortInfo) {
-        self.trait_sorts.insert(sort_name.to_owned());
+        if let Some(q) = &self.current_sort {
+            self.trait_sorts.insert(q.clone());
+        }
         let vis = self.visibility_prefix(sort.visibility);
 
         // Self-collapse heuristic: if exactly one type param and every op's
@@ -1734,9 +2343,7 @@ impl<'a> RustCodegen<'a> {
         sort_name: &str,
         type_params: &[String],
     ) -> String {
-        let rust_type = self.type_to_rust(ty);
-        let type_name = self.type_expr_short_name(ty);
-        if names_this_sort(&type_name, sort_name) {
+        if self.names_current_sort(ty) {
             // Self-referential → Box
             let generics = if type_params.is_empty() {
                 String::new()
@@ -1745,13 +2352,8 @@ impl<'a> RustCodegen<'a> {
             };
             format!("Box<{sort_name}{generics}>")
         } else {
-            // Map type params to their names as-is (they are generic)
-            if type_params.contains(&type_name) {
-                type_name
-            } else {
-                // WI-540: a trait-typed enum field becomes `Box<dyn Trait>`.
-                self.wrap_trait_field(&rust_type)
-            }
+            // WI-540: a trait-typed enum field becomes `Box<dyn Trait>`.
+            self.wrap_trait_field(&self.type_to_rust(ty), ty)
         }
     }
 
@@ -1764,9 +2366,10 @@ impl<'a> RustCodegen<'a> {
         type_params: &[String],
         collapse_self: bool,
     ) {
+        self.push_operation_scope(op);
         self.refuse_open_own_references_in(op, sort_name, type_params);
         let op_name = to_snake_case(&self.resolve(&op.name));
-        let effects = analyze_effects(&op.effects, self.symbols, type_params);
+        let effects = self.analyze_effects(&op.effects, type_params);
 
         // Per-op type params (`operation foldLeft[EffP, Acc]`) → method generics,
         // but ONLY the ones that surface in a value-type position (a param/return
@@ -1789,8 +2392,7 @@ impl<'a> RustCodegen<'a> {
         };
 
         // Determine self-arg
-        let (has_self, is_mut) =
-            self.check_self_arg(op, sort_name, type_params, &effects, collapse_self);
+        let (has_self, is_mut) = self.check_self_arg(op, type_params, &effects, collapse_self);
 
         let mut params_str = String::new();
 
@@ -1809,15 +2411,15 @@ impl<'a> RustCodegen<'a> {
                 params_str.push_str(", ");
             }
             let pname = to_snake_case(&self.local_name_of(param.name));
-            let ptype = self.type_to_rust_in_sort(&param.ty, sort_name, type_params, collapse_self);
-            let ptype = self.wrap_trait_param(&ptype, sort_name);
+            let ptype = self.type_to_rust_in_sort(&param.ty, type_params, collapse_self);
+            let ptype = self.wrap_trait_param(&ptype, &param.ty, sort_name);
             params_str.push_str(&format!("{pname}: {ptype}"));
         }
 
         // Return type
+        let raw_ret = self.type_to_rust_in_sort(&op.return_type, type_params, collapse_self);
         let raw_ret =
-            self.type_to_rust_in_sort(&op.return_type, sort_name, type_params, collapse_self);
-        let raw_ret = self.wrap_trait_return_in_sort(&raw_ret, sort_name, type_params);
+            self.wrap_trait_return_in_sort(&raw_ret, &op.return_type, sort_name, type_params);
         let ret = wrap_return_type(&raw_ret, &effects);
 
         // Object-safety: a self-less method (a factory like `kb() -> Box<dyn KB>`)
@@ -1835,6 +2437,7 @@ impl<'a> RustCodegen<'a> {
         self.line(&format!(
             "fn {op_name}{method_generics}({params_str}) -> {ret}{where_clause};"
         ));
+        self.pop_scope();
     }
 
     fn emit_method_signature(
@@ -1844,6 +2447,7 @@ impl<'a> RustCodegen<'a> {
         type_params: &[String],
         in_impl: bool,
     ) {
+        self.push_operation_scope(op);
         self.refuse_open_own_references_in(op, sort_name, type_params);
         let vis = if in_impl {
             self.visibility_prefix(op.visibility)
@@ -1851,9 +2455,9 @@ impl<'a> RustCodegen<'a> {
             ""
         };
         let op_name = to_snake_case(&self.resolve(&op.name));
-        let effects = analyze_effects(&op.effects, self.symbols, type_params);
+        let effects = self.analyze_effects(&op.effects, type_params);
 
-        let (has_self, is_mut) = self.check_self_arg(op, sort_name, type_params, &effects, false);
+        let (has_self, is_mut) = self.check_self_arg(op, type_params, &effects, false);
 
         let mut params_str = String::new();
 
@@ -1871,22 +2475,24 @@ impl<'a> RustCodegen<'a> {
                 params_str.push_str(", ");
             }
             let pname = to_snake_case(&self.local_name_of(param.name));
-            let ptype = self.type_to_rust_in_sort(&param.ty, sort_name, type_params, false);
+            let ptype = self.type_to_rust_in_sort(&param.ty, type_params, false);
             // Preserve the original bare-param emission when the flag is off;
             // only trait-object wrapping is opt-in (WI-540).
             let ptype = if self.config.boxed_trait_objects {
-                self.wrap_trait_param(&ptype, sort_name)
+                self.wrap_trait_param(&ptype, &param.ty, sort_name)
             } else {
                 ptype
             };
             params_str.push_str(&format!("{pname}: {ptype}"));
         }
 
-        let raw_ret = self.type_to_rust_in_sort(&op.return_type, sort_name, type_params, false);
-        let raw_ret = self.wrap_trait_return_in_sort(&raw_ret, sort_name, type_params);
+        let raw_ret = self.type_to_rust_in_sort(&op.return_type, type_params, false);
+        let raw_ret =
+            self.wrap_trait_return_in_sort(&raw_ret, &op.return_type, sort_name, type_params);
         let ret = wrap_return_type(&raw_ret, &effects);
 
         self.line(&format!("{vis}fn {op_name}({params_str}) -> {ret};"));
+        self.pop_scope();
     }
 
     /// Emit a module trait collecting orphan operations.
@@ -1919,8 +2525,9 @@ impl<'a> RustCodegen<'a> {
     /// Like `emit_trait_method` but always adds `&self` as receiver and keeps
     /// all original params (no sort-name matching for self-collapse).
     fn emit_module_trait_method(&mut self, op: &Operation) {
+        self.push_operation_scope(op);
         let op_name = to_snake_case(&self.resolve(&op.name));
-        let effects = analyze_effects(&op.effects, self.symbols, &[]);
+        let effects = self.analyze_effects(&op.effects, &[]);
 
         let mut params_str = String::from("&self");
 
@@ -1932,17 +2539,17 @@ impl<'a> RustCodegen<'a> {
         }
 
         let raw_ret = self.type_to_rust(&op.return_type);
-        let raw_ret = self.wrap_trait_return(&raw_ret);
+        let raw_ret = self.wrap_trait_return(&raw_ret, &op.return_type);
         let ret = wrap_return_type(&raw_ret, &effects);
 
         self.line(&format!("fn {op_name}({params_str}) -> {ret};"));
+        self.pop_scope();
     }
 
     /// Check if the first param should become self.
     fn check_self_arg(
         &self,
         op: &Operation,
-        sort_name: &str,
         type_params: &[String],
         effects: &EffectInfo,
         collapse_type_params: bool,
@@ -1951,11 +2558,13 @@ impl<'a> RustCodegen<'a> {
             return (false, false);
         }
 
-        let first_type_name = self.type_expr_short_name(&op.params[0].ty);
+        let first_type = &op.params[0].ty;
 
-        // Check if first param type matches the sort name or a type param
-        let is_self = names_this_sort(&first_type_name, sort_name)
-            || (collapse_type_params && type_params.iter().any(|p| p == &first_type_name));
+        // Check if first param type is the sort itself or a type param
+        let is_self = self.names_current_sort(first_type)
+            || (collapse_type_params
+                && matches!(first_type, TypeExpr::Simple(n)
+                    if matches!(self.denote(n), Denoted::Param(p) if type_params.contains(&p))));
 
         if !is_self {
             return (false, false);
@@ -1971,8 +2580,104 @@ impl<'a> RustCodegen<'a> {
         (true, is_mut)
     }
 
-    fn type_expr_short_name(&self, ty: &TypeExpr) -> String {
-        type_expr_name(self.symbols, ty)
+    /// What an operation's effects clause asks of its Rust signature: the parameters a
+    /// `Modify` mutates (receiver by `&mut`) and the `Error` payload (`Result<R, P>`).
+    /// A label is read by what its name resolves to, and only the payload that decides
+    /// the signature is rendered.
+    fn analyze_effects(&self, effects: &[Effect], type_params: &[String]) -> EffectInfo {
+        let mut modifies_targets = Vec::new();
+        let mut payload = None;
+        for effect in effects {
+            self.read_effect(
+                &effect.type_expr,
+                false,
+                type_params,
+                &mut modifies_targets,
+                &mut payload,
+            );
+        }
+        EffectInfo {
+            modifies_targets,
+            errors_type: payload.map(|p| match p {
+                ErrorPayload::Type(ty) => self.type_to_rust(ty),
+                ErrorPayload::Named(name) => name,
+            }),
+        }
+    }
+
+    /// [`Self::analyze_effects`] for one label. A later label's payload replaces an
+    /// earlier one, except that a GUARDED label only fills an empty slot.
+    fn read_effect<'t>(
+        &self,
+        label: &'t TypeExpr,
+        guarded: bool,
+        type_params: &[String],
+        modifies_targets: &mut Vec<String>,
+        payload: &mut Option<ErrorPayload<'t>>,
+    ) {
+        let mut set = |p: ErrorPayload<'t>| {
+            if !guarded || payload.is_none() {
+                *payload = Some(p);
+            }
+        };
+        match label {
+            TypeExpr::Parameterized { name, bindings } if !leaves_every_slot(bindings) => {
+                let Some(b) = bindings.first() else {
+                    return;
+                };
+                match self.denoted_qualified(name).as_deref() {
+                    // `Modify[c]` names the parameter `c` it mutates.
+                    Some(MODIFY_LABEL) => {
+                        if let TypeExpr::Simple(n) = &b.bound {
+                            modifies_targets.push(self.symbols.local_name(n.last()).to_owned());
+                        }
+                    }
+                    Some(ERROR_LABEL) if !matches!(b.bound, TypeExpr::Variable { .. }) => {
+                        set(ErrorPayload::Type(&b.bound));
+                    }
+                    _ => {}
+                }
+            }
+            // A label written bare, or applied with every slot left open.
+            TypeExpr::Simple(name) | TypeExpr::Parameterized { name, .. } => {
+                match self.denote(name) {
+                    // Bare Error (no type param) → Result<R, Error>
+                    Denoted::Declared(q) | Denoted::UnmappedPrelude(q) | Denoted::NotFound(q)
+                        if q == ERROR_LABEL =>
+                    {
+                        set(ErrorPayload::Named("Error".to_owned()));
+                    }
+                    // Abstract effect: a type parameter of the enclosing sort is an
+                    // abstract error type. E.g. `effects (E)` where `sort E = ?` →
+                    // Result<R, E>
+                    Denoted::Param(p) if type_params.contains(&p) => {
+                        set(ErrorPayload::Named(p));
+                    }
+                    _ => {}
+                }
+            }
+            TypeExpr::Variable { .. } => {}
+            TypeExpr::Tuple(_) => {}
+            TypeExpr::Arrow { .. } => {}
+            TypeExpr::Denoted(_) => {}
+            // WI-327: `-E` doesn't contribute Modify/Error analysis.
+            TypeExpr::EffectAbsent(_) => {}
+            // WI-375: a written effect-row in a type-arg slot is not an
+            // operation effects-clause — no Modify/Error contribution here.
+            TypeExpr::EffectRow(_) => {}
+            // WI-478: a guarded effect is CONSERVATIVELY PRESENT (phase 1 — discharge
+            // is WI-067), so it contributes the SAME Modify/Error analysis its bare
+            // label would (a `Error[X] :- g` still yields the `Error[X]` Result, not a
+            // silent drop).
+            TypeExpr::EffectGuarded { label, .. } => {
+                self.read_effect(label, true, type_params, modifies_targets, payload);
+            }
+        }
+    }
+
+    /// The qualified name `name` resolves to, when it resolves to a sort.
+    fn denoted_qualified(&self, name: &Name) -> Option<String> {
+        self.denote(name).qualified().map(str::to_owned)
     }
 
     // ── Secondary entry's `provides` → impl marker comment ───────
@@ -2072,94 +2777,6 @@ fn leaves_every_slot(bindings: &[SortBinding]) -> bool {
             .all(|b| matches!(b.bound, TypeExpr::Variable { fresh: true, .. }))
 }
 
-fn analyze_effects(
-    effects: &[Effect],
-    symbols: &SymbolTable,
-    type_params: &[String],
-) -> EffectInfo {
-    let mut info = EffectInfo {
-        modifies_targets: Vec::new(),
-        errors_type: None,
-    };
-
-    for effect in effects {
-        let written_bare;
-        let label = match &effect.type_expr {
-            TypeExpr::Parameterized { name, bindings } if leaves_every_slot(bindings) => {
-                written_bare = TypeExpr::Simple(name.clone());
-                &written_bare
-            }
-            other => other,
-        };
-        match label {
-            TypeExpr::Parameterized { name, bindings } => {
-                let kind = symbols.local_name(name.last());
-                // Extract target from first binding's bound value
-                let target = if let Some(b) = bindings.first() {
-                    match &b.bound {
-                        TypeExpr::Simple(n) => symbols.local_name(n.last()).to_owned(),
-                        _ => continue,
-                    }
-                } else {
-                    continue;
-                };
-
-                match kind {
-                    "Modify" => {
-                        info.modifies_targets.push(target);
-                    }
-                    "Error" => {
-                        info.errors_type = Some(map_primitive_type(&target));
-                    }
-                    _ => {}
-                }
-            }
-            TypeExpr::Simple(name) => {
-                let kind = symbols.local_name(name.last());
-                match kind {
-                    "Error" => {
-                        // Bare Error (no type param) → Result<R, Error>
-                        info.errors_type = Some("Error".to_owned());
-                    }
-                    _ => {
-                        // Abstract effect: if the name is a type parameter of the
-                        // enclosing sort, treat it as an abstract error type.
-                        // E.g. `effects (E)` where `sort E = ?` → Result<R, E>
-                        if type_params.contains(&kind.to_owned()) {
-                            info.errors_type = Some(kind.to_owned());
-                        }
-                    }
-                }
-            }
-            TypeExpr::Variable { .. } => {}
-            TypeExpr::Tuple(_) => {}
-            TypeExpr::Arrow { .. } => {}
-            TypeExpr::Denoted(_) => {}
-            // WI-327: `-E` doesn't contribute Modify/Error analysis.
-            TypeExpr::EffectAbsent(_) => {}
-            // WI-375: a written effect-row in a type-arg slot is not an
-            // operation effects-clause — no Modify/Error contribution here.
-            TypeExpr::EffectRow(_) => {}
-            // WI-478: a guarded effect is CONSERVATIVELY PRESENT (phase 1 — discharge
-            // is WI-067), so it contributes the SAME Modify/Error analysis its bare
-            // label would (a `Error[X] :- g` still yields the `Error[X]` Result, not a
-            // silent drop). Recurse on the label and merge.
-            TypeExpr::EffectGuarded { label, .. } => {
-                let inner = Effect {
-                    type_expr: (**label).clone(),
-                };
-                let sub = analyze_effects(std::slice::from_ref(&inner), symbols, type_params);
-                info.modifies_targets.extend(sub.modifies_targets);
-                if info.errors_type.is_none() {
-                    info.errors_type = sub.errors_type;
-                }
-            }
-        }
-    }
-
-    info
-}
-
 fn wrap_return_type(raw: &str, effects: &EffectInfo) -> String {
     if let Some(err_type) = &effects.errors_type {
         format!("Result<{raw}, {err_type}>")
@@ -2256,56 +2873,6 @@ fn lower_literal_rust(lit: &Literal, rust_ty: &str) -> String {
         Literal::Float(f) => with_point(f.into_inner().to_string()),
         Literal::Bool(b) => b.to_string(),
         Literal::String(s) => format!("{s:?}"),
-    }
-}
-
-/// Anthill prelude name -> Rust host type.
-///
-/// A SECOND, INDEPENDENT ANSWER to what `rust_std.anthill`'s `type_map` answers — not
-/// a copy of it, which is the first thing to know: the two overlap on six entries
-/// (`Int64`, `Float`, `Bool`, `String`, `Duration`, `Timestamp`) and each has entries
-/// the other lacks. The fact carries `List -> Vec` and `Option -> Option`; this
-/// carries `BigInt`, `Term` and `Meta`.
-///
-/// The scala backend had the same shape until WI-1060 moved it to the profile fact
-/// (`ScalaProfile.typeMap` reads the KB; `Bootstrap.generate` takes the resolved
-/// table as a parameter, so an edit to the fact changes generated code with no code
-/// change). That ticket DEFERRED this one explicitly rather than leaving it
-/// unexamined — different backend, different tests — so what follows is what a reader
-/// must settle before copying the scala fix across:
-///
-///  * READING THE FACT ALONE WOULD LOSE THREE ENTRIES. `BigInt`, `Term` and `Meta`
-///    are here and not in `rust_std.anthill`, and the `_ =>` arm makes the loss
-///    invisible: each would pass through unchanged and emit as a plausible
-///    project-defined type. Either the fact grows them or the deletion is deliberate.
-///  * READING THE FACT ALONE WOULD GAIN TWO. `List -> Vec` and `Option -> Option`
-///    are in the fact and not here, and WI-1021 settled (for scala) that those
-///    rewrites are wrong in principle — a prelude sort with anthill constructors is
-///    denoted by the type codegen EMITS for it, not by a host type that merely shares
-///    its spelling. Taking them on would reintroduce that defect rather than remove a
-///    copy. (WI-1060's scala side refuses such an entry outright: `List` declares a
-///    type parameter, and a host scalar has none.)
-///  * THE FALLBACK IS THE SHARPER PROBLEM. `_ => name.to_owned()` is the
-///    pass-through WI-1021 measured as the way an unresolvable name reaches the
-///    output looking like a project-defined type — in scala it made `field.anthill`
-///    compile green against `scala.math.Numeric`, a type from another library.
-///  * `Duration`/`Timestamp`/`Term`/`Meta` are host-over-nominal choices that
-///    `primitives.anthill` contradicts (it declares `Duration` and `Timestamp` as
-///    sorts WITH constructors), which is why the scala table dropped them. The first
-///    two are in the fact as well, so dropping them is a FACT edit; the last two are
-///    code-only and dropping them is not.
-fn map_primitive_type(name: &str) -> String {
-    match name {
-        "Int64" => "i64".to_owned(),
-        "BigInt" => "num_bigint::BigInt".to_owned(),
-        "Float" => "f64".to_owned(),
-        "Bool" => "bool".to_owned(),
-        "String" => "String".to_owned(),
-        "Duration" => "std::time::Duration".to_owned(),
-        "Timestamp" => "String".to_owned(),
-        "Term" => "Term".to_owned(),
-        "Meta" => "Meta".to_owned(),
-        _ => name.to_owned(),
     }
 }
 
@@ -2482,17 +3049,5 @@ mod tests {
         assert_eq!(to_pascal_case("kb"), "Kb");
         assert_eq!(to_pascal_case("Postgresql"), "Postgresql");
         assert_eq!(to_pascal_case("kebab-case"), "KebabCase");
-    }
-
-    #[test]
-    fn test_map_primitive_type() {
-        assert_eq!(map_primitive_type("Int64"), "i64");
-        assert_eq!(map_primitive_type("BigInt"), "num_bigint::BigInt");
-        assert_eq!(map_primitive_type("Float"), "f64");
-        assert_eq!(map_primitive_type("Bool"), "bool");
-        assert_eq!(map_primitive_type("String"), "String");
-        assert_eq!(map_primitive_type("Duration"), "std::time::Duration");
-        assert_eq!(map_primitive_type("Timestamp"), "String");
-        assert_eq!(map_primitive_type("MyType"), "MyType");
     }
 }

@@ -94,13 +94,13 @@ namespace anthill.realization.scala_std
     -- either: `scala.Long` is a RELATIVE path a project emitting into a package with
     -- its own `scala` member would capture.
     type_map: [
-      TypeMapping(anthill_type: "Int64",   host_type: "_root_.scala.Long"),
-      TypeMapping(anthill_type: "BigInt",  host_type: "_root_.scala.math.BigInt"),
-      TypeMapping(anthill_type: "Float",   host_type: "_root_.scala.Double"),
-      TypeMapping(anthill_type: "Bool",    host_type: "_root_.scala.Boolean"),
-      TypeMapping(anthill_type: "String",  host_type: "_root_.java.lang.String"),
-      TypeMapping(anthill_type: "Unit",    host_type: "_root_.scala.Unit"),
-      TypeMapping(anthill_type: "Nothing", host_type: "_root_.scala.Nothing")
+      TypeMapping(anthill_type: "anthill.prelude.Int64",   host_type: "_root_.scala.Long"),
+      TypeMapping(anthill_type: "anthill.prelude.BigInt",  host_type: "_root_.scala.math.BigInt"),
+      TypeMapping(anthill_type: "anthill.prelude.Float",   host_type: "_root_.scala.Double"),
+      TypeMapping(anthill_type: "anthill.prelude.Bool",    host_type: "_root_.scala.Boolean"),
+      TypeMapping(anthill_type: "anthill.prelude.String",  host_type: "_root_.java.lang.String"),
+      TypeMapping(anthill_type: "anthill.prelude.Unit",    host_type: "_root_.scala.Unit"),
+      TypeMapping(anthill_type: "anthill.prelude.Nothing", host_type: "_root_.scala.Nothing")
     ],
 
     -- Return abstract sorts via the trait's type parameter — Scala 3

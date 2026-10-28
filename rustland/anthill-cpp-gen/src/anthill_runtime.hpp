@@ -14,15 +14,20 @@
 //      to surface mismatches at the obvious site instead of deep inside a
 //      `std::optional<…>` instantiation.
 //
-//   2. Operation REALIZATIONS — `str_*` and friends (WI-890) — the
+//   2. Value TYPES the C++ standard library of the profile does not have —
+//      `Result<T, E>`, the host type of `anthill.prelude.Result` (C++17 has
+//      no `std::expected`).
+//
+//   3. Operation REALIZATIONS — `str_*` and friends (WI-890) — the
 //      hand-authored C++ backing for primitive operations whose lowering is
 //      an algorithm no `$1`/`$2` expression template can carry (scalar-indexed
 //      UTF-8, whitespace tables). A carrier's `operation_map` names them
 //      (`anthill::runtime::str_length($1)`), and the `anthill::runtime::`
 //      `IncludeMapping` probe pulls this header when one appears in emitted C++.
 //
-// New entries of either kind land here — a new typeclass detection trait, or a
-// new host operation whose realization is more than an expression template.
+// New entries of each kind land here — a new typeclass detection trait, a value
+// type a mapping names, or a new host operation whose realization is more than
+// an expression template.
 //
 // Conventions:
 //   - One trait per anthill prelude typeclass we generate against.
@@ -39,6 +44,7 @@
 #include <string>
 #include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace anthill::runtime {
@@ -120,6 +126,55 @@ inline constexpr bool satisfies_ordered_v = satisfies_ordered<T>::value;
 // reaches here.
 template <typename...>
 inline constexpr bool dependent_false_v = false;
+
+// ── Result ───────────────────────────────────────────────────────────
+//
+// The host type of `anthill.prelude.Result[E, T]`: cpp_std maps it to
+// `anthill::runtime::Result<$T, $E>`, success type first. A value is built
+// from `ok(v)` or `err(e)`, which name only their own half and convert to
+// any `Result` whose half accepts it, the way `std::nullopt` converts to any
+// `std::optional`. The two halves are held by INDEX, so `Result<T, T>` keeps
+// an `err` apart from an `ok` of the same type.
+template <typename T>
+struct Ok {
+    T value;
+};
+
+template <typename E>
+struct Err {
+    E error;
+};
+
+template <typename T>
+Ok<std::decay_t<T>> ok(T&& value) {
+    return {std::forward<T>(value)};
+}
+
+template <typename E>
+Err<std::decay_t<E>> err(E&& error) {
+    return {std::forward<E>(error)};
+}
+
+template <typename T, typename E>
+class Result {
+public:
+    template <typename U, typename = std::enable_if_t<std::is_convertible_v<U, T>>>
+    Result(Ok<U> ok) : alt_(std::in_place_index<0>, std::move(ok.value)) {}
+
+    template <typename F, typename = std::enable_if_t<std::is_convertible_v<F, E>>>
+    Result(Err<F> err) : alt_(std::in_place_index<1>, std::move(err.error)) {}
+
+    bool is_ok() const { return alt_.index() == 0; }
+    bool is_err() const { return alt_.index() == 1; }
+    const T& value() const { return std::get<0>(alt_); }
+    const E& error() const { return std::get<1>(alt_); }
+
+    bool operator==(const Result& other) const { return alt_ == other.alt_; }
+    bool operator!=(const Result& other) const { return alt_ != other.alt_; }
+
+private:
+    std::variant<T, E> alt_;
+};
 
 // ── String operations (WI-890) ───────────────────────────────────────
 //

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use anthill_core::codegen::{collect_trait_sorts, generate_rust_with_context};
+use anthill_core::codegen::{collect_sorts, generate_rust_with_context};
 use anthill_core::parse;
 
 fn main() {
@@ -36,13 +36,13 @@ fn main() {
         })
         .collect();
 
-    // Collect cross-file trait sorts
+    // The sorts the files declare, which each file names across the others
     let refs: Vec<&anthill_core::parse::ir::ParsedFile> = parsed.iter().map(|(_, p)| p).collect();
-    let trait_sorts = collect_trait_sorts(&refs);
+    let catalog = collect_sorts(&refs);
 
     // Generate with context
     for (name, p) in &parsed {
-        let rust = generate_rust_with_context(p, &trait_sorts)
+        let rust = generate_rust_with_context(p, &catalog)
             .unwrap_or_else(|e| panic!("codegen {name}: {e:?}"));
         let out_path = out_dir.join(format!("{name}.rs"));
         std::fs::write(&out_path, &rust)

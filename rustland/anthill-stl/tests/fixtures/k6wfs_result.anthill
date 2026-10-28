@@ -1,0 +1,20 @@
+-- K6WFS: a program over prelude sorts whose Rust (`anthill codegen rust`) is
+-- `k6wfs_result.rs` beside this file, compiled against this crate by
+-- `k6wfs_generated_rust_test`.
+namespace test.cgres
+  import anthill.prelude.{Int64, String, Option, Result, List, Pair}
+  sort Boom
+    entity boom(why: String)
+  end
+  sort Two
+    sort A = ?
+    sort B = ?
+    entity two(a: A, b: B)
+  end
+  sort Api
+    operation find(n: Int64) -> Option[T = Int64]
+    operation check(n: Int64) -> Result[E = Boom, T = Int64]
+    operation checkAll(ns: List[T = Int64]) -> Result[T = List[T = Int64], E = Boom]
+    operation swap(p: Pair[B = String, A = Int64]) -> Two[B = String, A = Int64]
+  end
+end

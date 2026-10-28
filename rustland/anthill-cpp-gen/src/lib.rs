@@ -48,6 +48,9 @@ pub static BINDING_SOURCES: &[(&str, &str)] = &[
 /// peer of `anthill_core::kb::load::INTERPRETER_LANG` on the rust side.
 const CPP_LANG: &str = "cpp";
 
+use anthill_core::codegen::type_template::{
+    bare_template_name, parse_type_template, TypeTemplatePart,
+};
 use anthill_core::eval::Value;
 use anthill_core::intern::{Symbol, SymbolKind};
 use anthill_core::kb::extent::{BodiedRulePolicy, ExtentReadError};
@@ -734,6 +737,10 @@ pub struct CodegenContext {
     /// `anthill.prelude.todo`, resolved once (WI-897: an operation is keyed by its
     /// symbol, not by its spelling). `None` in a KB that does not load the prelude.
     todo_op: Option<Symbol>,
+    /// Whether [`check_type_mappings`] has held for this context's KB. It runs at the
+    /// first `TypeMapping` lookup rather than here because it resolves, which takes
+    /// the KB `&mut`, and the context is built from a shared borrow.
+    type_mappings_checked: std::cell::Cell<bool>,
 }
 
 impl CodegenContext {
@@ -769,6 +776,7 @@ impl CodegenContext {
             capability_gap: std::cell::Cell::new(false),
             lowering_decl: std::cell::Cell::new(None),
             todo_op: kb.try_resolve_symbol("anthill.prelude.todo"),
+            type_mappings_checked: std::cell::Cell::new(false),
         })
     }
 
@@ -1877,8 +1885,7 @@ fn is_body_emittable(
         if ctx.carriers.lookup(&qualified).is_some() {
             return Ok(true);
         }
-        let short = short_name_of(&qualified);
-        return Ok(resolve_type_mapping(kb, ctx, &[short], None)?.is_some());
+        return Ok(resolve_type_mapping(kb, ctx, &qualified, None)?.is_some());
     }
     if matches!(extract_type(kb, ty), TypeExtractor::NamedTuple(fields) if fields.is_empty()) {
         return Ok(unit_mapping(kb, ctx)?.is_some());
@@ -1887,9 +1894,8 @@ fn is_body_emittable(
         return Ok(false);
     };
     let base_qn = kb.qualified_name_of(base_sym).to_string();
-    let base_short = short_name_of(&base_qn);
     let base_known = ctx.carriers.lookup(&base_qn).is_some()
-        || resolve_type_mapping(kb, ctx, &[base_short], None)?.is_some();
+        || resolve_type_mapping(kb, ctx, &base_qn, None)?.is_some();
     if !base_known {
         return Ok(false);
     }
@@ -1968,8 +1974,7 @@ fn marshal_for_type(
     });
     let Some(sym) = sym else { return Ok(None) };
     let qualified = kb.qualified_name_of(sym).to_string();
-    let short = short_name_of(&qualified);
-    let Some(hit) = resolve_type_mapping(kb, ctx, &[&qualified, short], binding)? else {
+    let Some(hit) = resolve_type_mapping(kb, ctx, &qualified, binding)? else {
         return Ok(None);
     };
     if hit.lift.is_none() && hit.lower.is_none() {
@@ -2515,7 +2520,7 @@ fn extract_optional_string(kb: &KnowledgeBase, term: TermId) -> Option<String> {
         return None;
     };
     let qn = kb.qualified_name_of(*functor);
-    if qn != "anthill.prelude.Option.some" && qn != "Option.some" {
+    if qn != "anthill.prelude.Option.some" {
         return None;
     }
     if let Some(v) = find_named(kb, named_args, "value").and_then(|t| as_string(kb, t)) {
@@ -3459,9 +3464,7 @@ fn lower_node(
             // Error.raise(e) ⇒ tl::make_unexpected(e). The op's return
             // type was wrapped in tl::expected by operations_in_sort,
             // so this slots in as a branch result or whole body.
-            if fn_qn == "anthill.prelude.Error.raise"
-                || fn_qn == "Error.raise"
-            {
+            if fn_qn == "anthill.prelude.Error.raise" {
                 let combined = combined_args(pos_args, named_args);
                 if combined.len() != 1 {
                     return Err(CppCodegenError {
@@ -3479,7 +3482,7 @@ fn lower_node(
             // Stdlib wrapper constructors that don't map 1:1 to a C++
             // struct (Option/Result) — handled before the generic
             // entity-literal path below.
-            if let Some(rendered) = lower_stdlib_wrapper_node(kb, ctx, &fn_qn, pos_args, named_args)? {
+            if let Some(rendered) = lower_stdlib_wrapper_node(kb, ctx, occ, &fn_qn, pos_args, named_args)? {
                 return Ok(rendered);
             }
             // Entity-constructor case: when the loader didn't wrap an
@@ -3526,7 +3529,7 @@ fn lower_node(
                 }
                 return Ok(format!("{{{}}}", parts.join(", ")));
             }
-            if let Some(rendered) = lower_stdlib_wrapper_node(kb, ctx, &name_qn, pos_args, named_args)? {
+            if let Some(rendered) = lower_stdlib_wrapper_node(kb, ctx, occ, &name_qn, pos_args, named_args)? {
                 return Ok(rendered);
             }
             if kb.entity_field_types(*name).is_some() {
@@ -4486,18 +4489,6 @@ fn unlowerable_operation(
 // `ctx.host_consts.lookup(sym)` call sites, symmetric with `operation_map` /
 // `HostOpTable` for `pi`/`e`/`tau`. See the WI-889 note in `HostConstTable`.
 
-/// Match a fully-qualified or short prelude name against a (suffix,
-/// payload) table. `suffix` is the qn after `anthill.prelude.`.
-/// Accepts both `anthill.prelude.<suffix>` (qualified) and `<suffix>`
-/// (short — produced when imports leave a name partly-qualified).
-fn lookup_prelude_qn<'a, T: Copy>(fn_qn: &str, table: &'a [(&'a str, T)]) -> Option<T> {
-    let stripped = fn_qn.strip_prefix("anthill.prelude.").unwrap_or(fn_qn);
-    table
-        .iter()
-        .find(|(suffix, _)| *suffix == stripped)
-        .map(|(_, v)| *v)
-}
-
 /// Lower `IndexedSeq.nth(xs, i)` and `IndexedSeq.length(xs)` to
 /// container-agnostic C++ — works for any host type with `size()`
 /// and `operator[]` (`std::vector`, `std::array`, hand-rolled, …).
@@ -4585,21 +4576,22 @@ fn render_as_operator(fn_qn: &str, args: &[String]) -> Option<String> {
 /// Lower stdlib wrapper-constants used as bare values (e.g. `none`
 /// on its own, without parens). Returns `Some(s)` when matched.
 fn lower_stdlib_constant(fn_qn: &str) -> Option<String> {
-    let table: &[(&str, &str)] = &[("Option.none", "std::nullopt")];
-    // Also handle the bare-import case (`none`) which strip_prefix can't reach.
-    if fn_qn == "none" {
-        return Some("std::nullopt".to_string());
-    }
-    lookup_prelude_qn(fn_qn, table).map(str::to_string)
+    (fn_qn == "anthill.prelude.Option.none").then(|| "std::nullopt".to_string())
 }
 
 /// Lower stdlib wrapper-constructor calls (Option, Result, …) from
 /// NodeOccurrence arg slices. Returns `Ok(Some(s))` when matched,
 /// `Ok(None)` when the functor is not one we recognise. Today:
-/// `Option.{some, none}`.
+/// `Option.{some, none}` and `Result.{ok, err}`.
+///
+/// `ok(v)` names only the success half of its `Result`, and C++ has no
+/// common type for the two halves of `c ? ok(a) : err(b)`, so a `Result`
+/// value is built at the type the typer inferred for the application `occ`:
+/// `anthill::runtime::Result<int64_t, Boom>(anthill::runtime::ok(v))`.
 fn lower_stdlib_wrapper_node(
     kb: &mut KnowledgeBase,
     ctx: &CodegenContext,
+    occ: &anthill_core::kb::node_occurrence::NodeOccurrence,
     fn_qn: &str,
     pos_args: &[std::rc::Rc<anthill_core::kb::node_occurrence::NodeOccurrence>],
     named_args: &[(
@@ -4610,8 +4602,7 @@ fn lower_stdlib_wrapper_node(
     if let Some(c) = lower_stdlib_constant(fn_qn) {
         return Ok(Some(c));
     }
-    let stripped = fn_qn.strip_prefix("anthill.prelude.").unwrap_or(fn_qn);
-    if stripped == "Option.some" || fn_qn == "some" {
+    if fn_qn == "anthill.prelude.Option.some" {
         let mut parts = Vec::new();
         for a in combined_args(pos_args, named_args) {
             parts.push(lower_node(kb, ctx, a)?);
@@ -4623,7 +4614,32 @@ fn lower_stdlib_wrapper_node(
         }
         return Ok(Some(format!("std::make_optional({})", parts[0])));
     }
-    Ok(None)
+    let half = match fn_qn {
+        "anthill.prelude.Result.ok" => "ok",
+        "anthill.prelude.Result.err" => "err",
+        _ => return Ok(None),
+    };
+    let mut parts = Vec::new();
+    for a in combined_args(pos_args, named_args) {
+        parts.push(lower_node(kb, ctx, a)?);
+    }
+    if parts.len() != 1 {
+        return Err(CppCodegenError {
+            message: format!("Result.{half} expects 1 arg, got {}", parts.len()),
+        });
+    }
+    let ty = occ.inferred_type().ok_or_else(|| CppCodegenError {
+        message: format!(
+            "Result.{half}({}) has no inferred type, and a C++ Result value is built at \
+             its type",
+            parts[0]
+        ),
+    })?;
+    let result_cpp = lower_type(kb, ctx, &ty)?;
+    Ok(Some(format!(
+        "{result_cpp}(anthill::runtime::{half}({}))",
+        parts[0]
+    )))
 }
 
 /// Lower an entity-constructor application from NodeOccurrence args
@@ -4873,7 +4889,7 @@ fn analyse_pattern_occ(
             let ctor_qn = kb.qualified_name_of(ctor_sym).to_string();
             let short = short_name_of(&ctor_qn);
             // Option.some(?w) special case mirrors the term-based path.
-            if ctor_qn == "anthill.prelude.Option.some" || ctor_qn == "Option.some" {
+            if ctor_qn == "anthill.prelude.Option.some" {
                 if pos_args.len() != 1 {
                     return Err(CppCodegenError {
                         message: format!(
@@ -4892,10 +4908,40 @@ fn analyse_pattern_occ(
                     }],
                 });
             }
-            if ctor_qn == "anthill.prelude.Option.none" || ctor_qn == "Option.none" {
+            if ctor_qn == "anthill.prelude.Option.none" {
                 return Ok(PatternInfo {
                     tag_check: Some(format!("!{scrutinee}.has_value()")),
                     decls: Vec::new(),
+                });
+            }
+            // `Result` lowers to `anthill::runtime::Result`, which keeps its halves
+            // behind `is_ok()` / `value()` and `is_err()` / `error()`.
+            let result_half = match ctor_qn.as_str() {
+                "anthill.prelude.Result.ok" => Some(("is_ok", "value")),
+                "anthill.prelude.Result.err" => Some(("is_err", "error")),
+                _ => None,
+            };
+            if let Some((tag, access)) = result_half {
+                if pos_args.len() != 1 {
+                    return Err(CppCodegenError {
+                        message: format!(
+                            "{ctor_qn} pattern expects 1 sub-pattern, got {}",
+                            pos_args.len()
+                        ),
+                    });
+                }
+                let mut decls = Vec::new();
+                if !matches!(pos_args[0].as_pattern(), Some(Pattern::Wildcard)) {
+                    let bind_name = match_subpattern_name(kb, &ctor_qn, &pos_args[0])?;
+                    decls.push(PatternBinding {
+                        cpp_name: cpp_identifier(&bind_name),
+                        source_name: bind_name,
+                        access: format!("{scrutinee}.{access}()"),
+                    });
+                }
+                return Ok(PatternInfo {
+                    tag_check: Some(format!("{scrutinee}.{tag}()")),
+                    decls,
                 });
             }
             // Generic entity constructor: variant tag + per-sub-pattern
@@ -5259,10 +5305,11 @@ fn lower_tuple_elem_types(
 }
 
 /// Lower a `parameterized(base: sort_ref(...), bindings: [...])` term
-/// to its C++ template form. Base resolves via carrier or the keyed
-/// `TypeMapping` query (`cpp_base_host_type`);
-/// each binding's `value` is recursively lowered into the angle-bracket
-/// arg list, in TypeBinding declaration order.
+/// to its C++ template form. A base the keyed `TypeMapping` query maps is
+/// rendered through that mapping's template, which places each binding by
+/// its parameter name (`Result<$T, $E>`). A carrier-bound base and a
+/// higher-kinded type parameter name a template the user wrote for the sort
+/// itself, so the bindings are wrapped in the sort's declaration order.
 fn lower_parameterized(
     kb: &mut KnowledgeBase,
     ctx: &CodegenContext,
@@ -5286,26 +5333,20 @@ fn lower_parameterized(
     // arity leaves that ill-kinded case to fall through to the loud
     // "no C++ mapping" error below rather than silently emitting invalid C++.
     let base_is_hk_param = !kb.type_params_of_sort(base_sym).is_empty();
-    // WI-760: the `TypeMapping` arm can no longer ride an `or_else` closure —
-    // it takes `&mut` on the KB, which the closure would capture uniquely while
-    // the earlier arms still borrow it. Matching preserves both the fallback
-    // ORDER and its laziness: the mapping is queried only if neither earlier
-    // arm hit.
-    let template_name = match ctx
+    let user_template = ctx
         .lookup_type_param(short)
         .filter(|_| base_is_hk_param)
-        .or_else(|| ctx.carriers.lookup(&qualified).map(str::to_string))
-    {
-        Some(name) => name,
-        None => resolve_type_mapping(kb, ctx, &[short], None)?
-            .map(|h| h.host_type)
-            .ok_or_else(|| CppCodegenError {
+        .or_else(|| ctx.carriers.lookup(&qualified).map(str::to_string));
+    let Some(template_name) = user_template else {
+        let hit =
+            resolve_type_mapping(kb, ctx, &qualified, None)?.ok_or_else(|| CppCodegenError {
                 message: format!(
                     "no C++ mapping for parameterized sort '{qualified}' — add a \
                      CarrierBinding, or a `fact TypeMapping(lang: some(\"cpp\"), \
-                     anthill_type: \"{short}\", host_type: ...)`"
+                     anthill_type: \"{qualified}\", host_type: ...)`"
                 ),
-            })?,
+            })?;
+        return render_type_template(kb, ctx, &qualified, &hit.host_type, &binding_pairs);
     };
 
     // C++ template args follow the sort's DECLARATION order (`template<K, V>`),
@@ -5352,6 +5393,58 @@ fn lower_parameterized(
     }
 }
 
+/// Render a `TypeMapping` `host_type` template for one application of the sort
+/// `qualified`: each `$Name` becomes the C++ type of the binding of the sort's
+/// parameter `Name`. The template was checked against the sort's parameters when
+/// the mappings were read ([`check_type_mappings`]); what can still be missing here
+/// is a binding — an application that leaves a parameter open has no C++ type.
+fn render_type_template(
+    kb: &mut KnowledgeBase,
+    ctx: &CodegenContext,
+    qualified: &str,
+    template: &str,
+    bindings: &[(Symbol, Value)],
+) -> Result<String, CppCodegenError> {
+    let parts = parse_type_template(template).map_err(|what| CppCodegenError {
+        message: format!(
+            "the cpp TypeMapping of '{qualified}' maps it to {template:?}, which {what}"
+        ),
+    })?;
+    let mut out = String::new();
+    for part in parts {
+        match part {
+            TypeTemplatePart::Text(text) => out.push_str(&text),
+            TypeTemplatePart::Param(name) => {
+                let value = bindings
+                    .iter()
+                    .find(|(p, _)| kb.local_name_of(*p) == name)
+                    .map(|(_, v)| v.clone())
+                    .ok_or_else(|| CppCodegenError {
+                        message: format!(
+                            "'{qualified}' is applied without its parameter `{name}`, and its \
+                             C++ type {template:?} needs it — a type with an open parameter has \
+                             no C++ type"
+                        ),
+                    })?;
+                let arg = lower_type(kb, ctx, &value)?;
+                // `Unit` lowers to `void`, which is no template argument:
+                // `std::optional<void>` and `Result<void, E>` do not compile.
+                if arg == "void" {
+                    return Err(CppCodegenError {
+                        message: format!(
+                            "'{qualified}' is applied with `{name}` = Unit, which this profile \
+                             lowers to `void`, and its C++ type {template:?} cannot take `void` \
+                             as a template argument"
+                        ),
+                    });
+                }
+                out.push_str(&arg);
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Map a sort symbol to its C++ type spelling. Lookup order:
 ///   1. `CarrierTable` (from `Implementation` / `CarrierBinding` facts)
 ///   2. Keyed `TypeMapping` query (`cpp_base_host_type`, WI-089) — the
@@ -5395,8 +5488,22 @@ fn sort_to_cpp(
     // `[profile?, none]` selects a profile overlay or the language base (never
     // a binding's marshalling overlay). `cpp_base_host_type` (base-only) is the
     // profile-agnostic special case of this.
-    if let Some(hit) = resolve_type_mapping(kb, ctx, &[short], None)? {
-        return Ok(hit.host_type);
+    if let Some(hit) = resolve_type_mapping(kb, ctx, &qualified, None)? {
+        let params = kb.type_params_of_sort(sym);
+        if params.is_empty() {
+            return render_type_template(kb, ctx, &qualified, &hit.host_type, &[]);
+        }
+        // A parameterized sort written without its arguments is passed unapplied, to a
+        // higher-kinded parameter (`Wrap[F = Option]`): it stands as the template's own
+        // name, where the template applies it to the parameters in declaration order.
+        return bare_template_name(&hit.host_type, &params).ok_or_else(|| CppCodegenError {
+            message: format!(
+                "'{qualified}' is written without its parameters {params:?}, and its C++ \
+                 type {:?} does not apply one template to them in declaration order, so \
+                 no template name stands for it unapplied",
+                hit.host_type
+            ),
+        });
     }
     // Runtime use of `anthill.reflect.*` (TermRepr, SortInfo, KB, …)
     // and `anthill.persistence.*` (Store, FileStore, IndexedFileStore, …) is
@@ -5492,59 +5599,43 @@ fn unique_or_ambiguous<T: Clone + PartialEq>(
     }
 }
 
-/// WI-089(a) / WI-833 / WI-847: keyed overlay selection over an ordered
-/// active-key list, most-specific-first — the priority logic that stays
-/// CALLER-SIDE (in Rust), not in the resolver, so migrating the read to
-/// `Resolve` (WI-833) only changes where the candidate rows come from, not how a
-/// key shadows another. `spellings` are the candidate `anthill_type` spellings of
-/// ONE sort, each paired with its OWN resolved hits, in priority order (a
-/// qualified name before its short name). For each key in `active_keys`, in
-/// order, each spelling's hits carrying that key are aggregated by
-/// [`unique_or_ambiguous`]:
-///   * 0 distinct  → this spelling is absent at this key; try the NEXT spelling,
-///     and once every spelling is absent, fall through to the next key (a
-///     binding / profile overlay shadows the base only where present, and the
-///     base sentinel `None` is always last, so a base-only type still resolves);
+/// WI-089(a) / WI-833: keyed overlay selection over an ordered active-key list,
+/// most-specific-first — the priority logic that stays CALLER-SIDE (in Rust), not
+/// in the resolver, so migrating the read to `Resolve` (WI-833) only changes where
+/// the candidate rows come from, not how a key shadows another. `hits` are the
+/// resolved entries for the ONE sort named `what`. For each key in `active_keys`,
+/// in order, the hits carrying that key are aggregated by [`unique_or_ambiguous`]:
+///   * 0 distinct  → absent at this key; fall through to the next key (a binding /
+///     profile overlay shadows the base only where present, and the base sentinel
+///     `None` is always last, so a base-only type still resolves);
 ///   * 1 distinct  → that is the selection;
-///   * >1 distinct → AMBIGUOUS: two COMPETING mappings of the SAME spelling share
-///     one key, so no deterministic pick exists — a loud `CppCodegenError` naming
-///     the spelling, the key, and the competing host types, never the silent
-///     first-wins the WI-089 `select_keyed` did. The `Refuse` read this replaced
-///     could not surface a same-key conflict (it never evaluated a guard, so two
-///     competing overlays were a load-time fact collision); under `Resolve` two
-///     guarded overlays can both fire here, so the ambiguity is detected here.
-///
-/// The KEY ladder DOMINATES the spelling order: a higher-priority key is resolved
-/// across EVERY spelling before a lower key is consulted, so a binding / profile
-/// overlay written under EITHER spelling still shadows a base written under the
-/// other — WI-847 must not let a qualified-name BASE preempt a short-name binding
-/// OVERLAY (binding > base). WITHIN a key, the earliest spelling that carries a
-/// hit wins: that is the qualified-over-short OVERRIDE — a cross-spelling pair at
-/// one key resolves to the qualified one, while only a SAME-spelling pair at one
-/// key is the ambiguity above (WI-833). This per-spelling-within-key walk is what
-/// the WI-833 MERGE (which fused both spellings into one list, reading a
-/// cross-spelling override as that same-key ambiguity — WI-847) replaced.
+///   * >1 distinct → AMBIGUOUS: two COMPETING mappings share one key, so no
+///     deterministic pick exists — a loud `CppCodegenError` naming the sort, the
+///     key, and the competing host types, never the silent first-wins the WI-089
+///     `select_keyed` did. The `Refuse` read this replaced could not surface a
+///     same-key conflict (it never evaluated a guard, so two competing overlays were
+///     a load-time fact collision); under `Resolve` two guarded overlays can both
+///     fire here, so the ambiguity is detected here.
 fn select_keyed_unique(
-    spellings: &[(&str, Vec<TypeMappingHit>)],
+    what: &str,
+    hits: &[TypeMappingHit],
     active_keys: &[Option<String>],
 ) -> Result<Option<TypeMappingHit>, CppCodegenError> {
     for ak in active_keys {
-        for (what, hits) in spellings {
-            let at_key = hits.iter().filter(|h| &h.key == ak).cloned();
-            let selected = unique_or_ambiguous(at_key, |distinct| {
-                let hosts: Vec<&str> = distinct.iter().map(|h| h.host_type.as_str()).collect();
-                CppCodegenError {
-                    message: format!(
-                        "ambiguous cpp TypeMapping for {what} at key {ak:?}: competing host \
-                         types {hosts:?} — a resolved overlay must select a single mapping \
-                         per key (check for duplicate facts, or guarded rules whose guards \
-                         overlap)"
-                    ),
-                }
-            })?;
-            if selected.is_some() {
-                return Ok(selected);
+        let at_key = hits.iter().filter(|h| &h.key == ak).cloned();
+        let selected = unique_or_ambiguous(at_key, |distinct| {
+            let hosts: Vec<&str> = distinct.iter().map(|h| h.host_type.as_str()).collect();
+            CppCodegenError {
+                message: format!(
+                    "ambiguous cpp TypeMapping for {what} at key {ak:?}: competing host \
+                     types {hosts:?} — a resolved overlay must select a single mapping \
+                     per key (check for duplicate facts, or guarded rules whose guards \
+                     overlap)"
+                ),
             }
+        })?;
+        if selected.is_some() {
+            return Ok(selected);
         }
     }
     Ok(None)
@@ -5631,76 +5722,140 @@ fn query_type_mappings(
     Ok(hits)
 }
 
-/// WI-089(a): resolve the single best `TypeMapping` entry for an anthill type
-/// under the active-key priority. `names` are the candidate `anthill_type`
-/// spellings for ONE sort — a qualified name first, then its short name — each
-/// queried into its OWN hit list and handed, IN THAT ORDER, to
-/// [`select_keyed_unique`]. So a fact written either way resolves; a
-/// qualified-name overlay OVERRIDES a short-name one at the same key (the
-/// qualified-over-short priority this doc has always promised — WI-847); and the
-/// key ladder (binding > profile > base) still DOMINATES that spelling order, so
-/// a binding overlay written under EITHER spelling shadows a base written under
-/// the other. `binding` is the foreign-binding key in scope (`Some` at a
-/// carrier-dispatch boundary, `None` in declared-signature position). Returns the
-/// highest-priority overlay present — the one query that backs BOTH
-/// declared-signature host-type lowering (reads `host_type`) and value-level
-/// marshalling (reads `lift` / `lower`).
 /// The profile's mapping for `Unit`, the tuple of no components (`void` in `cpp_std`):
 /// the one answer [`lower_type`] lowers it by and [`is_body_emittable`] asks.
 fn unit_mapping(
     kb: &mut KnowledgeBase,
     ctx: &CodegenContext,
 ) -> Result<Option<TypeMappingHit>, CppCodegenError> {
-    resolve_type_mapping(kb, ctx, &["Unit"], None)
+    resolve_type_mapping(kb, ctx, "anthill.prelude.Unit", None)
 }
 
+/// WI-089(a): resolve the single best `TypeMapping` entry for the sort whose
+/// qualified name is `qualified`, under the active-key priority. `binding` is the
+/// foreign-binding key in scope (`Some` at a carrier-dispatch boundary, `None` in
+/// declared-signature position). Returns the highest-priority overlay present —
+/// the one query that backs BOTH declared-signature host-type lowering (reads
+/// `host_type`) and value-level marshalling (reads `lift` / `lower`).
+///
+/// A sort is looked up by its qualified name and by nothing else: an entry
+/// written under a short name would answer for every sort of that name in every
+/// namespace. The first lookup of a context checks every cpp entry
+/// ([`check_type_mappings`]), so an entry that names no sort that way is an error
+/// rather than one that silently never matches.
 fn resolve_type_mapping(
     kb: &mut KnowledgeBase,
     ctx: &CodegenContext,
-    names: &[&str],
+    qualified: &str,
     binding: Option<&str>,
 ) -> Result<Option<TypeMappingHit>, CppCodegenError> {
-    let active_keys = ctx.active_keys(binding);
-    let mut spellings: Vec<(&str, Vec<TypeMappingHit>)> = Vec::with_capacity(names.len());
-    for &name in names {
-        // Skip a repeated spelling (a sort whose qualified name equals its short
-        // name — builtins like `Float`) so we don't issue the same discrim query
-        // twice; the first occurrence already carries that spelling's hits.
-        if spellings.iter().any(|(n, _)| *n == name) {
-            continue;
-        }
-        spellings.push((name, query_type_mappings(kb, "cpp", name)?));
+    if !ctx.type_mappings_checked.get() {
+        check_type_mappings(kb)?;
+        ctx.type_mappings_checked.set(true);
     }
-    select_keyed_unique(&spellings, &active_keys)
+    let hits = query_type_mappings(kb, "cpp", qualified)?;
+    select_keyed_unique(qualified, &hits, &ctx.active_keys(binding))
 }
 
-/// WI-089: the C++ language-base host type for `anthill_type` (the
-/// `key = none` entry), via the keyed `TypeMapping` query. Replaces the
-/// hardcoded `prim_lower` / `param_lower` tables: primitives lower to a
-/// leaf type (`Int64 -> int64_t`); parameterized stdlib sorts lower to a
-/// bare template name (`List -> std::vector`) the caller wraps with args.
+/// Every cpp `TypeMapping` entry the KB resolves, held to what its readers assume:
+/// `anthill_type` is the qualified name of a sort, and `host_type` is a template
+/// whose placeholders are that sort's type parameters, each exactly once. Checked
+/// for every entry, not only the ones a header happens to look up, as the
+/// `operation_map` templates are ([`HostOpTable`]).
+fn check_type_mappings(kb: &mut KnowledgeBase) -> Result<(), CppCodegenError> {
+    for row in
+        resolve_realization_rows(kb, &["anthill.realization.TypeMapping", "TypeMapping"], &[])?
+    {
+        if row_named_optional_string(kb, &row, "lang")?.as_deref() != Some("cpp") {
+            continue;
+        }
+        let Some(anthill_type) = row_named_string(kb, &row, "anthill_type")? else {
+            return Err(CppCodegenError {
+                message: "a cpp TypeMapping writes no `anthill_type` string — the sort it \
+                          maps is required"
+                    .to_string(),
+            });
+        };
+        let Some(host_type) = row_named_string(kb, &row, "host_type")? else {
+            return Err(CppCodegenError {
+                message: format!(
+                    "the cpp TypeMapping of {anthill_type:?} writes no `host_type` string — \
+                     the host type it maps to is required"
+                ),
+            });
+        };
+        let subject = format!("the cpp TypeMapping of {anthill_type:?} to {host_type:?}");
+        let sort = kb
+            .try_resolve_symbol(&anthill_type)
+            .filter(|s| kb.has_kind(*s, SymbolKind::Sort))
+            .filter(|s| kb.qualified_name_of(*s) == anthill_type)
+            .ok_or_else(|| CppCodegenError {
+                message: format!(
+                    "{subject} names no sort by its qualified name — `anthill_type` is \
+                     the sort's qualified name (\"anthill.prelude.Int64\")"
+                ),
+            })?;
+        let parts = parse_type_template(&host_type).map_err(|what| CppCodegenError {
+            message: format!("{subject}: the host type {what}"),
+        })?;
+        let params = kb.type_params_of_sort(sort);
+        let mut written: Vec<&str> = Vec::new();
+        for part in &parts {
+            if let TypeTemplatePart::Param(name) = part {
+                if !params.iter().any(|p| p == name) {
+                    return Err(CppCodegenError {
+                        message: format!(
+                            "{subject}: `${name}` is no type parameter of the sort \
+                             (it declares {params:?})"
+                        ),
+                    });
+                }
+                if written.contains(&name.as_str()) {
+                    return Err(CppCodegenError {
+                        message: format!("{subject}: `${name}` is written twice"),
+                    });
+                }
+                written.push(name);
+            }
+        }
+        if let Some(missing) = params.iter().find(|p| !written.contains(&p.as_str())) {
+            return Err(CppCodegenError {
+                message: format!(
+                    "{subject}: the sort's type parameter `{missing}` has no `${missing}` \
+                     in the host type — each parameter is placed once"
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// WI-089: the C++ language-base host type of the sort whose qualified name is
+/// `anthill_type` (the `key = none` entry), via the keyed `TypeMapping` query — the
+/// `host_type` template as written (`Int64 -> int64_t`, `List -> std::vector<$T>`).
 pub fn cpp_base_host_type(
     kb: &mut KnowledgeBase,
     anthill_type: &str,
 ) -> Result<Option<String>, CppCodegenError> {
     // The language base is the `key = none` entry — i.e. selection over the
-    // single-element active-key list `[none]`, with the single spelling
-    // `anthill_type`. Routed through the shared `select_keyed_unique` so there is
-    // one implementation of "pick the entry for this key", not a divergent
-    // `.find(key.is_none())` spelling — and so a duplicate/competing base entry
-    // (WI-833) is deduped or rejected here too.
+    // single-element active-key list `[none]`. Routed through the shared
+    // `select_keyed_unique` so there is one implementation of "pick the entry for
+    // this key", not a divergent `.find(key.is_none())` spelling — and so a
+    // duplicate/competing base entry (WI-833) is deduped or rejected here too.
+    check_type_mappings(kb)?;
     let hits = query_type_mappings(kb, "cpp", anthill_type)?;
-    Ok(select_keyed_unique(&[(anthill_type, hits)], &[None])?.map(|h| h.host_type))
+    Ok(select_keyed_unique(anthill_type, &hits, &[None])?.map(|h| h.host_type))
 }
 
-/// WI-089(a): resolve the cpp host type for `anthill_type` under the active-key
-/// priority — binding overlay > profile overlay > language base. `profile` is
-/// the compilation profile (e.g. "cpp20-stl"); `binding` is the foreign-binding
-/// key in scope at a carrier-dispatch boundary (`None` in declared-signature
-/// position). This is exactly the selection declared-signature lowering and the
-/// marshalling boundary perform internally, surfaced so callers (and tests) can
-/// ask "what does X map to under profile P at binding B?". `cpp_base_host_type`
-/// is the `profile = None, binding = None` special case.
+/// WI-089(a): resolve the cpp host type of the sort whose qualified name is
+/// `anthill_type` under the active-key priority — binding overlay > profile overlay
+/// > language base. `profile` is the compilation profile (e.g. "cpp20-stl");
+/// `binding` is the foreign-binding key in scope at a carrier-dispatch boundary
+/// (`None` in declared-signature position). This is exactly the selection
+/// declared-signature lowering and the marshalling boundary perform internally,
+/// surfaced so callers (and tests) can ask "what does X map to under profile P at
+/// binding B?". `cpp_base_host_type` is the `profile = None, binding = None` special
+/// case.
 pub fn cpp_host_type(
     kb: &mut KnowledgeBase,
     anthill_type: &str,
@@ -5708,7 +5863,7 @@ pub fn cpp_host_type(
     binding: Option<&str>,
 ) -> Result<Option<String>, CppCodegenError> {
     let ctx = CodegenContext::with_profile(kb, profile.map(str::to_string))?;
-    Ok(resolve_type_mapping(kb, &ctx, &[anthill_type], binding)?.map(|h| h.host_type))
+    Ok(resolve_type_mapping(kb, &ctx, anthill_type, binding)?.map(|h| h.host_type))
 }
 
 /// WI-576: THE uniform effect-realization accessor — the host `ReceiverForm`

@@ -25,11 +25,11 @@ namespace anthill.realization.cpp_std
   import anthill.prelude.Option.{some, none}
 
   -- Primitives → leaf host type.
-  fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "Int64",  host_type: "int64_t",     lift: none, lower: none)
-  fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "Float",  host_type: "double",      lift: none, lower: none)
-  fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "Bool",   host_type: "bool",        lift: none, lower: none)
-  fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "String", host_type: "std::string", lift: none, lower: none)
-  fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "Unit",   host_type: "void",        lift: none, lower: none)
+  fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "anthill.prelude.Int64",  host_type: "int64_t",     lift: none, lower: none)
+  fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "anthill.prelude.Float",  host_type: "double",      lift: none, lower: none)
+  fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "anthill.prelude.Bool",   host_type: "bool",        lift: none, lower: none)
+  fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "anthill.prelude.String", host_type: "std::string", lift: none, lower: none)
+  fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "anthill.prelude.Unit",   host_type: "void",        lift: none, lower: none)
 
   -- NO `BigInt` MAPPING, and that is a DECISION, not an omission (WI-890). C++17's
   -- standard library has no arbitrary-precision integer, so the base `cpp` profile
@@ -41,13 +41,16 @@ namespace anthill.realization.cpp_std
   -- through a `carrier` clause + `artifact`) is where its mapping belongs. The rust
   -- binding realizes it (`num_bigint`), so the two hosts differ here by design.
 
-  -- Parameterized stdlib containers: host_type is the template name; the
-  -- codegen wraps the type arguments (List[T = X] -> std::vector<X>).
-  fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "List",   host_type: "std::vector",   lift: none, lower: none)
-  fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "Option", host_type: "std::optional", lift: none, lower: none)
-  fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "Pair",   host_type: "std::pair",     lift: none, lower: none)
-  fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "Map",    host_type: "std::map",      lift: none, lower: none)
-  fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "Set",    host_type: "std::set",      lift: none, lower: none)
+  -- Parameterized sorts: host_type is a template over the sort's type parameters,
+  -- each written `$Name` once (List[T = X] -> std::vector<X>). The template places
+  -- the arguments, so a host whose order differs from the declaration's says so:
+  -- `Result` declares `E` before `T`.
+  fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "anthill.prelude.List",   host_type: "std::vector<$T>",   lift: none, lower: none)
+  fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "anthill.prelude.Option", host_type: "std::optional<$T>", lift: none, lower: none)
+  fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "anthill.prelude.Pair",   host_type: "std::pair<$A, $B>", lift: none, lower: none)
+  fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "anthill.prelude.Map",    host_type: "std::map<$K, $V>",  lift: none, lower: none)
+  fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "anthill.prelude.Set",    host_type: "std::set<$T>",      lift: none, lower: none)
+  fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "anthill.prelude.Result", host_type: "anthill::runtime::Result<$T, $E>", lift: none, lower: none)
 
   -- Effect realization for the C++ language base (key = none, profile-agnostic).
   -- The keys here ARE cpp's supported-effect set (WI-571's capability gate reads

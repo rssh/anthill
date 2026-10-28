@@ -48,13 +48,71 @@ struct User {
 }
 
 #[test]
-fn two_param_field_lowers_in_declaration_order() {
+fn two_param_carrier_lowers_in_declaration_order() {
     // WI-361 regression guard: term-backed parameterized bindings are stored in
     // canonical symbol-interning order, NOT declaration order, so cpp-gen must
-    // emit C++ template args in the sort's DECLARED param order. A 2-param sort
-    // `Pair { sort Z = ?; sort A = ? }` mapped to `std::pair` must lower
-    // `Pair[Z = Int64, A = String]` as `std::pair<int64_t, std::string>` (Z first),
-    // regardless of how Z/A intern. Pre-fix this emitted the args swapped.
+    // emit a carrier's C++ template args in the sort's DECLARED param order. A
+    // 2-param sort `Pair { sort Z = ?; sort A = ? }` carried by `std::pair` must
+    // lower `Pair[A = String, Z = Int64]` as `std::pair<int64_t, std::string>` (Z
+    // first), regardless of how Z/A intern or are written. Pre-fix this emitted the
+    // args swapped.
+    let source = r#"
+        namespace test.params
+          import anthill.prelude.{Int64, String}
+          import anthill.realization.{Implementation, CarrierBinding}
+          import anthill.prelude.Option.{none}
+          sort Pair
+            sort Z = ?
+            sort A = ?
+          end
+          fact Implementation(
+            target:        "test.params.Pair",
+            artifact:      "",
+            language:      "cpp",
+            profile:       none,
+            description:   none,
+            carrier:       [CarrierBinding(sort_name: "Pair", host_type: "std::pair")],
+            namespace_map: []
+          )
+          entity Holder(p: Pair[A = String, Z = Int64])
+        end
+    "#;
+    let mut kb = load_kb_with(source);
+    let cpp = emit_entity_struct(&mut kb, "test.params.Holder").expect("emit Holder");
+    assert!(
+        cpp.contains("std::pair<int64_t, std::string>"),
+        "2-param type must lower in declaration order (Z=Int64 then A=String); got:\n{cpp}"
+    );
+}
+
+#[test]
+fn a_mapped_sort_is_placed_by_its_template() {
+    // K6WFS: a `TypeMapping`'s host type is a template that places each argument by
+    // the parameter it binds — `std::pair<$A, $B>` for the prelude's `Pair[A, B]`
+    // however the application writes them, and `Result<$T, $E>` for `Result`, whose
+    // declaration puts `E` first. MEASURED before the change: refused, `Result` had no
+    // cpp mapping. The `Pair` field passes under a declaration-order wrap too, by
+    // design: `std::pair` takes its arguments in the declaration's order.
+    let source = r#"
+        namespace test.params
+          import anthill.prelude.{Int64, String, Pair, Result}
+          entity Holder(p: Pair[B = String, A = Int64], r: Result[E = String, T = Int64])
+        end
+    "#;
+    let mut kb = load_kb_with(source);
+    let cpp = emit_entity_struct(&mut kb, "test.params.Holder").expect("emit Holder");
+    assert!(cpp.contains("std::pair<int64_t, std::string> p;"), "{cpp}");
+    assert!(
+        cpp.contains("anthill::runtime::Result<int64_t, std::string> r;"),
+        "{cpp}"
+    );
+}
+
+#[test]
+fn a_sort_named_like_a_mapped_one_is_its_own() {
+    // K6WFS: a mapping is looked up by the sort's qualified name. The project's own
+    // `test.params.Pair` is not the prelude's, and has no C++ mapping of its own —
+    // it was `std::pair` while the lookup also tried the short name `Pair`.
     let source = r#"
         namespace test.params
           import anthill.prelude.{Int64, String}
@@ -66,10 +124,12 @@ fn two_param_field_lowers_in_declaration_order() {
         end
     "#;
     let mut kb = load_kb_with(source);
-    let cpp = emit_entity_struct(&mut kb, "test.params.Holder").expect("emit Holder");
+    let err = emit_entity_struct(&mut kb, "test.params.Holder").expect_err("no mapping");
     assert!(
-        cpp.contains("std::pair<int64_t, std::string>"),
-        "2-param type must lower in declaration order (Z=Int64 then A=String); got:\n{cpp}"
+        err.message
+            .contains("no C++ mapping for parameterized sort 'test.params.Pair'"),
+        "{}",
+        err.message
     );
 }
 

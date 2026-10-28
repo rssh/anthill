@@ -3890,7 +3890,7 @@ class BootstrapTest extends munit.FunSuite:
           effect_map: [],
           receiver_map: [],
           type_map: [
-            TypeMapping(anthill_type: "Int64", host_type: "_root_.my.own.Fixnum")
+            TypeMapping(anthill_type: "anthill.prelude.Int64", host_type: "_root_.my.own.Fixnum")
           ],
           trait_return: ImplTrait
         )
@@ -4056,31 +4056,39 @@ class BootstrapTest extends munit.FunSuite:
       """, s"badmap_$lang.anthill")
 
     val kb = StdlibFixture.kbWith(
-      mapping("dup", """[TypeMapping(anthill_type: "Int64", host_type: "A"),
-                        TypeMapping(anthill_type: "Int64", host_type: "B")]"""),
+      mapping("dup", """[TypeMapping(anthill_type: "anthill.prelude.Int64", host_type: "A"),
+                        TypeMapping(anthill_type: "anthill.prelude.Int64", host_type: "B")]"""),
+      // K6WFS: `anthill_type` is the sort's qualified name. A short one would place
+      // against whatever sort of that leaf a scope reaches.
+      mapping("short", """[TypeMapping(anthill_type: "Int64", host_type: "Long")]"""),
+      mapping("elsewhere", """[TypeMapping(anthill_type: "my.own.Int64", host_type: "Long")]"""),
       // WI-088's marshalled form: the host holds the value DIFFERENTLY and converts at
       // the boundary. Read as a plain rename it emits code that type-checks and moves
       // the wrong bytes, so it is refused rather than half-honoured.
-      mapping("marshalled", """[TypeMapping(anthill_type: "Vec3", host_type: "Array[Double]",
+      mapping("marshalled", """[TypeMapping(anthill_type: "anthill.geometry.Vec3", host_type: "Array[Double]",
                                 lift: some("Vec3.fromArray"))]"""),
       // A junk `lift` must not read as "no adapter": that is the one way a marshalled
       // entry could still pass as a plain rename.
-      mapping("badlift", """[TypeMapping(anthill_type: "Int64", host_type: "Long", lift: 42)]"""),
+      mapping("badlift", """[TypeMapping(anthill_type: "anthill.prelude.Int64", host_type: "Long", lift: 42)]"""),
       // WI-089's FLAT keyed form, written where the nested one belongs. `key` selects a
       // profile or a foreign-binding OVERLAY and `lang` selects a host language, and
       // `realization.anthill` documents `none` for both as "legacy/nested entry" — so a
       // written key can only DISAGREE with the LanguageMapping enclosing it. Read as a
       // plain rename, `key: some("webots")` emits the webots-only host type everywhere.
-      mapping("overlay", """[TypeMapping(anthill_type: "Vec3", host_type: "const double *",
+      mapping("overlay", """[TypeMapping(anthill_type: "anthill.geometry.Vec3", host_type: "const double *",
                              key: some("webots"))]"""),
-      mapping("otherlang", """[TypeMapping(anthill_type: "Int64", host_type: "int64_t",
+      mapping("otherlang", """[TypeMapping(anthill_type: "anthill.prelude.Int64", host_type: "int64_t",
                                lang: some("cpp"))]"""),
-      mapping("notalist", """TypeMapping(anthill_type: "Int64", host_type: "Long")"""),
-      mapping("notastring", """[TypeMapping(anthill_type: "Int64", host_type: 42)]"""))
+      mapping("notalist", """TypeMapping(anthill_type: "anthill.prelude.Int64", host_type: "Long")"""),
+      mapping("notastring", """[TypeMapping(anthill_type: "anthill.prelude.Int64", host_type: 42)]"""))
 
     def refusal(lang: String) = intercept[IllegalStateException](
       ScalaProfile.typeMap(kb, language = lang, profile = "std")).getMessage
     assert(refusal("dup").contains("two entries for `Int64`"), refusal("dup"))
+    assert(refusal("short").contains("for `Int64`, which is not a prelude sort's qualified"),
+      refusal("short"))
+    assert(refusal("elsewhere").contains("for `my.own.Int64`, which is not a prelude sort's"),
+      refusal("elsewhere"))
     assert(refusal("marshalled").contains("MARSHALLED"), refusal("marshalled"))
     assert(refusal("badlift").contains("`lift` that is not an Option term"),
       refusal("badlift"))
@@ -4607,7 +4615,7 @@ class BootstrapTest extends munit.FunSuite:
           language: "scala", profile: some("listy"),
           language_version: none,
           effect_map: [], receiver_map: [],
-          type_map: [TypeMapping(anthill_type: "List", host_type: "_root_.scala.List")],
+          type_map: [TypeMapping(anthill_type: "anthill.prelude.List", host_type: "_root_.scala.List")],
           trait_return: ImplTrait
         )
       end

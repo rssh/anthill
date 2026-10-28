@@ -18,17 +18,32 @@ fn base_renames_resolve_via_query() {
     let mut base = |ty: &str| cpp_base_host_type(&mut kb, ty).unwrap();
 
     // Primitives → leaf host type.
-    assert_eq!(base("Int64").as_deref(), Some("int64_t"));
-    assert_eq!(base("Float").as_deref(), Some("double"));
-    assert_eq!(base("String").as_deref(), Some("std::string"));
-    assert_eq!(base("Bool").as_deref(), Some("bool"));
-    assert_eq!(base("Unit").as_deref(), Some("void"));
+    assert_eq!(base("anthill.prelude.Int64").as_deref(), Some("int64_t"));
+    assert_eq!(base("anthill.prelude.Float").as_deref(), Some("double"));
+    assert_eq!(
+        base("anthill.prelude.String").as_deref(),
+        Some("std::string")
+    );
+    assert_eq!(base("anthill.prelude.Bool").as_deref(), Some("bool"));
+    assert_eq!(base("anthill.prelude.Unit").as_deref(), Some("void"));
 
-    // Parameterized stdlib containers → bare template name.
-    assert_eq!(base("List").as_deref(), Some("std::vector"));
-    assert_eq!(base("Option").as_deref(), Some("std::optional"));
+    // Parameterized stdlib sorts → a template over their parameters (K6WFS).
+    assert_eq!(
+        base("anthill.prelude.List").as_deref(),
+        Some("std::vector<$T>")
+    );
+    assert_eq!(
+        base("anthill.prelude.Option").as_deref(),
+        Some("std::optional<$T>")
+    );
+    assert_eq!(
+        base("anthill.prelude.Result").as_deref(),
+        Some("anthill::runtime::Result<$T, $E>")
+    );
 
-    // No mapping for an unknown type.
+    // A sort is looked up by its qualified name only (K6WFS): the short name finds
+    // nothing, as an unknown type does.
+    assert_eq!(base("Int64"), None);
     assert_eq!(base("NoSuchType"), None);
 }
 
@@ -53,17 +68,18 @@ fn guarded_type_mapping_is_evaluated_not_refused() {
               import anthill.prelude.{{Bool}}
               import anthill.prelude.Option.{{some, none}}
 
+              sort Money end
               entity FastMath(on: Bool)
               {toggle}
 
-              rule TypeMapping(lang: some("cpp"), key: none, anthill_type: "Money", host_type: "float",
-                               lift: none, lower: none)
+              rule TypeMapping(lang: some("cpp"), key: none, anthill_type: "test.bodiedguard.Money",
+                               host_type: "float", lift: none, lower: none)
                 :- FastMath(on: true)
             end
         "#
         );
         let mut kb = load_kb_with(&source);
-        cpp_base_host_type(&mut kb, "Money")
+        cpp_base_host_type(&mut kb, "test.bodiedguard.Money")
             .expect("a guarded TypeMapping is resolved, not refused")
     };
 
@@ -87,13 +103,106 @@ fn project_fact_participates_in_query() {
         namespace test.project
           import anthill.realization.{TypeMapping}
           import anthill.prelude.Option.{some, none}
-          fact TypeMapping(lang: some("cpp"), anthill_type: "Money", host_type: "::cents::Cents")
+          sort Money end
+          fact TypeMapping(lang: some("cpp"), anthill_type: "test.project.Money", host_type: "::cents::Cents")
         end
     "#;
     let mut kb = load_kb_with(source);
 
     assert_eq!(
-        cpp_base_host_type(&mut kb, "Money").unwrap().as_deref(),
+        cpp_base_host_type(&mut kb, "test.project.Money")
+            .unwrap()
+            .as_deref(),
         Some("::cents::Cents")
+    );
+}
+
+/// K6WFS: what every cpp `TypeMapping` is held to before any is used — `anthill_type`
+/// names a sort by its qualified name, and `host_type` places each of the sort's
+/// parameters exactly once. Each malformed entry is refused naming itself, where it
+/// used to be either never matched (a short name under the qualified-only lookup) or
+/// wrapped in an order the host does not have. FAILS with `check_type_mappings`
+/// backed out, as do `wi847`'s and `wi848`'s refusal rows; the well-formed twins pass
+/// either way.
+#[test]
+fn a_malformed_type_mapping_is_refused_naming_it() {
+    let refusal = |anthill_type: &str, host_type: &str| {
+        let source = format!(
+            r#"
+            namespace test.malformed
+              import anthill.realization.{{TypeMapping}}
+              import anthill.prelude.Option.{{some, none}}
+              sort Money end
+              sort Box
+                sort K = ?
+                sort V = ?
+              end
+              fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "{anthill_type}",
+                               host_type: "{host_type}", lift: none, lower: none)
+            end
+        "#
+        );
+        let mut kb = load_kb_with(&source);
+        cpp_base_host_type(&mut kb, "anthill.prelude.Int64")
+            .expect_err("a malformed entry is refused at the first lookup")
+            .message
+    };
+    // The well-formed twins resolve.
+    for (anthill_type, host_type) in [
+        ("test.malformed.Money", "cents"),
+        ("test.malformed.Box", "box<$V, $K>"),
+    ] {
+        let source = format!(
+            r#"
+            namespace test.malformed
+              import anthill.realization.{{TypeMapping}}
+              import anthill.prelude.Option.{{some, none}}
+              sort Money end
+              sort Box
+                sort K = ?
+                sort V = ?
+              end
+              fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "{anthill_type}",
+                               host_type: "{host_type}", lift: none, lower: none)
+            end
+        "#
+        );
+        let mut kb = load_kb_with(&source);
+        assert_eq!(
+            cpp_base_host_type(&mut kb, anthill_type)
+                .unwrap()
+                .as_deref(),
+            Some(host_type)
+        );
+    }
+
+    let short = refusal("Money", "cents");
+    assert!(
+        short.contains("names no sort by its qualified name"),
+        "{short}"
+    );
+    let unknown = refusal("test.malformed.Nothing", "cents");
+    assert!(
+        unknown.contains("names no sort by its qualified name"),
+        "{unknown}"
+    );
+    let stray = refusal("test.malformed.Box", "box<$K, $W>");
+    assert!(
+        stray.contains("`$W` is no type parameter of the sort"),
+        "{stray}"
+    );
+    let twice = refusal("test.malformed.Box", "box<$K, $K, $V>");
+    assert!(twice.contains("`$K` is written twice"), "{twice}");
+    let missing = refusal("test.malformed.Box", "box<$K>");
+    assert!(
+        missing.contains("type parameter `V` has no `$V`"),
+        "{missing}"
+    );
+    let bare = refusal("test.malformed.Box", "box");
+    assert!(bare.contains("type parameter `K` has no `$K`"), "{bare}");
+    let scalar = refusal("test.malformed.Money", "cents<$T>");
+    assert!(
+        scalar.contains("`$T` is no type parameter of the sort"),
+        "{scalar}"
     );
 }

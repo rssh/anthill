@@ -69,7 +69,7 @@ fn emit_sensor_without_naming_profile() -> Result<String, String> {
           -- The project has its OWN type mappings (so the signature lowers) but
           -- ships NO cpp NamingConvention. cpp_std (which normally supplies the
           -- one snake_case -> camelCase convention) is NOT loaded here.
-          fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "Unit",
+          fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "anthill.prelude.Unit",
                            host_type: "void", lift: none, lower: none)
         end
     "#;
@@ -131,7 +131,7 @@ fn declared_identity_casing_emits_identity_without_error() {
             namespace_map: [],
             binding:       none)
 
-          fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "Unit",
+          fact TypeMapping(lang: some("cpp"), key: none, anthill_type: "anthill.prelude.Unit",
                            host_type: "void", lift: none, lower: none)
           -- Identity casing, declared intentionally (the error's advised remedy).
           fact NamingConvention(language: "cpp", method_case: "snake_case", source_case: "snake_case")
