@@ -83,6 +83,7 @@ namespace test.r1w5a.eff
   import anthill.prelude.List.{cons, nil}
   import anthill.prelude.Option.{some, none}
   import anthill.prelude.Time.{now, Clock}
+  import anthill.prelude.PartialEq.{eq}
   import anthill.kernel.{or}
   import anthill.persistence.{Store}
 

@@ -1075,6 +1075,7 @@ impl KnowledgeBase {
             entity_fields: plain(&self.entity_fields),
             constructor_symbols: plain(&self.constructor_symbols),
             head_argument_sites: plain(&self.head_argument_sites),
+            effect_guard_sites: plain(&self.effect_guard_sites),
             absence_records: plain(&self.absence_records),
             absence_marker_syms: plain(&self.absence_marker_syms),
             next_var: plain(&self.next_var),

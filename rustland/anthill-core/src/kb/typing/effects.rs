@@ -1096,11 +1096,23 @@ pub(super) fn eq_neq_functors(kb: &mut KnowledgeBase) -> (Symbol, Option<Symbol>
     )
 }
 
+/// The term a call's argument stands for in a guard or a contract clause — its goal-term
+/// twin (`try_occurrence_to_term`) — or `None` when there is none to substitute: a
+/// computed, opaque expression, or a term holding a rule variable. A rule variable (`?b`
+/// in `?s <=> stampIf(?b)`) lowers to its raw De Bruijn index, which the resolver
+/// compares as a constant distinct from every literal, so `neq(?#0, true)` was proved and
+/// the guard `eq(b, true)` refuted at an argument whose value is not known until the rule
+/// runs. Without an entry the parameter stays symbolic and the guard is undecided, as it
+/// is at an operation's own parameter.
+pub(super) fn guard_arg_term(kb: &mut KnowledgeBase, arg: &Rc<NodeOccurrence>) -> Option<TermId> {
+    crate::kb::node_occurrence::try_occurrence_to_term(kb, arg).filter(|t| !kb.mentions_debruijn(t))
+}
+
 /// Build the call substitution σ: callee parameter ↦ the actual argument's
-/// goal-term twin (`try_occurrence_to_term`). Used by guard discharge to ground
-/// a guard over the actual arguments before refuting it. An argument without a
-/// clean term twin (a computed, opaque expression) is absent from σ — its param
-/// stays symbolic, so its guard flounders and the effect is conservatively kept.
+/// term ([`guard_arg_term`]). Used by guard discharge to ground a guard over the
+/// actual arguments before refuting it. An argument with no such term is absent from
+/// σ — its param stays symbolic, so its guard flounders and the effect is
+/// conservatively kept.
 pub(super) fn build_call_guard_sigma(
     kb: &mut KnowledgeBase,
     params: &[(Symbol, Value)],
@@ -1114,7 +1126,7 @@ pub(super) fn build_call_guard_sigma(
     // reads the operand the call binds.
     for (j, arg_occ) in pos_args.iter().enumerate() {
         if let Some((param_sym, _)) = pos_params[j].and_then(|p| params.get(p)) {
-            if let Some(t) = crate::kb::node_occurrence::try_occurrence_to_term(kb, arg_occ) {
+            if let Some(t) = guard_arg_term(kb, arg_occ) {
                 sigma.insert(*param_sym, t);
             }
         }
@@ -1122,7 +1134,7 @@ pub(super) fn build_call_guard_sigma(
     for (arg_name, arg_occ) in named_args {
         if let Some((param_sym, _)) = match_named_arg_param(kb, params, *arg_name) {
             let param_sym = *param_sym;
-            if let Some(t) = crate::kb::node_occurrence::try_occurrence_to_term(kb, arg_occ) {
+            if let Some(t) = guard_arg_term(kb, arg_occ) {
                 sigma.insert(param_sym, t);
             }
         }

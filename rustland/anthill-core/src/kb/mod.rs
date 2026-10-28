@@ -787,6 +787,21 @@ pub(crate) struct SortOpsTable {
 
 // ── KnowledgeBase ───────────────────────────────────────────────
 
+/// One goal of an effect guard, as the loader lowered it, for the post-load undefined-name
+/// check ([`KnowledgeBase::record_effect_guard_site`]).
+#[derive(Clone, Debug)]
+pub(crate) struct EffectGuardSite {
+    /// The goal, as the guard stores it.
+    pub goal: TermId,
+    /// Where the goal is written.
+    pub at: crate::span::SourceSpan,
+    /// The functors in the goal written as a dot on a value (`xs.isEmpty` in
+    /// `xs.isEmpty()` over a parameter `xs`), as written. Nothing dispatches a dot in a
+    /// guard, so such a functor names nothing, and its repair is to apply the operation to
+    /// the value, not to import a name.
+    pub dots_on_values: Vec<String>,
+}
+
 /// WI-835 — one written parameterized type instantiation (`Map[K = Float, V =
 /// Int64]`), as the post-load use-site checks need it: the base sort, the
 /// bindings that name a CARRIER, and where the base name was written.
@@ -1243,6 +1258,9 @@ pub struct KnowledgeBase {
     /// drained by the post-load undefined-name check. See
     /// [`Self::record_head_argument_site`].
     head_argument_sites: Vec<(Symbol, crate::span::SourceSpan)>,
+    /// One per goal of an effect guard the loader lowered, drained by the post-load
+    /// undefined-name check. See [`Self::record_effect_guard_site`].
+    effect_guard_sites: Vec<EffectGuardSite>,
 
     /// WI-865 — WHY each `NoProvider` marker symbol records an absence.
     ///
@@ -2972,6 +2990,7 @@ impl KnowledgeBase {
             entity_fields: HashMap::new(),
             constructor_symbols: HashSet::new(),
             head_argument_sites: Vec::new(),
+            effect_guard_sites: Vec::new(),
             absence_records: HashMap::new(),
             absence_marker_syms: HashMap::new(),
             next_var: 0,
@@ -6172,6 +6191,19 @@ impl KnowledgeBase {
         // The top-level goal commits to its head (WI-754); `under_not` starts
         // false and turns true the moment the walk steps through a `not`.
         self.collect_undefined_goal_functors(view, false, &mut out);
+        out
+    }
+
+    /// [`Self::undefined_query_goal_functors`] for a goal that is only ever read negated —
+    /// an effect guard, which a call refutes by proving `not(G)`. Every branch is followed,
+    /// as inside a `not`: a goal that names nothing in one branch of `p(d) | q(d)` makes
+    /// the negation provable wherever the other is refuted.
+    pub fn undefined_negated_goal_functors<V: term_view::TermView>(
+        &self,
+        view: &V,
+    ) -> SmallVec<[Symbol; 4]> {
+        let mut out = SmallVec::new();
+        self.collect_undefined_goal_functors(view, true, &mut out);
         out
     }
 
@@ -12692,6 +12724,22 @@ impl KnowledgeBase {
     /// this KB must judge only its own sites, not re-report every batch before it.
     pub(crate) fn take_head_argument_sites(&mut self) -> Vec<(Symbol, crate::span::SourceSpan)> {
         std::mem::take(&mut self.head_argument_sites)
+    }
+
+    /// Record one goal of an effect guard (`eq(b, 0)` in `Error[D] :- eq(b, 0)`), for the
+    /// post-load undefined-name check. Recorded where the guard is lowered, which is the one
+    /// place a guarded atom is built, so every row a guard can be written in reaches it: an
+    /// operation's own row, a function type's row, a binding of a row parameter. Decided
+    /// after the load, as [`Self::record_head_argument_site`] is, because a predicate a
+    /// later file defines is not declared yet when the signature is lowered.
+    pub(crate) fn record_effect_guard_site(&mut self, site: EffectGuardSite) {
+        self.effect_guard_sites.push(site);
+    }
+
+    /// Take the recorded effect-guard goals, leaving the registry empty — draining, so a
+    /// later `load_all` into this KB judges only its own guards.
+    pub(crate) fn take_effect_guard_sites(&mut self) -> Vec<EffectGuardSite> {
+        std::mem::take(&mut self.effect_guard_sites)
     }
 
     /// WI-835 — take the recorded sites, leaving the registry empty. DRAINING, so

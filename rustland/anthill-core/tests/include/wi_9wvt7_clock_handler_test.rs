@@ -257,6 +257,10 @@ fn a_drain_escaping_a_rule_body_reify_gets_no_boundary_advice() {
 /// it: `{ Clock :- eq(b, true) }`, called at `true`. Read through its `guarded` wrapper, which
 /// names no effect, it was reported as a row that declares no `Clock`.
 ///
+/// Asked as a query: a rule body that writes the call is refused at load, the guard holding at
+/// `true` (`wi_x5sb4_guard_refutation_test`). It was written as one, and loaded only because
+/// `eq` was not imported, so the guard named nothing and read as refuted.
+///
 /// BACK-OUT: the peel of `present` and `guarded` in `typing::declared_row_may_hold` taken out,
 /// and this fails on the wording.
 #[test]
@@ -266,12 +270,12 @@ fn a_guarded_clock_member_is_reported_as_performed() {
 namespace test.clockguarded
   import anthill.prelude.{Bool, String}
   import anthill.prelude.Time.{now, Clock}
+  import anthill.prelude.PartialEq.{eq}
   operation stampIf(b: Bool) -> String effects { Clock :- eq(b, true) } =
     if b then now() else "none"
-  rule viaGuarded(?s) :- ?s <=> stampIf(true)
 end
 "#,
-        "test.clockguarded.viaGuarded(?s)",
+        "test.clockguarded.stampIf(true, ?s)",
     );
     assert!(
         messages.iter().any(|m| m.contains("it performs `anthill.prelude.Time.Clock`")),

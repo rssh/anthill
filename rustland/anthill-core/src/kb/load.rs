@@ -819,6 +819,19 @@ pub enum LoadError {
         /// the functor so the line within it is unambiguous.
         span: Span,
     },
+    /// A goal of an effect guard (`Error[D] :- nosuchpred(d, 0)`) whose functor names
+    /// nothing. The guard twin of [`Self::UndefinedRuleBodyGoal`], with its own
+    /// consequence: a guard is not proved, its NEGATION is, and negation as failure proves
+    /// the negation of a goal no clause matches wherever the goal is ground — so the effect
+    /// vanished at every call whose arguments ground the guard.
+    UndefinedEffectGuardGoal {
+        /// The goal's functor, qualified.
+        functor: String,
+        /// Written as a dot on a value (`xs.isEmpty()`), which a guard does not dispatch.
+        dot_on_value: bool,
+        /// Where the goal is written.
+        span: Span,
+    },
     /// WI-1058 — the ARGUMENT-position twin of [`Self::UndefinedRuleBodyGoal`] (WI-895's
     /// remaining half): a COMPOUND TERM in a rule body's DATA slot whose functor names
     /// nothing. Raised by the typer's rule-body walk rather than by the loader's goal
@@ -3105,6 +3118,7 @@ impl LoadError {
             | LoadError::UndefinedAfterDefinePass { span, .. }
             | LoadError::UndefinedRuleBodyGoal { span, .. }
             | LoadError::UndefinedContractGoal { span, .. }
+            | LoadError::UndefinedEffectGuardGoal { span, .. }
             | LoadError::HostImplementedUnsupplied { span, .. }
             | LoadError::HostImplementedWithBody { span, .. }
             | LoadError::HostRaiseWithoutTypeValue { span, .. }
@@ -3440,6 +3454,17 @@ impl LoadError {
                     "{}: {}",
                     loc.format_start(*span),
                     undefined_head_argument_message(functor)
+                )
+            }
+            LoadError::UndefinedEffectGuardGoal {
+                functor,
+                dot_on_value,
+                span,
+            } => {
+                format!(
+                    "{}: {}",
+                    loc.format_start(*span),
+                    undefined_effect_guard_goal_message(functor, *dot_on_value)
                 )
             }
             LoadError::SortAppliedAsData { sort, span } => {
@@ -5143,6 +5168,19 @@ impl std::fmt::Display for LoadError {
                     f,
                     "{} at {}..{}",
                     undefined_head_argument_message(functor),
+                    span.start,
+                    span.end
+                )
+            }
+            LoadError::UndefinedEffectGuardGoal {
+                functor,
+                dot_on_value,
+                span,
+            } => {
+                write!(
+                    f,
+                    "{} at {}..{}",
+                    undefined_effect_guard_goal_message(functor, *dot_on_value),
                     span.start,
                     span.end
                 )
@@ -16597,6 +16635,29 @@ fn undefined_head_argument_message(functor: &str) -> String {
     )
 }
 
+/// The one wording of [`LoadError::UndefinedEffectGuardGoal`]: the census and repair its
+/// family shares, and the consequence that is the guard's own — the effect is dropped where
+/// the guard grounds and kept where it does not, so whether a call has it depended on how
+/// the call was written. A dot on a value names nothing for another reason, and no import
+/// repairs it.
+fn undefined_effect_guard_goal_message(functor: &str, dot_on_value: bool) -> String {
+    let consequence = "so no clause can match it, its negation holds wherever its arguments \
+                       are ground, and the effect it guards would be dropped at every such call";
+    match functor.split_once('.').filter(|_| dot_on_value) {
+        Some((receiver, member)) => format!(
+            "effect guard goal `{functor}` is a dot on the value `{receiver}`, and a guard \
+             does not dispatch a dot: the goal names nothing, {consequence}. Apply the \
+             operation to the value instead, `{member}({receiver})` with the operation \
+             imported, or qualified by the sort or spec that declares it."
+        ),
+        None => format!(
+            "effect guard goal `{functor}` names nothing: {}, {consequence}. {}",
+            no_declaration_census(),
+            undefined_name_repair(functor),
+        ),
+    }
+}
+
 /// WI-20260822-J38JE item 4 — the ONE wording of [`LoadError::ConstantInGoalPosition`],
 /// shared by the located `format_with_source` rendering, the span-less `Display`, and
 /// the `TypeError` face the typer raises it through.
@@ -17494,6 +17555,11 @@ fn load_phase_inner(
     // the same spelling, which is silence, not an error.
     all_errors.extend(check_undefined_head_arguments(kb));
     mark!("check_undefined_head_arguments");
+    // An effect guard's goal that names nothing, beside the head-argument check and for its
+    // reason: the verdict needs every file's clauses, and it stands above the `run_typer`
+    // return so a partial load drains its own guards too.
+    all_errors.extend(check_undefined_effect_guard_goals(kb));
+    mark!("check_undefined_effect_guard_goals");
     resolve_instantiations(kb);
     mark!("resolve_instantiations");
     register_requires_axiom_witnesses(kb);
@@ -22159,6 +22225,43 @@ fn check_undefined_head_arguments(kb: &mut KnowledgeBase) -> Vec<LoadError> {
             .located_in_kb_source(kb, at.source)
         })
         .collect()
+}
+
+/// The effect-guard position of the undefined-name family: every goal of a guard the
+/// loader lowered ([`KnowledgeBase::record_effect_guard_site`]) is asked whether it names
+/// nothing, by the authority the other positions ask, read as under a `not`
+/// ([`KnowledgeBase::undefined_negated_goal_functors`]): a guard is refuted by proving its
+/// negation, so every branch of a disjunction in it counts. A goal no clause can match has
+/// a negation negation as failure proves wherever the goal is ground: `effects {
+/// Error[Boom] :- eq(n, 0) }` written without importing `eq` dropped the effect at
+/// `safe(0)`, so `operation u0() -> Int64 = safe(0)` loaded with no row and raised.
+///
+/// Reported once per goal and functor: a type alias's body is lowered more than once, and
+/// `sort F = (d: Int64) -> Int64 @ {Error[D] :- eq(d, 0)}` records its guard twice. The key
+/// is the owner and the phase's dedup the backstop, as for [`check_rule_body_goals`]; with
+/// the key taken out the phase still collapses the copy, so no row fails.
+fn check_undefined_effect_guard_goals(kb: &mut KnowledgeBase) -> Vec<LoadError> {
+    let mut seen: HashSet<(Symbol, crate::span::SourceSpan)> = HashSet::new();
+    let mut errors = Vec::new();
+    for site in kb.take_effect_guard_sites() {
+        let at = site.at;
+        for functor in kb.undefined_negated_goal_functors(&site.goal) {
+            if !seen.insert((functor, at)) {
+                continue;
+            }
+            let functor = kb.qualified_name_of(functor).to_string();
+            let dot_on_value = site.dots_on_values.contains(&functor);
+            errors.push(
+                LoadError::UndefinedEffectGuardGoal {
+                    functor,
+                    dot_on_value,
+                    span: at.span,
+                }
+                .located_in_kb_source(kb, at.source),
+            );
+        }
+    }
+    errors
 }
 
 /// WI-1049 — AN OPERATION NAME IS DECLARED AT MOST ONCE PER SCOPE
@@ -38102,6 +38205,38 @@ impl<'a> Loader<'a> {
         self.kb.kinds(sym).is_value_place()
     }
 
+    /// The functors in the parse goal `parse_id` written as a dot on a value — `xs.isEmpty`
+    /// in `xs.isEmpty()`, a dotted name whose head segment is a local or a value place in
+    /// scope — rather than a qualified name (`List.isEmpty`).
+    fn dots_on_values(&self, parse_id: TermId) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut stack = vec![parse_id];
+        while let Some(id) = stack.pop() {
+            let Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            } = self.parsed.terms.get(id)
+            else {
+                continue;
+            };
+            let name = self.parsed.symbols.local_name(*functor);
+            if let Some((head, _)) = name.split_once('.') {
+                let on_value = self.lookup_local_name(head).is_some()
+                    || matches!(
+                        self.kb.symbols.resolve_in_scope(head, self.current_scope),
+                        ResolveResult::Found(s) if self.symbol_is_value_place(s)
+                    );
+                if on_value {
+                    out.push(name.to_owned());
+                }
+            }
+            stack.extend(pos_args.iter().copied());
+            stack.extend(named_args.iter().map(|(_, a)| *a));
+        }
+        out
+    }
+
 
     /// WI-302 (proposal 027.1 per-projection): classify a MULTI-segment dotted name
     /// in a type-argument slot whose HEAD resolves (in scope) to a VALUE and whose
@@ -40136,7 +40271,14 @@ impl<'a> Loader<'a> {
                     .iter()
                     .map(|g| {
                         let t = self.convert_term(*g);
-                        self.var_ref_signature_places(t)
+                        let t = self.var_ref_signature_places(t);
+                        let site = crate::kb::EffectGuardSite {
+                            goal: t,
+                            at: self.source_span_of(*g),
+                            dots_on_values: self.dots_on_values(*g),
+                        };
+                        self.kb.record_effect_guard_site(site);
+                        t
                     })
                     .collect();
                 // The guarded label stands where the atom does.

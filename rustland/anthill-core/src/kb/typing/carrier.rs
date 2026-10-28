@@ -3636,7 +3636,7 @@ pub(super) fn dispatched_impl_effects_of(
         // the paragraph stating this rule had been displaced off this function. Pairing a
         // MIXED call's positional arg by its index is the same wrong operand again.
         if impl_has_guarded {
-            if let Some(t) = crate::kb::node_occurrence::try_occurrence_to_term(kb, arg_occ) {
+            if let Some(t) = guard_arg_term(kb, arg_occ) {
                 guard_sigma.insert(*impl_param_sym, t);
             }
         }

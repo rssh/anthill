@@ -1964,6 +1964,8 @@ mod wi_qj6x1_a_builtin_judges_the_value_test;
 mod wi_r1w5a_call_typed_as_an_operation_body_test;
 #[path = "include/wi_r1w5a_effectful_call_refused_test.rs"]
 mod wi_r1w5a_effectful_call_refused_test;
+#[path = "include/wi_x5sb4_guard_refutation_test.rs"]
+mod wi_x5sb4_guard_refutation_test;
 #[path = "include/wi_c9802_lambda_in_term_position_test.rs"]
 mod wi_c9802_lambda_in_term_position_test;
 #[path = "include/wi_0k8wd_selection_per_requirement_test.rs"]
