@@ -55,10 +55,10 @@ use anthill_core::eval::Value;
 use anthill_core::intern::{Symbol, SymbolKind};
 use anthill_core::kb::extent::{BodiedRulePolicy, ExtentReadError};
 use anthill_core::kb::resolve::ResolveConfig;
-use anthill_core::kb::term::{Literal, Term, TermId, Var};
+use anthill_core::kb::term::{Literal, Term, TermId, Var, VarId};
 use anthill_core::kb::term_view::{TermView, ViewHead};
 use anthill_core::kb::typing::{
-    extract_sort_ref_sym, extract_type, type_holds_a_value, TypeExtractor,
+    extract_sort_ref_sym, extract_type, type_holds_a_value, type_param_global_var, TypeExtractor,
 };
 use anthill_core::kb::{KnowledgeBase, MintedParam};
 use anthill_core::parse::desugar_target as dt;
@@ -681,12 +681,10 @@ pub struct CodegenContext {
     /// `emit_namespace_header_closure` follows them to the headers a project
     /// layout must ship.
     pub referenced_namespaces: std::cell::RefCell<std::collections::BTreeSet<String>>,
-    /// Lexical stack of in-scope type parameters. Each frame holds
-    /// the params introduced by one enclosing sort; lookup walks from
-    /// top to bottom so an inner sort still sees an outer sort's
-    /// params, while an inner declaration of the same name shadows
-    /// the outer for the duration of inner emission.
-    pub type_params: std::cell::RefCell<Vec<std::collections::HashMap<String, TypeParamBinding>>>,
+    /// Lexical stack of in-scope type parameters. Each frame holds the params
+    /// introduced by one enclosing sort or operation, in declaration order; lookup
+    /// walks from top to bottom so an inner sort still sees an outer sort's params.
+    pub type_params: std::cell::RefCell<Vec<Vec<TypeParamBinding>>>,
     /// Lexical stack of in-scope value bindings introduced by match
     /// patterns. Each frame maps a source-level binding name to the
     /// C++ access expression that retrieves the bound value (e.g.
@@ -808,30 +806,62 @@ fn active_key_ladder(binding: Option<&str>, profile: Option<&str>) -> Vec<Option
     keys
 }
 
-/// One in-scope type parameter's C++ realization: the emitted parameter name plus
-/// its kind. `higher_kinded` marks a template-template parameter — declared
+/// One in-scope type parameter: what stands for it in a type being lowered, and its
+/// C++ realization. A type names a parameter by one of two identities, never by its
+/// name: a type the loader resolved — an entity's field, an operation's bracket
+/// parameter, a variable a signature writes — holds the parameter's variable, and an
+/// operation's signature names its enclosing sort's parameter by the declaration's
+/// symbol. `higher_kinded` marks a template-template parameter — declared
 /// `template<typename...> class F`, not `typename F` (WI-575) — which is NOT a type
 /// and so cannot stand in a type-argument slot like `dependent_false_v<F>`
 /// (WI-891); `innermost_type_param` skips those when keying an unlowerable-body
 /// static_assert.
 #[derive(Clone)]
 pub struct TypeParamBinding {
+    /// The declaration of a sort's parameter (`Box.T`). `None` for an operation's: its
+    /// record lists each by a symbol of the short name, which no type refers to.
+    pub decl: Option<Symbol>,
+    pub var: VarId,
     pub cpp: String,
     pub higher_kinded: bool,
 }
 
-impl CodegenContext {
-    /// Look up a type-parameter binding by source-level name. Walks
-    /// the lexical stack top-down so inner declarations shadow outer
-    /// ones with the same name.
-    pub fn lookup_type_param(&self, name: &str) -> Option<String> {
-        let stack = self.type_params.borrow();
-        for frame in stack.iter().rev() {
-            if let Some(v) = frame.get(name).map(|b| &b.cpp) {
-                return Some(v.clone());
-            }
+impl TypeParamBinding {
+    /// The parameter's entry in a `template<…>` list.
+    fn template_decl(&self) -> String {
+        if self.higher_kinded {
+            format!("template<typename...> class {}", self.cpp)
+        } else {
+            format!("typename {}", self.cpp)
         }
-        None
+    }
+}
+
+impl CodegenContext {
+    /// The in-scope type parameter `pick` selects, innermost frame first.
+    fn find_type_param(&self, pick: impl Fn(&TypeParamBinding) -> bool) -> Option<String> {
+        let stack = self.type_params.borrow();
+        stack
+            .iter()
+            .rev()
+            .find_map(|frame| frame.iter().find(|b| pick(b)))
+            .map(|b| b.cpp.clone())
+    }
+
+    /// The C++ name of the sort parameter `decl` declares, when it is in scope.
+    pub fn type_param_of_decl(&self, decl: Symbol) -> Option<String> {
+        self.find_type_param(|b| b.decl == Some(decl.plain()))
+    }
+
+    /// The C++ name of the type parameter `var` stands for, when it is in scope.
+    pub fn type_param_of_var(&self, var: VarId) -> Option<String> {
+        self.find_type_param(|b| b.var == var)
+    }
+
+    /// Is `cpp` the name of an in-scope template parameter — which hides any
+    /// other type of that spelling?
+    fn is_template_param_name(&self, cpp: &str) -> bool {
+        self.find_type_param(|b| b.cpp == cpp).is_some()
     }
 
     /// WI-891: build a CAPABILITY-GAP error — a lowering the cpp profile does not
@@ -875,7 +905,7 @@ impl CodegenContext {
         let stack = self.type_params.borrow();
         stack.iter().rev().find_map(|frame| {
             frame
-                .values()
+                .iter()
                 .filter(|b| !b.higher_kinded)
                 .map(|b| &b.cpp)
                 .min()
@@ -886,10 +916,7 @@ impl CodegenContext {
     /// Push a fresh frame of type-param bindings onto the lexical
     /// stack. Returns a guard that pops the frame on drop, so the
     /// caller doesn't have to remember to restore by hand.
-    pub fn push_type_params(
-        &self,
-        frame: std::collections::HashMap<String, TypeParamBinding>,
-    ) -> TypeParamGuard<'_> {
+    pub fn push_type_params(&self, frame: Vec<TypeParamBinding>) -> TypeParamGuard<'_> {
         self.type_params.borrow_mut().push(frame);
         TypeParamGuard { ctx: self }
     }
@@ -1110,7 +1137,10 @@ fn declaring_namespace_of<'a>(kb: &KnowledgeBase, qn: &'a str) -> Option<&'a str
 /// function for both, so no qualified path is printed without its
 /// include (the constructor-literal site used to qualify only).
 /// Same namespace, or no namespace context (direct
-/// `emit_traits_struct` callers), fall back to the short name.
+/// `emit_traits_struct` callers), fall back to the short name — unless an
+/// in-scope template parameter is spelled so: inside `template<typename T>` a
+/// plain `T` is the parameter, so the namespace's own sort `T` is written
+/// with its full path.
 fn qualify_cross_namespace(
     kb: &KnowledgeBase,
     ctx: &CodegenContext,
@@ -1118,15 +1148,16 @@ fn qualify_cross_namespace(
     short: &str,
 ) -> String {
     let short = cpp_identifier(short);
+    let ens = declaring_namespace_of(kb, entity_qn);
     let current_ns = ctx.emitting_namespace.borrow();
-    let Some(current) = current_ns.as_deref() else {
-        return short;
-    };
-    match declaring_namespace_of(kb, entity_qn) {
-        Some(ens) if ens != current => {
+    match (ens, current_ns.as_deref()) {
+        (Some(ens), Some(current)) if ens != current => {
             ctx.referenced_namespaces
                 .borrow_mut()
                 .insert(ens.to_string());
+            format!("::{}::{short}", cpp_namespace(ens))
+        }
+        (Some(ens), _) if ctx.is_template_param_name(&short) => {
             format!("::{}::{short}", cpp_namespace(ens))
         }
         _ => short,
@@ -1300,7 +1331,7 @@ fn entity_struct_members(
     let parent_sym = kb.sort_of_constructor(functor);
     let (template, type_params) = match parent_sym {
         Some(p) => template_prefix_for_sort(kb, p)?,
-        None => (String::new(), std::collections::HashMap::new()),
+        None => (String::new(), Vec::new()),
     };
     let _guard = ctx.push_type_params(type_params);
 
@@ -1785,7 +1816,7 @@ fn traits_struct_members(
     // The sort's chosen C++ param names seed each op's canonicaliser so a
     // per-operation type param can't collide with a class template param.
     let sort_param_cpp: std::collections::HashSet<String> =
-        type_params.values().map(|b| b.cpp.clone()).collect();
+        type_params.iter().map(|b| b.cpp.clone()).collect();
     let _guard = ctx.push_type_params(type_params);
 
     let ops = operations_in_sort(kb, ctx, sort_sym, &sort_param_cpp)?;
@@ -2238,15 +2269,38 @@ fn operations_in_sort(
         // pushes nothing.
         //
         // A VARIABLE THE SIGNATURE WRITES IN A PARAMETER TYPE (`b: ?U`) IS ONE OF THEM, and
-        // is keyed as written, `?U` ([`type_param_frame_key`]): its name reads as `U`, which
-        // is also a bracket's `[U]` and the enclosing sort's `T`, and keyed so it took their
+        // is its own: a type names each parameter by its variable, so `?U` is apart from a
+        // bracket's `[U]` and the enclosing sort's `T`. Keyed by the name `U`, it took their
         // place in the frame — every `U` lowered to the variable's template parameter, which
         // no call can deduce (MEASURED, g++).
-        let op_type_params: Vec<String> = rec
+        let op_type_params = rec
             .type_params
             .iter()
-            .map(|(sym, _)| type_param_frame_key(kb, *sym))
-            .collect();
+            .map(|(sym, var)| {
+                let name = kb.local_name_of(*sym).to_string();
+                let Var::Global(var) = var else {
+                    return Err(CppCodegenError {
+                        message: format!(
+                            "type parameter '{name}' of operation '{}' is {var:?}, not a \
+                             variable of its own",
+                            kb.qualified_name_of(op_sym)
+                        ),
+                    });
+                };
+                // A variable the signature writes declares no parameters of its own; a
+                // bracket parameter is read at its declaration.
+                let higher_kinded = kb.minted_param(*sym) != Some(MintedParam::Inline)
+                    && kb
+                        .type_param_sym_of(op_sym, &name)
+                        .is_some_and(|decl| declares_type_params(kb, decl));
+                Ok(DeclaredTypeParam {
+                    name,
+                    decl: None,
+                    var: *var,
+                    higher_kinded,
+                })
+            })
+            .collect::<Result<Vec<_>, CppCodegenError>>()?;
         let mut op_param_decls: Vec<(String, String)> = Vec::new();
         let mut _op_guard = None;
         if !op_type_params.is_empty() {
@@ -2258,13 +2312,12 @@ fn operations_in_sort(
                     .iter()
                     .map(|(name, _)| cpp_identifier(kb.local_name_of(*name))),
             );
-            let (decls, frame) = template_param_decls(kb, op_sym, &op_type_params, &mut op_taken)?;
+            let frame = template_param_decls(kb, op_sym, op_type_params, &mut op_taken)?;
             // (cpp_name, decl) pairs in declaration order, captured before the
             // frame is moved into the type-param stack.
-            op_param_decls = op_type_params
+            op_param_decls = frame
                 .iter()
-                .map(|src| frame[src].cpp.clone())
-                .zip(decls)
+                .map(|b| (b.cpp.clone(), b.template_decl()))
                 .collect();
             _op_guard = Some(ctx.push_type_params(frame));
         }
@@ -2898,25 +2951,14 @@ fn emit_sum_in(
     // parameter (e.g. nullary `None`) stay non-templated and appear
     // bare in the alias's argument list.
     //
-    // Compute prefix + canonical-name mapping + param-name list once;
-    // the per-ctor branch below reads them by reference to avoid
-    // re-scanning `by_qualified_name` per constructor.
-    let param_names = type_params_of(kb, sort_sym);
-    let (template_prefix, mapping) = template_prefix_for_sort(kb, sort_sym)?;
-    let cpp_args = if param_names.is_empty() {
-        String::new()
-    } else {
-        param_names
-            .iter()
-            .map(|p| {
-                mapping
-                    .get(p)
-                    .map(|b| b.cpp.clone())
-                    .unwrap_or_else(|| p.clone())
-            })
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
+    // Compute prefix + frame once; the per-ctor branch below reads them
+    // by reference.
+    let (template_prefix, frame) = template_prefix_for_sort(kb, sort_sym)?;
+    let cpp_args = frame
+        .iter()
+        .map(|b| b.cpp.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
 
     let mut out = String::new();
     for ctor_sym in ctors {
@@ -2929,7 +2971,7 @@ fn emit_sum_in(
         .map(|c| {
             let short = short_name_of(kb.qualified_name_of(*c)).to_string();
             let cpp = cpp_identifier(&short);
-            if !param_names.is_empty() && constructor_uses_params(kb, *c, &param_names) {
+            if constructor_uses_params(kb, *c, &frame) {
                 format!("{cpp}<{cpp_args}>")
             } else {
                 cpp
@@ -2947,32 +2989,36 @@ fn emit_sum_in(
 }
 
 /// True if any of the entity's field types references one of the
-/// supplied type parameters (by source-level name). Drives the
-/// `Ctor<T>` vs `Ctor` decision in generic sum-alias emission.
-fn constructor_uses_params(kb: &KnowledgeBase, entity_sym: Symbol, param_names: &[String]) -> bool {
+/// type parameters of `frame`. Drives the `Ctor<T>` vs `Ctor` decision in
+/// generic sum-alias emission.
+fn constructor_uses_params(kb: &KnowledgeBase, entity_sym: Symbol, frame: &[TypeParamBinding]) -> bool {
+    if frame.is_empty() {
+        return false;
+    }
     let Some(fields) = kb.entity_field_types(entity_sym) else {
         return false;
     };
     fields
         .iter()
-        .any(|(_, field_ty)| type_references_param(kb, field_ty, param_names))
+        .any(|(_, field_ty)| type_references_param(kb, field_ty, frame))
 }
 
-/// Recursively scan a type for references to any of the named type
-/// parameters, on whichever carrier it rides. Catches both bare `?T` and nested
-/// occurrences inside parameterized wrappers (`Vec[T = ?T]`).
-fn type_references_param<V: TermView>(kb: &KnowledgeBase, ty: &V, param_names: &[String]) -> bool {
+/// Recursively scan a type for references to any of the type parameters of
+/// `frame`, by either identity a type names one by, on whichever carrier it
+/// rides. Catches nested occurrences inside parameterized wrappers
+/// (`Vec[T = T]`).
+fn type_references_param<V: TermView>(kb: &KnowledgeBase, ty: &V, frame: &[TypeParamBinding]) -> bool {
+    if let Some(sym) = extract_sort_ref_sym(kb, ty) {
+        return frame.iter().any(|b| b.decl == Some(sym.plain()));
+    }
     match ty.head(kb) {
-        ViewHead::Var(Var::Global(vid)) => {
-            let name = kb.local_name_of(vid.name());
-            param_names.iter().any(|p| p == name)
-        }
+        ViewHead::Var(Var::Global(vid)) => frame.iter().any(|b| b.var == vid),
         ViewHead::Functor { pos_arity, .. } => {
             (0..pos_arity)
-                .any(|i| ty.pos_arg(kb, i).is_some_and(|c| type_references_param(kb, &c, param_names)))
+                .any(|i| ty.pos_arg(kb, i).is_some_and(|c| type_references_param(kb, &c, frame)))
                 || ty.named_keys(kb).into_iter().any(|k| {
                     ty.named_arg(kb, k)
-                        .is_some_and(|c| type_references_param(kb, &c, param_names))
+                        .is_some_and(|c| type_references_param(kb, &c, frame))
                 })
         }
         _ => false,
@@ -3950,12 +3996,6 @@ fn find_named(kb: &KnowledgeBase, named_args: &[(Symbol, TermId)], name: &str) -
         .map(|(_, v)| *v)
 }
 
-/// Read `sort T = ?` declarations inside a sort's body. Stable
-/// alphabetical order — used both to emit `template<typename …>`
-/// prefixes and to drive type-parameter substitution in `lower_type`.
-fn type_params_of(kb: &KnowledgeBase, sort_sym: Symbol) -> Vec<String> {
-    kb.type_params_of_sort(sort_sym)
-}
 
 /// Reserved C++ keywords that would clash if used as a template
 /// parameter identifier. The list is conservative — anything that
@@ -4059,24 +4099,11 @@ const CPP_KEYWORDS: &[&str] = &[
 /// Pick a unique C++ identifier for a type parameter. Keeps the source
 /// name when it's safe; otherwise appends `0..N` until a free slot is
 /// found. `taken` is updated with the chosen name.
-/// The key a type parameter is held under in a frame of [`CodegenContext::lookup_type_param`]:
-/// the name a bracket or a sort declares it by, and a variable an operation's signature
-/// writes in a parameter type as written, `?U` — its name reads as `U`, a bracket's and the
-/// enclosing sort's spelling too, and it is neither ([`MintedParam::Inline`]).
-fn type_param_frame_key(kb: &KnowledgeBase, name: Symbol) -> String {
-    let local = kb.local_name_of(name);
-    if kb.minted_param(name) == Some(MintedParam::Inline) {
-        format!("?{local}")
-    } else {
-        local.to_string()
-    }
-}
-
 fn canonicalise_param_name(
     source_name: &str,
     taken: &mut std::collections::HashSet<String>,
 ) -> String {
-    let base = cpp_identifier(source_name.trim_start_matches('?'));
+    let base = cpp_identifier(source_name);
     let needs_suffix = CPP_KEYWORDS.contains(&base.as_str()) || taken.contains(&base);
     let chosen = if needs_suffix {
         let mut n = 0;
@@ -4094,67 +4121,73 @@ fn canonicalise_param_name(
     chosen
 }
 
-/// Build the C++ template-parameter declarations for `params`, the type
-/// parameters owned by `owner_sym` (a sort or — for a per-operation generic —
-/// an operation symbol). Returns the decl fragments (`typename A` for a
-/// first-order param, `template<typename...> class F` for a higher-kinded
-/// carrier) and the source-name → cpp-name mapping to push onto the
-/// type-param stack. `taken` accumulates the chosen C++ identifiers; seed it
-/// with the enclosing sort's param names when building an operation's
-/// member-template prefix so a per-op `T` can't collide with the class `T`.
+/// A type parameter as its owner declares it, before it has a C++ name.
+struct DeclaredTypeParam {
+    name: String,
+    decl: Option<Symbol>,
+    var: VarId,
+    higher_kinded: bool,
+}
+
+/// Give `params`, the type parameters owned by `owner_sym` (a sort or — for a
+/// per-operation generic — an operation symbol), their C++ names, in declaration
+/// order: the frame to push onto the type-param stack. `taken` accumulates the
+/// chosen C++ identifiers; seed it with the enclosing sort's param names when
+/// building an operation's member-template prefix so a per-op `T` can't collide
+/// with the class `T`.
 fn template_param_decls(
     kb: &KnowledgeBase,
     owner_sym: Symbol,
-    params: &[String],
+    params: Vec<DeclaredTypeParam>,
     taken: &mut std::collections::HashSet<String>,
-) -> Result<
-    (
-        Vec<String>,
-        std::collections::HashMap<String, TypeParamBinding>,
-    ),
-    CppCodegenError,
-> {
+) -> Result<Vec<TypeParamBinding>, CppCodegenError> {
     refuse_cpp_identifier_collisions(
         &format!("type parameters of '{}'", kb.qualified_name_of(owner_sym)),
-        params.iter().map(|p| p.trim_start_matches('?')),
+        params.iter().map(|p| p.name.as_str()),
     )?;
-    let mut mapping = std::collections::HashMap::new();
-    let mut decls = Vec::with_capacity(params.len());
-    for p in params {
-        let cpp = canonicalise_param_name(p, taken);
-        // WI-575 (f): a higher-kinded carrier — a param whose own body declares
-        // type params (`sort Spec[F[T]]`, or `operation op[G[T]](…)`) — becomes
-        // a C++ template-template parameter `template<typename...> class F`, so
-        // a use `F[T = A]` can lower to `F<A>`. A first-order param stays the
-        // plain `typename F`. The kind rides into the binding (WI-891) so the
-        // unlowerable-body static_assert never keys `dependent_false_v<…>` on a
-        // template-template name, which is not a type.
-        let higher_kinded = is_higher_kinded_param(kb, owner_sym, p);
-        let decl = if higher_kinded {
-            format!("template<typename...> class {cpp}")
-        } else {
-            format!("typename {cpp}")
-        };
-        mapping.insert(p.clone(), TypeParamBinding { cpp, higher_kinded });
-        decls.push(decl);
-    }
-    Ok((decls, mapping))
+    Ok(params
+        .into_iter()
+        .map(|p| TypeParamBinding {
+            cpp: canonicalise_param_name(&p.name, taken),
+            decl: p.decl,
+            var: p.var,
+            higher_kinded: p.higher_kinded,
+        })
+        .collect())
 }
 
-/// Build the `(template prefix, name → binding)` pair for a sort.
-/// Empty prefix and empty map when the sort has no type parameters.
+/// Build the `(template prefix, frame)` pair for a sort. Empty prefix and empty
+/// frame when the sort has no type parameters.
 fn template_prefix_for_sort(
     kb: &KnowledgeBase,
     sort_sym: Symbol,
-) -> Result<(String, std::collections::HashMap<String, TypeParamBinding>), CppCodegenError> {
-    let params = type_params_of(kb, sort_sym);
+) -> Result<(String, Vec<TypeParamBinding>), CppCodegenError> {
+    let params = kb
+        .type_param_syms_of(sort_sym)
+        .iter()
+        .map(|&param| {
+            let var = type_param_global_var(kb, param).ok_or_else(|| CppCodegenError {
+                message: format!(
+                    "type parameter '{}' has no variable to stand for it",
+                    kb.qualified_name_of(param)
+                ),
+            })?;
+            Ok(DeclaredTypeParam {
+                name: kb.local_name_of(param).to_string(),
+                decl: Some(param.plain()),
+                var,
+                higher_kinded: declares_type_params(kb, param),
+            })
+        })
+        .collect::<Result<Vec<_>, CppCodegenError>>()?;
     if params.is_empty() {
-        return Ok((String::new(), std::collections::HashMap::new()));
+        return Ok((String::new(), Vec::new()));
     }
     let mut taken = std::collections::HashSet::new();
-    let (decls, mapping) = template_param_decls(kb, sort_sym, &params, &mut taken)?;
+    let frame = template_param_decls(kb, sort_sym, params, &mut taken)?;
+    let decls: Vec<String> = frame.iter().map(TypeParamBinding::template_decl).collect();
     let prefix = format!("template<{}>\n", decls.join(", "));
-    Ok((prefix, mapping))
+    Ok((prefix, frame))
 }
 
 /// Build an operation's `    template<…>\n` member-template prefix from its
@@ -4215,17 +4248,19 @@ fn collect_cpp_identifiers(s: &str, out: &mut std::collections::HashSet<String>)
     }
 }
 
-/// WI-575 (f): is `param` a higher-kinded type parameter of `sort_sym`? A
-/// marked carrier `F` of `sort Spec[F[T]]` loads as a nested sort
-/// `<Spec>.F` whose own body declares type params (`T`), so the test is
-/// "the nested sort named `param` has at least one type parameter of its
-/// own". Form-agnostic: the marked/unmarked-carrier distinction is a loader
-/// concern (it decides whether `F` gets a backing var), but by the time
-/// codegen runs the kind shows up the same way — as nested type params.
-fn is_higher_kinded_param(kb: &KnowledgeBase, sort_sym: Symbol, param: &str) -> bool {
-    let nested = format!("{}.{}", kb.qualified_name_of(sort_sym), param);
-    kb.try_resolve_symbol(&nested)
-        .is_some_and(|sym| !kb.type_params_of_sort(sym).is_empty())
+/// WI-575 (f): is the type parameter `param` declares higher-kinded? A marked
+/// carrier `F` of `sort Spec[F[T]]` loads as a nested sort `<Spec>.F` whose own
+/// body declares type params (`T`), so the test is "the parameter has at least
+/// one type parameter of its own". Form-agnostic: the marked/unmarked-carrier
+/// distinction is a loader concern (it decides whether `F` gets a backing var),
+/// but by the time codegen runs the kind shows up the same way — as nested type
+/// params. Such a parameter becomes a C++ template-template parameter
+/// `template<typename...> class F`, so a use `F[T = A]` can lower to `F<A>`; the
+/// kind rides into the binding (WI-891) so the unlowerable-body static_assert
+/// never keys `dependent_false_v<…>` on a template-template name, which is not a
+/// type.
+fn declares_type_params(kb: &KnowledgeBase, param: Symbol) -> bool {
+    !kb.type_params_of_sort(param).is_empty()
 }
 
 /// Classify a declared effect term into a short, codegen-relevant
@@ -5153,21 +5188,24 @@ fn lower_type(
     if let Some(sym) = extract_sort_ref_sym(kb, ty) {
         return sort_to_cpp(kb, ctx, sym);
     }
-    // Logic variable in a type position — references to a sort's
-    // declared type parameter (`?T`) lower to the C++ template
-    // parameter name. The Var's `name` symbol matches the
-    // `add_type_param` entry in the sort body's scope.
+    // Logic variable in a type position — the variable of an enclosing sort's or
+    // operation's type parameter lowers to its C++ template parameter name. A
+    // variable a declaration writes for itself (`entity one(v: ?T)`, §5.2) is no
+    // parameter, whatever its name.
     match ty.head(kb) {
         ViewHead::Var(Var::Global(vid)) => {
-            let name = kb.local_name_of(vid.name()).to_string();
-            if let Some(cpp) = ctx.lookup_type_param(&type_param_frame_key(kb, vid.name())) {
+            if let Some(cpp) = ctx.type_param_of_var(vid) {
                 return Ok(cpp);
             }
+            if let Some(param) = kb.type_param_of_canonical_var(vid) {
+                return Err(type_param_out_of_scope(kb, param));
+            }
+            let name = kb.local_name_of(vid.name());
             return Err(CppCodegenError {
                 message: format!(
-                    "type variable '?{name}' is not bound by any enclosing \
-                     sort's type parameters — declare `sort {name} = ?` in \
-                     the sort body, or pass an explicit binding"
+                    "type variable '?{name}' is no type parameter of an enclosing sort \
+                     or operation, so it has no C++ template parameter — a sort's \
+                     parameter is written by its name (`T`, over `sort T = ?`)"
                 ),
             });
         }
@@ -5321,21 +5359,17 @@ fn lower_parameterized(
         })?;
 
     let qualified = kb.qualified_name_of(base_sym).to_string();
-    let short = short_name_of(&qualified);
     // WI-575 (f): a parameterized type whose base is a higher-kinded type
     // parameter (`F[T = A]`, where `F` is the carrier of `sort Spec[F[T]]`)
-    // lowers to the template-template parameter applied — `F<A>`. Checked
-    // first (mirroring `sort_to_cpp`) so an enclosing `?F` shadows any stray
-    // carrier / `TypeMapping` that happens to share the short name. The base
+    // lowers to the template-template parameter applied — `F<A>`. The base
     // must be GENUINELY higher-kinded (its own body declares type params) —
     // applying a first-order param (`T[X = Int]`, a kind error) would emit
     // `T<Int>` against a `typename T` declaration; gating on the param's
     // arity leaves that ill-kinded case to fall through to the loud
     // "no C++ mapping" error below rather than silently emitting invalid C++.
-    let base_is_hk_param = !kb.type_params_of_sort(base_sym).is_empty();
     let user_template = ctx
-        .lookup_type_param(short)
-        .filter(|_| base_is_hk_param)
+        .type_param_of_decl(base_sym)
+        .filter(|_| declares_type_params(kb, base_sym))
         .or_else(|| ctx.carriers.lookup(&qualified).map(str::to_string));
     let Some(template_name) = user_template else {
         let hit =
@@ -5445,6 +5479,19 @@ fn render_type_template(
     Ok(out)
 }
 
+/// A sort's type parameter named where no frame holds it — an entity of a nested
+/// sort naming the outer sort's parameter. The same refusal whether the type names
+/// the parameter by its declaration or by its variable.
+fn type_param_out_of_scope(kb: &KnowledgeBase, param: Symbol) -> CppCodegenError {
+    CppCodegenError {
+        message: format!(
+            "type parameter '{}' has no C++ template parameter where this type is \
+             emitted — a struct is a template over its own sort's parameters only",
+            kb.qualified_name_of(param)
+        ),
+    }
+}
+
 /// Map a sort symbol to its C++ type spelling. Lookup order:
 ///   1. `CarrierTable` (from `Implementation` / `CarrierBinding` facts)
 ///   2. Keyed `TypeMapping` query (`cpp_base_host_type`, WI-089) — the
@@ -5464,14 +5511,13 @@ fn sort_to_cpp(
     sym: Symbol,
 ) -> Result<String, CppCodegenError> {
     let qualified = kb.qualified_name_of(sym).to_string();
-    let short = short_name_of(&qualified);
-    // Type parameter of any enclosing sort (set via push_type_params
-    // by emit_traits / emit_entity). Checked before carriers and
-    // primitives so a `?T` reference inside `Box[T = ?]` lowers to
-    // the template name `T` even if a stray carrier or primitive
-    // happens to share the short name.
-    if let Some(cpp) = ctx.lookup_type_param(short) {
+    // Type parameter of an enclosing sort (set via push_type_params by
+    // emit_traits / emit_entity), named by its declaration.
+    if let Some(cpp) = ctx.type_param_of_decl(sym) {
         return Ok(cpp);
+    }
+    if type_param_global_var(kb, sym).is_some() {
+        return Err(type_param_out_of_scope(kb, sym));
     }
     if let Some(host) = ctx.carriers.lookup(&qualified) {
         // Register the header that declares this carrier's host type
@@ -5529,7 +5575,7 @@ fn sort_to_cpp(
     // `anthill.examples.lf1` entity must render as
     // `::anthill::geometry::Vec3`).
     if kb.entity_field_types(sym).is_some() || !constructors_of(kb, sym).is_empty() {
-        return Ok(qualify_cross_namespace(kb, ctx, &qualified, short));
+        return Ok(qualify_cross_namespace(kb, ctx, &qualified, short_name_of(&qualified)));
     }
     Err(CppCodegenError {
         message: format!(

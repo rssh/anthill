@@ -96,6 +96,8 @@ A `TypeMapping` names its sort by the qualified name (`anthill.prelude.Option`) 
 
 A sort with operations maps to a **traits-class template** — `template<typename T...> struct SortName { static-method per operation; };`. The sort name itself disambiguates operations across sorts, so two anthill sorts with an `eq` operation produce two distinct C++ types and never collide.
 
+A sort's parameter, written by its name in a field or a signature (`v: T`), is the template parameter, and so is an operation's own. A variable written in a field (`v: ?T`) is the entity's own, not the sort's parameter of that name; C++ has no template parameter for it, and it is a codegen error. A type of the namespace spelled like a template parameter in scope is written with its path (`::ns::T`).
+
 ```anthill
 sort Eq
   sort T

@@ -3634,7 +3634,7 @@ impl KnowledgeBase {
     /// WI-20260923-WN9P8 — the type parameter `vid` is the canonical variable of, or
     /// `None` when it is no parameter's. The reverse of [`Self::canonical_type_param_var`],
     /// written by the same one writer, so the two cannot disagree.
-    pub(crate) fn type_param_of_canonical_var(&self, vid: VarId) -> Option<Symbol> {
+    pub fn type_param_of_canonical_var(&self, vid: VarId) -> Option<Symbol> {
         self.type_param_canonical_vids.get(&vid).copied()
     }
 

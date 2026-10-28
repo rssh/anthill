@@ -1,4 +1,4 @@
-//! Slice 2 of generic-sort support: `enum E { sort T = ?; entity Some(value: ?T); … }`.
+//! Slice 2 of generic-sort support: `enum E { sort T = ?; entity Some(value: T); … }`.
 //!
 //! Generic sum sorts emit:
 //! - per-constructor structs, templated when they reference any param
@@ -22,7 +22,7 @@ fn generic_sum_emits_templated_alias() {
         namespace test.gen_opt
           enum Option
             sort T = ?
-            entity Some(value: ?T)
+            entity Some(value: T)
             entity None
           end
         end
@@ -55,8 +55,8 @@ fn generic_sum_with_two_params_emits_two_arg_template() {
           enum Either
             sort L = ?
             sort R = ?
-            entity Left(value: ?L)
-            entity Right(value: ?R)
+            entity Left(value: L)
+            entity Right(value: R)
           end
         end
     "#;
