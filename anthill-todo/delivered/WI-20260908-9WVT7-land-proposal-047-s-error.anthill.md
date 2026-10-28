@@ -3,9 +3,9 @@
 - id: WI-20260908-9WVT7-land-proposal-047-s-error
 - created: 2026-09-08T13:03:02Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-08T13:03:02Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-10-28T19:47:42Z
 
 - acceptance: cargo-test
 
@@ -802,4 +802,8 @@ A CONSTRUCTOR'S QUALIFIED NAME IS THE REFERENCE ITS ONE-SEGMENT NAME IS (user, 2
 ### 2026-10-27T20:07:48Z — feedback — claude
 
 LEFTOVERS FILED (user, 2026-10-27: 'File tickets'). Parts of this ticket's goal, now its dependencies: WI-20261027-K6WFS (`Result` has no host type mapping; the Rust generator emits `Result<Boom, i64>` importing a name anthill-stl does not export, arguments in anthill's order, and reports no error) and WI-20261027-WGJFN (a registered `Error` handler is asked before any boundary; measured, a host handler throwing the payload back makes `Error.reify[T1 = Boom]` miss its own `Boom`). Filed on their own: WI-20261027-T31R0 (the guardians checker written in anthill, with the two decisions about the example) and WI-20261027-XNS5Z (a sort something provides has no `TypeValue`, the 2026-10-17 `spec[C]` observation, re-measured). Already owned, not filed again: variance in dispatch through the subtype relation is WI-20261017-DYX5E; the qualified name as the symbol for other kinds is WI-20261017-FTV0Q. Superseded, not filed: F10's direction (every `Modify` through `ModifyRuntime`) was re-scoped by the user on 2026-10-17 (decision D1 of docs/design/037-implementation.md): `ModifyRuntime` is retired (WI-200, 7714a53a), a base sort's runtime is its own operations, and time travel is another implementation of them (proposal 037 §6.4). Nothing else of this ticket's own remains.
+
+### 2026-10-28T19:47:41Z — feedback — claude
+
+DELIVERED (user, 2026-10-28). Its three dependencies are delivered: WI-20260911-3MV2C (by WI-20261016-5CDN5, 619218f7: a boundary admits by the whole type of the raise), WI-20261027-WGJFN (bf7eaefd: a host Error handler is handed the raise's type value) and WI-20261027-K6WFS (dc1b0d83: Result has a host type in Rust and C++). The 2026-10-27 note recorded nothing else of this ticket's own. Acceptance: step 5's rows (wi_9wvt7_error_reify_test) pass in the full gate at 0aa5eb5b, 11069 passed / 0 failed / 17 ignored. WI-20261027-T31R0 and WI-20261027-XNS5Z stay open on their own.
 
