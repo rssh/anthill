@@ -591,6 +591,9 @@ pub(super) fn check_operation_bodies(
         // is the one place holding both the clauses and the `rigidify` that puts them in
         // the body's vocabulary.
         let gamma0 = op_requires_gamma(kb, &op.requires, &op.rigidify);
+        // Proposal 050.1 §1.2: the separations it requires are hypotheses of its body's
+        // memory record, answered in either spelling.
+        env.assume_required_separations(kb, &op.requires);
         // WI-20260830-JM7A8: where THIS op's errors start, so the preconditions its body
         // deferred can be spliced back in AHEAD of the op-boundary verdicts below rather
         // than trailing them. A precondition names a CALL and carries that call's span;

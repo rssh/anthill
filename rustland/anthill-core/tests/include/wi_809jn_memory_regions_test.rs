@@ -668,12 +668,14 @@ fn a_scope_end_charges_only_its_own_names() {
 
 /// `memory_disconnected`, defined in `anthill.memory` by the Horn clause
 /// `memory_disconnected(?a, ?b) :- not(memory_maybe_connected(?a, ?b))`: two cells the body
-/// allocated are disconnected, one cell twice and two parameters are not proved so, and a
-/// caller requiring `not memory_maybe_connected(p, q)` discharges a callee requiring
-/// `memory_disconnected(p, q)` — the clause runs left to right. The other way round is not
-/// derived (`callerDtoN`): its Γ holds `memory_disconnected(p, q)`, and nothing derives the
-/// negation from it. FAILS with the clause removed: `freshD` and `callerNtoD` refused, the
-/// name declaring nothing.
+/// allocated are disconnected, one cell twice and two parameters are not proved so. An
+/// operation's own requirement that two of its parameters are disconnected, in either
+/// spelling, is a hypothesis of its memory record (§1.2), so it discharges a callee's in
+/// either spelling — through an alias too — and says nothing of a third parameter. FAILS
+/// with the clause removed: `freshD` and `callerNtoD` refused, the name declaring nothing;
+/// and with the hypotheses not taken: `callerDtoN`, `viaAlias` and `viaAliasN` refused,
+/// their Γ holding a fact no goal of the callee's matches; `viaAliasN` alone with the `not`
+/// spelling not read as one.
 #[test]
 fn memory_disconnected_is_the_negation_of_maybe_connected() {
     let src = program(
@@ -695,6 +697,16 @@ fn memory_disconnected_is_the_negation_of_maybe_connected() {
     requires not memory_maybe_connected(p, q) = apartD(p, q)
   operation callerDtoN(p: Cell[V = Int64], q: Cell[V = Int64]) -> Int64
     requires memory_disconnected(p, q) = apartN(p, q)
+  operation viaAlias(p: Cell[V = Int64], q: Cell[V = Int64]) -> Int64
+    requires memory_disconnected(q, p) =
+    let x = p
+    apartN(x, q)
+  operation otherPair(p: Cell[V = Int64], q: Cell[V = Int64], r: Cell[V = Int64]) -> Int64
+    requires memory_disconnected(p, q) = apartN(p, r)
+  operation viaAliasN(p: Cell[V = Int64], q: Cell[V = Int64]) -> Int64
+    requires not memory_maybe_connected(q, p) =
+    let y = p
+    apartD(y, q)
 "#,
     )
     .replace(
@@ -706,7 +718,12 @@ fn memory_disconnected_is_the_negation_of_maybe_connected() {
     assert!(!refused("memory_disconnected(a, b)"), "freshD: {errs:#?}");
     assert!(refused("memory_disconnected(a, a)"), "sameD: {errs:#?}");
     assert!(refused("memory_disconnected(p, q)"), "paramsD: {errs:#?}");
-    assert!(refused("not(memory_maybe_connected(p, q))"), "callerDtoN: {errs:#?}");
+    assert!(!refused("not(memory_maybe_connected(p, q))"), "callerDtoN: {errs:#?}");
+    assert!(!refused("not(memory_maybe_connected(x, q))"), "viaAlias: {errs:#?}");
+    assert!(refused("not(memory_maybe_connected(p, r))"), "otherPair: {errs:#?}");
+    // No Γ fact matches `memory_disconnected(y, q)` by shape: only the hypothesis read off
+    // the `not` spelling discharges it.
+    assert!(!refused("memory_disconnected(y, q)"), "viaAliasN: {errs:#?}");
     assert_eq!(
         errs.iter().filter(|e| e.contains("apartD.requires")).count(),
         2,

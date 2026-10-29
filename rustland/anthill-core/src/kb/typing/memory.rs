@@ -114,6 +114,10 @@ pub(crate) struct MemoryTable {
     /// The sorts a `Modify` fires on ([`crate::kb::region::region_sorts`]), read once per
     /// body: what decides whether a value's type can hold memory at all (§1's filter).
     region_sorts: Option<Rc<HashSet<Symbol>>>,
+    /// The pairs of parameters the operation requires disconnected (§1.2: an operation whose
+    /// facts need one case says so in its `requires`) — hypotheses the record answers from
+    /// where the two parameters would otherwise be unknown.
+    separations: Vec<(Symbol, Symbol)>,
 }
 
 impl MemoryTable {
@@ -142,6 +146,15 @@ impl MemoryScope {
     /// before the scope began, is outside it.
     fn bound_since(&self, name: Symbol, mark: usize) -> bool {
         self.table.borrow().bindings.get(&name).is_some_and(|(i, _)| *i >= mark)
+    }
+
+    /// Does the operation require `p` and `q` disconnected ([`MemoryTable::separations`])?
+    fn required_apart(&self, p: Symbol, q: Symbol) -> bool {
+        self.table
+            .borrow()
+            .separations
+            .iter()
+            .any(|(a, b)| (*a == p && *b == q) || (*a == q && *b == p))
     }
 
     /// The name a fresh region was first bound to.
@@ -224,6 +237,19 @@ impl TypingEnv {
             (_, Some(regions)) => Binding::Regions(regions.to_vec()),
             (_, None) => Binding::Supplied,
         }
+    }
+
+    /// Take the operation's own `requires` that two of its parameters are disconnected —
+    /// `memory_disconnected(p, q)` or `not memory_maybe_connected(p, q)` — as hypotheses of
+    /// the record ([`MemoryTable::separations`]), so that either spelling a callee requires
+    /// is answered from them.
+    pub(super) fn assume_required_separations(&self, kb: &KnowledgeBase, requires: &[Value]) {
+        let pairs: Vec<(Symbol, Symbol)> = requires
+            .iter()
+            .flat_map(|c| clause_conjuncts(kb, c))
+            .filter_map(|conj| required_separation(kb, &conj))
+            .collect();
+        self.memory.borrow_mut().separations.extend(pairs);
     }
 
     /// The writes charged to a pool so far, taken out of the record. One per label: only a
@@ -404,6 +430,32 @@ fn operand_name<V: TermView>(kb: &KnowledgeBase, item: &V) -> Option<Symbol> {
             let name = item.named_arg(kb, kb.lookup_symbol("name")?)?;
             operand_name(kb, &name)
         }
+        _ => None,
+    }
+}
+
+/// The two places a requirement says are disconnected: `memory_disconnected(a, b)`, or
+/// `not(memory_maybe_connected(a, b))` — the clause defining the first.
+fn required_separation(kb: &KnowledgeBase, conj: &Value) -> Option<(Symbol, Symbol)> {
+    let ViewHead::Functor {
+        functor,
+        pos_arity,
+        named_arity: 0,
+    } = conj.head(kb)
+    else {
+        return None;
+    };
+    let operands = |goal: &Value| match memory_relation(kb, goal) {
+        Some((MemoryRelation::MaybeConnected, Some(a), Some(b))) => Some((a, b)),
+        _ => None,
+    };
+    match (kb.qualified_name_of(functor), pos_arity) {
+        ("anthill.memory.memory_disconnected", 2) => {
+            let a = operand_name(kb, &conj.pos_arg(kb, 0)?)?;
+            let b = operand_name(kb, &conj.pos_arg(kb, 1)?)?;
+            Some((a, b))
+        }
+        ("anthill.kernel.not", 1) => operands(&conj.pos_arg(kb, 0)?.to_value()),
         _ => None,
     }
 }
@@ -816,11 +868,17 @@ impl MemoryView {
         };
         let (oa, ob) = (outside(&ra), outside(&rb));
         // Separate: they do not meet, and one reaches no outside region, or both reach
-        // only pools, which are distinct state (§1, "separate").
+        // only pools, which are distinct state, or every pair of parameters they reach is
+        // one the operation requires disconnected (§1, "separate"; §1.2).
+        let required = |x: &Region, y: &Region| match (x, y) {
+            (Region::Pool(_), Region::Pool(_)) => true,
+            (Region::Param(p), Region::Param(q)) => self.scope.required_apart(*p, *q),
+            _ => false,
+        };
         let separate = !meet
             && (oa.is_empty()
                 || ob.is_empty()
-                || oa.iter().chain(ob.iter()).all(|r| matches!(r, Region::Pool(_))));
+                || oa.iter().all(|x| ob.iter().all(|y| required(x, y))));
         Some(match relation {
             MemoryRelation::MaybeConnected if meet => MemoryAnswer::Holds,
             _ if separate => MemoryAnswer::Fails,
