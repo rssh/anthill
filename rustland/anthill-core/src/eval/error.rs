@@ -423,8 +423,10 @@ pub enum BridgeDisposition {
     /// A search BELOW was cut short, so this answer set is INCOMPLETE — but nothing
     /// here has a sentence worth printing.
     ///
-    /// One producer: `EvalError::Suspended { truncated: true }`, a nested carrier-`eq`
-    /// whose closed sub-proof hit its depth cap. THE BRIDGE DROPPED THAT BIT — it
+    /// Two producers: `EvalError::Suspended { truncated: true }`, a nested carrier-`eq`
+    /// whose closed sub-proof hit its depth cap, and a raise of the runtime's
+    /// `search_truncated`, a drain the callee ran whose search was cut. THE BRIDGE DROPPED
+    /// THE FIRST ONE'S BIT — it
     /// matched `Suspended { .. }` and returned `None`, so a truncation that
     /// [`crate::kb::KnowledgeBase::bridge_eq_op_to_eval`] reads through (WI-628) died
     /// at this bridge instead. An eager NAF/guard consumer then read the short result
@@ -439,8 +441,9 @@ pub enum BridgeDisposition {
     /// an eval-side relation drain whose sub-search stayed undischarged) and
     /// `raise_load_failed` (WI-SPGBP — `KB.loaded` reporting that its sources do not
     /// load) ride `Raised` and are not domain failures of the callee; they answer
-    /// [`Self::Schedule`]. The payload's constructor is the cause: both are runtime
-    /// accounts no program constructs ([`crate::kb::RuntimeAccount`]), so the same value
+    /// [`Self::Schedule`], and the runtime's `search_truncated` (a drain whose search was
+    /// cut) answers [`Self::Truncation`]. The payload's constructor is the cause: each is a
+    /// runtime account no program constructs ([`crate::kb::RuntimeAccount`]), so the same value
     /// raised again by the program that caught it is still that account. Every other
     /// payload — a user `Error.raise`, the host raises `match_failed` / `division_by_zero`
     /// that ride a row they never appear in, and the runtime's `evaluation_failure` — is a
@@ -644,10 +647,11 @@ pub(crate) fn raised_runtime_account(
 }
 
 /// The `Raised` half of [`EvalError::bridge_disposition`]: a raise is a FAULT unless its
-/// payload is the runtime's account of a drain that did not decide or of a load that did not
-/// happen. No program constructs one of the runtime's accounts ([`crate::kb::RuntimeAccount`]),
-/// so the payload names its cause wherever it is raised, also where a boundary caught it and
-/// the program raised it again, in that operation or in a later goal of the rule.
+/// payload is the runtime's account of a drain that did not decide, of a drain whose search
+/// was cut, or of a load that did not happen. No program constructs one of the runtime's
+/// accounts ([`crate::kb::RuntimeAccount`]), so the payload names its cause wherever it is
+/// raised, also where a boundary caught it and the program raised it again, in that
+/// operation or in a later goal of the rule.
 ///
 /// KEYED BY SYMBOL, never by name (WI-897), and read by [`raised_runtime_account`]. An
 /// unresolved account matches no payload, which is the loud side: a fault. A construction of
@@ -665,6 +669,10 @@ fn raised_disposition(kb: &crate::kb::KnowledgeBase, payload: &Value) -> BridgeD
         Some(crate::kb::RuntimeAccount::RelationFloundered | crate::kb::RuntimeAccount::LoadFailed) => {
             BridgeDisposition::Schedule
         }
+        // WI-20260913-P9QBF — a drain whose search was cut at a depth limit: a search BELOW
+        // was cut short, which is [`BridgeDisposition::Truncation`]'s exact meaning, as for
+        // the nested `eq` sub-proof's cut. Nothing is wrong with the callee, so no message.
+        Some(crate::kb::RuntimeAccount::SearchTruncated) => BridgeDisposition::Truncation,
         // A search behind a stream that faulted: the account of a search the runtime could
         // not finish, which a boundary around the call does not repair.
         Some(crate::kb::RuntimeAccount::EvaluationFailure) | None => BridgeDisposition::Fault,

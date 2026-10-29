@@ -1075,6 +1075,20 @@ impl Interpreter {
         )
     }
 
+    /// WI-20260913-P9QBF — raise a resolver stream whose search ran dry with a branch cut
+    /// at a depth limit as the declared `Error[ResolveStreamFailure]`: payload
+    /// `search_truncated(max_depth)`, the interpreter-face twin of the host bridge's
+    /// `SearchTruncated`.
+    pub fn raise_search_truncated(&mut self, max_depth: i64) -> EvalError {
+        self.raise_error_payload(
+            crate::kb::RuntimeAccount::SearchTruncated.qualified_name(),
+            "search_truncated",
+            vec![("max_depth", Value::Int(max_depth))],
+            // A pull whose search was cut.
+            RaiseBy::Account(|l| &l.resolve_stream_failure_type),
+        )
+    }
+
     /// Register the standard effect handlers. Includes real-stdio
     /// Console handlers (call explicitly for programs that need terminal
     /// access; tests usually skip this and inject buffered handlers), the

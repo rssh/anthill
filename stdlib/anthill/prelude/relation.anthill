@@ -21,8 +21,8 @@
 -- library/003 Phase C; `stream.anthill` makes the same cut for `Stream` itself).
 -- Providing `collect` IS the finiteness guarantee (`finite_collection.anthill`), and
 -- a relation cannot honor it: the resolver's depth cap makes a drain TERMINATE, but
--- "terminates" is not "can be fully consumed" — a truncated drain would silently
--- return an incomplete answer.
+-- "terminates" is not "can be fully consumed" — a truncated drain ends in a raise
+-- (`search_truncated`, below), not in the whole answer.
 --
 -- So collect a relation by BOUNDING it first: `takeN` is body-backed over
 -- `splitFirst` and returns a `List`, which DOES provide `FiniteCollection` — the
@@ -39,6 +39,11 @@
 -- search could not ASK (an ill-typed comparison, a bridged operation that raised) is
 -- `Error[ResolveStreamFailure]`'s `evaluation_failure`, the same payload `KB.execute`
 -- raises — "never decided" would misreport a goal that was never evaluated.
+--
+-- A search cut at its depth limit raises where the stream would end, as
+-- `search_truncated(max_depth)`, after the rows found before the cut: an ordinary end
+-- would say those rows were all there are, and `isEmpty` would read a cut search as having
+-- no member. A consumer that stops before the end (`takeN(5)`) never meets it.
 --
 -- A FLOUNDERED answer RAISES rather than yielding a row (WI-737): if the search
 -- delayed a goal on variables that never got bound, it never DECIDED, and there is

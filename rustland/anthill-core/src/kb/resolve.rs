@@ -439,6 +439,37 @@ pub struct SearchFault {
     pub residual: Vec<Value>,
 }
 
+/// What [`SearchStream::split_first`] returns in place of an answer or an end: the search
+/// could not ask part of the query, or it ran dry having cut a branch short.
+#[derive(Debug)]
+pub enum SearchFailure {
+    /// The search recorded a fault ([`SearchFault`]).
+    Faulted(SearchFault),
+    /// WI-20260913-P9QBF — the search ran dry with a branch abandoned at a depth limit
+    /// and no fault recorded ([`SearchStream::truncated`]): the answers already yielded
+    /// are answers, and the end is not the claim that they were all.
+    ///
+    /// NOT A FAULT: nothing is wrong with any goal, so the faces raise their own payload
+    /// for it (`search_truncated`), which the bridge reads as a truncation below it rather
+    /// than as a callee that failed. `max_depth` is the limit of THIS search, as the
+    /// payload's `Int64` (saturated); a search nested in it with a budget of its own (a
+    /// negation's, a carrier `eq`'s, the bridge's re-entry cap) ends it the same way.
+    Truncated { max_depth: i64 },
+}
+
+impl std::fmt::Display for SearchFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SearchFailure::Faulted(fault) => f.write_str(&fault.error.message),
+            SearchFailure::Truncated { max_depth } => write!(
+                f,
+                "the search abandoned a branch at a depth limit (its own is {max_depth}), so \
+                 the answers it gave are not all there are"
+            ),
+        }
+    }
+}
+
 impl ResolveError {
     /// A fault not yet located — see [`Self::at`].
     pub(crate) fn new(message: String) -> Self {
@@ -1507,10 +1538,10 @@ pub struct SearchStream {
     /// closed-sub-proof consumers — the semantic-`eq` sub-resolution
     /// ([`KnowledgeBase::prove_rule_predicate`]) and ground NAF
     /// ([`SearchStream::step_naf`]) — to answer *undecided* instead of a definite
-    /// verdict when the proof search was truncated. (The depth pop itself stays
-    /// silent for ordinary resolution; surfacing truncation to the EAGER
-    /// `resolve` consumers — the constraint / quantifier guards, which read
-    /// `is_empty()` as refutation — is the filed WI-628 follow-up.)
+    /// verdict when the proof search was truncated; by [`Self::drain_all`], which
+    /// hands it to the EAGER `resolve` consumers on [`ResolveStats::truncated`]; and by
+    /// [`Self::split_first`]'s exhaustion exit, which reports it to the LAZY ones as
+    /// [`SearchFailure::Truncated`].
     truncated: bool,
     /// Faults this search DETECTED — see [`ResolveError`]. Empty for a healthy
     /// resolution.
@@ -1540,6 +1571,10 @@ pub struct SearchStream {
     /// `truncated`: [`Self::record_error`], [`Self::absorb_reduce_faults`], and a NAF
     /// sub-search's faults when `not(P)` came out undecided.
     faults: Vec<ResolveError>,
+    /// Answers [`Self::split_first`] has handed out, which it holds to
+    /// `config.max_solutions` as [`Self::drain_all`] does: a query limited to `n` answers
+    /// ends after the `n`th, and that end is the one asked for, not a truncation.
+    answers_yielded: usize,
 }
 
 /// WI-628 — the three-way verdict of draining a CLOSED sub-resolution (see
@@ -1720,9 +1755,14 @@ impl SearchStream {
     /// face that must not hand a faulted search back as ordinary rows (`undecided` for a
     /// goal that could not be ASKED) or as an empty result.
     ///
-    /// WHAT IT DOES NOT REPORT: a search TRUNCATED at its depth cap with no fault still
-    /// ends `Ok(None)`. That is WI-628's incompleteness channel, which the lazy faces do
-    /// not yet carry; it is not a fault.
+    /// WI-20260913-P9QBF — [`SearchFailure::Truncated`] AT THE EXHAUSTION EXIT ONLY, when
+    /// the search is [`Self::truncated`] and recorded no fault. The answers yielded before
+    /// are answers — a cut branch can hide more of them, never unmake one — so only the
+    /// end's claim "that was all" is false, and only the end reports it. A fault outranks
+    /// it: a fault marks the search truncated too, and says why.
+    ///
+    /// A query limited to `n` answers (`config.max_solutions`) ends `Ok(None)` after the
+    /// `n`th, without searching on: the consumer asked for no more, so that end is true.
     ///
     /// AT THIS DOOR AND NOT PER CONSUMER, because per consumer is how it went wrong:
     /// the host bridge checked in three places and the interpreter's relation pump in
@@ -1733,7 +1773,10 @@ impl SearchStream {
     pub fn split_first(
         mut self,
         kb: &mut KnowledgeBase,
-    ) -> Result<Option<(Solution, SearchStream)>, SearchFault> {
+    ) -> Result<Option<(Solution, SearchStream)>, SearchFailure> {
+        if self.config.max_solutions > 0 && self.answers_yielded >= self.config.max_solutions {
+            return Ok(None);
+        }
         loop {
             if self.stack.is_empty() {
                 return self.exhausted();
@@ -1742,11 +1785,14 @@ impl SearchStream {
                 Some(StepResult::Continue) => continue,
                 Some(StepResult::YieldSolution(sol)) => {
                     return match self.faults.first() {
-                        Some(error) => Err(SearchFault {
+                        Some(error) => Err(SearchFailure::Faulted(SearchFault {
                             error: error.clone(),
                             residual: sol.residual,
-                        }),
-                        None => Ok(Some((sol, self))),
+                        })),
+                        None => {
+                            self.answers_yielded += 1;
+                            Ok(Some((sol, self)))
+                        }
                     };
                 }
                 None => return self.exhausted(),
@@ -1754,12 +1800,16 @@ impl SearchStream {
         }
     }
 
-    /// The exhaustion exit of [`Self::split_first`]: the first recorded fault, or none.
-    fn exhausted(self) -> Result<Option<(Solution, SearchStream)>, SearchFault> {
+    /// The exhaustion exit of [`Self::split_first`]: the first recorded fault, else the
+    /// truncation, else the end.
+    fn exhausted(self) -> Result<Option<(Solution, SearchStream)>, SearchFailure> {
         match self.faults.into_iter().next() {
-            Some(error) => Err(SearchFault {
+            Some(error) => Err(SearchFailure::Faulted(SearchFault {
                 error,
                 residual: Vec::new(),
+            })),
+            None if self.truncated => Err(SearchFailure::Truncated {
+                max_depth: i64::try_from(self.config.max_depth).unwrap_or(i64::MAX),
             }),
             None => Ok(None),
         }
@@ -1815,13 +1865,13 @@ impl SearchStream {
     /// `truncated` folded onto the stats. The eager front doors
     /// ([`KnowledgeBase::resolve_goals_with_truncation`] and
     /// [`KnowledgeBase::resolve_with_stats`]) route through this instead of a
-    /// `split_first` loop because `split_first` consumes the stream on
-    /// exhaustion and DROPS the stream-level `truncated` flag — so a constraint
-    /// / quantifier guard reading `is_empty()` would decide a refutation from an
-    /// incomplete search (the WI-628 hole, the eager-consumer analog of the
-    /// ground-NAF one). Draining by hand keeps the stream alive so
-    /// `self.truncated` is still readable after the search runs dry — this is
-    /// the ONE place the live flag becomes an observable result.
+    /// `split_first` loop because they want the answers, the flag and the
+    /// diagnostics side by side, where `split_first` consumes the stream on
+    /// exhaustion and answers one of them — so a constraint / quantifier guard
+    /// reading `is_empty()` would decide a refutation from an incomplete search
+    /// (the WI-628 hole, the eager-consumer analog of the ground-NAF one).
+    /// Draining by hand keeps the stream alive so `self.truncated` is still
+    /// readable after the search runs dry.
     fn drain_all(
         mut self,
         kb: &mut KnowledgeBase,
@@ -5798,6 +5848,7 @@ impl KnowledgeBase {
             truncated: false,
             errors: Vec::new(),
             faults: Vec::new(),
+            answers_yielded: 0,
         }
     }
 

@@ -550,17 +550,107 @@ impl KbBridge {
 /// residual-honest (WI-534, absorbed by WI-540). `subst`/`residual` carry the
 /// internal `Value`s wrapped at the boundary.
 struct SearchStreamAdapter {
-    inner: RefCell<Option<SearchStream>>,
+    state: RefCell<Pending>,
     kb: Rc<RefCell<KnowledgeBase>>,
-    /// WI-20260911-8Y5BE — a pull on this adapter reported a fault. `inner` is `None`
-    /// afterwards, which on its own reads as an ENDED stream to `take_n` / `exists` /
-    /// `is_empty` (`Ok([])`, `Ok(false)`, `Ok(true)`), an apparently complete answer set
-    /// after a caught fault. Found by `/code-review`; every direct reader refuses on it
-    /// with `stream_misused`, as the interpreter's `Faulted` slot does.
-    faulted: std::cell::Cell<bool>,
+}
+
+/// Where a [`SearchStreamAdapter`]'s search stands between pulls.
+///
+/// ONE STATE, NOT A STREAM BESIDE A FLAG. An `Option<SearchStream>` read `None` as an ENDED
+/// stream wherever a pull had taken the search, so after a caught fault `take_n` / `exists` /
+/// `is_empty` answered `Ok([])`, `Ok(false)`, `Ok(true)` — an apparently complete answer set —
+/// until a `faulted` flag was put beside it (WI-20260911-8Y5BE, found by `/code-review`). And
+/// `is_empty` answered from the stack without pulling, so a search no one had pulled was
+/// non-empty whatever its answers: a query with none, or one cut at its depth limit
+/// (WI-20260913-P9QBF). Each case is its own state here.
+enum Pending {
+    /// The search, not yet pulled past its next answer.
+    Search(SearchStream),
+    /// `is_empty` pulled the next answer to see that there is one; the next pull hands it
+    /// out before the search goes on.
+    Peeked(anthill_core::kb::resolve::Solution, SearchStream),
+    /// A pull found the end: the next pull is the end too.
+    Ended,
+    /// A pull took the search, and its continuation went to the caller.
+    Spent,
+    /// A pull raised — a fault, or (WI-20260913-P9QBF) a truncation. Every reader refuses
+    /// with `stream_misused`, as the interpreter's `Faulted` slot does, rather than reading
+    /// the rows already pulled as a complete answer set.
+    Raised,
 }
 
 impl SearchStreamAdapter {
+    fn over(kb: &Rc<RefCell<KnowledgeBase>>, state: Pending) -> Self {
+        SearchStreamAdapter {
+            state: RefCell::new(state),
+            kb: Rc::clone(kb),
+        }
+    }
+
+    /// Take the state out for a pull, leaving [`Pending::Spent`]; the reader puts back
+    /// what is left.
+    fn take_state(&self) -> Pending {
+        std::mem::replace(&mut *self.state.borrow_mut(), Pending::Spent)
+    }
+
+    /// One pull from `state`: the next answer and the search after it, or the end — which
+    /// leaves the adapter [`Pending::Ended`], whichever reader found it.
+    ///
+    /// A FAULT TAKES THE `Err` ARM — the `Error` effect `execute` declares
+    /// (`E = Error[ResolveStreamFailure]`), which this `Result` IS. The resolver reports it
+    /// on BOTH exits (`SearchStream::split_first`): at a yield it wins over the row, and at
+    /// exhaustion it wins over the empty result.
+    ///
+    /// WHY IT WINS. A faulted goal residualizes, so the pull it displaces holds an
+    /// `undecided(subst, residual)` row. Handing that over while dropping the fault tells the
+    /// consumer "this goal has no answer" — a legitimate third outcome — when the truth is
+    /// the goal could not be ASKED; and an empty result would call a search with an
+    /// un-evaluated branch complete.
+    ///
+    /// NOT A NEW `Solution` VARIANT, considered and rejected: putting `faulted` beside
+    /// `definite`/`undecided` would claim a fault is a kind of ANSWER. WI-519 keeps
+    /// undecidedness as data because a self-hosted resolver must inspect which goals stayed
+    /// pending — that argument is about an answer-shaped outcome and does not reach an error.
+    ///
+    /// The displaced row's residual rides in the payload as `goals`. No continuation is
+    /// kept, so a caller that catches and pulls again is refused rather than handed more
+    /// rows from a search whose premise failed.
+    ///
+    /// A TRUNCATION TAKES IT TOO (WI-20260913-P9QBF), at exhaustion only: `Ok(None)` would
+    /// tell the consumer that the rows it pulled were all there are.
+    fn pull(
+        &self,
+        state: Pending,
+    ) -> Result<Option<(anthill_core::kb::resolve::Solution, SearchStream)>, ResolveStreamFailure>
+    {
+        let pulled = match state {
+            Pending::Search(stream) => {
+                let result = {
+                    let mut kb = self.kb.borrow_mut();
+                    stream.split_first(&mut kb)
+                };
+                result.map_err(|failure| self.failure(failure))?
+            }
+            Pending::Peeked(sol, rest) => Some((sol, rest)),
+            Pending::Ended => None,
+            Pending::Spent => {
+                return Err(ResolveStreamFailure::StreamMisused {
+                    detail: "stream already consumed".into(),
+                })
+            }
+            Pending::Raised => {
+                *self.state.borrow_mut() = Pending::Raised;
+                return Err(ResolveStreamFailure::StreamMisused {
+                    detail: "a pull on a stream whose search already raised".into(),
+                });
+            }
+        };
+        if pulled.is_none() {
+            *self.state.borrow_mut() = Pending::Ended;
+        }
+        Ok(pulled)
+    }
+
     /// Wrap one resolver solution as a reflect `Solution`.
     fn make_solution(&self, sol: anthill_core::kb::resolve::Solution) -> Solution {
         // `undecided` is bound and NOT used, deliberately and with a name rather than
@@ -591,36 +681,38 @@ impl SearchStreamAdapter {
 }
 
 impl SearchStreamAdapter {
-    /// The declared `evaluation_failure` for a search that reported a FAULT — what every
-    /// consuming pull (`split_first`, `take_n`, `exists`) maps the resolver's
-    /// [`SearchFault`](anthill_core::kb::resolve::SearchFault) to, so no drain can hand a
-    /// faulted search back as ordinary rows.
+    /// The declared payload for a search that did not end as an answer set — what every
+    /// consuming pull ([`Self::pull`]) maps the resolver's
+    /// [`SearchFailure`](anthill_core::kb::resolve::SearchFailure) to, so no drain can hand
+    /// a faulted search back as ordinary rows, or a truncated one back as a complete set.
+    /// Marks the adapter [`Pending::Raised`].
     ///
-    /// `reason` and `at` are the search's FIRST recorded fault, and the fault list is
-    /// cumulative across the whole search; `goals` is the residual of the answer the
-    /// fault displaced. The two usually describe one goal — a faulted goal residualizes —
-    /// but not always: a fault from an earlier branch that yielded nothing surfaces on the
-    /// next yield or at exhaustion, where `goals` may be empty.
-    fn failure(&self, fault: anthill_core::kb::resolve::SearchFault) -> ResolveStreamFailure {
-        self.faulted.set(true);
-        ResolveStreamFailure::EvaluationFailure {
-            goals: fault.residual.into_iter().map(rterm).collect(),
-            reason: fault.error.message,
-            at: fault
-                .error
-                .at
-                .map(|occ| ReflectNodeOccurrence::new(Value::Node(occ))),
+    /// A FAULT is `evaluation_failure`. `reason` and `at` are the search's FIRST recorded
+    /// fault, and the fault list is cumulative across the whole search; `goals` is the
+    /// residual of the answer the fault displaced. The two usually describe one goal — a
+    /// faulted goal residualizes — but not always: a fault from an earlier branch that
+    /// yielded nothing surfaces on the next yield or at exhaustion, where `goals` may be
+    /// empty.
+    ///
+    /// WI-20260913-P9QBF — A TRUNCATION is `search_truncated`, raised where the stream would
+    /// have ended: the rows already pulled are answers, and the end is not the claim that
+    /// they were all.
+    fn failure(&self, failure: anthill_core::kb::resolve::SearchFailure) -> ResolveStreamFailure {
+        use anthill_core::kb::resolve::SearchFailure;
+        *self.state.borrow_mut() = Pending::Raised;
+        match failure {
+            SearchFailure::Faulted(fault) => ResolveStreamFailure::EvaluationFailure {
+                goals: fault.residual.into_iter().map(rterm).collect(),
+                reason: fault.error.message,
+                at: fault
+                    .error
+                    .at
+                    .map(|occ| ReflectNodeOccurrence::new(Value::Node(occ))),
+            },
+            SearchFailure::Truncated { max_depth } => {
+                ResolveStreamFailure::SearchTruncated { max_depth }
+            }
         }
-    }
-
-    /// `stream_misused` when a pull on this adapter already faulted — see `faulted`.
-    fn refuse_if_faulted(&self) -> Result<(), ResolveStreamFailure> {
-        if self.faulted.get() {
-            return Err(ResolveStreamFailure::StreamMisused {
-                detail: "a pull on a stream whose search already faulted".into(),
-            });
-        }
-        Ok(())
     }
 }
 
@@ -631,50 +723,12 @@ impl Stream<Solution, ResolveStreamFailure> for SearchStreamAdapter {
         Option<(Solution, Box<dyn Stream<Solution, ResolveStreamFailure>>)>,
         ResolveStreamFailure,
     > {
-        self.refuse_if_faulted()?;
-        let stream = self.inner.borrow_mut().take().ok_or_else(|| {
-            ResolveStreamFailure::StreamMisused {
-                detail: "stream already consumed".into(),
-            }
-        })?;
-        let result = {
-            let mut kb = self.kb.borrow_mut();
-            stream.split_first(&mut kb)
-        };
-        match result {
-            // A FAULT TAKES THE `Err` ARM — the `Error` effect `execute` declares
-            // (`E = Error[ResolveStreamFailure]`), which this `Result` IS. The resolver
-            // reports it on BOTH exits (`SearchStream::split_first`): at a yield it wins
-            // over the row, and at exhaustion it wins over the empty result.
-            //
-            // WHY IT WINS. A faulted goal residualizes, so the pull it displaces holds an
-            // `undecided(subst, residual)` row. Handing that over while dropping the fault
-            // tells the consumer "this goal has no answer" — a legitimate third outcome —
-            // when the truth is the goal could not be ASKED; and an empty result would
-            // call a search with an un-evaluated branch complete.
-            //
-            // NOT A NEW `Solution` VARIANT, considered and rejected: putting `faulted`
-            // beside `definite`/`undecided` would claim a fault is a kind of ANSWER. WI-519
-            // keeps undecidedness as data because a self-hosted resolver must inspect which
-            // goals stayed pending — that argument is about an answer-shaped outcome and
-            // does not reach an error.
-            //
-            // The displaced row's residual rides in the payload as `goals`. No continuation
-            // is stored, so a caller that catches and pulls again gets the "already
-            // consumed" refusal rather than more rows from a search whose premise failed.
-            Err(fault) => Err(self.failure(fault)),
-            Ok(Some((sol, rest))) => {
-                let elem = self.make_solution(sol);
-                let cont: Box<dyn Stream<Solution, ResolveStreamFailure>> =
-                    Box::new(SearchStreamAdapter {
-                        inner: RefCell::new(Some(rest)),
-                        kb: Rc::clone(&self.kb),
-                        faulted: std::cell::Cell::new(false),
-                    });
-                Ok(Some((elem, cont)))
-            }
-            Ok(None) => Ok(None),
-        }
+        let state = self.take_state();
+        Ok(self.pull(state)?.map(|(sol, rest)| {
+            let cont: Box<dyn Stream<Solution, ResolveStreamFailure>> =
+                Box::new(Self::over(&self.kb, Pending::Search(rest)));
+            (self.make_solution(sol), cont)
+        }))
     }
 
     fn head_option(&self) -> Result<Option<Solution>, ResolveStreamFailure> {
@@ -702,48 +756,47 @@ impl Stream<Solution, ResolveStreamFailure> for SearchStreamAdapter {
     ) -> Result<Box<dyn Stream<Solution, ResolveStreamFailure>>, ResolveStreamFailure> {
         match self.split_first()? {
             Some((_, t)) => Ok(t),
-            None => Ok(Box::new(SearchStreamAdapter {
-                inner: RefCell::new(None),
-                kb: Rc::clone(&self.kb),
-                faulted: std::cell::Cell::new(false),
-            })),
+            None => Ok(Box::new(Self::over(&self.kb, Pending::Ended))),
         }
     }
 
     fn take_n(&self, n: i64) -> Result<Vec<Solution>, ResolveStreamFailure> {
-        self.refuse_if_faulted()?;
         let mut results = Vec::new();
-        let mut current = self.inner.borrow_mut().take();
+        let mut current = self.take_state();
         for _ in 0..n {
-            let next = match current.take() {
-                Some(s) => {
-                    let mut kb = self.kb.borrow_mut();
-                    s.split_first(&mut kb)
-                }
-                None => break,
-            };
-            match next {
-                // A fault ends the drain loudly, as it does at `split_first`; the
-                // continuation is not put back (`current` is `None` here).
-                Err(fault) => return Err(self.failure(fault)),
-                Ok(Some((sol, rest))) => {
+            // A fault or a truncation ends the drain loudly, as it does at `split_first`;
+            // the state is `Raised` then, and the continuation is not put back.
+            match self.pull(current)? {
+                Some((sol, rest)) => {
                     results.push(self.make_solution(sol));
-                    current = Some(rest);
+                    current = Pending::Search(rest);
                 }
-                Ok(None) => break,
+                None => {
+                    current = Pending::Ended;
+                    break;
+                }
             }
         }
-        *self.inner.borrow_mut() = current;
+        *self.state.borrow_mut() = current;
         Ok(results)
     }
 
     fn is_empty(&self) -> Result<bool, ResolveStreamFailure> {
-        self.refuse_if_faulted()?;
-        let inner = self.inner.borrow();
-        match inner.as_ref() {
-            Some(s) => Ok(s.is_empty()),
-            None => Ok(true),
-        }
+        // ANSWERED BY A PULL, and the answer it pulled is kept for the next one: the stack
+        // says only whether the search has work left, and a search with work left may have
+        // no answer in it (WI-20260913-P9QBF). A fault or a truncation raises here as at
+        // any pull — "empty" would read a cut search as having no answers.
+        let state = self.take_state();
+        let (empty, kept) = match state {
+            Pending::Peeked(sol, rest) => (false, Pending::Peeked(sol, rest)),
+            Pending::Ended => (true, Pending::Ended),
+            other => match self.pull(other)? {
+                Some((sol, rest)) => (false, Pending::Peeked(sol, rest)),
+                None => (true, Pending::Ended),
+            },
+        };
+        *self.state.borrow_mut() = kept;
+        Ok(empty)
     }
 
     fn non_empty(&self) -> Result<bool, ResolveStreamFailure> {
@@ -757,26 +810,12 @@ impl Stream<Solution, ResolveStreamFailure> for SearchStreamAdapter {
         // `bool`, so consuming each element as it is tested costs nothing.
         //
         // Consumes the stream, like `take_n` above; short-circuits on the first hit.
-        self.refuse_if_faulted()?;
-        let mut current = self.inner.borrow_mut().take();
-        loop {
-            let next = match current.take() {
-                Some(s) => {
-                    let mut kb = self.kb.borrow_mut();
-                    s.split_first(&mut kb)
-                }
-                None => break,
-            };
-            match next {
-                Err(fault) => return Err(self.failure(fault)),
-                Ok(Some((sol, rest))) => {
-                    if pred(self.make_solution(sol)) {
-                        return Ok(true);
-                    }
-                    current = Some(rest);
-                }
-                Ok(None) => break,
+        let mut current = self.take_state();
+        while let Some((sol, rest)) = self.pull(current)? {
+            if pred(self.make_solution(sol)) {
+                return Ok(true);
             }
+            current = Pending::Search(rest);
         }
         Ok(false)
     }
@@ -798,13 +837,20 @@ impl Stream<Solution, ResolveStreamFailure> for SearchStreamAdapter {
     }
 
     fn iterator(&self) -> Box<dyn Stream<Solution, ResolveStreamFailure>> {
-        // `iterator(s) = s`: hand this stream's remaining state to the iterator.
-        Box::new(SearchStreamAdapter {
-            inner: RefCell::new(self.inner.borrow_mut().take()),
-            kb: Rc::clone(&self.kb),
-            // The fault travels with the state handed over.
-            faulted: std::cell::Cell::new(self.faulted.get()),
-        })
+        // `iterator(s) = s`: hand this stream's remaining state to the iterator. A raised
+        // search's refusal, and an end, hold for both, there being no search to hand over.
+        let state = match self.take_state() {
+            Pending::Raised => {
+                *self.state.borrow_mut() = Pending::Raised;
+                Pending::Raised
+            }
+            Pending::Ended => {
+                *self.state.borrow_mut() = Pending::Ended;
+                Pending::Ended
+            }
+            other => other,
+        };
+        Box::new(Self::over(&self.kb, state))
     }
 }
 
@@ -1032,11 +1078,7 @@ impl KB for KbBridge {
     ) -> Result<Box<dyn Stream<Solution, ResolveStreamFailure>>, ResolveStreamFailure> {
         let (goals, config) = self.query_to_goals_and_config(&query)?;
         let stream = self.kb.borrow().resolve_lazy_goals(goals, &config);
-        Ok(Box::new(SearchStreamAdapter {
-            inner: RefCell::new(Some(stream)),
-            kb: Rc::clone(&self.kb),
-            faulted: std::cell::Cell::new(false),
-        }))
+        Ok(Box::new(SearchStreamAdapter::over(&self.kb, Pending::Search(stream))))
     }
 
     fn facts_of(&self, sort: Type) -> Vec<Term> {
@@ -1572,6 +1614,172 @@ end
         assert!(misused(&stream.exists(|_| true).map(|_| ())), "exists after a fault");
         assert!(misused(&stream.is_empty().map(|_| ())), "is_empty after a fault");
         assert!(misused(&stream.iterator().take_n(1).map(|_| ())), "the fault travels with iterator()");
+    }
+
+    /// WI-20260913-P9QBF — `stuck` is cut at the depth limit with no answer; `again` has one
+    /// answer, which every level of `Some1`'s recursion derives again, and is then cut;
+    /// `absent` and `present` are complete searches with no answer and with one.
+    const CUT_SEARCH: &str = r#"
+namespace rstl.cut
+  import anthill.prelude.{Int64}
+
+  entity Deep(x: Int64)
+  entity Some1(x: Int64)
+  entity Link(from: Int64, to: Int64)
+  rule Deep(x: ?x) :- Deep(x: ?x)
+  fact Some1(x: 1)
+  rule Some1(x: ?x) :- Some1(x: ?x)
+  fact Link(from: 1, to: 2)
+  rule stuck :- Deep(x: 1)
+  rule again :- Some1(x: 1)
+  rule absent :- Link(from: 2, to: 1)
+  rule present :- Link(from: 1, to: 2)
+end
+"#;
+
+    /// A fresh `execute` stream over the nullary rule `rstl.cut.<name>`.
+    fn cut_stream(bridge: &KbBridge, name: &str) -> Box<dyn Stream<Solution, ResolveStreamFailure>> {
+        let query = {
+            let mut kb = bridge.kb.borrow_mut();
+            LogicalQuery::PatternQuery {
+                term: ReflectTerm::new(Value::term(
+                    kb.resolve_qualified_name_term(&format!("rstl.cut.{name}")),
+                )),
+            }
+        };
+        bridge.execute(query).expect("execute builds the stream")
+    }
+
+    fn is_truncated<T: std::fmt::Debug>(r: &Result<T, ResolveStreamFailure>) -> bool {
+        matches!(
+            r,
+            Err(ResolveStreamFailure::SearchTruncated { max_depth })
+                if *max_depth == ResolveConfig::default().max_depth as i64
+        )
+    }
+
+    /// A SEARCH CUT AT ITS DEPTH LIMIT TAKES THE `Err` ARM where it would end, as the
+    /// declared `search_truncated` naming the limit, on every reader that pulls.
+    ///
+    /// FAILS WHEN BACKED OUT (the exhaustion arm in `SearchStream::exhausted`): `split_first`
+    /// is `Ok(None)`, `take_n` `Ok([])`, `exists` `Ok(false)` and `is_empty` `Ok(true)`; and
+    /// with `is_empty` reading the stack, which answers `Ok(false)`.
+    #[test]
+    fn a_cut_search_takes_the_error_arm_at_its_end() {
+        let bridge = load_source_bridge_with_stdlib(CUT_SEARCH);
+        let first = cut_stream(&bridge, "stuck").split_first().map(|r| r.is_some());
+        assert!(is_truncated(&first), "split_first: {first:?}");
+        let taken = cut_stream(&bridge, "stuck").take_n(10).map(|rows| rows.len());
+        assert!(is_truncated(&taken), "take_n: {taken:?}");
+        let exists = cut_stream(&bridge, "stuck").exists(|_| true);
+        assert!(is_truncated(&exists), "exists: {exists:?}");
+        let empty = cut_stream(&bridge, "stuck").is_empty();
+        assert!(is_truncated(&empty), "is_empty: {empty:?}");
+    }
+
+    /// ROWS BEFORE THE CUT COME OUT FIRST, definite, and only the pull that would END the
+    /// stream raises; a pull after it is `stream_misused`, not the end.
+    ///
+    /// FAILS WHEN BACKED OUT (the exhaustion arm): the last pull is `Ok(None)`.
+    #[test]
+    fn rows_before_the_cut_come_out_first() {
+        let bridge = load_source_bridge_with_stdlib(CUT_SEARCH);
+        let mut stream = cut_stream(&bridge, "again");
+        let mut rows = 0usize;
+        let end = loop {
+            match stream.split_first() {
+                Ok(Some((Solution::Definite { .. }, rest))) => {
+                    rows += 1;
+                    stream = rest;
+                }
+                Ok(Some(_)) => panic!("every row before the cut is definite"),
+                other => break other.map(|r| r.is_some()),
+            }
+        };
+        assert!(rows >= 1, "the fact's answer comes out before the cut");
+        assert!(is_truncated(&end), "the end of the stream: {end:?}");
+        assert!(
+            matches!(stream.split_first(), Err(ResolveStreamFailure::StreamMisused { .. })),
+            "a pull after the raise is refused"
+        );
+    }
+
+    /// `is_empty` PULLS, and keeps what it pulled for the next pull. It answered from the
+    /// resolver's stack, which says only whether the search has work left: a fresh stream
+    /// was non-empty whatever its answers. Found under P9QBF, where it called a cut search
+    /// (above) non-empty too.
+    ///
+    /// FAILS WHEN BACKED OUT (`is_empty` reading the stack): `absent` is non-empty. The
+    /// `present` half passes either way, and pins that the pulled answer is handed out
+    /// once, not dropped and not twice.
+    #[test]
+    fn is_empty_pulls_and_keeps_the_answer() {
+        let bridge = load_source_bridge_with_stdlib(CUT_SEARCH);
+        let absent = cut_stream(&bridge, "absent");
+        assert!(matches!(absent.is_empty(), Ok(true)), "a search with no answer is empty");
+        assert!(matches!(absent.split_first(), Ok(None)), "and its next pull is the end");
+        let present = cut_stream(&bridge, "present");
+        assert!(matches!(present.is_empty(), Ok(false)), "a search with an answer is not");
+        assert!(matches!(present.is_empty(), Ok(false)), "asking twice pulls once");
+        assert_eq!(drain(present).len(), 1, "the pulled answer is handed out once");
+        assert_eq!(drain(cut_stream(&bridge, "present")).len(), 1, "as without `is_empty`");
+    }
+
+    /// A QUERY LIMITED TO `n` ANSWERS ENDS AFTER THE `n`TH, and that end is no truncation:
+    /// the consumer asked for no more. `again` has more answers than two before its cut, and
+    /// the lazy door ignored `max_solutions`, so the stream ran on to the cut — every row,
+    /// then `search_truncated`.
+    ///
+    /// FAILS WHEN BACKED OUT (the limit in `SearchStream::split_first`): the drain raises
+    /// `search_truncated` after more than two rows.
+    #[test]
+    fn a_limited_query_ends_at_its_limit() {
+        let bridge = load_source_bridge_with_stdlib(CUT_SEARCH);
+        let query = {
+            let mut kb = bridge.kb.borrow_mut();
+            LogicalQuery::Limited {
+                query: Box::new(LogicalQuery::PatternQuery {
+                    term: ReflectTerm::new(Value::term(
+                        kb.resolve_qualified_name_term("rstl.cut.again"),
+                    )),
+                }),
+                count: 2,
+            }
+        };
+        let stream = bridge.execute(query).expect("execute builds the stream");
+        assert_eq!(drain(stream).len(), 2, "two answers, then the end");
+    }
+
+    /// A SPENT OR ENDED ADAPTER ANSWERS AS WHAT IT IS. A pull hands the search to the
+    /// continuation it returns, so a reader of the adapter left behind is refused rather
+    /// than told the stream is empty (`Ok(true)`, `Ok([])`, `Ok(false)`, which the
+    /// `Option` the state was once read through answered). One that found the end answers
+    /// the end again, whichever reader found it. And a raised adapter stays raised when
+    /// `iterator()` hands its state on.
+    ///
+    /// Pins the readers of the state enum; passes with each part as written.
+    #[test]
+    fn a_spent_adapter_is_refused_and_an_ended_one_ends() {
+        let bridge = load_source_bridge_with_stdlib(CUT_SEARCH);
+        let misused = |r: Result<(), ResolveStreamFailure>, detail: &str| {
+            matches!(r, Err(ResolveStreamFailure::StreamMisused { detail: d }) if d == detail)
+        };
+        let spent = cut_stream(&bridge, "present");
+        assert!(matches!(spent.split_first(), Ok(Some(_))));
+        assert!(misused(spent.is_empty().map(|_| ()), "stream already consumed"));
+        assert!(misused(spent.take_n(1).map(|_| ()), "stream already consumed"));
+        assert!(misused(spent.exists(|_| true).map(|_| ()), "stream already consumed"));
+        let ended = cut_stream(&bridge, "absent");
+        assert!(matches!(ended.split_first(), Ok(None)));
+        assert!(matches!(ended.split_first(), Ok(None)), "the end, again");
+        assert!(matches!(ended.is_empty(), Ok(true)));
+        assert!(matches!(ended.iterator().split_first(), Ok(None)));
+        assert!(matches!(ended.split_first(), Ok(None)), "the end stays with the adapter");
+        let raised = cut_stream(&bridge, "stuck");
+        assert!(is_truncated(&raised.split_first().map(|r| r.is_some())));
+        let already = "a pull on a stream whose search already raised";
+        assert!(misused(raised.iterator().take_n(1).map(|_| ()), already));
+        assert!(misused(raised.take_n(1).map(|_| ()), already), "and stays with the adapter");
     }
 
     /// CONTROL for `at`, and the reason it is an `Option`: a goal REBUILT by the

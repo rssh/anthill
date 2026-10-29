@@ -316,10 +316,9 @@ end
     match stream.split_first(&mut kb) {
         Ok(None) => {}
         Ok(Some(_)) => panic!("`not(p(1))` fails, so `q` has no answer"),
-        Err(fault) => panic!(
+        Err(failure) => panic!(
             "a decided negation is not a fault; its sub-search's message is a diagnostic. \
-             Got: {}",
-            fault.error.message
+             Got: {failure}"
         ),
     }
 }

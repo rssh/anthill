@@ -1555,7 +1555,7 @@ pub fn first_unary(kb: &mut KnowledgeBase, qn: &str, k: usize) -> Vec<(eval::Val
                 stream = rest;
             }
             Ok(None) => break,
-            Err(fault) => panic!("first_unary: `{qn}` faulted: {}", fault.error.message),
+            Err(failure) => panic!("first_unary: `{qn}` did not end as an answer set: {failure}"),
         }
     }
     out

@@ -2384,13 +2384,13 @@ impl Interpreter {
         match action {
             Action::Done => Ok(None),
             Action::Faulted => Err(self.raise_stream_misused(
-                "a pull on a stream whose search already faulted".to_string(),
+                "a pull on a stream whose search already raised".to_string(),
             )),
             Action::YieldSelf(v) => Ok(Some((v, handle.clone()))),
             Action::PumpResolver(stream) => {
                 let result = stream.split_first(&mut self.kb);
                 match result {
-                    Err(fault) => Err(self.fault_stream(handle, fault)),
+                    Err(failure) => Err(self.fault_stream(handle, failure)),
                     Ok(Some((sol, rest))) => {
                         handle.with_source_mut(|prev| {
                             // Carry the layer forward onto the continuation — the
@@ -2429,7 +2429,7 @@ impl Interpreter {
                     // residualizes) — "never decided" for a goal that could not be asked,
                     // and a payload the SLD bridge SCHEDULES rather than reports — or,
                     // for a faulted branch that yielded nothing, to drop the fault.
-                    Err(fault) => Err(self.fault_stream(handle, fault)),
+                    Err(failure) => Err(self.fault_stream(handle, failure)),
                     Ok(Some((sol, rest))) => {
                         let cols = columns.clone();
                         handle.with_source_mut(move |_| {
@@ -2468,10 +2468,11 @@ impl Interpreter {
         }
     }
 
-    /// WI-20260911-8Y5BE — a resolver search behind `handle` reported a FAULT: park the
-    /// slot as [`stream::StreamSource::Faulted`] and raise the declared
-    /// `evaluation_failure`. The one arm both resolver pumps take, so the execute face
-    /// and the relation face cannot disagree about a faulted search.
+    /// WI-20260911-8Y5BE — a resolver search behind `handle` reported a FAULT, or
+    /// (WI-20260913-P9QBF) ran dry with a branch cut at a depth limit: park the slot as
+    /// [`stream::StreamSource::Faulted`] and raise the declared `evaluation_failure` or
+    /// `search_truncated`. The one arm both resolver pumps take, so the execute face and
+    /// the relation face cannot disagree about a faulted or a truncated search.
     ///
     /// THE CONTINUATION IS NOT KEPT, and the slot is not `Empty` either: a caller that
     /// catches the raise and pulls again is refused with `stream_misused` (as on the host
@@ -2481,10 +2482,16 @@ impl Interpreter {
     fn fault_stream(
         &mut self,
         handle: &value::StreamHandle,
-        fault: crate::kb::resolve::SearchFault,
+        failure: crate::kb::resolve::SearchFailure,
     ) -> EvalError {
+        use crate::kb::resolve::SearchFailure;
         handle.with_source_mut(|_| (stream::StreamSource::Faulted, ()));
-        self.raise_evaluation_failure(fault.residual, fault.error.message, fault.error.at)
+        match failure {
+            SearchFailure::Faulted(fault) => {
+                self.raise_evaluation_failure(fault.residual, fault.error.message, fault.error.at)
+            }
+            SearchFailure::Truncated { max_depth } => self.raise_search_truncated(max_depth),
+        }
     }
 
     /// WI-531: wrap a resolver [`Solution`](crate::kb::resolve::Solution) as a

@@ -359,13 +359,18 @@ pub enum RuntimeAccount {
     /// A resolver search behind a stream faulted (`Interpreter::fault_stream`): the account
     /// of a search the runtime could not finish.
     EvaluationFailure,
+    /// A resolver search behind a stream ran dry with a branch cut at a depth limit
+    /// (`Interpreter::fault_stream`): the search did not decide what it did not reach, which
+    /// is no failure of the callee.
+    SearchTruncated,
 }
 
 impl RuntimeAccount {
-    pub const ALL: [RuntimeAccount; 3] = [
+    pub const ALL: [RuntimeAccount; 4] = [
         RuntimeAccount::RelationFloundered,
         RuntimeAccount::LoadFailed,
         RuntimeAccount::EvaluationFailure,
+        RuntimeAccount::SearchTruncated,
     ];
 
     /// Why no program constructs one, said by every refusal of a construction made at run
@@ -384,6 +389,9 @@ impl RuntimeAccount {
             RuntimeAccount::LoadFailed => "anthill.reflect.LoadFailed.load_failed",
             RuntimeAccount::EvaluationFailure => {
                 "anthill.reflect.ResolveStreamFailure.evaluation_failure"
+            }
+            RuntimeAccount::SearchTruncated => {
+                "anthill.reflect.ResolveStreamFailure.search_truncated"
             }
         }
     }
@@ -2103,11 +2111,11 @@ pub struct KnowledgeBase {
     /// every goal whether it is a pattern's (`typing::synth`). `None` before the prelude loads.
     type_pattern_sym: Option<Symbol>,
 
-    /// The runtime's three accounts of what it could not do ([`RuntimeAccount`]), in
+    /// The runtime's accounts of what it could not do ([`RuntimeAccount`]), in
     /// [`RuntimeAccount::ALL`]'s order, cached where the connectives are: the bridge reads one
     /// per raise that escapes it, and the typer one per construction. `None` before the
     /// library loads.
-    runtime_account_syms: [Option<Symbol>; 3],
+    runtime_account_syms: [Option<Symbol>; RuntimeAccount::ALL.len()],
 
     /// The symbol of each sort's derived induction axiom (`<Sort>.induction`), canonical, as
     /// `emit_induction_rule` files it: the name the axiom owns, which the load refuses to an
@@ -3056,7 +3064,7 @@ impl KnowledgeBase {
             reify_operation_sym: None,
             error_sort_sym: None,
             type_pattern_sym: None,
-            runtime_account_syms: [None; 3],
+            runtime_account_syms: [None; RuntimeAccount::ALL.len()],
             induction_axioms: HashSet::new(),
             unify_connective_sym: None,
             tuple_literal_sym: None,

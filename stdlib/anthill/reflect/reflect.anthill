@@ -629,10 +629,10 @@ namespace anthill.reflect
   -- Payload for a `KB.execute` stream that could not be used or run (WI-20260911-8Y5BE).
   -- Carried by `Error` on `execute` below; lives here for the reason `LoadFailed` does.
   --
-  -- FOUR VARIANTS FROM A CENSUS of the host bridge's raise sites, not a guess. Three
+  -- The first four come from a census of the host bridge's raise sites, not a guess. Three
   -- carry `detail` as prose — the variant is what a handler branches on, the text is
   -- for a human: `malformed_query` (a query that does not lower) and `stream_misused`
-  -- (a stream pulled after it was spent, or after it faulted) are CALLER bugs;
+  -- (a stream pulled after it was spent, or after it raised) are CALLER bugs;
   -- `unsupported_operation` is a GAP in the face — a well-formed query or stream
   -- operation it has not implemented — which the caller cannot fix by rewriting. A
   -- two-variant split was rejected because those three would need a string catch-all,
@@ -656,12 +656,19 @@ namespace anthill.reflect
   --   * `goals` — the residual of the answer the fault displaced, which is not handed
   --     out as a row. Usually it holds the faulted goal (a faulted goal residualizes);
   --     EMPTY when the fault surfaced at exhaustion or displaced a definite answer.
+  --
+  -- `search_truncated` is raised where the stream would end, when the search abandoned a
+  -- branch at a depth limit and recorded no fault: the rows already handed out are
+  -- answers, and the end is not the claim that they were all. `max_depth` is the depth
+  -- limit of the search the stream runs; a search nested in it with a budget of its own
+  -- (a negation's, a carrier `eq`'s) ends it the same way.
   enum ResolveStreamFailure
-    import anthill.prelude.{List, Option, String}
+    import anthill.prelude.{Int64, List, Option, String}
     entity malformed_query(detail: String)
     entity unsupported_operation(detail: String)
     entity stream_misused(detail: String)
     entity evaluation_failure(goals: List[T = Term], reason: String, at: Option[T = NodeOccurrence])
+    entity search_truncated(max_depth: Int64)
   end
 
   -- The storage of the in-memory knowledge base: the pool (proposal 037 §2) that

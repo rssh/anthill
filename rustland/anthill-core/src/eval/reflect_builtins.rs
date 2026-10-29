@@ -1193,10 +1193,16 @@ pub(super) fn kernel_not(interp: &mut Interpreter, args: &[Value]) -> Result<Val
     match stream.split_first(kb) {
         // WI-20260911-8Y5BE — a sub-search that could not ASK part of the goal decides
         // nothing either way; refused as loudly as a flounder, with the resolver's words.
-        Err(fault) => Err(EvalError::Internal(format!(
+        Err(crate::kb::resolve::SearchFailure::Faulted(fault)) => Err(EvalError::Internal(format!(
             "kernel.not: the search faulted — {}",
             fault.error.message
         ))),
+        // WI-20260913-P9QBF — so does one cut at a depth limit: no answer is not "false" when
+        // the search did not reach the end. Not reached through a ground `not(P)`, whose cut
+        // sub-search residualizes `not(P)`; refused as loudly as a flounder, should it come.
+        Err(truncated @ crate::kb::resolve::SearchFailure::Truncated { .. }) => Err(
+            EvalError::Internal(format!("kernel.not: the search is undecided — {truncated}")),
+        ),
         Ok(None) => Ok(Value::Bool(false)),
         Ok(Some((sol, _rest))) if sol.residual.is_empty() => Ok(Value::Bool(true)),
         Ok(Some(_)) => Err(EvalError::Internal(
