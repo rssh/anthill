@@ -2076,7 +2076,7 @@ pub(super) fn build_op_scoped_dicts(
                 kb,
                 &entry.spec,
                 param_arg_types,
-                Receivers::Call,
+                Receivers::Call(None),
                 None,
                 &ctx,
                 None,

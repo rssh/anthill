@@ -173,6 +173,10 @@ pub(super) enum TypeBuildFrame {
         /// functional-relation arity + 1 is legal at a rule-body GOAL and nowhere else)
         /// and inherited by the two re-Visits this frame can push.
         pos: NodePos,
+        /// The call's own record of what its readings opened ([`PathOpenings`]), made where
+        /// the call was visited: the hints read it before the arguments are typed, the check
+        /// after.
+        openings: PathOpenings,
     },
     /// WI-793: the staged half of an `Apply`. Reached once the projection-receiver
     /// arguments have been typed: it completes the param→argument-type map with their
@@ -203,6 +207,8 @@ pub(super) enum TypeBuildFrame {
         /// WI-1104: carried through to the [`TypeBuildFrame::Apply`] this frame pushes —
         /// staging changes WHEN the arguments are typed, never where the call sits.
         pos: NodePos,
+        /// The call's own record ([`TypeBuildFrame::Apply`]'s), carried to it.
+        openings: PathOpenings,
     },
     /// All Constructor args finished; drain results and call
     /// `check_constructor_iter`. WI-270: `expected` flows into the
@@ -1275,6 +1281,7 @@ pub(super) fn check_bare_ref(
             &ret,
             &HashSet::new(),
             &[],
+            None,
             None,
             occ.span,
             occ.owner,

@@ -418,6 +418,7 @@ pub(super) fn operation_as_function_value(
         &HashSet::new(),
         &[],
         None,
+        None,
         span,
         owner,
     )

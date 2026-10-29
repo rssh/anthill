@@ -568,16 +568,19 @@ fn a_binder_over_a_field_left_open_is_an_instance_of_its_own() {
              0\n      case node(n) -> {arm}\n      case same(m) -> takes_int(m)"
         )
     };
-    // The unknown is named by the binder that holds it, as a parameter's is.
+    // The unknown is named by the binder that holds it, as a parameter's is: `next` is typed
+    // by the constructor (`same` declares it `Self`), so `b.next` names no type.
     assert_refused_naming(
         &load_errors(&field_program("wi80zv8q.g1", &peel("takes_int(n)"), "0")),
         &["takes_int.b (op-arg): expected Box[T = Int64], got Box[T = n.T]"],
         "a binder over `next: Box[T = ?]`",
     );
+    // A field the path has a type for is read at the path, `h.item` (WI-20261017-HQH9K); it
+    // was the binder's `b.T` before.
     let held = "operation peel(h: Holder) -> Int64 =\n    match h\n      case hold(b) -> takes_int(b)";
     assert_refused_naming(
         &load_errors(&field_program("wi80zv8q.g2", held, "0")),
-        &["takes_int.b (op-arg): expected Box[T = Int64], got Box[T = b.T]"],
+        &["takes_int.b (op-arg): expected Box[T = Int64], got Box[T = h.item.T]"],
         "a binder over a bare `item: Box`",
     );
     let any = field_program(
@@ -592,7 +595,9 @@ fn a_binder_over_a_field_left_open_is_an_instance_of_its_own() {
 /// = ?x], b: Box[T = ?x])` holds two boxes of one element type, whatever it is — built from
 /// two that agree, taken apart as two that agree, and neither taken for a `Box` of `Int64`.
 /// The binders kept the declaration's `?x` itself: `agree(p, q)` was refused, `expected a
-/// type for 'A', got unconstrained`, and `takes_int(p)` loaded (MEASURED).
+/// type for 'A', got unconstrained`, and `takes_int(p)` loaded (MEASURED). Over the path `t`
+/// the unknown is the holder's, named by the first field read (`t.a.T`, WI-20261017-HQH9K);
+/// it was a rigid printing `?x` before.
 #[test]
 fn a_variable_two_fields_share_is_one_for_both_binders() {
     let both = |arm: &str| {
@@ -606,7 +611,7 @@ fn a_variable_two_fields_share_is_one_for_both_binders() {
     assert_eq!(run_src(&agree, "wi80zv8q.h1.go"), Ok(42));
     assert_refused_naming(
         &load_errors(&field_program("wi80zv8q.h2", &both("takes_int(p)"), "0")),
-        &["takes_int.b (op-arg): expected Box[T = Int64], got Box[T = ?x]"],
+        &["takes_int.b (op-arg): expected Box[T = Int64], got Box[T = t.a.T]"],
         "one of the two binders taken for a `Box` of `Int64`",
     );
     let apart = field_program(

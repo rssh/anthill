@@ -659,13 +659,16 @@ pub(super) fn one_arg_hint(
     known: &HashMap<Symbol, Value>,
     arg_paths: &HashMap<Symbol, Vec<Symbol>>,
     inst: Option<&Substitution>,
+    records: Option<CallRecords<'_>>,
 ) -> Option<Value> {
     // WI-485: eliminate a callback param projection for the lambda hint (`s.T ⟹ Int64`);
     // keep the original `pt` for the nested-call hint (that path is gated on a ground
     // type and rides the call-site path).
     let pt_hof = pt
         .as_ref()
-        .and_then(|t| eliminate_callback_hint_projection(kb, t, known, arg_paths, functor))
+        .and_then(|t| {
+            eliminate_callback_hint_projection(kb, t, known, arg_paths, functor, records)
+        })
         .or_else(|| pt.clone());
     // Only a hof-shaped arg and a sequence literal consume `pt_hof` (their hints' own gates),
     // so the deep rebuild is skipped for every other argument.
@@ -861,8 +864,10 @@ pub(super) fn function_value_param_slots(
 /// That is what lets a staged argument keep the `nested_call_arg_hint` it would otherwise have
 /// received.
 ///
-/// `aliases`: the caller's `let` aliases ([`TypingEnv::receiver_aliases`]) — an argument path
-/// is read through them as the call reads it ([`call_arg_paths`]).
+/// `records`: the calling body and the call's own record ([`CallRecords`]) — an argument path is
+/// read through the caller's `let` aliases as the call reads it ([`call_arg_paths`]), and a
+/// parameter's path the hint opens is kept where the call's check reads it. `None` for a
+/// reading that is no call's.
 ///
 /// `site`: what the call's own bracket and receiver bind — see `inst` below.
 #[allow(clippy::too_many_arguments)]
@@ -873,7 +878,7 @@ pub(super) fn apply_arg_hints(
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
     known: &HashMap<Symbol, Value>,
-    aliases: &HashMap<Symbol, Vec<Symbol>>,
+    records: Option<CallRecords<'_>>,
     site: Option<&Substitution>,
 ) -> (Vec<Option<Value>>, Vec<Option<Value>>) {
     // WI-821: pin callee type params from the known sibling argument types once,
@@ -960,6 +965,8 @@ pub(super) fn apply_arg_hints(
         .unwrap_or_default();
     // Each argument's value path by the parameter it binds — what a callback hint's neutral
     // projection is re-keyed to, as the call re-keys the slot ([`eliminate_callback_hint_projection`]).
+    let no_aliases = HashMap::new();
+    let aliases = records.map_or(&no_aliases, |r| r.caller.receiver_aliases());
     let arg_paths = match op_params {
         Some(ps) if !known.is_empty() => {
             call_arg_paths(kb, aliases, ps, &pos_slots, pos_args, named_args)
@@ -974,7 +981,16 @@ pub(super) fn apply_arg_hints(
             .flatten()
             .and_then(|slot| op_params.and_then(|ps| ps.get(slot)))
             .map(|(_, t)| t.clone());
-        pos_hints.push(one_arg_hint(kb, functor, arg, pt, known, &arg_paths, inst.as_ref()));
+        pos_hints.push(one_arg_hint(
+            kb,
+            functor,
+            arg,
+            pt,
+            known,
+            &arg_paths,
+            inst.as_ref(),
+            records,
+        ));
     }
     let mut named_hints = Vec::with_capacity(named_args.len());
     for (name, arg) in named_args.iter() {
@@ -982,7 +998,16 @@ pub(super) fn apply_arg_hints(
         let pt = op_params
             .and_then(|ps| ps.iter().find(|(s, _)| same_label(kb, *s, *name)))
             .map(|(_, t)| t.clone());
-        named_hints.push(one_arg_hint(kb, functor, arg, pt, known, &arg_paths, inst.as_ref()));
+        named_hints.push(one_arg_hint(
+            kb,
+            functor,
+            arg,
+            pt,
+            known,
+            &arg_paths,
+            inst.as_ref(),
+            records,
+        ));
     }
     (pos_hints, named_hints)
 }
@@ -1038,12 +1063,17 @@ pub(super) fn call_arg_paths(
 /// re-keyed to the argument it projects off, as the call re-keys the slot it then checks the
 /// lambda against: hinted with the callee's `s.provider.K`, `lambda (x) -> 42` for `f: (x:
 /// s.provider.K) -> Int64` was refused against the call's `st.provider.K` (MEASURED: review 9).
+///
+/// `records`: where the call's check reads the field paths this opens ([`CallRecords`]) — off an
+/// argument that is no path, hinted at one unknown and checked at another, `lambda (x) -> 42`
+/// for `f: (x: h.s.T) -> Int64` was refused "expected ?T -> Int64, got ?T -> Int64".
 fn eliminate_callback_hint_projection(
     kb: &mut KnowledgeBase,
     pt: &Value,
     param_arg_types: &HashMap<Symbol, Value>,
     arg_paths: &HashMap<Symbol, Vec<Symbol>>,
     fn_sym: Symbol,
+    records: Option<CallRecords<'_>>,
 ) -> Option<Value> {
     if param_arg_types.is_empty() || !value_contains_projection(kb, pt) {
         return None;
@@ -1054,7 +1084,7 @@ fn eliminate_callback_hint_projection(
     };
     Discharge {
         arg_paths: Some(arg_paths),
-        ..Discharge::new(param_arg_types, Receivers::Call, &ctx, None)
+        ..Discharge::new(param_arg_types, Receivers::Call(records), &ctx, None)
     }
     .eliminate(kb, pt)
     .ok()

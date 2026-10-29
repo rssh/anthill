@@ -859,7 +859,7 @@ fn ground_entry_spec(
                 kb,
                 &entry.spec,
                 param_arg_types,
-                Receivers::Call,
+                Receivers::Call(None),
                 None,
                 &ctx,
                 None,

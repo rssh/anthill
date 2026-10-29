@@ -55,6 +55,10 @@ pub struct TypingEnv {
     /// (`let y = z ⟹ y.M ≡ z.M`, the Scala divergence). Heads are stored already
     /// de-aliased (transitive `let y = z; let w = y` ⟹ `w → [z]`).
     pub(super) receiver_aliases: HashMap<Symbol, Vec<Symbol>>,
+    /// What each stable path's field reads opened, once for the body ([`PathOpenings`]):
+    /// shared by every clone of this body's environment, as a path names one value for the
+    /// whole body.
+    path_openings: PathOpenings,
     /// WI-20260824-PAPX0 (proposal 055 umbrella A step 4, design §4) — the
     /// `Expr::TypeValue` occurrence a let-bound name DENOTES: `let t = Box[V =
     /// Int64]` records `t → that node`. Read at the `DotApply` frame, where a dot
@@ -310,6 +314,7 @@ impl TypingEnv {
         Self {
             var_bindings: HashMap::new(),
             receiver_aliases: HashMap::new(),
+            path_openings: PathOpenings::default(),
             type_denotations: HashMap::new(),
             param_rigids: Rc::new(Vec::new()),
             sort_rigid_len: 0,
@@ -780,6 +785,11 @@ impl TypingEnv {
 
     pub(super) fn receiver_aliases(&self) -> &HashMap<Symbol, Vec<Symbol>> {
         &self.receiver_aliases
+    }
+
+    /// This body's record of what its paths' field reads opened ([`PathOpenings`]).
+    pub(super) fn path_openings(&self) -> &PathOpenings {
+        &self.path_openings
     }
 
     /// WI-20260824-PAPX0: record that `name` denotes the type `node` names.

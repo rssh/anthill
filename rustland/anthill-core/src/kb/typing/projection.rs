@@ -1180,7 +1180,7 @@ pub(super) fn read_denoted_projections(
     }
     Discharge {
         denotations: Some((env, scope)),
-        ..Discharge::new(&env.var_bindings, Receivers::Own(Some(env.receiver_aliases())), ctx, span)
+        ..Discharge::new(&env.var_bindings, Receivers::Own(Some(env)), ctx, span)
     }
     .eliminate(kb, ty)
 }
@@ -1189,17 +1189,31 @@ pub(super) fn read_denoted_projections(
 /// open slots of a field path ([`field_type_at_path`]). Each discharge says, because the two
 /// differ exactly where a path's head is re-keyed to nothing: in a body that head is the body's
 /// own variable, at a call it is the callee's, which names nothing the caller holds.
+///
+/// Where the discharge has the body (or the call), a path's field read is KEPT in its record
+/// ([`PathOpenings`]), so this reading and every other of the path agree; without one, it opens
+/// afresh — a declaration has no body.
 #[derive(Clone, Copy)]
 pub(super) enum Receivers<'a> {
     /// A body's or a declaration's own variables: a path is named as written, read through the
-    /// `let` aliases in scope where there are any (`let t = h` makes `t.s.E` `h.s.E`).
-    Own(Option<&'a HashMap<Symbol, Vec<Symbol>>>),
+    /// body's `let` aliases (`let t = h` makes `t.s.E` `h.s.E`) and kept in the body's record.
+    Own(Option<&'a TypingEnv>),
     /// A call's: the callee's parameters. A path is the argument's, re-keyed as a neutral is
-    /// ([`rekeyed_neutral`]); off an argument that is no path the slot opens fresh, as a read
-    /// off a call's result does. Kept callee-keyed, a self-recursive `run2(mk_int(), v, n - 1)`
-    /// passed the caller's `v: h.s.T` for `mk_int()`'s, the callee's `h` being the caller's
-    /// own, and ran `inc` on a `String` (MEASURED: review of this ticket).
-    Call,
+    /// ([`rekeyed_neutral`]), and kept in the calling body's record; off an argument that is no
+    /// path the slot opens to a rigid of the call's own, as a read off a call's result does —
+    /// one for every reading of the call. Kept callee-keyed, a self-recursive `run2(mk_int(),
+    /// v, n - 1)` passed the caller's `v: h.s.T` for `mk_int()`'s, the callee's `h` being the
+    /// caller's own, and ran `inc` on a `String` (MEASURED).
+    Call(Option<CallRecords<'a>>),
+}
+
+/// The records a call's readings keep a field path's opening in ([`Receivers::Call`]).
+#[derive(Clone, Copy)]
+pub(super) struct CallRecords<'a> {
+    /// The calling body: a path re-keyed to an argument's is the caller's.
+    pub(super) caller: &'a TypingEnv,
+    /// The call's own, for a path off an argument that is no path, keyed by the callee's.
+    pub(super) call: &'a PathOpenings,
 }
 
 /// WI-20260929-0RP29 — a caller's own reading of a projection — given its receiver, the
@@ -1866,6 +1880,9 @@ fn resolve_receiver_path_type(
 /// parameter's `h.s.E` is `k.s.E`), else as written in a body, through its `let` aliases; at a
 /// call whose argument is no path there is none, and the slots open fresh. What the base's type
 /// put into the field type (`held`) is the receiver's and stays.
+///
+/// WHERE IT IS KEPT is [`Receivers`]' too: a body's path in the body's record, a re-keyed one in
+/// the caller's, a callee's path off an argument that is no path in the call's own.
 fn field_type_at_path(
     kb: &mut KnowledgeBase,
     base_ty: &Value,
@@ -1875,36 +1892,86 @@ fn field_type_at_path(
 ) -> Value {
     let segs = receiver_path_segs(kb, receiver)
         .expect("a receiver `resolve_receiver_path_type` resolved is a value-reference path");
-    let path = match rekeyed_segs(segs, cx.arg_syms, cx.arg_paths) {
-        Ok(rekeyed) => Some(rekeyed),
-        Err(written) => match cx.receivers {
-            Receivers::Own(aliases) => Some(match aliases {
-                Some(aliases) => canonical_receiver_path(aliases, written),
-                None => written,
-            }),
-            Receivers::Call => None,
-        },
+    // A parameter re-keyed to a bare NULLARY OPERATION by its symbol (`get(mk3)`) is no path
+    // either: the name is a call (`stable_receiver_path`'s rule), and kept as the caller's
+    // `mk3.s`, `same_list(get(mk3), get(mk3))` took two calls' results for one (MEASURED).
+    let rekeyed = match rekeyed_segs(segs.clone(), cx.arg_syms, cx.arg_paths) {
+        Ok(rekeyed) if crate::kb::op_info::is_nullary_operation(kb, rekeyed[0]) => Err(segs),
+        other => other,
     };
+    // The path the slots are named by, and the record and key the reading is kept under.
+    let (path, kept): (Option<Vec<Symbol>>, Option<(&PathOpenings, Vec<Symbol>)>) =
+        match (rekeyed, cx.receivers) {
+            (Ok(rekeyed), Receivers::Own(env)) => {
+                (Some(rekeyed.clone()), env.map(|e| (e.path_openings(), rekeyed)))
+            }
+            (Ok(rekeyed), Receivers::Call(records)) => (
+                Some(rekeyed.clone()),
+                records.map(|r| (r.caller.path_openings(), rekeyed)),
+            ),
+            (Err(written), Receivers::Own(env)) => {
+                let path = match env {
+                    Some(env) => canonical_receiver_path(env.receiver_aliases(), written),
+                    None => written,
+                };
+                (Some(path.clone()), env.map(|e| (e.path_openings(), path)))
+            }
+            (Err(written), Receivers::Call(records)) => (None, records.map(|r| (r.call, written))),
+        };
+    let (span, owner) = site_of(receiver);
+    let record = kept.as_ref().and_then(|(openings, key)| {
+        Some(Recorded {
+            openings,
+            path: ValuePath::of(key)?,
+            holder: base_ty,
+        })
+    });
+    open_field_at_path(
+        kb,
+        field_ty,
+        base_ty,
+        path.as_deref().and_then(ValuePath::of),
+        record,
+        span,
+        owner,
+    )
+}
+
+/// `field_ty`, a field's declared type at its holder's type `holder_ty`, with what the field
+/// leaves open opened ([`open_existentials`]) — named by `path` where the holder is one, kept in
+/// `record` where there is one. What the holder's type put into the field type (`held`) is the
+/// holder's and stays; what the field brings beyond it, named, is the holder's existentials.
+/// The one opening of a field path a written projection's receiver ([`field_type_at_path`]) and
+/// a pattern binder over a path scrutinee take.
+pub(super) fn open_field_at_path(
+    kb: &mut KnowledgeBase,
+    field_ty: Value,
+    holder_ty: &Value,
+    path: Option<ValuePath<'_>>,
+    record: Option<Recorded<'_>>,
+    span: crate::span::SourceSpan,
+    owner: Option<Symbol>,
+) -> Value {
     let mut seen = HashSet::new();
     let mut vars: Vec<VarId> = Vec::new();
-    crate::kb::node_occurrence::collect_value_type(kb, base_ty, &mut vars, &mut seen);
+    crate::kb::node_occurrence::collect_value_type(kb, holder_ty, &mut vars, &mut seen);
     let held: HashSet<u32> = vars.iter().map(|v| v.raw()).collect();
-    // What the field type holds beyond the base's, named: the reduction's `brought`
-    // ([`vars_a_reduction_brought`]) with the base's variables as both `before` and `held`.
+    // What the field type holds beyond the holder's, named: the reduction's `brought`
+    // ([`vars_a_reduction_brought`]) with the holder's variables as both `before` and `held`.
     let mut field_vars: Vec<VarId> = Vec::new();
     crate::kb::node_occurrence::collect_value_type(kb, &field_ty, &mut field_vars, &mut seen);
     let brought: Vec<VarId> = field_vars
         .into_iter()
         .filter(|v| !anonymous_var_name(kb, v.name()))
         .collect();
-    let (span, owner) = site_of(receiver);
     open_existentials(
         kb,
         HashMap::new(),
         &field_ty,
         &held,
         &brought,
-        path.as_deref().and_then(ValuePath::of),
+        path,
+        record,
         span,
         owner,
     )

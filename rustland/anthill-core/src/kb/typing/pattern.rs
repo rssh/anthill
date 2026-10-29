@@ -502,6 +502,10 @@ pub(super) fn bind_and_label_pattern(
     env: &mut TypingEnv,
     pattern: &Rc<NodeOccurrence>,
     scrutinee_type: Option<Value>,
+    // The stable value path the value taken apart is, as the body names it (`h`, `h.s`),
+    // where it is one: a binder is an alias of it, as a `let` of it is, and a field it
+    // destructures is read at the path ([`PathOpenings`]). `None` for anything else.
+    scrutinee_path: Option<&[Symbol]>,
     // WI-20260827-EJ5F5: which QUESTION this pattern is being read as. Threaded
     // unchanged into every sub-pattern — a `match` arm's whole pattern is refutable,
     // so each position inside it is too.
@@ -669,7 +673,7 @@ pub(super) fn bind_and_label_pattern(
                         kb,
                         &v,
                         &env.var_bindings,
-                        Receivers::Own(Some(env.receiver_aliases())),
+                        Receivers::Own(Some(env)),
                         None,
                         &ctx,
                         Some(ann.span.span),
@@ -729,6 +733,13 @@ pub(super) fn bind_and_label_pattern(
             // ([`closed_where_named`]).
             let ty = closed_where_named(kb, ty, Some(*name), bound, pattern.span, pattern.owner);
             env.bind_var(*name, ty);
+            // A binder over a stable path is an alias of it, so a projection off the binder
+            // is the one off the path (`case hold(s)` over `h` makes `s.E` `h.s.E`); over
+            // anything else it is its own receiver.
+            match scrutinee_path {
+                Some(path) => env.bind_receiver_alias(*name, path.to_vec()),
+                None => env.clear_receiver_alias(*name),
+            }
             // Pattern-bound names are local — effects on them shouldn't escape
             // the surrounding match/case scope (matches `check_let_expr`'s
             // declare_local_resource for let bindings). Without this, a body
@@ -788,25 +799,6 @@ pub(super) fn bind_and_label_pattern(
                 .as_ref()
                 .zip(parent_sort)
                 .and_then(|(st, p)| build_pattern_subst(kb, st, p));
-            // WI-20261001-80ZV8: what a field leaves open is opened here, where it is taken
-            // out ([`FieldOpening`]) — once for the pattern, so a variable two fields share
-            // is one unknown for both binders.
-            let opening = field_types
-                .as_ref()
-                .map(|fields| FieldOpening::of(kb, parent_sort, fields, scrutinee_type.as_ref()));
-            let opened = |kb: &mut KnowledgeBase,
-                          field_type: Option<Value>,
-                          sub_pat: &Rc<NodeOccurrence>| {
-                let binder = match sub_pat.as_pattern() {
-                    Some(Pattern::Var { name }) => Some(*name),
-                    _ => None,
-                };
-                match &opening {
-                    Some(opening) => field_type
-                        .map(|ty| opening.open(kb, ty, binder, pattern.span, pattern.owner)),
-                    None => field_type,
-                }
-            };
             // WI-803: a constructor's sub-patterns may THEMSELVES be tuple binder
             // lists (`case Box((a, b)) ->`), so the rebuilt children are collected
             // in `for_each_pattern_child` order — positional then named — and
@@ -837,8 +829,83 @@ pub(super) fn bind_and_label_pattern(
                 // what it can and leaves the rest `None`, as before.
                 _ => None,
             };
-            // POSITIONAL sub-patterns: the field each one RANKS to (its declared type).
-            for (i, sub_pat) in pos_args.iter().enumerate() {
+            // The declared field each sub-pattern takes: a POSITIONAL one the field it RANKS to,
+            // a NAMED one (WI-445: `case Box(v: some(x))`) the field it names — by FIELD NAME,
+            // order-independent, so robust to declaration order.
+            let declared_at = |i: usize| match &pos_fields {
+                Some(fields) => field_types
+                    .as_ref()
+                    .and_then(|f| f.iter().find(|(fs, _)| *fs == fields[i])),
+                None => field_types.as_ref().and_then(|f| f.get(i)),
+            };
+            let declared_named = |field_sym: Symbol| {
+                field_types
+                    .as_ref()
+                    .and_then(|fields| fields.iter().find(|(fname, _)| *fname == field_sym))
+            };
+            // WI-20261001-80ZV8: what a field leaves open is opened here, where it is taken
+            // out ([`FieldOpening`]) — once for the pattern, so a variable two fields share
+            // is one unknown for both binders.
+            //
+            // OVER A STABLE PATH the fields are read AT THE PATH (`h.s`), as the expression `h.s`
+            // and a written `h.s.E` read them, out of the body's record — so the three are one
+            // type, and a variable two fields share is the holder's one unknown
+            // ([`PathOpenings`]). Only when the path HAS a type for every field the pattern
+            // takes out: one the holder's constructors declare alike ([`resolve_field_type`]).
+            // A field typed by the constructor (`node(next: Box[T = ?])` beside `same(next:
+            // Self)`) is no read the path can name — read at the path, `case same(m)` took the
+            // opening `case node(n)` had made — and beside it the pattern reads none at the
+            // path, so a variable it shares with another field stays one unknown of the
+            // pattern's: read at the path for the field that had a type there, `case two(p, q)
+            // -> agree(p, q)` split `?x` in two (MEASURED, both on a first cut of this rule).
+            let at_path: Option<HashMap<Symbol, Value>> =
+                scrutinee_path.zip(scrutinee_type.as_ref()).and_then(|(_, holder)| {
+                    (0..pos_args.len())
+                        .map(declared_at)
+                        .chain(named_args.iter().map(|(f, _)| declared_named(*f)))
+                        .map(|declared| {
+                            let (field, _) = declared?;
+                            let ctx = TypeErrorContext::EntityField {
+                                entity: ctor_sym,
+                                field: *field,
+                            };
+                            let (ty, _) = resolve_field_type(kb, holder, *field, &ctx, None).ok()?;
+                            Some((*field, ty))
+                        })
+                        .collect()
+                });
+            let opening = field_types
+                .as_ref()
+                .filter(|_| at_path.is_none())
+                .map(|fields| FieldOpening::of(kb, parent_sort, fields, scrutinee_type.as_ref()));
+            // The type a sub-pattern over `declared` is bound at, and the path it takes apart
+            // where the pattern reads at the path.
+            let opened = |kb: &mut KnowledgeBase,
+                          env: &TypingEnv,
+                          declared: Option<&(Symbol, Value)>,
+                          sub_pat: &Rc<NodeOccurrence>|
+             -> (Option<Value>, Option<Vec<Symbol>>) {
+                if let (Some(path), Some(at_path), Some(holder), Some((field, _))) =
+                    (scrutinee_path, &at_path, &scrutinee_type, declared)
+                {
+                    let mut sub = path.to_vec();
+                    sub.push(*field);
+                    let at = ValuePath::of(&sub).expect("a field's path has its holder's head");
+                    let read = open_field_at_path(
+                        kb,
+                        at_path[field].clone(),
+                        holder,
+                        Some(at),
+                        Some(Recorded {
+                            openings: env.path_openings(),
+                            path: at,
+                            holder,
+                        }),
+                        pattern.span,
+                        pattern.owner,
+                    );
+                    return (Some(read), Some(sub));
+                }
                 // WI-342: the field type is a carrier-agnostic `Value`
                 // (`entity_field_types`); resolve its sort-level type params
                 // through the pattern subst without re-grounding. Deep-walk: a
@@ -847,23 +914,31 @@ pub(super) fn bind_and_label_pattern(
                 // `walk_type_value` left unsubstituted — so the destructure did
                 // not thread the scrutinee's element / effect into the
                 // sub-pattern var (WI-413).
-                let declared = match &pos_fields {
-                    Some(fields) => field_types
-                        .as_ref()
-                        .and_then(|f| f.iter().find(|(fs, _)| *fs == fields[i])),
-                    None => field_types.as_ref().and_then(|f| f.get(i)),
-                };
                 let field_type = match (declared, &subst) {
                     (Some((_, ty)), Some(s)) => Some(walk_pattern_field_type_deep(kb, s, ty)),
                     (Some((_, ty)), None) => Some(ty.clone()),
                     (None, _) => None,
                 };
-                let field_type = opened(kb, field_type, sub_pat);
+                let binder = match sub_pat.as_pattern() {
+                    Some(Pattern::Var { name }) => Some(*name),
+                    _ => None,
+                };
+                let read = match &opening {
+                    Some(opening) => field_type
+                        .map(|ty| opening.open(kb, ty, binder, pattern.span, pattern.owner)),
+                    None => field_type,
+                };
+                (read, None)
+            };
+            // POSITIONAL sub-patterns: the field each one RANKS to (its declared type).
+            for (i, sub_pat) in pos_args.iter().enumerate() {
+                let (field_type, sub_path) = opened(kb, env, declared_at(i), sub_pat);
                 rebuilt.push(bind_and_label_pattern(
                     kb,
                     env,
                     sub_pat,
                     field_type,
+                    sub_path.as_deref(),
                     role,
                     bound,
                     repointed,
@@ -877,25 +952,15 @@ pub(super) fn bind_and_label_pattern(
                     errors,
                 ));
             }
-            // WI-445: NAMED sub-patterns (`case Box(v: some(x))`) bind by FIELD
-            // NAME — order-independent, so robust to declaration order. The
-            // field type is resolved here, where the typer pass always has the
-            // entity in hand.
+            // NAMED sub-patterns: the field each one names.
             for (field_sym, sub_pat) in named_args {
-                let found = field_types
-                    .as_ref()
-                    .and_then(|fields| fields.iter().find(|(fname, _)| *fname == *field_sym));
-                let field_type = match (found, &subst) {
-                    (Some((_, ty)), Some(s)) => Some(walk_pattern_field_type_deep(kb, s, ty)),
-                    (Some((_, ty)), None) => Some(ty.clone()),
-                    (None, _) => None,
-                };
-                let field_type = opened(kb, field_type, sub_pat);
+                let (field_type, sub_path) = opened(kb, env, declared_named(*field_sym), sub_pat);
                 rebuilt.push(bind_and_label_pattern(
                     kb,
                     env,
                     sub_pat,
                     field_type,
+                    sub_path.as_deref(),
                     role,
                     bound,
                     repointed,
@@ -1012,6 +1077,7 @@ pub(super) fn bind_and_label_pattern(
                         env,
                         sub_pat,
                         comp,
+                        None,
                         role,
                         bound,
                         repointed,
@@ -1025,6 +1091,7 @@ pub(super) fn bind_and_label_pattern(
                         env,
                         sub_pat,
                         comp,
+                        None,
                         role,
                         bound,
                         repointed,

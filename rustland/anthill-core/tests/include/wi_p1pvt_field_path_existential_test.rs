@@ -31,7 +31,7 @@
 //!    [`a_parameters_path_projection_is_the_callers_argument`],
 //!    [`another_holders_row_is_not_the_arguments`],
 //!    [`a_named_variable_is_named_by_its_first_slot`] and
-//!    [`a_lambda_at_a_call_whose_argument_is_no_path_waits_for_a_name`], where a read meets a
+//!    `a_lambda_at_a_call_whose_argument_is_no_path_waits_for_a_name`, where a read meets a
 //!    written projection;
 //!    [`reads_of_two_paths_do_not_agree`] and [`a_bare_nullary_operation_is_no_path`] on their
 //!    TEXT alone (still refused, printing two rigids); and `wi_80zv8_written_wildcard_test`'s
@@ -43,7 +43,7 @@
 //!    [`another_holders_row_is_not_the_arguments`],
 //!    [`a_written_projection_off_a_fields_wildcard_is_no_flexible_type`] and
 //!    [`a_call_whose_argument_is_no_path_opens_fresh`] — the hole itself, twice — and
-//!    [`a_lambda_at_a_call_whose_argument_is_no_path_waits_for_a_name`], whose unnamed call loads.
+//!    `a_lambda_at_a_call_whose_argument_is_no_path_waits_for_a_name`, whose unnamed call loads.
 //!    [`a_named_variable_is_named_by_its_first_slot`] passes: a flexible `t.a.B` takes anything.
 //! 3. A NAMED VARIABLE TAKES ITS FIRST SLOT'S PROJECTION (the `if let Some(path)` block of
 //!    `open_existentials` skipped: a fresh rigid per read for it). 2 FAIL:
@@ -51,7 +51,7 @@
 //!    `a_field_read_opens_a_named_variable_too` (its text).
 //! 4. A CALL'S ARGUMENT THAT IS NO PATH OPENS FRESH (`Receivers::Call` keeping the callee's own
 //!    path). 3 FAIL: [`a_call_whose_argument_is_no_path_opens_fresh`] — it loads —,
-//!    [`a_lambda_at_a_call_whose_argument_is_no_path_waits_for_a_name`] — its unnamed call loads,
+//!    `a_lambda_at_a_call_whose_argument_is_no_path_waits_for_a_name` — its unnamed call loads,
 //!    hinted and checked at one callee-keyed `h.s.T` — and
 //!    [`a_written_projection_off_a_fields_wildcard_is_no_flexible_type`] (its text: `h.s.T`).
 //! 5. A BARE NULLARY OPERATION IS NO PATH (`stable_receiver_path` reading it as one). 1 FAILS:
@@ -65,14 +65,13 @@
 //! `a_declared_fields_written_wildcard_is_opened` is the ticket's other control —
 //! `takes_pure(h.s)` stays refused, `h.s.E` being no `{}`.
 //!
-//! NOT NAMED BY THE PATH — WI-20261017-HQH9K, one opening per path and per call, lifts all three:
-//! a slot nested inside a written binding (`s: Strm[T = List[T = ?]]`) has
-//! no projection to spell it, so it opens at each read AND at each elimination of a written
-//! projection — `f(h: Hold3, x: h.s.T, y: h.s.T)` holds two rigids in `x` and `y`. A pattern
-//! binder over a stable scrutinee (`match h case hold(s)`) is named by the binder (`s.E`), not
-//! the path, as before this ticket. At a call whose argument is no path, each elimination opens
-//! its own rigid, so an unannotated lambda for `f: (x: h.s.T) -> …` there is refused; bound to a
-//! `let` first, the argument is a path ([`a_lambda_at_a_call_whose_argument_is_no_path_waits_for_a_name`]).
+//! NOT NAMED BY THE PATH, on this ticket's tree — a slot nested inside a written binding (`s:
+//! Strm[T = List[T = ?]]`), a pattern binder over a stable scrutinee (`match h case hold(s)`
+//! named `s.E`), and each reading of a call whose argument is no path — opened apart, each
+//! refusing a correct program. WI-20261017-HQH9K opens a path once per body and a non-path
+//! argument once per call (`wi_hqh9k_one_opening_of_a_field_path_test`); the lambda row here
+//! turned with it, and the measurements above name it by its name on this ticket's tree,
+//! `a_lambda_at_a_call_whose_argument_is_no_path_waits_for_a_name`.
 
 use crate::common::{assert_refused_naming, load_errors_of as load_errors, run_int64 as run_src};
 
@@ -281,12 +280,13 @@ end
     );
 }
 
-/// … AND EACH READING OF THE CALL OPENS ITS OWN: an unannotated lambda for `f: (x: h.s.T) ->
-/// Int64` is hinted with one rigid and checked against another, and refused. Bound to a `let`
-/// first, the argument is a path and the call runs. A LIMIT, pinned so that lifting it moves
-/// this row: one opening per call (WI-20261017-HQH9K) would admit the first spelling too.
+/// … BUT ONE FOR EVERY READING OF THE CALL: an unannotated lambda for `f: (x: h.s.T) -> Int64`
+/// is hinted and checked at the call's one `h.s.T` and runs; bound to a `let` first, the
+/// argument is a path, and the call runs too. Each reading opened its own rigid before, and the
+/// first spelling was refused "expected ?T -> Int64, got ?T -> Int64" (MEASURED) — the limit
+/// WI-20261017-HQH9K lifted.
 #[test]
-fn a_lambda_at_a_call_whose_argument_is_no_path_waits_for_a_name() {
+fn a_lambda_at_a_call_whose_argument_is_no_path_is_hinted_at_the_calls_unknown() {
     let decls = r#"
   import anthill.prelude.{Int64, String}
   sort Strm
@@ -301,11 +301,7 @@ fn a_lambda_at_a_call_whose_argument_is_no_path_waits_for_a_name() {
     let unnamed = format!(
         "namespace wi_p1pvt.lambda_unnamed\n{decls}\n  operation go() -> Int64 = pick(hold2(s: strm(t: \"a\")), lambda (x) -> 42)\nend\n"
     );
-    assert_refused_naming(
-        &load_errors(&unnamed),
-        &["pick.f (op-arg): expected ?T -> Int64, got ?T -> Int64"],
-        "a lambda hinted and checked at two openings of one call",
-    );
+    assert_eq!(run_src(&unnamed, "wi_p1pvt.lambda_unnamed.go"), Ok(42));
     let named = format!(
         "namespace wi_p1pvt.lambda_named\n{decls}\n  operation go() -> Int64 =\n    let k = hold2(s: strm(t: \"a\"))\n    pick(k, lambda (x) -> 42)\nend\n"
     );

@@ -399,7 +399,7 @@ pub(super) fn check_operation_bodies(
                             kb,
                             &cur,
                             &decl,
-                            Receivers::Own(None),
+                            Receivers::Own(Some(&env)),
                             None,
                             &TypeErrorContext::OperationArgument {
                                 op_name: op.op_sym,
@@ -450,7 +450,7 @@ pub(super) fn check_operation_bodies(
                         kb,
                         &cur,
                         &decl,
-                        Receivers::Own(None),
+                        Receivers::Own(Some(&env)),
                         None,
                         &TypeErrorContext::OperationArgument {
                             op_name: op.op_sym,
@@ -515,7 +515,7 @@ pub(super) fn check_operation_bodies(
                 kb,
                 &op.return_type,
                 &param_map,
-                Receivers::Own(None),
+                Receivers::Own(Some(&env)),
                 None,
                 &TypeErrorContext::OperationReturn {
                     op_name: op.op_sym,
@@ -560,7 +560,7 @@ pub(super) fn check_operation_bodies(
                     kb,
                     e,
                     &param_map,
-                    Receivers::Own(None),
+                    Receivers::Own(Some(&env)),
                     None,
                     &TypeErrorContext::OperationEffects { op_name: op.op_sym },
                     op.span,

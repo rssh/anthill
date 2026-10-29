@@ -29,6 +29,10 @@ pub(super) fn check_apply_iter(
     // `build_relation_projection` types a SYNTHESIZED projection shape, so nothing
     // downstream would read what it solved.
     mut solving: Option<&mut WalkSolutions>,
+    // This call's own record of what its readings opened ([`PathOpenings`]): a parameter's
+    // path off an argument that is no path is one unknown for the hint, the parameter, the
+    // return and the effects — the hint read it where the call was visited.
+    call_openings: &PathOpenings,
 ) -> Result<TypeResult, TypeError> {
     // Surface any sub-expression failure before continuing. Aggregate
     // sibling errors so a multi-arg call reports every ill-typed arg
@@ -937,6 +941,10 @@ pub(super) fn check_apply_iter(
         // a dictionary is read from).
         let projection_receivers =
             projection_receivers(kb, &subst, &written_params, &param_to_arg_type, fn_sym);
+        let call_receivers = Receivers::Call(Some(CallRecords {
+            caller: env,
+            call: call_openings,
+        }));
         let mut effective_param_types: HashMap<Symbol, Value> = HashMap::new();
         // WI-20261001-80ZV8: a projection off a receiver whose type is one of the body's own
         // PARAMETERS has an instance to be read at, and the call knows which — the spec the
@@ -1015,7 +1023,7 @@ pub(super) fn check_apply_iter(
                     arg_paths: Some(&arg_paths),
                     selections: &selections,
                     reading: Some(&this_instance),
-                    ..Discharge::new(&projection_receivers, Receivers::Call, &ctx, span)
+                    ..Discharge::new(&projection_receivers, call_receivers, &ctx, span)
                 }
                 .eliminate(kb, param_type)?;
                 let eff = ground_param_projections(kb, &subst, &eff);
@@ -1425,7 +1433,7 @@ pub(super) fn check_apply_iter(
                 arg_paths: Some(&arg_paths),
                 selections: &selections,
                 reading: Some(&this_instance),
-                ..Discharge::new(&projection_receivers, Receivers::Call, &ret_ctx, span)
+                ..Discharge::new(&projection_receivers, call_receivers, &ret_ctx, span)
             };
             let eliminated = cx.eliminate(kb, &op.return_type).and_then(|rt| {
                 let effs = op
@@ -1795,12 +1803,22 @@ pub(super) fn check_apply_iter(
         // projections (`h.s` is a `Strm[T = Int64, E = h.s.E]`), the path as the receiver
         // projections name it — a `let` alias read as what it names ([`open_existentials`]).
         // A field read's return is a `FieldOf` the reduction above computed, so a call whose
-        // return no constructor reduced is no read and asks nothing more.
+        // return no constructor reduced is no read and asks nothing more. The read is kept in
+        // the body's record, off the receiver's type ([`PathOpenings`]): a slot nested in the
+        // field's type is the one rigid every reading of the path takes.
         let read_path = (op_return_ctors.iter().any(|f| *f)
             && kb.try_resolve_symbol(dt::qualified(dt::FIELD_ACCESS)) == Some(fn_sym))
         .then(|| stable_receiver_path(kb, occ))
         .flatten()
         .map(|path| env.canonicalize_receiver_path(path));
+        let read_holder = read_path.as_ref().map(|_| {
+            pos_results
+                .first()
+                .and_then(|r| r.as_ref().ok())
+                .map(|r| r.ty.clone())
+                .expect("a field read's receiver is its first argument, typed (the errors returned above)")
+        });
+        let read_record = read_path.as_deref().and_then(ValuePath::of).zip(read_holder.as_ref());
         let proj_return_type = match open_existential_return(
             kb,
             return_owner,
@@ -1808,6 +1826,11 @@ pub(super) fn check_apply_iter(
             &held,
             &brought,
             read_path.as_deref().and_then(ValuePath::of),
+            read_record.map(|(path, holder)| Recorded {
+                openings: env.path_openings(),
+                path,
+                holder,
+            }),
             occ.span,
             occ.owner,
         ) {
@@ -5499,6 +5522,7 @@ pub(super) fn check_apply_iter(
                 &ret,
                 &HashSet::new(),
                 &[],
+                None,
                 None,
                 occ.span,
                 occ.owner,

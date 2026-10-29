@@ -1818,7 +1818,7 @@ fn computed_result_type(
             };
             args.insert(*param, walk_type_deep_value(kb, &st.subst, &ty));
         }
-        ty = eliminate_type_projections(kb, &ty, &args, Receivers::Call, None, &ctx, None).ok()?;
+        ty = eliminate_type_projections(kb, &ty, &args, Receivers::Call(None), None, &ctx, None).ok()?;
         if value_contains_projection(kb, &ty) {
             return None;
         }

@@ -223,6 +223,7 @@ pub(super) fn build_type(
             mut known,
             site,
             pos,
+            openings,
         } => {
             // Staging is keyed off the callee's declared params, so reaching here with
             // none is not a degraded case to tolerate — it would silently give EVERY
@@ -267,7 +268,10 @@ pub(super) fn build_type(
                 &pos_args,
                 &named_args,
                 &known,
-                env.receiver_aliases(),
+                Some(CallRecords {
+                    caller: &env,
+                    call: &openings,
+                }),
                 site.as_ref(),
             );
             let staged_pairs: Vec<(usize, Result<TypeResult, TypeError>)> =
@@ -282,6 +286,7 @@ pub(super) fn build_type(
                 fuel,
                 staged_results: staged_pairs,
                 pos,
+                openings,
             }));
             // Visit only what has NOT been typed — a staged argument is typed exactly once,
             // on this same work-stack, with this same fuel and `@[simp]` gate.
@@ -320,6 +325,7 @@ pub(super) fn build_type(
             fuel,
             staged_results,
             pos,
+            openings,
         } => {
             let total = pos_args.len() + named_args.len();
             let drain_start = results.len() - (total - staged_results.len());
@@ -467,6 +473,7 @@ pub(super) fn build_type(
                 expected,
                 pos,
                 Some(solving),
+                &openings,
             );
             results.push(r);
         }
@@ -1110,11 +1117,21 @@ pub(super) fn build_type(
             // there is nothing to re-point either. Asserted, for the same reason the
             // lambda site asserts it.
             let mut let_repoints: Vec<(Symbol, Symbol)> = Vec::new();
+            // WI-400 increment C (eager let-alias): a STABLE receiver path (a var / field-access
+            // chain — immutable `let` ⟹ one runtime value) is what the binder aliases, so a later
+            // projection off it canonicalizes to the aliased receiver (`let y = z ⟹ y.M ≡ z.M`),
+            // and what a destructuring binder reads its field at. An unstable value (`let y =
+            // f()`) is no path: the binder is its own neutral receiver, and a re-bind clears an
+            // outer `let`'s alias of the same name — else `let y = p; let y = f(); … : y.M` would
+            // canonicalize `y.M` to `p.M` (a false accept).
+            let value_path = stable_receiver_path(kb, &value_node)
+                .map(|path| ext_env.canonicalize_receiver_path(path));
             let pattern = bind_and_label_pattern(
                 kb,
                 &mut ext_env,
                 &pattern,
                 bound_ty,
+                value_path.as_deref(),
                 PatternRole::Binder,
                 bound,
                 &mut let_repoints,
@@ -1136,19 +1153,7 @@ pub(super) fn build_type(
             }
             if let Some(var_name) = extract_pattern_var_name(&pattern) {
                 ext_env.declare_local_resource(var_name);
-                // WI-400 increment C (eager let-alias): if the value is a STABLE receiver
-                // path (a var / field-access chain — immutable `let` ⟹ one runtime value),
-                // record `var_name`'s canonical receiver, so a later projection off
-                // `var_name` canonicalizes to the aliased receiver (`let y = z ⟹
-                // y.M ≡ z.M`). An unstable value (`let y = f()`) records nothing — it is
-                // its own neutral receiver.
-                match stable_receiver_path(kb, &value_node) {
-                    Some(path) => ext_env.bind_receiver_alias(var_name, path),
-                    // A re-bind to an UNSTABLE value must CLEAR any stale alias from an
-                    // outer `let` of the same name — else `let y = p; let y = f(); … : y.M`
-                    // would wrongly canonicalize `y.M` to `p.M` (a false accept).
-                    None => ext_env.clear_receiver_alias(var_name),
-                }
+                // The binder's alias of `value_path` was recorded where the pattern bound it.
                 // If the value is a WRITTEN TYPE, record what `var_name` denotes, so a
                 // later `t.m(…)` is the call the written `Sort[…].m(…)` makes
                 // ([`denoted_sort_dot`]). A `Type` that is not written here — a call's
@@ -1359,6 +1364,10 @@ pub(super) fn build_type(
             // PASS 1 — rewrite each arm's pattern, extend its env, and re-point its body
             // and guard. Nothing here reads another arm.
             let mut branch_env_types: Vec<TypingEnv> = Vec::with_capacity(branches.len());
+            // The scrutinee as a path, where it is one: each arm's binders alias it and read
+            // the fields they take out at it.
+            let scr_path = stable_receiver_path(kb, &scr_node)
+                .map(|path| outer_env.canonicalize_receiver_path(path));
             for branch in branches.iter() {
                 let mut branch_env = (*outer_env).clone();
                 let mut branch_binder_errors = Vec::new();
@@ -1372,6 +1381,7 @@ pub(super) fn build_type(
                     &mut branch_env,
                     &branch.pattern,
                     Some(scr_ty.clone()),
+                    scr_path.as_deref(),
                     PatternRole::MatchArm,
                     // WI-20261001-80ZV8: a scrutinee is a value.
                     BinderOf::Value,

@@ -787,7 +787,7 @@ fn data_slot_arg_hints(
         pos_args,
         named_args,
         &HashMap::new(),
-        &HashMap::new(),
+        None,
         None,
     );
     let out: SmallVec<[Option<Value>; 8]> = pos_hints.into_iter().chain(named_hints).collect();

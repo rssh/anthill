@@ -137,7 +137,13 @@ fn node_contains_callable(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> bool 
             }
             TypeNode::EffectsRows { effects_expr } => child(effects_expr),
             TypeNode::Arrow { .. } => true,
-            TypeNode::ExprCarried { value, member } => child(value) || child(member),
+            // A projection's RECEIVER is a value path, not a type, as the groundness walk reads
+            // it ([`node_type_is_ground`]): a field path's (`t.a.T`) rides this carrier as a
+            // `DotApply` chain, which the arm below took for a callable, so a parameter typed
+            // through a field-path projection was withheld from the argument check — `agree(t.a,
+            // u.b)` over `agree[A](p: Box[T = A], q: Box[T = A])` loaded, where its
+            // single-reference twin `agree(p, q)` refuses `q` (MEASURED).
+            TypeNode::ExprCarried { member, .. } => child(member),
             TypeNode::NamedTuple { fields } => list_records_to_pairs(kb, fields, "name", "type")
                 .iter()
                 .any(|(_, t)| type_contains_callable(kb, t)),

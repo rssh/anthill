@@ -378,7 +378,8 @@ fn unwritten_signature_slot(kb: &mut KnowledgeBase, param: Symbol) -> Value {
 /// [`FieldOpening`] opens). Empty where nothing was reduced.
 ///
 /// `path`: the stable value path the result is READ off, where the call is a field read
-/// (`h.s`) — see [`open_existentials`]. `None` for every other call.
+/// (`h.s`), and `record` where the read is kept — see [`open_existentials`]. `None` for every
+/// other call.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn open_existential_return(
     kb: &mut KnowledgeBase,
@@ -387,11 +388,12 @@ pub(super) fn open_existential_return(
     held: &HashSet<u32>,
     brought: &[VarId],
     path: Option<ValuePath<'_>>,
+    record: Option<Recorded<'_>>,
     span: crate::span::SourceSpan,
     owner: Option<Symbol>,
 ) -> Option<Value> {
     let opened = unbound_return_var_openings(kb, callee_op, ret);
-    open_existentials(kb, opened, ret, held, brought, path, span, owner)
+    open_existentials(kb, opened, ret, held, brought, path, record, span, owner)
 }
 
 /// The opening behind [`open_existential_return`], given the variables already `opened`: every
@@ -408,9 +410,12 @@ pub(super) fn open_existential_return(
 /// both come here, so they cannot disagree about which slots a path names.
 ///
 /// THE TOP LEVEL ONLY: a slot nested inside a written binding (`s: Strm[T = List[T = ?]]`) has
-/// no projection to name it ([`UnwrittenFill::Anonymous`]) and opens per read. A NAMED variable
+/// no projection to name it ([`UnwrittenFill::Anonymous`]) and opens to a rigid. A NAMED variable
 /// the field writes as a top-level slot (`a: Pair[A = ?x, B = ?x]`) takes the projection of the
 /// first slot it fills, so the tie holds and the path names it (`h.a.B` is `h.a.A`).
+///
+/// `record`: where this reading is kept ([`PathOpenings`]) — a path's field read once, so every
+/// later reading of it takes the rigids this one opened; `None` opens afresh.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn open_existentials(
     kb: &mut KnowledgeBase,
@@ -419,9 +424,17 @@ pub(super) fn open_existentials(
     held: &HashSet<u32>,
     brought: &[VarId],
     path: Option<ValuePath<'_>>,
+    record: Option<Recorded<'_>>,
     span: crate::span::SourceSpan,
     owner: Option<Symbol>,
 ) -> Option<Value> {
+    let record = record.and_then(|r| r.openings.slot(kb, r));
+    if let Some(slot) = &record {
+        if let Some(read) = slot.field() {
+            return Some(read);
+        }
+        slot.seed(brought, &mut opened);
+    }
     if let Some(path) = path {
         if let TypeExtractor::Parameterized { bindings, .. } = extract_type(kb, ret) {
             for (param, v) in &bindings {
@@ -444,7 +457,7 @@ pub(super) fn open_existentials(
             opened.insert(vid.raw(), Value::term(rigid));
         }
     }
-    rigidify_unwritten_sort_params(
+    let read = rigidify_unwritten_sort_params(
         kb,
         match path {
             Some(path) => UnwrittenFill::Projection(path),
@@ -457,7 +470,126 @@ pub(super) fn open_existentials(
         },
         span,
         owner,
-    )
+    );
+    if let Some(slot) = record {
+        slot.keep(brought, &opened, read.as_ref().unwrap_or(ret));
+    }
+    read
+}
+
+/// ONE OPENING OF A STABLE PATH. What a holder at a stable value path leaves open is opened once
+/// for the holder: each field's slots where the field is first read, and each NAMED variable of
+/// its constructor where a field that writes it is first read. Every later reading of the path
+/// takes that opening — the expression read `h.s`, a written projection `h.s.T`, a pattern binder
+/// over `h` — so they agree. A top-level slot is named by the path whoever reads it
+/// ([`open_existentials`]); what the record decides is a slot NESTED in a written binding (`s:
+/// Strm[T = List[T = ?]]`), which only a rigid stands for, and a named variable two fields share
+/// (`two(a: Box[T = ?x], b: Box[T = ?x])`), which is one unknown for `t.a` and `t.b`.
+///
+/// Two lifetimes, one shape: a body's, held by its [`TypingEnv`] and shared by every clone of it,
+/// keyed by the path as the body spells it — a binder symbol is fresh per binding site, so a path
+/// names one value for the whole body; and a call's, carried by its frames, keyed by the CALLEE's
+/// path for an argument that is no path, so the hint, the parameter, the return and the effects
+/// of one call read one unknown where each used to open its own.
+///
+/// AT THE HOLDER'S TYPE ONLY: a holder read at a type other than the one it was opened at is no
+/// value this record speaks for, and opens afresh, unrecorded. A call reaches it: an argument it
+/// wraps in `some(…)` re-keys the option parameter to the argument's own path, so `f(o: Option[T
+/// = Hold3], x: o.value.s.T)` called as `f(k, …)` reads the holder `k` at `Option[T = Hold3]`
+/// after the caller's `k.s` opened it at `Hold3` (MEASURED: a debug assertion here panicked the
+/// load). The rigids are the body check's: the record lives no longer than the env or the call
+/// that holds it, so none outlives the check ([`value_contains_rigid`]).
+#[derive(Clone, Default)]
+pub(super) struct PathOpenings(Rc<std::cell::RefCell<HashMap<Vec<Symbol>, HolderOpening>>>);
+
+/// What a [`PathOpenings`] holds for one holder path.
+struct HolderOpening {
+    /// The holder's type the opening was made at.
+    ty: Value,
+    /// Each field read off the holder, opened.
+    fields: HashMap<Symbol, Value>,
+    /// The holder's named variables, opened.
+    named: HashMap<u32, Value>,
+}
+
+/// One reading [`open_existentials`] keeps in `openings`: the field at `path`, read off a holder
+/// of type `holder`.
+#[derive(Clone, Copy)]
+pub(super) struct Recorded<'a> {
+    pub(super) openings: &'a PathOpenings,
+    pub(super) path: ValuePath<'a>,
+    pub(super) holder: &'a Value,
+}
+
+/// A [`Recorded`] reading whose holder the record may speak for.
+struct RecordSlot<'a> {
+    openings: &'a PathOpenings,
+    holder: Vec<Symbol>,
+    field: Symbol,
+}
+
+impl PathOpenings {
+    /// `r`'s place in the record: `None` for a path with no holder (a bare variable), or one
+    /// recorded at another type.
+    fn slot<'a>(&'a self, kb: &KnowledgeBase, r: Recorded<'_>) -> Option<RecordSlot<'a>> {
+        let (&field, init) = r.path.fields.split_last()?;
+        let holder: Vec<Symbol> = std::iter::once(r.path.head).chain(init.iter().copied()).collect();
+        let mut map = self.0.borrow_mut();
+        match map.get(&holder) {
+            Some(h) if !views_structurally_equal(kb, &h.ty, r.holder) => return None,
+            Some(_) => {}
+            None => {
+                map.insert(
+                    holder.clone(),
+                    HolderOpening {
+                        ty: r.holder.clone(),
+                        fields: HashMap::new(),
+                        named: HashMap::new(),
+                    },
+                );
+            }
+        }
+        Some(RecordSlot {
+            openings: self,
+            holder,
+            field,
+        })
+    }
+}
+
+impl RecordSlot<'_> {
+    fn with<R>(&self, f: impl FnOnce(&mut HolderOpening) -> R) -> R {
+        let mut map = self.openings.0.borrow_mut();
+        f(map.get_mut(&self.holder).expect("a slot's holder is recorded"))
+    }
+
+    /// The field as an earlier reading opened it.
+    fn field(&self) -> Option<Value> {
+        self.with(|h| h.fields.get(&self.field).cloned())
+    }
+
+    /// The holder's named variables an earlier reading opened, for this one.
+    fn seed(&self, brought: &[VarId], opened: &mut HashMap<u32, Value>) {
+        self.with(|h| {
+            for vid in brought {
+                if let Some(v) = h.named.get(&vid.raw()) {
+                    opened.entry(vid.raw()).or_insert_with(|| v.clone());
+                }
+            }
+        })
+    }
+
+    /// Keep this reading: the field as `read`, and the named variables it opened.
+    fn keep(&self, brought: &[VarId], opened: &HashMap<u32, Value>, read: &Value) {
+        self.with(|h| {
+            for vid in brought {
+                if let Some(v) = opened.get(&vid.raw()) {
+                    h.named.entry(vid.raw()).or_insert_with(|| v.clone());
+                }
+            }
+            h.fields.insert(self.field, read.clone());
+        })
+    }
 }
 
 /// WI-20261001-80ZV8 — ONE CONSTRUCTOR PATTERN'S OPENING OF THE FIELDS IT DESTRUCTURES.

@@ -3696,7 +3696,7 @@ pub(super) fn dispatched_impl_effects_of(
                 kb,
                 e,
                 &param_to_arg_type,
-                Receivers::Call,
+                Receivers::Call(None),
                 arg_syms,
                 &ctx,
                 None,
@@ -3920,7 +3920,7 @@ pub(super) fn projection_receivers<'a>(
         for &i in &pass {
             let (param_sym, param_type, arg_ty, projects) = options[i];
             let read = if projects {
-                eliminate_type_projections(kb, param_type, &out, Receivers::Call, None, &ctx, None)
+                eliminate_type_projections(kb, param_type, &out, Receivers::Call(None), None, &ctx, None)
                     .unwrap_or_else(|_| param_type.clone())
             } else {
                 param_type.clone()
@@ -4081,7 +4081,7 @@ pub(super) fn override_declared_at_call(
         Discharge {
             arg_syms: receivers,
             denoted_syms: denoted,
-            ..Discharge::new(reading.arg_types, Receivers::Call, ctx, span)
+            ..Discharge::new(reading.arg_types, Receivers::Call(None), ctx, span)
         }
         .eliminate(kb, ty)
         .ok()
@@ -4203,7 +4203,7 @@ pub(super) fn override_at_call(
         }
     }
     let spec_at_call = |kb: &mut KnowledgeBase, spec_ty: &Value| {
-        let reduced = eliminate_type_projections(kb, spec_ty, &spec_args, Receivers::Call, None, &ctx, span)
+        let reduced = eliminate_type_projections(kb, spec_ty, &spec_args, Receivers::Call(None), None, &ctx, span)
             .unwrap_or_else(|_| mask_projections(kb, spec_ty));
         let bound = walk_type_deep_value(kb, call_subst, &reduced);
         expand_sorts_deep(kb, &bound, SlotVar::Flexible)

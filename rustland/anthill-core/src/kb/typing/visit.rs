@@ -135,7 +135,7 @@ pub(super) fn visit_type(
                         kb,
                         &ann,
                         &env.var_bindings,
-                        Receivers::Own(Some(env.receiver_aliases())),
+                        Receivers::Own(Some(&env)),
                         None,
                         &ctx,
                         occ_span,
@@ -337,6 +337,8 @@ pub(super) fn visit_type(
                 &mut lambda_env,
                 &param,
                 Some(param_type.clone()),
+                // A parameter is no path of the body's.
+                None,
                 // WI-20260827-EJ5F5: a lambda parameter BINDS. `lambda red -> …` over a
                 // `C` must be a total function of `C`, so a name colliding with one of
                 // `C`'s constructors is still the binder the author wrote — and nothing
@@ -712,6 +714,13 @@ pub(super) fn visit_type(
                 ),
                 None => op_info.map(|op| op.params),
             };
+            // What this call's readings open off an argument that is no path, one record for
+            // the hints below and the check ([`PathOpenings`]).
+            let openings = PathOpenings::default();
+            let records = CallRecords {
+                caller: &env,
+                call: &openings,
+            };
             if staged.is_empty() {
                 // THE ORDINARY PATH, unchanged: no argument hint depends on a sibling
                 // argument's type, so hint everything and visit everything.
@@ -722,7 +731,7 @@ pub(super) fn visit_type(
                     pos_args,
                     named_args,
                     &known_param_arg_types,
-                    env.receiver_aliases(),
+                    Some(records),
                     site.as_ref(),
                 );
                 // A `cons` / `nil` spine a rule body builds by its name, as the
@@ -752,6 +761,7 @@ pub(super) fn visit_type(
                     fuel,
                     staged_results: Vec::new(),
                     pos,
+                    openings: openings.clone(),
                 }));
                 for ((_, arg), hint) in named_args.iter().zip(named_hints.iter()).rev() {
                     push_visit(work, Rc::clone(arg), env.clone(), hint.clone(), fuel);
@@ -813,6 +823,8 @@ pub(super) fn visit_type(
                             &known_param_arg_types,
                             &HashMap::new(),
                             site.as_ref(),
+                            // Nor does it read a field path for the call's record.
+                            None,
                         )
                     })
                     .collect();
@@ -830,6 +842,7 @@ pub(super) fn visit_type(
                     known: known_param_arg_types,
                     site,
                     pos,
+                    openings: openings.clone(),
                 }));
                 // Reverse, so they pop in ASCENDING unified order — the order
                 // `known_arg_types_and_staged` sorted `staged` into and the order the

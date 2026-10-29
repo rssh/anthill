@@ -2727,6 +2727,8 @@ pub(super) fn build_relation_projection(
         // WI-20260904-50B2K part (c): a synthesized projection shape, not a written
         // body — nothing reads what it solves.
         None,
+        // Nothing hinted it: its readings are its own.
+        &PathOpenings::default(),
     ))
 }
 

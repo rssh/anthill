@@ -915,7 +915,9 @@ end
 /// the unwritten row it threads (WI-612) is `b.EB` — refused, since `g` declares `o.EB`, as the
 /// positional `Ctr.pick(b, o)` is. The receiver's TYPE was read by parameter but its NAME by
 /// index — `o` — so the call was charged `o.EB` and LOADED, the receiver's error undeclared
-/// (MEASURED to escape at run time with a stored callback). A LOAD VERDICT.
+/// (MEASURED to escape at run time with a stored callback). A LOAD VERDICT. The binder `b` is
+/// read at the path it takes apart, so its row prints `h.b.EB` (WI-20261017-HQH9K; `b.EB`
+/// before).
 #[test]
 fn a_mixed_calls_receiver_row_is_the_bound_arguments() {
     for call in ["Ctr.pick(o, c: b)", "Ctr.pick(b, o)"] {
@@ -947,7 +949,7 @@ namespace wi0rp29cb.cr
 end
 "#
         );
-        assert_refused_naming(&load_errors(&src), &["got undeclared effect: b.EB"], call);
+        assert_refused_naming(&load_errors(&src), &["got undeclared effect: h.b.EB"], call);
     }
 }
 
