@@ -1051,6 +1051,13 @@ pub(super) fn check_operation_bodies(
                 // top-level `absent` scan. A non-row atom is kept whole, so a plain
                 // label, a denoted `Modify[c]` and a bare row var compare exactly as
                 // before.
+                // Proposal 050.1: a write charged to a pool — state outside the process no
+                // row can name — cannot be declared, so it is refused here, once per name.
+                let mut pool_writes = result.env.take_pool_writes();
+                pool_writes.dedup_by(|a, b| a.name == b.name && a.pool == b.pool);
+                for write in &pool_writes {
+                    errors.push(pool_write_refusal(kb, op.op_sym, op.span, write));
+                }
                 for (expected, actual) in undeclared_effects(
                     kb,
                     &op.rigidify,

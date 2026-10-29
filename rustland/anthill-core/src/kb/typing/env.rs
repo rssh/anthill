@@ -137,7 +137,15 @@ pub struct TypingEnv {
     /// each call's inference. Shared across clones of this body's environment.
     pub(super) instance_member_rigids:
         Rc<std::cell::RefCell<HashMap<(Symbol, TermId, VarId), TermId>>>,
-    local_resources: Vec<Symbol>,
+    /// Proposal 050.1 — the memory record of the body being typed ([`MemoryTable`]): what each
+    /// local name holds, and the connections stores made. Shared by every clone, so one body
+    /// has one record (see `typing/memory.rs` for why it is shared and not copied per branch).
+    pub(super) memory: Rc<std::cell::RefCell<MemoryTable>>,
+    /// While a pattern takes apart a value that is no stable path: the regions that value
+    /// lies in, which each binder of the pattern lies in too. Set by the `let` and the `match`
+    /// around binding their pattern and cleared after; `None` for a lambda's parameter, whose
+    /// value its caller supplies.
+    pub(super) binding_regions: Option<Rc<[Region]>>,
     /// Enclosing sort for defer-to-requirement detection.
     pub(super) enclosing_sort: Option<Symbol>,
 
@@ -320,7 +328,8 @@ impl TypingEnv {
             sort_rigid_len: 0,
             body_rigidify: Rc::new(Substitution::new()),
             instance_member_rigids: Rc::new(std::cell::RefCell::new(HashMap::new())),
-            local_resources: Vec::new(),
+            memory: Rc::new(std::cell::RefCell::new(MemoryTable::default())),
+            binding_regions: None,
             enclosing_sort: None,
             rule_scope: None,
             rule_declared_specs: Rc::new(Vec::new()),
@@ -817,13 +826,6 @@ impl TypingEnv {
         !self.type_denotations.is_empty()
     }
 
-    pub fn declare_local_resource(&mut self, name: Symbol) {
-        self.local_resources.push(name);
-    }
-
-    pub fn is_local_resource(&self, name: Symbol) -> bool {
-        self.local_resources.iter().any(|r| *r == name)
-    }
 }
 
 /// [`TypingEnv::canonicalize_receiver_path`] over a bare alias map, for a reader that holds the
@@ -884,6 +886,18 @@ pub struct FlowEnv {
     ///
     /// `Rc` for the same reason `facts` is: an unchanged env clones as a refcount bump.
     pub(super) skolems: Rc<std::collections::HashSet<Symbol>>,
+    /// Proposal 050.1 — the branch of the body this Γ holds at, as the forks above it took
+    /// it ([`BranchPath`]). Forked with Γ at an `if` and at each `match` arm, and read with
+    /// the memory record's connections, each of which carries the branch it was made in.
+    pub(super) branch: BranchPath,
+    /// Proposal 050.1 — where the innermost `match` arm this Γ holds in began, in the order
+    /// the memory record binds names ([`TypingEnv::memory_mark`]): the arm's end charges the
+    /// names bound since. 0 outside an arm.
+    pub(super) scope_mark: usize,
+    /// Proposal 050.1 — the body's memory record this Γ answers `memory_alias` and
+    /// `memory_maybe_connected` from ([`FlowEnv::memory_view`]); set where a body's typing
+    /// starts ([`Env::with_gamma`]). `None` for a Γ built outside one.
+    pub(super) memory: Option<MemoryScope>,
 }
 
 impl FlowEnv {
@@ -892,6 +906,9 @@ impl FlowEnv {
         FlowEnv {
             facts: Rc::new(SubstTree::new()),
             skolems: Rc::new(std::collections::HashSet::new()),
+            branch: None,
+            scope_mark: 0,
+            memory: None,
         }
     }
 
@@ -1014,7 +1031,7 @@ impl Env {
     pub(super) fn with_gamma(types: &TypingEnv, flow: FlowEnv) -> Self {
         Env {
             types: Rc::new(types.clone()),
-            flow,
+            flow: flow.with_memory(types.memory_scope()),
         }
     }
 

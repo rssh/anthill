@@ -1646,6 +1646,12 @@ pub(super) fn assume_call_ensures(
     let mut flow = flow;
     for clause in &ensures {
         for conj in clause_conjuncts(kb, clause) {
+            // A memory clause is read into the memory record at the binding
+            // (`value_regions`), not assumed as a fact: Γ answers the memory relations from
+            // that record alone.
+            if is_memory_clause(kb, &conj) {
+                continue;
+            }
             let conj = substitute_ref_terms(kb, &conj, &sigma);
             if view_references_any(kb, &conj, &param_syms) {
                 continue;

@@ -59,27 +59,6 @@ impl TypeResult {
     }
 }
 
-/// Filter effects: keep only external effects (on non-local resources).
-/// Effects on let-bound resources are local and don't propagate.
-pub(crate) fn external_effects(
-    kb: &KnowledgeBase,
-    env: &TypingEnv,
-    effects: &[Value],
-) -> Vec<Value> {
-    effects
-        .iter()
-        .filter(|effect| {
-            // An effect like Modify[store] — check if 'store' is a local resource
-            // Effect terms are sort_ref or parameterized. Extract the resource symbol.
-            match extract_effect_resource_sym(kb, effect) {
-                Some(sym) => !env.is_local_resource(sym),
-                None => true, // can't determine resource — assume external
-            }
-        })
-        .cloned()
-        .collect()
-}
-
 /// Extract the resource symbol named by an effect label, carrier-agnostically
 /// (WI-361/WI-342). A `Modify[c]` label is a `parameterized` type whose binding
 /// value carries the resource as `denoted(Ref(c))` → `Some(c)`; a bare effect

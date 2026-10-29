@@ -475,6 +475,19 @@ pub(super) fn build_type(
                 Some(solving),
                 &openings,
             );
+            // Proposal 050.1: a callee clause relating two of its parameters connects the
+            // arguments' memory (`MutableStack.push(s, v)`).
+            if let Ok(typed) = &r {
+                if let Some(Expr::Apply {
+                    functor,
+                    pos_args,
+                    named_args,
+                    ..
+                }) = typed.node.as_expr()
+                {
+                    record_call_stores(kb, &env.types, &env.flow.branch, *functor, pos_args, named_args);
+                }
+            }
             results.push(r);
         }
         TypeBuildFrame::Constructor {
@@ -1126,6 +1139,11 @@ pub(super) fn build_type(
             // canonicalize `y.M` to `p.M` (a false accept).
             let value_path = stable_receiver_path(kb, &value_node)
                 .map(|path| ext_env.canonicalize_receiver_path(path));
+            // Proposal 050.1: the regions of the value, which each binder of the pattern lies
+            // in where the value is no path (a path's binder aliases it instead).
+            let value_memory: Rc<[Region]> =
+                value_regions(kb, &ext_env, &value_node, bound_ty.as_ref()).into();
+            let outer_binding = ext_env.set_binding_regions(Some(value_memory));
             let pattern = bind_and_label_pattern(
                 kb,
                 &mut ext_env,
@@ -1143,6 +1161,7 @@ pub(super) fn build_type(
                 UnpinnedBinder::Unnameable,
                 &mut binder_errors,
             );
+            ext_env.set_binding_regions(outer_binding);
             debug_assert!(
                 let_repoints.is_empty(),
                 "WI-20260827-EJ5F5: `PatternRole::Binder` must never rewrite",
@@ -1152,7 +1171,6 @@ pub(super) fn build_type(
                 return;
             }
             if let Some(var_name) = extract_pattern_var_name(&pattern) {
-                ext_env.declare_local_resource(var_name);
                 // The binder's alias of `value_path` was recorded where the pattern bound it.
                 // If the value is a WRITTEN TYPE, record what `var_name` denotes, so a
                 // later `t.m(…)` is the call the written `Sort[…].m(…)` makes
@@ -1368,8 +1386,15 @@ pub(super) fn build_type(
             // the fields they take out at it.
             let scr_path = stable_receiver_path(kb, &scr_node)
                 .map(|path| outer_env.canonicalize_receiver_path(path));
+            // Proposal 050.1: each arm types a branch of its own, and its binders lie in the
+            // scrutinee's regions where the scrutinee is no path.
+            let scr_memory: Rc<[Region]> =
+                value_regions(kb, &outer_env, &scr_node, Some(&scr_ty)).into();
+            let fork = outer_env.new_fork();
+            let arm_mark = outer_env.memory_mark();
             for branch in branches.iter() {
                 let mut branch_env = (*outer_env).clone();
+                branch_env.set_binding_regions(Some(Rc::clone(&scr_memory)));
                 let mut branch_binder_errors = Vec::new();
                 // The ONE refutable position — a bare name naming one of the scrutinee's
                 // own nullary constructors is rewritten to that constructor here, which
@@ -1391,6 +1416,7 @@ pub(super) fn build_type(
                     UnpinnedBinder::Unnameable,
                     &mut branch_binder_errors,
                 );
+                branch_env.set_binding_regions(None);
                 // WI-511: coverage reads the Pattern occurrence directly — no
                 // `pattern_to_term` bridge. WI-20260827-EJ5F5: and it reads the REWRITTEN
                 // one, so a resolved bare name reaches the `Constructor` arm rather than
@@ -1445,16 +1471,18 @@ pub(super) fn build_type(
             let arm_facts =
                 match_arm_gamma_facts(kb, &scrutinee_value, &arm_inputs, &scrutinee_ctors);
             // PASS 2 — the per-arm Γ and its guard, both of which need pass 1 finished.
-            for ((branch_env, branch_guard), facts) in branch_env_types
+            for (arm, ((branch_env, branch_guard), facts)) in branch_env_types
                 .into_iter()
                 .zip(branch_guards.iter_mut())
                 .zip(arm_facts.into_iter())
+                .enumerate()
             {
                 // Arm Γ = the outer Γ + this arm's pattern fact + earlier-arm
                 // negations (+ the guard predicate below). `assume` is a set, so
                 // a fact `view_is_indexable` rejects (an `Opaque`-headed
-                // scrutinee/value) is dropped losslessly.
-                let mut arm_flow = outer_env.flow.clone();
+                // scrutinee/value) is dropped losslessly. Proposal 050.1: the arm is a
+                // branch of its own ([`FlowEnv::in_branch`]).
+                let mut arm_flow = outer_env.flow.in_branch(fork, arm, arm_mark);
                 for fact in facts {
                     arm_flow = arm_flow.assume(kb, fact);
                 }
@@ -1602,7 +1630,14 @@ pub(super) fn build_type(
                 // Filter effects against this branch's locals so
                 // pattern-bound resources don't leak past the case
                 // arm (their bindings live only inside the branch).
-                let branch_external = external_effects(kb, &*branch_envs[i], &body_r.effects);
+                let branch_external = charge_local_writes(
+                    kb,
+                    &branch_envs[i].types,
+                    &branch_envs[i].flow.branch,
+                    ScopeEnd::Arm,
+                    branch_envs[i].flow.scope_mark,
+                    &body_r.effects,
+                );
                 merge_effects_into(kb, &mut effects, &branch_external);
             }
 
@@ -1665,6 +1700,7 @@ pub(super) fn build_type(
             outer_env,
             binder_error,
             param,
+            memory_mark,
         } => {
             let body_r = results.pop().expect("LambdaBody: missing body result");
             // WI-794: a contradicting binder annotation is reported ahead of any body
@@ -1694,6 +1730,17 @@ pub(super) fn build_type(
                 .ok()
                 .map(|r| r.effects.clone())
                 .unwrap_or_default();
+            // Proposal 050.1 §3: a lambda's body is a scope too — its row names only its own
+            // parameters and what is in scope where it is written, so a write through a name
+            // bound inside the body is charged where that name's memory lies.
+            let body_effects = charge_local_writes(
+                kb,
+                &outer_env.types,
+                &outer_env.flow.branch,
+                ScopeEnd::Arm,
+                memory_mark,
+                &body_effects,
+            );
             // WI-470: the lambda's arrow type is minted as an occurrence
             // (`Value::Node`, occurrence-primary). A denoted-bearing child (a
             // `Modify[c]` body effect) is CARRIED as a poisoned child rather than

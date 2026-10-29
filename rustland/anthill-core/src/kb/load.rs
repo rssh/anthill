@@ -16059,6 +16059,23 @@ fn register_stdlib_scopes(kb: &mut KnowledgeBase, global_scope: ScopeId) {
         },
     );
 
+    // anthill.memory namespace (proposal 050.1) — created here so the two memory
+    // relations' builtin tags can register before stdlib/anthill/memory/ loads.
+    let memory_sym = kb.symbols.define(
+        "memory",
+        "anthill.memory",
+        SymbolKind::Namespace,
+        anthill_scope,
+    );
+    let memory_scope = kb.symbols.scope_id(memory_sym);
+    kb.symbols.add_parent(
+        memory_scope,
+        ScopeInclusion {
+            parent_scope: anthill_scope,
+            is_enclosing: true,
+        },
+    );
+
     // anthill.kernel namespace — resolver primitives (proposal 033).
     // Pre-declared here so that the loader's resolve_symbol calls find
     // these names with proper scoping when stdlib/anthill/kernel/ loads.

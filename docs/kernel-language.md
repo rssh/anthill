@@ -4191,6 +4191,22 @@ application, whose result is a fresh value per call — is a **load error at the
 naming the caller's own expression: there is no slot for the effect to be re-keyed onto,
 and the repair is to give the value a name (`let x = mk()`, then pass `x`).
 
+**A target that is a local name is charged where its memory lies**, when the name's scope
+ends — the end of a `match` arm, of a lambda's body, or of the operation. A name bound to a parameter or to a
+field path off one is that parameter: after `let x = p`, `Cell.set(x, 1)` owes `Modify[p]`,
+and a write through `h` in `case cons(h, rest)` over `l` owes `Modify[l]`. Any other name is
+charged to every parameter its value may lie in: a construction lies in its parts, a branch
+value in each branch's (`let y = if b then p else q` owes `Modify[p]` and `Modify[q]`), and a
+call's result in what the callee's `ensures` connects it to; a callee clause relating two of
+its parameters connects their memory. A write to memory the body allocated adds nothing. A
+write through a lambda's parameter stays over that parameter, as the lambda's row says it.
+The values `kb()` and `KB.loaded` hand out are
+connected to `kb_storage`, the pool of the in-memory knowledge base, so a write through one
+cannot be declared and is refused. The relations, declared in `anthill.memory`, are answered
+in a body's contracts from the same bindings: two values the body allocated are separate, and
+two parameters are neither until the operation states it (`requires not
+memory_maybe_connected(p, q)`).
+
 #### Effect-Env Condition
 
 An effectful operation **respects its effect-env condition** if it only modifies the resources declared in its `Modify` effects:

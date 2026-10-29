@@ -13046,6 +13046,18 @@ impl KnowledgeBase {
     /// [`Self::register_builtin_tags`], and `BuiltinTag` is a closed enum, so this
     /// is no extension point.
     pub(crate) fn register_builtin_tag(&mut self, qualified_name: &str, tag: BuiltinTag) {
+        self.register_builtin_tag_as(qualified_name, tag, SymbolKind::Operation);
+    }
+
+    /// [`Self::register_builtin_tag`] for a builtin the stdlib declares as a RELATION — a
+    /// body-less `rule p(?a, ?b)` (proposal 061), which may declare a name only of a kind a
+    /// rule declares. Minted an operation, the stdlib's declaration would be refused as a
+    /// second one at the address.
+    fn register_builtin_relation_tag(&mut self, qualified_name: &str, tag: BuiltinTag) {
+        self.register_builtin_tag_as(qualified_name, tag, SymbolKind::Goal);
+    }
+
+    fn register_builtin_tag_as(&mut self, qualified_name: &str, tag: BuiltinTag, kind: SymbolKind) {
         let sym = if let Some(&resolved) = self.symbols.by_qualified_name.get(qualified_name) {
             resolved
         } else {
@@ -13067,8 +13079,7 @@ impl KnowledgeBase {
                     qualified_name
                 )
             };
-            self.symbols
-                .define(short, qualified_name, SymbolKind::Operation, scope)
+            self.symbols.define(short, qualified_name, kind, scope)
         };
         self.builtins.insert(sym, tag);
     }
@@ -13148,6 +13159,12 @@ impl KnowledgeBase {
         self.register_builtin_tag("anthill.reflect.scope", BuiltinTag::Scope);
         self.register_builtin_tag("anthill.reflect.kind", BuiltinTag::Kind);
         self.register_builtin_tag("anthill.reflect.feed.provenance", BuiltinTag::Provenance);
+        // Proposal 050.1 — the memory relations, answered by the memory half of Γ.
+        self.register_builtin_relation_tag("anthill.memory.memory_alias", BuiltinTag::MemoryAlias);
+        self.register_builtin_relation_tag(
+            "anthill.memory.memory_maybe_connected",
+            BuiltinTag::MemoryMaybeConnected,
+        );
         self.register_builtin_tag(dt::qualified(dt::FIELD_ACCESS), BuiltinTag::FieldAccess);
         self.register_builtin_tag(dt::qualified(dt::HO_APPLY), BuiltinTag::HoApply);
         // Resolver primitives (proposal 033 / 033.1 / 049)

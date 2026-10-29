@@ -14,8 +14,10 @@
 //! - it is **kept**, re-keyed to the operation's own `result`, when the
 //!   return type *can* carry it (`make : Cell`) — the op honestly
 //!   allocates a fresh region it hands out;
-//! - effects on **let/match-bound locals** keep their existing drop
-//!   (`external_effects`); effects on **parameters** stay external.
+//! - effects on **let/match-bound locals** are charged where the local's
+//!   memory lies (proposal 050.1, `charge_local_writes`): onto the parameter
+//!   it holds, dropped for memory the body allocated; effects on
+//!   **parameters** stay external.
 //!
 //! Organization (option 3′ of
 //! `docs/brainstorms/region-analysis-organization.md`): a factored,
@@ -36,7 +38,7 @@ use super::resolve::ResolveConfig;
 use super::term::{Term, TermId};
 use super::term_view::TermView;
 use super::typing::{
-    external_effects, extract_effect_resource_sym, extract_type, extract_type_param,
+    charge_local_writes, extract_effect_resource_sym, extract_type, extract_type_param, ScopeEnd,
     substitute_ref_syms, TypeExtractor, TypingEnv,
 };
 use super::KnowledgeBase;
@@ -309,7 +311,7 @@ fn rekey_resource(kb: &mut KnowledgeBase, effect: TermId, from: Symbol, to: Symb
 /// WI-342 effects-vertical: carrier-agnostic [`rekey_resource`]. A ground label
 /// re-keys via `substitute_ref_syms`; a `Value::Node` label needs occurrence
 /// `Ref` rewrite — deferred to E2 (no Node effect label is minted pre-E2).
-fn rekey_resource_value(kb: &mut KnowledgeBase, effect: &Value, from: Symbol, to: Symbol) -> Value {
+pub(crate) fn rekey_resource_value(kb: &mut KnowledgeBase, effect: &Value, from: Symbol, to: Symbol) -> Value {
     match effect {
         Value::Term { id: t, .. } => Value::term(rekey_resource(kb, *t, from, to)),
         // WI-342 E2: re-key the `Ref` spine of a `Value::Node` label (a callee's
@@ -329,7 +331,7 @@ fn rekey_resource_value(kb: &mut KnowledgeBase, effect: &Value, from: Symbol, to
 /// [`views_structurally_equal`] so a ground `Value::Term` label and a now-live
 /// `Value::Node` label (`Modify[c]`) of the same structure dedup across carriers
 /// (the old carrier-blind compare called those distinct).
-fn push_effect_dedup(kb: &KnowledgeBase, out: &mut Vec<Value>, effect: Value) {
+pub(crate) fn push_effect_dedup(kb: &KnowledgeBase, out: &mut Vec<Value>, effect: Value) {
     if !out
         .iter()
         .any(|e| crate::kb::term_view::views_structurally_equal(kb, e, &effect))
@@ -393,8 +395,9 @@ pub(crate) fn op_boundary_effects(
     // typed op. `Option<Option<_>>`: outer `None` = not yet resolved, inner = the
     // resolution result (itself possibly `None`).
     let mut op_result_sym_memo: Option<Option<Symbol>> = None;
-    // 1. Existing local-resource drop (let/match-bound names).
-    let after_local = external_effects(kb, env, effects);
+    // 1. Labels over the body's local names, charged where their memory lies (proposal
+    // 050.1 §3), read after every join: the boundary is the root of the body's branches.
+    let after_local = charge_local_writes(kb, env, &None, ScopeEnd::Final, 0, effects);
     // 2. Result-region masking, keyed on whether the result can carry one — asked of
     // the type's structure through the view, whichever carrier it rides. A result
     // type that was no term answered "no" outright, as a function value's; so an

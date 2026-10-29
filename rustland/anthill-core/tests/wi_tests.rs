@@ -2310,3 +2310,5 @@ mod error_row_admits_what_a_boundary_catches_test;
 mod wi_9wvt7_user_layer_reify_test;
 #[path = "include/wi_wgjfn_error_handler_type_value_test.rs"]
 mod wi_wgjfn_error_handler_type_value_test;
+#[path = "include/wi_809jn_memory_regions_test.rs"]
+mod wi_809jn_memory_regions_test;

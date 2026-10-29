@@ -1131,7 +1131,11 @@ fn performed_in_a_rule_body(kb: &mut KnowledgeBase, result: &TypeResult) -> (Vec
     let mut out = Vec::new();
     let mut open = false;
     let mut regions = None;
-    for e in external_effects(kb, &result.env, &result.effects) {
+    // A write charged to a pool is performed as written: the rule body performs it.
+    let mut charged =
+        charge_local_writes(kb, &result.env, &None, ScopeEnd::Final, 0, &result.effects);
+    charged.extend(result.env.take_pool_writes().into_iter().map(|w| w.label));
+    for e in charged {
         if extract_effect_resource_sym(kb, &e)
             .is_some_and(|r| crate::kb::region::is_result_region_sym(kb, r))
         {

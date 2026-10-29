@@ -373,6 +373,9 @@ pub(super) enum TypeBuildFrame {
         /// type. This is the child the lambda is reassembled from; `occ`'s own
         /// `param` is still the unlabelled written form.
         param: Rc<NodeOccurrence>,
+        /// Proposal 050.1: where the lambda's scope began in the memory record's binding
+        /// order — its parameters and its body's names are the ones bound since.
+        memory_mark: usize,
     },
     /// WI-285: all three If sub-expressions finished (drained in
     /// `[condition, then, else]` order); merge their effects and return

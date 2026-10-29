@@ -143,6 +143,12 @@ fn bind_value_to_value(bv: BindValue) -> Value {
 pub enum BuiltinTag {
     /// `anthill.reflect.nonvar(?x)` — succeeds if `?x` is bound to a non-variable.
     NonVar,
+    /// `anthill.memory.memory_alias(a, b)` — proposal 050.1: `a` and `b` are one resource.
+    /// Answered by the memory half of Γ ([`ResolveConfig::memory`]) and nowhere else.
+    MemoryAlias,
+    /// `anthill.memory.memory_maybe_connected(a, b)` — proposal 050.1: the memory of `a`
+    /// and of `b` may overlap. Answered as [`Self::MemoryAlias`] is.
+    MemoryMaybeConnected,
     /// `anthill.reflect.ground(?x)` — succeeds if `?x` is fully ground (no variables).
     Ground,
     /// `anthill.reflect.qualified_name(?sym, ?result)` — Symbol → full qualified name string.
@@ -951,6 +957,13 @@ pub struct ResolveConfig {
     ///    to remove. An unlimited query over a large extent is where it would be felt
     ///    first, and it has not been measured there.
     pub dedup_answers: bool,
+    /// Proposal 050.1 — the memory half of Γ: the record of the operation body whose
+    /// question this is, which alone answers `anthill.memory`'s two relations
+    /// ([`BuiltinTag::MemoryAlias`], [`BuiltinTag::MemoryMaybeConnected`]). Seeded beside
+    /// [`Self::gamma`] by the `prove_from_gamma` bridge; `None` for every other resolution,
+    /// where the two relations are not asked.
+    #[allow(private_interfaces)]
+    pub memory: Option<super::typing::MemoryView>,
 }
 
 impl Default for ResolveConfig {
@@ -963,6 +976,7 @@ impl Default for ResolveConfig {
             gamma: None,
             opaque_skolems: None,
             dedup_answers: true,
+            memory: None,
         }
     }
 }
@@ -2702,7 +2716,15 @@ impl SearchStream {
             // declined does. Drained onto the stream before the verdict is acted on, so a
             // fault is recorded even on the arms that `return` out of this match.
             let mut faults = ReduceFaults::default();
-            let builtin_result = if open_world_operand {
+            let builtin_result = if matches!(
+                tag,
+                BuiltinTag::MemoryAlias | BuiltinTag::MemoryMaybeConnected
+            ) {
+                // Its operands are places, `var_ref`s by nature: the record answers them,
+                // so the open-world reading does not apply.
+                let goal_value = kb.reify_value(&goal_val, &frame.subst);
+                self.memory_relation_result(kb, &goal_value)
+            } else if open_world_operand {
                 BuiltinResult::Unknown {
                     cause: UnknownCause::OpenWorldParameter,
                 }
@@ -4451,6 +4473,28 @@ impl SearchStream {
         Some(StepResult::Continue)
     }
 
+    /// A memory relation goal answered by the memory half of Γ ([`ResolveConfig::memory`]).
+    /// Outside an operation body's Γ there is no record to answer from: asked there, the
+    /// goal is refused as unaskable rather than failed, so that a `not(…)` over it proves
+    /// nothing.
+    fn memory_relation_result(&self, kb: &mut KnowledgeBase, goal: &Value) -> BuiltinResult {
+        let Some(view) = self.config.memory.clone() else {
+            return BuiltinResult::Error(ResolveError::new(
+                "`anthill.memory.memory_alias` and `memory_maybe_connected` relate the \
+                 places of an operation body; they are answered only in its contracts and \
+                 guards, from what the body binds, builds and calls"
+                    .to_string(),
+            ));
+        };
+        match view.answer(kb, goal) {
+            Some(super::typing::MemoryAnswer::Holds) => BuiltinResult::Success,
+            Some(super::typing::MemoryAnswer::Fails) => BuiltinResult::Failure,
+            Some(super::typing::MemoryAnswer::Unknown) | None => BuiltinResult::Unknown {
+                cause: UnknownCause::OpenWorldParameter,
+            },
+        }
+    }
+
     fn step_naf(
         &mut self,
         kb: &mut KnowledgeBase,
@@ -4474,6 +4518,43 @@ impl SearchStream {
                 return Some(StepResult::Continue);
             }
         };
+
+        // Proposal 050.1: `not` over a memory relation is decided by the record, before the
+        // open-world gate below — its operands are places, `var_ref`s by nature, and the
+        // record says of two of them that they are separate, connected, or unknown.
+        let inner_is_memory_relation = inner.head(kb).functor_sym().is_some_and(|f| {
+            matches!(
+                kb.builtin_of(f),
+                Some(BuiltinTag::MemoryAlias | BuiltinTag::MemoryMaybeConnected)
+            )
+        });
+        if let (true, Some(view)) = (inner_is_memory_relation, self.config.memory.clone()) {
+            let inner_value = kb.reify_value(&inner, &subst);
+            if let Some(answer) = view.answer(kb, &inner_value) {
+                return match answer {
+                    super::typing::MemoryAnswer::Holds => {
+                        self.stack.pop();
+                        Some(StepResult::Continue)
+                    }
+                    super::typing::MemoryAnswer::Fails => {
+                        let f = self.stack.last_mut().unwrap();
+                        f.goals.remove(0);
+                        f.depth += 1;
+                        f.state = FrameState::Init {
+                            delay_mode: delay_mode.reset(),
+                        };
+                        Some(StepResult::Continue)
+                    }
+                    super::typing::MemoryAnswer::Unknown => self.delay_goal(
+                        kb,
+                        goal.clone(),
+                        Some(UnknownCause::OpenWorldParameter),
+                        depth,
+                        delay_mode,
+                    ),
+                };
+            }
+        }
 
         // Groundness check: NAF on non-ground goals would be unsound. In the
         // LOCAL-INTERPRETATION query context (proposal 050: the `gamma` overlay is
@@ -4517,6 +4598,7 @@ impl SearchStream {
                 // proving `P` correctly fails `not(P)` (sound negation under Γ).
                 gamma: self.config.gamma.clone(),
                 opaque_skolems: self.config.opaque_skolems.clone(),
+                memory: self.config.memory.clone(),
                 // WI-FFPGD: this sub-search asks whether P has ANY proof, and
                 // `drain_verdict` stops at the first definite one — an answer SET
                 // is not the question, so deduping it would only cost fingerprints.
@@ -5704,6 +5786,8 @@ impl KnowledgeBase {
                 // WI-FFPGD: answers-or-proofs rides in too — `is_duplicate_answer`
                 // reads it at the goals-empty yield.
                 dedup_answers: config.dedup_answers,
+                // Proposal 050.1: the memory half of Γ, with it.
+                memory: config.memory.clone(),
             },
             query_cache: HashMap::new(),
             stats: ResolveStats::default(),
@@ -6164,6 +6248,9 @@ impl KnowledgeBase {
                     .to_string(),
             )),
             BuiltinTag::Not => unreachable!("Not is handled in step_init, not execute_builtin"),
+            BuiltinTag::MemoryAlias | BuiltinTag::MemoryMaybeConnected => {
+                unreachable!("a memory relation is answered in step_init, not execute_builtin")
+            }
             BuiltinTag::HoApply => {
                 unreachable!("HoApply is handled in step_init, not execute_builtin")
             }

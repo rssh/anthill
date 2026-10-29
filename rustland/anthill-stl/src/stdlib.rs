@@ -246,6 +246,11 @@ pub static SOURCES: &[(&str, &str)] = &[
         "anthill/geometry",
         include_str!("../../../stdlib/anthill/geometry.anthill"),
     ),
+    // ── memory (relations `reflect`'s accessors declare in their `ensures`) ──
+    (
+        "anthill/memory/memory",
+        include_str!("../../../stdlib/anthill/memory/memory.anthill"),
+    ),
     // ── reflect ──
     (
         "anthill/reflect/reflect",

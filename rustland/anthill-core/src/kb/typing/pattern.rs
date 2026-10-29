@@ -740,13 +740,10 @@ pub(super) fn bind_and_label_pattern(
                 Some(path) => env.bind_receiver_alias(*name, path.to_vec()),
                 None => env.clear_receiver_alias(*name),
             }
-            // Pattern-bound names are local — effects on them shouldn't escape
-            // the surrounding match/case scope (matches `check_let_expr`'s
-            // declare_local_resource for let bindings). Without this, a body
-            // like `match Cell.get(s) case wis(b, _) -> persist(b, ...)` would
-            // surface persist's `Modify[b]` as an external effect even though
-            // b's lifetime ends at case end.
-            env.declare_local_resource(*name);
+            // Proposal 050.1: what the binder holds — the field path it reads, or the
+            // regions of the value taken apart — so a write through it is charged where
+            // that memory lies when its scope ends ([`charge_local_writes`]).
+            env.bind_memory(*name, env.pattern_binder_memory(kb, scrutinee_path));
             // A binder writes no labels of its own; its `type_ann` is an Expr-kind
             // child the typer does not rewrite here.
             Rc::clone(pattern)

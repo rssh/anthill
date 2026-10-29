@@ -9,7 +9,7 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
-- depends_on: WI-20261015-169VS-proposal-050-1-stage-4-the
+- depends_on: WI-20261015-169VS-proposal-050-1-stage-4-the, WI-20261029-627CM-a-body-is-held-to-the-guarded
 
 - tags: proposal-050.1, typing
 

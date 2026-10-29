@@ -133,9 +133,25 @@ fn main() {
         parsed_files.push(parsed);
     }
 
+    // Files read for what they declare and generated into nothing: `memory` declares
+    // only predicates, which have no Rust item, and `reflect.anthill` imports two of
+    // them for its `ensures`. Read here, the import is known to name a predicate and
+    // writes no `use` line.
+    let declaring_only = ["memory/memory.anthill"];
+    let mut declaring_files = Vec::new();
+    for src in &declaring_only {
+        let source_path = stdlib_dir.join(src);
+        let source = std::fs::read_to_string(&source_path)
+            .unwrap_or_else(|e| panic!("read {}: {}", source_path.display(), e));
+        declaring_files.push(
+            parse::parse(&source)
+                .unwrap_or_else(|e| panic!("parse {}: {:?}", source_path.display(), e)),
+        );
+    }
+
     // The sorts every file declares: a type one file names from another is written
     // with its declared parameter order, and wrapped as a trait where it is one.
-    let refs: Vec<_> = parsed_files.iter().collect();
+    let refs: Vec<_> = parsed_files.iter().chain(declaring_files.iter()).collect();
     let catalog = collect_sorts(&refs);
 
     // Generate each file (reflect uses the generated-and-used reflect_config).

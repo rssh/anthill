@@ -1455,6 +1455,40 @@ end
     assert!(one.contains("fn g(n: i64) -> Boxy<i64>;"), "output:\n{one}");
 }
 
+/// A predicate has no Rust item, so an import of one writes no `use`: a run whose file
+/// declares `rule shares(?a, ?b)` drops `shares` from the import that brings it in for an
+/// `ensures`, and keeps the sort imported beside it. FAILS with the predicate not read
+/// into the catalog: `use test::mem::{Boxy, shares};` names an item the module does not
+/// have. CONTROL: generated alone, the run declares no `shares` and the import is
+/// written as before.
+#[test]
+fn an_import_of_a_declared_predicate_writes_no_use() {
+    let defs_src = r#"namespace test.mem
+  rule shares(?a, ?b)
+  entity Boxy(n: Int64)
+end
+"#;
+    let user_src = r#"namespace test.user
+  import anthill.prelude.{Int64}
+  import test.mem.{Boxy, shares}
+  sort Api
+    operation g(b: Boxy) -> Boxy
+      ensures shares(result, b)
+  end
+end
+"#;
+    let defs = parse::parse(defs_src).unwrap();
+    let user = parse::parse(user_src).unwrap();
+    let catalog = anthill_core::codegen::collect_sorts(&[&defs, &user]);
+    let out = anthill_core::codegen::generate_rust_with_context(&user, &catalog)
+        .unwrap_or_else(|e| panic!("{e:?}"));
+    assert!(out.contains("use test::mem::{Boxy};"), "output:\n{out}");
+    assert!(!out.contains("shares"), "output:\n{out}");
+
+    let alone = gen(user_src);
+    assert!(alone.contains("use test::mem::{Boxy, shares};"), "output:\n{alone}");
+}
+
 /// K6WFS review: a name a wildcard import of another namespace brings in is that
 /// namespace's, and Rust's `use path::*` brings it in by the same name. FAILS with the
 /// wildcard read only against the run's files: `Ledger` was refused as declared and

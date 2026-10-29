@@ -442,7 +442,7 @@ fn arg_place(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> ArgPlace {
 /// and was refused, unlocated, as undeclared, while the one declaration of it, `Modify[mk]`,
 /// is refused as an ambient place (MEASURED); [`stable_receiver_path`] already declined a
 /// nullary operation at a path's head.
-fn names_no_place(kb: &KnowledgeBase, sym: Symbol) -> bool {
+pub(super) fn names_no_place(kb: &KnowledgeBase, sym: Symbol) -> bool {
     kb.is_unplaceable_constructor(sym)
         || crate::kb::op_info::is_nullary_operation(kb, sym)
         || kb.has_kind(sym, crate::intern::SymbolKind::Const)

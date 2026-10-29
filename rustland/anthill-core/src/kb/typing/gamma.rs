@@ -31,6 +31,7 @@ pub fn prove_from_gamma(kb: &mut KnowledgeBase, flow: &FlowEnv, goal: &Value) ->
         max_solutions: 1,
         gamma: Some(flow.index()),
         opaque_skolems: Some(flow.skolems()),
+        memory: flow.memory_view(),
         ..crate::kb::resolve::ResolveConfig::default()
     };
     kb.resolve(std::slice::from_ref(goal), &config)
@@ -134,6 +135,7 @@ pub fn prove_from_gamma_verdict(
         max_solutions: 0,
         gamma: Some(flow.index()),
         opaque_skolems: Some(flow.skolems()),
+        memory: flow.memory_view(),
         ..crate::kb::resolve::ResolveConfig::default()
     };
     // `resolve_with_stats`, NOT `resolve_goals_with_truncation`: the latter answers

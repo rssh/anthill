@@ -324,6 +324,9 @@ pub(super) fn visit_type(
                     Value::Var(Var::Global(vid))
                 });
             let mut lambda_env = (*env).clone();
+            // Proposal 050.1: the lambda's scope begins here — its parameters and its body's
+            // names are bound from now on.
+            let memory_mark = lambda_env.memory_mark();
             // WI-794: at arity 1 `param_type` IS the annotation (it won the priority
             // ladder above), so the two agree and nothing fires here — that case is
             // rejected one altitude up, by the whole-arrow subsumption at the argument
@@ -379,6 +382,7 @@ pub(super) fn visit_type(
                 outer_env: env,
                 binder_error: binder_errors.into_iter().next(),
                 param,
+                memory_mark,
             }));
             push_visit(work, body_occ, body_env, body_expected, fuel);
         }
@@ -1145,11 +1149,20 @@ pub(super) fn visit_type(
             // the resolver bridge (WI-067 discharge), so narrowing is additive
             // — the branches' *types/effects* are unchanged from before.
             let cond_fact = Value::Node(Rc::clone(&condition));
-            let then_env = env.with_flow(env.flow.assume(kb, cond_fact.clone()));
-            let else_env = match negate_goal(kb, &cond_fact) {
-                Some(neg) => env.with_flow(env.flow.assume(kb, neg)),
-                None => env.clone(),
-            };
+            // Proposal 050.1: each branch is an arm of a fork of its own, so a connection a
+            // store makes in one is not read in the other ([`FlowEnv::in_branch`]).
+            let fork = env.types.new_fork();
+            // An `if` binds nothing of its own, so its branches keep the enclosing scope's mark.
+            let mark = env.flow.scope_mark;
+            let then_env =
+                env.with_flow(env.flow.assume(kb, cond_fact.clone()).in_branch(fork, 0, mark));
+            let else_env = env.with_flow(
+                match negate_goal(kb, &cond_fact) {
+                    Some(neg) => env.flow.assume(kb, neg),
+                    None => env.flow.clone(),
+                }
+                .in_branch(fork, 1, mark),
+            );
             // Drain order [cond, then, else]: push reversed. The
             // condition is always `Bool` (no hint); both branches share
             // the if's `expected` (WI-270), now under their narrowed Γ.

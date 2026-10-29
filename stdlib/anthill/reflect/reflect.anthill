@@ -19,6 +19,7 @@ namespace anthill.reflect
   import anthill.prelude.{TypeExtractor}
   import anthill.prelude.{Modifiable}
   import anthill.prelude.{FieldOf}
+  import anthill.memory.{memory_maybe_connected}
 
   -- ================================================================
   -- Opaque kernel handles (abstract — implementation-defined)
@@ -663,6 +664,16 @@ namespace anthill.reflect
     entity evaluation_failure(goals: List[T = Term], reason: String, at: Option[T = NodeOccurrence])
   end
 
+  -- The storage of the in-memory knowledge base: the pool (proposal 037 §2) that
+  -- every KB value `kb()` and `loaded` hand out is connected to, since a layer is
+  -- applied in place over the ambient knowledge base. Nothing writes it directly
+  -- and nothing is bound to it at run time. A write through such a value reaches
+  -- this storage, which no effect row can name, and is refused at load.
+  sort KBStorage
+    provides Modifiable[T = Self]
+    entity kb_storage
+  end
+
   sort KB
     -- Ambient-knowledge-base accessor — anthill code writes `kb()` to obtain
     -- the KB value passed to KB.execute / etc. It is a zero-argument OPERATION
@@ -671,7 +682,8 @@ namespace anthill.reflect
     -- one ambient KB per interpreter instance, which the runtime supplies; the
     -- type checker accepts `KB.execute(kb(), q)` without surfacing an abstract
     -- sort.
-    operation kb() -> KB @[host_implemented]
+    operation kb() -> KB
+      ensures memory_maybe_connected(result, kb_storage) @[host_implemented]
 
     -- WI-SPGBP — a SCOPED LOAD. Each element of `sources` is anthill source text;
     -- the result is a KB value that is a LAYER over the ambient one.
@@ -709,7 +721,8 @@ namespace anthill.reflect
     -- and `LoadFailed` is named in that file's `emit_only` closure for the reason its
     -- own comment gives about `LayerSymbol` / `LayerClause`.
     operation loaded(sources: List[T = String]) -> KB
-      effects Error[LoadFailed] requires TypeValue[T = LoadFailed] @[host_implemented]
+      effects Error[LoadFailed] requires TypeValue[T = LoadFailed]
+      ensures memory_maybe_connected(result, kb_storage) @[host_implemented]
 
     -- KB admits Modify[kb]: assert / retract / add_guard mutate the
     -- KB's internal indexes. Required by proposal 037 Rule 8.

@@ -161,6 +161,11 @@ pub fn generate_rust_with_config(
 #[derive(Clone, Default)]
 pub struct SortCatalog {
     sorts: HashMap<String, CatalogSort>,
+    /// The qualified names of the predicates the run's files declare — a rule with no
+    /// body (`rule memory_alias(?a, ?b)`). A predicate has no Rust item: the generated
+    /// code renders neither rule bodies nor contracts, so an import of one names
+    /// nothing it writes ([`RustCodegen::import_is_written`]).
+    predicates: HashSet<String>,
 }
 
 #[derive(Clone)]
@@ -177,9 +182,34 @@ struct CatalogSort {
 pub fn collect_sorts(files: &[&ParsedFile]) -> SortCatalog {
     let mut catalog = SortCatalog::default();
     for file in files {
-        collect_sorts_from_items(&file.items, &file.symbols, "", false, &mut catalog);
+        collect_sorts_from_items(&file.items, &file.symbols, &file.terms, "", false, &mut catalog);
     }
     catalog
+}
+
+/// Record the predicate `rule` declares, when it is a declaration: no body, and a head
+/// that is not an equation (`rule lhs <=> rhs` defines `lhs`'s functor, it does not
+/// declare a predicate). The equation test is the loader's — the minted connective, not
+/// the name alone.
+fn collect_declared_predicate(
+    rule: &Rule,
+    symbols: &SymbolTable,
+    terms: &SimpleTermStore,
+    prefix: &str,
+    catalog: &mut SortCatalog,
+) {
+    if rule.body.is_some() {
+        return;
+    }
+    for head in &rule.heads {
+        let RuleHead::Term(tid) = head else { continue };
+        let Term::Fn { functor, .. } = terms.get(*tid) else { continue };
+        let name = symbols.local_name(*functor);
+        if terms.is_minted(*tid) && crate::parse::pratt::is_equation_functor(name) {
+            continue;
+        }
+        catalog.predicates.insert(qualify(prefix, name));
+    }
 }
 
 /// `in_sort` — `items` are a sort's body, whose `sort T = ?` members are its type
@@ -187,6 +217,7 @@ pub fn collect_sorts(files: &[&ParsedFile]) -> SortCatalog {
 fn collect_sorts_from_items(
     items: &[Item],
     symbols: &SymbolTable,
+    terms: &SimpleTermStore,
     prefix: &str,
     in_sort: bool,
     catalog: &mut SortCatalog,
@@ -216,7 +247,7 @@ fn collect_sorts_from_items(
                     },
                 );
                 // Nested items: sub-namespaces and nested sorts.
-                collect_sorts_from_items(&s.items, symbols, &qualified, true, catalog);
+                collect_sorts_from_items(&s.items, symbols, terms, &qualified, true, catalog);
             }
             // A sort declared at namespace level without a body. One written inside a
             // sort's body is a type parameter of that sort, and was read above.
@@ -244,7 +275,13 @@ fn collect_sorts_from_items(
             }
             Item::Namespace(ns) => {
                 let qualified = qualify(prefix, &name_text(symbols, &ns.name));
-                collect_sorts_from_items(&ns.items, symbols, &qualified, false, catalog);
+                collect_sorts_from_items(&ns.items, symbols, terms, &qualified, false, catalog);
+            }
+            Item::Rule(r) => collect_declared_predicate(r, symbols, terms, prefix, catalog),
+            Item::RuleBlock(rb) => {
+                for r in &rb.entries {
+                    collect_declared_predicate(r, symbols, terms, prefix, catalog);
+                }
             }
             _ => {}
         }
@@ -2086,8 +2123,12 @@ impl<'a> RustCodegen<'a> {
     /// member of one (`Option.{some}`): the support crate exports neither. In the
     /// prelude, only what the support crate exports ([`StdlibRendering::Support`]) and
     /// what a file of this run declares are written; a prelude sort neither covers is
-    /// refused where a type names it, and its `use` would not resolve.
+    /// refused where a type names it, and its `use` would not resolve. Nor a predicate a
+    /// file of the run declares, anywhere: it has no Rust item.
     fn import_is_written(&self, qualified: &str) -> bool {
+        if self.catalog.predicates.contains(qualified) {
+            return false;
+        }
         let parent = qualified.rsplit_once('.').map(|(p, _)| p);
         let host =
             |q: &str| stdlib_type(q).is_some_and(|t| matches!(t.rendering, StdlibRendering::Host));
