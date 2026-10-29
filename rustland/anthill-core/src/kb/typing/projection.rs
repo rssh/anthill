@@ -1248,6 +1248,9 @@ pub(super) struct Discharge<'a> {
     /// A neutral receiver's re-key to a whole VALUE PATH (`w.st`, or a `let` alias read as what
     /// it names), before `arg_syms`'s single variable ([`rekeyed_neutral`]).
     pub(super) arg_paths: Option<&'a HashMap<Symbol, Vec<Symbol>>>,
+    /// The parameters the call hands `some(arg)`, with the field the argument is at in each
+    /// ([`wrapped_arg_params`]): both re-keys above reach one only through that field.
+    pub(super) wrapped: Option<&'a HashMap<Symbol, Symbol>>,
     /// The witnesses the call NAMES in a bracket (`Holder.get[Holder = BoxHolderA](…)`): a
     /// projection a witness lends is read from the one the call names, not by the agreement of
     /// every witness covering the receiver ([`witnesses_lend_member`]).
@@ -1279,6 +1282,7 @@ impl<'a> Discharge<'a> {
             denoted_syms: None,
             row_syms: None,
             arg_paths: None,
+            wrapped: None,
             selections: &[],
             reading: None,
             denotations: None,
@@ -1895,7 +1899,13 @@ fn field_type_at_path(
     // A parameter re-keyed to a bare NULLARY OPERATION by its symbol (`get(mk3)`) is no path
     // either: the name is a call (`stable_receiver_path`'s rule), and kept as the caller's
     // `mk3.s`, `same_list(get(mk3), get(mk3))` took two calls' results for one (MEASURED).
-    let rekeyed = match rekeyed_segs(segs.clone(), cx.arg_syms, cx.arg_paths) {
+    //
+    // The payload a wrapped parameter is read through (`o.value` over `some(arg)`) IS the
+    // argument: named by the argument's path, but no field of a holder of the caller's, so it is
+    // kept in no record. Kept as the field `k` of `ww` for `f(ww.k, …)`, the holder `ww` was read
+    // at the option's type (MEASURED: the record's assertion).
+    let reads_the_argument = segs.len() == 2 && cx.wrapped.is_some_and(|w| w.contains_key(&segs[0]));
+    let rekeyed = match rekeyed_segs(segs.clone(), cx.arg_syms, cx.arg_paths, cx.wrapped) {
         Ok(rekeyed) if crate::kb::op_info::is_nullary_operation(kb, rekeyed[0]) => Err(segs),
         other => other,
     };
@@ -1907,7 +1917,9 @@ fn field_type_at_path(
             }
             (Ok(rekeyed), Receivers::Call(records)) => (
                 Some(rekeyed.clone()),
-                records.map(|r| (r.caller.path_openings(), rekeyed)),
+                records
+                    .filter(|_| !reads_the_argument)
+                    .map(|r| (r.caller.path_openings(), rekeyed)),
             ),
             (Err(written), Receivers::Own(env)) => {
                 let path = match env {
@@ -2261,7 +2273,7 @@ fn project_expr_carried(
             // check — and the declaration rule, which re-keys the member's parameters to the
             // spec's names through this arm, refused a member restating `-> h.items.T`
             // verbatim, printing one type twice (MEASURED).
-            ProjResult::Neutral => rekeyed_neutral(kb, value, member, cx.arg_syms, cx.arg_paths),
+            ProjResult::Neutral => rekeyed_neutral(kb, value, member, cx),
         },
     )
 }
@@ -2277,10 +2289,10 @@ fn rekeyed_neutral(
     kb: &mut KnowledgeBase,
     value: &Value,
     member: Symbol,
-    arg_syms: Option<&HashMap<Symbol, Symbol>>,
-    arg_paths: Option<&HashMap<Symbol, Vec<Symbol>>>,
+    cx: &Discharge,
 ) -> Option<Value> {
-    let segs = rekeyed_segs(receiver_path_segs(kb, value)?, arg_syms, arg_paths).ok()?;
+    let segs = rekeyed_segs(receiver_path_segs(kb, value)?, cx.arg_syms, cx.arg_paths, cx.wrapped)
+        .ok()?;
     Some(build_projection_from_segs(
         kb,
         &segs,
@@ -2290,19 +2302,28 @@ fn rekeyed_neutral(
 }
 
 /// A receiver path's segments with the HEAD re-keyed as [`rekeyed_neutral`] re-keys it, or the
-/// segments back, untouched, where nothing re-keys it.
+/// segments back, untouched, where nothing re-keys it. A head the call hands `some(arg)`
+/// (`wrapped`) re-keys with the payload field after it — `o.value.s` is `k.s` — and not at all
+/// without it: the option is the call's.
 fn rekeyed_segs(
     mut segs: Vec<Symbol>,
     arg_syms: Option<&HashMap<Symbol, Symbol>>,
     arg_paths: Option<&HashMap<Symbol, Vec<Symbol>>>,
+    wrapped: Option<&HashMap<Symbol, Symbol>>,
 ) -> Result<Vec<Symbol>, Vec<Symbol>> {
+    let head = match wrapped.and_then(|w| w.get(&segs[0])) {
+        None => 1,
+        Some(payload) if segs.get(1) == Some(payload) => 2,
+        Some(_) => return Err(segs),
+    };
     if let Some(path) = arg_paths.and_then(|paths| paths.get(&segs[0])) {
-        segs.splice(0..1, path.iter().copied());
+        segs.splice(0..head, path.iter().copied());
         return Ok(segs);
     }
     match arg_syms.and_then(|syms| syms.get(&segs[0])) {
         Some(sym) => {
-            segs[0] = *sym;
+            let sym = *sym;
+            segs.splice(0..head, [sym]);
             Ok(segs)
         }
         None => Err(segs),

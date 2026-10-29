@@ -1006,7 +1006,7 @@ pub(super) fn synthesize_some_wrap(
     declared: &Value,
 ) -> Rc<NodeOccurrence> {
     let some_sym = kb.resolve_symbol("anthill.prelude.Option.some");
-    let value_sym = kb.intern("value");
+    let value_sym = some_payload_label(kb);
     let pass = crate::kb::simp_rewrite::simp_pass(kb);
     // Named form `some(value: child)` — the canonical `some` shape (the
     // loader canonicalizes source-written positional `some(x)` to it too).
@@ -1025,6 +1025,12 @@ pub(super) fn synthesize_some_wrap(
     );
     node.set_inferred_type(declared.clone());
     node
+}
+
+/// The field `some(…)` holds its payload at — the label [`synthesize_some_wrap`] writes, and the
+/// segment a path through a wrapped argument's parameter reads it at ([`wrapped_arg_params`]).
+pub(super) fn some_payload_label(kb: &mut KnowledgeBase) -> Symbol {
+    kb.intern("value")
 }
 
 /// A synthesized named-tuple LITERAL occurrence, type already stamped.

@@ -492,13 +492,14 @@ pub(super) fn open_existentials(
 /// path for an argument that is no path, so the hint, the parameter, the return and the effects
 /// of one call read one unknown where each used to open its own.
 ///
-/// AT THE HOLDER'S TYPE ONLY: a holder read at a type other than the one it was opened at is no
-/// value this record speaks for, and opens afresh, unrecorded. A call reaches it: an argument it
-/// wraps in `some(…)` re-keys the option parameter to the argument's own path, so `f(o: Option[T
-/// = Hold3], x: o.value.s.T)` called as `f(k, …)` reads the holder `k` at `Option[T = Hold3]`
-/// after the caller's `k.s` opened it at `Hold3` (MEASURED: a debug assertion here panicked the
-/// load). The rigids are the body check's: the record lives no longer than the env or the call
-/// that holds it, so none outlives the check ([`value_contains_rigid`]).
+/// AT THE HOLDER'S TYPE ONLY: a path names one value for its body and an argument one for its
+/// call, so a holder is read at one type, and one read at another is a re-key that gave the path
+/// another value — a build with debug assertions stops there, a release build opens it afresh,
+/// unrecorded. It found one: an argument the call wraps in `some(…)` re-keyed the option
+/// parameter as the argument, so `f(o: Option[T = Hold3], x: o.value.s.T)` called as `f(k, …)`
+/// read the holder `k` at `Option[T = Hold3]` ([`wrapped_arg_params`] reaches the argument
+/// through the payload now). The rigids are the body check's: the record lives no longer than
+/// the env or the call that holds it, so none outlives the check ([`value_contains_rigid`]).
 #[derive(Clone, Default)]
 pub(super) struct PathOpenings(Rc<std::cell::RefCell<HashMap<Vec<Symbol>, HolderOpening>>>);
 
@@ -536,7 +537,17 @@ impl PathOpenings {
         let holder: Vec<Symbol> = std::iter::once(r.path.head).chain(init.iter().copied()).collect();
         let mut map = self.0.borrow_mut();
         match map.get(&holder) {
-            Some(h) if !views_structurally_equal(kb, &h.ty, r.holder) => return None,
+            Some(h) if !views_structurally_equal(kb, &h.ty, r.holder) => {
+                debug_assert!(
+                    false,
+                    "the holder `{}` was opened at `{}` and is read at `{}`: a re-key gave a \
+                     path another value",
+                    holder.iter().map(|s| kb.local_name_of(*s)).collect::<Vec<_>>().join("."),
+                    type_display_name_value(kb, &h.ty),
+                    type_display_name_value(kb, r.holder),
+                );
+                return None;
+            }
             Some(_) => {}
             None => {
                 map.insert(

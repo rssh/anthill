@@ -985,19 +985,24 @@ pub(super) fn check_apply_iter(
         // parameter is re-keyed to ([`rekeyed_neutral`]), so `k: s.provider.K` at `check(w.st,
         // j)` is `w.st.provider.K` and at `let t = s; check(t, j)` is `s.provider.K`. The
         // parameters, the return and the effects read the one map, so `check(t, get(t, j))`
-        // passes `get`'s result where `check` names the same receiver.
-        let arg_paths: HashMap<Symbol, Vec<Symbol>> = if op_has_projection {
-            call_arg_paths(
-                kb,
-                env.receiver_aliases(),
-                &op.params,
-                &pos_call_params,
-                pos_args,
-                named_args,
-            )
-        } else {
-            HashMap::new()
-        };
+        // passes `get`'s result where `check` names the same receiver. A parameter the call
+        // hands `some(arg)` is reached through its payload field ([`wrapped_arg_params`]).
+        let (arg_paths, wrapped): (HashMap<Symbol, Vec<Symbol>>, HashMap<Symbol, Symbol>) =
+            if op_has_projection {
+                (
+                    call_arg_paths(
+                        kb,
+                        env.receiver_aliases(),
+                        &op.params,
+                        &pos_call_params,
+                        pos_args,
+                        named_args,
+                    ),
+                    wrapped_arg_params(kb, &projection_receivers, &param_to_arg_type),
+                )
+            } else {
+                (HashMap::new(), HashMap::new())
+            };
         if params_have_projection {
             // WI-459: re-key a cross-param projection NEUTRAL to the caller's argument too —
             // by variables; a `denoted` beside it by the EFFECT re-key, in the same pass (see
@@ -1021,6 +1026,7 @@ pub(super) fn check_apply_iter(
                     arg_syms,
                     denoted_syms,
                     arg_paths: Some(&arg_paths),
+                    wrapped: Some(&wrapped),
                     selections: &selections,
                     reading: Some(&this_instance),
                     ..Discharge::new(&projection_receivers, call_receivers, &ctx, span)
@@ -1431,6 +1437,7 @@ pub(super) fn check_apply_iter(
                 denoted_syms: arg_syms,
                 row_syms: returned_rows.as_ref(),
                 arg_paths: Some(&arg_paths),
+                wrapped: Some(&wrapped),
                 selections: &selections,
                 reading: Some(&this_instance),
                 ..Discharge::new(&projection_receivers, call_receivers, &ret_ctx, span)

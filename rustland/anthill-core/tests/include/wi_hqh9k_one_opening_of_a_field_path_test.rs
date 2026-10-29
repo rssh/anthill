@@ -25,8 +25,8 @@
 //! MEASURED on 2026-10-29, on the tree this file is committed with, each part disabled alone by
 //! a temporary switch, on a binary of this file and the three suites beside it
 //! (`wi_p1pvt_field_path_existential_test`, `wi_80zv8_written_wildcard_test`,
-//! `wi_0rp29_call_binding_test`; 114 rows, 119 with §4 and the review's rows; parts 8 and 9 are
-//! the review's):
+//! `wi_0rp29_call_binding_test`; 114 rows, 122 with §4, §5 and the reviews' rows; parts 8, 9,
+//! 11 and 12 are the reviews'):
 //!
 //! 1. THE READ KEPT (`apply.rs`, the field read's `Recorded` passed as `None`). 4 FAIL:
 //!    [`a_nested_slot_is_one_unknown_for_two_parameters`],
@@ -67,14 +67,22 @@
 //! 10. §4, A FIELD-PATH NEUTRAL'S RECEIVER IS NO CALLABLE (`node_contains_callable` descending
 //!    into an `ExprCarried`'s receiver again). 1 FAILS:
 //!    [`a_parameter_a_field_path_projection_types_checks_its_argument`]; none of §1–§3 reads it.
+//! 11. §5, A WRAPPED ARGUMENT IS REACHED THROUGH THE PAYLOAD (`wrapped_arg_params` answering
+//!    none). 3 FAIL: [`an_argument_the_call_wraps_is_its_parameters_payload`],
+//!    [`a_wrapped_arguments_nested_slot_is_the_callers`] — both by the record's debug assertion,
+//!    the holder `k` read at the option's type — and, on its text, the control
+//!    [`a_wrapped_parameters_payload_is_its_arguments_only`] (`k.value.s.T` printed for `k.s.T`).
+//! 12. §5, THE PAYLOAD READING IS KEPT IN NO RECORD (`field_type_at_path`'s `reads_the_argument`
+//!    false). 1 FAILS, by the record's debug assertion — the holder `ww` read at the option's
+//!    type: [`an_argument_the_call_wraps_is_its_parameters_payload`] (its `field_path` call).
 //!
-//! NOT DRIVEN: the record speaks for a holder at the type it was opened at. A call that wraps an
-//! argument in `some(…)` reads one at another ([`an_argument_the_call_wraps_reads_its_holder_afresh`]),
-//! and is refused with the check backed out too; no other program of the suites reaches it.
+//! THE HOLDER-TYPE CHECK is an assertion, not a part: the record speaks for a holder at the type
+//! it was opened at, and a build with debug assertions stops where a re-key gives a path another
+//! value. With part 11 backed out it fires (above); with every part present no program of the
+//! suites reaches it (the full workspace).
 //!
 //! CONTROLS, passing under every part by design: [`a_nested_slot_stays_apart_where_the_value_does`],
-//! [`a_holders_shared_variable_is_its_own`], [`two_calls_read_two_unknowns`],
-//! [`an_argument_the_call_wraps_reads_its_holder_afresh`] and
+//! [`a_holders_shared_variable_is_its_own`], [`two_calls_read_two_unknowns`] and
 //! [`a_field_path_projection_agrees_with_itself`] — the same verdict before the ticket and after,
 //! with every part present or backed out.
 
@@ -426,13 +434,13 @@ fn a_bare_nullary_operation_argument_is_a_call() {
     }
 }
 
-/// AN ARGUMENT THE CALL WRAPS IN `some(…)` re-keys the option parameter to the argument's own
-/// path — `o.value.s` read as `k.value.s` — so the caller's holder `k`, opened at `Hold3`, is read
-/// at `Option[T = Hold3]`, and that reading opens afresh. Refused, as before the ticket: the
-/// parameter's `o.value.s.T` is no unknown of the caller's. A debug assertion there panicked the
-/// load (MEASURED, a cut of this ticket).
+/// A NESTED SLOT THROUGH A WRAPPED ARGUMENT IS THE CALLER'S: `f(k, k.s.t)` over `f(o: Option[T =
+/// Hold3], x: o.value.s.T)` hands `o` the value `some(k)`, so `o.value.s.T` is the caller's
+/// `k.s.T`, the one unknown its read `k.s.t` has. Re-keyed as the argument itself, the holder `k`
+/// was read at `Option[T = Hold3]`, where a debug assertion panicked the load (MEASURED, a cut of
+/// this ticket), and with the assertion gone the call was refused.
 #[test]
-fn an_argument_the_call_wraps_reads_its_holder_afresh() {
+fn a_wrapped_arguments_nested_slot_is_the_callers() {
     let src = r#"
 namespace wi_hqh9k.wrapped
   import anthill.prelude.{Int64, List, Option}
@@ -447,13 +455,10 @@ namespace wi_hqh9k.wrapped
   operation g(k: Hold3) -> Int64 =
     let v = k.s.t
     f(k, v)
+  operation go() -> Int64 = g(hold3(s: strm(t: [1])))
 end
 "#;
-    assert_refused_naming(
-        &load_errors(src),
-        &["f.x (op-arg): expected List[T = ?T], got List[T = ?T]"],
-        "a parameter's slot through an option taken for the caller's",
-    );
+    assert_eq!(run_src(src, "wi_hqh9k.wrapped.go"), Ok(42));
 }
 
 // ── §4 found beside it: a parameter typed through a field-path projection checks its argument ──
@@ -521,5 +526,123 @@ fn a_field_path_projection_agrees_with_itself() {
         )),
         &["agree.q (op-arg): expected Box[T = p.T], got Box[T = q.T]"],
         "two parameters' elements taken for one",
+    );
+}
+
+// ── §5 found by the review: a parameter the call hands `some(arg)` is reached through `value` ──
+
+const WRAP: &str = r#"
+  import anthill.prelude.{Int64, String, Option}
+  sort Strm
+    sort T = ?
+    entity strm(t: T, fn: (x: T) -> Int64)
+  end
+  sort Hold2
+    entity hold2(s: Strm[T = ?])
+  end
+  operation inc(x: Int64) -> Int64 = x + 1
+  operation slen(x: String) -> Int64 = 3
+  operation mk_int() -> Hold2 = hold2(s: strm(t: 41, fn: inc))
+  operation mk_str() -> Hold2 = hold2(s: strm(t: "abc", fn: slen))
+  operation app(o: Option[T = Hold2], v: o.value.s.T) -> Int64 = match o
+    case some(h) ->
+      let g = h.s.fn
+      g(v)
+    case none() -> 0
+  operation pk(o: Option[T = Hold2], f: (x: o.value.s.T) -> Int64) -> Int64 = match o
+    case some(h) -> f(h.s.t)
+    case none() -> 0
+  operation whole(o: Option[T = Hold2], x: o.T) -> Int64 = 1
+  operation pass(o: Option[T = Hold2], v: o.value.s.T) -> o.value.s.T = v
+  sort W
+    entity w(k: Hold2)
+  end
+"#;
+
+fn wrap(ns: &str, body: &str) -> String {
+    format!("namespace wi_hqh9k.{ns}\n{WRAP}\n{body}\nend\n")
+}
+
+/// AN ARGUMENT THE CALL WRAPS IN `some(…)` IS THE PARAMETER'S PAYLOAD: `app(k, k.s.t)` over
+/// `app(o: Option[T = Hold2], v: o.value.s.T)` hands `o` the value `some(k)`, so `o.value.s.T` is
+/// the caller's `k.s.T` — positional, named, a lambda hinted through it, a return re-keyed through
+/// it, an argument that is a field path or a `let` alias. The parameter was re-keyed as the
+/// argument itself, `o.value.s` read as `k.value.s`, a path no value has, and each call was
+/// refused (MEASURED). The field-path argument is the reading `o.value` names `ww.k` by: kept in
+/// the record as the field `k` of `ww`, the holder `ww` was read at the option's type (MEASURED:
+/// the record's assertion, on the review of this part).
+#[test]
+fn an_argument_the_call_wraps_is_its_parameters_payload() {
+    for (ns, call_text) in [
+        ("positional", "let k = mk_int()\n    app(k, k.s.t) - 0"),
+        ("named", "let k = mk_int()\n    app(v: k.s.t, o: k)"),
+        ("hinted", "let k = mk_int()\n    pk(k, lambda (x) -> 42)"),
+        ("returned", "let k = mk_int()\n    app(k, pass(k, k.s.t))"),
+        ("field_path", "let ww = w(k: mk_int())\n    app(ww.k, ww.k.s.t)"),
+        ("aliased", "let k = mk_int()\n    let a = k\n    app(a, k.s.t)"),
+    ] {
+        let src = wrap(ns, &format!("  operation go() -> Int64 =\n    {call_text}"));
+        assert_eq!(run_src(&src, &format!("wi_hqh9k.{ns}.go")), Ok(42), "{ns}");
+    }
+}
+
+/// CONTROLS — another holder's element is not the payload's: `app(k, j.s.t)` would run `inc` on
+/// `"abc"`, and is refused; the option itself is the call's, so a projection off `o` is read at
+/// the option the call builds (`o.T` is `Hold2`, `whole(k, k)` loads, `whole(k, 1)` is refused).
+#[test]
+fn a_wrapped_parameters_payload_is_its_arguments_only() {
+    assert_refused_naming(
+        &load_errors(&wrap(
+            "another",
+            "  operation go() -> Int64 =\n    let k = mk_int()\n    let j = mk_str()\n    app(k, j.s.t)",
+        )),
+        &["app.v (op-arg): expected k.s.T, got j.s.T"],
+        "another holder's element passed for the payload's",
+    );
+    let src = wrap(
+        "whole",
+        "  operation go() -> Int64 =\n    let k = mk_int()\n    whole(k, k) + 41",
+    );
+    assert_eq!(run_src(&src, "wi_hqh9k.whole.go"), Ok(42));
+    assert_refused_naming(
+        &load_errors(&wrap(
+            "whole_wrong",
+            "  operation go() -> Int64 =\n    let k = mk_int()\n    whole(k, 1)",
+        )),
+        &["whole.x (op-arg)"],
+        "an Int64 passed for the option's element",
+    );
+}
+
+/// … AND IN AN EFFECT ROW: `fe(k, g2)` over `fe(o: Option[T = Hold], g: (x: Int64) -> Bool @
+/// {Error[String], -o.value.s.E})` reads the lacks-row as `-k.s.E`, which the caller's `g2`
+/// declares; refused before, "to lack the row `k.value.s.E`" (MEASURED). CONTROL: a callback
+/// lacking another holder's row is refused.
+#[test]
+fn a_wrapped_parameters_payload_row_is_the_arguments() {
+    let decls = r#"
+  import anthill.prelude.{Int64, Bool, String, Error, Option}
+  sort Strm
+    sort T = ?
+    effects E = ?
+    entity strm(t: T)
+  end
+  sort Hold
+    entity hold(s: Strm[T = Int64, E = ?])
+  end
+  operation pure1(x: Int64) -> Bool = true
+  operation fe(o: Option[T = Hold], g: (x: Int64) -> Bool @ {Error[String], -o.value.s.E}) -> Int64 = 41
+"#;
+    let ok = format!(
+        "namespace wi_hqh9k.row\n{decls}\n  operation ce(k: Hold, g2: (x: Int64) -> Bool @ {{Error[String], -k.s.E}}) -> Int64 = fe(k, g2)\n  operation go() -> Int64 = ce(hold(s: strm(t: 1)), pure1) + 1\nend\n"
+    );
+    assert_eq!(run_src(&ok, "wi_hqh9k.row.go"), Ok(42));
+    let wrong = format!(
+        "namespace wi_hqh9k.row_wrong\n{decls}\n  operation ce(k: Hold, j: Hold, g2: (x: Int64) -> Bool @ {{Error[String], -j.s.E}}) -> Int64 = fe(k, g2)\nend\n"
+    );
+    assert_refused_naming(
+        &load_errors(&wrong),
+        &["fe.g (op-arg)", "to lack the row `k.s.E`"],
+        "a callback lacking another holder's row passed for the payload's",
     );
 }

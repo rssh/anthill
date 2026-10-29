@@ -822,6 +822,7 @@ pub(super) fn visit_type(
                             pt,
                             &known_param_arg_types,
                             &HashMap::new(),
+                            &HashMap::new(),
                             site.as_ref(),
                             // Nor does it read a field path for the call's record.
                             None,

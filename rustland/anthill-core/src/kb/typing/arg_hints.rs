@@ -658,6 +658,7 @@ pub(super) fn one_arg_hint(
     pt: Option<Value>,
     known: &HashMap<Symbol, Value>,
     arg_paths: &HashMap<Symbol, Vec<Symbol>>,
+    wrapped: &HashMap<Symbol, Symbol>,
     inst: Option<&Substitution>,
     records: Option<CallRecords<'_>>,
 ) -> Option<Value> {
@@ -667,7 +668,7 @@ pub(super) fn one_arg_hint(
     let pt_hof = pt
         .as_ref()
         .and_then(|t| {
-            eliminate_callback_hint_projection(kb, t, known, arg_paths, functor, records)
+            eliminate_callback_hint_projection(kb, t, known, arg_paths, wrapped, functor, records)
         })
         .or_else(|| pt.clone());
     // Only a hof-shaped arg and a sequence literal consume `pt_hof` (their hints' own gates),
@@ -922,6 +923,7 @@ pub(super) fn apply_arg_hints(
         }
         _ => std::borrow::Cow::Borrowed(known),
     };
+    let wrapped = wrapped_arg_params(kb, &receivers, known);
     let known = &*receivers;
     // WI-20260904-50B2K — WHICH PARAMETER A POSITIONAL ARGUMENT TAKES IS
     // [`positional_param_indices`]' QUESTION, not `ps.get(i)`. A named argument CONSUMES a
@@ -988,6 +990,7 @@ pub(super) fn apply_arg_hints(
             pt,
             known,
             &arg_paths,
+            &wrapped,
             inst.as_ref(),
             records,
         ));
@@ -1005,6 +1008,7 @@ pub(super) fn apply_arg_hints(
             pt,
             known,
             &arg_paths,
+            &wrapped,
             inst.as_ref(),
             records,
         ));
@@ -1047,6 +1051,37 @@ pub(super) fn call_arg_paths(
     paths
 }
 
+/// The parameters a call hands `some(arg)` for their argument — whose receiver
+/// ([`projection_receivers`], borrowed where it changed none) is not the argument's own type —
+/// each with the field the argument is at in it ([`some_payload_label`]). Such a parameter's value is built by the call, so a path
+/// off it is the argument's only THROUGH that field: over `o: Option[T = Hold3]` given `k`,
+/// `o.value.s` is `k.s`, and `o` itself is no path of the caller's ([`rekeyed_segs`]). Re-keyed
+/// as the argument, `o.value.s` read as `k.value.s`, a path no value has, and `f(k, k.s.t)` over
+/// `f(o: Option[T = Hold3], x: o.value.s.T)` was refused (MEASURED).
+pub(super) fn wrapped_arg_params(
+    kb: &mut KnowledgeBase,
+    receivers: &std::borrow::Cow<'_, HashMap<Symbol, Value>>,
+    arg_types: &HashMap<Symbol, Value>,
+) -> HashMap<Symbol, Symbol> {
+    let std::borrow::Cow::Owned(receivers) = receivers else {
+        return HashMap::new();
+    };
+    let wrapped: Vec<Symbol> = receivers
+        .iter()
+        .filter(|(param, received)| {
+            arg_types
+                .get(*param)
+                .is_some_and(|arg| !views_structurally_equal(kb, *received, arg))
+        })
+        .map(|(param, _)| *param)
+        .collect();
+    if wrapped.is_empty() {
+        return HashMap::new();
+    }
+    let payload = some_payload_label(kb);
+    wrapped.into_iter().map(|param| (param, payload)).collect()
+}
+
 /// WI-485: eliminate a cross-param projection in a callback PARAM type (e.g. find's
 /// `pred: (x: s.T) -> Bool @ {EffP, -Modify[x]}`) against the receiver param's argument
 /// type, so a LAMBDA callback's param is hinted with the THREADED element
@@ -1072,6 +1107,7 @@ fn eliminate_callback_hint_projection(
     pt: &Value,
     param_arg_types: &HashMap<Symbol, Value>,
     arg_paths: &HashMap<Symbol, Vec<Symbol>>,
+    wrapped: &HashMap<Symbol, Symbol>,
     fn_sym: Symbol,
     records: Option<CallRecords<'_>>,
 ) -> Option<Value> {
@@ -1084,6 +1120,7 @@ fn eliminate_callback_hint_projection(
     };
     Discharge {
         arg_paths: Some(arg_paths),
+        wrapped: Some(wrapped),
         ..Discharge::new(param_arg_types, Receivers::Call(records), &ctx, None)
     }
     .eliminate(kb, pt)
