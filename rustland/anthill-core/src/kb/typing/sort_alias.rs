@@ -892,7 +892,8 @@ fn resolve_alias_shape_chain(
 /// [`resolve_alias_shape`]'s aliases only: a BARE link to a GROUND shape. A type parameter
 /// (`sort T = ?`), an opaque sort and a parametric alias stay as they are, as they do for the
 /// typer; so does a cyclic or non-well-founded alias, which has no finite expansion. An
-/// applied alias (`Name[…]`) is refused where it is written, so only a bare leaf can be one.
+/// applied alias (`Name[…]`) is read as the sort it stands for where it is written (§5.1),
+/// so only a bare leaf can be one.
 pub(crate) fn dealias_type(kb: &mut KnowledgeBase, t: TermId) -> TermId {
     rewrite_term_leaves(kb, t, &|kb, leaf| {
         alias_leaf(kb, ref_or_nullary_name(kb.get_term(leaf))?)

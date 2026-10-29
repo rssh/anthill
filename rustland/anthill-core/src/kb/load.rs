@@ -24918,6 +24918,40 @@ fn normalize_type_args<C: TypeArgChild>(
     kb.canonicalize_record_named_args(sort, named);
 }
 
+/// The type value `occ` as the one term its type is at every level ([`normalize_type_args`]):
+/// `List[T = Box[Int64]]` as `List[T = Box[V = Int64]]`. An operation body's type value keeps a
+/// positional for the evaluator to bind; this is that binding for a node no evaluator reads.
+/// Arguments that do not fit the sort are left as written, for the typer to refuse. Any other
+/// node is handed back as it is.
+fn type_value_as_one_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Rc<NodeOccurrence> {
+    let Some(Expr::TypeValue {
+        head,
+        pos_args,
+        named_args,
+    }) = occ.as_expr()
+    else {
+        return Rc::clone(occ);
+    };
+    let head = *head;
+    let mut pos: Vec<Rc<NodeOccurrence>> =
+        pos_args.iter().map(|a| type_value_as_one_term(kb, a)).collect();
+    let mut named: Vec<(Symbol, Rc<NodeOccurrence>)> = named_args
+        .iter()
+        .map(|(k, a)| (*k, type_value_as_one_term(kb, a)))
+        .collect();
+    let owner = kb.type_arg_owner(head).unwrap_or(head);
+    let declared = kb.type_params_of_sort(owner);
+    let keys: Vec<Symbol> = named.iter().map(|(k, _)| *k).collect();
+    if kb.check_sort_type_args(owner, &declared, &keys, pos.len()).is_ok() {
+        normalize_type_args(kb, head, &mut pos, &mut named);
+    }
+    occ.rebuilt_expr(Expr::TypeValue {
+        head,
+        pos_args: pos,
+        named_args: named,
+    })
+}
+
 /// [`super::typing::value_alias`] as the term of the type the alias stands for, or `None` for
 /// a name read as written. A tuple, an arrow or a row only where `structural` says the
 /// position holds one: an operation body does, as a bracket's entry writes it; a clause's
@@ -31886,16 +31920,16 @@ impl<'a> Loader<'a> {
                     let written_name = self.parsed.symbols.local_name(functor).to_owned();
                     if let Some(RuleTvar::Bounded(requirement)) = self.rule_head_tvar(&written_name)
                     {
-                        let fixed = match self.kb.get_term(requirement.instance) {
+                        let mut fixed = match self.kb.get_term(requirement.instance) {
                             Term::Fn { named_args, .. } => named_args.clone(),
                             _ => SmallVec::new(),
                         };
                         let declared = self.kb.type_params_of_sort(requirement.spec);
                         let labels: SmallVec<[Symbol; 2]> =
                             new_named.iter().map(|(key, _)| *key).collect();
-                        self.refuse_type_alias_rebinding(
-                            requirement.spec,
-                            &fixed,
+                        self.refuse_guard_rebinding(
+                            &written_name,
+                            &mut fixed,
                             &labels,
                             self.source_span_of(parse_id),
                         );
@@ -32181,23 +32215,15 @@ impl<'a> Loader<'a> {
                     && !self.in_quoted_term
                     && self.kb.has_kind(new_functor, SymbolKind::Sort)
                 {
-                    if let Some(super::typing::ValueAlias::Sort { base, fixed, .. }) =
+                    if let Some(super::typing::ValueAlias::Sort { base, mut fixed, .. }) =
                         self.value_alias_here(new_functor)
                     {
                         let written: SmallVec<[Symbol; 2]> =
                             new_named.iter().map(|(k, _)| *k).collect();
                         let site =
                             SourceSpan::from_span(self.source_id, self.parsed.terms.span(parse_id));
-                        self.refuse_type_alias_rebinding(new_functor, &fixed, &written, site);
-                        let given: SmallVec<[(Symbol, TermId); 2]> = fixed
-                            .into_iter()
-                            .filter(|(key, _)| {
-                                !written.iter().any(|k| {
-                                    self.kb.local_name_of(*k) == self.kb.local_name_of(*key)
-                                })
-                            })
-                            .collect();
-                        new_named.insert_many(0, given);
+                        self.refuse_type_alias_rebinding(new_functor, &mut fixed, &written, site);
+                        new_named.insert_many(0, fixed);
                         new_functor = base;
                     }
                 }
@@ -35606,6 +35632,10 @@ impl<'a> Loader<'a> {
     /// `which(Outer.Inner)` hands `which` the sort, as in an operation body. Outside a call a
     /// type written in a data slot stays the term the clause matches. `None` for a node
     /// that is no candidate, which the caller builds.
+    ///
+    /// The callee is handed the node as it stands, and no evaluator binds its positionals as
+    /// an operation body's does, so they are bound here: `idt(Box[Int64])` and `idt(CB[Int64])`
+    /// over `sort CB = Box` hand `idt` the type `Box[V = Int64]` is ([`type_value_as_one_term`]).
     fn written_type_in_call_argument(
         &mut self,
         parse_id: ParseTermId,
@@ -35618,7 +35648,7 @@ impl<'a> Loader<'a> {
         }
         let kb_term = self.convert_term(parse_id);
         if let Some(type_value) = self.written_type_receiver_occurrence(parse_id, kb_term) {
-            return Some(type_value);
+            return Some(type_value_as_one_term(self.kb, &type_value));
         }
         // No written type: built as the rule's own term. The `convert_term` above emitted the
         // subtree's inline descriptions, and the walk must not emit them again
@@ -36593,20 +36623,16 @@ impl<'a> Loader<'a> {
         site: SourceSpan,
         owner: Option<Symbol>,
     ) -> (Symbol, Vec<(Symbol, Rc<NodeOccurrence>)>) {
-        let Some(super::typing::ValueAlias::Sort { base, fixed, .. }) = self.value_alias_here(written)
+        let Some(super::typing::ValueAlias::Sort { base, mut fixed, .. }) =
+            self.value_alias_here(written)
         else {
             return (written, Vec::new());
         };
-        self.refuse_type_alias_rebinding(written, &fixed, written_keys, site);
-        let mut added = Vec::with_capacity(fixed.len());
-        for (key, value) in fixed {
-            let written_again = written_keys
-                .iter()
-                .any(|k| self.kb.local_name_of(*k) == self.kb.local_name_of(key));
-            if !written_again {
-                added.push((key, type_value_occurrence(self.kb, value, site, owner)));
-            }
-        }
+        self.refuse_type_alias_rebinding(written, &mut fixed, written_keys, site);
+        let added = fixed
+            .into_iter()
+            .map(|(key, value)| (key, type_value_occurrence(self.kb, value, site, owner)))
+            .collect();
         (base, added)
     }
 
@@ -38646,27 +38672,69 @@ impl<'a> Loader<'a> {
     /// WI-20260924-SNJPR — a type-position application binding again a parameter its alias
     /// already fixes (`WisStore[State = NoSp]`) is two values for one slot, refused as the
     /// spec-clause reading refuses it (`refuse_alias_rebinding`), whatever the two values.
+    ///
+    /// The alias's binding is then taken out of `fixed`, so this is the one report: the
+    /// argument check that follows sees the parameter bound once, and what the caller builds
+    /// holds the written value, so nothing read from it disagrees with the argument written.
     fn refuse_type_alias_rebinding(
         &mut self,
         written: Symbol,
-        fixed: &[(Symbol, TermId)],
+        fixed: &mut SmallVec<[(Symbol, TermId); 2]>,
         named: &[Symbol],
         span: SourceSpan,
     ) {
+        for (short, value) in self.take_rebound(fixed, named) {
+            self.errors.push(LoadError::SpecAliasRefused {
+                alias: self.kb.qualified_name_of(written).to_string(),
+                reason: format!(
+                    "and it already binds `{short}` to `{}`, which the application \
+                     binds again — two values for one parameter",
+                    super::typing::type_display_name(self.kb, value),
+                ),
+                span: span.span,
+            });
+        }
+    }
+
+    /// A rule head's bound over a variable its guard bounds, binding again what the guard
+    /// fixes — `rule ints[A](?x: A[Out = String]) :- …, ITagger[A]` over `sort ITagger =
+    /// Tagger[Out = Int64]` — is two values for one parameter, refused naming the variable;
+    /// the guard's binding is taken out of `fixed`, as [`Self::refuse_type_alias_rebinding`]
+    /// takes an alias's.
+    fn refuse_guard_rebinding(
+        &mut self,
+        var: &str,
+        fixed: &mut SmallVec<[(Symbol, TermId); 2]>,
+        named: &[Symbol],
+        span: SourceSpan,
+    ) {
+        for (short, value) in self.take_rebound(fixed, named) {
+            self.errors.push(LoadError::InvalidTypeArgument {
+                detail: format!(
+                    "the rule variable `{var}` is bounded by a guard that binds `{short}` to \
+                     `{}`, which the bound binds again — two values for one parameter",
+                    super::typing::type_display_name(self.kb, value),
+                ),
+                span: Some(span.span),
+            });
+        }
+    }
+
+    /// The bindings of `fixed` that `named` writes again, taken out of it: each parameter's
+    /// short name and the value `fixed` gave it.
+    fn take_rebound(
+        &self,
+        fixed: &mut SmallVec<[(Symbol, TermId); 2]>,
+        named: &[Symbol],
+    ) -> SmallVec<[(String, TermId); 1]> {
+        let mut taken = SmallVec::new();
         for n in named {
-            let short = self.kb.local_name_of(*n).to_owned();
-            if let Some((_, value)) = fixed.iter().find(|(p, _)| self.kb.local_name_of(*p) == short) {
-                self.errors.push(LoadError::SpecAliasRefused {
-                    alias: self.kb.qualified_name_of(written).to_string(),
-                    reason: format!(
-                        "and it already binds `{short}` to `{}`, which the application \
-                         binds again — two values for one parameter",
-                        super::typing::type_display_name(self.kb, *value),
-                    ),
-                    span: span.span,
-                });
+            let short = self.kb.local_name_of(*n);
+            if let Some(at) = fixed.iter().position(|(p, _)| self.kb.local_name_of(*p) == short) {
+                taken.push((short.to_owned(), fixed.remove(at).1));
             }
         }
+        taken
     }
 
     /// Does the written binding `key = bound` of an application of `head` leave its parameter
@@ -38691,7 +38759,8 @@ impl<'a> Loader<'a> {
     /// the sort a type alias stands for, with `fixed` the bindings that alias carries. Those
     /// are GIVEN before any argument is read, as a named binding is: an argument naming one
     /// again is two values for one parameter ([`Self::refuse_type_alias_rebinding`]), and a
-    /// positional skips them. What `head` resolved to then decides the reading:
+    /// positional skips them, and the refusal takes such a binding out of `fixed`. What
+    /// `head` resolved to then decides the reading:
     ///
     /// * NOTHING — the resolver has reported the name, and this adds no second report.
     ///   Nothing is known of its parameters: a named argument is kept as written, and a
@@ -38715,7 +38784,7 @@ impl<'a> Loader<'a> {
         &mut self,
         written: Symbol,
         head: Symbol,
-        fixed: &[(Symbol, TermId)],
+        fixed: &mut SmallVec<[(Symbol, TermId); 2]>,
         bindings: &[SortBinding],
         span: SourceSpan,
     ) -> SmallVec<[Option<Symbol>; 4]> {
@@ -40069,13 +40138,20 @@ impl<'a> Loader<'a> {
                 // read as written, and so refused as an application of a name that
                 // declares no parameters.
                 let written_name = join_segments(&self.parsed.symbols, &name.segments);
-                let (sort_sym, fixed) = if self.in_rule_head_bound {
+                let (sort_sym, mut fixed) = if self.in_rule_head_bound {
                     match self.rule_head_tvar(&written_name) {
                         Some(RuleTvar::Bounded(requirement)) => {
-                            let fixed = match self.kb.get_term(requirement.instance) {
+                            let mut fixed = match self.kb.get_term(requirement.instance) {
                                 Term::Fn { named_args, .. } => named_args.clone(),
                                 _ => SmallVec::new(),
                             };
+                            // Refused here, naming the variable: the guard's bindings are no
+                            // alias's, which `type_application_keys` would call them.
+                            let named: SmallVec<[Symbol; 2]> = bindings
+                                .iter()
+                                .filter_map(|b| b.param.as_ref().map(|p| self.reintern(p.last())))
+                                .collect();
+                            self.refuse_guard_rebinding(&written_name, &mut fixed, &named, span);
                             (requirement.spec, fixed)
                         }
                         _ => self.type_alias_application(written_sym),
@@ -40089,7 +40165,7 @@ impl<'a> Loader<'a> {
                 // one written type cannot mean two things. Reported once here, of ANY head
                 // that resolved (WI-20260929-AAQT5); an argument that does not fit is not
                 // built.
-                let keys = self.type_application_keys(written_sym, sort_sym, &fixed, bindings, span);
+                let keys = self.type_application_keys(written_sym, sort_sym, &mut fixed, bindings, span);
                 let mut child_bindings: Vec<(Symbol, node_occurrence::TypeChild)> = fixed
                     .iter()
                     .map(|(p, v)| (*p, node_occurrence::TypeChild::Interned(*v)))
@@ -40545,7 +40621,7 @@ impl<'a> Loader<'a> {
                 // WIS]`, and `sort S2AB = S2A[B = NoSp]` records `Spec2[A = WIS, B =
                 // NoSp]`, which is what lets `alias_expansion` stop at the sort it reaches.
                 let written = self.remap_name(name);
-                let (base_sym, fixed) = match super::typing::alias_expansion(self.kb, written) {
+                let (base_sym, mut fixed) = match super::typing::alias_expansion(self.kb, written) {
                     Some(super::typing::AliasExpansion::Sort { base, bindings }) => {
                         (base, bindings)
                     }
@@ -40571,7 +40647,7 @@ impl<'a> Loader<'a> {
                 // name, any argument of a head that takes none — is reported and not built.
                 // A binding VALUE is a type, never an instance claim, so it has no operation
                 // bindings that reading would misread.
-                let keys = self.type_application_keys(written, base_sym, &fixed, bindings, span);
+                let keys = self.type_application_keys(written, base_sym, &mut fixed, bindings, span);
                 let named: Vec<(Symbol, Value)> = fixed
                     .iter()
                     .map(|&(p, t)| (p, Value::term(t)))
@@ -43427,7 +43503,7 @@ impl<'a> Loader<'a> {
             .iter()
             .map(|(key, _)| self.reintern(*key))
             .collect();
-        self.refuse_type_alias_rebinding(written, &fixed, &labels, self.source_span_of(gtid));
+        self.refuse_type_alias_rebinding(written, &mut fixed, &labels, self.source_span_of(gtid));
         let given: SmallVec<[Symbol; 2]> = fixed.iter().map(|(key, _)| *key).collect();
         let slots: SmallVec<[Option<Symbol>; 4]> = std::iter::repeat_n(None, pos_args.len())
             .chain(labels.iter().copied().map(Some))
