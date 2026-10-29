@@ -13668,6 +13668,7 @@ impl Default for KnowledgeBase {
 }
 
 impl TermSource for KnowledgeBase {
+    type Id = TermId;
     fn term(&self, id: TermId) -> &Term {
         self.terms.get(id)
     }

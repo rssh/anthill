@@ -41,7 +41,7 @@ def extractAtPath(terms: TermStore, factTerm: TermId, path: VarPath): TermId =
   var i = 0
   while i < steps.length do
     terms.get(cur) match
-      case fn: Term.Fn =>
+      case fn: Term.Fn[TermId] =>
         val next: Option[TermId] = steps(i) match
           case ArgPos.Positional(n) =>
             if n < fn.posArgs.length then Some(fn.posArgs(n)) else None

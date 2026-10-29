@@ -77,14 +77,14 @@ object Builtins:
     * both, which is a shared limit rather than a scaland one. */
   def firstArg(kb: KnowledgeBase, goal: TermId): Option[TermId] =
     kb.getTerm(goal) match
-      case fn: Term.Fn if fn.posArgs.length >= 1 => Some(fn.posArgs(0))
+      case fn: Term.Fn[TermId] if fn.posArgs.length >= 1 => Some(fn.posArgs(0))
       case _ => None
 
   def isGround(kb: KnowledgeBase, term: TermId, subst: Substitution): GroundCheck =
     val walked = kb.walk(term, subst)
     kb.getTerm(walked) match
       case Term.Var(_) => GroundCheck.HasVar
-      case fn: Term.Fn =>
+      case fn: Term.Fn[TermId] =>
         var i = 0
         while i < fn.posArgs.length do
           if isGround(kb, fn.posArgs(i), subst) == GroundCheck.HasVar then
@@ -103,7 +103,7 @@ object Builtins:
     */
   private def extract2Args(kb: KnowledgeBase, goal: TermId, subst: Substitution): Option[(TermId, TermId)] =
     kb.getTerm(goal) match
-      case fn: Term.Fn if fn.posArgs.length >= 2 =>
+      case fn: Term.Fn[TermId] if fn.posArgs.length >= 2 =>
         Some((kb.walk(fn.posArgs(0), subst), fn.posArgs(1)))
       case _ => None
 

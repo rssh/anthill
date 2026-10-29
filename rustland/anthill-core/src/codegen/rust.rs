@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::type_template::{parse_type_template, TypeTemplatePart};
 use crate::intern::{Symbol, SymbolTable};
-use crate::kb::term::{Literal, Term, TermId};
+use crate::kb::term::{Literal, Term};
 use crate::parse::ir::*;
 
 // ── Codegen error ───────────────────────────────────────────────
@@ -1140,7 +1140,7 @@ impl<'a> RustCodegen<'a> {
         &mut self,
         name: &str,
         rust_ty: &str,
-        value: Option<TermId>,
+        value: Option<ParseTermId>,
     ) -> Option<String> {
         let Some(tid) = value else {
             if rust_ty == "f64" {

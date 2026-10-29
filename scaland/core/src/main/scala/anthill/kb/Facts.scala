@@ -26,14 +26,14 @@ object Facts:
     * marker fact) has no fields to read, so this walk, whose callers all read named
     * args, skips it. A caller that must see nullary heads needs `byFunctor` directly.
     */
-  def bodylessFacts(kb: KnowledgeBase, functorQn: String): Iterator[Term.Fn] =
+  def bodylessFacts(kb: KnowledgeBase, functorQn: String): Iterator[Term.Fn[TermId]] =
     kb.tryResolveSymbol(functorQn) match
       case None => Iterator.empty
       case Some(sym) =>
         kb.byFunctor(sym).iterator
           .filter(rid => kb.ruleBody(rid).isEmpty)
           .map(rid => kb.getTerm(kb.ruleHead(rid)))
-          .collect { case fn: Term.Fn => fn }
+          .collect { case fn: Term.Fn[TermId] => fn }
 
   /** Locate a named-arg value by field name.
     *
@@ -42,7 +42,7 @@ object Facts:
     * through it yet, and giving it its first consumer was a bigger decision than the
     * ticket). A change to named-arg semantics must visit both.
     */
-  def getNamedArg(kb: KnowledgeBase, fn: Term.Fn, key: String): Option[TermId] =
+  def getNamedArg(kb: KnowledgeBase, fn: Term.Fn[TermId], key: String): Option[TermId] =
     var i = 0
     while i < fn.namedArgs.length do
       val (sym, tid) = fn.namedArgs(i)
@@ -58,7 +58,7 @@ object Facts:
     * actual literals can match. (The synthetic schema-declaration fact that filter also
     * used to exclude is no longer asserted — WI-515.)
     */
-  def getNamedStringArg(kb: KnowledgeBase, fn: Term.Fn, key: String): Option[String] =
+  def getNamedStringArg(kb: KnowledgeBase, fn: Term.Fn[TermId], key: String): Option[String] =
     getNamedArg(kb, fn, key).flatMap(stringOf(kb, _))
 
   /** Decode a string-literal term. */
@@ -96,12 +96,12 @@ object Facts:
     */
   def optionArg(kb: KnowledgeBase, tid: TermId): OptionArg =
     kb.getTerm(tid) match
-      case fn: Term.Fn if instanceNamed(kb, fn.functor, "some") =>
+      case fn: Term.Fn[TermId] if instanceNamed(kb, fn.functor, "some") =>
         if fn.posArgs.length == 1 then OptionArg.Wrapped(fn.posArgs(0))
         else if fn.posArgs.isEmpty && fn.namedArgs.length == 1 then
           OptionArg.Wrapped(fn.namedArgs(0)._2)
         else OptionArg.NotAnOption
-      case fn: Term.Fn if instanceNamed(kb, fn.functor, "none") && fn.arity == 0 =>
+      case fn: Term.Fn[TermId] if instanceNamed(kb, fn.functor, "none") && fn.arity == 0 =>
         OptionArg.Absent
       case Term.Ident(s) if instanceNamed(kb, s, "none") => OptionArg.Absent
       case Term.Ref(s) if instanceNamed(kb, s, "none")   => OptionArg.Absent

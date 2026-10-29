@@ -29,9 +29,9 @@ class ParserIntegrationTest extends munit.FunSuite:
     try source.mkString finally source.close()
 
   /** Resolve the functor name of a term that's expected to be a `Term.Fn`. */
-  private def fnFunctor(pf: ParsedFile, t: TermId): String = pf.terms.get(t) match
-    case fn: Term.Fn => pf.symbols.name(fn.functor)
-    case other => fail(s"Expected Term.Fn, got $other")
+  private def fnFunctor(pf: ParsedFile, t: ParseTermId): String = pf.terms.get(t) match
+    case fn: Term.Fn[ParseTermId] => pf.symbols.name(fn.functor)
+    case other => fail(s"Expected Term.Fn[ParseTermId], got $other")
 
   /** Resolve the functor name of a positive head; fails the test on `Bottom`. */
   private def headFunctor(pf: ParsedFile, head: RuleHead): String = head match
@@ -262,7 +262,7 @@ class ParserIntegrationTest extends munit.FunSuite:
     // The Pratt parser desugars 2 + 2 → Fn("add", [Const(2), Const(2)])
     val factTerm = pf.terms.get(facts.head.term)
     factTerm match
-      case fn: Term.Fn =>
+      case fn: Term.Fn[ParseTermId] =>
         assertEquals(pf.symbols.name(fn.functor), anthill.parse.Pratt.addFunctor)
         assertEquals(fn.posArgs.length, 2)
         assertEquals(pf.terms.get(fn.posArgs(0)), Term.Const(Literal.IntLit(2)))
@@ -1068,7 +1068,7 @@ class ParserIntegrationTest extends munit.FunSuite:
     parsed
 
   /** Look up a named argument on a Fn term and follow it through the KB. */
-  private def namedArg(kb: KnowledgeBase, fn: Term.Fn, name: String): TermId =
+  private def namedArg(kb: KnowledgeBase, fn: Term.Fn[TermId], name: String): TermId =
     val sym = kb.intern(name)
     fn.namedArgs.find(_._1 == sym).map(_._2)
       .getOrElse(fail(s"missing named arg `$name`"))
@@ -1147,7 +1147,7 @@ class ParserIntegrationTest extends munit.FunSuite:
     assertEquals(records.length, 1, "expected exactly one ProofRecord fact")
 
     val recordHead = kb.getTerm(kb.ruleHead(records.head)) match
-      case fn: Term.Fn => fn
+      case fn: Term.Fn[TermId] => fn
       case other => fail(s"expected Fn at fact head, got $other")
 
     kb.getTerm(namedArg(kb, recordHead, "state_hash")) match
@@ -1155,7 +1155,7 @@ class ParserIntegrationTest extends munit.FunSuite:
       case other => fail(s"expected StringLit('abc123') for state_hash, got $other")
 
     val witnessFn = kb.getTerm(namedArg(kb, recordHead, "witness")) match
-      case w: Term.Fn => w
+      case w: Term.Fn[TermId] => w
       case other => fail(s"expected Fn for witness term, got $other")
     assert(functorQn(kb, witnessFn.functor).endsWith("TrustedAxiom"),
       s"expected witness functor TrustedAxiom, got ${functorQn(kb, witnessFn.functor)}")
@@ -1196,10 +1196,10 @@ class ParserIntegrationTest extends munit.FunSuite:
     assertEquals(records.length, 1)
 
     val recordHead = kb.getTerm(kb.ruleHead(records.head)) match
-      case fn: Term.Fn => fn
+      case fn: Term.Fn[TermId] => fn
       case other => fail(s"expected Fn at fact head, got $other")
     val witnessFn = kb.getTerm(namedArg(kb, recordHead, "witness")) match
-      case w: Term.Fn => w
+      case w: Term.Fn[TermId] => w
       case other => fail(s"expected Fn for witness, got $other")
     // WI-20260902-CZJ2N: `Unsat` is a NULLARY constructor and is stored bare, so the
     // verdict arrives as `Term.Ref`. The claim is the NAME, not the spelling.
@@ -1247,7 +1247,7 @@ class ParserIntegrationTest extends munit.FunSuite:
     val body = kb.ruleBody(rules.head)
     assertEquals(body.length, 1)
     kb.getTerm(body.head) match
-      case fn: Term.Fn =>
+      case fn: Term.Fn[TermId] =>
         assertEquals(functorQn(kb, fn.functor), "anthill.prelude.PartialEq.eq",
           "bare eq(?x, ?y) should resolve uniquely to PartialEq.eq (WI-644)")
       case other => fail(s"expected Fn for body atom, got $other")

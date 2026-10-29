@@ -252,7 +252,7 @@ class KnowledgeBaseTest extends munit.FunSuite:
     s.bind(vid, v)
     val result = kb.applySubst(term, s)
     kb.getTerm(result) match
-      case fn: Term.Fn => assertEquals(TermId.raw(fn.posArgs(0)), TermId.raw(v))
+      case fn: Term.Fn[TermId] => assertEquals(TermId.raw(fn.posArgs(0)), TermId.raw(v))
       case other => fail(s"expected Fn, got $other")
   }
 
@@ -302,7 +302,7 @@ class KnowledgeBaseTest extends munit.FunSuite:
     val optionT = kb.alloc(Term.Fn(optionSym, IArray(t), IArray.empty))
     val result = kb.substTerm(optionT, t, int)
     kb.getTerm(result) match
-      case fn: Term.Fn =>
+      case fn: Term.Fn[TermId] =>
         assertEquals(fn.posArgs.length, 1)
         assertEquals(TermId.raw(fn.posArgs(0)), TermId.raw(int))
       case other => fail(s"expected Fn, got $other")

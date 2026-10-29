@@ -22,6 +22,9 @@ impl TermId {
         self.0 as usize
     }
 
+    /// For a unit test that needs an id no store issued. Outside tests a `TermId` comes
+    /// from the [`TermStore`] alone, as a parse id comes from the parse store alone.
+    #[cfg(test)]
     pub(crate) fn from_raw(raw: u32) -> Self {
         TermId(raw)
     }
@@ -214,8 +217,14 @@ impl Hash for Var {
 /// There is no `Infix` variant — infix syntax (`a + b`, `x = y`) is desugared
 /// to `Fn` calls (`add(a, b)`, `eq(x, y)`) eagerly in the parser's CST→IR
 /// converter, so every downstream consumer sees only `Fn`.
+///
+/// `I` is the id a child is held by, which names the store the child lives in: the
+/// hash-consed [`TermStore`]'s [`TermId`] by default, and the parse store's
+/// [`ParseTermId`](crate::parse::ir::ParseTermId) for a parse term
+/// ([`ParseTerm`](crate::parse::ir::ParseTerm)). A child read off a parse term is a
+/// parse id by its type, so handing it to the other store does not compile.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum Term {
+pub enum Term<I = TermId> {
     /// Literal constant: string, int, float, bool
     Const(Literal),
     /// Logic variable: `?x`. Uses `Var` representation — either a de Bruijn
@@ -227,8 +236,8 @@ pub enum Term {
     /// (pre-sorted by `Symbol::index()` at construction time).
     Fn {
         functor: Symbol,
-        pos_args: SmallVec<[TermId; 4]>,
-        named_args: SmallVec<[(Symbol, TermId); 2]>,
+        pos_args: SmallVec<[I; 4]>,
+        named_args: SmallVec<[(Symbol, I); 2]>,
     },
     /// Reference term: `Ref(name)`
     Ref(Symbol),
@@ -238,7 +247,7 @@ pub enum Term {
     Ident(Symbol),
     /// WI-271 — parse-only: carries a tagged parse-IR payload
     /// (`ParseAux`) so the let_expr / apply Term::Fn can hold the
-    /// annotation / type-args as a child `TermId` rather than via a
+    /// annotation / type-args as a child (a `ParseTermId`) rather than via a
     /// side HashMap. Allocated only by the parse pass; the loader
     /// reads and lowers it before any KB-side allocation, so this
     /// variant **never** appears in the KB's hash-consed `TermStore`.
@@ -246,16 +255,16 @@ pub enum Term {
     ParseAux(Box<crate::parse::ir::ParseAux>),
 }
 
-impl Term {
-    /// Immediate child `TermId`s of this term.
-    pub fn subterms(&self) -> SmallVec<[TermId; 4]> {
+impl<I: Copy> Term<I> {
+    /// Immediate child ids of this term.
+    pub fn subterms(&self) -> SmallVec<[I; 4]> {
         match self {
             Term::Fn {
                 pos_args,
                 named_args,
                 ..
             } => {
-                let mut out: SmallVec<[TermId; 4]> = pos_args.iter().copied().collect();
+                let mut out: SmallVec<[I; 4]> = pos_args.iter().copied().collect();
                 out.extend(named_args.iter().map(|&(_, id)| id));
                 out
             }
@@ -533,13 +542,16 @@ mod tests {
 /// Read-only view over a term graph plus the symbol table that names its
 /// functors. Implemented by `KnowledgeBase` (hash-consed) and by
 /// `ParsedFile` (parse-IR + parse-time symbol table), for a reader that holds
-/// `TermId`s. The printer reads through `persistence::print::PrintView` instead,
+/// ids of the source's own store ([`TermSource::Id`]). The printer reads through `persistence::print::PrintView` instead,
 /// which reads a value and an occurrence as well as a term (WI-20261022-DRGCP).
 ///
 /// Distinct from `kb::term_view::TermView`, which abstracts unification
 /// over `TermId` vs runtime `Value`.
 pub trait TermSource {
-    fn term(&self, id: TermId) -> &Term;
+    /// The id this source's terms are held by — [`TermId`] for the knowledge base,
+    /// [`ParseTermId`](crate::parse::ir::ParseTermId) for a parsed file.
+    type Id: Copy;
+    fn term(&self, id: Self::Id) -> &Term<Self::Id>;
     fn sym_name(&self, sym: Symbol) -> &str;
     /// Fully-qualified name of a symbol — for collision-free functor matching
     /// (WI-173: distinguishing the type functor

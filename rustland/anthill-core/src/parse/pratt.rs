@@ -5,9 +5,9 @@
 /// nested `Term::Fn` calls: `add(a, mul(b, c))`.
 use smallvec::SmallVec;
 
-use super::ir::SimpleTermStore;
+use super::ir::{ParseTermId, SimpleTermStore};
 use crate::intern::{Symbol, SymbolTable};
-use crate::kb::term::{Term, TermId};
+use crate::kb::term::Term;
 use crate::span::Span;
 
 // ── Operator properties ─────────────────────────────────────────
@@ -557,7 +557,7 @@ pub(crate) fn prefix_entry(op: &str) -> Option<&'static PrefixEntry> {
 
 /// An element in a flat infix chain (alternating operands and operators).
 pub enum InfixElement<'a> {
-    Operand(TermId),
+    Operand(ParseTermId),
     Operator(&'a str),
 }
 
@@ -568,12 +568,12 @@ pub enum InfixElement<'a> {
 /// The `elements` slice alternates: `[operand, op, operand, op, operand, ...]`
 /// or `[op, operand, ...]` for prefix-led chains.
 ///
-/// Returns a single `TermId` representing the desugared expression.
+/// Returns a single `ParseTermId` representing the desugared expression.
 pub fn desugar_infix_chain(
     elements: &[InfixElement<'_>],
     terms: &mut SimpleTermStore,
     symbols: &mut SymbolTable,
-) -> Result<TermId, String> {
+) -> Result<ParseTermId, String> {
     if elements.is_empty() {
         return Err("empty infix chain".to_string());
     }
@@ -585,9 +585,9 @@ pub fn desugar_infix_chain(
 }
 
 /// Span of a synthesized op-node: merge the first and last operand span.
-/// For a prefix op the operator token has no TermId, so the start offset
+/// For a prefix op the operator token has no ParseTermId, so the start offset
 /// drops by the operator's width — accepted trade-off.
-fn op_span(terms: &SimpleTermStore, first: TermId, last: TermId) -> Span {
+fn op_span(terms: &SimpleTermStore, first: ParseTermId, last: ParseTermId) -> Span {
     Span::merge(terms.span(first), terms.span(last))
 }
 
@@ -599,9 +599,9 @@ fn op_span(terms: &SimpleTermStore, first: TermId, last: TermId) -> Span {
 pub(crate) fn mint_op_node(
     terms: &mut SimpleTermStore,
     functor: Symbol,
-    pos_args: SmallVec<[TermId; 4]>,
+    pos_args: SmallVec<[ParseTermId; 4]>,
     span: Span,
-) -> TermId {
+) -> ParseTermId {
     let tid = terms.alloc(
         Term::Fn {
             functor,
@@ -620,7 +620,7 @@ fn desugar(
     min_bp: u8,
     terms: &mut SimpleTermStore,
     symbols: &mut SymbolTable,
-) -> Result<(TermId, usize), String> {
+) -> Result<(ParseTermId, usize), String> {
     if pos >= elements.len() {
         return Err("unexpected end of infix chain".to_string());
     }
@@ -719,7 +719,7 @@ fn desugar(
 mod tests {
     use super::*;
 
-    fn run(ops: &[&str]) -> (SimpleTermStore, SymbolTable, TermId) {
+    fn run(ops: &[&str]) -> (SimpleTermStore, SymbolTable, ParseTermId) {
         let mut terms = SimpleTermStore::new();
         let mut symbols = SymbolTable::new();
         let z = Span::default();
@@ -747,7 +747,7 @@ mod tests {
     /// each carries is pinned once, by
     /// [`minted_operators_carry_their_spec_op_address`], and that the address DENOTES
     /// something by `wi040_reserved_vocab_test::every_desugar_target_is_declared_by_the_standard_load`.
-    fn fmt_term(terms: &SimpleTermStore, symbols: &SymbolTable, tid: TermId) -> String {
+    fn fmt_term(terms: &SimpleTermStore, symbols: &SymbolTable, tid: ParseTermId) -> String {
         match terms.get(tid) {
             Term::Ident(sym) => symbols.local_name(*sym).to_string(),
             Term::Fn {

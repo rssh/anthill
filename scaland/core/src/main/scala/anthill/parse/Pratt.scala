@@ -1,13 +1,13 @@
 package anthill.parse
 
 import anthill.intern.TermSymbol
-import anthill.term.{Term, TermId}
+import anthill.term.Term
 import anthill.span.Span
 
 /** Operator precedence parser — converts flat infix chains to nested Fn calls.
   *
   * Input: alternating operands [t0, op0, t1, op1, t2, ...]
-  * Output: single TermId with desugared expression.
+  * Output: single ParseTermId with desugared expression.
   */
 object Pratt:
 
@@ -173,25 +173,25 @@ object Pratt:
     * @param intern function to intern a string as a TermSymbol
     */
   def desugar(
-    operands: IndexedSeq[TermId],
+    operands: IndexedSeq[ParseTermId],
     ops: IndexedSeq[(TermSymbol, Span)],
     resolve: TermSymbol => String,
-    alloc: (Term, Span) => TermId,
+    alloc: (ParseTerm, Span) => ParseTermId,
     intern: String => TermSymbol
-  ): TermId =
+  ): ParseTermId =
     if operands.length == 1 then return operands(0)
     assert(operands.length == ops.length + 1,
       s"Expected ${ops.length + 1} operands, got ${operands.length}")
     desugarRec(operands, ops, 0, operands.length - 1, resolve, alloc, intern)
 
   private def desugarRec(
-    operands: IndexedSeq[TermId],
+    operands: IndexedSeq[ParseTermId],
     ops: IndexedSeq[(TermSymbol, Span)],
     lo: Int, hi: Int,
     resolve: TermSymbol => String,
-    alloc: (Term, Span) => TermId,
+    alloc: (ParseTerm, Span) => ParseTermId,
     intern: String => TermSymbol
-  ): TermId =
+  ): ParseTermId =
     if lo == hi then return operands(lo)
 
     // Find the operator with lowest precedence (split point)

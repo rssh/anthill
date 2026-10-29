@@ -100,7 +100,7 @@ class ExprLoaderTest extends munit.FunSuite:
   private def namesIn(kb: KnowledgeBase, id: TermId): Set[String] =
     val term = kb.getTerm(id)
     val self = term match
-      case fn: Term.Fn   => Set(kb.qualifiedNameOf(fn.functor))
+      case fn: Term.Fn[TermId]   => Set(kb.qualifiedNameOf(fn.functor))
       case Term.Ref(s)   => Set(kb.qualifiedNameOf(s))
       case Term.Ident(s) => Set(kb.qualifiedNameOf(s))
       case _             => Set.empty[String]
@@ -148,7 +148,7 @@ class ExprLoaderTest extends munit.FunSuite:
     val goal = soleGoalOf(kb, "r")
 
     kb.getTerm(goal) match
-      case fn: Term.Fn =>
+      case fn: Term.Fn[TermId] =>
         assertEquals(kb.qualifiedNameOf(fn.functor), "p", "the enclosing goal still loads")
         assertEquals(fn.posArgs.length, 1)
         assertEquals(kb.getTerm(fn.posArgs(0)), Term.Bottom, "the marker's slot is unbuilt")
@@ -185,7 +185,7 @@ class ExprLoaderTest extends munit.FunSuite:
     val (kb, errors) = loadSrc("import anthill.reflect.Expr.lambda_expr\nrule r(?x) :- lambda_expr(?x)")
     assert(errors.isEmpty, s"a written call is not a marker: $errors")
     kb.getTerm(soleGoalOf(kb, "r")) match
-      case fn: Term.Fn =>
+      case fn: Term.Fn[TermId] =>
         assertEquals(kb.qualifiedNameOf(fn.functor), "anthill.reflect.Expr.lambda_expr")
       case other => fail(s"expected a goal `Fn`, got $other")
   }

@@ -13,7 +13,7 @@ use crate::kb::node_occurrence::{Expr, NodeKind, NodeOccurrence, TypeNode};
 use crate::kb::term::{Literal, Term, TermId, TermSource, Var};
 use crate::kb::term_view::{type_child_view_item, TermView, ViewHead, ViewItem};
 use crate::kb::KnowledgeBase;
-use crate::parse::ir::ParsedFile;
+use crate::parse::ir::{ParseTermId, ParsedFile};
 
 /// A literal in `.anthill` SURFACE spelling — a quoted `String`, a `Float` that keeps
 /// its decimal point, `true`/`false`.
@@ -116,8 +116,8 @@ pub trait PrintView: TermSource {
     /// What the walk holds. Owned, so a walk can keep a child past its parent (a list
     /// spine's elements).
     type Item: Clone;
-    /// The item a hash-consed term is.
-    fn term_item(&self, id: TermId) -> Self::Item;
+    /// The item a term of this side's store is.
+    fn term_item(&self, id: Self::Id) -> Self::Item;
     fn head(&self, item: &Self::Item) -> ViewHead;
     fn pos_arg(&self, item: &Self::Item, i: usize) -> Option<Self::Item>;
     fn named_arg(&self, item: &Self::Item, key: Symbol) -> Option<Self::Item>;
@@ -209,15 +209,15 @@ fn owned_item(item: ViewItem<'_>) -> ViewItem<'static> {
 }
 
 impl PrintView for ParsedFile {
-    type Item = TermId;
+    type Item = ParseTermId;
 
-    fn term_item(&self, id: TermId) -> TermId {
+    fn term_item(&self, id: ParseTermId) -> ParseTermId {
         id
     }
 
     /// The heads `TermIdView` gives the knowledge base's terms, so one term has one head on
     /// both sides: a `Ref` and a nullary application alike (WI-20260902-CZJ2N).
-    fn head(&self, id: &TermId) -> ViewHead {
+    fn head(&self, id: &ParseTermId) -> ViewHead {
         match self.terms.get(*id) {
             Term::Var(v) => ViewHead::Var(*v),
             Term::Const(lit) => ViewHead::Const(lit.clone()),
@@ -238,14 +238,14 @@ impl PrintView for ParsedFile {
         }
     }
 
-    fn pos_arg(&self, id: &TermId, i: usize) -> Option<TermId> {
+    fn pos_arg(&self, id: &ParseTermId, i: usize) -> Option<ParseTermId> {
         match self.terms.get(*id) {
             Term::Fn { pos_args, .. } => pos_args.get(i).copied(),
             _ => None,
         }
     }
 
-    fn named_arg(&self, id: &TermId, key: Symbol) -> Option<TermId> {
+    fn named_arg(&self, id: &ParseTermId, key: Symbol) -> Option<ParseTermId> {
         match self.terms.get(*id) {
             Term::Fn { named_args, .. } => {
                 named_args.iter().find(|(s, _)| *s == key).map(|(_, t)| *t)
@@ -254,14 +254,14 @@ impl PrintView for ParsedFile {
         }
     }
 
-    fn named_keys(&self, id: &TermId) -> Vec<Symbol> {
+    fn named_keys(&self, id: &ParseTermId) -> Vec<Symbol> {
         match self.terms.get(*id) {
             Term::Fn { named_args, .. } => named_args.iter().map(|(s, _)| *s).collect(),
             _ => Vec::new(),
         }
     }
 
-    fn named_child(&self, id: &TermId, key: &str) -> Option<TermId> {
+    fn named_child(&self, id: &ParseTermId, key: &str) -> Option<ParseTermId> {
         match self.terms.get(*id) {
             Term::Fn { named_args, .. } => named_args
                 .iter()
@@ -271,14 +271,14 @@ impl PrintView for ParsedFile {
         }
     }
 
-    fn written_bracket(&self, id: &TermId) -> bool {
+    fn written_bracket(&self, id: &ParseTermId) -> bool {
         self.terms.is_type_application(*id)
     }
 
     /// The parse side has no kind table, but it has the surface: an application WRITTEN
     /// with the bracket is a type (WI-20260902-JB6RS), and printing it with parentheses
     /// would give a spelling the loader refuses.
-    fn heads_only_a_type(&self, id: &TermId, sym: Symbol) -> bool {
+    fn heads_only_a_type(&self, id: &ParseTermId, sym: Symbol) -> bool {
         sym.is_type_face() || self.terms.is_type_application(*id)
     }
 
@@ -286,7 +286,7 @@ impl PrintView for ParsedFile {
     /// parse-side term (e.g. for an error message), the loader stripping it before any KB
     /// allocation. Its payload is printed in Debug form, so a diagnostic carries the
     /// annotation or type-argument text even though it is not surface syntax.
-    fn own_spelling(printer: &TermPrinter<'_, Self>, id: &TermId, buf: &mut String) -> bool {
+    fn own_spelling(printer: &TermPrinter<'_, Self>, id: &ParseTermId, buf: &mut String) -> bool {
         use crate::parse::ir::ParseAux;
         let Term::ParseAux(aux) = printer.view.terms.get(*id) else {
             return false;
@@ -1172,7 +1172,7 @@ impl<'a, V: PrintView + ?Sized> TermPrinter<'a, V> {
     }
 
     /// Print a term as `.anthill` source text.
-    pub fn print_term(&self, id: TermId) -> String {
+    pub fn print_term(&self, id: V::Id) -> String {
         self.print_item(&self.view.term_item(id))
     }
 
@@ -2016,7 +2016,7 @@ impl<'a, V: PrintView + ?Sized> TermPrinter<'a, V> {
 /// WI-1099: the text this writes is READ BACK by the loader, so it is the
 /// reload-faithful question, not the canonical-surface one. The file store's
 /// retract key keeps the surface print — see [`TermPrinter::reload_faithful`].
-pub fn print_fact<V: PrintView + ?Sized>(view: &V, term: TermId, meta: Option<TermId>) -> String {
+pub fn print_fact<V: PrintView + ?Sized>(view: &V, term: V::Id, meta: Option<V::Id>) -> String {
     let printer = TermPrinter::reload_faithful(view);
     let mut out = String::from("fact ");
     out.push_str(&printer.print_term(term));
@@ -2044,8 +2044,8 @@ pub fn print_fact<V: PrintView + ?Sized>(view: &V, term: TermId, meta: Option<Te
 /// this IS [`print_fact`] — same text, same round trip.
 pub fn print_fact_omitting<V: PrintView + ?Sized>(
     view: &V,
-    term: TermId,
-    meta: Option<TermId>,
+    term: V::Id,
+    meta: Option<V::Id>,
     omit: &[&str],
 ) -> String {
     let item = view.term_item(term);

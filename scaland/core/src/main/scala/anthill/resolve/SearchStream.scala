@@ -292,7 +292,7 @@ class SearchStream private (
   ): Option[StepResult] =
     val frame = stack.last
     kb.getTerm(goal) match
-      case fn: Term.Fn if fn.posArgs.length == 2 && fn.namedArgs.isEmpty =>
+      case fn: Term.Fn[TermId] if fn.posArgs.length == 2 && fn.namedArgs.isEmpty =>
         val tail = frame.goals.drop(1)
         val nextState = FrameState.Init(delayMode.reset)
         if choice then

@@ -1,7 +1,7 @@
 package anthill.span
 
 import anthill.load.{EmbeddedStdlib, FileSourceResolver}
-import anthill.parse.{ParsedFile, Parser}
+import anthill.parse.{ParseTermId, ParsedFile, Parser}
 import anthill.term.Term
 import java.nio.file.Paths
 
@@ -64,7 +64,7 @@ class ParseSpanCoverageTest extends munit.FunSuite:
   private def offenders(pf: ParsedFile): List[String] =
     pf.terms.nameBearingWithoutSpan.map { id =>
       pf.terms.get(id) match
-        case f: Term.Fn    => s"Fn:${pf.symbols.name(f.functor)}"
+        case f: Term.Fn[ParseTermId]    => s"Fn:${pf.symbols.name(f.functor)}"
         case Term.Ref(s)   => s"Ref:${pf.symbols.name(s)}"
         case Term.Ident(s) => s"Ident:${pf.symbols.name(s)}"
         case other         => s"?:$other"

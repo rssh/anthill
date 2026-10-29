@@ -1,7 +1,7 @@
 package anthill.parse
 
 import anthill.intern.{TermSymbol, SymbolTable}
-import anthill.term.{Term, TermId, TermStore, VarId}
+import anthill.term.{Term, TermStore, VarId}
 import anthill.span.Span
 import scala.collection.mutable.{ArrayBuffer, HashMap}
 
@@ -16,7 +16,7 @@ import scala.collection.mutable.{ArrayBuffer, HashMap}
   * instrumenting store is an alloc counter. `open` also states the intent the compiler
   * otherwise only mentions under `-source:future` (`adhocExtensions`). */
 open class SimpleTermStore:
-  private val terms = ArrayBuffer.empty[Term]
+  private val terms = ArrayBuffer.empty[ParseTerm]
   /** WI-618: the `Term.Fn` nodes the parse pipeline MINTED — infix/prefix operator
     * desugars (`?a + ?b` → `add`) and accessor builds (`?x.f` → `field_access`,
     * `?x.m(…)` → `dot_apply`) — as opposed to nodes written as a call. Provenance,
@@ -24,7 +24,7 @@ open class SimpleTermStore:
     * write a functor called `add`, and only this set tells the two apart. Read by
     * the loader's rule-introduced-functor scan, which must not mint a symbol for a
     * desugar's own functor name. */
-  private val minted = scala.collection.mutable.HashSet.empty[TermId]
+  private val minted = scala.collection.mutable.HashSet.empty[ParseTermId]
   /** WI-1009: which nodes are PARSE-TIME MARKERS, and which marker each one is — the
     * expression and pattern forms scaland has no translation for (see [[ExprMarker]]).
     *
@@ -36,13 +36,13 @@ open class SimpleTermStore:
     *
     * SPARSE, hence a `HashMap` and not a parallel buffer: markers are a handful of nodes
     * per file where `spans` below is total. */
-  private val markers = HashMap.empty[TermId, ExprMarker]
+  private val markers = HashMap.empty[ParseTermId, ExprMarker]
   /** WI-20261020-80VNX (rustland's `is_type_application`, WI-20260902-JB6RS) — the
     * `Term.Fn` nodes WRITTEN WITH THE BRACKET, `Foo[…]`. A bracket is a TYPE in every
     * context (kernel-language.md §4.4), and its lowering is the same `Term.Fn` the
     * application `Foo(…)` lowers to, so the surface is carried, as `minted` carries its
     * own, for the loader to name the type by the constructor's type face. Sparse. */
-  private val typeApplications = scala.collection.mutable.HashSet.empty[TermId]
+  private val typeApplications = scala.collection.mutable.HashSet.empty[ParseTermId]
   /** WI-20261020-80VNX — the `Term.Ref` nodes of a name written in a TYPE position and
     * lowered to a term (`AnthillParser.typeExprToRef`): a bracket's binding, an arrow's or
     * a tuple's component, an effect label — and so a `red[]` written there, which is the
@@ -50,11 +50,11 @@ open class SimpleTermStore:
     * a constructor written there by its TYPE face, where the same name in a data slot is
     * its instance. Carried for the reason `typeApplications` is: the lowering is the
     * `Term.Ref` a data-slot name lowers to. Sparse. */
-  private val typeNames = scala.collection.mutable.HashSet.empty[TermId]
+  private val typeNames = scala.collection.mutable.HashSet.empty[ParseTermId]
   /** WI-957: the source text each term was built from, parallel to `terms`.
     *
     * A parse-time term is the ONE IR shape with no node of its own to carry a span
-    * — the loader is handed a bare `TermId` and lifts a NAME out of it
+    * — the loader is handed a bare `ParseTermId` and lifts a NAME out of it
     * ([[anthill.load.Loader.reallocTerm]]), so a diagnostic about that name had
     * nowhere to point. This is what WI-947 could not reach, and why
     * `AmbiguousSymbol` was the last locationless load error in the tree.
@@ -75,7 +75,7 @@ open class SimpleTermStore:
     * a DERIVED span — see `AnthillParser.typeExprToRef`. Derived is honest; empty is
     * what is forbidden, and [[nameBearingWithoutSpan]] is the audit for it. */
   private val spans = ArrayBuffer.empty[Span]
-  val descriptions: HashMap[TermId, ArrayBuffer[String]] = HashMap.empty
+  val descriptions: HashMap[ParseTermId, ArrayBuffer[String]] = HashMap.empty
 
   /** Allocate a term with NO NAME to resolve — a `Const`, a `Var`, `Bottom`.
     *
@@ -106,14 +106,14 @@ open class SimpleTermStore:
     *
     * A name-bearing term genuinely built from no source — a hand-assembled test
     * fixture — says so at the site: `allocAt(term, Span.empty)`. */
-  final def alloc(term: Term.Nameless): TermId = allocAt(term, Span.empty)
+  final def alloc(term: Term.Nameless): ParseTermId = allocAt(term, Span.empty)
 
   /** Allocate a term built from the source text at `span` (WI-957). Use this wherever
     * the term's own functor / ref / ident symbol comes from written text: that symbol
     * is what the loader resolves, so `span` is where a name error about it belongs.
     * THE single append point — keep it that way. */
-  final def allocAt(term: Term, span: Span): TermId =
-    val id = TermId.fromRaw(terms.length)
+  final def allocAt(term: ParseTerm, span: Span): ParseTermId =
+    val id = ParseTermId.fromRaw(terms.length)
     terms += term
     spans += span
     id
@@ -125,7 +125,7 @@ open class SimpleTermStore:
     * called with a name-bearing term and [[alloc]] no longer accepts one. The span is
     * the token the desugar came FROM — `?a + ?b` mints `add(?a, ?b)`, whose functor is
     * written nowhere, so it rides at the `+`. */
-  final def allocMintedAt(term: Term, span: Span): TermId =
+  final def allocMintedAt(term: ParseTerm, span: Span): ParseTermId =
     val id = allocAt(term, span)
     minted += id
     id
@@ -139,34 +139,34 @@ open class SimpleTermStore:
     * functor FROM the marker and is this method's only caller. Closing it here would mean
     * taking an `intern` function as a parameter and threading it through twelve
     * productions, which trades a one-site convention for a twelve-site one. */
-  final def allocMarkerAt(marker: ExprMarker, term: Term.Fn, span: Span): TermId =
+  final def allocMarkerAt(marker: ExprMarker, term: Term.Fn[ParseTermId], span: Span): ParseTermId =
     val id = allocMintedAt(term, span)
     markers(id) = marker
     id
 
-  def isMinted(id: TermId): Boolean = minted.contains(id)
+  def isMinted(id: ParseTermId): Boolean = minted.contains(id)
 
   /** Allocate a node WRITTEN WITH THE BRACKET — see `typeApplications`. */
-  final def allocTypeApplicationAt(term: Term.Fn, span: Span): TermId =
+  final def allocTypeApplicationAt(term: Term.Fn[ParseTermId], span: Span): ParseTermId =
     val id = allocAt(term, span)
     typeApplications += id
     id
 
   /** Was `id` written with the bracket, `Foo[…]`: a type, never an application? */
-  def isTypeApplication(id: TermId): Boolean = typeApplications.contains(id)
+  def isTypeApplication(id: ParseTermId): Boolean = typeApplications.contains(id)
 
   /** Allocate a name written in a TYPE position — see `typeNames`. */
-  final def allocTypeNameAt(term: Term.Ref, span: Span): TermId =
+  final def allocTypeNameAt(term: Term.Ref, span: Span): ParseTermId =
     val id = allocAt(term, span)
     typeNames += id
     id
 
   /** Is `id` a name written in a type position, read as a type? */
-  def isTypeName(id: TermId): Boolean = typeNames.contains(id)
+  def isTypeName(id: ParseTermId): Boolean = typeNames.contains(id)
 
   /** Which parse-time marker `id` is, or `None` for an ordinary term (WI-1009). THE
     * question `Loader.reallocTerm` asks before it resolves a functor by name. */
-  def markerOf(id: TermId): Option[ExprMarker] = markers.get(id)
+  def markerOf(id: ParseTermId): Option[ExprMarker] = markers.get(id)
 
   /** The source span of `id` — [[Span.empty]] for a synthesized node (WI-957).
     *
@@ -175,7 +175,7 @@ open class SimpleTermStore:
     * `AnthillParser.parseInto`, which owns that argument and the seam that follows from
     * it. WI-964 counted the reads with a counter HERE instead, summed over the store's
     * whole life; a count is now taken per PARSE, by a subclass, in the test tree. */
-  def spanOf(id: TermId): Span =
+  def spanOf(id: ParseTermId): Span =
     spans(id.index)
 
   /** WI-961: the name-bearing terms in this store that carry NO location.
@@ -196,12 +196,11 @@ open class SimpleTermStore:
     * stdlib exercises no type lowering at all. A HAND-BUILT store is expected to be
     * non-empty — the fixture declared `Span.empty` on purpose — which is why this
     * reports rather than throws: only the caller knows which kind of store it holds. */
-  def nameBearingWithoutSpan: IndexedSeq[TermId] =
-    (0 until terms.length).view
-      .map(TermId.fromRaw)
+  def nameBearingWithoutSpan: IndexedSeq[ParseTermId] =
+    ids
       .filter(id => !spans(id.index).hasLocation)
       .filter(id => terms(id.index) match
-        case _: Term.Fn | _: Term.Ref | _: Term.Ident => true
+        case _: Term.Fn[?] | _: Term.Ref | _: Term.Ident => true
         case _                                        => false)
       .toIndexedSeq
 
@@ -220,16 +219,19 @@ open class SimpleTermStore:
     * (`Span`'s doc lists them) bracket no text, so they have no last character to be
     * wrong about. `source` is the text the store was built from — a hand-built store has
     * none, which is why this takes it rather than holding it. */
-  def spansEndingInWhitespace(source: String): IndexedSeq[(TermId, String)] =
-    (0 until terms.length).view
-      .map(TermId.fromRaw)
+  def spansEndingInWhitespace(source: String): IndexedSeq[(ParseTermId, String)] =
+    ids
       .map(id => (id, spans(id.index)))
       .filter((_, sp) => sp.hasLocation && sp.end > sp.start && sp.end <= source.length)
       .filter((_, sp) => source.charAt(sp.end - 1).isWhitespace)
       .map((id, sp) => (id, source.slice(sp.start, sp.end)))
       .toIndexedSeq
 
-  def get(id: TermId): Term = terms(id.index)
+  def get(id: ParseTermId): ParseTerm = terms(id.index)
+
+  /** Every allocated id, in allocation order. */
+  def ids: scala.collection.IndexedSeqView[ParseTermId] =
+    (0 until terms.length).view.map(ParseTermId.fromRaw)
   def size: Int = terms.length
   def isEmpty: Boolean = terms.isEmpty
 
@@ -255,7 +257,7 @@ object Name:
 enum TypeExpr:
   case Simple(name: Name)
   case Parameterized(name: Name, bindings: IndexedSeq[SortBinding])
-  case Variable(termId: TermId, descriptions: IndexedSeq[String])
+  case Variable(termId: ParseTermId, descriptions: IndexedSeq[String])
   case TupleType(fields: IndexedSeq[(TermSymbol, TypeExpr)])
   /** Arrow type: `(A) -> B`, `(A, B) -> C @ E`, or `(A) -> B @ {E1, E2}`.
     * Its parameter surface is parsed by the same parenthesized type-list production
@@ -269,7 +271,7 @@ enum TypeExpr:
     * e.g. `Vector[Int64, 3]` / `Fin[n = 8]`. The loader/typer (rust-only)
     * classifies it; scaland lowers it to the raw literal term. Mirrors
     * rustland's `TypeExpr::Denoted`. */
-  case Denoted(value: TermId)
+  case Denoted(value: ParseTermId)
   /** WI-375: a written effect-row in a type-argument value slot, e.g.
     * `Stream[E = {}]` / `Stream[E = {Modify[c]}]`. A distinct node (not a set
     * literal) per rustland's named-`effect_row` decision — `{X}` is a
@@ -282,7 +284,7 @@ enum TypeExpr:
     * `E :- p` stores `[p]`, a paren `( E :- p, q )` stores `[p, q]`). Only
     * meaningful in an effect-clause / effect-row position. Mirrors rustland's
     * `TypeExpr::EffectGuarded`. */
-  case EffectGuarded(label: TypeExpr, guard: IndexedSeq[TermId])
+  case EffectGuarded(label: TypeExpr, guard: IndexedSeq[ParseTermId])
 
 object TypeExpr:
   /** Is `te` the anonymous `?` alone — a variable of that occurrence, which the parser names
@@ -434,13 +436,13 @@ case class Rule(
     * Multi-head desugars conjunctively (proposal 032).
     */
   heads: IndexedSeq[RuleHead],
-  body: Option[IndexedSeq[TermId]],
+  body: Option[IndexedSeq[ParseTermId]],
   meta: Option[MetaBlock],
   span: Span
 )
 
 enum RuleHead:
-  case TermHead(termId: TermId)
+  case TermHead(termId: ParseTermId)
   case Bottom
 
 // ── Operation ───────────────────────────────────────────────────
@@ -451,10 +453,10 @@ case class Operation(
   typeParams: IndexedSeq[TypeParam],
   params: IndexedSeq[Param],
   returnType: TypeExpr,
-  requires: IndexedSeq[IndexedSeq[TermId]],
-  ensures: IndexedSeq[IndexedSeq[TermId]],
+  requires: IndexedSeq[IndexedSeq[ParseTermId]],
+  ensures: IndexedSeq[IndexedSeq[ParseTermId]],
   effects: IndexedSeq[Effect],
-  body: Option[TermId],
+  body: Option[ParseTermId],
   meta: Option[MetaBlock],
   span: Span
 )
@@ -474,7 +476,7 @@ case class Param(
   ty: TypeExpr,
   rest: Boolean,
   span: Span,
-  default: Option[TermId] = None
+  default: Option[ParseTermId] = None
 )
 
 /** Operation-local type parameter (WI-269): `[T]`.
@@ -512,7 +514,7 @@ case class Const(
   visibility: Option[Visibility],
   name: Name,
   ty: TypeExpr,
-  value: Option[TermId],
+  value: Option[ParseTermId],
   meta: Option[MetaBlock],
   span: Span
 )
@@ -542,12 +544,12 @@ case class Entity(
   span: Span
 )
 
-case class Fact(term: TermId, meta: Option[MetaBlock], span: Span)
+case class Fact(term: ParseTermId, meta: Option[MetaBlock], span: Span)
 
 case class Constraint(
   label: Option[Name],
-  head: IndexedSeq[TermId],
-  guard: Option[IndexedSeq[TermId]],
+  head: IndexedSeq[ParseTermId],
+  guard: Option[IndexedSeq[ParseTermId]],
   meta: Option[MetaBlock],
   span: Span
 )
@@ -564,7 +566,7 @@ case class Effect(typeExpr: TypeExpr)
 
 case class MetaBlock(entries: IndexedSeq[MetaEntry])
 
-case class MetaEntry(key: Name, value: TermId)
+case class MetaEntry(key: Name, value: ParseTermId)
 
 // ── Stage 0 ─────────────────────────────────────────────────────
 
@@ -621,15 +623,15 @@ enum SuccessCriterion:
   case ExitZero
   case ExitCode(code: Long)
   case OutputMatches(pattern: String)
-  case Custom(termId: TermId)
+  case Custom(termId: ParseTermId)
 
 case class WorkItem(
   id: Name,
-  description: Option[TermId],
+  description: Option[ParseTermId],
   context: IndexedSeq[ContextRef],
   acceptance: IndexedSeq[AcceptanceCriterion],
   dependsOn: IndexedSeq[Name],
-  generates: IndexedSeq[TermId],
+  generates: IndexedSeq[ParseTermId],
   requiresCapability: IndexedSeq[Capability],
   status: WorkStatus,
   meta: Option[MetaBlock],
@@ -638,14 +640,14 @@ case class WorkItem(
 
 enum ContextRef:
   case FileRef(path: String, lines: Option[(Long, Long)])
-  case FactRef(name: Name, term: TermId)
+  case FactRef(name: Name, term: ParseTermId)
   case WorkItemRef(name: Name)
 
 enum AcceptanceCriterion:
-  case ToolPasses(tool: Name, bindings: Option[IndexedSeq[(String, TermId)]])
-  case FactHolds(name: Name, term: TermId)
+  case ToolPasses(tool: Name, bindings: Option[IndexedSeq[(String, ParseTermId)]])
+  case FactHolds(name: Name, term: ParseTermId)
   case Compiles(target: CompileTarget)
-  case ConstraintCrit(termId: TermId)
+  case ConstraintCrit(termId: ParseTermId)
 
 enum CompileTarget:
   case SourceRootTarget(root: SourceRoot)
@@ -667,7 +669,7 @@ enum WorkStatus:
 case class Feedback(
   workitem: Name,
   author: String,
-  content: TermId,
+  content: ParseTermId,
   at: String,
   meta: Option[MetaBlock],
   span: Span
@@ -691,13 +693,13 @@ case class ProofDecl(
   * the typed Tactic IR (proposal 025.1 phase 2) is not yet ported. */
 case class ProofStrategy(
   name: TermSymbol,
-  args: IndexedSeq[TermId],
+  args: IndexedSeq[ParseTermId],
   span: Span
 )
 
 enum ProofBody:
   /** `:- hint1, hint2` — guided-derivation hints. */
-  case Hints(hints: IndexedSeq[TermId])
+  case Hints(hints: IndexedSeq[ParseTermId])
   /** `query "..."` (+ optional mapping). */
   case Query(text: String, mapping: Option[MappingBlock])
   /** Structured body: a sequence of inner step rules each with its own
@@ -799,7 +801,7 @@ enum ProvidesItem:
   // `_provides_content` lists `provides_clause` alone.
   case ProvidesClauseI(clause: ProvidesClause)
 
-case class CarrierBinding(anthillParam: TermSymbol, hostType: TermId)
-case class NamespaceMapEntry(anthillNamespace: TermSymbol, hostModule: TermId)
-case class OperationMapEntry(operation: TermSymbol, hostFn: TermId)
-case class ConstMapEntry(constName: TermSymbol, hostExpr: TermId)
+case class CarrierBinding(anthillParam: TermSymbol, hostType: ParseTermId)
+case class NamespaceMapEntry(anthillNamespace: TermSymbol, hostModule: ParseTermId)
+case class OperationMapEntry(operation: TermSymbol, hostFn: ParseTermId)
+case class ConstMapEntry(constName: TermSymbol, hostExpr: ParseTermId)

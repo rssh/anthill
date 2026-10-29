@@ -490,7 +490,7 @@ object Loader:
           case TypeExpr.Denoted(v) => term(v)
           case TypeExpr.EffectRow(es) => es.map(ty(_, scope)).mkString("{", ",", "}")
           case TypeExpr.EffectGuarded(t, gs) => ty(t, scope) + gs.map(term).mkString(":-", ",", "")
-        def term(id: TermId): String = file.terms.get(id) match
+        def term(id: ParseTermId): String = file.terms.get(id) match
           case Term.Fn(f, ps, ns) => fileSym.name(f) + ps.map(term).mkString("(", ",", ")") + ns.map((n, v) => fileSym.name(n) + ":" + term(v)).sorted.mkString("{", ",", "}")
           case Term.Ref(s) => fileSym.name(s)
           case Term.Ident(s) => fileSym.name(s)
@@ -1752,7 +1752,7 @@ object Loader:
     * Measured strip back-out: every search answer in RuleHeadDeclarationTest stays
     * correct. The empty-body identity and unconditional-denial refusal fail, because
     * those depend on body shape rather than the operational reading of `true`. */
-  private def isEmptyConjunctionGoal(fileTerms: SimpleTermStore, tid: TermId): Boolean =
+  private def isEmptyConjunctionGoal(fileTerms: SimpleTermStore, tid: ParseTermId): Boolean =
     fileTerms.get(tid) match
       case Term.Const(Literal.BoolLit(true)) => true
       case _                                 => false
@@ -1949,10 +1949,10 @@ object Loader:
     * reachable: the grammar allows a typed column in any argument position, not only a
     * top-level one. */
   private def headCarriesTypedColumn(
-    fileSym: SymbolTable, fileTerms: SimpleTermStore, tid: TermId
+    fileSym: SymbolTable, fileTerms: SimpleTermStore, tid: ParseTermId
   ): Boolean =
     fileTerms.get(tid) match
-      case fn: Term.Fn =>
+      case fn: Term.Fn[ParseTermId] =>
         (fn.posArgs.iterator ++ fn.namedArgs.iterator.map(_._2)).exists { a =>
           isTypedVarMarker(fileTerms, a, fileSym) ||
             headCarriesTypedColumn(fileSym, fileTerms, a)
@@ -2022,7 +2022,7 @@ object Loader:
     * intern. On BOTH paths since WI-20260902-CZJ2N — the two spellings are one term, so
     * a bare `rule tau <=> …` defines exactly as `rule tau() <=> …` does. */
   private def introducedName(
-    fileSym: SymbolTable, fileTerms: SimpleTermStore, subject: TermId
+    fileSym: SymbolTable, fileTerms: SimpleTermStore, subject: ParseTermId
   ): Either[NoIntroduction, String] =
     def unqualified(name: String) =
       if name.contains('.') then Left(NoIntroduction.QualifiedSpelling(name)) else Right(name)
@@ -2030,7 +2030,7 @@ object Loader:
       case Some(chain) => Left(NoIntroduction.QualifiedSpelling(chain))
       case None if fileTerms.isMinted(subject) => Left(NoIntroduction.DesugaredSubject)
       case None => fileTerms.get(subject) match
-        case fn: Term.Fn    => unqualified(fileSym.name(fn.functor))
+        case fn: Term.Fn[ParseTermId]    => unqualified(fileSym.name(fn.functor))
         case id: Term.Ident => unqualified(fileSym.name(id.sym))
         case _              => Left(NoIntroduction.NotAnApplication)
 
@@ -2060,7 +2060,7 @@ object Loader:
     * the name so a second walk cannot disagree (WI-898). The rule's LABEL is deliberately
     * never read. */
   private def headIntroduces(
-    bodyless: Boolean, headId: TermId, fileSym: SymbolTable, fileTerms: SimpleTermStore
+    bodyless: Boolean, headId: ParseTermId, fileSym: SymbolTable, fileTerms: SimpleTermStore
   ): Either[NoIntroduction, (String, SymbolKind)] =
     // Only a BODY-LESS rule can be an equation (a `:-` rule with an `=` head is an
     // ordinary predicate whose head happens to be an equality goal).
@@ -2143,11 +2143,11 @@ object Loader:
     * introducing nothing at all. (WI-948 ported this guard to rustland's
     * `parse_equation_lhs`; the two implementations agree.) */
   private def parseConnectiveHead(
-    fileSym: SymbolTable, fileTerms: SimpleTermStore, head: TermId
-  ): Option[(String, TermId)] =
+    fileSym: SymbolTable, fileTerms: SimpleTermStore, head: ParseTermId
+  ): Option[(String, ParseTermId)] =
     if !fileTerms.isMinted(head) then None
     else fileTerms.get(head) match
-      case fn: Term.Fn if fn.posArgs.length == 2 && fn.namedArgs.isEmpty =>
+      case fn: Term.Fn[ParseTermId] if fn.posArgs.length == 2 && fn.namedArgs.isEmpty =>
         val name = fileSym.name(fn.functor)
         Option.when(Pratt.isEqualityFamilyFunctor(name))((name, fn.posArgs(0)))
       case _ => None
@@ -2163,8 +2163,8 @@ object Loader:
     * is this one. Collapsing them cost rustland a bodied `g[T](?x) === ?x :- p(?x)`,
     * whose `[T]` introducer rides on the LHS like every connective head's. */
   private def parseEquationLhs(
-    fileSym: SymbolTable, fileTerms: SimpleTermStore, head: TermId
-  ): Option[TermId] =
+    fileSym: SymbolTable, fileTerms: SimpleTermStore, head: ParseTermId
+  ): Option[ParseTermId] =
     parseConnectiveHead(fileSym, fileTerms, head)
       .filter((name, _) => Pratt.isEquationFunctor(name))
       .map((_, lhs) => lhs)
@@ -2182,13 +2182,13 @@ object Loader:
     * connective's identity needs no symbol resolution — a user's own `struct_eq`
     * operation can never be minted (WI-948), which is why that guard exists. */
   private def nonDefiningConnectiveHead(
-    fileSym: SymbolTable, fileTerms: SimpleTermStore, head: TermId
+    fileSym: SymbolTable, fileTerms: SimpleTermStore, head: ParseTermId
   ): Option[(String, Option[String])] =
     parseConnectiveHead(fileSym, fileTerms, head)
       .filterNot((name, _) => Pratt.isEquationFunctor(name))
       .map { (name, lhs) =>
         val subject = fileTerms.get(lhs) match
-          case fn: Term.Fn => Some(fileSym.name(fn.functor))
+          case fn: Term.Fn[ParseTermId] => Some(fileSym.name(fn.functor))
           case Term.Ref(s) => Some(fileSym.name(s))
           case _           => None
         (name, subject)
@@ -2245,12 +2245,12 @@ object Loader:
   private def refuseBareLiteralConclusion(
     fileSym: SymbolTable,
     fileTerms: SimpleTermStore,
-    t: TermId,
+    t: ParseTermId,
     what: String,
     errors: ArrayBuffer[LoadError]
   ): Boolean =
     val span = fileTerms.spanOf(t)
-    def bareName(id: TermId): Option[String] = fileTerms.get(id) match
+    def bareName(id: ParseTermId): Option[String] = fileTerms.get(id) match
       case Term.Ref(sym) => Some(fileSym.name(sym))
       case Term.Ident(sym) => Some(fileSym.name(sym))
       case Term.Fn(f, pos, named) if pos.isEmpty && named.isEmpty => Some(fileSym.name(f))
@@ -2277,7 +2277,7 @@ object Loader:
     * that). Rustland shipped the rule side alone and its review found the `fact`
     * spelling loading clean one keyword away. */
   private def refuseNonDefiningConnectiveHead(
-    fileSym: SymbolTable, fileTerms: SimpleTermStore, head: TermId,
+    fileSym: SymbolTable, fileTerms: SimpleTermStore, head: ParseTermId,
     span: Span, errors: ArrayBuffer[LoadError]
   ): Boolean =
     nonDefiningConnectiveHead(fileSym, fileTerms, head) match
@@ -3325,9 +3325,9 @@ object Loader:
     * The name and shape tests stay, because minted-ness alone does not say WHICH
     * desugar wrote the node, and `posArgs(0)` below would be out of bounds for another.
     * A non-marker `typed_var` falls through to normal loading. */
-  private def isTypedVarMarker(fileTerms: SimpleTermStore, tid: TermId, fileSym: SymbolTable): Boolean =
+  private def isTypedVarMarker(fileTerms: SimpleTermStore, tid: ParseTermId, fileSym: SymbolTable): Boolean =
     fileTerms.isMinted(tid) && (fileTerms.get(tid) match
-      case fn: Term.Fn =>
+      case fn: Term.Fn[ParseTermId] =>
         fileSym.name(fn.functor) == "typed_var" &&
           fn.posArgs.length == 1 &&
           fn.namedArgs.exists { case (k, _) => fileSym.name(k) == "type" }
@@ -3348,11 +3348,11 @@ object Loader:
     * none on either of its two `field_access` paths); and NAME-ROOTED (a chain rooted in
     * a variable is `?x.f`, a projection on a value, with no name to be). */
   private def dottedCitationName(
-    fileSym: SymbolTable, fileTerms: SimpleTermStore, termId: TermId
+    fileSym: SymbolTable, fileTerms: SimpleTermStore, termId: ParseTermId
   ): Option[String] =
     if !fileTerms.isMinted(termId) then return None
     fileTerms.get(termId) match
-      case fn: Term.Fn
+      case fn: Term.Fn[ParseTermId]
         if fn.namedArgs.isEmpty && DesugarTarget.is(fileSym.name(fn.functor), DesugarTarget.FieldAccess) => ()
       case _ => return None
     val segments = ArrayBuffer.empty[String]
@@ -3363,7 +3363,7 @@ object Loader:
         case id: Term.Ident =>
           segments += fileSym.name(id.sym)
           done = true
-        case fn: Term.Fn
+        case fn: Term.Fn[ParseTermId]
           if DesugarTarget.is(fileSym.name(fn.functor), DesugarTarget.FieldAccess)
             && fn.posArgs.length == 2 && fn.namedArgs.isEmpty =>
           fileTerms.get(fn.posArgs(1)) match
@@ -3391,7 +3391,7 @@ object Loader:
     kb: KnowledgeBase,
     fileTerms: SimpleTermStore,
     fileSym: SymbolTable,
-    termId: TermId,
+    termId: ParseTermId,
     scope: kb.ScopeId,
     errors: ArrayBuffer[LoadError],
     varMap: HashMap[Int, VarId] = HashMap.empty,
@@ -3488,7 +3488,7 @@ object Loader:
           kb.freshVar(kbSym)
         })
         kb.alloc(Term.Var(Var.Global(kbVid)))
-      case fn: Term.Fn if isTypedVarMarker(fileTerms, termId, fileSym) =>
+      case fn: Term.Fn[ParseTermId] if isTypedVarMarker(fileTerms, termId, fileSym) =>
         // WI-582: strip the typed-pattern marker `typed_var(?x, type: T)` back to
         // the bare `?x`. The parser wraps a `?x: T` rule-LHS arg as this marker;
         // rustland installs T as a per-DeBruijn `Type` bound and keeps the head
@@ -3502,7 +3502,7 @@ object Loader:
       // each hands `resolveName` the span its OWN parse term was allocated at
       // (WI-957), so a diagnostic lands on the occurrence, not on the enclosing
       // declaration and not nowhere.
-      case fn: Term.Fn =>
+      case fn: Term.Fn[ParseTermId] =>
         val name = fileSym.name(fn.functor)
         // ERF7T replaces the connective-only override with ordinary absolute lookup.
         // A missing target fails loudly; a same-spelled local operation cannot answer.

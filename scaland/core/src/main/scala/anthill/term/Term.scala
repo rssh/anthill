@@ -3,13 +3,15 @@ package anthill.term
 import anthill.intern.TermSymbol
 
 import scala.collection.immutable.ArraySeq
+import scala.reflect.ClassTag
 
 // ── Handles ─────────────────────────────────────────────────────
 
 opaque type TermId = Int
 
 object TermId:
-  def fromRaw(raw: Int): TermId = raw
+  /** Only the [[TermStore]] issues ids, as only the parse store issues a parse id. */
+  private[term] def fromRaw(raw: Int): TermId = raw
 
   extension (id: TermId)
     def index: Int = id
@@ -100,19 +102,25 @@ enum Literal:
 
 // ── Term ADT ────────────────────────────────────────────────────
 
-/** A term in the knowledge base.
+/** A term, whose children are held by ids of type `I`.
   *
   * Functor names are a single interned Symbol carrying the fully-qualified
   * name. Infix syntax is desugared to Fn calls in the parser.
   *
+  * `I` names the store a child lives in: the hash-consed [[TermStore]]'s [[TermId]]
+  * for a knowledge-base term ([[Term]]), the parse store's
+  * [[anthill.parse.ParseTermId]] for a parse term ([[anthill.parse.ParseTerm]]). A
+  * child read off a parse term is a parse id by its type, so handing it to the other
+  * store does not compile.
+  *
   * Term.Fn uses IArray for args and overrides equals/hashCode for structural
   * equality (needed for hash-consing since IArray uses referential equality).
   */
-sealed trait Term:
-  /** Immediate child TermIds of this term. */
-  def subterms: IArray[TermId] = this match
+sealed trait TermOf[+I]:
+  /** Immediate child ids of this term. */
+  def subterms[J >: I: ClassTag]: IArray[J] = this match
     case Term.Fn(_, posArgs, namedArgs) =>
-      val buf = IArray.newBuilder[TermId]
+      val buf = IArray.newBuilder[J]
       posArgs.foreach(buf += _)
       namedArgs.foreach((_, id) => buf += id)
       buf.result()
@@ -122,6 +130,9 @@ sealed trait Term:
   def arity: Int = this match
     case Term.Fn(_, posArgs, namedArgs) => posArgs.length + namedArgs.length
     case _ => 0
+
+/** A knowledge-base term: its children are [[TermId]]s of the hash-consed store. */
+type Term = TermOf[TermId]
 
 object Term:
 
@@ -136,38 +147,39 @@ object Term:
     * `Fn`/`Ref`/`Ident` are deliberately NOT `Nameless`: each carries a `TermSymbol`
     * that `Loader.reallocTerm` resolves, so each needs the span of the text it came
     * from. */
-  sealed trait Nameless extends Term
+  sealed trait Nameless extends TermOf[Nothing]
 
   case class Const(lit: Literal) extends Term.Nameless
   // Param type fully-qualified: inside `object Term`, a bare `Var` would bind to
   // this nested case class, not the top-level `anthill.term.Var` enum.
   case class Var(v: anthill.term.Var) extends Term.Nameless
   case object Bottom extends Term.Nameless
-  case class Ref(sym: TermSymbol) extends Term
-  case class Ident(sym: TermSymbol) extends Term
+  case class Ref(sym: TermSymbol) extends TermOf[Nothing]
+  case class Ident(sym: TermSymbol) extends TermOf[Nothing]
 
-  /** Function application with structural equality over IArray contents. */
-  final class Fn(
+  /** Function application with structural equality over IArray contents. Both id types
+    * are an `Int` underneath, and an id's `##` is that `Int`. */
+  final class Fn[+I](
     val functor: TermSymbol,
-    val posArgs: IArray[TermId],
-    val namedArgs: IArray[(TermSymbol, TermId)]
-  ) extends Term:
+    val posArgs: IArray[I],
+    val namedArgs: IArray[(TermSymbol, I)]
+  ) extends TermOf[I]:
     override def hashCode(): Int =
       var h = TermSymbol.raw(functor)
       var i = 0
       while i < posArgs.length do
-        h = h * 31 + TermId.raw(posArgs(i))
+        h = h * 31 + posArgs(i).##
         i += 1
       i = 0
       while i < namedArgs.length do
         val (s, t) = namedArgs(i)
         h = h * 31 + TermSymbol.raw(s)
-        h = h * 31 + TermId.raw(t)
+        h = h * 31 + t.##
         i += 1
       h
 
     override def equals(that: Any): Boolean = that match
-      case fn: Fn =>
+      case fn: Fn[?] =>
         TermSymbol.raw(functor) == TermSymbol.raw(fn.functor) &&
         posArgs.length == fn.posArgs.length &&
         namedArgs.length == fn.namedArgs.length &&
@@ -175,13 +187,13 @@ object Term:
           var i = 0
           var eq = true
           while eq && i < posArgs.length do
-            eq = TermId.raw(posArgs(i)) == TermId.raw(fn.posArgs(i))
+            eq = posArgs(i) == fn.posArgs(i)
             i += 1
           i = 0
           while eq && i < namedArgs.length do
             val (s1, t1) = namedArgs(i)
             val (s2, t2) = fn.namedArgs(i)
-            eq = TermSymbol.raw(s1) == TermSymbol.raw(s2) && TermId.raw(t1) == TermId.raw(t2)
+            eq = TermSymbol.raw(s1) == TermSymbol.raw(s2) && t1 == t2
             i += 1
           eq
         }
@@ -191,8 +203,8 @@ object Term:
       s"Fn($functor, ${posArgs.toSeq}, ${namedArgs.toSeq})"
 
   object Fn:
-    def apply(functor: TermSymbol, posArgs: IArray[TermId], namedArgs: IArray[(TermSymbol, TermId)]): Fn =
+    def apply[I](functor: TermSymbol, posArgs: IArray[I], namedArgs: IArray[(TermSymbol, I)]): Fn[I] =
       new Fn(functor, posArgs, namedArgs)
 
-    def unapply(fn: Fn): Some[(TermSymbol, IArray[TermId], IArray[(TermSymbol, TermId)])] =
+    def unapply[I](fn: Fn[I]): Some[(TermSymbol, IArray[I], IArray[(TermSymbol, I)])] =
       Some((fn.functor, fn.posArgs, fn.namedArgs))

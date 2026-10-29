@@ -4,7 +4,7 @@ import anthill.codegen.scala.StdlibFixture
 import anthill.intern.{ResolveResult, TermSymbol}
 import anthill.kb.{KnowledgeBase, LoadFixture}
 import anthill.parse.Parser
-import anthill.term.{Term, Var}
+import anthill.term.{Term, TermId, Var}
 import anthill.resolve.SearchStream
 
 /** WI-20261008-T290W — THE ABSOLUTE SPELLING `..a.b.c` (kernel §2.3, §8.6): a name that
@@ -242,7 +242,7 @@ class AbsoluteNameTest extends munit.FunSuite:
     for holder <- Seq("zzAbs.rg.citesAbs", "zzAbs.rg.citesRel") do
       val sym = kb.tryResolveSymbol(holder).getOrElse(fail(s"`$holder` must resolve"))
       val arg = kb.getTerm(kb.factTerm(kb.byFunctor(sym).head)) match
-        case fn: Term.Fn => kb.getTerm(fn.posArgs(0))
+        case fn: Term.Fn[TermId] => kb.getTerm(fn.posArgs(0))
         case other       => fail(s"`$holder`'s fact is not an application: $other")
       arg match
         case Term.Ref(target) => assertEquals(kb.qualifiedNameOf(target), "zzAbs.rf.p", holder)
@@ -333,18 +333,18 @@ class AbsoluteNameTest extends munit.FunSuite:
     def held(holder: String): Term =
       val sym = kb.tryResolveSymbol(s"zzAbs.rr.$holder").getOrElse(fail(s"`$holder` must resolve"))
       kb.getTerm(kb.factTerm(kb.byFunctor(sym).head)) match
-        case fn: Term.Fn => kb.getTerm(fn.posArgs(0))
+        case fn: Term.Fn[TermId] => kb.getTerm(fn.posArgs(0))
         case other       => fail(s"`$holder`'s fact is not an application: $other")
     def named(t: Term): (String, Boolean) = t match
       case Term.Ref(sym) => (kb.qualifiedNameOf(sym), kb.symbols.isResolved(sym))
-      case fn: Term.Fn   => (kb.qualifiedNameOf(fn.functor), kb.symbols.isResolved(fn.functor))
+      case fn: Term.Fn[TermId]   => (kb.qualifiedNameOf(fn.functor), kb.symbols.isResolved(fn.functor))
       case other         => fail(s"unexpected carrier $other")
     assertEquals(named(held("refRel")), named(held("callRel")),
       "`Ref(Rec.E)` and `Rec.E(…)` name one path and must resolve alike")
     // A TYPE WRITTEN INSIDE A TERM is the third carrier of the same path, and went the
     // same way for the same reason: it read its last segment too.
     val typeRel = held("typeRel") match
-      case fn: Term.Fn => kb.getTerm(fn.namedArgs.head._2)
+      case fn: Term.Fn[TermId] => kb.getTerm(fn.namedArgs.head._2)
       case other       => fail(s"`typeRel` holds $other, not an application")
     assertEquals(named(typeRel), named(held("callRel")),
       "`Box[T = Rec.E]` binds the path `Rec.E(…)` calls")
@@ -379,14 +379,14 @@ class AbsoluteNameTest extends munit.FunSuite:
     def bound(holder: String): String =
       val sym = kb.tryResolveSymbol(s"zzAbs.tm.$holder").getOrElse(fail(s"`$holder` must resolve"))
       val box = kb.getTerm(kb.factTerm(kb.byFunctor(sym).head)) match
-        case fn: Term.Fn => kb.getTerm(fn.posArgs(0))
+        case fn: Term.Fn[TermId] => kb.getTerm(fn.posArgs(0))
         case other       => fail(s"`$holder`'s fact is not an application: $other")
       val value = box match
-        case fn: Term.Fn => kb.getTerm(fn.namedArgs.head._2)
+        case fn: Term.Fn[TermId] => kb.getTerm(fn.namedArgs.head._2)
         case other       => fail(s"`$holder` holds $other, not an application")
       value match
         case Term.Ref(target) => kb.qualifiedNameOf(target)
-        case fn: Term.Fn      => kb.qualifiedNameOf(fn.functor)
+        case fn: Term.Fn[TermId]      => kb.qualifiedNameOf(fn.functor)
         case other            => fail(s"`$holder` binds $other")
     assertEquals(
       (bound("viaAbs"), bound("viaQual"), bound("viaBare")),

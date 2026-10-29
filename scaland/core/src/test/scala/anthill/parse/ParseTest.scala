@@ -1,7 +1,7 @@
 package anthill.parse
 
 import anthill.intern.{TermSymbol, SymbolTable}
-import anthill.term.{Term, TermId, Literal}
+import anthill.term.{Term, Literal}
 import anthill.span.Span
 
 class ParseTest extends munit.FunSuite:
@@ -25,12 +25,12 @@ class ParseTest extends munit.FunSuite:
 
     // Result should be add(add(1, 2), 3)
     terms.get(result) match
-      case fn: Term.Fn =>
+      case fn: Term.Fn[ParseTermId] =>
         assertEquals(st.name(fn.functor), Pratt.addFunctor)
         assertEquals(fn.posArgs.length, 2)
         // Left child should be add(1, 2)
         terms.get(fn.posArgs(0)) match
-          case inner: Term.Fn =>
+          case inner: Term.Fn[ParseTermId] =>
             assertEquals(st.name(inner.functor), Pratt.addFunctor)
           case other => fail(s"expected Fn, got $other")
         // Right child should be 3
@@ -58,7 +58,7 @@ class ParseTest extends munit.FunSuite:
     )
 
     terms.get(result) match
-      case fn: Term.Fn =>
+      case fn: Term.Fn[ParseTermId] =>
         assertEquals(st.name(fn.functor), "pow")
         // Left child should be 2
         terms.get(fn.posArgs(0)) match
@@ -66,7 +66,7 @@ class ParseTest extends munit.FunSuite:
           case other => fail(s"expected Const(2), got $other")
         // Right child should be pow(3, 4)
         terms.get(fn.posArgs(1)) match
-          case inner: Term.Fn =>
+          case inner: Term.Fn[ParseTermId] =>
             assertEquals(st.name(inner.functor), "pow")
           case other => fail(s"expected Fn, got $other")
       case other => fail(s"expected Fn, got $other")
@@ -91,7 +91,7 @@ class ParseTest extends munit.FunSuite:
     )
 
     terms.get(result) match
-      case fn: Term.Fn =>
+      case fn: Term.Fn[ParseTermId] =>
         assertEquals(st.name(fn.functor), Pratt.addFunctor)
         // Left should be 1
         terms.get(fn.posArgs(0)) match
@@ -99,7 +99,7 @@ class ParseTest extends munit.FunSuite:
           case other => fail(s"expected Const(1), got $other")
         // Right should be mul(2, 3)
         terms.get(fn.posArgs(1)) match
-          case inner: Term.Fn =>
+          case inner: Term.Fn[ParseTermId] =>
             assertEquals(st.name(inner.functor), Pratt.mulFunctor)
           case other => fail(s"expected Fn, got $other")
       case other => fail(s"expected Fn, got $other")
@@ -110,7 +110,7 @@ class ParseTest extends munit.FunSuite:
     val terms = SimpleTermStore()
     val v = terms.alloc(Term.Const(Literal.IntLit(42)))
     val result = Pratt.desugar(IndexedSeq(v), IndexedSeq.empty, st.name, terms.allocAt, st.intern)
-    assertEquals(TermId.raw(result), TermId.raw(v))
+    assertEquals(result, v)
   }
 
   test("SimpleTermStore allocates sequentially") {
@@ -118,7 +118,7 @@ class ParseTest extends munit.FunSuite:
     val t1 = terms.alloc(Term.Const(Literal.IntLit(1)))
     val t2 = terms.alloc(Term.Const(Literal.IntLit(1)))
     // No hash-consing — same content gets different ids
-    assertNotEquals(TermId.raw(t1), TermId.raw(t2))
+    assertNotEquals(t1, t2)
     assertEquals(terms.size, 2)
   }
 
@@ -153,7 +153,7 @@ class ParseTest extends munit.FunSuite:
     val entries = rule.meta.map(_.entries).getOrElse(IndexedSeq.empty)
     (pf, entries)
 
-  private def assertBottom(pf: ParsedFile, t: TermId, label: String): Unit =
+  private def assertBottom(pf: ParsedFile, t: ParseTermId, label: String): Unit =
     pf.terms.get(t) match
       case Term.Bottom => ()
       case other => fail(s"$label should store Term.Bottom, got $other")
@@ -476,9 +476,9 @@ class ParseTest extends munit.FunSuite:
 
 
   /** Named-arg keys of a `Fn` term, by interned name. */
-  private def namedKeys(pf: ParsedFile, tid: TermId): Set[String] =
+  private def namedKeys(pf: ParsedFile, tid: ParseTermId): Set[String] =
     pf.terms.get(tid) match
-      case fn: Term.Fn => fn.namedArgs.map((k, _) => pf.symbols.name(k)).toSet
+      case fn: Term.Fn[ParseTermId] => fn.namedArgs.map((k, _) => pf.symbols.name(k)).toSet
       case other => fail(s"expected Fn, got $other")
 
   test("WI-185: `let x : T = …` carries a `type_name` named arg") {
@@ -486,7 +486,7 @@ class ParseTest extends munit.FunSuite:
       "  operation f() -> Int =\n    let x : T = 1 in x")
     val body = op.body.getOrElse(fail("operation has no body"))
     pf.terms.get(body) match
-      case fn: Term.Fn =>
+      case fn: Term.Fn[ParseTermId] =>
         assertEquals(pf.symbols.name(fn.functor), DesugarTarget.LetExpr)
         assertEquals(fn.posArgs.length, 3)
         assert(namedKeys(pf, body).contains("type_name"),
@@ -563,7 +563,7 @@ class ParseTest extends munit.FunSuite:
       case Some(Term.Const(Literal.IntLit(0))) => ()
       case other => fail(s"`low`'s default is the literal 0; got $other")
     op.params(2).default.map(pf.terms.get) match
-      case Some(fn: Term.Fn) => assertEquals(pf.symbols.name(fn.functor), "max_of")
+      case Some(fn: Term.Fn[ParseTermId]) => assertEquals(pf.symbols.name(fn.functor), "max_of")
       case other => fail(s"`high`'s default is the call `max_of(low, 100)`; got $other")
   }
 
@@ -699,7 +699,7 @@ class ParseTest extends munit.FunSuite:
       "  operation f() -> Int =\n    Map[K = String](x)")
     val body = op.body.getOrElse(fail("operation has no body"))
     pf.terms.get(body) match
-      case fn: Term.Fn =>
+      case fn: Term.Fn[ParseTermId] =>
         assertEquals(pf.symbols.name(fn.functor), "Map")
         assert(namedKeys(pf, body).contains("type_args"),
           s"expected type_args named arg, got ${namedKeys(pf, body)}")
@@ -709,22 +709,22 @@ class ParseTest extends munit.FunSuite:
   // ── WI-288: typeExprToRef lowers arrow / tuple types ───────────
 
   /** Value term of a `Fn`'s named arg, by interned name. */
-  private def namedArg(pf: ParsedFile, tid: TermId, key: String): TermId =
+  private def namedArg(pf: ParsedFile, tid: ParseTermId, key: String): ParseTermId =
     pf.terms.get(tid) match
-      case fn: Term.Fn =>
+      case fn: Term.Fn[ParseTermId] =>
         fn.namedArgs.collectFirst { case (k, v) if pf.symbols.name(k) == key => v }
           .getOrElse(fail(s"no named arg `$key` on $tid"))
       case other => fail(s"expected Fn, got $other")
 
   /** Functor name of a `Fn` term. */
-  private def functorName(pf: ParsedFile, tid: TermId): String =
+  private def functorName(pf: ParsedFile, tid: ParseTermId): String =
     pf.terms.get(tid) match
-      case fn: Term.Fn => pf.symbols.name(fn.functor)
+      case fn: Term.Fn[ParseTermId] => pf.symbols.name(fn.functor)
       case other => fail(s"expected Fn, got $other")
 
   /** Short (last `.`-segment) functor name of a `Fn` term — mirrors rustland's
     * `resolve_sym`, since parse-time symbols keep their full interned string. */
-  private def shortFunctor(pf: ParsedFile, tid: TermId): String =
+  private def shortFunctor(pf: ParsedFile, tid: ParseTermId): String =
     val n = functorName(pf, tid)
     val i = n.lastIndexOf('.')
     if i >= 0 then n.substring(i + 1) else n
@@ -752,7 +752,7 @@ class ParseTest extends munit.FunSuite:
 
     // Walk the right-folded `merge(present(l), merge(…, empty_row))` chain,
     // collecting the present-label types in order.
-    def collect(node: TermId): List[TermId] =
+    def collect(node: ParseTermId): List[ParseTermId] =
       shortFunctor(pf, node) match
         case "empty_row" => Nil
         case "present"   => List(namedArg(pf, node, "label"))
@@ -771,16 +771,16 @@ class ParseTest extends munit.FunSuite:
   }
 
   test("WI-340: canonical row keeps distinct same-base effects but collapses true duplicates") {
-    // rustland de-duplicates by hash-consed TermId, so structurally-distinct
+    // rustland de-duplicates by hash-consed ParseTermId, so structurally-distinct
     // atoms all survive; scaland must match that with a fully-structural key,
     // not a lossy display name that would collapse same-base parameterized
     // effects (whose bindings ride as POSITIONAL args) into one.
-    def presentLabels(effectSrc: String): List[TermId] =
+    def presentLabels(effectSrc: String): List[ParseTermId] =
       val (pf, op) = parseDemoOp(
         s"  operation f() -> Int =\n    let x : (A) -> B @ {$effectSrc} = 1 in x")
       val effectsField =
         namedArg(pf, namedArg(pf, op.body.getOrElse(fail("no body")), "type_name"), "effects")
-      def collect(node: TermId): List[TermId] =
+      def collect(node: ParseTermId): List[ParseTermId] =
         shortFunctor(pf, node) match
           case "empty_row" => Nil
           case "present"   => List(namedArg(pf, node, "label"))
@@ -815,7 +815,7 @@ class ParseTest extends munit.FunSuite:
     def names(effectSrc: String): List[String] =
       val (pf, op) = parseDemoOp(
         s"  operation f() -> Int =\n    let x : (A) -> B @ {$effectSrc} = 1 in x")
-      def collect(node: TermId): List[TermId] =
+      def collect(node: ParseTermId): List[ParseTermId] =
         shortFunctor(pf, node) match
           case "empty_row" => Nil
           case "present"   => List(namedArg(pf, node, "label"))
@@ -829,7 +829,7 @@ class ParseTest extends munit.FunSuite:
         namedArg(pf, namedArg(pf, op.body.getOrElse(fail("no body")), "type_name"), "effects")
       collect(namedArg(pf, effectsField, "effects_expr")).map(l => pf.terms.get(l) match
         case Term.Ref(sym) => pf.symbols.name(sym)
-        case fn: Term.Fn   => pf.symbols.name(fn.functor)
+        case fn: Term.Fn[ParseTermId]   => pf.symbols.name(fn.functor)
         case other         => fail(s"unexpected label $other"))
     // ORDER is by short name and then by the name written, so it does not depend on
     // which was written first.
@@ -1154,7 +1154,7 @@ end
   // ── WI-424: value-in-type + effect-rows (port rust WI-302/375/373) ──
   //   Re-ported from the retired wi068 branch onto main's current parser.
 
-  private def factTerm(src: String): (ParsedFile, Term) =
+  private def factTerm(src: String): (ParsedFile, ParseTerm) =
     val pf = Parser.parse(src, "<fact>").toOption.getOrElse(fail(s"parse failed: $src"))
     val fact = pf.items.collectFirst { case Item.FactItem(f) => f }
       .getOrElse(fail(s"no fact in: $src"))
@@ -1297,9 +1297,9 @@ end
 
   /** Whether `tid`'s term tree contains a `Fn` with functor short/full name
     * `target` anywhere (used to locate a marker inside a rule head). */
-  private def findFunctor(pf: ParsedFile, tid: TermId, target: String): Boolean =
+  private def findFunctor(pf: ParsedFile, tid: ParseTermId, target: String): Boolean =
     pf.terms.get(tid) match
-      case fn: Term.Fn =>
+      case fn: Term.Fn[ParseTermId] =>
         pf.symbols.name(fn.functor) == target ||
           fn.posArgs.exists(findFunctor(pf, _, target)) ||
           fn.namedArgs.exists { case (_, v) => findFunctor(pf, v, target) }
@@ -1310,7 +1310,7 @@ end
     val (pf, op) = parseDemoOp("  operation f() -> Int =\n    lambda (x) -> x")
     val body = op.body.getOrElse(fail("no lambda body"))
     pf.terms.get(body) match
-      case fn: Term.Fn =>
+      case fn: Term.Fn[ParseTermId] =>
         assertEquals(pf.symbols.name(fn.functor), DesugarTarget.LambdaExpr)
         // The `(x)` param unwraps to a bare `pattern_var`, NOT a `pattern_tuple`.
         assertEquals(functorName(pf, fn.posArgs(0)), "pattern_var")
@@ -1384,7 +1384,7 @@ end
   test("WI-1131: `(a: 1)` is a one-component named TupleLiteral, not grouping") {
     val (pf, t) = factTerm("fact (a: 1)")
     t match
-      case fn: Term.Fn =>
+      case fn: Term.Fn[ParseTermId] =>
         assertEquals(pf.symbols.name(fn.functor), DesugarTarget.TupleLiteral)
         assertEquals(fn.posArgs.length, 0)
         assertEquals(fn.namedArgs.map((k, _) => pf.symbols.name(k)).toSeq, Seq("a"))
@@ -1394,7 +1394,7 @@ end
   test("WI-1131: the trailing comma is admitted at arity one too") {
     val (pf, t) = factTerm("fact (a: 1,)")
     t match
-      case fn: Term.Fn =>
+      case fn: Term.Fn[ParseTermId] =>
         assertEquals(pf.symbols.name(fn.functor), DesugarTarget.TupleLiteral)
         assertEquals(fn.namedArgs.map((k, _) => pf.symbols.name(k)).toSeq, Seq("a"))
       case other => fail(s"expected TupleLiteral, got $other")
@@ -1403,14 +1403,14 @@ end
   test("WI-1131 control: a single parenthesized term stays grouping") {
     val (_, t) = factTerm("fact (1)")
     t match
-      case fn: Term.Fn => fail(s"`(1)` must be grouping, got a ${fn.getClass.getSimpleName}")
+      case fn: Term.Fn[ParseTermId] => fail(s"`(1)` must be grouping, got a ${fn.getClass.getSimpleName}")
       case _           => ()
   }
 
   test("WI-1131: a trailing comma at 2+ parses too, as it always has in rustland") {
     val (pf, t) = factTerm("fact (1, 2,)")
     t match
-      case fn: Term.Fn =>
+      case fn: Term.Fn[ParseTermId] =>
         assertEquals(pf.symbols.name(fn.functor), DesugarTarget.TupleLiteral)
         assertEquals(fn.posArgs.length, 2)
       case other => fail(s"expected TupleLiteral, got $other")
@@ -1432,7 +1432,7 @@ end
   test("WI-639: `?x.(a, b)` desugars to a named `TupleLiteral` keyed by the members") {
     val (pf, t) = factTerm("fact ?x.(a, b)")
     t match
-      case fn: Term.Fn =>
+      case fn: Term.Fn[ParseTermId] =>
         assertEquals(pf.symbols.name(fn.functor), DesugarTarget.TupleLiteral)
         assertEquals(fn.namedArgs.map((k, _) => pf.symbols.name(k)).toSet, Set("a", "b"))
         // Each column is the SAME accessor `?x.a` builds (value receiver ⇒ dot_apply).
@@ -1443,12 +1443,12 @@ end
   test("WI-639: rename `?x.(a: f1, b: f2)` keys by the LABELS, accesses the MEMBERS") {
     val (pf, t) = factTerm("fact ?x.(a: f1, b: f2)")
     t match
-      case fn: Term.Fn =>
+      case fn: Term.Fn[ParseTermId] =>
         assertEquals(fn.namedArgs.map((k, _) => pf.symbols.name(k)).toSet, Set("a", "b"))
         val aAccess = fn.namedArgs.collectFirst { case (k, v) if pf.symbols.name(k) == "a" => v }.get
         // dot_apply(?x, Ident(f1)) — the accessed member is `f1`, not the label `a`.
         pf.terms.get(aAccess) match
-          case acc: Term.Fn =>
+          case acc: Term.Fn[ParseTermId] =>
             pf.terms.get(acc.posArgs(1)) match
               case Term.Ident(m) => assertEquals(pf.symbols.name(m), "f1")
               case other => fail(s"expected member Ident(f1), got $other")
@@ -1468,7 +1468,7 @@ end
     for (src, key) <- Seq("fact ?x.(f)" -> "f", "fact ?x.(a: f)" -> "a") do
       val (pf, t) = factTerm(src)
       t match
-        case fn: Term.Fn =>
+        case fn: Term.Fn[ParseTermId] =>
           assertEquals(pf.symbols.name(fn.functor), DesugarTarget.TupleLiteral, src)
           assertEquals(fn.namedArgs.length, 1, s"$src: one keyed component")
           assertEquals(pf.symbols.name(fn.namedArgs(0)._1), key, s"$src: result key")
@@ -1489,7 +1489,7 @@ end
   test("WI-639: a name receiver `Rec.(x, y)` uses field_access accessors") {
     val (pf, t) = factTerm("fact Rec.(x, y)")
     t match
-      case fn: Term.Fn =>
+      case fn: Term.Fn[ParseTermId] =>
         assertEquals(pf.symbols.name(fn.functor), DesugarTarget.TupleLiteral)
         for (_, v) <- fn.namedArgs do assertEquals(functorName(pf, v), DesugarTarget.FieldAccess)
       case other => fail(s"expected TupleLiteral, got $other")
@@ -1499,7 +1499,7 @@ end
     // The projection is a value (a TupleLiteral), so `.a` on it is a value dot.
     val (pf, t) = factTerm("fact ?x.(a, b).a")
     t match
-      case fn: Term.Fn => assertEquals(pf.symbols.name(fn.functor), DesugarTarget.DotApply)
+      case fn: Term.Fn[ParseTermId] => assertEquals(pf.symbols.name(fn.functor), DesugarTarget.DotApply)
       case other => fail(s"expected outer dot_apply, got $other")
   }
 
@@ -1545,7 +1545,7 @@ end
   test("string escapes: `\\\"` does not close the literal, and decodes to a quote") {
     val (pf, term) = factTerm("""fact F(x: "#include \"hdr.hpp\"")""")
     val named = term match
-      case fn: Term.Fn => fn.namedArgs.head._2
+      case fn: Term.Fn[ParseTermId] => fn.namedArgs.head._2
       case other => fail(s"expected Fn, got $other")
     pf.terms.get(named) match
       case Term.Const(Literal.StringLit(s)) =>
@@ -1556,7 +1556,7 @@ end
   test("string escapes: `\\n` `\\t` `\\\\` decode") {
     val (pf, term) = factTerm("""fact F(x: "a\nb\tc\\d")""")
     val named = term match
-      case fn: Term.Fn => fn.namedArgs.head._2
+      case fn: Term.Fn[ParseTermId] => fn.namedArgs.head._2
       case other => fail(s"expected Fn, got $other")
     pf.terms.get(named) match
       case Term.Const(Literal.StringLit(s)) => assertEquals(s, "a\nb\tc\\d")
@@ -1575,7 +1575,7 @@ end
     do
       val (pf, term) = factTerm(s"fact F(x: $lit)")
       val named = term match
-        case fn: Term.Fn => fn.namedArgs.head._2
+        case fn: Term.Fn[ParseTermId] => fn.namedArgs.head._2
         case other => fail(s"expected Fn, got $other")
       pf.terms.get(named) match
         case Term.Const(Literal.StringLit(s)) => assertEquals(s, want, lit)
@@ -1644,7 +1644,7 @@ end
   test("string escapes: an ordinary literal is unchanged") {
     val (pf, term) = factTerm("""fact F(x: "plain")""")
     val named = term match
-      case fn: Term.Fn => fn.namedArgs.head._2
+      case fn: Term.Fn[ParseTermId] => fn.namedArgs.head._2
       case other => fail(s"expected Fn, got $other")
     pf.terms.get(named) match
       case Term.Const(Literal.StringLit(s)) => assertEquals(s, "plain")
@@ -1965,11 +1965,11 @@ end
     val ns = pf.items.collectFirst { case Item.NamespaceItem(ns) => ns }.get
     val fact = ns.items.collectFirst { case Item.FactItem(f) => f }.get
     val args = pf.terms.get(fact.term) match
-      case fn: Term.Fn => fn.posArgs
+      case fn: Term.Fn[ParseTermId] => fn.posArgs
       case other => fail(s"a fact application, got $other")
     for (arg, bracketed) <- args.zip(Seq(true, false)) do
       pf.terms.get(arg) match
-        case fn: Term.Fn =>
+        case fn: Term.Fn[ParseTermId] =>
           assertEquals(pf.symbols.name(fn.functor), "Foo")
           assert(fn.posArgs.isEmpty && fn.namedArgs.isEmpty)
           assertEquals(pf.terms.isTypeApplication(arg), bracketed,

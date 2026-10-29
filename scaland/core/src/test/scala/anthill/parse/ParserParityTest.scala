@@ -82,14 +82,14 @@ class ParserParityTest extends munit.FunSuite:
     val file = parsePath(corpusRoot.resolve("accept/lambda_as_infix_operand.anthill"))
       .toOption.getOrElse(fail("the lambda-operand parity case did not parse"))
     val items = file.items.collectFirst { case Item.NamespaceItem(ns) => ns }.get.items
-    def render(tid: anthill.term.TermId): String = file.terms.get(tid) match
+    def render(tid: ParseTermId): String = file.terms.get(tid) match
       case anthill.term.Term.Const(lit) => Parser.renderLiteral(lit)
       case anthill.term.Term.Var(anthill.term.Var.Global(id)) => s"?${file.symbols.name(id.name)}"
       case anthill.term.Term.Var(v) => v.toString
       case anthill.term.Term.Bottom => "⊥"
       case anthill.term.Term.Ref(s) => file.symbols.name(s)
       case anthill.term.Term.Ident(s) => file.symbols.name(s)
-      case fn: anthill.term.Term.Fn =>
+      case fn: anthill.term.Term.Fn[ParseTermId] =>
         val args = fn.posArgs.map(render) ++
           fn.namedArgs.map((k, v) => s"${file.symbols.name(k)}: ${render(v)}")
         s"${file.symbols.name(fn.functor)}(${args.mkString(", ")})"

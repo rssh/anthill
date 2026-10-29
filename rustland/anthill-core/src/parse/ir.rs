@@ -3,7 +3,7 @@
 /// This is the intermediate representation between the tree-sitter CST
 /// and the KnowledgeBase. All AST nodes live here.
 ///
-/// Terms at parse time use `TermId` into `SimpleTermStore` (a plain Vec,
+/// Terms at parse time use `ParseTermId` into `SimpleTermStore` (a plain Vec,
 /// no hash-consing). During loading into the KB, terms are re-allocated
 /// into the hash-consed store.
 use std::collections::{HashMap, HashSet};
@@ -13,10 +13,74 @@ use std::sync::Arc;
 use smallvec::SmallVec;
 
 use crate::intern::{Symbol, SymbolTable};
-use crate::kb::term::{Term, TermId, TermSource};
+use crate::kb::term::{Term, TermSource};
 use crate::span::Span;
 
 // ── Simple term store (parse-time only) ─────────────────────────
+
+/// The id of a term in a [`SimpleTermStore`]. It names a PLACE in the file: two terms
+/// written alike are two ids. A knowledge-base [`TermId`](crate::kb::term::TermId) names
+/// a STRUCTURE — its store is hash-consed, so terms built alike share one — and indexes
+/// the other store. The two are separate types, so an id handed to the wrong store, or
+/// to a table keyed by the other's ids, does not compile.
+///
+/// The three refusals below each fail with one error, E0308 at the id argument —
+/// measured by compiling them as ordinary tests; stable rustdoc does not check the
+/// code, so a row that failed for another reason would pass too. The first is the
+/// back-out control: it names no new type, and it compiles while the parse store
+/// indexes by `TermId`. The second and third name the parse types, so they pass only
+/// beside them. The last row compiles either way by design: it is what keeps the
+/// three from passing on a broken import.
+///
+/// ```compile_fail
+/// use anthill_core::kb::term::TermId;
+/// use anthill_core::parse::ir::SimpleTermStore;
+/// fn read(store: &SimpleTermStore, id: TermId) {
+///     let _ = store.get(id);
+/// }
+/// ```
+///
+/// Nor the other way, a parse id into the knowledge base's store:
+/// ```compile_fail
+/// use anthill_core::kb::KnowledgeBase;
+/// use anthill_core::parse::ir::ParseTermId;
+/// fn read(kb: &KnowledgeBase, id: ParseTermId) {
+///     let _ = kb.get_term(id);
+/// }
+/// ```
+///
+/// And a child read off a parse term is a parse id, not a `TermId`:
+/// ```compile_fail
+/// use anthill_core::kb::term::{Term, TermId};
+/// use anthill_core::parse::ir::ParseTerm;
+/// fn first_child(t: &ParseTerm) -> Option<TermId> {
+///     match t {
+///         Term::Fn { pos_args, .. } => pos_args.first().copied(),
+///         _ => None,
+///     }
+/// }
+/// ```
+///
+/// What does compile is reading each store by its own id:
+/// ```
+/// use anthill_core::kb::term::Term;
+/// use anthill_core::parse::ir::{ParseTermId, SimpleTermStore};
+/// use anthill_core::span::Span;
+/// let mut store = SimpleTermStore::new();
+/// let leaf: ParseTermId = store.alloc(Term::Bottom, Span::default());
+/// assert_eq!(store.get(leaf), &Term::Bottom);
+/// ```
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct ParseTermId(u32);
+
+impl ParseTermId {
+    fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+/// A term of the parse store: its children are [`ParseTermId`]s.
+pub type ParseTerm = Term<ParseTermId>;
 
 /// One slot in a written argument list — `f(a, k: b, c)` is
 /// `[Positional, Named(k), Positional]`.
@@ -38,7 +102,7 @@ pub enum ArgSlot {
 /// `docs/design/expr-occurrences.md`).
 #[derive(Debug)]
 pub struct ParseTermEntry {
-    pub term: Term,
+    pub term: ParseTerm,
     pub span: Span,
 }
 
@@ -46,8 +110,8 @@ pub struct ParseTermEntry {
 #[derive(Debug, Default)]
 pub struct SimpleTermStore {
     entries: Vec<ParseTermEntry>,
-    /// Inline description blocks attached to variables: TermId → description texts.
-    pub descriptions: HashMap<TermId, Vec<String>>,
+    /// Inline description blocks attached to variables: ParseTermId → description texts.
+    pub descriptions: HashMap<ParseTermId, Vec<String>>,
     /// WI-618: `Term::Fn` nodes MINTED by the parse pipeline rather than
     /// written as calls. THREE producer categories, not two:
     ///
@@ -88,11 +152,11 @@ pub struct SimpleTermStore {
     /// Provenance is the exact discriminator consumers need — e.g. the
     /// loader's bare-arrow lambda-typo diagnostics tell the infix `->` from a
     /// user-written `arrow(a, b)` call by this set, not by name/scope
-    /// heuristics. Keyed by `TermId`, so it relies on parse terms never being
+    /// heuristics. Keyed by `ParseTermId`, so it relies on parse terms never being
     /// copied/re-allocated after mint — true today (the converter only wraps
     /// existing child ids; the loader never allocates into a parse store); a
     /// future rewrite pass that reconstructs subtrees must carry marks over.
-    minted: HashSet<TermId>,
+    minted: HashSet<ParseTermId>,
     /// WI-710: `Term::Fn` nodes written as a BRACKETED type application in term
     /// position — `Cell[V = Int64]`, `Monad[M = Option]` (grammar node `application`,
     /// converted by `convert_instantiation_term`). Both a type application and a
@@ -102,7 +166,7 @@ pub struct SimpleTermStore {
     /// by shape: only the surface `[…]`-vs-`(…)` distinguishes them, and that is known
     /// only here. Recorded like [`Self::minted`], for the same reason — provenance the
     /// consumer needs is carried, not re-derived from name/scope heuristics.
-    type_applications: HashSet<TermId>,
+    type_applications: HashSet<ParseTermId>,
     /// WI-762: the named-tuple `Term::Fn` nodes this converter DESUGARED a
     /// distributive projection `x.(m1, …, mn)` into (§6.8; the sole producer is
     /// `BuildFrame::DistributiveProjection`). EVERY arity is recorded — since
@@ -121,10 +185,10 @@ pub struct SimpleTermStore {
     /// stores it on [`crate::kb::node_occurrence::Expr::Constructor`], the carrier
     /// that survives the typer's rebuilds.
     ///
-    /// Governed by the same `TermId`-stability caveat stated on [`Self::minted`] — a
+    /// Governed by the same `ParseTermId`-stability caveat stated on [`Self::minted`] — a
     /// future rewrite pass that reconstructs parse subtrees must carry these marks
     /// over. That note is written once, there, and now governs all four sets.
-    projections: HashSet<TermId>,
+    projections: HashSet<ParseTermId>,
 
     /// WI-1099: the `Fn{ListLiteral, …}` terms written as the BRACKET SURFACE `[a, b]`,
     /// as opposed to a call to the reflect entity by its name, `ListLiteral(a, b)`. The
@@ -139,7 +203,7 @@ pub struct SimpleTermStore {
     /// `wi040_reserved_vocab_test::query_pattern_bare_list_literal_resolves_qualified`,
     /// which pins `ListLiteral(?x)` resolving to `anthill.reflect.ListLiteral` and went
     /// red the moment the query converter started lowering.
-    collection_literals: HashSet<TermId>,
+    collection_literals: HashSet<ParseTermId>,
 
     /// WI-20260909-C7ANM: the WRITTEN argument order of a call whose argument list
     /// MIXES positional and named slots — the one shape `Term::Fn`'s positional/named
@@ -158,9 +222,9 @@ pub struct SimpleTermStore {
     /// was not written in the list; every reader filters those out first
     /// (`named_child_survives_walk`).
     ///
-    /// Governed by the `TermId`-stability caveat stated on [`Self::minted`], like its
+    /// Governed by the `ParseTermId`-stability caveat stated on [`Self::minted`], like its
     /// three siblings.
-    arg_order: HashMap<TermId, SmallVec<[ArgSlot; 4]>>,
+    arg_order: HashMap<ParseTermId, SmallVec<[ArgSlot; 4]>>,
 
     /// WI-20260911-5G28A (L3): the zero-argument call `Fn{Sort.m, recv_type: …}` the
     /// converter lowers a PAREN-LESS bracketed citation `Sort[…].m` into — the same term
@@ -171,7 +235,7 @@ pub struct SimpleTermStore {
     /// refused rather than silently read as a call
     /// (`Loader::refuse_paren_less_bracket_binding_nothing`). Recorded like its siblings,
     /// for their reason.
-    paren_less_citations: HashSet<TermId>,
+    paren_less_citations: HashSet<ParseTermId>,
 
     /// The `dot_apply` a dot written WITHOUT PARENTHESES lowers to — `e.m`, `(Box).m`,
     /// and each member of `x.(a, b)` — where `e.m()` lowers to the same term with no
@@ -179,7 +243,7 @@ pub struct SimpleTermStore {
     /// that takes arguments is a function value where one is expected when written
     /// without parentheses, and an arity error when written with them. Recorded like its
     /// siblings, for their reason.
-    paren_less_dots: HashSet<TermId>,
+    paren_less_dots: HashSet<ParseTermId>,
 }
 
 impl SimpleTermStore {
@@ -187,17 +251,17 @@ impl SimpleTermStore {
         Self::default()
     }
 
-    pub fn alloc(&mut self, term: Term, span: Span) -> TermId {
-        let id = TermId::from_raw(self.entries.len() as u32);
+    pub fn alloc(&mut self, term: ParseTerm, span: Span) -> ParseTermId {
+        let id = ParseTermId(self.entries.len() as u32);
         self.entries.push(ParseTermEntry { term, span });
         id
     }
 
-    pub fn get(&self, id: TermId) -> &Term {
+    pub fn get(&self, id: ParseTermId) -> &ParseTerm {
         &self.entries[id.index()].term
     }
 
-    pub fn span(&self, id: TermId) -> Span {
+    pub fn span(&self, id: ParseTermId) -> Span {
         self.entries[id.index()].span
     }
 
@@ -214,7 +278,7 @@ impl SimpleTermStore {
     /// `typed_var`), not written as a call. See the `minted` field — ADDING A PRODUCER
     /// IS A CENSUSED CHANGE, because each reader pairs the flag with a different
     /// name or position test.
-    pub fn mark_minted(&mut self, id: TermId) {
+    pub fn mark_minted(&mut self, id: ParseTermId) {
         self.minted.insert(id);
     }
 
@@ -222,26 +286,26 @@ impl SimpleTermStore {
     /// operator, an accessor form, or a surface-form marker), as opposed to written
     /// as a call? It does NOT say which of the three — pair it with a name or a
     /// position test, as every reader does.
-    pub fn is_minted(&self, id: TermId) -> bool {
+    pub fn is_minted(&self, id: ParseTermId) -> bool {
         self.minted.contains(&id)
     }
 
     /// WI-710: record that `id` was written as a bracketed type application
     /// (`Cell[V = Int64]`), not as a `(…)` call.
-    pub fn mark_type_application(&mut self, id: TermId) {
+    pub fn mark_type_application(&mut self, id: ParseTermId) {
         self.type_applications.insert(id);
     }
 
     /// WI-710: was this `Term::Fn` written as a bracketed type application? The loader
     /// checks type ARGUMENTS only on these — a `(…)` call with a sort-named functor is a
     /// data constructor, whose named args are FIELDS.
-    pub fn is_type_application(&self, id: TermId) -> bool {
+    pub fn is_type_application(&self, id: ParseTermId) -> bool {
         self.type_applications.contains(&id)
     }
 
     /// WI-762: record that `id` is the named tuple a MULTI-member distributive
     /// projection `x.(m1, …, mn)` desugared into.
-    pub fn mark_projection(&mut self, id: TermId) {
+    pub fn mark_projection(&mut self, id: ParseTermId) {
         self.projections.insert(id);
     }
 
@@ -249,35 +313,35 @@ impl SimpleTermStore {
     /// opposed to written as a tuple literal? The two are structurally identical
     /// once desugared — `x.(a, b)` and `(a: x.a, b: x.b)` build the same term — so
     /// only this bit tells them apart.
-    pub fn is_projection(&self, id: TermId) -> bool {
+    pub fn is_projection(&self, id: ParseTermId) -> bool {
         self.projections.contains(&id)
     }
 
     /// WI-20260911-5G28A: record that `id` was written as the paren-less citation
     /// `Sort[…].m`, lowered to the zero-argument call — see [`Self::paren_less_citations`].
-    pub fn mark_paren_less_citation(&mut self, id: TermId) {
+    pub fn mark_paren_less_citation(&mut self, id: ParseTermId) {
         self.paren_less_citations.insert(id);
     }
 
     /// WI-20260911-5G28A: was this call written paren-less, as `Sort[…].m`?
-    pub fn is_paren_less_citation(&self, id: TermId) -> bool {
+    pub fn is_paren_less_citation(&self, id: ParseTermId) -> bool {
         self.paren_less_citations.contains(&id)
     }
 
     /// Record that the `dot_apply` `id` was written without parentheses — see
     /// [`Self::paren_less_dots`].
-    pub fn mark_paren_less_dot(&mut self, id: TermId) {
+    pub fn mark_paren_less_dot(&mut self, id: ParseTermId) {
         self.paren_less_dots.insert(id);
     }
 
     /// Was this `dot_apply` written without parentheses, as `e.m`?
-    pub fn is_paren_less_dot(&self, id: TermId) -> bool {
+    pub fn is_paren_less_dot(&self, id: ParseTermId) -> bool {
         self.paren_less_dots.contains(&id)
     }
 
     /// WI-1099: record that `id` was written as the bracket surface `[a, b]`, not as a
     /// call to the reflect entity by name.
-    pub fn mark_collection_literal(&mut self, id: TermId) {
+    pub fn mark_collection_literal(&mut self, id: ParseTermId) {
         self.collection_literals.insert(id);
     }
 
@@ -286,7 +350,7 @@ impl SimpleTermStore {
     /// name is the reflect entity and keeps its shape. See
     /// [`Self::collection_literals`] for why the distinction cannot be recovered from
     /// the term.
-    pub fn is_collection_literal(&self, id: TermId) -> bool {
+    pub fn is_collection_literal(&self, id: ParseTermId) -> bool {
         self.collection_literals.contains(&id)
     }
 
@@ -297,7 +361,7 @@ impl SimpleTermStore {
     /// optimization. Recording it here rather than at each caller keeps the predicate
     /// in ONE place: a producer that hands over its slots cannot record a subset by
     /// accident.
-    pub fn record_arg_order(&mut self, id: TermId, slots: &[ArgSlot]) {
+    pub fn record_arg_order(&mut self, id: ParseTermId, slots: &[ArgSlot]) {
         let mixed = slots.iter().any(|s| matches!(s, ArgSlot::Positional))
             && slots.iter().any(|s| matches!(s, ArgSlot::Named(_)));
         if mixed {
@@ -307,18 +371,21 @@ impl SimpleTermStore {
 
     /// The written slot order of `id`'s argument list, or `None` when the
     /// positional/named split already IS that order (see [`Self::record_arg_order`]).
-    pub fn arg_order(&self, id: TermId) -> Option<&[ArgSlot]> {
+    pub fn arg_order(&self, id: ParseTermId) -> Option<&[ArgSlot]> {
         self.arg_order.get(&id).map(|v| v.as_slice())
     }
 
-    /// Iterate every allocated `(TermId, &Term)` in allocation order.
+    /// Every allocated id, in allocation order. Holds no borrow of the store, so a walk
+    /// may read the store through a wider borrow while it goes.
+    pub fn ids(&self) -> impl Iterator<Item = ParseTermId> {
+        (0..self.entries.len() as u32).map(ParseTermId)
+    }
+
+    /// Iterate every allocated `(ParseTermId, &Term)` in allocation order.
     /// Used by tests that need to find specific Term shapes (e.g.
     /// `Term::ParseAux`) without navigating from an Item field.
-    pub fn iter(&self) -> impl Iterator<Item = (TermId, &Term)> + '_ {
-        self.entries
-            .iter()
-            .enumerate()
-            .map(|(i, entry)| (TermId::from_raw(i as u32), &entry.term))
+    pub fn iter(&self) -> impl Iterator<Item = (ParseTermId, &ParseTerm)> + '_ {
+        self.ids().zip(self.entries.iter().map(|entry| &entry.term))
     }
 }
 
@@ -382,7 +449,8 @@ impl ParsedFile {
 }
 
 impl TermSource for ParsedFile {
-    fn term(&self, id: TermId) -> &Term {
+    type Id = ParseTermId;
+    fn term(&self, id: ParseTermId) -> &ParseTerm {
         self.terms.get(id)
     }
     fn sym_name(&self, sym: Symbol) -> &str {
@@ -435,7 +503,7 @@ pub enum TypeExpr {
     },
     /// Type variable: `?` or `?name`, with zero or more inline descriptions.
     Variable {
-        term_id: TermId,
+        term_id: ParseTermId,
         descriptions: Vec<String>,
         /// Written `?` alone: a variable of this occurrence, tying it to nothing. `?_` and
         /// `?name` are variables of the declaration, the same one wherever they are written.
@@ -459,10 +527,10 @@ pub enum TypeExpr {
     },
     /// Denoted value-in-type (WI-302): a value standing in a type-argument
     /// position — `Modify[c]`, `Vector[Int, 3]`. Carries the parse expression
-    /// `TermId` for the value (like `Variable` carries `term_id`); lowered to
+    /// `ParseTermId` for the value (like `Variable` carries `term_id`); lowered to
     /// `denoted(value: <occurrence>)` by building the value's occurrence via
     /// `convert_expr_term`. Mirrors reflect `Type.denoted(value: NodeOccurrence)`.
-    Denoted(TermId),
+    Denoted(ParseTermId),
     /// WI-327: `-E` absence / lacks-constraint surface form (proposal 045
     /// §3, §Phase 2). Carries the inner effect TypeExpr. The loader
     /// lowers `EffectAbsent(t)` into the `absent(t)` `EffectExpression`
@@ -501,7 +569,7 @@ pub enum TypeExpr {
     /// stores it). `label` is the guarded effect (the `_simple_effect`, a `Simple`
     /// label / `Parameterized` / `Denoted` application); `guard` is the guard's Horn
     /// body — a conjunction of goal terms over the operation's parameters (parse-store
-    /// `TermId`s, the same shape `convert_rule_body` produces). A bare `E :- p` stores
+    /// `ParseTermId`s, the same shape `convert_rule_body` produces). A bare `E :- p` stores
     /// `[p]`; a paren `( E :- p, q )` stores `[p, q]`. The loader lowers this to the
     /// `EffectExpression.guarded(label, guard: List[reflect.Term])` element; the empty
     /// guard `[]` is the degenerate `present(label)` case (not produced here — a bare
@@ -511,7 +579,7 @@ pub enum TypeExpr {
     /// places it only where `EffectAbsent` / `EffectRow` are placed.
     EffectGuarded {
         label: Box<TypeExpr>,
-        guard: Vec<TermId>,
+        guard: Vec<ParseTermId>,
     },
 }
 
@@ -524,7 +592,7 @@ pub struct SortBinding {
 
 // ── Parse-only payloads embedded in Term::ParseAux ──────────────
 //
-// WI-271: parse-only data that needs to be addressable by `TermId`
+// WI-271: parse-only data that needs to be addressable by `ParseTermId`
 // (so the let_expr / apply parse `Term::Fn` can reference it as a
 // child) but doesn't fit the structural Fn/Ref/Var/Const shapes.
 // Lives in `SimpleTermStore` like every other parse `Term`; never
@@ -736,14 +804,14 @@ pub struct Rule {
     /// verdict here and another there (the operation face's `capture_ok`, kb/load.rs,
     /// is the same discipline within one function).
     pub head_captures: Vec<Option<usize>>,
-    pub body: Option<Vec<TermId>>,
+    pub body: Option<Vec<ParseTermId>>,
     pub meta: Option<MetaBlock>,
     pub span: Span,
 }
 
 #[derive(Debug)]
 pub enum RuleHead {
-    Term(TermId),
+    Term(ParseTermId),
     Bottom,
 }
 
@@ -759,10 +827,10 @@ pub struct Operation {
     pub type_params: Vec<TypeParam>,
     pub params: Vec<Param>,
     pub return_type: TypeExpr,
-    pub requires: Vec<Vec<TermId>>,
-    pub ensures: Vec<Vec<TermId>>,
+    pub requires: Vec<Vec<ParseTermId>>,
+    pub ensures: Vec<Vec<ParseTermId>>,
     pub effects: Vec<Effect>,
-    pub body: Option<TermId>,
+    pub body: Option<ParseTermId>,
     /// WI-1070: the operation's OWN `{< … >}` blocks, in source order — the peer of
     /// [`AbstractSort::descriptions`] / [`SortWithBody::descriptions`], reaching the KB
     /// as `anthill.reflect.DescriptionInfo` facts from `load_operation`. The grammar
@@ -822,7 +890,7 @@ pub struct Param {
     /// the parameter out (`low: Int64 = 0`). Lowered by the loader in the operation's
     /// scope, checked by the typer at the declaration, and inserted into each call
     /// that omits the parameter, so every call reaches its callee at full arity.
-    pub default: Option<TermId>,
+    pub default: Option<ParseTermId>,
     pub span: Span,
 }
 
@@ -839,7 +907,7 @@ pub struct Const {
     pub name: Name,
     pub ty: TypeExpr,
     /// The defining expression (`= EXPR`), or `None` for a host-supplied const.
-    pub value: Option<TermId>,
+    pub value: Option<ParseTermId>,
     /// WI-1070: the const's own `{< … >}` blocks — the same hole `Operation` had, and
     /// closed the same way (`load_const` emits the `DescriptionInfo` facts).
     /// `const_declaration` was modeled on `operation_declaration` down to the leading
@@ -880,7 +948,7 @@ pub struct Fact {
     /// A fact has no declaration name or citation handle, so it deliberately has no
     /// description field. WI-1072 makes the converter refuse a leading block instead
     /// of constructing an IR value that must silently lose it later.
-    pub term: TermId,
+    pub term: ParseTermId,
     pub meta: Option<MetaBlock>,
     pub span: Span,
 }
@@ -906,8 +974,8 @@ pub enum ConstraintBody {
     /// form the loader currently stores as an inert `Constraint` fact (its
     /// historical behavior); the others lower to a `LogicalQuery` guard.
     Denial {
-        head: Vec<TermId>,
-        guard: Option<Vec<TermId>>,
+        head: Vec<ParseTermId>,
+        guard: Option<Vec<ParseTermId>>,
     },
     /// `forall/some/one/lone/no ?x [: condition] -: body`. `condition` is the
     /// conjunction of patterns gating the binder (empty = no gate); `body` is
@@ -917,12 +985,12 @@ pub enum ConstraintBody {
         /// Binder name (the `?x` without its `?`). Carried for reflection; the
         /// guard engine identifies the variable structurally, not by this name.
         var: String,
-        condition: Vec<TermId>,
+        condition: Vec<ParseTermId>,
         body: Box<ConstraintBody>,
     },
     /// A leaf query body — a conjunction of patterns reached as the `-: body`
     /// of a quantifier when that body is not itself quantified.
-    Patterns(Vec<TermId>),
+    Patterns(Vec<ParseTermId>),
     /// `count/sum/min/max(?x: condition -: body) op bound`. Parsed and carried
     /// faithfully, but the guard engine cannot yet evaluate aggregation, so the
     /// loader reports it as a loud "not yet enforced" error (WI-023 decision)
@@ -930,10 +998,10 @@ pub enum ConstraintBody {
     Aggregation {
         aggregate: Aggregate,
         var: String,
-        condition: Vec<TermId>,
-        body: Vec<TermId>,
+        condition: Vec<ParseTermId>,
+        body: Vec<ParseTermId>,
         op: CompareOp,
-        bound: TermId,
+        bound: ParseTermId,
     },
 }
 
@@ -1021,7 +1089,7 @@ pub struct MetaBlock {
 #[derive(Debug)]
 pub struct MetaEntry {
     pub key: Name,
-    pub value: TermId,
+    pub value: ParseTermId,
 }
 
 // ── Proof construct (proposal 025) ──────────────────────────────
@@ -1045,14 +1113,14 @@ pub struct ProofDecl {
 pub struct ProofStrategy {
     /// "derivation" | "z3" | "test" | tool name
     pub name: Symbol,
-    /// Optional tool args, named or positional. Each TermId points into
+    /// Optional tool args, named or positional. Each ParseTermId points into
     /// the file's SimpleTermStore. Named args are stored as
     /// `Term::FnArg::Named { name, value }` already.
     ///
     /// Legacy field. New consumers should read `tactic` (proposal 025.1
     /// Phase 2 IR). Kept for backwards compat with anthill-cli's
     /// dispatch path.
-    pub args: Vec<TermId>,
+    pub args: Vec<ParseTermId>,
     /// Typed tactic term (proposal 025.1). Populated for `by z3(...)`
     /// blocks. For other strategies (derivation, test, ...) this is
     /// `None`. The conversion treats `by z3(logic: "LRA")` as the
@@ -1104,7 +1172,7 @@ pub enum TacticArgValue {
 #[derive(Debug)]
 pub enum ProofBody {
     /// `:- hint1, hint2` — guided search hints (rule-name terms).
-    Hints(Vec<TermId>),
+    Hints(Vec<ParseTermId>),
     /// `query "..."` (+ optional mapping block) — explicit external query.
     Query {
         text: String,
@@ -1201,13 +1269,13 @@ pub enum ProvidesItem {
 #[derive(Debug)]
 pub struct CarrierBinding {
     pub anthill_param: Symbol,
-    pub host_type: TermId,
+    pub host_type: ParseTermId,
 }
 
 #[derive(Debug)]
 pub struct NamespaceMapEntry {
     pub anthill_namespace: Symbol,
-    pub host_module: TermId,
+    pub host_module: ParseTermId,
 }
 
 /// WI-876 — one `operation_map { compare: "ordered_compare" }` entry: the SHORT
@@ -1216,7 +1284,7 @@ pub struct NamespaceMapEntry {
 #[derive(Debug)]
 pub struct OperationMapEntry {
     pub operation: Symbol,
-    pub host_fn: TermId,
+    pub host_fn: ParseTermId,
 }
 
 /// WI-889 — one `const_map { infinity: "…" }` entry: the SHORT name of a bodyless
@@ -1226,7 +1294,7 @@ pub struct OperationMapEntry {
 #[derive(Debug)]
 pub struct ConstMapEntry {
     pub const_name: Symbol,
-    pub host_fn: TermId,
+    pub host_fn: ParseTermId,
 }
 
 // ── Stage 0: import tools ───────────────────────────────────────

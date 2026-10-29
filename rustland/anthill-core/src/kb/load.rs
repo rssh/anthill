@@ -4626,7 +4626,7 @@ fn collect_domain_goal_sorts_in_term(kb: &KnowledgeBase, term: TermId, out: &mut
 /// constraint body, across all forms (denial head + guard, quantified condition
 /// + nested body, leaf patterns, aggregation condition + body). Each is a
 /// candidate contract goal the binding-unify check classifies.
-fn collect_constraint_body_goal_tids(body: &ConstraintBody, out: &mut Vec<TermId>) {
+fn collect_constraint_body_goal_tids(body: &ConstraintBody, out: &mut Vec<ParseTermId>) {
     match body {
         ConstraintBody::Denial { head, guard } => {
             out.extend(head.iter().copied());
@@ -6837,7 +6837,7 @@ pub fn scan_definitions_with_sources(
 fn query_application_errors(
     kb: &mut KnowledgeBase,
     file: &ParsedFile,
-    root: TermId,
+    root: ParseTermId,
     scope: ScopeId,
     errors: &mut Vec<LoadError>,
 ) {
@@ -6919,8 +6919,7 @@ fn query_bracket_errors(file: &ParsedFile) -> Vec<LoadError> {
     let key = |name: &str| file.symbols.lookup(name);
     let (type_args_key, recv_type_key) = (key("type_args"), key("recv_type"));
     let mut errors = Vec::new();
-    for i in 0..file.terms.len() {
-        let id = TermId::from_raw(i as u32);
+    for id in file.terms.ids() {
         if let Term::ParseAux(aux) = file.terms.get(id) {
             if matches!(aux.as_ref(), ParseAux::EntryType(ty) if !matches!(ty, TypeExpr::EffectRow(_))) {
                 errors.push(
@@ -6982,7 +6981,7 @@ fn query_bracket_errors(file: &ParsedFile) -> Vec<LoadError> {
 fn query_type_name_errors(
     kb: &KnowledgeBase,
     file: &ParsedFile,
-    id: TermId,
+    id: ParseTermId,
     scope: ScopeId,
     in_type: bool,
     errors: &mut Vec<LoadError>,
@@ -7774,8 +7773,8 @@ impl RuleIntroduction {
 fn parse_connective_head<'a>(
     parse_sym: &'a crate::intern::SymbolTable,
     parse_terms: &SimpleTermStore,
-    head: TermId,
-) -> Option<(&'a str, TermId, TermId)> {
+    head: ParseTermId,
+) -> Option<(&'a str, ParseTermId, ParseTermId)> {
     if !parse_terms.is_minted(head) {
         return None;
     }
@@ -7832,8 +7831,8 @@ fn parse_connective_head<'a>(
 fn parse_equation_lhs(
     parse_sym: &crate::intern::SymbolTable,
     parse_terms: &SimpleTermStore,
-    head: TermId,
-) -> Option<TermId> {
+    head: ParseTermId,
+) -> Option<ParseTermId> {
     parse_connective_head(parse_sym, parse_terms, head)
         .filter(|(name, _, _)| crate::parse::pratt::is_equation_functor(name))
         .map(|(_, lhs, _)| lhs)
@@ -7862,8 +7861,8 @@ fn parse_equation_lhs(
 fn parse_equation_rhs(
     parse_sym: &crate::intern::SymbolTable,
     parse_terms: &SimpleTermStore,
-    head: TermId,
-) -> Option<TermId> {
+    head: ParseTermId,
+) -> Option<ParseTermId> {
     parse_connective_head(parse_sym, parse_terms, head).map(|(_, _, rhs)| rhs)
 }
 
@@ -7884,7 +7883,7 @@ fn parse_equation_rhs(
 /// `false` gets NO reading here, deliberately: §6.1 gives `true` one because that is
 /// what `fact` desugars to, and nothing in the language makes `:- false` mean anything
 /// but the ordinary unresolvable goal it already is.
-fn is_empty_conjunction_goal(parse_terms: &SimpleTermStore, tid: TermId) -> bool {
+fn is_empty_conjunction_goal(parse_terms: &SimpleTermStore, tid: ParseTermId) -> bool {
     matches!(parse_terms.get(tid), Term::Const(Literal::Bool(true)))
 }
 
@@ -8070,7 +8069,7 @@ fn several_heads_refusal(r: &Rule) -> Option<SeveralHeadsRefusal> {
 fn head_carries_typed_column(
     parse_sym: &crate::intern::SymbolTable,
     parse_terms: &SimpleTermStore,
-    tid: TermId,
+    tid: ParseTermId,
 ) -> bool {
     let Term::Fn {
         pos_args,
@@ -8104,7 +8103,7 @@ fn head_carries_typed_column(
 fn is_typed_column(
     parse_sym: &crate::intern::SymbolTable,
     parse_terms: &SimpleTermStore,
-    tid: TermId,
+    tid: ParseTermId,
 ) -> bool {
     let Term::Fn {
         functor,
@@ -8147,7 +8146,7 @@ fn is_typed_column(
 fn dotted_citation_name(
     parse_sym: &crate::intern::SymbolTable,
     parse_terms: &SimpleTermStore,
-    parse_id: TermId,
+    parse_id: ParseTermId,
 ) -> Option<String> {
     if !parse_terms.is_minted(parse_id) {
         return None;
@@ -8179,7 +8178,7 @@ fn dotted_citation_name(
 fn field_access_dotted_name_of(
     parse_sym: &crate::intern::SymbolTable,
     parse_terms: &SimpleTermStore,
-    parse_id: TermId,
+    parse_id: ParseTermId,
 ) -> Option<String> {
     // Segments BORROW from the parse tables (only the join allocates) — this runs on
     // every name-rooted dotted path in every op body, and WI-749 added a second caller
@@ -8285,7 +8284,7 @@ struct NonDefiningHead {
 fn non_defining_connective_head(
     parse_sym: &crate::intern::SymbolTable,
     parse_terms: &SimpleTermStore,
-    head: TermId,
+    head: ParseTermId,
 ) -> Option<NonDefiningHead> {
     let (name, lhs, _rhs) = parse_connective_head(parse_sym, parse_terms, head)?;
     if crate::parse::pratt::is_equation_functor(name) {
@@ -18675,7 +18674,7 @@ fn chain_back_to(alias: Symbol, names: &HashMap<Symbol, Vec<Symbol>>) -> Option<
 /// The type variables written in `ty`, by their terms, in source order: every `?t` at any
 /// depth of an application, a tuple, an arrow or an effect row. A value written in a type
 /// (`Vector[Int64, 3]`) holds none.
-fn collect_written_type_vars(ty: &TypeExpr, out: &mut Vec<TermId>) {
+fn collect_written_type_vars(ty: &TypeExpr, out: &mut Vec<ParseTermId>) {
     for_each_type_expr(ty, &mut |t| {
         if let TypeExpr::Variable { term_id, .. } = t {
             out.push(*term_id);
@@ -24347,7 +24346,7 @@ pub fn convert_query_term(
     kb: &mut KnowledgeBase,
     parse_terms: &SimpleTermStore,
     parse_symbols: &crate::intern::SymbolTable,
-    parse_id: TermId,
+    parse_id: ParseTermId,
     scope: ScopeId,
     var_map: &mut HashMap<u32, VarId>,
 ) -> QueryPattern {
@@ -24963,7 +24962,7 @@ fn convert_query_term_expecting(
     kb: &mut KnowledgeBase,
     parse_terms: &SimpleTermStore,
     parse_symbols: &crate::intern::SymbolTable,
-    parse_id: TermId,
+    parse_id: ParseTermId,
     scope: ScopeId,
     var_map: &mut HashMap<u32, VarId>,
     expected: Option<Value>,
@@ -25914,7 +25913,7 @@ fn rule_head_ladder_answer(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> Re
 fn head_type_annotation_names(
     parse_sym: &crate::intern::SymbolTable,
     parse_terms: &SimpleTermStore,
-    head: TermId,
+    head: ParseTermId,
 ) -> Vec<String> {
     let (pos_args, named_args) = match parse_terms.get(head) {
         Term::Fn {
@@ -25925,7 +25924,7 @@ fn head_type_annotation_names(
         _ => return Vec::new(),
     };
     let mut out = Vec::new();
-    let mut visit = |arg: TermId| {
+    let mut visit = |arg: ParseTermId| {
         if !parse_terms.is_minted(arg) {
             return;
         }
@@ -25989,7 +25988,7 @@ fn head_type_annotation_names(
 fn parse_arg_type_name_of(
     parse_sym: &crate::intern::SymbolTable,
     parse_terms: &SimpleTermStore,
-    value: TermId,
+    value: ParseTermId,
 ) -> Option<String> {
     match parse_terms.get(value) {
         Term::Ref(s) | Term::Ident(s) => Some(parse_sym.local_name(*s).to_owned()),
@@ -26818,7 +26817,7 @@ pub fn print_item_timings(label: &str) {
 /// the parent kb_id, keeping host stack usage O(1) regardless of
 /// source nesting depth.
 enum LoadWorkOp {
-    Visit(TermId),
+    Visit(ParseTermId),
     Build(LoadBuildFrame),
     /// Open a let/lambda/match-branch local-name scope. The frame's
     /// (name → symbol) entries shadow same-named rules / params /
@@ -26847,32 +26846,32 @@ enum LoadWorkOp {
 /// converted children from the result stack and rebuild the parent.
 enum LoadBuildFrame {
     MatchExpr {
-        outer_parse_id: TermId,
+        outer_parse_id: ParseTermId,
         branch_count: usize,
     },
     MatchBranch {
-        outer_parse_id: TermId,
+        outer_parse_id: ParseTermId,
         has_guard: bool,
     },
     IfExpr {
-        outer_parse_id: TermId,
+        outer_parse_id: ParseTermId,
     },
     LetExpr {
-        outer_parse_id: TermId,
+        outer_parse_id: ParseTermId,
     },
     Lambda {
-        outer_parse_id: TermId,
+        outer_parse_id: ParseTermId,
     },
     /// WI-538: an in-body / control-flow proof. `has_conclude` selects
     /// whether the result stack carries `[body, conclude]` or `[body]`;
     /// the target / strategy / using clauses are read back off the
     /// parse term's `ParseAux::ProofStmt`.
     ProofStmt {
-        outer_parse_id: TermId,
+        outer_parse_id: ParseTermId,
         has_conclude: bool,
     },
     PatternConstructor {
-        outer_parse_id: TermId,
+        outer_parse_id: ParseTermId,
         name_ref: TermId,
         sub_pattern_count: usize,
         /// WI-445: the (reinterned) field names of named sub-patterns
@@ -26881,11 +26880,11 @@ enum LoadBuildFrame {
         named_fields: Vec<Symbol>,
     },
     PatternTuple {
-        outer_parse_id: TermId,
+        outer_parse_id: ParseTermId,
         element_count: usize,
     },
     ApplyOrConstructor {
-        outer_parse_id: TermId,
+        outer_parse_id: ParseTermId,
         functor: Symbol,
         pos_count: usize,
         named_keys: SmallVec<[Symbol; 2]>,
@@ -26896,7 +26895,7 @@ enum LoadBuildFrame {
     /// metadata, not a child); the receiver and args are drained from
     /// `results`.
     DotApply {
-        outer_parse_id: TermId,
+        outer_parse_id: ParseTermId,
         name_ref: TermId,
         pos_count: usize,
         named_keys: SmallVec<[Symbol; 2]>,
@@ -26989,14 +26988,14 @@ struct RuleBoundAnchor {
 #[derive(Clone, Copy)]
 struct ClauseHead {
     /// The head's own node — never judged, a head INTRODUCES its functor (WI-896).
-    node: TermId,
+    node: ParseTermId,
     /// For a connective head: its subject node, and the span its replacement covers.
     /// Set when the head node itself converts and its RESOLVED functor is known.
-    connective: Option<(TermId, crate::span::SourceSpan)>,
+    connective: Option<(ParseTermId, crate::span::SourceSpan)>,
 }
 
 impl ClauseHead {
-    fn new(node: TermId) -> Self {
+    fn new(node: ParseTermId) -> Self {
         Self {
             node,
             connective: None,
@@ -27006,7 +27005,7 @@ impl ClauseHead {
     /// Is `parse_id`, written `at`, a connective's subject node or inside its replacement?
     /// BY SPAN for the replacement, because its subtree is converted by the ordinary
     /// recursion, which this does not bracket.
-    fn exempts(&self, parse_id: TermId, at: crate::span::SourceSpan) -> bool {
+    fn exempts(&self, parse_id: ParseTermId, at: crate::span::SourceSpan) -> bool {
         self.connective.is_some_and(|(subject, replacement)| {
             parse_id == subject
                 || (at.source == replacement.source
@@ -27109,8 +27108,8 @@ struct Loader<'a> {
     resolver: &'a dyn SourceResolver,
     #[allow(dead_code)]
     loaded_paths: &'a mut HashSet<String>,
-    // Map from parse-time TermId → KB TermId
-    term_map: HashMap<u32, TermId>,
+    // Map from a parse term to the KB term it converted to
+    term_map: HashMap<ParseTermId, TermId>,
     /// WI-20260903-FC2X4 — is [`Loader::compound_expression_occurrence`] currently
     /// lending [`Loader::visit_load`] to a compound expression written IN A RULE?
     ///
@@ -27135,7 +27134,7 @@ struct Loader<'a> {
     /// such node (a `@[simp]` head's term conversion and its RHS occurrence) delegate to
     /// `convert_expr_term` ONCE. Keyed by PARSE node, like `entity_slot_origin` and for
     /// its reason: the question is about a place, not about a structure.
-    compound_expr_occ: HashMap<u32, Rc<NodeOccurrence>>,
+    compound_expr_occ: HashMap<ParseTermId, Rc<NodeOccurrence>>,
     /// WI-20260902-2SZ88 — per ENTITY-headed parse node, the `(field, parse child)`
     /// pairs its lowering ASSIGNED, in no particular order (the reader looks up by
     /// symbol). A declared field missing from the list was INVENTED by
@@ -27148,7 +27147,7 @@ struct Loader<'a> {
     /// occurrence builder asks — which span, is this a dot the author wrote, was this
     /// bracket consumed — is about a PLACE. Written by `convert_term_inner`'s `Fn` arm,
     /// the one site that decides the assignment; read by `entity_ctor_expr`.
-    entity_slot_origin: HashMap<u32, Vec<(Symbol, TermId)>>,
+    entity_slot_origin: HashMap<ParseTermId, Vec<(Symbol, ParseTermId)>>,
     /// WI-20260902-2SZ88 — IS A `convert_term` WALK ALREADY COVERING THIS SUBTREE'S
     /// INLINE DESCRIPTIONS? Set while [`Self::entity_ctor_expr`]'s children are being
     /// built, because that function calls `convert_term` on the whole entity subtree
@@ -27401,9 +27400,9 @@ struct Loader<'a> {
     /// alias, each on the occurrence that holds the name
     /// ([`Self::clause_binding_as_written`]), keyed by the goal's parse term. Left by the
     /// goal's conversion for [`Self::contract_goal_as_written`], which takes it.
-    contract_goal_aliases: HashMap<u32, Vec<(ClauseSlot, Rc<NodeOccurrence>)>>,
-    // Description index counter per target (keyed by TermId raw)
-    desc_index: HashMap<u32, i64>,
+    contract_goal_aliases: HashMap<ParseTermId, Vec<(ClauseSlot, Rc<NodeOccurrence>)>>,
+    // Description index counter per target
+    desc_index: HashMap<TermId, i64>,
     // WI-20260914-DV7DP — declarations with no block, whose empty `DeclarationMeta` row
     // waits for the end of the file, and the (name, kind)s some declaration gave a
     // block. See `record_declaration_block`.
@@ -27464,7 +27463,7 @@ struct Loader<'a> {
     // DISTINCT symbols — making Γ's binder facts (`x ≡ e`, `eq(s, some(x))`)
     // shadowing-correct (proposal 050). Parse ids are unique per file (the parse
     // store does not hash-cons), so no two binding sites collide.
-    binder_syms: HashMap<u32, Symbol>,
+    binder_syms: HashMap<ParseTermId, Symbol>,
     // WI-201: bare-spec-member sugar accumulator. `Some` ONLY while loading an
     // operation SIGNATURE (set up at the top of `load_operation`, drained at its
     // end). A bare `Spec.Member` in a signature type position — `Member` a
@@ -27527,30 +27526,30 @@ struct Loader<'a> {
     // unrecorded lowering path fails LOUDLY (its bracket is reported) instead of
     // silently, and a new honouring reader announces itself by having to record here.
     //
-    // Keyed by parse `TermId`, and therefore governed by the parse-store STABILITY
+    // Keyed by `ParseTermId`, and therefore governed by the parse-store STABILITY
     // caveat `SimpleTermStore` states for its own `minted` / `type_applications` /
     // `projections` marks (`parse/ir.rs`): a future pass that reconstructs parse
     // subtrees must carry this set over too, or every consumed bracket becomes a
     // spurious refusal. Named here because the set lives outside that type.
-    consumed_call_type_args: HashSet<TermId>,
+    consumed_call_type_args: HashSet<ParseTermId>,
     /// WI-20260829-W6JH0 — the `recv_type` channel's own half of the WI-839 rule "every
     /// written bracket is read or reported". Kept SEPARATE from
     /// [`Self::consumed_call_type_args`] rather than sharing one set: a call may carry
     /// both brackets, and one set would mark the receiver's consumed because the callee's
     /// was read, which is the accounting error the sweep exists to catch.
-    consumed_recv_types: HashSet<TermId>,
+    consumed_recv_types: HashSet<ParseTermId>,
     // WI-839: rule-HEAD nodes whose bracket carries a concrete binding rather than a
     // bare WI-582 introducer (`rule r[A = Int64](…)`). Recorded by
     // `collect_rule_tvar_names` — the only place that knows the node is a head — purely
     // so the sweep can give that shape its own advice; the refusal itself is the
     // ordinary unconsumed one.
-    rule_head_bracket_bindings: HashSet<TermId>,
+    rule_head_bracket_bindings: HashSet<ParseTermId>,
     /// The parse nodes written as an ENTRY of a bracket in a value definition — the
     /// children of a bracketed application the expression walk has visited. An entry of a
     /// bracket is a type argument, so a BARE constructor standing there (`Box[V = Pair.left]`)
     /// is the constructor's type (`Loader::push_leaf_occ`). A bracketed one is its type
     /// wherever it stands (WI-20260902-JB6RS), so this set is read for the bare name only.
-    bracket_entries: HashSet<TermId>,
+    bracket_entries: HashSet<ParseTermId>,
 }
 
 /// WI-201: per-operation accumulator for the carrier-direct bare-spec-member sugar.
@@ -27743,9 +27742,9 @@ impl ExprBuilderSyms {
 /// `ArgSlot::Named` carries and what `rule_head_written_columns` matches against.
 struct RuleHeadParams {
     head_sym: Symbol,
-    pos_args: SmallVec<[TermId; 4]>,
-    named_args: SmallVec<[(Symbol, TermId); 2]>,
-    params: Vec<(Symbol, TermId)>,
+    pos_args: SmallVec<[ParseTermId; 4]>,
+    named_args: SmallVec<[(Symbol, ParseTermId); 2]>,
+    params: Vec<(Symbol, ParseTermId)>,
 }
 
 /// How one `require` bracket binding lowered — THREE outcomes, not two.
@@ -27873,12 +27872,12 @@ impl<'a> Loader<'a> {
     /// distinct symbols — alpha-renaming the binder so Γ's facts over it are
     /// shadowing-correct. The display name stays `name`, so eval's name-based
     /// `find_local` and the printer are unchanged.
-    fn binder_sym(&mut self, name: &str, pattern_var_parse_id: TermId) -> Symbol {
-        if let Some(&sym) = self.binder_syms.get(&pattern_var_parse_id.raw()) {
+    fn binder_sym(&mut self, name: &str, pattern_var_parse_id: ParseTermId) -> Symbol {
+        if let Some(&sym) = self.binder_syms.get(&pattern_var_parse_id) {
             return sym;
         }
         let sym = self.kb.intern_unique(name);
-        self.binder_syms.insert(pattern_var_parse_id.raw(), sym);
+        self.binder_syms.insert(pattern_var_parse_id, sym);
         sym
     }
 
@@ -27916,7 +27915,7 @@ impl<'a> Loader<'a> {
     /// walked normally (they may contain minted arrows of their own).
     fn check_bare_arrow_typo(
         &mut self,
-        parse_id: TermId,
+        parse_id: ParseTermId,
         position: &'static str,
         bound: &HashSet<String>,
     ) {
@@ -28018,7 +28017,7 @@ impl<'a> Loader<'a> {
     /// `field_access` is not minted and is walked in full).
     fn find_arrow_witness(
         &self,
-        parse_id: TermId,
+        parse_id: ParseTermId,
         bound: &HashSet<String>,
         found: &mut ArrowWitness,
     ) {
@@ -28112,7 +28111,7 @@ impl<'a> Loader<'a> {
     /// variable NAMES of a `pattern_var`/`pattern_tuple`/`pattern_constructor`
     /// parse pattern, without minting binder symbols (this pre-pass must not
     /// disturb the per-site alpha-renaming the load walk performs).
-    fn pattern_binder_names(&self, parse_id: TermId, out: &mut HashSet<String>) {
+    fn pattern_binder_names(&self, parse_id: ParseTermId, out: &mut HashSet<String>) {
         let Term::Fn {
             functor,
             pos_args,
@@ -28151,7 +28150,7 @@ impl<'a> Loader<'a> {
     /// `local_names_stack`. Empty patterns (wildcard, literal) produce
     /// an empty frame; callers should skip the Push/Pop ops in that
     /// case to avoid no-op stack churn.
-    fn build_pattern_scope_frame(&mut self, parse_id: TermId) -> HashMap<String, Symbol> {
+    fn build_pattern_scope_frame(&mut self, parse_id: ParseTermId) -> HashMap<String, Symbol> {
         let mut frame: HashMap<String, Symbol> = HashMap::new();
         self.collect_pattern_names_into(parse_id, &mut frame);
         frame
@@ -28178,8 +28177,11 @@ impl<'a> Loader<'a> {
     /// The FRAME is still what shadows; only what it resolves to changes. It reuses
     /// `build_pattern_scope_frame`'s walk rather than re-deriving which names a pattern
     /// binds — one owner of that question — and re-keys the result to name identity.
-    fn build_pattern_name_frame(&mut self, parse_id: TermId) -> HashMap<String, Symbol> {
-        let names: Vec<String> = self.build_pattern_scope_frame(parse_id).into_keys().collect();
+    fn build_pattern_name_frame(&mut self, parse_id: ParseTermId) -> HashMap<String, Symbol> {
+        let names: Vec<String> = self
+            .build_pattern_scope_frame(parse_id)
+            .into_keys()
+            .collect();
         names
             .into_iter()
             .map(|name| {
@@ -28195,7 +28197,7 @@ impl<'a> Loader<'a> {
     /// `load_pattern_var → reintern` produces for the pattern itself.
     fn collect_pattern_names_into(
         &mut self,
-        parse_id: TermId,
+        parse_id: ParseTermId,
         frame: &mut HashMap<String, Symbol>,
     ) {
         // Borrow `parsed.terms` immutably; `kb.intern` borrows kb mutably.
@@ -28386,7 +28388,7 @@ impl<'a> Loader<'a> {
     /// scope by construction, so there is no producer to enumerate and no rung to
     /// re-rank. The defect the override was written for, and the measurement that says
     /// the addresses still close it, are recorded at those constants.
-    fn remap_functor(&mut self, functor: Symbol, parse_id: TermId) -> Symbol {
+    fn remap_functor(&mut self, functor: Symbol, parse_id: ParseTermId) -> Symbol {
         self.remap_symbol(functor, self.parsed.terms.span(parse_id))
     }
 
@@ -29220,7 +29222,7 @@ impl<'a> Loader<'a> {
 
     /// This file's `SourceSpan` for a parse-IR term — the parse span tagged with
     /// the loader's `source_id` (fixed for the whole file, set in `Loader::new`).
-    fn source_span_of(&self, parse_id: TermId) -> SourceSpan {
+    fn source_span_of(&self, parse_id: ParseTermId) -> SourceSpan {
         SourceSpan::from_span(self.source_id, self.parsed.terms.span(parse_id))
     }
 
@@ -29229,7 +29231,7 @@ impl<'a> Loader<'a> {
     /// other passes read these for error-reporting spans.
     /// First-write-wins on both keys mirrors the legacy
     /// `the legacy occurrence by-term index/rules_by_functor.first()` semantics.
-    fn create_occurrence(&mut self, parse_id: TermId, kb_id: TermId) {
+    fn create_occurrence(&mut self, parse_id: ParseTermId, kb_id: TermId) {
         let source_span = self.source_span_of(parse_id);
         self.kb.term_spans.entry(kb_id).or_insert(source_span);
         // WI-20260902-CZJ2N — `Term::Ref` / `Term::Ident` TOO. A nullary application is
@@ -29466,7 +29468,7 @@ impl<'a> Loader<'a> {
     /// price the relational head has always paid. MEASURED 2026-09-10: no `.anthill` file
     /// in `stdlib/`, `examples/` or `rustland/` writes an equation head with a top-level
     /// `name: Sort` argument, so the loss is latent. Raised by /code-review.
-    fn classify_rule_head_params(&mut self, parse_id: TermId) -> Option<RuleHeadParams> {
+    fn classify_rule_head_params(&mut self, parse_id: ParseTermId) -> Option<RuleHeadParams> {
         let (functor, pos_args, named_args) = match self.parsed.terms.get(parse_id) {
             Term::Fn {
                 functor,
@@ -29527,7 +29529,7 @@ impl<'a> Loader<'a> {
         if pos_args.iter().any(|&a| self.is_parse_aux(a)) {
             return None;
         }
-        let named_args: SmallVec<[(Symbol, TermId); 2]> = named_args
+        let named_args: SmallVec<[(Symbol, ParseTermId); 2]> = named_args
             .into_iter()
             .filter(|&(_, id)| self.named_child_survives_walk(id))
             .collect();
@@ -29536,7 +29538,7 @@ impl<'a> Loader<'a> {
         }
         // (2b) which named args are the parameter form. Resolved BEFORE anything is
         // built, so a head with none is left untouched rather than rebuilt identically.
-        let params: Vec<(Symbol, TermId)> = named_args
+        let params: Vec<(Symbol, ParseTermId)> = named_args
             .iter()
             .filter(|&&(_, v)| self.parse_arg_names_a_sort(v))
             .copied()
@@ -29571,7 +29573,7 @@ impl<'a> Loader<'a> {
     /// THE PARAMETER IS A COLUMN IN THE POSITION IT WAS WRITTEN
     /// (WI-20260909-C7ANM) — see [`Self::rule_head_written_columns`], which owns that
     /// half and the measurement behind it.
-    fn convert_rule_head_with_params(&mut self, parse_id: TermId) -> Option<TermId> {
+    fn convert_rule_head_with_params(&mut self, parse_id: ParseTermId) -> Option<TermId> {
         // WI-20261001-KDMQS — this builds the head NODE itself rather than through
         // `convert_term_inner`'s `Fn` arm, so it moves the const-fold state the way that
         // arm does (its arguments are DATA slots) and gives the caller's back.
@@ -29581,7 +29583,7 @@ impl<'a> Loader<'a> {
         head
     }
 
-    fn convert_rule_head_with_params_inner(&mut self, parse_id: TermId) -> Option<TermId> {
+    fn convert_rule_head_with_params_inner(&mut self, parse_id: ParseTermId) -> Option<TermId> {
         let RuleHeadParams {
             head_sym,
             pos_args,
@@ -29775,7 +29777,7 @@ impl<'a> Loader<'a> {
             pos_args: new_pos,
             named_args: new_named,
         });
-        self.term_map.insert(parse_id.raw(), head);
+        self.term_map.insert(parse_id, head);
         Some(head)
     }
 
@@ -29813,7 +29815,7 @@ impl<'a> Loader<'a> {
     /// these keys makes every `find` below miss.
     fn rule_head_written_columns(
         &mut self,
-        parse_id: TermId,
+        parse_id: ParseTermId,
         positional: &[TermId],
         parse_keyed_params: &[(Symbol, TermId)],
     ) -> Option<SmallVec<[TermId; 4]>> {
@@ -29915,7 +29917,7 @@ impl<'a> Loader<'a> {
     /// bare-name spelling's 1 — a genuinely dead clause, not the symbolic-constant
     /// reading, because a named arg's LABEL is not a term the body can match. Found by
     /// `/code-review`.
-    fn parse_arg_type_name(&self, value: TermId) -> Option<String> {
+    fn parse_arg_type_name(&self, value: ParseTermId) -> Option<String> {
         parse_arg_type_name_of(&self.parsed.symbols, &self.parsed.terms, value)
     }
 
@@ -29923,7 +29925,7 @@ impl<'a> Loader<'a> {
     /// (`List[T = Int64]`) rather than a name? Its bound is the whole converted term,
     /// where a name's is a re-minted sort ref. A DOTTED path is a name, however it
     /// parses — asked through [`dotted_citation_name`], the one owner of that question.
-    fn parse_arg_type_is_applied(&self, value: TermId) -> bool {
+    fn parse_arg_type_is_applied(&self, value: ParseTermId) -> bool {
         matches!(self.parsed.terms.get(value), Term::Fn { .. })
             && dotted_citation_name(&self.parsed.symbols, &self.parsed.terms, value).is_none()
     }
@@ -29982,7 +29984,7 @@ impl<'a> Loader<'a> {
     /// read the spec base out of this very slot — recognizes `Apply`/`Constructor`/
     /// `Instantiation`/`Ref`/`Ident` and not `Spliced`, so splicing here would have made
     /// the rewrite report "an argument with no nominal spec head" for every goal.
-    fn build_require_spec_occurrence(&mut self, parse_id: TermId) -> Rc<NodeOccurrence> {
+    fn build_require_spec_occurrence(&mut self, parse_id: ParseTermId) -> Rc<NodeOccurrence> {
         let raw_span = self.parsed.terms.span(parse_id);
         let span = SourceSpan::from_span(self.source_id, raw_span);
         // A tuple type, an arrow type or an effect row standing where the spec instance
@@ -30230,7 +30232,7 @@ impl<'a> Loader<'a> {
     /// that true at every depth: an earlier version let it fall to `remap_symbol_strict`,
     /// and a nested head-introduced type variable was then reported `unresolved name`
     /// — two resolvers answering one question, found by `/code-review`.
-    fn require_spec_binding_occurrence(&mut self, parse_id: TermId) -> SpecBindingLowering {
+    fn require_spec_binding_occurrence(&mut self, parse_id: ParseTermId) -> SpecBindingLowering {
         // WI-20260909-S8CBV gate (1) — A PROJECTION IS A THIRD KIND. Asked FIRST, because
         // the two rungs below are about NAMES (does this spell a sort? is it the spec's
         // own parameter?) and `p.E` is neither, so the drop rule read it as a typo:
@@ -30338,7 +30340,7 @@ impl<'a> Loader<'a> {
         &mut self,
         base: Symbol,
         declared: &[String],
-        value: TermId,
+        value: ParseTermId,
         span: crate::span::Span,
     ) {
         // A tuple type and an arrow type have no name; each is named by its text.
@@ -30418,7 +30420,7 @@ impl<'a> Loader<'a> {
     /// shared with that function because the two differ in the half that matters: this
     /// one resolves its receiver in `rule_param_vars`, which the type ladder never
     /// consults, and admits no other head at all.
-    fn try_require_spec_projection(&mut self, parse_id: TermId) -> SpecBindingLowering {
+    fn try_require_spec_projection(&mut self, parse_id: ParseTermId) -> SpecBindingLowering {
         let Some(name) = self.parse_arg_type_name(parse_id) else {
             return SpecBindingLowering::Dropped;
         };
@@ -30519,14 +30521,14 @@ impl<'a> Loader<'a> {
         ))
     }
 
-    fn require_spec_binding_sort(&self, parse_id: TermId) -> Option<Symbol> {
+    fn require_spec_binding_sort(&self, parse_id: ParseTermId) -> Option<Symbol> {
         let name = self.parse_arg_type_name(parse_id)?;
         self.parse_arg_sort_symbol(&name)
     }
 
     /// WI-742 §2.1 — does this parse argument spell a name that resolves to a SORT?
     /// The second half of [`Self::convert_rule_head_with_params`]'s discriminator.
-    fn parse_arg_names_a_sort(&mut self, value: TermId) -> bool {
+    fn parse_arg_names_a_sort(&mut self, value: ParseTermId) -> bool {
         self.parse_arg_is_self_type(value)
             || self
                 .parse_arg_type_name(value)
@@ -30547,7 +30549,7 @@ impl<'a> Loader<'a> {
     /// reference to the enclosing sort is exactly what `Self` is not. MEASURED before
     /// this: `rule pick(c: Self) :- item(c)` loaded clean and answered nothing where
     /// `c: Tag` answered `red` — `c` was a label over an unknown constant.
-    fn parse_arg_is_self_type(&self, value: TermId) -> bool {
+    fn parse_arg_is_self_type(&self, value: ParseTermId) -> bool {
         !self.parse_arg_type_is_applied(value)
             && self.parse_arg_type_name(value).as_deref() == Some(crate::intern::SELF_TYPE_NAME)
             && self.enclosing_sort_for_self().is_some()
@@ -30589,7 +30591,7 @@ impl<'a> Loader<'a> {
         }
     }
 
-    fn convert_subject_term(&mut self, parse_id: TermId) -> TermId {
+    fn convert_subject_term(&mut self, parse_id: ParseTermId) -> TermId {
         let Some(sym) = self.dotted_subject_symbol(parse_id) else {
             let tid = self.convert_term(parse_id);
             // WI-20260902-CZJ2N: §8.3's expansion, at the funnel. The memo is
@@ -30598,7 +30600,7 @@ impl<'a> Loader<'a> {
             // later walk of it sees a shape this position already decided against.
             let expanded = self.expand_bare_entity_subject(tid);
             if expanded != tid {
-                self.term_map.insert(parse_id.raw(), expanded);
+                self.term_map.insert(parse_id, expanded);
             }
             return expanded;
         };
@@ -30613,7 +30615,7 @@ impl<'a> Loader<'a> {
         // never had one, so this stays a substitution for that call rather than a second
         // writer into the hash-consed `term_spans`, where first-write-wins would let a
         // head site claim a `Ref`'s span from whatever renders it later (WI-458).
-        self.term_map.insert(parse_id.raw(), kb_id);
+        self.term_map.insert(parse_id, kb_id);
         kb_id
     }
 
@@ -30624,7 +30626,7 @@ impl<'a> Loader<'a> {
     /// functor takes, so `rule nsx.tgt` and `rule nsx.tgt()` cannot land on different
     /// symbols, and a name that resolves to NOTHING reaches WI-476's bare intern in both
     /// spellings instead of one of them silently becoming a `field_access` clause.
-    fn dotted_subject_symbol(&mut self, parse_id: TermId) -> Option<Symbol> {
+    fn dotted_subject_symbol(&mut self, parse_id: ParseTermId) -> Option<Symbol> {
         let name = dotted_citation_name(&self.parsed.symbols, &self.parsed.terms, parse_id)?;
         Some(self.remap_name_str(&name, self.parsed.terms.span(parse_id)))
     }
@@ -30650,7 +30652,7 @@ impl<'a> Loader<'a> {
     /// is a `const`, else `None`. A value the loader cannot know is reported HERE, at the
     /// slot that asked for it, and the caller keeps the symbol: the load has failed, and
     /// the stored shape no longer matters.
-    fn data_slot_const_value(&mut self, sym: Symbol, parse_id: TermId) -> Option<Literal> {
+    fn data_slot_const_value(&mut self, sym: Symbol, parse_id: ParseTermId) -> Option<Literal> {
         if self.const_fold != ConstFold::Data || !self.kb.has_kind(sym, SymbolKind::Const) {
             return None;
         }
@@ -30695,7 +30697,7 @@ impl<'a> Loader<'a> {
     ///
     /// A chain rooted at a clause parameter or a local binder is a projection on that
     /// binding and never names a const, however its root is spelled.
-    fn data_slot_dotted_const(&self, parse_id: TermId) -> Option<Symbol> {
+    fn data_slot_dotted_const(&self, parse_id: ParseTermId) -> Option<Symbol> {
         if self.const_fold != ConstFold::Data {
             return None;
         }
@@ -30715,7 +30717,7 @@ impl<'a> Loader<'a> {
     /// one-segment name is, so `fact holds(Colour.red)` holds `red`'s symbol, and a goal or a
     /// query writing `red`, `Colour.red` or the whole qualified name finds it. Rooted at no
     /// binding, as [`Self::data_slot_dotted_const`] is.
-    fn data_slot_dotted_ctor(&self, parse_id: TermId) -> Option<Symbol> {
+    fn data_slot_dotted_ctor(&self, parse_id: ParseTermId) -> Option<Symbol> {
         if self.const_fold != ConstFold::Data {
             return None;
         }
@@ -30729,7 +30731,7 @@ impl<'a> Loader<'a> {
     /// that fixes parameters (`CA.T`) is read at them ([`dotted_type_named`]). A member whose
     /// definition names a parameter the alias leaves open is refused. Rooted at no binding,
     /// as [`Self::data_slot_dotted_const`] is.
-    fn data_slot_dotted_type(&mut self, parse_id: TermId) -> Option<DottedType> {
+    fn data_slot_dotted_type(&mut self, parse_id: ParseTermId) -> Option<DottedType> {
         if self.const_fold != ConstFold::Data {
             return None;
         }
@@ -30749,7 +30751,7 @@ impl<'a> Loader<'a> {
     /// literal it holds, a const in a data slot its value, a type alias there the type it
     /// stands for, anything else its reference. One reading for the one-segment name, the
     /// written reference and a constructor's qualified name.
-    fn resolved_name_term(&mut self, sym: Symbol, parse_id: TermId, span: Span) -> Term {
+    fn resolved_name_term(&mut self, sym: Symbol, parse_id: ParseTermId, span: Span) -> Term {
         if self.term_walk_at_goal() {
             if let Some(lit) = self.goal_const_value(sym) {
                 return Term::Const(lit);
@@ -30770,7 +30772,7 @@ impl<'a> Loader<'a> {
     /// A bracket is the type; a node the converter MINTED is its own encoding. In a CLAUSE
     /// only (`const_fold` is `Off` outside one): an operation body's application is the
     /// typer's to refuse, and it does, naming the bracket (`sort_applied_as_call`).
-    fn refuse_sort_applied_as_data(&mut self, parse_id: TermId, functor: Symbol) {
+    fn refuse_sort_applied_as_data(&mut self, parse_id: ParseTermId, functor: Symbol) {
         if self.const_fold == ConstFold::Off
             || self.parsed.terms.is_type_application(parse_id)
             || self.parsed.terms.is_minted(parse_id)
@@ -30810,7 +30812,7 @@ impl<'a> Loader<'a> {
     /// field after field, each level built here as its parse node is lowered.
     fn clause_param_field_read(
         &mut self,
-        parse_id: TermId,
+        parse_id: ParseTermId,
         span: SourceSpan,
     ) -> Option<Rc<NodeOccurrence>> {
         if !self.parsed.terms.is_minted(parse_id) {
@@ -30877,7 +30879,7 @@ impl<'a> Loader<'a> {
     /// term takes none, and the end-of-file sweep refuses it as it refuses one on `?p.t.m`.
     fn clause_param_method_call(
         &mut self,
-        parse_id: TermId,
+        parse_id: ParseTermId,
         span: SourceSpan,
     ) -> Option<Rc<NodeOccurrence>> {
         if self.rule_param_vars.is_empty() {
@@ -30917,7 +30919,7 @@ impl<'a> Loader<'a> {
             .iter()
             .map(|&a| self.build_body_atom_occurrence(a))
             .collect();
-        let named_args: Vec<(Symbol, TermId)> = named_args
+        let named_args: Vec<(Symbol, ParseTermId)> = named_args
             .iter()
             .copied()
             .filter(|&(_, a)| self.named_child_survives_walk(a))
@@ -30946,7 +30948,7 @@ impl<'a> Loader<'a> {
     /// clause's own term is read, unless its root is a clause parameter or a local
     /// binder: such a chain is a projection on that binding and names nothing, however
     /// its root is spelled.
-    fn dotted_name_rooted_at_no_binding(&self, parse_id: TermId) -> Option<String> {
+    fn dotted_name_rooted_at_no_binding(&self, parse_id: ParseTermId) -> Option<String> {
         let name = dotted_citation_name(&self.parsed.symbols, &self.parsed.terms, parse_id)?;
         let root = name.split('.').next()?;
         if self.rule_param_vars.contains_key(root)
@@ -30960,8 +30962,8 @@ impl<'a> Loader<'a> {
         Some(name)
     }
 
-    /// Convert a parse-time TermId to a KB TermId, re-allocating into the hash-consed store.
-    fn convert_term(&mut self, parse_id: TermId) -> TermId {
+    /// Convert a parse term to a KB term, re-allocating into the hash-consed store.
+    fn convert_term(&mut self, parse_id: ParseTermId) -> TermId {
         self.convert_term_with_expected(parse_id, None)
     }
 
@@ -30972,7 +30974,7 @@ impl<'a> Loader<'a> {
     /// would silently match only `E`s whose optional field is `none()`. Clear
     /// `in_value_position` for that field's subtree; every other field converts under
     /// the ambient context.
-    fn convert_arg_value(&mut self, parse_id: TermId, expected: Option<Value>) -> TermId {
+    fn convert_arg_value(&mut self, parse_id: ParseTermId, expected: Option<Value>) -> TermId {
         let quoted = expected
             .as_ref()
             .is_some_and(|e| super::typing::is_reflect_term_type(self.kb, e));
@@ -31029,7 +31031,11 @@ impl<'a> Loader<'a> {
     /// WI-20261001-KDMQS: and `const_fold` the same way. A node sets its children's state
     /// before converting each one, so the CALLER's state must come back when the node is
     /// done.
-    fn convert_term_with_expected(&mut self, parse_id: TermId, expected: Option<Value>) -> TermId {
+    fn convert_term_with_expected(
+        &mut self,
+        parse_id: ParseTermId,
+        expected: Option<Value>,
+    ) -> TermId {
         let saved = self.term_depth;
         let saved_fold = self.const_fold;
         let saved_type_binding = self.in_type_binding;
@@ -31041,7 +31047,7 @@ impl<'a> Loader<'a> {
         converted
     }
 
-    fn convert_term_inner(&mut self, parse_id: TermId, expected: Option<Value>) -> TermId {
+    fn convert_term_inner(&mut self, parse_id: ParseTermId, expected: Option<Value>) -> TermId {
         if self.in_rule_head_bound && !self.parse_arg_type_is_applied(parse_id) {
             if let Some(name) = self.parse_arg_type_name(parse_id) {
                 if let Some(RuleTvar::Bounded(requirement)) = self.rule_head_tvar(&name) {
@@ -31054,7 +31060,7 @@ impl<'a> Loader<'a> {
                 }
             }
         }
-        if let Some(&mapped) = self.term_map.get(&parse_id.raw()) {
+        if let Some(&mapped) = self.term_map.get(&parse_id) {
             return mapped;
         }
         // Proposal 070 §1.2 — `Self` INSIDE A RULE HEAD'S APPLIED BOUND (`c: List[T =
@@ -31066,7 +31072,7 @@ impl<'a> Loader<'a> {
         // which is not what `Self` says (MEASURED, found by /code-review).
         if self.in_rule_head_bound && self.parse_arg_is_self_type(parse_id) {
             let term = self.self_type_term(self.parsed.terms.span(parse_id));
-            self.term_map.insert(parse_id.raw(), term);
+            self.term_map.insert(parse_id, term);
             return term;
         }
         // …AND A PARAMETER OF THE ENCLOSING SORT NAMED THERE (`c: Box[T = T]`, `c: Option[T
@@ -31087,7 +31093,7 @@ impl<'a> Loader<'a> {
                 {
                     if let Some(param) = self.parse_arg_sort_symbol(&name) {
                         let term = self.type_param_var(param, &name);
-                        self.term_map.insert(parse_id.raw(), term);
+                        self.term_map.insert(parse_id, term);
                         return term;
                     }
                 }
@@ -31148,7 +31154,7 @@ impl<'a> Loader<'a> {
                 if let Some(c) = self.data_slot_dotted_const(parse_id) {
                     if let Some(lit) = self.data_slot_const_value(c, parse_id) {
                         let kb_id = self.kb.alloc(Term::Const(lit));
-                        self.term_map.insert(parse_id.raw(), kb_id);
+                        self.term_map.insert(parse_id, kb_id);
                         return kb_id;
                     }
                 }
@@ -31160,7 +31166,7 @@ impl<'a> Loader<'a> {
                         .and_then(|c| self.goal_const_value(c));
                     if let Some(lit) = at_goal {
                         let kb_id = self.kb.alloc(Term::Const(lit));
-                        self.term_map.insert(parse_id.raw(), kb_id);
+                        self.term_map.insert(parse_id, kb_id);
                         return kb_id;
                     }
                 }
@@ -31181,7 +31187,7 @@ impl<'a> Loader<'a> {
                     None => None,
                 };
                 if let Some(kb_id) = kb_id {
-                    self.term_map.insert(parse_id.raw(), kb_id);
+                    self.term_map.insert(parse_id, kb_id);
                     return kb_id;
                 }
                 // Every child of this node is a DATA slot unless the node is a connective
@@ -31316,7 +31322,7 @@ impl<'a> Loader<'a> {
                                 .to_string(),
                         });
                     }
-                    self.term_map.insert(parse_id.raw(), var_kb);
+                    self.term_map.insert(parse_id, var_kb);
                     return var_kb;
                 }
                 // WI-278: re-encode a *converter-emitted* parse
@@ -31402,7 +31408,7 @@ impl<'a> Loader<'a> {
                             (k_args, args_list),
                         ]),
                     });
-                    self.term_map.insert(parse_id.raw(), kb_id);
+                    self.term_map.insert(parse_id, kb_id);
                     return kb_id;
                 }
 
@@ -31587,7 +31593,7 @@ impl<'a> Loader<'a> {
                         .map(|&id| self.convert_arg_value(id, elem_expected.clone()))
                         .collect();
                     let kb_id = self.kb.build_list(&items);
-                    self.term_map.insert(parse_id.raw(), kb_id);
+                    self.term_map.insert(parse_id, kb_id);
                     if let Some(desc_texts) = self.parsed.terms.descriptions.get(&parse_id) {
                         let desc_texts = desc_texts.clone();
                         for desc_text in &desc_texts {
@@ -31763,7 +31769,7 @@ impl<'a> Loader<'a> {
                 // (`ParseAux::TypeExpr(EffectRow)`, e.g. `fact Spec[E = {}]`) —
                 // unlike the let/apply build-site ParseAux payloads, it is a real
                 // term-position binding value the ParseAux arm lowers in place.
-                let visible_named: SmallVec<[(Symbol, TermId); 2]> = named_args
+                let visible_named: SmallVec<[(Symbol, ParseTermId); 2]> = named_args
                     .iter()
                     .filter(|&&(_, id)| self.named_child_survives_walk(id))
                     .copied()
@@ -31780,7 +31786,7 @@ impl<'a> Loader<'a> {
                 // surface at all, which is exactly what the reader needs to know; the
                 // sort that function applies afterwards is not mirrored here, because
                 // the reader looks each field up BY SYMBOL.
-                let mut slot_origin: Vec<(Symbol, TermId)> = visible_named
+                let mut slot_origin: Vec<(Symbol, ParseTermId)> = visible_named
                     .iter()
                     .map(|&(sym, pid)| (self.reintern(sym), pid))
                     .collect();
@@ -32061,7 +32067,7 @@ impl<'a> Loader<'a> {
                 }
 
                 // WI-20260902-2SZ88 — HAND THE ORIGINS TO THE OCCURRENCE BUILDER. Keyed by
-                // the PARSE `TermId`, which is a PLACE key: `SimpleTermStore::alloc`
+                // the `ParseTermId`, which is a PLACE key: `SimpleTermStore::alloc`
                 // pushes unconditionally, one id per syntactic node. The KB id cannot
                 // carry this — it is hash-consed (many-to-one) and its slots are reissued
                 // from a free list, which is why the two tables that tried
@@ -32081,7 +32087,7 @@ impl<'a> Loader<'a> {
                 // ASSERT IS SAFE, and it was written nowhere until `/code-review` traced
                 // it; a future entry in that table with a field schema breaks it.
                 if self.kb.written_entity_field_names(new_functor).is_some() {
-                    self.entity_slot_origin.insert(parse_id.raw(), slot_origin);
+                    self.entity_slot_origin.insert(parse_id, slot_origin);
                 }
 
                 // A GOAL OF AN OPERATION'S `requires`. A type alias written in it — a
@@ -32106,7 +32112,7 @@ impl<'a> Loader<'a> {
                         written.extend(as_written.map(|occ| (ClauseSlot::Named(*key), occ)));
                     }
                     if !written.is_empty() {
-                        self.contract_goal_aliases.insert(parse_id.raw(), written);
+                        self.contract_goal_aliases.insert(parse_id, written);
                     }
                 }
 
@@ -32328,7 +32334,7 @@ impl<'a> Loader<'a> {
                 // disabled, and other non-value names use the ordinary resolver.
                 if self.in_op_contract_clause {
                     if let Some(child) = self.try_contract_projection(sym, span) {
-                        self.term_map.insert(parse_id.raw(), child);
+                        self.term_map.insert(parse_id, child);
                         return child;
                     }
                 }
@@ -32344,7 +32350,7 @@ impl<'a> Loader<'a> {
                     let name_ref = self.kb.alloc(Term::Ref(member));
                     let args_list = self.kb.build_list(&[]);
                     let kb_id = self.mk_dot_apply(receiver, name_ref, args_list);
-                    self.term_map.insert(parse_id.raw(), kb_id);
+                    self.term_map.insert(parse_id, kb_id);
                     return kb_id;
                 }
                 let new_sym = self.remap_symbol_strict(sym, span);
@@ -32387,7 +32393,7 @@ impl<'a> Loader<'a> {
                 // lowered HERE via the lowering the same text takes in a type
                 // position, so the fact-head and `provides` rows are byte-identical.
                 if let Some(kb_id) = self.lower_entry_type_aux(parse_id) {
-                    self.term_map.insert(parse_id.raw(), kb_id);
+                    self.term_map.insert(parse_id, kb_id);
                     return kb_id;
                 }
                 unreachable!(
@@ -32400,7 +32406,7 @@ impl<'a> Loader<'a> {
         };
 
         let kb_id = self.kb.alloc(kb_term);
-        self.term_map.insert(parse_id.raw(), kb_id);
+        self.term_map.insert(parse_id, kb_id);
 
         // Emit DescriptionInfo facts if the variable has inline descriptions
         if let Some(desc_texts) = self.parsed.terms.descriptions.get(&parse_id) {
@@ -32428,20 +32434,19 @@ impl<'a> Loader<'a> {
     /// kb_ids from the result stack and assembles the parent. Runs in
     /// O(1) host stack regardless of source nesting depth.
     ///
-    /// `parse_id` INDEXES `self.parsed.terms`, not the KB store. The two share the
-    /// `TermId` type (`parse::ir` reuses it for `SimpleTermStore`, a plain `Vec` with a
-    /// span per entry and no hash-consing) and this walk needs the PARSE one specifically:
-    /// it reads `is_minted` provenance, indexes `pos_args` BY POSITION (the marker layout
+    /// `parse_id` INDEXES `self.parsed.terms`, not the KB store — a [`ParseTermId`], the
+    /// id of `SimpleTermStore`, a plain `Vec` with a span per entry and no hash-consing —
+    /// and this walk needs the PARSE one specifically: it reads `is_minted` provenance, indexes `pos_args` BY POSITION (the marker layout
     /// only the desugar produces), takes a span per node, and keys each binder's gensym on
     /// its `pattern_var` parse node so `let x = 0` and `let x = 1` alpha-rename apart. All
     /// four are questions about a PLACE, which is why no `TermView` — the carrier-neutral
     /// view over KB-side terms and values — could stand in here; see `entity_slot_origin`,
-    /// which states the same rule for its key. That the two stores share ONE id TYPE, so
-    /// passing the wrong one compiles, is **WI-20260904-BZYQX**.
+    /// which states the same rule for its key. The two stores' ids are separate types
+    /// (WI-20260904-BZYQX), so a KB id handed to this walk does not compile.
     ///
     /// RETURNS THE OCCURRENCE ALONE. The KB terms are built and are load-bearing INSIDE
     /// the walk, but the root handle is not returned — see the pop at the tail for why.
-    fn convert_expr_term(&mut self, parse_id: TermId) -> Rc<NodeOccurrence> {
+    fn convert_expr_term(&mut self, parse_id: ParseTermId) -> Rc<NodeOccurrence> {
         let mut work = std::mem::take(&mut self.expr_work);
         let mut results = std::mem::take(&mut self.expr_results);
         work.clear();
@@ -32532,7 +32537,7 @@ impl<'a> Loader<'a> {
     /// kb_id directly or push a Build frame + child Visits.
     fn visit_load(
         &mut self,
-        parse_id: TermId,
+        parse_id: ParseTermId,
         work: &mut Vec<LoadWorkOp>,
         results: &mut Vec<TermId>,
     ) {
@@ -32844,7 +32849,7 @@ impl<'a> Loader<'a> {
                         let positional = &pos_args[2..];
                         // The dot's bracket rides as the `type_args` child an application's
                         // does, and is read where the frame builds the occurrence.
-                        let named_args: Vec<(Symbol, TermId)> = named_args
+                        let named_args: Vec<(Symbol, ParseTermId)> = named_args
                             .iter()
                             .filter(|&&(_, tid)| self.named_child_survives_walk(tid))
                             .copied()
@@ -32881,7 +32886,7 @@ impl<'a> Loader<'a> {
                         // (`operation f() -> Type = Spec[E = {}]`, `Box[V = (Int64)
                         // -> Int64]`) — the `Term::ParseAux` arm below lowers it (it
                         // is a real binding value, not a build-site payload).
-                        let visible_named: Vec<(Symbol, TermId)> = named_args
+                        let visible_named: Vec<(Symbol, ParseTermId)> = named_args
                             .iter()
                             .filter(|&&(_, tid)| self.named_child_survives_walk(tid))
                             .copied()
@@ -33111,7 +33116,7 @@ impl<'a> Loader<'a> {
     /// entry as a type, one dotted name; resolved as one, it named nothing.
     fn try_value_rooted_entry(
         &mut self,
-        parse_id: TermId,
+        parse_id: ParseTermId,
         work: &mut Vec<LoadWorkOp>,
         results: &mut Vec<TermId>,
     ) -> bool {
@@ -33142,7 +33147,11 @@ impl<'a> Loader<'a> {
 
     /// A dotted name of one dot whose root is a value — a `let` binder or a parameter — as
     /// `(root, member)`: the dot `dd.T` a type position reads as the projection off `dd`.
-    fn value_rooted_name(&mut self, sym: Symbol, parse_id: TermId) -> Option<(Symbol, Symbol)> {
+    fn value_rooted_name(
+        &mut self,
+        sym: Symbol,
+        parse_id: ParseTermId,
+    ) -> Option<(Symbol, Symbol)> {
         let name = self.parsed.symbols.local_name(sym).to_owned();
         let (root, member) = name.split_once('.')?;
         if member.contains('.') {
@@ -33182,10 +33191,10 @@ impl<'a> Loader<'a> {
     /// unknown-functor diagnostic).
     fn try_identifier_dot_call(
         &mut self,
-        parse_id: TermId,
+        parse_id: ParseTermId,
         functor_name: &str,
-        pos_args: &[TermId],
-        visible_named: &[(Symbol, TermId)],
+        pos_args: &[ParseTermId],
+        visible_named: &[(Symbol, ParseTermId)],
         work: &mut Vec<LoadWorkOp>,
         results: &mut Vec<TermId>,
     ) -> bool {
@@ -33491,8 +33500,8 @@ impl<'a> Loader<'a> {
     /// [`DotFieldPass`] variant placed explicitly in that ladder instead.
     fn try_identifier_dot_field(
         &mut self,
-        parse_id: TermId,
-        pos_args: &[TermId],
+        parse_id: ParseTermId,
+        pos_args: &[ParseTermId],
         work: &mut Vec<LoadWorkOp>,
         pass: DotFieldPass,
     ) -> bool {
@@ -33543,7 +33552,7 @@ impl<'a> Loader<'a> {
     /// root walk — only NAME-rooted receivers reach the loader as `field_access`
     /// (a value-rooted one already became `dot_apply` in the converter), so the
     /// root identifier is the value-vs-name discriminator.
-    fn field_access_root_is_value(&self, receiver: TermId) -> Option<Symbol> {
+    fn field_access_root_is_value(&self, receiver: ParseTermId) -> Option<Symbol> {
         let mut cur = receiver;
         loop {
             match self.parsed.terms.get(cur) {
@@ -33634,7 +33643,7 @@ impl<'a> Loader<'a> {
     /// untouched.
     fn try_qualified_rule_ref(
         &mut self,
-        parse_id: TermId,
+        parse_id: ParseTermId,
         name: &str,
         // What `name` resolves to ([`Self::resolve_qualified_readonly`]), which the
         // ladder asks once for this rung and the const's.
@@ -33675,7 +33684,7 @@ impl<'a> Loader<'a> {
     /// the receiver of the projection.
     fn try_qualified_const_ref(
         &mut self,
-        parse_id: TermId,
+        parse_id: ParseTermId,
         // What the chain's name resolves to, as [`Self::try_qualified_rule_ref`] takes it.
         whole: Option<Symbol>,
         results: &mut Vec<TermId>,
@@ -33716,7 +33725,7 @@ impl<'a> Loader<'a> {
     /// sort (`Outer.Inner.deep`) reaches this rung at its inner level, as the receiver.
     fn try_qualified_sort_ref(
         &mut self,
-        parse_id: TermId,
+        parse_id: ParseTermId,
         // The chain's dotted name, whose receiver the alias pass reads.
         name: &str,
         // What the chain's name resolves to, as [`Self::try_qualified_rule_ref`] takes it.
@@ -33757,7 +33766,7 @@ impl<'a> Loader<'a> {
     /// entity's name first, as the one-segment spelling's reading does.
     fn try_qualified_ctor_ref(
         &mut self,
-        parse_id: TermId,
+        parse_id: ParseTermId,
         // What the chain's name resolves to, as [`Self::try_qualified_rule_ref`] takes it.
         whole: Option<Symbol>,
         results: &mut Vec<TermId>,
@@ -33785,7 +33794,7 @@ impl<'a> Loader<'a> {
     /// bare name the typer reports as no operation.
     fn try_qualified_op_ref(
         &mut self,
-        parse_id: TermId,
+        parse_id: ParseTermId,
         name: &str,
         // What the chain's name resolves to, as [`Self::try_qualified_rule_ref`] takes it.
         whole: Option<Symbol>,
@@ -33812,7 +33821,7 @@ impl<'a> Loader<'a> {
 
     /// The reference to `sym` a one-segment name lowers to (`load_var_ref`), with its
     /// leaf occurrence, standing for the whole node at `parse_id`.
-    fn push_name_ref(&mut self, parse_id: TermId, sym: Symbol, results: &mut Vec<TermId>) {
+    fn push_name_ref(&mut self, parse_id: ParseTermId, sym: Symbol, results: &mut Vec<TermId>) {
         let kb_id = self.mk_var_ref(sym);
         self.create_occurrence(parse_id, kb_id);
         results.push(kb_id);
@@ -33823,7 +33832,7 @@ impl<'a> Loader<'a> {
     /// `ApplyOrConstructor` frame builds an applied callee with no arguments.
     fn push_zero_arg_apply(
         &mut self,
-        parse_id: TermId,
+        parse_id: ParseTermId,
         functor: Symbol,
         recv_type: Option<crate::eval::value::Value>,
         results: &mut Vec<TermId>,
@@ -33861,7 +33870,7 @@ impl<'a> Loader<'a> {
     /// a free function (WI-20260901-719FJ) because the QUERY-pattern position has no
     /// `Loader` to ask it through, and a second copy of "which name does this chain
     /// spell" is how the citation positions drifted apart before (WI-729/749/750/751).
-    fn field_access_dotted_name(&self, parse_id: TermId) -> Option<String> {
+    fn field_access_dotted_name(&self, parse_id: ParseTermId) -> Option<String> {
         field_access_dotted_name_of(&self.parsed.symbols, &self.parsed.terms, parse_id)
     }
 
@@ -33971,7 +33980,7 @@ impl<'a> Loader<'a> {
         &mut self,
         parse_functor: Symbol,
         kb_functor: Symbol,
-        parse_id: TermId,
+        parse_id: ParseTermId,
     ) {
         let def = self.kb.symbols.get(kb_functor);
         if def.kinds().is_empty()
@@ -34008,7 +34017,7 @@ impl<'a> Loader<'a> {
     ///
     /// A caller with NO parse node of its own passes the node it is synthesized FOR (the
     /// dot-call receiver passes the whole call, [`Self::try_identifier_dot_call`]).
-    fn push_leaf_occ(&mut self, parse_id: TermId, kb_id: TermId) {
+    fn push_leaf_occ(&mut self, parse_id: ParseTermId, kb_id: TermId) {
         if self.occ_suppress == 0 {
             let span = self.source_span_of(parse_id);
             let leaf = node_occurrence::build_expr_leaf(self.kb, kb_id, span);
@@ -34828,7 +34837,7 @@ impl<'a> Loader<'a> {
 
     fn build_call_type_args(
         &mut self,
-        parse_id: TermId,
+        parse_id: ParseTermId,
     ) -> Vec<(Option<Symbol>, crate::eval::value::Value)> {
         let Some(bindings) = self.read_parse_call_type_args(parse_id) else {
             return Vec::new();
@@ -34877,9 +34886,8 @@ impl<'a> Loader<'a> {
         let Some(key_sym) = self.parsed.symbols.lookup("type_args") else {
             return; // no call in this file wrote a bracket
         };
-        let mut unconsumed: Vec<(TermId, Symbol)> = Vec::new();
-        for i in 0..self.parsed.terms.len() {
-            let id = TermId::from_raw(i as u32);
+        let mut unconsumed: Vec<(ParseTermId, Symbol)> = Vec::new();
+        for id in self.parsed.terms.ids() {
             if self.consumed_call_type_args.contains(&id) {
                 continue;
             }
@@ -34916,7 +34924,7 @@ impl<'a> Loader<'a> {
 
     /// The callee an unread bracket at `id` is written on, as the author wrote it: the
     /// member of a dot (`m` of `?x.m[…](…)`), and the functor of any other call.
-    fn unread_bracket_callee(&self, id: TermId, functor: Symbol) -> String {
+    fn unread_bracket_callee(&self, id: ParseTermId, functor: Symbol) -> String {
         match self.dot_marker_member(id) {
             Some(member) => self.parsed.symbols.local_name(member).to_string(),
             None => self.parsed.symbols.local_name(functor).to_string(),
@@ -34925,7 +34933,7 @@ impl<'a> Loader<'a> {
 
     /// The member of the converter's `dot_apply` marker at `id` — a dot written on a value
     /// (`?x.m(…)`), whose bracket is a call's — or `None` for any other node.
-    fn dot_marker_member(&self, id: TermId) -> Option<Symbol> {
+    fn dot_marker_member(&self, id: ParseTermId) -> Option<Symbol> {
         let Term::Fn {
             functor, pos_args, ..
         } = self.parsed.terms.get(id)
@@ -34960,9 +34968,8 @@ impl<'a> Loader<'a> {
         let Some(key_sym) = self.parsed.symbols.lookup("recv_type") else {
             return;
         };
-        let mut unconsumed: Vec<(TermId, Symbol)> = Vec::new();
-        for i in 0..self.parsed.terms.len() {
-            let id = TermId::from_raw(i as u32);
+        let mut unconsumed: Vec<(ParseTermId, Symbol)> = Vec::new();
+        for id in self.parsed.terms.ids() {
             if self.consumed_recv_types.contains(&id) {
                 continue;
             }
@@ -35045,7 +35052,7 @@ impl<'a> Loader<'a> {
     /// out of the generic visit/recurse paths — those children are
     /// consumed directly at the LetExpr / ApplyOrConstructor build
     /// sites via `read_parse_*` helpers.
-    fn is_parse_aux(&self, id: TermId) -> bool {
+    fn is_parse_aux(&self, id: ParseTermId) -> bool {
         matches!(self.parsed.terms.get(id), Term::ParseAux(_))
     }
 
@@ -35065,7 +35072,7 @@ impl<'a> Loader<'a> {
     /// then be silently dropped by the other — which is the shape of defect the
     /// reclassifier's own comment claims immunity from, so the claim has to be true
     /// rather than asserted.
-    fn named_child_survives_walk(&self, id: TermId) -> bool {
+    fn named_child_survives_walk(&self, id: ParseTermId) -> bool {
         !self.is_parse_aux(id) || self.is_entry_type_aux(id)
     }
 
@@ -35080,7 +35087,7 @@ impl<'a> Loader<'a> {
     ///
     /// Asked of the payload's kind and not of the type's shape: a `let`'s annotation may
     /// be an arrow or a tuple too, and is no argument of the `let`.
-    fn is_entry_type_aux(&self, id: TermId) -> bool {
+    fn is_entry_type_aux(&self, id: ParseTermId) -> bool {
         matches!(self.parsed.terms.get(id),
             Term::ParseAux(aux) if matches!(aux.as_ref(), ParseAux::EntryType(_)))
     }
@@ -35089,7 +35096,7 @@ impl<'a> Loader<'a> {
     /// `ParseAux::SortBindings` that [`Self::read_parse_call_type_args`] unwraps?
     /// Tested without cloning the bindings, because `check_unconsumed_call_type_args`
     /// asks it of every term in the parse store.
-    fn is_call_type_args_aux(&self, id: TermId) -> bool {
+    fn is_call_type_args_aux(&self, id: ParseTermId) -> bool {
         matches!(self.parsed.terms.get(id),
             Term::ParseAux(aux) if matches!(aux.as_ref(), ParseAux::SortBindings(b) if !b.is_empty()))
     }
@@ -35108,7 +35115,7 @@ impl<'a> Loader<'a> {
     /// (WI-366 B, gated on effect-expressions-as-types) — so it emits the gated
     /// diagnostic, and the term handed back stands in for the refused entry: the closed
     /// pure row for a row, the bottom type for the others.
-    fn lower_entry_type_aux(&mut self, pid: TermId) -> Option<TermId> {
+    fn lower_entry_type_aux(&mut self, pid: ParseTermId) -> Option<TermId> {
         let ty = match self.parsed.terms.get(pid) {
             Term::ParseAux(aux) => match aux.as_ref() {
                 ParseAux::EntryType(ty) => ty.clone(),
@@ -35135,7 +35142,7 @@ impl<'a> Loader<'a> {
     /// materialize it as an `Rc<NodeOccurrence>`, the twin the occurrence-building
     /// paths (`build_body_atom_occurrence`) need where the term path uses the raw
     /// `TermId`. `None` when `pid` is not such an entry.
-    fn lower_entry_type_aux_occ(&mut self, pid: TermId) -> Option<Rc<NodeOccurrence>> {
+    fn lower_entry_type_aux_occ(&mut self, pid: ParseTermId) -> Option<Rc<NodeOccurrence>> {
         let type_tid = self.lower_entry_type_aux(pid)?;
         // WI-753: the type is the canonical interned value, so its occurrence is that
         // term's — but located at the entry the author WROTE, not through `term_spans`.
@@ -35145,7 +35152,7 @@ impl<'a> Loader<'a> {
 
     /// [`Self::lower_entry_type_aux_occ`] of an effect row, and `None` for any other
     /// entry: the one such entry a `require[…]` spec instance takes as a binding.
-    fn lower_effect_row_entry_occ(&mut self, pid: TermId) -> Option<Rc<NodeOccurrence>> {
+    fn lower_effect_row_entry_occ(&mut self, pid: ParseTermId) -> Option<Rc<NodeOccurrence>> {
         match self.parsed.terms.get(pid) {
             Term::ParseAux(aux)
                 if matches!(aux.as_ref(), ParseAux::EntryType(TypeExpr::EffectRow(_))) =>
@@ -35201,7 +35208,7 @@ impl<'a> Loader<'a> {
     /// argument value is an ordinary term.
     fn read_parse_aux<T>(
         &self,
-        parent_id: TermId,
+        parent_id: ParseTermId,
         key: &str,
         // `Fn`, not `FnOnce`: the scan may have to try more than one entry under the
         // key before finding the ParseAux this caller wants.
@@ -35250,7 +35257,7 @@ impl<'a> Loader<'a> {
     /// of shape-dependent, invisible choice this ticket removes.
     fn annotate_let_pattern(
         &mut self,
-        let_parse_id: TermId,
+        let_parse_id: ParseTermId,
         pattern: TermId,
     ) -> (TermId, Option<Rc<NodeOccurrence>>) {
         let Some(ty_expr) = self.read_parse_type_annotation(let_parse_id) else {
@@ -35314,7 +35321,7 @@ impl<'a> Loader<'a> {
     fn lower_written_annotation(
         &mut self,
         ty_expr: &TypeExpr,
-        at: TermId,
+        at: ParseTermId,
     ) -> (TermId, Option<Rc<NodeOccurrence>>) {
         let value = self.written_type_to_value(ty_expr);
         let ann = self.lower_pattern_annotation(&value);
@@ -35354,7 +35361,7 @@ impl<'a> Loader<'a> {
     /// WI-271: the `let pat : T = …` annotation child of a let_expr.
     fn read_parse_type_annotation(
         &self,
-        let_parse_id: TermId,
+        let_parse_id: ParseTermId,
     ) -> Option<crate::parse::ir::TypeExpr> {
         self.read_parse_aux(let_parse_id, "type_name", |aux| match aux {
             crate::parse::ir::ParseAux::TypeExpr(ty) => Some(ty.clone()),
@@ -35366,7 +35373,7 @@ impl<'a> Loader<'a> {
     /// strategy / using) off a `proof_stmt` parse term.
     fn read_parse_proof_meta(
         &self,
-        proof_parse_id: TermId,
+        proof_parse_id: ParseTermId,
     ) -> Option<crate::parse::ir::ProofStmtIr> {
         self.read_parse_aux(proof_parse_id, "proof_meta", |aux| match aux {
             crate::parse::ir::ParseAux::ProofStmt(m) => Some(m.clone()),
@@ -35377,7 +35384,7 @@ impl<'a> Loader<'a> {
     /// WI-271: the `op[A = Int64, B = String](…)` bindings child of an apply.
     fn read_parse_call_type_args(
         &self,
-        apply_parse_id: TermId,
+        apply_parse_id: ParseTermId,
     ) -> Option<Vec<crate::parse::ir::SortBinding>> {
         self.read_parse_aux(apply_parse_id, "type_args", |aux| match aux {
             crate::parse::ir::ParseAux::SortBindings(bindings) => Some(bindings.clone()),
@@ -35389,7 +35396,10 @@ impl<'a> Loader<'a> {
     /// call (`Map[K = String, V = Int64].empty()`), as the parser preserved it. The twin
     /// of [`Self::read_parse_call_type_args`] on the channel beside it; `None` for every
     /// other callee shape.
-    fn read_parse_recv_type(&self, apply_parse_id: TermId) -> Option<crate::parse::ir::TypeExpr> {
+    fn read_parse_recv_type(
+        &self,
+        apply_parse_id: ParseTermId,
+    ) -> Option<crate::parse::ir::TypeExpr> {
         self.read_parse_aux(apply_parse_id, "recv_type", |aux| match aux {
             crate::parse::ir::ParseAux::TypeExpr(t) => Some(t.clone()),
             _ => None,
@@ -35420,7 +35430,7 @@ impl<'a> Loader<'a> {
     /// `Box[V = Int64].wrap(…)` writes ([`Self::alias_recv_type`]).
     fn build_recv_type(
         &mut self,
-        parse_id: TermId,
+        parse_id: ParseTermId,
         callee: Symbol,
     ) -> Option<crate::eval::value::Value> {
         let Some(te) = self.read_parse_recv_type(parse_id) else {
@@ -35438,7 +35448,12 @@ impl<'a> Loader<'a> {
     /// `SortDomain[T = Colour].fill(?x)` answered nothing, since `fill` is a spec's rule with
     /// no clause of its own. A citation from an operation body reads the bracket; a sort's
     /// domain is its `domain` relation.
-    fn refuse_rule_goal_receiver(&mut self, parse_id: TermId, callee: Symbol, span: Span) -> bool {
+    fn refuse_rule_goal_receiver(
+        &mut self,
+        parse_id: ParseTermId,
+        callee: Symbol,
+        span: Span,
+    ) -> bool {
         if !self.kb.cites_a_relation(callee) || self.kb.has_kind(callee, SymbolKind::Operation) {
             return false;
         }
@@ -35464,7 +35479,7 @@ impl<'a> Loader<'a> {
     /// it as a chain ([`dotted_citation_name`]), every other callee as one symbol.
     fn alias_recv_type(
         &mut self,
-        parse_id: TermId,
+        parse_id: ParseTermId,
         callee: Symbol,
     ) -> Option<crate::eval::value::Value> {
         let parsed = self.parsed;
@@ -35547,7 +35562,7 @@ impl<'a> Loader<'a> {
     /// same top-level-vs-nested reading: a body ATOM is a goal (`:- Modifiable[T = ?t]`,
     /// an instance-fact query), a NESTED sort application is a type
     /// (`is_modifiable(Cell[V = Int64])`).
-    fn build_body_atom_occurrence(&mut self, parse_id: TermId) -> Rc<NodeOccurrence> {
+    fn build_body_atom_occurrence(&mut self, parse_id: ParseTermId) -> Rc<NodeOccurrence> {
         let saved = self.term_depth;
         // WI-20261001-KDMQS — restored like `term_depth`, for the reason
         // `convert_term_with_expected` gives.
@@ -35574,7 +35589,10 @@ impl<'a> Loader<'a> {
     /// `which(Outer.Inner)` hands `which` the sort, as in an operation body. Outside a call a
     /// type written in a data slot stays the term the clause matches. `None` for a node
     /// that is no candidate, which the caller builds.
-    fn written_type_in_call_argument(&mut self, parse_id: TermId) -> Option<Rc<NodeOccurrence>> {
+    fn written_type_in_call_argument(
+        &mut self,
+        parse_id: ParseTermId,
+    ) -> Option<Rc<NodeOccurrence>> {
         if !self.in_call_argument
             || !(self.parsed.terms.is_type_application(parse_id)
                 || self.dotted_sort_name(parse_id).is_some())
@@ -35647,7 +35665,10 @@ impl<'a> Loader<'a> {
     /// the RHS occurrence over the same parse subtree — and `convert_expr_term` is not
     /// free of side effects (it emits inline-description facts and mints occurrences), so
     /// running it twice for one node would double them.
-    fn compound_expression_occurrence(&mut self, parse_id: TermId) -> Option<Rc<NodeOccurrence>> {
+    fn compound_expression_occurrence(
+        &mut self,
+        parse_id: ParseTermId,
+    ) -> Option<Rc<NodeOccurrence>> {
         // Already inside `convert_expr_term` — that walk has its own marker arms and is
         // documented non-reentrant, so a nested delegation would clobber its stacks.
         if self.in_op_body_value {
@@ -35662,14 +35683,13 @@ impl<'a> Loader<'a> {
         if !is_compound_expression_marker(self.parsed.symbols.local_name(*functor)) {
             return None;
         }
-        if let Some(occ) = self.compound_expr_occ.get(&parse_id.raw()) {
+        if let Some(occ) = self.compound_expr_occ.get(&parse_id) {
             return Some(Rc::clone(occ));
         }
         let saved = std::mem::replace(&mut self.lowering_rule_compound_expr, true);
         let occ = self.convert_expr_term(parse_id);
         self.lowering_rule_compound_expr = saved;
-        self.compound_expr_occ
-            .insert(parse_id.raw(), Rc::clone(&occ));
+        self.compound_expr_occ.insert(parse_id, Rc::clone(&occ));
         Some(occ)
     }
 
@@ -35713,11 +35733,15 @@ impl<'a> Loader<'a> {
     /// 3. OTHERWISE THE CHILD PASSED THROUGH, and it is built from its own parse node —
     ///    exact span, exact `dot_chain`, no table involved. That is the majority and the
     ///    point of the ticket.
-    fn lowered_child_occurrence(&mut self, pid: TermId, kb_child: TermId) -> Rc<NodeOccurrence> {
+    fn lowered_child_occurrence(
+        &mut self,
+        pid: ParseTermId,
+        kb_child: TermId,
+    ) -> Rc<NodeOccurrence> {
         if let Some(child) = self.lower_entry_type_aux_occ(pid) {
             return child;
         }
-        if self.term_map.get(&pid.raw()).copied() == Some(kb_child) {
+        if self.term_map.get(&pid).copied() == Some(kb_child) {
             return self.build_body_atom_occurrence(pid);
         }
         // Case 2: a TRANSFORMED child. The wrapper is the lowering's own and is read from
@@ -35725,8 +35749,10 @@ impl<'a> Loader<'a> {
         // keeps its own span and `dot_chain` (WI-753 — before, the whole subtree was
         // re-derived from the term and located through per-atom tables keyed on
         // hash-consed ids).
-        let converted = self.term_map.get(&pid.raw()).copied().unwrap_or_else(|| {
-            unreachable!("lowered_child_occurrence: a written child the lowering kept has no conversion")
+        let converted = self.term_map.get(&pid).copied().unwrap_or_else(|| {
+            unreachable!(
+                "lowered_child_occurrence: a written child the lowering kept has no conversion"
+            )
         });
         let site = self.source_span_of(pid);
         let child = self.build_body_atom_occurrence(pid);
@@ -35763,7 +35789,7 @@ impl<'a> Loader<'a> {
     /// of them shipped the double-emit first.
     fn equation_rhs_occurrence(
         &mut self,
-        parse_head: TermId,
+        parse_head: ParseTermId,
         kb_head: TermId,
     ) -> Option<Rc<NodeOccurrence>> {
         let rhs_pid = parse_equation_rhs(&self.parsed.symbols, &self.parsed.terms, parse_head)?;
@@ -35817,7 +35843,7 @@ impl<'a> Loader<'a> {
     ///
     /// `None` also when the lowered term does not line up with the parse node — a loud
     /// `debug_assert`, since the re-encode builds it one-for-one from that node.
-    fn dot_apply_expr(&mut self, parse_id: TermId) -> Option<Expr> {
+    fn dot_apply_expr(&mut self, parse_id: ParseTermId) -> Option<Expr> {
         // Tested BEFORE anything is cloned: this runs for every rule-body node that is
         // neither an entity constructor nor a collection literal, nearly all of which are
         // not a method call (the discipline `collection_literal_expr` keeps too).
@@ -35836,7 +35862,7 @@ impl<'a> Loader<'a> {
         };
         // A bracket is no argument: a clause's own term takes none, and the end-of-file
         // sweep refuses it.
-        let parse_named: SmallVec<[(Symbol, TermId); 2]> = parse_named
+        let parse_named: SmallVec<[(Symbol, ParseTermId); 2]> = parse_named
             .into_iter()
             .filter(|&(_, tid)| self.named_child_survives_walk(tid))
             .collect();
@@ -35937,7 +35963,7 @@ impl<'a> Loader<'a> {
     /// re-entered.
     fn written_type_receiver_occurrence(
         &mut self,
-        parse_id: TermId,
+        parse_id: ParseTermId,
         kb_receiver: TermId,
     ) -> Option<Rc<NodeOccurrence>> {
         if self.in_op_body_value {
@@ -35982,7 +36008,7 @@ impl<'a> Loader<'a> {
     /// operation body, asked here before that walk is lent the node. `None` for a chain
     /// rooted at a clause parameter or a local binder, which is a projection on that
     /// binding.
-    fn dotted_sort_name(&self, parse_id: TermId) -> Option<Symbol> {
+    fn dotted_sort_name(&self, parse_id: ParseTermId) -> Option<Symbol> {
         self.dotted_name_rooted_at_no_binding(parse_id)
             .and_then(|name| self.resolve_qualified_readonly(&name))
             .filter(|sym| self.kb.has_kind(*sym, SymbolKind::Sort))
@@ -36023,7 +36049,7 @@ impl<'a> Loader<'a> {
     /// tuple slot naming no written child. Those are the shapes this pairing does not
     /// claim to understand, and guessing at one would be a wrong term rather than a worse
     /// diagnostic.
-    fn collection_literal_expr(&mut self, parse_id: TermId, functor: Symbol) -> Option<Expr> {
+    fn collection_literal_expr(&mut self, parse_id: ParseTermId, functor: Symbol) -> Option<Expr> {
         // TESTED ON THE BORROWED SLICE, OWNED ONLY ON A HIT. This function is the `else`
         // of the entity gate, so it runs for EVERY non-entity `Term::Fn` in every rule
         // body — 127 097 nodes over one workspace load — and all but a couple of hundred
@@ -36101,8 +36127,8 @@ impl<'a> Loader<'a> {
         kb_term: TermId,
         kb_pos: smallvec::SmallVec<[TermId; 4]>,
         kb_named: smallvec::SmallVec<[(Symbol, TermId); 2]>,
-        parse_pos: smallvec::SmallVec<[TermId; 4]>,
-        parse_named: smallvec::SmallVec<[(Symbol, TermId); 2]>,
+        parse_pos: smallvec::SmallVec<[ParseTermId; 4]>,
+        parse_named: smallvec::SmallVec<[(Symbol, ParseTermId); 2]>,
     ) -> Option<Expr> {
         // ── A LOWERED LIST: the `cons`/`nil` spine (WI-1096) ────────────────────
         if key == "ListLiteral" && lowered_key != "ListLiteral" {
@@ -36133,11 +36159,12 @@ impl<'a> Loader<'a> {
         // lowered list may be in a different order from the written one. Reinterned up
         // front for a second reason too: the lookup cannot borrow `self` inside a closure
         // that `lowered_child_occurrence` needs mutably.
-        let written_named: Vec<(Symbol, TermId)> = parse_named
+        let written_named: Vec<(Symbol, ParseTermId)> = parse_named
             .iter()
             .map(|&(sym, pid)| (self.reintern(sym), pid))
             .collect();
-        let mut named_pairs: Vec<(Symbol, TermId, TermId)> = Vec::with_capacity(kb_named.len());
+        let mut named_pairs: Vec<(Symbol, ParseTermId, TermId)> =
+            Vec::with_capacity(kb_named.len());
         for &(field, kb_child) in kb_named.iter() {
             let written = written_named
                 .iter()
@@ -36175,7 +36202,7 @@ impl<'a> Loader<'a> {
     /// loud loader failure rather than a guess). The
     /// alternative — pairing whatever lines up — would put one element's occurrence at
     /// another's slot, which is a wrong term and not a worse diagnostic.
-    fn cons_spine_expr(&mut self, kb_term: TermId, parse_pos: &[TermId]) -> Option<Expr> {
+    fn cons_spine_expr(&mut self, kb_term: TermId, parse_pos: &[ParseTermId]) -> Option<Expr> {
         let cons_sym = self.kb.try_resolve_symbol("anthill.prelude.List.cons")?;
         let head_sym = self.kb.intern("head");
         let tail_sym = self.kb.intern("tail");
@@ -36312,7 +36339,7 @@ impl<'a> Loader<'a> {
     /// `None` when the lowered term is neither a `Term::Fn` nor the `nullary_canon`
     /// `Term::Ref` a 0-field constructor folds to. There is no round trip behind it
     /// since WI-753: the caller fails loudly (`unreachable!`).
-    fn entity_ctor_expr(&mut self, parse_id: TermId, functor: Symbol) -> Option<Expr> {
+    fn entity_ctor_expr(&mut self, parse_id: ParseTermId, functor: Symbol) -> Option<Expr> {
         let kb_term = self.convert_term(parse_id); // memoized hit
         let (kb_pos, kb_named) = match self.kb.get_term(kb_term).clone() {
             Term::Fn {
@@ -36378,16 +36405,16 @@ impl<'a> Loader<'a> {
 
     fn entity_ctor_children(
         &mut self,
-        parse_id: TermId,
+        parse_id: ParseTermId,
         functor: Symbol,
         kb_pos: smallvec::SmallVec<[TermId; 4]>,
         kb_named: smallvec::SmallVec<[(Symbol, TermId); 2]>,
-        parse_pos: smallvec::SmallVec<[TermId; 4]>,
+        parse_pos: smallvec::SmallVec<[ParseTermId; 4]>,
     ) -> Option<Expr> {
         // NAMED SLOTS ARE LOOKED UP BY FIELD SYMBOL — the lowered list is in declared
         // field order (`entity_slots::complete_named_slots` sorts it), which is not the
         // order the author wrote, so index correspondence would be wrong here.
-        let origins = match self.entity_slot_origin.get(&parse_id.raw()) {
+        let origins = match self.entity_slot_origin.get(&parse_id) {
             Some(o) => o.clone(),
             // The conversion of THIS node did not run the `Fn` arm that writes the
             // origins — it cannot have produced the named args we are looking at. Loud
@@ -36615,7 +36642,12 @@ impl<'a> Loader<'a> {
     /// goal the literal it holds, a const in a data slot its value, a type its type value, a
     /// nullary operation its call, anything else its reference. One reading for the
     /// one-segment name and a constructor's qualified one.
-    fn body_resolved_name_expr(&mut self, sym: Symbol, parse_id: TermId, span: SourceSpan) -> Expr {
+    fn body_resolved_name_expr(
+        &mut self,
+        sym: Symbol,
+        parse_id: ParseTermId,
+        span: SourceSpan,
+    ) -> Expr {
         if self.in_body_goal && !self.in_body_goal_wrapper {
             if let Some(lit) = self.goal_const_value(sym) {
                 return Expr::Const(lit);
@@ -36644,7 +36676,7 @@ impl<'a> Loader<'a> {
         }
     }
 
-    fn nullary_op_call_or_ref(&mut self, sym: Symbol, parse_id: TermId) -> Expr {
+    fn nullary_op_call_or_ref(&mut self, sym: Symbol, parse_id: ParseTermId) -> Expr {
         if super::op_info::is_nullary_operation(&self.kb, sym) {
             return Expr::Apply {
                 recv_type: self.build_recv_type(parse_id, sym),
@@ -36683,7 +36715,7 @@ impl<'a> Loader<'a> {
     fn body_data_slot_name(
         &mut self,
         sym: Symbol,
-        parse_id: TermId,
+        parse_id: ParseTermId,
         span: SourceSpan,
     ) -> Option<Rc<NodeOccurrence>> {
         // `const_fold` is `Data` exactly in a clause's data slot, and `Off` inside a quoted
@@ -36716,7 +36748,7 @@ impl<'a> Loader<'a> {
     fn bare_entity_goal_occurrence(
         &mut self,
         sym: Symbol,
-        parse_id: TermId,
+        parse_id: ParseTermId,
     ) -> Option<Rc<NodeOccurrence>> {
         self.kb.written_entity_field_names(sym)?;
         let bare = self.kb.alloc(Term::Ref(sym));
@@ -36735,7 +36767,7 @@ impl<'a> Loader<'a> {
         Some(node_occurrence::materialize_at(self.kb, expanded, site))
     }
 
-    fn build_body_atom_occurrence_inner(&mut self, parse_id: TermId) -> Rc<NodeOccurrence> {
+    fn build_body_atom_occurrence_inner(&mut self, parse_id: ParseTermId) -> Rc<NodeOccurrence> {
         // WI-753 — set by the `Term::Fn` arm when the node it builds is a reflect form
         // written as data, which the tail re-reads into its keyed occurrence.
         let mut reread_reflect_form = false;
@@ -37400,7 +37432,7 @@ impl<'a> Loader<'a> {
         node
     }
 
-    fn load_var_ref(&mut self, parse_id: TermId) -> TermId {
+    fn load_var_ref(&mut self, parse_id: ParseTermId) -> TermId {
         let parse_term = self.parsed.terms.get(parse_id).clone();
         if let Term::Ident(sym) = parse_term {
             // A sigil-free parameter of the rule's head, read in a compound expression the
@@ -37411,7 +37443,7 @@ impl<'a> Loader<'a> {
                 if self.lookup_local_name(name).is_none() {
                     if let Some(&vid) = self.rule_param_vars.get(name) {
                         let kb_id = self.kb.alloc(Term::Var(Var::Global(vid)));
-                        self.term_map.insert(parse_id.raw(), kb_id);
+                        self.term_map.insert(parse_id, kb_id);
                         return kb_id;
                     }
                 }
@@ -37539,7 +37571,7 @@ impl<'a> Loader<'a> {
     /// a free var) keeps the generic `var_map`-shared behavior via `convert_term`;
     /// the param path never reads or writes `var_map`, so the two cannot
     /// cross-contaminate even when they share a parse `vid`.
-    fn load_op_body_var(&mut self, parse_id: TermId, vid: VarId) -> TermId {
+    fn load_op_body_var(&mut self, parse_id: ParseTermId, vid: VarId) -> TermId {
         let name = self.parsed.symbols.local_name(vid.name()).to_owned();
         // WI-550: a `?x` naming a let/lambda/match binder REFERS to that binder, so
         // bind it to the binder's per-site (gensym) Symbol — the same identity its
@@ -37559,7 +37591,7 @@ impl<'a> Loader<'a> {
         {
             let kb_vid = self.kb.fresh_var(local);
             let kb_id = self.kb.alloc(Term::Var(Var::Global(kb_vid)));
-            self.term_map.insert(parse_id.raw(), kb_id);
+            self.term_map.insert(parse_id, kb_id);
             return kb_id;
         }
         if let ResolveResult::Found(sym) =
@@ -37568,7 +37600,7 @@ impl<'a> Loader<'a> {
             if self.kb.symbols.get(sym).has_kind(SymbolKind::Param) {
                 let kb_vid = self.kb.fresh_var(sym);
                 let kb_id = self.kb.alloc(Term::Var(Var::Global(kb_vid)));
-                self.term_map.insert(parse_id.raw(), kb_id);
+                self.term_map.insert(parse_id, kb_id);
                 return kb_id;
             }
         }
@@ -37594,7 +37626,7 @@ impl<'a> Loader<'a> {
     }
 
     /// Literal constant → int_lit/bigint_lit/float_lit/string_lit/bool_lit
-    fn load_literal_expr(&mut self, parse_id: TermId) -> TermId {
+    fn load_literal_expr(&mut self, parse_id: ParseTermId) -> TermId {
         let parse_term = self.parsed.terms.get(parse_id).clone();
         if let Term::Const(ref lit) = parse_term {
             let (entity_name, value_term) = match lit {
@@ -37645,7 +37677,11 @@ impl<'a> Loader<'a> {
     /// path uses and materialize a TermId for the var_pattern's `type_ann`
     /// slot, which the typer reads to constrain inference. A bare binder has
     /// no `type` arg, so `type_ann` stays `none()`.
-    fn load_pattern_var(&mut self, parse_id: TermId, pos_args: &SmallVec<[TermId; 4]>) -> TermId {
+    fn load_pattern_var(
+        &mut self,
+        parse_id: ParseTermId,
+        pos_args: &SmallVec<[ParseTermId; 4]>,
+    ) -> TermId {
         let name_term = self.parsed.terms.get(pos_args[0]).clone();
         let mut binder: Option<Symbol> = None;
         let name_ref = if let Term::Ident(sym) = name_term {
@@ -37707,7 +37743,7 @@ impl<'a> Loader<'a> {
     }
 
     /// pattern_literal: pos_args[0] = literal term
-    fn load_pattern_literal(&mut self, pos_args: &SmallVec<[TermId; 4]>) -> TermId {
+    fn load_pattern_literal(&mut self, pos_args: &SmallVec<[ParseTermId; 4]>) -> TermId {
         let value = self.convert_term(pos_args[0]);
         let lit_pattern_sym = self
             .kb
@@ -38208,7 +38244,7 @@ impl<'a> Loader<'a> {
     /// The functors in the parse goal `parse_id` written as a dot on a value — `xs.isEmpty`
     /// in `xs.isEmpty()`, a dotted name whose head segment is a local or a value place in
     /// scope — rather than a qualified name (`List.isEmpty`).
-    fn dots_on_values(&self, parse_id: TermId) -> Vec<String> {
+    fn dots_on_values(&self, parse_id: ParseTermId) -> Vec<String> {
         let mut out = Vec::new();
         let mut stack = vec![parse_id];
         while let Some(id) = stack.pop() {
@@ -39491,7 +39527,7 @@ impl<'a> Loader<'a> {
     fn requirement_name_call(
         &mut self,
         parse_functor: Symbol,
-        parse_id: TermId,
+        parse_id: ParseTermId,
     ) -> Option<RequirementNameCall> {
         if !self.in_op_body_value || self.lowering_rule_compound_expr {
             return None;
@@ -40958,7 +40994,7 @@ impl<'a> Loader<'a> {
 
     /// The const a const BODY names when the body is nothing but a name (`= B`,
     /// `= Float.infinity`): a one-segment name, or a converter-minted dotted chain.
-    fn parse_const_reference(&self, body: TermId) -> Option<Symbol> {
+    fn parse_const_reference(&self, body: ParseTermId) -> Option<Symbol> {
         let name = match self.parsed.terms.get(body) {
             Term::Ident(s) => self.parsed.symbols.local_name(*s).to_owned(),
             Term::Fn { .. } => {
@@ -43250,7 +43286,7 @@ impl<'a> Loader<'a> {
     /// the sweep report it instead of dropping it.
     fn collect_rule_tvar_names(
         &mut self,
-        head_parse_id: TermId,
+        head_parse_id: ParseTermId,
         out: &mut std::collections::HashSet<String>,
     ) {
         // For a connective head `keep[T](…) = rhs` the introducer rides on the LHS
@@ -43312,7 +43348,7 @@ impl<'a> Loader<'a> {
     /// supplies the carrier; the remaining bindings stay in the requirement.
     fn try_body_tvar_guard(
         &mut self,
-        gtid: TermId,
+        gtid: ParseTermId,
         introducers: &std::collections::HashSet<String>,
     ) -> Option<(String, RuleProviderRequirement)> {
         let Term::Fn {
@@ -43451,7 +43487,7 @@ impl<'a> Loader<'a> {
     /// The CHAIN is asked first, because its node IS a `Term::Fn` — the accessor's — and
     /// the `Fn` arm would answer `field_access` for it. Same order as
     /// [`head_subject_name`]'s, for the same reason.
-    fn head_name_as_written(&self, tid: TermId) -> Option<String> {
+    fn head_name_as_written(&self, tid: ParseTermId) -> Option<String> {
         if let Some(chain) = dotted_citation_name(&self.parsed.symbols, &self.parsed.terms, tid) {
             return Some(chain);
         }
@@ -43823,7 +43859,8 @@ impl<'a> Loader<'a> {
         // from the body. The inline `?x: Spec` form needs none of this — the
         // introducer set is empty and `rule_tvar_bounds` stays empty.
         self.rule_tvar_bounds.clear();
-        let mut folded_guard_ids: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let mut folded_guard_ids: std::collections::HashSet<ParseTermId> =
+            std::collections::HashSet::new();
         let mut introducers: std::collections::HashSet<String> = std::collections::HashSet::new();
         {
             for h in &r.heads {
@@ -43904,11 +43941,11 @@ impl<'a> Loader<'a> {
                                          spanning several guards is not yet supported)"
                                     ),
                                 });
-                                folded_guard_ids.insert(gtid.raw());
+                                folded_guard_ids.insert(gtid);
                                 continue;
                             }
                             self.rule_tvar_bounds.insert(tvar, Some(requirement));
-                            folded_guard_ids.insert(gtid.raw());
+                            folded_guard_ids.insert(gtid);
                         }
                     }
                 }
@@ -43992,7 +44029,7 @@ impl<'a> Loader<'a> {
         // WI-20260903-FCZ3N: per positive head, the PARSE id its RHS occurrence must be
         // built from, parallel to `positive_heads`. The build itself waits until
         // `body_nodes` is known — see the install below.
-        let mut positive_head_parse_ids: Vec<TermId> = Vec::with_capacity(r.heads.len());
+        let mut positive_head_parse_ids: Vec<ParseTermId> = Vec::with_capacity(r.heads.len());
         let mut has_bottom = false;
         // The rule's SHAPE refusal, read at the two places below it is reported from.
         let several_heads = several_heads_refusal(r);
@@ -44135,7 +44172,7 @@ impl<'a> Loader<'a> {
             for &tid in terms {
                 // WI-582: a folded `Spec[T]` guard — its content became the
                 // bound on the `?x: T` variable, so it is not a body goal.
-                if folded_guard_ids.contains(&tid.raw()) {
+                if folded_guard_ids.contains(&tid) {
                     continue;
                 }
                 // §6.1 (061) — `true` IS the empty conjunction, so it contributes no
@@ -44479,7 +44516,7 @@ impl<'a> Loader<'a> {
     /// test via NAF). `parse_tid` is converted (memoized — the normal contract
     /// path converts the same term) so the functor resolves to its canonical
     /// `anthill.kernel.unify` before classification.
-    fn reject_binding_unify_in_contract(&mut self, parse_tid: TermId, position: &str) {
+    fn reject_binding_unify_in_contract(&mut self, parse_tid: ParseTermId, position: &str) {
         let goal = self.convert_term(parse_tid);
         if self.kb.get_builtin(goal) == Some(BuiltinTag::Unify) {
             self.errors.push(LoadError::BindingInContract {
@@ -44499,8 +44536,8 @@ impl<'a> Loader<'a> {
     /// a declared op type-param (those are universal — caller-supplied) nor a
     /// resolvable sort (a CONCRETE return carrying an `ensures` postcondition is a
     /// different, valid case — never rewritten). Returns the carrier short name and the
-    /// matching `ensures` spec atom (the raw parse `TermId`, for the return-type rewrite).
-    fn detect_existential_carrier(&self, o: &Operation) -> Option<(String, TermId)> {
+    /// matching `ensures` spec atom (its parse id, for the return-type rewrite).
+    fn detect_existential_carrier(&self, o: &Operation) -> Option<(String, ParseTermId)> {
         let TypeExpr::Simple(ret_name) = &o.return_type else {
             return None;
         };
@@ -44537,7 +44574,7 @@ impl<'a> Loader<'a> {
 
     /// The carrier (first positional) short-name of an `ensures` spec atom
     /// (`KVStore[C, …]` ⟹ `Some("C")`), read from the RAW parse term.
-    fn ensures_atom_carrier_name(&self, atom: TermId) -> Option<String> {
+    fn ensures_atom_carrier_name(&self, atom: ParseTermId) -> Option<String> {
         let Term::Fn { pos_args, .. } = self.parsed.terms.get(atom) else {
             return None;
         };
@@ -44546,7 +44583,7 @@ impl<'a> Loader<'a> {
 
     /// Short name of a bare-name parse term (the carrier-slot shapes: `Ident` / `Ref`
     /// / nullary `Fn`).
-    fn parse_bare_name(&self, tid: TermId) -> Option<String> {
+    fn parse_bare_name(&self, tid: ParseTermId) -> Option<String> {
         match self.parsed.terms.get(tid) {
             Term::Ident(s) | Term::Ref(s) => Some(self.parsed.symbols.local_name(*s).to_owned()),
             Term::Fn {
@@ -44571,7 +44608,7 @@ impl<'a> Loader<'a> {
     fn build_existential_return(
         &mut self,
         carrier: &str,
-        spec_atom: TermId,
+        spec_atom: ParseTermId,
         op_qualified: &str,
         op_scope: ScopeId,
         domain: Symbol,
@@ -44702,7 +44739,7 @@ impl<'a> Loader<'a> {
     /// alias's definition leaves open: it reaches a parameter's type through the alias, as
     /// a written type, and the declaration names no variable for it.
     fn mint_inline_type_params(&mut self, o: &Operation) -> Vec<TermId> {
-        let mut written: Vec<TermId> = Vec::new();
+        let mut written: Vec<ParseTermId> = Vec::new();
         for p in &o.params {
             collect_written_type_vars(&p.ty, &mut written);
         }
@@ -45337,7 +45374,7 @@ impl<'a> Loader<'a> {
         o: &Operation,
         op_functor: Symbol,
         op_scope: ScopeId,
-        body_parse_id: TermId,
+        body_parse_id: ParseTermId,
         domain: Symbol,
     ) {
         // WI-20260911-073GH — LOWERED IN THE OPERATION'S OWN SCOPE, where its
@@ -45568,7 +45605,7 @@ impl<'a> Loader<'a> {
         // WI-525 (proposal 049, Part B): a `constraint` body is a contract — it
         // TESTS, never binds. Reject any binding `<=>` / `let` (a `unify` goal)
         // anywhere in it, across all constraint forms.
-        let mut constraint_goals: Vec<TermId> = Vec::new();
+        let mut constraint_goals: Vec<ParseTermId> = Vec::new();
         collect_constraint_body_goal_tids(&c.body, &mut constraint_goals);
         let no_tvars = HashSet::new();
         for &tid in &constraint_goals {
@@ -45639,7 +45676,7 @@ impl<'a> Loader<'a> {
     /// ([`KnowledgeBase::spec_laws`]) still count the constraint once.
     fn assert_constraint_goal_clause(
         &mut self,
-        goals: &[TermId],
+        goals: &[ParseTermId],
         label: Option<Symbol>,
         domain: Symbol,
     ) {
@@ -45673,8 +45710,8 @@ impl<'a> Loader<'a> {
     /// denial/invariant constraint (the pre-WI-023 representation, unchanged).
     fn store_denial_constraint_fact(
         &mut self,
-        head: &[TermId],
-        guard: Option<&[TermId]>,
+        head: &[ParseTermId],
+        guard: Option<&[ParseTermId]>,
         domain: Symbol,
         span: SourceSpan,
     ) {
@@ -45801,7 +45838,7 @@ impl<'a> Loader<'a> {
 
     /// Fold a conjunction of patterns into a `LogicalQuery`: empty → `empty_query`,
     /// one → `pattern_query(term: p)`, many → right-nested `conjunction(…)`.
-    fn build_patterns_lq(&mut self, patterns: &[TermId]) -> Option<TermId> {
+    fn build_patterns_lq(&mut self, patterns: &[ParseTermId]) -> Option<TermId> {
         if patterns.is_empty() {
             let empty = self.logical_query_ctor("empty_query")?;
             return Some(self.kb.alloc(Term::Fn {
@@ -46259,7 +46296,7 @@ impl<'a> Loader<'a> {
         if !o.type_params.iter().any(|tp| tp.requirement_slot.is_some()) {
             return;
         }
-        let goals: Vec<TermId> = o.requires.iter().flatten().copied().collect();
+        let goals: Vec<ParseTermId> = o.requires.iter().flatten().copied().collect();
         for tp in &o.type_params {
             let Some(slot) = tp.requirement_slot else {
                 continue;
@@ -47834,7 +47871,7 @@ impl<'a> Loader<'a> {
     /// Convert a parsed host_type term (typically a `Term::Const(String)`
     /// like `"i64"`) into a String-literal KB term. Falls back to
     /// stringifying via `convert_term` for non-literal forms.
-    fn host_type_to_string_term(&mut self, parse_id: TermId) -> TermId {
+    fn host_type_to_string_term(&mut self, parse_id: ParseTermId) -> TermId {
         if let Term::Const(super::term::Literal::String(s)) = self.parsed.terms.get(parse_id) {
             let s = s.clone();
             return self.kb.alloc(Term::Const(super::term::Literal::String(s)));
@@ -47878,7 +47915,7 @@ impl<'a> Loader<'a> {
             .alloc(Term::Const(super::term::Literal::String(text.to_string())));
 
         // Track description index per target
-        let idx = self.desc_index.entry(target.raw()).or_insert(0);
+        let idx = self.desc_index.entry(target).or_insert(0);
         let index_term = self.kb.alloc(Term::Const(super::term::Literal::Int(*idx)));
         *idx += 1;
 
@@ -47916,7 +47953,10 @@ impl<'a> Loader<'a> {
         wrap_places_as_var_ref(&mut self.kb, term, &places, var_ref_sym, expr_carried_sym)
     }
 
-    fn convert_clause_list(&mut self, clauses: &[Vec<TermId>]) -> Vec<crate::eval::value::Value> {
+    fn convert_clause_list(
+        &mut self,
+        clauses: &[Vec<ParseTermId>],
+    ) -> Vec<crate::eval::value::Value> {
         self.convert_clause_list_with_extra(clauses, &[])
     }
 
@@ -47931,7 +47971,7 @@ impl<'a> Loader<'a> {
     /// other is the term it always was.
     fn convert_clause_list_with_extra(
         &mut self,
-        clauses: &[Vec<TermId>],
+        clauses: &[Vec<ParseTermId>],
         extra_terms: &[TermId],
     ) -> Vec<crate::eval::value::Value> {
         use crate::eval::value::Value;
@@ -47970,11 +48010,11 @@ impl<'a> Loader<'a> {
     /// there, so the value and the term are one clause to every reader of its structure.
     fn contract_goal_as_written(
         &mut self,
-        written_at: TermId,
+        written_at: ParseTermId,
         goal: TermId,
     ) -> crate::eval::value::Value {
         use crate::eval::value::Value;
-        let Some(written) = self.contract_goal_aliases.remove(&written_at.raw()) else {
+        let Some(written) = self.contract_goal_aliases.remove(&written_at) else {
             return Value::term(goal);
         };
         let Term::Fn {

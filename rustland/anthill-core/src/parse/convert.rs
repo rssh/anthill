@@ -9,7 +9,7 @@ use smallvec::SmallVec;
 use tree_sitter::Node;
 
 use crate::intern::{positional_label, Symbol, SymbolTable, ABSOLUTE_PATH_MARKER};
-use crate::kb::term::{Literal, Term, TermId, Var, VarId};
+use crate::kb::term::{Literal, Term, Var, VarId};
 use crate::span::Span;
 
 /// Join name segments into a single dot-separated string for interning.
@@ -91,7 +91,7 @@ const ENTITY_FIELDS_DISTINCT: &str = "an entity's field names must be distinct �
 
 /// Work-stack opcode for the iterative CST → IR walker covering
 /// term / expression-body / pattern subtrees. `Visit` dispatches a
-/// tree-sitter node (leaf → emit TermId; non-leaf → push a `Build`
+/// tree-sitter node (leaf → emit ParseTermId; non-leaf → push a `Build`
 /// frame + child Visits). `Build` consumes already-converted
 /// children from the result stack and assembles the parent. Mirrors
 /// the post-WI-253 NodeOccurrence materializer / kb/load.rs
@@ -107,12 +107,12 @@ enum WorkKind {
 enum WorkOp<'t> {
     Visit(WorkKind, Node<'t>),
     Build(BuildFrame<'t>),
-    /// Push a precomputed TermId to the result stack when this op
+    /// Push a precomputed ParseTermId to the result stack when this op
     /// pops. Lets `visit_*` stand in a synthetic Bottom for a missing
     /// optional child without violating sibling result-stack ordering
     /// (`results.push(bot)` inline would land bot at the wrong slot
     /// relative to its sibling Visits, which haven't yet popped).
-    Yield(TermId),
+    Yield(ParseTermId),
 }
 
 // `ArgSlot` — one slot in a function-application / tuple / pattern-constructor
@@ -167,7 +167,7 @@ enum BuildFrame<'t> {
         /// `...?args` REST PATTERNS. The marker is syntax, not structure — each
         /// variable rides `slots` as an ordinary positional arg, so the head term
         /// the loader indexes is exactly `fix(?r, ?args)` — and the mark has to
-        /// survive as a per-OCCURRENCE fact until the `TermId` its child converts
+        /// survive as a per-OCCURRENCE fact until the `ParseTermId` its child converts
         /// to exists, which is `build_parse` time. Carried on the frame rather than
         /// as an `ArgSlot` variant because `ArgSlot` is shared with four other
         /// frames (`DotApply`, tuple, instantiation, spec-rule args), none of which
@@ -225,7 +225,7 @@ enum BuildFrame<'t> {
         slots: SmallVec<[ArgSlot; 4]>,
     },
     /// Distributive dot projection `x.(m1, …, mn)` (WI-639). The receiver
-    /// `x` is visited ONCE (its TermId shared across every member); each
+    /// `x` is visited ONCE (its ParseTermId shared across every member); each
     /// entry carries the result label + dot-member. `is_value_recv` picks
     /// the same `dot_apply` vs `field_access` desugaring `push_field_access`
     /// uses. The result is the named tuple at EVERY arity, one entry included
@@ -271,7 +271,7 @@ enum BuildFrame<'t> {
     },
     PatternConstructor {
         node: Node<'t>,
-        name_tid: TermId,
+        name_tid: ParseTermId,
         slots: SmallVec<[ArgSlot; 4]>,
     },
     PatternTuple {
@@ -304,9 +304,9 @@ pub(super) struct Converter<'a> {
     /// the parent's body in the consumer's SMT preamble.
     rule_var_scopes: HashMap<Symbol, HashMap<Symbol, VarId>>,
     /// WI-1129 (proposal 056 §2.3): every `...?args` REST PATTERN converted so far
-    /// that no `@[simp]` rule head has claimed — `(the capture variable's TermId, its
+    /// that no `@[simp]` rule head has claimed — `(the capture variable's ParseTermId, its
     /// span)`. Filled by [`Self::build_parse`]'s `FnTerm` arm (the earliest point the
-    /// child's `TermId` exists), drained by [`Self::claim_rule_head_captures`], and
+    /// child's `ParseTermId` exists), drained by [`Self::claim_rule_head_captures`], and
     /// whatever remains when the file finishes converting is refused by
     /// [`Self::refuse_stray_rest_args`].
     ///
@@ -317,7 +317,7 @@ pub(super) struct Converter<'a> {
     /// [`SimpleTermStore`] mark either — nothing downstream reads it; the loader
     /// reads the DECIDED capture position off [`super::ir::Rule::head_captures`],
     /// so there is exactly one decider.
-    pending_rest_args: Vec<(TermId, Span)>,
+    pending_rest_args: Vec<(ParseTermId, Span)>,
 }
 
 impl<'a> Converter<'a> {
@@ -465,9 +465,9 @@ impl<'a> Converter<'a> {
     fn alloc_fn_term(
         &mut self,
         functor_name: &str,
-        pos_args: SmallVec<[TermId; 4]>,
+        pos_args: SmallVec<[ParseTermId; 4]>,
         span: Span,
-    ) -> TermId {
+    ) -> ParseTermId {
         let functor = self.intern(functor_name);
         self.terms.alloc(
             Term::Fn {
@@ -582,9 +582,9 @@ impl<'a> Converter<'a> {
     fn alloc_marker_term(
         &mut self,
         functor_name: &str,
-        pos_args: SmallVec<[TermId; 4]>,
+        pos_args: SmallVec<[ParseTermId; 4]>,
         span: Span,
-    ) -> TermId {
+    ) -> ParseTermId {
         self.alloc_marker_term_with_named(functor_name, pos_args, SmallVec::new(), span)
     }
 
@@ -611,10 +611,10 @@ impl<'a> Converter<'a> {
     fn alloc_marker_term_with_named(
         &mut self,
         functor_name: &str,
-        pos_args: SmallVec<[TermId; 4]>,
-        named_args: SmallVec<[(Symbol, TermId); 2]>,
+        pos_args: SmallVec<[ParseTermId; 4]>,
+        named_args: SmallVec<[(Symbol, ParseTermId); 2]>,
         span: Span,
-    ) -> TermId {
+    ) -> ParseTermId {
         let functor = self.intern(functor_name);
         let tid = self.terms.alloc(
             Term::Fn {
@@ -629,7 +629,7 @@ impl<'a> Converter<'a> {
     }
 
     /// Bottom-term factory for error/unwrap_or_else paths.
-    fn alloc_bottom(&mut self, span: Span) -> TermId {
+    fn alloc_bottom(&mut self, span: Span) -> ParseTermId {
         self.terms.alloc(Term::Bottom, span)
     }
 
@@ -1028,7 +1028,7 @@ impl<'a> Converter<'a> {
 
     // ── Terms ───────────────────────────────────────────────────
 
-    fn convert_term(&mut self, node: Node) -> TermId {
+    fn convert_term(&mut self, node: Node) -> ParseTermId {
         self.convert_expr_iter(node, WorkKind::Term)
     }
 
@@ -1036,13 +1036,13 @@ impl<'a> Converter<'a> {
     /// term / expression-body / pattern subtree converters; runs a
     /// work-stack loop so host stack usage stays O(1) regardless of
     /// source nesting depth. Each `Visit(kind, node)` dispatches by
-    /// kind+`node.kind()` to either emit a leaf TermId or push a
+    /// kind+`node.kind()` to either emit a leaf ParseTermId or push a
     /// `Build` frame + child `Visit`s; `Build` frames consume
     /// already-converted children from the result stack and assemble
     /// the parent.
-    fn convert_expr_iter<'t>(&mut self, root: Node<'t>, init_kind: WorkKind) -> TermId {
+    fn convert_expr_iter<'t>(&mut self, root: Node<'t>, init_kind: WorkKind) -> ParseTermId {
         let mut work: Vec<WorkOp<'t>> = Vec::with_capacity(64);
-        let mut results: Vec<TermId> = Vec::with_capacity(64);
+        let mut results: Vec<ParseTermId> = Vec::with_capacity(64);
         work.push(WorkOp::Visit(init_kind, root));
         while let Some(op) = work.pop() {
             match op {
@@ -1063,13 +1063,13 @@ impl<'a> Converter<'a> {
         results.pop().expect("iterative parse: empty result stack")
     }
 
-    /// Dispatch a single parse-time term node: produce a leaf TermId
+    /// Dispatch a single parse-time term node: produce a leaf ParseTermId
     /// directly or push a `Build` frame + child `Visit`s.
     fn visit_term<'t>(
         &mut self,
         node: Node<'t>,
         work: &mut Vec<WorkOp<'t>>,
-        results: &mut Vec<TermId>,
+        results: &mut Vec<ParseTermId>,
     ) {
         let span = self.span(node);
         match node.kind() {
@@ -1419,7 +1419,7 @@ impl<'a> Converter<'a> {
         if is_ho {
             // The HO head is a `variable` leaf; treat it as a positional
             // child that requires a Visit so we don't have to specialize
-            // build assembly. Each operand still produces a single TermId.
+            // build assembly. Each operand still produces a single ParseTermId.
             slots.push(ArgSlot::Positional);
             child_nodes.push(name_node);
         }
@@ -1615,7 +1615,7 @@ impl<'a> Converter<'a> {
         &mut self,
         node: Node<'t>,
         work: &mut Vec<WorkOp<'t>>,
-        results: &mut Vec<TermId>,
+        results: &mut Vec<ParseTermId>,
     ) {
         let mut op_text: Option<String> = None;
         let mut operand_node: Option<Node<'t>> = None;
@@ -1695,7 +1695,7 @@ impl<'a> Converter<'a> {
     /// citation or an operation's call and nothing else, and it is the loader, which knows
     /// what `m` resolves to, that refuses any other member
     /// (`Loader::refuse_paren_less_bracket_binding_nothing`).
-    fn convert_paren_less_citation(&mut self, node: Node) -> TermId {
+    fn convert_paren_less_citation(&mut self, node: Node) -> ParseTermId {
         let span = self.span(node);
         let object = self
             .field(node, "object")
@@ -1720,7 +1720,7 @@ impl<'a> Converter<'a> {
     /// argument its call carries. ONE builder for the applied `Sort[…].m(…)` and the
     /// paren-less `Sort[…].m` (WI-20260911-5G28A), so the two spellings build one term by
     /// construction rather than by two copies agreeing.
-    fn recv_type_arg(&mut self, recv_type: TypeExpr, span: Span) -> (Symbol, TermId) {
+    fn recv_type_arg(&mut self, recv_type: TypeExpr, span: Span) -> (Symbol, ParseTermId) {
         let aux = Term::ParseAux(Box::new(super::ir::ParseAux::TypeExpr(recv_type)));
         let aux_tid = self.terms.alloc(aux, span);
         (self.intern("recv_type"), aux_tid)
@@ -2032,7 +2032,7 @@ impl<'a> Converter<'a> {
         &mut self,
         node: Node<'t>,
         work: &mut Vec<WorkOp<'t>>,
-        results: &mut Vec<TermId>,
+        results: &mut Vec<ParseTermId>,
     ) {
         match node.kind() {
             "match_expr" => {
@@ -2138,7 +2138,7 @@ impl<'a> Converter<'a> {
         &mut self,
         node: Node<'t>,
         work: &mut Vec<WorkOp<'t>>,
-        results: &mut Vec<TermId>,
+        results: &mut Vec<ParseTermId>,
     ) {
         let span = self.span(node);
         match node.kind() {
@@ -2313,8 +2313,8 @@ impl<'a> Converter<'a> {
         }
     }
 
-    /// Assemble a parent TermId from its already-converted children.
-    fn build_parse<'t>(&mut self, frame: BuildFrame<'t>, results: &mut Vec<TermId>) {
+    /// Assemble a parent ParseTermId from its already-converted children.
+    fn build_parse<'t>(&mut self, frame: BuildFrame<'t>, results: &mut Vec<ParseTermId>) {
         match frame {
             BuildFrame::FnTerm {
                 node,
@@ -2327,8 +2327,8 @@ impl<'a> Converter<'a> {
             } => {
                 let span = self.span(node);
                 let drain_start = results.len() - slots.len();
-                let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
-                let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+                let mut pos_args: SmallVec<[ParseTermId; 4]> = SmallVec::new();
+                let mut named_args: SmallVec<[(Symbol, ParseTermId); 2]> = SmallVec::new();
                 for (i, slot) in slots.iter().enumerate() {
                     let value = results[drain_start + i];
                     match slot {
@@ -2337,7 +2337,7 @@ impl<'a> Converter<'a> {
                     }
                 }
                 // WI-1129 (proposal 056 §2.3): record this call's `...?args` capture
-                // variable, now that its `TermId` exists. UNCLAIMED by default —
+                // variable, now that its `ParseTermId` exists. UNCLAIMED by default —
                 // `claim_rule_head_captures` takes it off this list when the call is a
                 // `@[simp]` rule head's LHS, and whatever is left when the file finishes
                 // converting is a `...` written where nothing could ever read it
@@ -2488,10 +2488,10 @@ impl<'a> Converter<'a> {
                 let drain_start = results.len() - (1 + slots.len());
                 let receiver = results[drain_start];
                 let name_tid = self.terms.alloc(Term::Ident(name_sym), name_span);
-                let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
+                let mut pos_args: SmallVec<[ParseTermId; 4]> = SmallVec::new();
                 pos_args.push(receiver);
                 pos_args.push(name_tid);
-                let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+                let mut named_args: SmallVec<[(Symbol, ParseTermId); 2]> = SmallVec::new();
                 for (i, slot) in slots.iter().enumerate() {
                     let value = results[drain_start + 1 + i];
                     match slot {
@@ -2527,7 +2527,7 @@ impl<'a> Converter<'a> {
             BuildFrame::SetLiteral { node, count } => {
                 let span = self.span(node);
                 let drain_start = results.len() - count;
-                let elements: SmallVec<[TermId; 4]> =
+                let elements: SmallVec<[ParseTermId; 4]> =
                     results[drain_start..].iter().copied().collect();
                 results.truncate(drain_start);
                 results.push(self.alloc_fn_term(dt::SET_LITERAL, elements, span));
@@ -2535,7 +2535,7 @@ impl<'a> Converter<'a> {
             BuildFrame::CollectionLiteral { node, elem_count } => {
                 let span = self.span(node);
                 let drain_start = results.len() - elem_count;
-                let elements: SmallVec<[TermId; 4]> =
+                let elements: SmallVec<[ParseTermId; 4]> =
                     results[drain_start..].iter().copied().collect();
                 results.truncate(drain_start);
                 let id = self.alloc_fn_term(dt::LIST_LITERAL, elements, span);
@@ -2549,8 +2549,8 @@ impl<'a> Converter<'a> {
             BuildFrame::TupleLiteral { node, slots } => {
                 let span = self.span(node);
                 let drain_start = results.len() - slots.len();
-                let mut positional: SmallVec<[TermId; 4]> = SmallVec::new();
-                let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+                let mut positional: SmallVec<[ParseTermId; 4]> = SmallVec::new();
+                let mut named: SmallVec<[(Symbol, ParseTermId); 2]> = SmallVec::new();
                 for (i, slot) in slots.iter().enumerate() {
                     let value = results[drain_start + i];
                     match slot {
@@ -2590,7 +2590,7 @@ impl<'a> Converter<'a> {
             } => {
                 // WI-639: `x.(m1, …, mn)` ⇒ the ordered/named tuple
                 // `(m1: x.m1, …, mn: x.mn)`. Distribute the SINGLE converted
-                // receiver (a shared TermId) over each member, building the
+                // receiver (a shared ParseTermId) over each member, building the
                 // same `dot_apply` / `field_access` node `push_field_access`
                 // would for `x.m` (chosen by `is_value_recv`), then key each
                 // by its result label. Desugaring here means the existing
@@ -2606,7 +2606,7 @@ impl<'a> Converter<'a> {
                 } else {
                     dt::FIELD_ACCESS
                 });
-                let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+                let mut named: SmallVec<[(Symbol, ParseTermId); 2]> = SmallVec::new();
                 for entry in &entries {
                     let member_tid = self
                         .terms
@@ -2667,7 +2667,8 @@ impl<'a> Converter<'a> {
                 let span = self.span(node);
                 let drain_start = results.len() - (branch_count + 1);
                 let scrutinee = results[drain_start];
-                let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::with_capacity(branch_count + 1);
+                let mut pos_args: SmallVec<[ParseTermId; 4]> =
+                    SmallVec::with_capacity(branch_count + 1);
                 pos_args.push(scrutinee);
                 pos_args.extend(results[drain_start + 1..].iter().copied());
                 results.truncate(drain_start);
@@ -2679,7 +2680,7 @@ impl<'a> Converter<'a> {
                 let drain_start = results.len() - n;
                 // WI-537: carry the optional guard as a 3rd positional arg
                 // (load.rs reshapes it to the named `guard: some(g)` slot).
-                let mut args: SmallVec<[TermId; 4]> =
+                let mut args: SmallVec<[ParseTermId; 4]> =
                     SmallVec::from_slice(&results[drain_start..drain_start + 2]);
                 if has_guard {
                     args.push(results[drain_start + 2]);
@@ -2717,7 +2718,7 @@ impl<'a> Converter<'a> {
                 // `Term::ParseAux(TypeExpr(T))` node — replaces the
                 // prior `SimpleTermStore::let_type_annotations` HashMap.
                 // The loader unwraps it and lowers via `type_expr_to_value`.
-                let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+                let mut named: SmallVec<[(Symbol, ParseTermId); 2]> = SmallVec::new();
                 if let Some(ty) = type_anno {
                     let aux = Term::ParseAux(Box::new(super::ir::ParseAux::TypeExpr(ty)));
                     let aux_tid = self.terms.alloc(aux, span);
@@ -2776,7 +2777,7 @@ impl<'a> Converter<'a> {
                     span,
                 })));
                 let meta_tid = self.terms.alloc(meta, span);
-                let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
+                let mut pos_args: SmallVec<[ParseTermId; 4]> = SmallVec::new();
                 pos_args.push(body);
                 if let Some(c) = conclude {
                     pos_args.push(c);
@@ -2806,8 +2807,8 @@ impl<'a> Converter<'a> {
             } => {
                 let span = self.span(node);
                 let drain_start = results.len() - slots.len();
-                let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
-                let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+                let mut pos_args: SmallVec<[ParseTermId; 4]> = SmallVec::new();
+                let mut named_args: SmallVec<[(Symbol, ParseTermId); 2]> = SmallVec::new();
                 pos_args.push(name_tid);
                 for (i, slot) in slots.iter().enumerate() {
                     let value = results[drain_start + i];
@@ -2832,7 +2833,7 @@ impl<'a> Converter<'a> {
             BuildFrame::PatternTuple { node, count } => {
                 let span = self.span(node);
                 let drain_start = results.len() - count;
-                let pos_args: SmallVec<[TermId; 4]> =
+                let pos_args: SmallVec<[ParseTermId; 4]> =
                     results[drain_start..].iter().copied().collect();
                 results.truncate(drain_start);
                 results.push(self.alloc_marker_term("pattern_tuple", pos_args, span));
@@ -2840,7 +2841,7 @@ impl<'a> Converter<'a> {
         }
     }
 
-    fn convert_variable_node(&mut self, node: Node) -> TermId {
+    fn convert_variable_node(&mut self, node: Node) -> ParseTermId {
         let span = self.span(node);
         let text = self.text(node);
         if text.len() > 1 {
@@ -2858,17 +2859,17 @@ impl<'a> Converter<'a> {
         }
     }
 
-    fn convert_nested_implication(&mut self, node: Node) -> TermId {
+    fn convert_nested_implication(&mut self, node: Node) -> ParseTermId {
         let span = self.span(node);
-        let mut binders: SmallVec<[TermId; 4]> = SmallVec::new();
+        let mut binders: SmallVec<[ParseTermId; 4]> = SmallVec::new();
         for n in self.fields_by_name(node, "binder") {
             binders.push(self.convert_variable_node(n));
         }
-        let antecedents: SmallVec<[TermId; 4]> = self
+        let antecedents: SmallVec<[ParseTermId; 4]> = self
             .field(node, "antecedents")
             .map(|n| self.convert_rule_body(n).into_iter().collect())
             .unwrap_or_default();
-        let consequent: SmallVec<[TermId; 4]> = self
+        let consequent: SmallVec<[ParseTermId; 4]> = self
             .field(node, "consequent")
             .map(|n| self.convert_rule_body(n).into_iter().collect())
             .unwrap_or_default();
@@ -2889,7 +2890,7 @@ impl<'a> Converter<'a> {
     /// `get_or_create_var`), so the resolver can structurally substitute each
     /// concrete list element for the binder. The collection is any term (a list
     /// literal, a variable bound earlier in the rule, a call returning a list).
-    fn convert_bounded_quantification(&mut self, node: Node) -> TermId {
+    fn convert_bounded_quantification(&mut self, node: Node) -> ParseTermId {
         let span = self.span(node);
         // The `quantifier` field is an anonymous `forall` / `some` token; read its
         // source text. Own it as a `String` first so the error arm may borrow
@@ -2931,7 +2932,7 @@ impl<'a> Converter<'a> {
                 self.alloc_bottom(span)
             }
         };
-        let body: SmallVec<[TermId; 4]> = self
+        let body: SmallVec<[ParseTermId; 4]> = self
             .field(node, "body")
             .map(|n| self.convert_rule_body(n).into_iter().collect())
             .unwrap_or_default();
@@ -2943,15 +2944,15 @@ impl<'a> Converter<'a> {
         )
     }
 
-    fn convert_instantiation_term(&mut self, node: Node) -> TermId {
+    fn convert_instantiation_term(&mut self, node: Node) -> ParseTermId {
         // Eq[Int] or Eq[T = Int] — parameterized type in term position
         let span = self.span(node);
         let name_node = self.field(node, "name").unwrap_or(node);
         let name = self.convert_name(name_node);
         let functor = self.intern_name(&name);
 
-        let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
-        let mut named_args: SmallVec<[(crate::intern::Symbol, TermId); 2]> = SmallVec::new();
+        let mut pos_args: SmallVec<[ParseTermId; 4]> = SmallVec::new();
+        let mut named_args: SmallVec<[(crate::intern::Symbol, ParseTermId); 2]> = SmallVec::new();
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             if child.kind() == "sort_binding" {
@@ -3028,7 +3029,7 @@ impl<'a> Converter<'a> {
     /// still collapse to `Term::Ref` / `Term::Var`. A tuple type, an
     /// arrow type and an effect row have no term shape and ride as
     /// `ParseAux::EntryType`.
-    fn convert_type_value(&mut self, node: Node) -> TermId {
+    fn convert_type_value(&mut self, node: Node) -> ParseTermId {
         let span = self.span(node);
         match node.kind() {
             "simple_type" => {
@@ -3040,8 +3041,8 @@ impl<'a> Converter<'a> {
                 let name_node = self.field(node, "name").unwrap_or(node);
                 let name = self.convert_name(name_node);
                 let functor = self.intern_name(&name);
-                let mut pos_args: SmallVec<[TermId; 4]> = SmallVec::new();
-                let mut named_args: SmallVec<[(crate::intern::Symbol, TermId); 2]> =
+                let mut pos_args: SmallVec<[ParseTermId; 4]> = SmallVec::new();
+                let mut named_args: SmallVec<[(crate::intern::Symbol, ParseTermId); 2]> =
                     SmallVec::new();
                 let mut cursor = node.walk();
                 for child in node.named_children(&mut cursor) {
@@ -3362,7 +3363,7 @@ impl<'a> Converter<'a> {
     /// WI-478: lower a `guarded_effect` (`E :- p`) or `paren_guarded_effect`
     /// (`( E :- p, q )`) CST node into a [`TypeExpr::EffectGuarded`]. The `effect`
     /// field is the guarded label (`_simple_effect`); the `guard` field is a single
-    /// `_term` (bare) or a `rule_body` (paren) — both collected to a `Vec<TermId>`
+    /// `_term` (bare) or a `rule_body` (paren) — both collected to a `Vec<ParseTermId>`
     /// of goal terms.
     fn convert_guarded_effect(&mut self, node: Node) -> TypeExpr {
         let label = self
@@ -3373,7 +3374,7 @@ impl<'a> Converter<'a> {
                 let sym = self.intern("?");
                 TypeExpr::Simple(Name::simple(sym, self.span(node)))
             });
-        let guard: Vec<TermId> = match self.field(node, "guard") {
+        let guard: Vec<ParseTermId> = match self.field(node, "guard") {
             Some(g) if g.kind() == "rule_body" => self.convert_rule_body(g),
             Some(g) => vec![self.convert_term(g)],
             None => {
@@ -3637,7 +3638,7 @@ impl<'a> Converter<'a> {
     /// two that must be kept in step. That is the grammar comment's claim
     /// (`requires_body` is otherwise `rule_body` verbatim) made structural: a goal
     /// rewrite added for one is added for both.
-    fn convert_rule_body(&mut self, node: Node) -> Vec<TermId> {
+    fn convert_rule_body(&mut self, node: Node) -> Vec<ParseTermId> {
         let goals = self.convert_requires_body(node, &mut Vec::new(), 0);
         // WI-1040: `require[X]` is a RULE-BODY interpretation, so it is applied
         // HERE and not inside `convert_requires_body` — that walk is shared with an
@@ -3687,7 +3688,7 @@ impl<'a> Converter<'a> {
     /// same way `requires` / `unify` / `eq` are matched by name here. A parenthesised
     /// `require(X)` is deliberately NOT this form: it stays an ordinary goal, so a
     /// user predicate spelled `require` keeps working.
-    fn rewrite_require_goal(&mut self, tid: TermId) -> TermId {
+    fn rewrite_require_goal(&mut self, tid: ParseTermId) -> ParseTermId {
         // Spelling 2: `?d = require[X]` — the author names the output. `=` desugars
         // to `eq(lhs, rhs)` (pratt `EQ_FUNCTOR`), and only this exact shape is a
         // requirement denotation: variable on the left, `require[…]` on the right.
@@ -3738,7 +3739,7 @@ impl<'a> Converter<'a> {
     /// The spec-instance argument of a `require[X]` denotation, or `None` when `tid`
     /// is not one. The shape is a BRACKETED application on the bare name `require`
     /// with exactly one type argument.
-    fn require_spec_arg(&self, tid: TermId) -> Option<TermId> {
+    fn require_spec_arg(&self, tid: ParseTermId) -> Option<ParseTermId> {
         match self.terms.get(tid) {
             Term::Fn {
                 functor,
@@ -3756,7 +3757,12 @@ impl<'a> Converter<'a> {
     }
 
     /// Build `find_dictionary(<spec base>, out: <out>)` for a `require[X]` goal.
-    fn lower_require(&mut self, require_tid: TermId, out: TermId, span: Span) -> TermId {
+    fn lower_require(
+        &mut self,
+        require_tid: ParseTermId,
+        out: ParseTermId,
+        span: Span,
+    ) -> ParseTermId {
         let spec_arg = self
             .require_spec_arg(require_tid)
             .expect("lower_require called on a non-`require[…]` term");
@@ -3779,7 +3785,7 @@ impl<'a> Converter<'a> {
     /// Refuse any `require[…]` still nested inside `tid` after the two legal
     /// spellings have been lowered. Iterative (explicit worklist) so a deeply
     /// nested goal cannot overflow the host stack.
-    fn refuse_nested_require(&mut self, tid: TermId) {
+    fn refuse_nested_require(&mut self, tid: ParseTermId) {
         let mut stack = vec![tid];
         let mut offenders: Vec<Span> = Vec::new();
         while let Some(t) = stack.pop() {
@@ -3869,7 +3875,7 @@ impl<'a> Converter<'a> {
         node: Node,
         type_params: &mut Vec<TypeParam>,
         slot_base: usize,
-    ) -> Vec<TermId> {
+    ) -> Vec<ParseTermId> {
         let mut terms = Vec::new();
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
@@ -3921,7 +3927,7 @@ impl<'a> Converter<'a> {
     /// keyword (grammar), so a rule-body `requires(X)` reaches here as an ordinary
     /// `Term::Fn` whose functor is the bare interned name `"requires"` — matched by
     /// name, exactly as the loader's `unify`/`eq` special-cases match by name.
-    fn rewrite_requires_goal(&mut self, tid: TermId) -> TermId {
+    fn rewrite_requires_goal(&mut self, tid: ParseTermId) -> ParseTermId {
         let (spec_arg, span) = match self.terms.get(tid) {
             Term::Fn {
                 functor,
@@ -3943,7 +3949,7 @@ impl<'a> Converter<'a> {
         // question belongs and where a name denoting no sort is dropped rather than
         // reported. See `docs/design/060-implementation.md` §8.6.
         let base = spec_arg;
-        let mut args: SmallVec<[TermId; 4]> = SmallVec::new();
+        let mut args: SmallVec<[ParseTermId; 4]> = SmallVec::new();
         args.push(base);
         // The address, as at `lower_require` (the `require[X]` producer): the typer
         // asks for this relation by qualified name, so the address is what the two
@@ -4634,7 +4640,7 @@ impl<'a> Converter<'a> {
     /// WI-888 and no ticket. Claiming a capture on a head the loader then refuses costs
     /// nothing: both refusals return before any rule is asserted, so no capture is ever
     /// installed on one.
-    fn equation_lhs(&self, tid: TermId) -> Option<TermId> {
+    fn equation_lhs(&self, tid: ParseTermId) -> Option<ParseTermId> {
         let Term::Fn {
             functor, pos_args, ..
         } = self.terms.get(tid)
@@ -4650,11 +4656,11 @@ impl<'a> Converter<'a> {
         }
     }
 
-    fn is_pending_rest(&self, tid: TermId) -> bool {
+    fn is_pending_rest(&self, tid: ParseTermId) -> bool {
         self.pending_rest_args.iter().any(|(t, _)| *t == tid)
     }
 
-    fn claim_rest(&mut self, tid: TermId) {
+    fn claim_rest(&mut self, tid: ParseTermId) {
         self.pending_rest_args.retain(|(t, _)| *t != tid);
     }
 
@@ -4770,7 +4776,7 @@ impl<'a> Converter<'a> {
     /// literal of its own, so both sides were the same stale string and it stayed green;
     /// and no `.anthill` file in the corpus writes a goal-position `let`, so the suite
     /// never reached the loud error either.
-    fn convert_let_binding(&mut self, node: Node) -> TermId {
+    fn convert_let_binding(&mut self, node: Node) -> ParseTermId {
         let span = self.span(node);
         let var = self.field(node, "var").map(|n| self.convert_term(n));
         let value = self.field(node, "value").map(|n| self.convert_term(n));
@@ -5356,7 +5362,7 @@ impl<'a> Converter<'a> {
     /// Convert a single `named_arg` node into a synthetic
     /// `named_arg(name: "...", value: <term>)` term so it can be carried
     /// alongside positional args in proof strategies.
-    fn convert_named_arg(&mut self, node: Node) -> TermId {
+    fn convert_named_arg(&mut self, node: Node) -> ParseTermId {
         let span = self.span(node);
         let key_node = self.field(node, "name");
         let val_node = self.field(node, "value");
@@ -5367,7 +5373,7 @@ impl<'a> Converter<'a> {
             );
             let val_tid = self.convert_term(v);
             let functor = self.intern("named_arg");
-            let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
+            let mut named_args: SmallVec<[(Symbol, ParseTermId); 2]> = SmallVec::new();
             named_args.push((self.intern("name"), key_str));
             named_args.push((self.intern("value"), val_tid));
             self.terms.alloc(
@@ -5391,7 +5397,7 @@ impl<'a> Converter<'a> {
             .unwrap_or_else(|| self.intern("derivation"));
         // Args are positional/named children of the proof_strategy node.
         // _fn_arg can be either a term (positional) or a named_arg.
-        let mut args: Vec<TermId> = Vec::new();
+        let mut args: Vec<ParseTermId> = Vec::new();
         let mut tactic_args: Vec<TacticArg> = Vec::new();
         let mut explicit_tactic: Option<Tactic> = None;
         let mut seen_strategy_labels: SmallVec<[Symbol; 4]> = SmallVec::new();
@@ -5897,9 +5903,9 @@ impl<'a> Converter<'a> {
         node: Node,
         what: &'static str,
         why: &'static str,
-    ) -> Vec<(Symbol, TermId)> {
+    ) -> Vec<(Symbol, ParseTermId)> {
         // bindings: '{' commaSep1(seq(identifier, ':', term)) '}'
-        let mut out: Vec<(Symbol, TermId)> = Vec::new();
+        let mut out: Vec<(Symbol, ParseTermId)> = Vec::new();
         if let Some(bindings) = self.field(node, "bindings") {
             let mut cursor = bindings.walk();
             let children: Vec<Node> = bindings.named_children(&mut cursor).collect();
@@ -5941,7 +5947,7 @@ impl<'a> Converter<'a> {
     /// Convert an expression body node (match_expr / if_expr /
     /// let_chain / lambda_expr / plain term). Delegates to the
     /// iterative walker.
-    fn convert_expr_body(&mut self, node: Node) -> TermId {
+    fn convert_expr_body(&mut self, node: Node) -> ParseTermId {
         self.convert_expr_iter(node, WorkKind::ExprBody)
     }
 }

@@ -2,7 +2,7 @@ package anthill.load
 
 import anthill.kb.KnowledgeBase
 import anthill.intern.ResolveResult
-import anthill.parse.{Parser, ParsedFile, Item, DesugarTarget, Pratt}
+import anthill.parse.{Parser, ParsedFile, ParseTermId, Item, DesugarTarget, Pratt}
 import anthill.term.{Term, TermId}
 
 /** ERF7T back-out measured: reverting the parser mints plus implicit reflect
@@ -13,13 +13,13 @@ class DesugarTargetTest extends munit.FunSuite:
   private def parsed(src: String): ParsedFile =
     Parser.parse(src).fold(e => fail(e.toString), identity)
 
-  private def body(src: String): (ParsedFile, IndexedSeq[TermId]) =
+  private def body(src: String): (ParsedFile, IndexedSeq[ParseTermId]) =
     val pf = parsed(s"rule probe(?x, ?d, ?P) :- $src")
     val r = pf.items.collectFirst { case Item.RuleItem(r) => r }.get
     (pf, r.body.get)
 
-  private def functor(pf: ParsedFile, id: TermId): String = pf.terms.get(id) match
-    case fn: Term.Fn => pf.symbols.name(fn.functor)
+  private def functor(pf: ParsedFile, id: ParseTermId): String = pf.terms.get(id) match
+    case fn: Term.Fn[ParseTermId] => pf.symbols.name(fn.functor)
     case other => fail(s"expected application, got $other")
 
   for (src, address) <- Seq(
@@ -74,10 +74,10 @@ class DesugarTargetTest extends munit.FunSuite:
   test("requirement output is carried and ordinary control names remain ordinary") {
     val (pf, goals) = body("require[Eq], ?d = require[Eq], requires(Eq), require(Eq), cut(1), find_dictionary(Eq), requires(Eq, Eq)")
     for i <- 0 to 1 do
-      val fn = pf.terms.get(goals(i)).asInstanceOf[Term.Fn]
+      val fn = pf.terms.get(goals(i)).asInstanceOf[Term.Fn[ParseTermId]]
       assertEquals(fn.namedArgs.map((k, _) => pf.symbols.name(k)).toSeq, Seq("out"))
       assert(pf.terms.get(fn.namedArgs(0)._2).isInstanceOf[Term.Var])
-    assertEquals(pf.terms.get(goals(2)).asInstanceOf[Term.Fn].namedArgs.length, 0)
+    assertEquals(pf.terms.get(goals(2)).asInstanceOf[Term.Fn[ParseTermId]].namedArgs.length, 0)
     assertEquals(functor(pf, goals(3)), "require")
     assertEquals(functor(pf, goals(4)), "cut")
     assertEquals(functor(pf, goals(5)), "find_dictionary")
@@ -116,11 +116,11 @@ class DesugarTargetTest extends munit.FunSuite:
     val rules = kb.byFunctor(kb.resolveSymbol("app.demo.p"))
     assertEquals(rules.length, 1)
     val goals = kb.ruleBody(rules.head)
-    val holds = kb.getTerm(goals.head).asInstanceOf[Term.Fn]
+    val holds = kb.getTerm(goals.head).asInstanceOf[Term.Fn[TermId]]
     for (id, address) <- holds.posArgs.toSeq.zip(Seq(DesugarTarget.ListLiteral, DesugarTarget.SetLiteral, DesugarTarget.TupleLiteral)) do
-      assertEquals(kb.qualifiedNameOf(kb.getTerm(id).asInstanceOf[Term.Fn].functor), DesugarTarget.qualified(address))
-    assertEquals(kb.qualifiedNameOf(kb.getTerm(goals(1)).asInstanceOf[Term.Fn].functor), DesugarTarget.qualified(DesugarTarget.HoApply))
-    assertEquals(kb.qualifiedNameOf(kb.getTerm(goals(2)).asInstanceOf[Term.Fn].functor), DesugarTarget.qualified(DesugarTarget.DotApply))
+      assertEquals(kb.qualifiedNameOf(kb.getTerm(id).asInstanceOf[Term.Fn[TermId]].functor), DesugarTarget.qualified(address))
+    assertEquals(kb.qualifiedNameOf(kb.getTerm(goals(1)).asInstanceOf[Term.Fn[TermId]].functor), DesugarTarget.qualified(DesugarTarget.HoApply))
+    assertEquals(kb.qualifiedNameOf(kb.getTerm(goals(2)).asInstanceOf[Term.Fn[TermId]].functor), DesugarTarget.qualified(DesugarTarget.DotApply))
   }
 
   /** A namespace declaring its own `forall_impl` / `forall_in` / `some_in` does not
@@ -137,5 +137,5 @@ class DesugarTargetTest extends munit.FunSuite:
     assertEquals(rules.length, 1)
     val goals = kb.ruleBody(rules.head)
     for (id, address) <- goals.toSeq.drop(1).zip(Seq(DesugarTarget.ForallImpl, DesugarTarget.ForallIn, DesugarTarget.SomeIn)) do
-      assertEquals(kb.qualifiedNameOf(kb.getTerm(id).asInstanceOf[Term.Fn].functor), DesugarTarget.qualified(address))
+      assertEquals(kb.qualifiedNameOf(kb.getTerm(id).asInstanceOf[Term.Fn[TermId]].functor), DesugarTarget.qualified(address))
   }

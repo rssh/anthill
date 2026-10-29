@@ -58,7 +58,7 @@ object Policy:
 
   private def decodePolicyTerm(kb: KnowledgeBase, tid: TermId): Option[PredicatePolicy] =
     val functor: TermSymbol = kb.getTerm(tid) match
-      case f: Term.Fn   => f.functor
+      case f: Term.Fn[TermId]   => f.functor
       case Term.Ref(s)  => s
       case Term.Ident(s)=> s
       case _ => return None

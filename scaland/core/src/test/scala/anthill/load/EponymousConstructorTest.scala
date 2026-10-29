@@ -1,7 +1,7 @@
 package anthill.load
 
 import anthill.kb.{KnowledgeBase, LoadFixture}
-import anthill.term.{Term, Var}
+import anthill.term.{Term, TermId, Var}
 import anthill.resolve.SearchStream
 
 /** §6.3 (WI-926) — AN EPONYMOUS CONSTRUCTOR IS ITS SORT. `sort Foo … entity Foo(…) … end`
@@ -47,7 +47,7 @@ class EponymousConstructorTest extends munit.FunSuite:
     val entityOf = kb.byFunctor(kb.intern("entity_of")).map(kb.ruleHead)
     assert(
       !entityOf.exists(h => kb.getTerm(h) match
-        case fn: Term.Fn => fn.posArgs.exists(a => kb.getTerm(a) == Term.Ref(foo))
+        case fn: Term.Fn[TermId] => fn.posArgs.exists(a => kb.getTerm(a) == Term.Ref(foo))
         case _ => false),
       "an eponymous constructor is not a constructor OF its sort, so no `entity_of` names it")
   }

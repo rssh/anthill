@@ -247,7 +247,7 @@ class ResolveTest extends munit.FunSuite:
     // Reify each binding and count succ depth
     def succDepth(tid: TermId): Int =
       kb.getTerm(tid) match
-        case fn: Term.Fn if kb.resolveSym(fn.functor) == "succ" && fn.posArgs.length == 1 =>
+        case fn: Term.Fn[TermId] if kb.resolveSym(fn.functor) == "succ" && fn.posArgs.length == 1 =>
           1 + succDepth(fn.posArgs(0))
         // WI-20260902-CZJ2N: `zero()` is a NULLARY application and is stored bare, so the
         // base case arrives as `Term.Ref`.

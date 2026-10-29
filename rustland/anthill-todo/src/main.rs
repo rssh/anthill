@@ -10,7 +10,7 @@ use anthill_core::kb::term::{Literal, Term, TermId};
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::parse;
 use anthill_core::parse::error::ParseError;
-use anthill_core::parse::ir::ParsedFile;
+use anthill_core::parse::ir::{ParseTermId, ParsedFile};
 
 use smallvec::SmallVec;
 
@@ -587,9 +587,9 @@ fn collect_mapping_facts(
     Ok(())
 }
 
-type IrArgs = [(anthill_core::intern::Symbol, TermId)];
+type IrArgs = [(anthill_core::intern::Symbol, ParseTermId)];
 
-fn ir_arg(pf: &ParsedFile, args: &IrArgs, field: &str) -> Option<TermId> {
+fn ir_arg(pf: &ParsedFile, args: &IrArgs, field: &str) -> Option<ParseTermId> {
     args.iter()
         .find(|(s, _)| pf.symbols.local_name(*s) == field)
         .map(|(_, t)| *t)
@@ -688,8 +688,8 @@ fn inject_prose(
     use anthill_core::parse::ir::Item;
     // The facts in emission order, which is the order they were written and so
     // the order they parse in.
-    let mut targets: Vec<(TermId, anthill_core::span::Span)> = Vec::new();
-    fn scan(items: &[Item], out: &mut Vec<(TermId, anthill_core::span::Span)>) {
+    let mut targets: Vec<(ParseTermId, anthill_core::span::Span)> = Vec::new();
+    fn scan(items: &[Item], out: &mut Vec<(ParseTermId, anthill_core::span::Span)>) {
         for item in items {
             match item {
                 Item::Namespace(ns) => scan(&ns.items, out),
@@ -700,7 +700,7 @@ fn inject_prose(
     }
     scan(&parsed.items, &mut targets);
 
-    let mut rebuilt: std::collections::HashMap<usize, TermId> =
+    let mut rebuilt: std::collections::HashMap<usize, ParseTermId> =
         std::collections::HashMap::new();
     for binding in &facts.prose {
         let Some((term, span)) = targets.get(binding.fact).copied() else {
@@ -741,7 +741,7 @@ fn inject_prose(
     fn rewrite(
         items: &mut [Item],
         index: &mut usize,
-        rebuilt: &std::collections::HashMap<usize, TermId>,
+        rebuilt: &std::collections::HashMap<usize, ParseTermId>,
     ) {
         for item in items {
             match item {
@@ -768,11 +768,11 @@ fn inject_prose(
 /// point at, and pointing at the whole fact is the closest true answer.
 fn with_named_arg(
     parsed: &mut ParsedFile,
-    term: TermId,
+    term: ParseTermId,
     field: &str,
-    value: TermId,
+    value: ParseTermId,
     span: anthill_core::span::Span,
-) -> TermId {
+) -> ParseTermId {
     let Term::Fn {
         functor,
         pos_args,
@@ -782,7 +782,7 @@ fn with_named_arg(
         return term;
     };
     let sym = parsed.symbols.intern(field);
-    let mut named: SmallVec<[(anthill_core::intern::Symbol, TermId); 2]> = named_args;
+    let mut named: SmallVec<[(anthill_core::intern::Symbol, ParseTermId); 2]> = named_args;
     match named.iter_mut().find(|(s, _)| *s == sym) {
         Some(slot) => slot.1 = value,
         None => named.push((sym, value)),
@@ -797,7 +797,7 @@ fn with_named_arg(
     )
 }
 
-fn named_arg_of(parsed: &ParsedFile, term: TermId, field: &str) -> Option<TermId> {
+fn named_arg_of(parsed: &ParsedFile, term: ParseTermId, field: &str) -> Option<ParseTermId> {
     let Term::Fn { named_args, .. } = parsed.terms.get(term) else {
         return None;
     };
@@ -3297,8 +3297,8 @@ fn apply_legacy_rewrites(
     mapping: &DocumentMapping,
 ) {
     use anthill_core::parse::ir::Item;
-    let mut targets: Vec<(TermId, anthill_core::span::Span)> = Vec::new();
-    fn scan(items: &[Item], out: &mut Vec<(TermId, anthill_core::span::Span)>) {
+    let mut targets: Vec<(ParseTermId, anthill_core::span::Span)> = Vec::new();
+    fn scan(items: &[Item], out: &mut Vec<(ParseTermId, anthill_core::span::Span)>) {
         for item in items {
             match item {
                 Item::Namespace(ns) => scan(&ns.items, out),
@@ -3309,7 +3309,8 @@ fn apply_legacy_rewrites(
     }
     scan(&parsed.items, &mut targets);
 
-    let mut rebuilt: std::collections::HashMap<usize, TermId> = std::collections::HashMap::new();
+    let mut rebuilt: std::collections::HashMap<usize, ParseTermId> =
+        std::collections::HashMap::new();
     for (position, rewrite) in plan {
         let Some((term, span)) = targets.get(*position).copied() else {
             continue;
@@ -3338,7 +3339,7 @@ fn apply_legacy_rewrites(
     fn rewrite_items(
         items: &mut [Item],
         index: &mut usize,
-        rebuilt: &std::collections::HashMap<usize, TermId>,
+        rebuilt: &std::collections::HashMap<usize, ParseTermId>,
     ) {
         for item in items {
             match item {
@@ -3365,29 +3366,29 @@ fn apply_legacy_rewrites(
 /// becomes `none` — nothing is invented, because the information is gone.
 fn hoist_status(
     parsed: &mut ParsedFile,
-    term: TermId,
+    term: ParseTermId,
     span: anthill_core::span::Span,
     mapping: &DocumentMapping,
-) -> TermId {
+) -> ParseTermId {
     let Some(status) = named_arg_of(parsed, term, "status") else {
         return term;
     };
-    let (variant, payload): (String, Vec<(String, TermId)>) = match parsed.terms.get(status).clone()
-    {
-        Term::Ref(s) | Term::Ident(s) => (parsed.symbols.local_name(s).to_string(), Vec::new()),
-        Term::Fn {
-            functor,
-            named_args,
-            ..
-        } => (
-            parsed.symbols.local_name(functor).to_string(),
-            named_args
-                .iter()
-                .map(|(s, t)| (parsed.symbols.local_name(*s).to_string(), *t))
-                .collect(),
-        ),
-        _ => return term,
-    };
+    let (variant, payload): (String, Vec<(String, ParseTermId)>) =
+        match parsed.terms.get(status).clone() {
+            Term::Ref(s) | Term::Ident(s) => (parsed.symbols.local_name(s).to_string(), Vec::new()),
+            Term::Fn {
+                functor,
+                named_args,
+                ..
+            } => (
+                parsed.symbols.local_name(functor).to_string(),
+                named_args
+                    .iter()
+                    .map(|(s, t)| (parsed.symbols.local_name(*s).to_string(), *t))
+                    .collect(),
+            ),
+            _ => return term,
+        };
     let field = |name: &str| payload.iter().find(|(n, _)| n == name).map(|(_, t)| *t);
     let agent = field("agent");
     let at = field("at").or_else(|| field("since"));
@@ -3401,7 +3402,7 @@ fn hoist_status(
         },
         span,
     );
-    let mut named: SmallVec<[(anthill_core::intern::Symbol, TermId); 2]> = SmallVec::new();
+    let mut named: SmallVec<[(anthill_core::intern::Symbol, ParseTermId); 2]> = SmallVec::new();
     named.push((parsed.symbols.intern("status"), bare));
     for (name, held) in [("agent", agent), ("at", at), ("reason", reason)] {
         let value = match held {
@@ -3442,8 +3443,12 @@ fn hoist_status(
 /// Same rule as `parse::desugar_target` and `parse::pratt`: a functor a PROGRAM never
 /// wrote must carry its target outright. `..` is unspellable by any identifier, so it
 /// cannot be captured by a user declaration either.
-fn some_of(parsed: &mut ParsedFile, value: TermId, span: anthill_core::span::Span) -> TermId {
-    let mut named: SmallVec<[(anthill_core::intern::Symbol, TermId); 2]> = SmallVec::new();
+fn some_of(
+    parsed: &mut ParsedFile,
+    value: ParseTermId,
+    span: anthill_core::span::Span,
+) -> ParseTermId {
+    let mut named: SmallVec<[(anthill_core::intern::Symbol, ParseTermId); 2]> = SmallVec::new();
     named.push((parsed.symbols.intern("value"), value));
     parsed.terms.alloc(
         Term::Fn {
@@ -3455,7 +3460,7 @@ fn some_of(parsed: &mut ParsedFile, value: TermId, span: anthill_core::span::Spa
     )
 }
 
-fn none_of(parsed: &mut ParsedFile, span: anthill_core::span::Span) -> TermId {
+fn none_of(parsed: &mut ParsedFile, span: anthill_core::span::Span) -> ParseTermId {
     parsed.terms.alloc(
         Term::Fn {
             functor: parsed.symbols.intern("..anthill.prelude.Option.none"),
@@ -3468,10 +3473,10 @@ fn none_of(parsed: &mut ParsedFile, span: anthill_core::span::Span) -> TermId {
 
 fn without_named_arg(
     parsed: &mut ParsedFile,
-    term: TermId,
+    term: ParseTermId,
     field: &str,
     span: anthill_core::span::Span,
-) -> TermId {
+) -> ParseTermId {
     let Term::Fn {
         functor,
         pos_args,
@@ -3481,7 +3486,7 @@ fn without_named_arg(
         return term;
     };
     let sym = parsed.symbols.intern(field);
-    let named: SmallVec<[(anthill_core::intern::Symbol, TermId); 2]> =
+    let named: SmallVec<[(anthill_core::intern::Symbol, ParseTermId); 2]> =
         named_args.into_iter().filter(|(s, _)| *s != sym).collect();
     parsed.terms.alloc(
         Term::Fn {

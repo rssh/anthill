@@ -532,7 +532,7 @@ private[smtgen] final class Emitter(val kb: KnowledgeBase):
       val candidates = kb.byFunctor(functor)
       val answering = candidates.filter { rid =>
         kb.getTerm(kb.ruleHead(rid)) match
-          case f: Term.Fn => f.posArgs.length + f.namedArgs.length == 1
+          case f: Term.Fn[TermId] => f.posArgs.length + f.namedArgs.length == 1
           case _          => false
       }
       answering.find(rid => kb.ruleBody(rid).nonEmpty) match
@@ -570,7 +570,7 @@ private[smtgen] final class Emitter(val kb: KnowledgeBase):
     visitedRules += calleeQn
     val head = kb.ruleHead(rid)
     val resultIdx = kb.getTerm(head) match
-      case f: Term.Fn if f.posArgs.length == 1 => kb.getTerm(f.posArgs(0)) match
+      case f: Term.Fn[TermId] if f.posArgs.length == 1 => kb.getTerm(f.posArgs(0)) match
         case Term.Var(vid) => vid.varId.id
         case _ => return Left(SmtGenError(
           s"v0: called rule '$calleeQn' head must be ?Var"))
@@ -689,7 +689,7 @@ private[smtgen] final class Emitter(val kb: KnowledgeBase):
               "inlined rule is named when its frame is opened"))
       case Term.Ref(s)   => Right(SmtGen.sanitizeSmtId(kb.resolveSym(s)))
       case Term.Ident(s) => Right(SmtGen.sanitizeSmtId(kb.resolveSym(s)))
-      case f: Term.Fn =>
+      case f: Term.Fn[TermId] =>
         val op = kb.qualifiedNameOf(f.functor)
         SmtGen.mapUnaryOp(op) match
           case Some(smtOp) =>

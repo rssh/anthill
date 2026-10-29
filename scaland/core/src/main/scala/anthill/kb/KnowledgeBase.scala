@@ -467,7 +467,7 @@ class KnowledgeBase:
       case Term.Var(v) =>
         val vid = v.varId
         if seen.add(vid.id) then vars += vid
-      case fn: Term.Fn =>
+      case fn: Term.Fn[TermId] =>
         fn.posArgs.foreach(id => collectVarsRec(id, vars, seen))
         fn.namedArgs.foreach((_, id) => collectVarsRec(id, vars, seen))
       case _ =>
@@ -483,7 +483,7 @@ class KnowledgeBase:
   /** Map over Fn children, returning the same TermId if nothing changed (avoids allocation). */
   private def mapFnChildren(term: TermId, f: TermId => TermId): TermId =
     terms.get(term) match
-      case fn: Term.Fn =>
+      case fn: Term.Fn[TermId] =>
         var changed = false
         val newPos = IArray.tabulate(fn.posArgs.length) { i =>
           val old = fn.posArgs(i); val r = f(old)
@@ -501,7 +501,7 @@ class KnowledgeBase:
   def applySubst(term: TermId, subst: Substitution): TermId =
     terms.get(term) match
       case Term.Var(v) => subst.resolve(v.varId).getOrElse(term)
-      case _: Term.Fn => mapFnChildren(term, id => applySubst(id, subst))
+      case _: Term.Fn[TermId] => mapFnChildren(term, id => applySubst(id, subst))
       case _ => term
 
   def walk(term: TermId, subst: Substitution): TermId =
@@ -522,7 +522,7 @@ class KnowledgeBase:
     val walked = walk(term, subst)
     terms.get(walked) match
       case Term.Var(_) => walked
-      case _: Term.Fn => mapFnChildren(walked, id => reify(id, subst))
+      case _: Term.Fn[TermId] => mapFnChildren(walked, id => reify(id, subst))
       case _ => walked
 
   /** Number of DeBruijn vars a rule closes over head+body (WI-637); 0 for a
@@ -540,7 +540,7 @@ class KnowledgeBase:
         val pos = order.indexWhere(_ == vid)
         if pos >= 0 then alloc(Term.Var(Var.DeBruijn(order.length - 1 - pos))) else term
       case Term.Var(_) => term
-      case _: Term.Fn => mapFnChildren(term, id => termToDebruijn(id, order))
+      case _: Term.Fn[TermId] => mapFnChildren(term, id => termToDebruijn(id, order))
       case _ => term
 
   /** Open a DeBruijn term: replace `DeBruijn(i)` with `Global(freshVars(i))`
@@ -551,7 +551,7 @@ class KnowledgeBase:
       case Term.Var(Var.DeBruijn(idx)) =>
         if idx < freshVars.length then alloc(Term.Var(Var.Global(freshVars(idx)))) else term
       case Term.Var(_) => term
-      case _: Term.Fn => mapFnChildren(term, id => termFromDebruijn(id, freshVars))
+      case _: Term.Fn[TermId] => mapFnChildren(term, id => termFromDebruijn(id, freshVars))
       case _ => term
 
   /** Does `vid` occur (chased through `subst`) in the term rooted at `term`?
@@ -559,7 +559,7 @@ class KnowledgeBase:
   private def occursInTerm(vid: VarId, term: TermId, subst: Substitution): Boolean =
     terms.get(walk(term, subst)) match
       case Term.Var(v) => v.varId.id == vid.id
-      case fn: Term.Fn =>
+      case fn: Term.Fn[TermId] =>
         fn.posArgs.exists(occursInTerm(vid, _, subst)) ||
           fn.namedArgs.exists((_, t) => occursInTerm(vid, t, subst))
       case _ => false
@@ -670,7 +670,7 @@ class KnowledgeBase:
     val entry = rules(id.index)
     if entry.body.nonEmpty || entry.retracted then return false
     terms.get(entry.head) match
-      case fn: Term.Fn =>
+      case fn: Term.Fn[TermId] =>
         val name = symbols.name(fn.functor)
         (name == "eq" || name == "unify" || name == anthill.parse.Pratt.unifyFunctor) && fn.posArgs.length == 2
       case _ => false

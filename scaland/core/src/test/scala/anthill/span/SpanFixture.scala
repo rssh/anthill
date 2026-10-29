@@ -1,7 +1,7 @@
 package anthill.span
 
-import anthill.parse.{Item, Parser, ParsedFile, SimpleTermStore}
-import anthill.term.{Term, TermId}
+import anthill.parse.{Item, ParseTerm, ParseTermId, Parser, ParsedFile, SimpleTermStore}
+import anthill.term.Term
 
 /** What every span test in this package does before it can assert anything: parse a
   * fixture, walk the items it produced, find the one it is about, and compare a span
@@ -38,7 +38,7 @@ private[span] object SpanFixture:
     * The production store keeps no counter, so nothing on the loader's path writes one. */
   private final class CountingTermStore extends SimpleTermStore:
     var spanReads = 0
-    override def spanOf(id: TermId): Span =
+    override def spanOf(id: ParseTermId): Span =
       spanReads += 1
       super.spanOf(id)
 
@@ -101,7 +101,7 @@ private[span] object SpanFixture:
     * enforce, and `ParseSpanGrowthTest` now walks BEFORE it asserts, on purpose. */
   def fnSpans(pf: ParsedFile, functor: String): IndexedSeq[Span] =
     termSpans(pf) {
-      case f: Term.Fn => pf.symbols.name(f.functor) == functor
+      case f: Term.Fn[ParseTermId] => pf.symbols.name(f.functor) == functor
       case _          => false
     }
 
@@ -121,9 +121,8 @@ private[span] object SpanFixture:
     if found.length == 1 then found.head
     else munit.Assertions.fail(s"fixture drift: expected exactly one Ref:$name, got ${found.length}")
 
-  private def termSpans(pf: ParsedFile)(p: Term => Boolean): IndexedSeq[Span] =
-    (0 until pf.terms.size).view
-      .map(TermId.fromRaw)
+  private def termSpans(pf: ParsedFile)(p: ParseTerm => Boolean): IndexedSeq[Span] =
+    pf.terms.ids
       .filter(id => p(pf.terms.get(id)))
       .map(pf.terms.spanOf)
       .toIndexedSeq

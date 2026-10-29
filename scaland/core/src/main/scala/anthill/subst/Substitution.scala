@@ -99,7 +99,7 @@ class Substitution(
         case (Term.Ref(sa), Term.Ref(sb))     => TermSymbol.raw(sa) == TermSymbol.raw(sb)
         case (Term.Ident(sa), Term.Ident(sb)) => TermSymbol.raw(sa) == TermSymbol.raw(sb)
         case (Term.Bottom, Term.Bottom)       => true
-        case (fa: Term.Fn, fb: Term.Fn) =>
+        case (fa: Term.Fn[TermId], fb: Term.Fn[TermId]) =>
           if TermSymbol.raw(fa.functor) != TermSymbol.raw(fb.functor) ||
              fa.posArgs.length != fb.posArgs.length ||
              fa.namedArgs.length != fb.namedArgs.length then false
@@ -142,7 +142,7 @@ class Substitution(
   private def occursIn(terms: TermStore, v: VarId, id: TermId): Boolean =
     terms.get(chase(terms, id)) match
       case Term.Var(w) => w.varId.id == v.id
-      case fn: Term.Fn =>
+      case fn: Term.Fn[TermId] =>
         fn.posArgs.exists(occursIn(terms, v, _)) ||
           fn.namedArgs.exists((_, t) => occursIn(terms, v, t))
       case _ => false

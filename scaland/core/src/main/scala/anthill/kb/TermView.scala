@@ -168,13 +168,13 @@ object TermView:
     def head(a: TermId, kb: KnowledgeBase): ViewHead = kb.getTerm(a) match
       case Term.Var(v)     => ViewHead.Var(v)
       case Term.Const(lit) => ViewHead.Const(lit)
-      case fn: Term.Fn     => functorViewHead(kb, fn.functor, fn.posArgs.length, fn.namedArgs.length)
+      case fn: Term.Fn[TermId]     => functorViewHead(kb, fn.functor, fn.posArgs.length, fn.namedArgs.length)
       case Term.Ref(s)     => ViewHead.nullary(s)
       case Term.Ident(s)   => ViewHead.Ident(s)
       case Term.Bottom     => ViewHead.Bottom
 
     def posArg(a: TermId, kb: KnowledgeBase, i: Int): Option[Value] = kb.getTerm(a) match
-      case fn: Term.Fn =>
+      case fn: Term.Fn[TermId] =>
         if i >= 0 && i < fn.posArgs.length then Some(Value.Term(fn.posArgs(i))) else None
       case Term.Const(_) | Term.Var(_) | Term.Ref(_) | Term.Ident(_) | Term.Bottom => None
 
@@ -182,7 +182,7 @@ object TermView:
     // resolved STRING name; a change to named-arg semantics must visit both (WI-1053).
     def namedArg(a: TermId, kb: KnowledgeBase, sym: TermSymbol): Option[Value] =
       kb.getTerm(a) match
-        case fn: Term.Fn =>
+        case fn: Term.Fn[TermId] =>
           var i = 0
           var found: Option[Value] = None
           while i < fn.namedArgs.length && found.isEmpty do
@@ -193,7 +193,7 @@ object TermView:
         case Term.Const(_) | Term.Var(_) | Term.Ref(_) | Term.Ident(_) | Term.Bottom => None
 
     def namedKeys(a: TermId, kb: KnowledgeBase): IndexedSeq[TermSymbol] = kb.getTerm(a) match
-      case fn: Term.Fn => Vector.tabulate(fn.namedArgs.length)(i => fn.namedArgs(i)._1)
+      case fn: Term.Fn[TermId] => Vector.tabulate(fn.namedArgs.length)(i => fn.namedArgs(i)._1)
       case Term.Const(_) | Term.Var(_) | Term.Ref(_) | Term.Ident(_) | Term.Bottom => Vector.empty
 
   /** The non-interned carrier. A `Value.Term` delegates to [[termIdView]]; the

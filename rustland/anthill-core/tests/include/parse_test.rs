@@ -3191,7 +3191,13 @@ use anthill_core::parse::ir::SimpleTermStore;
 /// literal head an error (a head is a conclusion; a literal denotes a value —
 /// spec §"A head is an atom"), and a head was never the right position anyway:
 /// `parse_rule_body_goals_ir` below already had one that is unconstrained.
-fn parse_term_ir(expr: &str) -> (SimpleTermStore, anthill_core::intern::SymbolTable, TermId) {
+fn parse_term_ir(
+    expr: &str,
+) -> (
+    SimpleTermStore,
+    anthill_core::intern::SymbolTable,
+    ParseTermId,
+) {
     let (terms, symbols, goals) = parse_rule_body_goals_ir(expr);
     assert_eq!(goals.len(), 1, "expected a single goal for `{expr}`");
     (terms, symbols, goals[0])
@@ -3201,7 +3207,7 @@ fn parse_term_ir(expr: &str) -> (SimpleTermStore, anthill_core::intern::SymbolTa
 fn fmt_ir_term(
     terms: &SimpleTermStore,
     symbols: &anthill_core::intern::SymbolTable,
-    tid: TermId,
+    tid: ParseTermId,
 ) -> String {
     match terms.get(tid) {
         Term::Var(Var::Global(vid)) => format!("?{}", symbols.local_name(vid.name())),
@@ -3266,7 +3272,7 @@ fn parse_rule_body_goals_ir(
 ) -> (
     SimpleTermStore,
     anthill_core::intern::SymbolTable,
-    Vec<TermId>,
+    Vec<ParseTermId>,
 ) {
     let source = format!("rule r: h(?x) :- {body}\n");
     let parsed = parse::parse(&source).expect("parse failed");

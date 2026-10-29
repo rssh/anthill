@@ -29,7 +29,7 @@ object TacticEmit:
     val (name, argPairs) = kb.getTerm(term) match
       case Term.Ident(sym) => (kb.resolveSym(sym), Vector.empty)
       case Term.Ref(sym)   => (kb.resolveSym(sym), Vector.empty)
-      case f: Term.Fn =>
+      case f: Term.Fn[TermId] =>
         val pairs = collectArgPairs(f.posArgs, f.namedArgs)
         (kb.resolveSym(f.functor), pairs)
       case _ => return None
@@ -43,7 +43,7 @@ object TacticEmit:
     kb.getTerm(term) match
       case Term.Ident(sym) => kb.resolveSym(sym)
       case Term.Ref(sym)   => kb.resolveSym(sym)
-      case f: Term.Fn =>
+      case f: Term.Fn[TermId] =>
         val pairs = collectArgPairs(f.posArgs, f.namedArgs)
         emitTermInner(kb, kb.resolveSym(f.functor), pairs)
       case _ => "smt"
