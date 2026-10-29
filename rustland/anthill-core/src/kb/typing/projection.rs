@@ -214,7 +214,18 @@ fn bare_field_access(kb: &KnowledgeBase, receiver: &Value) -> Option<(Value, Sym
     }
     let base = receiver.named_arg(kb, key("receiver")?)?.to_value();
     let field = extract_sort_ref_sym(kb, &receiver.named_arg(kb, key("name")?)?)?;
-    Some((base, field))
+    Some((base, field_label(kb, field)))
+}
+
+/// The field a path's segment names, by its label: the bare name a constructor declares the
+/// field by, and a field read (`field_access(ww, "k")`) and a pattern take it by. The name after
+/// a dot is resolved where it is written, and beside a local binder of the same name it is that
+/// binder (`ww.k` under `let k = …`): kept so, one path held two symbols, and `Car.pick(x, ww.k,
+/// ww.k.s.t)` was refused, "expected ww.k.s.T, got ww.k.s.T" (MEASURED). A label no declaration
+/// interned names no field, and is refused where the field is looked up.
+fn field_label(kb: &KnowledgeBase, name: Symbol) -> Symbol {
+    kb.lookup_symbol(short_name_of(kb.local_name_of(name)))
+        .unwrap_or(name)
 }
 
 /// WI-400 increment C: the stable receiver PATH a `let`-bound value occurrence denotes,
@@ -246,7 +257,7 @@ pub(super) fn stable_receiver_path(
             named_args,
             type_args,
         } if pos_args.is_empty() && named_args.is_empty() && type_args.is_empty() => {
-            let name = *name;
+            let name = field_label(kb, *name);
             let mut segs = stable_receiver_path(kb, receiver)?;
             segs.push(name);
             Some(segs)
@@ -1192,7 +1203,8 @@ pub(super) fn read_denoted_projections(
 ///
 /// Where the discharge has the body (or the call), a path's field read is KEPT in its record
 /// ([`PathOpenings`]), so this reading and every other of the path agree; without one, it opens
-/// afresh — a declaration has no body.
+/// afresh — a declaration has no body, and two compared by the member rule share the
+/// comparison's.
 #[derive(Clone, Copy)]
 pub(super) enum Receivers<'a> {
     /// A body's or a declaration's own variables: a path is named as written, read through the
@@ -1205,6 +1217,11 @@ pub(super) enum Receivers<'a> {
     /// v, n - 1)` passed the caller's `v: h.s.T` for `mk_int()`'s, the callee's `h` being the
     /// caller's own, and ran `inc` on a `String` (MEASURED).
     Call(Option<CallRecords<'a>>),
+    /// The member rule's: a spec operation's parameters and its member's, compared position by
+    /// position. A path is named as written — the member's in the spec's names — and kept in the
+    /// comparison's record ([`ComparedOpenings`]), so a slot nested in a field path is one
+    /// unknown on both sides.
+    Compared(&'a ComparedOpenings),
 }
 
 /// The records a call's readings keep a field path's opening in ([`Receivers::Call`]).
@@ -1929,6 +1946,9 @@ fn field_type_at_path(
                 (Some(path.clone()), env.map(|e| (e.path_openings(), path)))
             }
             (Err(written), Receivers::Call(records)) => (None, records.map(|r| (r.call, written))),
+            (Ok(path) | Err(path), Receivers::Compared(record)) => {
+                (Some(path.clone()), Some((record.record(), path)))
+            }
         };
     let (span, owner) = site_of(receiver);
     let record = kept.as_ref().and_then(|(openings, key)| {

@@ -1250,6 +1250,7 @@ pub(super) fn check_apply_iter(
             some_wraps: &some_wraps,
             bracket: &bracket_params,
             expected: expected.as_ref(),
+            openings: call_openings,
         };
         // WI-426: named-argument COVERAGE (see `bind_call_arguments`, which
         // WI-783 shares with the function-VALUE call path so the two cannot drift).

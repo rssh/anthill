@@ -6977,8 +6977,17 @@ pub(crate) fn substitute_ref_syms_occ(
                 TypeNode::NamedTuple { fields } => TypeNode::NamedTuple {
                     fields: rewrite_ref_value(fields, map),
                 },
+                // The receiver of `o.s.E` is the field path `o.s`, an expression: its head is
+                // re-keyed as a `denoted`'s is. Read as a type child, the expression passed
+                // through, and an override restating its spec's `o.s.E` was refused as a
+                // widening, the two naming two parameters.
                 TypeNode::ExprCarried { value, member } => TypeNode::ExprCarried {
-                    value: rewrite_ref_child(value, map),
+                    value: match value {
+                        TypeChild::Node(n) if matches!(n.kind, NodeKind::Expr { .. }) => {
+                            TypeChild::Node(rewrite_ref_expr(n, map))
+                        }
+                        other => rewrite_ref_child(other, map),
+                    },
                     member: rewrite_ref_child(member, map),
                 },
                 // WI-1083: this rewrite re-keys `Ref(sym)` effect labels, which a

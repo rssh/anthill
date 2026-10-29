@@ -3641,7 +3641,6 @@ pub(super) fn dispatched_impl_effects_of(
             }
         }
     }
-    let arg_syms = (!places.vars.is_empty()).then_some(&places.vars);
     let eff_rekey = places.eff_rekey();
     let ctx = TypeErrorContext::OperationReturn {
         op_name: impl_op_sym,
@@ -3650,11 +3649,15 @@ pub(super) fn dispatched_impl_effects_of(
     // WI-20260929-0RP29 — THE OVERRIDE'S OWN TYPE PARAMETERS, as this call binds them. The
     // call's σ binds the SPEC op's; an override's `[W]` is its own, so `effects {EC, Error[W]}`
     // reached the caller as `Error[?W]` (refused where `Car.op(x, "str")` loads, MEASURED).
-    let reading = OverrideReading {
-        arg_types: &param_to_arg_type,
-        receivers: &places.vars,
-        denoted: &eff_rekey,
-    };
+    let reading = OverrideReading::at_call(
+        kb,
+        call,
+        spec_params,
+        &impl_op.params,
+        &param_to_arg_type,
+        &places.vars,
+        &eff_rekey,
+    );
     let own_sigma =
         override_at_call(kb, impl_op_sym, &impl_op, spec_op, call, subst, &reading, span)?;
     let mut out: Vec<Value> = Vec::new();
@@ -3691,17 +3694,13 @@ pub(super) fn dispatched_impl_effects_of(
             // projection-bearing effects are left to the variable re-key: a field path's HEAD
             // names the holder, not the field, so `k.E` with `k` bound to `h.s` became `h.E` —
             // the HOLDER's row — and a caller declaring `h.E` loaded with `h.s`'s row undeclared
-            // (MEASURED).
-            match eliminate_type_projections(
-                kb,
-                e,
-                &param_to_arg_type,
-                Receivers::Call(None),
-                arg_syms,
-                &ctx,
-                None,
-            ) {
-                Ok(reduced) if !effect_is_unresolved_var(kb, call.env.param_rigids(), &reduced) => {
+            // (MEASURED). A path through an argument the call wrapped in `some(…)` reads the
+            // argument at the payload, as the call's own effects do (`o.value.s.E` over `some(k)`
+            // is `k.s.E`): read as the call's argument itself, `Sp.touch(x, k)` was charged
+            // `k.value.s.E`, which no caller can declare, where `Car.touch(x, k)` is charged
+            // `k.s.E` (MEASURED).
+            match override_declared_at_call(kb, e, &reading, &places.vars, &ctx, None) {
+                Some(reduced) if !effect_is_unresolved_var(kb, call.env.param_rigids(), &reduced) => {
                     reduced
                 }
                 _ => substitute_ref_syms_value(kb, e, &places.vars),
@@ -3774,6 +3773,8 @@ pub(super) struct CallToOverride<'a> {
     pub(super) bracket: &'a [VarId],
     /// The type the call's context expects of its result (a `let` annotation), when it has one.
     pub(super) expected: Option<&'a Value>,
+    /// The call's own record of field-path openings ([`CallRecords`]).
+    pub(super) openings: &'a PathOpenings,
 }
 
 impl CallToOverride<'_> {
@@ -3817,6 +3818,64 @@ impl CallToOverride<'_> {
             Some((_, declared)) => Some(option_of(kb, declared, arg_ty)),
             None => Some(arg_ty),
         }
+    }
+
+    /// The records the call's own readings keep a field path's opening in: an override read at
+    /// the call reads the caller's opening of `k.s` where the call does.
+    fn records(&self) -> CallRecords<'_> {
+        CallRecords {
+            caller: self.env,
+            call: self.openings,
+        }
+    }
+
+    /// Each argument that is a value path, by `params` — the override's, aligned with the spec's
+    /// by position — as the call's own readings take it ([`call_arg_paths`]): `h.s.T` given
+    /// `ww.k` is `ww.k.s.T`.
+    fn arg_paths(
+        &self,
+        kb: &mut KnowledgeBase,
+        spec_params: &[(Symbol, Value)],
+        params: &[(Symbol, Value)],
+    ) -> HashMap<Symbol, Vec<Symbol>> {
+        let by_spec = call_arg_paths(
+            kb,
+            self.env.receiver_aliases(),
+            spec_params,
+            self.pos_params,
+            self.pos_args,
+            self.named_args,
+        );
+        spec_params
+            .iter()
+            .zip(params)
+            .filter_map(|((spec_p, _), (p, _))| by_spec.get(spec_p).map(|path| (*p, path.clone())))
+            .collect()
+    }
+
+    /// Each of `params` — the override's, aligned with the spec's by position — whose argument
+    /// the call wrapped in `some(…)`, with the payload field a path through it reads the
+    /// argument at, as the call's own readings take it ([`wrapped_arg_params`]): `o.value.s`
+    /// over `some(k)` is `k.s`.
+    fn wrapped(
+        &self,
+        kb: &mut KnowledgeBase,
+        spec_params: &[(Symbol, Value)],
+        params: &[(Symbol, Value)],
+    ) -> HashMap<Symbol, Symbol> {
+        if self.some_wraps.is_empty() {
+            return HashMap::new();
+        }
+        let payload = some_payload_label(kb);
+        params
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| {
+                self.arg(kb, spec_params, *i)
+                    .is_some_and(|(u, _)| self.some_wraps.iter().any(|(w, _)| *w == u))
+            })
+            .map(|(_, (p, _))| (*p, payload))
+            .collect()
     }
 }
 
@@ -4056,11 +4115,43 @@ fn declared_positions<'a>(
 
 /// How a path that types an override at a call reads the override's DECLARED types there, by
 /// the override's own parameters: the type each receives, the caller's variable a projection's
-/// receiver is re-keyed to, and the one a `denoted` is ([`override_declared_at_call`]).
+/// receiver is re-keyed to, the one a `denoted` is, and — as the call's own readings take them —
+/// the path each argument is, the parameters a path reaches its argument through the payload of,
+/// and the records an opening is kept in ([`override_declared_at_call`]). Read without the paths
+/// and the records, `Sp.pick(x, ww.k, ww.k.s.t)` over `pick(…, h: Hold, d: h.s.T)` was refused
+/// ("expected ?T, got ww.k.s.T") and a slot nested in `h.s.T` was a second unknown, where
+/// `Car.pick(…)` loads (MEASURED).
 pub(super) struct OverrideReading<'a> {
     pub(super) arg_types: &'a HashMap<Symbol, Value>,
     pub(super) receivers: &'a HashMap<Symbol, Symbol>,
     pub(super) denoted: &'a HashMap<Symbol, Symbol>,
+    paths: HashMap<Symbol, Vec<Symbol>>,
+    wrapped: HashMap<Symbol, Symbol>,
+    records: CallRecords<'a>,
+}
+
+impl<'a> OverrideReading<'a> {
+    /// The reading of `call` by `params` — the override's, aligned with the spec's by position —
+    /// over the types, receivers and denoteds its reader keyed so; what the call's own readings
+    /// take besides, it takes from the call.
+    pub(super) fn at_call(
+        kb: &mut KnowledgeBase,
+        call: &'a CallToOverride,
+        spec_params: &[(Symbol, Value)],
+        params: &[(Symbol, Value)],
+        arg_types: &'a HashMap<Symbol, Value>,
+        receivers: &'a HashMap<Symbol, Symbol>,
+        denoted: &'a HashMap<Symbol, Symbol>,
+    ) -> Self {
+        OverrideReading {
+            arg_types,
+            receivers,
+            denoted,
+            paths: call.arg_paths(kb, spec_params, params),
+            wrapped: call.wrapped(kb, spec_params, params),
+            records: call.records(),
+        }
+    }
 }
 
 /// A type an override declares, as the call reads it: δ over its projections against the
@@ -4081,7 +4172,9 @@ pub(super) fn override_declared_at_call(
         Discharge {
             arg_syms: receivers,
             denoted_syms: denoted,
-            ..Discharge::new(reading.arg_types, Receivers::Call(None), ctx, span)
+            arg_paths: Some(&reading.paths),
+            wrapped: Some(&reading.wrapped),
+            ..Discharge::new(reading.arg_types, Receivers::Call(Some(reading.records)), ctx, span)
         }
         .eliminate(kb, ty)
         .ok()

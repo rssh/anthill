@@ -2524,11 +2524,15 @@ pub(super) fn concrete_override_threaded(
     // δ on a DECLARED type (see the doc): a projection's receiver re-keyed to caller variables,
     // a `denoted` through `denoted` in the same pass; `None` when a projection does not
     // eliminate.
-    let reading = OverrideReading {
-        arg_types: &impl_arg_types,
-        receivers: &impl_arg_syms,
-        denoted: &impl_eff_rekey,
-    };
+    let reading = OverrideReading::at_call(
+        kb,
+        call,
+        &op.params,
+        &impl_info.params,
+        &impl_arg_types,
+        &impl_arg_syms,
+        &impl_eff_rekey,
+    );
     let discharge = |kb: &mut KnowledgeBase, ty: &Value, denoted: &HashMap<Symbol, Symbol>| {
         override_declared_at_call(kb, ty, &reading, denoted, &ctx, span)
     };

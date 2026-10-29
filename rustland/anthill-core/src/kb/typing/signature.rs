@@ -2032,6 +2032,12 @@ struct ProjectionReader {
     /// E]`) — through which a receiver's type instantiates the witness's own parameters; `None`
     /// for a provision the receiving sort writes itself.
     witness_view: Option<Value>,
+    /// The comparison's one record of field-path openings ([`ComparedOpenings`]):
+    /// the spec's and the member's parameters at one position are one argument, so a slot nested
+    /// in a field path over it (`h.s.T` over `s: Strm[T = List[T = ?]]`) is one unknown on both
+    /// sides. Opened per side, a member written as its spec was refused as taking less than it
+    /// (MEASURED).
+    openings: ComparedOpenings,
 }
 
 impl ProjectionReader {
@@ -2058,6 +2064,7 @@ impl ProjectionReader {
             bindings,
             spec_params: by_short(kb, spec_canon),
             witness_view,
+            openings: ComparedOpenings::new(),
         }
     }
 
@@ -2300,7 +2307,7 @@ impl ProjectionReader {
             arg_syms: rekey,
             denoted_syms: rekey,
             reading: Some(&read),
-            ..Discharge::new(args, Receivers::Own(None), ctx, None)
+            ..Discharge::new(args, Receivers::Compared(&self.openings), ctx, None)
         }
         .eliminate(kb, ty)
         .map_err(|e| match e {

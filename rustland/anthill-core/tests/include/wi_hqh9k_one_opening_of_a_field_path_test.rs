@@ -20,6 +20,13 @@
 //! Found beside it and closed with it (§4): an argument at a parameter a field-path projection
 //! types was not checked at all — `swap(t.a, u.a)` loaded and ran `inc` on a `String`.
 //!
+//! And after it (§6, §7): a spec call that dispatches to an override reads the override at the
+//! call as the call reads itself — an argument it wraps in `some(…)` at its payload, a field-path
+//! argument at its path, a slot nested in one in the call's record; an override restating its
+//! spec's field-path effect refines it; a path's field segment is the field's label, also beside
+//! a binder of its name; and the declaration rule reads the spec's and the member's field path
+//! over one argument once, so a member written as its spec fits it over a nested slot (§8).
+//!
 //! ── WHICH ROWS FAIL WHEN A PART IS BACKED OUT ────────────────────────────────
 //!
 //! MEASURED on 2026-10-29, on the tree this file is committed with, each part disabled alone by
@@ -75,6 +82,37 @@
 //! 12. §5, THE PAYLOAD READING IS KEPT IN NO RECORD (`field_type_at_path`'s `reads_the_argument`
 //!    false). 1 FAILS, by the record's debug assertion — the holder `ww` read at the option's
 //!    type: [`an_argument_the_call_wraps_is_its_parameters_payload`] (its `field_path` call).
+//!
+//! Parts 13–19 MEASURED the same way on a binary of this file and the twelve suites beside it
+//! that read an override at a call or a field path (`wi347_override_refinement_test`, `wi604_…`,
+//! `wi606_…`, the four `wi_0rp29_…`, `wi_80zv8_written_wildcard_test`, `wi_gjw9z_…`,
+//! `wi_jpsdh_…`, `wi_p1pvt_…`, `wi698_row_param_refinement_test`; 620 rows):
+//!
+//! 13. §6, A DISPATCHED OVERRIDE READS A WRAPPED ARGUMENT AT ITS PAYLOAD (`CallToOverride::wrapped`
+//!    answering none). 2 FAIL: [`a_dispatched_override_reads_the_call_as_the_call_does`] and, on
+//!    its text, the control [`a_dispatched_overrides_reading_is_its_arguments_only`].
+//! 14. §6, … A FIELD-PATH ARGUMENT AT ITS PATH (`CallToOverride::arg_paths` answering none). 1
+//!    FAILS: [`a_dispatched_override_reads_the_call_as_the_call_does`].
+//! 15. §6, … IN THE CALL'S RECORD (`override_declared_at_call` reading with no record). 1 FAILS:
+//!    [`a_dispatched_overrides_nested_slot_is_the_calls`].
+//!    Parts 13 and 14 backed out in one reader alone — the WI-606 fallback's
+//!    (`concrete_override_threaded`) or the effects' (`dispatched_impl_effects_of`) — fail the
+//!    same two rows each.
+//! 16. §6, A FIELD PATH'S RECEIVER IS RENAMED (`substitute_ref_syms_occ` passing an
+//!    `ExprCarried`'s receiver expression through). 4 FAIL:
+//!    [`an_override_restating_a_field_path_effect_refines_it`], and by the same refusal of
+//!    `touch` in their shared fixture, [`a_dispatched_override_reads_the_call_as_the_call_does`],
+//!    [`a_dispatched_overrides_nested_slot_is_the_calls`] and
+//!    [`a_field_segment_is_its_label_beside_a_binder_of_its_name`].
+//! 17. §7, A FIELD SEGMENT IS ITS LABEL (`field_label` answering the name as resolved). 1 FAILS:
+//!    [`a_field_segment_is_its_label_beside_a_binder_of_its_name`].
+//! 18. §8, THE MEMBER RULE'S ONE RECORD (`Receivers::Compared` keeping nothing). 2 FAIL:
+//!    [`a_member_written_as_its_spec_fits_it_over_a_nested_slot`] and, on its text, the control
+//!    [`a_member_taking_less_over_a_nested_slot_is_refused`] (the other return refused at the
+//!    parameter beside it).
+//! 19. §8, … READ AT EITHER DECLARATION'S TYPE (`ComparedOpenings` checking the
+//!    holder's type). 1 FAILS, by the record's debug assertion — `h` opened at `cat`, read at
+//!    `Animal`: [`a_member_written_as_its_spec_fits_it_over_a_nested_slot`].
 //!
 //! THE HOLDER-TYPE CHECK is an assertion, not a part: the record speaks for a holder at the type
 //! it was opened at, and a build with debug assertions stops where a re-key gives a path another
@@ -645,4 +683,330 @@ fn a_wrapped_parameters_payload_row_is_the_arguments() {
         &["fe.g (op-arg)", "to lack the row `k.s.E`"],
         "a callback lacking another holder's row passed for the payload's",
     );
+}
+
+// ── §6 an override a spec call dispatches to is read at the call as the call reads itself ─────
+
+const DISPATCH: &str = r#"
+  import anthill.prelude.{Int64, Option, List}
+  sort Strm
+    sort T = ?
+    effects E = ?
+    entity strm(t: T, fn: (x: T) -> Int64)
+  end
+  sort Hold
+    entity hold(s: Strm[T = ?, E = ?])
+  end
+  sort Hold3
+    entity hold3(s: Strm[T = List[T = ?], E = {}])
+  end
+  sort W
+    entity w(k: Hold)
+  end
+  operation inc(x: Int64) -> Int64 = x + 1
+  operation len(x: List[T = Int64]) -> Int64 = 1
+  operation mk() -> Hold = hold(s: strm(t: 40, fn: inc))
+  operation mk3() -> Hold3 = hold3(s: strm(t: [1], fn: len))
+  operation same_list[A](x: A, y: A) -> Int64 = 42
+  sort Sp
+    sort T = ?
+    effects E = ?
+    operation touch(s: Self, o: Option[T = Hold]) -> Int64 effects {s.E, o.value.s.E}
+    operation pick(s: Self, o: Option[T = Hold], d: o.value.s.T) -> o.value.s.T effects {s.E}
+    operation pickh(s: Self, h: Hold, d: h.s.T) -> h.s.T effects {s.E}
+    operation pick3(s: Self, h: Hold3, d: h.s.T) -> h.s.T effects {s.E} = d
+  end
+  sort Car
+    sort V = ?
+    effects EC = ?
+    entity car(v: V)
+    provides Sp[T = V, E = {EC}]
+    operation touch(c: Self, o: Option[T = Hold]) -> Int64 effects {EC, o.value.s.E} = 41
+    operation pick(c: Self, p: Option[T = Hold], d: p.value.s.T) -> p.value.s.T effects {EC} = match p
+      case some(h) -> h.s.t
+      case none() -> d
+    operation pickh(c: Self, h: Hold, d: h.s.T) -> h.s.T effects {EC} = h.s.t
+    operation pick3(c: Self, h: Hold3, d: h.s.T) -> h.s.T effects {EC} = h.s.t
+  end
+  sort Direct
+    effects E = ?
+    entity direct
+    provides Sp[T = Int64]
+    operation touch(c: Self, p: Option[T = Hold]) -> Int64 effects {E, p.value.s.E} = 41
+    operation pick(c: Self, o: Option[T = Hold], d: o.value.s.T) -> o.value.s.T effects {E} = d
+    operation pickh(c: Self, h: Hold, d: h.s.T) -> h.s.T effects {E} = d
+  end
+"#;
+
+fn dispatch(ns: &str, body: &str) -> String {
+    format!("namespace wi_hqh9k.{ns}\n{DISPATCH}\n{body}\nend\n")
+}
+
+/// A SPEC CALL READS ITS OVERRIDE AT THE CALL AS THE CALL READS ITSELF: an argument it wraps in
+/// `some(…)` at its payload (`Sp.touch(x, k)` is charged `Car.touch`'s `o.value.s.E` as `k.s.E`),
+/// a field-path argument at its path (`Sp.pickh(x, ww.k, ww.k.s.t)`, `h.s.T` is `ww.k.s.T`).
+/// Each was refused through the spec and loaded qualified — "undeclared effect: k.value.s.E",
+/// "expected ?T, got ww.k.s.T" (MEASURED). Through `Car`, whose row member is not the spec's
+/// `E`, the call takes the override's signature (the WI-606 fallback) and is charged its effects;
+/// through `Direct`, which has the member, it is charged the effects alone.
+#[test]
+fn a_dispatched_override_reads_the_call_as_the_call_does() {
+    for (ns, x, call) in [
+        ("car", "Car[V = Int64, EC = R]", "Sp.touch(x, k)"),
+        ("car_named", "Car[V = Int64, EC = R]", "Sp.touch(o: k, s: x)"),
+        ("direct", "Direct[E = R]", "Sp.touch(x, k)"),
+    ] {
+        let src = dispatch(
+            &format!("touch_{ns}"),
+            &format!("  operation use[R](x: {x}, k: Hold) -> Int64 effects {{R, k.s.E}} = {call}"),
+        );
+        let errs = load_errors(&src);
+        assert!(errs.is_empty(), "`{call}` over `{x}`: {errs:#?}");
+    }
+    let src = dispatch(
+        "touch_path",
+        "  operation use[R](x: Car[V = Int64, EC = R], ww: W) -> Int64 effects {R, ww.k.s.E} = Sp.touch(x, ww.k)",
+    );
+    let errs = load_errors(&src);
+    assert!(errs.is_empty(), "`Sp.touch(x, ww.k)`: {errs:#?}");
+    for (ns, x, made) in [
+        ("car", "Car[V = Int64, EC = {}]", "car(v: 1)"),
+        ("direct", "Direct[E = {}]", "direct"),
+    ] {
+        let src = dispatch(
+            &format!("pick_{ns}"),
+            &format!(
+                "  operation go() -> Int64 =\n    let x: {x} = {made}\n    let h = mk()\n    let g = h.s.fn\n    let ww = w(k: mk())\n    let f = ww.k.s.fn\n    g(Sp.pick(x, h, h.s.t)) - 40 + f(Sp.pickh(x, ww.k, ww.k.s.t))"
+            ),
+        );
+        assert_eq!(run_src(&src, &format!("wi_hqh9k.pick_{ns}.go")), Ok(42), "{ns}");
+    }
+}
+
+/// … AND A SLOT NESTED IN A FIELD PATH IS THE CALL'S ONE: `same_list(Sp.pick3(x, k, k.s.t),
+/// k.s.t)` over `pick3(…, h: Hold3, d: h.s.T) -> h.s.T`, `s: Strm[T = List[T = ?]]`, read
+/// `List[T = ?T]` twice, the override's reading opening its own (MEASURED: refused, "these render
+/// alike"). The spec operation has a default body here: without one the declaration rule refuses
+/// the member, for the same reason, before any call is read.
+#[test]
+fn a_dispatched_overrides_nested_slot_is_the_calls() {
+    let src = dispatch(
+        "nested",
+        "  operation use[R](x: Car[V = Int64, EC = R], k: Hold3) -> Int64 effects {R} =\n    same_list(Sp.pick3(x, k, k.s.t), k.s.t)\n  operation cc() -> Car[V = Int64, EC = {}] = car(v: 1)\n  operation go() -> Int64 = use(cc(), mk3())",
+    );
+    assert_eq!(run_src(&src, "wi_hqh9k.nested.go"), Ok(42));
+}
+
+/// CONTROLS — another holder's is not the argument's, through the spec as qualified: `use`
+/// declaring `j.s.E` for `Sp.touch(x, k)` is refused naming `k.s.E`, and `Sp.pick(x, k, j.s.t)`
+/// naming both.
+#[test]
+fn a_dispatched_overrides_reading_is_its_arguments_only() {
+    for (ns, x) in [("car", "Car[V = Int64, EC = R]"), ("direct", "Direct[E = R]")] {
+        assert_refused_naming(
+            &load_errors(&dispatch(
+                &format!("touch_wrong_{ns}"),
+                &format!(
+                    "  operation use[R](x: {x}, k: Hold, j: Hold) -> Int64 effects {{R, j.s.E}} = Sp.touch(x, k)"
+                ),
+            )),
+            &["use.effects", "undeclared effect: k.s.E"],
+            &format!("another holder's row declared over `{x}`"),
+        );
+        assert_refused_naming(
+            &load_errors(&dispatch(
+                &format!("pick_wrong_{ns}"),
+                &format!(
+                    "  operation use[R](x: {x}, k: Hold, j: Hold) -> Int64 effects {{R}} = Sp.pick(x, k, j.s.t) + 0"
+                ),
+            )),
+            &["pick.d (op-arg): expected k.s.T, got j.s.T"],
+            &format!("another holder's element passed over `{x}`"),
+        );
+    }
+}
+
+/// AN OVERRIDE RESTATING ITS SPEC'S FIELD-PATH EFFECT REFINES IT: `touch(c: Self, h: Hold)
+/// effects {EC, h.s.E}` behind `touch(s: Self, h: Hold) effects {s.E, h.s.E}`. The two `h` are
+/// two parameters, read in the spec's names before they are compared, and the rename did not
+/// reach a field path's receiver: the override was refused as widening the spec's row
+/// (MEASURED). CONTROL: one naming another parameter's row is refused.
+#[test]
+fn an_override_restating_a_field_path_effect_refines_it() {
+    let program = |ns: &str, row: &str| {
+        format!(
+            r#"namespace wi_hqh9k.{ns}
+  import anthill.prelude.Int64
+  sort Strm
+    sort T = ?
+    effects E = ?
+    entity strm(t: T)
+  end
+  sort Hold
+    entity hold(s: Strm[T = Int64, E = ?])
+  end
+  sort Sp
+    effects E = ?
+    operation touch(s: Self, h: Hold, j: Hold) -> Int64 effects {{s.E, h.s.E}}
+  end
+  sort Car
+    effects EC = ?
+    entity car
+    provides Sp[E = {{EC}}]
+    operation touch(c: Self, h: Hold, j: Hold) -> Int64 effects {{EC, {row}}} = 41
+  end
+end
+"#
+        )
+    };
+    let errs = load_errors(&program("refines", "h.s.E"));
+    assert!(errs.is_empty(), "{errs:#?}");
+    assert_refused_naming(
+        &load_errors(&program("widens", "j.s.E")),
+        &["overrides", "the override declares effect `j.s.E`", "effects must not widen"],
+        "another parameter's row",
+    );
+}
+
+// ── §7 a path's field segment is the field's label ───────────────────────────────────────────
+
+/// A FIELD SEGMENT IS ITS LABEL, BESIDE A BINDER OF ITS NAME: the name after a dot is resolved
+/// where it is written, so `ww.k` beside `let k = …`, a parameter `k` or a lambda's `k` named that
+/// binder, where the field read `ww.k.s` names the field — one path, two symbols, and
+/// `Car.pickh(x, ww.k, ww.k.s.t)` was refused, "expected ww.k.s.T, got ww.k.s.T" (MEASURED: the
+/// parameter and the lambda; the `let` spelling too, once the call reads the argument's path).
+/// CONTROL: the binder's own `k.s.t` is not `ww.k`'s.
+#[test]
+fn a_field_segment_is_its_label_beside_a_binder_of_its_name() {
+    let src = dispatch(
+        "label",
+        r#"  operation ap(g: (k: Hold) -> Int64) -> Int64 = g(mk())
+  operation cc() -> Car[V = Int64, EC = {}] = car(v: 1)
+  operation via_let() -> Int64 =
+    let k = mk()
+    let ww = w(k: mk())
+    let v: ww.k.s.T = ww.k.s.t
+    let f = ww.k.s.fn
+    f(Car.pickh(cc(), ww.k, v)) - f(Sp.pickh(cc(), ww.k, ww.k.s.t)) + 42
+  operation via_param(ww: W, k: Hold) -> Int64 =
+    let f = ww.k.s.fn
+    f(Car.pickh(cc(), ww.k, ww.k.s.t)) + 1
+  operation via_lambda(ww: W) -> Int64 = ap(lambda (k) ->
+      let f = ww.k.s.fn
+      f(Car.pickh(cc(), ww.k, ww.k.s.t)) + 1)
+  operation go() -> Int64 = via_let() + via_param(w(k: mk()), mk()) + via_lambda(w(k: mk())) - 84"#,
+    );
+    assert_eq!(run_src(&src, "wi_hqh9k.label.go"), Ok(42));
+    assert_refused_naming(
+        &load_errors(&dispatch(
+            "label_wrong",
+            "  operation go(ww: W, k: Hold) -> Int64 =\n    let f = ww.k.s.fn\n    f(k.s.t)",
+        )),
+        &["expected ww.k.s.T, got k.s.T"],
+        "the binder's element passed for the field's",
+    );
+}
+
+// ── §8 the declaration rule reads a field path over one argument once ───────────────────────
+
+const MEMBER: &str = r#"
+  import anthill.prelude.{Int64, Bool, List}
+  sort Strm
+    sort T = ?
+    effects E = ?
+    entity strm(t: T)
+  end
+  sort Hold3
+    entity hold3(s: Strm[T = List[T = ?], E = {}])
+  end
+  sort Box3
+    sort U = ?
+    entity box3(s: Strm[T = List[T = ?], E = {}], u: U)
+  end
+  sort Animal
+    entity cat(s: Strm[T = List[T = ?], E = {}])
+    entity dog(s: Strm[T = List[T = ?], E = {}])
+  end
+  operation same_list[A](x: A, y: A) -> Int64 = 42
+"#;
+
+fn member(ns: &str, spec: &str, carrier: &str, body: &str) -> String {
+    format!(
+        "namespace wi_hqh9k.{ns}\n{MEMBER}\n  sort Sp\n    effects E = ?\n{spec}\n  end\n  sort Car\n    effects EC = ?\n    entity car\n    provides Sp[E = {{EC}}]\n{carrier}\n  end\n{body}\nend\n"
+    )
+}
+
+/// A MEMBER WRITTEN AS ITS SPEC FITS IT OVER A NESTED SLOT: `pick3(c: Self, h: Hold3, d: h.s.T)
+/// -> h.s.T` behind the spec's same signature, `s: Strm[T = List[T = ?]]`. The declaration rule
+/// read the spec's `h.s.T` and the member's apart, two unknowns, and refused the member as taking
+/// less than the spec — at a parametric holder (`h: Box3[U = W]` behind `h: Box3[U = Q]`) and a
+/// wider one (`h: Box3` behind `h: Box3[U = Int64]`, `h: Animal` behind `h: cat`) too (MEASURED).
+/// The two parameters are one argument, read at either declaration's type. The spec call then
+/// runs through the member.
+#[test]
+fn a_member_written_as_its_spec_fits_it_over_a_nested_slot() {
+    let src = member(
+        "fits",
+        r#"    operation pick3(s: Self, h: Hold3, d: h.s.T) -> h.s.T effects {s.E}
+    operation pickw[W](s: Self, h: Box3[U = W], d: h.s.T, w: W) -> h.s.T effects {s.E}
+    operation pickb(s: Self, h: Box3[U = Int64], d: h.s.T) -> h.s.T effects {s.E}
+    operation pickc(s: Self, h: cat, d: h.s.T) -> h.s.T effects {s.E}"#,
+        r#"    operation pick3(c: Self, h: Hold3, d: h.s.T) -> h.s.T effects {EC} = h.s.t
+    operation pickw[Q](c: Self, h: Box3[U = Q], d: h.s.T, w: Q) -> h.s.T effects {EC} = d
+    operation pickb(c: Self, h: Box3, d: h.s.T) -> h.s.T effects {EC} = d
+    operation pickc(c: Self, h: Animal, d: h.s.T) -> h.s.T effects {EC} = d"#,
+        r#"  operation use[R](x: Car[EC = R], k: Hold3) -> Int64 effects {R} =
+    same_list(Sp.pick3(x, k, k.s.t), k.s.t)
+  operation cc() -> Car[EC = {}] = car
+  operation go() -> Int64 = use(cc(), hold3(s: strm(t: [1])))"#,
+    );
+    assert_eq!(run_src(&src, "wi_hqh9k.fits.go"), Ok(42));
+}
+
+/// CONTROLS — a member that does take less is still refused, where it does: a parameter narrower
+/// than the spec's `h.s.T` (`d: List[T = Int64]`), a return that is not the spec's (`->
+/// List[T = Int64]`, refused at the return, where it was refused at the parameter beside it), a
+/// holder narrower than the spec's (`h: cat` behind `h: Animal`) or unrelated to it (`Box3[U =
+/// Bool]` behind `Box3[U = Int64]`), the last two at the holder itself.
+#[test]
+fn a_member_taking_less_over_a_nested_slot_is_refused() {
+    let spec = "    operation pick3(s: Self, h: Hold3, d: h.s.T) -> h.s.T effects {s.E}";
+    for (ns, carrier, expected) in [
+        (
+            "narrower_param",
+            "    operation pick3(c: Self, h: Hold3, d: List[T = Int64]) -> h.s.T effects {EC} = h.s.t",
+            "parameter 3 (`d: List[T = Int64]`) takes less than the spec's",
+        ),
+        (
+            "other_return",
+            "    operation pick3(c: Self, h: Hold3, d: h.s.T) -> List[T = Int64] effects {EC} = [1]",
+            "the member returns `List[T = Int64]`, which is not a subtype of the spec's",
+        ),
+    ] {
+        assert_refused_naming(
+            &load_errors(&member(ns, spec, carrier, "")),
+            &["does not fit", expected],
+            ns,
+        );
+    }
+    for (ns, spec, carrier, expected) in [
+        (
+            "narrower_holder",
+            "    operation pickc(s: Self, h: Animal, d: h.s.T) -> h.s.T effects {s.E}",
+            "    operation pickc(c: Self, h: cat, d: h.s.T) -> h.s.T effects {EC} = d",
+            "parameter 2 is `cat` where the spec's is `Animal`",
+        ),
+        (
+            "other_holder",
+            "    operation pickb(s: Self, h: Box3[U = Int64], d: h.s.T) -> h.s.T effects {s.E}",
+            "    operation pickb(c: Self, h: Box3[U = Bool], d: h.s.T) -> h.s.T effects {EC} = d",
+            "parameter 2 is `Box3[U = Bool]` where the spec's is `Box3[U = Int64]`",
+        ),
+    ] {
+        assert_refused_naming(
+            &load_errors(&member(ns, spec, carrier, "")),
+            &["does not fit", expected],
+            ns,
+        );
+    }
 }

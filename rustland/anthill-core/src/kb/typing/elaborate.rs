@@ -486,22 +486,50 @@ pub(super) fn open_existentials(
 /// Strm[T = List[T = ?]]`), which only a rigid stands for, and a named variable two fields share
 /// (`two(a: Box[T = ?x], b: Box[T = ?x])`), which is one unknown for `t.a` and `t.b`.
 ///
-/// Two lifetimes, one shape: a body's, held by its [`TypingEnv`] and shared by every clone of it,
-/// keyed by the path as the body spells it — a binder symbol is fresh per binding site, so a path
-/// names one value for the whole body; and a call's, carried by its frames, keyed by the CALLEE's
+/// Three lifetimes, one shape: a body's, held by its [`TypingEnv`] and shared by every clone of
+/// it, keyed by the path as the body spells it — a binder symbol is fresh per binding site, so a
+/// path names one value for the whole body; a call's, carried by its frames, keyed by the CALLEE's
 /// path for an argument that is no path, so the hint, the parameter, the return and the effects
-/// of one call read one unknown where each used to open its own.
+/// of one call read one unknown where each used to open its own; and a member rule comparison's
+/// ([`ComparedOpenings`]).
 ///
-/// AT THE HOLDER'S TYPE ONLY: a path names one value for its body and an argument one for its
-/// call, so a holder is read at one type, and one read at another is a re-key that gave the path
-/// another value — a build with debug assertions stops there, a release build opens it afresh,
-/// unrecorded. It found one: an argument the call wraps in `some(…)` re-keyed the option
-/// parameter as the argument, so `f(o: Option[T = Hold3], x: o.value.s.T)` called as `f(k, …)`
-/// read the holder `k` at `Option[T = Hold3]` ([`wrapped_arg_params`] reaches the argument
-/// through the payload now). The rigids are the body check's: the record lives no longer than
-/// the env or the call that holds it, so none outlives the check ([`value_contains_rigid`]).
+/// AT THE HOLDER'S TYPE ONLY, in a body's and a call's: a path names one value for its body and
+/// an argument one for its call, so a holder is read at one type, and one read at another is a
+/// re-key that gave the path another value — a build with debug assertions stops there, a
+/// release build opens it afresh, unrecorded. It found one: an argument the call wraps in
+/// `some(…)` re-keyed the option parameter as the argument, so `f(o: Option[T = Hold3], x:
+/// o.value.s.T)` called as `f(k, …)` read the holder `k` at `Option[T = Hold3]`
+/// ([`wrapped_arg_params`] reaches the argument through the payload now). A comparison's record
+/// reads a holder at either declaration's type, by design. The rigids are the body check's: the
+/// record lives no longer than the env, the call or the comparison that holds it, so none
+/// outlives the check ([`value_contains_rigid`]).
 #[derive(Clone, Default)]
-pub(super) struct PathOpenings(Rc<std::cell::RefCell<HashMap<Vec<Symbol>, HolderOpening>>>);
+pub(super) struct PathOpenings {
+    held: Rc<std::cell::RefCell<HashMap<Vec<Symbol>, HolderOpening>>>,
+    /// A comparison's record ([`ComparedOpenings`]), which no other can be.
+    one_argument: bool,
+}
+
+/// The record of the member rule's comparison of a spec operation with its member, where the two
+/// declarations type one argument at a position, each at its own type (`h: cat` and `h:
+/// Animal`): a path over it is one value's, read at either type, so the second reading takes the
+/// first's opening. A member narrower there, or unrelated, is refused at the parameter itself,
+/// which the rule compares before any projection reads it. Only this type is read so
+/// ([`Receivers::Compared`]), and a body's or a call's record cannot be one.
+pub(super) struct ComparedOpenings(PathOpenings);
+
+impl ComparedOpenings {
+    pub(super) fn new() -> Self {
+        ComparedOpenings(PathOpenings {
+            one_argument: true,
+            ..PathOpenings::default()
+        })
+    }
+
+    pub(super) fn record(&self) -> &PathOpenings {
+        &self.0
+    }
+}
 
 /// What a [`PathOpenings`] holds for one holder path.
 struct HolderOpening {
@@ -535,9 +563,9 @@ impl PathOpenings {
     fn slot<'a>(&'a self, kb: &KnowledgeBase, r: Recorded<'_>) -> Option<RecordSlot<'a>> {
         let (&field, init) = r.path.fields.split_last()?;
         let holder: Vec<Symbol> = std::iter::once(r.path.head).chain(init.iter().copied()).collect();
-        let mut map = self.0.borrow_mut();
+        let mut map = self.held.borrow_mut();
         match map.get(&holder) {
-            Some(h) if !views_structurally_equal(kb, &h.ty, r.holder) => {
+            Some(h) if !self.one_argument && !views_structurally_equal(kb, &h.ty, r.holder) => {
                 debug_assert!(
                     false,
                     "the holder `{}` was opened at `{}` and is read at `{}`: a re-key gave a \
@@ -570,7 +598,7 @@ impl PathOpenings {
 
 impl RecordSlot<'_> {
     fn with<R>(&self, f: impl FnOnce(&mut HolderOpening) -> R) -> R {
-        let mut map = self.openings.0.borrow_mut();
+        let mut map = self.openings.held.borrow_mut();
         f(map.get_mut(&self.holder).expect("a slot's holder is recorded"))
     }
 
