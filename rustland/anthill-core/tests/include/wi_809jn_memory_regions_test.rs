@@ -665,3 +665,51 @@ fn a_scope_end_charges_only_its_own_names() {
         "both lambdas write the enclosing body's cell and are refused at a pure slot; got:\n{errs:#?}"
     );
 }
+
+/// `memory_disconnected`, defined in `anthill.memory` by the Horn clause
+/// `memory_disconnected(?a, ?b) :- not(memory_maybe_connected(?a, ?b))`: two cells the body
+/// allocated are disconnected, one cell twice and two parameters are not proved so, and a
+/// caller requiring `not memory_maybe_connected(p, q)` discharges a callee requiring
+/// `memory_disconnected(p, q)` — the clause runs left to right. The other way round is not
+/// derived (`callerDtoN`): its Γ holds `memory_disconnected(p, q)`, and nothing derives the
+/// negation from it. FAILS with the clause removed: `freshD` and `callerNtoD` refused, the
+/// name declaring nothing.
+#[test]
+fn memory_disconnected_is_the_negation_of_maybe_connected() {
+    let src = program(
+        "disconnected",
+        r#"
+  operation apartN(p: Cell[V = Int64], q: Cell[V = Int64]) -> Int64
+    requires not memory_maybe_connected(p, q) = 1
+  operation apartD(p: Cell[V = Int64], q: Cell[V = Int64]) -> Int64
+    requires memory_disconnected(p, q) = 2
+  operation freshD(n: Int64) -> Int64 =
+    let a = Cell.new(n)
+    let b = Cell.new(n)
+    apartD(a, b)
+  operation sameD(n: Int64) -> Int64 =
+    let a = Cell.new(n)
+    apartD(a, a)
+  operation paramsD(p: Cell[V = Int64], q: Cell[V = Int64]) -> Int64 = apartD(p, q)
+  operation callerNtoD(p: Cell[V = Int64], q: Cell[V = Int64]) -> Int64
+    requires not memory_maybe_connected(p, q) = apartD(p, q)
+  operation callerDtoN(p: Cell[V = Int64], q: Cell[V = Int64]) -> Int64
+    requires memory_disconnected(p, q) = apartN(p, q)
+"#,
+    )
+    .replace(
+        "import anthill.memory.{memory_alias, memory_maybe_connected}",
+        "import anthill.memory.{memory_alias, memory_maybe_connected, memory_disconnected}",
+    );
+    let errs = load_errors_of(&src);
+    let refused = |goal: &str| errs.iter().any(|e| e.contains(goal));
+    assert!(!refused("memory_disconnected(a, b)"), "freshD: {errs:#?}");
+    assert!(refused("memory_disconnected(a, a)"), "sameD: {errs:#?}");
+    assert!(refused("memory_disconnected(p, q)"), "paramsD: {errs:#?}");
+    assert!(refused("not(memory_maybe_connected(p, q))"), "callerDtoN: {errs:#?}");
+    assert_eq!(
+        errs.iter().filter(|e| e.contains("apartD.requires")).count(),
+        2,
+        "sameD and paramsD only — callerNtoD's own requirement discharges apartD's: {errs:#?}"
+    );
+}

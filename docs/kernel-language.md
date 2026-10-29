@@ -4204,8 +4204,8 @@ The values `kb()` and `KB.loaded` hand out are
 connected to `kb_storage`, the pool of the in-memory knowledge base, so a write through one
 cannot be declared and is refused. The relations, declared in `anthill.memory`, are answered
 in a body's contracts from the same bindings: two values the body allocated are separate, and
-two parameters are neither until the operation states it (`requires not
-memory_maybe_connected(p, q)`).
+two parameters are neither until the operation states it (`requires memory_disconnected(p,
+q)`, defined there as `not memory_maybe_connected(p, q)`).
 
 #### Effect-Env Condition
 

@@ -3,15 +3,17 @@
 --   memory_alias(a, b)             a and b are one resource: a write through one is
 --                                  read through the other.
 --   memory_maybe_connected(a, b)   the memory of a and the memory of b may overlap.
---                                  `not memory_maybe_connected(a, b)` says they are
---                                  separate.
+--   memory_disconnected(a, b)      the memory of a and the memory of b do not overlap:
+--                                  separation logic's a * b.
 --
 -- An operation states what a call of it leaves shared in its `ensures`:
 -- `ensures memory_maybe_connected(result, l)` says where its result may live,
--- `ensures memory_alias(result, b)` that its result is `b` itself. The typer
--- answers both relations inside an operation body, from what the body binds,
--- builds and calls; a rule body over the knowledge base answers nothing for them.
+-- `ensures memory_alias(result, b)` that its result is `b` itself. It states what it
+-- needs kept apart in its `requires`: `requires memory_disconnected(p, q)`. The typer
+-- answers the relations inside an operation body, from what the body binds, builds and
+-- calls; a rule body over the knowledge base answers nothing for them.
 namespace anthill.memory
   rule memory_alias(?a, ?b)
   rule memory_maybe_connected(?a, ?b)
+  rule memory_disconnected(?a, ?b) :- not(memory_maybe_connected(?a, ?b))
 end
