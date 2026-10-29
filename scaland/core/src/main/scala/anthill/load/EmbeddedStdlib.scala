@@ -86,6 +86,9 @@ object EmbeddedStdlib:
     // ── meta + reflect
     "anthill.prelude.sort",
     "anthill.prelude.meta",
+    // Proposal 050.1: the memory relations — `reflect.anthill` imports
+    // `memory_maybe_connected` for `kb()`'s and `loaded`'s `ensures`.
+    "anthill.memory.memory",
     "anthill.reflect.reflect",
     "anthill.reflect.typing",
     // ── kernel meta-spec
