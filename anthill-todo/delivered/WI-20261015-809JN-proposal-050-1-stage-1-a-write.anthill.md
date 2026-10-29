@@ -3,9 +3,9 @@
 - id: WI-20261015-809JN-proposal-050-1-stage-1-a-write
 - created: 2026-10-15T13:36:05Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-10-15T13:36:05Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-10-29T20:42:33Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
