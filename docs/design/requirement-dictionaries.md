@@ -445,7 +445,8 @@ with a **`Symbol`**, a KB-lifetime name that already has a `Value` carrier
 locates its target with a **private slot index** (`RuleId`, `RowKey`) that has no
 `Value` carrier and means nothing outside the KB that minted it. So one reference
 has a shape to present and the other has only an identity to hold — which is why
-the same word, "reference", lands them on opposite sides. See proposal 005.
+the same word, "reference", lands them on opposite sides. See library proposal 005
+(`docs/proposals/library/005-stored-references.md`).
 
 ### 2.4 OpRef
 
