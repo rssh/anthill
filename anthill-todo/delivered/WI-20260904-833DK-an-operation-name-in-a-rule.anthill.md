@@ -3,9 +3,9 @@
 - id: WI-20260904-833DK-an-operation-name-in-a-rule
 - created: 2026-09-04T16:45:20Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-04T16:45:20Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-10-30T19:34:50Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -59,4 +59,10 @@ VIEWS as a nullary functor naming an operation and mint the `OpRef` `reduce_var`
 have. Its own controls are needed — that area carries WI-577's builtin-backed OpRef
 fallback and WI-801's `classify_application`, and widening what counts as callable is
 exactly the kind of change that must name the rows a back-out fails.
+
+## Changes
+
+### 2026-10-30T19:34:51Z — feedback — claude
+
+Delivered in 4903165d with WI-20261023-Y6QW2, whose operation-reference half is this ticket: the apply path recognizes a value that views as a nullary functor naming an operation and mints the OpRef reduce_var would (the same eta_op_ref, extracted), with the typer's dictionary, operation slots and spread labels. ?r <=> apply1(inc1, 2) answers 3, definite, and the two-parameter apply2(sum2op, (a: 1, b: 2)) answers 3 through spread_eta_args. The pinned row wi_qqpq2…::an_eta_d_operation_name_is_a_known_gap answered 3 and is deleted as it asks; its programs are wi_y6qw2_function_value_from_a_rule_test::an_operation_name_in_a_function_slot_is_applied, failing with the conversion backed out. Controls named by the ticket: the builtin-backed OpRef path is untouched (an OpRef dispatches through dispatch_resolved_operation as before); full workspace 11,232 passed. Scaland has no evaluator, nothing to port; its sbt suite was not run for this change (no scaland file changed).
 
