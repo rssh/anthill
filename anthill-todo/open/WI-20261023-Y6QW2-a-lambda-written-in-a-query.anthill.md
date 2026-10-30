@@ -27,3 +27,7 @@ ALSO (2026-10-23, found delivering WI-20261015-C9802, 01424c91): A QUERY RUNS NO
 
 DEPENDS ON WI-20261030-BXMPK (2026-10-30): the query half — a lambda in a query pattern lowered to the reflect term `lambda_expr(…)` — goes through `lower_leaf` (kb/execute.rs), one of the goal sites BXMPK takes off `value_to_term`. The operation-reference half is this ticket's alone: `apply1(pureOp, 4, ?r)` in a rule body faults "unknown operation: apply1.f" in one clause as through a head (measured on c541ef90, the same on 0989f81a), and the same call from an operation body answers 5.
 
+### 2026-10-30T16:34:42Z — feedback — claude
+
+CORRECTION to the 2026-10-30 note (measured on cf906e65, WI-20261030-BXMPK delivered): the query half does NOT go through `lower_leaf`. `anthill query 'probe.y6.applyThunk(lambda () -> "x", ?r)'` still answers the same conditional row with the residual `applyThunk(lambda_expr(pattern_tuple, "x"), ?r)` before and after BXMPK: the CLI pattern is converted by `load::convert_query_term` to an occurrence whose lambda is already the reflect term, so the fix is in that converter (read a lambda as the clause's walk does, with the loader's bare-arrow refusals, per the 2026-10-23 note). What BXMPK did fix on the query side is an OPERATION's query: `keep(f).head.c` handed a lambda or a closure answers (wi_bxmpk_goal_value_carried_test).
+

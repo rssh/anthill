@@ -3,9 +3,9 @@
 - id: WI-20261030-BXMPK-a-goal-holding-a-value-with-no
 - created: 2026-10-30T15:21:47Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-10-30T15:21:47Z
+- status_at: 2026-10-30T16:34:03Z
 
 - acceptance: cargo-test
 
@@ -27,4 +27,10 @@ THE SITES (READ, an audit of every `value_to_term` / `alloc_from_value` caller a
 THE CHANGE: each reads its goal through the view and builds what it needs on the value carrier (an occurrence or an entity spine), as `with_fresh_vars` has since W2JP7; a goal value with no term form is carried, never a failed goal and never a dropped clause. No `value_to_term` / `alloc_from_value` call remains on a goal in kb/resolve.rs, kb/execute.rs or kb/proof_verify.rs. WI-20261013-2HX69 (068 D1c) rewrites `unfold_eq_operand` too; whichever lands second rebases on the other.
 
 ACCEPTANCE (cargo-test via rustland/scripts/test.sh): a row per site a program reaches, driving a closure or a lambda through it and failing with that site's lowering put back — a contract `requires` holding a lambda is assumed; an entity headed by a reflect-form functor with a closure child reduces; `unfold_eq_operand` unfolds an Entity OTHER with an occurrence child; a query with a lambda leaf keeps it as a lambda (WI-20261023-Y6QW2's query half). For a site no program reaches, the measured statement at the site and the lowering removed all the same. The rows of wi_w2jp7_closure_through_a_head_test pass either way.
+
+## Changes
+
+### 2026-10-30T16:33:55Z — feedback — claude
+
+DELIVERED cf906e65. A goal holding a value with no term form is carried: `?p(args…)` is applied as a goal over its arguments as they are, so a closure or a lambda reaches the predicate (and a `forall` antecedent applies to a lambda); an operation that queries with a function it was handed keeps the query's leaf on its carrier (put in the form a fact is stored in), and an `or` and a multi-goal branch are goals over their parts — the multi-goal branch is its `push_and` conjunction, which replaced the synthesized `_synth_N` rule, so no query mints a rule. `unfold_eq_operand` and the contract proof's conjuncts read through the view; no program reaches either old lowering (measured, stated at each site). `value_as_occurrence`'s reflect-form arm keeps its lowering: a keyed functor is a call only for an operation named like a form, which the loader loses first. Found on the way and fixed: a contract proof over an `if` / `match` / `let` / lambda body panicked in debug and read `result` as ⊥ in release; it is Deferred. Rows: wi_bxmpk_goal_value_carried_test (12, three controls), each part measured backed out alone. Not this ticket's, reported to the user: a `forall` hypothesis holding a closure panics the matcher (HEAD too), and an operation named like a reflect form is read as the form by its name's last segment.
 
