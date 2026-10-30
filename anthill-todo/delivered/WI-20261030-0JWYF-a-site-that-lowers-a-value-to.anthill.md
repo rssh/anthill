@@ -3,9 +3,9 @@
 - id: WI-20261030-0JWYF-a-site-that-lowers-a-value-to
 - created: 2026-10-30T15:22:32Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-10-30T15:22:32Z
+- status_at: 2026-10-30T18:34:23Z
 
 - acceptance: cargo-test
 
@@ -34,4 +34,10 @@ THE SITES (READ, the audit of every caller after c541ef90; rustland/anthill-core
 THE CHANGE: each site reads through the view where its question can be asked of a value; where its destination needs a term (a `TermId` field, a hash-consed key), a value that does not lower is an error: a located load error at a written type, or a panic naming the invariant where no source can produce one — never a skipped value, a `false`, `⊥`, a fresh variable or the type returned as it was, and the same in release as in debug. A site whose refusal is raised elsewhere states which one and asserts it was raised.
 
 ACCEPTANCE (cargo-test via rustland/scripts/test.sh): a row per site a program reaches, with a value that does not lower written where the site reads it, refused (or answered through the view) and failing with the silent arm put back; for a site no row reaches, the arm replaced all the same and the measurement stated at the site. The full gate, the node-carrier control and the families unchanged otherwise.
+
+## Changes
+
+### 2026-10-30T18:34:31Z — feedback — claude
+
+Delivered in 28e9bd1a. Measured before: a full gate with a trace on value_to_term's failure reached it once (a unit row on a relation), so no listed site is reached by the suite; the grammar refuses an if or a lambda inside a written type, and a call's argument enters a dependent result type only where it is a place. The one type a program writes with no term form is a domain(?x, T) goal's T in a clause: it loaded and answered nothing, and is now refused at the T at every goal of the clause (not, or, a forall discharge, a constraint body). The type lowering answers None for a part with no term form instead of a ⊥ under debug_assert; five readers go through the view (binding_grows_past, collect_param_refs, the unread-column check, the sealed-column compare, read_unknowns_from_bound — a run-time path); the term destinations expect a term in release as in debug. The refused-at-another-site arms (default-provider index, SortInfo's requires, the carrier-binding scan) name the refusal at the site, by the user's decision, with no new state; the alias target asserts locally. 11 rows with a back-out ledger; full workspace 11,219 passed, node carrier the same, families unmoved. Not here, found on the way: a dependent result type over a non-place argument keeps the callee's parameter name (mk(if b then 1 else 2) is typed Vec[N = n], n being mk's own parameter); domain(?v, 5) and domain(?v, NoSuch) still load.
 
