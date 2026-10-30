@@ -352,37 +352,40 @@ pub(crate) fn growing_self_requirement(kb: &mut KnowledgeBase, spec: Symbol) -> 
 }
 
 /// Does the binding `value` STRICTLY hold one of `params` — mention it below its own head,
-/// as `List[T = T]` holds `T` — rather than being one of them, or holding none?
-fn binding_grows_past(kb: &mut KnowledgeBase, value: &Value, params: &[Symbol]) -> bool {
-    let Ok(root) = crate::kb::node_occurrence::value_to_term(kb, value) else {
-        return false;
-    };
-    let is_param = |kb: &KnowledgeBase, t: TermId| match kb.get_term(t) {
-        Term::Ref(s) | Term::Ident(s) => params.iter().any(|p| kb.canonical_sym(*p) == kb.canonical_sym(*s)),
-        Term::Var(Var::Global(v)) => kb
-            .type_param_of_canonical_var(*v)
-            .is_some_and(|p| params.iter().any(|q| kb.canonical_sym(*q) == kb.canonical_sym(p))),
-        _ => false,
-    };
-    if is_param(kb, root) {
-        return false;
-    }
-    let mut stack = vec![root];
-    while let Some(t) = stack.pop() {
-        if is_param(kb, t) {
-            return true;
+/// as `List[T = T]` holds `T` — rather than being one of them, or holding none? Read through
+/// the view, so a binding on any carrier answers, one written through an alias as the type
+/// it stands for.
+fn binding_grows_past(kb: &KnowledgeBase, value: &Value, params: &[Symbol]) -> bool {
+    fn is_param<V: TermView>(kb: &KnowledgeBase, view: &V, params: &[Symbol]) -> bool {
+        let named = |s: Symbol| params.iter().any(|p| kb.canonical_sym(*p) == kb.canonical_sym(s));
+        if let Some(var) = view.index_var(kb) {
+            return match var {
+                Var::Global(v) => kb.type_param_of_canonical_var(v).is_some_and(named),
+                _ => false,
+            };
         }
-        if let Term::Fn {
-            pos_args,
-            named_args,
-            ..
-        } = kb.get_term(t)
-        {
-            stack.extend(pos_args.iter().copied());
-            stack.extend(named_args.iter().map(|(_, v)| *v));
+        match view.head(kb) {
+            ViewHead::Ident(s)
+            | ViewHead::Functor {
+                functor: s,
+                pos_arity: 0,
+                named_arity: 0,
+            } => named(s),
+            _ => false,
         }
     }
-    false
+    fn holds_param<V: TermView>(kb: &KnowledgeBase, view: &V, params: &[Symbol]) -> bool {
+        is_param(kb, view, params)
+            || kb
+                .structural_child_views(view)
+                .iter()
+                .any(|c| holds_param(kb, c, params))
+    }
+    !is_param(kb, value, params)
+        && kb
+            .structural_child_views(value)
+            .iter()
+            .any(|c| holds_param(kb, c, params))
 }
 
 /// Collect the full transitive requires chain for a sort.

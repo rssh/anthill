@@ -3360,9 +3360,7 @@ pub(super) fn unified_column_types(
         // A sort's parameter written by its NAME (`Wrap[T = T]` in a sort nested in the one
         // that declares `T`) is that parameter's variable, which the unification reaches
         // through the name.
-        if let Ok(t) = crate::kb::node_occurrence::value_to_term(kb, bound) {
-            collect_param_refs(kb, t, &mut written);
-        }
+        collect_param_refs(kb, bound, &mut written);
     }
     written.sort_by_key(|v| !kb.is_canonical_type_param_var(*v));
     let mut back = Substitution::new();
@@ -3399,11 +3397,16 @@ pub(super) fn unified_column_types(
     Some(out)
 }
 
-/// The canonical variable of every sort parameter `t` names by its symbol, into `out`.
-fn collect_param_refs(kb: &KnowledgeBase, t: TermId, out: &mut Vec<VarId>) {
-    match kb.get_term(t) {
-        Term::Ref(s) => {
-            if let Some(v) = kb.canonical_type_param_var(*s) {
+/// The canonical variable of every sort parameter `t` names by its symbol, into `out` — read
+/// through the view, so a type on any carrier answers.
+fn collect_param_refs<V: TermView>(kb: &KnowledgeBase, t: &V, out: &mut Vec<VarId>) {
+    match t.head(kb) {
+        ViewHead::Functor {
+            functor: s,
+            pos_arity: 0,
+            named_arity: 0,
+        } => {
+            if let Some(v) = kb.canonical_type_param_var(s) {
                 if let Term::Var(Var::Global(vid)) = kb.get_term(v) {
                     if !out.iter().any(|o| o.raw() == vid.raw()) {
                         out.push(*vid);
@@ -3411,13 +3414,9 @@ fn collect_param_refs(kb: &KnowledgeBase, t: TermId, out: &mut Vec<VarId>) {
                 }
             }
         }
-        Term::Fn {
-            pos_args,
-            named_args,
-            ..
-        } => {
-            for a in pos_args.iter().copied().chain(named_args.iter().map(|(_, a)| *a)) {
-                collect_param_refs(kb, a, out);
+        ViewHead::Functor { .. } => {
+            for c in kb.structural_child_views(t) {
+                collect_param_refs(kb, &c, out);
             }
         }
         _ => {}
@@ -3646,7 +3645,7 @@ pub(super) fn relation_columns_over(
 /// column of some type beside one of a type, or two types that are not one up to the names
 /// of their variables. `None` where they agree at every slot.
 pub(super) fn first_column_read_apart<'a>(
-    kb: &mut KnowledgeBase,
+    kb: &KnowledgeBase,
     before: &'a [(SlotKey, ColumnType)],
     after: &'a [(SlotKey, ColumnType)],
 ) -> Option<(SlotKey, &'a ColumnType, Option<&'a ColumnType>)> {
@@ -3655,13 +3654,7 @@ pub(super) fn first_column_read_apart<'a>(
         let agree = match (was, now) {
             (ColumnType::Some, Some(ColumnType::Some)) => true,
             (ColumnType::Of(a), Some(ColumnType::Of(b))) => {
-                match (
-                    crate::kb::node_occurrence::value_to_term(kb, a),
-                    crate::kb::node_occurrence::value_to_term(kb, b),
-                ) {
-                    (Ok(a), Ok(b)) => terms_alike_up_to_renaming(kb, a, b, &mut Vec::new()),
-                    _ => false,
-                }
+                views_alike_up_to_renaming(kb, a, b, &mut Vec::new())
             }
             _ => false,
         };
@@ -3672,51 +3665,52 @@ pub(super) fn first_column_read_apart<'a>(
     None
 }
 
-/// `a` and `b` are one term but for the names of their variables, renamed one-to-one.
-fn terms_alike_up_to_renaming(
+/// `a` and `b` are one type but for the names of their variables, renamed one-to-one. Read
+/// through the view, so the two may ride different carriers.
+fn views_alike_up_to_renaming<A: TermView, B: TermView>(
     kb: &KnowledgeBase,
-    a: TermId,
-    b: TermId,
+    a: &A,
+    b: &B,
     renamed: &mut Vec<(Var, Var)>,
 ) -> bool {
-    if a == b {
-        return true;
-    }
-    match (kb.get_term(a), kb.get_term(b)) {
-        (Term::Var(x), Term::Var(y)) => {
-            match renamed.iter().find(|(p, q)| p == x || q == y) {
-                Some((p, q)) => p == x && q == y,
+    match (a.head(kb), b.head(kb)) {
+        (ViewHead::Var(x), ViewHead::Var(y)) => {
+            match renamed.iter().find(|(p, q)| *p == x || *q == y) {
+                Some((p, q)) => *p == x && *q == y,
                 None => {
-                    renamed.push((*x, *y));
+                    renamed.push((x, y));
                     true
                 }
             }
         }
         (
-            Term::Fn {
+            ViewHead::Functor {
                 functor: fa,
-                pos_args: pa,
-                named_args: na,
+                pos_arity: pa,
+                named_arity: na,
             },
-            Term::Fn {
+            ViewHead::Functor {
                 functor: fb,
-                pos_args: pb,
-                named_args: nb,
+                pos_arity: pb,
+                named_arity: nb,
             },
         ) => {
-            let (pa, pb, na, nb) = (pa.clone(), pb.clone(), na.clone(), nb.clone());
             fa == fb
-                && pa.len() == pb.len()
-                && na.len() == nb.len()
-                && pa
-                    .iter()
-                    .zip(pb.iter())
-                    .all(|(x, y)| terms_alike_up_to_renaming(kb, *x, *y, renamed))
-                && na.iter().zip(nb.iter()).all(|((kx, x), (ky, y))| {
-                    kx == ky && terms_alike_up_to_renaming(kb, *x, *y, renamed)
+                && pa == pb
+                && na == nb
+                && (0..pa).all(|i| match (a.pos_arg(kb, i), b.pos_arg(kb, i)) {
+                    (Some(x), Some(y)) => views_alike_up_to_renaming(kb, &x, &y, renamed),
+                    _ => false,
+                })
+                && a.named_keys(kb).into_iter().all(|k| {
+                    match (a.named_arg(kb, k), b.named_arg(kb, k)) {
+                        (Some(x), Some(y)) => views_alike_up_to_renaming(kb, &x, &y, renamed),
+                        _ => false,
+                    }
                 })
         }
-        _ => false,
+        (ViewHead::Var(_), _) | (_, ViewHead::Var(_)) => false,
+        _ => views_structurally_equal(kb, a, b),
     }
 }
 
@@ -3767,9 +3761,12 @@ fn generalize_columns(
         }
         let (ta, tb) = (ca.ty, cb.ty);
         let ground = !term_mentions_type_var(kb, ta) && !term_mentions_type_var(kb, tb);
+        // The join of two types with a term form has one: it is built of their parts.
         let joined = if ground && !ca.some && !cb.some {
-            join_types(kb, Value::term(ta), Value::term(tb))
-                .and_then(|j| crate::kb::node_occurrence::value_to_term(kb, &j).ok())
+            join_types(kb, Value::term(ta), Value::term(tb)).map(|j| {
+                crate::kb::node_occurrence::value_to_term(kb, &j)
+                    .expect("the join of two types with a term has one")
+            })
         } else {
             None
         };
@@ -3975,7 +3972,12 @@ fn clause_goal_columns(kb: &mut KnowledgeBase, rid: RuleId) -> Option<Vec<GoalCo
                 term_slot_types[at].clone()
             }
         };
-        let ty = crate::kb::node_occurrence::value_to_term(kb, &ty).ok()?;
+        // The columns are generalized as terms ([`generalize_term`] builds the type both
+        // clauses are instances of). A clause's typing is read off types written in it, a
+        // `domain` goal's included, which [`constrain_domain_test`] takes only where it has a
+        // term; so every type here has one.
+        let ty = crate::kb::node_occurrence::value_to_term(kb, &ty)
+            .expect("a column's type is a type, which has a term");
         // A variable a column of some type gives, and nothing else types, makes this column
         // one too: `anyHolds(?x) :- holds(?x)` holds `holds`'s values.
         let some = d.is_some_and(|d| typing.some_typed.contains_key(&d));
@@ -3998,10 +4000,7 @@ fn clause_goal_columns(kb: &mut KnowledgeBase, rid: RuleId) -> Option<Vec<GoalCo
         let once = types.iter().map(|t| count_var_occurrences(kb, *t, v)).sum::<usize>() == 1;
         column.unread = once
             && (unread_slots.contains(&column.slot)
-                || typing.unread.iter().any(|u| {
-                    matches!(crate::kb::node_occurrence::value_to_term(kb, u).ok()
-                        .map(|t| kb.get_term(t).clone()), Some(Term::Var(w)) if w == v)
-                }));
+                || typing.unread.iter().any(|u| u.index_var(kb) == Some(v)));
     }
     Some(columns)
 }

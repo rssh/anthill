@@ -996,8 +996,9 @@ pub(super) fn walk_value_to_resolved(
 /// `walk_type` and `walk_type_deep` deliberately STOP at a non-`Term`
 /// binding, returning the var unchanged. Surface such a binding by lowering
 /// it faithfully to a `TermId` (`value_to_term`, lossless for a `Node` via
-/// WI-390 `occurrence_to_term`). A `Term` binding, an unbound var, or an
-/// un-lowerable carrier returns `walked` unchanged (the pre-WI-394 behavior).
+/// WI-390 `occurrence_to_term`). A `Term` binding or an unbound var returns `walked`
+/// unchanged. A type variable bound to a carrier with no term form is a malformation of
+/// whatever bound it, and panics naming it.
 /// Callers that can consume a `Value` directly should instead walk via
 /// `walk_term_to_resolved` / `walk_value_to_resolved`; this is the bridge for
 /// the sites that genuinely need a `TermId` (storage / structural compare).
@@ -1014,22 +1015,7 @@ pub(super) fn surface_node_binding_to_term(
         Some(v) if !matches!(v, Value::Term { .. }) => v.clone(),
         _ => return walked,
     };
-    match value_to_term(kb, &bound) {
-        Ok(t) => t,
-        Err(e) => {
-            // A var bound to a non-`Term`, non-lowerable carrier (opaque / Unit
-            // / Tuple / a runtime-only `Value`) standing in a TYPE slot is a
-            // malformation, not a benign miss — surface it loudly (mirrors the
-            // `walk_view` Path-carrier guard). Release stays strictly no-worse
-            // than the pre-WI-394 walk: keep the bare var.
-            debug_assert!(
-                false,
-                "surface_node_binding_to_term: type var {vid:?} bound to an \
-                 un-lowerable carrier {bound:?}: {e:?}"
-            );
-            walked
-        }
-    }
+    value_to_term(kb, &bound).expect("a type variable is bound to a type, which has a term")
 }
 
 /// The logic-var id a resolved type *is*, if any — a hash-consed
@@ -1774,14 +1760,14 @@ fn ground_rigid_projection_if_concrete(
             continue;
         };
         // A term walk answers a term: the binding's, on whichever carrier the provision
-        // holds it — one written through a type alias is an occurrence.
-        let Some(bound) = bindings
-            .iter()
-            .find(|(n, _)| kb.local_name_of(*n) == member_str)
-            .and_then(|(_, b)| crate::kb::node_occurrence::value_to_term(kb, b).ok())
+        // holds it — one written through a type alias is an occurrence. A provision's binding
+        // is a written type, which has a term form.
+        let Some((_, b)) = bindings.iter().find(|(n, _)| kb.local_name_of(*n) == member_str)
         else {
             continue;
         };
+        let bound = crate::kb::node_occurrence::value_to_term(kb, b)
+            .expect("a provision's binding is a type, which has a term");
         // WI-391: the provider binding is the canonical `Ref(S)` shape, so the grounded
         // member walks directly (the late nullary-`Fn` normalization is retired).
         return Some(walk_type_deep(kb, subst, bound));
@@ -1805,7 +1791,8 @@ fn ground_rigid_projection_if_concrete(
         let sigma = params_bound_by(kb, subst, &params);
         let chain = op_requires_chain_rc(kb, sort);
         let read = member_through_lending_requirement(kb, &chain, &subject, member, &sigma)?;
-        let read = crate::kb::node_occurrence::value_to_term(kb, &read).ok()?;
+        let read = crate::kb::node_occurrence::value_to_term(kb, &read)
+            .expect("a requirement's binding is a type, which has a term");
         return Some(walk_type_deep(kb, subst, read));
     }
     // WI-383 SELF-CARRIER (implicit licensing): no `requires` bound mentions the subject,
@@ -2006,7 +1993,8 @@ fn ground_sort_param_projection(
     genuine_concrete_sort(kb, extract_sort_ref_sym(kb, bound)?)?;
     let chain = requires_chain(kb, decl);
     let read = member_through_lending_requirement(kb, &chain, subject, member, &sigma)?;
-    let read = crate::kb::node_occurrence::value_to_term(kb, &read).ok()?;
+    let read = crate::kb::node_occurrence::value_to_term(kb, &read)
+        .expect("a requirement's binding is a type, which has a term");
     Some(walk_type_deep(kb, subst, read))
 }
 

@@ -146,14 +146,8 @@ pub(super) fn value_to_type_child(kb: &mut KnowledgeBase, v: &Value) -> TypeChil
                 _ => "not a type carrier".to_string(),
             };
             // Anything else — a scalar, or an entity spine that is no type — is a typer bug
-            // here (types are `Term`/`Node`/`Var`, an entity converted): loud in a debug build,
-            // and a fresh `?ungrounded` type var in release rather than a panic.
-            debug_assert!(
-                false,
-                "WI-342: non-type Value in a TypeChild slot ({why}): {other:?}"
-            );
-            let sym = kb.intern("?ungrounded");
-            TypeChild::Interned(kb.make_type_var(sym))
+            // here (types are `Term`/`Node`/`Var`, an entity converted), in every build.
+            panic!("WI-342: non-type Value in a TypeChild slot ({why}): {other:?}")
         }
     }
 }
@@ -225,17 +219,16 @@ fn type_children(
     owner: Option<Symbol>,
 ) -> TypeChildren {
     // An ENTITY-carried child (σ's splice spine) is converted first ([`entity_type_on_builders`]);
-    // one that does not convert is a typer bug, which the occurrence branch's per-child placement
-    // ([`value_to_type_child`]) asserts against, naming why.
+    // one that does not convert is a typer bug, and panics naming why.
     let converted: Vec<(Symbol, Value)>;
     let items = if items.iter().any(|(_, v)| matches!(v, Value::Entity { .. })) {
         converted = items
             .iter()
             .map(|(s, v)| {
                 let v = match v {
-                    Value::Entity { .. } => {
-                        entity_type_on_builders(kb, v).unwrap_or_else(|_| v.clone())
-                    }
+                    Value::Entity { .. } => entity_type_on_builders(kb, v).unwrap_or_else(|why| {
+                        panic!("a type's entity-carried child is no type ({why}): {v:?}")
+                    }),
                     _ => v.clone(),
                 };
                 (*s, v)

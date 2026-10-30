@@ -72,24 +72,13 @@ pub(super) fn reconstruct_sort_params(
         // `Var`) so the built type keeps the sort's full param arity while staying
         // compatible with whatever the use-site declares. WI-516: a `Value::Node`-carried
         // binding is lowered to a Term so the reconstructed type KEEPS it rather than
-        // dropping it.
+        // dropping it. A parameter is bound to a type, which has a term form; one bound to a
+        // carrier with none is a malformation of what bound it, and panics naming it.
         let bound_type = match subst.resolve_as_value(vid) {
             Some(Value::Term { id: bound_type, .. }) => *bound_type,
             Some(other) => {
                 let other = other.clone();
-                match value_to_term(kb, &other) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        debug_assert!(
-                            false,
-                            "WI-516: param `{}` bound to un-lowerable carrier {}: {e:?}",
-                            kb.local_name_of(param_sym),
-                            other.type_name(),
-                        );
-                        let name = kb.intern("?_");
-                        kb.make_type_var(name)
-                    }
-                }
+                value_to_term(kb, &other).expect("a sort's parameter is bound to a type, which has a term")
             }
             None => {
                 let name = kb.intern("?_");
@@ -2982,7 +2971,9 @@ fn value_type_open_with_unknowns(
 }
 
 /// `ty` with each of its `unknowns` that stands opposite a part of `bound` with no variable in
-/// it replaced by that part ([`pin_bound_as_a_bound`]).
+/// it replaced by that part ([`pin_bound_as_a_bound`]). The bound is read through the view: it
+/// is walked through the run's σ, so a part of it may be a value a query bound (a closure in a
+/// value-in-type slot), which stands where it stood.
 fn read_unknowns_from_bound(
     kb: &mut KnowledgeBase,
     ty: &Value,
@@ -2992,56 +2983,65 @@ fn read_unknowns_from_bound(
     if unknowns.is_empty() {
         return ty.clone();
     }
-    let (Value::Term { id: t, .. }, Ok(b)) =
-        (ty, crate::kb::node_occurrence::value_to_term(kb, bound))
-    else {
-        return ty.clone();
+    // Unknowns are opened on a term only ([`value_type_open_with_unknowns`]), so a type that
+    // has some is one.
+    let Value::Term { id: t, .. } = ty else {
+        unreachable!("a type with unknowns opened in it is a term: {ty:?}")
     };
-    fn walk(kb: &mut KnowledgeBase, t: TermId, b: TermId, unknowns: &[VarId]) -> TermId {
-        match (kb.get_term(t).clone(), kb.get_term(b).clone()) {
-            (Term::Var(Var::Global(v)), _)
-                if unknowns.contains(&v) && !type_mentions_flex_var(kb, &Value::term(b)) =>
+    fn walk(kb: &mut KnowledgeBase, t: TermId, b: &Value, unknowns: &[VarId]) -> Value {
+        match kb.get_term(t).clone() {
+            Term::Var(Var::Global(v))
+                if unknowns.contains(&v) && !type_mentions_flex_var(kb, b) =>
             {
-                b
+                b.clone()
             }
-            (
-                Term::Fn {
-                    functor,
-                    pos_args,
-                    named_args,
-                },
-                Term::Fn {
+            Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            } => {
+                let ViewHead::Functor {
                     functor: bf,
-                    pos_args: bp,
-                    named_args: bn,
-                },
-            ) if functor == bf && pos_args.len() == bp.len() => {
-                let pos: SmallVec<[TermId; 4]> = pos_args
+                    pos_arity,
+                    ..
+                } = b.head(kb)
+                else {
+                    return Value::term(t);
+                };
+                if functor != bf || pos_args.len() != pos_arity {
+                    return Value::term(t);
+                }
+                let pos: Vec<(TermId, Option<Value>)> = pos_args
                     .iter()
-                    .zip(bp.iter())
-                    .map(|(&a, &x)| walk(kb, a, x, unknowns))
+                    .enumerate()
+                    .map(|(i, &a)| (a, b.pos_arg(kb, i).map(|x| view_item_value(&x))))
                     .collect();
-                let named: SmallVec<[(Symbol, TermId); 2]> = named_args
+                let named: Vec<(Symbol, TermId, Option<Value>)> = named_args
                     .iter()
-                    .map(|&(k, a)| match bn.iter().find(|(bk, _)| *bk == k) {
-                        Some(&(_, x)) => (k, walk(kb, a, x, unknowns)),
-                        None => (k, a),
-                    })
+                    .map(|&(k, a)| (k, a, b.named_arg(kb, k).map(|x| view_item_value(&x))))
                     .collect();
-                if pos == pos_args && named == named_args {
-                    t
+                let mut changed = false;
+                let mut read = |kb: &mut KnowledgeBase, a: TermId, x: Option<Value>| match x {
+                    Some(x) => {
+                        let r = walk(kb, a, &x, unknowns);
+                        changed |= !matches!(r, Value::Term { id, .. } if id == a);
+                        r
+                    }
+                    None => Value::term(a),
+                };
+                let pos: Vec<Value> = pos.into_iter().map(|(a, x)| read(kb, a, x)).collect();
+                let named: Vec<(Symbol, Value)> =
+                    named.into_iter().map(|(k, a, x)| (k, read(kb, a, x))).collect();
+                if changed {
+                    kb.fn_value(functor, pos, named)
                 } else {
-                    kb.alloc(Term::Fn {
-                        functor,
-                        pos_args: pos,
-                        named_args: named,
-                    })
+                    Value::term(t)
                 }
             }
-            _ => t,
+            _ => Value::term(t),
         }
     }
-    Value::term(walk(kb, *t, b, unknowns))
+    walk(kb, *t, bound, unknowns)
 }
 
 /// `ty` with every reflect `TypeVar` placeholder — [`value_type_term`]'s "not known" — replaced

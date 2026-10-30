@@ -632,18 +632,14 @@ pub(super) fn type_member_as_value(
 }
 
 /// The type value of the type `ty`, built where `occ` stands: as the walks build a type written
-/// in value position (`load::type_value_occurrence`).
+/// in value position (`load::type_value_occurrence`). `ty` is a member's written definition, or
+/// a projection of a receiver's type with no variable in it; both are built of written types,
+/// a value in them included, and have a term form. One with none is a defect of the reader
+/// that built it, and panics naming it.
 fn type_value_of(kb: &mut KnowledgeBase, ty: &Value, occ: &Rc<NodeOccurrence>) -> Rc<NodeOccurrence> {
-    match crate::kb::node_occurrence::value_to_term(kb, ty) {
-        Ok(id) => crate::kb::load::type_value_occurrence(kb, id, occ.span, occ.owner),
-        // A type that holds a value rides an occurrence, and is spliced as the type itself.
-        Err(_) => {
-            let node = NodeOccurrence::new_expr(Expr::Spliced(ty.clone()), occ.span, occ.owner);
-            let type_ty = kb.make_sort_ref_by_name("anthill.prelude.Type");
-            node.set_inferred_type(Value::term(type_ty));
-            node
-        }
-    }
+    let id = crate::kb::node_occurrence::value_to_term(kb, ty)
+        .expect("a type member read as a value is a type, which has a term");
+    crate::kb::load::type_value_occurrence(kb, id, occ.span, occ.owner)
 }
 
 /// `name.member` in a type, where a `let` bound `name` to a written type: the type the

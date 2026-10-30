@@ -661,19 +661,13 @@ pub(super) fn rewrite_binding_leaves(
     leaf: &impl Fn(&mut KnowledgeBase, &Value) -> Option<Value>,
 ) -> Option<Value> {
     let rewritten = rewrite_type_leaves(kb, binding, leaf)?;
+    // A binding is a type, and so is the spine above a parameter of it. One the builders have
+    // no form for is a reader's error and not a program's, and panics naming it.
     match type_child_value(kb, rewritten.clone()) {
         Ok(on_builders) => Some(on_builders),
-        // A binding is a type, and so is the spine above a parameter of it. One the
-        // builders have no form for is a reader's error and not a program's: loud where it
-        // can be, and where it cannot the rewrite's own value is still the binding.
-        Err(why) => {
-            debug_assert!(
-                false,
-                "rewrite_binding_leaves: no type form for the rewritten binding ({why}) \
-                 {rewritten:?}"
-            );
-            Some(rewritten)
-        }
+        Err(why) => panic!(
+            "rewrite_binding_leaves: no type form for the rewritten binding ({why}) {rewritten:?}"
+        ),
     }
 }
 

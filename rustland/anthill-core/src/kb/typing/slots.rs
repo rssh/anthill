@@ -5663,20 +5663,19 @@ pub(super) fn install_type_param_defaults_of(
 /// /code-review). A `let` with no annotation is where the inferred type is finalized for
 /// every later read — the binding's slot would otherwise open as its projection (`t.T`).
 ///
-/// Read through the term carrier, where the type has one: a type on the occurrence carrier
-/// that converts (a construction's argument types often ride it) is filled as its term, and
-/// one that holds a value (a denoted-bearing type) is returned as it is, no default reaching
-/// a slot of it. A type nothing is filled in keeps the carrier it came on.
+/// Read through the term carrier, where the filled type is built: a type on the occurrence
+/// carrier (a construction's argument types often ride it, a denoted-bearing one included) is
+/// filled as its term. A type nothing is filled in keeps the carrier it came on. An inferred
+/// type is built of written ones, each with a term form; one with none is a defect of the
+/// reader that built it, and panics naming it.
 pub(super) fn fill_inferred_defaults(kb: &mut KnowledgeBase, ty: &Value) -> Value {
     if kb.sort_param_defaults.is_empty() {
         return ty.clone();
     }
     let id = match ty {
         Value::Term { id } => *id,
-        other => match crate::kb::node_occurrence::value_to_term(kb, other) {
-            Ok(id) => id,
-            Err(_) => return ty.clone(),
-        },
+        other => crate::kb::node_occurrence::value_to_term(kb, other)
+            .expect("an inferred type is a type, which has a term"),
     };
     let filled = fill_term_defaults(kb, id);
     if filled == id {
@@ -5722,10 +5721,10 @@ fn fill_term_defaults(kb: &mut KnowledgeBase, t: TermId) -> TermId {
     if fills.is_empty() {
         return t;
     }
+    // A default is a type its sort writes, which has a term form.
     for fill in fills {
-        let Ok(term) = crate::kb::node_occurrence::value_to_term(kb, &fill.value) else {
-            return t;
-        };
+        let term = crate::kb::node_occurrence::value_to_term(kb, &fill.value)
+            .expect("a parameter's default is a type, which has a term");
         kept.push((fill.key, term));
     }
     let base = kb.make_sort_ref(head);

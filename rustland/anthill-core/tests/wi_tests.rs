@@ -2324,3 +2324,5 @@ mod wi_50361_namespace_named_head_test;
 mod wi_w2jp7_closure_through_a_head_test;
 #[path = "include/wi_bxmpk_goal_value_carried_test.rs"]
 mod wi_bxmpk_goal_value_carried_test;
+#[path = "include/wi_0jwyf_type_with_no_term_form_test.rs"]
+mod wi_0jwyf_type_with_no_term_form_test;

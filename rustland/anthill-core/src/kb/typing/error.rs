@@ -1388,6 +1388,8 @@ pub enum TypeErrorContext {
         sort: Symbol,
         param: Symbol,
     },
+    /// The type a `domain(?x, T)` goal written in a clause asks about.
+    DomainGoal,
 }
 
 /// WI-20261012-80259 — which pattern [`TypeErrorContext::PatternPosition`] is about. A
@@ -1465,6 +1467,7 @@ impl TypeErrorContext {
             }
             TypeErrorContext::RuleBound { rule, .. } => kb.local_name_of(*rule).to_string(),
             TypeErrorContext::SortParameter { sort, .. } => kb.local_name_of(*sort).to_string(),
+            TypeErrorContext::DomainGoal => "domain".to_string(),
         }
     }
 
@@ -1501,6 +1504,7 @@ impl TypeErrorContext {
             TypeErrorContext::RuleColumn { .. } => "rule-column",
             TypeErrorContext::RuleBound { .. } => "rule-bound",
             TypeErrorContext::SortParameter { .. } => "sort-parameter",
+            TypeErrorContext::DomainGoal => "domain-goal",
         }
     }
 
@@ -1534,6 +1538,7 @@ impl TypeErrorContext {
             TypeErrorContext::RuleColumn { column, .. } => kb.local_name_of(*column).to_string(),
             TypeErrorContext::RuleBound { var, .. } => kb.local_name_of(*var).to_string(),
             TypeErrorContext::SortParameter { param, .. } => kb.local_name_of(*param).to_string(),
+            TypeErrorContext::DomainGoal => "type".to_string(),
         }
     }
 }

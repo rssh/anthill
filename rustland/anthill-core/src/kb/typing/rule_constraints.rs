@@ -195,6 +195,9 @@ pub(super) enum Misfit {
         var: Symbol,
         column: (Symbol, Symbol),
     },
+    /// A position that takes a type holds an expression that is none — an `if`, a lambda —
+    /// named by its form.
+    NoType { form: &'static str },
 }
 
 impl Misfit {
@@ -279,6 +282,13 @@ impl ClauseDisagreement {
                     kb.local_name_of(*label),
                     kb.local_name_of(*var),
                 ),
+                site: TypeError::here(),
+            },
+            Misfit::NoType { form } => TypeError::Other {
+                span,
+                context: self.context.clone(),
+                expected: "a type".to_string(),
+                actual: format!("{form}, which is no type"),
                 site: TypeError::here(),
             },
         }
@@ -759,8 +769,8 @@ pub(super) fn collect_occurrence_type_constraints(
     let goal = matches!(pos, BodyPos::Goal(_) | BodyPos::GoalTuple(_));
     let nested = match clause_call_parts(expr) {
         Some((functor, pos_args, named_args)) => {
-            if goal && committed {
-                constrain_domain_test(kb, functor, pos_args, st);
+            if goal {
+                constrain_domain_test(kb, functor, pos_args, committed, st);
             }
             let bracket = call_bracket_instances(kb, occ, expr, functor);
             let (nested, result) =
@@ -928,12 +938,13 @@ fn call_bracket_instances(
         .iter()
         .map(|(v, val)| (*v, val.clone()))
         .collect();
+    // Each is a type the bracket writes, which has a term form.
     bound
         .into_iter()
-        .filter_map(|(v, val)| {
-            crate::kb::node_occurrence::value_to_term(kb, &val)
-                .ok()
-                .map(|t| (v, t))
+        .map(|(v, val)| {
+            let t = crate::kb::node_occurrence::value_to_term(kb, &val)
+                .expect("a call's bracket binds a type, which has a term");
+            (v, t)
         })
         .collect()
 }
@@ -1207,20 +1218,44 @@ fn constrain_literal_arg(
 /// `domain(?v, T)`, the run-time type test: `?v` is a `T` where the test holds, as a position
 /// that declares `T` says, and it is narrowed. A `T` the loader refuses — naming no sort, a spec
 /// over its parameter — says nothing.
+///
+/// A `T` written as a value that is no type — `domain(?v, lambda () -> 1)`, `domain(?v, if b
+/// then Int64 else String)` — is refused here, at the `T` ([`Misfit::NoType`]): it has no term
+/// form, which every type written in a clause has, and the test it asks holds of nothing. At
+/// every goal of the clause, under a `not` or a quantifier too, where `committed` is false and
+/// nothing is narrowed.
 fn constrain_domain_test(
     kb: &mut KnowledgeBase,
     functor: Symbol,
     pos_args: &[Rc<NodeOccurrence>],
+    committed: bool,
     st: &mut ClauseConstraints,
 ) {
     if kb.builtin_of(functor) != Some(crate::kb::resolve::BuiltinTag::TypeDomain) {
         return;
     }
     let [value, ty] = pos_args else { return };
-    let Some(d) = value.var_key(kb) else { return };
-    let Ok(ty) = crate::kb::node_occurrence::value_to_term(kb, &Value::Node(Rc::clone(ty))) else {
+    let Ok(ty_term) = crate::kb::node_occurrence::value_to_term(kb, &Value::Node(Rc::clone(ty)))
+    else {
+        let form = match ty.as_expr() {
+            Some(Expr::Lambda { .. } | Expr::LambdaWithin { .. }) => "a lambda",
+            Some(Expr::If { .. }) => "an `if`",
+            Some(Expr::Match { .. }) => "a `match`",
+            Some(Expr::Let { .. }) => "a `let`",
+            _ => "an expression",
+        };
+        st.found.push(ClauseDisagreement {
+            span: Some(ty.span),
+            context: TypeErrorContext::DomainGoal,
+            misfit: Misfit::NoType { form },
+        });
         return;
     };
+    if !committed {
+        return;
+    }
+    let Some(d) = value.var_key(kb) else { return };
+    let ty = ty_term;
     let ty = Value::term(ty);
     if type_mentions_unresolved_name(kb, &ty) || parameter_spec_written_as_type(kb, &ty).is_some() {
         return;

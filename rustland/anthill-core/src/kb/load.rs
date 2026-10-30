@@ -29158,10 +29158,12 @@ impl<'a> Loader<'a> {
                 // Kept where it lowers to the very term read here. An application the
                 // loader assembled with its bindings in another order than a written type
                 // has them (a head type variable applied, `A[C = Red]`, takes its guard's)
-                // is that term and no other, and stays on it.
+                // is that term and no other, and stays on it. It is built of terms and of
+                // occurrences that lowered above, so it lowers.
                 let written = written.filter(|occ| {
-                    node_occurrence::value_to_term(self.kb, &Value::Node(Rc::clone(occ))).ok()
-                        == Some(read)
+                    node_occurrence::value_to_term(self.kb, &Value::Node(Rc::clone(occ)))
+                        .expect("a type read through its aliases has a term")
+                        == read
                 });
                 (read, written)
             }
@@ -35725,16 +35727,10 @@ impl<'a> Loader<'a> {
     /// so the two spellings of an annotation (`let p: T` and `(x: T)`) reach the
     /// slot through ONE lowering.
     fn lower_pattern_annotation(&mut self, value: &crate::eval::value::Value) -> TermId {
-        // `type_expr_to_value` yields only `Term`/`Node`, both of which
-        // `value_to_term` lowers without error, so the `Err` branch cannot fire.
-        // Guard it loudly rather than silently dropping the annotation.
-        node_occurrence::value_to_term(self.kb, value).unwrap_or_else(|e| {
-            debug_assert!(
-                false,
-                "WI-819: pattern annotation not term-representable: {e:?}"
-            );
-            self.kb.alloc(Term::Bottom)
-        })
+        // A written type: a value in it is a literal, a name or a field path, each with a
+        // term form, so it lowers. One that does not is the lowering's defect.
+        node_occurrence::value_to_term(self.kb, value)
+            .expect("a written annotation is a type, which has a term")
     }
 
     /// A written annotation lowered both ways: the TERM a pattern's `type_ann` slot holds,
@@ -42175,6 +42171,9 @@ impl<'a> Loader<'a> {
         if super::typing::is_sort_param_symbol(self.kb, source) {
             return;
         }
+        // `None` where the alias's own lowering refused its definition for having no term
+        // form (`ValueInTypeNotResolved`, through `lower_value_or_gate`).
+        let refused = stands_for.is_none();
         // The type the `SortAlias` fact was just given ([`KnowledgeBase::alias_types`]).
         if let Some(stands_for) = stands_for {
             self.kb.alias_types.entry(source).or_insert(stands_for);
@@ -42194,10 +42193,18 @@ impl<'a> Loader<'a> {
         };
         self.kb.restore_load_check_marks(marks);
         self.errors.truncate(reported);
-        if let Ok(target) = node_occurrence::value_to_term(&mut self.kb, &reading) {
-            if !matches!(self.kb.get_term(target), Term::Var(_)) {
-                self.kb.alias_targets.entry(source).or_insert(target);
+        // A reading with no term form is of a definition with none, which was refused.
+        match node_occurrence::value_to_term(&mut self.kb, &reading) {
+            Ok(target) => {
+                if !matches!(self.kb.get_term(target), Term::Var(_)) {
+                    self.kb.alias_targets.entry(source).or_insert(target);
+                }
             }
+            Err(e) => assert!(
+                refused,
+                "an alias's reading has no term form ({e:?}) where its definition was not \
+                 refused: {reading:?}"
+            ),
         }
     }
 
@@ -43144,6 +43151,10 @@ impl<'a> Loader<'a> {
                     let spec = self.sort_inst_to_value(&r.type_expr);
                     let req_term = match self.plain_spec_term(&spec) {
                         Some(t) => t,
+                        // A spec that holds a value is named by its base. So is one with no
+                        // term form, which `load_requires_decl` has refused already
+                        // (`ValueInTypeNotResolved`, through `lower_value_or_gate`): the walk
+                        // visits the `requires` item before the sort's exit.
                         None => match &r.type_expr {
                             TypeExpr::Simple(name) | TypeExpr::Parameterized { name, .. } => {
                                 match self.spec_name_symbol(name) {
@@ -43286,9 +43297,13 @@ impl<'a> Loader<'a> {
             // same variable, one carrier out.
             Value::Var(v) => Some(self.kb.alloc(Term::Var(*v))),
             // A type that rides an occurrence and holds no value — one written through
-            // an alias, at any depth — is named by the term of the type it is.
+            // an alias, at any depth — is named by the term of the type it is, which every
+            // written type has.
             other if !super::typing::type_holds_a_value(self.kb, other) => {
-                node_occurrence::value_to_term(self.kb, other).ok()
+                Some(
+                    node_occurrence::value_to_term(self.kb, other)
+                        .expect("a field's written type is a type, which has a term"),
+                )
             }
             _ => None,
         }
@@ -46874,8 +46889,9 @@ impl<'a> Loader<'a> {
 
     /// A clause's spec as the plain term it is, for a reader that keeps a term and
     /// nothing else: `None` for a spec that holds a value (`Foo[Int64, 3]`), which such a
-    /// reader has no place for. A binding written through a type alias is the type it
-    /// stands for.
+    /// reader has no place for, or that has no term form — which the clause's own lowering
+    /// ([`Self::lower_value_or_gate`]) refuses. A binding written through a type alias is the
+    /// type it stands for.
     fn plain_spec_term(&mut self, spec: &crate::eval::value::Value) -> Option<TermId> {
         if super::typing::type_holds_a_value(self.kb, spec) {
             return None;
@@ -48970,6 +48986,7 @@ impl<'a> Loader<'a> {
     ///
     /// A binding's occurrence is kept where it lowers to the very term the goal holds
     /// there, so the value and the term are one clause to every reader of its structure.
+    /// Each was made by [`Self::term_read_through_aliases`], whose occurrences lower.
     fn contract_goal_as_written(
         &mut self,
         written_at: ParseTermId,
@@ -48993,7 +49010,9 @@ impl<'a> Loader<'a> {
                 .find(|(at, _)| *at == slot)
                 .map(|(_, occ)| Value::Node(Rc::clone(occ)))
                 .filter(|as_written| {
-                    node_occurrence::value_to_term(loader.kb, as_written).ok() == Some(held)
+                    node_occurrence::value_to_term(loader.kb, as_written)
+                        .expect("a contract binding read through its aliases has a term")
+                        == held
                 })
                 .unwrap_or_else(|| Value::term(held))
         };

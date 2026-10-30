@@ -4846,11 +4846,13 @@ pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
     // `Expr::VarRef` (an unqualified lambda/`let` binder; no producer mints one in a
     // denoted today) is the deferred case: it would need `make_positioned` with a
     // resolved `pos`, so a bare `VarRef` reaching here stays a non-goal `None`.)
+    // A type with a part that has no term form — a value in it that is an `if`, a
+    // lambda — has none either, and is `None` ([`type_node_to_term`]).
     if let Some(tn) = occ.as_type() {
-        return Some(type_node_to_term(kb, tn));
+        return type_node_to_term(kb, tn);
     }
     if let Some(en) = occ.as_effect_expr() {
-        return Some(effect_node_to_term(kb, en));
+        return effect_node_to_term(kb, en);
     }
     Some(match occ.as_expr() {
         Some(Expr::Var(v)) => kb.alloc(Term::Var(*v)),
@@ -5422,12 +5424,12 @@ fn type_args_list_term(
 // ── WI-390: faithful Value/occurrence → Term lowering ───────────
 
 /// A [`TypeChild`] → `TermId`: a ground child passes through verbatim, a
-/// poisoned (`denoted`-bearing) child lowers via the now-lossless
-/// [`occurrence_to_term`].
-fn type_child_to_term(kb: &mut KnowledgeBase, child: &TypeChild) -> TermId {
+/// poisoned (`denoted`-bearing) child lowers via [`try_occurrence_to_term`] — `None` for
+/// one with no term form, which makes the type it is in have none.
+fn type_child_to_term(kb: &mut KnowledgeBase, child: &TypeChild) -> Option<TermId> {
     match child {
-        TypeChild::Interned(t) => *t,
-        TypeChild::Node(occ) => occurrence_to_term(kb, occ),
+        TypeChild::Interned(t) => Some(*t),
+        TypeChild::Node(occ) => try_occurrence_to_term(kb, occ),
     }
 }
 
@@ -5436,29 +5438,33 @@ fn type_child_to_term(kb: &mut KnowledgeBase, child: &TypeChild) -> TermId {
 /// loader's ground build of the same type. Arrows reuse the *non*-canonicalizing
 /// [`KnowledgeBase::make_arrow_from_effects_rows`] (the `effects` child is already
 /// a canonical `effects_rows`; re-canonicalizing would change bytes).
-fn type_node_to_term(kb: &mut KnowledgeBase, tn: &TypeNode) -> TermId {
-    match tn {
+///
+/// `None` where a part of the type has no term form — a value in it that is an `if`, a
+/// lambda, a closure — so [`value_to_term`] answers `Err` for the whole type and its caller
+/// decides, rather than a `⊥` standing in that part.
+fn type_node_to_term(kb: &mut KnowledgeBase, tn: &TypeNode) -> Option<TermId> {
+    Some(match tn {
         // WI-20260904-02ERR: this function's whole job is "give me the hash-consed twin",
         // so interning here is the CALLER's request, not the leak the ticket removes.
         TypeNode::Var(v) => kb.alloc_or_find_var_term(*v),
         // The hash-consed twin is the type's: a term has no place for the written name.
         TypeNode::Aliased { stands_for, .. } | TypeNode::Defaulted { stands_for, .. } => {
-            type_child_to_term(kb, stands_for)
+            type_child_to_term(kb, stands_for)?
         }
         TypeNode::Denoted { value } => {
-            let v = occurrence_to_term(kb, value);
+            let v = try_occurrence_to_term(kb, value)?;
             kb.make_denoted(v)
         }
         TypeNode::Parameterized { base, bindings } => {
-            let base_t = type_child_to_term(kb, base);
+            let base_t = type_child_to_term(kb, base)?;
             let mut binding_ts: Vec<(Symbol, TermId)> = Vec::with_capacity(bindings.len());
             for (s, c) in bindings {
-                binding_ts.push((*s, type_child_to_term(kb, c)));
+                binding_ts.push((*s, type_child_to_term(kb, c)?));
             }
             kb.make_parameterized_type(base_t, &binding_ts)
         }
         TypeNode::EffectsRows { effects_expr } => {
-            let e = type_child_to_term(kb, effects_expr);
+            let e = type_child_to_term(kb, effects_expr)?;
             kb.make_effects_rows_type(e)
         }
         TypeNode::Arrow {
@@ -5468,20 +5474,18 @@ fn type_node_to_term(kb: &mut KnowledgeBase, tn: &TypeNode) -> TermId {
             arity,
             binders,
         } => {
-            let p = type_child_to_term(kb, param);
-            let r = type_child_to_term(kb, result);
-            let e = type_child_to_term(kb, effects);
+            let p = type_child_to_term(kb, param)?;
+            let r = type_child_to_term(kb, result)?;
+            let e = type_child_to_term(kb, effects)?;
             // WI-791: the arity child crosses to the term twin as-is (a ground
             // `Const(Int)`), so the two carriers stay structurally identical —
             // `GoalKey` identity and discrim keys both depend on that. So do the
             // arrow's own binders, the list of its places.
-            let a = type_child_to_term(kb, arity);
-            let b = binders.as_ref().map(|b| {
-                value_to_term(kb, b).unwrap_or_else(|e| {
-                    debug_assert!(false, "arrow binders not term-representable: {e:?}");
-                    kb.alloc(Term::Bottom)
-                })
-            });
+            let a = type_child_to_term(kb, arity)?;
+            let b = match binders {
+                Some(b) => Some(value_to_term(kb, b).ok()?),
+                None => None,
+            };
             kb.make_arrow_from_effects_rows_arity_term(p, r, e, a, b)
         }
         TypeNode::ExprCarried { value, member } => {
@@ -5490,7 +5494,7 @@ fn type_node_to_term(kb: &mut KnowledgeBase, tn: &TypeNode) -> TermId {
             // `make_expr_carried`) is rarely hit; it keeps the lowering total. The
             // receiver lowers via the shared child path; `member` is a ground
             // `Ref(sym)` by construction.
-            let v = type_child_to_term(kb, value);
+            let v = type_child_to_term(kb, value)?;
             let member_sym = match member {
                 TypeChild::Interned(t) => match kb.get_term(*t) {
                     Term::Ref(s) => Some(*s),
@@ -5505,7 +5509,7 @@ fn type_node_to_term(kb: &mut KnowledgeBase, tn: &TypeNode) -> TermId {
                     // ground `Ref`). Rebuild the `ExprCarried` Fn faithfully (mirroring
                     // `make_expr_carried`'s shape) rather than silently dropping the
                     // member projection to `v` (loud-over-silent).
-                    let m = type_child_to_term(kb, member);
+                    let m = type_child_to_term(kb, member)?;
                     let ec = kb.resolve_symbol("anthill.prelude.TypeExtractor.ExprCarried");
                     let vk = kb.intern("value");
                     let mk = kb.intern("member");
@@ -5524,13 +5528,8 @@ fn type_node_to_term(kb: &mut KnowledgeBase, tn: &TypeNode) -> TermId {
         TypeNode::NamedTuple { fields } => {
             // `fields` is a `Value`-carried `List[NamedTupleElement]` (structurally
             // the same list `make_named_tuple_type` builds), so lower it via
-            // `value_to_term` and wrap in the `NamedTuple` functor. The `Err`
-            // branch can't fire (a tuple field type is structure, never an opaque
-            // handle); guard it loudly rather than silently dropping the fields.
-            let fields_t = value_to_term(kb, fields).unwrap_or_else(|e| {
-                debug_assert!(false, "named_tuple fields not term-representable: {e:?}");
-                kb.alloc(Term::Bottom)
-            });
+            // `value_to_term` and wrap in the `NamedTuple` functor.
+            let fields_t = value_to_term(kb, fields).ok()?;
             let nt_sym = kb.resolve_symbol("anthill.prelude.TypeExtractor.NamedTuple");
             let fields_key = kb.intern("fields");
             let mut named_args: smallvec::SmallVec<[(Symbol, TermId); 2]> =
@@ -5554,15 +5553,9 @@ fn type_node_to_term(kb: &mut KnowledgeBase, tn: &TypeNode) -> TermId {
             context,
             body,
         } => {
-            let binders_t = value_to_term(kb, binders).unwrap_or_else(|e| {
-                debug_assert!(false, "poly_type binders not term-representable: {e:?}");
-                kb.alloc(Term::Bottom)
-            });
-            let context_t = value_to_term(kb, context).unwrap_or_else(|e| {
-                debug_assert!(false, "poly_type context not term-representable: {e:?}");
-                kb.alloc(Term::Bottom)
-            });
-            let body_t = type_child_to_term(kb, body);
+            let binders_t = value_to_term(kb, binders).ok()?;
+            let context_t = value_to_term(kb, context).ok()?;
+            let body_t = type_child_to_term(kb, body)?;
             let pt_sym = kb.resolve_symbol("anthill.prelude.TypeExtractor.PolyType");
             let binders_key = kb.intern("binders");
             let context_key = kb.intern("context");
@@ -5575,44 +5568,40 @@ fn type_node_to_term(kb: &mut KnowledgeBase, tn: &TypeNode) -> TermId {
             // above uses (WI-299), so the two spellings of one type hash-cons alike.
             kb.make_entity_term(pt_sym, smallvec::SmallVec::new(), named)
         }
-    }
+    })
 }
 
 /// WI-390: lower an `EffectExpression`-sort occurrence to its term twin, mirroring
-/// the `make_effect_expression_*` builders.
-fn effect_node_to_term(kb: &mut KnowledgeBase, en: &EffectExprNode) -> TermId {
-    match en {
+/// the `make_effect_expression_*` builders. `None` where a part has no term form, as
+/// [`type_node_to_term`].
+fn effect_node_to_term(kb: &mut KnowledgeBase, en: &EffectExprNode) -> Option<TermId> {
+    Some(match en {
         EffectExprNode::Merge { left, right } => {
-            let l = type_child_to_term(kb, left);
-            let r = type_child_to_term(kb, right);
+            let l = type_child_to_term(kb, left)?;
+            let r = type_child_to_term(kb, right)?;
             kb.make_effect_expression_merge(l, r)
         }
         EffectExprNode::Present { label } => {
-            let l = type_child_to_term(kb, label);
+            let l = type_child_to_term(kb, label)?;
             kb.make_effect_expression_present(l)
         }
         EffectExprNode::Guarded { label, guard } => {
-            let l = type_child_to_term(kb, label);
-            // `guard` is a `Value`-carried `List[reflect.Term]`; lower it via the
-            // total `value_to_term` boundary (as `NamedTuple`'s `fields`). Goal
-            // terms / occurrences are always term-representable, so the `Err`
-            // branch is a loud guard, never a silent drop.
-            let guard_t = value_to_term(kb, guard).unwrap_or_else(|e| {
-                debug_assert!(false, "guarded guard not term-representable: {e:?}");
-                kb.alloc(Term::Bottom)
-            });
+            let l = type_child_to_term(kb, label)?;
+            // `guard` is a `Value`-carried `List[reflect.Term]`; lowered through the
+            // `value_to_term` boundary, as `NamedTuple`'s `fields`.
+            let guard_t = value_to_term(kb, guard).ok()?;
             kb.make_effect_expression_guarded(l, guard_t)
         }
         EffectExprNode::Absent { label } => {
-            let l = type_child_to_term(kb, label);
+            let l = type_child_to_term(kb, label)?;
             kb.make_effect_expression_absent(l)
         }
         EffectExprNode::Open { tail } => {
-            let t = type_child_to_term(kb, tail);
+            let t = type_child_to_term(kb, tail)?;
             kb.make_effect_expression_open(t)
         }
         EffectExprNode::EmptyRow => kb.make_effect_expression_empty_row(),
-    }
+    })
 }
 
 /// WI-819 — lower a type `Value` into the `Expr`-kind occurrence a pattern's
@@ -5640,22 +5629,18 @@ fn effect_node_to_term(kb: &mut KnowledgeBase, en: &EffectExprNode) -> TermId {
 /// [`value_to_term`] is the total `Value → Term` boundary (WI-390 — a
 /// `denoted`-bearing type lowers losslessly through `occurrence_to_term`), and
 /// `expr_leaf_occ` is the inverse `term_to_param_occurrence` has always
-/// used to read a binder's annotation back. The `Err` arm cannot fire for a
-/// loader-built annotation (`type_expr_to_value` yields only `Term`/`Node`, both
-/// total here); it is a debug-assert + `Bottom` rather than a silent drop,
-/// mirroring the guard `load_pattern_var` has carried since WI-517.
+/// used to read a binder's annotation back.
+///
+/// An annotation is a type written at a `let` or a binder, or one the typer read a
+/// projection of it to; a value in a written type is a literal, a name or a field path,
+/// each of which has a term form. One that has none is a defect of the reader that built
+/// it, and panics here, naming it.
 pub fn value_to_pattern_annotation(
     kb: &mut KnowledgeBase,
     v: &Value,
     span: SourceSpan,
 ) -> Rc<NodeOccurrence> {
-    let tid = value_to_term(kb, v).unwrap_or_else(|e| {
-        debug_assert!(
-            false,
-            "WI-819: pattern annotation not term-representable: {e:?}"
-        );
-        kb.alloc(Term::Bottom)
-    });
+    let tid = value_to_term(kb, v).expect("a pattern annotation is a type, which has a term");
     expr_leaf_occ(kb, &Src::Term(tid), span)
 }
 
@@ -5936,6 +5921,14 @@ pub(crate) fn with_written_annotations(
 /// `if`, a `let`, a `match`) — the honest residue, never a panic or a lossy term. Unlike `alloc_from_value` (which
 /// rejects *every* `Node`), this is `Node`-aware: it is the one converter to use
 /// where a value-in-type may ride (e.g. a `requires`/`provides` spec).
+///
+/// A TYPE has a term form: a value written in a type is a literal, a name or a field path,
+/// and the typer builds its types of written ones. So a caller that lowers a type for a
+/// destination that holds a term — a column, a pattern's annotation, a walk over terms —
+/// `expect`s it ("… is a type, which has a term"); `Err` there is a defect of the reader that
+/// built the type. MEASURED, WI-20261030-0JWYF: no row of the suite and no probe of that
+/// ticket reached one; the one type a program writes with no term form, a `domain(?x, T)`
+/// goal's `T` (`lambda () -> 1`, an `if`), is refused where the clause typing reads it.
 pub fn value_to_term(
     kb: &mut KnowledgeBase,
     v: &Value,
