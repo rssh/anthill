@@ -3,9 +3,9 @@
 - id: WI-20261024-RMZQZ-a-labeled-rule-in-a-host
 - created: 2026-10-24T11:49:53Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-10-24T11:49:53Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-10-30T20:26:59Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -20,4 +20,10 @@ WHERE IT BELONGS: the block's CLAUSES resolve in the TARGET sort's scope (§10.2
 TO DO: measure scaland first (expected the same, from the code). Define a host block's rule labels at the carrier's scope once the target resolves, in both implementations.
 
 ACCEPTANCE (driven, not "it loads"): a labeled single-head and a labeled multi-head rule in a host block load; `using` / `rules_by_label` on the label reaches exactly the clauses stored under the carrier's predicates; two carriers' blocks writing one label do not collide; and `wi_ne0e4_multi_head_introduction_test` (whose header records this gap) gets its host-block multi-head row. Back-outs at each row's site.
+
+## Changes
+
+### 2026-10-30T20:26:51Z — feedback — claude
+
+Delivered in 04f3c495. Pass 1 skips host blocks, whose target is known only after imports, so neither a rule's label nor the predicate a body-less rule declares was defined there. Rustland's sub-pass 2c (HostBlockDefinePass) and scaland's deferred block now define both at the target sort; an import that pass 2 deferred and that names one is wired as it would be for the sort's own body (plain, selective, one scope below). Found on the way and fixed: beside a same-named label in the enclosing namespace, a host-block rule loaded clean under that label; in rustland a host-block declaration was no declaration to proposal 061 (two files' clauses refused as undeclared); a block whose target names nothing drew an error per labeled rule (rustland) or three copies of the target error (scaland), now one. Not done: scaland reads no alias through, so a host block at an alias loads at the alias (left by the user for now). Spec §5.3 one sentence. Rows: wi_rmzqz_host_block_rule_label_test (8), NE0E4's host-block row, scaland HostBlockRuleLabelTest (8); back-outs measured in each header. Full rustland workspace 11,241 passed, 0 failed; scaland testFull 840 passed.
 
