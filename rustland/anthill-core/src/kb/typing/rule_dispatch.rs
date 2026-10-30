@@ -123,10 +123,9 @@ pub(super) fn dispatch_calls_in_occ(
     let mark = errors.len();
     let walked = match (shape, occ.as_expr()) {
         // WI-1058 — an UNTYPED position is left entirely alone, subtree included: a
-        // discharge's binder tuple `tuple(?f₁, …, ?fₙ)`, and the interior of a type
-        // written in a rule body. Neither is a value, so neither is walked — the wrapper
-        // is never read as a call on a functor that names nothing, and a type's sort-name
-        // leaves are never read as unresolved values.
+        // discharge's binder tuple `tuple(?f₁, …, ?fₙ)`, and a binder form's pattern.
+        // Neither is a value, so neither is walked — the wrapper is never read as a call
+        // on a functor that names nothing.
         (_, _) if pos == BodyPos::Untyped => Rc::clone(occ),
         (Some(CallDispatch::Checked | CallDispatch::CompoundExpression | CallDispatch::Fragment), _)
         | (_, None) => Rc::clone(occ),
@@ -470,11 +469,10 @@ pub(super) enum BodyPos {
     ///
     ///   * the variables a quantifier / discharge scopes ([`SlotReading::Binders`]) —
     ///     `forall_impl`'s `tuple(?f₁, …, ?fₙ)`;
-    ///   * everything inside a TYPE written in a rule body
-    ///     ([`rule_body_type_term`]) — `PartialEq[T = ?t]`, `List[T = ?x]`, `(?a ->
-    ///     ?b)`. A type is a term (this repo's representation note), its leaves are
-    ///     type names rather than values, and it is checked where it is BUILT
-    ///     (`check_sort_type_args`, WI-710) rather than here.
+    ///   * a binder form's pattern ([`pattern_child_indices`]).
+    ///
+    /// The interior of an arrow written in a rule body is not among them: it is data, as a
+    /// tuple's components are ([`rule_body_type_term`]).
     Untyped,
 }
 
@@ -575,11 +573,7 @@ pub(super) fn child_body_positions(
     pos: BodyPos,
     n_children: usize,
 ) -> SmallVec<[BodyPos; 8]> {
-    // A TYPE's interior is a type: its "arguments" are type arguments and its leaves are
-    // sort names, neither of which has a value reading. Asked before the slot table so a
-    // sort that happens to share a connective's short name cannot open a goal position
-    // inside a type.
-    if pos == BodyPos::Untyped || rule_body_type_term(kb, expr) {
+    if pos == BodyPos::Untyped {
         return smallvec::smallvec![BodyPos::Untyped; n_children];
     }
     let mut out: SmallVec<[BodyPos; 8]> = smallvec::smallvec![BodyPos::Value; n_children];
@@ -860,15 +854,21 @@ fn pattern_child_indices(expr: &Expr) -> SmallVec<[usize; 4]> {
     out
 }
 
-/// WI-1058 — is this rule-body node an ARROW TYPE, whose interior is type-land?
+/// WI-1058 — is this rule-body node an ARROW TYPE written as a term?
 ///
 /// A rule body's argument slots hold TERMS, and in this language a type IS a term with
 /// logical variables in it — `?t <=> (?a -> ?b)`, `?t <=> (Int64 -> Int64 @ {})`. The
 /// arrow family ([`crate::parse::pratt::is_arrow_functor`], the ONE owner of "which
 /// spellings `->`/`@` mint") is minted by the pratt desugar and declared NOWHERE, so the
 /// data-slot name check ([`data_functor_error`]) would report every arrow type as a name
-/// that resolves to nothing. Its interior is types too — sort names, type variables,
-/// effect rows — so the whole subtree is [`BodyPos::Untyped`].
+/// that resolves to nothing. The node itself is therefore not dispatched.
+///
+/// WHAT IT HOLDS IS DATA, as a tuple's components are: a sort name there is the type value
+/// the rule-body walk records it as, and a call is a call in a value slot — typed, and
+/// refused, as any other (kernel-language §5.3). Its interior was [`BodyPos::Untyped`]
+/// while the evaluator ran the calls in it: `?t <=> Int64 -> plus1("a")` and `?t <=> Int64 ->
+/// stamp()` loaded, to fault and to be declined at run time, where their twins outside the
+/// arrow are refused at load.
 ///
 /// **NARROW ON PURPOSE, and the first cut was not.** It also answered `true` for any
 /// `has_kind(Sort)` functor, to keep a parameterized type application (`Holder[T =
@@ -1714,7 +1714,7 @@ pub(super) fn call_dispatch_shape(
                 })
             };
             match pos {
-                // Returned above, with the type-term test it shares a reason with.
+                // Returned above.
                 BodyPos::Untyped => None,
                 BodyPos::Value => spec_op()
                     .or_else(|| operation_application(kb, *functor).then_some(CallDispatch::Fragment))

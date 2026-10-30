@@ -113,7 +113,7 @@ namespace k4jgc
   rule q(?x) :- r(?x), num(n: ?x)
   rule q2(?x) :- num(n: ?x), r(?x)
 
-  -- review rows: deep data, a call with no value, a goal passed as data
+  -- review rows: deep data, a call with no value, an equality passed to a relation
   rule divBound(?r) :- ?r <=> Int64.div(1, 0)
   rule divTested(1) :- Int64.div(1, 0) = 3
   rule divNot(1) :- not(Int64.div(1, 0) = 3)
@@ -121,6 +121,8 @@ namespace k4jgc
   rule divRelation(?r) :- Int64.div(1, 0, ?r)
   rule takes(?g) :- anthill.reflect.nonvar(?g)
   rule goalAsData(1) :- takes(PartialEq.eq(?x, 1))
+  fact isTrue(true)
+  rule eqAsValue(1) :- ?x <=> 1, isTrue(PartialEq.eq(?x, 1))
 
   -- CONTROLS
   rule controlVar(?n) :- box(v: ?n) <=> box(v: C.tag(red()))
@@ -368,16 +370,18 @@ fn a_raising_call_propagates_where_it_is_read() {
     assert_eq!(rows(&mut kb, "divNot"), vec![("1".to_string(), false)]);
 }
 
-/// A GOAL-ONLY builtin (`eq`) passed as DATA to a relation is not a value computation: it
-/// stays the term, so `takes(PartialEq.eq(?x, 1))` holds. FAILS with such a builtin
-/// classified like a call that cannot run yet: it becomes a hole, `takes` holds of the
-/// hole, and the pending `unify(?t, eq(?x, 1))` never discharges — one conditional row. An
-/// EDGE row: it passes with the whole ticket backed out, where goal arguments were not
-/// evaluated.
+/// `PartialEq.eq` passed to a relation is the operation's call, and the relation is handed
+/// its value (user, 2026-10-30; 068 §1.3): `isTrue(PartialEq.eq(?x, 1))` with `?x` bound to
+/// `1` meets `fact isTrue(true)`. With `?x` unbound the call waits: `takes` holds of the
+/// hole, and the pending `unify(?t, eq(?x, 1))` never discharges — one conditional row. It
+/// was read as a goal written as data, which stayed the term: `takes(...)` held definitely
+/// and `eqAsValue` answered nothing, a refutation `not(...)` read as a falsehood. FAILS with
+/// that reading back (`run_builtin_for_value`'s `PartialEq.eq` arm), at both rows.
 #[test]
-fn a_goal_passed_as_data_stays_the_term() {
+fn an_equality_passed_to_a_relation_is_its_value() {
     let mut kb = kb();
-    assert!(holds(&mut kb, "goalAsData"), "{:?}", rows(&mut kb, "goalAsData"));
+    assert!(holds(&mut kb, "eqAsValue"), "{:?}", rows(&mut kb, "eqAsValue"));
+    assert_eq!(rows(&mut kb, "goalAsData"), vec![("1".to_string(), false)]);
 }
 
 // ── CONTROLS ──────────────────────────────────────────────────────────────────────────────

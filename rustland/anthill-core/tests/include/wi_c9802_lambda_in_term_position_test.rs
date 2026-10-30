@@ -214,12 +214,15 @@ fn a_declared_lambda_is_called() {
 /// binder, a declaration two imports reach — is not refused as a lambda without parentheses.
 /// Passes before; each failed on a draft of C9802, whose walk did not skip a field name or
 /// scope a binder and counted an ambiguous `lambda` as undeclared (measured 2026-10-23).
+///
+/// `fieldArrow`'s receiver is the holder itself: an arrow's components are data, so the dot
+/// is typed, and over `fact holder(3)` the goal `holder(?h)` bound `?h` to the field's `3`,
+/// a dot on an `Int64` that its tuple twin was refused for (WI-20261023-HH0HT).
 #[test]
 fn a_lambda_that_is_a_name_is_not_refused() {
     let mut kb = load_kb_with(&with(
         "sort Holder\n    entity holder(lambda: Int64)\n  end\n  \
-         fact holder(3)\n  \
-         rule fieldArrow(?t) :- holder(?h), ?t <=> ?h.lambda -> Int64\n  \
+         rule fieldArrow(?t) :- ?h <=> holder(3), ?t <=> ?h.lambda -> Int64\n  \
          rule binderNamed(?t) :- ?t <=> applyOne(lambda lambda -> 1) -> Int64",
     ));
     for relation in ["test.c9802.fieldArrow", "test.c9802.binderNamed"] {

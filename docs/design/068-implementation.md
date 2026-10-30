@@ -320,8 +320,9 @@ driven by `wi_cynpe_waiting_goals_test` (back-outs stated at its sites):
   undecided.
 - **Builtins in a value slot compute** through their result column (`add(a, b)` as
   `add(a, b, ?r)`): arithmetic in an operand or a goal argument answered nothing before, and the
-  WI-670 row needed it. A GOAL-ONLY builtin (`eq`, `not`, …) written as data is SYMBOLIC — a goal
-  passed to a relation stays the term.
+  WI-670 row needed it. A GOAL-ONLY builtin (`not`, `unify`, …) written as data is SYMBOLIC — a goal
+  passed to a relation stays the term. `PartialEq.eq` / `neq` and `struct_eq` are operations: in a value slot
+  each is the test's verdict, `true` or `false` (user, 2026-10-30).
 - **A dotted NAME is not a call** (`Box.zero`, `ns.inner.rel` — a receiver that names a scope):
   at the top of an operand it is read as before (`reduce_dot_value`: a nullary operation's call,
   else the name); in a data slot and a goal argument it stays the chain, so `fact holds(ns.rel)`

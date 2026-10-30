@@ -5509,6 +5509,21 @@ pub(super) fn check_apply_iter(
     }
     let _ = pos_args;
     let _ = named_args;
+    // An arrow written in a rule body's own term is a type written as a term
+    // ([`rule_body_type_term`]), a value of `Type` as a sort name there is; its components
+    // were typed as data. Under a compound expression the text is an operation body's, where
+    // an arrow names no value; and a name the program declares is not the arrow.
+    if env.in_rule_own_term()
+        && kb.symbol_declares_nothing(fn_sym)
+        && occ.as_expr().is_some_and(|e| rule_body_type_term(kb, e))
+    {
+        return Ok(TypeResult {
+            ty: Value::term(kb.make_sort_ref_by_name("anthill.prelude.Type")),
+            env: env.clone(),
+            effects,
+            node: Rc::clone(occ),
+        });
+    }
     // WI-1063: the declared return becomes this call's result here too, outside the Path-1
     // block, so the opening runs here as well — a callee with a recorded return but no full
     // `OperationInfo` is still a callee, and a rule that holds only on the path the typer

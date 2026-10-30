@@ -900,7 +900,8 @@ impl KnowledgeBase {
     }
 
     /// A value-returning builtin run through its RESULT COLUMN: `add(a, b)` as the goal
-    /// `add(a, b, ?r)`, answering `?r`'s binding.
+    /// `add(a, b, ?r)`, answering `?r`'s binding. The equalities have no result column: their
+    /// value is the test's verdict.
     fn run_builtin_for_value(
         &mut self,
         tag: BuiltinTag,
@@ -908,9 +909,28 @@ impl KnowledgeBase {
         subst: &Substitution,
         faults: &mut ReduceFaults,
     ) -> BuiltinValue {
-        // A GOAL-ONLY builtin (`eq`, `not`, `unify`, a reflect goal) has no result column:
-        // written in a value slot it is not a value computation — a goal passed as data
-        // (`prove(eq(?x, 1))`) stays the term, and a test over it waits, as WI-738 had it.
+        // `PartialEq.eq(a, b)`, `neq` and `struct_eq` (`===`) are operations, `-> Bool`, and
+        // each call denotes its value in a value slot as any other does (068 §1.3):
+        // `(Int64, PartialEq.eq(1, 1))` is `(Int64, true)`. They were read as goals written
+        // as data, and kept as the term `eq(1, 1)` in a definite answer. A test that waits
+        // leaves the call to `stuck_state`, which tells an unbound operand from a rigid one.
+        if matches!(tag, BuiltinTag::SemEq | BuiltinTag::SemNeq | BuiltinTag::Eq) {
+            return match self.execute_builtin(tag, call, subst, faults) {
+                BuiltinResult::Success => BuiltinValue::Value(Value::Bool(true)),
+                BuiltinResult::Failure => BuiltinValue::Value(Value::Bool(false)),
+                BuiltinResult::Unknown { .. } => BuiltinValue::Stuck(Stuck::Unreduced),
+                BuiltinResult::Error(err) => {
+                    faults.fault(err.message);
+                    BuiltinValue::Declined
+                }
+                BuiltinResult::Delay { .. }
+                | BuiltinResult::SuccessWithBindings(_)
+                | BuiltinResult::SuccessSplicing { .. } => BuiltinValue::Declined,
+            };
+        }
+        // A GOAL-ONLY builtin (`not`, `unify`, a reflect goal) has no result column: written
+        // in a value slot it is not a value computation — a goal passed as data stays the
+        // term, and a test over it waits, as WI-738 had it.
         let Some(arity) = builtin_value_arity(tag) else {
             return BuiltinValue::Stuck(Stuck::Symbolic);
         };

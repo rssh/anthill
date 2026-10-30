@@ -767,7 +767,8 @@ pub(super) fn collect_occurrence_type_constraints(
         return;
     }
     let goal = matches!(pos, BodyPos::Goal(_) | BodyPos::GoalTuple(_));
-    let nested = match clause_call_parts(expr) {
+    // An arrow's components are data, walked below; the arrow itself is no call.
+    let nested = match clause_call_parts(expr).filter(|_| !rule_body_type_term(kb, expr)) {
         Some((functor, pos_args, named_args)) => {
             if goal {
                 constrain_domain_test(kb, functor, pos_args, committed, st);
@@ -1468,14 +1469,14 @@ fn says_nothing_of_a_value(kb: &KnowledgeBase, ty: &Value) -> bool {
     is_reflect_term_type(kb, ty)
 }
 
-/// Whether `expr` is a type written as a term: an application of one of the structural
-/// type forms (`TypeExtractor`'s constructors, an arrow), or a sort's type face (`Box[…]`
-/// written as a value).
+/// Whether `expr` is a type written as a term whose interior is no data: an application of
+/// one of `TypeExtractor`'s structural forms, or a sort's type face (`Box[…]` written as a
+/// value). An arrow is not one: what it holds is data ([`rule_body_type_term`]).
 fn type_written_as_term(kb: &KnowledgeBase, expr: &Expr) -> bool {
     let (Expr::Apply { functor, .. } | Expr::Ref(functor)) = expr else {
         return false;
     };
-    rule_body_type_term(kb, expr) || is_type_form_functor(kb, *functor)
+    is_type_form_functor(kb, *functor)
 }
 
 /// Whether `functor` writes a type as a value: a sort's type face (`Item[]`), or one of
