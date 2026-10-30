@@ -3,9 +3,9 @@
 - id: WI-20261029-50361-a-rule-head-named-like-the
 - created: 2026-10-29T22:47:17Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-10-29T22:47:17Z
+- status_at: 2026-10-30T00:07:03Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
