@@ -3,9 +3,9 @@
 - id: WI-20261015-8Z5TK-a-function-value-that-reaches
 - created: 2026-10-15T20:50:53Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-10-15T20:50:53Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-10-30T15:20:45Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -27,4 +27,10 @@ MECHANISM (read, at the review): the head match renames the clause body through 
 THE CHANGE: carry such a value through the head match (opened on the occurrence carrier, as a body variable's binding already is); at the floor, refuse loudly — a fault on the stream and the search marked incomplete, never a contradiction.
 
 ACCEPTANCE (cargo-test via rustland/scripts/test.sh): the rows above answer as their one-body twins do (2; 1; 2 and 0), or, at the floor, each marks the search incomplete with a message; the plain disjunction and the one-body twins unchanged.
+
+## Changes
+
+### 2026-10-30T15:20:42Z — feedback — claude
+
+DELIVERED c541ef90, by WI-20261023-W2JP7's change (the same mechanism: `with_fresh_vars` lowered every head-match binding through `value_to_term` and a binding with no term form marked the match contradictory). Each program answers as its one-body twin: `mkPure(?f), applyIt(?f, ?r)` and `applyIt(lambda () -> pureOp(1), ?r)` 2, `mkPure(?f), anyF(?f, ?n)` 1, the lambda disjunction 2 and 0; the twins and the plain disjunction unchanged (rows z5tk_* in wi_w2jp7_closure_through_a_head_test, failing with the change backed out, the twins' row passing either way). No floor was needed: the value is carried, never refused. The ticket's operation reference passed from a rule body to a function parameter (`apply1(pureOp, 4, ?r)`) faults "unknown operation: apply1.f" before and after, in one clause too, so it is not the head's: it is WI-20261023-Y6QW2's second half.
 
