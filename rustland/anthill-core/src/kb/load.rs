@@ -6478,6 +6478,31 @@ pub fn scan_definitions_with_sources(
         let (file_idx, e) = e;
         errors.push(e.located_in(files[file_idx]));
     }
+    // Sub-pass 2c — pass 1's definitions for a host block's rules, at its target sort,
+    // and the imports sub-pass 2 deferred that name one. See [`HostBlockDefinePass`].
+    let mut host_block_names: HashSet<String> = HashSet::new();
+    for (file_idx, file) in files.iter().enumerate() {
+        kb.symbols.set_asking_file(Some(source_ids[file_idx]));
+        let mut file_errors = Vec::new();
+        let mut pass = HostBlockDefinePass {
+            kb,
+            parse_sym: &file.symbols,
+            parse_terms: &file.terms,
+            errors: &mut file_errors,
+            defined: &mut host_block_names,
+        };
+        walk_scopes(&mut pass, &file.items, global);
+        errors.extend(file_errors.into_iter().map(|e| e.located_in(file)));
+    }
+    wire_imports_of_host_block_names(
+        kb,
+        &mut pending,
+        &host_block_names,
+        files,
+        source_ids,
+        attribution,
+        &mut errors,
+    );
 
     // Sub-pass 3: register unlabeled rule head-functor Goals, binding to an
     // inherited/existing origin where one resolves (proposal 044 / B2).
@@ -7744,6 +7769,8 @@ fn register_callback_places(
 ///
 /// [`rule_reading`] is the single decider, shared with `Loader::load_rule`: pass 1 mints
 /// exactly the names the load then declines to assert.
+///
+/// Returns the local names it defined.
 fn scan_rule(
     kb: &mut KnowledgeBase,
     r: &Rule,
@@ -7751,12 +7778,14 @@ fn scan_rule(
     parse_terms: &SimpleTermStore,
     scope: ScopeId,
     prefix: &str,
-) {
+) -> SmallVec<[String; 2]> {
+    let mut defined = SmallVec::new();
     if let Some(ref label) = r.label {
         let name = join_segments(parse_sym, &label.segments);
         let qualified = make_qualified(prefix, &name);
         kb.symbols
             .define(&name, &qualified, SymbolKind::Rule, scope);
+        defined.push(name);
     }
     if rule_reading(r, parse_sym, parse_terms) == RuleReading::Declaration {
         // `expect` rather than a silent skip: `RuleReading::Declaration` is reached
@@ -7769,7 +7798,9 @@ fn scan_rule(
         let qualified = make_qualified(prefix, name);
         kb.symbols
             .define(name, &qualified, introduced_by.symbol_kind(), scope);
+        defined.push(name.to_owned());
     }
+    defined
 }
 
 /// Register a rule's INTRODUCED FUNCTOR as a scoped Goal symbol — UNLESS the
@@ -13223,25 +13254,10 @@ impl<'f> RuleHeadCollectPass<'_, 'f> {
     /// The TEXTUAL `written_in` stays the enclosing scope for 059 R3's entry-ownership
     /// question; name ownership and clause resolution use `spec_scope`.
     ///
-    /// THE SPEC'S SCOPE IS ASKED AS `load_provides_block` ASKS IT: the written name's
-    /// BASE (a parameterized spec lowers to an application, whose clauses still belong
-    /// to the base sort), resolved where the block is WRITTEN.
+    /// THE SPEC'S SCOPE IS ASKED AS `load_provides_block` ASKS IT ([`host_block_target`]).
     fn collect_provides_block(&mut self, pb: &ProvidesBlock, scope: ScopeId) {
-        let base = type_expr_base_name(self.parse_sym, &pb.spec);
-        let ResolveResult::Found(written) = resolve_name_in_kb(self.kb, &base, scope) else {
-            // The spec names nothing here, so `load_provides_block`'s own remap of the
-            // same name falls to the bare intern (WI-476) and the block's clauses land
-            // under a global symbol, never on a scoped predicate this census is about.
-            // The unresolved spec is the load's own diagnostic, not this pass's.
+        let Some(spec) = host_block_target(self.kb, self.parse_sym, pb, scope) else {
             return;
-        };
-        // WI-20260924-SNJPR — the block realizes the sort an alias stands for, as
-        // `load_provides_block` reads it; the scan knows the alias's head by now (sub-pass
-        // 2b). A name that is an alias AND owns members is refused by the load and read
-        // as written here.
-        let spec = match super::typing::owns_members(self.kb, written) {
-            true => written,
-            false => self.kb.alias_head(written).unwrap_or(written),
         };
         let spec_scope = self.kb.symbols.scope_id(spec);
         let spec_prefix = self.kb.qualified_name_of(spec).to_owned();
@@ -13379,6 +13395,98 @@ impl<'f> ScopePass for RuleHeadCollectPass<'_, 'f> {
     }
 }
 
+/// The sort a host `provides … language … end` block written at `scope` realizes, which
+/// is the scope its clauses, introduced names and rule labels belong to — asked as
+/// `load_provides_block` asks it: the written name's BASE (a parameterized spec lowers to
+/// an application, whose clauses still belong to the base sort), resolved where the block
+/// is WRITTEN. Answerable from sub-pass 2b on, which wires imports and alias heads.
+fn host_block_target(
+    kb: &KnowledgeBase,
+    parse_sym: &crate::intern::SymbolTable,
+    pb: &ProvidesBlock,
+    scope: ScopeId,
+) -> Option<Symbol> {
+    let base = type_expr_base_name(parse_sym, &pb.spec);
+    let ResolveResult::Found(written) = resolve_name_in_kb(kb, &base, scope) else {
+        // The spec names nothing here, so `load_provides_block`'s own remap of the
+        // same name falls to the bare intern (WI-476) and the block's clauses land
+        // under a global symbol, never on a scoped predicate. The unresolved spec is
+        // the load's own diagnostic, not the scan's.
+        return None;
+    };
+    // WI-20260924-SNJPR — the block realizes the sort an alias stands for, as
+    // `load_provides_block` reads it; the scan knows the alias's head by now (sub-pass
+    // 2b). A name that is an alias AND owns members is refused by the load and read
+    // as written here.
+    Some(match super::typing::owns_members(kb, written) {
+        true => written,
+        false => kb.alias_head(written).unwrap_or(written),
+    })
+}
+
+/// Sub-pass 2c — what pass 1 defines for a rule ([`scan_rule`]: its label, and the
+/// predicate a body-less one declares), for the rules of a host `provides … language …
+/// end` block, at the block's target sort: the scope its clauses load in, where
+/// `load_rule` looks the label up and a clause's head finds the declaration. Pass 1
+/// cannot: the target is known only once imports and alias heads are (sub-pass 2b).
+/// Before this pass neither was defined there: a labeled rule in a block failed to load
+/// ("unresolved name"), and a declaration in one did not count as one (061).
+struct HostBlockDefinePass<'a> {
+    kb: &'a mut KnowledgeBase,
+    parse_sym: &'a crate::intern::SymbolTable,
+    parse_terms: &'a SimpleTermStore,
+    errors: &'a mut Vec<LoadError>,
+    /// The local names the pass defined, across the scan's files: what an import
+    /// sub-pass 2 deferred may now find ([`wire_imports_of_host_block_names`]).
+    defined: &'a mut HashSet<String>,
+}
+
+impl ScopePass for HostBlockDefinePass<'_> {
+    fn parse_symbols(&self) -> &crate::intern::SymbolTable {
+        self.parse_sym
+    }
+
+    fn enter_scope(&mut self, site: &ScopeSite<'_>) -> Option<ScopeId> {
+        lookup_scope(self.kb, site, self.errors)
+    }
+
+    fn at_item(&mut self, item: &Item, scope: ScopeId, _prefix: &str) {
+        let Item::ProvidesBlock(pb) = item else {
+            return;
+        };
+        let Some(spec) = host_block_target(self.kb, self.parse_sym, pb, scope) else {
+            return;
+        };
+        let spec_scope = self.kb.symbols.scope_id(spec);
+        let spec_prefix = self.kb.qualified_name_of(spec).to_owned();
+        for inner in &pb.items {
+            let rules = match inner {
+                ProvidesItem::Rule(r) => std::slice::from_ref(r),
+                ProvidesItem::RuleBlock(rb) => rb.entries.as_slice(),
+                // Nothing else in a block is a rule.
+                ProvidesItem::Fact(_)
+                | ProvidesItem::ProvidesClause(_)
+                | ProvidesItem::Proof(_)
+                | ProvidesItem::Artifact(_)
+                | ProvidesItem::Carrier(_)
+                | ProvidesItem::NamespaceMap(_)
+                | ProvidesItem::OperationMap(_)
+                | ProvidesItem::ConstMap(_) => continue,
+            };
+            for r in rules {
+                self.defined.extend(scan_rule(
+                    self.kb,
+                    r,
+                    self.parse_sym,
+                    self.parse_terms,
+                    spec_scope,
+                    &spec_prefix,
+                ));
+            }
+        }
+    }
+}
+
 /// Get the base name of a TypeExpr (ignoring bindings).
 fn type_expr_base_name(parse_sym: &crate::intern::SymbolTable, ty: &TypeExpr) -> String {
     match ty {
@@ -13474,6 +13582,99 @@ fn parent_scope_of(kb: &KnowledgeBase, sym: Symbol, admits: &[SymbolKind]) -> Op
         .iter()
         .any(|&k| def.has_kind(k))
         .then(|| kb.symbols.scope_id(sym))
+}
+
+/// What `import path.{short}` binds, by sub-pass 2's rungs: `path.short`, `short` asked
+/// from below an import edge at the base's scope (`base_scope`), then the one match one
+/// scope below the base ([`nested_scope_matches`]). The flag says whether that last rung
+/// found any match, which a deferral of the name keeps.
+fn selective_import_target(
+    kb: &KnowledgeBase,
+    path: &str,
+    base_scope: Option<ScopeId>,
+    short: &str,
+) -> (Option<Symbol>, bool) {
+    let qualified = format!("{path}.{short}");
+    // No rung lands on an operation's place, as no plain import does.
+    let direct = kb
+        .symbols
+        .by_qualified_name
+        .get(&qualified)
+        .copied()
+        .filter(|&sym| !kb.symbols.is_operation_place(sym))
+        .or_else(|| {
+            base_scope.and_then(|bs| match kb.symbols.resolve_below_import(short, bs) {
+                crate::intern::ResolveResult::Found(sym) => Some(sym),
+                _ => None,
+            })
+            // The base's own scope sees its operation's places, which the importing
+            // scope does not.
+            .filter(|&sym| !kb.symbols.is_operation_place(sym))
+        });
+    // The nested-scope rung, scanned once: its one match binds, and whether it had any
+    // is what a deferral of this name keeps (WI-20261022-JBHQC).
+    match direct {
+        Some(sym) => (Some(sym), false),
+        None => {
+            let nested = nested_scope_matches(kb, path, short);
+            ((nested.len() == 1).then(|| nested[0]), !nested.is_empty())
+        }
+    }
+}
+
+/// Sub-pass 2c's names for the imports sub-pass 2 deferred. `defined` holds the local
+/// names [`HostBlockDefinePass`] defined; an import of one is wired now to what sub-pass
+/// 2 would have bound had the name been defined then, as a label or a declaration in a
+/// sort's own body is. Every other deferred import still waits for the head census.
+fn wire_imports_of_host_block_names(
+    kb: &mut KnowledgeBase,
+    pending: &mut Vec<PendingImport>,
+    defined: &HashSet<String>,
+    files: &[&ParsedFile],
+    source_ids: &[SourceId],
+    attribution: ImportAttribution,
+    errors: &mut Vec<LoadError>,
+) {
+    if defined.is_empty() {
+        return;
+    }
+    pending.retain(|p| {
+        if !defined.contains(&p.short) {
+            return true;
+        }
+        let target = match &p.form {
+            PendingForm::Plain => kb
+                .symbols
+                .by_qualified_name
+                .get(&p.qualified)
+                .copied()
+                .filter(|&sym| !kb.symbols.is_operation_place(sym)),
+            PendingForm::Selective { base, .. } => {
+                selective_import_target(kb, base, find_scope_by_name(kb, base), &p.short).0
+            }
+            // Bound to the prelude's name already; it moves only to a top-level name a
+            // head mints, and a host block's names are a sort's.
+            PendingForm::PreludeFallback => None,
+        };
+        let Some(sym) = target else {
+            return true;
+        };
+        kb.symbols.set_asking_file(Some(source_ids[p.file_idx]));
+        let mut refused = Vec::new();
+        if forbid_internal_import(kb, sym, &p.short, p.scope, p.span, &mut refused) {
+            kb.symbols
+                .drop_deferred_import(p.scope, &p.short, p.placeholder);
+            errors.extend(refused.into_iter().map(|e| e.located_in(files[p.file_idx])));
+        } else {
+            let origin = match attribution {
+                ImportAttribution::PerFile => ImportOrigin::File(source_ids[p.file_idx]),
+                ImportAttribution::Invocation => ImportOrigin::Invocation,
+            };
+            kb.symbols
+                .wire_deferred_import(p.scope, &p.short, p.placeholder, sym, origin);
+        }
+        false
+    });
 }
 
 /// Walk one level of nested scopes under `base_path` looking for a symbol
@@ -14773,36 +14974,8 @@ fn process_one_import(
                 for (short, name_span) in names {
                     let short = short.clone();
                     let qualified = format!("{}.{}", path, short);
-                    // No rung lands on an operation's place, as no plain import does.
-                    let direct = kb
-                        .symbols
-                        .by_qualified_name
-                        .get(&qualified)
-                        .copied()
-                        .filter(|&sym| !kb.symbols.is_operation_place(sym))
-                        .or_else(|| {
-                            base_scope.and_then(|bs| {
-                                match kb.symbols.resolve_below_import(&short, bs) {
-                                    crate::intern::ResolveResult::Found(sym) => Some(sym),
-                                    _ => None,
-                                }
-                            })
-                            // The base's own scope sees its operation's places, which
-                            // the importing scope does not.
-                            .filter(|&sym| !kb.symbols.is_operation_place(sym))
-                        });
-                    // The nested-scope rung, scanned once: its one match binds, and whether
-                    // it had any is what a deferral of this name keeps (WI-20261022-JBHQC).
-                    let (original_sym, existing_below) = match direct {
-                        Some(sym) => (Some(sym), false),
-                        None => {
-                            let nested = nested_scope_matches(kb, &path, &short);
-                            (
-                                (nested.len() == 1).then(|| nested[0]),
-                                !nested.is_empty(),
-                            )
-                        }
-                    };
+                    let (original_sym, existing_below) =
+                        selective_import_target(kb, &path, base_scope, &short);
                     if let Some(sym) = original_sym {
                         // WI-369: a selective import of an `internal` name into a
                         // scope that can't see it is a forbidden reference.
@@ -48464,7 +48637,15 @@ impl<'a> Loader<'a> {
         // refused.) An alias the reading refuses is reported there, and the block skipped.
         let spec_domain = match &pb.spec {
             TypeExpr::Simple(name) | TypeExpr::Parameterized { name, .. } => {
+                let reported = self.errors.len();
                 let written = self.remap_name(name);
+                // A target that names nothing is reported here, and the block has no sort
+                // for its clauses to load in: loaded under the name's bare intern, each
+                // labeled rule drew a second error about its label. The block is skipped,
+                // as the scan's census skips it ([`host_block_target`]) and as scaland does.
+                if self.errors.len() > reported {
+                    return;
+                }
                 match self.read_spec_alias(written, name.span) {
                     Err(_) => return,
                     Ok((sort, _)) => sort,

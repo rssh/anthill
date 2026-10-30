@@ -141,7 +141,7 @@ object Loader:
 
     // Blocks name a realized sort through imports; collect their work during pass 1
     // and run it after imports, without another scope walk (G2BXZ).
-    val deferredBlocks = ArrayBuffer.empty[() => Unit]
+    val deferredBlocks = ArrayBuffer.empty[() => Iterable[String]]
     // Pass 1: Define all names
     for (file, fid) <- files.zip(fileIds) do
       kb.symbols.setAskingFile(Some(fid))
@@ -161,7 +161,9 @@ object Loader:
       kb.symbols.setAskingFile(Some(fid))
       walkScopes(ImportPass(kb, file.symbols, errors, pending, ImportOrigin.File(fid)), file.items)
 
-    deferredBlocks.foreach(_())
+    // A deferred block returns the names it defined: an import pass 2 deferred may now
+    // find one ([[wireImportsOfHostBlockNames]]).
+    wireImportsOfHostBlockNames(kb, pending, deferredBlocks.flatMap(_()).toSet)
 
     // A type alias whose definition reaches its own name is refused where it is declared
     // ([[reportRecursiveAliases]]). After pass 2, because a definition names what its
@@ -695,7 +697,8 @@ object Loader:
   /** Define every declared name, accumulating all roles at the same address. */
   private final class DefinePass(
     val kb: KnowledgeBase, val fileSym: SymbolTable, fileTerms: SimpleTermStore,
-    errors: ArrayBuffer[LoadError], deferredBlocks: ArrayBuffer[() => Unit], fileId: FileId
+    errors: ArrayBuffer[LoadError], deferredBlocks: ArrayBuffer[() => Iterable[String]],
+    fileId: FileId
   ) extends ScopePass:
 
     def enterScope(
@@ -802,18 +805,22 @@ object Loader:
           val askingFile = Some(fileId)
           deferredBlocks += (() => {
             kb.symbols.setAskingFile(askingFile)
-            for target <- providesBlockScope(kb, fileSym, pb, scope, errors) do
+            val defined = ArrayBuffer.empty[String]
+            for target <- providesBlockScope(kb, fileSym, pb, scope, ArrayBuffer.empty) do
               val targetPrefix = kb.scopeDisplayName(target)
+              // A rule's label and the predicate a body-less one declares belong to the
+              // target sort, the scope the block's clauses load in.
+              def define(rule: Rule): Unit =
+                defined ++= defineRuleLabel(rule, target, targetPrefix)
+                defined ++= declarePredicate(kb, fileSym, fileTerms, rule, target, targetPrefix)
               for inner <- pb.items do inner match
-                case ProvidesItem.RuleI(rule) =>
-                  declarePredicate(kb, fileSym, fileTerms, rule, target, targetPrefix)
-                case ProvidesItem.RuleBlockI(block) =>
-                  for rule <- block.entries do
-                    declarePredicate(kb, fileSym, fileTerms, rule, target, targetPrefix)
+                case ProvidesItem.RuleI(rule) => define(rule)
+                case ProvidesItem.RuleBlockI(block) => block.entries.foreach(define)
                 case ProvidesItem.ProvidesClauseI(pc) =>
                   processProvidesConditions(kb, pc, fileSym, target, errors)
                   processProvidesHead(kb, pc, fileSym, target, errors)
                 case _ => ()
+            defined
           })
 
         // WI-840 (proposal 058 §4.7): a NAMED requirement slot — `requires O: Ord[T]`
@@ -866,21 +873,25 @@ object Loader:
         kb.registerEntityOf(entityTerm, kb.scopeTerm(scope))
       kb.registerEntityFields(sym, fields)
 
-    private def defineRuleLabel(rule: Rule, scope: kb.ScopeId, prefix: String): Unit =
-      rule.label.foreach { label =>
+    /** Define `rule`'s label at `scope`; the local name defined, if any. */
+    private def defineRuleLabel(rule: Rule, scope: kb.ScopeId, prefix: String): Option[String] =
+      rule.label.map { label =>
         val shortName = joinSegments(fileSym, label.segments)
         kb.symbols.define(shortName, makeQualified(prefix, shortName), SymbolKind.Rule, scope)
+        shortName
       }
 
-  /** Mint during pass 1; validate against the complete role set at load time. */
+  /** Mint during pass 1; validate against the complete role set at load time. The local
+    * name declared, if any. */
   private def declarePredicate(
     kb: KnowledgeBase, fileSym: SymbolTable, fileTerms: SimpleTermStore,
     rule: Rule, scope: kb.ScopeId, prefix: String
-  ): Unit =
+  ): Option[String] =
     ruleReading(rule, fileSym, fileTerms) match
       case RuleReading.Declaration(name) =>
         defineSymbolOnce(kb, name, makeQualified(prefix, name), SymbolKind.Goal, scope)
-      case RuleReading.Clause | RuleReading.DeclaresNothing(_) => ()
+        Some(name)
+      case RuleReading.Clause | RuleReading.DeclaresNothing(_) => None
 
   /** Define an ABSTRACT sort in `scope` and, when `isParam` and the scope is a
     * sort body, register it as one of that sort's TYPE PARAMETERS — the marker the
@@ -1309,7 +1320,7 @@ object Loader:
         case Item.FactItem(fact) => collectFact(fact, scope, prefix)
         // G2BXZ: every language's clauses belong to the realized sort, as at load.
         case Item.ProvidesBlockItem(pb) =>
-          for target <- providesBlockScope(kb, fileSym, pb, scope, errors) do
+          for target <- providesBlockScope(kb, fileSym, pb, scope, ArrayBuffer.empty) do
             val targetPrefix = kb.scopeDisplayName(target)
             for inner <- pb.items do inner match
               case ProvidesItem.RuleI(rule) => collect(rule, target, targetPrefix)
@@ -2647,6 +2658,26 @@ object Loader:
     * can only land one scope below its base waits for phase 2's answers ([[wireLate]]). One
     * whose name no head could mint names nothing, and is refused now, before any head
     * reads it. */
+  /** The names a host block's deferred work defined, for the imports pass 2 deferred
+    * (rustland's `wire_imports_of_host_block_names`). A block's labels and declarations are
+    * defined at its target sort, which is known only after imports, so an import of one
+    * waited; it is wired now to what pass 2 would have bound had the name been defined then,
+    * as a label or a declaration in a sort's own body is. Every other deferred import still
+    * waits for the head census. */
+  private def wireImportsOfHostBlockNames(
+    kb: KnowledgeBase, pending: ArrayBuffer[PendingImport[kb.ScopeId]], names: Set[String]
+  ): Unit =
+    if names.nonEmpty then
+      pending.filterInPlace { p =>
+        val target =
+          if !names.contains(p.short) then None
+          else p.form match
+            case PendingForm.Plain(path) => kb.symbols.byQualifiedName.get(path)
+            case PendingForm.Selective(sym, path, _) => resolveSelectiveImport(kb, sym, path, p.short)
+        target.foreach(kb.symbols.wireDeferredImport(p.scope, p.short, p.placeholder, _, p.origin))
+        target.isEmpty
+      }
+
   private def wireDeferredImports(
     kb: KnowledgeBase,
     heads: IndexedSeq[RuleHeadSite[kb.ScopeId]],
@@ -3335,7 +3366,9 @@ object Loader:
 
   /** G2BXZ: declaration, head collection and loading must use ONE scope decision.
     * The base sort owns clauses in every host language, including parameterized specs.
-    * Resolve before entering that scope, so the name uses the block's written context. */
+    * Resolve before entering that scope, so the name uses the block's written context.
+    * A target that names nothing is the load's diagnostic ([[loadProvidesBlock]]): the two
+    * scan-time callers discard `errors`, which reported it three times. */
   private def providesBlockScope(
     kb: KnowledgeBase, fileSym: SymbolTable, pb: anthill.parse.ProvidesBlock,
     writtenScope: kb.ScopeId, errors: ArrayBuffer[LoadError]

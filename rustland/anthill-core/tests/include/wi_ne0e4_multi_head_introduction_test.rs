@@ -36,6 +36,9 @@
 //! [`every_head_that_introduces_nothing_is_named`],
 //! [`a_refused_rules_other_heads_are_judged_too`]), both order rows, and
 //! `wi_rdgqc_head_introduction_census_test::a_multi_head_rules_heads_are_scoped_where_they_are_written`.
+//! The host-block row added with WI-20261024-RMZQZ,
+//! [`a_host_block_multi_head_rules_label_cites_the_scoped_clauses`], fails under it too:
+//! its heads mint nothing at `S` (measured 2026-10-30).
 //!
 //! **BACK-OUT 2 — ONE HEAD PER RULE AT THE R3 JOIN.** `judge_secondary_entry_rules`
 //! groups only the LAST site of a rule (2b, what a one-site-per-span map keeps) or only
@@ -99,11 +102,10 @@
 //! A `⊥` AMONG SEVERAL HEADS has no row: the grammar writes `⊥` only as a rule's sole
 //! head, so no source reaches `SeveralHeadsRefusal::DenialAmongHeads`.
 //!
-//! A MULTI-HEAD RULE IN A HOST `provides … language … end` BLOCK has no row: a labeled
-//! rule there does not load at all today ("unresolved name 'law'" — pass 1 never walks a
-//! host block, so its rule labels are never defined), and a multi-head rule must be
-//! labeled. Measured with one head and with two; it is WI-20261024-RMZQZ's, which owes
-//! this file that row.
+//! A MULTI-HEAD RULE IN A HOST `provides … language … end` BLOCK is
+//! [`a_host_block_multi_head_rules_label_cites_the_scoped_clauses`]: its heads introduce
+//! at the block's target sort (WI-20260821-TTHRK), and its label is defined there
+//! (WI-20261024-RMZQZ, whose suite says which back-outs fail it).
 //!
 //! STDLIB LOADS: every row loads through the `tests/common` recipe.
 
@@ -224,6 +226,37 @@ fn the_label_cites_the_scoped_clauses() {
         .try_resolve_symbol("zzNE.lb.S.law")
         .expect("the label is a scoped symbol");
     assert!(kb.rules_by_functor(label).is_empty(), "and the label itself holds no clause");
+}
+
+#[test]
+fn a_host_block_multi_head_rules_label_cites_the_scoped_clauses() {
+    // The same rule written in a host block for `S`: its heads introduce at `S`, where
+    // the block's clauses load, and so is its label defined.
+    let src = "namespace zzNE.hb\n  import anthill.prelude.{Int64}\n  sort S\n    \
+               entity se(v: Int64)\n    rule see(?x) :- aa(?x)\n  end\n  \
+               provides S language rust\n    artifact \"x.rs\"\n    \
+               rule law: aa(1), bb(2) :- true\n  end\nend\n";
+    let mut kb = crate::common::load_kb_with(src);
+    assert_eq!(answers(&mut kb, "zzNE.hb.S.see"), 1, "the clause is the sort's");
+    let mut cited: Vec<usize> = kb
+        .rule_ids_by_qn("zzNE.hb.S.law")
+        .into_iter()
+        .map(|r| r.index())
+        .collect();
+    cited.sort();
+    let mut scoped: Vec<usize> = ["zzNE.hb.S.aa", "zzNE.hb.S.bb"]
+        .iter()
+        .flat_map(|qn| {
+            let sym = kb
+                .try_resolve_symbol(qn)
+                .unwrap_or_else(|| panic!("`{qn}` names the head's own predicate"));
+            kb.rules_by_functor(sym)
+        })
+        .map(|r| r.index())
+        .collect();
+    scoped.sort();
+    assert_eq!(cited.len(), 2, "the label cites both heads' clauses");
+    assert_eq!(cited, scoped, "and they are the clauses of the target sort's predicates");
 }
 
 #[test]
