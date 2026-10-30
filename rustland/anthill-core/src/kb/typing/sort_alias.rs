@@ -1024,6 +1024,134 @@ pub(crate) fn alias_type_application(
     Some((base, fixed))
 }
 
+/// The PARAMETERS of a type alias at one use: each variable its definition writes by a name
+/// — `?A` and `?B` of `sort PureFunction = Function[?A, ?B, {}]` — as it stands in `fixed`,
+/// the bindings the alias fixes there, in the order it first stands there (the sort's slots
+/// in the order the sort declares them). An application of
+/// the alias binds them ([`alias_parameter_of`]). A sort's own parameter is none, and
+/// neither is `?` nor `?_`, which no bracket can name.
+pub(crate) fn alias_parameters(kb: &KnowledgeBase, fixed: &[(Symbol, TermId)]) -> SmallVec<[VarId; 2]> {
+    let mut params: SmallVec<[VarId; 2]> = SmallVec::new();
+    for (_, value) in fixed {
+        push_alias_parameters(kb, kb.collect_vars(&TermIdView(*value)), &mut params);
+    }
+    params
+}
+
+/// [`alias_parameters`] of an alias that stands for a tuple, an arrow or a row, as `ty`, the
+/// type it stands for at one use.
+pub(crate) fn structural_alias_parameters(kb: &KnowledgeBase, ty: &Value) -> SmallVec<[VarId; 2]> {
+    let mut params: SmallVec<[VarId; 2]> = SmallVec::new();
+    push_alias_parameters(kb, kb.collect_vars(ty), &mut params);
+    params
+}
+
+fn push_alias_parameters(kb: &KnowledgeBase, vars: Vec<VarId>, params: &mut SmallVec<[VarId; 2]>) {
+    for v in vars {
+        if !kb.is_canonical_type_param_var(v) && kb.local_name_of(v.name()) != "_" && !params.contains(&v) {
+            params.push(v);
+        }
+    }
+}
+
+/// The alias parameter each argument of an application of an alias binds: a named argument
+/// the parameter of its name, and each positional the next parameter no name takes; `None`
+/// for an argument left to the sort the alias stands for — a name no parameter has, a
+/// positional past the last parameter. `keys` are the written arguments' names, `None` for a
+/// positional. A name two parameters have is `Err` with that name.
+pub(crate) fn alias_parameter_of(
+    kb: &KnowledgeBase,
+    params: &[VarId],
+    keys: &[Option<Symbol>],
+) -> Result<SmallVec<[Option<VarId>; 4]>, Symbol> {
+    let named = |key: Symbol| -> Result<Option<VarId>, Symbol> {
+        let short = kb.local_name_of(key);
+        let mut found = params.iter().filter(|v| kb.local_name_of(v.name()) == short);
+        match (found.next(), found.next()) {
+            (Some(_), Some(_)) => Err(key),
+            (one, None) => Ok(one.copied()),
+            (None, Some(_)) => unreachable!("a second match after none"),
+        }
+    };
+    let mut bound: SmallVec<[Option<VarId>; 4]> = SmallVec::new();
+    for key in keys {
+        bound.push(match key {
+            Some(key) => named(*key)?,
+            None => None,
+        });
+    }
+    let free: SmallVec<[VarId; 2]> = params
+        .iter()
+        .copied()
+        .filter(|v| !bound.contains(&Some(*v)))
+        .collect();
+    let mut free = free.into_iter();
+    for (key, slot) in keys.iter().zip(bound.iter_mut()) {
+        if key.is_none() {
+            *slot = free.next();
+        }
+    }
+    Ok(bound)
+}
+
+/// The first argument of an application of an alias whose name is a parameter the argument
+/// gives (`bound`, [`alias_parameter_of`]) and also a slot of `base`, the sort the alias
+/// stands for, that `fixed` leaves open: the argument would bind two things.
+pub(crate) fn ambiguous_alias_argument(
+    kb: &KnowledgeBase,
+    base: Symbol,
+    fixed: &[(Symbol, TermId)],
+    keys: &[Option<Symbol>],
+    bound: &[Option<VarId>],
+) -> Option<Symbol> {
+    let open = |short: &str| {
+        kb.type_params_of_sort(base).iter().any(|d| d == short)
+            && !fixed.iter().any(|(p, _)| kb.local_name_of(*p) == short)
+    };
+    keys.iter()
+        .zip(bound)
+        .find(|(key, param)| param.is_some() && key.is_some_and(|k| open(kb.local_name_of(k))))
+        .and_then(|(key, _)| *key)
+}
+
+/// The refusal of an argument whose name two parameters of `alias` have.
+pub(crate) fn two_parameters_named_message(kb: &KnowledgeBase, alias: Symbol, key: Symbol) -> String {
+    format!(
+        "`{}` names two variables of the definition of `{}`, so the argument binds no one \
+         parameter; rename one of them",
+        kb.local_name_of(key),
+        kb.qualified_name_of(alias),
+    )
+}
+
+/// The written arguments' names, in the order [`alias_parameter_of`] reads them: `pos_count`
+/// positionals, then `named`.
+pub(crate) fn argument_keys(pos_count: usize, named: impl Iterator<Item = Symbol>) -> SmallVec<[Option<Symbol>; 4]> {
+    std::iter::repeat_n(None, pos_count).chain(named.map(Some)).collect()
+}
+
+/// `fixed`, the bindings an alias fixes at one use, with each of its parameters given the
+/// argument `given` holds for it: `Function[A = ?A, B = ?B, E = {}]` with `?A` and `?B`
+/// given `Int64` is `Function[A = Int64, B = Int64, E = {}]`.
+pub(crate) fn give_alias_parameters(
+    kb: &mut KnowledgeBase,
+    fixed: &[(Symbol, TermId)],
+    given: &[(VarId, Value)],
+) -> SmallVec<[(Symbol, Value); 2]> {
+    let mut subst = crate::kb::subst::Substitution::new();
+    for (var, value) in given {
+        subst.bind_value(kb, *var, value.clone());
+    }
+    fixed
+        .iter()
+        .map(|&(key, value)| {
+            let (value, _) =
+                crate::kb::node_occurrence::subst_value_type(kb, &Value::term(value), &subst);
+            (key, value)
+        })
+        .collect()
+}
+
 /// The receiver a member reached through the alias `alias` is called at: the sort the
 /// alias stands for at the parameters it fixes, which is the receiver the same call has
 /// with the type written out — `CA.wrap(…)` over `sort CA = Box[V = Int64]` is
@@ -1078,14 +1206,24 @@ pub(crate) enum ValueAlias {
 /// nobody's. A tuple, an arrow or a row naming a parameter is read as written inside the
 /// sort too: nothing gives such a type its parameter's value at run time.
 ///
-/// `bare` where the alias is written without a bracket of its own, the one reading that
-/// takes the defaults its definition leaves out (`ValueAlias::Sort`'s `defaults`).
-pub(crate) fn value_alias(
+/// Written without a bracket of its own, the alias takes the defaults its definition leaves
+/// out (`ValueAlias::Sort`'s `defaults`); an application is read by [`value_alias_giving`].
+pub(crate) fn value_alias(kb: &mut KnowledgeBase, sym: Symbol, within_declaring_scope: bool) -> Option<ValueAlias> {
+    value_alias_giving(kb, sym, within_declaring_scope, true, &[]).map(|(alias, _)| alias)
+}
+
+/// [`value_alias`], `bare` or applied. An application may give some of the alias's own
+/// parameters ([`alias_parameters`] of its definition): each variable of `given` stands at
+/// this use for a variable of its own, returned beside the reading, which the caller replaces
+/// with the argument given. Such a variable is no slot left out, and is written where the
+/// definition writes it.
+pub(crate) fn value_alias_giving(
     kb: &mut KnowledgeBase,
     sym: Symbol,
     within_declaring_scope: bool,
     bare: bool,
-) -> Option<ValueAlias> {
+    given: &[VarId],
+) -> Option<(ValueAlias, SmallVec<[(VarId, VarId); 2]>)> {
     let (base, bindings) = match alias_expansion(kb, sym)? {
         AliasExpansion::Sort { base, bindings } => (base, bindings),
         AliasExpansion::NotASort(_) => {
@@ -1096,7 +1234,7 @@ pub(crate) fn value_alias(
                 .collect_vars(&TermIdView(ty))
                 .into_iter()
                 .any(|v| kb.is_canonical_type_param_var(v));
-            return (!names_a_parameter).then_some(ValueAlias::Structural(ty));
+            return (!names_a_parameter).then_some((ValueAlias::Structural(ty), SmallVec::new()));
         }
         AliasExpansion::Cycle(_) | AliasExpansion::AlsoDeclared(_) => return None,
     };
@@ -1107,16 +1245,27 @@ pub(crate) fn value_alias(
     }
     // Each variable the definition writes is one of this use alone, as a written `?` is.
     let mut fresh = crate::kb::subst::Substitution::new();
+    let mut at_this_use: SmallVec<[(VarId, VarId); 2]> = SmallVec::new();
     for (_, value) in &bindings {
         for v in kb.collect_vars(&TermIdView(*value)) {
             if !kb.is_canonical_type_param_var(v) && fresh.resolve_as_value(v).is_none() {
-                let anon = kb.intern("_");
-                let new = kb.fresh_var(anon);
+                let new = match given.contains(&v) {
+                    true => {
+                        let new = kb.fresh_var(v.name());
+                        at_this_use.push((v, new));
+                        new
+                    }
+                    false => {
+                        let anon = kb.intern("_");
+                        kb.fresh_var(anon)
+                    }
+                };
                 let new = kb.alloc(Term::Var(Var::Global(new)));
                 fresh.bind_term(kb, v, new);
             }
         }
     }
+    let is_given = |v: &VarId| at_this_use.iter().any(|(_, new)| new == v);
     let bindings: SmallVec<[(Symbol, TermId); 2]> = bindings
         .into_iter()
         .map(|(key, value)| {
@@ -1128,7 +1277,8 @@ pub(crate) fn value_alias(
     // What the definition writes, its identical substitutions left out, and what a bare
     // reading adds: the defaults of the slots it leaves out, filled as a bracket's are.
     let mut kept: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
-    let named_once = occurrences_once(kb, bindings.iter().map(|(_, v)| *v));
+    let mut named_once = occurrences_once(kb, bindings.iter().map(|(_, v)| *v));
+    named_once.retain(|v| !is_given(v));
     for (key, value) in bindings {
         if !identical_substitution(kb, base, key, value, &named_once) {
             kept.push((key, value));
@@ -1144,7 +1294,8 @@ pub(crate) fn value_alias(
             fills.push((fill.key, ty));
         }
     }
-    let named_once = occurrences_once(kb, kept.iter().chain(fills.iter()).map(|(_, v)| *v));
+    let mut named_once = occurrences_once(kb, kept.iter().chain(fills.iter()).map(|(_, v)| *v));
+    named_once.retain(|v| !is_given(v));
     let fixed = kept
         .into_iter()
         .map(|(key, value)| (key, written_type_value(kb, value, &named_once)))
@@ -1153,11 +1304,14 @@ pub(crate) fn value_alias(
         .into_iter()
         .map(|(key, value)| (key, written_type_value(kb, value, &named_once)))
         .collect();
-    Some(ValueAlias::Sort {
-        base,
-        fixed,
-        defaults,
-    })
+    Some((
+        ValueAlias::Sort {
+            base,
+            fixed,
+            defaults,
+        },
+        at_this_use,
+    ))
 }
 
 /// Does the type `ty`, as a declaration lowered it, hold a sort's type-parameter variable —

@@ -2233,8 +2233,80 @@ private class AnthillParserImpl(
               default = parameterDefault(n, "sort", defn, default)))
         case Right((imports, items, meta)) =>
           Item.SortWithBodyItem(SortWithBody(vis, n, IndexedSeq.empty, imports,
-            flattenProvisionMembers(items), meta, span, SortDeclKind.Sort))
+            declareAliasBindingVariables(flattenProvisionMembers(items)), meta, span, SortDeclKind.Sort))
     }
+
+  /** A named variable written in the definition of a type alias member — `?A` in `sort P =
+    * Pair[?A, ?B]` — is a parameter of the sort the alias is a member of: the variable becomes
+    * the parameter's name, and the parameter is declared (`sort A = ?`, placed before the
+    * alias) where the sort declares none by that name. rustland's
+    * `declare_alias_binding_variables`, which says the rest: a variable a parameter is declared
+    * with (`sort T = ?X`) is that parameter, `?_` stays the variable it is, and a name the sort
+    * declares as something other than a parameter is refused. */
+  private def declareAliasBindingVariables(items: IndexedSeq[Item]): IndexedSeq[Item] =
+    def varName(te: TypeExpr): Option[TermSymbol] = te match
+      case TypeExpr.Variable(tid, _) => terms.get(tid) match
+        case Term.Var(v) => Some(v.varId.name)
+        case _           => None
+      case _ => None
+    val params = ArrayBuffer.empty[TermSymbol]
+    val declaredWith = scala.collection.mutable.LinkedHashMap.empty[TermSymbol, TermSymbol]
+    val others = scala.collection.mutable.LinkedHashMap.empty[TermSymbol, String]
+    items.foreach {
+      case Item.AbstractSortItem(a) => a.definition match
+        case TypeExpr.Variable(_, _) =>
+          params += a.name.last
+          varName(a.definition).filter(v => symbols.name(v) != "?")
+            .foreach(v => if !declaredWith.contains(v) then declaredWith(v) = a.name.last)
+        case _ => others.getOrElseUpdate(a.name.last, "a type alias")
+      case Item.SortWithBodyItem(s) if s.isTypeParam => params += s.name.last
+      case Item.SortWithBodyItem(s) => others.getOrElseUpdate(s.name.last, "a sort")
+      case Item.EntityItem(e)       => others.getOrElseUpdate(e.name.last, "an entity")
+      case Item.OperationItem(o)    => others.getOrElseUpdate(o.name.last, "an operation")
+      case Item.ConstItem(c)        => others.getOrElseUpdate(c.name.last, "a const")
+      case _                        => ()
+    }
+    val out = ArrayBuffer.empty[Item]
+    items.foreach {
+      case Item.AbstractSortItem(alias) if !alias.definition.isInstanceOf[TypeExpr.Variable] =>
+        val written = ArrayBuffer.empty[(TermSymbol, Span)]
+        def rewrite(te: TypeExpr): TypeExpr = te match
+          case TypeExpr.Variable(tid, _) =>
+            varName(te).filter(v => symbols.name(v) != "?" && symbols.name(v) != "_") match
+              case None => te
+              case Some(v) =>
+                val param = declaredWith.getOrElse(v, v)
+                val span = terms.spanOf(tid)
+                others.get(param) match
+                  case Some(kind) =>
+                    val p = symbols.name(param)
+                    errors += ParseError(
+                      s"`?$p` in the definition of `${symbols.name(alias.name.last)}` writes " +
+                      s"the sort's parameter `$p`, but the sort declares `$p` as $kind; " +
+                      "rename the variable", span)
+                    te
+                  case None =>
+                    if !params.contains(param) && !written.exists(_._1 == param) then
+                      written += ((param, span))
+                    TypeExpr.Simple(Name.simple(param, span))
+          case TypeExpr.Parameterized(n, bindings) =>
+            TypeExpr.Parameterized(n, bindings.map(b => b.copy(bound = rewrite(b.bound))))
+          case TypeExpr.TupleType(fields) => TypeExpr.TupleType(fields.map((k, t) => (k, rewrite(t))))
+          case TypeExpr.Arrow(ps, r, es) => TypeExpr.Arrow(ps.map(rewrite), rewrite(r), es.map(rewrite))
+          case TypeExpr.EffectRow(es) => TypeExpr.EffectRow(es.map(rewrite))
+          case TypeExpr.EffectGuarded(label, guard) => TypeExpr.EffectGuarded(rewrite(label), guard)
+          case other => other
+        val definition = rewrite(alias.definition)
+        written.foreach { case (param, span) =>
+          params += param
+          out += Item.AbstractSortItem(
+            AbstractSort(None, Name.simple(param, span), freshAnonTypeVar(span), IndexedSeq.empty,
+              None, span, isEffectRow = false, default = None))
+        }
+        out += Item.AbstractSortItem(alias.copy(definition = definition))
+      case other => out += other
+    }
+    out.toIndexedSeq
 
   /** WI-454: the binder NAME, in either spelling — `?X` reuses the logical-var marker,
     * `[X]` brackets a plain identifier. The two are alternatives of ONE production
@@ -2325,7 +2397,7 @@ private class AnthillParserImpl(
     P(located(visibility.? ~ keyword("enum") ~/ name ~ body ~ metaBlock.?)).map {
       case ((vis, n, (imports, items), meta), span) =>
         Item.SortWithBodyItem(SortWithBody(vis, n, IndexedSeq.empty, imports,
-          flattenProvisionMembers(items), meta, span, SortDeclKind.Enum))
+          declareAliasBindingVariables(flattenProvisionMembers(items)), meta, span, SortDeclKind.Enum))
     }
 
   private def abstractSortRest[$: P]

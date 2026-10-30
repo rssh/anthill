@@ -4267,6 +4267,7 @@ impl<'a> Converter<'a> {
                 }
             }
         }
+        self.declare_alias_binding_variables(&mut items);
 
         Some(SortWithBody {
             kind,
@@ -4280,6 +4281,157 @@ impl<'a> Converter<'a> {
             meta,
             span,
         })
+    }
+
+    /// A named variable written in the definition of a type alias member — `?A` in `sort P
+    /// = Pair[?A, ?B]` — is a parameter of the sort the alias is a member of: the variable
+    /// becomes the parameter's name, and the parameter is declared (`sort A = ?`, placed
+    /// before the alias) where the sort declares none by that name. So the sort above is
+    /// `sort A = ?`, `sort B = ?`, `sort P = Pair[A, B]`, and every member writing `?A`
+    /// writes the one parameter.
+    ///
+    /// A variable a parameter is declared with (`sort T = ?X`) is that parameter, as two
+    /// members `sort T = ?X` and `sort U = ?X` are one: `?X` in a member's definition writes
+    /// `T`. `?_` names nothing a bracket can bind, and stays the variable it is. A name the
+    /// sort declares as something other than a parameter is refused: the variable would
+    /// name two declarations.
+    fn declare_alias_binding_variables(&mut self, items: &mut Vec<Item>) {
+        let mut params: Vec<Symbol> = Vec::new();
+        let mut declared_with: HashMap<Symbol, Symbol> = HashMap::new();
+        let mut others: HashMap<Symbol, &'static str> = HashMap::new();
+        for item in items.iter() {
+            match item {
+                Item::AbstractSort(a) => match &a.definition {
+                    TypeExpr::Variable { term_id, fresh, .. } => {
+                        params.push(a.name.last());
+                        if let (false, Term::Var(Var::Global(v))) = (*fresh, self.terms.get(*term_id)) {
+                            declared_with.entry(v.name()).or_insert(a.name.last());
+                        }
+                    }
+                    _ => {
+                        others.insert(a.name.last(), "a type alias");
+                    }
+                },
+                Item::SortWithBody(s) if s.is_type_param => params.push(s.name.last()),
+                Item::SortWithBody(s) => {
+                    others.insert(s.name.last(), "a sort");
+                }
+                Item::Entity(e) => {
+                    others.insert(e.name.last(), "an entity");
+                }
+                Item::Operation(o) => {
+                    others.insert(o.name.last(), "an operation");
+                }
+                Item::Const(c) => {
+                    others.insert(c.name.last(), "a const");
+                }
+                _ => {}
+            }
+        }
+        let anonymous = self.intern("_");
+        let mut at = 0;
+        while at < items.len() {
+            let Item::AbstractSort(alias) = &mut items[at] else {
+                at += 1;
+                continue;
+            };
+            if matches!(alias.definition, TypeExpr::Variable { .. }) {
+                at += 1;
+                continue;
+            }
+            let alias_name = alias.name.last();
+            let mut definition = std::mem::replace(&mut alias.definition, TypeExpr::EffectRow(Vec::new()));
+            let mut written: Vec<(Symbol, Span)> = Vec::new();
+            let mut refused: Vec<(Symbol, &'static str, Span)> = Vec::new();
+            self.rewrite_type_variables(&mut definition, &mut |var, span| {
+                if var == anonymous {
+                    return None;
+                }
+                let param = declared_with.get(&var).copied().unwrap_or(var);
+                if let Some(kind) = others.get(&param) {
+                    refused.push((param, kind, span));
+                    return None;
+                }
+                if !params.contains(&param) && !written.iter().any(|(p, _)| *p == param) {
+                    written.push((param, span));
+                }
+                Some(param)
+            });
+            let Item::AbstractSort(alias) = &mut items[at] else {
+                unreachable!("the item was an alias above")
+            };
+            alias.definition = definition;
+            for (param, kind, span) in refused {
+                let msg = format!(
+                    "`?{}` in the definition of `{}` writes the sort's parameter `{}`, but the \
+                     sort declares `{}` as {kind}; rename the variable",
+                    self.symbols.local_name(param),
+                    self.symbols.local_name(alias_name),
+                    self.symbols.local_name(param),
+                    self.symbols.local_name(param),
+                );
+                self.err_at_span(msg, span);
+            }
+            for (param, span) in written {
+                params.push(param);
+                let declaration = self.make_type_param_item(Name::simple(param, span), None, None, None, None, span);
+                items.insert(at, declaration);
+                at += 1;
+            }
+            at += 1;
+        }
+    }
+
+    /// Each named variable written in `ty` — at any depth of an application, a tuple, an
+    /// arrow or an effect row, not inside a value written in a type — replaced by the name
+    /// `rename` gives for its name, or left where it gives none.
+    fn rewrite_type_variables(
+        &mut self,
+        ty: &mut TypeExpr,
+        rename: &mut impl FnMut(Symbol, Span) -> Option<Symbol>,
+    ) {
+        match ty {
+            TypeExpr::Variable { term_id, fresh: false, .. } => {
+                let Term::Var(Var::Global(v)) = self.terms.get(*term_id) else {
+                    return;
+                };
+                let (var, span) = (v.name(), self.terms.span(*term_id));
+                if let Some(param) = rename(var, span) {
+                    *ty = TypeExpr::Simple(Name::simple(param, span));
+                }
+            }
+            TypeExpr::Parameterized { bindings, .. } => {
+                for b in bindings {
+                    self.rewrite_type_variables(&mut b.bound, rename);
+                }
+            }
+            TypeExpr::Tuple(fields) => {
+                for (_, t) in fields {
+                    self.rewrite_type_variables(t, rename);
+                }
+            }
+            TypeExpr::Arrow {
+                params,
+                return_type,
+                effects,
+            } => {
+                for (_, t) in params {
+                    self.rewrite_type_variables(t, rename);
+                }
+                self.rewrite_type_variables(return_type, rename);
+                for e in effects {
+                    self.rewrite_type_variables(e, rename);
+                }
+            }
+            TypeExpr::EffectAbsent(inner) => self.rewrite_type_variables(inner, rename),
+            TypeExpr::EffectRow(elements) => {
+                for e in elements {
+                    self.rewrite_type_variables(e, rename);
+                }
+            }
+            TypeExpr::EffectGuarded { label, .. } => self.rewrite_type_variables(label, rename),
+            TypeExpr::Simple(_) | TypeExpr::Variable { .. } | TypeExpr::Denoted(_) => {}
+        }
     }
 
     /// WI-451 (§5.4 non-rigid type-variable marker): desugar an enclosing sort

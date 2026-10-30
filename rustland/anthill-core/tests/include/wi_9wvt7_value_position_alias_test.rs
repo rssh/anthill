@@ -149,7 +149,7 @@ fn binding_again_what_the_alias_fixes_is_refused_once() {
     ));
     assert_refused_naming(
         &errs,
-        &["it already binds `A` to `Int64`, which the application binds again"],
+        &["already binds `A` to `Int64`, which the application binds again"],
         "a fixed parameter bound again",
     );
     assert_eq!(errs.len(), 1, "one report: {errs:#?}");

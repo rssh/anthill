@@ -5671,6 +5671,21 @@ The kernel enforces a **structural type system**:
   ?]`, `Function[A, B, {Error}]`) keeps what it wrote. A slot the definition left out is left out
   for the carrier rule (§5.2) too: under `sort MyBox = Box`, `b: MyBox` is no carrier of `Box`'s
   parameter, as `b: Box` is not.
+
+  A variable an alias's definition writes by a name is a parameter. In a member of a sort it is
+  the sort's parameter of that name, as `sort A = ?` declares one: under `sort Holder  sort P =
+  Pair[?A, ?B]  entity holder(p: P)  end`, `Holder[A = Int64, B = String]` holds `pair(a: 1, b:
+  "s")`. A variable a parameter is declared with (`sort T = ?X`) is that parameter, and a name the
+  sort declares as anything else is refused. Outside a sort the variable is a parameter of the
+  alias, which an application gives by its name, or by position in the order the variables
+  stand in the type the alias stands for, a sort's slots in the order the sort declares them:
+  over `sort PureFunction = Function[?A, ?B, {}]`, `PureFunction[A = Int64, B = Int64]` and
+  `PureFunction[Int64, Int64]` are `Function[Int64, Int64, {}]`, and over `sort Sw = Pair[?B,
+  ?A]`, `Sw[A = Int64]` is `Pair[B = Int64]` and `Sw[Int64, String]` is `Pair[A = Int64, B =
+  String]`. A parameter the application leaves out is open at each use, as `?` is. An argument
+  whose name is a parameter of the alias and a slot its definition leaves out is refused. An
+  alias of a tuple or an arrow, written where a type is, takes its own parameters only
+  (`Cb[A = Int64]` over `sort Cb = (?A) -> ?A`). `?` and `?_` declare no parameter.
 - **Sorts with constructors** (`sort S { entity C₁(...), entity C₂(...) }`) introduce closed algebraic data types. All constructors are enumerated; pattern matching in rules is exhaustive.
 - **Operations** have typed signatures: `operation op(x: A, y: B) -> C`. Parameters are named bindings; the kernel type-checks that actual arguments match declared types.
 - **Terms** are typed: `Const` carries its type, `Var` declares its type, `Fn` has the type of its sort's constructor, `Ref` refers to a named type.
