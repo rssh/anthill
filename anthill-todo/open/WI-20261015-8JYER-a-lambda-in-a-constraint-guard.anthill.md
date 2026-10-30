@@ -30,3 +30,9 @@ THE CHANGE: a guard's lambdas converted as a rule body's are, at load, by the co
 
 ACCEPTANCE (cargo-test via rustland/scripts/test.sh): both constraints load, and their violated twins are reported as violations; a guard holding a rule-body `Error.reify` with a lambda loads and holds.
 
+## Changes
+
+### 2026-10-30T15:25:17Z — feedback — claude
+
+ALSO (2026-10-30, measured on c541ef90, found delivering WI-20261023-W2JP7): A LAMBDA IN A FACT KEEPS THE SAME MARKER. Over `operation applyThunk[Rho](f: () -> String @ {Rho}) -> String effects {Rho} = f()` and `operation applyF(f: (Int64) -> Int64, x: Int64) -> Int64 = f(x)`: `fact holdsL(lambda () -> "h")` with `rule viaFact(?r) :- holdsL(?f), applyThunk(?f, ?r)` faults "closure: expected 1 args, got 0" (the residual shows `lambda_expr(pattern_tuple, "h")`), and `fact holdsU(lambda (y) -> y + 1)` with `holdsU(?f), applyF(?f, 3, ?r)` faults "raised match_failed(occurrence: lambda_expr(pattern_var(y), add(y, 1)), scrutinee: 3)" — the guard's two errors, word for word; `applyThunk(lambda () -> "h", ?r)` in a rule body answers "h". A fact's head is built as a TERM as a guard body is, so its lambda carries the parser's `pattern_tuple` / `pattern_var`. ACCEPTANCE ADDS: `viaFact(?r)` answers "h" and `holdsU(?f), applyF(?f, 3, ?r)` answers 4, definite.
+
