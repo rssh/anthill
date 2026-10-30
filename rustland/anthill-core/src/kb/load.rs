@@ -2326,6 +2326,10 @@ pub enum LoadError {
     BodylessRuleDeclaresNothing {
         /// Which of those shapes it is, phrased for the author.
         detail: String,
+        /// Can a clause stand under the name? Then giving the rule a body is a repair, and
+        /// the message says so; not where the name holds no clauses — a const, a
+        /// namespace — whose `detail` names the repair (WI-20261029-50361).
+        clause_can_stand: bool,
         span: Span,
     },
     /// PROPOSAL 061 — a DECLARATION stores no clause, so a citation label, a
@@ -2483,10 +2487,19 @@ pub enum LoadError {
     /// `const`, at any arity. A goal naming the const is the const's value, so the clause
     /// was reached by no bare goal: `rule flag :- true` beside `const flag: Bool = false`
     /// left `:- flag` answering the const's `false`, with nothing said.
-    ClauseHeadNamesConst {
+    ///
+    /// WI-20261029-50361 (spec §5.3): or a `namespace`, which holds no clauses. A head
+    /// reaches one only where a predicate of its own would take the namespace's name — in
+    /// the scope that declares it, or spelled qualified — since anywhere else it introduces
+    /// ([`rule_head_ladder_answer`]). MEASURED before: `rule zed(1) :- true` in `namespace
+    /// probe` beside `namespace probe.zed`, and `rule probe.zed(1) :- true` written in
+    /// another namespace, each loaded clean with the clause stored under the namespace.
+    ClauseHeadNamesNoRelation {
         /// The refused item's kind — `"fact"` or `"rule"`.
         kind: &'static str,
-        /// The const, qualified.
+        /// What the head names.
+        named: NotARelation,
+        /// The name, qualified.
         name: String,
         span: Span,
     },
@@ -3113,7 +3126,7 @@ impl LoadError {
             | LoadError::SelfTypeMisuse { span, .. }
             | LoadError::TypeParamShadowsSlot { span, .. }
             | LoadError::FunctorOwnedByExtent { span, .. }
-            | LoadError::ClauseHeadNamesConst { span, .. }
+            | LoadError::ClauseHeadNamesNoRelation { span, .. }
             | LoadError::MacroRejected { span, .. }
             | LoadError::UndefinedAfterDefinePass { span, .. }
             | LoadError::UndefinedRuleBodyGoal { span, .. }
@@ -3997,13 +4010,21 @@ impl LoadError {
                     predicate
                 )
             }
-            LoadError::BodylessRuleDeclaresNothing { detail, span } => {
+            LoadError::BodylessRuleDeclaresNothing {
+                detail,
+                clause_can_stand,
+                span,
+            } => {
                 format!(
                     "{}: a rule with no body DECLARES a predicate (proposal 061), and \
-                     this one declares nothing — {}. Give it a body (`:- true` asserts \
-                     it), or write it as a `fact`.",
+                     this one declares nothing — {}.{}",
                     loc.format_start(*span),
-                    detail
+                    detail,
+                    if *clause_can_stand {
+                        " Give it a body (`:- true` asserts it), or write it as a `fact`."
+                    } else {
+                        ""
+                    }
                 )
             }
             LoadError::DeclarationCarriesClauseText {
@@ -4039,11 +4060,16 @@ impl LoadError {
                     consequence
                 )
             }
-            LoadError::ClauseHeadNamesConst { kind, name, span } => {
+            LoadError::ClauseHeadNamesNoRelation {
+                kind,
+                named,
+                name,
+                span,
+            } => {
                 format!(
                     "{}: {}",
                     loc.format_start(*span),
-                    clause_head_names_const_message(kind, name)
+                    clause_head_names_no_relation_message(kind, *named, name)
                 )
             }
             LoadError::FunctorOwnedByExtent {
@@ -5572,7 +5598,7 @@ impl std::fmt::Display for LoadError {
                     name, scope, predicate, span.start, span.end
                 )
             }
-            LoadError::BodylessRuleDeclaresNothing { detail, span } => {
+            LoadError::BodylessRuleDeclaresNothing { detail, span, .. } => {
                 write!(
                     f,
                     "a body-less rule declares nothing here — {} (at {}..{})",
@@ -5610,11 +5636,16 @@ impl std::fmt::Display for LoadError {
                     qualified, consequence, span.start, span.end,
                 )
             }
-            LoadError::ClauseHeadNamesConst { kind, name, span } => {
+            LoadError::ClauseHeadNamesNoRelation {
+                kind,
+                named,
+                name,
+                span,
+            } => {
                 write!(
                     f,
                     "{} at {}..{}",
-                    clause_head_names_const_message(kind, name),
+                    clause_head_names_no_relation_message(kind, *named, name),
                     span.start,
                     span.end
                 )
@@ -16711,14 +16742,41 @@ pub enum ConstGoalProblem {
     NotFolded,
 }
 
-/// WI-20260822-NDG34 — the one wording of [`LoadError::ClauseHeadNamesConst`], for its two
-/// renderings.
-fn clause_head_names_const_message(kind: &str, name: &str) -> String {
-    format!(
-        "this {kind}'s head names the const `{name}`: a const is a value and not a \
-         relation, a name in a scope is one symbol, and a goal naming the const reads its \
-         value (kernel-language.md §5.9). Give the relation a name of its own."
-    )
+/// What a clause head named that holds no clauses ([`LoadError::ClauseHeadNamesNoRelation`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotARelation {
+    Const,
+    Namespace,
+}
+
+/// What `sym` is, when a clause cannot be written of it — the one answer for the clause's
+/// refusal and for a body-less rule's repair, which must not advise writing one. A rule's
+/// own kinds do not count: the declaration a repair is for merged them onto the symbol.
+fn not_a_relation(kb: &KnowledgeBase, sym: Symbol) -> Option<NotARelation> {
+    if kb.has_kind(sym, SymbolKind::Const) {
+        Some(NotARelation::Const)
+    } else if is_namespace_only(kb, sym) {
+        Some(NotARelation::Namespace)
+    } else {
+        None
+    }
+}
+
+/// WI-20260822-NDG34 — the one wording of [`LoadError::ClauseHeadNamesNoRelation`], for its
+/// two renderings.
+fn clause_head_names_no_relation_message(kind: &str, named: NotARelation, name: &str) -> String {
+    let why = match named {
+        NotARelation::Const => format!(
+            "names the const `{name}`: a const is a value and not a relation, a name in a \
+             scope is one symbol, and a goal naming the const reads its value \
+             (kernel-language.md §5.9)"
+        ),
+        NotARelation::Namespace => format!(
+            "names the namespace `{name}`: a namespace is not a relation and holds no \
+             clauses (kernel-language.md §5.3)"
+        ),
+    };
+    format!("this {kind}'s head {why}. Give the relation a name of its own.")
 }
 
 /// WI-20260822-NDG34 — the one wording of [`LoadError::ConstInGoalPosition`], shared by
@@ -22954,7 +23012,7 @@ fn captured_origin(
 /// the census never reached. Each is excluded where it arises, with its own reason:
 /// a sibling type's CONSTRUCTOR, in [`crate::intern::SymbolTable::resolve_captured_name`]
 /// (members and constructors are named per TYPE), and an enclosing NAMESPACE, in
-/// [`captured_is_namespace_only`] (a namespace has no answer to change). The residual
+/// [`is_namespace_only`] (a namespace has no answer to change). The residual
 /// corpus cost is zero, which is what 059 claimed and now holds for stated reasons
 /// rather than by an incomplete count.
 ///
@@ -23045,7 +23103,7 @@ fn check_name_captures(kb: &KnowledgeBase) -> Vec<LoadError> {
                 if other == decl.sym {
                     continue;
                 }
-                if captured_is_namespace_only(kb, other) || capture_is_excused(kb, sort, other) {
+                if is_namespace_only(kb, other) || capture_is_excused(kb, sort, other) {
                     continue;
                 }
                 hit = Some(other);
@@ -23109,8 +23167,9 @@ fn scope_reading_files(kb: &KnowledgeBase) -> HashMap<ScopeId, Vec<SourceId>> {
     askers
 }
 
-/// WI-999 — is the captured name a NAMESPACE and nothing else? Then it is not a
-/// capture 059 R4 clause 3 governs (amended, WI-999).
+/// WI-999 — is the name a NAMESPACE and nothing else? Then a declaration taking it is not
+/// a capture 059 R4 clause 3 governs (amended, WI-999), and a rule head reaching it holds
+/// no clause of it ([`rule_head_ladder_answer`], WI-20261029-50361).
 ///
 /// A namespace denotes no value and no type: it can appear only as the head of a
 /// QUALIFIED PATH, so it has no answer for a body to silently get a different one
@@ -23135,8 +23194,8 @@ fn scope_reading_files(kb: &KnowledgeBase) -> HashMap<ScopeId, Vec<SourceId>> {
 /// `has_kind`, not `kind_of`, and the value/type kinds are named rather than
 /// negated: `namespace X` beside `sort X` is ONE symbol carrying both categories
 /// (WI-926/956), and that one IS a type — 059 R2's own secondary-entry shape.
-fn captured_is_namespace_only(kb: &KnowledgeBase, captured: Symbol) -> bool {
-    kb.has_kind(captured, SymbolKind::Namespace)
+fn is_namespace_only(kb: &KnowledgeBase, sym: Symbol) -> bool {
+    kb.has_kind(sym, SymbolKind::Namespace)
         && ![
             SymbolKind::Sort,
             SymbolKind::Entity,
@@ -23144,7 +23203,7 @@ fn captured_is_namespace_only(kb: &KnowledgeBase, captured: Symbol) -> bool {
             SymbolKind::Const,
         ]
         .iter()
-        .any(|&k| kb.has_kind(captured, k))
+        .any(|&k| kb.has_kind(sym, k))
 }
 
 /// WI-999 — is this capture one 059 R4 clause 3 admits? The exclusion is a RELATION
@@ -25914,6 +25973,17 @@ fn quoted_scope_list(scopes: &[String]) -> String {
 /// a `<global>` name is among its candidates — the namespace's own REFERENCES to the name
 /// are ambiguous too, and WI-900 reports that at the reference rather than letting the
 /// head pick a side (`wi_hsg31_global_declaration_test` drives it).
+///
+/// WI-20261029-50361 — A NAMESPACE IS NO ANSWER, unless its own scope is the head's. A
+/// namespace holds no clauses ([`is_namespace_only`]), so a head whose name
+/// reaches one — `rule zed :- …` inside `namespace probe.zed`, through the enclosing
+/// `probe`, or through an `import probe.zed` — introduces its predicate where it is
+/// written, exactly as its
+/// declaration `rule zed(?x)` does there. MEASURED before: the clause was stored under the
+/// namespace, `probe.zed.zed` named nothing, and the declared twin answered through it.
+/// Where the head is written in the scope that declares the namespace, introducing would
+/// mint the namespace's own qualified name, so the answer stands and the clause is refused
+/// at its head ([`Loader::refuse_if_head_names_no_relation`]), as the declaration is.
 fn rule_head_ladder_answer(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> ResolveResult {
     let global = kb.global_scope();
     let simple = match kb.symbols.resolve_in_scope(name, scope) {
@@ -25927,7 +25997,7 @@ fn rule_head_ladder_answer(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> Re
     };
     // WI-20260924-SNJPR — the ladder, save that a head is a DECLARATION: it does not read
     // a type alias through ([`AliasReading::AsDeclared`]).
-    simple.or_else(|| {
+    let answer = simple.or_else(|| {
         resolve_dotted_in_kb_with(
             kb,
             name,
@@ -25935,7 +26005,15 @@ fn rule_head_ladder_answer(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> Re
             DottedVisibility::VisibleOnly,
             AliasReading::AsDeclared,
         )
-    })
+    });
+    match answer {
+        ResolveResult::Found(sym)
+            if is_namespace_only(kb, sym) && kb.symbols.declaring_scope(sym) != Some(scope) =>
+        {
+            ResolveResult::NotFound
+        }
+        other => other,
+    }
 }
 
 /// WI-742 — the TYPE NAMES a rule head's `?x: T` annotations write, dotted, in written
@@ -30758,7 +30836,7 @@ impl<'a> Loader<'a> {
 
     /// Is this walk at a GOAL the term walk folds a `Bool` const in: a goal that is not a
     /// clause head — a constraint's, or a goal slot the rule-body walk handed over. A head
-    /// names its relation, and a const there is refused (`Self::refuse_if_const_head`).
+    /// names its relation, and a const there is refused (`Self::refuse_if_head_names_no_relation`).
     fn term_walk_at_goal(&self) -> bool {
         self.const_fold == ConstFold::Goal && self.clause_head.is_none()
     }
@@ -43116,19 +43194,45 @@ impl<'a> Loader<'a> {
         }
     }
 
-    /// WI-20260822-NDG34 — refuse a clause whose head names a `const`
-    /// ([`LoadError::ClauseHeadNamesConst`]), and return `true` so the caller stores no
-    /// clause. A scope maps the name to one symbol, and a const keeps one value under it.
-    fn refuse_if_const_head(&mut self, head: TermId, kind: &'static str, span: Span) -> bool {
+    /// WI-20260822-NDG34 — refuse a clause whose head names a `const` or a `namespace`
+    /// ([`LoadError::ClauseHeadNamesNoRelation`]), and return `true` so the caller stores no
+    /// clause. A scope maps the name to one symbol, and a const keeps one value under it; a
+    /// namespace holds no clauses (WI-20261029-50361).
+    fn refuse_if_head_names_no_relation(
+        &mut self,
+        head: TermId,
+        kind: &'static str,
+        span: Span,
+    ) -> bool {
         let Some(functor) = self.kb.head_functor(head) else {
             return false;
         };
-        if !self.kb.has_kind(functor, SymbolKind::Const) {
+        let Some(named) = not_a_relation(self.kb, functor) else {
             return false;
-        }
+        };
         let name = self.kb.qualified_name_of(functor).to_string();
-        self.errors.push(LoadError::ClauseHeadNamesConst { kind, name, span });
+        self.errors.push(LoadError::ClauseHeadNamesNoRelation {
+            kind,
+            named,
+            name,
+            span,
+        });
         true
+    }
+
+    /// Was an ambiguous name reported since `mark`, an earlier length of `errors`? A clause
+    /// whose head holds one is not stored, and its head not judged further
+    /// (WI-20261029-50361): the load is refused already, and the name stands on the
+    /// candidate [`Self::push_ambiguous_symbol`] hands back to keep the KB consistent,
+    /// which is no name the author wrote. MEASURED: `fact M719.tgt`, with `M719` a
+    /// namespace under both of two wildcard imports, was refused a second time as a clause
+    /// of `zz719I.a.M719`. What the post-load checks and the typer would say of a rule's
+    /// body is not said in this load: they read stored clauses, as for the refusals beside
+    /// this one.
+    fn reported_ambiguity_since(&self, mark: usize) -> bool {
+        self.errors[mark..]
+            .iter()
+            .any(|e| matches!(e, LoadError::AmbiguousSymbol { .. }))
     }
 
     fn load_fact(&mut self, f: &Fact, domain: Symbol) {
@@ -43207,6 +43311,7 @@ impl<'a> Loader<'a> {
         // WI-20261001-KDMQS — a fact is a CLAUSE: its head is a goal position and every
         // argument a data slot, where a const is its value.
         let prev_fold = std::mem::replace(&mut self.const_fold, ConstFold::Goal);
+        let reported = self.errors.len();
         let term = self.convert_subject_term(f.term);
         self.const_fold = prev_fold;
         self.clause_head = prev_clause_head;
@@ -43224,8 +43329,13 @@ impl<'a> Loader<'a> {
         self.in_value_position = false;
         // WI-797: a mounted-extent functor is virtualized through its store, so a
         // resident source fact for it is refused (single owner).
-        if self.refuse_if_extent_owned(term, "fact", self.parsed.terms.span(f.term))
-            || self.refuse_if_const_head(term, "fact", self.parsed.terms.span(f.term))
+        if self.reported_ambiguity_since(reported)
+            || self.refuse_if_extent_owned(term, "fact", self.parsed.terms.span(f.term))
+            || self.refuse_if_head_names_no_relation(
+                term,
+                "fact",
+                self.parsed.terms.span(f.term),
+            )
         {
             self.current_owner = prev_owner;
             return;
@@ -43840,6 +43950,7 @@ impl<'a> Loader<'a> {
                                  asserts a clause — write `:- true` to add a CLAUSE to \
                                  the denoted predicate, or choose a new local name"
                             ),
+                            clause_can_stand: true,
                             span: r.span,
                         }),
                         // SOMETHING ELSE ALREADY DECLARED THE NAME HERE, and pass 1's
@@ -43869,13 +43980,24 @@ impl<'a> Loader<'a> {
                             ));
                             match clash {
                                 Some(kind) => {
+                                    // WI-20261029-50361 — not `:- true` where no clause can
+                                    // stand: that advice led a namespace's name to the
+                                    // clause its head refusal now refuses.
+                                    let clause_can_stand = not_a_relation(self.kb, sym).is_none();
+                                    let repair = if clause_can_stand {
+                                        "— write `:- true` to make this a CLAUSE of it, or \
+                                         delete the line"
+                                    } else {
+                                        "and no clause can be written of it — give the \
+                                         predicate a name of its own"
+                                    };
                                     self.errors.push(LoadError::BodylessRuleDeclaresNothing {
                                         detail: format!(
                                             "`{name}` is already declared in this scope as \
                                              a {kind:?}, so a body-less rule adds nothing \
-                                             to it — write `:- true` to make this a CLAUSE \
-                                             of it, or delete the line"
+                                             to it {repair}"
                                         ),
+                                        clause_can_stand,
                                         span: r.span,
                                     });
                                 }
@@ -43939,6 +44061,7 @@ impl<'a> Loader<'a> {
                         &self.parsed.symbols,
                         &self.parsed.terms,
                     ),
+                    clause_can_stand: true,
                     span: r.span,
                 });
                 return;
@@ -44204,6 +44327,7 @@ impl<'a> Loader<'a> {
                     // and it is memoized here, so the connective walk below must agree —
                     // which its `equation_head` test does. Every other head is a GOAL
                     // position whose arguments are data slots.
+                    let reported = self.errors.len();
                     if let Some((_, lhs, _)) =
                         parse_connective_head(&self.parsed.symbols, &self.parsed.terms, *tid)
                     {
@@ -44230,8 +44354,13 @@ impl<'a> Loader<'a> {
                     positive_heads.push(head);
                     // WI-797: a mounted-extent functor must have no resident rule
                     // (single owner) — refuse any head owned by a mounted source.
-                    if self.refuse_if_extent_owned(head, "rule", self.parsed.terms.span(*tid))
-                        || self.refuse_if_const_head(head, "rule", self.parsed.terms.span(*tid))
+                    if self.reported_ambiguity_since(reported)
+                        || self.refuse_if_extent_owned(head, "rule", self.parsed.terms.span(*tid))
+                        || self.refuse_if_head_names_no_relation(
+                            head,
+                            "rule",
+                            self.parsed.terms.span(*tid),
+                        )
                     {
                         self.current_owner = prev_owner;
                         return;

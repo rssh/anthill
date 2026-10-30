@@ -373,7 +373,7 @@ class KnowledgeBase:
   /** The functor a rule/fact HEAD names, in either spelling. WI-20260902-CZJ2N: a
     * nullary head is stored as `Term.Ref`, so a `Term.Fn`-only read misses it. `None` for
     * a head that names no functor (a variable, a literal, `⊥`). */
-  private def headFunctorOf(head: TermId): Option[TermSymbol] =
+  def headFunctorOf(head: TermId): Option[TermSymbol] =
     terms.get(head) match
       case Term.Fn(functor, _, _) => Some(functor)
       case Term.Ref(sym)          => Some(sym)

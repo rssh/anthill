@@ -1002,12 +1002,13 @@ end
 }
 
 /// THE RULE A PROOF IS OF IS THE CLAUSES ITS NAME STATES, and not a declaration that
-/// shares the name. A rule named as the last segment of its namespace has the
-/// namespace's symbol for the functor of its head, so the namespace's own clause is
+/// shares the name. A rule named as the last segment of its namespace had the
+/// namespace's symbol for the functor of its head, so the namespace's own clause was
 /// under the name too, and first: the proof was of THAT — an empty document, `sat`, a
 /// COUNTEREXAMPLE of a rule whose body cannot hold (5 is not above 99) — where the same
 /// rule under another name proved. Found by the count this change makes of a rule's
-/// clauses, which made this one "2 clauses".
+/// clauses, which made this one "2 clauses". Since WI-20261029-50361 the head introduces
+/// a predicate of its own, `test.kf2sd.legacy.legacy`, and the proof is of it.
 #[test]
 fn a_rule_named_as_its_namespace_is_proved_as_the_rule() {
     let out = dry_run(
@@ -1028,7 +1029,30 @@ end
     );
     assert_eq!(errors(&out), Vec::<&str>::new(), "stderr:\n{}", out.stderr);
     assert_eq!(
-        assertions(&out, "test.kf2sd.legacy"),
+        assertions(&out, "test.kf2sd.legacy.legacy"),
         ["(assert (> scale 99.0))"]
     );
+}
+
+/// A PROOF NAMING A NAMESPACE is of no rule: what is under the name is the namespace's own
+/// clause, and its document would be empty — `sat`, a counterexample. Refused as a rule
+/// that is not there. Fails with `stated_clauses`' clause-kind filter backed out, which is
+/// the one row that does since a rule head no longer lands on a namespace
+/// (WI-20261029-50361).
+#[test]
+fn a_proof_naming_a_namespace_is_of_no_rule() {
+    let out = dry_run(
+        "nsproof",
+        r#"
+namespace test.kf2sd.nsproof.zed
+  import anthill.prelude.{Int64}
+  entity Cfg(scale: Int64)
+end
+namespace test.kf2sd.nsproof
+  proof zed by z3(logic: "LIA") end
+end
+"#,
+    );
+    let said = refusal(&out, "test.kf2sd.nsproof.zed");
+    assert!(said.contains("rule 'test.kf2sd.nsproof.zed' not found"), "{said}");
 }

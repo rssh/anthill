@@ -1312,7 +1312,7 @@ pub(super) fn check_rule_body_operation_requires(kb: &mut KnowledgeBase) -> Vec<
 /// which names no truth, or a `Bool` with no value to fold
 /// ([`crate::kb::load::ConstGoalProblem`]). Applied (`flag()`), it is the call the typer
 /// refuses in a value slot and an operation body, [`TypeError::UnknownApplyFunctor`]. No
-/// clause is filed under a const (`Loader::refuse_if_const_head`), so a const is never a
+/// clause is filed under a const (`Loader::refuse_if_head_names_no_relation`), so a const is never a
 /// relation's name here.
 pub(super) fn check_rule_body_goal_readings(
     kb: &mut KnowledgeBase,

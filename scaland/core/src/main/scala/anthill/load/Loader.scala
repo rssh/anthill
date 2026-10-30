@@ -52,6 +52,11 @@ enum LoadError:
     * is written `S[…]`. It used to BE the type in silence: `Eq(T: ?q)` answered from
     * `fact Eq[T = Int64]`, the two surfaces building one term. */
   case SortAppliedAsData(sort: String, span: Span)
+  /** WI-20261029-50361 (rustland's `ClauseHeadNamesNoRelation` for a namespace) — a `fact`
+    * or a `rule` clause whose head names a namespace, which holds no clauses. A head
+    * reaches one only where a predicate of its own would take the namespace's name: in the
+    * scope that declares it, or spelled qualified. It used to be stored under it. */
+  case ClauseHeadNamesNamespace(kind: String, name: String, span: Span)
   case Other(message: String, span: Span)
 
   /** WI-947: `file:line:col: message`, through the ONE located renderer that
@@ -94,6 +99,10 @@ enum LoadError:
       span.render(s"`$sort(…)` is an application, and `$sort` names no constructor, predicate or " +
         s"operation to apply — it is a sort, and its type is written `$sort[…]` " +
         "(kernel-language.md §4.4)")
+    case ClauseHeadNamesNamespace(kind, name, span) =>
+      span.render(s"this $kind's head names the namespace `$name`: a namespace is not a " +
+        "relation and holds no clauses (kernel-language.md §5.3). Give the relation a name " +
+        "of its own.")
     case Other(message, span) =>
       span.render(message)
 
@@ -1436,16 +1445,55 @@ object Loader:
     * `<global>` declares nothing by this name, and a `Found` elsewhere never reached it.
     * An `Ambiguous` answer is kept even with a `<global>` candidate among it — the
     * namespace's own references are ambiguous too, and WI-900 reports that at the
-    * reference. Rustland's twin is `load::rule_head_ladder_answer`. */
+    * reference. Rustland's twin is `load::rule_head_ladder_answer`.
+    *
+    * WI-20261029-50361 — A NAMESPACE IS NO ANSWER, unless its own scope is the head's. A
+    * namespace holds no clauses ([[isNamespaceOnly]]), so a head whose name reaches one —
+    * `rule zed :- …` inside `namespace probe.zed`, through the enclosing `probe`, or
+    * through an `import probe.zed` — introduces its predicate where it is written, exactly
+    * as its declaration `rule zed(?x)` does there. Where the head is written in the scope
+    * that declares the namespace, introducing would mint the namespace's own qualified
+    * name, so the answer stands and the clause is refused at its head
+    * ([[refuseHeadNamingNamespace]]). */
   private def ruleHeadLadderAnswer(kb: KnowledgeBase, name: String, scope: kb.ScopeId): ResolveResult =
-    kb.symbols.resolveInScope(name, scope) match
+    val answer = kb.symbols.resolveInScope(name, scope) match
       case ResolveResult.Found(sym)
-          if (kb.symbols.get(sym) match
-                case SymbolDef.Resolved(_, _, _, home) => home == kb.globalScope
-                case _                                 => false)
-            && kb.symbols.isInsideNamespace(scope) =>
+          if homeOf(kb, sym).contains(kb.globalScope) && kb.symbols.isInsideNamespace(scope) =>
         kb.symbols.resolveRuleHeadInsideNamespace(name, scope)
       case other => other
+    answer match
+      case ResolveResult.Found(sym) if isNamespaceOnly(kb, sym) && !homeOf(kb, sym).contains(scope) =>
+        ResolveResult.NotFound
+      case other => other
+
+  /** The scope `sym` is declared in, if it is a resolved symbol. */
+  private def homeOf(kb: KnowledgeBase, sym: TermSymbol): Option[kb.ScopeId] =
+    kb.symbols.get(sym) match
+      case SymbolDef.Resolved(_, _, _, home) => Some(home)
+      case _                                 => None
+
+  /** Is `sym` a namespace and nothing else? A namespace denotes no value and no type, and
+    * holds no clauses. A `namespace X` beside `sort X` is one symbol that IS a type (059
+    * R2's secondary entry), so the value and type kinds are named. Rustland's twin is
+    * `load::is_namespace_only`. */
+  private def isNamespaceOnly(kb: KnowledgeBase, sym: TermSymbol): Boolean =
+    val d = kb.symbols.get(sym)
+    d.hasKind(SymbolKind.Namespace) &&
+      !Seq(SymbolKind.Sort, SymbolKind.Entity, SymbolKind.Operation, SymbolKind.Const).exists(d.hasKind)
+
+  /** WI-20261029-50361 — refuse a clause whose head names a namespace, and answer `true` so
+    * the caller stores none. A head reaches one only where a predicate of its own would
+    * take the namespace's name: in the scope that declares it, or spelled qualified.
+    * Rustland's twin is `Loader::refuse_if_head_names_no_relation`, which refuses a const
+    * head too; scaland has no const refusal. */
+  private def refuseHeadNamingNamespace(
+    kb: KnowledgeBase, head: TermId, kind: String, span: Span, errors: ArrayBuffer[LoadError]
+  ): Boolean =
+    kb.headFunctorOf(head).filter(isNamespaceOnly(kb, _)) match
+      case Some(ns) =>
+        errors += LoadError.ClauseHeadNamesNamespace(kind, kb.qualifiedNameOf(ns), span)
+        true
+      case None => false
 
   /** Mint one sentinel per scope that writes a rule head — a symbol standing for "a head
     * is written here", so the resolver can be told about names that are not symbols yet.
@@ -1865,8 +1913,11 @@ object Loader:
     val reached = if kb.symbols.isInsideNamespace(scope) then
       kb.symbols.resolveRuleHeadInsideNamespace(name, scope, ownLocalsVisible = false)
     else kb.symbols.resolveWithOverlay(name, scope, _ => None)
+    // WI-20261029-50361 — a namespace reached is no answer, as on the head's ladder
+    // ([[ruleHeadLadderAnswer]]): the undeclared head introduces there, so its declaration
+    // does too. One the scope itself declares is the `local` collision below.
     reached match
-      case ResolveResult.Found(sym) =>
+      case ResolveResult.Found(sym) if !isNamespaceOnly(kb, sym) =>
         kb.symbols.get(sym).kindsSet.diff(DeclarableByARule).toSeq.sortBy(_.ordinal).foreach { k =>
           errors += LoadError.Other(
             s"the body-less rule `$name` DECLARES a predicate, but `$name` already " +
@@ -1925,11 +1976,16 @@ object Loader:
             // idempotent, and naming a predicate that really exists. Only the `None` arm
             // above is the silent no-op, and it is the one that speaks.
             // Membership: ANY non-rule role makes this declaration a collision.
+            // WI-20261029-50361 — not `:- true` where no clause can stand: that advice led
+            // a namespace's name to the clause [[refuseHeadNamingNamespace]] now refuses.
+            val repair =
+              if isNamespaceOnly(kb, sym) then
+                "and no clause can be written of it — give the predicate a name of its own"
+              else "— write `:- true` to make this a CLAUSE of it, or delete the line"
             kb.symbols.get(sym).kindsSet.diff(DeclarableByARule).toSeq.sortBy(_.ordinal).foreach { k =>
               errors += LoadError.Other(
                 s"`$name` is already declared in this scope (kind: $k), so a body-less " +
-                "rule adds nothing to it — write `:- true` to make this a CLAUSE of it, " +
-                "or delete the line",
+                s"rule adds nothing to it $repair",
                 rule.span)
             }
 
@@ -2936,8 +2992,9 @@ object Loader:
             // WI-20260901-719FJ: a fact head is a LOGICAL SUBJECT too — `fact ns.tgt`
             // is the same reference `fact ns.tgt()` is.
             val kbTerm = reallocTerm(kb, fileTerms, fileSym, fact.term, scope, errors, atGoal = true, atHead = true)
-            val sortSort = findSortTerm(kb, "anthill.reflect.Fact")
-            kb.assertFact(kbTerm, sortSort, scope)
+            if !refuseHeadNamingNamespace(kb, kbTerm, "fact", fileTerms.spanOf(fact.term), errors) then
+              val sortSort = findSortTerm(kb, "anthill.reflect.Fact")
+              kb.assertFact(kbTerm, sortSort, scope)
 
         case Item.RuleItem(rule) =>
           val sortSort = findSortTerm(kb, "anthill.reflect.Rule")
@@ -3170,10 +3227,16 @@ object Loader:
       kb.assertRule(botTerm, kbBody, sortSort, scope)
     else
       // One horn rule per head, sharing body (and shared var scope via vm).
-      for headId <- positiveHeads do
+      // WI-20261029-50361: a head that names a namespace refuses the whole rule, none of
+      // its heads stored, as rustland's `load_rule` returns at it.
+      val kbHeads = positiveHeads.map { headId =>
         // WI-20260901-719FJ: a rule head is a LOGICAL SUBJECT.
-        val kbHead = reallocTerm(kb, fileTerms, fileSym, headId, scope, errors, vm, atGoal = true, atHead = true)
-        kb.assertRule(kbHead, kbBody, sortSort, scope)
+        headId -> reallocTerm(kb, fileTerms, fileSym, headId, scope, errors, vm, atGoal = true, atHead = true)
+      }
+      val refused = kbHeads.exists((headId, kbHead) =>
+        refuseHeadNamingNamespace(kb, kbHead, "rule", fileTerms.spanOf(headId), errors))
+      if !refused then
+        for (_, kbHead) <- kbHeads do kb.assertRule(kbHead, kbBody, sortSort, scope)
 
   // ── Proof / Provides loaders (proposal 025 + 031) ────────────
 
@@ -3284,7 +3347,8 @@ object Loader:
         // WI-20260901-719FJ: the same head position, inside a `provides … language
         // anthill` block.
         val kbTerm = reallocTerm(kb, fileTerms, fileSym, f.term, scope, errors, atGoal = true, atHead = true)
-        kb.assertFact(kbTerm, factSort, scope)
+        if !refuseHeadNamingNamespace(kb, kbTerm, "fact", fileTerms.spanOf(f.term), errors) then
+          kb.assertFact(kbTerm, factSort, scope)
       case ProvidesItem.ProofI(p) =>
         loadProof(kb, p, fileSym, scope, errors)
       case ProvidesItem.ProvidesClauseI(pc) =>

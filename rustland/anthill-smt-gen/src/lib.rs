@@ -489,13 +489,13 @@ pub struct Lifted {
 }
 
 /// THE CLAUSES A NAME STATES — a rule's, a fact's, a constraint's — and not a
-/// declaration that shares the name (WI-20261012-KF2SD). A rule named as the last
-/// segment of its namespace has the namespace's symbol for the functor of its head, so
-/// the namespace's own clause is under the name too, and FIRST: measured, `rule
-/// legacy(?m) :- Cfg(scale: ?s), gt(?s, 99), eq(?m, ?s)` in `namespace
-/// test.outcome.legacy` was proved as that clause — an EMPTY document, which is `sat`,
-/// a COUNTEREXAMPLE — where the same rule under another name proved. Found when a
-/// proof began to count the clauses of its rule, and this one was two.
+/// declaration that shares the name (WI-20261012-KF2SD). A namespace's own clause is under
+/// the namespace's name, so a proof naming a namespace (`proof zed` beside `namespace
+/// ….zed`) would be proved as that clause — an EMPTY document, which is `sat`, a
+/// COUNTEREXAMPLE — and is "not found" instead. Found when a rule named as the last segment
+/// of its namespace still had the namespace's symbol for its head's functor (`rule
+/// legacy(?m) :- …` in `namespace test.outcome.legacy`), which since WI-20261029-50361
+/// introduces a predicate of its own.
 fn stated_clauses(kb: &KnowledgeBase, rule_qn: &str) -> Vec<ProgramClause> {
     kb.program_clauses_by_qn(rule_qn)
         .into_iter()
