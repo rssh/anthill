@@ -1,7 +1,22 @@
+> **REJECTED** (WI-1126, 2026-10-30). Every case this proposal names is covered by an
+> existing clause, and `extends` would merge two of them that the kernel keeps apart.
+> "B needs A" is `requires` (A's dictionary is passed in, and A's names are in B's
+> scope, §5.2). "B is an A" is `provides` written on a spec (the A dictionary is built
+> from B, §5.1, WI-1110: `Ord provides WeakOrd[T = T]`). A refinement that supplies A's
+> bodies is a conditional provision with a `where` block (`provides TypePattern[T = T]
+> :- TypeValue[T = T] where …`). A diamond collapses on unnamed requirements and splits
+> on named ones (`requires Plus: Mon[T]`). A data-sort subsort is `sort Cat requires
+> Animal`, which leaves Animal's constructors closed. WI-1109 wrote one edge as both
+> `requires` and `provides` and got a cycle; `extends` as proposed (inherit the
+> operations AND `B <: A`) turns that mistake into a keyword. This is a rejection on
+> design grounds: reconsider only if those two relations stop being distinct, not when
+> some feature lands. Adding constructors to a parent sort (open sums) and entity field
+> inheritance are not covered here and would each need a proposal of their own.
+
 # Proposal 005: Reintroducing `extends` and Sort Inheritance
 
 **Status:** Deferred (draft for future consideration)
-**Depends on:** [001-sort-domain-unification](001-sort-domain-unification.md)
+**Depends on:** [001-sort-domain-unification](../001-sort-domain-unification.md)
 **Affects:** Kernel Language Specification §5.1, §5.2, §8.1
 
 ## Background

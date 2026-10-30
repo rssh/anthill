@@ -52,4 +52,7 @@ it contradicts the law in §8.3* does not. Say which kind it is.
 
 ## Index
 
-_(none yet — the first entries land with the 0.1.0 proposal review, WI-1126.)_
+- [005-extends-and-inheritance.md](005-extends-and-inheritance.md) — `extends` as
+  operation inheritance plus `B <: A`. Declined (WI-1126): `requires` (dictionary
+  passed in) and a spec's `provides` (dictionary built from self, WI-1110) already
+  say the two halves, and merging them is the cycle WI-1109 hit.
