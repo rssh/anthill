@@ -57,6 +57,9 @@ enum LoadError:
     * reaches one only where a predicate of its own would take the namespace's name: in the
     * scope that declares it, or spelled qualified. It used to be stored under it. */
   case ClauseHeadNamesNamespace(kind: String, name: String, span: Span)
+  /** WI-20261029-50361 (rustland's `EquationSubjectNamesNoFunction` for a namespace) — an
+    * equation whose subject names a namespace, which is no function it can define. */
+  case EquationSubjectNamesNamespace(name: String, span: Span)
   /** WI-20261029-50361 (rustland's `NamespaceAsGoal`) — a goal naming a namespace, which
     * is not a relation. It answered `true`, through the clause a namespace declaration
     * files under its own name. Scaland judges a rule's and a constraint's body. */
@@ -106,6 +109,10 @@ enum LoadError:
     case NamespaceAsGoal(position, namespace, span) =>
       span.render(s"the $position `$namespace` names a namespace, and a namespace is not a " +
         "goal: it is not a relation and holds no clauses (kernel-language.md §5.3)")
+    case EquationSubjectNamesNamespace(name, span) =>
+      span.render(s"this equation's subject names the namespace `$name`: a namespace is not a " +
+        "function, and an equation about it defines nothing (kernel-language.md §5.3). Give " +
+        "the function a name of its own.")
     case ClauseHeadNamesNamespace(kind, name, span) =>
       span.render(s"this $kind's head names the namespace `$name`: a namespace is not a " +
         "relation and holds no clauses (kernel-language.md §5.3). Give the relation a name " +
@@ -1503,11 +1510,24 @@ object Loader:
     * Rustland's twin is `Loader::refuse_if_head_names_no_relation`, which refuses a const
     * head too; scaland has no const refusal. */
   private def refuseHeadNamingNamespace(
-    kb: KnowledgeBase, head: TermId, kind: String, span: Span, errors: ArrayBuffer[LoadError]
+    kb: KnowledgeBase, fileSym: SymbolTable, fileTerms: SimpleTermStore, parseHead: ParseTermId,
+    head: TermId, kind: String, errors: ArrayBuffer[LoadError]
   ): Boolean =
-    kb.headFunctorOf(head).filter(isNamespaceOnly(kb, _)) match
+    val span = fileTerms.spanOf(parseHead)
+    // An EQUATION's head is its connective, so for one the SUBJECT is asked: a rewriting
+    // connective (`<=>`, a guarded `=`), not `===`, which tests and defines nothing.
+    val equation = parseConnectiveHead(fileSym, fileTerms, parseHead)
+      .exists((connective, _) => connective != Pratt.structEqFunctor)
+    val named =
+      if equation then kb.getTerm(head) match
+        case Term.Fn(_, pos, _) if pos.nonEmpty => kb.headFunctorOf(pos(0))
+        case _                                  => None
+      else kb.headFunctorOf(head)
+    named.filter(isNamespaceOnly(kb, _)) match
       case Some(ns) =>
-        errors += LoadError.ClauseHeadNamesNamespace(kind, kb.qualifiedNameOf(ns), span)
+        errors += (
+          if equation then LoadError.EquationSubjectNamesNamespace(kb.qualifiedNameOf(ns), span)
+          else LoadError.ClauseHeadNamesNamespace(kind, kb.qualifiedNameOf(ns), span))
         true
       case None => false
 
@@ -3008,7 +3028,7 @@ object Loader:
             // WI-20260901-719FJ: a fact head is a LOGICAL SUBJECT too — `fact ns.tgt`
             // is the same reference `fact ns.tgt()` is.
             val kbTerm = reallocTerm(kb, fileTerms, fileSym, fact.term, scope, errors, atGoal = true, atHead = true)
-            if !refuseHeadNamingNamespace(kb, kbTerm, "fact", fileTerms.spanOf(fact.term), errors) then
+            if !refuseHeadNamingNamespace(kb, fileSym, fileTerms, fact.term, kbTerm, "fact", errors) then
               val sortSort = findSortTerm(kb, "anthill.reflect.Fact")
               kb.assertFact(kbTerm, sortSort, scope)
 
@@ -3250,7 +3270,7 @@ object Loader:
         headId -> reallocTerm(kb, fileTerms, fileSym, headId, scope, errors, vm, atGoal = true, atHead = true)
       }
       val refused = kbHeads.exists((headId, kbHead) =>
-        refuseHeadNamingNamespace(kb, kbHead, "rule", fileTerms.spanOf(headId), errors))
+        refuseHeadNamingNamespace(kb, fileSym, fileTerms, headId, kbHead, "rule", errors))
       if !refused then
         for (_, kbHead) <- kbHeads do kb.assertRule(kbHead, kbBody, sortSort, scope)
 
@@ -3363,7 +3383,7 @@ object Loader:
         // WI-20260901-719FJ: the same head position, inside a `provides … language
         // anthill` block.
         val kbTerm = reallocTerm(kb, fileTerms, fileSym, f.term, scope, errors, atGoal = true, atHead = true)
-        if !refuseHeadNamingNamespace(kb, kbTerm, "fact", fileTerms.spanOf(f.term), errors) then
+        if !refuseHeadNamingNamespace(kb, fileSym, fileTerms, f.term, kbTerm, "fact", errors) then
           kb.assertFact(kbTerm, factSort, scope)
       case ProvidesItem.ProofI(p) =>
         loadProof(kb, p, fileSym, scope, errors)

@@ -2514,6 +2514,18 @@ pub enum LoadError {
         name: String,
         span: Span,
     },
+    /// WI-20261029-50361 (spec §5.3, §5.9): an equation (`<=>`, or a guarded `=`) whose
+    /// SUBJECT names a const or a namespace — no function an equation can define. An
+    /// equation's head is its connective, so [`Self::ClauseHeadNamesNoRelation`] does not
+    /// see it. MEASURED before: `rule zed(1) <=> 2 @[simp]` in `namespace probe` beside
+    /// `namespace probe.zed` loaded, and an operation body's `zed(1)` answered 2; so did
+    /// `rule zc(1) <=> 2 @[simp]` beside `const zc: Int64 = 1`.
+    EquationSubjectNamesNoFunction {
+        named: NotARelation,
+        /// The name, qualified.
+        name: String,
+        span: Span,
+    },
     /// WI-023: an `aggregation` constraint (`count/sum/min/max(…) op bound`). The
     /// parser and loader carry it faithfully, but the guard engine cannot yet
     /// evaluate aggregation — so the loader reports it loudly (load-blocking)
@@ -3138,6 +3150,7 @@ impl LoadError {
             | LoadError::TypeParamShadowsSlot { span, .. }
             | LoadError::FunctorOwnedByExtent { span, .. }
             | LoadError::ClauseHeadNamesNoRelation { span, .. }
+            | LoadError::EquationSubjectNamesNoFunction { span, .. }
             | LoadError::MacroRejected { span, .. }
             | LoadError::UndefinedAfterDefinePass { span, .. }
             | LoadError::UndefinedRuleBodyGoal { span, .. }
@@ -4093,6 +4106,13 @@ impl LoadError {
                     "{}: {}",
                     loc.format_start(*span),
                     clause_head_names_no_relation_message(kind, *named, name)
+                )
+            }
+            LoadError::EquationSubjectNamesNoFunction { named, name, span } => {
+                format!(
+                    "{}: {}",
+                    loc.format_start(*span),
+                    equation_subject_names_no_function_message(*named, name)
                 )
             }
             LoadError::FunctorOwnedByExtent {
@@ -5682,6 +5702,15 @@ impl std::fmt::Display for LoadError {
                     f,
                     "{} at {}..{}",
                     clause_head_names_no_relation_message(kind, *named, name),
+                    span.start,
+                    span.end
+                )
+            }
+            LoadError::EquationSubjectNamesNoFunction { named, name, span } => {
+                write!(
+                    f,
+                    "{} at {}..{}",
+                    equation_subject_names_no_function_message(*named, name),
                     span.start,
                     span.end
                 )
@@ -16813,6 +16842,21 @@ fn clause_head_names_no_relation_message(kind: &str, named: NotARelation, name: 
         ),
     };
     format!("this {kind}'s head {why}. Give the relation a name of its own.")
+}
+
+/// WI-20261029-50361 — the one wording of [`LoadError::EquationSubjectNamesNoFunction`].
+fn equation_subject_names_no_function_message(named: NotARelation, name: &str) -> String {
+    let why = match named {
+        NotARelation::Const => format!(
+            "names the const `{name}`: a const is a value, and an equation defines a \
+             function by rewriting its applications (kernel-language.md §5.9)"
+        ),
+        NotARelation::Namespace => format!(
+            "names the namespace `{name}`: a namespace is not a function, and an equation \
+             about it defines nothing (kernel-language.md §5.3)"
+        ),
+    };
+    format!("this equation's subject {why}. Give the function a name of its own.")
 }
 
 /// WI-20260822-NDG34 — the one wording of [`LoadError::ConstInGoalPosition`], shared by
@@ -43250,24 +43294,48 @@ impl<'a> Loader<'a> {
     /// ([`LoadError::ClauseHeadNamesNoRelation`]), and return `true` so the caller stores no
     /// clause. A scope maps the name to one symbol, and a const keeps one value under it; a
     /// namespace holds no clauses (WI-20261029-50361).
+    ///
+    /// An EQUATION's head is its connective, so for one it asks the SUBJECT instead
+    /// ([`LoadError::EquationSubjectNamesNoFunction`]): `<=>`, or `=` with a body (`guarded`)
+    /// — the connectives that rewrite. Not `===`, which tests, and not a body-less `=`,
+    /// which defines nothing and is refused as that (`NonDefiningConnectiveHead`) in the
+    /// `fact` spelling and the `rule` one alike.
     fn refuse_if_head_names_no_relation(
         &mut self,
         head: TermId,
+        parse_head: ParseTermId,
         kind: &'static str,
-        span: Span,
+        guarded: bool,
     ) -> bool {
-        let Some(functor) = self.kb.head_functor(head) else {
+        let span = self.parsed.terms.span(parse_head);
+        let equation = parse_connective_head(&self.parsed.symbols, &self.parsed.terms, parse_head)
+            .is_some_and(|(connective, _, _)| {
+                connective == pratt::UNIFY_FUNCTOR || (connective == pratt::EQ_FUNCTOR && guarded)
+            });
+        let named_term = if equation {
+            let Term::Fn { pos_args, .. } = self.kb.get_term(head) else {
+                unreachable!("a connective head converts to the connective's application")
+            };
+            pos_args[0]
+        } else {
+            head
+        };
+        let Some(functor) = self.kb.head_functor(named_term) else {
             return false;
         };
         let Some(named) = not_a_relation(self.kb, functor) else {
             return false;
         };
         let name = self.kb.qualified_name_of(functor).to_string();
-        self.errors.push(LoadError::ClauseHeadNamesNoRelation {
-            kind,
-            named,
-            name,
-            span,
+        self.errors.push(if equation {
+            LoadError::EquationSubjectNamesNoFunction { named, name, span }
+        } else {
+            LoadError::ClauseHeadNamesNoRelation {
+                kind,
+                named,
+                name,
+                span,
+            }
         });
         true
     }
@@ -43383,11 +43451,7 @@ impl<'a> Loader<'a> {
         // resident source fact for it is refused (single owner).
         if self.reported_ambiguity_since(reported)
             || self.refuse_if_extent_owned(term, "fact", self.parsed.terms.span(f.term))
-            || self.refuse_if_head_names_no_relation(
-                term,
-                "fact",
-                self.parsed.terms.span(f.term),
-            )
+            || self.refuse_if_head_names_no_relation(term, f.term, "fact", false)
         {
             self.current_owner = prev_owner;
             return;
@@ -44410,8 +44474,9 @@ impl<'a> Loader<'a> {
                         || self.refuse_if_extent_owned(head, "rule", self.parsed.terms.span(*tid))
                         || self.refuse_if_head_names_no_relation(
                             head,
+                            *tid,
                             "rule",
-                            self.parsed.terms.span(*tid),
+                            !rule_body_is_empty_conjunction(r, &self.parsed.terms),
                         )
                     {
                         self.current_owner = prev_owner;

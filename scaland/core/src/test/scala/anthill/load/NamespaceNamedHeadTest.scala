@@ -35,7 +35,8 @@ import anthill.term.{Literal, Term}
   *   * the namespace exclusion in `refuseDeclarationThatCannotStand` → the declared
   *     predicate's row;
   *   * the declaration's repair advising `:- true` again → the advice row;
-  *   * `Loader.refuseNamespaceGoal` reporting nothing → the goal row.
+  *   * `Loader.refuseNamespaceGoal` reporting nothing → the goal row;
+  *   * `refuseHeadNamingNamespace` not reading an equation's subject → the equation row.
   * The declared entity and the predicate-goal control pass either way by design, as do
   * `GlobalDeclarationHeadTest`'s seven. */
 class NamespaceNamedHeadTest extends munit.FunSuite:
@@ -148,4 +149,15 @@ class NamespaceNamedHeadTest extends munit.FunSuite:
     val kb = loaded("s.anthill" ->
       "namespace n50361s.zed\n  rule zed(3) :- true\n  rule q(?x) :- zed(?x)\nend\n")
     assertEquals(answers(kb, "n50361s.zed.q", 3), 1)
+  }
+
+  test("an equation whose subject names a namespace is refused") {
+    val child = "namespace n50361u.zed\n  entity X(v: Int64)\nend\n"
+    for (label, src) <- Seq(
+      ("applied", s"namespace n50361u\n  rule zed(1) <=> 2 @[simp]\nend\n$child"),
+      ("qualified", s"namespace n50361v\n  rule n50361u.zed(1) <=> 2 @[simp]\nend\n$child"),
+    ) do
+      val errs = errorsOf("u.anthill" -> src)
+      assert(errs.exists(_.contains("this equation's subject names the namespace `n50361u.zed`")),
+        s"$label: $errs")
   }

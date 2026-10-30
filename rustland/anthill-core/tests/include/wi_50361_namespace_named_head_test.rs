@@ -20,6 +20,9 @@
 //!    an effect guard and in a query (`NamespaceAsGoal`); before, each answered through the
 //!    clause a namespace declaration files under its own name, `true`. Found on the way: a
 //!    query's goal slot did not read a dotted paren-less name as the name it spells.
+//! E. AN EQUATION'S SUBJECT IS NO NAMESPACE AND NO CONST (decided with the user after D):
+//!    an equation's head is its connective, so C's refusal did not see one whose subject
+//!    names either; `EquationSubjectNamesNoFunction` does.
 //!
 //! WHAT FAILS UNDER WHICH BACK-OUT — MEASURED, each switched off alone in one build, over this
 //! file and the whole `wi_tests` binary:
@@ -44,7 +47,11 @@
 //!     [`a_namespace_is_not_a_goal_in_a_contract_or_a_guard`];
 //!   * the query walk's goal-slot collapse → [`a_dotted_name_in_a_query_goal_slot_is_the_name_it_spells`],
 //!     and `anthill-cli`'s `query_cmd_test::a_namespace_is_not_a_query_goal`, which the
-//!     CLI's own check (`report_namespace_query_goals`) fails alone too.
+//!     CLI's own check (`report_namespace_query_goals`) fails alone too;
+//!   * the equation arm of `Loader::refuse_if_head_names_no_relation` →
+//!     [`an_equation_subject_naming_a_namespace_or_a_const_is_refused`] alone; its
+//!     control [`an_equation_inside_the_namespace_defines_its_own_subject`] passes;
+//!     reading a body-less `=` as an equation → [`a_bodyless_eq_is_no_equation_in_either_spelling`].
 //!
 //!   PASS EITHER WAY, by design: [`the_declared_entity_and_the_declared_predicate_were_already_their_own`],
 //!   the control. Outside this binary, `anthill-cli`'s
@@ -378,4 +385,85 @@ fn a_dotted_name_in_a_query_goal_slot_is_the_name_it_spells() {
     assert_eq!(answers(&mut kb, "not(test.n50361t.flag)"), 0, "negated");
     assert_eq!(answers(&mut kb, "test.n50361t.flag | test.n50361t.flag"), 1, "a branch");
     assert_eq!(answers(&mut kb, "not(test.n50361t.flag())"), 0, "control, parenthesised");
+}
+
+// ── E. An equation's subject is no namespace and no const ───────────────────
+
+/// An equation (`<=>`, or a guarded `=`) defines its SUBJECT, and neither a namespace nor a
+/// const is a function it can define — decided with the user, after D. Before, each loaded:
+/// `rule zed(1) <=> 2 @[simp]` beside `namespace probe.zed` made an operation body's
+/// `zed(1)` answer 2, and so did the const twin.
+#[test]
+fn an_equation_subject_naming_a_namespace_or_a_const_is_refused() {
+    let child = "namespace test.n50361u.zed\n  entity X(v: Int64)\nend\n";
+    for (label, src, named) in [
+        (
+            "namespace, applied",
+            format!("namespace test.n50361u\n  rule zed(1) <=> 2 @[simp]\nend\n{child}"),
+            "the namespace `test.n50361u.zed`",
+        ),
+        (
+            "namespace, bare",
+            format!("namespace test.n50361u\n  rule zed <=> 2 @[simp]\nend\n{child}"),
+            "the namespace `test.n50361u.zed`",
+        ),
+        (
+            "namespace, qualified",
+            format!("namespace test.n50361v\n  rule test.n50361u.zed(1) <=> 2 @[simp]\nend\n{child}"),
+            "the namespace `test.n50361u.zed`",
+        ),
+        (
+            "const",
+            "namespace test.n50361w\n  const zc: Int64 = 1\n  rule zc(1) <=> 2 @[simp]\nend\n".to_owned(),
+            "the const `test.n50361w.zc`",
+        ),
+        (
+            "const, fact spelling",
+            "namespace test.n50361w\n  const zc: Int64 = 1\n  fact zc <=> 2 @[simp]\nend\n".to_owned(),
+            "the const `test.n50361w.zc`",
+        ),
+        (
+            "const, guarded `=`",
+            "namespace test.n50361w\n  const zc: Int64 = 1\n  rule zc(?x) = 2 :- ?x = 1\nend\n"
+                .to_owned(),
+            "the const `test.n50361w.zc`",
+        ),
+    ] {
+        let errs = load_errors_of(&src);
+        assert_refused_naming(
+            &errs,
+            &[&format!("this equation's subject names {named}")],
+            label,
+        );
+    }
+}
+
+/// CONTROL, passing with E's refusal backed out: written inside the namespace, the subject
+/// reaches it from the enclosing scope and gets a symbol of its own (part A), whose
+/// equation fires.
+#[test]
+fn an_equation_inside_the_namespace_defines_its_own_subject() {
+    let got = crate::common::run_int64(
+        "namespace test.n50361x.zed\n  import anthill.prelude.{Int64}\n  rule zed(1) <=> 2 @[simp]\n  \
+         operation useit() -> Int64 = zed(1)\nend\n",
+        "test.n50361x.zed.useit",
+    );
+    assert_eq!(got, Ok(2));
+}
+
+/// A body-less `=` defines nothing and is refused as that, in the `rule` spelling and the
+/// `fact` one alike, not as an equation about its subject (found by `/code-review`: the
+/// `rule` spelling reported the subject, the `fact` one the connective).
+#[test]
+fn a_bodyless_eq_is_no_equation_in_either_spelling() {
+    for clause in ["rule zc(1) = 2", "fact zc(1) = 2"] {
+        let errs = load_errors_of(&format!(
+            "namespace test.n50361y\n  const zc: Int64 = 1\n  {clause}\nend\n"
+        ));
+        assert_refused_naming(&errs, &["`=` is the semantic equality TEST"], clause);
+        assert!(
+            !errs.iter().any(|e| e.contains("this equation's subject")),
+            "{clause}: {errs:#?}"
+        );
+    }
 }
