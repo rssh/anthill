@@ -1182,8 +1182,10 @@ an operation passed as data — with the written clause's refusal beside it (§6
 Not this part's, measured on the way, each the same on 083cb6b8:
 
 - A closure handed to another relation through its head answers nothing, pure or not
-  (`pureThunk(?f), thunkVia(?f, ?r)`); in one clause it answers. An effectful one is refused
-  where it is handed over (above); a pure one still answers nothing.
+  (`pureThunk(?f), thunkVia(?f, ?r)`); in one clause it answers (WI-20261023-W2JP7). An
+  effectful one is refused where it is handed over (above). Delivered by that ticket: a head
+  match carries each binding on the carrier it was bound on, a closure and a lambda included,
+  so the pure one answers, and a negation over it is decided.
 - Unparenthesized at a side of `<=>`, `lambda () -> now()` is read as the arrow term
   `arrow(lambda, now())`, not a lambda: `?f <=> lambda () -> now()` binds `?f` to that term.
   Parenthesized, and in a call's argument, it is a lambda.

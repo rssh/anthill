@@ -10687,6 +10687,83 @@ impl KnowledgeBase {
         }
     }
 
+    /// [`Self::substitute_vars_transient`] on every carrier: a term goes through it, a
+    /// variable on any carrier is `leaf`'s, an entity or tuple spine is rebuilt only where a
+    /// child changed, and an occurrence is `node`'s — the caller's opener; one that hands
+    /// back a new `Rc` counts as a change, so its parent spine is rebuilt. A scalar or a
+    /// runtime handle (a closure, a stream, a map) holds no variable and rides through as it
+    /// is.
+    pub(crate) fn substitute_vars_transient_value(
+        &mut self,
+        v: &crate::eval::value::Value,
+        leaf: &mut dyn FnMut(&mut Self, &Var) -> Option<crate::eval::value::Value>,
+        node: &mut dyn FnMut(&mut Self, &Rc<NodeOccurrence>) -> Rc<NodeOccurrence>,
+    ) -> crate::eval::value::Value {
+        self.substituted_value(v, leaf, node).unwrap_or_else(|| v.clone())
+    }
+
+    /// The walk of [`Self::substitute_vars_transient_value`]: `None` when nothing in `v`
+    /// was substituted, so an untouched spine is shared rather than rebuilt.
+    fn substituted_value(
+        &mut self,
+        v: &crate::eval::value::Value,
+        leaf: &mut dyn FnMut(&mut Self, &Var) -> Option<crate::eval::value::Value>,
+        node: &mut dyn FnMut(&mut Self, &Rc<NodeOccurrence>) -> Rc<NodeOccurrence>,
+    ) -> Option<crate::eval::value::Value> {
+        use crate::eval::value::Value;
+        if let Some(var) = term_view::TermView::index_var(v, self) {
+            return leaf(self, &var);
+        }
+        // `substitute_vars_transient`'s idiom: stack buffers and a `changed` flag, so an
+        // untouched spine costs no heap allocation.
+        let mut children = |kb: &mut Self, pos: &[Value], named: &[(Symbol, Value)]| {
+            let mut changed = false;
+            let mut sub = |kb: &mut Self, c: &Value| match kb.substituted_value(c, leaf, node) {
+                Some(out) => {
+                    changed = true;
+                    out
+                }
+                None => c.clone(),
+            };
+            let pos: SmallVec<[Value; 4]> = pos.iter().map(|c| sub(kb, c)).collect();
+            let named: SmallVec<[(Symbol, Value); 2]> =
+                named.iter().map(|(s, c)| (*s, sub(kb, c))).collect();
+            changed.then(|| (Rc::from(&pos[..]), Rc::from(&named[..])))
+        };
+        match v {
+            Value::Term { id } => {
+                let out = self.substitute_vars_transient(*id, leaf);
+                (!matches!(out, Value::Term { id: same } if same == *id)).then_some(out)
+            }
+            Value::Node(occ) => {
+                let out = node(self, occ);
+                (!Rc::ptr_eq(&out, occ)).then(|| Value::Node(out))
+            }
+            Value::Entity { functor, pos, named } => children(self, pos, named)
+                .map(|(pos, named)| Value::Entity { functor: *functor, pos, named }),
+            Value::Tuple { pos, named } => {
+                children(self, pos, named).map(|(pos, named)| Value::Tuple { pos, named })
+            }
+            Value::Var(_)
+            | Value::Int(_)
+            | Value::BigInt(_)
+            | Value::Float(_)
+            | Value::Bool(_)
+            | Value::Str(_)
+            | Value::Unit
+            | Value::SymbolRef(_)
+            | Value::Closure(_)
+            | Value::OpRef { .. }
+            | Value::Stream(_)
+            | Value::Substitution(_)
+            | Value::Map(_)
+            | Value::Cell(_)
+            | Value::Kb(_)
+            | Value::FactRef(_)
+            | Value::Relation { .. } => None,
+        }
+    }
+
     /// `vid`'s chain end when it is CONCRETE — `None` for an unbound var and for a
     /// chain ending at one. The shape every σ-reading gate wants for a value-level
     /// var inside a compound carrier (`value_is_ground`, the open-world-ref reader,
@@ -10943,17 +11020,9 @@ impl KnowledgeBase {
     /// occurrences and paid nothing). Pinned flat in
     /// `wi_7ypgm_goal_walk_flatness_test::the_walk_is_flat_over_an_unbound_link`.
     ///
-    /// **AND THIS FUNCTION IS THEN THE ONE THAT ENTERS IT** — said here because the
-    /// sentence above stopped one clause short in 7YPGM's first cut and `/code-review`
-    /// measured the difference. The `tree_subst` NORMALIZATION below re-interns every
-    /// non-`Term` entry through `value_to_term`, and a σ-moved goal is now an
-    /// `Entity`, so a goal that goes on to make a HEAD MATCH puts its spine — fresh
-    /// var and all — back into the store. That comment's "every stdlib case today"
-    /// fast path is narrower than it was. MEASURED on `[loose(?a, ?y), unify(?x,
-    /// Box(v: ?y)), takes(?x)]`: +4 per resolve before 7YPGM, +2 after — halved, not
-    /// closed. Closing it means retiring the term-only `tree_subst` reads beneath
-    /// (the WI-636 boundary), which is why it is PINNED rather than fixed:
-    /// `wi_7ypgm_goal_walk_flatness_test::a_head_match_over_an_entity_goal_still_interns`.
+    /// The head match's own bindings ride as they were bound, on every carrier — a
+    /// closure the goal hands a clause included — so a goal that makes a head match
+    /// over an `Entity` spine does not put the spine back into the store either.
     pub fn with_fresh_vars(
         &mut self,
         id: RuleId,
@@ -10978,73 +11047,15 @@ impl KnowledgeBase {
         // longer opened/renamed here — it is on no resolution path.
         let body_nodes = self.rules[id.index()].body_nodes.clone();
 
-        // WI-246 / WI-636: matching a value goal binds head/rule vars to
-        // non-`Term` subparts of the goal. Every De Bruijn / rename / answer-link
-        // walk below reads `tree_subst` term-only (`iter_terms` in the arity > 0
-        // passes; `resolve_as_value` narrowed to `Value::Term` in the arity-0
-        // legacy path), so a non-`Term` entry left as a `Value` is SILENTLY
-        // dropped — losing the head-match constraint and letting the body run
-        // unconstrained (a wrong under-bound answer, or exponential
-        // over-exploration). Concretely (WI-636): a synthetic `u32::MAX - n` entry
-        // bound to a non-`Term` value never enters `body_rename`, and a non-`Term`
-        // query-var link never reaches `answer_links`.
-        //
-        // So route EVERY non-`Term` carrier through the total `value_to_term`
-        // boundary here, at this single choke point (it precedes the arity split,
-        // so it hardens both paths):
-        //  - Reify the structural subset to a hash-consed term — `Node` losslessly
-        //    via `occurrence_to_term`, an `Entity` (recursing through its
-        //    children), and the scalar / `Var` leaves — so the walks below see it.
-        //    A `Value::Entity{ctor, [scalar…]}` operand (the common eq-bridge
-        //    case) now fires the rule correctly instead of being dropped.
-        //  - A carrier with NO faithful term form — an opaque runtime handle
-        //    (`Closure`/`Stream`/`Map`/`Cell`/`Substitution`/`Relation`), or an
-        //    `Entity` carrying one — cannot enter the TermId `body_rename`
-        //    machinery, so the rule candidate simply can't fire over this match:
-        //    DROP it (mark `contradiction`, exactly like the occurs-check drop
-        //    below and the resolver's `tree_subst`-contradiction drop). This IS
-        //    reachable on real input — the WI-625 eval→SLD `eq`/`neq` bridge feeds
-        //    raw ground operands into a rule-backed `eq`'s head match — so a
-        //    process-aborting panic here would crash on legitimate user code. (A
-        //    tuple is no such carrier: it lowers to its `TupleLiteral(_1: …)` term.)
-        //    Dropping the candidate makes `eq` fall back to its structural verdict
-        //    (what it already does when no override can decide), not a silent
-        //    unbound-var wrong answer. Reifying the operand at the producer (the
-        //    eq-bridge) is the deeper fix — recorded against WI-625.
-        // Fast-path: an all-`Term` `tree_subst` (every stdlib case today) passes
-        // through untouched (no rebuild, preserves any parent chain).
-        let normalized;
-        let tree_subst = if tree_subst
-            .iter()
-            .any(|(_, v)| !matches!(v, crate::eval::value::Value::Term { .. }))
-        {
-            let entries: Vec<(VarId, crate::eval::value::Value)> = tree_subst
-                .iter()
-                .map(|(v, val)| (*v, val.clone()))
-                .collect();
-            let mut norm = subst::Substitution::new();
-            for (vid, val) in entries {
-                match val {
-                    crate::eval::value::Value::Term { id: t, .. } => norm.bind(self, vid, t),
-                    other => match node_occurrence::value_to_term(self, &other) {
-                        Ok(t) => norm.bind(self, vid, t),
-                        // Un-reifiable carrier (Tuple / opaque handle / Unit, or an
-                        // Entity carrying one): can't ride the TermId body_rename,
-                        // so this candidate can't match — drop it gracefully.
-                        Err(_e) => {
-                            let mut contradicted = subst::Substitution::new();
-                            contradicted.contradiction = true;
-                            return (Vec::new(), contradicted);
-                        }
-                    },
-                }
-            }
-            normalized = norm;
-            &normalized
-        } else {
-            tree_subst
-        };
-
+        // A head match binds on every carrier the goal and the head are written on — a term,
+        // an occurrence, an entity spine, a scalar, and a value with no term form at all (a
+        // closure an operation returned, a lambda written as an argument). Each binding
+        // rides into the clause AS THE VALUE IT IS: a slot the match bound goes into
+        // `body_rename`, which `substitute_occurrence` splices on any carrier, and a caller's
+        // link is opened by [`Self::substitute_vars_transient_value`], which reads every
+        // carrier. Nothing is lowered to a term on the way, so the match's `contradiction`
+        // means what it says — the two sides do not unify, or an occurs check failed — and a
+        // binding is never the reason a candidate is dropped.
         if arity > 0 {
             // De Bruijn path: allocate N fresh vars, open DeBruijn to Global
             let name_sym = self.intern("_");
@@ -11065,9 +11076,6 @@ impl KnowledgeBase {
             //    Open any DeBruijn vars in the value to their fresh globals.
             let mut answer_links = subst::Substitution::new();
             let mut body_rename = subst::Substitution::new();
-            // `iter_terms` is total here: the WI-636 normalization above reified
-            // every non-`Term` entry (or dropped the candidate).
-            //
             // Two passes (WI-624): `body_rename` must be COMPLETE before any
             // query-var link is opened. A nonlinear head (`unbox(box(v: ?v), ?v)`)
             // binds the rule var concretely through one occurrence (a synthetic
@@ -11077,14 +11085,14 @@ impl KnowledgeBase {
             // and the answer leaks an unbound fresh var. (The arity-0 legacy
             // path below always threaded links through its `rename` — this
             // restores that parity for the De Bruijn path.)
-            for (ts_vid, bound_term) in tree_subst.iter_terms() {
+            for (ts_vid, bound) in tree_subst.iter() {
                 // `u32::MAX - n` decode (`Var::synthetic_debruijn_index`); this
                 // is now its sole caller (the former `apply_eq_rules` /
                 // `instantiate_eq_rhs` site is gone — `fire_simp_equation` binds
                 // head vars via `match_view` instead).
-                if let Some(db_index) = Var::synthetic_debruijn_index(ts_vid, arity) {
+                if let Some(db_index) = Var::synthetic_debruijn_index(*ts_vid, arity) {
                     if let Some(&fresh_vid) = fresh_vars.get(db_index) {
-                        body_rename.bind(self, fresh_vid, bound_term);
+                        body_rename.bind_value(self, fresh_vid, bound.clone());
                     }
                 }
             }
@@ -11100,18 +11108,13 @@ impl KnowledgeBase {
                     // `term_from_debruijn` kept it as a De Bruijn term, which then
                     // matched as a constant, silently.
                     //
-                    // DELIBERATELY NOT the `contradiction` drop the WI-636
-                    // normalization above uses, and the difference is REACHABILITY,
-                    // not taste. That drop exists because an un-reifiable carrier
-                    // arrives from real user input (the WI-625 eq-bridge feeds raw
-                    // ground operands into a rule-backed `eq`), so aborting there
-                    // would crash on a correct program. THIS condition is an
-                    // invariant violation inside our own loader — no anthill source
+                    // Not a `contradiction`: that flag means the match failed — the
+                    // two sides do not unify, or an occurs check — and this is an
+                    // invariant violation inside our own loader. No anthill source
                     // can produce a head whose index exceeds the arity recorded for
-                    // it — so there is no legitimate program to protect. Dropping
-                    // the candidate would convert a loader bug into a silently
-                    // missing answer, which is the failure mode the panic exists to
-                    // prevent.
+                    // it, so there is no legitimate program to protect, and dropping
+                    // the candidate would turn a loader bug into a silently missing
+                    // answer.
                     let f = *fresh_vars.get(*i as usize).unwrap_or_else(|| {
                         panic!(
                             "with_fresh_vars: De Bruijn slot #{i} is outside the rule's \
@@ -11128,11 +11131,25 @@ impl KnowledgeBase {
                 }
                 _ => None,
             };
-            for (ts_vid, bound_term) in tree_subst.iter_terms() {
+            // A head subterm on an occurrence (a value head) opens as the body does. The
+            // opener keeps an index outside `fresh_vars` as it is where the leaf above
+            // panics, so the same loader bug is caught here before it reaches σ.
+            let mut open_node = |kb: &mut Self, occ: &Rc<NodeOccurrence>| {
+                let opened = node_occurrence::open_debruijn_node(kb, occ, &fresh_vars);
+                debug_assert!(
+                    !kb.mentions_debruijn(&crate::eval::value::Value::Node(Rc::clone(&opened))),
+                    "with_fresh_vars: a head subterm keeps a De Bruijn slot outside the rule's \
+                     arity {arity} — the loader recorded a smaller arity than the head uses"
+                );
+                node_occurrence::substitute_occurrence(kb, &opened, &body_rename)
+            };
+            for (ts_vid, bound) in tree_subst.iter() {
+                let ts_vid = *ts_vid;
                 if Var::synthetic_debruijn_index(ts_vid, arity).is_some() {
                     continue;
                 }
-                let linked = self.substitute_vars_transient(bound_term, &mut rename_or_fresh);
+                let linked =
+                    self.substitute_vars_transient_value(bound, &mut rename_or_fresh, &mut open_node);
                 // Occurs check: the rename can route the query var's own
                 // term back into its link (`p(box(v: g(?q)), ?q)` links
                 // ?q → g(?q)); the SLD bind path is not occurs-checked and
@@ -11200,18 +11217,11 @@ impl KnowledgeBase {
 
             let mut rename = subst::Substitution::new();
             for vid in &all_vars {
-                // Term-narrow is safe here: the top-of-function normalization
-                // (WI-636) already reified every non-`Term` binding to a term (or
-                // dropped the whole candidate on an un-reifiable carrier), so
-                // `resolve_as_value` sees a `Value::Term` for any bound rule var —
-                // a `Node`/scalar/`Entity` no longer falls through to a fresh var
-                // and drops its head-match constraint.
-                if let Some(crate::eval::value::Value::Term { id: bound, .. }) =
-                    tree_subst.resolve_as_value(*vid)
-                {
-                    let bound = *bound;
-                    if !matches!(self.terms.get(bound), Term::Var(_)) {
-                        rename.bind(self, *vid, bound);
+                // A head var the match bound to a value — on any carrier — takes it; one
+                // bound to a variable is freshened below.
+                if let Some(bound) = tree_subst.resolve_as_value(*vid) {
+                    if term_view::TermView::index_var(bound, self).is_none() {
+                        rename.bind_value(self, *vid, bound.clone());
                         continue;
                     }
                 }
@@ -11245,12 +11255,16 @@ impl KnowledgeBase {
                 Var::Global(g) => rename.resolve_as_value(*g).cloned(),
                 _ => None,
             };
+            let mut renamed_node = |kb: &mut Self, occ: &Rc<NodeOccurrence>| {
+                node_occurrence::substitute_occurrence(kb, occ, &rename)
+            };
             let mut answer_links = subst::Substitution::new();
-            for (ts_vid, bound_term) in tree_subst.iter_terms() {
+            for (ts_vid, bound) in tree_subst.iter() {
+                let ts_vid = *ts_vid;
                 if all_vars.contains(&ts_vid) {
                     continue;
                 }
-                let linked = self.substitute_vars_transient(bound_term, &mut renamed);
+                let linked = self.substitute_vars_transient_value(bound, &mut renamed, &mut renamed_node);
                 // The occurs check the De Bruijn path has: a nonlinear Global-var
                 // head (`fact p(box(v: ?v), ?v)` queried `p(box(v: g(?q)), ?q)`)
                 // renames `?v ↦ g(?q)` and would link `?q ↦ g(?q)` — a cyclic σ
@@ -15638,14 +15652,16 @@ mod tests {
     }
 
     #[test]
-    fn with_fresh_vars_reifies_synthetic_non_term_binding() {
+    fn with_fresh_vars_carries_a_synthetic_non_term_binding() {
         // WI-636: a synthetic `u32::MAX - n` head-match entry bound to a NON-Term
         // Value (a scalar) must reach `body_rename` and substitute into the body.
-        // The old `iter_terms` walk narrowed to `Value::Term` and SILENTLY dropped
-        // it, leaving the body running on an unbound fresh var (the head-match
+        // An `iter_terms` walk narrows to `Value::Term` and SILENTLY drops it,
+        // leaving the body running on an unbound fresh var (the head-match
         // constraint lost). Build rule `p(?x) :- q(?x)`, hand-feed "DeBruijn 0
         // matched scalar 5" as a `Value::Int` synthetic entry, and assert the
-        // opened body is `q(5)` — not `q(?fresh)`.
+        // opened body is `q(5)` — not `q(?fresh)`. Passes with WI-20261023-W2JP7's
+        // change backed out as well, by design: the lowering it removed gave a scalar
+        // a term form.
         use crate::eval::value::Value;
         use term::Var;
 
@@ -15763,19 +15779,18 @@ mod tests {
     }
 
     #[test]
-    fn with_fresh_vars_drops_candidate_on_unreifiable_carrier() {
-        // WI-636: a carrier with no faithful term form reaching a head match must
-        // NOT panic (that would abort the process on legitimate user input — the
-        // WI-625 eq/neq bridge routes a `Value::Entity{ctor, [Value::Tuple…]}`
-        // operand here) and must NOT be silently dropped into an unbound-var wrong
-        // answer. Instead the candidate is dropped (`contradiction`), so eq falls
-        // back to its structural verdict. Feed `mk(<a relation>)` — an Entity
-        // carrying a term-less child (it was a `Value::Tuple` until a tuple became
-        // the `TupleLiteral(_1: …)` term, WI-20261011-7G99A) — and assert the
-        // returned links are a contradiction (candidate dropped).
+    fn with_fresh_vars_carries_a_carrier_with_no_term_form() {
+        // WI-20261023-W2JP7: a head-match binding with no term form — here `mk(<a
+        // relation>)`, an Entity carrying a runtime handle; a closure is the case a
+        // program meets — rides into the body as the value it is. It used to mark the
+        // match contradictory, dropping a candidate that matches, in silence. FAILS with
+        // the lowering of every binding put back, and with it put back at a clause's slot
+        // alone; passes with it put back at a fact's variable or a caller's link, which
+        // this rule's match does not reach (measured).
         use crate::eval::value::Value;
         use std::rc::Rc;
         use term::Var;
+        use term_view::{TermView, ViewHead};
 
         let mut kb = KnowledgeBase::new();
         let p = kb.intern("p");
@@ -15799,8 +15814,6 @@ mod tests {
         let body_nodes = kb.term_body_to_nodes(&[body_q]);
         let rid = kb.assert_rule_debruijn_with_nodes(head, body_nodes, sort, domain, None);
 
-        // A term-less child nested in an Entity — value_to_term recurses into it
-        // and errors, so the whole candidate is dropped.
         let relation = Value::Relation {
             query: Rc::new(Value::Unit),
             columns: Rc::from(vec![]),
@@ -15814,27 +15827,28 @@ mod tests {
         tree_subst.bind_value(&kb, Var::DeBruijn(0).as_vid(), entity);
 
         let (fresh_nodes, links) = kb.with_fresh_vars(rid, &tree_subst);
+        assert!(!links.is_contradiction(), "a binding is no contradiction");
+        assert_eq!(fresh_nodes.len(), 1, "one body atom q(?x)");
+        let body = Value::Node(Rc::clone(&fresh_nodes[0]));
+        assert!(matches!(body.head(&kb), ViewHead::Functor { functor, .. } if functor == q));
+        let arg = body.pos_arg(&kb, 0).expect("q has its argument");
         assert!(
-            links.is_contradiction(),
-            "an un-reifiable carrier must drop the candidate (contradiction), not panic/leak",
-        );
-        assert!(
-            fresh_nodes.is_empty(),
-            "dropped candidate yields no body nodes"
+            matches!(arg.head(&kb), ViewHead::Functor { functor, .. } if functor == mk),
+            "the body's argument is the bound `mk(…)`, not a fresh variable",
         );
     }
 
     #[test]
-    fn prove_rule_predicate_no_panic_on_an_unreifiable_operand() {
-        // WI-636 end-to-end: this replicates the reachable path the WI-625 eq/neq
-        // bridge drives — `prove_rule_predicate` builds an Entity goal from raw
-        // ground operands and resolves it through `with_fresh_vars`. An operand
-        // that is a `Value::Entity` carrying a term-less child used to panic
-        // (aborting the process); it must now resolve without crashing, the rule
-        // candidate dropping so the predicate is simply unproved (`Refuted`). The
-        // child was a `Value::Tuple` until a tuple became the `TupleLiteral(_1: …)`
-        // term a rule writes for it (WI-20261011-7G99A): an operand carrying one now
-        // reifies, and the predicate holds.
+    fn prove_rule_predicate_holds_over_an_operand_with_no_term_form() {
+        // The path the WI-625 eq/neq bridge drives — `prove_rule_predicate` builds an
+        // Entity goal from raw ground operands and resolves it through
+        // `with_fresh_vars`. An operand carrying a value with no term form matches
+        // `pr(?a, ?b) :- marker` as any other does (WI-20261023-W2JP7); it used to drop
+        // the candidate, so the predicate read as refuted. A tuple operand lowers to its
+        // `TupleLiteral(_1: …)` term (WI-20261011-7G99A) and holds too. FAILS with the
+        // lowering of every binding put back, and with it put back at a clause's slot
+        // alone; passes with it put back at a fact's variable or a caller's link
+        // (measured).
         use crate::eval::value::Value;
         use crate::kb::resolve::PredicateProof;
         use std::rc::Rc;
@@ -15874,19 +15888,16 @@ mod tests {
             named: Rc::from(Vec::<(crate::intern::Symbol, Value)>::new()),
         };
 
-        // Operand `mk(<a relation>)`: an Entity carrying a term-less child. No panic;
-        // the candidate drops, so the predicate is unproved.
         let relation = Value::Relation {
             query: Rc::new(Value::Unit),
             columns: Rc::from(vec![]),
         };
         let proof = kb.prove_rule_predicate(pr, vec![under_mk(relation), Value::Int(0)]);
         assert!(
-            matches!(proof, PredicateProof::Refuted),
-            "un-reifiable operand → dropped candidate → Refuted (no crash)",
+            matches!(proof, PredicateProof::Proved),
+            "an operand with no term form matches the head: {proof:?}",
         );
 
-        // Operand `mk((1, 2))`: the tuple reifies, and `pr(?a, ?b) :- marker` holds.
         let tuple = Value::Tuple {
             pos: Rc::from(vec![Value::Int(1), Value::Int(2)]),
             named: Rc::from(Vec::<(crate::intern::Symbol, Value)>::new()),
@@ -15894,7 +15905,7 @@ mod tests {
         let proof = kb.prove_rule_predicate(pr, vec![under_mk(tuple), Value::Int(0)]);
         assert!(
             matches!(proof, PredicateProof::Proved),
-            "a tuple operand reifies: {proof:?}",
+            "a tuple operand holds: {proof:?}",
         );
     }
 

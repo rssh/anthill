@@ -83,17 +83,17 @@
 //! `value_is_ground` / `collect_unbound_vars_value` / `value_has_open_world_ref` are
 //! carrier-neutral since WI-629.
 //!
-//! # WHAT THIS TICKET DOES NOT CLOSE
+//! # What this ticket did not close, and what closed it
 //!
-//! The leak is HALVED on a goal that then makes a HEAD MATCH, not closed — corrected
+//! The leak was HALVED on a goal that then makes a HEAD MATCH, not closed — corrected
 //! here after `/code-review` measured the first cut's `with_fresh_vars` note ("nothing
-//! on this path enters" the store) FALSE. That function normalizes every non-`Term`
+//! on this path enters" the store) FALSE. That function normalized every non-`Term`
 //! `tree_subst` entry back through `value_to_term`, because the walks beneath it read
 //! `tree_subst` term-only (the WI-636 boundary), and an `Entity` goal is exactly what
-//! now arrives there. `[loose(?a, ?y), unify(?x, Box(v: ?y)), takes(?x)]` grew +4 per
-//! resolve at HEAD and grows +2 here. Pinned by
-//! [`a_head_match_over_an_entity_goal_still_interns`], which is deleted the day that
-//! boundary is retired.
+//! arrives there. `[loose(?a, ?y), unify(?x, Box(v: ?y)), takes(?x)]` grew +4 per
+//! resolve before this ticket and +2 after it. WI-20261023-W2JP7 retired that boundary
+//! (a head match's bindings ride on the carrier they were bound on) and it grows 0:
+//! [`a_head_match_over_an_entity_goal_interns_nothing`].
 //!
 //! # What each row measures, and what fails when the change is backed out
 //!
@@ -293,7 +293,7 @@ fn a_bound_link_was_already_flat() {
     }
 }
 
-// ── The residue this ticket does NOT close, pinned ───────────────────────────
+// ── A head match over an Entity goal ─────────────────────────────────────────
 
 /// `takes(?b)` gives the goal a HEAD MATCH to make; `unify` binds `?x` to a spine
 /// whose leaf is the still-unbound link, so the third goal reaches that head match
@@ -307,35 +307,19 @@ namespace ypgm_z
 end
 "#;
 
-/// THE LEAK IS HALVED, NOT CLOSED, AND THE RESIDUE IS AT A DIFFERENT SITE. Found by
-/// `/code-review` against the first cut of this ticket, whose `with_fresh_vars` note
-/// claimed "nothing on this path enters" the store — which was false.
-///
-/// `with_fresh_vars` normalizes every NON-`Term` `tree_subst` entry back through
-/// `value_to_term` (mod.rs, the WI-636 choke point) because the De Bruijn / rename /
-/// answer-link walks beneath it read `tree_subst` term-only. Its own comment calls
-/// that the fast path's rare case — "an all-`Term` `tree_subst` (every stdlib case
-/// today) passes through untouched" — and this ticket makes it LESS rare: a σ-moved
-/// goal is now an `Entity`, so the head match it makes binds an `Entity` and the
-/// normalization re-interns the spine, fresh var and all.
-///
-/// MEASURED on `[loose(?a, ?y), unify(?x, Box(v: ?y)), takes(?x)]`, one definite
-/// solution throughout, growth per resolve:
+/// THE HEAD MATCH INTERNS NOTHING EITHER. MEASURED on `[loose(?a, ?y), unify(?x, Box(v:
+/// ?y)), takes(?x)]`, one definite solution throughout, growth per resolve:
 ///
 /// | tree | growth | interned at |
 /// |---|---|---|
-/// | HEAD | **+4** | `step_init`'s walk (`fn_value`) |
-/// | `Transient` carrier backed out (`reify_value_on`) | **+4** | same |
+/// | before this ticket | **+4** | `step_init`'s walk (`fn_value`) |
 /// | this ticket | **+2** | `with_fresh_vars` → `value_to_term` |
+/// | WI-20261023-W2JP7 | **0** | — |
 ///
-/// So the ticket is a net −2 on this shape and a full close on
-/// [`the_walk_is_flat_over_an_unbound_link`]'s (which has no head match over a
-/// non-`Term` entry, so it never reaches the normalization). ASSERTED SO THE SITE IS
-/// REMEMBERED, not relaxed: this row goes red the day the `tree_subst` term-only
-/// boundary is retired, and is DELETED then — as N20EZ's residual row was by this
-/// ticket, and J0RM4's by N20EZ.
+/// FAILS with `with_fresh_vars`' lowering of every binding to a term put back (grew 2), and
+/// with it put back at a clause's slot alone.
 #[test]
-fn a_head_match_over_an_entity_goal_still_interns() {
+fn a_head_match_over_an_entity_goal_interns_nothing() {
     let mut kb = load_with_stdlib(RESIDUE_SRC);
     let box_sym = kb.try_resolve_symbol("ypgm_z.Box").expect("Box resolves");
     let v_sym = kb.intern("v");
@@ -364,13 +348,7 @@ fn a_head_match_over_an_entity_goal_still_interns() {
     let after_first = kb.term_store_len();
     assert_eq!(definite(&mut kb, &[g1, g2, g3]).len(), 1);
     let grew = kb.term_store_len() - after_first;
-    assert!(
-        grew > 0,
-        "`with_fresh_vars`' `value_to_term` normalization no longer interns the \
-         `Entity` goal's head match — the residue named in this file's header has \
-         been closed. DELETE this row rather than relax it (grew {grew}; it was 2 \
-         when this ticket landed and 4 before it)",
-    );
+    assert_eq!(grew, 0, "a head match over an `Entity` goal interned {grew} entries");
 }
 
 // ── THE READERS, each driven with an Entity-carried goal ─────────────────────

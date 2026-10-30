@@ -3008,22 +3008,19 @@ impl SearchStream {
                 // builds then fails. Same sentence as the paragraph above, one shape in:
                 // that repair fixed the CARRIER and this one fixes the SHAPE.
                 //
-                // THREE PRODUCERS REACH IT, which is why the repair is here and not at any
+                // THREE PRODUCERS REACHED IT, which is why the repair is here and not at any
                 // one of them. All three were MEASURED silently answering nothing, each by
                 // a program that loads clean and exits 0:
                 //   * A `|` / `&` BRANCH — the ticket's own. `kernel.or` / `kernel.and` are
                 //     stdlib RULES (`or(?a, ?b) :- push_choice(?a, ?b)`), so a branch is
-                //     bound by a HEAD MATCH — and `with_fresh_vars` (kb/mod.rs) reifies every
-                //     non-`Term` head-match binding through `value_to_term`, because the De
-                //     Bruijn / rename / answer-link walks under it read `tree_subst`
-                //     term-only (WI-636). That boundary's own doc calls the `Node` reification
-                //     LOSSLESS, and it is — for everything but a nullary call, which the canon
-                //     collapses on the way in. MEASURED: the `or` goal reaches this function
-                //     carrying `Node(Apply{onx})` at its source span; the branch, one head
-                //     match later, arrives as `Node(Ref(onx))` with the span zeroed.
-                //     `kernel.not` has no such rule — it is a builtin that reads its negand
-                //     off the goal's own view — and that is exactly why `not(onx)` reached the
-                //     view when a branch did not.
+                //     bound by a HEAD MATCH — and `with_fresh_vars` (kb/mod.rs) then reified
+                //     every non-`Term` head-match binding through `value_to_term` (WI-636),
+                //     which the canon collapses for a nullary call. MEASURED: the `or` goal
+                //     reached this function carrying `Node(Apply{onx})` at its source span;
+                //     the branch, one head match later, arrived as `Node(Ref(onx))` with the
+                //     span zeroed. Since WI-20261023-W2JP7 a head match carries each binding
+                //     on the carrier it was bound on, so a branch arrives as it was written;
+                //     the other two producers still need this site.
                 //   * A TOP-LEVEL QUERY. `load::nullary_query_canon` builds the transient
                 //     carrier's `Expr::Ref` deliberately, to keep the two carriers' canons
                 //     one test; so `anthill run`'s own query path could never reduce a
@@ -5219,29 +5216,16 @@ impl SearchStream {
             let mut merged = frame.subst.clone();
             // Path compression over the answer links, on every carrier. An answer
             // link is TRANSIENT (WI-20260905-N20EZ): `with_fresh_vars` builds it
-            // off the store as one of exactly three carriers — the shared
-            // `Value::Term` of an untouched head subterm, a fresh
-            // `Value::Var(Global)`, or a `Value::Entity` spine over those — and
-            // `bind_compressed` takes all three. (The fact fast-path above still
-            // narrows to `iter_terms`, because ITS non-`Term` entries are
-            // external-row carriers that need the occurs-checked `bind_waking`
-            // loop; WI-636's completeness fix for a non-`Term` HEAD-MATCH carrier
-            // lives at the source in `with_fresh_vars`.)
-            // Assert the construction SET, so a future edit that writes any other
-            // carrier into a link — a `Node` would have bypassed the WI-636
-            // normalization, a scalar the `Term` form of a head subterm — trips
-            // loudly in test/dev instead of riding into σ. (An UNOPENED De Bruijn
-            // slot cannot reach here: `with_fresh_vars`' leaf panics on an index
-            // outside the rule's arity.)
-            debug_assert!(
-                answer_links.iter().all(|(_, v)| matches!(
-                    v,
-                    Value::Term { .. } | Value::Var(Var::Global(_)) | Value::Entity { .. }
-                )),
-                "an answer link must be a shared Term, a fresh Global var, or an Entity \
-                 spine over those — the carriers `substitute_vars_transient` mints \
-                 (WI-20260905-N20EZ)",
-            );
+            // off the store — the shared `Value::Term` of an untouched head
+            // subterm, a fresh `Value::Var(Global)`, a spine rebuilt over one, or
+            // the value the match bound, on the carrier it was bound on (a closure
+            // the caller handed a nonlinear head) — and `bind_compressed` takes
+            // every carrier. (The fact fast-path above still narrows to
+            // `iter_terms`, because ITS non-`Term` entries are external-row
+            // carriers that need the occurs-checked `bind_waking` loop.) An
+            // UNOPENED De Bruijn slot cannot reach here: `with_fresh_vars`' leaf
+            // panics on an index outside the rule's arity, and its occurrence
+            // opener asserts the same.
             merged.bind_compressed(answer_links.bindings.into_iter(), kb);
             // WI-20260911-5G28A S2 — a CITATION's implicit arguments reach the clause
             // here, before any of its body runs: each requirement read of the opened

@@ -16,7 +16,8 @@ use super::common;
 
 use anthill_core::eval::value::Value;
 use anthill_core::kb::resolve::ResolveConfig;
-use anthill_core::kb::term::{Term, Var};
+use anthill_core::kb::term::Var;
+use anthill_core::kb::term_view::{TermView, ViewHead};
 use anthill_core::kb::KnowledgeBase;
 use common::load_kb_with;
 
@@ -77,16 +78,24 @@ fn realizes(
         named: std::rc::Rc::from(Vec::new()),
     };
     let sols = kb.resolve(&[goal], &ResolveConfig::default());
-    let mut out: Vec<String> = sols
+    // Read as `realizes_effect` reads it — `answer_binding`, then the name through the
+    // view on whichever carrier the answer rides — and loudly: an answer that is no
+    // name is a failure, not a row dropped from the list.
+    let bindings: Vec<Value> = sols
         .iter()
         .filter(|s| s.residual.is_empty())
-        .filter_map(|s| match s.subst.resolve_as_value(vid) {
-            Some(Value::Term { id, .. }) => match kb.get_term(*id) {
-                Term::Ref(s) | Term::Ident(s) => Some(kb.local_name_of(*s).to_string()),
-                Term::Fn { functor, .. } => Some(kb.local_name_of(*functor).to_string()),
-                _ => None,
-            },
-            _ => None,
+        .map(|s| {
+            kb.answer_binding(vid, &s.subst)
+                .unwrap_or_else(|| panic!("a definite answer left ?r unbound"))
+        })
+        .collect();
+    let mut out: Vec<String> = bindings
+        .iter()
+        .map(|v| match v.head(kb) {
+            ViewHead::Functor { functor, .. } | ViewHead::Ident(functor) => {
+                kb.local_name_of(functor).to_string()
+            }
+            _ => panic!("?r = {v:?} is no name"),
         })
         .map(|qn| qn.rsplit('.').next().unwrap_or(&qn).to_string())
         .collect();

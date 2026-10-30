@@ -5,7 +5,9 @@
 mod common;
 
 use anthill_core::kb::resolve::ResolveConfig;
-use anthill_core::kb::term::{Term, TermId, Var};
+use anthill_core::eval::Value;
+use anthill_core::kb::term::{Literal, Term, TermId, Var};
+use anthill_core::kb::term_view::{TermView, ViewHead};
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::persistence::print::TermPrinter;
 
@@ -55,29 +57,28 @@ fn make_query2(kb: &mut KnowledgeBase, qualified_functor: &str, arg1: &str, arg2
     })
 }
 
-/// Extract a string binding from a solution.
-fn extract_string(kb: &KnowledgeBase, term: TermId) -> Option<String> {
-    match kb.get_term(term) {
-        Term::Const(anthill_core::kb::term::Literal::String(s)) => Some(s.clone()),
+/// A string answer, on whichever carrier it rides.
+fn extract_string(kb: &KnowledgeBase, v: &Value) -> Option<String> {
+    match v.head(kb) {
+        ViewHead::Const(Literal::String(s)) => Some(s),
         _ => None,
     }
 }
 
-/// Resolve a named query var's binding in one solution to its term, loudly.
-fn binding_term(
-    kb: &KnowledgeBase,
+/// A named query var's answer in one solution, read as a consumer reads it
+/// (`answer_binding`), loudly.
+fn binding_value(
+    kb: &mut KnowledgeBase,
     query: TermId,
     sol: &anthill_core::kb::resolve::Solution,
     var_name: &str,
-) -> TermId {
+) -> Value {
     let query_vars = kb.collect_vars(&query);
-    let var = query_vars
+    let var = *query_vars
         .iter()
         .find(|v| kb.local_name_of(v.name()) == var_name)
         .unwrap_or_else(|| panic!("query has no var ?{var_name}"));
-    sol.subst
-        .resolve_as_value(*var)
-        .map(|v| v.expect_term())
+    kb.answer_binding(var, &sol.subst)
         .unwrap_or_else(|| panic!("?{var_name} unbound in solution"))
 }
 
@@ -85,15 +86,15 @@ fn binding_term(
 /// whose `?id` is unbound or not a String literal panics rather than being
 /// silently dropped from the comparison.
 fn sorted_ids(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     query: TermId,
     solutions: &[anthill_core::kb::resolve::Solution],
 ) -> Vec<String> {
     let mut ids: Vec<String> = solutions
         .iter()
         .map(|sol| {
-            let t = binding_term(kb, query, sol, "id");
-            extract_string(kb, t).unwrap_or_else(|| panic!("?id is not a String literal"))
+            let v = binding_value(kb, query, sol, "id");
+            extract_string(kb, &v).unwrap_or_else(|| panic!("?id is not a String literal"))
         })
         .collect();
     ids.sort();
@@ -151,7 +152,7 @@ fn claimable_resolves_only_wi_auth_001() {
     let query = make_query2(&mut kb, "anthill.stage0.workflow.claimable", "id", "desc");
     let solutions = kb.resolve(&[query], &resolve_config());
     assert_eq!(
-        sorted_ids(&kb, query, &solutions),
+        sorted_ids(&mut kb, query, &solutions),
         vec!["WI-AUTH-001"],
         "only WI-AUTH-001 has no dependencies",
     );
@@ -176,7 +177,7 @@ end
     let mut kb = load_github_todo_kb_with_extra(extra);
     let query = make_query2(&mut kb, "anthill.stage0.workflow.claimable", "id", "desc");
     let solutions = kb.resolve(&[query], &resolve_config());
-    let ids = sorted_ids(&kb, query, &solutions);
+    let ids = sorted_ids(&mut kb, query, &solutions);
 
     assert!(
         ids.contains(&"WI-CHILD".to_string()),
@@ -195,7 +196,7 @@ fn blocked_resolves_three() {
     let query = make_query2(&mut kb, "anthill.stage0.workflow.blocked", "id", "desc");
     let solutions = kb.resolve(&[query], &resolve_config());
     assert_eq!(
-        sorted_ids(&kb, query, &solutions),
+        sorted_ids(&mut kb, query, &solutions),
         vec!["WI-AUTH-002", "WI-AUTH-003", "WI-AUTH-004"],
         "3 items have unverified dependencies",
     );
@@ -229,7 +230,7 @@ fn wi717_omitted_optionals_stay_claimable() {
     let query = make_query2(&mut kb, "anthill.stage0.workflow.claimable", "id", "desc");
     let solutions = kb.resolve(&[query], &resolve_config());
     assert_eq!(
-        sorted_ids(&kb, query, &solutions),
+        sorted_ids(&mut kb, query, &solutions),
         vec!["WI-AUTH-001", "WI-NODEPS", "WI-NODESC"],
         "an item omitting depends_on (WI-NODEPS) or description (WI-NODESC) \
          must be claimable exactly once, alongside the baseline WI-AUTH-001",
@@ -242,7 +243,7 @@ fn wi717_omitted_description_still_open_with_none_desc() {
     let query = make_query2(&mut kb, "anthill.stage0.workflow.open_item", "id", "desc");
     let solutions = kb.resolve(&[query], &resolve_config());
     assert_eq!(
-        sorted_ids(&kb, query, &solutions),
+        sorted_ids(&mut kb, query, &solutions),
         vec![
             "WI-AUTH-001",
             "WI-AUTH-002",
@@ -255,28 +256,32 @@ fn wi717_omitted_description_still_open_with_none_desc() {
     );
 
     // An omitted description surfaces as the ground `none`, never an unbound
-    // var; a present one unwraps to its term (pins the some-case of
+    // var; a present one unwraps to its value (pins the some-case of
     // description_view's nonlinear head, not just the ground none-case).
-    let find = |id: &str| {
-        solutions
+    let descs: Vec<(String, Value)> = solutions
+        .iter()
+        .map(|sol| {
+            let id = binding_value(&mut kb, query, sol, "id");
+            let id = extract_string(&kb, &id).expect("?id is a String literal");
+            (id, binding_value(&mut kb, query, sol, "desc"))
+        })
+        .collect();
+    let desc_of = |id: &str| {
+        descs
             .iter()
-            .find(|sol| {
-                let t = binding_term(&kb, query, sol, "id");
-                extract_string(&kb, t).as_deref() == Some(id)
-            })
+            .find(|(i, _)| i == id)
+            .map(|(_, d)| d)
             .unwrap_or_else(|| panic!("no solution for {id}"))
     };
-    let nodesc_desc = binding_term(&kb, query, find("WI-NODESC"), "desc");
     assert_eq!(
-        TermPrinter::new(&kb).print_term(nodesc_desc),
+        TermPrinter::new(&kb).print_value(desc_of("WI-NODESC")),
         "none",
         "an omitted description surfaces as none(), not a leaked var",
     );
-    let nodeps_desc = binding_term(&kb, query, find("WI-NODEPS"), "desc");
     assert_eq!(
-        extract_string(&kb, nodeps_desc).as_deref(),
+        extract_string(&kb, desc_of("WI-NODEPS")).as_deref(),
         Some("omits depends_on entirely"),
-        "a present description unwraps to its term",
+        "a present description unwraps to its value",
     );
 }
 
@@ -291,7 +296,7 @@ fn wi717_needs_review_lists_omitted_description() {
     );
     let solutions = kb.resolve(&[query], &resolve_config());
     assert_eq!(
-        sorted_ids(&kb, query, &solutions),
+        sorted_ids(&mut kb, query, &solutions),
         vec!["WI-DELIV-NODESC"],
         "a Delivered item whose description is omitted still shows up for review",
     );
@@ -303,7 +308,7 @@ fn wi717_omitted_optionals_are_not_blocked() {
     let query = make_query2(&mut kb, "anthill.stage0.workflow.blocked", "id", "desc");
     let solutions = kb.resolve(&[query], &resolve_config());
     assert_eq!(
-        sorted_ids(&kb, query, &solutions),
+        sorted_ids(&mut kb, query, &solutions),
         vec!["WI-AUTH-002", "WI-AUTH-003", "WI-AUTH-004"],
         "items with omitted optionals have no unmet deps — blocked stays the \
          3 example items with real unverified dependencies",

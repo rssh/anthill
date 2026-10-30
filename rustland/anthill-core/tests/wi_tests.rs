@@ -2320,3 +2320,5 @@ mod wi_809jn_memory_regions_test;
 mod wi_7b15v_applied_alias_test;
 #[path = "include/wi_50361_namespace_named_head_test.rs"]
 mod wi_50361_namespace_named_head_test;
+#[path = "include/wi_w2jp7_closure_through_a_head_test.rs"]
+mod wi_w2jp7_closure_through_a_head_test;

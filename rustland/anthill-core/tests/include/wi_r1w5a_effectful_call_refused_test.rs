@@ -14,7 +14,8 @@
 //! parameter. `applies(lambda () -> now(), ?r)` over `rule applies(?f, ?r) :- applyThunk(?f,
 //! ?r)` and `useVia(?c, lambda (x) -> Cell.set(x, 9), ?u)` are refused; `applies` itself, and
 //! a pure function handed over, load. It answered nothing before, silently: a function
-//! handed to a relation through its head does not reach the call.
+//! handed to a relation through its head did not reach the call (it does since
+//! WI-20261023-W2JP7).
 //!
 //! RUN TIME KEEPS THE DECLINE for a goal no typer sees — a query's, or one a rule builds at run
 //! time (`?p(?x, ?r)` over an operation it passes as data): such a goal on an effectful
@@ -27,8 +28,8 @@
 //! holds such a function is not handed it: it can apply none.
 //!
 //! Not this part's, and measured on the way (2026-10-23, the same on 083cb6b8): a closure
-//! handed to another relation through its head answers nothing, pure or not; a constraint's
-//! goal is not walked by this typing (WI-20261023-76KZN).
+//! handed to another relation through its head answered nothing, pure or not (answers since
+//! WI-20261023-W2JP7); a constraint's goal is not walked by this typing (WI-20261023-76KZN).
 //!
 //! ## Back-out
 //!
