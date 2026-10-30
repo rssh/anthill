@@ -3,9 +3,9 @@
 - id: WI-20261003-EK43F-a-sort-member-bound-to-a-type
 - created: 2026-10-03T09:16:26Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-10-03T09:16:26Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-10-30T09:20:46Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -20,4 +20,8 @@ A SORT MEMBER BOUND TO A TYPE WITH OPEN SLOTS IS UNINHABITABLE: `sort P = Pair[?
 ### 2026-10-03T09:18:13Z — feedback — user
 
 USE (user, 2026-10-03): a pure function type gets its name through this ticket's named-slot rule applied to an ALIAS's own parameters — `sort PureFunction = Function[?A, ?B, {}]`, used as `PureFunction[A = Int64, B = Int64]` (or positionally), is `Function[Int64, Int64, {}]`, which already refuses a raising callback at the call (MEASURED). `Function[A, B]` with E unwritten stays effect-polymorphic (kernel-language.md §4.4 as corrected 2026-10-03). Add to the acceptance: PureFunction admits `inc` and refuses `boom` as `Function[Int64, Int64, {}]` does.
+
+### 2026-10-30T09:20:45Z — feedback — claude
+
+DELIVERED in 5147928c. Part 1 (an anonymous `?` in a member's binding) needed no code: bisected from the filing commit 7c4f50a5, it was closed by ZY11J (10679258, an alias written bare is the type it stands for), and since KPBVX `Pair[?, ?]` is the bare `Pair`, fresh at each use; its row is in wi_ek43f_alias_variable_parameter_test. Part 2 as decided: a named `?A` in a member's binding is the sort's parameter (`sort P = Pair[?A, ?B]` is `sort A = ?`, `sort B = ?`, `sort P = Pair[A, B]`, rewritten as the file is parsed); outside a sort it is a parameter of the alias, given by name or by position (the order the variables stand in the type the alias stands for), at every reader of an applied alias. PureFunction acceptance: `PureFunction[A = Int64, B = Int64]` and `PureFunction[Int64, Int64]` admit `inc` and refuse `boom` as `Function[Int64, Int64, {}]` does. The note of 2026-10-03 that `Function[A, B]` with E unwritten stays effect-polymorphic is stale since proposal 069 stage 1 (it is pure). Changed verdicts: a variable naming another member is refused; inside the sort `swap(x: P) -> P` ties argument and result; `Holder.P` outside the sort is read as its written twin is (refused); `U[B = …]` over `sort U = Pair[A = List[?B]]` is refused as ambiguous; `requires IntTag[X = …]` no longer drops `X`. Not covered: an applied tuple/arrow alias as a value in an operation body is refused as before. Spec §8.1 wording approved by the user.
 
