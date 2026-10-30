@@ -19,3 +19,7 @@ A RULE HEAD NAMED LIKE THE LAST SEGMENT OF ITS NAMESPACE LANDS ITS CLAUSES ON TH
 
 Second part, decided with the user: a namespace is not a goal. NamespaceAsGoal refuses a goal naming one in a rule body (every proved slot), a constraint, a contract clause, an effect guard and an anthill query pattern (1d71da46). Found on the way and fixed: a query goal slot did not read a dotted paren-less name as the name it spells (not(ns.flag) answered true). Left: a query an operation body runs is not checked.
 
+### 2026-10-30T07:13:41Z — feedback — claude
+
+Third part, decided with the user: an equation whose subject names a namespace or a const is refused (EquationSubjectNamesNoFunction; <=> or a guarded =, in the rule and fact spellings, bare, applied and qualified). Before, rule zed(1) <=> 2 beside namespace probe.zed made zed(1) answer 2. Written inside the namespace, the subject still introduces its own symbol. A sort is left as it is (user: requires Foo is a requirement).
+
