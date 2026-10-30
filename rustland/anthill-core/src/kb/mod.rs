@@ -1238,20 +1238,6 @@ pub struct KnowledgeBase {
     /// what a maintainer must not break. See [`Self::value_fact_dedup_key`].
     value_fact_dedup: HashMap<(term_view::GoalKey, ClauseKind, Symbol), RuleId>,
 
-    // WI-169: structural-dedup memo for synthesized conjunction-rules
-    // (`_synth_N(?vars) :- body`, minted by `synthesize_conjunction_rule` when
-    // a multi-goal disjunction/negation branch is lowered for a query). Keyed
-    // on the body's structural fingerprint (`Vec<SynthKey>`: interned symbols +
-    // De Bruijn-style positional var indices, preserving variable sharing), so
-    // a repeated multi-goal query reuses one synth rule instead of appending a
-    // fresh rule slot + symbol + discrim entry per execution — bounding the
-    // synth population by #distinct-bodies, not #queries. The key is
-    // storage-neutral (no `TermId` slot identity), so it can never dangle. A
-    // synth rule is a permanent lowering artifact (never retracted), so this
-    // memo never goes stale and needs no invalidation; like `fact_dedup` it
-    // must be reset alongside `rules` by any future KB clone/reset.
-    synth_rule_memo: HashMap<Vec<execute::SynthKey>, Symbol>,
-
     // Builtin dispatch: functor symbol → builtin tag
     builtins: HashMap<Symbol, BuiltinTag>,
 
@@ -2993,7 +2979,6 @@ impl KnowledgeBase {
             discrim: SubstTree::new(),
             fact_dedup: HashMap::new(),
             value_fact_dedup: HashMap::new(),
-            synth_rule_memo: HashMap::new(),
             builtins: HashMap::new(),
             entity_fields: HashMap::new(),
             constructor_symbols: HashSet::new(),
@@ -5056,9 +5041,8 @@ impl KnowledgeBase {
         // this fires the moment a producer drifts off the canonical symbol.
         //
         // It deliberately does NOT fire on a legitimately *undeclared* predicate
-        // (`fact file_extension(...)`, datalog-style ad-hoc test facts, the
-        // generated `_synth_N` memo rules): those are bare short-name interns
-        // with no `by_qualified_name` entry, so `canonical_sym` returns the
+        // (`fact file_extension(...)`, datalog-style ad-hoc test facts): those
+        // are bare short-name interns with no `by_qualified_name` entry, so `canonical_sym` returns the
         // identity and they pass. They are sound without being canonical — head
         // and goal bare-intern the same string to the same symbol (`intern_map`
         // dedup), so they agree. Per the CAVEAT on `canonical_sym`, a bare intern

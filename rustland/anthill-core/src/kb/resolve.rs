@@ -1294,9 +1294,10 @@ impl Wait {
 //    which reads any carrier, allocates nothing, and is total where a reify is
 //    partial (WI-348 moved answer dedup there, WI-815 fact-head dedup).
 //  - for the candidate match → `query_view`.
-//  - to BUILD a term that is then stored (`lower_ho_apply`'s lowered goal) →
-//    `node_occurrence::value_to_term`, which is explicit about being a
-//    conversion and returns a `Result` rather than panicking.
+//  - to BUILD a goal → it does not; build it on the value carrier, an entity
+//    spine over the parts as they are (`make_goal_value`, `lower_ho_apply`) or an
+//    occurrence (`node_occurrence::value_as_occurrence`). A part with no term form
+//    — a closure, a lambda — is carried, where a term build lost the goal.
 //
 // WHAT THIS DOES NOT COVER: the view's carrier coverage is not identical to the
 // retired reify's, and where it is narrower a receiver that used to project no
@@ -2546,7 +2547,7 @@ impl SearchStream {
                 let subst = frame.subst.clone();
                 if let Some(applied) = Self::lower_ho_apply(kb, &goal_val, &subst) {
                     let f = self.stack.last_mut().unwrap();
-                    f.goals[0].goal = Value::term(applied);
+                    f.goals[0].goal = applied;
                     f.state = FrameState::Init { delay_mode };
                     return Some(StepResult::Continue);
                 } else {
@@ -3491,10 +3492,7 @@ impl SearchStream {
             .iter()
             .map(|a| {
                 let sk = kb.reify_value(a, &skolem);
-                match Self::lower_ho_apply(kb, &sk, &frame_subst) {
-                    Some(t) => Value::term(t),
-                    None => sk,
-                }
+                Self::lower_ho_apply(kb, &sk, &frame_subst).unwrap_or(sk)
             })
             .collect();
         let skolemized_consequents: Vec<Value> = consequents
@@ -3940,19 +3938,26 @@ impl SearchStream {
     }
 
     /// If `goal` is a top-level `ho_apply(?P, args…)` whose predicate `?P` walks
-    /// to a concrete symbol under σ, return the lowered form `pred_sym(args…)`;
+    /// to a concrete symbol under σ, return the applied goal `pred_sym(args…)`;
     /// otherwise `None`. Reads `goal` through [`TermView`] (carrier-neutral — a
-    /// rule-body `ho_apply` occurrence lowers without a whole-goal reify), and
-    /// **creates a term for each argument** via `value_to_term` to build the
-    /// lowered `Term::Fn` (rather than splicing pre-interned arg handles). The
-    /// single lowering path for both the HoApply-builtin dispatch (a `Value`
-    /// goal) and `forall_impl` antecedent lowering (a `TermId`, which is itself a
-    /// `TermView`).
+    /// rule-body `ho_apply` occurrence is read without a whole-goal reify), and
+    /// builds the applied goal as an entity spine over the arguments as they are.
+    /// The single path for both the HoApply-builtin dispatch (a `Value` goal) and
+    /// `forall_impl` antecedent lowering (a `TermId`, which is itself a `TermView`).
+    ///
+    /// AN ARGUMENT IS NOT LOWERED TO A TERM (WI-20261030-BXMPK). It was, through
+    /// `value_to_term`, and an argument with no term form — a closure an operation
+    /// returned, a lambda written as the argument — made this answer `None`: the
+    /// dispatch then failed the goal as if its predicate were unbound, and a
+    /// `forall_impl` antecedent stayed `ho_apply(…)`, so the hypothesis matched no
+    /// goal. MEASURED, over `rule apply2(?p, ?f, ?r) :- ?p(?f, ?r)`:
+    /// `pureThunk(?f), apply2(cc, ?f, ?r)` and `apply2(cc, lambda () -> "y", ?r)`
+    /// answered nothing where `cc(?f, ?r)` answers.
     fn lower_ho_apply<V: TermView>(
-        kb: &mut KnowledgeBase,
+        kb: &KnowledgeBase,
         goal: &V,
         subst: &Substitution,
-    ) -> Option<TermId> {
+    ) -> Option<Value> {
         let pos_arity = match goal.head(kb) {
             ViewHead::Functor {
                 functor: f,
@@ -4008,17 +4013,7 @@ impl SearchStream {
             } => s,
             _ => return None,
         };
-        // Create a term for each argument (a `Value::Node` arg lowers via
-        // `occurrence_to_term`, a `Value::Term` unwraps, a scalar allocs a const).
-        let mut remaining: SmallVec<[TermId; 4]> = SmallVec::new();
-        for a in &raw[1..] {
-            remaining.push(node_occurrence::value_to_term(kb, a).ok()?);
-        }
-        Some(kb.alloc(Term::Fn {
-            functor: pred_sym,
-            pos_args: remaining,
-            named_args: SmallVec::new(),
-        }))
+        Some(kb.make_goal_value(pred_sym, raw.into_iter().skip(1).collect()))
     }
 
     /// Build `__pop_assumption(N)` — a synthetic goal that, when reached
@@ -13781,17 +13776,17 @@ impl KnowledgeBase {
         if self.value_has_bodied_op_call(&other) {
             return None;
         }
-        // OTHER as a goal occurrence for the Node `unify(result, OTHER)` goal: a
-        // `Node` rides directly (no `occurrence_to_term`); any other carrier is
-        // the external finite-DATA operand we did not build, so materialize its
-        // occurrence at this boundary (via its faithful term twin).
-        let other_occ = match &other {
-            Value::Node(occ) => Rc::clone(occ),
-            _ => {
-                let t = self.alloc_from_value(&other).ok()?;
-                super::node_occurrence::materialize_from_handle(self, t)
-            }
-        };
+        // OTHER as a goal occurrence for the Node `unify(result, OTHER)` goal, through
+        // the one materializer: a `Node` rides directly, a term materializes, any other
+        // carrier is read through the view with its children on their own carriers.
+        //
+        // It was `alloc_from_value` + `materialize_from_handle`, which refused an entity
+        // holding an occurrence, so the unfold was skipped for it (WI-20261030-BXMPK). A
+        // closure never reached that lowering — `value_has_bodied_op_call` above declines
+        // an opaque OTHER — and no program is known to put an entity there: MEASURED,
+        // `?o <=> mk(1), pick(?c) = ?o` with `mk` run by the bridge brings OTHER as the
+        // occurrence the entity is spliced into, which rode directly before as now.
+        let other_occ = super::node_occurrence::value_as_occurrence(self, &other);
         let unify_sym = self.unify_functor();
         // Build a `Value::Node` `unify(a, b)` goal — the shape shared by the
         // scrutinee-shape and result/OTHER decompositions in each arm.

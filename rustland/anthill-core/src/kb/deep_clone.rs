@@ -1070,7 +1070,6 @@ impl KnowledgeBase {
             discrim: plain(&self.discrim),
             fact_dedup: plain(&self.fact_dedup),
             value_fact_dedup: plain(&self.value_fact_dedup),
-            synth_rule_memo: plain(&self.synth_rule_memo),
             builtins: plain(&self.builtins),
             entity_fields: plain(&self.entity_fields),
             constructor_symbols: plain(&self.constructor_symbols),

@@ -42,13 +42,13 @@
 //!   * the bridge:
 //!     - `lower_leaf` back on `alloc_from_value` — `an_operation_run_by_the_bridge_queries_a_-
 //!       rule_with_its_parameter` and `a_bridged_parameter_aligns_in_a_union` (a conditional
-//!       row, `malformed_query`);
+//!       row, `malformed_query`). Since WI-20261030-BXMPK `lower_leaf` lowers nothing; back
+//!       on `value_to_term` it fails `a_bridged_control_form_operand_reaches_the_rule`;
 //!     - `goal_value_to_term` back on `alloc_from_value` — `a_bridged_parameter_lowers_inside_-
-//!       a_negation`;
+//!       a_negation`, measured then; since WI-20261030-BXMPK the `or` and a multi-goal branch
+//!       are goals over their parts, with no lowering left to put back;
 //!     - `rename_query_vars` refusing a ground `Node` — `a_bridged_parameter_aligns_in_a_union`
-//!       (a debug-build panic);
-//!     - `value_to_term`'s `Node` arm on the asserting `occurrence_to_term` —
-//!       `a_bridged_control_form_operand_is_refused_loudly` (a debug-build panic).
+//!       (a debug-build panic).
 //!
 //! The CONTROL rows pass either way, by design, and each says why at its site.
 
@@ -682,17 +682,15 @@ fn a_bridged_parameter_aligns_in_a_union() {
     assert_eq!(crate::common::one_definite_int(&mut kb, "wiprva2.bridge.rUniR"), Some(7));
 }
 
-/// The bridge with an operand that has NO term form — a lambda — is refused LOUDLY: the query
-/// raises (`malformed_query`), and the rule is one conditional row, the call unevaluated. The
-/// lowering reached `occurrence_to_term`'s `debug_assert!` — a debug-build PANIC, and a `⊥`
-/// query in release. FAILS with `value_to_term`'s `Node` arm on the asserting converter: the
-/// test panics.
+/// The bridge with an operand that has NO term form — a lambda — reaches the rule: `keep(f)`
+/// is the goal `keep(<lambda>, ?c)` on the carriers it was built on, and answers 1. The query
+/// leaf was lowered to a term, and this one raised (`malformed_query`): one conditional row,
+/// the call unevaluated (WI-20261030-BXMPK, whose rows are
+/// `wi_bxmpk_goal_value_carried_test`). Before that, the lowering reached
+/// `occurrence_to_term`'s `debug_assert!` — a debug-build PANIC, and a `⊥` query in release.
+/// FAILS with `lower_leaf` back on `value_to_term`.
 #[test]
-fn a_bridged_control_form_operand_is_refused_loudly() {
+fn a_bridged_control_form_operand_reaches_the_rule() {
     let mut kb = crate::common::load_kb_with(BRIDGE);
-    let rows = crate::common::query_unary(&mut kb, "wiprva2.bridge.rLambda");
-    assert!(
-        rows.len() == 1 && !rows[0].1,
-        "the call raised: one conditional row, never a definite answer; got {rows:?}",
-    );
+    assert_eq!(crate::common::one_definite_int(&mut kb, "wiprva2.bridge.rLambda"), Some(1));
 }

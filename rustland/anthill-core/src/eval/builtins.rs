@@ -3613,10 +3613,9 @@ const BOOLEAN_CONNECTIVES: [(&str, &str, &[&str]); 3] = [
 /// tree's parameters share one index space and one capture record.
 ///
 /// All four are already wired in the `kb/execute.rs` lowerer, which is what makes
-/// nesting free: it flattens a conjunction into a goal LIST and lifts a MULTI-goal
-/// `or`/`not` branch through a synthesized conjunction rule (`_synth_N(?vars) :-
-/// goals`, proposal 033 §M4). So `or(and(a, b), c)` needs no new machinery here — only
-/// the tree walk. (WI-730; the first `where`/`join` increments compiled the atom
+/// nesting free: it flattens a conjunction into a goal LIST and makes a MULTI-goal
+/// `or`/`not` branch one goal, its `push_and` conjunction. So `or(and(a, b), c)` needs
+/// no new machinery here — only the tree walk. (WI-730; the first `where`/`join` increments compiled the atom
 /// alone.)
 ///
 /// The recursion is bounded by the SOURCE nesting of a hand-written condition, the

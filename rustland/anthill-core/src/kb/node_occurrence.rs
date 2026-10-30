@@ -4977,8 +4977,8 @@ pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
         // `Fn{Expr.var_ref, name: Ref(name)}` — the inverse of `build_expr_leaf`,
         // byte-identical to its `TermView` view (`occ_head` reads VarRef as
         // `Functor{var_ref}` with the same `name: Ref` child). So a Γ goal/fact
-        // over a binder round-trips through the term store (and the resolver's
-        // `goal_value_to_term`) instead of the former non-goal `None` — which
+        // over a binder round-trips through the term store instead of the former
+        // non-goal `None` — which
         // tripped this function's debug_assert and reified the binder to ⊥.
         // WI-592: a `var_ref` whose `name` is a CONSTRUCTOR is not a binder
         // variable — it is a ground datum, so it lowers to a bare `Ref(name)`.
@@ -5122,9 +5122,10 @@ pub fn try_occurrence_to_term(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) 
         // spine under another compound (`take(pair(?p, 1))` with `?p` linked to
         // `Box(v: ?f)`, WI-20260905-N20EZ) — lowers through the one value→term
         // boundary; a carrier with no term form is a non-goal `None` exactly as a
-        // child-bearing form is. Without this arm the WI-636 normalization in
-        // `with_fresh_vars` hit the `occurrence_to_term` debug-assert on a legal
-        // program (found by /code-review).
+        // child-bearing form is. The goal readers that came here — the head match
+        // (WI-20261023-W2JP7), `ho_apply` and the query lowerer (WI-20261030-BXMPK) —
+        // carry a goal on its own carrier now; what asks needs a term (a type, a
+        // simp RHS's stored encoding).
         Some(Expr::Spliced(v)) => {
             let v = v.clone();
             return value_to_term(kb, &v).ok();
@@ -6107,6 +6108,14 @@ pub fn value_as_occurrence(kb: &mut KnowledgeBase, v: &Value) -> Rc<NodeOccurren
         // beneath the spine) — carried as `Spliced` rather than dropped; no caller
         // can read it as a call, which is the same no-answer outcome the `Term`
         // carrier has for it.
+        //
+        // NO PROGRAM REACHES THIS WITH A CALL (WI-20261030-BXMPK, measured). Every
+        // caller has gated the functor to an operation, so a keyed functor is a call
+        // only when an operation is NAMED like a form — `constructor`, `apply` — and
+        // that program is lost before it gets here: the loader reads its rule-body call
+        // as the form too (`?r <=> constructor(lambda () -> "x")` answered
+        // `?r = constructor`; `?r <=> apply(?f)` was refused "expected 1 argument … got
+        // 0"), because a form is keyed by a name's last segment (`expr_form_key`).
         return match value_to_term(kb, v) {
             Ok(t) => materialize_from_handle(kb, t),
             Err(_) => NodeOccurrence::new_expr(Expr::Spliced(v.clone()), empty_span(), None),

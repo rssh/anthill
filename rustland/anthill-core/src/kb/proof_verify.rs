@@ -41,7 +41,7 @@ use crate::kb::subst::Substitution;
 use crate::kb::term::{Literal, Term, TermId};
 use crate::kb::typing::{
     clause_conjuncts, get_named_arg, is_value_precondition_clause, prove_from_gamma_verdict,
-    substitute_ref_terms_term, FlowEnv, GammaVerdict,
+    substitute_ref_terms, substitute_ref_terms_term, FlowEnv, GammaVerdict,
 };
 use crate::kb::{KnowledgeBase, RuleId};
 
@@ -609,7 +609,18 @@ fn discharge_contract_proof(
         .body_node
         .as_ref()
         .expect("body_node present (checked above)");
-    let body_term = super::node_occurrence::occurrence_to_term(kb, body_occ);
+    // The symbolic execution reads the body as a TERM, so a body with no term form — an
+    // `if`, a `match`, a `let`, a lambda — cannot be run here, and saying so is the
+    // verdict. MEASURED before this: `occurrence_to_term` asserted (a debug-build panic)
+    // and in release read `result` as `⊥`, for `= if eq(x, 1) then 0 else 0` and
+    // `= lambda () -> "x"` alike.
+    let Some(body_term) = super::node_occurrence::try_occurrence_to_term(kb, body_occ) else {
+        return ProofVerdict::Deferred {
+            reason: "the body has no term form (an `if`, a `match`, a `let` or a lambda), \
+                     and this proof reads `result` as the body's term"
+                .to_string(),
+        };
+    };
     let body_sub = substitute_ref_terms_term(kb, body_term, &sigma);
     if let Some(result_sym) = super::region::resolve_op_result_sym(kb, op_sym) {
         sigma.insert(result_sym, body_sub);
@@ -634,43 +645,30 @@ fn discharge_contract_proof(
         if !is_value_precondition_clause(kb, c) {
             continue;
         }
-        for conj in contract_clause_conjuncts(kb, c) {
-            let conj = substitute_ref_terms_term(kb, conj, &sigma);
-            if let Some(node) = kb.term_body_to_nodes(&[conj]).into_iter().next() {
-                flow = flow.assume(kb, Value::Node(node));
-            }
+        for conj in clause_conjuncts(kb, c) {
+            let conj = contract_goal(kb, &conj, &sigma);
+            flow = flow.assume(kb, conj);
         }
     }
 
     // Discharge every predicate `ensures` conjunct from Γ ∪ KB. The goal is
     // materialized as an occurrence so its op-calls fold to ground values.
     for c in &pred_ensures {
-        let conjuncts = contract_clause_conjuncts(kb, c);
+        let conjuncts = clause_conjuncts(kb, c);
         // A predicate `ensures` that passed the filter (functor-headed, non-Sort)
-        // but yields NO goal term is an unsupported value carrier — NOT vacuously
-        // true. Fail closed (loud over silent): never fall through to a Discharged
-        // verdict for a clause we could not even read as a goal.
+        // but splits into NO goal is not vacuously true. Fail closed (loud over
+        // silent): never fall through to a Discharged verdict for a clause we could
+        // not even read as a goal.
         if conjuncts.is_empty() {
             return write_contract_failed(
                 kb,
                 rid,
                 rule_qn,
-                "an `ensures` clause could not be read as a goal (unsupported value carrier)",
+                "an `ensures` clause could not be read as a goal",
             );
         }
         for conj in conjuncts {
-            let conj = substitute_ref_terms_term(kb, conj, &sigma);
-            let goal = match kb.term_body_to_nodes(&[conj]).into_iter().next() {
-                Some(n) => Value::Node(n),
-                None => {
-                    return write_contract_failed(
-                        kb,
-                        rid,
-                        rule_qn,
-                        "could not materialize an `ensures` goal occurrence",
-                    )
-                }
-            };
+            let goal = contract_goal(kb, &conj, &sigma);
             // THREE FAILURES, THREE MESSAGES. This was one bool and one sentence —
             // "not derivable from the body" — for all three, which told an author
             // whose body is FINE that it is not: an `ensures` over a parameter maps to
@@ -763,37 +761,30 @@ fn discharge_contract_proof(
     ProofVerdict::Discharged
 }
 
-/// The conjuncts of a contract clause `Value`, as terms — split the
-/// `conjunction(..)` carrier-neutrally (reusing the View-layer [`clause_conjuncts`],
-/// WI-621), then lower each conjunct to a term for the term-based contract proof.
-/// Carrier-faithful (WI-348): a hash-consed `Value::Term` conjunct is its term; a
-/// denoted `Value::Node` lowers via `occurrence_to_term`; a value-fact's
-/// `Value::Entity` conjunct (an op with a denoted effect carries its clauses as value
-/// carriers — [`super::op_info::clause_list_field`]) lowers via the total
-/// `value_to_term` boundary (WI-390). Every carrier [`is_value_precondition_clause`]
-/// accepts is handled, so an accepted clause never silently yields zero conjuncts
-/// (which would otherwise fall through to a false Discharge). A genuinely unlowerable
-/// conjunct returns NO conjuncts (all-or-nothing); the caller treats that as a
-/// discharge FAILURE, not a vacuous pass.
-fn contract_clause_conjuncts(kb: &mut KnowledgeBase, clause: &Value) -> Vec<TermId> {
-    // Split carrier-neutrally FIRST (WI-621 `clause_conjuncts` over the View layer),
-    // then lower each conjunct to a term for the term-based contract proof
-    // (skolemized symbolic execution). All-or-nothing: a conjunct that cannot be
-    // lowered fails the WHOLE clause (empty result), so the caller treats a short
-    // count as a discharge FAILURE, never a vacuous pass.
-    let mut out = Vec::new();
-    for conj in clause_conjuncts(kb, clause) {
-        let t = match &conj {
-            Value::Term { id: t, .. } => *t,
-            Value::Node(occ) => super::node_occurrence::occurrence_to_term(kb, occ),
-            other => match super::node_occurrence::value_to_term(kb, other) {
-                Ok(t) => t,
-                Err(_) => return Vec::new(),
-            },
-        };
-        out.push(t);
-    }
-    out
+/// A conjunct of a contract clause as the goal the proof runs: σ (each parameter ↦ its
+/// skolem, `result` ↦ the body) substituted on the carrier the conjunct rides
+/// ([`substitute_ref_terms`], the typer's own `requires` seed walk), then the occurrence
+/// the resolver folds its op-calls on ([`value_as_occurrence`]). A term conjunct takes
+/// the term path of both, so its goal is the occurrence `materialize_from_handle` makes
+/// of the substituted term, as before.
+///
+/// NOTHING IS LOWERED TO A TERM (WI-20261030-BXMPK). A conjunct went through
+/// `value_to_term` when it rode an entity, and one with no term form emptied its whole
+/// clause: a `requires` was not assumed, in silence, and an `ensures` was `Failed`.
+/// MEASURED, no program reaches that: the loader carries every contract conjunct as a
+/// term (14 over a `requires` and an `ensures` holding a lambda, with no effect, with
+/// `Error` and with `Modify[c]`, whose `OperationInfo` is a value fact), so a lambda
+/// there was its reflect term already, and each of those contracts discharged before
+/// as now.
+///
+/// [`value_as_occurrence`]: super::node_occurrence::value_as_occurrence
+fn contract_goal(
+    kb: &mut KnowledgeBase,
+    conj: &Value,
+    sigma: &HashMap<Symbol, TermId>,
+) -> Value {
+    let conj = substitute_ref_terms(kb, conj, sigma);
+    Value::Node(super::node_occurrence::value_as_occurrence(kb, &conj))
 }
 
 /// Write a `Failed(Unknown(reason))` verdict onto a contract `ProofRecord` and

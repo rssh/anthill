@@ -707,11 +707,11 @@ end
 }
 
 #[test]
-fn q3_disjunction_multi_goal_branch_lifts_via_synthesized_rule() {
-    // Multi-goal disjunction branches lift through a synthesized
-    // conjunction-rule head (proposal 033 §M4 / WI-076). The left branch
-    // is `conjunction(left_tag(?v), other_tag(?v))` — a 2-goal body that
-    // needs a synthesized head; the right branch is a single-goal pattern.
+fn q3_disjunction_multi_goal_branch_is_its_conjunction() {
+    // A multi-goal disjunction branch is one goal, its `push_and` conjunction
+    // (it was a synthesized conjunction rule, proposal 033 §M4 / WI-076). The
+    // left branch is `conjunction(left_tag(?v), other_tag(?v))` — a 2-goal body;
+    // the right branch is a single-goal pattern.
     // The query succeeds when both halves of the conjunction match a
     // single ?v ("alpha"), or when the right branch matches alone.
     let mut kb = load_kb_with(
@@ -850,11 +850,11 @@ fn q3_disjunction_empty_branch_is_not_yet_implemented() {
 }
 
 #[test]
-fn q3_negation_multi_goal_lifts_via_synthesized_rule() {
-    // Multi-goal negation lifts through the same synthesizer — proposal
-    // 033 §M4 / WI-076. A `negation(conjunction(p, q))` lowers to
-    // `not(_synth_N(?vars))` where the synthesized rule says
-    // `_synth_N(?vars) :- p_goal, q_goal`. Test: a conjunction that's
+fn q3_negation_multi_goal_is_its_conjunction() {
+    // A multi-goal negation is the negation of its conjunction:
+    // `negation(conjunction(p, q))` lowers to `not(push_and(p_goal, q_goal))`
+    // (it was `not(_synth_N(?vars))` over a synthesized rule, proposal 033 §M4 /
+    // WI-076). Test: a conjunction that's
     // unsatisfiable (left_tag and right_tag for the same ?v don't both
     // match any single ?v) negated should succeed.
     let mut kb = load_kb_with(
@@ -951,13 +951,13 @@ end
 }
 
 #[test]
-fn q3_synth_rule_memoized_across_repeated_queries() {
-    // WI-169: re-issuing the SAME multi-goal query must REUSE one synthesized
-    // conjunction-rule, not append a fresh `_synth_N` (+ rule slot + symbol +
-    // discrim entry) per execution. Each iteration opens FRESH query vars (as a
-    // real long-running query consumer would), so the memo has to canonicalize
-    // the body's De Bruijn form to register a hit. The acceptance contract is
-    // ZERO growth after the first execution — not merely sub-linear.
+fn q3_multi_goal_query_mints_no_rule() {
+    // WI-169's contract, which it met with a memo: re-issuing a multi-goal query
+    // must not append a rule (+ symbol + discrim entry) per execution. A
+    // multi-goal branch was a synthesized `_synth_N` rule, memoized on the body's
+    // structural key; since WI-20261030-BXMPK it is its `push_and` conjunction, so
+    // no execution mints a rule — the first one included. Each iteration opens
+    // FRESH query vars, as a real long-running query consumer would.
     let mut kb = load_kb_with(
         r#"
 namespace test.q3_synth_memo
@@ -997,7 +997,7 @@ end
     let name_field = kb.intern("name");
 
     // Build + execute the same query shape once, opening a FRESH `?v` each time
-    // so the synth body carries different Globals per run. Returns the bound
+    // so each run's query carries different Globals. Returns the bound
     // `name` strings so the caller can confirm results stay stable.
     let run_once = |kb: &mut anthill_core::kb::KnowledgeBase| -> std::collections::HashSet<String> {
         let v_sym = kb.intern("v");
@@ -1017,7 +1017,7 @@ end
             .into(),
         };
         // disjunction(conjunction(left_tag(?v), other_tag(?v)), right_tag(?v)) —
-        // the left branch is a 2-goal body that lifts via `synthesize_conjunction_rule`.
+        // the left branch is a 2-goal body, one `push_and` goal.
         let multi_left = entity_named(
             conj_sym,
             vec![(left_field, pq(left_sym)), (right_field, pq(other_sym))],
@@ -1044,36 +1044,24 @@ end
     let expected: std::collections::HashSet<String> =
         ["alpha", "beta"].iter().map(|s| s.to_string()).collect();
 
-    // First execution mints the synth rule.
-    assert_eq!(
-        run_once(&mut kb),
-        expected,
-        "sanity: first run yields alpha+beta"
-    );
-    let after_first = kb.rule_count();
-
-    // Re-issue the identical query shape with fresh vars; the synth rule must
-    // be reused, so the rule count stays CONSTANT.
-    for _ in 0..5 {
+    let before = kb.rule_count();
+    for _ in 0..6 {
         assert_eq!(run_once(&mut kb), expected, "results stable across repeats");
         assert_eq!(
             kb.rule_count(),
-            after_first,
-            "WI-169: repeated multi-goal query must reuse one synth rule (zero growth)"
+            before,
+            "a multi-goal query mints no rule (WI-169's zero growth, from the first run)"
         );
     }
 }
 
 #[test]
-fn q3_synth_rule_distinguishes_variable_sharing() {
-    // WI-169 (structural key): two multi-goal bodies that differ ONLY in
-    // variable sharing — `conj(left(?v), other(?v))` vs `conj(left(?v),
-    // other(?w))` — MUST synthesize distinct rules. A key that treats vars as
-    // wildcards (as a discrimination key does — pattern vars are var-edges, not
-    // concrete keys) would collapse them onto one rule and resolve the unshared
-    // body with shared-var semantics. The structural key preserves sharing by
-    // numbering each var by first-occurrence position, so this catches a
-    // wildcard-collapse two ways: the rule count, and the differing results.
+fn q3_multi_goal_branch_keeps_variable_sharing() {
+    // Two multi-goal bodies that differ ONLY in variable sharing —
+    // `conj(left(?v), other(?v))` vs `conj(left(?v), other(?w))` — answer
+    // differently. WI-169 kept them apart in its memo key of the synthesized
+    // rule; a multi-goal branch is its `push_and` conjunction now, over the
+    // query's own variables, so there is no key to collapse them onto.
     let mut kb = load_kb_with(
         r#"
 namespace test.q3_synth_share
@@ -1113,8 +1101,8 @@ end
     let name_field = kb.intern("name");
 
     // disjunction(conjunction(left_tag(?a), other_tag(?b)), right_tag(?a)) —
-    // the conjunction branch lifts via the synthesizer; `?a` (collected) is the
-    // outer variable the right branch also binds. Returns the bound `?a` names.
+    // the conjunction branch is one `push_and` goal; `?a` is the outer variable
+    // the right branch also binds. Returns the bound `?a` names.
     let run = |kb: &mut anthill_core::kb::KnowledgeBase,
                a: TermId,
                b: TermId,
@@ -1162,8 +1150,8 @@ end
     let v_sym = kb.intern("v");
     let vid = kb.fresh_var(v_sym);
     let var_v = kb.alloc(Term::Var(Var::Global(vid)));
+    let before = kb.rule_count();
     let shared = run(&mut kb, var_v, var_v, vid);
-    let after_shared = kb.rule_count();
 
     // Unshared: conj(left(?v2), other(?w)) — independent vars, so the
     // conjunction matches (left=alpha, other=beta) and ?v2 binds alpha.
@@ -1174,17 +1162,8 @@ end
     let var_v2 = kb.alloc(Term::Var(Var::Global(v2id)));
     let var_w = kb.alloc(Term::Var(Var::Global(wid)));
     let unshared = run(&mut kb, var_v2, var_w, v2id);
-    let after_unshared = kb.rule_count();
+    assert_eq!(kb.rule_count(), before, "neither query mints a rule");
 
-    // The bodies differ only in sharing, so they must NOT share a synth rule:
-    // exactly one new rule appears for the unshared body.
-    assert_eq!(
-        after_unshared,
-        after_shared + 1,
-        "different variable-sharing bodies must not collapse onto one synth rule"
-    );
-
-    // …and the semantics differ accordingly.
     assert!(
         shared.contains("gamma") && !shared.contains("alpha"),
         "shared ?v: conj unsatisfiable (alpha≠beta), only right branch; saw {shared:?}"
