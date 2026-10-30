@@ -2028,7 +2028,7 @@ impl SymbolTable {
     }
 
     /// WI-995 — the file the current resolutions are asked on behalf of.
-    fn asking_file(&self) -> Option<SourceId> {
+    pub(crate) fn asking_file(&self) -> Option<SourceId> {
         self.asking_file_plus_one
             .load(std::sync::atomic::Ordering::Relaxed)
             .checked_sub(1)

@@ -732,28 +732,7 @@ impl Interpreter {
         // apply (`f()`) with no indexing.
         if let Some((_, params)) = self.cached_operation_body(sym) {
             if !params.is_empty() || Self::occ_is_eta_marked(occ) {
-                // WI-420: if the typer attached a dispatching dict to this eta
-                // occurrence, evaluate it IN THE CURRENT (eta-site) FRAME — so
-                // an abstract requirement reads the enclosing `__req_*` and a
-                // concrete one builds from its `fact` — and capture it on the
-                // OpRef for the apply path to install into the callee frame.
-                let dict = self.eta_dispatch_dict(occ)?;
-                // WI-1091: and the OPERATION's own slots, evaluated in this same frame
-                // for the same reason. `List.member` needs exactly this and no sort
-                // half at all — `List` declares no `requires`.
-                let op_reqs = self.eta_op_scoped_reqs(occ)?;
-                // WI-857: an eta captures its OWN parent's bundle, so the named op
-                // and the target are the same — `named: None`.
-                return Ok(StepOutcome::Deliver(Value::OpRef {
-                    op: sym,
-                    dict: dict.map(std::rc::Rc::new),
-                    named: None,
-                    // WI-1087: captured at MINT for the same reason `dict` is — the
-                    // apply site cannot re-derive which of `A`'s components each
-                    // parameter wants.
-                    spread_labels: Self::eta_spread_labels(occ),
-                    op_reqs,
-                }));
+                return Ok(StepOutcome::Deliver(self.eta_op_ref(sym, occ)?));
             }
         }
         // WI-714 (proposal 052): a bare reference to a RULE — its head functor
@@ -1175,6 +1154,33 @@ impl Interpreter {
         // Restore the caller's stack whether the fold succeeded or errored.
         self.stack = saved;
         result
+    }
+
+    /// The `OpRef` an eta occurrence of `op` denotes, what the typer attached at it read IN
+    /// THE CURRENT FRAME, the eta site's.
+    fn eta_op_ref(&mut self, op: Symbol, occ: &Rc<NodeOccurrence>) -> Result<Value, EvalError> {
+        // WI-420: if the typer attached a dispatching dict to this eta
+        // occurrence, evaluate it IN THE CURRENT (eta-site) FRAME — so
+        // an abstract requirement reads the enclosing `__req_*` and a
+        // concrete one builds from its `fact` — and capture it on the
+        // OpRef for the apply path to install into the callee frame.
+        let dict = self.eta_dispatch_dict(occ)?;
+        // WI-1091: and the OPERATION's own slots, evaluated in this same frame
+        // for the same reason. `List.member` needs exactly this and no sort
+        // half at all — `List` declares no `requires`.
+        let op_reqs = self.eta_op_scoped_reqs(occ)?;
+        // WI-857: an eta captures its OWN parent's bundle, so the named op
+        // and the target are the same — `named: None`.
+        Ok(Value::OpRef {
+            op,
+            dict: dict.map(Rc::new),
+            named: None,
+            // WI-1087: captured at MINT for the same reason `dict` is — the
+            // apply site cannot re-derive which of `A`'s components each
+            // parameter wants.
+            spread_labels: Self::eta_spread_labels(occ),
+            op_reqs,
+        })
     }
 
     /// WI-700: the eta marker on an occurrence, if any. `Some(dict)` when the typer
@@ -2701,14 +2707,19 @@ impl Interpreter {
                 // WI-20260903-FC2X4 — …AND A LAMBDA THE RESOLVER PROVED, which rides on
                 // the OCCURRENCE carrier. See [`Self::closure_of_applied_lambda_node`].
                 Value::Node(o) if occurrence_is_lambda(o) => Some(v.clone()),
+                // …and an operation's name a rule passed as data
+                // ([`Self::op_ref_of_applied_name`]).
+                _ if applied_operation_name(&self.kb, v).is_some() => Some(v.clone()),
                 _ => None,
             })
         };
         // WI-20260903-FC2X4 — a `Value::Node(Expr::Lambda)` local becomes a closure HERE,
-        // where it is being APPLIED, and nowhere earlier. See the method's doc.
+        // where it is being APPLIED, and nowhere earlier; an operation's name becomes its
+        // `OpRef` here too. See the methods' docs.
         let local_callable = match local_callable {
-            Some(v @ Value::Node(_)) => Some(self.closure_of_applied_lambda_node(&v)),
-            other => other,
+            Some(v @ (Value::Closure(_) | Value::OpRef { .. })) => Some(v),
+            Some(v) => Some(self.callable_of_applied_value(&v)?),
+            None => None,
         };
         if let Some(callable) = local_callable {
             return self.apply_callable_value(callable, arg_values, requirements);
@@ -4139,6 +4150,65 @@ impl Interpreter {
         Value::Closure(handle)
     }
 
+    /// A value being APPLIED as a function, as the callable it denotes: a lambda the
+    /// resolver proved becomes a closure ([`Self::closure_of_applied_lambda_node`]), an
+    /// operation's name its `OpRef` ([`Self::op_ref_of_applied_name`]). Anything else is
+    /// returned unchanged.
+    fn callable_of_applied_value(&mut self, v: &Value) -> Result<Value, EvalError> {
+        match v {
+            Value::Node(o) if occurrence_is_lambda(o) => Ok(self.closure_of_applied_lambda_node(v)),
+            _ => self.op_ref_of_applied_name(v),
+        }
+    }
+
+    /// An OPERATION'S NAME a rule passed as data, as the `OpRef` this apply can enter.
+    /// Anything else is returned unchanged.
+    ///
+    /// An operation body evaluates the name where it is written ([`Self::reduce_var`]) and
+    /// hands on an `OpRef`. A rule does not: `apply1(pureOp, 4, ?r)` hands `apply1` the
+    /// name, on the occurrence carrier — or on the term carrier, when a fact holds it or a
+    /// rule's column carries it to `?p(…)` — and the lookup above fell through to operation
+    /// resolution and reported `unknown operation: apply1.f`. Converted where it is
+    /// applied, as a lambda is, for the reasons [`Self::closure_of_applied_lambda_node`]
+    /// gives: a macro reads its argument as syntax, and a callee that returns the function
+    /// hands the resolver back the name it can carry.
+    ///
+    /// What the typer attached at the name (`CallClass::EtaOpRef`'s dictionary, the
+    /// operation's own slots, the spread labels) is read as an operation body's eta reads
+    /// it, but in a frame that binds nothing: the name was written in a rule, which has no
+    /// requirement frame, and the frame on top here is the callee's — a slot it forwards
+    /// would be read from the callee's channel. No program reaches one: the typer refuses a
+    /// rule's reference whose dictionary would forward a slot (measured, a rule in a
+    /// `requires` sort passing its sibling), so this frame makes a forward an error naming
+    /// the slot rather than a read of another operation's.
+    fn op_ref_of_applied_name(&mut self, v: &Value) -> Result<Value, EvalError> {
+        let Some(op) = applied_operation_name(&self.kb, v) else {
+            return Ok(v.clone());
+        };
+        let Value::Node(occ) = v else {
+            return Ok(Value::OpRef {
+                op,
+                dict: None,
+                named: None,
+                spread_labels: None,
+                op_reqs: None,
+            });
+        };
+        let saved = std::mem::replace(&mut self.stack, super::frame::ActivationStack::with_cap(1));
+        let op_ref = self
+            .stack
+            .push(Frame {
+                op,
+                expr: Rc::clone(occ),
+                locals: SmallVec::new(),
+                requirements: SmallVec::new(),
+                awaiting: None,
+            })
+            .and_then(|()| self.eta_op_ref(op, occ));
+        self.stack = saved;
+        op_ref
+    }
+
     fn enter_closure(
         &mut self,
         handle: super::value::ClosureHandle,
@@ -4232,8 +4302,8 @@ impl Interpreter {
         };
         // WI-20260903-FC2X4 — a lambda the RESOLVER proved rides on the
         // occurrence carrier; it becomes a closure where it is applied, as it
-        // does for an ordinary HOF argument.
-        let body = self.closure_of_applied_lambda_node(body);
+        // does for an ordinary HOF argument — and an operation's name its `OpRef`.
+        let body = self.callable_of_applied_value(body)?;
         if !matches!(body, Value::Closure(_) | Value::OpRef { .. }) {
             return Err(EvalError::TypeMismatch {
                 expected: "a callable value (a lambda or an operation reference)",
@@ -5938,4 +6008,19 @@ pub fn lookup_operation_body(
 /// [`Interpreter::closure_of_applied_lambda_node`], which owns the reason.
 fn occurrence_is_lambda(occ: &std::rc::Rc<NodeOccurrence>) -> bool {
     matches!(occ.as_expr(), Some(Expr::Lambda { .. }))
+}
+
+/// The operation a value names, read through the view on any carrier: a bare reference
+/// whose symbol is an operation. A free function for the reason
+/// [`occurrence_is_lambda`] is. See [`Interpreter::op_ref_of_applied_name`].
+fn applied_operation_name(kb: &KnowledgeBase, v: &Value) -> Option<Symbol> {
+    use crate::kb::term_view::{TermView, ViewHead};
+    match TermView::head(v, kb) {
+        ViewHead::Functor {
+            functor,
+            pos_arity: 0,
+            named_arity: 0,
+        } if kb.has_kind(functor, crate::intern::SymbolKind::Operation) => Some(functor),
+        _ => None,
+    }
 }

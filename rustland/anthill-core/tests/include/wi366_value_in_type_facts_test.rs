@@ -467,14 +467,10 @@ fn query_pattern_written_empty_effect_row_lowers() {
     for item in &parsed.items {
         if let anthill_core::parse::ir::Item::Fact(f) = item {
             // Must NOT panic (was `unreachable!` on the effect-row ParseAux).
-            term = Some(load::convert_query_term(
-                &mut kb,
-                &parsed.terms,
-                &parsed.symbols,
-                f.term,
-                global_scope,
-                &mut var_map,
-            ));
+            term = Some(
+                load::convert_query_term(&mut kb, &parsed, f.term, global_scope, &mut var_map)
+                    .expect("the pattern converts"),
+            );
         }
     }
     let term = term.expect("query pattern has a fact term");

@@ -80,14 +80,8 @@ fn wi7fp1m_query_file_import_is_visible_to_validation() {
         panic!("query file must contain a fact pattern");
     };
     let scope = kb.global_scope();
-    let query = load::convert_query_term(
-        &mut kb,
-        &parsed.terms,
-        &parsed.symbols,
-        fact.term,
-        scope,
-        &mut Default::default(),
-    );
+    let query = load::convert_query_term(&mut kb, &parsed, fact.term, scope, &mut Default::default())
+        .expect("the pattern converts");
     let rows = kb.resolve(&[query], &ResolveConfig::default());
     assert_eq!(rows.len(), 1);
     assert!(rows[0].is_definite());

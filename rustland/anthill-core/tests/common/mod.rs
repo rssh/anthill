@@ -2705,14 +2705,13 @@ pub fn query_pattern_term(
     let mut var_map = std::collections::HashMap::new();
     for item in &parsed.items {
         if let anthill_core::parse::ir::Item::Fact(f) = item {
-            return load::convert_query_term(
-                kb,
-                &parsed.terms,
-                &parsed.symbols,
-                f.term,
-                global_scope,
-                &mut var_map,
-            );
+            return load::convert_query_term(kb, &parsed, f.term, global_scope, &mut var_map)
+                .unwrap_or_else(|errs| {
+                    panic!(
+                        "query pattern `{pattern}` failed to convert: {:?}",
+                        errs.iter().map(|e| e.to_string()).collect::<Vec<_>>()
+                    )
+                });
         }
     }
     panic!("query pattern `{pattern}` produced no fact item");

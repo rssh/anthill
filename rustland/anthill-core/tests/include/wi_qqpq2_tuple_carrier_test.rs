@@ -34,8 +34,8 @@
 //! because an operation NAME in a rule-body function slot is not callable and dies
 //! `UnknownOperation { name: "…apply2.f" }` before any tuple is looked at. That is a
 //! DIFFERENT root, not a scope call: it reproduces at ONE parameter (`apply1(inc1, 2)`),
-//! where no tuple exists anywhere. Filed as WI-20260904-833DK and pinned by
-//! `an_eta_d_operation_name_is_a_known_gap`; the reader itself is driven by
+//! where no tuple exists anywhere. Filed as WI-20260904-833DK, closed by WI-20261023-Y6QW2
+//! (`wi_y6qw2…::an_operation_name_in_a_function_slot_is_applied`); the reader itself is driven by
 //! `an_op_ref_spreads_a_bridged_tuple_and_keeps_its_labels`, which mints the `OpRef` in
 //! an OPERATION body and threads the bridged tuple in as a parameter.
 //!
@@ -324,47 +324,12 @@ fn an_op_ref_spreads_a_bridged_tuple_and_keeps_its_labels() {
 // part_b_a_permuted_named_tuple_binds_a_rule_body_lambdas_binders_by_name`, which asserts
 // -1 and fails on that change's own back-out.
 
-/// **A KNOWN GAP, PINNED RATHER THAN LEFT TO BE REDISCOVERED.** An operation NAME in a
-/// rule-body function slot is not callable: it arrives as a `Value::Node(Ref(op))` and
-/// the apply path, which knows `Value::Closure` and `Value::OpRef`, dies
-/// `UnknownOperation { name: "<caller>.f" }` — the callee's own PARAMETER read as an
-/// operation name.
-///
-/// FOUND BY THIS TICKET'S CENSUS AND EXCLUDED FROM IT ON MEASUREMENT, not on scope:
-/// the failure is raised BEFORE any argument is destructured, `spread_eta_args` (the
-/// other `tuple_components` reader) is never entered, and the row below is at ONE
-/// parameter — no tuple exists anywhere in it. WI-784's rule that a lambda and an
-/// operation are interchangeable as function values is what makes it a defect rather
-/// than a missing feature; its repair is in the apply path's callee classification and
-/// carries its own controls. WI-20260904-833DK owns it.
-///
-/// The row asserts the CURRENT behaviour: ZERO definite answers, one floundered
-/// solution. When it starts answering 3, the gap is closed — delete this row and say
-/// which change closed it.
-#[test]
-fn an_eta_d_operation_name_is_a_known_gap() {
-    let src = "\
-namespace zzqqpq2.etagap
-  import anthill.prelude.{Int64, Function}
-  operation inc1(n: Int64) -> Int64 = n + 1
-  operation apply1(f: Function[A = Int64, B = Int64], n: Int64) -> Int64 = f(n)
-  rule value(?r) :- ?r <=> apply1(inc1, 2)
-end
-";
-    let mut kb = crate::common::try_load_kb_with(src).expect("the KNOWN GAP still LOADS");
-    let all = crate::common::query_unary(&mut kb, "zzqqpq2.etagap.value");
-    assert_eq!(
-        all.len(),
-        1,
-        "expected the single residual solution, got {all:?}"
-    );
-    assert!(
-        !all[0].1,
-        "KNOWN GAP: an operation name in a rule-body function slot answers a RESIDUAL. \
-         If it is now DEFINITE the gap is closed: delete this row and say which change \
-         closed it. Got {all:?}",
-    );
-}
+// CLOSED BY WI-20261023-Y6QW2 (with WI-20260904-833DK) — an operation NAME in a rule-body
+// function slot was not callable: it arrived as a `Value::Node(Ref(op))` and the apply path
+// died `UnknownOperation { name: "<caller>.f" }`. The name becomes its `OpRef` where it is
+// applied now. The row, and its two-parameter spelling through a tuple, live with that change
+// as `wi_y6qw2_function_value_from_a_rule_test::an_operation_name_in_a_function_slot_is_applied`,
+// which fails on its back-out.
 
 /// **A USER-WRITTEN `_1` LABEL IS NOT A SYNTHETIC ONE, AND THE TWO CARRIERS MUST STILL
 /// AGREE.** Found by `/code-review` (high) on this ticket's shipped code, and DRIVEN —

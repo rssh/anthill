@@ -1822,13 +1822,19 @@ fn scan_query_source(
     if errors.is_empty() {
         return Ok(());
     }
-    for e in load::LoadError::render_all(&errors) {
+    Err(report_query_errors(&errors, origin))
+}
+
+/// Print a query source's load errors, as [`scan_query_source`] reports them, and answer
+/// the exit code.
+fn report_query_errors(errors: &[load::LoadError], origin: Option<&str>) -> i32 {
+    for e in load::LoadError::render_all(errors) {
         match origin {
             Some(origin) => eprintln!("error: {origin}: {e}"),
             None => eprintln!("error: {e}"),
         }
     }
-    Err(1)
+    1
 }
 
 /// Supply the `-i` flags to the scope the query pattern is resolved in.
@@ -1900,14 +1906,8 @@ fn collect_queries(
         let mut terms = Vec::new();
         for item in &parsed.items {
             if let Item::Fact(fact) = item {
-                let pat = load::convert_query_term(
-                    kb,
-                    &parsed.terms,
-                    &parsed.symbols,
-                    fact.term,
-                    global_scope,
-                    &mut var_map,
-                );
+                let pat = load::convert_query_term(kb, &parsed, fact.term, global_scope, &mut var_map)
+                    .map_err(|errors| report_query_errors(&errors, Some("--pattern")))?;
                 terms.push(pat);
             }
         }
@@ -1948,14 +1948,8 @@ fn collect_queries(
         let mut var_map = HashMap::new();
         for item in &parsed.items {
             if let Item::Fact(fact) = item {
-                let pat = load::convert_query_term(
-                    kb,
-                    &parsed.terms,
-                    &parsed.symbols,
-                    fact.term,
-                    global_scope,
-                    &mut var_map,
-                );
+                let pat = load::convert_query_term(kb, &parsed, fact.term, global_scope, &mut var_map)
+                    .map_err(|errors| report_query_errors(&errors, None))?;
                 let label = TermPrinter::new(kb).print_occurrence(&pat);
                 queries.push((label, vec![pat]));
             }

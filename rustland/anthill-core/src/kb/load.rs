@@ -6950,6 +6950,7 @@ pub fn scan_definitions_with_sources(
                 if let Item::Fact(fact) = item {
                     query_type_name_errors(kb, file, fact.term, global, false, &mut errors);
                     query_application_errors(kb, file, fact.term, global, &mut errors);
+                    errors.extend(query_arrow_errors(kb, file, source_ids[i], fact.term, global));
                 }
             }
         }
@@ -6958,6 +6959,25 @@ pub fn scan_definitions_with_sources(
     // the per-file declaration/load loops set it again.
     kb.symbols.set_asking_file(None);
     errors
+}
+
+/// A bare `->` in a query pattern, judged as the clause that writes it is
+/// ([`Loader::check_bare_arrow_typo`]): `lambda () -> body` without its parentheses
+/// ([`LoadError::LambdaInTermPosition`]), and a keyword-less `(x) -> body` whose binder
+/// resolves to nothing ([`LoadError::BareArrowInLogicPosition`]). A query reads a lambda
+/// as a clause does ([`query_compound_expression`]), so it is held to the clause's
+/// spelling of one.
+fn query_arrow_errors(
+    kb: &mut KnowledgeBase,
+    file: &ParsedFile,
+    source_id: SourceId,
+    root: ParseTermId,
+    scope: ScopeId,
+) -> Vec<LoadError> {
+    let mut loaded_paths = HashSet::new();
+    let mut loader = Loader::new(kb, file, &NullResolver, &mut loaded_paths, scope, Some(source_id));
+    loader.check_bare_arrow_typo(root, "a query", &HashSet::new());
+    stamped_file_errors(loader.errors, file)
 }
 
 /// The APPLICATIONS a query pattern writes, judged as the clause that writes them is,
@@ -24510,7 +24530,8 @@ pub type QueryPattern = Rc<NodeOccurrence>;
 /// resolver read through `TermView` exactly as they read the hash-consed twin: the tree
 /// keys on structural `DiscrimKey`s and never on `TermId` identity, and
 /// `resolve_with_stats` / `browse_program_clauses_matching` have been `TermView`-generic
-/// since WI-349. Nothing built here enters the `TermStore`.
+/// since WI-349. Nothing built here enters the `TermStore`, but for a compound expression,
+/// which the clause's walk lowers and interns ([`query_compound_expression`]).
 ///
 /// WHAT THAT FIXES, MEASURED on `j0rm4_query_pattern_carrier_test`: every conversion of
 /// `Top(a: 1)` used to add three permanent slots to the hash-consed store — one per
@@ -24550,14 +24571,17 @@ pub type QueryPattern = Rc<NodeOccurrence>;
 /// the loader reads it — the registry is populated by then, since a query runs against
 /// a fully loaded KB. The hint is a TYPE, which is persistent KB content, so it stays a
 /// `TermId` on both sides of the carrier change.
+///
+/// A compound expression in the pattern is lowered by the clause's walk
+/// ([`query_compound_expression`]); what that walk refuses is the `Err`, located in the
+/// query source.
 pub fn convert_query_term(
     kb: &mut KnowledgeBase,
-    parse_terms: &SimpleTermStore,
-    parse_symbols: &crate::intern::SymbolTable,
+    parsed: &ParsedFile,
     parse_id: ParseTermId,
     scope: ScopeId,
     var_map: &mut HashMap<u32, VarId>,
-) -> QueryPattern {
+) -> Result<QueryPattern, Vec<LoadError>> {
     // WI-20260901-719FJ — THE PATTERN IS A LOGICAL SUBJECT, so a dotted paren-less name
     // written here is the NAME, the same reading the rule head, the fact head and the
     // rule-body goal take (`Loader::convert_subject_term`). MEASURED before it, on a
@@ -24569,23 +24593,27 @@ pub fn convert_query_term(
     // of a connective in it (`not(nsx.tgt)`, WI-20261029-50361) — so never at an argument:
     // a data slot holds a term whose spelling is its identity, and the fact this query
     // searches for was built by the loader's own data-slot walk, which is untouched.
+    let mut errors = Vec::new();
     let occ = convert_query_term_expecting(
         kb,
-        parse_terms,
-        parse_symbols,
+        parsed,
         parse_id,
         scope,
         var_map,
         None,
         ConstFold::Goal,
+        &mut errors,
     );
+    if !errors.is_empty() {
+        return Err(errors);
+    }
     // WI-20260902-CZJ2N — §8.3'S EXPANSION AT THE QUERY PATTERN, the fifth logical
     // position. `anthill query 'account'` searches for the same all-fields-fresh pattern
     // `account()` searches for, so a query cannot be written that the fact head cannot
     // answer. AT THE ENTRY POINT: an ARGUMENT of the pattern is a data slot, which the
     // walk reads by its context where it converts it (`query_data_slot_name`,
     // WI-20260902-JB6RS), as the loader's own data-slot walk reads the fact's.
-    expand_bare_entity_query_name(kb, occ)
+    Ok(expand_bare_entity_query_name(kb, occ))
 }
 
 /// A dotted paren-less name written where a query proves a goal, read as the NAME it spells
@@ -25278,13 +25306,61 @@ fn query_child_fold(
     fold.child(slot)
 }
 
+/// A compound expression a query pattern writes — a `lambda`, an `if`, a `let`, a `match`
+/// — as the occurrence a clause's walk builds for it ([`Loader::compound_expression_occurrence`]),
+/// so a query and a rule body hand an operation the same lambda and evaluate the same `if`.
+/// The converter's positional marker (`lambda_expr(pattern_tuple, "x")`) was no function
+/// value: `applyThunk(lambda () -> "x", ?r)` faulted "unknown operation: applyThunk.f",
+/// and `?y <=> (if 1 = 1 then 10 else 20)` bound `?y` to the marker. `None` for anything
+/// else, so the converter keeps its own reading.
+///
+/// The walk is the loader's, lent this query's variables, so a `?x` the form names is the
+/// pattern's `?x`. Its spans are the query source's: the scan that precedes the conversion
+/// registers it and leaves it the asking file ([`scan_query_definitions`]), and the names
+/// the converter resolves are read on that file's behalf too. The walk interns what it
+/// builds, as a clause's walk does.
+fn query_compound_expression(
+    kb: &mut KnowledgeBase,
+    parsed: &ParsedFile,
+    parse_id: ParseTermId,
+    scope: ScopeId,
+    var_map: &mut HashMap<u32, VarId>,
+    errors: &mut Vec<LoadError>,
+) -> Option<Rc<NodeOccurrence>> {
+    let Term::Fn { functor, .. } = parsed.terms.get(parse_id) else {
+        return None;
+    };
+    if !parsed.terms.is_minted(parse_id)
+        || !is_compound_expression_marker(parsed.symbols.local_name(*functor))
+    {
+        return None;
+    }
+    let source_id = kb
+        .symbols
+        .asking_file()
+        .filter(|&id| {
+            kb.sources
+                .provenance(id)
+                .is_some_and(|(_, text)| std::sync::Arc::ptr_eq(&text, &parsed.source))
+        })
+        .expect("a query pattern is converted after the scan of its source, which leaves it the asking file");
+    let mut loaded_paths = HashSet::new();
+    let mut loader =
+        Loader::new(kb, parsed, &NullResolver, &mut loaded_paths, scope, Some(source_id));
+    loader.lent_to_query = true;
+    loader.var_map = std::mem::take(var_map);
+    let occ = loader.compound_expression_occurrence(parse_id);
+    *var_map = std::mem::take(&mut loader.var_map);
+    errors.extend(stamped_file_errors(loader.errors, parsed));
+    occ
+}
+
 /// [`convert_query_term`] carrying the enclosing argument position's declared type —
 /// the query-side twin of `Loader::convert_term_with_expected`'s `expected`.
 #[allow(clippy::too_many_arguments)]
 fn convert_query_term_expecting(
     kb: &mut KnowledgeBase,
-    parse_terms: &SimpleTermStore,
-    parse_symbols: &crate::intern::SymbolTable,
+    parsed: &ParsedFile,
     parse_id: ParseTermId,
     scope: ScopeId,
     var_map: &mut HashMap<u32, VarId>,
@@ -25293,7 +25369,11 @@ fn convert_query_term_expecting(
     // a goal, its arguments data slots, where a const is its value — so a pattern and the
     // fact it searches for fold alike.
     fold: ConstFold,
+    // What lowering a compound expression refused ([`query_compound_expression`]).
+    errors: &mut Vec<LoadError>,
 ) -> Rc<NodeOccurrence> {
+    let parse_terms = &parsed.terms;
+    let parse_symbols = &parsed.symbols;
     // WI-20261029-50361 — the pattern and a goal slot of a connective in it are goals, so a
     // dotted paren-less name there is the name it spells ([`convert_query_term`]).
     // MEASURED before: over `rule flag :- true`, `not(probe.fl.flag)` answered one solution,
@@ -25303,6 +25383,9 @@ fn convert_query_term_expecting(
         if let Some(name) = dotted_citation_name(parse_symbols, parse_terms, parse_id) {
             return query_goal_citation(kb, &name, scope);
         }
+    }
+    if let Some(occ) = query_compound_expression(kb, parsed, parse_id, scope, var_map, errors) {
+        return occ;
     }
     let parse_term = parse_terms.get(parse_id).clone();
     let expr = match parse_term {
@@ -25400,13 +25483,13 @@ fn convert_query_term_expecting(
                         let child = fold.child(None);
                         let occ = convert_query_term_expecting(
                             kb,
-                            parse_terms,
-                            parse_symbols,
+                            parsed,
                             id,
                             scope,
                             var_map,
                             elem_expected.clone(),
                             child,
+                            errors,
                         );
                         query_data_slot_name(kb, occ, child)
                     })
@@ -25479,13 +25562,13 @@ fn convert_query_term_expecting(
                     );
                     let occ = convert_query_term_expecting(
                         kb,
-                        parse_terms,
-                        parse_symbols,
+                        parsed,
                         id,
                         scope,
                         var_map,
                         exp,
                         child,
+                        errors,
                     );
                     if bracket {
                         occ
@@ -25503,13 +25586,13 @@ fn convert_query_term_expecting(
                     let child = query_child_fold(kb, fold, None, exp.as_ref());
                     let occ = convert_query_term_expecting(
                         kb,
-                        parse_terms,
-                        parse_symbols,
+                        parsed,
                         id,
                         scope,
                         var_map,
                         exp,
                         child,
+                        errors,
                     );
                     (kb_sym, if bracket { occ } else { query_data_slot_name(kb, occ, child) })
                 })
@@ -27580,6 +27663,12 @@ struct Loader<'a> {
     /// SAVED AND RESTORED rather than set-and-clear, so a nested entity constructor
     /// cannot un-suppress its parent's subtree on the way out.
     descs_emitted_by_convert: bool,
+    /// The walk is lent to a QUERY pattern ([`query_compound_expression`]), which declares
+    /// nothing ([`SourceRole::Query`]): an inline description in it asserts no
+    /// `DescriptionInfo`, as one elsewhere in the pattern asserts none. MEASURED before it:
+    /// `applyThunk(lambda () -> ?s {< the text >}?, ?r)` asserted one, which every query of
+    /// the run then answered.
+    lent_to_query: bool,
     // Map from parse-time Symbol → KB Symbol (for reintern — plain intern)
     sym_map: HashMap<u32, Symbol>,
     // Map from parse-time VarId → KB VarId
@@ -28214,6 +28303,7 @@ impl<'a> Loader<'a> {
             lowering_equation_rhs: false,
             entity_slot_origin: HashMap::new(),
             descs_emitted_by_convert: false,
+            lent_to_query: false,
             sym_map: HashMap::new(),
             var_map: HashMap::new(),
             errors: Vec::new(),
@@ -48883,6 +48973,9 @@ impl<'a> Loader<'a> {
     }
 
     fn emit_desc_fact(&mut self, target: TermId, text: &str, domain: Symbol) {
+        if self.lent_to_query {
+            return;
+        }
         let desc_sort = ClauseKind::Description;
         let desc_sym = self.kb.resolve_symbol("anthill.reflect.DescriptionInfo");
         let target_field = self.kb.intern("target");
