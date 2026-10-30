@@ -2774,7 +2774,8 @@ A position that does not fit what the rest of the clause says of it is a load er
 by the position: a construction's argument against its field, in a body, a head or a fact; a
 rule goal's argument against the callee's column; a head's bound against the body; a call's
 result, a result column and a dot's value against the slot they fill; and two positions of
-one variable. The enclosing sort's parameter is rigid in the clause: in `sort Box3[T]`, `rule
+one variable. So is a `domain(?v, T)` goal whose `T` is no type — a lambda, an `if` — wherever
+in the clause it stands. The enclosing sort's parameter is rigid in the clause: in `sort Box3[T]`, `rule
 pr(?x: Self) :- ?x <=> b3(v: 5)` is refused, `expected T, got Int64`, while `rule pr(?x:
 Box3)`, an open slot, loads. A column whose clauses give it no common type is of some type: a
 value read from it goes wherever any type is taken, and a demand on it (a call's argument at
