@@ -9,6 +9,8 @@
 
 - acceptance: cargo-test
 
+- depends_on: WI-20261030-BXMPK-a-goal-holding-a-value-with-no
+
 - tags: resolver
 
 ## Description
@@ -20,4 +22,8 @@ A lambda written in a query pattern, and an operation's name passed as data and 
 ### 2026-10-23T17:59:19Z — feedback — claude
 
 ALSO (2026-10-23, found delivering WI-20261015-C9802, 01424c91): A QUERY RUNS NONE OF THE LOADER'S BARE-ARROW REFUSALS. Over `operation plus1(n: Int64) -> Int64 = n + 1`, `anthill query '?f <=> lambda () -> probe.q.plus1(1)'` answers `?f = arrow(lambda, 2)` — refused in a clause since C9802 (the parentheses named) — and the keyword-less `?f <=> (x) -> probe.q.plus1(x)` answers `arrow(x, plus1(x))`, refused in a clause by WI-618. `convert_query_term` has no error channel; the CLI's `scan_query_source` does. Once a query lowers a lambda, both refusals belong at the query too, through the clause's walk (`Loader::find_arrow_witness`); before that the advised parentheses would not help there.
+
+### 2026-10-30T15:22:44Z — feedback — claude
+
+DEPENDS ON WI-20261030-BXMPK (2026-10-30): the query half — a lambda in a query pattern lowered to the reflect term `lambda_expr(…)` — goes through `lower_leaf` (kb/execute.rs), one of the goal sites BXMPK takes off `value_to_term`. The operation-reference half is this ticket's alone: `apply1(pureOp, 4, ?r)` in a rule body faults "unknown operation: apply1.f" in one clause as through a head (measured on c541ef90, the same on 0989f81a), and the same call from an operation body answers 5.
 
