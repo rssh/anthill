@@ -1518,6 +1518,18 @@ fn check_goal_atom_reading(
                 _ => continue,
             }
         };
+        // WI-20261029-50361 — a namespace is no relation, and its goal answered `true`
+        // through the clause its declaration files under its own name.
+        if kb.is_namespace_only(f) {
+            errors.push((
+                TypeError::NamespaceAsGoal {
+                    span: Some(o.span.span),
+                    namespace: f,
+                },
+                Some(o.span.source),
+            ));
+            continue;
+        }
         if kb.has_kind(f, crate::intern::SymbolKind::Const) {
             const_goals.push(Rc::clone(&o));
             continue;

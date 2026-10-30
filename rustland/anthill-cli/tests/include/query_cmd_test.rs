@@ -89,3 +89,22 @@ fn unresolved_import_in_a_query_blocks() {
         out.stderr
     );
 }
+
+/// WI-20261029-50361 — a namespace is not a goal: a query writing one, as the pattern or
+/// under a `not`, is refused before it runs, with exit 1. Before, `probe.db` answered
+/// `true` through the clause a namespace declaration files under its own name, and
+/// `not(anthill.prelude)` answered `no solutions`.
+#[test]
+fn a_namespace_is_not_a_query_goal() {
+    for (pattern, ns) in [("probe.db", "probe.db"), ("not(anthill.prelude)", "anthill.prelude")] {
+        let out = q(&[pattern]);
+        assert_eq!(out.code, 1, "`{pattern}`: stdout:\n{}\nstderr:\n{}", out.stdout, out.stderr);
+        assert!(
+            out.stderr
+                .contains(&format!("the query goal `{ns}` names a namespace, and a namespace is not a goal")),
+            "`{pattern}`: stderr:\n{}",
+            out.stderr
+        );
+        assert!(!out.stdout.contains("solution"), "`{pattern}` is not run: {}", out.stdout);
+    }
+}

@@ -109,6 +109,9 @@ pub enum RequiresSite {
     Clause,
 }
 
+/// The position a rule-body [`TypeError::NamespaceAsGoal`] names.
+const RULE_BODY_GOAL: &str = "rule-body goal";
+
 #[derive(Clone, Debug)]
 pub enum TypeError {
     /// Canonical type mismatch from `assert_compatible`. `context` is where
@@ -966,6 +969,13 @@ pub enum TypeError {
         /// The equation subject, for the diagnostic — rendered QUALIFIED, the spelling
         /// that locates the equations.
         functor: Symbol,
+    },
+    /// WI-20261029-50361: a rule-body goal naming a namespace — the typer's face of
+    /// [`crate::kb::load::LoadError::NamespaceAsGoal`], raised by the rule-body goal
+    /// reading, which reads every goal the body proves.
+    NamespaceAsGoal {
+        span: Option<Span>,
+        namespace: Symbol,
     },
     /// WI-650: an `PartialEq.eq`/`PartialEq.neq` (`=`/`neq`) call whose operand's sort declares
     /// its OWN `eq` override with NO backing — no runnable body and no non-fact
@@ -2260,6 +2270,10 @@ impl TypeError {
                     kb.qualified_name_of(*functor),
                 )
             }
+            TypeError::NamespaceAsGoal { namespace, .. } => crate::kb::load::namespace_as_goal_message(
+                RULE_BODY_GOAL,
+                kb.qualified_name_of(*namespace),
+            ),
             TypeError::EqOverrideUnbacked { carrier_sort, .. } => {
                 let carrier_qn = kb.qualified_name_of(*carrier_sort);
                 format!(
@@ -2458,6 +2472,7 @@ impl TypeError {
             | TypeError::ConstantInGoalPosition { span, .. }
             | TypeError::ConstInGoalPosition { span, .. }
             | TypeError::EquationSubjectInGoalPosition { span, .. }
+            | TypeError::NamespaceAsGoal { span, .. }
             | TypeError::EqOverrideUnbacked { span, .. }
             | TypeError::DotDispatchNoMatch { span, .. }
             | TypeError::ForbiddenInternalField { span, .. }
@@ -3127,6 +3142,11 @@ impl TypeError {
                     span: self.span(kb).unwrap_or_default(),
                 }
             }
+            TypeError::NamespaceAsGoal { namespace, .. } => LoadError::NamespaceAsGoal {
+                position: RULE_BODY_GOAL,
+                namespace: kb.qualified_name_of(*namespace).to_string(),
+                span: self.span(kb).unwrap_or_default(),
+            },
             TypeError::EqOverrideUnbacked { carrier_sort, .. } => {
                 let carrier_qn = kb.qualified_name_of(*carrier_sort).to_string();
                 LoadError::TypeMismatch {

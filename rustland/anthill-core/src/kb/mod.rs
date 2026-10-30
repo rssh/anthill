@@ -6105,6 +6105,76 @@ impl KnowledgeBase {
         self.kinds(sym).is_empty() && self.rules_by_functor_iter(sym).next().is_none()
     }
 
+    /// WI-999 — is the name a NAMESPACE and nothing else? Then a declaration taking it is not
+    /// a capture 059 R4 clause 3 governs (amended, WI-999), a rule head reaching it holds no
+    /// clause of it (`load::rule_head_ladder_answer`), and it is no goal
+    /// ([`Self::namespace_goals`]) — WI-20261029-50361.
+    ///
+    /// A namespace denotes no value and no type: it can appear only as the head of a
+    /// QUALIFIED PATH, so it has no answer for a body to silently get a different one
+    /// of. What a capture does to it is break or re-point the path, and MEASURED that
+    /// belongs to the dotted ladder rather than to the declaration:
+    ///
+    /// | written | before WI-1075 | now |
+    /// |---|---|---|
+    /// | `namespace outer { namespace inner { operation g; sort Box { … inner.g(…) } } }` | resolves to `outer.inner.g` | unchanged |
+    /// | + a member `Box.inner` | **loud** `unknown functor` | unchanged |
+    /// | + a member `Box.inner`, and a TOP-LEVEL `namespace inner` also exists | loads clean, silently calling the TOP-LEVEL `inner.g` | **loud** — `..inner.g` is how the top-level one is asked for |
+    ///
+    /// The third row was `load::dotted_absolute` recovering a shadowed head at the bare global
+    /// twin, on the strength of a spelling that also meant "resolve me relatively". WI-1075
+    /// gave the absolute reading its own spelling and made a bare path purely relative, so
+    /// the exclusion above no longer rests on the hazard being rare: with no way to write
+    /// the re-rooting, capturing a namespace name can neither break a path silently nor
+    /// re-point one. Refusing the declaration would in any case have closed one route into
+    /// a defect reachable without any declaration at all — a `let` binder or a labelled
+    /// rule shadows a head just as well.
+    ///
+    /// `has_kind`, not `kind_of`, and the value/type kinds are named rather than
+    /// negated: `namespace X` beside `sort X` is ONE symbol carrying both categories
+    /// (WI-926/956), and that one IS a type — 059 R2's own secondary-entry shape.
+    pub fn is_namespace_only(&self, sym: Symbol) -> bool {
+        use crate::intern::SymbolKind;
+        self.has_kind(sym, SymbolKind::Namespace)
+            && ![
+                SymbolKind::Sort,
+                SymbolKind::Entity,
+                SymbolKind::Operation,
+                SymbolKind::Const,
+            ]
+            .iter()
+            .any(|&k| self.has_kind(sym, k))
+    }
+
+    /// Every namespace `view` writes AS A GOAL (WI-20261029-50361, kernel-language.md
+    /// §5.3): its head, and every goal it proves at any depth — a disjunction's branches
+    /// and a quantifier's body too, which the undefined-name walks leave to resolution
+    /// because such a branch may fail while its sibling holds. A namespace's never fails:
+    /// MEASURED before, `rule q :- zed` inside `namespace probe.zed` and the query
+    /// `anthill.prelude` each answered `true`, through the clause a namespace declaration
+    /// files under its own name. A discharge's hypotheses are not proved goals and are not
+    /// read ([`Self::goal_arg_views`]). `out` dedups.
+    pub fn namespace_goals<V: term_view::TermView>(&self, view: &V) -> SmallVec<[Symbol; 4]> {
+        let mut out = SmallVec::new();
+        self.collect_namespace_goals(view, &mut out);
+        out
+    }
+
+    fn collect_namespace_goals<V: term_view::TermView>(
+        &self,
+        view: &V,
+        out: &mut SmallVec<[Symbol; 4]>,
+    ) {
+        if let Some((sym, _)) = self.goal_head_sym_arity(view) {
+            if self.is_namespace_only(sym) && !out.contains(&sym) {
+                out.push(sym);
+            }
+        }
+        for child in self.goal_arg_views(view) {
+            self.collect_namespace_goals(&child, out);
+        }
+    }
+
     /// The `(functor symbol, positional arity)` of a GOAL's head, or `None` for a head
     /// with no functor at all (`Var` / `Const` / `Bottom` — a bare `?x` or a literal).
     ///

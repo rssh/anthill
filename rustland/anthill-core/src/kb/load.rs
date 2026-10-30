@@ -953,6 +953,17 @@ pub enum LoadError {
         /// Where the goal is written.
         span: Span,
     },
+    /// WI-20261029-50361 (spec §5.3): a goal naming a namespace, which is not a relation.
+    /// It used to answer `true`, through the clause a namespace declaration files under its
+    /// own name — in a rule body, a constraint, a contract clause, an effect guard and a
+    /// query alike ([`KnowledgeBase::namespace_goals`]).
+    NamespaceAsGoal {
+        /// Where the goal stands: `"rule-body goal"`, `"`requires` goal"`, ….
+        position: &'static str,
+        /// The namespace, qualified.
+        namespace: String,
+        span: Span,
+    },
     /// WI-1033 (058 §3.8): a CONDITIONAL provision is certified by the carrier's own
     /// conditional provision of the spec it requires, and the outer conditions do not
     /// ENTAIL the inner ones — so the outer holds at bindings where the inner does not,
@@ -3142,6 +3153,7 @@ impl LoadError {
             | LoadError::ConstantInGoalPosition { span, .. }
             | LoadError::ConstInGoalPosition { span, .. }
             | LoadError::EquationSubjectInGoalPosition { span, .. }
+            | LoadError::NamespaceAsGoal { span, .. }
             | LoadError::UnknownEntityField { span, .. }
             | LoadError::SecondaryEntryContent { span, .. }
             | LoadError::ProvidesNamesDataSort { span, .. }
@@ -3599,6 +3611,17 @@ impl LoadError {
                     "{}: {}",
                     loc.format_start(*span),
                     equation_subject_in_goal_position_message(functor)
+                )
+            }
+            LoadError::NamespaceAsGoal {
+                position,
+                namespace,
+                span,
+            } => {
+                format!(
+                    "{}: {}",
+                    loc.format_start(*span),
+                    namespace_as_goal_message(position, namespace)
                 )
             }
             LoadError::UnbackedProviderOperation {
@@ -5245,6 +5268,19 @@ impl std::fmt::Display for LoadError {
                     f,
                     "{} at {}..{}",
                     equation_subject_in_goal_position_message(functor),
+                    span.start,
+                    span.end
+                )
+            }
+            LoadError::NamespaceAsGoal {
+                position,
+                namespace,
+                span,
+            } => {
+                write!(
+                    f,
+                    "{} at {}..{}",
+                    namespace_as_goal_message(position, namespace),
                     span.start,
                     span.end
                 )
@@ -16755,7 +16791,7 @@ pub enum NotARelation {
 fn not_a_relation(kb: &KnowledgeBase, sym: Symbol) -> Option<NotARelation> {
     if kb.has_kind(sym, SymbolKind::Const) {
         Some(NotARelation::Const)
-    } else if is_namespace_only(kb, sym) {
+    } else if kb.is_namespace_only(sym) {
         Some(NotARelation::Namespace)
     } else {
         None
@@ -16804,6 +16840,15 @@ pub(crate) fn const_in_goal_position_message(name: &str, problem: &ConstGoalProb
              This is a defect in that walk, not in the program."
         ),
     }
+}
+
+/// WI-20261029-50361 — the ONE wording of [`LoadError::NamespaceAsGoal`], for its two
+/// renderings, the typer's face of it and the CLI's query refusal.
+pub fn namespace_as_goal_message(position: &str, namespace: &str) -> String {
+    format!(
+        "the {position} `{namespace}` names a namespace, and a namespace is not a goal: it \
+         is not a relation and holds no clauses (kernel-language.md §5.3)"
+    )
 }
 
 /// WI-20260902-8K4RB — the ONE wording of [`LoadError::EquationSubjectInGoalPosition`],
@@ -17036,6 +17081,25 @@ fn check_contract_clause_goals(kb: &KnowledgeBase) -> Vec<LoadError> {
                                 functor: kb.qualified_name_of(functor).to_string(),
                                 op: kb.qualified_name_of(op).to_string(),
                                 clause: kind,
+                                span: site.span,
+                            }
+                            .located_in_kb_source(kb, site.source),
+                        );
+                    }
+                    // WI-20261029-50361 — and none names a namespace, at any depth.
+                    for namespace in kb.namespace_goals(&conjunct) {
+                        if seen.contains(&(kind, namespace)) {
+                            continue;
+                        }
+                        seen.push((kind, namespace));
+                        errors.push(
+                            LoadError::NamespaceAsGoal {
+                                position: if kind == "requires" {
+                                    "`requires` goal"
+                                } else {
+                                    "`ensures` goal"
+                                },
+                                namespace: kb.qualified_name_of(namespace).to_string(),
                                 span: site.span,
                             }
                             .located_in_kb_source(kb, site.source),
@@ -22319,6 +22383,20 @@ fn check_undefined_effect_guard_goals(kb: &mut KnowledgeBase) -> Vec<LoadError> 
     let mut errors = Vec::new();
     for site in kb.take_effect_guard_sites() {
         let at = site.at;
+        // WI-20261029-50361 — a goal naming a namespace, in any branch.
+        for namespace in kb.namespace_goals(&site.goal) {
+            if !seen.insert((namespace, at)) {
+                continue;
+            }
+            errors.push(
+                LoadError::NamespaceAsGoal {
+                    position: "effect guard goal",
+                    namespace: kb.qualified_name_of(namespace).to_string(),
+                    span: at.span,
+                }
+                .located_in_kb_source(kb, at.source),
+            );
+        }
         for functor in kb.undefined_negated_goal_functors(&site.goal) {
             if !seen.insert((functor, at)) {
                 continue;
@@ -23012,7 +23090,7 @@ fn captured_origin(
 /// the census never reached. Each is excluded where it arises, with its own reason:
 /// a sibling type's CONSTRUCTOR, in [`crate::intern::SymbolTable::resolve_captured_name`]
 /// (members and constructors are named per TYPE), and an enclosing NAMESPACE, in
-/// [`is_namespace_only`] (a namespace has no answer to change). The residual
+/// [`KnowledgeBase::is_namespace_only`] (a namespace has no answer to change). The residual
 /// corpus cost is zero, which is what 059 claimed and now holds for stated reasons
 /// rather than by an incomplete count.
 ///
@@ -23103,7 +23181,7 @@ fn check_name_captures(kb: &KnowledgeBase) -> Vec<LoadError> {
                 if other == decl.sym {
                     continue;
                 }
-                if is_namespace_only(kb, other) || capture_is_excused(kb, sort, other) {
+                if kb.is_namespace_only(other) || capture_is_excused(kb, sort, other) {
                     continue;
                 }
                 hit = Some(other);
@@ -23167,44 +23245,6 @@ fn scope_reading_files(kb: &KnowledgeBase) -> HashMap<ScopeId, Vec<SourceId>> {
     askers
 }
 
-/// WI-999 — is the name a NAMESPACE and nothing else? Then a declaration taking it is not
-/// a capture 059 R4 clause 3 governs (amended, WI-999), and a rule head reaching it holds
-/// no clause of it ([`rule_head_ladder_answer`], WI-20261029-50361).
-///
-/// A namespace denotes no value and no type: it can appear only as the head of a
-/// QUALIFIED PATH, so it has no answer for a body to silently get a different one
-/// of. What a capture does to it is break or re-point the path, and MEASURED that
-/// belongs to the dotted ladder rather than to the declaration:
-///
-/// | written | before WI-1075 | now |
-/// |---|---|---|
-/// | `namespace outer { namespace inner { operation g; sort Box { … inner.g(…) } } }` | resolves to `outer.inner.g` | unchanged |
-/// | + a member `Box.inner` | **loud** `unknown functor` | unchanged |
-/// | + a member `Box.inner`, and a TOP-LEVEL `namespace inner` also exists | loads clean, silently calling the TOP-LEVEL `inner.g` | **loud** — `..inner.g` is how the top-level one is asked for |
-///
-/// The third row was [`dotted_absolute`] recovering a shadowed head at the bare global
-/// twin, on the strength of a spelling that also meant "resolve me relatively". WI-1075
-/// gave the absolute reading its own spelling and made a bare path purely relative, so
-/// the exclusion above no longer rests on the hazard being rare: with no way to write
-/// the re-rooting, capturing a namespace name can neither break a path silently nor
-/// re-point one. Refusing the declaration would in any case have closed one route into
-/// a defect reachable without any declaration at all — a `let` binder or a labelled
-/// rule shadows a head just as well.
-///
-/// `has_kind`, not `kind_of`, and the value/type kinds are named rather than
-/// negated: `namespace X` beside `sort X` is ONE symbol carrying both categories
-/// (WI-926/956), and that one IS a type — 059 R2's own secondary-entry shape.
-fn is_namespace_only(kb: &KnowledgeBase, sym: Symbol) -> bool {
-    kb.has_kind(sym, SymbolKind::Namespace)
-        && ![
-            SymbolKind::Sort,
-            SymbolKind::Entity,
-            SymbolKind::Operation,
-            SymbolKind::Const,
-        ]
-        .iter()
-        .any(|&k| kb.has_kind(sym, k))
-}
 
 /// WI-999 — is this capture one 059 R4 clause 3 admits? The exclusion is a RELATION
 /// between the declaring sort and the sort that owns the captured name, and it never
@@ -24433,27 +24473,10 @@ pub fn convert_query_term(
     // `conditional / residual: eq(field_access(nsx, tgt), true)` — a FLOUNDERED solution
     // a `.len()` counts as an answer — where `nsx.tgt()` answered `true`.
     //
-    // AT THE ENTRY POINT, so it reads the PATTERN and never an argument of one: a data
-    // slot holds a term whose spelling is its identity, and the fact this query searches
-    // for was built by the loader's own data-slot walk, which is untouched. That is why
-    // the collapse is here and not in `convert_query_term_expecting`, which recurses.
-    if let Some(name) = dotted_citation_name(parse_symbols, parse_terms, parse_id) {
-        let sym = resolve_query_name(kb, &name, scope);
-        // `Ref` when the name denotes, `Ident` when it does not — `resolve_query_name`
-        // bare-interns the two answers that name no single symbol (WI-476), and an
-        // unresolved bare intern heads no clause, so the pattern matches nothing and the
-        // CLI's `report_unknown_functor_name` gets a name to diagnose instead of
-        // `field_access`. A `Bool` const is the literal it holds, as at every goal.
-        let expr = if kb.symbols.is_resolved(sym) {
-            match query_slot_const(kb, sym, ConstFold::Goal) {
-                Some(lit) => Expr::Const(lit),
-                None => Expr::Ref(sym),
-            }
-        } else {
-            Expr::Ident(sym)
-        };
-        return expand_bare_entity_query_name(kb, expr_node(expr));
-    }
+    // MADE BY THE WALK, at every node it converts as a GOAL — the pattern, and a goal slot
+    // of a connective in it (`not(nsx.tgt)`, WI-20261029-50361) — so never at an argument:
+    // a data slot holds a term whose spelling is its identity, and the fact this query
+    // searches for was built by the loader's own data-slot walk, which is untouched.
     let occ = convert_query_term_expecting(
         kb,
         parse_terms,
@@ -24471,6 +24494,25 @@ pub fn convert_query_term(
     // walk reads by its context where it converts it (`query_data_slot_name`,
     // WI-20260902-JB6RS), as the loader's own data-slot walk reads the fact's.
     expand_bare_entity_query_name(kb, occ)
+}
+
+/// A dotted paren-less name written where a query proves a goal, read as the NAME it spells
+/// ([`convert_query_term`] carries why). `Ref` when the name denotes, `Ident` when it does
+/// not — `resolve_query_name` bare-interns the two answers that name no single symbol
+/// (WI-476), and an unresolved bare intern heads no clause, so the pattern matches nothing
+/// and the CLI's `report_unknown_functor_name` gets a name to diagnose instead of
+/// `field_access`. A `Bool` const is the literal it holds, as at every goal.
+fn query_goal_citation(kb: &mut KnowledgeBase, name: &str, scope: ScopeId) -> Rc<NodeOccurrence> {
+    let sym = resolve_query_name(kb, name, scope);
+    let expr = if kb.symbols.is_resolved(sym) {
+        match query_slot_const(kb, sym, ConstFold::Goal) {
+            Some(lit) => Expr::Const(lit),
+            None => Expr::Ref(sym),
+        }
+    } else {
+        Expr::Ident(sym)
+    };
+    expand_bare_entity_query_name(kb, expr_node(expr))
 }
 
 /// WI-20260902-JB6RS — a bare constructor name in a query's DATA slot is its INSTANCE
@@ -25081,6 +25123,16 @@ fn convert_query_term_expecting(
     // fact it searches for fold alike.
     fold: ConstFold,
 ) -> Rc<NodeOccurrence> {
+    // WI-20261029-50361 — the pattern and a goal slot of a connective in it are goals, so a
+    // dotted paren-less name there is the name it spells ([`convert_query_term`]).
+    // MEASURED before: over `rule flag :- true`, `not(probe.fl.flag)` answered one solution,
+    // its negand a `field_access` chain heading no clause, where `not(probe.fl.flag())`
+    // answered none; and `not(probe.db)` hid the namespace from its refusal.
+    if fold == ConstFold::Goal {
+        if let Some(name) = dotted_citation_name(parse_symbols, parse_terms, parse_id) {
+            return query_goal_citation(kb, &name, scope);
+        }
+    }
     let parse_term = parse_terms.get(parse_id).clone();
     let expr = match parse_term {
         Term::Const(lit) => Expr::Const(lit),
@@ -25975,7 +26027,7 @@ fn quoted_scope_list(scopes: &[String]) -> String {
 /// head pick a side (`wi_hsg31_global_declaration_test` drives it).
 ///
 /// WI-20261029-50361 — A NAMESPACE IS NO ANSWER, unless its own scope is the head's. A
-/// namespace holds no clauses ([`is_namespace_only`]), so a head whose name
+/// namespace holds no clauses ([`KnowledgeBase::is_namespace_only`]), so a head whose name
 /// reaches one — `rule zed :- …` inside `namespace probe.zed`, through the enclosing
 /// `probe`, or through an `import probe.zed` — introduces its predicate where it is
 /// written, exactly as its
@@ -26008,7 +26060,7 @@ fn rule_head_ladder_answer(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> Re
     });
     match answer {
         ResolveResult::Found(sym)
-            if is_namespace_only(kb, sym) && kb.symbols.declaring_scope(sym) != Some(scope) =>
+            if kb.is_namespace_only(sym) && kb.symbols.declaring_scope(sym) != Some(scope) =>
         {
             ResolveResult::NotFound
         }

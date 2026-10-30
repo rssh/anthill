@@ -57,6 +57,10 @@ enum LoadError:
     * reaches one only where a predicate of its own would take the namespace's name: in the
     * scope that declares it, or spelled qualified. It used to be stored under it. */
   case ClauseHeadNamesNamespace(kind: String, name: String, span: Span)
+  /** WI-20261029-50361 (rustland's `NamespaceAsGoal`) — a goal naming a namespace, which
+    * is not a relation. It answered `true`, through the clause a namespace declaration
+    * files under its own name. Scaland judges a rule's and a constraint's body. */
+  case NamespaceAsGoal(position: String, namespace: String, span: Span)
   case Other(message: String, span: Span)
 
   /** WI-947: `file:line:col: message`, through the ONE located renderer that
@@ -99,6 +103,9 @@ enum LoadError:
       span.render(s"`$sort(…)` is an application, and `$sort` names no constructor, predicate or " +
         s"operation to apply — it is a sort, and its type is written `$sort[…]` " +
         "(kernel-language.md §4.4)")
+    case NamespaceAsGoal(position, namespace, span) =>
+      span.render(s"the $position `$namespace` names a namespace, and a namespace is not a " +
+        "goal: it is not a relation and holds no clauses (kernel-language.md §5.3)")
     case ClauseHeadNamesNamespace(kind, name, span) =>
       span.render(s"this $kind's head names the namespace `$name`: a namespace is not a " +
         "relation and holds no clauses (kernel-language.md §5.3). Give the relation a name " +
@@ -1480,6 +1487,15 @@ object Loader:
     val d = kb.symbols.get(sym)
     d.hasKind(SymbolKind.Namespace) &&
       !Seq(SymbolKind.Sort, SymbolKind.Entity, SymbolKind.Operation, SymbolKind.Const).exists(d.hasKind)
+
+  /** WI-20261029-50361 — refuse a goal that names a namespace, where a body writes it: any
+    * goal slot, since a namespace's goal never fails. Rustland's twin is the rule-body goal
+    * reading's `NamespaceAsGoal`. */
+  private def refuseNamespaceGoal(
+    kb: KnowledgeBase, sym: TermSymbol, span: Span, errors: ArrayBuffer[LoadError]
+  ): Unit =
+    if isNamespaceOnly(kb, sym) then
+      errors += LoadError.NamespaceAsGoal("rule-body goal", kb.qualifiedNameOf(sym), span)
 
   /** WI-20261029-50361 — refuse a clause whose head names a namespace, and answer `true` so
     * the caller stores none. A head reaches one only where a predicate of its own would
@@ -3510,6 +3526,7 @@ object Loader:
       dottedCitationName(fileSym, fileTerms, termId) match
         case Some(name) =>
           val sym = resolveName(kb, name, scope, errors, fileTerms.spanOf(termId), allowQualifiedMiss = atHead)
+          if !atHead then refuseNamespaceGoal(kb, sym, fileTerms.spanOf(termId), errors)
           return
             if kb.symbols.isResolved(sym) then kb.alloc(Term.Ref(sym))
             else kb.alloc(Term.Ident(sym))
@@ -3594,6 +3611,7 @@ object Loader:
         // node that is itself a goal: `holds(not(a.b))` stores data. Every other
         // argument is DATA, which keeps a fact's slot and the pattern that searches for
         // it spelling one term. Mirrors rustland's `goal_arg_slots` descent.
+        if atGoal && !atHead then refuseNamespaceGoal(kb, kbFunctor, fileTerms.spanOf(termId), errors)
         val goalSlots =
           if atGoal then kb.goalArgSlots(kbFunctor, fn.posArgs.length) else Set.empty[Int]
         // A field declared `Term` holds what is written in it, quoted — named, or by
@@ -3613,6 +3631,7 @@ object Loader:
       case Term.Ref(sym) =>
         val name = fileSym.name(sym)
         val kbSym = resolveName(kb, name, scope, errors, fileTerms.spanOf(termId), allowQualifiedMiss = atHead)
+        if atGoal && !atHead then refuseNamespaceGoal(kb, kbSym, fileTerms.spanOf(termId), errors)
         // A name written in a TYPE position (§4.4; rustland's `type_context_binding` and
         // its type lowerings, JB6RS steps 3–5) — a bracket's binding (`Box[V = red]` is
         // `Box[V = red[]]`), an arrow's or tuple's component — is the TYPE: a constructor
@@ -3621,6 +3640,7 @@ object Loader:
       case Term.Ident(sym) =>
         val name = fileSym.name(sym)
         val kbSym = resolveName(kb, name, scope, errors, fileTerms.spanOf(termId), allowQualifiedMiss = atHead)
+        if atGoal && !atHead then refuseNamespaceGoal(kb, kbSym, fileTerms.spanOf(termId), errors)
         // WI-20260902-CZJ2N — PROMOTE A RESOLVED BARE NAME TO `Ref`, which is what
         // rustland's `convert_term_inner` has always done and scaland did not. Without
         // it the store still held two nullary forms: `tgtA` stayed `Term.Ident` while

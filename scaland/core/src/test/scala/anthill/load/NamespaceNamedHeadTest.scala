@@ -15,9 +15,12 @@ import anthill.term.{Literal, Term}
   * its own can be introduced — the head is written in the scope that declares the
   * namespace, or spelled qualified — the clause is refused.
   *
+  * A namespace is not a goal either: a rule body's goal naming one is refused.
+  *
   * NOT PORTED: rustland's ambiguity row (scaland's recovery interns the written name, so it
-  * never stands on a namespace) and its one-arity, two-scope and path rows, whose refusals
-  * scaland does not raise.
+  * never stands on a namespace), its one-arity, two-scope and path rows, whose refusals
+  * scaland does not raise, and its contract, effect-guard and query rows — scaland reads
+  * no operation body or contract, and has no query.
   *
   * ── THE BACK-OUT, applied and run ───────────────────────────────────────────
   *
@@ -31,9 +34,10 @@ import anthill.term.{Literal, Term}
   *     row;
   *   * the namespace exclusion in `refuseDeclarationThatCannotStand` → the declared
   *     predicate's row;
-  *   * the declaration's repair advising `:- true` again → the advice row.
-  * The declared entity passes either way by design, as do `GlobalDeclarationHeadTest`'s
-  * seven. */
+  *   * the declaration's repair advising `:- true` again → the advice row;
+  *   * `Loader.refuseNamespaceGoal` reporting nothing → the goal row.
+  * The declared entity and the predicate-goal control pass either way by design, as do
+  * `GlobalDeclarationHeadTest`'s seven. */
 class NamespaceNamedHeadTest extends munit.FunSuite:
 
   private def errorsOf(files: (String, String)*): IndexedSeq[String] =
@@ -124,4 +128,24 @@ class NamespaceNamedHeadTest extends munit.FunSuite:
         "n50361p.zed(1), other(1) :- true\nend\n", "p.anthill"))).map(_.render)
     assert(errs.exists(_.contains("head names the namespace `n50361p.zed`")), s"$errs")
     assert(clauses(kb, "n50361q.other") <= 0, "the rule's other head is not stored")
+  }
+
+  // A `|` branch and a constraint are rustland's rows: `|` is the kernel's `or`, which these
+  // fixtures do not load, and scaland parses a `constraint` and drops it (WI-1007).
+  test("a namespace is not a goal, in any goal slot of a rule") {
+    val decls = "namespace n50361r.zed\n  entity A(v: Int64)\n  fact A(v: 1)\n"
+    for (label, body) <- Seq(
+      ("bare", "  rule q :- zed\n"),
+      ("applied", "  rule q(?x) :- zed(?x)\n"),
+      ("qualified", "  rule q :- n50361r.zed\n"),
+      ("negated", "  rule q :- A(v: 1), not(zed)\n"),
+    ) do
+      val errs = errorsOf("r.anthill" -> s"$decls${body}end\n")
+      assert(errs.exists(_.contains("the rule-body goal `n50361r.zed` names a namespace")), s"$label: $errs")
+  }
+
+  test("CONTROL: the predicate a head introduces under the name is a goal") {
+    val kb = loaded("s.anthill" ->
+      "namespace n50361s.zed\n  rule zed(3) :- true\n  rule q(?x) :- zed(?x)\nend\n")
+    assertEquals(answers(kb, "n50361s.zed.q", 3), 1)
   }

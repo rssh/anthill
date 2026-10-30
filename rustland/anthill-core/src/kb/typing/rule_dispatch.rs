@@ -1807,6 +1807,9 @@ pub(super) fn call_dispatch_shape(
 ///     owns absence, with the hypothesis exemption and the discrimination-tree backstop
 ///     an arity-0 proposition needs. Reporting it here too would say the same thing
 ///     twice about one defect.
+///   * Nor is a namespace, whose one clause is the one its declaration files under its
+///     name: the goal reading refuses it as no goal at all (`NamespaceAsGoal`,
+///     WI-20261029-50361), and a shape against that clause would be a second report.
 ///
 /// ENTITY-headed goals never arrive: [`call_dispatch_shape`] routes them to the
 /// constructor reading, whose shape comes from the DECLARED field schema (and admits
@@ -1820,6 +1823,9 @@ fn subgoal_shape_error(
     let Some(Expr::Apply { functor, .. }) = occ.as_expr() else {
         return None;
     };
+    if kb.is_namespace_only(*functor) {
+        return None;
+    }
     let mut shapes: Vec<(usize, Vec<Symbol>)> = Vec::new();
     for rid in kb.rules_by_functor_iter(*functor) {
         // No readable shape ⇒ no proof; say nothing at all.

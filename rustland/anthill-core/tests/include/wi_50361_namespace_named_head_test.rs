@@ -15,6 +15,11 @@
 //!    declares the namespace, a qualified head, a namespace-less file naming `anthill`
 //!    (`ClauseHeadNamesNoRelation`, beside the const refusal it widens); the body-less
 //!    declaration there no longer advises `:- true`; and an ambiguous head is reported once.
+//! D. A NAMESPACE IS NOT A GOAL (decided with the user after A–C): a goal naming one is
+//!    refused in every goal slot of a rule body and a constraint, in a contract clause, in
+//!    an effect guard and in a query (`NamespaceAsGoal`); before, each answered through the
+//!    clause a namespace declaration files under its own name, `true`. Found on the way: a
+//!    query's goal slot did not read a dotted paren-less name as the name it spells.
 //!
 //! WHAT FAILS UNDER WHICH BACK-OUT — MEASURED, each switched off alone in one build, over this
 //! file and the whole `wi_tests` binary:
@@ -31,7 +36,15 @@
 //!   * the declaration's repair advising `:- true` again, in its detail or in the closing
 //!     sentence (`BodylessRuleDeclaresNothing::clause_can_stand`) → the second alone;
 //!   * the stop at a head reported ambiguous (`Loader::reported_ambiguity_since`) →
-//!     [`an_ambiguous_head_is_reported_once`].
+//!     [`an_ambiguous_head_is_reported_once`];
+//!   * the namespace arm of the typer's rule-body goal reading, or the shape check's
+//!     declining of a namespace (a second report for `zed(?x)`) →
+//!     [`a_namespace_is_not_a_goal_in_a_body`];
+//!   * the contract check's or the effect-guard check's namespace walk →
+//!     [`a_namespace_is_not_a_goal_in_a_contract_or_a_guard`];
+//!   * the query walk's goal-slot collapse → [`a_dotted_name_in_a_query_goal_slot_is_the_name_it_spells`],
+//!     and `anthill-cli`'s `query_cmd_test::a_namespace_is_not_a_query_goal`, which the
+//!     CLI's own check (`report_namespace_query_goals`) fails alone too.
 //!
 //!   PASS EITHER WAY, by design: [`the_declared_entity_and_the_declared_predicate_were_already_their_own`],
 //!   the control. Outside this binary, `anthill-cli`'s
@@ -277,3 +290,92 @@ fn an_ambiguous_head_is_reported_once() {
 }
 
 
+
+// ── D. A namespace is not a goal ────────────────────────────────────────────
+
+/// Every goal slot of a rule body refuses a goal naming a namespace — bare, applied,
+/// qualified, negated, a disjunction's branch, a quantifier's body, a constraint — once
+/// each. Before, each loaded, and `rule q :- zed` answered `true` through the clause a
+/// namespace declaration files under its own name; the applied one was refused only by the
+/// shape check against that clause ("a clause of `….zed` can match (0 positional)").
+#[test]
+fn a_namespace_is_not_a_goal_in_a_body() {
+    let decls = "namespace test.n50361p.zed\n  entity A(v: Int64)\n  fact A(v: 1)\n";
+    for (label, body, ns) in [
+        ("bare", "  rule q :- zed\n", "test.n50361p.zed"),
+        ("applied", "  rule q(?x) :- zed(?x)\n", "test.n50361p.zed"),
+        ("qualified", "  rule q :- anthill.prelude\n", "anthill.prelude"),
+        ("negated", "  rule q :- A(v: 1), not(zed)\n", "test.n50361p.zed"),
+        ("a branch", "  rule q :- A(v: 2) | zed\n", "test.n50361p.zed"),
+        ("a quantifier's body", "  rule q :- (forall ?x in [1]: zed)\n", "test.n50361p.zed"),
+        ("a constraint", "  constraint c1: zed\n", "test.n50361p.zed"),
+    ] {
+        let errs = load_errors_of(&format!("{decls}{body}end\n"));
+        assert_eq!(errs.len(), 1, "{label}: one report: {errs:#?}");
+        assert_refused_naming(
+            &errs,
+            &[&format!("the rule-body goal `{ns}` names a namespace, and a namespace is not a goal")],
+            label,
+        );
+    }
+}
+
+/// A contract clause and an effect guard are goal positions too, at any depth.
+#[test]
+fn a_namespace_is_not_a_goal_in_a_contract_or_a_guard() {
+    for (label, src, position) in [
+        (
+            "requires, negated",
+            "namespace test.n50361q.zed\n  import anthill.prelude.{Int64}\n  operation f(n: \
+             Int64) -> Int64 requires not(zed) = n\nend\n",
+            "`requires` goal",
+        ),
+        (
+            "effect guard, a branch",
+            "namespace test.n50361q.zed\n  import anthill.prelude.{Int64, String, Error}\n  \
+             import anthill.prelude.PartialEq.{eq}\n  sort Boom\n    entity boom(why: String)\n  \
+             end\n  operation safe(n: Int64) -> Int64 effects { Error[Boom] :- eq(n, 0) | zed } \
+             =\n    if n === 0 then Error.raise(boom(\"z\")) else n\nend\n",
+            "effect guard goal",
+        ),
+        (
+            "requires",
+            "namespace test.n50361q.zed\n  import anthill.prelude.{Int64}\n  operation f(n: \
+             Int64) -> Int64 requires zed = n\nend\n",
+            "`requires` goal",
+        ),
+        (
+            "ensures",
+            "namespace test.n50361q.zed\n  import anthill.prelude.{Int64}\n  operation f(n: \
+             Int64) -> Int64 ensures zed = n\nend\n",
+            "`ensures` goal",
+        ),
+        (
+            "effect guard",
+            "namespace test.n50361q.zed\n  import anthill.prelude.{Int64, String, Error}\n  sort \
+             Boom\n    entity boom(why: String)\n  end\n  operation safe(n: Int64) -> Int64 \
+             effects { Error[Boom] :- zed } =\n    if n === 0 then Error.raise(boom(\"z\")) else \
+             n\nend\n",
+            "effect guard goal",
+        ),
+    ] {
+        let errs = load_errors_of(src);
+        assert_refused_naming(
+            &errs,
+            &[&format!("the {position} `test.n50361q.zed` names a namespace")],
+            label,
+        );
+    }
+}
+
+/// Found on the way: a query's goal slot is a goal, so a dotted name written there without
+/// parentheses is the name it spells, as at the pattern itself. Before, over `rule flag :-
+/// true`, `not(….flag)` answered `true` and `….flag | ….flag` nothing — a `field_access`
+/// chain heading no clause — where the parenthesised spellings answered as they do here.
+#[test]
+fn a_dotted_name_in_a_query_goal_slot_is_the_name_it_spells() {
+    let mut kb = load_kb_with("namespace test.n50361t\n  rule flag :- true\nend\n");
+    assert_eq!(answers(&mut kb, "not(test.n50361t.flag)"), 0, "negated");
+    assert_eq!(answers(&mut kb, "test.n50361t.flag | test.n50361t.flag"), 1, "a branch");
+    assert_eq!(answers(&mut kb, "not(test.n50361t.flag())"), 0, "control, parenthesised");
+}

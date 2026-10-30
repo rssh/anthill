@@ -1658,6 +1658,13 @@ fn run_query(args: &QueryArgs) -> Result<(), i32> {
                             any_unknown = true;
                             continue;
                         }
+                        // WI-20261029-50361: a namespace is not a goal, and one answered
+                        // `true` through the clause its declaration files under its name.
+                        // Ahead of the run, as the tie is: the pattern has no reading.
+                        if report_namespace_query_goals(&kb, qt) {
+                            any_unknown = true;
+                            continue;
+                        }
                         // WI-767: SLD resolution is the default — the old
                         // head-match default reported a rule-head unification
                         // (variables unbound) as an answer.
@@ -2040,6 +2047,20 @@ fn report_ambiguous_query_dispatch(kb: &KnowledgeBase, qt: &QueryPattern) -> boo
         eprintln!("error: {msg}");
     }
     !ties.is_empty()
+}
+
+/// WI-20261029-50361 — report every namespace the query pattern writes as a goal
+/// (`KnowledgeBase::namespace_goals`), in the load refusal's wording, and say whether any
+/// was. Unlocated, as [`report_ambiguous_query_dispatch`] is and for its reason.
+fn report_namespace_query_goals(kb: &KnowledgeBase, qt: &QueryPattern) -> bool {
+    let namespaces = kb.namespace_goals(qt);
+    for &ns in &namespaces {
+        eprintln!(
+            "error: {}",
+            load::namespace_as_goal_message("query goal", kb.qualified_name_of(ns))
+        );
+    }
+    !namespaces.is_empty()
 }
 
 /// The WI-754 unknown-functor diagnostic for one `sym`. Shared by the head-only
