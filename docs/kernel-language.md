@@ -3412,6 +3412,11 @@ host-backed obligation; an operation with `=` has an Anthill implementation.
   - the carrier is a sort that supplies no such member, and `S`'s own runs nothing (`LogicalStream.mplus(r, r)` with `r: Relation[…]`).
 
   A result names a carrier only through a type parameter of `S`, since `Self` in `S` is `S`. Where an argument stands at `S`, the carrier is the sort of its value, and the call is not refused.
+- At the call, in an operation body or a rule body, of a body-less member of a spec `S` whose instance the call does not fix. The instance the call requests is answered by a provision only where it conforms to it for every type a parameter left open could be, an open parameter being read as a rigid variable; a parameter the provision at the carrier determines is read off that provision, as `Iterable.find(xs)` reads `Element` off `List`'s. Refused, with `Conv[A, B]` declaring `conv(a: A, b: B)` and `tag(b: B)`:
+  - its carrier parameter (§5.1) is fixed by nothing at the call — no argument, bracket, expected result or requirement in scope names it: `Conv.tag("km")`, where `A` is the carrier;
+  - the provisions at what it fixes give a parameter it leaves open different types: `Conv.tag("km")` where `Conv` declares only `tag`, so that `B` is the carrier, and `Meters` and `Feet` both provide `Conv` at `B = String`.
+
+  The instance is then written at the call: in an operation body as a bracket (`Conv[A = Meters].tag("km")`) or a `requires` on the operation, in a rule body as the clause's `require[Conv[A = Meters, B = String]]`, which the call is answered at.
 
 What still reaches an unrunnable target when a program runs is a dispatch gap only the run can find — a carrier no provider supplies an operation for, reached by value. From an operation body it is the fault `OperationBodyMissing`; from a rule body it is §8.3's UNREDUCED comparison, parked as undecided so that a failing sibling still refutes the clause.
 

@@ -510,6 +510,20 @@ pub enum TypeError {
         spec: Symbol,
         suggestion: String,
     },
+    /// A call of a body-less member `op` of `spec` that leaves spec parameters `open` with
+    /// nothing at the call to fix them, while the provisions at the parameters it does fix
+    /// name different types for them (`providers`): the requested instance conforms to none
+    /// of them for every type the open parameters could be. `suggestion` is the instance
+    /// written — the clause's `require[…]` in a rule body, the call's bracket elsewhere.
+    ParameterNamedApart {
+        span: Option<Span>,
+        op: Symbol,
+        spec: Symbol,
+        open: Vec<String>,
+        providers: SmallVec<[Symbol; 2]>,
+        suggestion: String,
+        in_rule_own_term: bool,
+    },
     /// WI-841 (058 §4.2 rule 2): a bracket key matched the SPEC SHORT NAME of two or
     /// more of the callee's anonymous requirement slots — `requires Monoid[T],
     /// Monoid[U]`, or two specs sharing a last segment. The short name is a GATED
@@ -1867,6 +1881,33 @@ impl TypeError {
                 kb.qualified_name_of(*op),
                 kb.qualified_name_of(*spec),
             ),
+            TypeError::ParameterNamedApart {
+                op,
+                spec,
+                open,
+                providers,
+                suggestion,
+                in_rule_own_term,
+                ..
+            } => {
+                let quote = |xs: &mut dyn Iterator<Item = String>| {
+                    xs.map(|x| format!("`{x}`")).collect::<Vec<_>>().join(" and ")
+                };
+                format!(
+                    "a call of `{}` that names no instance of `{}`: it leaves {} open, and {} \
+                     provide `{1}` at what it fixes, naming different types for it. Write the \
+                     instance: {}",
+                    kb.qualified_name_of(*op),
+                    kb.qualified_name_of(*spec),
+                    quote(&mut open.iter().cloned()),
+                    quote(&mut providers.iter().map(|p| kb.qualified_name_of(*p).to_string())),
+                    if *in_rule_own_term {
+                        format!("declare `{suggestion}` in the clause")
+                    } else {
+                        format!("`{suggestion}`")
+                    },
+                )
+            }
             TypeError::AmbiguousRequirementKey {
                 op, name, slots, ..
             } => {
@@ -2457,6 +2498,7 @@ impl TypeError {
             | TypeError::CarrierSuppliesNoMember { span, .. }
             | TypeError::DictionaryCannotAnswer { span, .. }
             | TypeError::CallNamesNoInstance { span, .. }
+            | TypeError::ParameterNamedApart { span, .. }
             | TypeError::AmbiguousRequirementKey { span, .. }
             | TypeError::SelectionValueNotASort { span, .. }
             | TypeError::SlotSelectionUnindexable { span, .. }
@@ -2791,7 +2833,8 @@ impl TypeError {
             | TypeError::CallOfUnselectableSpecOperation { op, .. }
             | TypeError::CarrierSuppliesNoMember { op, .. }
             | TypeError::DictionaryCannotAnswer { op, .. }
-            | TypeError::CallNamesNoInstance { op, .. } => LoadError::TypeMismatch {
+            | TypeError::CallNamesNoInstance { op, .. }
+            | TypeError::ParameterNamedApart { op, .. } => LoadError::TypeMismatch {
                 origin: None,
                 entity_name: kb.qualified_name_of(*op).to_string(),
                 field_name: "call".to_string(),
@@ -3573,7 +3616,7 @@ fn missing_requires_repair(kb: &KnowledgeBase, clause: &str, site: RequiresSite)
         RequiresSite::Operation { op, sort: None } => {
             format!("add `requires {clause}` to `{}`", kb.qualified_name_of(op))
         }
-        RequiresSite::Clause => format!("write `requires({clause})` in the rule's body"),
+        RequiresSite::Clause => format!("declare `require[{clause}]` in the clause"),
     }
 }
 
@@ -3588,7 +3631,7 @@ fn missing_requires_place(kb: &KnowledgeBase, clause: &str, site: RequiresSite) 
         RequiresSite::Operation { op, sort: None } => {
             format!("`requires {clause}` on `{}`", kb.qualified_name_of(op))
         }
-        RequiresSite::Clause => format!("`requires({clause})` in the rule's body"),
+        RequiresSite::Clause => format!("`require[{clause}]` in the clause"),
     }
 }
 

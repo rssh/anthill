@@ -437,6 +437,110 @@ pub(super) fn provision_binds_param_to_carrier(
         .find(|view| binds_pvid_to_carrier(view))
 }
 
+/// The clause's `require[…]` instances of `spec_sort`, where a rule body declares one.
+fn clause_required_views<'a>(
+    kb: &'a KnowledgeBase,
+    env: &'a TypingEnv,
+    spec_sort: Symbol,
+) -> impl Iterator<Item = &'a Value> + 'a {
+    env.rule_declared_specs()
+        .iter()
+        .filter(move |v| sort_functor_of_view(kb, *v).is_some_and(|s| same_sort_canonical(kb, s, spec_sort)))
+}
+
+/// Does the clause's own `require[…]` name an instance of `spec_sort`?
+pub(super) fn clause_requires_spec(kb: &KnowledgeBase, env: &TypingEnv, spec_sort: Symbol) -> bool {
+    clause_required_views(kb, env, spec_sort).next().is_some()
+}
+
+/// The bindings of the clause's `require[…]` of `spec_sort` at `carrier_sym` — one that binds
+/// the carrier parameter `pvid` to it — where a rule body declares one. A bracket's instance
+/// there is the call its text wrote (`Conv(A: Feet, B: String)`), whose named children are the
+/// bindings.
+pub(super) fn clause_required_view_at_carrier(
+    kb: &KnowledgeBase,
+    env: &TypingEnv,
+    spec_sort: Symbol,
+    pvid: VarId,
+    carrier_sym: Symbol,
+) -> Option<SmallVec<[(Symbol, Value); 2]>> {
+    clause_required_views(kb, env, spec_sort)
+        .map(|v| match spec_view_bindings_value(kb, v) {
+            b if b.is_empty() => view_named_children(kb, v),
+            b => b,
+        })
+        .find(|b| view_binds_param_to_sort(kb, spec_sort, pvid, carrier_sym, b))
+}
+
+/// The provisions of `spec_sort` at `carrier_sym` — those that bind the carrier parameter
+/// `pvid` to it, the carrier's own and a witness's — each with its provider and bindings.
+pub(super) fn provisions_at_carrier(
+    kb: &KnowledgeBase,
+    spec_sort: Symbol,
+    pvid: VarId,
+    carrier_sym: Symbol,
+) -> Vec<(Symbol, SmallVec<[(Symbol, Value); 2]>)> {
+    let carrier_canon = kb.canonical_sort_sym(carrier_sym);
+    provides_rows_of_spec(kb, spec_sort)
+        .filter(|row| {
+            kb.canonical_sort_sym(row.provider) == carrier_canon
+                || witness_dispatch_carrier(kb, spec_sort, row.provider, &row.spec_view)
+                    == Some(carrier_canon)
+        })
+        .map(|row| (row.provider, row.bindings(kb)))
+        .filter(|(_, view)| view_binds_param_to_sort(kb, spec_sort, pvid, carrier_sym, view))
+        .collect()
+}
+
+/// The providers of `at_carrier` ([`provisions_at_carrier`]) that bind some parameter other
+/// than the carrier `pvid`, one `open_at` admits, to different types. `open_at` is the call's question: a
+/// parameter it leaves open with nothing at the call to fix it. Empty where fewer than two
+/// such provisions disagree.
+///
+/// The requested instance holds such a parameter as a rigid variable (it must conform to a
+/// provision for every type the parameter could be), so two provisions that fix it apart
+/// leave the call naming neither. Read from the first, `Conv.tag("km")` over `Conv`'s
+/// carrier `B` took `Meters`' `A` beside `Feet`'s, both at `B = String`, and answered
+/// `Meters`' member.
+pub(super) fn providers_apart_at_carrier(
+    kb: &KnowledgeBase,
+    spec_sort: Symbol,
+    pvid: VarId,
+    at_carrier: &[(Symbol, SmallVec<[(Symbol, Value); 2]>)],
+    open_at: &dyn Fn(Symbol) -> bool,
+) -> SmallVec<[Symbol; 2]> {
+    let binding_of = |view: &SmallVec<[(Symbol, Value); 2]>, param: Symbol| {
+        view.iter()
+            .find(|(k, _)| short_name_of(kb.local_name_of(*k)) == short_name_of(kb.local_name_of(param)))
+            .map(|(_, v)| v.clone())
+    };
+    let apart = sort_type_params_as_pairs(kb, spec_sort)
+        .iter()
+        .map(|(param, _)| *param)
+        .filter(|param| type_param_vid_in_sort(kb, spec_sort, *param) != Some(pvid) && open_at(*param))
+        .any(|param| {
+            let mut bindings = at_carrier.iter().map(|(_, view)| binding_of(view, param));
+            let Some(first) = bindings.next() else {
+                return false;
+            };
+            bindings.any(|b| match (&first, &b) {
+                (Some(a), Some(b)) => !views_structurally_equal(kb, a, b),
+                (None, None) => false,
+                _ => true,
+            })
+        });
+    if !apart {
+        return SmallVec::new();
+    }
+    let mut providers: SmallVec<[Symbol; 2]> = SmallVec::new();
+    for (provider, _) in at_carrier {
+        if !providers.iter().any(|p| same_sort_canonical(kb, *p, *provider)) {
+            providers.push(*provider);
+        }
+    }
+    providers
+}
+
 /// WI-20260828-57MRM — the WITNESS sort whose provision of `spec_sort` dispatches at
 /// `carrier_sym`, if the provision comes from a witness rather than from the carrier's own
 /// `provides`. The same scan [`provision_binds_param_to_carrier`]'s witness arm makes,
@@ -470,7 +574,7 @@ fn witness_provider_for(
 /// canonical variable is `pvid` to `sort` itself: a bare reference to it or an application
 /// of it ([`composed_self_reference`])? The one statement of "this provision is AT this
 /// carrier", for the readers that pick a provision by it.
-fn view_binds_param_to_sort<V: TermView>(
+pub(super) fn view_binds_param_to_sort<V: TermView>(
     kb: &KnowledgeBase,
     spec_sort: Symbol,
     pvid: VarId,

@@ -2717,6 +2717,42 @@ pub fn query_pattern_term(
     panic!("query pattern `{pattern}` produced no fact item");
 }
 
+/// Several query goals, as [`query_pattern_term`] converts one, sharing their variables: a
+/// conjunction built at run time, which the load does not type — what a row asks whose subject
+/// is the run time over a clause the load would refuse, siblings and all.
+#[allow(dead_code)]
+pub fn query_goals(
+    kb: &mut KnowledgeBase,
+    patterns: &[&str],
+) -> Vec<anthill_core::kb::load::QueryPattern> {
+    let src: String = patterns.iter().map(|p| format!("fact {p}\n")).collect();
+    let parsed = parse::parse(&src).expect("parse query goals");
+    let errs = load::scan_query_definitions(kb, &[&parsed]);
+    assert!(
+        errs.is_empty(),
+        "query goals {patterns:?} failed to scan: {:?}",
+        errs.iter().map(|e| e.to_string()).collect::<Vec<_>>()
+    );
+    let global_scope = kb.global_scope();
+    let mut var_map = std::collections::HashMap::new();
+    let mut goals = Vec::new();
+    for item in &parsed.items {
+        if let anthill_core::parse::ir::Item::Fact(f) = item {
+            goals.push(
+                load::convert_query_term(kb, &parsed, f.term, global_scope, &mut var_map)
+                    .unwrap_or_else(|errs| {
+                        panic!(
+                            "query goals {patterns:?} failed to convert: {:?}",
+                            errs.iter().map(|e| e.to_string()).collect::<Vec<_>>()
+                        )
+                    }),
+            );
+        }
+    }
+    assert_eq!(goals.len(), patterns.len(), "one goal per pattern");
+    goals
+}
+
 /// [`query_pattern_functor`]'s answer as a qualified name — what a suite asserting
 /// WHERE a spelling lands wants (`wi040`, `wi752`).
 #[allow(dead_code)]

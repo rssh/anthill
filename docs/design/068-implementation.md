@@ -1209,6 +1209,40 @@ Not this part's, measured on the way, each the same on 083cb6b8:
   `stampIf(true)` over `{Clock :- eq(b, true)}` in a rule body; the stdlib's `Int64.div(7, 0)`
   is refused.
 
+### 6.13 C1d, an instance the call does not fix (WI-20261013-RYDNV, first part, 2026-10-31)
+
+Decided with the user 2026-10-31 (`requirement-channel.md` §5.2): the requested instance is
+answered by a provision only where it conforms to it for every type an open parameter could be,
+the parameter read as a rigid variable at the spec's carrier parameter. `kb/typing/apply.rs`
+(`check_apply_iter`), `kb/typing/carrier.rs` (`providers_apart_at_carrier`,
+`clause_required_view_at_carrier`), `TypeError::ParameterNamedApart`; rows in
+`wi_rydnv_one_classification_test`, the ledger at its head.
+
+- **The carrier parameter is not skipped as one the signature never writes.** The abstract-
+  dispatch arm skipped a spec parameter no parameter, result or effect of the called operation
+  writes, so `Conv.tag(b: B)` under `Conv`'s carrier `A` loaded — in an operation body and in a
+  rule body — and answered nothing when it ran. Where the callee runs nothing of its own the
+  carrier is asked: an operation body tags it as before (the missing `requires`), a rule body is
+  refused at the call, naming the clause's `require`, unless one names the spec.
+- **Two providers at the carrier that fix an open parameter apart are refused**, before the
+  carrier's provision is read for that parameter, which read the first: `Conv.tag("km")` where
+  `Conv`'s carrier is `B` and `Meters` and `Feet` both provide it at `String` answered `Meters`'
+  3. A parameter the signature reads through a projection off an argument (`get(c: C) -> c.T`)
+  is not open there: the witnesses covering the argument are held to agree on it where the
+  projection is read (WI-20260929-0RP29's refusal, which keeps its rows).
+- **A clause's `require[…]` at the receiver's carrier is the view the call's parameters are read
+  off**, in place of the carrier's first provision: `require[Conv[A = Feet, B = String]],
+  Conv.tag("km", ?r)` pinned `Meters`' member and answered 3.
+
+Rows moved by design: CYNPE's unreduced call is asked as a query, each clause that wrote it
+refused (`a_clause_that_writes_the_unreduced_call_is_refused_at_load`); `nar1x`'s and `wi_96ztm`'s
+controls without a `require` are refused at load, `nar1x`'s run-time half asked as a query.
+
+Found, and left to this ticket's later parts (the class read in every position): a
+`require[…]` whose only call is in a value slot
+(`require[Conv[A = Meters, B = String]], ?r <=> Conv.tag("km")`) is refused "no body call … to
+ground the requirement", where the goal spelling answers 3 — the same before.
+
 ## 7. Testing
 
 Per CLAUDE.md: each ticket's rows live in one test module, driven by value with its back-outs run

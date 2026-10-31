@@ -39,6 +39,12 @@
 //!     clause has no answer) and `a_parked_goal_is_never_asked_again` (the clause residualizes
 //!     before its siblings run).
 //!
+//! The unreduced call is asked as a QUERY since WI-20261013-RYDNV, the program built at run
+//! time: a clause that writes `Conv.tag("km")` is refused at load, nothing at the call fixing
+//! `Conv`'s carrier `A` (`a_clause_that_writes_the_unreduced_call_is_refused_at_load`). The
+//! siblings the clauses gave it are the query's other goals. The ledger above was measured on
+//! the clause spelling, and the query spelling was not backed out again.
+//!
 //! The CONTROLS pass either way, by design, and each says why at its site. The ticket's two
 //! controls outside this module pass unchanged: `wi519_residual_honesty_test` (every residual
 //! row) and `classic_mini_test` (tiny-sat 2, alphabet-words 27/12/100, map-colouring 6) —
@@ -50,8 +56,9 @@ use anthill_core::kb::term_view::{TermView, ViewHead};
 use anthill_core::kb::KnowledgeBase;
 
 /// `Colour.score` is an ordinary BODIED operation (35E14's population: P7VP4 weaves only spec
-/// operations). `Conv.tag(b: B)` stands at `B`, so nothing in `?s <=> "km", Conv.tag(?s, ?r)`
-/// grounds `Conv`'s carrier `A`: no provider supplies the call (PRVA2's row).
+/// operations). `Conv.tag(b: B)` stands at `B`, so nothing in `Conv.tag("km")` grounds
+/// `Conv`'s carrier `A`: no provider supplies the call (PRVA2's row). A clause cannot write it
+/// ([`UNREDUCED_CLAUSES`]); the rows ask it as a query ([`goals`]).
 const SRC: &str = r#"
 namespace wicynpe
   import anthill.prelude.{Int64, String}
@@ -84,22 +91,10 @@ namespace wicynpe
   rule late(x: Colour) :- Colour.score(x, 3)
   rule unbound(?r) :- Colour.score(?v, ?r)
 
-  -- PRVA2: a call no provider supplies
-  rule convTag(?r) :- ?s <=> "km", Conv.tag(?s, ?r)
-  rule convTagFails(?r) :- ?s <=> "km", Conv.tag(?s, ?r), 1 = 2
-
   -- a goal waiting on `?z`, which nothing binds, among siblings that make progress one
   -- at a time; and the same siblings without it
   rule chain(?a) :- Int64.gt(?z, 0), ?a <=> ?b + 1, ?b <=> ?c + 1, ?c <=> 1
   rule chainBare(?a) :- ?a <=> ?b + 1, ?b <=> ?c + 1, ?c <=> 1
-
-  -- a PARKED goal whose own variable `?c` a sibling binds; and the same without it
-  rule parked(?a) :- ?s <=> "km", ?c <=> Conv.tag(?s), ?a <=> ?b + 1, ?b <=> ?c + 1, ?c <=> 1
-  rule parkedBare(?a) :- ?s <=> "km", ?a <=> ?b + 1, ?b <=> ?c + 1, ?c <=> 1
-
-  -- an UNREDUCED comparison beside a call that waits on `?z`: bound to `0`, it has no value
-  rule absent(1) :- ?s <=> "km", Int64.div(1, ?z) = Conv.tag(?s), ?z <=> 0
-  rule absentLater(1) :- ?s <=> "km", Int64.div(1, ?z) = Conv.tag(?s), ?z <=> 1
 
   -- a hypothesis about a call stuck on an eigenvariable
   rule hypo(1) :- (forall(?c), Colour.score(?c, 3) -: Colour.score(?c, 3))
@@ -111,8 +106,26 @@ namespace wicynpe
 end
 "#;
 
+/// The clauses that wrote the unreduced call, each refused at load: `Conv`'s carrier is fixed by
+/// nothing at the call. Their goals are asked below as queries.
+const UNREDUCED_CLAUSES: &[&str] = &[
+    "  rule convTag(?r) :- ?s <=> \"km\", Conv.tag(?s, ?r)\n",
+    "  rule convTagFails(?r) :- ?s <=> \"km\", Conv.tag(?s, ?r), 1 = 2\n",
+    "  rule parked(?a) :- ?s <=> \"km\", ?c <=> Conv.tag(?s), ?a <=> ?b + 1, ?b <=> ?c + 1, ?c <=> 1\n",
+    "  rule absent(1) :- ?s <=> \"km\", Int64.div(1, ?z) = Conv.tag(?s), ?z <=> 0\n",
+];
+
+/// The unreduced call, as a query goal.
+const TAG: &str = "wicynpe.Conv.tag(\"km\", ?r)";
+
 fn kb() -> KnowledgeBase {
     crate::common::load_kb_with(SRC)
+}
+
+/// Resolve the conjunction `patterns`, asked as a query: its solutions and the telemetry.
+fn goals(kb: &mut KnowledgeBase, patterns: &[&str]) -> (Vec<Solution>, ResolveStats) {
+    let goals = crate::common::query_goals(kb, patterns);
+    kb.resolve_with_stats(&goals, &ResolveConfig::default())
 }
 
 fn rows(kb: &mut KnowledgeBase, rel: &str) -> Vec<(String, bool)> {
@@ -177,13 +190,27 @@ fn a_call_that_never_gets_its_argument_is_a_conditional_answer() {
     assert!(stats.errors.is_empty(), "nothing faulted; got {:?}", stats.errors);
 }
 
+/// PRVA2's row, the load-time half (WI-20261013-RYDNV): a clause that writes the call is
+/// refused, each, naming the `require` that would fix `A`. They loaded, and their goals reached
+/// the run time as the rows below ask them.
+#[test]
+fn a_clause_that_writes_the_unreduced_call_is_refused_at_load() {
+    let src = SRC.replace("\nend\n", &format!("\n{}end\n", UNREDUCED_CLAUSES.concat()));
+    let errs = crate::common::load_errors_of(&src);
+    let refused = errs
+        .iter()
+        .filter(|e| e.contains("wicynpe.Conv.tag") && e.contains("require[Conv[A = …]]"))
+        .count();
+    assert_eq!(refused, UNREDUCED_CLAUSES.len(), "one refusal per clause: {errs:#?}");
+}
+
 /// PRVA2's row, the run-time half: no provider supplies `Conv.tag("km")`, so the call is
 /// UNREDUCED — an undecided residual that NAMES its cause, never an empty answer. Before: no
 /// solutions, silently.
 #[test]
 fn an_unreduced_call_is_an_undecided_residual_naming_its_cause() {
     let mut kb = kb();
-    let (sols, _) = resolve(&mut kb, "convTag");
+    let (sols, _) = goals(&mut kb, &[TAG]);
     assert_eq!(sols.len(), 1, "one undecided answer; got {} solutions", sols.len());
     let sol = &sols[0];
     assert!(!sol.is_definite());
@@ -199,7 +226,7 @@ fn an_unreduced_call_is_an_undecided_residual_naming_its_cause() {
 #[test]
 fn a_failing_sibling_still_refutes_a_parked_goal() {
     let mut kb = kb();
-    let (sols, stats) = resolve(&mut kb, "convTagFails");
+    let (sols, stats) = goals(&mut kb, &[TAG, "1 = 2"]);
     assert!(sols.is_empty(), "`1 = 2` refutes the clause; got {} answers", sols.len());
     assert!(!stats.truncated, "and the search is complete: the answer is 0, definitely");
 }
@@ -225,13 +252,21 @@ fn a_hypothesis_still_answers_a_stuck_call() {
 #[test]
 fn a_call_waiting_beside_an_unreduced_one_is_asked_again() {
     let mut kb = kb();
-    let (sols, stats) = resolve(&mut kb, "absent");
+    let absent = |z: &'static str| {
+        [
+            "anthill.prelude.Int64.div(1, ?z) = wicynpe.Conv.tag(\"km\")",
+            z,
+        ]
+    };
+    let (sols, stats) = goals(&mut kb, &absent("?z <=> 0"));
     assert!(sols.is_empty(), "`div(1, 0)` has no value; got {} answers", sols.len());
     assert!(stats.truncated, "and the raise marks the answer set incomplete");
-    assert_eq!(
-        crate::common::undecided_causes(&mut kb, "wicynpe.absentLater"),
-        vec![vec![UnknownCause::Unreduced]],
-    );
+    let (sols, _) = goals(&mut kb, &absent("?z <=> 1"));
+    let causes: Vec<Vec<UnknownCause>> = sols
+        .iter()
+        .map(|sol| sol.undecided.iter().map(|(_, c)| *c).collect())
+        .collect();
+    assert_eq!(causes, vec![vec![UnknownCause::Unreduced]]);
 }
 
 // ── a waiting goal is not asked again ─────────────────────────────────────────────────────
@@ -260,13 +295,17 @@ fn a_suspended_goal_is_asked_once() {
 #[test]
 fn a_parked_goal_is_never_asked_again() {
     let mut kb = kb();
-    assert_eq!(crate::common::one_definite_int(&mut kb, "wicynpe.parkedBare"), Some(3));
-    let (sols, _) = resolve(&mut kb, "parked");
+    let bare = ["?a <=> ?b + 1", "?b <=> ?c + 1", "?c <=> 1"];
+    let parked = ["?c <=> wicynpe.Conv.tag(\"km\")", bare[0], bare[1], bare[2]];
+    let (sols, _) = goals(&mut kb, &bare);
+    assert_eq!(sols.len(), 1);
+    assert!(sols[0].is_definite(), "without the parked goal the siblings answer");
+    let (sols, _) = goals(&mut kb, &parked);
     assert_eq!(sols.len(), 1);
     let causes: Vec<UnknownCause> = sols[0].undecided.iter().map(|(_, c)| *c).collect();
     assert_eq!(causes, vec![UnknownCause::Unreduced]);
-    let with = asked(&mut kb, "parked");
-    let without = asked(&mut kb, "parkedBare");
+    let with = goals(&mut kb, &parked).1.goals_asked;
+    let without = goals(&mut kb, &bare).1.goals_asked;
     assert_eq!(with, without + 1, "asked {with} vs {without}: the parked goal is asked once");
 }
 

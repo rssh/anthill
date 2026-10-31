@@ -33,6 +33,9 @@ yet — an operand of `=`, a member of a sort that `requires`, a call reached th
 rule's goal — is measured in `060-implementation.md` §8.9.
 **The clause environment a condition is routed in is decided** (WI-20261013-GGXCX,
 2026-10-21; §5.1, and `068-implementation.md` §6.2 for the whole of it).
+**One classification per call is decided** (WI-20261013-RYDNV, 2026-10-31; §5.2), and its
+first part built: an instance the call does not fix is held to the provisions with its open
+carrier rigid.
 **Consumers:** WI-1037; **WI-070** (`Branch` effect) and **WI-069** (`Suspension`
 snapshot/resume) — jointly 027.2's eval↔SLD switch.
 
@@ -446,6 +449,51 @@ routed to nothing). Decided with the user on WI-20261013-GGXCX, built by WI-2026
 - **A rule goal still passes its callee nothing** (060-implementation §8.9 row C6): the clause
   typing reads the callee's column types, not its dictionaries. Rule→rule inheritance (§5,
   above) stays absent.
+
+### 5.2 One classification per call (decided 2026-10-31)
+
+The typer and the inference decided one rule-body call by two readings — the typer by the
+operation-body requirement check, the inference by its own carrier outcome over the stamped
+argument types — so a call was refused, woven or left alone by the position it is written in
+(WI-20260926-7D48J's 2026-10-08 rows). Decided with the user on WI-20261013-RYDNV: after the
+clause typing (§5.1), with operation type defaults installed (proposal 069), every rule-body
+call that owes a dictionary — a spec operation's dispatch, or an operation's chain, its sort's
+`requires` and then its own — has ONE class, which the typer's refusal, the typer's pin and the
+inference's weave all read, wherever the call is written (a goal, a `<=>` side, an `=` operand,
+a spec operation's argument):
+
+| class | when | what happens |
+|---|---|---|
+| pinned | every element of the instance is a concrete type | selected at load and stamped (the pin, `op_dicts`); not woven; no provider is a load error |
+| conditional | an element is open, and something grounds it at run time — an argument whose value carries it, a `require`, the enclosing sort's `requires` | woven with a read before its goal (§5); a citation fills it, an uncited clause derives it from the value |
+| refused | an element is open and nothing grounds it | load error, as in the operation-body twin (`Mk.mk(?c)` over `mk[B]() requires WeakOrd[T = B]`) |
+| value-directed | the callee is unknown at load — a dot on a receiver no position types (WI-282) | no read; dispatched by the value |
+
+**The instance a call does not fix is held to the provisions with its open parameters RIGID**
+(decided 2026-10-31): the requested instance is answered by a provision only where it conforms
+to it — requested `<:<` provided, the direction a provision at `Animal` answers a request at
+`Dog` (kernel-language §8.7) — for every type an open parameter could be. A parameter the
+provision at the carrier determines is read off that provision, as `Iterable.find(xs)` reads
+`Element` off `List`'s, so rigidity is asked at the carrier parameter. Over `Conv[A, B]`:
+
+| call | requested | verdict |
+|---|---|---|
+| `Conv.tag("km")`, `Conv`'s carrier `A` (`conv(a: A, b: B)`) | `∀a. Conv[A = a, B = String]` | refused: nothing at the call fixes `A` |
+| the same under `require[Conv[A = Meters, B = String]]` | `Conv[A = Meters, B = String]` | `Meters`' 3 |
+| `Conv.tag("km")`, carrier `B` (only `tag`), `Meters` and `Feet` both at `B = String` | `∀a. Conv[A = a, B = String]` | refused: the two fix `A` apart |
+| the same with one provider at `String` | `Conv[A = ?, B = String]`, `A` read off it | its member |
+| `Mon.make()` over `make() -> C`, one provider | `∀c. Mon[C = c]` | refused, as before (CK7PP's decision stands) |
+
+One provider does not pin a parameter the call leaves open: it is no evidence, and a provider a
+later load adds would turn the call into a refusal.
+
+As built so far (the first part, `068-implementation.md` §6.13): the rigid carrier, in both
+bodies. Not built yet: the class as a stamp the inference reads in place of
+`spec_op_call_carrier_outcome`; the pinned class for an operation's own `requires`
+(WI-20261023-GBH5F's `viaRule`, which aborts a debug build); the conditional class in an `=`
+operand and for a member of a sort that `requires`; the refused class; the value-slot decline
+of an unpinned body-less operation (`inferred_demand`), retired on WI-20261013-GFS6A's answer;
+and the sort test of the walk gate (`spec_op_call_parent`).
 
 ---
 

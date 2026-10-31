@@ -436,6 +436,117 @@ pub(super) fn check_apply_iter(
                 },
             )
         };
+        // A clause's `require[…]` of the spec at the receiver's carrier names the instance the
+        // call is at: its bindings are the view every reading of the carrier's provision takes
+        // below. Read from the provision, `require[Conv[A = Feet, B = String]], Conv.tag("km",
+        // ?r)` took `Meters`' `A` — the first provision at `String` — and ran its member.
+        let carrier_param_info = carrier_param_info.map(|mut info| {
+            let (spec_sort, carrier_sym, carrier_pvid) = (info.0, info.1, info.4);
+            if let Some(declared) = clause_required_view_at_carrier(kb, env, spec_sort, carrier_pvid, carrier_sym) {
+                info.3 = declared;
+            }
+            info
+        });
+        // Two providers at the receiver's carrier that fix a parameter the call leaves open
+        // apart ([`providers_apart_at_carrier`]): the call names neither, and is refused here,
+        // before the carrier's provision is read for that parameter below — which reads the
+        // first. Not where a bracket, a selection or a requirement in scope names the instance.
+        let at_carrier = carrier_param_info
+            .as_ref()
+            .map(|(spec_sort, carrier_sym, _, _, pvid, ..)| {
+                provisions_at_carrier(kb, *spec_sort, *pvid, *carrier_sym)
+            })
+            .unwrap_or_default();
+        if let Some((spec_sort, carrier_sym, _, _, carrier_pvid, ..)) =
+            carrier_param_info.as_ref().filter(|_| at_carrier.len() > 1)
+        {
+            let (spec_sort, carrier_sym, carrier_pvid) = (*spec_sort, *carrier_sym, *carrier_pvid);
+            let mut open: SmallVec<[Symbol; 2]> = SmallVec::new();
+            for (param, _) in sort_type_params_as_pairs(kb, spec_sort).iter().copied() {
+                let Some(vid) = type_param_vid_in_sort(kb, spec_sort, param) else {
+                    continue;
+                };
+                // Written, or read through a projection off an argument (`get(c: C) -> c.T`):
+                // the witnesses covering that argument are held to agree on it where the
+                // projection is read.
+                let name = short_name_of(kb.local_name_of(param)).to_owned();
+                let mentioned = op
+                    .params
+                    .iter()
+                    .map(|(_, t)| t)
+                    .chain(std::iter::once(&op.return_type))
+                    .chain(op.effects.iter())
+                    .any(|t| {
+                        type_mentions_spec_param(kb, t, &[param], &[vid])
+                            || projections_in(kb, t)
+                                .iter()
+                                .any(|(_, member)| short_name_of(kb.local_name_of(*member)) == name)
+                    });
+                if !mentioned && spec_param_binding(kb, &subst, vid).is_none() {
+                    open.push(param);
+                }
+            }
+            let covered = || {
+                pinned_witness_for(kb, &selections, spec_sort).is_some()
+                    || clause_requires_spec(kb, env, spec_sort)
+                    || env.enclosing_requires().iter().any(|r| {
+                        same_sort_canonical(kb, r.required_sort, spec_sort)
+                            && view_binds_param_to_sort(
+                                kb,
+                                spec_sort,
+                                carrier_pvid,
+                                carrier_sym,
+                                &spec_view_bindings_value(kb, &r.spec),
+                            )
+                    })
+            };
+            if !open.is_empty() && !covered() && !op_requires_covers_call(kb, env, &subst, spec_sort) {
+                let apart = providers_apart_at_carrier(kb, spec_sort, carrier_pvid, &at_carrier, &|p| {
+                    open.contains(&p)
+                });
+                if apart.len() > 1 {
+                    // The instance as the author writes it: the carrier parameter at the
+                    // receiver's sort, and every other one left to fill — the arguments are
+                    // not unified with the parameters yet, so the carrier is all this knows.
+                    let mut bindings: Vec<String> = Vec::new();
+                    for (param, _) in sort_type_params_as_pairs(kb, spec_sort).iter().copied() {
+                        let name = short_name_of(kb.local_name_of(param)).to_owned();
+                        let at_carrier = type_param_vid_in_sort(kb, spec_sort, param) == Some(carrier_pvid);
+                        bindings.push(if at_carrier {
+                            format!("{name} = {}", short_name_of(kb.qualified_name_of(carrier_sym)))
+                        } else {
+                            format!("{name} = …")
+                        });
+                    }
+                    let in_rule = env.in_rule_own_term();
+                    let suggestion = if in_rule {
+                        format!(
+                            "require[{}[{}]]",
+                            short_name_of(kb.qualified_name_of(spec_sort)),
+                            bindings.join(", ")
+                        )
+                    } else {
+                        let open_only: Vec<String> = open
+                            .iter()
+                            .map(|p| format!("{} = …", short_name_of(kb.local_name_of(*p))))
+                            .collect();
+                        format!("{}[{}](…)", kb.qualified_name_of(fn_sym), open_only.join(", "))
+                    };
+                    return Err(TypeError::ParameterNamedApart {
+                        span,
+                        op: fn_sym,
+                        spec: spec_sort,
+                        open: open
+                            .iter()
+                            .map(|p| short_name_of(kb.local_name_of(*p)).to_owned())
+                            .collect(),
+                        providers: apart,
+                        suggestion,
+                        in_rule_own_term: in_rule,
+                    });
+                }
+            }
+        }
         // WI-20261005-KSSA4 — a value typed at a spec, where this operation receives on its
         // spec's carrier parameter, is refused where it is written
         // ([`spec_typed_value_at_carrier_error`]). Before any reading of the receiver: the
@@ -4112,6 +4223,16 @@ pub(super) fn check_apply_iter(
                         let provider_bindings =
                             carrier_sym.and_then(|c| provider_spec_view_bindings(kb, c, spec_sort));
                         let mut abstract_params: SmallVec<[Symbol; 2]> = SmallVec::new();
+                        // The spec's CARRIER parameter, where the callee runs nothing of its
+                        // own: the provider the call reaches is chosen at it, whether or not
+                        // this operation's signature writes it (below).
+                        let carrier_param = runs_nothing_of_its_own(kb, fn_sym)
+                            .then(|| spec_carrier_param(kb, spec_sort))
+                            .flatten();
+                        let chosen_at =
+                            carrier_param.map(|p| short_name_of(kb.local_name_of(p)).to_owned());
+                        // Whether that parameter is open with nothing at the call to fix it.
+                        let mut carrier_unfixed = false;
                         for short in kb.type_params_of_sort(spec_sort) {
                             if provider_bindings.as_ref().is_some_and(|binds| {
                                 binds.iter().any(|(p, v)| {
@@ -4203,11 +4324,23 @@ pub(super) fn check_apply_iter(
                             // missing evidence, where skipped it loaded and died "no
                             // dispatching dictionary". Left unbound, the call was refused
                             // already ([`receiver_less_call_names_no_instance`]).
+                            //
+                            // NOT THE CARRIER PARAMETER, though. The provider is chosen at it, so
+                            // a call whose signature never writes it still turns on it:
+                            // `Conv.tag(b: B)` under `Conv`'s carrier `A` (`conv(a: A, b: B)`)
+                            // is answered by the provider at whatever `A` is, and with nothing
+                            // at the call to fix `A` none is (the requested `Conv[A = a, B =
+                            // String]` conforms to no provision for every `a`). It loaded, and
+                            // failed when it ran.
+                            let is_carrier = chosen_at.as_deref() == Some(short.as_str());
                             if !signature_mentions
                                 && dispatches_on_nothing
                                 && spec_param_binding(kb, &subst, vid).is_none()
                             {
-                                continue;
+                                if !is_carrier {
+                                    continue;
+                                }
+                                carrier_unfixed = true;
                             }
                             // Read as the dispatch readers read it — through
                             // [`spec_param_binding`], so a type on another carrier (one
@@ -4242,6 +4375,23 @@ pub(super) fn check_apply_iter(
                             if is_abstract {
                                 abstract_params.push(short_qn_sym);
                             }
+                        }
+                        // A rule body — its own term and what stands under its compound
+                        // expressions alike — has no `requires` to add and no later pass that
+                        // reports the classification below: the unfixed carrier is refused here,
+                        // unless the clause's own `require[…]` names the instance.
+                        if let Some(carrier) = carrier_param.filter(|_| {
+                            carrier_unfixed
+                                && env.in_rule_body()
+                                && !clause_requires_spec(kb, env, spec_sort)
+                        }) {
+                            return Err(TypeError::MissingRequiresForSpecOp {
+                                span,
+                                spec_op_sym: fn_sym,
+                                spec_sort_sym: spec_sort,
+                                abstract_params: SmallVec::from_elem(carrier, 1),
+                                site: RequiresSite::Clause,
+                            });
                         }
                         if !abstract_params.is_empty() {
                             let class = CallClass::UnresolvedSpecOp {

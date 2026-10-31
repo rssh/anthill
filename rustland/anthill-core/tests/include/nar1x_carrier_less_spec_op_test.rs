@@ -186,25 +186,38 @@ fn the_carrier_less_call_answers_the_carriers_own_number() {
 /// classification (WI-1044), which is what carries the equivalent carrier-BEARING
 /// row below.
 ///
-/// Delete the `require` and the identical clause has NO DEFINITE answer — because
-/// value-direction reads the operands' carried types and a nullary call has none, so
-/// `Sum` and `Prod` TIE and no implementation is reachable. The call is UNREDUCED
-/// (proposal 068 §2): one undecided row naming that cause. It answered nothing, silently,
-/// until WI-20260926-CYNPE made the WI-938 hook route a call that did not run instead of
-/// sending it to candidate selection — so this row is ALSO the run-time supplier-TIE row
-/// of that ticket (a tie at a carrier the typer sees is refused at load).
+/// Delete the `require` and the identical clause is REFUSED AT LOAD (WI-20261013-RYDNV):
+/// `zero() -> Int64` writes nothing of `Zeroable`'s carrier `T`, so nothing at the call fixes
+/// it and no provision answers it at every `T` — the `require` is the repair the refusal
+/// names. The run-time half is the call asked as a query, which no load types: value-direction
+/// reads the operands' carried types and a nullary call has none, so `Sum` and `Prod` TIE and
+/// no implementation is reachable — UNREDUCED (proposal 068 §2), one undecided row naming that
+/// cause. The clause loaded and answered that undecided row until RYDNV; it answered nothing,
+/// silently, until WI-20260926-CYNPE made the WI-938 hook route a call that did not run instead
+/// of sending it to candidate selection — so the query is ALSO the run-time supplier-TIE row of
+/// that ticket.
 #[test]
 fn the_same_clause_without_the_require_has_no_definite_answer() {
-    let src = two_carriers(
-        "  rule via(?x, ?r) :- Zeroable.tag(?x, ?t), Zeroable.zero(?r)\n  \
-           rule answer(?r) :- via(sum(), ?r)\n",
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&two_carriers(
+            "  rule via(?x, ?r) :- Zeroable.tag(?x, ?t), Zeroable.zero(?r)\n  \
+               rule answer(?r) :- via(sum(), ?r)\n",
+        )),
+        &["test.nar1x.Zeroable.zero", "require[Zeroable[T = …]]"],
+        "without the clause dictionary nothing at the call fixes the carrier",
     );
-    let mut kb = crate::common::load_kb_with(&src);
+    let mut kb = crate::common::load_kb_with(&two_carriers(""));
+    let goal = crate::common::query_pattern_term(&mut kb, "test.nar1x.Zeroable.zero(?r)");
+    let causes: Vec<Vec<anthill_core::kb::resolve::UnknownCause>> = kb
+        .resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default())
+        .iter()
+        .map(|sol| sol.undecided.iter().map(|(_, cause)| *cause).collect())
+        .collect();
     assert_eq!(
-        crate::common::undecided_causes(&mut kb, "test.nar1x.answer"),
+        causes,
         vec![vec![anthill_core::kb::resolve::UnknownCause::Unreduced]],
-        "without the clause dictionary nothing can name an implementation of a nullary spec \
-         op: one undecided row, naming the cause",
+        "asked as a query, nothing can name an implementation of a nullary spec op: one \
+         undecided row, naming the cause",
     );
 }
 
