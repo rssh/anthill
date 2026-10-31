@@ -33,7 +33,7 @@ use anthill_core::kb::node_occurrence::{
     for_each_child, materialize_from_handle, Expr, NodeOccurrence,
 };
 use anthill_core::kb::term::{Literal, Term, TermId, Var, VarId};
-use anthill_core::kb::typing::is_typed_head_domain_goal;
+use anthill_core::kb::typing::{is_inferred_requirement_read, is_typed_head_domain_goal};
 use anthill_core::kb::{ClauseKind, KnowledgeBase, ProgramClause};
 use anthill_core::parse::desugar_target as dt;
 
@@ -1201,6 +1201,14 @@ impl<'kb> Emitter<'kb> {
         // rule wrote a bound was refused here — "unhandled body goal functor
         // 'anthill.kernel.__domain_guard'", for `?x: Float` as for `?a: T`.
         if is_typed_head_domain_goal(self.kb, goal) {
+            return Ok(());
+        }
+        // A requirement's read the inference generated before a goal whose call owes a
+        // dictionary (`find_dictionary(Lattice, lub, ?a, …, out: ?d)` in front of `neq(lub(?a,
+        // top), top)`) says where the dictionary comes from, which the call's operation at its
+        // declared sort already is here: the scope's `requires` is what the proof assumes, and
+        // the woven call is read as its call.
+        if is_inferred_requirement_read(self.kb, goal) {
             return Ok(());
         }
         // WI-20261012-CDHSQ (/code-review) — A RULE'S PREDICATE OF NO ARGUMENTS, named

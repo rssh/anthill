@@ -710,10 +710,13 @@ fn an_unground_slot_call_delays() {
 
 // ── Review fixes, round 2: each row drives one fix, and fails with it backed out ─────
 
-/// An UNPINNED body-less spec op in a VALUE slot gets no condition from the inference: `mk`'s
-/// call is not woven. (A call whose carrier is known at load is PINNED by the typer and
-/// dispatched, and is no demand of the inference either way.) FAILS with `inferred_demand`
-/// admitting a body-less op in a value slot: the call is woven behind a `find_dictionary`.
+/// An UNPINNED body-less spec op in a VALUE slot is the clause's condition, as at goal position
+/// (WI-20261013-RYDNV): `mk`'s call is woven behind a `find_dictionary`, and `mkOne` derives
+/// `Num`'s dictionary from the value. It got none — the inference read the call as symbolic
+/// algebra there — which made a dot through another variable's requirement slot answer by the
+/// values where its goal spelling answered through the citation
+/// (`wi_0rrqp…::a_dot_through_another_variables_slot_is_the_call`). FAILS with that decline
+/// restored: the call is not woven.
 ///
 /// What it EVALUATES TO changed with WI-20260926-K4JGC. It was the term the rule wrote —
 /// "symbolic algebra", kernel-language §5.3's "what the gate still declines" — and `?s` was
@@ -722,7 +725,7 @@ fn an_unground_slot_call_delays() {
 /// wherever it is written, so `?s` is `Num.circle`'s `num(v: 9)`. FAILS with K4JGC backed
 /// out: `?s` is the written term again.
 #[test]
-fn a_body_less_operand_stays_the_term_the_rule_wrote() {
+fn a_body_less_operand_is_the_clauses_condition() {
     const PROGRAM: &str = r#"
 namespace wip7vp4.symbolic
   import anthill.prelude.Int64
@@ -746,10 +749,11 @@ end
     assert_eq!(
         crate::common::body_calls(&kb, "wip7vp4.symbolic.mk"),
         vec![
-            ("circle".to_string(), false, Vec::new()),
+            ("circle".to_string(), true, Vec::new()),
+            ("find_dictionary".to_string(), false, Vec::new()),
             ("unify".to_string(), false, Vec::new()),
         ],
-        "the body-less operand is not woven: no `find_dictionary` is inferred for it",
+        "the body-less operand is woven behind its inferred `find_dictionary`",
     );
     let rows = crate::common::query_unary(&mut kb, "wip7vp4.symbolic.mkOne");
     let [(s, true)] = rows.as_slice() else {

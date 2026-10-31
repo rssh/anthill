@@ -2739,8 +2739,7 @@ requires Desc[T = T]`, `rule v(?n) :- d(?n)` takes the provider at `Int64`, and 
 where none provides it. A
 resolver builtin (`eq`, `<`) compares values itself and reads no dictionary. A call
 inside a `|` or `&` branch, a negation, a quantifier body, or a `lambda` / `let` /
-`match` / `if`, and a body-less spec operation in a value position, have no condition
-and dispatch on the value when they run. A requirement no argument carries — at a type
+`match` / `if` has no condition and dispatches on the value when it runs. A requirement no argument carries — at a type
 parameter none of the operation's parameters writes — and one at a spec nothing provides are
 load errors wherever the call is written, no value being able to derive them: over `mk[B]()
 requires WeakOrd[T = B]`, `rule five(?c) :- mk(?c)` is refused, as `mk()` is in an

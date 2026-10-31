@@ -1508,11 +1508,13 @@ fn a_slot_whose_spec_has_an_element_the_read_leaves_open_is_read() {
 /// A DOT THROUGH ANOTHER VARIABLE'S SLOT IS THE CALL (user, 2026-10-22): in `orderDot`, `?x`
 /// is typed `t` and `?p`'s `O` states `WeakOrd[T = t]`, so `?x.compare(?y)` is
 /// `WeakOrd.compare(?x, ?y)`, as `a.compare(b)` is in a member of `Box`. It was data, and the
-/// citation handed back the term `1.compare(5)` declared an `Int64`. STATED LIMIT, the other
-/// half: in a value slot the call answers as its written twin `orderVal` there does, by the
-/// values, `Int64`'s own `-1` where the goal-position `order` answers `-4`; weaving a value
-/// slot's call through the clause's condition is WI-20261013-RYDNV's. FAILS with the dot's
-/// reading backed out (`find_spec_op_for_clause_slot`): `dotOutside` is the term.
+/// citation handed back the term `1.compare(5)` declared an `Int64`. In a value slot the call
+/// is the clause's condition, as at goal position (WI-20261013-RYDNV): `dotOutside` and its
+/// written twin `orderVal` answer `-4` through the citation, as the goal-position `order` does.
+/// They answered `Int64`'s own `-1`, by the values, the inference declining a body-less
+/// operation in a value slot. FAILS with the dot's reading backed out
+/// (`find_spec_op_for_clause_slot`): `dotOutside` is the term; and with the decline restored:
+/// `-1, -1, -4`.
 #[test]
 fn a_dot_through_another_variables_slot_is_the_call() {
     let ns = "wi0rrqp.dot";
@@ -1532,7 +1534,7 @@ fn a_dot_through_another_variables_slot_is_the_call() {
     let at = |entry: &str| drive(&src, &format!("{ns}.Dots.{entry}"));
     assert_eq!(
         [at("dotOutside"), at("valOutside"), at("goalOutside")],
-        [-1, -1, -4]
+        [-4, -4, -4]
     );
 }
 
@@ -1620,6 +1622,23 @@ fn two_slots_that_may_name_two_providers_are_refused() {
         let errors = at(ns, ops);
         assert!(errors.len() == 1 && errors[0].contains(says), "{ns}: {errors:#?}");
     }
+    // THE DOT SPELLING of the citation's read, `?c <=> ?x.compare(?y)`, is refused as its
+    // written goal form is: a value slot's call is the clause's condition since
+    // WI-20261013-RYDNV, routed as the goal's is. It answered `Int64`'s own, by the values.
+    let dotted = TWO_BOXES
+        .replace(
+            "rule two(?p, ?q, ?c) :- ?p <=> cbox(a: ?x, b: ?y), ?q <=> cbox(a: ?x, b: ?y), WeakOrd.compare(?x, ?y, ?c)",
+            "rule two(?p, ?q, ?c) :- ?p <=> cbox(a: ?x, b: ?y), ?q <=> cbox(a: ?x, b: ?y), ?c <=> ?x.compare(?y)",
+        )
+        .replace(
+            "OPS",
+            "operation cited() -> Int64 effects {Error, Error[EmptyStream]} = \
+             CBox.two(asc(), desc()).head.c",
+        );
+    let errors = crate::common::load_errors_of(&program("wi0rrqp.twodot", &dotted));
+    let says = "fix two requirement slots that state it, to `wi0rrqp.twodot.Ascending` and to \
+                `wi0rrqp.twodot.Descending`, and the read names neither";
+    assert!(errors.len() == 1 && errors[0].contains(says), "the dot spelling: {errors:#?}");
 }
 
 /// THE OTHER TWO COLLISIONS of the spec's rule (kernel-language §5.2: a slot another entry of

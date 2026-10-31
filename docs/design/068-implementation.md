@@ -1319,6 +1319,28 @@ Rows moved by design: P7VP4's member row (a condition in every position, `requir
 refused as beside `Util.sign`), `wi_n31xx`'s sort-level `TypeValue` forward (the goal spelling
 answers `Cell[V = Int64]`).
 
+### 6.17 C1d, a body-less operation in a value slot (WI-20261013-RYDNV, fifth part, 2026-10-31)
+
+The decline WI-20260926-DSEXA's 2026-09-30 note asked to retire: `inferred_demand` gave no
+condition to an unpinned body-less spec operation in a value slot, reading it as symbolic
+algebra. Proposal 068 §1 reads an operation application as a computation wherever it is
+written, and since WI-20261013-GFS6A a woven read at a carrier no provider answers fails, as
+a written one does: the call gets its condition there as at goal position. Rows moved by design,
+as §6.9 recorded: `wi_0rrqp`'s `dotOutside` and `valOutside` answer `-4` beside `goalOutside`
+(they answered `Int64`'s own `-1`); the two-box dot spelling is refused as its goal spelling is;
+P7VP4's body-less operand is woven, and still answers `Num`'s `num(v: 9)`.
+
+The SMT emitter skips an inferred read (`is_inferred_requirement_read`), as it skips a typed
+head's generated goals: the scope's `requires` is what a proof assumes, and the woven call is read
+as its call. A law's proof inside `sort Scope requires BoundedLattice[T = T]` reached one in
+`neq(lub(?a, top), top)` (`wi_zz7ph`).
+
+Left, measured: SHED7's `vs <=> Builds.fromList([…])` in `sort Sat[C] requires Builds[C = C]`
+still flounders. Its call has no argument at `Builds`' carrier, so no read is generated; given one,
+the citation `Sat[C = List[T = Bit]].model` routed nothing to it — the route reads the read's
+witnesses' types, and the list carries nothing at `C` — and the clause answered 0 models,
+definitely, where tiny-sat has 2. The route has to read the cited sort's instance.
+
 ## 7. Testing
 
 Per CLAUDE.md: each ticket's rows live in one test module, driven by value with its back-outs run

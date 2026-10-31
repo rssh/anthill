@@ -479,7 +479,7 @@ pub(crate) fn is_woven_slots_call(kb: &KnowledgeBase, node: &NodeOccurrence) -> 
 /// qualified names and never finds a pass: MEASURED, that spelling answered `false` for
 /// every inferred read, so each one counted as the author's declaration and silenced
 /// NR6FJ's refusal of a slot nothing can fill.
-fn is_inferred_requirement_read(kb: &KnowledgeBase, node: &NodeOccurrence) -> bool {
+pub fn is_inferred_requirement_read(kb: &KnowledgeBase, node: &NodeOccurrence) -> bool {
     node.synthesized_by().is_some_and(|by| {
         kb.symbols
             .lookup(INFERRED_REQUIREMENT_PASS)
@@ -540,9 +540,7 @@ fn is_inferred_requirement_read(kb: &KnowledgeBase, node: &NodeOccurrence) -> bo
 ///     an uncited clause could never derive it;
 ///   * a spec NO SORT PROVIDES — nothing could ever be derived; and a DEFAULTED member of
 ///     a spec with no abstract member, which owes no instance at all (WI-883);
-///   * a callee with no reader for a woven call ([`collect_covered_calls`]' first gate), and
-///     a BODY-LESS spec op in a VALUE slot, which is symbolic algebra there (kernel-language
-///     §5.3) where a woven call would be dispatched ([`inferred_demand`]);
+///   * a callee with no reader for a woven call ([`collect_covered_calls`]' first gate);
 ///   * a `Suspend` call with a CONCRETE carrier among its arguments, beside one not known
 ///     at load — which that carrier decides, as it decides a `Fire` one ([`inferred_demand`]
 ///     says what weaving it would let in);
@@ -625,7 +623,7 @@ pub(super) fn infer_rule_body_requirements(kb: &mut KnowledgeBase) {
                     continue;
                 }
                 if let Some(demand) =
-                    inferred_demand(kb, &o, top, *functor, pos_args, named_args, &written)
+                    inferred_demand(kb, &o, *functor, pos_args, named_args, &written)
                 {
                     found.push(demand);
                 } else if let Some(demand) =
@@ -1060,11 +1058,9 @@ fn inferred_slot_demand(
 /// The spec a rule-body call DEMANDS a condition for under [`infer_rule_body_requirements`],
 /// with the call's aligned and carrier arguments ([`SpecDemand`]), or `None` where it demands
 /// none there (see that function's list of what is declined).
-/// `top`: the call IS the top-level goal, rather than sitting in one of its value positions.
 fn inferred_demand(
     kb: &KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
-    top: bool,
     functor: Symbol,
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
@@ -1090,15 +1086,15 @@ fn inferred_demand(
     // would otherwise pass as a demand no read can be written for.
     let rec = crate::kb::op_info::lookup_operation_info(kb, functor)?;
     let args = align_call_args_to_params(kb, &rec.params, pos_args, named_args)?;
-    // A BODY-LESS spec op is read — dispatched — only AT GOAL POSITION, WI-1057's
-    // functional-relation form. In a value slot an UNPINNED one — and this pass sees only
-    // those: its carrier is not known at load — is SYMBOLIC ALGEBRA, the term the rule
-    // wrote, which `reduce_operand` never dispatches (kernel-language §5.3, "what the gate
-    // still declines"). So it demands no condition there, and a woven one would be
-    // DISPATCHED where the unwoven one is data — `?s <=> Shape.circle(?r)` binding the
-    // provider's result instead of the term, the moment any sort provides `Shape`.
+    // A BODY-LESS spec op is read — dispatched — wherever the goal runs it: at goal position,
+    // WI-1057's functional-relation form, and in a value slot, where an operation application
+    // is a computation (proposal 068 §1) and a woven call is dispatched through its
+    // dictionary (`reduce_op_value`). It was declined in a value slot, read as symbolic
+    // algebra, so a dot through another variable's requirement slot answered by the values
+    // where its goal spelling answered through the citation (WI-20261013-RYDNV); a call
+    // whose carrier is ground dispatches by it either way (WI-20260926-K4JGC).
     let reader = kb.functional_relation_arity(functor).is_some()
-        || (top && kb.body_less_relation_arity(functor).is_some());
+        || kb.body_less_relation_arity(functor).is_some();
     if !reader || occ.classified_apply_target().is_some() {
         return None;
     }
