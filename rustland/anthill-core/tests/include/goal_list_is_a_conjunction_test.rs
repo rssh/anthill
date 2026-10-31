@@ -92,3 +92,21 @@ fn a_parenthesized_list_in_a_value_position_is_a_tuple() {
         assert_eq!(ints(name, body), [1], "{name}");
     }
 }
+
+/// A `@[simp]` GUARD IS A GOAL POSITION: `g(?x) = 10 :- (a(?x), b(?x))` rewrites `g(2)`, where
+/// both hold, and `g(1)` falls through to the unguarded `g(?x) <=> 20`. FAILS with the list
+/// read as a tuple: the guard never holds, and `g(2)` is 20 too.
+#[test]
+fn a_goal_list_in_a_simp_guard_is_the_conjunction() {
+    let guarded = "  operation g(x: Int64) -> Int64\n  \
+                   rule g(?x) = 10 :- (a(?x), b(?x)) @[simp]\n  \
+                   rule g(?x) <=> 20 @[simp]\n";
+    assert_eq!(
+        ints("gl.guardtwo", &format!("{guarded}  rule value(?r) :- ?r <=> g(2)")),
+        [10]
+    );
+    assert_eq!(
+        ints("gl.guardone", &format!("{guarded}  rule value(?r) :- ?r <=> g(1)")),
+        [20]
+    );
+}
