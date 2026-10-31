@@ -2389,6 +2389,16 @@ pub enum LoadError {
     Other {
         message: String,
     },
+    /// A `@[simp]` or `@[unfold]` tag on a declaration that is not an equation. The tag makes an
+    /// equation run (§5.3), so anywhere else it does nothing; and a declaration's `@[…]` is
+    /// written after it, so a tag set in front of a rule is the tag of the declaration before.
+    RewriteTagOffEquation {
+        /// `simp` or `unfold`, as written.
+        tag: String,
+        /// What the tag stands on: "an operation", "a fact", …
+        declaration: &'static str,
+        span: Span,
+    },
     /// WI-605: a bare `pattern -> body` in an expression position (an operation /
     /// const body). The infix `->` there builds an arrow-TYPE term, not a
     /// function value — so its left-hand binder names would load as unresolved
@@ -3196,6 +3206,7 @@ impl LoadError {
             | LoadError::UnguardedNonEnclosingPredicateJoin { span, .. }
             | LoadError::BodylessRuleDeclaresNothing { span, .. }
             | LoadError::DescriptionWithoutTarget { span, .. }
+            | LoadError::RewriteTagOffEquation { span, .. }
             | LoadError::DeclarationCarriesClauseText { span, .. } => Some(*span),
             LoadError::TypeMismatch { span, .. }
             | LoadError::IncompleteConstruction { span, .. }
@@ -4098,6 +4109,15 @@ impl LoadError {
                     crate::parse::error::description_without_target(kind)
                 )
             }
+            LoadError::RewriteTagOffEquation {
+                tag,
+                declaration,
+                span,
+            } => format!(
+                "{}: {}",
+                loc.format_start(*span),
+                rewrite_tag_off_equation(tag, declaration)
+            ),
             LoadError::UndefinedAfterDefinePass {
                 qualified,
                 consequence,
@@ -5721,6 +5741,17 @@ impl std::fmt::Display for LoadError {
                     span.end
                 )
             }
+            LoadError::RewriteTagOffEquation {
+                tag,
+                declaration,
+                span,
+            } => write!(
+                f,
+                "{} (at {}..{})",
+                rewrite_tag_off_equation(tag, declaration),
+                span.start,
+                span.end
+            ),
             LoadError::UndefinedAfterDefinePass {
                 qualified,
                 consequence,
@@ -24280,6 +24311,35 @@ pub fn is_equational_head(kb: &KnowledgeBase, head: TermId) -> bool {
 /// given key. Treats both `[name]` (no value) and `[name: anything]`
 /// as "flag is present" — the loader stores the meta as a `meta(...)`
 /// term whose `named_args` carry the entries.
+/// What a clause head that is no equation is, for [`LoadError::RewriteTagOffEquation`] — `None`
+/// for an equation (`=`, `<=>`), which takes a rewrite tag. `predicate` names the other heads:
+/// a rule's or a fact's.
+fn head_that_is_no_equation(
+    kb: &KnowledgeBase,
+    head: TermId,
+    predicate: &'static str,
+) -> Option<&'static str> {
+    if is_equational_head(kb, head) {
+        return None;
+    }
+    Some(match kb.get_term(head) {
+        Term::Bottom => "a denial",
+        Term::Fn { functor, .. } if kb.is_equality_family_connective(*functor) => {
+            "a structural identity test (`===`)"
+        }
+        _ => predicate,
+    })
+}
+
+/// The sentence of [`LoadError::RewriteTagOffEquation`], one owner for both renderings.
+fn rewrite_tag_off_equation(tag: &str, declaration: &str) -> String {
+    format!(
+        "`@[{tag}]` stands on {declaration}, which is not an equation: the tag makes an equation \
+         run (`rule f(?x) <=> … @[{tag}]`). A declaration's `@[…]` is written after it, so a tag \
+         set in front of a rule belongs to the declaration before it"
+    )
+}
+
 pub fn meta_has_flag(kb: &KnowledgeBase, meta: Option<TermId>, key: &str) -> bool {
     match meta {
         Some(tid) => tid.named_field(kb, key).is_some(),
@@ -43464,6 +43524,7 @@ impl<'a> Loader<'a> {
         sort_scope: ScopeId,
         parent_domain: Symbol,
     ) -> CarrierBlock {
+        self.refuse_rewrite_tags(s.meta.as_ref(), "a sort");
         // WI-1028 — the sort's SYMBOL is what this half is mostly about (the
         // `defined_sorts` entry, the `register_sort` key, the domain its body's
         // clauses are filed under), and it is the scope's owner. The TERM is derived
@@ -44232,6 +44293,7 @@ impl<'a> Loader<'a> {
     }
 
     fn load_entity(&mut self, e: &Entity, functor: Symbol, domain: Symbol) {
+        self.refuse_rewrite_tags(e.meta.as_ref(), "an entity");
         self.emit_own_descriptions(functor, &e.descriptions, domain);
 
         // WI-20260914-DV7DP — the constructor's block, recorded HERE because every entity
@@ -44420,6 +44482,25 @@ impl<'a> Loader<'a> {
             .any(|e| matches!(e, LoadError::AmbiguousSymbol { .. }))
     }
 
+    /// Refuse each `@[simp]` / `@[unfold]` entry of `meta`, the block of `declaration`, which is
+    /// no equation ([`LoadError::RewriteTagOffEquation`]).
+    fn refuse_rewrite_tags(&mut self, meta: Option<&MetaBlock>, declaration: &'static str) {
+        let Some(mb) = meta else { return };
+        for entry in &mb.entries {
+            let [key] = entry.key.segments.as_slice() else {
+                continue;
+            };
+            let tag = self.parsed.symbols.local_name(*key);
+            if tag == "simp" || tag == "unfold" {
+                self.errors.push(LoadError::RewriteTagOffEquation {
+                    tag: tag.to_string(),
+                    declaration,
+                    span: entry.key.span,
+                });
+            }
+        }
+    }
+
     fn load_fact(&mut self, f: &Fact, domain: Symbol) {
         let fact_kind = ClauseKind::Fact;
 
@@ -44500,6 +44581,10 @@ impl<'a> Loader<'a> {
         let term = self.convert_subject_term(f.term);
         self.const_fold = prev_fold;
         self.clause_head = prev_clause_head;
+        // `fact lhs <=> rhs` is an equation (below), and takes the tag as its `rule` spelling.
+        if let Some(declaration) = head_that_is_no_equation(self.kb, term, "a fact") {
+            self.refuse_rewrite_tags(f.meta.as_ref(), declaration);
+        }
         // WI-20260903-FCZ3N — A `fact lhs <=> rhs` IS A BODYLESS EQUATION, so it fires
         // like the `rule` spelling and needs its RHS occurrence for the same reason. The
         // item IS the empty body (the `NonDefiningConnectiveHead` refusal above relies on
@@ -45749,6 +45834,12 @@ impl<'a> Loader<'a> {
             positive_heads
         };
 
+        if let Some(declaration) = kb_heads
+            .iter()
+            .find_map(|&h| head_that_is_no_equation(self.kb, h, "a predicate rule"))
+        {
+            self.refuse_rewrite_tags(r.meta.as_ref(), declaration);
+        }
         for (head_idx, kb_head) in kb_heads.into_iter().enumerate() {
             // WI-20260911-5G28A — THIS HEAD'S BOUNDS CONTRIBUTE THEIR OWN VARIABLES TO
             // THE FRAME. `?t` in `?x: List[T = ?t]` is in neither the head term (the
@@ -46170,6 +46261,7 @@ impl<'a> Loader<'a> {
     /// against the enclosing scope (a const has no params/result, so — unlike
     /// `load_operation` — it needs no dedicated op scope).
     fn load_const(&mut self, c: &Const, domain: Symbol) {
+        self.refuse_rewrite_tags(c.meta.as_ref(), "a const");
         let const_sym = self.remap_name(&c.name);
 
         // WI-1070: the const's own description blocks (§4.1), emitted against the SAME
@@ -46233,6 +46325,7 @@ impl<'a> Loader<'a> {
     }
 
     fn load_operation(&mut self, o: &Operation, domain: Symbol) {
+        self.refuse_rewrite_tags(o.meta.as_ref(), "an operation");
         let op_sort = ClauseKind::Operation;
         let functor = self.remap_name(&o.name);
 
@@ -47050,6 +47143,7 @@ impl<'a> Loader<'a> {
     }
 
     fn load_constraint(&mut self, c: &Constraint, domain: Symbol) {
+        self.refuse_rewrite_tags(c.meta.as_ref(), "a constraint");
         // WI-20261001-KDMQS — a constraint's goals are matched against facts like a rule
         // body's, so each is a GOAL position whose data slots fold. Set across the whole
         // item because the FIRST conversion of a goal (`reject_binding_unify_in_contract`)
@@ -50034,6 +50128,8 @@ impl ScopePass for LoadPass<'_, '_> {
         let domain = scope.owner();
         let kind = match item {
             Item::AbstractSort(s) => {
+                // Here, not in `load_abstract_sort`, which the alias pre-load runs too.
+                self.loader.refuse_rewrite_tags(s.meta.as_ref(), "a sort");
                 self.loader.load_abstract_sort(s, domain);
                 // WI-20260914-DV7DP — the block is recorded HERE, not in
                 // `load_abstract_sort`: that one also runs from the alias pre-load, which

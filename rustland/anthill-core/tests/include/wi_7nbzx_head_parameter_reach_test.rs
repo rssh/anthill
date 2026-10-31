@@ -363,20 +363,24 @@ fn a_guarded_equals_equation_reclassifies_its_lhs_too() {
 fn a_structural_identity_head_is_unchanged_in_both_spellings() {
     // PASSES EITHER WAY BY DESIGN, and it is why the widened gate needs no carve-out for
     // `===`. It is a structural identity TEST, not a defining connective: bodyless it is
-    // refused, and guarded it fires in NEITHER spelling. Reclassifying its LHS therefore
-    // puts the sigil-free spelling on the path its twin already took, rather than giving
-    // it a new behaviour — which is the claim this row pins.
+    // refused, and guarded its `@[simp]` is refused as a tag on no equation
+    // (`rewrite_tag_off_equation_test`; until that refusal it loaded and fired in NEITHER
+    // spelling). Reclassifying its LHS therefore puts the sigil-free spelling on the path
+    // its twin already took, rather than giving it a new behaviour — which is the claim
+    // this row pins.
     for lhs in ["pick(?a: Red, ?b)", "pick(a: Red, ?b)"] {
         crate::common::expect_load_errors(
             crate::common::try_load_kb_with(&connective_src(lhs, "===", "", "@[simp]")),
             &["structural identity TEST"],
         );
-        let mut kb =
-            crate::common::load_kb_with(&connective_src(lhs, "===", ":- seed(red())", "@[simp]"));
-        let out = simplify_pick(&mut kb);
-        let Term::Fn { functor, .. } = &out else {
-            panic!("`{lhs} === 7` rewrote to {out:?}; a `===` head defines nothing")
-        };
-        assert_eq!(kb.local_name_of(*functor), "pick");
+        crate::common::expect_load_errors(
+            crate::common::try_load_kb_with(&connective_src(
+                lhs,
+                "===",
+                ":- seed(red())",
+                "@[simp]",
+            )),
+            &["`@[simp]` stands on a structural identity test (`===`)"],
+        );
     }
 }
