@@ -532,8 +532,9 @@ fn a_clause_defined_operation_of_a_provided_sort_is_dispatched() {
 /// Nothing but that it may be provided. `Lone` takes no type parameter and nothing
 /// provides it, and its operations are answered for as `Wide`'s are, which takes one: the
 /// answer of a declaration does not move with what is loaded after it. `Held` has a
-/// constructor, and nothing provides a data sort. A rule body's gate is the one that
-/// asks more — a parameter or a provider — and `Lone` has neither.
+/// constructor, and nothing provides a data sort. A rule body's gate asks the same since
+/// WI-20261013-RYDNV — it asked for a parameter or a provider, and walked `Wide`'s
+/// operations and not `Lone`'s.
 ///
 /// `Held.open` is defined by a `@[simp]` equation rather than a body: a data sort's
 /// body-less member with no definition is refused at load (WI-20260909-M8QWJ), and a body
@@ -564,8 +565,8 @@ fn the_gates_read_no_parameter_and_no_provider() {
     );
     assert!(
         spec_op_call_parent(&kb, op("Wide.open")).is_some()
-            && spec_op_call_parent(&kb, op("Lone.open")).is_none(),
-        "a rule body's walk asks a type parameter or a provider"
+            && spec_op_call_parent(&kb, op("Lone.open")).is_some(),
+        "a rule body's walk reads no parameter and no provider: `Lone` is walked as `Wide` is"
     );
 }
 

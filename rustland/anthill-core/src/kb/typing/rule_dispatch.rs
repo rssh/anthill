@@ -1727,9 +1727,32 @@ pub(super) fn call_dispatch_shape(
                     if wrapper || !kb.goal_slot_readings(*functor, pos_args.len()).is_empty() {
                         return None;
                     }
-                    // 2 — the two spec-op shapes, unchanged.
-                    if let Some(s) = spec_op() {
-                        return Some(s);
+                    // A column named `result:` (proposal 069 §1.1) is the result of the call the
+                    // other arguments write, whatever their count.
+                    let named_result = named_args.iter().any(|(label, _)| is_result_label(kb, *label));
+                    // 2 — the two spec-op shapes. The FUNCTIONAL VIEW — a result column past the
+                    // parameter list, positional or `result:` — is a rule-less operation's
+                    // (§5.3): on an operation a body or a host function defines and a clause
+                    // defines too, that goal is the relation's, and the relation's arity check
+                    // reads it. A goal at the parameter list is the call beside the clauses, which
+                    // are alternatives of one search (`gte` and its laws).
+                    let result_column = || {
+                        named_result
+                            || kb
+                                .op_record(*functor)
+                                .and_then(|r| r.signature.as_ref())
+                                .is_some_and(|sig| {
+                                    named_args.is_empty() && pos_args.len() == sig.params.len() + 1
+                                })
+                    };
+                    match spec_op() {
+                        Some(_)
+                            if (op_has_runnable_body(kb, *functor)
+                                || kb.is_host_mapped_op(*functor))
+                                && kb.rules_by_functor_iter(*functor).next().is_some()
+                                && result_column() => {}
+                        Some(s) => return Some(s),
+                        None => {}
                     }
                     // 3 — a resolver BUILTIN, which is read by the builtin.
                     if kb.builtin_of(*functor).is_some() {
@@ -1738,9 +1761,6 @@ pub(super) fn call_dispatch_shape(
                     // A goal on an operation no clause defines is that operation's call,
                     // where it is written as one of the two goals a call is (§5.3); any
                     // other is `check_rule_body_goal_readings`' to refuse.
-                    // A column named `result:` (proposal 069 §1.1) is the result of the
-                    // call the other arguments write, whatever their count.
-                    let named_result = named_args.iter().any(|(label, _)| is_result_label(kb, *label));
                     if operation_application(kb, *functor)
                         && kb.rules_by_functor_iter(*functor).next().is_none()
                         && (named_result

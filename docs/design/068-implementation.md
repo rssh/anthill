@@ -1377,6 +1377,42 @@ with a spec call inside it is refused for its arity (`expected 2 arguments, got 
 `let`, `match` or `if` in a rule body is typed as an operation body (§6.11) and refused where it
 leaves its instance open; a condition carried into one is not built.
 
+### 6.19 C1d, the walk gate reads no provider (WI-20261013-RYDNV, seventh part, 2026-10-31)
+
+`spec_op_call_parent`, the gate that says whether a rule body's call is typed as a spec
+operation's, asked "a type parameter or a provider" of the declaring sort; it now asks what
+the two halves ask — that the sort may be provided, having no constructors — or that it is a
+parametric data sort. That reads the declaration alone: a provision loaded later no longer
+changes how an earlier rule body's call is typed. MEASURED on the full workspace with the
+provider leg dropped: 5 rows fail, every one a row pinning the gate (`wi1043`'s union, 4DYR6's
+`Lone`, and the short-name query of `wi_1wbzt` / `wi_vt8cf`), and one that was not: `wi939`'s
+arity + 1 goal beside a clause at a host operation's own arity loaded clean, the goal taken
+for the call. Answering for every operation of a sort fails one row more (`wi_mhrn1`, a data
+sort's own).
+
+- **The goal beside a clause**: the walk's spec-operation rung took a call for the goal before
+  asking whether a clause defines the functor, which the fragment rung asks (§5.3: the
+  functional view is a rule-less operation's). It asks now, of the arity + 1 goal on an
+  operation a body or a host function defines, in both its spellings — a positional result
+  column and `result:` (proposal 069 §1.1), which first answered no solutions in silence here:
+  `Tool.size(1, ?n)` and `Tool.size(1, result: ?n)` beside `rule Tool.size(1) :- true`,
+  `Prov.own(1, ?n)` and `String.length("abc", ?n)` are the relation's goals and refused for
+  their arity, as they were; so is a parametric data sort's `Held.peek(held(v: 1), ?n)`,
+  which loaded as the call before this ticket too. Asked of every goal, it failed 12 rows: a
+  goal at the parameter list beside clauses is the call, the clauses alternatives of one search
+  (`gte` and its laws; `wi_9c2pz`'s mistyped calls loaded clean, `wi_4nekz`'s `eq` operands lost
+  their typing). A body-less operation with no host function is untouched: its clauses are its
+  definition, or a dispatch selects it (`Desc.describe(leaf(), ?n)` loads, as it did).
+- **The short-name query** (`spec_operation_short_names`, three tests' question) asks which
+  operations another sort answers for, which does need the provider; it reads its own predicate,
+  `answered_by_another_sort` (`Float.pow` stays `Float`'s own).
+- **The arity check** of the inference and the resolver's query walk read the gate as before:
+  the call they no longer hold to its parameters raises the same refusal where it is typed
+  (`Tool.size(1, 2, ?n)`, `Tool.size(x: 1, ?n)`, measured against the before-binary).
+
+Rows moved by design: `wi1043`'s union (`Float.pow` walked, nothing in a half alone) and 4DYR6's
+`Lone` (walked as `Wide` is).
+
 ## 7. Testing
 
 Per CLAUDE.md: each ticket's rows live in one test module, driven by value with its back-outs run

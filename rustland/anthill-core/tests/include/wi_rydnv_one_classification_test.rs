@@ -528,6 +528,71 @@ fn a_call_in_a_branch_is_its_clauses_condition() {
     }
 }
 
+/// A GOAL ON A DEFINED OPERATION BESIDE ITS CLAUSES IS THE RELATION'S, whatever the declaring
+/// sort: with a clause at the operation's own arity, an arity + 1 goal is read against the
+/// clauses and refused for its arity — for `sort Tool`'s bodied operation (no parameter, no
+/// provider) in both its spellings, the positional result column and `result:`, for one of
+/// `Prov` (which provides `Desc` and is provided by nothing), for a parametric data sort's
+/// bodied operation and for the host operation `String.length`. The walk
+/// gate reads no provider, so each is a spec operation's call to it; FAILS with that call taken
+/// for the goal where clauses define the functor (rule_dispatch's rung 2 condition backed out):
+/// each loads clean, the call answering where the relation was written. `Held.peek` loaded clean
+/// before this ticket too, its sort being walked for its parameter. A goal at the parameter list
+/// beside clauses stays the call (`gte` and its laws, `wi_9c2pz`, `wi_4nekz`).
+#[test]
+fn a_goal_on_a_defined_operation_beside_its_clauses_is_the_relations() {
+    let tool = "  sort Tool\n    operation size(x: Int64) -> Int64 = x\n  end";
+    let two = "got 2 positional";
+    for (ns, decl, clause, goal, functor, got) in [
+        ("rydnv.arity.tool", tool, "Tool.size(1)", "Tool.size(1, ?n)", "Tool.size", two),
+        (
+            "rydnv.arity.result",
+            tool,
+            "Tool.size(1)",
+            "Tool.size(1, result: ?n)",
+            "Tool.size",
+            "got 1 positional + `result`",
+        ),
+        (
+            "rydnv.arity.prov",
+            "  sort Desc\n    sort T = ?\n    operation describe(x: T) -> Int64\n  end\n  \
+             sort Prov\n    provides Desc[T = Int64]\n    \
+             operation describe(x: Int64) -> Int64 = 9\n    \
+             operation own(x: Int64) -> Int64 = x\n  end",
+            "Prov.own(1)",
+            "Prov.own(1, ?n)",
+            "Prov.own",
+            two,
+        ),
+        (
+            "rydnv.arity.data",
+            "  sort Held\n    sort V = ?\n    entity held(v: V)\n    \
+             operation peek(h: Held[V]) -> V = h.v\n  end",
+            "Held.peek(held(v: 1))",
+            "Held.peek(held(v: 1), ?n)",
+            "Held.peek",
+            two,
+        ),
+        (
+            "rydnv.arity.host",
+            "  import anthill.prelude.{String}",
+            "String.length(\"abc\")",
+            "String.length(\"abc\", ?n)",
+            "anthill.prelude.String.length",
+            two,
+        ),
+    ] {
+        let errs = crate::common::load_errors_of(&format!(
+            "namespace test.{ns}\n  import anthill.prelude.{{Int64}}\n{decl}\n  \
+             rule {clause} :- true\n  rule asked(?n) :- {goal}\nend\n"
+        ));
+        assert!(
+            errs.len() == 1 && errs[0].contains(&format!("{functor}` can match (1 positional), {got}")),
+            "{ns}: expected the one arity refusal of `{goal}`, got {errs:?}"
+        );
+    }
+}
+
 /// A CALL IN A PARENTHESIZED GOAL LIST is its clause's condition, as in the `&` the list is
 /// (`goal_list_is_a_conjunction_test`): it answers 4 / -4 / -1. It was refused at load, the
 /// list read as a tuple and the call in it as a value of two arguments given three. FAILS

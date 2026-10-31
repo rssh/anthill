@@ -369,19 +369,18 @@ fn a_carrier_with_no_instance_is_refused_at_load() {
 /// Its members are this test's own `Held.open` and `Held.peek`, so the list does not
 /// empty with what the library declares.
 ///
-/// WHAT THE HALVES HOLD THAT THE WALK DOES NOT (WI-20261003-4DYR6). The halves read
-/// nothing off a sort but that it may be provided, so an operation of a sort with no
-/// parameter that nothing provides is in one — `Float.pow`. The walk leaves its
-/// rule-body goal as it is written: there is no other carrier to type it against. An
-/// operation of a sort with no parameter that IS provided is in both —
-/// `anthill.persistence.Store.persist`.
+/// NOTHING IS IN A HALF ALONE (WI-20261013-RYDNV). The halves read nothing off a sort but
+/// that it may be provided, and so does the walk: an operation of a sort with no parameter
+/// that nothing provides is walked — `Float.pow` — as one of a sort with no parameter that is
+/// provided is — `anthill.persistence.Store.persist`. The walk asked for a provider until
+/// then (WI-20261003-4DYR6), and `Float.pow` was in a half and not in the walk.
 ///
 /// CONTROL: add any clause to [`spec_op_call_parent`] that neither half has, or drop its
 /// `OperationInfo` probe (which is what keeps an entity constructor declared inside a
 /// parametric sort — `anthill.prelude.Option.some` — out of the walk), and this fails.
 /// Read a sort with constructors as one that may be provided and it fails on the third
-/// list, which is then empty. Put a type-parameter test back in the halves and it fails
-/// on `Float.pow`; drop the walk's provider leg and it fails on `Store.persist`.
+/// list, which is then empty. Put a provider leg back in the walk and it fails on
+/// `Float.pow`, in a half alone.
 #[test]
 fn the_walk_gate_is_the_two_halves_and_a_data_sorts_operations() {
     let kb: KnowledgeBase = crate::common::load_kb_with(
@@ -444,9 +443,15 @@ fn the_walk_gate_is_the_two_halves_and_a_data_sorts_operations() {
         );
     }
     assert!(
-        in_a_half_alone.contains(&"anthill.prelude.Float.pow"),
-        "`Float.pow` is in a half — `Float` may be provided — and not in the walk, \
-         nothing providing `Float`: {in_a_half_alone:?}",
+        in_a_half_alone.is_empty(),
+        "the walk reads no provider, so what a half holds it walks: {in_a_half_alone:?}",
+    );
+    let pow = kb
+        .try_resolve_symbol("anthill.prelude.Float.pow")
+        .expect("the stdlib declares Float.pow");
+    assert!(
+        spec_op_call_parent(&kb, pow).is_some(),
+        "`Float` may be provided, and nothing provides it: the walk answers for `Float.pow`",
     );
     let persist = kb
         .try_resolve_symbol("anthill.persistence.Store.persist")

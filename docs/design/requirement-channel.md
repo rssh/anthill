@@ -487,18 +487,18 @@ provision at the carrier determines is read off that provision, as `Iterable.fin
 One provider does not pin a parameter the call leaves open: it is no evidence, and a provider a
 later load adds would turn the call into a refusal.
 
-As built so far (`068-implementation.md` §6.13–§6.18): the rigid carrier, in both bodies;
+As built so far (`068-implementation.md` §6.13–§6.19): the rigid carrier, in both bodies;
 the pinned class for an operation's own `requires`; for that requirement, the conditional class
 in every position the goal runs a call (an `=` operand included) and the refused class; the
 same for a member of a sort that `requires`, its woven call marked as carrying its chain's
 slots; an unpinned body-less spec operation in a value position, which was declined; and a call
 in a connective's proved goal (a branch, a negand, a quantifier's body, a discharge's
-consequent), its read beside that goal and reached by a citation. Not
-built yet: the class as a stamp the inference reads in place of
-`spec_op_call_carrier_outcome`; a call with no argument at its spec's carrier whose requirement
-the clause's sort supplies (SHED7's `fromList`, which a citation has to route from the cited
-sort's instance, its witness carrying nothing at the carrier); and the sort test of the walk
-gate (`spec_op_call_parent`).
+consequent), its read beside that goal and reached by a citation; and a walk gate
+(`spec_op_call_parent`) that reads the declaration alone, no provider. Not built yet: the class
+as a stamp the inference reads in place of `spec_op_call_carrier_outcome`; and a call with no
+argument at its spec's carrier whose requirement the clause's sort supplies (SHED7's
+`fromList`, which a citation has to route from the cited sort's instance, its witness carrying
+nothing at the carrier).
 
 ---
 

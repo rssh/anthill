@@ -23621,8 +23621,9 @@ fn capture_is_excused(kb: &KnowledgeBase, sort: Symbol, captured: Symbol) -> boo
 // language decision, stated in kernel-language.md §5.5.
 
 /// The SHORT NAMES of the operations of every sort with a type parameter or a provider —
-/// the population a rule body types and weaves as dispatched
-/// ([`crate::kb::typing::spec_op_call_parent`]).
+/// the operations another sort answers for ([`crate::kb::typing::answered_by_another_sort`]).
+/// It was the population a rule body types, until that gate stopped reading providers
+/// (WI-20261013-RYDNV, [`crate::kb::typing::spec_op_call_parent`]).
 ///
 /// ITS PRODUCTION READER IS GONE. This was `check_rival_spec_operations`' gate — the
 /// population that pass drew its refusal from — and WI-20260825-KD9SW deleted the pass
@@ -23648,7 +23649,7 @@ pub fn spec_operation_short_names(kb: &KnowledgeBase) -> HashSet<&str> {
         .values()
         .filter(|&&sym| {
             kb.has_kind(sym, crate::intern::SymbolKind::Operation)
-                && crate::kb::typing::spec_op_call_parent(kb, sym).is_some()
+                && crate::kb::typing::answered_by_another_sort(kb, sym)
         })
         .map(|&sym| kb.local_name_of(sym))
         .collect()

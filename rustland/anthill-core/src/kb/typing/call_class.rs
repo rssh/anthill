@@ -180,26 +180,22 @@ pub fn defaulted_spec_op_parent(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Sy
     sort_may_be_provided(kb, parent_sym).then_some(parent_sym)
 }
 
-/// WI-1043 — THE WALK TRIGGER'S gate: `op_sym` is an OPERATION of a sort with a type
-/// parameter or a provider. Returns the declaring sort.
+/// WI-1043 — THE WALK TRIGGER'S gate: `op_sym` is an OPERATION of a sort that may be
+/// provided, or of a parametric data sort. Returns the declaring sort.
 ///
-/// A RULE BODY'S QUESTION, AND THE ONE GATE THAT READS THE KNOWLEDGE BASE. An operation
-/// body's call has its carrier in hand, and [`spec_op_parent_sort`] asks nothing of the
-/// sort but that it may be provided. A rule body's call is typed and woven at load with
-/// its arguments unbound: the walk has to say THERE whether it types the call and which
-/// evidence the call carries (below), and a call of a sort with no parameter that nothing
-/// provides has no other carrier to be typed against — the goal the clauses answer, as
-/// proposal 068 leaves it. MEASURED with this gate at "every sort that may be provided":
-/// 35 rows fail, a module-style `sort Util`'s operations woven as dispatched and its
-/// rule-body goals typed as calls.
+/// IT READS THE DECLARATION ALONE (WI-20261013-RYDNV): that the sort has no constructors, or
+/// takes a parameter — nothing a later load can add. It asked for a provider until then, so a
+/// rule body's call of `sort Util`'s operation was typed one way before a provision of `Util`
+/// was loaded and another way after. What the call needs is the call's own question, put to
+/// it where it is typed: a member of a sort that requires carries its chain's slots, and the
+/// weave marks it ([`woven_call_dispatches`], `is_woven_slots_call`).
 ///
-/// Within what it admits it is the union of the two halves — [`defaulted_spec_op_parent`]'s
-/// (a runnable default a carrier may override) and [`lookup_spec_op_dispatch`]'s
-/// (body-less, resolved by call-site dispatch) — AND OF AN OPERATION OF A PARAMETRIC DATA
-/// SORT, which is in neither half (WI-20261011-RM247 for the body-less one,
-/// WI-20261003-4DYR6 for the bodied): its sort is the only carrier a call of it can have.
-/// Its call in a rule body is still typed — its arguments checked at the sort's
-/// parameters, its `@[simp]` equation fired.
+/// It is the union of the two halves — [`defaulted_spec_op_parent`]'s (a runnable default a
+/// carrier may override) and [`lookup_spec_op_dispatch`]'s (body-less, resolved by call-site
+/// dispatch) — AND OF AN OPERATION OF A PARAMETRIC DATA SORT, which is in neither half
+/// (WI-20261011-RM247 for the body-less one, WI-20261003-4DYR6 for the bodied): its sort is
+/// the only carrier a call of it can have. Its call in a rule body is still typed — its
+/// arguments checked at the sort's parameters, its `@[simp]` equation fired.
 ///
 /// ITS FIRST READER is [`call_dispatch_shape`], and it is the union because
 /// [`check_apply_iter`] decides both halves in the same frame: the WI-444 block pins
@@ -237,8 +233,19 @@ pub fn defaulted_spec_op_parent(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Sy
 pub fn spec_op_call_parent(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol> {
     let parent_sym = impl_parent_sort_of_op(kb, op_sym)?;
     crate::kb::op_info::lookup_operation_info(kb, op_sym)?;
-    (sort_is_parametric(kb, parent_sym) || spec_has_any_providers(kb, parent_sym))
+    (sort_may_be_provided(kb, parent_sym) || sort_is_parametric(kb, parent_sym))
         .then_some(parent_sym)
+}
+
+/// An operation ANOTHER sort answers for: one of a sort with a type parameter or a provider.
+/// The question [`crate::kb::load::spec_operation_short_names`] asks — `Float.pow` is `Float`'s
+/// own while nothing provides `Float` — and not the walk's ([`spec_op_call_parent`]), which
+/// reads the declaration alone.
+pub fn answered_by_another_sort(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
+    impl_parent_sort_of_op(kb, op_sym).is_some_and(|parent| {
+        crate::kb::op_info::lookup_operation_info(kb, op_sym).is_some()
+            && (sort_is_parametric(kb, parent) || spec_has_any_providers(kb, parent))
+    })
 }
 
 /// Is a woven call of `op_sym` DISPATCHED — does it carry one dictionary of its sort, which
