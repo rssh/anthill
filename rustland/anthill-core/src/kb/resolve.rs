@@ -11567,7 +11567,7 @@ impl KnowledgeBase {
             // bridge for its slot, an unbound one is left to the bridge's own derivation. So
             // this arm never waits on a slot, where a dispatch waits on its dictionary: an
             // unfilled condition means "derive as before", not "not yet".
-            let (call, woven) = if self.woven_call_takes_slots(*functor) {
+            let (call, woven) = if super::typing::is_woven_slots_call(self, &occ) {
                 let slots: Vec<Option<crate::eval::value::Dictionary>> = requirements
                     .iter()
                     .map(|r| self.supplied_dictionary(r, subst))
@@ -12071,18 +12071,6 @@ impl KnowledgeBase {
             return None;
         }
         self.dictionary_of_binding(&dict)
-    }
-
-    /// WI-20260925-P7VP4 — does a woven call to `functor` carry SLOTS — the clause's
-    /// conditions for an ordinary operation's own dictionary chain — rather than one DISPATCH
-    /// dictionary for a spec op? `reduce_op_value`'s `ApplyWithin` arms split on it.
-    ///
-    /// The WI-580 case split (`op_call_as_occ`) never meets a slot-woven call, MEASURED: in an
-    /// `eq` operand the rule-body typer stamps an ordinary operation's own `requires`
-    /// (`op_dicts`, so the inference declines it), and an operation whose chain is only its
-    /// sort's is a DEFAULTED spec op of that sort, not a slot weave.
-    fn woven_call_takes_slots(&self, functor: Symbol) -> bool {
-        super::typing::spec_op_call_parent(self, functor).is_none()
     }
 
     /// WI-1040 — the implementation member a woven call's dictionary selects, and
@@ -12871,7 +12859,10 @@ impl KnowledgeBase {
                 type_args,
             }) = o.as_expr()
             {
-                if self.woven_call_takes_slots(*functor) {
+                // A call woven with its callee's slots ([`super::typing::is_woven_slots_call`]) is
+                // no dispatch this split can open — an `=` operand's, since WI-20261013-RYDNV:
+                // the comparison over it stays undecided (WI-20260926-DSEXA's item 3).
+                if super::typing::is_woven_slots_call(self, o) {
                     return None;
                 }
                 let (target, _) = self.dictionary_dispatch_target(*functor, requirements, subst)?;

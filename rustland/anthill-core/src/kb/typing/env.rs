@@ -661,6 +661,12 @@ impl TypingEnv {
         }
     }
 
+    /// The domain the rule being typed is written in — its sort or namespace — where this env
+    /// types a rule body.
+    pub(super) fn rule_domain(&self) -> Option<Symbol> {
+        self.rule_scope
+    }
+
     /// WI-977 — see [`Self::rule_scope`]. Set once per rule by the rule-body sweep.
     pub(super) fn set_rule_scope(&mut self, domain: Symbol) {
         self.rule_scope = Some(domain);

@@ -239,24 +239,16 @@ end
     );
 }
 
-/// WI-20260921-3G1YT — THE SORT HALF OF THE SAME SITE, pinned because deleting its arm
-/// is a REGRESSION and the suite could not see it. A `requires` on the SORT, at a
-/// no-route spec, reached from a rule body: refused, and it must stay so.
-///
-/// MEASURED: with `type_value_forward_unsuppliable`'s remaining call site removed, this
-/// program LOADS CLEAN while every other row in the file stays green — the same
-/// silent-refusal shape as the op half's, one channel over.
-/// /code-review caught it with this exact probe.
-///
-/// IT IS NO LONGER SPELLED `TypeValue`. An earlier cut of this ticket left the sort half
-/// hardcoded because the general rule needs the CALLEE'S OP to ask whether its body reads
-/// the slot, and `build_dispatching_dict_from_chain` was handed the callee's SORT.
-/// `rule_body_callee` now plumbs that op through, both hardcodes are deleted, and
-/// [`a_sort_level_user_typeclass_is_refused_too`] drives the general form — the gap this
-/// row's note previously recorded as PRE-EXISTING is closed with it.
+/// THE SORT HALF OF THE SAME SITE: a `requires` on the SORT, reached from a rule body at an
+/// element the argument carries — `Holder.get(?x)` under `requires TypeValue[T = U]` — is a
+/// condition of the clause in every spelling, as the operation half's is
+/// ([`a_rule_body_forward_is_the_clauses_condition`]; WI-20261013-RYDNV). The goal spelling
+/// answers `Cell[V = Int64]` at `1`; the `=` spelling is undecided (WI-20260926-DSEXA's item
+/// 3). Both were refused at load. A sort-level requirement no value could supply is still
+/// refused ([`a_sort_level_user_typeclass_is_refused_too`] below).
 #[test]
-fn a_sort_level_rule_body_forward_is_refused_too() {
-    let errs = load_errors(
+fn a_sort_level_rule_body_forward_is_the_clauses_condition() {
+    let mut kb = crate::common::load_kb_with(
         r#"
 namespace test.n31xx.sortlevel
   import anthill.prelude.{Cell, Int64, Type}
@@ -269,31 +261,31 @@ namespace test.n31xx.sortlevel
   end
 
   rule names(?x, ?t) :- ?t = Holder.get(?x)
+  rule asGoal(?x, ?t) :- Holder.get(?x, ?t)
+  rule viaEq(?t) :- names(1, ?t)
+  rule viaGoal(?t) :- asGoal(1, ?t)
 end
 "#,
     );
-    assert!(
-        !errs.is_empty(),
-        "a SORT-level TypeValue clause forwarded from a rule body must be refused; \
-         leaving it silent is the regression this row exists to catch"
-    );
-    assert!(
-        errs.iter().any(|e| e.contains("anthill.reflect.TypeValue")),
-        "the refusal must name the evidence; got {errs:#?}"
-    );
+    let goal = crate::common::shown_rows(&mut kb, "test.n31xx.sortlevel.viaGoal");
+    assert_eq!(goal, vec![("Cell[V = Int64]".to_string(), true)], "the goal spelling");
+    let eq = crate::common::query_unary(&mut kb, "test.n31xx.sortlevel.viaEq");
+    assert!(eq.len() == 1 && !eq[0].1, "the `=` spelling is undecided; got {eq:?}");
 }
 
 /// WI-20260921-3G1YT — **THE SORT HALF, GENERAL.** The same shape as
-/// [`a_sort_level_rule_body_forward_is_refused_too`] with a USER typeclass in place of
-/// `TypeValue`, which is what says the sort-half rule is keyed on a spec's PROPERTY and
-/// not on one spec's name.
+/// [`a_sort_level_rule_body_forward_is_the_clauses_condition`] with a USER typeclass in place
+/// of `TypeValue`, which is what says the sort-half rule is keyed on a spec's PROPERTY and not
+/// on one spec's name. Since WI-20261013-RYDNV the two differ by that property: `TypeValue` has
+/// providers, so its read is the clause's condition; `Stamp` has none, so no value could derive
+/// it, and the call is refused.
 ///
 /// MEASURED AS A GAP THIS CLOSES, and it is older than this ticket: while the sort half
 /// asked `dep.required_sort == anthill.reflect.TypeValue`, this program LOADED CLEAN
 /// while the `TypeValue` spelling of it was refused. Both are refused now.
 ///
-/// WHICH TESTS FAIL IF THE SORT-HALF RULE IS BACKED OUT: this one and
-/// [`a_sort_level_rule_body_forward_is_refused_too`], and no others.
+/// WHICH TESTS FAIL IF THE SORT-HALF RULE IS BACKED OUT: this one, and the `TypeValue`
+/// spelling's until RYDNV made that read the clause's condition.
 #[test]
 fn a_sort_level_user_typeclass_is_refused_too() {
     let errs = load_errors(

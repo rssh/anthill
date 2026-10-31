@@ -35,7 +35,7 @@
 //!
 //! | backed out | fails |
 //! |---|---|
-//! | the head's bound (`settle_head_bounds`) | `a_heads_bound_types_its_variable`, `a_field_of_a_head_parameter_is_a_receiver`, `a_field_read_types_the_slot_it_fills`, `a_projection_in_a_result_is_read_off_the_argument`, `a_rule_goal_reads_the_callees_columns`, `wi_0rrqp…::an_inferred_column_is_checked_as_a_written_one`, `wi_p7vp4…::a_member_of_a_sort_that_requires_is_refused_at_rule_variables` |
+//! | the head's bound (`settle_head_bounds`) | `a_heads_bound_types_its_variable`, `a_field_of_a_head_parameter_is_a_receiver`, `a_field_read_types_the_slot_it_fills`, `a_projection_in_a_result_is_read_off_the_argument`, `a_rule_goal_reads_the_callees_columns`, `wi_0rrqp…::an_inferred_column_is_checked_as_a_written_one`, `wi_p7vp4…::a_member_of_a_sort_that_requires_is_its_clauses_condition` |
 //! | the enclosing sort's parameter rigid in a bound (`rigidify`) | `wi_0rrqp…::an_inferred_column_is_checked_as_a_written_one` |
 //! | a call's result in a value slot (`LatePosition::CallResult`) | `a_calls_result_types_the_slot_it_fills`, `a_projection_in_a_result_is_read_off_the_argument`, `a_rule_goal_reads_the_callees_columns` |
 //! | the result column (`LatePosition::ResultColumn`) | `a_calls_result_types_the_slot_it_fills`, four `wi_9wvt7` rows (`a_scoped_kb_does_not_outlive_a_rule_body_call`, `a_clock_read_in_a_rule_body_is_not_performed`, `an_effectful_thunk_leaves_the_goal_undecided`, `the_advised_repairs_answer`) |

@@ -1293,6 +1293,32 @@ Rows moved by design: `wi842`'s `=`-spelled tie (now a condition, the goal spell
 `Leaf`'s 1 and undecided at the `Twig` tie), `wi_n31xx`'s `TypeValue` forward (the goal spelling
 answers `Cell[V = Int64]`), P7VP4's operand and no-argument rows.
 
+### 6.16 C1d, a member of a sort that `requires` (WI-20261013-RYDNV, fourth part, 2026-10-31)
+
+`Holder.hsign(?a, ?b, ?c)` under `sort Holder { sort A = ?; requires WeakOrd[T = A]; operation
+hsign(x: A, y: A) -> Int64 = … }` is a condition of the clause, as `Util.sign` is, and cited
+under a rival answers 4 / -4 / -1. It was refused in every position, by two readers.
+
+- **The typer**: the sort half of the chain at an element the arguments carry, at a spec
+  something provides, is left to the clause (`sort_requirements_carried_by_arguments`, read where
+  the call's sort dictionary is built) — not where the call fixes it (`Holder[T = Twig].show(…)`
+  is refused for `Twig`'s missing provision), and not in a rule written in the callee's own sort,
+  whose `requires` its citation supplies.
+- **The inference and the resolver**: the walk gate (`spec_op_call_parent`, "a type parameter or
+  a provider") decided which kind a woven call is, so `Holder`'s member read as dispatched and
+  was woven with nothing. The inference now gives slots to every call but a dispatched one
+  (`woven_call_dispatches`: a body-less member of a sort that may be provided, a defaulted member
+  of a sort with an abstract member) and a defaulted member of a sort something provides or the
+  clause is written in; and the weave MARKS a call carrying slots, building it as a node of the
+  woven-slots pass (`is_woven_slots_call`), which the resolver reads in place of the gate. Asked of
+  the callee, it would have to answer for every weave of one operation at once, and two weave it
+  differently: a `require[X]` over a defaulted member of `X` carries one dictionary whatever `X`
+  declares (WI-1040's rows read the slots there with the callee-keyed predicate).
+
+Rows moved by design: P7VP4's member row (a condition in every position, `require[WeakOrd[T]]`
+refused as beside `Util.sign`), `wi_n31xx`'s sort-level `TypeValue` forward (the goal spelling
+answers `Cell[V = Int64]`).
+
 ## 7. Testing
 
 Per CLAUDE.md: each ticket's rows live in one test module, driven by value with its back-outs run

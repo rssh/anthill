@@ -1392,7 +1392,7 @@ fn an_operations_own_requires_is_its_clauses_condition_in_every_position() {
         );
     }
     // Over a head typed `Int64` the call is no longer this refusal's: the head's bound
-    // reaches its element since WI-20261013-WF14Z ([`a_member_of_a_sort_that_requires_is_refused_at_rule_variables`]
+    // reaches its element since WI-20261013-WF14Z ([`a_member_of_a_sort_that_requires_is_its_clauses_condition`]
     // runs that clause). Beside two such bindings a written `require[WeakOrd[T = Int64]]`
     // names no one of them, which is refused for its own reason, before and after.
     crate::common::assert_refused_naming(
@@ -1405,31 +1405,41 @@ fn an_operations_own_requires_is_its_clauses_condition_in_every_position() {
     );
 }
 
-/// A MEMBER OF A SORT THAT `requires` IS REFUSED AT LOAD wherever its arguments are rule
-/// variables the clause does not type — as a goal, in a value slot, with a `require` of the
-/// spec, and under the introducer. Its chain is its sort's; the rule-body
-/// typer checks a member of a parametric sort wherever it is written, as it checks a spec
-/// operation; and `Holder` is no spec any sort provides, so neither a bracket nor an
-/// inferred read has an instance of it to name. Turns with WI-20260926-7D48J's
-/// classification; the refusals pass either way.
+/// A MEMBER OF A SORT THAT `requires` IS A CONDITION OF THE CLAUSE wherever its arguments are
+/// rule variables the clause does not type — as a goal, in a value slot, under the introducer
+/// — as `Util.sign` is (WI-20261013-RYDNV): `Holder`'s `WeakOrd[T = A]` at the `A` the
+/// arguments carry is woven as the slots of `hsign`'s chain, and cited under a rival answers 4
+/// / -4, uncited `Int64`'s own -1. It was refused in every position: the typer checked the
+/// sort's requirement as an operation body's and refused it, and the inference read `Holder`, a
+/// sort with a type parameter, as one whose members are dispatched, and wove nothing — with
+/// the refusal switched off the clause loaded and answered -1 under both rivals. FAILS with the
+/// sort's requirement checked as an operation body's again
+/// (`sort_requirements_carried_by_arguments` answering no): refused; and with the inference
+/// declining it as before (`woven_call_dispatches` read as `spec_op_call_parent`): -1, -1, -1.
+/// A `require[WeakOrd[T]]` holds no requirement of `Holder`'s, and is refused as one no body
+/// call grounds, as beside `Util.sign`.
 ///
-/// THE REPAIRS THE REFUSAL NAMES, EACH RUN. An argument whose type is known at load pins
-/// the chain: `lit` answers `Int64`'s own. And `hsign` called from an operation that declares
-/// the requirement, that operation written as the clause's goal: its `requires` is the
-/// clause's condition, and the caller's dictionary reaches `hsign` through it — FAILS with
-/// the inference backed out (`-1, -1, -1`).
+/// THE REPAIRS THE REFUSAL NAMED, each run, still answer: an argument whose type is known at
+/// load pins the chain (`lit`, `Int64`'s own); and `hsign` called from an operation that
+/// declares the requirement, that operation written as the clause's goal.
 #[test]
-fn a_member_of_a_sort_that_requires_is_refused_at_rule_variables() {
-    refused_per_clause(
-        "wip7vp4.memberno",
-        HOLDER,
-        &[
-            "  rule m1(?a, ?b, ?c) :- Holder.hsign(?a, ?b, ?c)\n",
-            "  rule m2(?a, ?b, ?c) :- ?c <=> Holder.hsign(?a, ?b)\n",
-            "  rule m3(?a, ?b, ?c) :- require[WeakOrd[T]], Holder.hsign(?a, ?b, ?c)\n",
-            "  rule m6[A](?a: A, ?b: A, ?c) :- WeakOrd[A], Holder.hsign(?a, ?b, ?c)\n",
-        ],
-        "Holder.hsign",
+fn a_member_of_a_sort_that_requires_is_its_clauses_condition() {
+    for (ns, clause) in [
+        ("wip7vp4.membergoal", "  rule r(?a, ?b, ?c) :- Holder.hsign(?a, ?b, ?c)\n"),
+        ("wip7vp4.memberval", "  rule r(?a, ?b, ?c) :- ?c <=> Holder.hsign(?a, ?b)\n"),
+        ("wip7vp4.memberintro", "  rule r[A](?a: A, ?b: A, ?c) :- WeakOrd[A], Holder.hsign(?a, ?b, ?c)\n"),
+    ] {
+        let src = fix_program(ns, &format!("{HOLDER}{clause}{}", cite_driver("Driver", "r")));
+        let mut interp = crate::common::interp_for(&src);
+        assert_eq!(cited(&mut interp, ns, "Driver"), (4, -4, -1), "{ns}");
+    }
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&fix_program(
+            "wip7vp4.memberreq",
+            &format!("{HOLDER}  rule m3(?a, ?b, ?c) :- require[WeakOrd[T]], Holder.hsign(?a, ?b, ?c)\n"),
+        )),
+        &["expected a body call to one of `WeakOrd`'s operations"],
+        "a bracket of the requirement's own spec holds nothing",
     );
     // A HEAD TYPED `Int64` PINS THE CHAIN (068-implementation §6.2, decision 1; 7D48J's
     // 2026-10-08 note, row 3): the clause reads the head's bound, so `hsign` is at `Int64` and

@@ -224,11 +224,9 @@ pub fn defaulted_spec_op_parent(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Sy
 /// `wi1043_bodyless_rule_body_test::the_walk_gate_is_the_two_halves_and_a_data_sorts_-
 /// operations` drives that equality over the corpus.
 ///
-/// THE SAME UNION SPLITS A WOVEN CALL (WI-20260925-P7VP4): a spec op's woven call carries
-/// one DISPATCH dictionary, any other operation's carries SLOTS — the inference declines a
-/// slot demand on what this answers (`inferred_slot_demand`), and the resolver reads a woven
-/// call by it (`resolve::woven_call_takes_slots`). One predicate, so the weave and its reader
-/// cannot disagree about which kind a call is.
+/// IT NO LONGER SPLITS A WOVEN CALL (WI-20261013-RYDNV): the weave marks a call carrying its
+/// callee's slots (`is_woven_slots_call`), and the resolver reads the mark; which calls the
+/// inference gives slots is [`woven_call_dispatches`]' question.
 ///
 /// CLAUSE ORDER as [`defaulted_spec_op_parent`] measured it: the name split first (the
 /// cheap non-operation early-out — every relational atom head leaves here), then the
@@ -241,6 +239,26 @@ pub fn spec_op_call_parent(kb: &KnowledgeBase, op_sym: Symbol) -> Option<Symbol>
     crate::kb::op_info::lookup_operation_info(kb, op_sym)?;
     (sort_is_parametric(kb, parent_sym) || spec_has_any_providers(kb, parent_sym))
         .then_some(parent_sym)
+}
+
+/// Is a woven call of `op_sym` DISPATCHED — does it carry one dictionary of its sort, which
+/// selects the member — rather than the slots of its chain, its sort's `requires` and then its
+/// own? A body-less operation of a sort that may be provided ([`lookup_spec_op_dispatch`]), and a
+/// defaulted one of a sort with an abstract member, an interface its providers implement
+/// ([`defaulted_spec_op_parent`], [`spec_has_an_abstract_member`]). A member of a sort whose
+/// every operation has a body — `sort Util`, `sort Holder { sort A = ?; requires WeakOrd[T = A];
+/// operation hsign(…) = … }` — is the sort's own, and its call carries slots.
+///
+/// The inference declines a slot demand on what this answers, and on a defaulted member of a
+/// sort something provides, whose call the carrier's value dispatches. It asked
+/// [`spec_op_call_parent`] until WI-20261013-RYDNV — "a type parameter or a provider" — so
+/// `Holder.hsign`, a parametric sort's own member, was read as dispatched and woven with
+/// nothing. The resolver does not ask it: the weave marks a call it gives slots
+/// (`is_woven_slots_call`), a `require[X]` weaving a defaulted member of `X` with one
+/// dictionary whatever `X` declares.
+pub fn woven_call_dispatches(kb: &KnowledgeBase, op_sym: Symbol) -> bool {
+    lookup_spec_op_dispatch(kb, op_sym).is_some()
+        || defaulted_spec_op_parent(kb, op_sym).is_some_and(|s| spec_has_an_abstract_member(kb, s))
 }
 
 /// WI-210 — `op_sym` is a body-less operation of a sort that may be provided

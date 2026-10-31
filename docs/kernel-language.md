@@ -2712,8 +2712,9 @@ an introducer bound, which records the spec and admits every provider, keeps
 that reading for every member.
 
 A requirement need not be written to be the clause's. A rule-body call that needs a
-dictionary at an argument whose type is not known at load — a spec operation, or an
-operation that declares `requires` — makes that requirement a condition of the clause,
+dictionary at an argument whose type is not known at load — a spec operation, an operation
+that declares `requires`, or a member of a sort that does — makes that requirement a
+condition of the clause,
 wherever the goal runs the call (the goal itself, a side of `<=>`, an operand of `=`),
 read as though `require[X]` stood before the goal holding the call: `rule cmp(?a, ?b,
 ?c) :- WeakOrd.compare(?a, ?b, ?c)` has a `WeakOrd` condition at `?a`'s type, and a
@@ -2743,8 +2744,8 @@ and dispatch on the value when they run. A requirement no argument carries — a
 parameter none of the operation's parameters writes — and one at a spec nothing provides are
 load errors wherever the call is written, no value being able to derive them: over `mk[B]()
 requires WeakOrd[T = B]`, `rule five(?c) :- mk(?c)` is refused, as `mk()` is in an
-operation body. A member of a sort that itself `requires` is a load error at a rule variable
-the clause does not type: reach it through an operation that declares the requirement.
+operation body. A member of the sort the clause is written in reads its sort's `requires` as
+the clause's own, which the citation supplies.
 
 What a rule variable's type is at load is read off the whole clause, as an operation
 body's variables are: one typing over the clause's variables, in any order of its goals,

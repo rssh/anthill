@@ -1833,6 +1833,48 @@ pub(super) fn own_requirements_carried_by_arguments(kb: &mut KnowledgeBase, call
     })
 }
 
+/// [`own_requirements_carried_by_arguments`] for the SORT half of `callee_op`'s chain — the
+/// `requires` of the sort `owner` that declares it, over the sort's own type parameters: is each
+/// element of each carried by an argument (a parameter of `callee_op` whose declared type writes
+/// the parameter), at a spec some sort provides? `Holder.hsign(x: A, y: A)` under `sort Holder {
+/// sort A = ?; requires WeakOrd[T = A] }` is; the clause can supply its `WeakOrd` from the value
+/// passed at `x`.
+pub(super) fn sort_requirements_carried_by_arguments(
+    kb: &mut KnowledgeBase,
+    callee_op: Symbol,
+    owner: Symbol,
+    subst: &Substitution,
+) -> bool {
+    let Some(op) = lookup_operation_info_full(kb, callee_op) else {
+        return false;
+    };
+    let chain = op_dict_entries(kb, callee_op);
+    let entries = chain.entries()[..chain.sort_len()].to_vec();
+    let params: Vec<(Symbol, Vec<VarId>)> = sort_type_params_as_pairs(kb, owner)
+        .iter()
+        .map(|(sym, _)| (*sym, type_param_global_var(kb, *sym).into_iter().collect()))
+        .collect();
+    // One the call fixes — `Holder[T = Twig].show(twig())` — is decided at the call, refused
+    // where no provider answers it, as an operation body's call of it is; and so is the chain
+    // beside it.
+    let fixed = entries.iter().any(|entry| {
+        let spec = substitute_spec_via_subst(kb, &entry.spec, subst);
+        type_is_ground(kb, &spec)
+    });
+    !entries.is_empty()
+        && !fixed
+        && entries.iter().all(|entry| {
+            let carried = params.iter().all(|(sym, vars)| {
+                !type_mentions_spec_param(kb, &entry.spec, &[*sym], vars)
+                    || op
+                        .params
+                        .iter()
+                        .any(|(_, t)| type_mentions_spec_param(kb, t, &[*sym], vars))
+            });
+            carried && spec_has_any_providers(kb, entry.required_sort)
+        })
+}
+
 /// WI-20260921-28TAT — THE ONE WRITER of an occurrence's op-scoped evidence: build the
 /// dictionaries this call site owes its callee's OWN `requires` slots, and stamp them.
 ///

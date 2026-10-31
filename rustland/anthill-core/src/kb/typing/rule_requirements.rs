@@ -271,7 +271,8 @@ pub(super) fn record_find_dictionary_grounding(kb: &mut KnowledgeBase) -> Vec<Ty
         // one — `reassemble` hands the rebuilt parent back as a NEW node, which the later
         // identity match cannot find: a debug build panicked at load and a release build
         // left the outer call value-dispatched (WI-20260925-PRVA2 (a)).
-        let targets: Vec<WeaveTarget> = weaves.into_iter().map(|(call, out)| (call, vec![out])).collect();
+        let targets: Vec<WeaveTarget> =
+            weaves.into_iter().map(|(call, out)| (call, vec![out], None)).collect();
         if !targets.is_empty() {
             let mut reached = vec![false; targets.len()];
             new_body = new_body.iter().map(|n| weave_calls(n, &targets, &mut reached)).collect();
@@ -364,7 +365,7 @@ pub(super) fn install_rule_provider_dictionaries(kb: &mut KnowledgeBase) -> Vec<
                 }
                 if targets
                     .iter()
-                    .any(|(previous, _)| Rc::ptr_eq(previous, &call))
+                    .any(|(previous, _, _)| Rc::ptr_eq(previous, &call))
                 {
                     errors.push(TypeError::Other {
                         site: TypeError::here(),
@@ -377,7 +378,7 @@ pub(super) fn install_rule_provider_dictionaries(kb: &mut KnowledgeBase) -> Vec<
                         actual: "the call is covered by distinct carrier requirements".into(),
                     });
                 } else {
-                    targets.push((call, vec![out.clone()]));
+                    targets.push((call, vec![out.clone()], None));
                 }
             }
             let spec_node = NodeOccurrence::new_expr(
@@ -450,6 +451,25 @@ pub(crate) fn inferred_requirement_pass(kb: &mut KnowledgeBase) -> crate::kb::oc
 }
 
 const INFERRED_REQUIREMENT_PASS: &str = "anthill.kb.passes.inferred_requirement";
+
+/// The pass that marks a woven call carrying the SLOTS of its callee's chain, one per entry —
+/// the clause's conditions for an operation's `requires` — rather than one dictionary its
+/// member is dispatched through ([`weave_calls`]).
+pub(crate) fn woven_slots_pass(kb: &mut KnowledgeBase) -> crate::kb::occurrence::PassId {
+    kb.register_pass(WOVEN_SLOTS_PASS)
+}
+
+const WOVEN_SLOTS_PASS: &str = "anthill.kb.passes.woven_slots";
+
+/// Does this woven call carry its callee's slots ([`woven_slots_pass`])? Read on a shared
+/// borrow, by the pass name's intern entry, as [`is_inferred_requirement_read`] reads its own.
+pub(crate) fn is_woven_slots_call(kb: &KnowledgeBase, node: &NodeOccurrence) -> bool {
+    node.synthesized_by().is_some_and(|by| {
+        kb.symbols
+            .lookup(WOVEN_SLOTS_PASS)
+            .is_some_and(|s| crate::kb::occurrence::PassId::from_symbol(s) == by)
+    })
+}
 
 /// Did [`infer_rule_body_requirements`] synthesize this body goal? The read-only face of
 /// [`inferred_requirement_pass`], for the checks that run on a shared borrow.
@@ -537,6 +557,7 @@ pub(super) fn infer_rule_body_requirements(kb: &mut KnowledgeBase) {
         return; // no `find_dictionary` — no clause can hold a read
     };
     let pass = inferred_requirement_pass(kb);
+    let slots_pass = woven_slots_pass(kb);
     let labels = ReadLabels {
         out: kb.intern(REQUIREMENT_OUT_LABEL),
         slot: kb.intern(REQUIREMENT_SLOT_LABEL),
@@ -608,7 +629,7 @@ pub(super) fn infer_rule_body_requirements(kb: &mut KnowledgeBase) {
                 {
                     found.push(demand);
                 } else if let Some(demand) =
-                    inferred_slot_demand(kb, &o, *functor, pos_args, named_args)
+                    inferred_slot_demand(kb, rid, &o, *functor, pos_args, named_args)
                 {
                     found_slots.push(demand);
                 }
@@ -657,7 +678,7 @@ pub(super) fn infer_rule_body_requirements(kb: &mut KnowledgeBase) {
             );
             reads_before[gi].push(read);
             for call in calls {
-                targets.push((call, vec![Rc::clone(&out)]));
+                targets.push((call, vec![Rc::clone(&out)], None));
             }
         }
         // A SLOT demand gets one read per slot of the callee's chain, and the call carries
@@ -669,7 +690,7 @@ pub(super) fn infer_rule_body_requirements(kb: &mut KnowledgeBase) {
                 reads_before[gi].push(read);
                 outs.push(out);
             }
-            targets.push((demand.call.call, outs));
+            targets.push((demand.call.call, outs, Some(slots_pass)));
         }
         // ONE pass over the ORIGINAL body, every target matched by identity there. Weaving
         // call after call instead lost any call whose subtree an earlier weave had rebuilt —
@@ -775,7 +796,10 @@ fn inferred_read(
 }
 
 /// A call to weave, by identity in the original body, and the requirements it carries.
-type WeaveTarget = (Rc<NodeOccurrence>, Vec<Rc<NodeOccurrence>>);
+/// A call to weave, by identity in the original body, the requirements it carries, and — for a
+/// call carrying the SLOTS of its chain rather than one dispatch dictionary — the pass that
+/// marks it so ([`woven_slots_pass`]).
+type WeaveTarget = (Rc<NodeOccurrence>, Vec<Rc<NodeOccurrence>>, Option<crate::kb::occurrence::PassId>);
 
 /// Weave every target under `node` in ONE walk of the original tree, a target's own
 /// arguments included — so a woven call nested in another woven call is found either way
@@ -784,8 +808,11 @@ type WeaveTarget = (Rc<NodeOccurrence>, Vec<Rc<NodeOccurrence>>);
 /// The ONE weave, for both producers: WI-1040's covered calls (one DISPATCH dictionary per
 /// spec-op call, which instance it dispatches on) and [`infer_rule_body_requirements`]'
 /// demands (that, or one per SLOT of an ordinary operation's dictionary chain, the clause's
-/// conditions for the callee's own `requires`). `reduce_op_value` tells the two apart by
-/// the callee: a spec op dispatches, anything else takes slots.
+/// conditions for the callee's own `requires`). A slot weave's call is built as a node of the
+/// slot-weave pass, and the resolver tells the two apart by that mark
+/// ([`is_woven_slots_call`]), not by the callee: one operation may be woven either way, a
+/// `require[X]` covering a defaulted member of `X` with one dictionary where the clause's
+/// inferred condition for `Holder.hsign`, a sort's own member, carries its sort's slots.
 ///
 /// ```text
 ///     Desc.describe(?x, ?r)  ⇒  apply_within(fn = Desc.describe, args = (?x, ?r),
@@ -813,10 +840,10 @@ fn weave_calls(
             type_args,
             ..
         },
-    ) = (targets.iter().position(|(t, _)| Rc::ptr_eq(t, node)), expr)
+    ) = (targets.iter().position(|(t, _, _)| Rc::ptr_eq(t, node)), expr)
     {
         reached[i] = true;
-        return node.rebuilt_expr(Expr::ApplyWithin {
+        let woven = Expr::ApplyWithin {
             functor: *functor,
             args: pos_args.iter().map(|a| weave_calls(a, targets, reached)).collect(),
             named_args: named_args
@@ -825,7 +852,15 @@ fn weave_calls(
                 .collect(),
             requirements: targets[i].1.clone(),
             type_args: type_args.clone(),
-        });
+        };
+        return match targets[i].2 {
+            None => node.rebuilt_expr(woven),
+            Some(pass) => {
+                let marked = NodeOccurrence::synthesized_expr(woven, Rc::clone(node), pass, node.owner);
+                marked.carry_typer_stamps_from(node);
+                marked
+            }
+        };
     }
     let mut children: Vec<Rc<NodeOccurrence>> = Vec::new();
     for_each_child(expr, |c| children.push(Rc::clone(c)));
@@ -973,14 +1008,18 @@ fn occ_mentions_var(occ: &Rc<NodeOccurrence>) -> bool {
 /// an unevaluated call), as the same call unwoven does since WI-20260926-CYNPE — increment
 /// 1's `an_unground_woven_call_delays`, and `an_unground_slot_call_delays` for this one.
 ///
-/// Declined: a spec op (a [`inferred_demand`] or a builtin); a builtin or host-implemented
-/// callee; a callee the bridge does not run from a rule body (`functional_relation_arity`
+/// Declined: a call woven with one dispatch dictionary ([`woven_call_dispatches`], an
+/// [`inferred_demand`]); a defaulted member of a sort something provides, which the carrier's
+/// value dispatches, or of the sort the clause is written in, whose `requires` its citation
+/// supplies; a builtin or host-implemented callee; a callee the bridge does not run from a
+/// rule body (`functional_relation_arity`
 /// — a rule-less bodied or host-mapped operation, the host-implemented ones declined
 /// before it); a call the typer stamped;
 /// and a call whose every argument's type is known at load, which the chain is pinned by
 /// already.
 fn inferred_slot_demand(
     kb: &mut KnowledgeBase,
+    rid: crate::kb::RuleId,
     occ: &Rc<NodeOccurrence>,
     functor: Symbol,
     pos_args: &[Rc<NodeOccurrence>],
@@ -989,7 +1028,13 @@ fn inferred_slot_demand(
     if !crate::kb::op_info::operation_is_declared(kb, functor)
         || kb.is_builtin(functor)
         || host_implements(kb, functor)
-        || spec_op_call_parent(kb, functor).is_some()
+        || woven_call_dispatches(kb, functor)
+        || defaulted_spec_op_parent(kb, functor).is_some_and(|s| {
+            // A member of a sort something provides, whose call the carrier's value
+            // dispatches; or of the sort the clause is written in, whose `requires` are the
+            // clause's own, which its citation supplies (068-implementation §6.2).
+            spec_has_any_providers(kb, s) || same_sort_canonical(kb, s, kb.rule_domain(rid))
+        })
         || kb.functional_relation_arity(functor).is_none()
         || occ.classified_apply_target().is_some()
         || !occ.op_dicts().is_empty()

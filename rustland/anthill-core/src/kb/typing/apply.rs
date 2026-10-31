@@ -4950,6 +4950,13 @@ pub(super) fn check_apply_iter(
                     // classifying `dispatch_dict: None` here loaded clean and
                     // died at eval reading the unbound `__req_*`.
                     let mut unsuppliable: Option<Box<RequirementRefusal>> = None;
+                    // Not in a rule written in the callee's own sort, whose parameters are the
+                    // clause's, rigid, and whose `requires` its citation supplies.
+                    let rule_body_callee = (env.enclosing_op().is_none()
+                        && !(env.leaves_own_requirements_to_the_clause()
+                            && env.rule_domain().is_none_or(|d| !same_sort_canonical(kb, d, parent_sym))
+                            && sort_requirements_carried_by_arguments(kb, fn_sym, parent_sym, &subst)))
+                        .then_some(fn_sym);
                     let dispatch_dict = build_concrete_dispatch_dict(
                         kb,
                         // WI-20260921-3G1YT — a RULE-body site, and only then: an
@@ -4957,7 +4964,11 @@ pub(super) fn check_apply_iter(
                         // and decided against the callee's body, which is the right
                         // machinery; a rule body can neither park (the queue is drained
                         // before rule bodies are typed) nor be value-rescued.
-                        env.enclosing_op().is_none().then_some(fn_sym),
+                        // Not where the call's arguments carry the elements of the sort's
+                        // `requires`, at a spec something provides: a call of a rule's own
+                        // term leaves those to its clause, which supplies them as slots of the
+                        // woven call, as its operation's own `requires` is left.
+                        rule_body_callee,
                         &held_views,
                         &subst,
                         parent_sym,
