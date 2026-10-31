@@ -3,9 +3,9 @@
 - id: WI-20261013-R1W5A-068-c1c-a-call-or-a-binder
 - created: 2026-10-13T08:03:19Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-10-13T08:03:19Z
+- status_at: 2026-10-31T05:26:47Z
 
 - acceptance: cargo-test
 
@@ -54,4 +54,8 @@ DECIDED (user, 2026-10-23) AND BUILT: A FUNCTION A RULE HANDS OVER IS HELD TO IT
 ### 2026-10-23T17:05:13Z — feedback — claude
 
 BOTH DONE IN THIS TICKET (user, 2026-10-23: "do both in R1W5A"). (1) A SIDE OF `=`/`<=>` THAT HOLDS A LAMBDA GIVES THE OTHER SIDE ITS TYPE in the clause typing (`LatePosition::LambdaValue`, typed by the operation-body typer once the clause types what the lambda reads, as a dot's value is; a call's side is its result's): `?f <=> (lambda () -> now()), applies(?f, ?r)` and `?l <=> [lambda () -> now()], holds(?l, ?r)` are refused, and `rule giveF(?f) :- ?f <=> (lambda () -> now())` publishes its column, so `giveF(?f), applies(?f, ?r)` is refused at `applies` — not at `giveF`: a relation whose column already holds the function can apply none (its clause would be refused), so it is not handed it. (2) A VALUE OF A DATA SORT THAT HOLDS SUCH A FUNCTION is read through the sort's fields and the type's arguments (`effects_held`), a field's row written over the sort's own parameter at the argument the type gives it: `?b <=> box(f: lambda () -> now()), holds(?b, ?r)`, `?b <=> box2(f: …)` over `effects R = ?`, and `rule r(?r, ?b: Box2[R = {Clock}]) :- holds(?b, ?r)` are refused; the pure twins load. Back-outs in the test file's ledger; full gate, corpus census and families green. FOUND, pre-existing, not this ticket's: bare at a side of `<=>`, `lambda () -> now()` is read as the arrow term `arrow(lambda, now())`, so `?f <=> lambda () -> now()` binds `?f` to a term, not a function (parenthesized, and in a call's argument, it is a lambda).
+
+### 2026-10-31T05:26:45Z — feedback — claude
+
+LAST PART BUILT (e10e60ea, 2026-10-31), with its last dependency WI-20261023-6Q43W. Found there and fixed in this ticket's scope: in a rule body a nullary operation's name written alone at a function-typed parameter was refused, "expected () -> Int64, got Int64", where the operation-body twin `applyThunk(seven)` answers 7. The walk marks it written alone, as an operation body's is; the clause typing leaves such an argument to the operation-body typer for a call typed whole (Fragment, Checked, BodyLessSpecOp), and the evaluator applies the typer's stored reference. Rows answered: at an arrow, an alias, `Function[…]`, a labelled parameter (`result: ?r` too) and a row parameter, 7 or 8 as the operation-body twins; `Error.reify(raiseNow, ?r)` answers `err(boom(why: "now"))`, as its lambda twin does (9WVT7's row moved to the answering repairs); the effectful `stampN` there is refused for `Clock` by this ticket's row rule; `seven()` with parentheses is no function; elsewhere the name is its call. Also fixed: the rule-body goal `q(t: seven)` on a field of type `Term` meets `fact q(t: seven)`. Left: a relation's function-typed column reads the call (refused in a rule body, undecided in a query). Rows in wi_6q43w_nullary_operation_name_test; spec sentence in the rule-body evaluation section; 068-implementation note. Every dependency delivered.
 
