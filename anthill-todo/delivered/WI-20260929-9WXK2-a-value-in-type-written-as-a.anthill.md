@@ -3,9 +3,9 @@
 - id: WI-20260929-9WXK2-a-value-in-type-written-as-a
 - created: 2026-09-29T16:03:45Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-29T16:03:45Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-10-31T06:01:09Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -20,4 +20,8 @@ A VALUE-IN-TYPE WRITTEN AS A NAME IN A PROVISION BINDING IS A SORT REFERENCE THE
 ### 2026-09-29T20:18:10Z — feedback — user
 
 ADDENDUM from WI-20260929-WBHTM: the divergence also reaches a `requires`. `operation size() -> Int64 = 3; sort User { requires Store[State = Buf[T = Int64, N = size]]; operation via(s: Buf[T = Int64, N = size]) -> Int64 = Store.peek(s) }` no longer loads since WBHTM (no provider or caller needed to see it): the defer-match now compares the call's binding, lowered from its type as `denoted(Ref(size))`, with the entry's `Ref(size)`, and the σ verdict refutes the cover — refused "requirement `Store[State = Buf[…, N = size]]` cannot be supplied … `Buf` provides no `Store`", naming the requirement the sort itself declares. It covered before only vacuously, while the binding was dropped; the literal `N = 3` twin loads. This ticket's planned fix (the binding path gets the type position's value-name classification, `sort_inst_to_value`'s loop included, which `requires` shares) closes it — add a `requires` row to the ACCEPTANCE: the program loads and, with a caller and a provider at `N = size`, the call runs through the requirement.
+
+### 2026-10-31T06:01:08Z — feedback — claude
+
+DELIVERED (d51288f5, 2026-10-31). REPRODUCED first on d9b10fd5, every shape the ticket names: a correct member at `provides Store[State = Buf[T = Int64, N = size]]` refused "parameter 1 is `Buf[T = Int64, N = size]` where the spec's is `Buf[T = Int64, N = size]`"; the same for an operation bound by name, a spec alias fixing the binding, a nested `Modify[slot]` over a zero-argument operation, a provision condition and the addendum's sort `requires` ("`Buf` provides no `Store`"); a top-level `provides Sized[N = size]` loaded and `Sized[N = size].width()` failed at run time, "operation has no body". The literal twins ran. TWO PARTS OF THE TICKET WERE OUT OF DATE: the nullary-constructor `Modify` target (ambient places retired 2026-10-20, a constructor in the bracket is its type), and `sort_view_substitution`, replaced by `spec_binding_texts`, which with the other op-binding readers already decides by the slot (WI-974) and needed no change. FIX (kb/load.rs): one test for "a name written in a type is a value" (`names_a_value_in_a_type`), read by the type position and by `sort_binding_to_value` at a declared type parameter (`BindingSlot`): the nested recursion, the alias-parameter split, `record_alias_target`, and the top-level loop of `sort_inst_to_value`, which classifies each key; at an operation's slot (`peek = bufPeek`) the name stays the operation. FOUND BY /code-review (high) and fixed: an operation's own `requires` is lowered from the clause term, so with the provision half alone `operation via() -> Int64 requires Sized[N = size] = 7` over `provides Sized[N = size]`, which ran (7), was refused; `contract_value_binding` reads the name the same way there, and an operation-level `requires Store[State = Buf[…, N = size]]`, refused before, now runs. Tests: wi_9wxk2_value_name_in_binding_test (17 rows; three parts backed out present-but-wrong, ledger in its module doc — the value name fails 14, the slot read as a type parameter everywhere fails the stdlib load, the operation requires fails 3). Full workspace green via rustland/scripts/test.sh (11281 passed, 17 ignored); node-carrier and both other load recipes green on the new and F3FYJ/WBHTM rows; families unchanged; scaland sbt testFull green (792 + 47).
 
