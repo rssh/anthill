@@ -1802,6 +1802,37 @@ pub(super) fn own_requirements_fixed_at(
         })
 }
 
+/// Is every element of `callee_op`'s own `requires` that the call leaves open carried by an
+/// argument — named by a type parameter that some parameter's declared type writes, or a
+/// projection off a parameter — at a spec some sort provides? Then the clause can supply it: the
+/// value passed there carries it when the goal runs, and a citation can route one. One no
+/// parameter writes — `mk[B]() requires WeakOrd[T = B]` — no value can, and is the call's to
+/// supply, as in an operation body: refused there unless the provider facts decide it. So is
+/// one at a spec nothing provides, which no value could derive (`stampOf[B](x: B) requires
+/// Stamp[T = B]` beside no provider of `Stamp`). Asked of a requirement the call does not fix
+/// ([`own_requirements_fixed_at`]).
+pub(super) fn own_requirements_carried_by_arguments(kb: &mut KnowledgeBase, callee_op: Symbol) -> bool {
+    let Some(op) = lookup_operation_info_full(kb, callee_op) else {
+        return false;
+    };
+    let chain = op_dict_entries(kb, callee_op);
+    let entries = chain.op_entries().to_vec();
+    entries.iter().all(|entry| {
+        let carried = op.type_params.iter().all(|(sym, var)| {
+            let vars: Vec<VarId> = match var {
+                Var::Global(v) => vec![*v],
+                _ => Vec::new(),
+            };
+            !type_mentions_spec_param(kb, &entry.spec, &[*sym], &vars)
+                || op
+                    .params
+                    .iter()
+                    .any(|(_, t)| type_mentions_spec_param(kb, t, &[*sym], &vars))
+        });
+        carried && spec_has_any_providers(kb, entry.required_sort)
+    })
+}
+
 /// WI-20260921-28TAT — THE ONE WRITER of an occurrence's op-scoped evidence: build the
 /// dictionaries this call site owes its callee's OWN `requires` slots, and stamp them.
 ///

@@ -1268,6 +1268,31 @@ Desc[T = {Red}]`, called from an operation) loaded and answered nothing at run t
 refusal arm had no account for a requirement the call fixes whole and no provision answers, and
 parked nothing. It parks that account now, the one a rule body's call gets.
 
+### 6.15 C1d, an operation's own `requires` in every position (WI-20261013-RYDNV, third part, 2026-10-31)
+
+The conditional and refused classes of `requirement-channel.md` §5.2 for an operation's own
+`requires`, which no longer depend on where the call is written.
+
+- **Every call of a rule's own term leaves an unfixed requirement to the clause**
+  (`TypingEnv::leaves_own_requirements_to_the_clause`, the fragment's and an `=` operand's
+  alike): `?c = Util.sign(?a, ?b)` and `PartialEq.eq(Util.sign(?a, ?b), ?c)` are woven as
+  `Util.sign(?a, ?b, ?c)` is. They were refused, "this is a RULE-body goal, and nothing in the
+  clause determines…" (WI-20260922-0DK3H's rule, which P7VP4's inference had already lifted
+  for the goal and `<=>` spellings). What `=` answers over such an operand is `=`'s: undecided
+  (WI-20260926-DSEXA's item 3).
+- **A requirement no argument carries, or at a spec nothing provides, is the call's**
+  (`own_requirements_carried_by_arguments`): its dictionaries are built as an operation body's
+  are, and refused there. `Mk.mk(?c)` over `mk[B]() requires WeakOrd[T = B]` is refused in every
+  position (it loaded and answered from a body that never reads the slot); `stampOf(?x, ?n)`
+  beside no provider of `Stamp` too (it loaded at goal position and was declined there).
+- **A written `require[…]`'s witness may stand in a value position** (`calls_run_with_their_goal`,
+  the inference's own walk): `require[Conv[A = Meters, B = String]], ?r <=> Conv.tag("km")`
+  answers 3, where it was refused "no body call … to ground the requirement".
+
+Rows moved by design: `wi842`'s `=`-spelled tie (now a condition, the goal spelling answering
+`Leaf`'s 1 and undecided at the `Twig` tie), `wi_n31xx`'s `TypeValue` forward (the goal spelling
+answers `Cell[V = Int64]`), P7VP4's operand and no-argument rows.
+
 ## 7. Testing
 
 Per CLAUDE.md: each ticket's rows live in one test module, driven by value with its back-outs run

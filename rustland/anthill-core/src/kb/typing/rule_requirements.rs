@@ -878,6 +878,47 @@ fn woven_goal_has_reader(
     relational || bool_view
 }
 
+/// The calls of `body` that run when their goal does, in body order: each top-level goal, and
+/// the calls in its value positions, reached through the argument lists of calls and data
+/// constructors ([`demand_walk_enters`]) — the positions a read placed before the goal can
+/// serve. The walk [`infer_rule_body_requirements`] makes for an inferred read, asked of a
+/// written one's witness.
+pub(super) fn calls_run_with_their_goal(
+    kb: &KnowledgeBase,
+    body: &[Rc<NodeOccurrence>],
+) -> Vec<Rc<NodeOccurrence>> {
+    fn walk(
+        kb: &KnowledgeBase,
+        node: &Rc<NodeOccurrence>,
+        top: bool,
+        out: &mut Vec<Rc<NodeOccurrence>>,
+    ) {
+        let Some(expr) = node.as_expr() else { return };
+        out.push(Rc::clone(node));
+        if !top && !demand_walk_enters(expr) {
+            return;
+        }
+        let mut children: SmallVec<[Rc<NodeOccurrence>; 8]> = SmallVec::new();
+        for_each_child(expr, |c| children.push(Rc::clone(c)));
+        let pos = if top {
+            BodyPos::Goal(GoalCommit::Top)
+        } else {
+            BodyPos::Value
+        };
+        let positions = child_body_positions(kb, expr, pos, children.len());
+        for (child, p) in children.iter().zip(positions) {
+            if p == BodyPos::Value {
+                walk(kb, child, false, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for goal in body {
+        walk(kb, goal, true, &mut out);
+    }
+    out
+}
+
 /// Does the demand walk of [`infer_rule_body_requirements`] look inside this DATA-position
 /// node — is it evaluated where the goal holding it runs, and does it bind nothing? A call's
 /// arguments and a data constructor's fields are; a lambda, `let`, `match` or `if` is not.

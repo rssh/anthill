@@ -24,6 +24,18 @@
 //!   * a requirement the call fixes refused with the rule-body account that says nothing fixes
 //!     it — `wi_gfs6a`'s q2 and fwd rows (their refusal does not say no impl provides it).
 //!
+//!   * the witness of a written `require[…]` read off the body's goals alone
+//!     (`calls_run_with_their_goal`) — `a_requires_witness_in_a_value_slot_grounds_it`;
+//!   * the provider question left out of `own_requirements_carried_by_arguments` —
+//!     `a_requirement_at_a_spec_nothing_provides_is_refused_in_every_position`;
+//!   * that function answering yes whatever the parameters write — P7VP4's
+//!     `a_requirement_no_argument_names_is_refused_in_every_position`;
+//!   * an `=` operand's call checked for its own `requires` as an operation body's again
+//!     (`leaves_own_requirements_to_the_clause` the fragment's alone) — P7VP4's
+//!     `an_operations_own_requires_is_its_clauses_condition_in_every_position`, `wi842`'s
+//!     `a_rule_body_tie_is_decided_when_the_goal_runs_on_both_arms` and `wi_n31xx`'s
+//!     `a_rule_body_forward_is_the_clauses_condition` (each refused at load).
+//!
 //! Outside this file, measured on the full gate: a parameter read through a projection off an
 //! argument (`get(c: C) -> c.T`) counted as open — three `wi_0rp29` rows, whose witnesses are
 //! held to agree on the member where the projection is read, get this file's refusal in place
@@ -384,5 +396,51 @@ fn a_requirement_at_a_projection_the_clause_leaves_open_is_its_condition() {
     let mut kb = crate::common::load_kb_with(&src);
     for rule in ["q", "qv"] {
         assert_eq!(crate::common::one_definite_int(&mut kb, &format!("{ns}.{rule}")), Some(7), "`{rule}`");
+    }
+}
+
+// ── the class read in every position ──────────────────────────────────────────────────────
+
+/// A `require[…]`'S WITNESS MAY STAND IN A VALUE SLOT: `require[Conv[A = Meters, B = String]],
+/// ?r <=> Conv.tag("km")` answers `Meters`' 3, as its goal spelling does. The witness scan
+/// read the clause's top-level goals alone, so the clause was refused "no body call … to
+/// ground the requirement". FAILS with that scan restored (`calls_run_with_their_goal` read
+/// as the body's goals): refused.
+#[test]
+fn a_requires_witness_in_a_value_slot_grounds_it() {
+    let ns = "rydnv.valuewitness";
+    let src = program(
+        ns,
+        &[AT_A],
+        "  rule t(?r) :- require[Conv[A = Meters, B = String]], ?r <=> Conv.tag(\"km\")",
+    );
+    let mut kb = crate::common::load_kb_with(&src);
+    assert_eq!(crate::common::one_definite_int(&mut kb, &format!("{ns}.t")), Some(3));
+}
+
+/// A REQUIREMENT AT A SPEC NOTHING PROVIDES IS REFUSED IN EVERY POSITION: no value could
+/// derive it, so it is no condition of the clause. `stampOf(?x, ?n)` over `stampOf[B](x: B)
+/// requires Stamp[T = B]`, beside no provider of `Stamp`, loaded at goal position and was
+/// declined by the inference, while `?n = stampOf(?x)` was refused. FAILS with the provider
+/// question left out of `own_requirements_carried_by_arguments`: both load.
+#[test]
+fn a_requirement_at_a_spec_nothing_provides_is_refused_in_every_position() {
+    let decl = r#"
+  sort Stamp
+    sort T = ?
+    operation stamp() -> Int64
+  end
+  operation stampOf[B](x: B) -> Int64 requires Stamp[T = B] = Stamp.stamp[T = B]()
+"#;
+    for (spelling, clause) in [
+        ("goal", "  rule names(?x, ?n) :- stampOf(?x, ?n)"),
+        ("operand", "  rule names(?x, ?n) :- ?n = stampOf(?x)"),
+        ("value", "  rule names(?x, ?n) :- ?n <=> stampOf(?x)"),
+    ] {
+        crate::common::assert_refused_naming(
+            &crate::common::load_errors_of(&program("rydnv.noprovider", &[decl], clause)),
+            &["rydnv.noprovider.Stamp", "cannot be supplied for call to `rydnv.noprovider.stampOf`"],
+            spelling,
+        );
     }
 }

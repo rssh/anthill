@@ -236,9 +236,12 @@ pub(super) fn rewrite_find_dictionary_goal(
         witness_carrier_param.and_then(|p| written_carrier_sort(kb, spec_arg, p, spec_canon));
 
     // The candidates, in body order: a body call to one of spec X's OWN operations whose
-    // arguments can ground the instance.
+    // arguments can ground the instance — a goal, or a call in a goal's value positions, which
+    // runs when the goal does ([`calls_run_with_their_goal`]): `?r <=> Conv.tag("km")` is the
+    // witness its goal spelling `Conv.tag("km", ?r)` is.
+    let candidates = calls_run_with_their_goal(kb, body_nodes);
     let mut direct: Vec<usize> = Vec::new();
-    for (i, cand) in body_nodes.iter().enumerate() {
+    for (i, cand) in candidates.iter().enumerate() {
         let Some(Expr::Apply { functor, .. }) = cand.as_expr() else {
             continue;
         };
@@ -280,7 +283,7 @@ pub(super) fn rewrite_find_dictionary_goal(
         let named: Vec<usize> = direct
             .iter()
             .copied()
-            .filter(|i| match body_nodes[*i].as_expr() {
+            .filter(|i| match candidates[*i].as_expr() {
                 Some(Expr::Apply {
                     functor,
                     pos_args,
@@ -310,7 +313,7 @@ pub(super) fn rewrite_find_dictionary_goal(
             pos_args,
             named_args,
             ..
-        }) = body_nodes[i].as_expr()
+        }) = candidates[i].as_expr()
         else {
             continue;
         };

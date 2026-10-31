@@ -1326,27 +1326,24 @@ fn a_rule_goal_passes_its_callee_no_dictionary() {
     );
 }
 
-/// AN OPERATION'S OWN `requires` IS A CONDITION IN A VALUE SLOT OF `<=>`, AND A LOAD ERROR AS
-/// AN OPERAND OF `=`. `?c <=> Util.sign(?a, ?b)` is woven like the goal form and answers
-/// through the caller's dictionary; FAILS with the inference backed out (`-1, -1, -1`).
+/// AN OPERATION'S OWN `requires` IS A CONDITION OF THE CLAUSE IN EVERY POSITION: `?c <=>
+/// Util.sign(?a, ?b)` is woven like the goal form and answers through the caller's dictionary;
+/// FAILS with the inference backed out (`-1, -1, -1`). As an operand of `=` — `?c =
+/// Util.sign(?a, ?b)`, `PartialEq.eq(Util.sign(?a, ?b), ?c)` — the call gets the same
+/// condition, and so it does under the introducer (WI-20261013-RYDNV, one classification per
+/// call): it was refused there, for a requirement the clause's text does not determine,
+/// while the goal and `<=>` spellings got the condition. What `=` answers over such an operand
+/// is `=`'s: at literals the clause loads and its `=` is undecided, `?c` free — `=` reduces no
+/// operand that calls an operation with `requires` (WI-20260926-DSEXA's item 3) — and so is a
+/// citation's answer of the woven `=` spelling.
 ///
-/// The same call as an operand of `=` is refused, whatever the clause writes beside it. An
-/// ordinary operation at goal position is a subgoal and in a value slot a data term, neither
-/// type-checked; `=` is `PartialEq.eq`, a spec operation, which the rule-body typer checks
-/// with its arguments (`call_dispatch_shape`), and the requirement check of an operation
-/// body then refuses a requirement the clause's text does not determine, before the
-/// inference runs. A `require[WeakOrd[…]]` does not discharge it — a bracket holds what its
-/// spec REQUIRES, not the spec (`scope_contract_covers_dep`); the refusal advised that
-/// bracket until this ticket ran it, and no longer does — nor does the introducer. A head
-/// typed `Int64` is an argument whose type is known since WI-20261013-WF14Z: the clause reads
-/// the head's bound. Of the two repairs it still names, an argument whose type is known loads
-/// (`lit`) and then is not reduced: an operand of `=` that calls an operation with
-/// `requires` stays a term and the goal is undecided (WI-20260926-DSEXA's item 3). What
-/// answers is the call written as the `<=>` operand above, or as a goal of its own.
-/// One classification of a rule-body call for the typer and the inference is
-/// WI-20260926-7D48J's; the refusals and `lit` pass either way and turn when those land.
+/// A `require[WeakOrd[T]]` does not discharge the call's own requirement — a bracket holds
+/// what its spec REQUIRES, not the spec (`scope_contract_covers_dep`) — and is refused as one
+/// no body call grounds, in every spelling (this one's goal twin as well); the refusal advised
+/// that bracket until P7VP4 ran it, and no longer does. Beside two typed head bindings a
+/// written `require[WeakOrd[T = Int64]]` names no one of them, refused for its own reason.
 #[test]
-fn an_operations_own_requires_is_inferred_in_a_value_slot_and_refused_as_an_eq_operand() {
+fn an_operations_own_requires_is_its_clauses_condition_in_every_position() {
     let ns = "wip7vp4.operand";
     let woven = format!(
         "  rule r(?a, ?b, ?c) :- ?c <=> Util.sign(?a, ?b)\n  \
@@ -1365,21 +1362,35 @@ fn an_operations_own_requires_is_inferred_in_a_value_slot_and_refused_as_an_eq_o
         rows.len() == 1 && !rows[0].1 && matches!(rows[0].0, Value::Var(_)),
         "at literals the clause loads and its `=` is undecided, `?c` free: {rows:?}",
     );
-    let errs = refused_per_clause(
-        "wip7vp4.operandno",
-        "",
-        &[
-            "  rule r1(?a, ?b, ?c) :- ?c = Util.sign(?a, ?b)\n",
-            "  rule r2(?a, ?b, ?c) :- PartialEq.eq(Util.sign(?a, ?b), ?c)\n",
-            "  rule r3(?a, ?b, ?c) :- require[WeakOrd[T]], ?c = Util.sign(?a, ?b)\n",
-            "  rule r5[A](?a: A, ?b: A, ?c) :- WeakOrd[A], ?c = Util.sign(?a, ?b)\n",
-        ],
-        "Util.sign",
-    );
-    assert!(
-        !errs.iter().any(|e| e.contains("Declare `require[")),
-        "no bracket holds an operation's own requirement, and none is advised: {errs:?}",
-    );
+    let ns = "wip7vp4.operandeq";
+    let kb = crate::common::load_kb_with(&fix_program(
+        ns,
+        "  rule r1(?a, ?b, ?c) :- ?c = Util.sign(?a, ?b)\n  \
+           rule r2(?a, ?b, ?c) :- PartialEq.eq(Util.sign(?a, ?b), ?c)\n  \
+           rule r5[A](?a: A, ?b: A, ?c) :- WeakOrd[A], ?c = Util.sign(?a, ?b)\n",
+    ));
+    for rule in ["r1", "r2", "r5"] {
+        let woven = kb
+            .rule_ids_by_qn(&format!("{ns}.{rule}"))
+            .into_iter()
+            .any(|rid| kb.rule_body_nodes(rid).iter().any(holds_woven_call));
+        assert!(woven, "`{rule}`: the operand's call carries the clause's condition");
+    }
+    for (spelling, clause) in [
+        ("operand", "  rule r3(?a, ?b, ?c) :- require[WeakOrd[T]], ?c = Util.sign(?a, ?b)\n"),
+        ("goal", "  rule r3(?a, ?b, ?c) :- require[WeakOrd[T]], Util.sign(?a, ?b, ?c)\n"),
+    ] {
+        let errs = crate::common::load_errors_of(&fix_program("wip7vp4.operandreq", clause));
+        crate::common::assert_refused_naming(
+            &errs,
+            &["expected a body call to one of `WeakOrd`'s operations"],
+            spelling,
+        );
+        assert!(
+            !errs.iter().any(|e| e.contains("Declare `require[")),
+            "no bracket holds an operation's own requirement, and none is advised: {errs:?}",
+        );
+    }
     // Over a head typed `Int64` the call is no longer this refusal's: the head's bound
     // reaches its element since WI-20261013-WF14Z ([`a_member_of_a_sort_that_requires_is_refused_at_rule_variables`]
     // runs that clause). Beside two such bindings a written `require[WeakOrd[T = Int64]]`
@@ -1470,26 +1481,23 @@ fn a_member_of_a_sort_that_requires_is_refused_at_rule_variables() {
     );
 }
 
-/// A REQUIREMENT NO ARGUMENT NAMES LOADS AT GOAL POSITION. `mk`'s `WeakOrd[T = B]` is at a
-/// parameter no argument fixes: an operation body calling `Mk.mk()` is refused for the
-/// unconstrained `B`. At goal position an ordinary operation is a subgoal the rule-body
-/// typer does not type, so the clause loads; it gets no condition — the inference reads one
-/// only where some argument's type is unknown, and there is no argument — and it answers from
-/// a body that never reads the slot. Passes either way; a goal-position call typed as its
-/// operand twin is, WI-20260926-7D48J's, makes this a load error.
+/// A REQUIREMENT NO ARGUMENT NAMES IS REFUSED, IN EVERY POSITION (WI-20261013-RYDNV, the
+/// refused class): `mk`'s `WeakOrd[T = B]` is at a parameter no argument carries and nothing
+/// fixes, so no value could derive it and no condition of the clause can be read for it —
+/// refused at the goal and in a value slot, as an operation body calling `Mk.mk()` is (there
+/// for the unconstrained `B` itself). It loaded, got no condition, and answered from a body
+/// that never reads the slot. FAILS with the requirement left to the clause whether or not an
+/// argument carries it (`own_requirements_carried_by_arguments`): both load and answer 5.
 #[test]
-fn a_requirement_no_argument_names_loads_at_goal_position() {
+fn a_requirement_no_argument_names_is_refused_in_every_position() {
     let decl = "  sort Mk\n    operation mk[B]() -> Int64 requires WeakOrd[T = B] = 5\n  end\n";
-    let mut kb = crate::common::load_kb_with(&fix_program(
-        "wip7vp4.unanchored",
-        &format!("{decl}  rule five(?c) :- Mk.mk(?c)\n"),
-    ));
-    let woven = kb
-        .rule_ids_by_qn("wip7vp4.unanchored.five")
-        .into_iter()
-        .any(|rid| kb.rule_body_nodes(rid).iter().any(holds_woven_call));
-    assert!(!woven, "no argument's type is unknown at load: no condition, no weave");
-    assert_eq!(crate::common::one_definite_int(&mut kb, "wip7vp4.unanchored.five"), Some(5));
+    for (spelling, clause) in [("goal", "  rule five(?c) :- Mk.mk(?c)\n"), ("value", "  rule five(?c) :- ?c <=> Mk.mk()\n")] {
+        crate::common::assert_refused_naming(
+            &crate::common::load_errors_of(&fix_program("wip7vp4.unanchored", &format!("{decl}{clause}"))),
+            &["wip7vp4.unanchored.Mk.mk", "nothing in the clause determines which `anthill.prelude.WeakOrd`"],
+            spelling,
+        );
+    }
     let errs = crate::common::load_errors_of(&fix_program(
         "wip7vp4.unanchoredop",
         &format!("{decl}  sort User\n    operation use() -> Int64 = Mk.mk()\n  end\n"),

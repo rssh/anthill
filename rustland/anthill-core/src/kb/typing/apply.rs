@@ -5065,11 +5065,13 @@ pub(super) fn check_apply_iter(
                     // slot may forward from the caller's own op slots, which is how an
                     // op-scoped requirement relays hop to hop — whereas the instance
                     // dict above must not (see `TypingEnv::enclosing_chain`). In a call of
-                    // a rule's own term only where the call's types fix every one of them:
-                    // such a call is decided at load, as in an operation body. One left open
-                    // is a condition of the clause, which supplies it.
+                    // a rule's own term only where the call's types fix every one of them —
+                    // such a call is decided at load, as in an operation body — or where one
+                    // is open that no argument carries, which no condition of the clause could
+                    // derive. One an argument carries is the clause's to supply.
                     if !env.leaves_own_requirements_to_the_clause()
                         || own_requirements_fixed_at(kb, fn_sym, &subst, &projection_receivers)
+                        || !own_requirements_carried_by_arguments(kb, fn_sym)
                     {
                     stamp_op_scoped_dicts(
                         kb,

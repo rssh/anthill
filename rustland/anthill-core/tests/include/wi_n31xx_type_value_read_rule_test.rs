@@ -155,60 +155,19 @@ end
     assert_eq!(eval_type(src, "test.n31xx.two.ask"), "Cell[V = Int64]");
 }
 
-/// …AND A MIDDLE LEVEL THAT DROPS THE CLAUSE IS REFUSED AT THE CALL — the FORWARD half
-/// of the rule, which the read half above does not cover.
-///
-/// `mid[U](y: U) = tyOf(y)` reads nothing; it hands its own rigid to an operation that
-/// `requires TypeValue[T = U]`, holding no evidence and having declared none. Without
-/// this the rule would cover the READ and not the FORWARD, and a signature could still
-/// quietly depend on a type it promises nothing about — parametricity half enforced.
-///
-/// WHY IT IS REFUSED RATHER THAN LEFT AS AN UNFILLED SLOT. `build_op_scoped_dicts` makes
-/// an unsuppliable op slot a SILENT ABSENCE on purpose, and its own comment gives the
-/// measured reason: 29 stdlib bodies declare a chain and never read it, so a slot nothing
-/// fills costs them nothing. `TypeValue` can never be one of those — `type_value()` is
-/// NULLARY, so no argument and no receiver names the type and the dispatching dictionary
-/// is the ONLY carrier of the answer (WI-20260919-HXGXF's fact 1). A body holding this
-/// evidence necessarily reads it through the slot, so an unfilled one is either an
-/// eval-time `Internal` death no handler can catch or a clause that was pure noise.
-///
-/// AT THE CALL, NOT AT THE DECLARATION: `mid`'s signature is legal on its own, and it is
-/// only this call that needs what `mid` has not got. The refusal is located there.
-///
-/// THE SECOND HALF WAS THIS LEG'S NARROWNESS CONTROL AND IS NOW ITS SUBSUMPTION ROW.
-/// The same forward shape over a plain user spec — `requires TT[T = B]`, nothing to do
-/// with 065 — used to LOAD, because this leg said only that `TypeValue` evidence is
-/// never benignly absent and not that operation-level requirement propagation was
-/// checked in general. WI-20260920-XSVCS closed that wider gap: a carrier that is the
-/// CALLER's own type parameter is unfillable whatever the spec, so the plain-spec shape
-/// is now refused too — parked, and reported because `tyOf`'s body reads the slot.
-///
-/// THE TWO ARMS ARE NOW ONE (WI-20260921-3G1YT). 065's arm was keyed on
-/// `dep.required_sort == anthill.reflect.TypeValue` and ran first, so this half used to
-/// carry its own message; that hardcode is deleted and both halves take XSVCS's, which
-/// says the same thing for ANY spec and additionally names where to declare the evidence.
-/// See `wi_xsvcs_op_requires_forward_test` for the plain-spec shape driven to an answer,
-/// and [`a_rule_body_forward_is_refused_too`] for the site that hardcode really covered.
-/// WI-20260921-3G1YT — THE SAME FORWARD FROM A **RULE BODY**, where there is no
-/// enclosing operation. Added because its ABSENCE is what made deleting 065's arm look
-/// safe: with `type_value_forward_unsuppliable` disabled the suite is 6385 passed / 2
-/// FAILED and both failures are about MESSAGE TEXT, so the corpus said "this arm decides
-/// no verdict". It does decide one — here — and **a refusal that becomes silent fails no
-/// test**, which is why nothing caught it.
-///
-/// WHY THIS SITE IS THE ONE THE OTHER ARM CANNOT REACH: `caller_rigid_carrier` is
-/// `enclosing_op`-scoped, and a rule body has no enclosing operation. WI-945's note says
-/// a rule-body goal is deliberately NOT refused in general — it reaches eval through the
-/// SLD bridge, which resolves dictionaries from concrete argument values and suspends
-/// when it cannot. `TypeValue` is the exception, because 065 §1's lowering synthesizes
-/// the read and the slot is therefore not optional.
-///
-/// DRIVEN BY BACKING OUT: with the arm removed this program LOADS CLEAN (measured: 4203
-/// facts, 431 rules) and dies at eval on an unbound `__req_typevalue`. This row is the
-/// only one in the workspace that fails on that removal.
+/// A RULE BODY THAT FORWARDS A TYPE NOTHING FIXES INTO A `TypeValue` READER — `tyOf(?x)` over
+/// `tyOf[B](x: B) requires TypeValue[T = B]`, with `?x` untyped — owes the reader a
+/// `TypeValue` the argument's value carries, which the clause derives when the goal runs.
+/// WI-20261013-RYDNV decides the call in an operand of `=` as the same call written as a
+/// goal: a condition of the clause in both. The goal spelling answers `Cell[V = Int64]` at
+/// `1`; the `=` spelling is undecided, `=` reducing no operand that calls an operation with
+/// `requires` (WI-20260926-DSEXA's item 3). Before RYDNV the `=` spelling was refused at load
+/// as an unevidenced forward (this row's old subject, 065 §1's synthesized read), while the
+/// goal spelling loaded. A read nothing could ever supply is still refused: a spec no sort
+/// provides, below ([`a_user_typeclass_of_the_same_shape_is_refused_too`]).
 #[test]
-fn a_rule_body_forward_is_refused_too() {
-    let errs = load_errors(
+fn a_rule_body_forward_is_the_clauses_condition() {
+    let mut kb = crate::common::load_kb_with(
         r#"
 namespace test.n31xx.rulebody
   import anthill.prelude.{Cell, Int64, Type}
@@ -217,19 +176,16 @@ namespace test.n31xx.rulebody
   operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = Cell[V = B]
 
   rule names(?x, ?t) :- ?t = tyOf(?x)
+  rule asGoal(?x, ?t) :- tyOf(?x, ?t)
+  rule viaEq(?t) :- names(1, ?t)
+  rule viaGoal(?t) :- asGoal(1, ?t)
 end
 "#,
     );
-    assert!(
-        !errs.is_empty(),
-        "a rule body forwarding an unevidenced rigid into a TypeValue reader must be \
-         refused at load, not left to die on an unbound slot at eval"
-    );
-    assert!(
-        errs.iter().any(|e| e.contains("anthill.reflect.TypeValue")
-            && e.contains("test.n31xx.rulebody.tyOf")),
-        "the refusal must name the evidence and the callee; got {errs:#?}"
-    );
+    let goal = crate::common::shown_rows(&mut kb, "test.n31xx.rulebody.viaGoal");
+    assert_eq!(goal, vec![("Cell[V = Int64]".to_string(), true)], "the goal spelling");
+    let eq = crate::common::query_unary(&mut kb, "test.n31xx.rulebody.viaEq");
+    assert!(eq.len() == 1 && !eq[0].1, "the `=` spelling is undecided; got {eq:?}");
 }
 
 /// WI-20260921-3G1YT — **THE SAME DEFECT AT A USER TYPECLASS, WHICH IS WHY THE RULE IS
@@ -247,9 +203,11 @@ end
 /// `spec_has_value_directed_route` between WI-20260921-3G1YT and WI-20260922-0DK3H, which
 /// deleted that predicate for appealing to what a value might name at fire time.)
 ///
-/// WHICH TESTS FAIL IF THE RULE IS BACKED OUT: this one and
-/// [`a_rule_body_forward_is_refused_too`], the `TypeValue` spelling of the same site.
-/// Both, together, are what says the rule is general rather than one spec's.
+/// WHICH TESTS FAIL IF THE RULE IS BACKED OUT: this one, and — until WI-20261013-RYDNV made
+/// that read the clause's condition, `TypeValue` having providers — the `TypeValue` spelling
+/// of the same site ([`a_rule_body_forward_is_the_clauses_condition`]). The refusal here is
+/// RYDNV's too now: `Stamp` has no provider, so no value could derive the read, and the goal
+/// spelling `stampOf(?x, ?n)` is refused with it.
 #[test]
 fn a_user_typeclass_of_the_same_shape_is_refused_too() {
     let errs = load_errors(
@@ -287,7 +245,7 @@ end
 ///
 /// MEASURED: with `type_value_forward_unsuppliable`'s remaining call site removed, this
 /// program LOADS CLEAN while every other row in the file stays green — the same
-/// silent-refusal shape as [`a_rule_body_forward_is_refused_too`], one channel over.
+/// silent-refusal shape as the op half's, one channel over.
 /// /code-review caught it with this exact probe.
 ///
 /// IT IS NO LONGER SPELLED `TypeValue`. An earlier cut of this ticket left the sort half

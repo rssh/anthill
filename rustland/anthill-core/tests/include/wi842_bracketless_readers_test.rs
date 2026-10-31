@@ -272,47 +272,45 @@ fn a_self_providing_carrier_now_answers_where_it_used_to_tie() {
 /// WI-861 moved the TIED arm onto [`TWIG`] for the reason that constant states: `Leaf` +
 /// `RIVAL` now resolves by rung 2a. The UNTIED arm keeps `Leaf`, so the pair still
 /// differs by exactly one thing — whether anything answers the dispatch.
-/// WI-20260922-0DK3H — **INVERTED, BOTH ARMS, and the second one is the finding.** This
-/// row's subject — a rule-body tie is NOT resolved by first-match — is unchanged and is
-/// still measured, at the HOST entry, by this file's `probe_entity` rows. What is gone is
-/// the rule-body CHANNEL for it, because a rule body no longer reaches value-directed
-/// dispatch at all.
-///
-/// THE TIED ARM was the expected inversion: two `Twig` witnesses disagree (3 vs 5) and
-/// nothing in the clause chooses, so an undecided dictionary is refused where the call is
-/// written instead of delaying into a query that returns nothing.
-///
-/// THE UNTIED ARM INVERTS TOO, AND THAT WAS NOT PREDICTED — it was measured, and the
-/// reason is worth keeping. `Leaf` looks like a sole provider, but `DESC_INSTANCES` also
-/// carries `WrapDesc provides Desc[T = Wrap[A = E]]` with `E` OPEN. Per
-/// [`unique_provider_completion`]'s own rule, a provider that leaves an element abstract
-/// answers at MORE THAN ONE completion and so proves the arguments do not decide: at
-/// `Desc[T = ?]` both `T := Leaf` and `T := Wrap[A = …]` are answerable. The clause
-/// genuinely determines no dictionary, and only the runtime value of `?x` ever did.
-///
-/// SO THE PAIR IS NO LONGER ONE-PROVIDER vs TWO; both arms are refused for the same
-/// reason, and the arm that still separates them lives at the host entry where a VALUE is
-/// in hand. Asserted here as one refusal each so a future change that admits either is
-/// loud.
+/// WI-20260922-0DK3H — **INVERTED, BOTH ARMS** — and inverted back by WI-20261013-RYDNV, which
+/// decides a call in an operand of `=` as the same call written as a goal: `Holder.probe`'s
+/// requirement at the type of `?x`, which the clause leaves open and the argument carries, is
+/// a condition of the clause in both spellings. The row's subject — a rule-body tie is NOT
+/// resolved by first-match — is measured at the HOST entry by this file's `probe_entity`
+/// rows, and here at run time: the goal spelling at `leaf()` answers `Leaf`'s 1 (rung 2a
+/// over `WrapDesc`'s open row), and at `twig()`, where `TwigA` and `TwigB` tie, it is
+/// undecided. The `=` spelling is undecided at both: `=` does not reduce an operand that
+/// calls an operation with `requires` (WI-20260926-DSEXA's item 3). Before RYDNV both arms
+/// were refused at load in the `=` spelling, where the goal spelling loaded.
 #[test]
-fn a_rule_body_tie_is_refused_at_load_on_both_arms() {
-    const RULE: &str = r#"
-  rule described(?x, ?y)
-    :- eq(?y, Holder.probe(?x))
-"#;
-    for (ns, extra, what) in [
-        ("wi842.vd.rule.untied", "", "one provider plus WrapDesc's open-ended row"),
-        ("wi842.vd.rule.tie", TWIG, "two disagreeing Twig witnesses"),
+fn a_rule_body_tie_is_decided_when_the_goal_runs_on_both_arms() {
+    for (ns, extra, ctor, goal_answer) in [
+        ("wi842.vd.rule.untied", "", "Leaf.leaf()", Some(1)),
+        ("wi842.vd.rule.tie", TWIG, "Twig.twig()", None),
     ] {
-        let errs = match crate::common::try_load_kb_with(&program(ns, extra, RULE)) {
-            Err(errs) => errs,
-            Ok(_) => panic!("{what}: a rule-body goal that determines no dictionary must \
-                             be refused at load, not delayed"),
-        };
+        let rules = format!(
+            "  rule described(?x, ?y) :- eq(?y, Holder.probe(?x))\n  \
+             rule asGoal(?x, ?y) :- Holder.probe(?x, ?y)\n  \
+             rule viaEq(?y) :- described({ctor}, ?y)\n  \
+             rule viaGoal(?y) :- asGoal({ctor}, ?y)\n"
+        );
+        let mut kb = crate::common::load_kb_with(&program(ns, extra, &rules));
+        let goal = crate::common::query_unary(&mut kb, &format!("{ns}.viaGoal"));
+        match goal_answer {
+            Some(n) => assert_eq!(
+                crate::common::one_definite_int(&mut kb, &format!("{ns}.viaGoal")),
+                Some(n),
+                "{ns}: the goal spelling answers `Leaf`'s own"
+            ),
+            None => assert!(
+                goal.len() == 1 && !goal[0].1,
+                "{ns}: the tie leaves the goal spelling one undecided answer; got {goal:?}"
+            ),
+        }
+        let eq = crate::common::query_unary(&mut kb, &format!("{ns}.viaEq"));
         assert!(
-            errs.iter().any(|e| e.contains("Desc")),
-            "{what}: the refusal must name the spec whose dictionary is undetermined; \
-             got {errs:#?}"
+            eq.len() == 1 && !eq[0].1,
+            "{ns}: the `=` spelling is undecided (DSEXA item 3); got {eq:?}"
         );
     }
 }

@@ -420,9 +420,11 @@ impl TypingEnv {
     }
 
     /// Is a callee's own `requires` a condition of the enclosing clause here, and not
-    /// this call's to supply ([`RuleText::Fragment`])?
+    /// this call's to supply — a call of a rule's own term, a fragment's or one an operand of
+    /// a comparison holds ([`Self::in_rule_own_term`])? Where the call's types fix it, it is
+    /// decided at the call all the same (`own_requirements_fixed_at`).
     pub(super) fn leaves_own_requirements_to_the_clause(&self) -> bool {
-        self.rule_body_dispatch == Some(RuleText::Fragment)
+        self.in_rule_own_term()
     }
 
     /// Is the text typed here a rule body's own term, or a call of it ([`RuleText::Term`],
