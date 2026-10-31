@@ -1453,6 +1453,34 @@ Rows moved by design: P7VP4's mixed-carrier row (woven), `wi642`'s polymorphic r
 namespace level, loads in a sort that requires the spec), `wi1043`'s unground row (the clause
 refused, the hook driven by a query).
 
+### 6.21 C1d, a call reads its clause sort's requirement (WI-20261013-RYDNV, ninth part, 2026-10-31)
+
+SHED7's solver over its collection answers: in `sort Sat[C] requires Builds[C = C]`, `rule
+model(vs: C) :- vs <=> Builds.fromList([?p, ?q, ?r]), …` cited as `Sat[C = List[T = Bit]].model`
+has tiny-sat's 2 models; given `[t, t, f]` it holds once, `[t, t, t]` never. It floundered:
+`fromList` takes no argument at `Builds`' carrier `C` (only its result is one), so no read could
+take a witness, and the call's dictionary was read by nothing.
+
+- **The class**: the typer stamps such a call — no argument at the spec's carrier, in a clause
+  whose sort requires the spec — `ClauseCondition::SortRequires { spec }`; with no such
+  requirement it is left as before (refused where nothing fixes it, by the carrier's own
+  refusal).
+- **The read** has no witness, `find_dictionary(Builds, fromList, out: ?d)`: nothing the call
+  is given says which instance is meant. At run time a supplied dictionary stands, and an
+  unsupplied one waits — the uncited `Sat.model` leaves the read a residual, its instance open.
+- **The route** (`sort_requirement_route`) reads the sort's `requires` entry, each of the
+  sort's parameters as the clause variable that stands for it — the one in `rule_globals`, at
+  De Bruijn index `len - 1 - position` — through the clause's typed heads met with the
+  citation's column types. Two things had to change for the pins to say anything: the opened
+  frame covers the whole clause, not the head's arity (`vs: C` is bound to the variable for
+  `C`, beyond the head), and a column's type is walked through the citation's σ before it pins
+  (a bracket on the cited sort binds the variable the column was opened at, `?C`). A read the
+  sort's `requires` does not answer falls through to the routes after it — the typed head's
+  `SortDomain` read lost its route when it did not (`S[C = Bit].sig` raised).
+
+`rule_globals`' doc said "indexed by their assigned DeBruijn number"; the index is the position
+counted from the frame's end, as `extend_rule_frame_with_bounds` states, and the doc says so now.
+
 ## 7. Testing
 
 Per CLAUDE.md: each ticket's rows live in one test module, driven by value with its back-outs run

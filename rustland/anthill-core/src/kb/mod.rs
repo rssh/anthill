@@ -10065,8 +10065,8 @@ impl KnowledgeBase {
         rule_id
     }
 
-    /// Pre-DeBruijn Global VarIds for this rule, indexed by their
-    /// assigned DeBruijn number. Empty for ground facts. Used by
+    /// Pre-DeBruijn Global VarIds for this rule; the variable at position `p` has De Bruijn
+    /// index `len - 1 - p` ([`Self::extend_rule_frame_with_bounds`]). Empty for ground facts. Used by
     /// structured-proof step synthesis (proposal 031) to align step
     /// rule variables with the parent's frame.
     pub fn rule_globals(&self, id: RuleId) -> &[VarId] {

@@ -3436,6 +3436,8 @@ host-backed obligation; an operation with `=` has an Anthill implementation.
 
   The instance is then written at the call: in an operation body as a bracket (`Conv[A = Meters].tag("km")`) or a `requires` on the operation, in a rule body as the clause's `require[Conv[A = Meters, B = String]]`, which the call is answered at.
 
+  A rule written in a sort that requires `S` reads that requirement for a call with no argument at `S`'s carrier: its instance is the one the citation fixes the sort's parameters to. In `sort Sat[C] requires Builds[C = C]`, with `operation fromList(l: List[T = Bit]) -> C` in `Builds`, `rule model(vs: C) :- vs <=> Builds.fromList([?p, ?q, ?r]), …` cited as `Sat[C = List[T = Bit]].model` is answered by the provider of `Builds[C = List[T = Bit]]`; asked uncited, its instance is open, and the clause waits.
+
 What still reaches an unrunnable target when a program runs is a dispatch gap only the run can find — a carrier no provider supplies an operation for, reached by value. From an operation body it is the fault `OperationBodyMissing`; from a rule body it is §8.3's UNREDUCED comparison, parked as undecided so that a failing sibling still refutes the clause.
 
 **An operation not written yet has the body `todo()`** (WI-20261017-JRHZ0; user decisions 2026-10-17). `anthill.prelude.todo() -> Nothing` is a host function, pure, nullary, and imported like any prelude name. `Nothing` is the bottom sort and conforms to every type, so `operation area(s: Shape) -> Measure = todo()` keeps its signature under the rule above, whatever the signature says — type parameters, an open row, a `requires`. It is the hole Rust spells `todo!()` and Scala `???`:

@@ -960,10 +960,17 @@ fn citation_requirement_routes(
     for rid in rids {
         let slots = rule_head_var_slots(kb, rid);
         let name = kb.intern("citation_carrier");
-        let fresh: Vec<_> = if kb.rule_provider_requirements(rid).is_empty() {
+        // The clause's typed heads pinned at the citation's column types: what a provider's read
+        // reads its instance through, and what fixes the clause's own sort's parameters for a
+        // read of that sort's requirement.
+        let fresh: Vec<_> = if kb.rule_provider_requirements(rid).is_empty()
+            && kb.rule_type_bounds(rid).is_empty()
+        {
             Vec::new()
         } else {
-            (0..kb.rule_arity(rid))
+            // The whole frame, which a bound may name beyond the head: a typed head at the
+            // sort's parameter (`vs: C`) is bound to the clause variable standing for `C`.
+            (0..(kb.rule_arity(rid) as usize).max(kb.rule_globals(rid).len()))
                 .map(|_| kb.fresh_var(name))
                 .collect()
         };
@@ -982,8 +989,11 @@ fn citation_requirement_routes(
                 .find(|(n, _)| n == name)
                 .or_else(|| column_types.iter().find(|(n, _)| n == name));
             if let Some((_, ty)) = actual {
+                // The column's type as this citation fixes it: a bracket on the cited sort binds
+                // the parameter the column was opened at (`Sat[C = List[T = Bit]]`, `?C`).
+                let ty = walk_type_deep_value(kb, subst, ty);
                 let (bound, _) = crate::kb::node_occurrence::open_value_type(kb, &bound, &fresh);
-                if !pin_type_vars(kb, &mut carrier_subst, ty, &bound) {
+                if !pin_type_vars(kb, &mut carrier_subst, &ty, &bound) {
                     carrier_subst.contradiction = true;
                 }
             }
@@ -1010,6 +1020,7 @@ fn citation_requirement_routes(
                 kb,
                 chain,
                 param_rigids,
+                rid,
                 pos_args,
                 named_args,
                 &slots,
@@ -1039,6 +1050,7 @@ fn route_requirement_read(
     kb: &mut KnowledgeBase,
     chain: &DictChain,
     param_rigids: &[(VarId, TermId)],
+    rid: crate::kb::RuleId,
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
     slots: &[(SlotKey, Symbol, u32)],
@@ -1102,6 +1114,25 @@ fn route_requirement_read(
         return resolve_route(kb, chain, param_rigids, subst, &built.goal);
     }
     let op_functor = occ_head_symbol(&pos_args[1])?;
+    // A read for a call with no argument at its spec's carrier, in a clause whose sort requires
+    // the spec: its instance is that requirement at the types the citation fixes the sort's
+    // parameters to, through the clause's typed heads — `Builds.fromList([…])` in `sort Sat[C]
+    // requires Builds[C = C]`, cited at `Sat[C = List[T = Bit]]`, reads `Builds[C = List[T =
+    // Bit]]`. No witness could say it: what the call is given carries nothing at the carrier.
+    if !is_anchor_form(kb, spec_sort, op_functor) && !op_has_spec_carrier_param(kb, op_functor, spec_sort) {
+        if let Some(route) = sort_requirement_route(
+            kb,
+            chain,
+            param_rigids,
+            subst,
+            rid,
+            spec_sort,
+            fresh,
+            carrier_subst,
+        ) {
+            return Some(route);
+        }
+    }
     let bracket = requirement_bracket(kb, &Value::Node(Rc::clone(&pos_args[0])));
     let mut arg_types: Vec<Value> = Vec::with_capacity(pos_args.len().saturating_sub(2));
     for witness in &pos_args[2..] {
@@ -1645,6 +1676,52 @@ impl ClauseTypes {
         let (_, ty) = self.types.iter().find(|(seen, _)| *seen == d)?;
         Some(ty.clone())
     }
+}
+
+/// The route of a read of the requirement at `spec_sort` that the sort clause `rid` is written
+/// in states ([`route_requirement_read`]): the entry, each of the sort's parameters read as the
+/// clause variable that stands for it — the one the clause was closed over, opened as `fresh` —
+/// through `pins`, the clause's typed heads met with the citation's column types. `None` where
+/// the sort states no such requirement, or the citation leaves a parameter of it open.
+#[allow(clippy::too_many_arguments)]
+fn sort_requirement_route(
+    kb: &mut KnowledgeBase,
+    chain: &DictChain,
+    param_rigids: &[(VarId, TermId)],
+    subst: &Substitution,
+    rid: crate::kb::RuleId,
+    spec_sort: Symbol,
+    fresh: &[VarId],
+    pins: &Substitution,
+) -> Option<TermId> {
+    if pins.is_contradiction() {
+        return None;
+    }
+    let entry = requires_chain(kb, kb.rule_domain(rid))
+        .into_iter()
+        .find(|e| same_sort_canonical(kb, e.required_sort, spec_sort))?;
+    let globals = kb.rule_globals(rid).to_vec();
+    let spec = rewrite_type_leaves(kb, &entry.spec, &|kb, leaf| {
+        // The parameter, written by its name or carried as its own variable.
+        let vid = match crate::kb::term_view::TermView::head(leaf, kb) {
+            crate::kb::term_view::ViewHead::Var(Var::Global(v)) => v,
+            _ => type_param_global_var(kb, ref_or_nullary_name_view(kb, leaf)?)?,
+        };
+        // A De Bruijn index is the position counted from the frame's end
+        // ([`KnowledgeBase::extend_rule_frame_with_bounds`]).
+        let position = globals.iter().position(|g| *g == vid)?;
+        let opened = *fresh.get(globals.len() - 1 - position)?;
+        match walk_type_deep_value(kb, pins, &Value::Var(Var::Global(opened))) {
+            Value::Var(Var::Global(end)) if end == opened => None,
+            pinned => Some(pinned),
+        }
+    })
+    .unwrap_or_else(|| entry.spec.clone());
+    if !type_is_ground(kb, &spec) {
+        return None;
+    }
+    let goal = goal_from_requires_entry(kb, &RequiresEntry { spec, ..entry })?;
+    resolve_route(kb, chain, param_rigids, subst, &goal)
 }
 
 /// The tail every route shares: resolve `goal` against the citing caller's frame `chain` —

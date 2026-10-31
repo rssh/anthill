@@ -1010,9 +1010,12 @@ end
 /// through this form before; `S.parPattern`, `Sat.model` and `Sat.unsat` are each refused,
 /// naming the parameter. The repair builds `vs` as a `C` from the list
 /// (WI-20260925-SHED7's step 3, `PersistentCollection.fromList`, which the stdlib does not
-/// have yet — `Builds` stands in): it loads, and answering waits on a call with no argument
-/// at its carrier parameter, supplied by the sort's `requires` (WI-20261013-RYDNV) — today
-/// the relation flounders.
+/// have yet — `Builds` stands in), and it answers: a call with no argument at its carrier
+/// parameter reads the instance the sort's `requires` states, at what the citation fixes `C`
+/// to (WI-20261013-RYDNV). `Sat[C = List[T = Bit]].model` has tiny-sat's 2 models; given
+/// `[t, t, f]` it holds once, given `[t, t, t]` never. It floundered, the call's dictionary
+/// read by nothing. FAILS with the call left without its condition (`dispatch_to_the_clause`
+/// stamping no `SortRequires`): `model` raises `relation_floundered`.
 #[test]
 fn the_parameter_form_of_a_type_variable_bound_is_the_sigil_form() {
     const PARAM: &str = r#"
@@ -1072,12 +1075,17 @@ end
     )
     .replace(
         "  end\nend\n",
-        "    operation model() -> Int64 effects {Error} = Sat[C = List[T = Bit]].model.takeN(100).length()\n  end\nend\n",
+        "    operation model() -> Int64 effects {Error} = Sat[C = List[T = Bit]].model.takeN(100).length()\n    \
+         operation given() -> Int64 effects {Error} = \
+         Sat[C = List[T = Bit]].model([t(), t(), f()]).takeN(5).length()\n    \
+         operation refuted() -> Int64 effects {Error} = \
+         Sat[C = List[T = Bit]].model([t(), t(), t()]).takeN(5).length()\n  end\nend\n",
     );
     let mut interp = crate::common::interp_for(&repaired);
-    let got = interp.call("shed7param.Driver.model", &[]);
-    assert!(
-        matches!(got, Err(anthill_core::eval::EvalError::Raised { .. })),
-        "STATED LIMIT: the repair loads, and floundering waits on WI-20261013-RYDNV: {got:?}"
-    );
+    for (entry, want) in [("model", 2), ("given", 1), ("refuted", 0)] {
+        match interp.call(&format!("shed7param.Driver.{entry}"), &[]) {
+            Ok(Value::Int(n)) => assert_eq!(n, want, "`{entry}`"),
+            other => panic!("`{entry}`: expected {want}, got {other:?}"),
+        }
+    }
 }

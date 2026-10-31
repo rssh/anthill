@@ -1617,6 +1617,10 @@ pub enum ClauseCondition {
     Dispatch { spec: Symbol },
     /// The slots of the callee's chain, its sort's `requires` and then its own.
     Slots,
+    /// The dictionary of `spec` that the sort the rule is written in requires, for a call with
+    /// no argument at the spec's carrier: the citation fixes the sort's parameters, and so the
+    /// instance (`Builds.fromList([…])` in `sort Sat[C] requires Builds[C = C]`).
+    SortRequires { spec: Symbol },
 }
 
 /// Record that the typer left `occ`'s requirement to its clause — unless the callee compares
@@ -1649,24 +1653,28 @@ pub(super) fn dispatch_to_the_clause(
     spec: Symbol,
     span: Option<Span>,
 ) -> Result<(), TypeError> {
-    // A callee that compares values itself; and a call with no argument at the spec's carrier,
-    // whose instance no read can take a witness for — refused where nothing fixes it, a stated
-    // limit where the clause's sort requires it (SHED7's `fromList`).
-    if kb.is_builtin(callee)
-        || host_implements(kb, callee)
-        || !op_has_spec_carrier_param(kb, callee, spec)
-    {
+    if kb.is_builtin(callee) || host_implements(kb, callee) {
+        return Ok(());
+    }
+    let sort_requires = env.rule_domain().is_some_and(|d| {
+        transitive_required_sorts(kb, d)
+            .iter()
+            .any(|s| same_sort_canonical(kb, *s, spec))
+    });
+    // A call with no argument at the spec's carrier has no witness for a read to take: where
+    // the clause's sort requires the spec, the citation fixes its instance; elsewhere it is
+    // refused where nothing fixes it (the carrier's own refusal), or left to the value.
+    if !op_has_spec_carrier_param(kb, callee, spec) {
+        if sort_requires {
+            leave_to_the_clause(kb, occ, callee, ClauseCondition::SortRequires { spec });
+        }
         return Ok(());
     }
     let supplied = spec_has_any_providers(kb, spec)
         || library_instances(kb, spec).is_some()
         || clause_requires_spec(kb, env, spec)
-        || env.rule_domain().is_some_and(|d| {
-            same_sort_canonical(kb, d, spec)
-                || transitive_required_sorts(kb, d)
-                    .iter()
-                    .any(|s| same_sort_canonical(kb, *s, spec))
-        });
+        || sort_requires
+        || env.rule_domain().is_some_and(|d| same_sort_canonical(kb, d, spec));
     if !supplied && !spec_warrants_abstract_check(kb, spec) {
         return Ok(());
     }

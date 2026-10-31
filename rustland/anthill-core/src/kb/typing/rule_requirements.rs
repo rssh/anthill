@@ -1161,8 +1161,10 @@ fn inferred_demand(
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
     written: &[Symbol],
 ) -> Option<SpecDemand> {
-    let Some(ClauseCondition::Dispatch { spec }) = occ.clause_condition() else {
-        return None;
+    let (spec, of_the_sort) = match occ.clause_condition() {
+        Some(ClauseCondition::Dispatch { spec }) => (spec, false),
+        Some(ClauseCondition::SortRequires { spec }) => (spec, true),
+        _ => return None,
     };
     // The clause's own `require[…]` reads it, and covers its calls (WI-1040).
     if written.contains(&kb.canonical_sort_sym(spec)) {
@@ -1181,7 +1183,14 @@ fn inferred_demand(
     if !reader {
         return None;
     }
-    let carriers = aligned_carrier_args(kb, &rec.params, &args, spec);
+    // A read of the clause sort's requirement has no carrier and no witness: every such call
+    // in the clause reads the one instance the citation fixes, and nothing the call is given
+    // says which — a supplied dictionary decides it, and an uncited clause waits.
+    let (carriers, args) = if of_the_sort {
+        (Vec::new(), Vec::new())
+    } else {
+        (aligned_carrier_args(kb, &rec.params, &args, spec), args)
+    };
     Some(SpecDemand {
         call: DemandCall {
             call: Rc::clone(occ),

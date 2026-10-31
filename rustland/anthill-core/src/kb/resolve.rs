@@ -9501,6 +9501,18 @@ impl KnowledgeBase {
                 ))),
             };
         }
+        // A READ WITH NO WITNESS is the requirement the clause's sort states, for a call with
+        // no argument at its spec's carrier (`Builds.fromList([…])` in `sort Sat[C] requires
+        // Builds[C = C]`): nothing the clause holds says which instance is meant, and the
+        // citation that fixes the sort's parameters does. Its dictionary stands; an uncited
+        // clause leaves the instance open, and waits.
+        if arg_vals.is_empty() && typed_instance.is_none() {
+            return if supplied {
+                BuiltinResult::Success
+            } else {
+                BuiltinResult::delay()
+            };
+        }
         let rung = if supplied {
             DefaultRung::Unranked
         } else {
