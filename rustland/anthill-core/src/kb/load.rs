@@ -2389,6 +2389,11 @@ pub enum LoadError {
     Other {
         message: String,
     },
+    /// A named tuple written where a goal stands: its labels name components, and the
+    /// components of a parenthesized goal list are goals (§5.3).
+    GoalIsANamedTuple {
+        span: Span,
+    },
     /// A `@[simp]` or `@[unfold]` tag on a declaration that is not an equation. The tag makes an
     /// equation run (§5.3), so anywhere else it does nothing; and a declaration's `@[…]` is
     /// written after it, so a tag set in front of a rule is the tag of the declaration before.
@@ -3207,6 +3212,7 @@ impl LoadError {
             | LoadError::BodylessRuleDeclaresNothing { span, .. }
             | LoadError::DescriptionWithoutTarget { span, .. }
             | LoadError::RewriteTagOffEquation { span, .. }
+            | LoadError::GoalIsANamedTuple { span }
             | LoadError::DeclarationCarriesClauseText { span, .. } => Some(*span),
             LoadError::TypeMismatch { span, .. }
             | LoadError::IncompleteConstruction { span, .. }
@@ -4118,6 +4124,9 @@ impl LoadError {
                 loc.format_start(*span),
                 rewrite_tag_off_equation(tag, declaration)
             ),
+            LoadError::GoalIsANamedTuple { span } => {
+                format!("{}: {}", loc.format_start(*span), GOAL_IS_A_NAMED_TUPLE)
+            }
             LoadError::UndefinedAfterDefinePass {
                 qualified,
                 consequence,
@@ -5752,6 +5761,9 @@ impl std::fmt::Display for LoadError {
                 span.start,
                 span.end
             ),
+            LoadError::GoalIsANamedTuple { span } => {
+                write!(f, "{} (at {}..{})", GOAL_IS_A_NAMED_TUPLE, span.start, span.end)
+            }
             LoadError::UndefinedAfterDefinePass {
                 qualified,
                 consequence,
@@ -8101,8 +8113,27 @@ fn parse_equation_rhs(
 /// `false` gets NO reading here, deliberately: §6.1 gives `true` one because that is
 /// what `fact` desugars to, and nothing in the language makes `:- false` mean anything
 /// but the ordinary unresolvable goal it already is.
-fn is_empty_conjunction_goal(parse_terms: &SimpleTermStore, tid: ParseTermId) -> bool {
-    matches!(parse_terms.get(tid), Term::Const(Literal::Bool(true)))
+///
+/// `()` is the empty conjunction too: a parenthesized goal list is the conjunction of its
+/// goals (§5.3), and `()` lists none.
+fn is_empty_conjunction_goal(
+    parse_sym: &crate::intern::SymbolTable,
+    parse_terms: &SimpleTermStore,
+    tid: ParseTermId,
+) -> bool {
+    match parse_terms.get(tid) {
+        Term::Const(Literal::Bool(true)) => true,
+        Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } => {
+            pos_args.is_empty()
+                && named_args.is_empty()
+                && parse_sym.local_name(*functor) == dt::TUPLE_LITERAL
+        }
+        _ => false,
+    }
 }
 
 /// Does this rule's body add NOTHING to its head — no body at all, or a body that is
@@ -8121,11 +8152,15 @@ fn is_empty_conjunction_goal(parse_terms: &SimpleTermStore, tid: ParseTermId) ->
 /// [`rule_reading`]'s and is keyed on the SYNTACTIC absence of a body
 /// (`body: None`). That is 061's split point: `rule p(?x)` declares and
 /// `rule p(?x) :- true` asserts, so the two must never be fused.
-fn rule_body_is_empty_conjunction(r: &Rule, parse_terms: &SimpleTermStore) -> bool {
+fn rule_body_is_empty_conjunction(
+    r: &Rule,
+    parse_sym: &crate::intern::SymbolTable,
+    parse_terms: &SimpleTermStore,
+) -> bool {
     r.body.as_ref().is_none_or(|goals| {
         goals
             .iter()
-            .all(|&t| is_empty_conjunction_goal(parse_terms, t))
+            .all(|&t| is_empty_conjunction_goal(parse_sym, parse_terms, t))
     })
 }
 
@@ -8733,7 +8768,7 @@ fn rule_introduced_functor_name<'a>(
     if r.heads.len() != 1 {
         return Err(NoIntroduction::SeveralHeads(r.heads.len()));
     }
-    let bodyless = rule_body_is_empty_conjunction(r, parse_terms);
+    let bodyless = rule_body_is_empty_conjunction(r, parse_sym, parse_terms);
     let (subject, introduced_by) =
         head_subject_name(&r.heads[0], bodyless, parse_sym, parse_terms)?;
     Ok((subject_introduces(subject)?, introduced_by))
@@ -13170,7 +13205,7 @@ impl<'f> RuleHeadCollectPass<'_, 'f> {
         if several_heads_refusal(r).is_some() {
             return;
         }
-        let bodyless = rule_body_is_empty_conjunction(r, parse_terms);
+        let bodyless = rule_body_is_empty_conjunction(r, parse_sym, parse_terms);
         for (position, head) in (1..).zip(&r.heads) {
             let (subject, introduced_by) =
                 match head_subject_name(head, bodyless, parse_sym, parse_terms) {
@@ -24331,6 +24366,11 @@ fn head_that_is_no_equation(
         _ => predicate,
     })
 }
+
+/// The sentence of [`LoadError::GoalIsANamedTuple`], for both renderings.
+const GOAL_IS_A_NAMED_TUPLE: &str = "a named tuple is not a goal: its labels name components, and \
+    the components of a parenthesized goal list are its goals. Drop the labels to write their \
+    conjunction, or put the tuple in a value position (`?t <=> (k: …)`)";
 
 /// The sentence of [`LoadError::RewriteTagOffEquation`], one owner for both renderings.
 fn rewrite_tag_off_equation(tag: &str, declaration: &str) -> String {
@@ -37692,21 +37732,19 @@ impl<'a> Loader<'a> {
         Some(node_occurrence::materialize_at(self.kb, expanded, site))
     }
 
-    /// Is this `Term::Fn` a positional tuple literal — `(g₁, …, gₙ)` as written, which at a goal
-    /// position is a goal list ([`Self::goal_list_conjunction`])? A named tuple is not one: its
-    /// labels name components, and a goal has none.
-    fn is_written_goal_list(
-        &self,
-        functor: Symbol,
-        pos_args: &[ParseTermId],
-        named_args: &[(Symbol, ParseTermId)],
-    ) -> bool {
+    /// Is this `Term::Fn` a tuple literal as written — `(…)`, its components named, positional
+    /// or none?
+    fn is_tuple_literal(&self, functor: Symbol, pos_args: &[ParseTermId]) -> bool {
         pos_args.is_empty()
-            && !named_args.is_empty()
             && self.kb.try_resolve_symbol(dt::qualified(dt::TUPLE_LITERAL)) == Some(functor)
-            && named_args.iter().enumerate().all(|(i, &(label, _))| {
-                crate::intern::is_positional_label_at(self.parsed.symbols.local_name(label), i)
-            })
+    }
+
+    /// Are a tuple literal's components positional — `(g₁, …, gₙ)`, which at a goal position is a
+    /// goal list ([`Self::goal_list_conjunction`])?
+    fn is_positional_list(&self, named_args: &[(Symbol, ParseTermId)]) -> bool {
+        named_args.iter().enumerate().all(|(i, &(label, _))| {
+            crate::intern::is_positional_label_at(self.parsed.symbols.local_name(label), i)
+        })
     }
 
     /// `(g₁, …, gₙ)` at a goal position: `and(g₁, and(g₂, … gₙ))`, each component built as a
@@ -38017,15 +38055,22 @@ impl<'a> Loader<'a> {
                 }
                 let new_functor = self.remap_functor(functor, parse_id);
                 // A PARENTHESIZED GOAL LIST is the conjunction of its goals (§5.3): at a goal
-                // position `(a, b)` is `a & b`. A tuple has no reading as a goal — it heads no
-                // clause — so it failed there, and held under `not`.
-                if at_goal
-                    && !is_wrapper
-                    && self.is_written_goal_list(new_functor, &pos_args, &named_args)
-                {
-                    let goals: Vec<ParseTermId> =
-                        named_args.iter().map(|&(_, pid)| pid).collect();
-                    return self.goal_list_conjunction(&goals, parse_id, span, node_fold);
+                // position `(a, b)` is `a & b`, and `()` is `true`, the empty conjunction. A
+                // tuple has no reading as a goal — it heads no clause — so it failed there, and
+                // held under `not`. A NAMED tuple is refused: its labels name components, which
+                // a goal list's are not.
+                if at_goal && !is_wrapper && self.is_tuple_literal(new_functor, &pos_args) {
+                    if named_args.is_empty() {
+                        return NodeOccurrence::new_expr(Expr::Const(Literal::Bool(true)), span, None);
+                    }
+                    if self.is_positional_list(&named_args) {
+                        let goals: Vec<ParseTermId> =
+                            named_args.iter().map(|&(_, pid)| pid).collect();
+                        return self.goal_list_conjunction(&goals, parse_id, span, node_fold);
+                    }
+                    self.errors.push(LoadError::GoalIsANamedTuple {
+                        span: self.parsed.terms.span(parse_id),
+                    });
                 }
                 // A WRAPPER is not a goal — its components are — so it is not routed.
                 //
@@ -45693,7 +45738,11 @@ impl<'a> Loader<'a> {
                             head,
                             *tid,
                             "rule",
-                            !rule_body_is_empty_conjunction(r, &self.parsed.terms),
+                            !rule_body_is_empty_conjunction(
+                                r,
+                                &self.parsed.symbols,
+                                &self.parsed.terms,
+                            ),
                         )
                     {
                         self.current_owner = prev_owner;
@@ -45735,7 +45784,7 @@ impl<'a> Loader<'a> {
                 // goal. This is what makes `rule H :- true` the exact spelling of
                 // `fact H`: the same clause, with the same empty body, reached by the
                 // two syntaxes §6.1 now says mean one thing.
-                if is_empty_conjunction_goal(&self.parsed.terms, tid) {
+                if is_empty_conjunction_goal(&self.parsed.symbols, &self.parsed.terms, tid) {
                     continue;
                 }
                 // WI-618: a keyword-less `pattern -> body` lambda typo in a

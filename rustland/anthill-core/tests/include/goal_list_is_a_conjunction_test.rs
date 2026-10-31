@@ -110,3 +110,51 @@ fn a_goal_list_in_a_simp_guard_is_the_conjunction() {
         [20]
     );
 }
+
+/// THE EMPTY GOAL LIST IS `true`, the empty conjunction: at the top of a body, in a branch, in a
+/// quantifier's body and as an assertion's body it holds, and under `not` it fails. FAILS with
+/// `()` read as the unit (`is_empty_conjunction_goal` and the goal walk answering it as a
+/// tuple): the four that hold answer nothing, and the negation holds.
+#[test]
+fn an_empty_goal_list_is_true() {
+    for (name, body, want) in [
+        ("gl.emptytop", "  rule value(?r) :- c(?r), ()", vec![1, 2, 3]),
+        ("gl.emptybranch", "  rule value(?r) :- c(?r), (() | false)", vec![1, 2, 3]),
+        (
+            "gl.emptyquant",
+            "  rule value(?r) :- c(?r), (forall ?z in [1]: ())",
+            vec![1, 2, 3],
+        ),
+        ("gl.emptyassert", "  rule value(2) :- ()", vec![2]),
+        ("gl.emptyneg", "  rule value(?r) :- c(?r), not(())", vec![]),
+    ] {
+        assert_eq!(ints(name, body), want, "{name}");
+    }
+}
+
+/// A NAMED TUPLE IS NO GOAL: `(k: a(?r))` names a component, which a goal list's are not, and
+/// is refused at the top of a body and in a branch; in a value position it is the tuple it is.
+/// FAILS with the refusal backed out (`GoalIsANamedTuple` not pushed): both load, the tuple
+/// goal answering nothing.
+#[test]
+fn a_named_tuple_goal_is_refused() {
+    use anthill_core::kb::load::LoadError;
+    for (name, body) in [
+        ("gl.namedtop", "  rule value(?r) :- (k: a(?r))"),
+        ("gl.namedbranch", "  rule value(?r) :- (k: a(?r), j: b(?r)) | false"),
+    ] {
+        let errors = crate::common::unrendered_load_errors_of(&ns(name, body));
+        assert!(
+            matches!(
+                errors.iter().map(LoadError::peel).collect::<Vec<_>>().as_slice(),
+                [LoadError::GoalIsANamedTuple { .. }]
+            ),
+            "{name}: expected the one refusal, got {errors:?}"
+        );
+    }
+    assert_eq!(
+        ints("gl.namedvalue", "  rule value(?r) :- ?t <=> (k: 1), ?t <=> (k: ?r)"),
+        [1],
+        "a named tuple in a value position"
+    );
+}

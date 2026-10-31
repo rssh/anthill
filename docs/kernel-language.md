@@ -2638,8 +2638,9 @@ outermost literal (§4.1), with a located diagnostic.
 A parenthesized list of goals written where a goal stands is their conjunction:
 `p(?x) :- (a(?x), b(?x))` is `p(?x) :- a(?x) & b(?x)`, and so is the list in a branch, a
 negand, a quantifier's body and a mirror-form rule's body, so `not(a(?x), b(?x))` holds
-where the two do not both hold. In a value position, such as a goal's argument or an
-operand of `<=>`, the same text is a tuple (§4.5).
+where the two do not both hold. The empty list `()` is `true`, the empty conjunction, and a
+named tuple, whose labels name components, is a load error where a goal stands. In a value
+position, such as a goal's argument or an operand of `<=>`, the same text is a tuple (§4.5).
 
 **Cut (`!`, proposal 033.1 / WI-568).** A standalone `!` body goal commits the
 current rule invocation: once reached, alternatives created since that
