@@ -7,7 +7,7 @@
 /// bindings are cheap (`Rc::clone`), eval can stash on its frame stack
 /// without lifetime threading, and cross-pass identity is `Rc::ptr_eq`.
 use smallvec::SmallVec;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
 use crate::intern::Symbol;
@@ -546,6 +546,7 @@ impl NodeOccurrence {
                 compound_syntax,
                 classification: RefCell::new(None),
                 op_dicts: RefCell::new(SmallVec::new()),
+                    clause_condition: Cell::new(None),
                 inferred_type: RefCell::new(None),
                 lowered_receiver: RefCell::new(None),
             },
@@ -649,6 +650,7 @@ impl NodeOccurrence {
                     compound_syntax: self.is_compound_syntax(),
                     classification: RefCell::new(None),
                     op_dicts: RefCell::new(SmallVec::new()),
+                    clause_condition: Cell::new(None),
                     inferred_type: RefCell::new(None),
                     lowered_receiver: RefCell::new(None),
                 },
@@ -811,6 +813,7 @@ impl NodeOccurrence {
                 compound_syntax: self.is_compound_syntax(),
                 classification: RefCell::new(None),
                 op_dicts: RefCell::new(SmallVec::new()),
+                    clause_condition: Cell::new(None),
                 inferred_type: RefCell::new(None),
                 lowered_receiver: RefCell::new(None),
             },
@@ -840,6 +843,7 @@ impl NodeOccurrence {
                 compound_syntax: self.is_compound_syntax(),
                 classification: RefCell::new(None),
                 op_dicts: RefCell::new(SmallVec::new()),
+                    clause_condition: Cell::new(None),
                 inferred_type: RefCell::new(None),
                 lowered_receiver: RefCell::new(None),
             },
@@ -934,6 +938,7 @@ impl NodeOccurrence {
                 compound_syntax: _,
                 classification: dst_class,
                 op_dicts: dst_op_dicts,
+                clause_condition: dst_condition,
                 inferred_type: dst_ty,
                 lowered_receiver: _,
             },
@@ -945,6 +950,7 @@ impl NodeOccurrence {
                 compound_syntax: _,
                 classification: src_class,
                 op_dicts: src_op_dicts,
+                clause_condition: src_condition,
                 inferred_type: src_ty,
                 lowered_receiver: _,
             },
@@ -963,6 +969,9 @@ impl NodeOccurrence {
         let src_dicts = src_op_dicts.borrow();
         if !src_dicts.is_empty() {
             *dst_op_dicts.borrow_mut() = src_dicts.clone();
+        }
+        if let Some(condition) = src_condition.get() {
+            dst_condition.set(Some(condition));
         }
     }
 
@@ -1006,6 +1015,7 @@ impl NodeOccurrence {
                 compound_syntax: false,
                 classification: RefCell::new(None),
                 op_dicts: RefCell::new(SmallVec::new()),
+                    clause_condition: Cell::new(None),
                 inferred_type: RefCell::new(None),
                 lowered_receiver: RefCell::new(None),
             },
@@ -1301,6 +1311,22 @@ impl NodeOccurrence {
         }
     }
 
+    /// Record that the typer left this rule-body call's requirement to its clause. One writer
+    /// ([`super::typing::leave_to_the_clause`]). No-op on non-Expr kinds.
+    pub fn set_clause_condition(&self, condition: super::typing::ClauseCondition) {
+        if let NodeKind::Expr { clause_condition, .. } = &self.kind {
+            clause_condition.set(Some(condition));
+        }
+    }
+
+    /// The condition [`Self::set_clause_condition`] recorded, or `None`.
+    pub fn clause_condition(&self) -> Option<super::typing::ClauseCondition> {
+        match &self.kind {
+            NodeKind::Expr { clause_condition, .. } => clause_condition.get(),
+            _ => None,
+        }
+    }
+
     /// Record the typer's inferred type for this occurrence (WI-284).
     /// Only `Expr`-kind occurrences carry typer metadata; rule heads
     /// ignore the call. Idempotent under re-typing — the last (most
@@ -1422,6 +1448,12 @@ pub enum NodeKind {
         /// measured `reqs=[]` at its dispatch site. See
         /// [`super::typing::stamp_op_scoped_dicts`] for the one writer.
         op_dicts: RefCell<SmallVec<[Option<TermId>; 2]>>,
+        /// A rule-body call's requirement the typer left to its clause, which the requirement
+        /// inference weaves (requirement-channel.md §5.2's conditional class). `None` for
+        /// every other call: pinned, refused, value-directed, or owing nothing. Beside the
+        /// `CallClass` rather than in it: a call whose chain the clause supplies keeps its
+        /// `ConcreteApplyWithin`, which eval reads.
+        clause_condition: Cell<Option<super::typing::ClauseCondition>>,
         /// Typer-attached inferred type for this occurrence (WI-284):
         /// the `TypeResult.ty` the typer computes but historically
         /// discarded. Kept here — a third per-node annotation alongside

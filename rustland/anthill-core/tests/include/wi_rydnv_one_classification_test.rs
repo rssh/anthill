@@ -593,6 +593,27 @@ fn a_goal_on_a_defined_operation_beside_its_clauses_is_the_relations() {
     }
 }
 
+/// A LAW IN ITS SPEC'S OWN SORT IS ITS CLAUSE'S CONDITION, nothing providing the spec: a law
+/// written in `Spec` is the law of every carrier, and its citation supplies the instance, so
+/// `heavy`'s open `w(?a)` loads. Its namespace-level twin is in no sort that could supply it,
+/// and is refused (requirement-channel.md §5.2, decided with the user). FAILS with the spec's
+/// own sort not counted as supplying it (`dispatch_to_the_clause`): the law is refused too.
+#[test]
+fn a_law_in_its_specs_own_sort_is_its_clauses_condition() {
+    let spec = "  import anthill.prelude.{Int64}\n  import anthill.prelude.PartialOrd.{gte}\n  \
+                sort Spec\n    sort T = ?\n    operation w(a: T) -> Int64\n";
+    crate::common::load_kb_with(&format!(
+        "namespace test.rydnv.ownlaw\n{spec}    rule heavy(?a: T) :- gte(w(?a), 3)\n  end\nend\n"
+    ));
+    let errs = crate::common::load_errors_of(&format!(
+        "namespace test.rydnv.nslaw\n{spec}  end\n  rule heavy(?a) :- gte(Spec.w(?a), 3)\nend\n"
+    ));
+    assert!(
+        errs.len() == 1 && errs[0].contains("nothing provides `test.rydnv.nslaw.Spec`"),
+        "the namespace-level twin is refused: {errs:?}"
+    );
+}
+
 /// A CALL IN A PARENTHESIZED GOAL LIST is its clause's condition, as in the `&` the list is
 /// (`goal_list_is_a_conjunction_test`): it answers 4 / -4 / -1. It was refused at load, the
 /// list read as a tuple and the call in it as a value of two arguments given three. FAILS

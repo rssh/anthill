@@ -515,6 +515,14 @@ pub enum TypeError {
     /// name different types for them (`providers`): the requested instance conforms to none
     /// of them for every type the open parameters could be. `suggestion` is the instance
     /// written — the clause's `require[…]` in a rule body, the call's bracket elsewhere.
+    /// A rule-body call of `op` whose instance of `spec` is open at a spec nothing provides,
+    /// in a clause whose sort does not require it: no value can carry an instance, so no
+    /// condition of the clause could hold (requirement-channel.md §5.2's refused class).
+    ConditionAtUnprovidedSpec {
+        span: Option<Span>,
+        op: Symbol,
+        spec: Symbol,
+    },
     ParameterNamedApart {
         span: Option<Span>,
         op: Symbol,
@@ -1881,6 +1889,14 @@ impl TypeError {
                 kb.qualified_name_of(*op),
                 kb.qualified_name_of(*spec),
             ),
+            TypeError::ConditionAtUnprovidedSpec { op, spec, .. } => format!(
+                "a call of `{}` whose instance of `{1}` this clause leaves open, and nothing \
+                 provides `{1}`: no value can carry an instance of it, so no condition of the \
+                 clause can hold. Declare a sort that provides `{1}`, or write the rule in a \
+                 sort that `requires` it, whose citation supplies it",
+                kb.qualified_name_of(*op),
+                kb.qualified_name_of(*spec),
+            ),
             TypeError::ParameterNamedApart {
                 op,
                 spec,
@@ -2499,6 +2515,7 @@ impl TypeError {
             | TypeError::DictionaryCannotAnswer { span, .. }
             | TypeError::CallNamesNoInstance { span, .. }
             | TypeError::ParameterNamedApart { span, .. }
+            | TypeError::ConditionAtUnprovidedSpec { span, .. }
             | TypeError::AmbiguousRequirementKey { span, .. }
             | TypeError::SelectionValueNotASort { span, .. }
             | TypeError::SlotSelectionUnindexable { span, .. }
@@ -2834,7 +2851,8 @@ impl TypeError {
             | TypeError::CarrierSuppliesNoMember { op, .. }
             | TypeError::DictionaryCannotAnswer { op, .. }
             | TypeError::CallNamesNoInstance { op, .. }
-            | TypeError::ParameterNamedApart { op, .. } => LoadError::TypeMismatch {
+            | TypeError::ParameterNamedApart { op, .. }
+            | TypeError::ConditionAtUnprovidedSpec { op, .. } => LoadError::TypeMismatch {
                 origin: None,
                 entity_name: kb.qualified_name_of(*op).to_string(),
                 field_name: "call".to_string(),

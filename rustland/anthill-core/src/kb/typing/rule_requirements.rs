@@ -513,44 +513,24 @@ pub fn is_inferred_requirement_read(kb: &KnowledgeBase, node: &NodeOccurrence) -
 /// (`wi_p7vp4_rule_body_requirements_test`'s two delay rows). Decided by the user,
 /// 2026-09-25: INFER, rather than refuse the clause until the author restates it.
 ///
-/// WHERE A CALL GETS ONE: the read runs immediately before the top-level goal, so only a
-/// call that runs exactly when that goal does, with its variables in scope there, can have
-/// it — one in the goal's value positions, reached through the argument lists of calls and
-/// data constructors ([`demand_walk_enters`]). The walk stops at
-///   * a GOAL position under the top one — `not(…)`, a quantifier's body, a `|` / `&`
-///     branch. A negand or quantifier body binds its own variables; a branch reaches the
-///     resolver through its connective's head match as a TERM, and a citation's reads are
-///     laid out over the body's TOP-LEVEL goals (`requirement_read_counts`), so a condition
-///     inside one could be neither placed nor routed;
-///   * a DEFERRED data form — a lambda, `let`, `match` or `if` — whose calls run later, under
-///     binders of their own or on one branch only: a read before the goal would name a
-///     binder out of its scope, or run for a branch never taken.
+/// WHERE A CALL GETS ONE: the read runs immediately before the goal holding the call — a body
+/// goal, or a goal in a connective's proved slot (a branch, a negand, a quantifier's body, a
+/// discharge's consequent), beside which it is placed — so only a call that runs exactly when
+/// that goal does, with its variables in scope there, can have it: one in the goal's value
+/// positions, reached through the argument lists of calls and data constructors
+/// ([`demand_walk_enters`]). The walk stops at a DEFERRED data form — a lambda, `let`, `match`
+/// or `if` — whose calls run later, under binders of their own or on one branch only, and which
+/// is typed as an operation body is.
 ///
-/// A call there keeps value-directed dispatch, exactly as before this pass: its caller's
-/// dictionary does not reach it. That is a stated limit, not a silent one — the author can
-/// write the `require` where the call is, and `wi_p7vp4_rule_body_requirements_test` pins
-/// both halves.
-///
-/// THE POPULATION is exactly the calls the static check leaves undecided: the carrier
-/// decision is [`spec_op_call_carrier_outcome`]'s, shared with
-/// [`check_one_spec_op_requirement`], so a call is refused there (`DontFire`), decided
-/// by its concrete carrier (`Fire`, unchanged — the typer's route), or given a condition
-/// here (`Suspend`, no carrier known at load), and never two of these. Declined, each for a
-/// reason of its own:
-///   * a resolver BUILTIN or HOST-implemented callee (`eq`, `lt`, `add`) — it compares
-///     values itself and reads no dictionary, and weaving one makes it invisible to
-///     builtin dispatch (WI-1040 measured `require[PartialEq[T]], eq(?x, ?y)` go from
-///     one answer to zero);
-///   * a CARRIER-LESS callee (`Zeroable.zero()`) — no argument grounds the instance, so
-///     an uncited clause could never derive it;
-///   * a spec NO SORT PROVIDES — nothing could ever be derived; and a DEFAULTED member of
-///     a spec with no abstract member, which owes no instance at all (WI-883);
-///   * a callee with no reader for a woven call ([`collect_covered_calls`]' first gate);
-///   * a `Suspend` call with a CONCRETE carrier among its arguments, beside one not known
-///     at load — which that carrier decides, as it decides a `Fire` one ([`inferred_demand`]
-///     says what weaving it would let in);
-///   * a call the typer PINNED, and a spec the author already wrote a `require` for in
-///     this clause — that read covers its calls exactly as it did (WI-1040).
+/// WHICH CALLS GET ONE is the typer's decision, read here and not made again
+/// (requirement-channel.md §5.2): a call the typer leaves to its clause carries a
+/// [`ClauseCondition`] — the dictionary of the spec it is dispatched through, or the slots of
+/// its chain — and the typer refuses, pins or leaves alone every other. What is declined here is
+/// the weave's own business:
+///   * a spec the author already wrote a `require` for in this clause — that read covers its
+///     calls exactly as it did (WI-1040);
+///   * a callee with no reader for a woven call ([`collect_covered_calls`]' first gate), and a
+///     call whose arguments do not align to its parameters, the typer's to refuse.
 ///
 /// ONE READ PER CARRIER: calls sharing their carrier arguments share one dictionary, as
 /// one written `require` covers every call at its carrier; calls at different carriers
@@ -645,7 +625,7 @@ pub(super) fn infer_rule_body_requirements(kb: &mut KnowledgeBase) {
                 {
                     found.push(demand);
                 } else if let Some(demand) =
-                    inferred_slot_demand(kb, rid, &o, *functor, pos_args, named_args)
+                    inferred_slot_demand(kb, &o, *functor, pos_args, named_args)
                 {
                     found_slots.push(demand);
                 }
@@ -1127,35 +1107,10 @@ fn demand_walk_enters(expr: &Expr) -> bool {
     )
 }
 
-/// Is this call argument's type NOT known at load? A term holding no variable is known —
-/// its value names its type (`plain()`, `1`), and it carries no stamp to read, since the
-/// typer stamps VARIABLE leaves (WI-603). One holding a variable is known only where its
-/// stamped type is ground.
-fn arg_type_unknown_at_load(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> bool {
-    if !occ_mentions_var(arg) {
-        return false;
-    }
-    arg.inferred_type()
-        .is_none_or(|t| !resolved_type_is_ground(kb, &t))
-}
-
-/// Does this occurrence hold a variable anywhere?
-fn occ_mentions_var(occ: &Rc<NodeOccurrence>) -> bool {
-    let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(occ)];
-    while let Some(o) = stack.pop() {
-        let Some(expr) = o.as_expr() else { continue };
-        if matches!(expr, Expr::Var(_)) {
-            return true;
-        }
-        for_each_child(expr, |c| stack.push(Rc::clone(c)));
-    }
-    false
-}
-
-/// WI-20260925-P7VP4 — the SLOT demand of a rule-body call to an ORDINARY operation with a
-/// dictionary chain (its parent sort's `requires`, then its own — [`op_dict_entries`]): the
-/// spec of each slot, in chain order, with the call's aligned arguments ([`SlotDemand`]), or
-/// `None` where the call demands no conditions.
+/// WI-20260925-P7VP4 — the SLOT demand of a rule-body call the typer left to its clause as the
+/// slots of its chain ([`ClauseCondition::Slots`]): the spec of each slot, in chain order, with
+/// the call's aligned arguments ([`SlotDemand`]), or `None` where the call carries no such
+/// condition or nothing reads it woven.
 ///
 /// Each slot becomes a condition of the clause, and the call carries them. A condition no
 /// citation fills stays UNBOUND, and the bridge then derives that slot from the argument
@@ -1164,44 +1119,24 @@ fn occ_mentions_var(occ: &Rc<NodeOccurrence>) -> bool {
 /// an unevaluated call), as the same call unwoven does since WI-20260926-CYNPE — increment
 /// 1's `an_unground_woven_call_delays`, and `an_unground_slot_call_delays` for this one.
 ///
-/// Declined: a call woven with one dispatch dictionary ([`woven_call_dispatches`], an
-/// [`inferred_demand`]); a defaulted member of a sort something provides, which the carrier's
-/// value dispatches, or of the sort the clause is written in, whose `requires` its citation
-/// supplies; a builtin or host-implemented callee; a callee the bridge does not run from a
-/// rule body (`functional_relation_arity`
-/// — a rule-less bodied or host-mapped operation, the host-implemented ones declined
-/// before it); a call the typer stamped;
-/// and a call whose every argument's type is known at load, which the chain is pinned by
-/// already.
+/// Which calls carry the condition is the typer's decision, written on the call where it
+/// leaves a half of the chain to the clause (`leave_to_the_clause`); what is asked here is the
+/// weave's own: a callee the bridge runs from a rule body (`functional_relation_arity`), and
+/// arguments that align to its parameters.
 fn inferred_slot_demand(
     kb: &mut KnowledgeBase,
-    rid: crate::kb::RuleId,
     occ: &Rc<NodeOccurrence>,
     functor: Symbol,
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
 ) -> Option<SlotDemand> {
-    if !crate::kb::op_info::operation_is_declared(kb, functor)
-        || kb.is_builtin(functor)
-        || host_implements(kb, functor)
-        || woven_call_dispatches(kb, functor)
-        || defaulted_spec_op_parent(kb, functor).is_some_and(|s| {
-            // A member of a sort something provides, whose call the carrier's value
-            // dispatches; or of the sort the clause is written in, whose `requires` are the
-            // clause's own, which its citation supplies (068-implementation §6.2).
-            spec_has_any_providers(kb, s) || same_sort_canonical(kb, s, kb.rule_domain(rid))
-        })
+    if occ.clause_condition() != Some(ClauseCondition::Slots)
         || kb.functional_relation_arity(functor).is_none()
-        || occ.classified_apply_target().is_some()
-        || !occ.op_dicts().is_empty()
     {
         return None;
     }
     let rec = crate::kb::op_info::lookup_operation_info(kb, functor)?;
     let args = align_call_args_to_params(kb, &rec.params, pos_args, named_args)?;
-    if !args.iter().any(|a| arg_type_unknown_at_load(kb, a)) {
-        return None;
-    }
     let chain = op_dict_entries(kb, functor);
     (!chain.is_empty()).then(|| SlotDemand {
         chain: chain.iter().map(|e| e.required_sort).collect(),
@@ -1213,9 +1148,11 @@ fn inferred_slot_demand(
     })
 }
 
-/// The spec a rule-body call DEMANDS a condition for under [`infer_rule_body_requirements`],
-/// with the call's aligned and carrier arguments ([`SpecDemand`]), or `None` where it demands
-/// none there (see that function's list of what is declined).
+/// The spec a rule-body call DEMANDS a condition for under [`infer_rule_body_requirements`] —
+/// one the typer left to its clause as the dictionary of a spec it is dispatched through
+/// ([`ClauseCondition::Dispatch`]) — with the call's aligned and carrier arguments
+/// ([`SpecDemand`]), or `None` where the call carries no such condition or the weave declines
+/// it (see that function's list).
 fn inferred_demand(
     kb: &KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
@@ -1224,61 +1161,28 @@ fn inferred_demand(
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
     written: &[Symbol],
 ) -> Option<SpecDemand> {
-    let (spec, defaulted) = lookup_spec_op_dispatch(kb, functor)
-        .map(|s| (s, false))
-        .or_else(|| defaulted_spec_op_parent(kb, functor).map(|s| (s, true)))?;
-    if kb.is_builtin(functor) || host_implements(kb, functor) {
+    let Some(ClauseCondition::Dispatch { spec }) = occ.clause_condition() else {
         return None;
-    }
-    if !op_has_spec_carrier_param(kb, functor, spec) || !spec_has_any_providers(kb, spec) {
-        return None;
-    }
-    if defaulted && !spec_has_an_abstract_member(kb, spec) {
-        return None;
-    }
+    };
+    // The clause's own `require[…]` reads it, and covers its calls (WI-1040).
     if written.contains(&kb.canonical_sort_sym(spec)) {
         return None;
     }
     // A call that does not ALIGN to its operation's parameters (an argument missing, a
-    // label naming no parameter) is the typer's to refuse; it reads headless below and
-    // would otherwise pass as a demand no read can be written for.
+    // label naming no parameter) is the typer's to refuse.
     let rec = crate::kb::op_info::lookup_operation_info(kb, functor)?;
     let args = align_call_args_to_params(kb, &rec.params, pos_args, named_args)?;
     // A BODY-LESS spec op is read — dispatched — wherever the goal runs it: at goal position,
     // WI-1057's functional-relation form, and in a value slot, where an operation application
     // is a computation (proposal 068 §1) and a woven call is dispatched through its
-    // dictionary (`reduce_op_value`). It was declined in a value slot, read as symbolic
-    // algebra, so a dot through another variable's requirement slot answered by the values
-    // where its goal spelling answered through the citation (WI-20261013-RYDNV); a call
-    // whose carrier is ground dispatches by it either way (WI-20260926-K4JGC).
+    // dictionary (`reduce_op_value`).
     let reader = kb.functional_relation_arity(functor).is_some()
         || kb.body_less_relation_arity(functor).is_some();
-    if !reader || occ.classified_apply_target().is_some() {
+    if !reader {
         return None;
     }
-    // Only a carrier NOT KNOWN AT LOAD gets a condition: `Fire` is decided by its concrete
-    // carrier (the typer's route) and `DontFire` is WI-642's refusal.
-    let (outcome, _) = aligned_carrier_outcome(kb, functor, Some(&args), spec);
-    if !matches!(outcome, FindDictOutcome::Suspend) {
-        return None;
-    }
-    // AND `Suspend` IS NOT "NO CARRIER IS KNOWN": the guard answers it wherever one carrier
-    // is unknown and the known ones refuse nothing, so a call with a concrete carrier among
-    // its arguments can answer it. Such a call is decided by that carrier, as a `Fire` one
-    // is, and keeps value dispatch — the concrete-carrier CONTROL's policy, one argument over
-    // (a clause that wrote `Int64` is not handed the caller's dictionary). Where the carriers
-    // stand at several spec parameters a concrete one need not fix the instance —
-    // `Conv.conv(?x, "km")` leaves `A` open — and such a call keeps value dispatch too,
-    // conservatively: its woven read would ask the provision at its carriers and answer
-    // (WI-20260925-PRVA2 (c)), and a written `require[…]` weaves it. Only a call whose
-    // carriers are ALL unknown at load gets an inferred condition.
     let carriers = aligned_carrier_args(kb, &rec.params, &args, spec);
-    let concrete = carriers
-        .iter()
-        .filter_map(|a| a.inferred_type())
-        .filter_map(|t| sort_functor_of_view(kb, &t))
-        .any(|s| !is_sort_param_symbol(kb, s) && !carrier_is_abstract_spec(kb, s));
-    (!concrete).then(|| SpecDemand {
+    Some(SpecDemand {
         call: DemandCall {
             call: Rc::clone(occ),
             functor,
@@ -2266,10 +2170,9 @@ pub(super) fn check_one_spec_op_requirement(
 /// can have none) — with what decided a `DontFire` ([`GuardRefusal`]): the carrier that
 /// provides nothing, or the carriers no provision binds together (WI-20260925-PRVA2 (c)).
 ///
-/// ONE OWNER for two readers that must agree about which calls are decided at load:
-/// [`check_one_spec_op_requirement`] refuses the `DontFire` ones, and
-/// [`infer_rule_body_requirements`] gives the `Suspend` ones a condition of the clause. A
-/// call either reader classified differently would be refused twice or covered by neither.
+/// Read by [`check_one_spec_op_requirement`], which refuses the `DontFire` ones: a known
+/// carrier no provision binds. The calls it leaves are the typer's to classify; the inference
+/// weaves the ones the typer leaves to the clause ([`ClauseCondition`]).
 fn spec_op_call_carrier_outcome(
     kb: &KnowledgeBase,
     functor: Symbol,

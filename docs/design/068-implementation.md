@@ -1413,6 +1413,46 @@ sort's own).
 Rows moved by design: `wi1043`'s union (`Float.pow` walked, nothing in a half alone) and 4DYR6's
 `Lone` (walked as `Wide` is).
 
+### 6.20 C1d, the class is the typer's stamp (WI-20261013-RYDNV, eighth part, 2026-10-31)
+
+The inference no longer classifies a rule-body call: the typer writes, on a call it leaves to its
+clause, a `ClauseCondition` — `Dispatch { spec }`, the dictionary the call is dispatched
+through, or `Slots`, its chain's — beside the node's `CallClass` (a slots call keeps its
+`ConcreteApplyWithin`, which eval reads), and `inferred_demand` / `inferred_slot_demand` weave
+exactly the stamped calls. What they still ask is the weave's own: a clause's written
+`require` covering the call (WI-1040), a reader for the woven goal, arguments that align. Gone
+from them: the carrier outcome (`spec_op_call_carrier_outcome`'s `Suspend`), the concrete
+carrier beside an open one, the builtin and host test, providers, the abstract member, the
+argument types "known at load".
+
+Where the typer stamps, as it decides: the body-less dispatch arm's open carrier (beside its
+`UnresolvedSpecOp`), its abstract-spec receiver (`Sp.size(s: Sp)`) and its carrier parameter
+left unpinned, the defaulted arm's interface member with no carrier the call pins
+(`Scale.twice`), and the direct arm where either half of a chain is left to the clause — the
+sort half with no own half beside it, the own half only where the callee has one (both
+predicates answered vacuously for an operation with no `requires` of its own, and stamped
+`Ghost.probe`). Not a builtin or host callee, and not a call with no argument at the spec's
+carrier, which no read can take a witness for (SHED7's limit, unchanged).
+
+MEASURED before the switch, by tracing the stamp beside the inference's verdict over the full
+workspace: 53 calls of about 2,250 disagreed, each for a reason now settled.
+- `TypeValue` and `TypePattern` count as supplied where the clause runs
+  (`library_instances`): the two "carried by the arguments" predicates asked for a provider, so
+  the typer stamped none of their slot calls (`n31xx`, `rrbg`), which the inference wove.
+- A concrete carrier beside an open one is conditional, as §5.2's table has it:
+  `Conv.conv(?x, "km")` is woven, and answers `7` as it did unwoven (PRVA2 (c)).
+- An open carrier at a spec nothing provides (decided with the user): refused at load
+  (`TypeError::ConditionAtUnprovidedSpec`) unless the rule is written in that spec, a law of
+  every carrier, or in a sort that requires it, whose citation supplies it. A host's spec with
+  no provider by design (`Stream`) takes no condition, its call resolved by the value.
+- The static check (`check_rule_body_requirements`, WI-642) runs before the inference: it reads
+  calls unwoven, and a call stamped conditional with a known carrier no provision binds
+  (`Conv.conv(?u, ?x)`, `?u` a `String`) was woven past it.
+
+Rows moved by design: P7VP4's mixed-carrier row (woven), `wi642`'s polymorphic row (refused at
+namespace level, loads in a sort that requires the spec), `wi1043`'s unground row (the clause
+refused, the hook driven by a query).
+
 ## 7. Testing
 
 Per CLAUDE.md: each ticket's rows live in one test module, driven by value with its back-outs run

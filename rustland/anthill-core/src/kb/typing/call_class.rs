@@ -1608,6 +1608,79 @@ impl CalleeFrame {
     }
 }
 
+/// A rule-body call's requirement left to its clause — requirement-channel.md §5.2's
+/// conditional class: an element of the instance is open and something grounds it at run
+/// time. What the typer decided, and what [`infer_rule_body_requirements`] weaves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClauseCondition {
+    /// The dictionary of `spec`, through which the call is dispatched.
+    Dispatch { spec: Symbol },
+    /// The slots of the callee's chain, its sort's `requires` and then its own.
+    Slots,
+}
+
+/// Record that the typer left `occ`'s requirement to its clause — unless the callee compares
+/// values itself (a resolver builtin, a host implementation), reading no dictionary.
+pub(super) fn leave_to_the_clause(
+    kb: &KnowledgeBase,
+    occ: &Rc<NodeOccurrence>,
+    callee: Symbol,
+    condition: ClauseCondition,
+) {
+    if kb.is_builtin(callee) || host_implements(kb, callee) {
+        return;
+    }
+    occ.set_clause_condition(condition);
+}
+
+/// A call dispatched through the dictionary of `spec`, its instance open, in a rule's own
+/// term: the clause's condition ([`leave_to_the_clause`]) where something can supply it — a
+/// provider of `spec`, the library's instances of it, the clause's own `require[…]`, the sort
+/// the rule is written in where that is `spec` (a law of every carrier) or `requires` it, whose
+/// citation supplies it — and refused
+/// where nothing can ([`TypeError::ConditionAtUnprovidedSpec`]). A host's spec that nothing
+/// provides by design (`Stream`, `Map`) is resolved by the value where the call runs, and
+/// takes no condition ([`spec_warrants_abstract_check`]).
+pub(super) fn dispatch_to_the_clause(
+    kb: &KnowledgeBase,
+    env: &TypingEnv,
+    occ: &Rc<NodeOccurrence>,
+    callee: Symbol,
+    spec: Symbol,
+    span: Option<Span>,
+) -> Result<(), TypeError> {
+    // A callee that compares values itself; and a call with no argument at the spec's carrier,
+    // whose instance no read can take a witness for — refused where nothing fixes it, a stated
+    // limit where the clause's sort requires it (SHED7's `fromList`).
+    if kb.is_builtin(callee)
+        || host_implements(kb, callee)
+        || !op_has_spec_carrier_param(kb, callee, spec)
+    {
+        return Ok(());
+    }
+    let supplied = spec_has_any_providers(kb, spec)
+        || library_instances(kb, spec).is_some()
+        || clause_requires_spec(kb, env, spec)
+        || env.rule_domain().is_some_and(|d| {
+            same_sort_canonical(kb, d, spec)
+                || transitive_required_sorts(kb, d)
+                    .iter()
+                    .any(|s| same_sort_canonical(kb, *s, spec))
+        });
+    if !supplied && !spec_warrants_abstract_check(kb, spec) {
+        return Ok(());
+    }
+    if !supplied {
+        return Err(TypeError::ConditionAtUnprovidedSpec {
+            span,
+            op: callee,
+            spec,
+        });
+    }
+    leave_to_the_clause(kb, occ, callee, ClauseCondition::Dispatch { spec });
+    Ok(())
+}
+
 /// WI-231 — per-call-site classification produced by the typer for
 /// consumption by the requirement-insertion pass (`kb/req_insertion.rs`).
 /// Each tagged apply site carries its `CallClass` on the apply

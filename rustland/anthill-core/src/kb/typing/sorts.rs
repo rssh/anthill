@@ -400,6 +400,16 @@ pub(super) fn type_check_sorts_collect(
 
     errors.extend(record_find_dictionary_grounding(kb));
     errors.extend(install_rule_provider_dictionaries(kb));
+    // WI-642: the STATIC face of WI-300. `record_find_dictionary_grounding` above
+    // handles a rule that DECLARES its requirement (`requires(X)` → find_dictionary);
+    // this flags a rule-body spec-op call whose requirement is neither declared nor
+    // satisfiable by a provision — statically missing, so the WI-300 guard would only
+    // `DontFire` at resolution (a silent clause failure). Runs after the dictionary
+    // rewrite so a declared `requires` is visible, and after `type_rule_bodies` so the
+    // per-arg `inferred_type` the carrier decision reads is stamped; and BEFORE the
+    // inference below, which weaves a call it reads unwoven: a call left to its clause with
+    // a carrier no provision binds among its known ones is refused, not woven past.
+    errors.extend(check_rule_body_requirements(kb));
     // WI-20260925-P7VP4: every rule-body call whose requirement is not known at load gets
     // the condition its author could have written — a read before the goal holding it, the
     // call woven through it. AFTER the requirement sweep, which grounds each WRITTEN
@@ -412,14 +422,6 @@ pub(super) fn type_check_sorts_collect(
     // refuses names its file, so it is pushed with the anchored errors below.
     let citations_refused = settle_citation_routes(kb);
 
-    // WI-642: the STATIC face of WI-300. `record_find_dictionary_grounding` above
-    // handles a rule that DECLARES its requirement (`requires(X)` → find_dictionary);
-    // this flags a rule-body spec-op call whose requirement is neither declared nor
-    // satisfiable by a provision — statically missing, so the WI-300 guard would only
-    // `DontFire` at resolution (a silent clause failure). Runs after the dictionary
-    // rewrite so a declared `requires` is visible, and after `type_rule_bodies` so the
-    // per-arg `inferred_type` the carrier decision reads is stamped.
-    errors.extend(check_rule_body_requirements(kb));
 
     // WI-20260917-NR6FJ: the OPERATION-CALL twin of the above — a rule-body call to an
     // operation whose declared `requires` names a concrete carrier that provides no such

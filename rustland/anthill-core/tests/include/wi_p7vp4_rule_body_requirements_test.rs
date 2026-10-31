@@ -1028,15 +1028,15 @@ end
 
 // ── Review fixes, round 3: each row drives one fix, and fails with it backed out ─────
 
-/// A call with a CONCRETE carrier among its arguments keeps value dispatch, though the guard
-/// answers `Suspend` for it (`?x` is not known at load): `toN`'s `?u` is a `String`, the
-/// second carrier of `Conv`, and the call is left unwoven. `go` answers `7`. FAILS, first
-/// assertion, with `inferred_demand`'s concrete-carrier check removed: the call is woven. The
-/// ANSWER passes either way since WI-20260925-PRVA2 (c): woven, its read asks the provision at
-/// `(Meters, String)`, which `Meters`' row binds (measured, `7`); before (c) the read asked
-/// `String` to provide `Conv`, DontFired, and `go` was empty.
+/// A call with a CONCRETE carrier beside an open one is its clause's condition, as one whose
+/// carriers are all open is (requirement-channel.md §5.2's conditional class: an element of the
+/// instance is open, and the argument's value grounds it): `toN`'s `?u` is a `String`, the
+/// second carrier of `Conv`, `?x` the first, and the call is woven. Its read asks the provision
+/// at `(Meters, String)`, which `Meters`' row binds, and `go` answers `7`. It was left unwoven,
+/// decided by the value — the concrete carrier read as deciding it (WI-20261013-RYDNV moved the
+/// first assertion); the ANSWER passes either way since WI-20260925-PRVA2 (c).
 #[test]
-fn a_call_with_a_concrete_carrier_among_its_arguments_keeps_value_dispatch() {
+fn a_call_with_a_concrete_carrier_beside_an_open_one_is_its_clauses_condition() {
     const MIXED: &str = r#"
 namespace wip7vp4.mixed
   import anthill.prelude.{Int64, String}
@@ -1058,10 +1058,11 @@ namespace wip7vp4.mixed
 end
 "#;
     let mut kb = crate::common::load_kb_with(MIXED);
-    assert_eq!(
-        crate::common::body_calls(&kb, "wip7vp4.mixed.toN"),
-        vec![("conv".to_string(), false, Vec::new()), ("unify".to_string(), false, Vec::new())],
-        "the call is left unwoven: its concrete carrier decides it",
+    assert!(
+        crate::common::body_calls(&kb, "wip7vp4.mixed.toN")
+            .iter()
+            .any(|(callee, woven, _)| callee == "conv" && *woven),
+        "the call is woven: its open carrier is the clause's condition",
     );
     assert_eq!(crate::common::one_definite_int(&mut kb, "wip7vp4.mixed.go"), Some(7), "`Meters.conv`, by value");
 }

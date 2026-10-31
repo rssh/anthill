@@ -125,9 +125,13 @@ fn stamps_of(root: &Rc<NodeOccurrence>) -> String {
         if let NodeKind::Expr {
             classification,
             op_dicts,
+            clause_condition,
             ..
         } = &o.kind
         {
+            if let Some(c) = clause_condition.get() {
+                let _ = write!(out, "{c:?};");
+            }
             if let Some(c) = classification.borrow().as_ref() {
                 let _ = write!(out, "{};", without_run_minted_ids(&format!("{c:?}")));
             }

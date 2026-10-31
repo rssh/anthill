@@ -211,7 +211,10 @@ end
     let (weaker_laws, same_clause, same_rule) = hashes("0 - 5", "Spec");
     assert_ne!(weaker_laws, laws, "the law changed");
     assert_eq!((same_clause, same_rule), (clause.clone(), rule.clone()));
-    let (same_laws, other_clause, same_rule) = hashes("0", "Other");
+    // A second requirement beside `Spec`, which the scope keeps: nothing provides `Spec`, so a
+    // scope that stopped requiring it would leave `Spec.w(?a)` with no condition that could
+    // hold, refused at load.
+    let (same_laws, other_clause, same_rule) = hashes("0", "Spec[T = T]\n    requires Other");
     assert_ne!(other_clause, clause, "the clause changed");
     assert_eq!((same_laws, same_rule), (laws, rule));
 }

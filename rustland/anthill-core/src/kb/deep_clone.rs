@@ -400,6 +400,7 @@ impl Copier {
                 compound_syntax,
                 classification,
                 op_dicts,
+                clause_condition,
                 inferred_type,
                 lowered_receiver,
             } => {
@@ -428,6 +429,7 @@ impl Copier {
                             .map(|class| Box::new(self.call_class(class))),
                     ),
                     op_dicts: RefCell::new(plain(&*op_dicts.borrow())),
+                    clause_condition: std::cell::Cell::new(plain(&clause_condition.get())),
                     inferred_type: RefCell::new(
                         inferred_type.borrow().as_ref().map(|ty| self.value(ty)),
                     ),

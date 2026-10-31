@@ -2751,8 +2751,11 @@ operation body is (below), and refused where its types leave its instance open. 
 parameter none of the operation's parameters writes — and one at a spec nothing provides are
 load errors wherever the call is written, no value being able to derive them: over `mk[B]()
 requires WeakOrd[T = B]`, `rule five(?c) :- mk(?c)` is refused, as `mk()` is in an
-operation body. A member of the sort the clause is written in reads its sort's `requires` as
-the clause's own, which the citation supplies.
+operation body. The spec nothing provides is the clause's condition where the sort the rule
+is written in is that spec or requires it, whose citation supplies it: with nothing providing
+`Relatable`, `rule linked(?x, ?y) :- related(?x, ?y)` is refused at namespace level and loads
+in `sort Linking { sort T = ?; requires Relatable[T = T] }`. A member of the sort the clause
+is written in reads its sort's `requires` as the clause's own, which the citation supplies.
 
 What a rule variable's type is at load is read off the whole clause, as an operation
 body's variables are: one typing over the clause's variables, in any order of its goals,

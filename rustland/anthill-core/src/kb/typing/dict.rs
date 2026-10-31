@@ -1829,8 +1829,14 @@ pub(super) fn own_requirements_carried_by_arguments(kb: &mut KnowledgeBase, call
                     .iter()
                     .any(|(_, t)| type_mentions_spec_param(kb, t, &[*sym], &vars))
         });
-        carried && spec_has_any_providers(kb, entry.required_sort)
+        carried && spec_is_supplied(kb, entry.required_sort)
     })
+}
+
+/// Can something supply an instance of `spec` where a clause runs: a sort that provides it, or
+/// the library, whose instances of `TypeValue` and `TypePattern` are built for the type at hand.
+fn spec_is_supplied(kb: &KnowledgeBase, spec: Symbol) -> bool {
+    spec_has_any_providers(kb, spec) || library_instances(kb, spec).is_some()
 }
 
 /// [`own_requirements_carried_by_arguments`] for the SORT half of `callee_op`'s chain — the
@@ -1871,7 +1877,7 @@ pub(super) fn sort_requirements_carried_by_arguments(
                         .iter()
                         .any(|(_, t)| type_mentions_spec_param(kb, t, &[*sym], vars))
             });
-            carried && spec_has_any_providers(kb, entry.required_sort)
+            carried && spec_is_supplied(kb, entry.required_sort)
         })
 }
 
@@ -4713,7 +4719,7 @@ enum FormerCarrier {
 /// sort and refused when written; and `TypePattern`, whose one row is `TypeValuePattern`'s
 /// and every other refused when written.
 #[derive(Clone, Copy, Debug)]
-enum LibraryInstances {
+pub(super) enum LibraryInstances {
     TypeValue,
     TypePattern,
 }
@@ -4772,7 +4778,7 @@ impl LibraryInstances {
     }
 }
 
-fn library_instances(kb: &KnowledgeBase, spec: Symbol) -> Option<LibraryInstances> {
+pub(super) fn library_instances(kb: &KnowledgeBase, spec: Symbol) -> Option<LibraryInstances> {
     let canon = kb.canonical_sort_sym(spec);
     if type_value_spec_sym(kb).is_some_and(|tv| kb.canonical_sort_sym(tv) == canon) {
         Some(LibraryInstances::TypeValue)

@@ -2743,6 +2743,14 @@ pub(super) fn check_apply_iter(
             // same way there.
             let self_recv_carrier =
                 statically_pinned_carrier(kb, &recv_carrier, None, Some(spec_sort));
+            // An interface member with no carrier the call pins is dispatched by the provider
+            // at its carrier, through the dictionary a condition of the clause reads.
+            if carrier.is_none()
+                && env.leaves_own_requirements_to_the_clause()
+                && spec_has_an_abstract_member(kb, spec_sort)
+            {
+                dispatch_to_the_clause(kb, env, occ, fn_sym, spec_sort, span)?;
+            }
             if let Some(carrier_sym) = carrier.as_ref().map(|c| c.sort) {
                 let op_qn = kb.qualified_name_of(fn_sym).to_string();
                 let op_short_sym = kb.intern(short_name_of(&op_qn));
@@ -3728,6 +3736,11 @@ pub(super) fn check_apply_iter(
                 let has_witness = spec_has_any_providers(kb, spec_sort)
                     || !spec_warrants_abstract_check(kb, spec_sort);
                 if has_witness {
+                    // The receiver's value is some provider where the clause runs: the call is
+                    // dispatched through the dictionary a condition of the clause reads.
+                    if env.leaves_own_requirements_to_the_clause() {
+                        dispatch_to_the_clause(kb, env, occ, fn_sym, spec_sort, span)?;
+                    }
                     stamp_spec_op_supply(
                         kb,
                         env,
@@ -3796,6 +3809,14 @@ pub(super) fn check_apply_iter(
             if matches!(&carrier_param_info, Some((.., true, _)))
                 || (carrier_param_sym.is_some() && pinned_carrier.is_none())
             {
+                // An open carrier: the clause's condition, as at the abstract receiver above. A
+                // concrete one reached transitively is the value's, dispatched where it runs.
+                if pinned_carrier.is_none()
+                    && carrier_param_sym.is_some()
+                    && env.leaves_own_requirements_to_the_clause()
+                {
+                    dispatch_to_the_clause(kb, env, occ, fn_sym, spec_sort, span)?;
+                }
                 stamp_spec_op_supply(
                     kb,
                     env,
@@ -4435,7 +4456,15 @@ pub(super) fn check_apply_iter(
                                 (false, Some(w)) => {
                                     w.defer_abstract_dispatch(occ, minted, spec_sort, class)
                                 }
-                                _ => classify(kb, occ, class),
+                                _ => {
+                                    // An open carrier something grounds where the clause runs:
+                                    // the call is dispatched through the dictionary a
+                                    // condition of the clause reads.
+                                    if env.leaves_own_requirements_to_the_clause() {
+                                        dispatch_to_the_clause(kb, env, occ, fn_sym, spec_sort, span)?;
+                                    }
+                                    classify(kb, occ, class)
+                                }
                             }
                         }
                     }
@@ -4952,11 +4981,12 @@ pub(super) fn check_apply_iter(
                     let mut unsuppliable: Option<Box<RequirementRefusal>> = None;
                     // Not in a rule written in the callee's own sort, whose parameters are the
                     // clause's, rigid, and whose `requires` its citation supplies.
-                    let rule_body_callee = (env.enclosing_op().is_none()
-                        && !(env.leaves_own_requirements_to_the_clause()
-                            && env.rule_domain().is_none_or(|d| !same_sort_canonical(kb, d, parent_sym))
-                            && sort_requirements_carried_by_arguments(kb, fn_sym, parent_sym, &subst)))
-                        .then_some(fn_sym);
+                    let sort_half_to_the_clause = env.enclosing_op().is_none()
+                        && env.leaves_own_requirements_to_the_clause()
+                        && env.rule_domain().is_none_or(|d| !same_sort_canonical(kb, d, parent_sym))
+                        && sort_requirements_carried_by_arguments(kb, fn_sym, parent_sym, &subst);
+                    let rule_body_callee =
+                        (env.enclosing_op().is_none() && !sort_half_to_the_clause).then_some(fn_sym);
                     let dispatch_dict = build_concrete_dispatch_dict(
                         kb,
                         // WI-20260921-3G1YT — a RULE-body site, and only then: an
@@ -5080,10 +5110,25 @@ pub(super) fn check_apply_iter(
                     // such a call is decided at load, as in an operation body — or where one
                     // is open that no argument carries, which no condition of the clause could
                     // derive. One an argument carries is the clause's to supply.
-                    if !env.leaves_own_requirements_to_the_clause()
-                        || own_requirements_fixed_at(kb, fn_sym, &subst, &projection_receivers)
-                        || !own_requirements_carried_by_arguments(kb, fn_sym)
+                    let has_own_half = {
+                        let chain = op_dict_entries(kb, fn_sym);
+                        chain.entries().len() > chain.sort_len()
+                    };
+                    let own_half_to_the_clause = env.leaves_own_requirements_to_the_clause()
+                        && has_own_half
+                        && !own_requirements_fixed_at(kb, fn_sym, &subst, &projection_receivers)
+                        && own_requirements_carried_by_arguments(kb, fn_sym);
+                    // A chain the clause supplies: the call carries its slots, each read by a
+                    // condition of the clause. Not a call woven as dispatched, whose condition is
+                    // its sort's dictionary; and not one whose own half the call fixes, stamped
+                    // here, beside a sort half left open — that half is derived from the values
+                    // where the call runs, a stated limit.
+                    if (own_half_to_the_clause || (sort_half_to_the_clause && !has_own_half))
+                        && !woven_call_dispatches(kb, fn_sym)
                     {
+                        leave_to_the_clause(kb, occ, fn_sym, ClauseCondition::Slots);
+                    }
+                    if !own_half_to_the_clause {
                     stamp_op_scoped_dicts(
                         kb,
                         occ,

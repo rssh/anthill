@@ -115,9 +115,13 @@ end
     );
 }
 
-/// ACCEPTANCE (under-determined case): a polymorphic rule whose carrier is not
-/// pinned to any concrete sort SUSPENDS — it must NOT error (WI-292: never flag a
-/// not-yet-ground requirement, never a rule that legitimately propagates it).
+/// ACCEPTANCE (under-determined case): a polymorphic rule whose carrier is not pinned to any
+/// concrete sort leaves its requirement to the clause where something can supply it — here the
+/// `requires` of the sort it is written in, whose citation supplies it: it loads (WI-292: a rule
+/// that legitimately propagates its requirement is never flagged). Nothing provides `Relatable`,
+/// so at namespace level, in no sort that requires it, the same rule is refused at load: no value
+/// can carry an instance, so no condition of its clause could hold (WI-20261013-RYDNV; it
+/// loaded, and its call dispatched on a value that could have none).
 #[test]
 fn polymorphic_under_determined_rule_body_suspends_no_error() {
     let src = format!(
@@ -126,14 +130,35 @@ namespace test.wi642.poly
   import anthill.prelude.{{Int64, Bool}}
   import test.wi642.poly.Relatable.{{related}}
 {PRELUDE}
-  rule anyLinked(?x, ?y) :- related(?x, ?y)
+  sort Linking
+    sort T = ?
+    requires Relatable[T = T]
+    rule anyLinked(?x, ?y) :- related(?x, ?y)
+  end
 end
 "#
     );
     let (_kb, errs) = try_load(&src);
     assert!(
         errs.is_empty(),
-        "a polymorphic (under-determined carrier) rule body must not error; got:\n{}",
+        "a polymorphic rule in a sort that requires its spec must not error; got:\n{}",
+        fmt_errs(&errs),
+    );
+    let src = format!(
+        r#"
+namespace test.wi642.polyns
+  import anthill.prelude.{{Int64, Bool}}
+  import test.wi642.polyns.Relatable.{{related}}
+{PRELUDE}
+  rule anyLinked(?x, ?y) :- related(?x, ?y)
+end
+"#
+    );
+    let (_kb, errs) = try_load(&src);
+    assert!(
+        errs.len() == 1
+            && fmt_errs(&errs).contains("nothing provides `test.wi642.polyns.Relatable`"),
+        "at namespace level, in no sort that requires it, the rule is refused; got:\n{}",
         fmt_errs(&errs),
     );
 }
