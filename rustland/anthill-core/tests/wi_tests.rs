@@ -2007,6 +2007,8 @@ mod wi_p9qbf_lazy_truncation_test;
 
 #[path = "include/wi_hrfr5_witness_attribution_test.rs"]
 mod wi_hrfr5_witness_attribution_test;
+#[path = "include/wi_gp8jc_defaulted_weave_test.rs"]
+mod wi_gp8jc_defaulted_weave_test;
 
 #[path = "include/wi_nr6fj_operation_requires_test.rs"]
 mod wi_nr6fj_operation_requires_test;

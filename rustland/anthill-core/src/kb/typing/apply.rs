@@ -2652,7 +2652,7 @@ pub(super) fn check_apply_iter(
         // WI-1042 — "defaulted spec op" is [`defaulted_spec_op_parent`], the gate this
         // block OWNS and three other sites ask ([`dot_member_dispatch_decision`]'s
         // defaulted leg, [`call_dispatch_shape`]'s rule-body walk trigger,
-        // [`defaulted_spec_op_witness_grounds_soundly`]'s witness scan). It stood here as
+        // [`rewrite_find_dictionary_goal`]'s direct witness scan). It stood here as
         // `lookup_spec_op_dispatch(..).is_none() && spec_op_parent_sort(..)`, which asks
         // one question twice: `lookup_spec_op_dispatch` IS `spec_op_parent_sort` plus the
         // body-less test (and, since WI-20261011-RM247, the data-sort one).

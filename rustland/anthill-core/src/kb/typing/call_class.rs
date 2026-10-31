@@ -96,10 +96,8 @@ pub(super) fn sort_is_parametric(kb: &KnowledgeBase, sort_sym: Symbol) -> bool {
 ///     nothing else since WI-1036 deleted its `!is_builtin` clause. WI-1043 turned that
 ///     site's ADMISSION into [`spec_op_call_parent`] (both halves) and left this gate
 ///     naming WHICH half, which is what its error tail is keyed on;
-///   * [`defaulted_spec_op_witness_grounds_soundly`], WI-1040's last witness scan — a
-///     FOURTH reader, found by this ticket's own review, which asked the question by name
-///     while reading only the body-AGNOSTIC parent and leaning on caller scan order for
-///     the rest.
+///   * the direct witness scan of [`rewrite_find_dictionary_goal`], which takes a
+///     defaulted op of the spec as a witness beside a body-less one.
 ///
 /// The drift this closes is not hypothetical: the equivalence of the two spellings was
 /// held by a doc comment 30k lines away, so a clause added to the WI-444 block would

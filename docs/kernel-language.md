@@ -2659,9 +2659,7 @@ rule q(?x, ?d) :- ?d = require[Eq[T]], consume(?x, ?d)
 
 The bare form brings the resolved dictionary into the clause for the body calls
 it covers — the calls to the spec's own operations that name no carrier, and
-those whose carrier argument is the one the dictionary was read from (a call to
-a DEFAULTED operation is still covered whatever it carries — a known gap,
-`docs/design/060-implementation.md` §7.3); the direct `?d = require[X]` form also exposes that same structural
+those whose carrier argument is the one the dictionary was read from; the direct `?d = require[X]` form also exposes that same structural
 dictionary as a clause variable.  The latter is a converter-recognized binding
 form at the top level of a body goal—not a change to ordinary `=`, which remains
 a semantic equality test (§8.3).  A nested occurrence such as

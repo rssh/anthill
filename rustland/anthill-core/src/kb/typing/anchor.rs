@@ -172,8 +172,7 @@ pub(super) fn rewrite_find_dictionary_goal(
     // inside the conjunct `eq(member(?x, ?xs), true)`. A functor failing either gate is
     // skipped; both scans returning `None` falls through to the loud "no witness" error
     // (honest that the requirement is ungroundable, never a dead/unsound guard).
-    let scan_body_dfs = |gate: fn(&KnowledgeBase, Symbol, Symbol) -> bool,
-                         covers: bool|
+    let scan_body_dfs = |gate: fn(&KnowledgeBase, Symbol, Symbol) -> bool|
      -> Option<GroundedRequirement> {
         let mut stack: Vec<Rc<NodeOccurrence>> = body_nodes.iter().cloned().collect();
         while let Some(cand) = stack.pop() {
@@ -200,20 +199,13 @@ pub(super) fn rewrite_find_dictionary_goal(
             if let Some(goal) = make_witness(kb, *functor, pos_args, named_args) {
                 return Some(GroundedRequirement {
                     goal: Some(goal),
-                    // The transitive / inherited / defaulted scans do NOT take the
-                    // bracket into account: HRFR5 widened the DIRECT scan only, which is
-                    // where a carrier argument names the spec's own carrier parameter.
+                    // The transitive / inherited scans do NOT take the bracket into
+                    // account: HRFR5 widened the DIRECT scan only, which is where a
+                    // carrier argument names the spec's own carrier parameter.
                     bracket_attributed: false,
-                    covered_calls: if covers {
-                        collect_covered_calls(
-                            kb,
-                            body_nodes,
-                            spec_canon,
-                            &call_carrier_args(kb, *functor, pos_args, named_args, spec_canon),
-                        )
-                    } else {
-                        Vec::new()
-                    },
+                    // The witness is not a call to one of X's operations, so X's
+                    // dictionary decides no dispatch of it — see each scan below.
+                    covered_calls: Vec::new(),
                 });
             }
         }
@@ -248,11 +240,20 @@ pub(super) fn rewrite_find_dictionary_goal(
         if *functor == fd_sym {
             continue; // don't treat a find_dictionary goal as its own witness
         }
-        // The op must be a (body-less) spec op OF THIS spec, AND actually carry the
-        // spec in a parameter — a nullary / all-content op (`Monoid.unit()`) never
-        // grounds the instance from its arguments, so it is not a usable witness
-        // (choosing it would make the guard permanently `DontFire`).
-        match lookup_spec_op_dispatch(kb, *functor) {
+        // The op must be a spec op OF THIS spec, AND actually carry the spec in a
+        // parameter — a nullary / all-content op (`Monoid.unit()`) never grounds the
+        // instance from its arguments, so it is not a usable witness (choosing it would
+        // make the guard permanently `DontFire`).
+        //
+        // Body-less or DEFAULTED: a default body changes what an uncovered call runs, not
+        // how its carrier argument grounds the instance. A defaulted op was read only by a
+        // scan of its own, after the transitive and inherited ones, walked last call first
+        // and blind to the bracket — so the dictionary was read at the last call's
+        // carrier, and a caller's dictionary reached the call at that carrier instead of
+        // the first one. That scan is left for a call no goal runs (below).
+        let parent = lookup_spec_op_dispatch(kb, *functor)
+            .or_else(|| defaulted_spec_op_parent(kb, *functor));
+        match parent {
             Some(parent) if kb.canonical_sort_sym(parent) == spec_canon => {}
             _ => continue,
         }
@@ -365,11 +366,11 @@ pub(super) fn rewrite_find_dictionary_goal(
     //   * `op_has_spec_carrier_param` — the op must expose a carrier parameter the
     //     guard recognizes for X, else the emitted guard would be permanently
     //     `DontFire` (a silently-dead rule).
-    // `covers: false` — the call GROUNDS X (its own `requires X` is discharged at
+    // No covered calls — the call GROUNDS X (its own `requires X` is discharged at
     // the same carrier) but is not a call to one of X's operations, so X's
     // dictionary does not decide its dispatch. Threading a dictionary INTO such a
     // callee is the §6 crossing, not this weave.
-    if let Some(found) = scan_body_dfs(transitive_witness_grounds_soundly, false) {
+    if let Some(found) = scan_body_dfs(transitive_witness_grounds_soundly) {
         return Ok(found);
     }
 
@@ -394,28 +395,51 @@ pub(super) fn rewrite_find_dictionary_goal(
     // mis-decision. A rule that means to constrain a container ELEMENT should compare
     // elements (or use an op like `List.member` that DECLARES `requires Eq[T]`, caught
     // by the transitive scan first).
-    // `covers: false` — the witness is an op of a spec X *requires* (`eq` for
+    // No covered calls — the witness is an op of a spec X *requires* (`eq` for
     // `Eq`), so reaching its implementation from X's dictionary needs a projection
     // into a sub-slot; the value it grounds X at is still correct.
-    if let Some(found) = scan_body_dfs(inherited_spec_op_witness_grounds_soundly, false) {
+    if let Some(found) = scan_body_dfs(inherited_spec_op_witness_grounds_soundly) {
         return Ok(found);
     }
 
-    // Find a DEFAULTED-SPEC-OP WITNESS. `lookup_spec_op_dispatch` — the DIRECT
-    // scan's gate — answers only for a BODY-LESS spec op, so a call to a spec op
-    // that carries a DEFAULT body (`operation describe(x: T) -> Int64 = 1`) was no
-    // witness at all and its `requires`/`require` was rejected as ungroundable. It
-    // grounds the instance exactly as the body-less sibling does: the carrier
-    // parameter is declared with the spec's own type-parameter, so the argument's
-    // carried type decides — which is why `op_has_spec_carrier_param` (shared with
-    // every scan above) is the only other gate needed.
-    //
-    // ORDERED LAST, and that ordering is what makes it a zero-blast-radius
-    // addition rather than a re-attribution: reaching here means all three scans
-    // above found nothing, which until now was the hard error below. No rule that
-    // loads today can change which witness it picks.
-    if let Some(found) = scan_body_dfs(defaulted_spec_op_witness_grounds_soundly, true) {
-        return Ok(found);
+    // A DEFAULTED call that no goal runs — in a negand, a branch, a quantifier's body —
+    // is still a witness, the first one in body order: the direct scan takes only the
+    // calls that run with their goal, and `rule r(?x) :- require[Desc[T]],
+    // not(Desc.describe(?x, 1))` loaded on this path before the direct scan took
+    // defaulted calls. A body-less call there is no witness, as it was not.
+    let mut stack: Vec<Rc<NodeOccurrence>> = body_nodes.iter().rev().cloned().collect();
+    while let Some(cand) = stack.pop() {
+        let Some(expr) = cand.as_expr() else { continue };
+        let mut children: Vec<Rc<NodeOccurrence>> = Vec::new();
+        for_each_child(expr, |c| children.push(Rc::clone(c)));
+        stack.extend(children.into_iter().rev());
+        let Expr::Apply {
+            functor,
+            pos_args,
+            named_args,
+            ..
+        } = expr
+        else {
+            continue;
+        };
+        if !defaulted_spec_op_parent(kb, *functor)
+            .is_some_and(|parent| kb.canonical_sort_sym(parent) == spec_canon)
+            || !op_has_spec_carrier_param(kb, *functor, spec_canon)
+        {
+            continue;
+        }
+        if let Some(goal) = make_witness(kb, *functor, pos_args, named_args) {
+            return Ok(GroundedRequirement {
+                goal: Some(goal),
+                bracket_attributed: false,
+                covered_calls: collect_covered_calls(
+                    kb,
+                    body_nodes,
+                    spec_canon,
+                    &call_carrier_args(kb, *functor, pos_args, named_args, spec_canon),
+                ),
+            });
+        }
     }
 
     // THE SECOND ANCHOR — a TYPED HEAD BINDING (proposal 060 §3, WI-20260909-QMFC5).
@@ -1062,16 +1086,10 @@ pub(super) fn anchor_grounding(
         // spec's own operations in the clause — the same population the DIRECT witness
         // scan covers, and for the same reason.
         //
-        // AT THE ANCHORED VARIABLE, for a carrier-bearing body-less call (see
+        // AT THE ANCHORED VARIABLE, for a carrier-bearing call (see
         // [`collect_covered_calls`]); a PROJECTED anchor's carrier is the root's
-        // ELEMENT, which no call argument spells, so it names none. The bodied and
-        // carrier-less calls are still covered CARRIER-BLIND: a clause with one anchored
-        // bound and a second, UNBOUND variable of another provider would weave the
-        // anchor's dictionary into that variable's bodied call too, and the `>1 anchors`
-        // refusal cannot see it because it counts BOUNDS. `/code-review` could not drive
-        // it to a wrong value — the anchor path is only reachable when no witness call
-        // exists, and the shapes left name no carrier to differ on — so it is recorded
-        // here rather than claimed as fixed or as impossible.
+        // ELEMENT, which no call argument spells, so it names none. A carrier-less call
+        // is covered wherever the dictionary is.
         covered_calls: collect_covered_calls(
             kb,
             body_nodes,
@@ -1082,31 +1100,6 @@ pub(super) fn anchor_grounding(
         // written bracket is what selected the head binding above.
         bracket_attributed: true,
     }))
-}
-
-/// WI-1040 — is `functor` an operation of spec `spec_canon` that carries a DEFAULT
-/// body? The gate for [`rewrite_find_dictionary_goal`]'s last witness scan.
-///
-/// WI-1042 — asks [`defaulted_spec_op_parent`], the ONE owner of that question. It read
-/// the body-AGNOSTIC [`spec_op_parent_sort`] and left the DEFAULT half to the caller's
-/// scan order ("a body-less op was already taken by the direct scan"), which is the
-/// prose-held coupling this ticket exists to delete: the predicate's NAME claimed a test
-/// its body did not make, so a reordering of the scans above would have changed what it
-/// means with nothing to notice.
-///
-/// NOT OBSERVABLE, and said plainly rather than dressed as a fix: if the scan order holds,
-/// a body-less op never reaches here and the two readings agree — no test can distinguish
-/// them, and none is claimed. What changes is the FAILURE MODE if the order ever stops
-/// holding: the strict gate answers `false` and the caller falls through to its "no such
-/// call in the rule body" error, instead of grounding the requirement on a witness whose
-/// dispatch the dictionary cannot decide.
-pub(super) fn defaulted_spec_op_witness_grounds_soundly(
-    kb: &KnowledgeBase,
-    functor: Symbol,
-    spec_canon: Symbol,
-) -> bool {
-    defaulted_spec_op_parent(kb, functor)
-        .is_some_and(|parent| kb.canonical_sort_sym(parent) == spec_canon)
 }
 
 /// The nominal head symbol of an occurrence in spec-instance / reference position
