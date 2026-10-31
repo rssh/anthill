@@ -427,6 +427,47 @@ impl TypingEnv {
         self.in_rule_own_term()
     }
 
+    /// Does the clause supply the open requirements of a call with these arguments — a call of
+    /// the rule's own term ([`Self::leaves_own_requirements_to_the_clause`]), or one under a
+    /// form of it (a `let`, `match`, `if` or `lambda`) whose arguments name none of the form's
+    /// binders? Each such argument is a value of the clause's when the goal holding the form
+    /// runs, so a read placed before that goal takes it; a binder exists only once the form
+    /// runs (requirement-channel.md §5.2).
+    pub(super) fn clause_supplies_requirements(
+        &self,
+        pos_args: &[Rc<NodeOccurrence>],
+        named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    ) -> bool {
+        self.leaves_own_requirements_to_the_clause()
+            || (self.in_rule_body()
+                && self.enclosing_op().is_none()
+                && !pos_args
+                    .iter()
+                    .chain(named_args.iter().map(|(_, a)| a))
+                    .any(|a| self.names_a_binder(a)))
+    }
+
+    /// Does `occ` name a variable this environment binds — a form's binder, where the
+    /// environment is a rule body's?
+    fn names_a_binder(&self, occ: &Rc<NodeOccurrence>) -> bool {
+        if self.var_bindings.is_empty() {
+            return false;
+        }
+        let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(occ)];
+        while let Some(o) = stack.pop() {
+            let Some(expr) = o.as_expr() else { continue };
+            match expr {
+                Expr::Ident(s) | Expr::Ref(s) | Expr::VarRef { name: s, .. }
+                    if self.var_bindings.contains_key(s) =>
+                {
+                    return true;
+                }
+                _ => for_each_child(expr, |c| stack.push(Rc::clone(c))),
+            }
+        }
+        false
+    }
+
     /// Is the text typed here a rule body's own term, or a call of it ([`RuleText::Term`],
     /// [`RuleText::Fragment`]) — not an operation body, nor what stands under a compound
     /// expression? A call written there has no type bracket: the loader refuses one

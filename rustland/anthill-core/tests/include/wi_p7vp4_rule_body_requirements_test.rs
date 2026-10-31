@@ -768,14 +768,15 @@ end
     );
 }
 
-/// A call inside a DEFERRED data form — an `if` branch — gets no condition: a read before the
-/// goal would run whether or not the branch is taken. `pick(false, 5, ?e)` takes the `else`,
-/// so nothing ever calls `twice` on `5`, an `Int64` with no `Scale`. (`twice` is a DEFAULTED
-/// spec op: a body-less one in a value slot is symbolic data and gets no condition anywhere.)
-/// FAILS with the demand walk entering an `if`: the hoisted read on `5` fails the clause, and
+/// A call in an `if` branch that is not taken costs its clause nothing. The call is its
+/// clause's condition, and its read, before the goal, finds no `Scale` at `5`, an `Int64`: it
+/// binds that absence, which only the `then` branch would read. `pick(false, 5, ?e)` takes the
+/// `else`, so `pickOne` answers 1. (`twice` is a DEFAULTED spec op: a body-less one in a value
+/// slot is symbolic data and gets no condition anywhere.) FAILS with a read under a form
+/// failing on a missing provider, as a goal's read does: the read on `5` fails the clause, and
 /// `pickOne` is empty.
 #[test]
-fn a_call_in_an_untaken_branch_gets_no_condition() {
+fn a_call_in_an_untaken_branch_costs_its_clause_nothing() {
     let mut kb = crate::common::load_kb_with(&fix_program(
         "wip7vp4.deferred",
         "  rule pick(?f, ?v, ?e) :- ?e <=> (if ?f then Scale.twice(?v) else 1)\n  \

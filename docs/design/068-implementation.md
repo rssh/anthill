@@ -1481,6 +1481,40 @@ take a witness, and the call's dictionary was read by nothing.
 `rule_globals`' doc said "indexed by their assigned DeBruijn number"; the index is the position
 counted from the frame's end, as `extend_rule_frame_with_bounds` states, and the doc says so now.
 
+### 6.22 C1d, a call under a form (WI-20261013-RYDNV, tenth part, 2026-10-31)
+
+Decided with the user: a call under a `let`, `match`, `if` or `lambda` whose open instance a
+clause variable carries is its clause's condition, read before the goal holding the form, and
+the form is run with the dictionary — a `lambda`'s closure holds it. A call one of whose
+arguments names a form's own binder keeps the operation-body class: the read takes every
+argument as a witness, and a binder exists only once the form runs. A missing provider in a branch
+the form does not take costs the clause nothing (the user's choice of three).
+
+- **The class**: the typer's gate is `TypingEnv::clause_supplies_requirements` — a call of the
+  rule's own term, or one in a rule body, outside any operation, none of whose arguments names a
+  form binder (`var_bindings`) — at the six sites that read
+  `leaves_own_requirements_to_the_clause` before. `Error.raise` and `Error.reify` are spec
+  operations no dispatch arm classifies; their own `requires` is refused where open at a goal
+  too, and so in a thunk (`raise(?p)`'s `TypeValue`).
+- **The read**: the demand walk enters the four forms and marks a call under one; its read
+  carries `in_form: true` (`REQUIREMENT_IN_FORM_LABEL`), a group's read only when every call it
+  serves is under a form. A dispatch read no provider answers binds the absence
+  (`UnavailableWhy::NoProvider`, `dictionary_of_absence`), which the call refuses when it runs,
+  the bridge reading that as no value (`BridgeDisposition::NoProvider`). A slot read derives its
+  slot itself at the argument values (`derive_slot_read`, the bridge's own
+  `resolve_bridge_requirements`), binding a recorded absence the same way, and is kept in the
+  opened body (`is_routing_only_read` drops only the unmarked slot read, which the bridge
+  derives).
+- **The evaluator** runs a slots-woven call inside a form as one call with its chain's slots
+  (`start_apply_with_woven_slots`): read as a dispatch, it pushed a frame of the wrong arity.
+
+MEASURED against HEAD's binary: the spec-operation calls under a form answered by the value,
+`Int64`'s -1 under every citation; they answer the citation's 4 / -4 now, and an operation's own
+`requires` under a form, refused before, answers the same. The goal spellings and a call naming a
+binder are unchanged. A `@[simp]` equation whose right-hand side holds a form, refused before,
+is rewritten into the clause and answers the citation's, as its plain twin did. Rows moved by design: P7VP4's untaken-branch row (now a condition, answering
+as before), and two of `wi_9wvt7`'s, refused at the catcher's pattern instead of at the raise.
+
 ## 7. Testing
 
 Per CLAUDE.md: each ticket's rows live in one test module, driven by value with its back-outs run

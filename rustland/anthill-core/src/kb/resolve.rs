@@ -9310,6 +9310,9 @@ impl KnowledgeBase {
         };
         // ONE pass over the labels, for both questions asked of them below.
         let keys = goal.named_keys(self);
+        let in_form = keys
+            .iter()
+            .any(|&k| self.local_name_of(k) == super::typing::REQUIREMENT_IN_FORM_LABEL);
         // WI-20260925-P7VP4 — A SLOT READ DERIVES NOTHING. It is the clause's condition for
         // one slot of an ordinary operation's dictionary chain, and the woven call it
         // precedes carries its variable: a citation that fills it (`bind_citation_reads`)
@@ -9321,6 +9324,12 @@ impl KnowledgeBase {
             .iter()
             .any(|&k| self.local_name_of(k) == super::typing::REQUIREMENT_SLOT_LABEL)
         {
+            // A read marked `in_form:` is the one exception: its call stands under a form the
+            // evaluator runs whole, where no bridge derives an unfilled slot, so the read
+            // derives it — at the argument values, as the bridge would — and binds it.
+            if in_form {
+                return self.derive_slot_read(goal, &keys, subst, op_functor, pos_arity);
+            }
             return BuiltinResult::Success;
         }
         // WI-20260913-J38VE — THE WRITTEN BRACKET, read off slot 0 ONCE for both of its
@@ -9405,9 +9414,128 @@ impl KnowledgeBase {
                 out,
                 &bracket,
                 typed_instance,
+                in_form,
             ),
             None => unreachable!("`named_keys` listed `out` but `named_arg` has no child for it"),
         }
+    }
+
+    /// A slot read marked `in_form:` ([`super::typing::REQUIREMENT_IN_FORM_LABEL`]): its `out`
+    /// left unbound by every citation is derived from the call's argument values — the
+    /// read's witnesses, in parameter order — by the bridge's own derivation
+    /// ([`super::typing::resolve_bridge_requirements`]), and bound. Waits while an argument
+    /// is not ground; a slot the bridge records absent binds that absence.
+    fn derive_slot_read<V: TermView>(
+        &mut self,
+        goal: &V,
+        keys: &[Symbol],
+        subst: &Substitution,
+        op_functor: Symbol,
+        pos_arity: usize,
+    ) -> BuiltinResult {
+        let label = |name: &str| keys.iter().copied().find(|&k| self.local_name_of(k) == name);
+        let (Some(out_sym), Some(slot_sym)) = (
+            label(super::typing::REQUIREMENT_OUT_LABEL),
+            label(super::typing::REQUIREMENT_SLOT_LABEL),
+        ) else {
+            return BuiltinResult::Error(ResolveError::new(
+                "a derived slot read carries no `out:` or no `slot:`".to_string(),
+            ));
+        };
+        let Some(out) = self.walk_arg(goal.named_arg(self, out_sym), subst) else {
+            return BuiltinResult::Failure;
+        };
+        if !matches!(out.head(self), ViewHead::Var(_)) {
+            return BuiltinResult::Success;
+        }
+        let Some(slot) = self
+            .walk_arg(goal.named_arg(self, slot_sym), subst)
+            .and_then(|v| v.as_literal(self))
+            .and_then(|l| match l {
+                Literal::Int(k) => usize::try_from(k).ok(),
+                _ => None,
+            })
+        else {
+            return BuiltinResult::Error(ResolveError::new(
+                "a derived slot read's `slot:` is not an index".to_string(),
+            ));
+        };
+        let mut args: Vec<Value> = Vec::with_capacity(pos_arity.saturating_sub(2));
+        for i in 2..pos_arity {
+            match self.walk_arg(goal.pos_arg(self, i), subst) {
+                Some(v) if self.value_deep_ground(&v, subst) => args.push(self.reify_value(&v, subst)),
+                Some(_) => return BuiltinResult::delay(),
+                None => return BuiltinResult::Failure,
+            }
+        }
+        use super::typing::{BridgeRequirements, BridgeSlot};
+        let dict = match super::typing::resolve_bridge_requirements(
+            self,
+            op_functor,
+            &args,
+            super::typing::NamedSlotTies::Raise,
+        ) {
+            BridgeRequirements::Resolved(_, slots) => match slots.get(slot) {
+                Some((_, BridgeSlot::Resolved(tree))) => {
+                    match super::typing::dictionary_of_tree(self, tree) {
+                        Some(dict) => dict,
+                        None => return BuiltinResult::delay(),
+                    }
+                }
+                Some((_, BridgeSlot::Supplied(dict))) => dict.clone(),
+                // The absence the bridge records for this slot, refused by the call when the
+                // form runs it.
+                Some((_, BridgeSlot::Absent { spec_sort, why })) => {
+                    let (spec_sort, why) = (*spec_sort, why.clone());
+                    return self.bind_absence(out, spec_sort, why, subst);
+                }
+                None => {
+                    return BuiltinResult::Error(ResolveError::new(format!(
+                        "a derived slot read names slot {slot} of `{}`, whose chain has {}",
+                        self.qualified_name_of(op_functor),
+                        slots.len(),
+                    )))
+                }
+            },
+            // A slot read stands only for a callee whose chain has the slot.
+            BridgeRequirements::NoneNeeded => {
+                return BuiltinResult::Error(ResolveError::new(format!(
+                    "a derived slot read names slot {slot} of `{}`, for which the bridge finds no \
+                     requirement",
+                    self.qualified_name_of(op_functor),
+                )))
+            }
+            _ => return BuiltinResult::delay(),
+        };
+        self.bind_read_out(out, dict.into_value(), subst)
+    }
+
+    /// Bind a read's unbound `out` to the dictionary it read.
+    fn bind_read_out(&mut self, out: Value, dict: Value, subst: &Substitution) -> BuiltinResult {
+        let mut work = Substitution::with_parent(subst.clone());
+        match self.unify_values(out, dict, &mut work) {
+            UnifyOutcome::Ok if !work.is_contradiction() => BuiltinResult::SuccessWithBindings(work),
+            UnifyOutcome::Delay => BuiltinResult::delay(),
+            _ => BuiltinResult::Failure,
+        }
+    }
+
+    /// Bind a read's `out` to the dictionary that records `why` no provider of `spec_sort`
+    /// stands there ([`super::typing::dictionary_of_absence`]), refused by whatever reads it.
+    fn bind_absence(
+        &mut self,
+        out: Value,
+        spec_sort: Symbol,
+        why: super::typing::UnavailableWhy,
+        subst: &Substitution,
+    ) -> BuiltinResult {
+        let Some(dict) = super::typing::dictionary_of_absence(self, spec_sort, why) else {
+            return BuiltinResult::Error(ResolveError::new(format!(
+                "no dictionary sort to record that `{}` has no provider",
+                self.qualified_name_of(spec_sort),
+            )));
+        };
+        self.bind_read_out(out, dict.into_value(), subst)
     }
 
     /// WI-1040 — the `out` arm of [`Self::builtin_find_dictionary`]: fetch the
@@ -9445,6 +9573,8 @@ impl KnowledgeBase {
         // named.
         bracket: &super::typing::RequirementBracket,
         typed_instance: Option<&Value>,
+        // The read of a call under a form ([`super::typing::REQUIREMENT_IN_FORM_LABEL`]).
+        in_form: bool,
     ) -> BuiltinResult {
         use super::typing::{DefaultRung, FindDictFetch, FindDictOutcome};
         // WI-20260911-5G28A S2 — A SUPPLIED DICTIONARY IS CHECKED AGAINST A UNIQUE ROW
@@ -9480,16 +9610,7 @@ impl KnowledgeBase {
                 return BuiltinResult::delay();
             };
             return match self.domain_evidence(ty, subst) {
-                DomainEvidence::Dict { value, .. } => {
-                    let mut work = Substitution::with_parent(subst.clone());
-                    match self.unify_values(out, value, &mut work) {
-                        UnifyOutcome::Ok if !work.is_contradiction() => {
-                            BuiltinResult::SuccessWithBindings(work)
-                        }
-                        UnifyOutcome::Delay => BuiltinResult::delay(),
-                        _ => BuiltinResult::Failure,
-                    }
-                }
+                DomainEvidence::Dict { value, .. } => self.bind_read_out(out, value, subst),
                 DomainEvidence::NotYet(_) => BuiltinResult::delay(),
                 // A WITNESS WHOSE TYPE HAS NO DOMAIN has no `SortDomain` dictionary to bind:
                 // the read stands aside, `?d` unbound, and what decides the value is the
@@ -9544,7 +9665,15 @@ impl KnowledgeBase {
             }
             // A CARRIER KNOWN TO PROVIDE NO INSTANCE: the requirement is not available, and
             // the read fails — written by the author or inferred for a woven call alike. A
-            // missing provider is no undecided answer.
+            // missing provider is no undecided answer. A call under a form may not run, so
+            // its read binds the absence instead, which the call refuses when it does run.
+            FindDictFetch::Guard(FindDictOutcome::DontFire) if in_form && !supplied => {
+                let why = super::typing::UnavailableWhy::NoProvider {
+                    goal: self.qualified_name_of(spec_sort).to_string(),
+                    why: "it has no provision at the call's carrier".to_string(),
+                };
+                return self.bind_absence(out, spec_sort, why, subst);
+            }
             FindDictFetch::Guard(FindDictOutcome::DontFire) => return BuiltinResult::Failure,
             // The carried type is not readable yet (the witness value is unbound).
             // DELAY, and the wake condition needs no new machinery: the goal
@@ -15093,7 +15222,8 @@ pub(crate) fn unrouted_read(kb: &mut KnowledgeBase) -> Value {
 ///  * a SLOT read (WI-20260925-P7VP4, `slot: k`) — the woven call it precedes reads its `out`
 ///    from σ, bound when the clause opened if a citation routed it, and derives that slot
 ///    from the argument values itself if none did (`builtin_find_dictionary` answers the goal
-///    `Success` untouched);
+///    `Success` untouched). Not one marked `in_form:`, whose call is run under a form that
+///    derives nothing: that read derives the slot itself, and runs;
 ///  * a TYPED HEAD's `SortDomain` read (WI-20260925-SHED7) — the `apply_domain` it follows
 ///    reads its `out` from σ, bound when the clause opened if a citation routed it; unrouted,
 ///    the goal built a dictionary from the value's type that no later goal reads, the
@@ -15119,9 +15249,8 @@ fn is_routing_only_read(kb: &KnowledgeBase, n: &NodeOccurrence) -> bool {
     if kb.builtin_of(*functor) != Some(BuiltinTag::FindDictionary) {
         return false;
     }
-    named_args
-        .iter()
-        .any(|(k, _)| kb.local_name_of(*k) == super::typing::REQUIREMENT_SLOT_LABEL)
+    let labelled = |name: &str| named_args.iter().any(|(k, _)| kb.local_name_of(*k) == name);
+    labelled(super::typing::REQUIREMENT_SLOT_LABEL) && !labelled(super::typing::REQUIREMENT_IN_FORM_LABEL)
         || super::typing::is_typed_head_domain_pass(kb, by)
 }
 

@@ -543,6 +543,7 @@ pub(super) fn infer_rule_body_requirements(kb: &mut KnowledgeBase) {
     let slots_pass = woven_slots_pass(kb);
     let conjunction_pass = kb.register_pass(INFERRED_CONJUNCTION_PASS);
     let labels = ReadLabels {
+        in_form: kb.intern(REQUIREMENT_IN_FORM_LABEL),
         out: kb.intern(REQUIREMENT_OUT_LABEL),
         slot: kb.intern(REQUIREMENT_SLOT_LABEL),
         dict: kb.intern("dict"),
@@ -584,12 +585,20 @@ pub(super) fn infer_rule_body_requirements(kb: &mut KnowledgeBase) {
             // `(node, is it the top-level goal itself)`: the top goal's VALUE positions, and
             // below them only what [`demand_walk_enters`] admits — see the doc above for
             // where the walk stops and why.
-            let mut stack: Vec<(Rc<NodeOccurrence>, bool)> = vec![(Rc::clone(goal), true)];
+            // `(node, is it the goal itself, is it under a form)` — a call under a `let`,
+            // `match`, `if` or `lambda` is run by the evaluator inside that form, where only
+            // a slot its read has bound reaches it.
+            let mut stack: Vec<(Rc<NodeOccurrence>, bool, bool)> = vec![(Rc::clone(goal), true, false)];
             let mut found: Vec<SpecDemand> = Vec::new();
             let mut found_slots: Vec<SlotDemand> = Vec::new();
-            while let Some((o, top)) = stack.pop() {
+            while let Some((o, top, in_form)) = stack.pop() {
                 let Some(expr) = o.as_expr() else { continue };
                 if top || demand_walk_enters(expr) {
+                    let under_form = in_form
+                        || matches!(
+                            expr,
+                            Expr::Let { .. } | Expr::Match { .. } | Expr::If { .. } | Expr::Lambda { .. }
+                        );
                     let mut children: SmallVec<[Rc<NodeOccurrence>; 8]> = SmallVec::new();
                     for_each_child(expr, |c| children.push(Rc::clone(c)));
                     let pos = if top {
@@ -603,7 +612,7 @@ pub(super) fn infer_rule_body_requirements(kb: &mut KnowledgeBase) {
                             .into_iter()
                             .zip(positions)
                             .filter(|(_, p)| *p == BodyPos::Value)
-                            .map(|(c, _)| (c, false)),
+                            .map(|(c, _)| (c, false, under_form)),
                     );
                 }
                 let Expr::Apply {
@@ -620,13 +629,15 @@ pub(super) fn infer_rule_body_requirements(kb: &mut KnowledgeBase) {
                 if top && !woven_goal_has_reader(kb, &o, *functor, pos_args, named_args) {
                     continue;
                 }
-                if let Some(demand) =
+                if let Some(mut demand) =
                     inferred_demand(kb, &o, *functor, pos_args, named_args, &written)
                 {
+                    demand.in_form = in_form;
                     found.push(demand);
-                } else if let Some(demand) =
+                } else if let Some(mut demand) =
                     inferred_slot_demand(kb, &o, *functor, pos_args, named_args)
                 {
+                    demand.in_form = in_form;
                     found_slots.push(demand);
                 }
             }
@@ -657,7 +668,10 @@ pub(super) fn infer_rule_body_requirements(kb: &mut KnowledgeBase) {
                         .all(|(a, b)| views_structurally_equal(kb, a, b))
             });
             match same {
-                Some((_, _, calls)) => calls.push(demand.call.call),
+                Some((_, w, calls)) => {
+                    w.in_form &= demand.in_form;
+                    calls.push(demand.call.call)
+                }
                 None => {
                     let call = Rc::clone(&demand.call.call);
                     groups.push((gi, demand, vec![call]));
@@ -676,6 +690,7 @@ pub(super) fn infer_rule_body_requirements(kb: &mut KnowledgeBase) {
                 witness.spec,
                 &witness.call,
                 None,
+                witness.in_form,
             );
             reads_before[gi].push(read);
             for call in calls {
@@ -687,7 +702,17 @@ pub(super) fn infer_rule_body_requirements(kb: &mut KnowledgeBase) {
         for (gi, demand) in slot_calls {
             let mut outs: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(demand.chain.len());
             for (k, spec) in demand.chain.iter().enumerate() {
-                let (read, out) = inferred_read(kb, rid, fd_sym, pass, &labels, *spec, &demand.call, Some(k));
+                let (read, out) = inferred_read(
+                    kb,
+                    rid,
+                    fd_sym,
+                    pass,
+                    &labels,
+                    *spec,
+                    &demand.call,
+                    Some(k),
+                    demand.in_form,
+                );
                 reads_before[gi].push(read);
                 outs.push(out);
             }
@@ -850,6 +875,8 @@ pub(crate) fn clause_requirement_reads(
 
 /// The labels an inferred read is spelled with, interned once per pass.
 struct ReadLabels {
+    /// The read of a call under a form ([`REQUIREMENT_IN_FORM_LABEL`]).
+    in_form: Symbol,
     out: Symbol,
     slot: Symbol,
     dict: Symbol,
@@ -871,6 +898,10 @@ struct SpecDemand {
     call: DemandCall,
     spec: Symbol,
     carriers: Vec<Rc<NodeOccurrence>>,
+    /// The call stands under a form, which may not run it: its read binds the absence a
+    /// missing provider leaves instead of failing ([`REQUIREMENT_IN_FORM_LABEL`]). A group's
+    /// read is so only when every call it serves is.
+    in_form: bool,
 }
 
 /// A SLOT demand ([`inferred_slot_demand`]): the spec of each slot of the callee's dictionary
@@ -878,6 +909,9 @@ struct SpecDemand {
 struct SlotDemand {
     call: DemandCall,
     chain: Vec<Symbol>,
+    /// The call stands under a form the evaluator runs whole, where nothing derives an
+    /// unfilled slot ([`REQUIREMENT_IN_FORM_LABEL`]).
+    in_form: bool,
 }
 
 /// One INFERRED read for [`infer_rule_body_requirements`], and the clause variable it binds:
@@ -895,6 +929,8 @@ fn inferred_read(
     spec: Symbol,
     witness: &DemandCall,
     slot: Option<usize>,
+    // The read of a call under a form ([`REQUIREMENT_IN_FORM_LABEL`]).
+    in_form: bool,
 ) -> (Rc<NodeOccurrence>, Rc<NodeOccurrence>) {
     let DemandCall {
         call: witness,
@@ -914,6 +950,9 @@ fn inferred_read(
     let mut read_named = Vec::with_capacity(2);
     if let Some(k) = slot {
         read_named.push((labels.slot, node(Expr::Const(Literal::Int(k as i64)))));
+    }
+    if in_form {
+        read_named.push((labels.in_form, node(Expr::Const(Literal::Bool(true)))));
     }
     read_named.push((labels.out, Rc::clone(&out)));
     let read = NodeOccurrence::synthesized_expr(
@@ -1097,6 +1136,10 @@ fn demand_walk_enters(expr: &Expr) -> bool {
     matches!(
         expr,
         Expr::Apply { .. }
+            | Expr::Let { .. }
+            | Expr::Match { .. }
+            | Expr::If { .. }
+            | Expr::Lambda { .. }
             | Expr::ApplyWithin { .. }
             | Expr::DotApply { .. }
             | Expr::Constructor { .. }
@@ -1139,6 +1182,7 @@ fn inferred_slot_demand(
     let args = align_call_args_to_params(kb, &rec.params, pos_args, named_args)?;
     let chain = op_dict_entries(kb, functor);
     (!chain.is_empty()).then(|| SlotDemand {
+        in_form: false,
         chain: chain.iter().map(|e| e.required_sort).collect(),
         call: DemandCall {
             call: Rc::clone(occ),
@@ -1199,6 +1243,7 @@ fn inferred_demand(
         },
         spec,
         carriers,
+        in_form: false,
     })
 }
 

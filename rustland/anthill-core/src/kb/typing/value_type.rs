@@ -1478,6 +1478,14 @@ pub(crate) const REQUIREMENT_OUT_LABEL: &str = "out";
 /// [`super::infer_rule_body_requirements`].
 pub(crate) const REQUIREMENT_SLOT_LABEL: &str = "slot";
 
+/// The label of a read for a call under a form the evaluator runs whole (a `let`, `match`,
+/// `if` or `lambda`). Two things follow. A SLOT read derives its slot from the call's
+/// argument values where no citation supplied it, as the bridge does for a call in a goal.
+/// And a read no provider answers binds the absence of that provider instead of failing the
+/// clause: the form may not run the call (an `if` branch, a `match` case), and when it does,
+/// the call refuses the absence and has no value.
+pub(crate) const REQUIREMENT_IN_FORM_LABEL: &str = "in_form";
+
 /// WI-300 — the three-way outcome of a rule-body `requires(X)` guard (the
 /// desugared `find_dictionary` goal). Three-way *by construction* (never
 /// NAF-decide, WI-519 / WI-067): the guard RESOLVES the requirement — it does not

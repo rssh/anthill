@@ -658,3 +658,156 @@ fn a_call_in_a_negand_a_quantifier_or_a_consequent_reads_its_condition_there() {
     );
     assert_eq!(discharged.map(|(n, _)| n), [1, 0, 0], "the consequent");
 }
+
+/// What the rows on forms add to [`ORDERS`]: a value whose sort provides no `WeakOrd`,
+/// operations to hand a `lambda` to, at `Int64` and at the type of their second argument, an
+/// operation with an argument at no carrier, and an equation whose right-hand side is a form.
+const FORM_DECLS: &str = "  import anthill.prelude.Option.{some, none}\n  \
+                          entity box(v: Int64)\n  \
+                          sort Apply\n    \
+                          operation app(f: (u: Int64) -> Int64, v: Int64) -> Int64 = f(v)\n    \
+                          operation appAt[X](f: (u: X) -> Int64, v: X) -> Int64 = f(v)\n    \
+                          operation shift[A](x: A, n: Int64) -> Int64 requires WeakOrd[T = A] = \
+                          Int64.add(WeakOrd.compare(x, x), n)\n  \
+                          end\n  \
+                          sort Tw\n    \
+                          operation tw[A](a: A, b: A) -> Int64 requires WeakOrd[T = A]\n    \
+                          rule tw(?a, ?b) <=> (let s = Util.sign(?a, ?b)\n      s) @[simp]\n  \
+                          end\n";
+
+/// A CALL UNDER A `let`, AN `if`, A `match` OR A `lambda`, ITS INSTANCE CARRIED BY A CLAUSE
+/// VARIABLE, IS ITS CLAUSE'S CONDITION, as the same call written as a goal is: each spelling
+/// answers `Descending`'s 4, `Ascending`'s -4 and `Int64`'s own -1, for an operation's own
+/// `requires` (`Util.sign`) and for a spec operation (`WeakOrd.compare`). The read stands
+/// before the goal that holds the form, and the form is run with its dictionary; the closure a
+/// `lambda` builds carries it. So does a `@[simp]` equation whose right-hand side is the form,
+/// rewritten into the clause. Each was refused at load ("nothing in the clause determines
+/// which `anthill.prelude.WeakOrd` instance it means"). FAILS with the typer leaving a call to
+/// the clause only outside a form (`clause_supplies_requirements` reading
+/// `leaves_own_requirements_to_the_clause` alone): every form spelling is refused. The slot
+/// spellings also FAIL with the evaluator running a slots-woven call as a deferred dispatch
+/// (`start_apply_with_woven_slots` skipped): no answer under any citation. The goal spellings
+/// pass either way, by design.
+#[test]
+fn a_call_under_a_form_is_its_clauses_condition() {
+    for (ns, rule) in [
+        ("rydnv.sgoal", "  rule r(?a, ?b, ?c) :- Util.sign(?a, ?b, ?c)"),
+        ("rydnv.slet", "  rule r(?a, ?b, ?c) :- ?c <=> (let s = Util.sign(?a, ?b)\n    s)"),
+        ("rydnv.sif", "  rule r(?a, ?b, ?c) :- ?c <=> (if true then Util.sign(?a, ?b) else 0)"),
+        (
+            "rydnv.scond",
+            "  rule r(?a, ?b, ?c) :- ?c <=> (if Int64.lt(Util.sign(?a, ?b), 0) then -4 else 4)",
+        ),
+        (
+            "rydnv.smatch",
+            "  rule r(?a, ?b, ?c) :- ?c <=> (match true\n    case true -> Util.sign(?a, ?b)\n    case false -> 0)",
+        ),
+        (
+            "rydnv.slambda",
+            "  rule r(?a, ?b, ?c) :- ?c <=> Apply.app(lambda (u: Int64) -> Util.sign(?a, ?b), 0)",
+        ),
+        ("rydnv.ssimp", "  rule r(?a, ?b, ?c) :- ?c <=> Tw.tw(?a, ?b)"),
+        ("rydnv.dgoal", "  rule r(?a, ?b, ?c) :- WeakOrd.compare(?a, ?b, ?c)"),
+        ("rydnv.dlet", "  rule r(?a, ?b, ?c) :- ?c <=> (let s = WeakOrd.compare(?a, ?b)\n    s)"),
+        (
+            "rydnv.dif",
+            "  rule r(?a, ?b, ?c) :- ?c <=> (if true then WeakOrd.compare(?a, ?b) else 0)",
+        ),
+        (
+            "rydnv.dmatch",
+            "  rule r(?a, ?b, ?c) :- ?c <=> (match true\n    case true -> WeakOrd.compare(?a, ?b)\n    case false -> 0)",
+        ),
+        (
+            "rydnv.dlambda",
+            "  rule r(?a, ?b, ?c) :- ?c <=> Apply.app(lambda (u: Int64) -> WeakOrd.compare(?a, ?b), 0)",
+        ),
+    ] {
+        let want = if ns == "rydnv.scond" {
+            // The condition reads the sign, and the branch says which way it went.
+            [(1, Some(4)), (1, Some(-4)), (1, Some(-4))]
+        } else {
+            [(1, Some(4)), (1, Some(-4)), (1, Some(-1))]
+        };
+        assert_eq!(cited_counts(ns, &format!("{FORM_DECLS}{rule}"), "r"), want, "{ns}");
+    }
+}
+
+/// A CALL IN A BRANCH THAT IS NOT TAKEN COSTS ITS CLAUSE NOTHING: at `box(v: 1)`, whose sort
+/// provides no `WeakOrd`, the read before the goal binds the absence of a provider in place of
+/// failing the clause, and only the branch that calls would read it. Untaken, the clause
+/// answers the other branch's 1, definitely; taken, the call refuses the absence and the clause
+/// has no answer, as a goal calling it at `box(v: 1)` has none; at `Int64` it answers `Int64`'s
+/// own. For both classes, under an `if` and under a `match`, each queried uncited. FAILS with a
+/// read under a form failing on a missing provider, as a goal's read does: every untaken row is
+/// empty. The `Util.sign` rows also FAIL with the read of a slot under a form dropped from the
+/// body the resolver runs (`is_routing_only_read` ignoring `in_form:`): uncited, the form waits
+/// on a dictionary nothing binds; with the evaluator running a slots-woven call as a deferred
+/// dispatch; and with the typer leaving a call to the clause only outside a form. The taken
+/// rows pass either way, by design.
+#[test]
+fn a_call_in_a_branch_not_taken_costs_its_clause_nothing() {
+    let src = program(
+        "rydnv.untaken",
+        &[ORDERS, FORM_DECLS],
+        "  rule sIf(?f, ?a, ?b, ?e) :- ?e <=> (if ?f then Util.sign(?a, ?b) else 1)\n  \
+         rule dMatch(?f, ?a, ?b, ?e) :- ?e <=> (match ?f\n    \
+         case true -> WeakOrd.compare(?a, ?b)\n    \
+         case false -> 1)\n  \
+         rule sIfUntaken(?e) :- sIf(false, box(v: 1), box(v: 5), ?e)\n  \
+         rule sIfTaken(?e) :- sIf(true, box(v: 1), box(v: 5), ?e)\n  \
+         rule sIfInt(?e) :- sIf(true, 1, 5, ?e)\n  \
+         rule dMatchUntaken(?e) :- dMatch(false, box(v: 1), box(v: 5), ?e)\n  \
+         rule dMatchTaken(?e) :- dMatch(true, box(v: 1), box(v: 5), ?e)\n  \
+         rule dMatchInt(?e) :- dMatch(true, 1, 5, ?e)\n",
+    );
+    let mut kb = crate::common::load_kb_with(&src);
+    for class in ["sIf", "dMatch"] {
+        let rel = |case: &str| format!("rydnv.untaken.{class}{case}");
+        assert_eq!(crate::common::one_definite_int(&mut kb, &rel("Untaken")), Some(1), "{class}: the other branch");
+        let taken = crate::common::query_unary(&mut kb, &rel("Taken"));
+        assert!(taken.is_empty(), "{class}: the call has no value at `box(v: 1)`: {taken:?}");
+        assert_eq!(crate::common::one_definite_int(&mut kb, &rel("Int")), Some(-1), "{class}: `Int64`'s own");
+    }
+}
+
+/// A CALL AN ARGUMENT OF WHICH NAMES A FORM'S OWN BINDER KEEPS ITS CLASS: the lambda's
+/// parameter `u`, the `match` case's `x` and the `let`'s `s` are bound inside the form, where no
+/// read before the goal sees them, and the read takes every argument as a witness — `u` in
+/// `Apply.shift(?a, u)` too, where `?a` carries the instance. An operation's own `requires`
+/// there is refused, as before; a spec operation on the lambda's parameter is dispatched by the
+/// value, as before: `Int64`'s own -1 under every citation. FAILS with the binder test
+/// (`names_a_binder`) answering no: the refused spellings load.
+#[test]
+fn a_call_naming_a_forms_own_binder_keeps_its_class() {
+    for (what, rule) in [
+        (
+            "a lambda's parameter",
+            "  rule r(?a, ?b, ?c) :- ?c <=> Apply.appAt(lambda (u) -> Util.sign(u, ?b), ?a)",
+        ),
+        (
+            "a match case's binder",
+            "  rule r(?a, ?b, ?c) :- ?c <=> (match some(?a)\n    case some(x) -> Util.sign(x, ?b)\n    case none -> 0)",
+        ),
+        ("a let's binder", "  rule r(?a, ?b, ?c) :- ?c <=> (let s = ?a\n    Util.sign(s, ?b))"),
+        (
+            "a lambda's parameter at no carrier",
+            "  rule r(?a, ?c) :- ?c <=> Apply.app(lambda (u: Int64) -> Apply.shift(?a, u), 0)",
+        ),
+    ] {
+        let src = program("rydnv.binder", &[ORDERS, FORM_DECLS], rule);
+        let errs = crate::common::load_errors_of(&src);
+        crate::common::assert_refused_naming(
+            &errs,
+            &["requirement `anthill.prelude.WeakOrd[T = ", "cannot be supplied for call to `rydnv.binder."],
+            what,
+        );
+    }
+    let by_value = cited_counts(
+        "rydnv.binderspec",
+        &format!(
+            "{FORM_DECLS}  rule r(?a, ?b, ?c) :- ?c <=> Apply.appAt(lambda (u) -> WeakOrd.compare(u, ?b), ?a)"
+        ),
+        "r",
+    );
+    assert_eq!(by_value, [(1, Some(-1)), (1, Some(-1)), (1, Some(-1))], "by the value");
+}

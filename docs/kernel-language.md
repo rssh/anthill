@@ -2748,7 +2748,14 @@ resolver builtin (`eq`, `<`) compares values itself and reads no dictionary. A c
 in a `|` or `&` branch, a negation, a quantifier's body or a discharge's consequent has its
 condition there, read beside the goal it is in, which a citation reaches as it reaches one
 before the body's own goals. A call under a `lambda`, `let`, `match` or `if` is typed as an
-operation body is (below), and refused where its types leave its instance open. A requirement no argument carries — at a type
+operation body is (below). Where its instance is open and a clause variable carries it, it has
+its condition before the goal that holds the form, as a call of that goal has:
+`?c <=> (if ?f then WeakOrd.compare(?a, ?b) else 0)` compares by the dictionary its citation
+hands, and a `lambda` keeps the dictionary it is built with. Where no provider is at the
+carrier, the condition records that none is instead of failing: a branch the form does not take
+costs the clause nothing, and the goal fails only where the call runs. A call one of whose
+arguments names a variable of the form's own — a `lambda`'s parameter, a `let`'s or a case's
+binder — is decided as in an operation body, the variable not existing before the form runs. A requirement no argument carries — at a type
 parameter none of the operation's parameters writes — and one at a spec nothing provides are
 load errors wherever the call is written, no value being able to derive them: over `mk[B]()
 requires WeakOrd[T = B]`, `rule five(?c) :- mk(?c)` is refused, as `mk()` is in an

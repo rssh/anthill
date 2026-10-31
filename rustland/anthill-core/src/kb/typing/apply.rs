@@ -2746,7 +2746,7 @@ pub(super) fn check_apply_iter(
             // An interface member with no carrier the call pins is dispatched by the provider
             // at its carrier, through the dictionary a condition of the clause reads.
             if carrier.is_none()
-                && env.leaves_own_requirements_to_the_clause()
+                && env.clause_supplies_requirements(pos_args, named_args)
                 && spec_has_an_abstract_member(kb, spec_sort)
             {
                 dispatch_to_the_clause(kb, env, occ, fn_sym, spec_sort, span)?;
@@ -3738,7 +3738,7 @@ pub(super) fn check_apply_iter(
                 if has_witness {
                     // The receiver's value is some provider where the clause runs: the call is
                     // dispatched through the dictionary a condition of the clause reads.
-                    if env.leaves_own_requirements_to_the_clause() {
+                    if env.clause_supplies_requirements(pos_args, named_args) {
                         dispatch_to_the_clause(kb, env, occ, fn_sym, spec_sort, span)?;
                     }
                     stamp_spec_op_supply(
@@ -3813,7 +3813,7 @@ pub(super) fn check_apply_iter(
                 // concrete one reached transitively is the value's, dispatched where it runs.
                 if pinned_carrier.is_none()
                     && carrier_param_sym.is_some()
-                    && env.leaves_own_requirements_to_the_clause()
+                    && env.clause_supplies_requirements(pos_args, named_args)
                 {
                     dispatch_to_the_clause(kb, env, occ, fn_sym, spec_sort, span)?;
                 }
@@ -4460,7 +4460,7 @@ pub(super) fn check_apply_iter(
                                     // An open carrier something grounds where the clause runs:
                                     // the call is dispatched through the dictionary a
                                     // condition of the clause reads.
-                                    if env.leaves_own_requirements_to_the_clause() {
+                                    if env.clause_supplies_requirements(pos_args, named_args) {
                                         dispatch_to_the_clause(kb, env, occ, fn_sym, spec_sort, span)?;
                                     }
                                     classify(kb, occ, class)
@@ -4982,7 +4982,7 @@ pub(super) fn check_apply_iter(
                     // Not in a rule written in the callee's own sort, whose parameters are the
                     // clause's, rigid, and whose `requires` its citation supplies.
                     let sort_half_to_the_clause = env.enclosing_op().is_none()
-                        && env.leaves_own_requirements_to_the_clause()
+                        && env.clause_supplies_requirements(pos_args, named_args)
                         && env.rule_domain().is_none_or(|d| !same_sort_canonical(kb, d, parent_sym))
                         && sort_requirements_carried_by_arguments(kb, fn_sym, parent_sym, &subst);
                     let rule_body_callee =
@@ -5114,7 +5114,7 @@ pub(super) fn check_apply_iter(
                         let chain = op_dict_entries(kb, fn_sym);
                         chain.entries().len() > chain.sort_len()
                     };
-                    let own_half_to_the_clause = env.leaves_own_requirements_to_the_clause()
+                    let own_half_to_the_clause = env.clause_supplies_requirements(pos_args, named_args)
                         && has_own_half
                         && !own_requirements_fixed_at(kb, fn_sym, &subst, &projection_receivers)
                         && own_requirements_carried_by_arguments(kb, fn_sym);

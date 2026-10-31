@@ -498,6 +498,12 @@ impl Interpreter {
                 // changes, this must read the classification's `spec_op_sym` instead;
                 // a concrete-form `fn` would make the layout measure a spec-instance
                 // dict against the provider's chain alone.
+                // A rule-body call woven with its clause's conditions for its dictionary
+                // CHAIN, run inside a form the resolver handed over whole: one slot per entry,
+                // not a dispatch.
+                if crate::kb::typing::is_woven_slots_call(&self.kb, occ) {
+                    return self.start_apply_with_woven_slots(*functor, args, named_args, requirements);
+                }
                 // WI-822 LEG 1: no op-scoped slots — the IR `apply_within` form carries
                 // only the instance channel, and this arm is rebuild-only (see above).
                 self.start_apply_within(*functor, *functor, args, named_args, requirements, &[])
@@ -1806,6 +1812,39 @@ impl Interpreter {
             },
             first,
         )
+    }
+
+    /// A rule-body call carrying its clause's conditions for `functor`'s dictionary chain —
+    /// one dictionary per slot, in chain order ([`crate::kb::typing::op_dict_entries`]) — under
+    /// a form the resolver hands the evaluator whole (a `let`, `match`, `if`, or a `lambda`'s
+    /// body where it is applied). The frame is the one the bridge builds for the same call at
+    /// goal position (`call_op_bridged`): the sort's stand-in, then each slot under its name.
+    fn start_apply_with_woven_slots(
+        &mut self,
+        functor: Symbol,
+        args: &[Rc<NodeOccurrence>],
+        named_args: &[(Symbol, Rc<NodeOccurrence>)],
+        slots: &[Rc<NodeOccurrence>],
+    ) -> Result<StepOutcome, EvalError> {
+        let chain = crate::kb::typing::op_dict_entries(&mut self.kb, functor);
+        let names = chain.names(&mut self.kb);
+        if names.len() != slots.len() {
+            return Err(EvalError::Internal(format!(
+                "a woven call of `{}` carries {} slot(s), and its chain has {}",
+                self.kb.qualified_name_of(functor),
+                slots.len(),
+                names.len(),
+            )));
+        }
+        let mut requirements: SmallVec<[(Symbol, super::value::Dictionary); 2]> = SmallVec::new();
+        if let Some(parent) = crate::kb::typing::impl_parent_of_op(&self.kb, functor) {
+            let stand_in = self.stand_in_requirement(parent, parent, None)?;
+            requirements.push((self.fields.req_self, stand_in));
+        }
+        for (name, slot) in names.iter().zip(slots) {
+            requirements.push((*name, self.eval_requirement_chain_node(slot)?));
+        }
+        self.dispatch_apply_with_requirements(functor, requirements, args, named_args)
     }
 
     /// WI-223 / WI-234 (Model 1): reduce `apply_within(fn, args,

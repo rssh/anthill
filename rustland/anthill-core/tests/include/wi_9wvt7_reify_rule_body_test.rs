@@ -71,8 +71,9 @@
 //!   * the boundary's refusal of no evidence backed out (the boundary installed, catching
 //!     nothing) → `an_unpinned_host_entry_is_refused_and_leaves_no_frame`. A rule body no
 //!     longer reaches the boundary with no evidence: since proposal 071 stage (d) the raise in
-//!     its thunk requires the payload's `TypeValue` and is refused at load first
-//!     (`a_generic_catcher_cited_from_a_rule_is_refused_at_its_raise`), where until then
+//!     its thunk requires the payload's `TypeValue`, and where the clause leaves that open the
+//!     call is refused at load (`a_generic_catcher_cited_from_a_rule_is_refused_at_load`: at
+//!     the catcher, the raise's `TypeValue` being its clause's condition), where until then
 //!     `useA` reached the boundary and raised past it under this back-out. Until
 //!     WI-20261016-YM8HD the bridge kept the slot as an absence marker for both, read by a
 //!     gate keyed on `ErrorTag`; that refusal named the unpinned slot, and this one names
@@ -410,10 +411,15 @@ end
 ];
 
 /// A rule-body call whose pattern slot it builds no evidence for is refused where it is
-/// written — AT THE RAISE, where the thunk raises at a type the clause leaves open (proposal
-/// 071 stage (d)): the raising call requires the `TypeValue` of that type, which the clause
-/// pins as little as the pattern, and is refused first (the rule variable's shapes, the open
-/// collection). A tuple is refused at both. Where the thunk raises nothing open — a spec as
+/// written. Where the thunk's raise requires a `TypeValue` that is no condition of the clause,
+/// the raise is refused first (proposal 071 stage (d)): `Error.raise` itself at a rule
+/// variable's type, and a collection whose element is open, which no row answers. Where an
+/// operation the thunk calls raises at a rule variable's type beside a second label, that
+/// operation's `TypeValue` is its clause's condition, read off the value as the thunk runs, and
+/// the refusal is the boundary's: no one pattern admits `Error[T = ?P]` and `Error[T = Other]`;
+/// FAILS with the typer leaving a call to the clause only outside a form
+/// (`clause_supplies_requirements`): the raise is refused first, naming its `TypeValue`. A tuple
+/// is refused at both. Where the thunk raises nothing open — a spec as
 /// the payload, no `Error` label — the refusal is the pattern's. The boundary catches by that evidence, and with none it refuses to run, so the
 /// call can never answer: with (d)'s load refusal backed out the programs load and
 /// `either(7, 7, ?r)` is undecided at every query. Before the boundary refused to run with
@@ -440,6 +446,11 @@ fn an_unfilled_pattern_slot_is_refused_where_it_is_written() {
                 "anthill.reflect.TypePattern[T = (_1: Int64, _2: Int64)]",
                 "a STRUCTURAL FORMER",
                 "Name a sort with no tuple or arrow among its type arguments",
+            ]
+        } else if shape == "a rule variable's type beside a second label" {
+            &[
+                "expected one pattern for `T1` that admits every `Error` label the argument raises",
+                "the argument raises `Error[T = ?P]` and `Error[T = Other]`, which no one sort heads",
             ]
         } else if shape.starts_with("a rule variable's type") {
             &[
@@ -470,9 +481,13 @@ fn an_unfilled_pattern_slot_is_refused_where_it_is_written() {
 }
 
 /// A GENERIC operation that reifies at its own `P` (`requires TypePattern[T = P]`), cited from
-/// a rule whose arguments do not pin `P`, IS REFUSED AT LOAD, AT THE RAISE (proposal 071 stage
-/// (d)): the thunk calls `raiseEither(?p, ?n)`, whose `requires TypeValue[T = P]` nothing in
-/// the clause pins. Until stage (d) both clauses loaded; `useA` reached the boundary with no
+/// a rule whose arguments do not pin `P`, IS REFUSED AT LOAD, AT THE CATCHER: the thunk calls
+/// `raiseEither(?p, ?n)`, which raises `Error[P]` at `?p`'s type, open in the clause, beside
+/// `Error[Other]`, and no one pattern for the catcher's `P` admits both. The raise's `requires
+/// TypeValue[T = P]` is its clause's condition, read off `?p`'s value as the thunk runs; with
+/// the typer leaving a call to the clause only outside a form (`clause_supplies_requirements`),
+/// the raise is refused first, as proposal 071 stage (d) refused it. Until stage (d) both
+/// clauses loaded; `useA` reached the boundary with no
 /// evidence, refused there, and `eitherW` had the bridge pin `P` from `?p`'s value as it ran.
 /// With the payload a constructor's value the clause pins `P`, and the boundary narrows: the
 /// `Other` passes it, the `Boom` is caught.
@@ -502,7 +517,7 @@ end
 "#;
 
 #[test]
-fn a_generic_catcher_cited_from_a_rule_is_refused_at_its_raise() {
+fn a_generic_catcher_cited_from_a_rule_is_refused_at_load() {
     let errs = crate::common::load_errors_of(GENERIC_CATCHER);
     assert_eq!(errs.len(), 2, "one refusal per clause: {errs:#?}");
     // Each clause's own refusal, located at its line: the two are not one refusal reported
@@ -518,8 +533,8 @@ fn a_generic_catcher_cited_from_a_rule_is_refused_at_its_raise() {
             .find(|e| e.starts_with(&format!("{line}:")))
             .unwrap_or_else(|| panic!("{clause}: a refusal at line {line}: {errs:#?}"));
         for want in [
-            "anthill.reflect.TypeValue[T = test.rrbg.raiseEither.P]",
-            "nothing in the clause determines which `anthill.reflect.TypeValue` instance",
+            "expected one pattern for `P` that admits every `Error` label the argument raises",
+            "the argument raises `Error[T = ?P]` and `Error[T = Other]`, which no one sort heads",
         ] {
             assert!(refusal.contains(want), "{clause}: expected {want:?}; got {refusal:?}");
         }
