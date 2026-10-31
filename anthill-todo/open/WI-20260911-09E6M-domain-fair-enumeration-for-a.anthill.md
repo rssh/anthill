@@ -9,6 +9,8 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
+- depends_on: WI-20260925-SHED7-inductive-relations-proposal
+
 ## Description
 
 DOMAIN: fair enumeration for a constructor with TWO OR MORE recursive positions.
@@ -43,4 +45,10 @@ exactly `nil, [a], [b], [c], [a, a], …` (pinned by `an_infinite_domain_is_fair
 first four LENGTHS are asserted); `alphabet-words` still prints 27 / 12 and `tiny-sat` 2.
 State at the site what the ordering rules mean once interleaving exists — they may become
 redundant, and if so the two rows that measure them today say which.
+
+## Changes
+
+### 2026-10-31T05:34:59Z — feedback — claude
+
+MOVES TO `SortDomain.fill` (user, 2026-10-31), so this waits on WI-20260925-SHED7. Since SHED7's step 1 a sort's domain is its `SortDomain`'s derived `fill` (proposal 060 §2.3), and the two ordering rules this ticket describes are written there (`kb/fill_derive.rs`); SHED7's increment (e) retires the `domain` derivation. The fair enumeration of two recursive positions is that `fill`'s; the limit is still pinned by `wi743_finite_domain_test::two_recursive_positions_in_one_constructor_are_not_fair`.
 
