@@ -37631,6 +37631,59 @@ impl<'a> Loader<'a> {
         Some(node_occurrence::materialize_at(self.kb, expanded, site))
     }
 
+    /// Is this `Term::Fn` a positional tuple literal — `(g₁, …, gₙ)` as written, which at a goal
+    /// position is a goal list ([`Self::goal_list_conjunction`])? A named tuple is not one: its
+    /// labels name components, and a goal has none.
+    fn is_written_goal_list(
+        &self,
+        functor: Symbol,
+        pos_args: &[ParseTermId],
+        named_args: &[(Symbol, ParseTermId)],
+    ) -> bool {
+        pos_args.is_empty()
+            && !named_args.is_empty()
+            && self.kb.try_resolve_symbol(dt::qualified(dt::TUPLE_LITERAL)) == Some(functor)
+            && named_args.iter().enumerate().all(|(i, &(label, _))| {
+                crate::intern::is_positional_label_at(self.parsed.symbols.local_name(label), i)
+            })
+    }
+
+    /// `(g₁, …, gₙ)` at a goal position: `and(g₁, and(g₂, … gₙ))`, each component built as a
+    /// goal, and the connective the one `&` lowers to.
+    fn goal_list_conjunction(
+        &mut self,
+        goals: &[ParseTermId],
+        parse_id: ParseTermId,
+        span: SourceSpan,
+        fold: ConstFold,
+    ) -> Rc<NodeOccurrence> {
+        let raw_span = self.parsed.terms.span(parse_id);
+        let and = self.remap_name_str(crate::parse::pratt::AND_FUNCTOR, raw_span);
+        let and = self.route_body_goal_boolean(and, 2, raw_span);
+        let mut built: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(goals.len());
+        for &goal in goals {
+            self.const_fold = fold;
+            self.in_body_goal = true;
+            self.binding_slot = Some((and, None));
+            built.push(self.build_body_atom_occurrence(goal));
+            self.in_body_goal = false;
+        }
+        let last = built.pop().expect("a goal list has a component");
+        built.into_iter().rev().fold(last, |rest, goal| {
+            NodeOccurrence::new_expr(
+                Expr::Apply {
+                    recv_type: None,
+                    functor: and,
+                    pos_args: vec![goal, rest],
+                    named_args: Vec::new(),
+                    type_args: Vec::new(),
+                },
+                span,
+                None,
+            )
+        })
+    }
+
     fn build_body_atom_occurrence_inner(&mut self, parse_id: ParseTermId) -> Rc<NodeOccurrence> {
         // WI-753 — set by the `Term::Fn` arm when the node it builds is a reflect form
         // written as data, which the tail re-reads into its keyed occurrence.
@@ -37902,6 +37955,17 @@ impl<'a> Loader<'a> {
                     }
                 }
                 let new_functor = self.remap_functor(functor, parse_id);
+                // A PARENTHESIZED GOAL LIST is the conjunction of its goals (§5.3): at a goal
+                // position `(a, b)` is `a & b`. A tuple has no reading as a goal — it heads no
+                // clause — so it failed there, and held under `not`.
+                if at_goal
+                    && !is_wrapper
+                    && self.is_written_goal_list(new_functor, &pos_args, &named_args)
+                {
+                    let goals: Vec<ParseTermId> =
+                        named_args.iter().map(|&(_, pid)| pid).collect();
+                    return self.goal_list_conjunction(&goals, parse_id, span, node_fold);
+                }
                 // A WRAPPER is not a goal — its components are — so it is not routed.
                 //
                 // AND NEITHER IS A DATA SLOT — WI-20260825-P9Y67 tried it and it was a

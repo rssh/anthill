@@ -528,6 +528,22 @@ fn a_call_in_a_branch_is_its_clauses_condition() {
     }
 }
 
+/// A CALL IN A PARENTHESIZED GOAL LIST is its clause's condition, as in the `&` the list is
+/// (`goal_list_is_a_conjunction_test`): it answers 4 / -4 / -1. It was refused at load, the
+/// list read as a tuple and the call in it as a value of two arguments given three. FAILS
+/// with the list read as a tuple (`is_written_goal_list` answering `false`): the load refusal.
+#[test]
+fn a_call_in_a_goal_list_is_its_clauses_condition() {
+    assert_eq!(
+        cited_counts(
+            "rydnv.goallist",
+            "  rule r(?a, ?b, ?c) :- (Util.sign(?a, ?b, ?c), 1 = 1)",
+            "r"
+        ),
+        [(1, Some(4)), (1, Some(-4)), (1, Some(-1))]
+    );
+}
+
 /// A CALL IN A NEGAND, A QUANTIFIER'S BODY AND A DISCHARGE'S CONSEQUENT reads its condition
 /// there: `not(Util.sign(?a, ?b, 4))` fails under `Descending` (4) and holds under `Ascending`
 /// and uncited; `(forall ?z in [1]: Util.sign(?a, ?b, ?c))` and `(forall(?z), hyp(?z) -:
