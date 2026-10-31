@@ -27804,6 +27804,19 @@ enum TypeSite {
     OwnRowElement,
 }
 
+/// The slot a clause binding fills ([`Loader::sort_binding_to_value`]), which decides what
+/// a VALUE'S NAME written there is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum BindingSlot {
+    /// A type parameter, or an argument of a type written in a binding: the name of a value
+    /// is the value in the type, as in a type position — `N = size` is the `N = size` of
+    /// `Buf[T = Int64, N = size]` in a signature.
+    TypeParameter,
+    /// Any other slot of a spec — an operation's (`peek = bufPeek`), or one the spec does
+    /// not declare: the name is the operation it names.
+    Other,
+}
+
 /// The form a type parameter of the declaring sort takes where a type alias is read
 /// ([`Loader::term_read_through_aliases`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -33077,6 +33090,14 @@ impl<'a> Loader<'a> {
                     }
                     for (key, child) in new_named.iter_mut() {
                         *child = self.type_context_binding(head, Some(*key), *child);
+                    }
+                    if self.in_op_contract_clause {
+                        for child in new_pos.iter_mut() {
+                            *child = self.contract_value_binding(head, None, *child);
+                        }
+                        for (key, child) in new_named.iter_mut() {
+                            *child = self.contract_value_binding(head, Some(*key), *child);
+                        }
                     }
                 }
 
@@ -40736,35 +40757,39 @@ impl<'a> Loader<'a> {
                 self.type_param_var(sort_sym, &short_name),
             );
         }
-        // WI-302/WI-313: a name resolving to a VALUE in a type slot is
-        // value-in-type (`Modify[c]`) — the `denoted` source. Mint it as
-        // a `Value::Node` occurrence rather than the ground `make_denoted`.
-        // Shared value-place set + a zero-arg `Operation` (the WI-313
-        // ambient-KB accessor `Modify[op]`, value-producing) — the one kind
-        // the compound-path heads omit (a field off an op name is not a place).
-        // A NULLARY CONSTRUCTOR is deliberately NOT here — a constructor name in a
-        // type slot is its TYPE (WI-313, kernel §4.4; `Level.Untrusted` standing in
-        // `Text[L = Untrusted]` is the live idiom that depends on it), in every slot,
-        // `Modify`'s target included since WI-20260902-JB6RS. Nor a SORT that is also an
-        // operation (WI-751's pair): a name in a type slot is the type whenever it has a
-        // type reading ([`KnowledgeBase::has_type_reading`], §4.4), so `Modify[Both]` is a
-        // TYPE target as `Modify[Cell]` is (WI-974) — the sort's type face
-        // (WI-20261022-7EXEY), which `make_sort_ref` below names it by.
-        let is_value = self.symbol_is_value_place(sort_sym)
-            || (self.kb.has_kind(sort_sym, SymbolKind::Operation)
-                && !self.kb.has_type_reading(sort_sym));
-        // NB the operation arm is arity-BLIND, which kernel-language.md §5.6 and
-        // `check_modify_targets`' own message both contradict ("a value-producing
-        // ZERO-ARG operation"): `Modify[twoArgOp]` lowers as a place today. Left
-        // as it stands — it long predates WI-20260823-4GBQV, an operation's
-        // declared arity is not readable here (signatures load later), and
-        // narrowing it is a separate measurement. Recorded by `/code-review`
-        // rather than silently inherited.
-        if is_value {
+        if self.names_a_value_in_a_type(sort_sym) {
             node_occurrence::TypeChild::Node(self.kb.make_denoted_occ_ref(sort_sym, span, owner))
         } else {
             node_occurrence::TypeChild::Interned(self.kb.make_sort_ref(sort_sym))
         }
+    }
+
+    /// Whether the name `sym`, written where a type is, is a VALUE in the type
+    /// (`Modify[c]`, `Buf[N = size]`) — lowered to its `denoted` occurrence — rather than a
+    /// type. The one answer for a type position ([`Self::type_name_child`]) and for a clause
+    /// binding at a type parameter ([`Self::sort_binding_to_value`]), so `Buf[T = Int64, N =
+    /// size]` is one type in a signature and in a `provides` or `requires` binding.
+    ///
+    /// WI-302/WI-313: the shared value-place set + a zero-arg `Operation` (the WI-313
+    /// ambient-KB accessor `Modify[op]`, value-producing) — the one kind the compound-path
+    /// heads omit (a field off an op name is not a place). A NULLARY CONSTRUCTOR is
+    /// deliberately NOT here — a constructor name in a type slot is its TYPE (WI-313, kernel
+    /// §4.4; `Level.Untrusted` standing in `Text[L = Untrusted]` is the live idiom that
+    /// depends on it), in every slot, `Modify`'s target included since WI-20260902-JB6RS. Nor
+    /// a SORT that is also an operation (WI-751's pair): a name in a type slot is the type
+    /// whenever it has a type reading ([`KnowledgeBase::has_type_reading`], §4.4), so
+    /// `Modify[Both]` is a TYPE target as `Modify[Cell]` is (WI-974) — the sort's type face
+    /// (WI-20261022-7EXEY), which `make_sort_ref` names it by.
+    ///
+    /// NB the operation arm is arity-BLIND, which kernel-language.md §5.6 and
+    /// `check_modify_targets`' own message both contradict ("a value-producing ZERO-ARG
+    /// operation"): `Modify[twoArgOp]` lowers as a place today. Left as it stands — it long
+    /// predates WI-20260823-4GBQV, an operation's declared arity is not readable here
+    /// (signatures load later), and narrowing it is a separate measurement. Recorded by
+    /// `/code-review` rather than silently inherited.
+    fn names_a_value_in_a_type(&self, sym: Symbol) -> bool {
+        self.symbol_is_value_place(sym)
+            || (self.kb.has_kind(sym, SymbolKind::Operation) && !self.kb.has_type_reading(sym))
     }
 
     /// [`parameter_default_fills`] for a type application an operation body writes as a value
@@ -41604,7 +41629,18 @@ impl<'a> Loader<'a> {
     /// (variable, value) falls through [`sort_inst_to_value`] to its catch-all,
     /// [`Self::type_expr_to_value`] — never to its name arms, which read a type alias as a
     /// SPEC.
-    fn sort_binding_to_value(&mut self, ty: &TypeExpr) -> crate::eval::value::Value {
+    ///
+    /// A VALUE'S NAME at a type parameter (`slot`) is the value in the type, as a type
+    /// position reads it ([`Self::names_a_value_in_a_type`]): `N = size`, over `operation
+    /// size() -> Int64`, is the `denoted` occurrence of `size`, so `provides Store[State =
+    /// Buf[T = Int64, N = size]]` binds the type a member's `s: Buf[T = Int64, N = size]`
+    /// is. At an operation's slot the name is the operation (`peek = bufPeek`). Every
+    /// argument of a type written in a binding is at a type parameter.
+    fn sort_binding_to_value(
+        &mut self,
+        ty: &TypeExpr,
+        slot: BindingSlot,
+    ) -> crate::eval::value::Value {
         use crate::eval::value::Value;
         match ty {
             // Proposal 070 §1.2 — `Self` as a binding value (`provides Rel[A = Self]`) is
@@ -41643,8 +41679,15 @@ impl<'a> Loader<'a> {
             }
             TypeExpr::Simple(name) => {
                 let sort_sym = self.remap_name(name);
-                let stands_for = self.clause_alias_type(sort_sym);
                 let span = self.type_expr_span(ty);
+                if slot == BindingSlot::TypeParameter && self.names_a_value_in_a_type(sort_sym) {
+                    return Value::Node(self.kb.make_denoted_occ_ref(
+                        sort_sym,
+                        span,
+                        self.current_owner,
+                    ));
+                }
+                let stands_for = self.clause_alias_type(sort_sym);
                 self.clause_binding_as_written(sort_sym, stands_for, span)
             }
             // WI-600: a NESTED parameterized binding VALUE (`Element = Pair[A = K, B
@@ -41659,12 +41702,11 @@ impl<'a> Loader<'a> {
             // loader's canon and no longer a contract the matcher depends on). A
             // value-in-type LITERAL child is no exception (WI-20260924-F3FYJ): it takes the
             // occurrence carrier, as it does in a type position — `assemble_binding_value`
-            // says why the wrapper it used to take was wrong. A value written as a NAME
-            // (`N = size`, a zero-arg operation) is still the `Simple` arm's `Ref(size)`
-            // here, where a type position reads `denoted(size)`: the same divergence, one
-            // spelling over, and not closed by this arm (WI-20260929-9WXK2). (The `fact`
-            // twin this matched, `canonicalize_fact_binding_value`, went with the `fact`
-            // spelling of a provision, WI-20260917-S8JYF.)
+            // says why the wrapper it used to take was wrong — and a value written as a
+            // NAME (`N = size`) is its `denoted` occurrence, as there: every argument here
+            // is at a type parameter. (The `fact` twin this matched,
+            // `canonicalize_fact_binding_value`, went with the `fact` spelling of a
+            // provision, WI-20260917-S8JYF.)
             TypeExpr::Parameterized { name, bindings } => {
                 // WI-20260924-SNJPR — an ALIAS applied to further arguments is the sort it
                 // stands for with the bindings it fixes, as in a type position
@@ -41695,7 +41737,11 @@ impl<'a> Loader<'a> {
                     Some((to_params, others)) => {
                         let given: Vec<(VarId, Value)> = to_params
                             .into_iter()
-                            .map(|(var, b)| (var, self.sort_binding_to_value(&b.bound)))
+                            .map(|(var, b)| {
+                                let bound =
+                                    self.sort_binding_to_value(&b.bound, BindingSlot::TypeParameter);
+                                (var, bound)
+                            })
                             .collect();
                         given_fixed = Some(super::typing::give_alias_parameters(self.kb, &fixed, &given));
                         rest = others;
@@ -41706,7 +41752,7 @@ impl<'a> Loader<'a> {
                 // one is reported even when the argument itself has no parameter to take.
                 let bounds: Vec<Value> = bindings
                     .iter()
-                    .map(|b| self.sort_binding_to_value(&b.bound))
+                    .map(|b| self.sort_binding_to_value(&b.bound, BindingSlot::TypeParameter))
                     .collect();
                 // WI-20260923-N3W68 (#9) — a positional binds the next declared param NOT
                 // already bound by name (`KnowledgeBase::positional_param_slots`). This arm
@@ -41855,7 +41901,11 @@ impl<'a> Loader<'a> {
                         Some((to_params, others)) => {
                             let given: Vec<(VarId, Value)> = to_params
                                 .into_iter()
-                                .map(|(var, b)| (var, self.sort_binding_to_value(&b.bound)))
+                                .map(|(var, b)| {
+                                    let bound =
+                                        self.sort_binding_to_value(&b.bound, BindingSlot::TypeParameter);
+                                    (var, bound)
+                                })
                                 .collect();
                             let named =
                                 super::typing::give_alias_parameters(self.kb, &fixed, &given).into_vec();
@@ -41925,7 +41975,6 @@ impl<'a> Loader<'a> {
                 }
                 let mut slots = slots.into_iter();
                 for b in bindings {
-                    let bound = self.sort_binding_to_value(&b.bound);
                     let param_sym = match &b.param {
                         Some(p) => Some(self.reintern(p.last())),
                         None => slots
@@ -41933,6 +41982,17 @@ impl<'a> Loader<'a> {
                             .flatten()
                             .map(|i| self.kb.intern(&declared_params[i])),
                     };
+                    // A clause binds operations by name too (`peek = bufPeek`): only a
+                    // declared type parameter reads a value's name as a value in the type.
+                    let slot = match param_sym {
+                        Some(sym)
+                            if declared_params.iter().any(|d| d == self.kb.local_name_of(sym)) =>
+                        {
+                            BindingSlot::TypeParameter
+                        }
+                        _ => BindingSlot::Other,
+                    };
+                    let bound = self.sort_binding_to_value(&b.bound, slot);
                     match param_sym {
                         Some(sym) => named.push((sym, bound)),
                         None => pos.push(bound),
@@ -42558,7 +42618,7 @@ impl<'a> Loader<'a> {
                 let linked = self.remap_name(name);
                 crate::eval::value::Value::term(self.kb.make_sort_ref(linked))
             }
-            _ => self.sort_binding_to_value(definition),
+            _ => self.sort_binding_to_value(definition, BindingSlot::TypeParameter),
         };
         self.kb.restore_load_check_marks(marks);
         self.errors.truncate(reported);
@@ -48378,6 +48438,32 @@ impl<'a> Loader<'a> {
     /// operation slot ([`KnowledgeBase::binding_type_face`], WI-20261022-7EXEY); anything
     /// else — a variable, a value, an application already headed by its own face — is left
     /// as converted.
+    /// A value's NAME at a type parameter of a bracket in an operation's `requires` — a type
+    /// position ([`Loader::in_op_contract_clause`]) — is the value in the type, as in a
+    /// signature and in a sort's clause ([`Self::names_a_value_in_a_type`]): `requires
+    /// Sized[N = size]` is at the `denoted` `size` that `provides Sized[N = size]` files. At a
+    /// key that is no declared type parameter (`combine = add`) the name is the operation; a
+    /// positional is at a type parameter when the head declares any (an excess one is
+    /// refused), and is the carrier when it declares none.
+    fn contract_value_binding(&mut self, head: Symbol, key: Option<Symbol>, t: TermId) -> TermId {
+        let Term::Ref(s) = *self.kb.get_term(t) else {
+            return t;
+        };
+        if !self.names_a_value_in_a_type(s) {
+            return t;
+        }
+        let declared = self.kb.type_params_of_sort(head);
+        let at_a_type_parameter = match key {
+            Some(k) => declared.iter().any(|d| d == self.kb.local_name_of(k)),
+            None => !declared.is_empty(),
+        };
+        if at_a_type_parameter {
+            self.kb.make_denoted(t)
+        } else {
+            t
+        }
+    }
+
     fn type_context_binding(&mut self, head: Symbol, key: Option<Symbol>, t: TermId) -> TermId {
         match *self.kb.get_term(t) {
             Term::Ref(s) => {

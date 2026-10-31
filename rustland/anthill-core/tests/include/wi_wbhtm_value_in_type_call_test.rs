@@ -92,10 +92,10 @@
 //! [`a_receivers_arguments_reach_the_carriers_requirement_ground`].
 //!
 //! NOT COVERED HERE, and why:
-//! * A value-in-type written as a NAME (`N = size`, a zero-arg operation): a `requires` files
+//! * A value-in-type written as a NAME (`N = size`, a zero-arg operation): a `requires` filed
 //!   it as `Ref(size)` while the call's type lowers it to `denoted(Ref(size))`, so a
-//!   requirement at `N = size` no longer covers its own call — it did only vacuously, while
-//!   the binding was dropped. The divergence is WI-20260929-9WXK2's, whose fix closes this.
+//!   requirement at `N = size` did not cover its own call. Closed by WI-20260929-9WXK2, and
+//!   driven in `wi_9wxk2_value_name_in_binding_test`.
 //! * A call at a value NO provision covers (the one provider at `N = 3`, the call at
 //!   `N = 4`) runs that provider, on every spelling — occurrence, `let`-annotated term, and
 //!   the typed twin alike: WI-20260929-05ZQE. Reading the binding abstract had refused the

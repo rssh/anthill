@@ -76,9 +76,8 @@
 //! with a GROUND provision, with no provision at all). The rows call with `buf(v: …)`, whose
 //! inferred type carries no denoted; that call is `wi_wbhtm_value_in_type_call_test`'s
 //! (WI-20260929-WBHTM). A value-in-type
-//! written as a NAME (`N = size`, a zero-arg operation) still lowers to `Ref(size)` in a
-//! binding where a signature reads `denoted(size)` — the same divergence one spelling over,
-//! not closed here (WI-20260929-9WXK2).
+//! written as a NAME (`N = size`, a zero-arg operation) is the same divergence one spelling
+//! over, closed by WI-20260929-9WXK2 and driven in `wi_9wxk2_value_name_in_binding_test`.
 
 use crate::common::{assert_refused_naming, definite_unary, interp_for, try_load_kb_with};
 use anthill_core::eval::Value;

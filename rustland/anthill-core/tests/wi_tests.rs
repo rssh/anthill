@@ -2099,6 +2099,8 @@ mod wi_4zzkz_spec_half_refusal_test;
 mod wi_f3fyj_value_in_type_binding_test;
 #[path = "include/wi_wbhtm_value_in_type_call_test.rs"]
 mod wi_wbhtm_value_in_type_call_test;
+#[path = "include/wi_9wxk2_value_name_in_binding_test.rs"]
+mod wi_9wxk2_value_name_in_binding_test;
 #[path = "include/wi_tk8x4_carrier_grounding_value_in_type_test.rs"]
 mod wi_tk8x4_carrier_grounding_value_in_type_test;
 #[path = "include/wi_020th_two_hop_chain_test.rs"]
