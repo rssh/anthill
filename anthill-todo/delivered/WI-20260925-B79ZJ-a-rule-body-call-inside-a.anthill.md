@@ -3,9 +3,9 @@
 - id: WI-20260925-B79ZJ-a-rule-body-call-inside-a
 - created: 2026-09-25T22:22:46Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-25T22:22:46Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-10-31T22:46:41Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -27,4 +27,10 @@ WHAT A FIX NEEDS:
  (3) THE RESOLVER'S READERS of a woven call reached through a connective. MEASURED: a woven call inside an `|` branch IS read today (`pickRod` answered `6` through it with the walk entering the branch), so `or` may need nothing — confirm for `&`, `not` (a builtin reading its negand off the goal's view) and a quantifier body; and WI-670's `body_refuted_by_ground_conjunct` reads a woven goal's head as `apply_within` (see WI-20260925-P7VP4's round-2 review).
 
 ACCEPTANCE, driven by value: `pick` under `WeakOrd = Descending` answers `4` from the branch; `pickFree` keeps its definite `99`; a call in a `not(…)` and in a `forall ?e in ?xs: …` body answers through the caller's dictionary when cited; every uncited clause answers as before (value dispatch). CONTROLS stated at their sites. Full workspace green via rustland/scripts/test.sh; scaland testFull.
+
+## Changes
+
+### 2026-10-31T22:46:40Z — feedback — claude
+
+DELIVERED by WI-20261013-RYDNV's parts (a call in a connective's proved slot is its clause's condition, its read placed beside it: an | / & branch, a negand, a quantifier's body, a discharge's consequent) and driven in f7b8d91a. Acceptance, each by value: rule r(?a, ?b, ?c) :- (WeakOrd.compare(?a, ?b, ?c) | 1 = 2) answers Descending's 4, Ascending's -4 and, uncited, Int64's own -1 — so do the right branch, a branch whose witness is bound in it alone, and the Util.sign twins (wi_rydnv_one_classification_test::a_call_in_a_branch_is_its_clauses_condition); pickFree keeps its definite 99 (wi_p7vp4_rule_body_requirements_test::a_call_in_a_branch_reads_its_condition_in_the_branch); not(…), forall ?z in [1]: … and a consequent read the caller's dictionary for both calls (a_call_in_a_negand_a_quantifier_or_a_consequent_reads_its_condition_there). CONTROLS, measured with temporary switches: nested reads off, every branch spelling answers -1 under each citation, the negation (1, 1, 1), the quantifier and the consequent (0, 0, 0); the read hoisted before the top-level goal, pickFree has no definite answer and the quantifier row's answer comes back conditional. Full workspace 11,311 passed; scaland testFull 840 passed.
 
