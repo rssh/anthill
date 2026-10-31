@@ -454,8 +454,7 @@ const FIX_PRELUDE: &str = r#"
       Int64.lt(WeakOrd.compare(x, y), 0)
   end
 
-  -- a DEFAULTED spec op: bodied, so a VALUE slot reduces it — and weaves it — where a
-  -- body-less one is symbolic data
+  -- DEFAULTED spec ops (`twice`, `scaled`), bodied over the provider's `unit`
   sort Scale
     sort T = ?
     operation unit(x: T) -> Int64
@@ -568,13 +567,13 @@ fn a_goal_at_its_declared_arity_is_woven_only_for_the_bool_view() {
     assert!(errs.contains("no relational reading"), "{errs}");
 }
 
-/// A call inside a SCOPE — a bounded quantifier's body — whose carrier is bound only there.
-/// A read placed before the top-level goal would wait on `?e` for ever, and the woven call
-/// on the read: the clause floundered where value dispatch answers. (`twice` is bodied: the
-/// inference never weaves a body-less spec op below the top-level goal at all.) FAILS with the
-/// demand walk descending into goal positions again.
+/// A call inside a SCOPE — a bounded quantifier's body — whose carrier is bound only there has
+/// its read beside it in the body, where `?e` is bound, and uncited the read derives `Rod`'s
+/// instance from each element. FAILS with the read placed before the top-level goal instead
+/// (measured with a temporary switch): there it names `?e` outside the quantifier, where `?e` is
+/// never bound, and `sixOne`'s answer comes back conditional.
 #[test]
-fn a_call_inside_a_quantifier_keeps_its_value_dispatch() {
+fn a_call_inside_a_quantifier_reads_its_condition_in_the_body() {
     let mut kb = crate::common::load_kb_with(&fix_program(
         "wip7vp4.scope",
         "  rule allSix(?xs) :- (forall ?e in ?xs: Scale.twice(?e, 6))\n  \
@@ -785,17 +784,16 @@ fn a_call_in_an_untaken_branch_costs_its_clause_nothing() {
     assert_eq!(crate::common::one_definite_int(&mut kb, "wip7vp4.deferred.pickOne"), Some(1), "the `else` calls nothing");
 }
 
-/// THE STATED LIMIT, pinned: a call in a `|` BRANCH gets no condition, because the only place
-/// a read can go is before the TOP-level goal — a citation's reads are laid out over the body's
-/// top-level goals (`requirement_read_counts`) — and there it runs whichever branch is taken.
-/// So the call keeps VALUE dispatch, as before this ticket (its caller's dictionary does not
-/// reach it — the stated limit), and the OTHER branch keeps its answers: `pickB(?x, ?c)` with
-/// `?x` free answers `99`, definitely, by its second branch. FAILS with the demand walk entering
-/// goal positions: the read hoisted before the `|` waits on `?x`, which only the first branch
-/// would use, and `99` comes back CONDITIONAL. The CONTROL, `pickRod`, answers `6` and `99`
-/// either way, by design: with `?x` bound the hoisted read derives, and costs nothing.
+/// A call in an `|` BRANCH has its read beside it in the branch, so the read runs only where
+/// that branch is taken, and the OTHER branch keeps its answers: `pickB(?x, ?c)` with `?x` free
+/// answers `99`, definitely, by its second branch. (That a citation reaches the call is
+/// `wi_rydnv_one_classification_test::a_call_in_a_branch_is_its_clauses_condition`.) FAILS with
+/// the read placed before the top-level goal instead (measured with a temporary switch): it
+/// waits on `?x`, which only the first branch uses, and `pickFree` has no definite answer. The
+/// CONTROL, `pickRod`, answers `6` and `99` either way, by design: with `?x` bound the hoisted
+/// read derives, and costs nothing.
 #[test]
-fn a_call_in_a_branch_keeps_value_dispatch() {
+fn a_call_in_a_branch_reads_its_condition_in_the_branch() {
     let mut kb = crate::common::load_kb_with(&fix_program(
         "wip7vp4.branch",
         "  rule pickB(?x, ?c) :- (Scale.twice(?x, ?c) | ?c <=> 99)\n  \

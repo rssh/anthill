@@ -515,12 +515,15 @@ pub fn is_inferred_requirement_read(kb: &KnowledgeBase, node: &NodeOccurrence) -
 ///
 /// WHERE A CALL GETS ONE: the read runs immediately before the goal holding the call — a body
 /// goal, or a goal in a connective's proved slot (a branch, a negand, a quantifier's body, a
-/// discharge's consequent), beside which it is placed — so only a call that runs exactly when
-/// that goal does, with its variables in scope there, can have it: one in the goal's value
-/// positions, reached through the argument lists of calls and data constructors
-/// ([`demand_walk_enters`]). The walk stops at a DEFERRED data form — a lambda, `let`, `match`
-/// or `if` — whose calls run later, under binders of their own or on one branch only, and which
-/// is typed as an operation body is.
+/// discharge's consequent), beside which it is placed, so a variable bound in that scope alone
+/// is bound when the read runs. The walk reaches a call in the goal's value positions through
+/// the argument lists of calls and data constructors, and under a lambda, `let`, `match` or
+/// `if` ([`demand_walk_enters`]): the form runs with the dictionaries its goal's reads bound,
+/// and a lambda's closure keeps them. A read every call of which is under a form is labelled
+/// `in_form` ([`REQUIREMENT_IN_FORM_LABEL`]): where no provider is at the carrier it binds the
+/// absence instead of failing, so a branch the form does not take costs the clause nothing. A
+/// call naming a form's own binder is not the clause's to supply
+/// ([`TypingEnv::clause_supplies_requirements`]) and gets none.
 ///
 /// WHICH CALLS GET ONE is the typer's decision, read here and not made again
 /// (requirement-channel.md §5.2): a call the typer leaves to its clause carries a
@@ -582,9 +585,6 @@ pub(super) fn infer_rule_body_requirements(kb: &mut KnowledgeBase) {
         let mut demands: Vec<(usize, SpecDemand)> = Vec::new();
         let mut slot_calls: Vec<(usize, SlotDemand)> = Vec::new();
         for (gi, goal) in sites.iter().enumerate() {
-            // `(node, is it the top-level goal itself)`: the top goal's VALUE positions, and
-            // below them only what [`demand_walk_enters`] admits — see the doc above for
-            // where the walk stops and why.
             // `(node, is it the goal itself, is it under a form)` — a call under a `let`,
             // `match`, `if` or `lambda` is run by the evaluator inside that form, where only
             // a slot its read has bound reaches it.
@@ -1130,8 +1130,9 @@ pub(super) fn calls_run_with_their_goal(
 }
 
 /// Does the demand walk of [`infer_rule_body_requirements`] look inside this DATA-position
-/// node — is it evaluated where the goal holding it runs, and does it bind nothing? A call's
-/// arguments and a data constructor's fields are; a lambda, `let`, `match` or `if` is not.
+/// node? A call's arguments and a data constructor's fields are evaluated where the goal
+/// holding them runs; a lambda's, `let`'s, `match`'s or `if`'s calls later, inside the form,
+/// with the dictionaries the goal's reads bound — the walk marks what it finds there `in_form`.
 fn demand_walk_enters(expr: &Expr) -> bool {
     matches!(
         expr,

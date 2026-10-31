@@ -505,9 +505,10 @@ fn cited_counts(ns: &str, rules: &str, rel: &str) -> [(i64, Option<i64>); 3] {
 /// branch (`or(and(find_dictionary(…), sign(…)), …)`), where a citation routes to it as to one
 /// at the top of the body: each branch spelling answers `Descending`'s 4, `Ascending`'s -4 and
 /// `Int64`'s own -1, as the goal spelling does, and so does a branch whose call's witness is
-/// bound in the branch alone (`?x`). It had no read, and answered `Int64`'s -1 under both
+/// bound in the branch alone (`?x`) — for an operation's own `requires` (`Util.sign`) and for a
+/// spec operation (`WeakOrd.compare`). It had no read, and answered `Int64`'s -1 under both
 /// rivals. FAILS with the reads placed at the body's own goals alone (`nested_goals` pushing
-/// nothing): `-1` under each citation, for every spelling but the goal one, which passes either
+/// nothing): `-1` under each citation, for every spelling but the goal ones, which pass either
 /// way by design.
 #[test]
 fn a_call_in_a_branch_is_its_clauses_condition() {
@@ -519,6 +520,13 @@ fn a_call_in_a_branch_is_its_clauses_condition() {
             "  rule r(?a, ?b, ?c) :- (?x <=> ?a & Util.sign(?x, ?b, ?c)) | 1 = 2",
         ),
         ("rydnv.branchgoal", "  rule r(?a, ?b, ?c) :- Util.sign(?a, ?b, ?c)"),
+        ("rydnv.dbranchl", "  rule r(?a, ?b, ?c) :- (WeakOrd.compare(?a, ?b, ?c) | 1 = 2)"),
+        ("rydnv.dbranchr", "  rule r(?a, ?b, ?c) :- (1 = 2 | WeakOrd.compare(?a, ?b, ?c))"),
+        (
+            "rydnv.dbranchlocal",
+            "  rule r(?a, ?b, ?c) :- (?x <=> ?a & WeakOrd.compare(?x, ?b, ?c)) | 1 = 2",
+        ),
+        ("rydnv.dbranchgoal", "  rule r(?a, ?b, ?c) :- WeakOrd.compare(?a, ?b, ?c)"),
     ] {
         assert_eq!(
             cited_counts(ns, rule, "r"),
@@ -633,30 +641,35 @@ fn a_call_in_a_goal_list_is_its_clauses_condition() {
 /// A CALL IN A NEGAND, A QUANTIFIER'S BODY AND A DISCHARGE'S CONSEQUENT reads its condition
 /// there: `not(Util.sign(?a, ?b, 4))` fails under `Descending` (4) and holds under `Ascending`
 /// and uncited; `(forall ?z in [1]: Util.sign(?a, ?b, ?c))` and `(forall(?z), hyp(?z) -:
-/// Util.sign(?a, ?b, ?c))`, with `?c` fixed at 4, hold under `Descending` alone. They read
-/// `Int64`'s own -1 under every citation: the negation held three times and the others never
-/// did. FAILS as the row above does: `(1, 1, 1)`, `(0, 0, 0)` and `(0, 0, 0)`.
+/// Util.sign(?a, ?b, ?c))`, with `?c` fixed at 4, hold under `Descending` alone — and so do
+/// their twins over the spec operation `WeakOrd.compare`. They read `Int64`'s own -1 under every
+/// citation: the negation held three times and the others never did. FAILS as the row above
+/// does: `(1, 1, 1)`, `(0, 0, 0)` and `(0, 0, 0)`, for both calls.
 #[test]
 fn a_call_in_a_negand_a_quantifier_or_a_consequent_reads_its_condition_there() {
-    let negated = cited_counts(
-        "rydnv.negand",
-        "  rule r(?a, ?b, ?c) :- not(Util.sign(?a, ?b, 4)), ?c <=> 1",
-        "r",
-    );
-    assert_eq!(negated.map(|(n, _)| n), [0, 1, 1], "the negation");
-    let quantified = cited_counts(
-        "rydnv.quantified",
-        "  rule r(?a, ?b, ?c) :- ?c <=> 4, (forall ?z in [1]: Util.sign(?a, ?b, ?c))",
-        "r",
-    );
-    assert_eq!(quantified.map(|(n, _)| n), [1, 0, 0], "the quantifier");
-    let discharged = cited_counts(
-        "rydnv.consequent",
-        "  rule hyp(?z) :- false
-           rule r(?a, ?b, ?c) :- ?c <=> 4, (forall(?z), hyp(?z) -: Util.sign(?a, ?b, ?c))",
-        "r",
-    );
-    assert_eq!(discharged.map(|(n, _)| n), [1, 0, 0], "the consequent");
+    for (tag, call) in [("s", "Util.sign"), ("d", "WeakOrd.compare")] {
+        let negated = cited_counts(
+            &format!("rydnv.{tag}negand"),
+            &format!("  rule r(?a, ?b, ?c) :- not({call}(?a, ?b, 4)), ?c <=> 1"),
+            "r",
+        );
+        assert_eq!(negated.map(|(n, _)| n), [0, 1, 1], "the negation of {call}");
+        let quantified = cited_counts(
+            &format!("rydnv.{tag}quantified"),
+            &format!("  rule r(?a, ?b, ?c) :- ?c <=> 4, (forall ?z in [1]: {call}(?a, ?b, ?c))"),
+            "r",
+        );
+        assert_eq!(quantified.map(|(n, _)| n), [1, 0, 0], "the quantifier over {call}");
+        let discharged = cited_counts(
+            &format!("rydnv.{tag}consequent"),
+            &format!(
+                "  rule hyp(?z) :- false
+           rule r(?a, ?b, ?c) :- ?c <=> 4, (forall(?z), hyp(?z) -: {call}(?a, ?b, ?c))"
+            ),
+            "r",
+        );
+        assert_eq!(discharged.map(|(n, _)| n), [1, 0, 0], "the consequent {call}");
+    }
 }
 
 /// What the rows on forms add to [`ORDERS`]: a value whose sort provides no `WeakOrd`,
