@@ -521,11 +521,23 @@ fn kcna0(ns: &str, rest: &str) -> String {
     )
 }
 
-/// `qn` has no answer, by a complete search: the call has no value at its arguments.
+/// The clause `rule answer(?r) :- {goal}` over `decls` is REFUSED AT LOAD: the call's arguments
+/// fix the requirement, which no provider answers, as in its operation-body twin
+/// (WI-20261013-RYDNV's pinned class). The run-time half is the goal asked as a query, built at
+/// run time, which no load types: it has no answer, by a complete search — the call has no
+/// value at its arguments. The clause loaded and failed so until RYDNV.
 #[track_caller]
-fn assert_kcna0_fails(src: &str, qn: &str) {
-    let mut kb = crate::common::load_kb_with(src);
-    assert_refuted(&mut kb, qn);
+fn assert_kcna0_refused_and_fails(ns: &str, decls: &str, goal: &str, query: &str) {
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&kcna0(ns, &format!("{decls}  rule answer(?r) :- {goal}\n"))),
+        &[&format!("test.{ns}.Desc"), "cannot be supplied for call to", "no impl provides"],
+        "the clause, whose call fixes the requirement",
+    );
+    let mut kb = crate::common::load_kb_with(&kcna0(ns, decls));
+    let goal = crate::common::query_pattern_term(&mut kb, query);
+    let (sols, stats) = kb.resolve_with_stats(&[goal], &ResolveConfig::default());
+    assert!(sols.is_empty(), "{query}: no answer; got {} solution(s)", sols.len());
+    assert!(!stats.truncated && stats.errors.is_empty(), "{query}: a complete search: {stats:?}");
 }
 
 /// (q1) A projection the call grounds: `x.E` is `Blue` at `box(v: blue())`, and `Blue`
@@ -533,26 +545,34 @@ fn assert_kcna0_fails(src: &str, qn: &str) {
 /// skipped and the body's read aborted a debug build.
 #[test]
 fn a_projection_grounded_at_a_carrier_that_provides_none_fails() {
-    assert_kcna0_fails(
-        &kcna0(
-            "gfs6a.q1",
-            "  operation pick(x: Box) -> Int64 requires Desc[T = x.E] = Desc.tag[T = x.E]()\n  \
-             rule answer(?r) :- pick(box(v: blue()), ?r)\n",
-        ),
-        "test.gfs6a.q1.answer",
+    assert_kcna0_refused_and_fails(
+        "gfs6a.q1",
+        "  operation pick(x: Box) -> Int64 requires Desc[T = x.E] = Desc.tag[T = x.E]()\n",
+        "pick(box(v: blue()), ?r)",
+        "test.gfs6a.q1.pick(test.gfs6a.q1.Box.box(v: test.gfs6a.q1.Blue.blue()), ?r)",
     );
 }
 
 /// (q2) A structural former: nothing provides `Desc` at the row `{Red}`. Before: the abort.
+/// Its operation-body twin is refused with the same account (WI-20261013-RYDNV): it loaded,
+/// and the call had no value when it ran. FAILS, the twin's half, with the ground arm of
+/// `build_op_scoped_dicts`' parked refusals backed out.
 #[test]
 fn a_structural_former_no_provider_answers_fails() {
-    assert_kcna0_fails(
-        &kcna0(
-            "gfs6a.q2",
-            "  operation pick2(x: Box) -> Int64 requires Desc[T = {Red}] = Desc.tag[T = {Red}]()\n  \
-             rule answer(?r) :- pick2(box(v: red()), ?r)\n",
-        ),
-        "test.gfs6a.q2.answer",
+    let decl = "  operation pick2(x: Box) -> Int64 requires Desc[T = {Red}] = Desc.tag[T = {Red}]()\n";
+    assert_kcna0_refused_and_fails(
+        "gfs6a.q2",
+        decl,
+        "pick2(box(v: red()), ?r)",
+        "test.gfs6a.q2.pick2(test.gfs6a.q2.Box.box(v: test.gfs6a.q2.Red.red()), ?r)",
+    );
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&kcna0(
+            "gfs6a.q2op",
+            &format!("{decl}  operation twin() -> Int64 = pick2(box(v: red()))\n"),
+        )),
+        &["test.gfs6a.q2op.Desc[T = {Red}]", "cannot be supplied for call to", "no impl provides"],
+        "the operation-body twin",
     );
 }
 
@@ -560,14 +580,12 @@ fn a_structural_former_no_provider_answers_fails() {
 /// `outer`'s own slot is the unprovided `Desc[T = {Red}]` at the bridge. Before: the abort.
 #[test]
 fn a_forwarded_requirement_no_provider_answers_fails() {
-    assert_kcna0_fails(
-        &kcna0(
-            "gfs6a.fwd",
-            "  operation pick(x: Box) -> Int64 requires Desc[T = {x.E}] = Desc.tag[T = {x.E}]()\n  \
-             operation outer(b: Box) -> Int64 requires Desc[T = {b.E}] = pick(b)\n  \
-             rule answer(?r) :- outer(box(v: red()), ?r)\n",
-        ),
-        "test.gfs6a.fwd.answer",
+    assert_kcna0_refused_and_fails(
+        "gfs6a.fwd",
+        "  operation pick(x: Box) -> Int64 requires Desc[T = {x.E}] = Desc.tag[T = {x.E}]()\n  \
+         operation outer(b: Box) -> Int64 requires Desc[T = {b.E}] = pick(b)\n",
+        "outer(box(v: red()), ?r)",
+        "test.gfs6a.fwd.outer(test.gfs6a.fwd.Box.box(v: test.gfs6a.fwd.Red.red()), ?r)",
     );
 }
 
@@ -587,16 +605,28 @@ fn a_provided_carrier_answers() {
     assert_eq!(crate::common::one_definite_int(&mut kb, "test.gfs6a.ok.forwarded"), Some(7));
 }
 
-/// CONTROL, passes either way BY DESIGN: a body that never reads the slot no provider answers
-/// runs. The slot was skipped before and is a recorded absence now, refused only where it is
-/// read.
+/// CONTROL, passes either way BY DESIGN, at run time: a body that never reads the slot no
+/// provider answers runs — the slot was skipped before and is a recorded absence now, refused
+/// only where it is read — asked as a query. The CLAUSE that writes the call is refused at
+/// load, as its operation-body twin is: the call fixes `Desc[T = Blue]`, and a declared
+/// `requires` is owed because it is declared (WI-20261013-RYDNV; it loaded and answered 5).
 #[test]
 fn a_body_that_never_reads_the_slot_runs() {
-    let src = kcna0(
-        "gfs6a.unread",
-        "  operation noRead(x: Box) -> Int64 requires Desc[T = x.E] = 5\n  \
-         rule answer(?r) :- noRead(box(v: blue()), ?r)\n",
+    let decl = "  operation noRead(x: Box) -> Int64 requires Desc[T = x.E] = 5\n";
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&kcna0(
+            "gfs6a.unreadrule",
+            &format!("{decl}  rule answer(?r) :- noRead(box(v: blue()), ?r)\n"),
+        )),
+        &["test.gfs6a.unreadrule.Desc[T = test.gfs6a.unreadrule.Blue]", "cannot be supplied"],
+        "the clause, as its operation-body twin",
     );
-    let mut kb = crate::common::load_kb_with(&src);
-    assert_eq!(crate::common::one_definite_int(&mut kb, "test.gfs6a.unread.answer"), Some(5));
+    let mut kb = crate::common::load_kb_with(&kcna0("gfs6a.unread", decl));
+    assert_eq!(
+        answers(
+            &mut kb,
+            "test.gfs6a.unread.noRead(test.gfs6a.unread.Box.box(v: test.gfs6a.unread.Blue.blue()), ?r)"
+        ),
+        vec![(Some(5), true)],
+    );
 }

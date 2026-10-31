@@ -18,6 +18,12 @@
 //!   * the clause's `require[…]` not read at the carrier (`clause_required_view_at_carrier`) —
 //!     `a_clause_require_names_the_instance_at_its_carrier` (`3`, `Meters`', for `Feet`'s 4).
 //!
+//!   * an operation's own `requires` left to the clause however the call's types fix it
+//!     (`own_requirements_fixed_at` answering no) — both rows of the pinned class here, and the
+//!     load halves of `wi_gfs6a`'s four KCNA0 rows (each loads);
+//!   * a requirement the call fixes refused with the rule-body account that says nothing fixes
+//!     it — `wi_gfs6a`'s q2 and fwd rows (their refusal does not say no impl provides it).
+//!
 //! Outside this file, measured on the full gate: a parameter read through a projection off an
 //! argument (`get(c: C) -> c.T`) counted as open — three `wi_0rp29` rows, whose witnesses are
 //! held to agree on the member where the projection is read, get this file's refusal in place
@@ -84,7 +90,7 @@ const FEET_INT: &str = r#"
 
 fn program(ns: &str, decls: &[&str], body: &str) -> String {
     format!(
-        "namespace {ns}\n  import anthill.prelude.{{Int64, String}}\n{}{body}\nend\n",
+        "namespace {ns}\n  import anthill.prelude.{{Int64, String, Bool}}\n{}{body}\nend\n",
         decls.concat()
     )
 }
@@ -257,4 +263,126 @@ fn a_requirement_at_another_carrier_does_not_name_the_instance() {
         &["it leaves `A` open", "rydnv.othercarrier.Conv.tag[A = …](…)"],
         "a requirement at `Int64` beside a call at `String`",
     );
+}
+
+// ── an operation's own `requires` its call fixes is decided at load ───────────────────────
+
+/// `d`'s `Desc[T = T]` at its default `Int64` and `whichN`'s `TypeValue[T = T]` at a typed head:
+/// the call's types fix each, and a second provider of the spec (`StrDesc`) leaves the
+/// arguments nothing to derive it from.
+const OWN: &str = r#"
+  import anthill.prelude.{Option, Type}
+  import anthill.reflect.{TypeValue}
+  sort Desc
+    sort T = ?
+    operation describe() -> Int64
+  end
+  sort IntDesc
+    provides Desc[T = Int64]
+    operation describe() -> Int64 = 7
+  end
+  sort StrDesc
+    provides Desc[T = String]
+    operation describe() -> Int64 = 8
+  end
+  sort U
+    operation d[T = Int64]() -> Int64 requires Desc[T = T] = Desc[T = T].describe()
+    operation whichN[T](o: Option[T]) -> Type requires TypeValue[T = T] = TypeValue.type_value[T]()
+  end
+"#;
+
+/// A REQUIREMENT THE CALL'S TYPES FIX IS DECIDED AT LOAD (068 C1d's pinned class): `U.d(?n)`
+/// and `?n <=> U.d()` answer `IntDesc`'s 7, `U.whichN(?o, ?t)` under `?o: Option[T = Int64]`
+/// answers `Int64` — each as its operation-body twin does. The clause was handed the
+/// requirement as its condition, which read the argument values — none — and a debug build
+/// aborted ("`__req_desc` not bound in caller frame", WI-20261023-GBH5F's row). FAILS with the
+/// requirement left to the clause however the call's types fix it (`own_requirements_fixed_at`).
+#[test]
+fn an_operations_own_requirement_its_call_fixes_is_decided_at_load() {
+    let ns = "rydnv.own";
+    let src = program(
+        ns,
+        &[OWN],
+        "  rule viaRule(?n) :- U.d(?n)\n  \
+         rule viaVal(?n) :- ?n <=> U.d()\n  \
+         rule r(?o: Option[T = Int64], ?t) :- U.whichN(?o, ?t)\n  \
+         rule which(?t) :- r(Option.none(), ?t)",
+    );
+    let mut kb = crate::common::load_kb_with(&src);
+    for rule in ["viaRule", "viaVal"] {
+        assert_eq!(crate::common::one_definite_int(&mut kb, &format!("{ns}.{rule}")), Some(7), "`{rule}`");
+    }
+    let rows = crate::common::shown_rows(&mut kb, &format!("{ns}.which"));
+    assert_eq!(rows, vec![("Int64".to_string(), true)], "`whichN` at the typed head");
+}
+
+/// … AND REFUSED AT LOAD WHERE NOTHING PROVIDES IT, with the refusal its operation-body twin
+/// gets: `d[T = Bool]` with no provider at `Bool` answered `IntDesc`'s 7 — the bridge took the
+/// one provider of `Desc` there was — and two providers at `Int64` aborted a debug build. FAILS
+/// as the row above does: the first loads and answers 7.
+#[test]
+fn an_operations_own_requirement_its_call_fixes_with_no_provider_is_refused() {
+    let errs = crate::common::load_errors_of(&program(
+        "rydnv.ownnone",
+        &[r#"
+  sort Desc
+    sort T = ?
+    operation describe() -> Int64
+  end
+  sort IntDesc
+    provides Desc[T = Int64]
+    operation describe() -> Int64 = 7
+  end
+  sort U
+    operation d[T = Bool]() -> Int64 requires Desc[T = T] = Desc[T = T].describe()
+    operation twin() -> Int64 = d()
+  end
+"#],
+        "  rule v(?n) :- U.d(?n)",
+    ));
+    let refused: Vec<&String> = errs
+        .iter()
+        .filter(|e| e.contains("`rydnv.ownnone.Desc[T = anthill.prelude.Bool]` cannot be supplied"))
+        .collect();
+    assert_eq!(refused.len(), 2, "the rule body and its operation-body twin: {errs:#?}");
+    let text = |e: &str| e.split_once(": type mismatch").map(|(_, t)| t.to_string());
+    assert_eq!(text(refused[0]), text(refused[1]), "one refusal, written twice");
+}
+
+/// A REQUIREMENT AT A PROJECTION IS FIXED ONLY WHERE THE ARGUMENT'S TYPE GROUNDS IT: over
+/// `pick(x: Box) requires Desc[T = x.E]`, `pick(?b, ?r)` at a head variable the clause leaves
+/// untyped is the clause's condition, and answers `Red`'s 7 through `r(box(v: red()), ?r)` —
+/// in the goal spelling and in a value slot. `x.E` holds no variable, so read as ground it was
+/// fixed, and the clause refused (found reviewing this part). FAILS with the projection not
+/// read at the argument's type in `own_requirements_fixed_at`: both clauses refused.
+#[test]
+fn a_requirement_at_a_projection_the_clause_leaves_open_is_its_condition() {
+    let ns = "rydnv.proj";
+    let src = program(
+        ns,
+        &[r#"
+  sort Desc
+    sort T = ?
+    operation tag() -> Int64
+  end
+  sort Red
+    entity red
+    provides Desc[T = Red]
+    operation tag() -> Int64 = 7
+  end
+  sort Box
+    sort E = ?
+    entity box(v: E)
+  end
+  operation pick(x: Box) -> Int64 requires Desc[T = x.E] = Desc.tag[T = x.E]()
+"#],
+        "  rule r(?b, ?r) :- pick(?b, ?r)\n  \
+         rule rv(?b, ?r) :- ?r <=> pick(?b)\n  \
+         rule q(?r) :- r(box(v: red()), ?r)\n  \
+         rule qv(?r) :- rv(box(v: red()), ?r)",
+    );
+    let mut kb = crate::common::load_kb_with(&src);
+    for rule in ["q", "qv"] {
+        assert_eq!(crate::common::one_definite_int(&mut kb, &format!("{ns}.{rule}")), Some(7), "`{rule}`");
+    }
 }

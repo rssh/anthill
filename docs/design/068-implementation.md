@@ -1243,6 +1243,31 @@ Found, and left to this ticket's later parts (the class read in every position):
 (`require[Conv[A = Meters, B = String]], ?r <=> Conv.tag("km")`) is refused "no body call … to
 ground the requirement", where the goal spelling answers 3 — the same before.
 
+### 6.14 C1d, an operation's own `requires` the call fixes (WI-20261013-RYDNV, second part, 2026-10-31)
+
+The pinned class of `requirement-channel.md` §5.2 for an operation's own `requires`: a call of
+a rule's own term whose types fix every entry of the callee's op half (`op_dict_entries`) —
+by its arguments, a typed head, a type default (proposal 069) — has its dictionaries built at
+load, as an operation body's call does (`own_requirements_fixed_at`, read at the fragment
+exemption in `check_apply_iter`); one left open is still the clause's condition. Before, every
+such requirement was the clause's, and the woven call derived it from the argument values:
+`d[T = Int64]() requires Desc[T = T]` called as `d(?n)` beside a second provider of `Desc` read
+no argument and aborted a debug build (WI-20261023-GBH5F's row), and with one provider the
+bridge took it whatever `T` was — `d[T = Bool]` with no provider at `Bool` answered `Int64`'s.
+Where the fixed requirement has no provider the clause is refused, saying so
+(`RequirementRefusal::carrying_its_repair` over the resolution's failure, where the rule-body
+account said no element was fixed). Rows in `wi_rydnv_one_classification_test`.
+
+Rows moved by design: `wi_gfs6a`'s four KCNA0 rows — a clause whose literal arguments fix a
+requirement no provider answers is refused at load, and the run-time half is the goal asked as
+a query; its control, a body that never reads the slot, is refused at load as its
+operation-body twin is, and answers 5 as a query.
+
+Found and fixed on the way: the operation-body twin of the structural-former row (`requires
+Desc[T = {Red}]`, called from an operation) loaded and answered nothing at run time — its
+refusal arm had no account for a requirement the call fixes whole and no provision answers, and
+parked nothing. It parks that account now, the one a rule body's call gets.
+
 ## 7. Testing
 
 Per CLAUDE.md: each ticket's rows live in one test module, driven by value with its back-outs run

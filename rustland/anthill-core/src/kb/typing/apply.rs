@@ -5064,9 +5064,13 @@ pub(super) fn check_apply_iter(
                     // substitution. Its caller chain is the COMPOSED one — a callee op
                     // slot may forward from the caller's own op slots, which is how an
                     // op-scoped requirement relays hop to hop — whereas the instance
-                    // dict above must not (see `TypingEnv::enclosing_chain`). Not in a
-                    // call of a rule's own term, whose clause supplies them.
-                    if !env.leaves_own_requirements_to_the_clause() {
+                    // dict above must not (see `TypingEnv::enclosing_chain`). In a call of
+                    // a rule's own term only where the call's types fix every one of them:
+                    // such a call is decided at load, as in an operation body. One left open
+                    // is a condition of the clause, which supplies it.
+                    if !env.leaves_own_requirements_to_the_clause()
+                        || own_requirements_fixed_at(kb, fn_sym, &subst, &projection_receivers)
+                    {
                     stamp_op_scoped_dicts(
                         kb,
                         occ,

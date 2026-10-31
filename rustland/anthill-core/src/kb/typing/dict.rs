@@ -1755,6 +1755,53 @@ pub(super) fn build_concrete_dispatch_dict(
     )
 }
 
+/// Does the call's substitution fix every requirement of `callee_op`'s own `requires` — each
+/// entry of the op half of its chain ([`op_dict_entries`]) ground once the call's types are
+/// substituted in? Then the call is decided at load: its dictionaries are what an operation
+/// body's call would construct. A rule-body call reads it to tell a requirement the clause must
+/// supply from one the call's types already fix (`d[T = Int64]() requires Desc[T = T]` called
+/// as `d(?n)`, whose default fixes `T`, was left to the clause, which read no argument and
+/// aborted at run time).
+///
+/// A requirement written at a projection (`requires Desc[T = x.E]`) is read at the argument's
+/// type first, as [`build_op_scoped_dicts`] reads it, and is fixed only where that grounds it: at
+/// `pick(box(v: blue()))` it is `Desc[T = Blue]`, at an argument whose type the clause leaves
+/// open it stays `x.E`, which no variable spells and the clause's condition supplies.
+pub(super) fn own_requirements_fixed_at(
+    kb: &mut KnowledgeBase,
+    callee_op: Symbol,
+    subst: &Substitution,
+    param_arg_types: &HashMap<Symbol, Value>,
+) -> bool {
+    let chain = op_dict_entries(kb, callee_op);
+    let entries = chain.op_entries().to_vec();
+    !entries.is_empty()
+        && entries.iter().all(|entry| {
+            let projected = if value_contains_projection(kb, &entry.spec) {
+                let ctx = TypeErrorContext::OperationReturn {
+                    op_name: callee_op,
+                    surface: None,
+                };
+                match eliminate_type_projections(
+                    kb,
+                    &entry.spec,
+                    param_arg_types,
+                    Receivers::Call(None),
+                    None,
+                    &ctx,
+                    None,
+                ) {
+                    Ok(v) => v,
+                    Err(_) => return false,
+                }
+            } else {
+                entry.spec.clone()
+            };
+            let spec = substitute_spec_via_subst(kb, &projected, subst);
+            !value_contains_projection(kb, &spec) && type_is_ground(kb, &spec)
+        })
+}
+
 /// WI-20260921-28TAT — THE ONE WRITER of an occurrence's op-scoped evidence: build the
 /// dictionaries this call site owes its callee's OWN `requires` slots, and stamp them.
 ///
@@ -2556,6 +2603,19 @@ pub(super) fn build_op_scoped_dicts(
                         }).into());
                     }
                 }
+                // And where the call fixes every element and no provision answers, that is
+                // what is said: `Desc[T = {Red}]`, a row no provision names, is a requirement
+                // the clause determined, and "this call pins no element" is false of it.
+                if let Some(nomatch @ ResolutionResult::NoMatch { .. }) = &s3_failure {
+                    if dep_fixed_whole(kb, &dep) {
+                        return Err(Box::new(RequirementRefusal::carrying_its_repair(
+                            kb,
+                            &dep,
+                            describe_resolution_failure(kb, nomatch),
+                        ))
+                        .into());
+                    }
+                }
                 let dep_text = render_requires_entry(kb, &dep);
                 return Err(Box::new(unrescuable_rule_body_refusal(
                     kb,
@@ -2851,6 +2911,22 @@ pub(super) fn build_op_scoped_dicts(
                                     untied: None,
                                 })
                             }
+                            // A REQUIREMENT THE CALL FIXES WHOLE, which no provision answers and
+                            // none of the accounts above explains: a row no provision names
+                            // (`requires Desc[T = {Red}]`). Silent, the slot stayed empty, the
+                            // program loaded and the call had no value when it ran; a rule body's
+                            // call of it is refused with this account.
+                            (None, Some(nomatch @ ResolutionResult::NoMatch { .. }))
+                                if former.is_none()
+                                    && !read_where_applied(kb, usage, callee_op, &dep, &disambig)
+                                    && dep_fixed_whole(kb, &dep) =>
+                            {
+                                Some(RequirementRefusal::carrying_its_repair(
+                                    kb,
+                                    &dep,
+                                    describe_resolution_failure(kb, nomatch),
+                                ))
+                            }
                             (None, _) => former.map(|former| former_refusal(kb, &dep, &former)),
                         }
                     }
@@ -2873,6 +2949,22 @@ pub(super) fn build_op_scoped_dicts(
         out.push(projected);
     }
     Ok(out)
+}
+
+/// Does `dep` fix its spec whole — write every type parameter of it, at a ground type? A
+/// parameter it leaves unwritten (or writes `?`) is any binding (kernel-language §8.1), which a
+/// provision answering the rest supplies, so such a requirement is not one the call fixed.
+fn dep_fixed_whole(kb: &KnowledgeBase, dep: &RequiresEntry) -> bool {
+    if !type_is_ground(kb, &dep.spec) {
+        return false;
+    }
+    let written = spec_view_bindings_value(kb, &dep.spec);
+    kb.type_params_of_sort(dep.required_sort).iter().all(|param| {
+        written.iter().any(|(k, v)| {
+            short_name_of(kb.local_name_of(*k)) == param.as_str()
+                && !is_open_requires_slot(kb, dep.required_sort, *k, v)
+        })
+    })
 }
 
 /// WI-20260911-VNQTR — is `dep` a requirement of an operation used as a FUNCTION VALUE, an
