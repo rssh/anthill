@@ -15302,7 +15302,9 @@ fn bind_citation_reads(
     let offset: usize = counts[..at].iter().map(|(_, n)| n).sum();
     let fd = super::typing::find_dictionary_symbol(kb)
         .expect("a citation marker carries dictionaries only for reads, and a read is a `find_dictionary` goal");
-    let outs: Vec<Rc<NodeOccurrence>> = opened
+    // In the order the routes were computed in: a read in a connective's goal slot as well as
+    // one at the top ([`super::typing::clause_requirement_reads`]).
+    let outs: Vec<Rc<NodeOccurrence>> = super::typing::clause_requirement_reads(kb, fd, opened)
         .iter()
         .filter_map(|n| super::typing::requirement_read_out(kb, fd, n).cloned())
         .collect();

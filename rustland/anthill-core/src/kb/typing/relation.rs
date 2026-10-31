@@ -989,18 +989,15 @@ fn citation_requirement_routes(
             }
         }
         let body: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
+        // Every read, a connective's goal slot's included, in the order the resolver binds
+        // the routes in ([`clause_requirement_reads`]).
+        let read_nodes = clause_requirement_reads(kb, fd, &body);
         // Read for a clause with a read: the one source of a witness's type where the
         // witness is no column, and of the named slots its variables' types carry.
-        let reads = body
-            .iter()
-            .any(|node| requirement_read_out(kb, fd, node).is_some());
-        let clause_types = reads
+        let clause_types = (!read_nodes.is_empty())
             .then(|| ClauseTypes::at_citation(kb, &body, &slots, column_types, bound_types, subst))
             .flatten();
-        for node in &body {
-            if requirement_read_out(kb, fd, node).is_none() {
-                continue;
-            }
+        for node in &read_nodes {
             let Some(Expr::Apply {
                 pos_args,
                 named_args,

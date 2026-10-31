@@ -452,6 +452,11 @@ pub(crate) fn inferred_requirement_pass(kb: &mut KnowledgeBase) -> crate::kb::oc
 
 const INFERRED_REQUIREMENT_PASS: &str = "anthill.kb.passes.inferred_requirement";
 
+/// The pass of the `and(read, …, goal)` that puts a read beside a goal in a connective's slot
+/// ([`place_nested_reads`]). Not the read's own pass: the conjunction is no read, and a reader
+/// that skips a read ([`is_inferred_requirement_read`]) would skip the goal inside it.
+const INFERRED_CONJUNCTION_PASS: &str = "anthill.kb.passes.inferred_requirement_conjunction";
+
 /// The pass that marks a woven call carrying the SLOTS of its callee's chain, one per entry —
 /// the clause's conditions for an operation's `requires` — rather than one dictionary its
 /// member is dispatched through ([`weave_calls`]).
@@ -556,6 +561,7 @@ pub(super) fn infer_rule_body_requirements(kb: &mut KnowledgeBase) {
     };
     let pass = inferred_requirement_pass(kb);
     let slots_pass = woven_slots_pass(kb);
+    let conjunction_pass = kb.register_pass(INFERRED_CONJUNCTION_PASS);
     let labels = ReadLabels {
         out: kb.intern(REQUIREMENT_OUT_LABEL),
         slot: kb.intern(REQUIREMENT_SLOT_LABEL),
@@ -570,19 +576,31 @@ pub(super) fn infer_rule_body_requirements(kb: &mut KnowledgeBase) {
             continue;
         }
         let body: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
-        // IDEMPOTENT by provenance: the typer is not guaranteed to run once per KB.
-        if body.iter().any(|n| n.synthesized_by() == Some(pass)) {
+        // IDEMPOTENT by provenance: the typer is not guaranteed to run once per KB. A read
+        // may stand in a connective's goal slot as well as at the top.
+        if clause_requirement_reads(kb, fd_sym, &body)
+            .iter()
+            .any(|n| n.synthesized_by() == Some(pass))
+        {
             continue;
         }
         let mut written: SmallVec<[Symbol; 2]> = SmallVec::new();
         for node in &body {
             collect_find_dictionary_bases(kb, node, fd_sym, &mut written);
         }
-        // Per SPEC-OP demand `(goal index, the demand)`, and per SLOT demand `(goal index, the
-        // call, its arguments, its callee's chain)`, in body order.
+        // The goals a read can stand before: the body's own, and every goal in a connective's
+        // PROVED slot beneath them — an `|` / `&` branch, a negand, a quantifier's body, a
+        // discharge's consequent ([`nested_goals`]). Sites `0..body.len()` are the body's goals,
+        // in order; the rest are nested ones.
+        let mut sites: Vec<Rc<NodeOccurrence>> = body.clone();
+        for goal in &body {
+            nested_goals(kb, goal, &mut sites);
+        }
+        // Per SPEC-OP demand `(site, the demand)`, and per SLOT demand `(site, the call, its
+        // arguments, its callee's chain)`, in site order.
         let mut demands: Vec<(usize, SpecDemand)> = Vec::new();
         let mut slot_calls: Vec<(usize, SlotDemand)> = Vec::new();
-        for (gi, goal) in body.iter().enumerate() {
+        for (gi, goal) in sites.iter().enumerate() {
             // `(node, is it the top-level goal itself)`: the top goal's VALUE positions, and
             // below them only what [`demand_walk_enters`] admits — see the doc above for
             // where the walk stops and why.
@@ -642,11 +660,16 @@ pub(super) fn infer_rule_body_requirements(kb: &mut KnowledgeBase) {
         if demands.is_empty() && slot_calls.is_empty() {
             continue;
         }
-        // Group by (spec, carrier arguments); the first call of a group is its witness.
+        // Group by (spec, carrier arguments); the first call of a group is its witness. The
+        // body's own goals share a read across goals, which runs before the first; a nested
+        // goal's reads are its own, standing beside it in its slot, where the variables it
+        // reads are bound.
+        let top = body.len();
         let mut groups: Vec<(usize, SpecDemand, Vec<Rc<NodeOccurrence>>)> = Vec::new();
         for (gi, demand) in demands {
-            let same = groups.iter_mut().find(|(_, w, _)| {
-                w.spec == demand.spec
+            let same = groups.iter_mut().find(|(g, w, _)| {
+                (gi < top && *g < top || *g == gi)
+                    && w.spec == demand.spec
                     && w.carriers.len() == demand.carriers.len()
                     && w.carriers
                         .iter()
@@ -661,7 +684,7 @@ pub(super) fn infer_rule_body_requirements(kb: &mut KnowledgeBase) {
                 }
             }
         }
-        let mut reads_before: Vec<Vec<Rc<NodeOccurrence>>> = vec![Vec::new(); body.len()];
+        let mut reads_before: Vec<Vec<Rc<NodeOccurrence>>> = vec![Vec::new(); sites.len()];
         let mut targets: Vec<WeaveTarget> = Vec::new();
         for (gi, witness, calls) in groups {
             let (read, out) = inferred_read(
@@ -694,9 +717,29 @@ pub(super) fn infer_rule_body_requirements(kb: &mut KnowledgeBase) {
         // call after call instead lost any call whose subtree an earlier weave had rebuilt —
         // an outer call around a woven inner one — which `reassemble` hands back as a NEW
         // node the later identity match cannot find.
+        //
+        // A nested goal's reads are placed first, rebuilding the connectives above it
+        // ([`place_nested_reads`]); the rebuild keeps every other node, so the weave below
+        // still finds each call by identity.
+        let nested: Vec<(Rc<NodeOccurrence>, Vec<Rc<NodeOccurrence>>)> = sites[top..]
+            .iter()
+            .cloned()
+            .zip(reads_before.split_off(top))
+            .filter(|(_, reads)| !reads.is_empty())
+            .collect();
+        let placed: Vec<Rc<NodeOccurrence>> = if nested.is_empty() {
+            body.clone()
+        } else {
+            let and_sym = kb
+                .try_resolve_symbol("anthill.kernel.and")
+                .expect("a clause with a connective's goal slot has the kernel's `and`");
+            body.iter()
+                .map(|g| place_nested_reads(kb, g, &nested, and_sym, conjunction_pass))
+                .collect()
+        };
         let mut reached = vec![false; targets.len()];
         let new_body: Vec<Rc<NodeOccurrence>> =
-            body.iter().map(|g| weave_calls(g, &targets, &mut reached)).collect();
+            placed.iter().map(|g| weave_calls(g, &targets, &mut reached)).collect();
         debug_assert!(
             reached.iter().all(|r| *r),
             "P7VP4: an inferred demand's call was not found in its body"
@@ -708,6 +751,121 @@ pub(super) fn infer_rule_body_requirements(kb: &mut KnowledgeBase) {
         }
         kb.set_rule_body_nodes(rid, body_out);
     }
+}
+
+/// The goals in a connective's PROVED slots beneath `goal`, at every depth, pushed onto `out`
+/// in pre-order: an `|` / `&` branch, a negand, a quantifier's body and a discharge's consequent
+/// (each component of a slot the table wraps in `tuple(…)`), but no hypothesis and no binder
+/// ([`proved_goal_children`]).
+fn nested_goals(kb: &KnowledgeBase, goal: &Rc<NodeOccurrence>, out: &mut Vec<Rc<NodeOccurrence>>) {
+    let Some(expr) = goal.as_expr() else { return };
+    for child in proved_goal_children(kb, expr) {
+        out.push(Rc::clone(&child));
+        nested_goals(kb, &child, out);
+    }
+}
+
+/// `goal` with each nested goal of `nested` given its reads, as `and(read, …, goal)` where the
+/// goal stands — a component of a slot the table wraps in `tuple(…)`, or the slot itself. The
+/// connectives above a placement are rebuilt; every other node is kept, so a call is still found
+/// by identity.
+fn place_nested_reads(
+    kb: &KnowledgeBase,
+    goal: &Rc<NodeOccurrence>,
+    nested: &[(Rc<NodeOccurrence>, Vec<Rc<NodeOccurrence>>)],
+    and_sym: Symbol,
+    pass: crate::kb::occurrence::PassId,
+) -> Rc<NodeOccurrence> {
+    let Some((functor, pos_args, _)) = goal.as_expr().and_then(expr_call_parts) else {
+        return Rc::clone(goal);
+    };
+    let slots = kb.goal_slot_readings(functor, pos_args.len());
+    if slots.is_empty() {
+        return Rc::clone(goal);
+    }
+    // One goal of a slot, its reads before it and its own slots placed in turn.
+    let place = |g: &Rc<NodeOccurrence>| {
+        let reads = nested
+            .iter()
+            .find(|(site, _)| Rc::ptr_eq(site, g))
+            .map(|(_, reads)| reads.as_slice())
+            .unwrap_or(&[]);
+        let inner = place_nested_reads(kb, g, nested, and_sym, pass);
+        reads.iter().rev().fold(inner, |rest, read| {
+            NodeOccurrence::synthesized_expr(
+                Expr::Apply {
+                    recv_type: None,
+                    functor: and_sym,
+                    pos_args: vec![Rc::clone(read), rest],
+                    named_args: Vec::new(),
+                    type_args: Vec::new(),
+                },
+                Rc::clone(g),
+                pass,
+                g.owner,
+            )
+        })
+    };
+    // A node's children in `for_each_child` order: its positional arguments first.
+    let children_of = |n: &Rc<NodeOccurrence>| {
+        let mut children: Vec<Rc<NodeOccurrence>> = Vec::new();
+        if let Some(expr) = n.as_expr() {
+            for_each_child(expr, |c| children.push(Rc::clone(c)));
+        }
+        children
+    };
+    let mut children = children_of(goal);
+    for slot in slots.iter().filter(|s| s.reading == crate::kb::SlotReading::Proved) {
+        let Some(child) = pos_args.get(slot.index) else {
+            continue;
+        };
+        let parts = slot.tuple_wrapped.then(|| goal_tuple_parts(kb, child)).flatten();
+        children[slot.index] = match parts {
+            Some(parts) => {
+                let mut parts_now = children_of(child);
+                for (i, part) in parts.iter().enumerate() {
+                    parts_now[i] = place(part);
+                }
+                crate::kb::simp_rewrite::reassemble(child, &parts_now)
+            }
+            None => place(child),
+        };
+    }
+    crate::kb::simp_rewrite::reassemble(goal, &children)
+}
+
+/// A clause's requirement reads, in the one order every reader takes them in: the body's goals
+/// in order, each preceded by the reads that stand before it, and within a goal the reads in its
+/// connectives' PROVED slots, in pre-order. The citation computes a route per read in this order
+/// (`citation_requirement_routes`), the resolver binds the routes in it (`bind_citation_reads`),
+/// and the routes are counted and their specs read by it ([`requirement_read_counts`],
+/// [`requirement_read_specs`]).
+pub(crate) fn clause_requirement_reads(
+    kb: &KnowledgeBase,
+    fd: Symbol,
+    body: &[Rc<NodeOccurrence>],
+) -> Vec<Rc<NodeOccurrence>> {
+    fn visit(
+        kb: &KnowledgeBase,
+        fd: Symbol,
+        node: &Rc<NodeOccurrence>,
+        out: &mut Vec<Rc<NodeOccurrence>>,
+    ) {
+        if requirement_read_out(kb, fd, node).is_some() {
+            out.push(Rc::clone(node));
+            return;
+        }
+        if let Some(expr) = node.as_expr() {
+            for child in proved_goal_children(kb, expr) {
+                visit(kb, fd, &child, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for node in body {
+        visit(kb, fd, node, &mut out);
+    }
+    out
 }
 
 /// The labels an inferred read is spelled with, interned once per pass.
@@ -1506,15 +1664,22 @@ fn tuple_goal_children_occ(
     kb: &KnowledgeBase,
     body: &Rc<NodeOccurrence>,
 ) -> Vec<Rc<NodeOccurrence>> {
-    let wrapper_args = body
-        .as_expr()
-        .and_then(expr_call_parts)
-        .filter(|(f, _, _)| kb.local_name_of(*f) == "tuple")
-        .map(|(_, pos_args, _)| pos_args);
-    match wrapper_args {
+    match goal_tuple_parts(kb, body) {
         Some(args) => args.iter().map(Rc::clone).collect(),
         None => vec![Rc::clone(body)],
     }
+}
+
+/// The components of a tuple-wrapped goal slot's `tuple(g₁, …, gₙ)` wrapper, or `None` for a
+/// body that is one goal ([`tuple_goal_children_occ`]).
+fn goal_tuple_parts<'a>(
+    kb: &KnowledgeBase,
+    body: &'a Rc<NodeOccurrence>,
+) -> Option<&'a [Rc<NodeOccurrence>]> {
+    body.as_expr()
+        .and_then(expr_call_parts)
+        .filter(|(f, _, _)| kb.local_name_of(*f) == "tuple")
+        .map(|(_, pos_args, _)| pos_args)
 }
 
 /// Classify one goal-position occurrence for [`check_rule_body_goal_readings`]:
@@ -1833,27 +1998,33 @@ fn operation_goal_arity_error(
 /// cover walk treats as binding nothing — the same "empty is a real answer" that
 /// [`RequirementBracket`] states for its own reader.
 pub(super) fn collect_declared_spec_views(
+    kb: &KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
     fd_sym: Symbol,
     out: &mut Vec<Value>,
 ) {
-    for_each_find_dictionary_instance(occ, fd_sym, |instance| {
+    for_each_find_dictionary_instance(kb, occ, fd_sym, |instance| {
         out.push(Value::Node(Rc::clone(instance)));
     });
 }
 
-/// WI-20260923-32XFQ — every in-body `find_dictionary(instance, …)` goal under `occ`,
-/// handed its slot-0 INSTANCE, in the walk's order — the one walk
+/// WI-20260923-32XFQ — every in-body `find_dictionary(instance, …)` goal under `occ` the AUTHOR
+/// wrote, handed its slot-0 INSTANCE, in the walk's order — the one walk
 /// [`collect_declared_spec_views`] and [`collect_find_dictionary_bases`] each spelled, and
-/// which differ only in what they keep of the instance. Iterative (explicit stack) so a
-/// deeply-nested body cannot overflow the host stack.
+/// which differ only in what they keep of the instance. An inferred read is no declaration, at
+/// the top of a body or in a connective's goal slot ([`is_inferred_requirement_read`]).
+/// Iterative (explicit stack) so a deeply-nested body cannot overflow the host stack.
 fn for_each_find_dictionary_instance(
+    kb: &KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
     fd_sym: Symbol,
     mut visit: impl FnMut(&Rc<NodeOccurrence>),
 ) {
     let mut stack: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(occ)];
     while let Some(o) = stack.pop() {
+        if is_inferred_requirement_read(kb, &o) {
+            continue;
+        }
         let Some(expr) = o.as_expr() else { continue };
         if let Expr::Apply {
             functor, pos_args, ..
@@ -1880,7 +2051,7 @@ fn collect_find_dictionary_bases(
     fd_sym: Symbol,
     out: &mut SmallVec<[Symbol; 2]>,
 ) {
-    for_each_find_dictionary_instance(occ, fd_sym, |instance| {
+    for_each_find_dictionary_instance(kb, occ, fd_sym, |instance| {
         if let Some(base) = occ_head_symbol(instance) {
             let canon = kb.canonical_sort_sym(base);
             if !out.contains(&canon) {
@@ -3278,10 +3449,7 @@ pub(crate) fn requirement_read_specs(kb: &KnowledgeBase, relation: Symbol) -> Ve
     let qn = kb.qualified_name_of(relation).to_string();
     let mut out: Vec<Option<Symbol>> = Vec::new();
     for rid in kb.rule_ids_by_qn(&qn) {
-        for n in kb.rule_body_nodes(rid) {
-            if requirement_read_out(kb, fd, n).is_none() {
-                continue;
-            }
+        for n in clause_requirement_reads(kb, fd, kb.rule_body_nodes(rid)) {
             out.push(match n.as_expr() {
                 Some(Expr::Apply { pos_args, .. }) => {
                     sort_functor_of_view(kb, &Value::Node(pos_args[0].clone()))
@@ -3316,11 +3484,7 @@ pub(crate) fn requirement_read_counts(
     kb.rule_ids_by_qn(&qn)
         .into_iter()
         .map(|rid| {
-            let reads = kb
-                .rule_body_nodes(rid)
-                .iter()
-                .filter(|n| requirement_read_out(kb, fd, n).is_some())
-                .count();
+            let reads = clause_requirement_reads(kb, fd, kb.rule_body_nodes(rid)).len();
             (rid, reads)
         })
         .collect()

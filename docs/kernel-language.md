@@ -2738,8 +2738,10 @@ a typed head, the parameter's default — as in an operation body: over `d[T = I
 requires Desc[T = T]`, `rule v(?n) :- d(?n)` takes the provider at `Int64`, and is refused
 where none provides it. A
 resolver builtin (`eq`, `<`) compares values itself and reads no dictionary. A call
-inside a `|` or `&` branch, a negation, a quantifier body, or a `lambda` / `let` /
-`match` / `if` has no condition and dispatches on the value when it runs. A requirement no argument carries — at a type
+in a `|` or `&` branch, a negation, a quantifier's body or a discharge's consequent has its
+condition there, read beside the goal it is in, which a citation reaches as it reaches one
+before the body's own goals. A call under a `lambda`, `let`, `match` or `if` is typed as an
+operation body is (below), and refused where its types leave its instance open. A requirement no argument carries — at a type
 parameter none of the operation's parameters writes — and one at a spec nothing provides are
 load errors wherever the call is written, no value being able to derive them: over `mk[B]()
 requires WeakOrd[T = B]`, `rule five(?c) :- mk(?c)` is refused, as `mk()` is in an

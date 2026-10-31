@@ -457,7 +457,7 @@ pub(super) fn type_rule_bodies(
             )) {
                 let mut declared: Vec<Value> = Vec::new();
                 for node in &body_nodes {
-                    collect_declared_spec_views(node, fd, &mut declared);
+                    collect_declared_spec_views(kb, node, fd, &mut declared);
                 }
                 env.set_rule_declared_specs(declared);
             }

@@ -444,3 +444,115 @@ fn a_requirement_at_a_spec_nothing_provides_is_refused_in_every_position() {
         );
     }
 }
+
+// ── a call in a connective's goal slot ────────────────────────────────────────────────────
+
+/// `Util.sign`, whose `WeakOrd[T = A]` is a condition of the clause, and the `Ascending` and
+/// `Descending` orders over `Int64` a citation can select.
+const ORDERS: &str = r#"
+  import anthill.prelude.{Error, EmptyStream, WeakOrd, Ord}
+  import anthill.prelude.Numeric.{sub}
+  sort Ascending
+    provides Ord[T = Int64]
+    operation compare(a: Int64, b: Int64) -> Int64 = sub(a, b)
+  end
+  sort Descending
+    provides Ord[T = Int64]
+    operation compare(a: Int64, b: Int64) -> Int64 = sub(b, a)
+  end
+  sort Util
+    operation sign[A](x: A, y: A) -> Int64 requires WeakOrd[T = A] = WeakOrd.compare(x, y)
+  end
+"#;
+
+/// `rel` cited at `(1, 5)` under `Descending`, under `Ascending` and uncited: how many answers
+/// each citation gets, and the first one's `c` where there is one.
+fn cited_counts(ns: &str, rules: &str, rel: &str) -> [(i64, Option<i64>); 3] {
+    let src = program(
+        ns,
+        &[ORDERS],
+        &format!(
+            "{rules}\n  sort Driver\n    \
+             operation n[A](x: A, y: A) -> Int64 effects {{Error}} requires WeakOrd[T = A] = \
+             {rel}(x, y).takeN(5).length()\n    \
+             operation desc() -> Int64 effects {{Error}} = n[A = Int64, WeakOrd = Descending](1, 5)\n    \
+             operation asc() -> Int64 effects {{Error}} = n[A = Int64, WeakOrd = Ascending](1, 5)\n    \
+             operation plain() -> Int64 effects {{Error}} = {rel}(1, 5).takeN(5).length()\n    \
+             operation first[A](x: A, y: A) -> Int64 effects {{Error, Error[EmptyStream]}} \
+             requires WeakOrd[T = A] = {rel}(x, y).head.c\n    \
+             operation descC() -> Int64 effects {{Error, Error[EmptyStream]}} = \
+             first[A = Int64, WeakOrd = Descending](1, 5)\n    \
+             operation ascC() -> Int64 effects {{Error, Error[EmptyStream]}} = \
+             first[A = Int64, WeakOrd = Ascending](1, 5)\n    \
+             operation plainC() -> Int64 effects {{Error, Error[EmptyStream]}} = {rel}(1, 5).head.c\n  \
+             end"
+        ),
+    );
+    let mut interp = crate::common::interp_for(&src);
+    let mut at = |entry: &str| match interp.call(&format!("{ns}.Driver.{entry}"), &[]) {
+        Ok(Value::Int(n)) => Some(n),
+        _ => None,
+    };
+    let row = |n: Option<i64>, c: Option<i64>| (n.expect("a count"), c);
+    [
+        row(at("desc"), at("descC")),
+        row(at("asc"), at("ascC")),
+        row(at("plain"), at("plainC")),
+    ]
+}
+
+/// A CALL IN AN `|` BRANCH IS A CONDITION OF THE CLAUSE, its read standing beside it in the
+/// branch (`or(and(find_dictionary(…), sign(…)), …)`), where a citation routes to it as to one
+/// at the top of the body: each branch spelling answers `Descending`'s 4, `Ascending`'s -4 and
+/// `Int64`'s own -1, as the goal spelling does, and so does a branch whose call's witness is
+/// bound in the branch alone (`?x`). It had no read, and answered `Int64`'s -1 under both
+/// rivals. FAILS with the reads placed at the body's own goals alone (`nested_goals` pushing
+/// nothing): `-1` under each citation, for every spelling but the goal one, which passes either
+/// way by design.
+#[test]
+fn a_call_in_a_branch_is_its_clauses_condition() {
+    for (ns, rule) in [
+        ("rydnv.branchl", "  rule r(?a, ?b, ?c) :- (Util.sign(?a, ?b, ?c) | 1 = 2)"),
+        ("rydnv.branchr", "  rule r(?a, ?b, ?c) :- (1 = 2 | Util.sign(?a, ?b, ?c))"),
+        (
+            "rydnv.branchlocal",
+            "  rule r(?a, ?b, ?c) :- (?x <=> ?a & Util.sign(?x, ?b, ?c)) | 1 = 2",
+        ),
+        ("rydnv.branchgoal", "  rule r(?a, ?b, ?c) :- Util.sign(?a, ?b, ?c)"),
+    ] {
+        assert_eq!(
+            cited_counts(ns, rule, "r"),
+            [(1, Some(4)), (1, Some(-4)), (1, Some(-1))],
+            "{ns}"
+        );
+    }
+}
+
+/// A CALL IN A NEGAND, A QUANTIFIER'S BODY AND A DISCHARGE'S CONSEQUENT reads its condition
+/// there: `not(Util.sign(?a, ?b, 4))` fails under `Descending` (4) and holds under `Ascending`
+/// and uncited; `(forall ?z in [1]: Util.sign(?a, ?b, ?c))` and `(forall(?z), hyp(?z) -:
+/// Util.sign(?a, ?b, ?c))`, with `?c` fixed at 4, hold under `Descending` alone. They read
+/// `Int64`'s own -1 under every citation: the negation held three times and the others never
+/// did. FAILS as the row above does: `(1, 1, 1)`, `(0, 0, 0)` and `(0, 0, 0)`.
+#[test]
+fn a_call_in_a_negand_a_quantifier_or_a_consequent_reads_its_condition_there() {
+    let negated = cited_counts(
+        "rydnv.negand",
+        "  rule r(?a, ?b, ?c) :- not(Util.sign(?a, ?b, 4)), ?c <=> 1",
+        "r",
+    );
+    assert_eq!(negated.map(|(n, _)| n), [0, 1, 1], "the negation");
+    let quantified = cited_counts(
+        "rydnv.quantified",
+        "  rule r(?a, ?b, ?c) :- ?c <=> 4, (forall ?z in [1]: Util.sign(?a, ?b, ?c))",
+        "r",
+    );
+    assert_eq!(quantified.map(|(n, _)| n), [1, 0, 0], "the quantifier");
+    let discharged = cited_counts(
+        "rydnv.consequent",
+        "  rule hyp(?z) :- false
+           rule r(?a, ?b, ?c) :- ?c <=> 4, (forall(?z), hyp(?z) -: Util.sign(?a, ?b, ?c))",
+        "r",
+    );
+    assert_eq!(discharged.map(|(n, _)| n), [1, 0, 0], "the consequent");
+}

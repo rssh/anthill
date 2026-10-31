@@ -1341,6 +1341,42 @@ the citation `Sat[C = List[T = Bit]].model` routed nothing to it — the route r
 witnesses' types, and the list carries nothing at `C` — and the clause answered 0 models,
 definitely, where tiny-sat has 2. The route has to read the cited sort's instance.
 
+### 6.18 C1d, a call in a connective's goal (WI-20261013-RYDNV, sixth part, 2026-10-31)
+
+`rule r(?a, ?b, ?c) :- Util.sign(?a, ?b, ?c) | false`, cited under `Descending` / `Ascending` and
+plainly, answers 4 / -4 / -1, as the flat clause does; so do the right branch, the negand of
+`not(Util.sign(?a, ?b, 7))`, a quantifier's body and a discharge's consequent. The inference
+generated reads for the body's own goals only, so a call in a nested goal was woven with no read
+and dispatched on the value (-1 under every citation).
+
+- **Placement**: the inference walks the PROVED slots of the goal-slot table
+  (`proved_goal_children`, `nested_goals`) beside the body, and a read for a nested call goes
+  beside the goal it is in (`place_nested_reads`), as `and(read, …, goal)` where the goal stands,
+  a component of a tuple-wrapped slot or the slot itself. The `and` is a node of a pass of its
+  own: it is no read, and a reader that skips a read would skip the goal inside it. A read is
+  never hoisted out of its goal: a branch's read in front of the disjunction would fail the
+  clause where the other branch holds, and a negand's in front of `not` would fail where `not`
+  succeeds. Two calls share one read only when both are the body's own goals, or both are the
+  same nested goal's.
+- **One reader of the reads**: what the counts, the routes, the binding of a citation and a
+  written domain's `fill` read (`requirement_read_counts`, `citation_requirement_routes`,
+  `bind_citation_reads`, `requirement_read_specs`) is `clause_requirement_reads`: the reads in
+  pre-order, at the top and in proved slots. The four walked the body's top level each; one of
+  them seeing a nested read the others do not hands a dictionary to the wrong read. A slot the
+  table reads as `Assumed` (a discharge's hypothesis) or `Binders` holds none, since the
+  inference places none there: a call in a hypothesis is assumed, not run.
+- **Idempotence** asks the same walk for a read of the pass, so a nested read is seen when the
+  pass runs again; the declared-view scan (`for_each_find_dictionary_instance`) skips inferred
+  reads, which it used to meet only at the top.
+- **SMT**: nothing new. The emitter refuses a connective goal (`unhandled body goal functor
+  'anthill.kernel.not'`, before this part as after), and a condition (`if`, `ite`) holds no read.
+
+Measured, not this part's, the same on the before-binary: a parenthesized goal list at goal
+position, `rule p(?x) :- (a(?x), b(?x))`, is a tuple goal and answers no solutions, silently;
+with a spec call inside it is refused for its arity (`expected 2 arguments, got 3`). A `lambda`,
+`let`, `match` or `if` in a rule body is typed as an operation body (§6.11) and refused where it
+leaves its instance open; a condition carried into one is not built.
+
 ## 7. Testing
 
 Per CLAUDE.md: each ticket's rows live in one test module, driven by value with its back-outs run
