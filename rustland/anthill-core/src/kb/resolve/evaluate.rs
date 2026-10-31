@@ -498,10 +498,10 @@ impl KnowledgeBase {
     /// Is `v` an operation application WRITTEN as one — a node with parentheses whose
     /// functor is an operation or a builtin, not an entity constructor, a relation, a
     /// tuple, a collection literal or a variable? A bare nullary NAME (an `Expr::Ref`, or
-    /// a dotted one — [`Self::is_qualified_name`]) is not: §5.4 reads it by type, and it
-    /// is left alone.
+    /// a dotted one — [`Self::is_qualified_name`]) is not: §5.4 reads it by type, and the
+    /// walks that build a rule body and a query build the name they read as a call as one.
     ///
-    /// On a carrier with no occurrence (a query's term, a σ-rebuilt `Entity`) a nullary
+    /// On a carrier with no occurrence (a term a fact holds, a σ-rebuilt `Entity`) a nullary
     /// application and a bare name are one term (the nullary canon), so there only an
     /// application WITH arguments is a call — as `reduce_op_value` reads it.
     ///

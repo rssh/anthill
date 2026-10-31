@@ -831,14 +831,10 @@ pub(super) fn paren_less_member_as_function(
     {
         return None;
     }
-    if operation_is_nullary(kb, functor) {
-        let exp = expected?;
-        arrow_parts(kb, exp)?;
-        if lookup_operation_return_type(kb, functor)
-            .is_some_and(|ret| types_compatible(kb, &mut Substitution::new(), &ret, exp))
-        {
-            return None;
-        }
+    if operation_is_nullary(kb, functor)
+        && !expected.is_some_and(|exp| nullary_name_is_function_value(kb, functor, exp))
+    {
+        return None;
     }
     // The reference the one-segment name is, standing where the call stood: the eta arm
     // stamps it, and the evaluator mints the function value from it.
@@ -853,6 +849,19 @@ pub(super) fn paren_less_member_as_function(
     Some(check_bare_ref(
         kb, env, flow, functor, span, &reference, expected, recv_type, solving,
     ))
+}
+
+/// Is the nullary operation `functor`, named without parentheses where `expected` is
+/// expected, the function value rather than its call (§5.4)? A function is expected there,
+/// and the operation's result is not one that fits it.
+pub(crate) fn nullary_name_is_function_value(
+    kb: &mut KnowledgeBase,
+    functor: Symbol,
+    expected: &Value,
+) -> bool {
+    arrow_parts(kb, expected).is_some()
+        && !lookup_operation_return_type(kb, functor)
+            .is_some_and(|ret| types_compatible(kb, &mut Substitution::new(), &ret, expected))
 }
 
 /// `receiver` is the type an operation's name was written on without parentheses

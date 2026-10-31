@@ -25770,6 +25770,7 @@ fn convert_query_term_expecting(
                     (kb_sym, if bracket { occ } else { query_data_slot_name(kb, occ, child) })
                 })
                 .collect();
+            query_function_value_arguments(kb, kb_functor, &mut new_pos, &mut new_named);
 
             // WI-433: DESUGAR a positional constructor QUERY to the canonical
             // NAMED form, mirroring the fact/rule term path
@@ -25938,7 +25939,7 @@ fn convert_query_term_expecting(
                 }
             }
 
-            nullary_query_canon(kb, kb_functor, new_pos, new_named.into_vec())
+            nullary_query_canon(kb, kb_functor, new_pos, new_named.into_vec(), fold)
         }
         Term::Ident(sym) => {
             let name = parse_symbols.local_name(sym);
@@ -25947,7 +25948,7 @@ fn convert_query_term_expecting(
                     Some(lit) => Expr::Const(lit),
                     None => match query_data_slot_alias(kb, resolved, fold) {
                         Some(occ) => return occ,
-                        None => Expr::Ref(resolved),
+                        None => return query_resolved_name(kb, resolved, fold),
                     },
                 },
                 ResolveResult::Ambiguous(..) | ResolveResult::NotFound => {
@@ -25962,7 +25963,7 @@ fn convert_query_term_expecting(
                 Some(lit) => Expr::Const(lit),
                 None => match query_data_slot_alias(kb, resolved, fold) {
                     Some(occ) => return occ,
-                    None => Expr::Ref(resolved),
+                    None => return query_resolved_name(kb, resolved, fold),
                 },
             }
         }
@@ -26019,16 +26020,28 @@ fn query_type_context_binding(
     key: Option<Symbol>,
     occ: &Rc<NodeOccurrence>,
 ) -> Rc<NodeOccurrence> {
-    match occ.as_expr() {
-        Some(Expr::Ref(s)) => {
-            let face = kb.binding_type_face(head, key, *s);
-            if face == *s {
-                Rc::clone(occ)
-            } else {
-                NodeOccurrence::new_expr(Expr::Ref(face), occ.span, occ.owner)
-            }
+    // A nullary operation's name is built as its call ([`query_nullary_call`]); in a type
+    // context it is the name.
+    let name = match occ.as_expr() {
+        Some(Expr::Ref(s)) => *s,
+        Some(Expr::Apply {
+            functor,
+            pos_args,
+            named_args,
+            ..
+        }) if pos_args.is_empty()
+            && named_args.is_empty()
+            && super::op_info::is_nullary_operation(kb, *functor) =>
+        {
+            *functor
         }
-        _ => Rc::clone(occ),
+        _ => return Rc::clone(occ),
+    };
+    let face = kb.binding_type_face(head, key, name);
+    if face == name && matches!(occ.as_expr(), Some(Expr::Ref(_))) {
+        Rc::clone(occ)
+    } else {
+        NodeOccurrence::new_expr(Expr::Ref(face), occ.span, occ.owner)
     }
 }
 
@@ -26038,11 +26051,11 @@ fn query_type_context_binding(
 /// WI-20260904-J0RM4 — the interned path got this for free, because `kb.alloc` applies
 /// the canon at the single funnel, and the query converter used to go through it. On the
 /// occurrence side `Expr::Apply { f, [], [] }` and `Expr::Ref(f)` are two NODES with one
-/// `ViewHead::nullary(f)` head, so matching would agree either way — but `reduce_op_value`
-/// opens an `Expr::Apply` and hands anything else back un-reduced, so building the `Apply`
-/// would silently give a query `f()` on a nullary OPERATION the call reading that
-/// WI-20260902-CZJ2N scoped to RULE BODIES ("SCOPE — RULE BODIES, ops only"). Applying
-/// the canon here keeps the query pattern's shape exactly what it was.
+/// `ViewHead::nullary(f)` head, so matching agrees either way — but `reduce_op_value`
+/// opens an `Expr::Apply` and hands anything else back un-reduced. So a nullary
+/// OPERATION's application is kept the `Apply`, its call, as a rule body's is
+/// ([`Loader::nullary_op_call_or_ref`]): `?v <=> seven()` binds the value. Not in a quoted
+/// `Term` field, which holds the name.
 ///
 /// The TEST is `KnowledgeBase::nullary_name_canons_to_ref`, shared with the interned
 /// canon rather than re-spelled — two carriers deciding this two ways is how one
@@ -26052,8 +26065,13 @@ fn nullary_query_canon(
     functor: Symbol,
     pos_args: Vec<Rc<NodeOccurrence>>,
     named_args: Vec<(Symbol, Rc<NodeOccurrence>)>,
+    fold: ConstFold,
 ) -> Expr {
-    if pos_args.is_empty() && named_args.is_empty() && kb.nullary_name_canons_to_ref(functor) {
+    if pos_args.is_empty()
+        && named_args.is_empty()
+        && kb.nullary_name_canons_to_ref(functor)
+        && (fold == ConstFold::Off || !super::op_info::is_nullary_operation(kb, functor))
+    {
         return Expr::Ref(functor);
     }
     Expr::Apply {
@@ -26062,6 +26080,81 @@ fn nullary_query_canon(
         pos_args,
         named_args,
         type_args: Vec::new(),
+    }
+}
+
+/// A resolved one-segment name in a query: a nullary operation's call where it is written
+/// alone, as a rule body's is ([`query_nullary_call`]); in a quoted `Term` field, and for
+/// any other name, its reference.
+fn query_resolved_name(kb: &KnowledgeBase, sym: Symbol, fold: ConstFold) -> Rc<NodeOccurrence> {
+    if fold != ConstFold::Off && super::op_info::is_nullary_operation(kb, sym) {
+        return query_nullary_call(sym, true);
+    }
+    expr_node(Expr::Ref(sym))
+}
+
+/// A nullary operation's call, written with parentheses or without (`paren_less`), which
+/// [`query_function_value_arguments`] reads.
+fn query_nullary_call(op: Symbol, paren_less: bool) -> Rc<NodeOccurrence> {
+    NodeOccurrence::new_expr_written(
+        Expr::Apply {
+            recv_type: None,
+            functor: op,
+            pos_args: Vec::new(),
+            named_args: Vec::new(),
+            type_args: Vec::new(),
+        },
+        node_occurrence::empty_span(),
+        None,
+        false,
+        paren_less,
+    )
+}
+
+/// A nullary operation named without parentheses where `functor`'s parameter expects a
+/// function is that function (§5.4), as in a rule body, where the typer reads it so: its name,
+/// which the call applies. A query has no typer, so the parameter's declared type decides.
+fn query_function_value_arguments(
+    kb: &mut KnowledgeBase,
+    functor: Symbol,
+    pos_args: &mut [Rc<NodeOccurrence>],
+    named_args: &mut [(Symbol, Rc<NodeOccurrence>)],
+) {
+    let written_alone = |arg: &Rc<NodeOccurrence>| arg.is_paren_less();
+    if kb.is_entity_constructor(functor)
+        || !(pos_args.iter().any(written_alone) || named_args.iter().any(|(_, a)| written_alone(a)))
+    {
+        return;
+    }
+    let Some(params) = kb
+        .op_record(functor)
+        .and_then(|r| r.signature.as_ref())
+        .map(|s| s.params.clone())
+    else {
+        return;
+    };
+    let ranks = super::typing::positional_param_indices(kb, &params, pos_args.len(), named_args);
+    let mut at: Vec<(Option<usize>, &mut Rc<NodeOccurrence>)> =
+        pos_args.iter_mut().zip(ranks).map(|(arg, p)| (p, arg)).collect();
+    for (label, arg) in named_args.iter_mut() {
+        let p = params
+            .iter()
+            .position(|(name, _)| kb.local_name_of(*name) == kb.local_name_of(*label));
+        at.push((p, arg));
+    }
+    for (p, arg) in at {
+        let Some((_, param_type)) = p.and_then(|p| params.get(p)) else {
+            continue;
+        };
+        let Some(&Expr::Apply { functor: op, .. }) = arg.as_expr() else {
+            continue;
+        };
+        if arg.is_paren_less()
+            && super::op_info::is_nullary_operation(kb, op)
+            && super::typing::nullary_name_is_function_value(kb, op, param_type)
+        {
+            *arg = expr_node(Expr::Ref(op));
+        }
     }
 }
 
@@ -37400,9 +37493,14 @@ impl<'a> Loader<'a> {
         }
         match self.data_slot_const_value(sym, parse_id) {
             Some(lit) => Expr::Const(lit),
-            None => self
-                .body_bare_type_value(sym, span)
-                .unwrap_or_else(|| self.nullary_op_call_or_ref(sym, parse_id)),
+            None => self.body_bare_type_value(sym, span).unwrap_or_else(|| {
+                // A quoted `Term` field holds the name, as the fact it is matched with does.
+                if self.const_fold == ConstFold::Off {
+                    Expr::Ref(sym)
+                } else {
+                    self.nullary_op_call_or_ref(sym, parse_id)
+                }
+            }),
         }
     }
 
@@ -38155,9 +38253,17 @@ impl<'a> Loader<'a> {
         let dot_chain =
             dotted_citation_name(&self.parsed.symbols, &self.parsed.terms, parse_id).is_some();
         // A method call written without parentheses, `(D).T`, is marked as an operation
-        // body's is: what the typer reads off a written type's dot depends on it.
-        let paren_less = matches!(expr, Expr::DotApply { .. })
-            && self.parsed.terms.is_paren_less_dot(parse_id);
+        // body's is: what the typer reads off a written type's dot depends on it. So is a
+        // nullary operation's name written alone, built as its call
+        // ([`Self::nullary_op_call_or_ref`]): where a function is expected it is the
+        // function value, as in an operation body (§5.4).
+        let paren_less = match &expr {
+            Expr::DotApply { .. } => self.parsed.terms.is_paren_less_dot(parse_id),
+            Expr::Apply { .. } => {
+                matches!(self.parsed.terms.get(parse_id), Term::Ref(_) | Term::Ident(_))
+            }
+            _ => false,
+        };
         let node = NodeOccurrence::new_expr_written(expr, span, None, dot_chain, paren_less);
         // WI-753 — A REFLECT FORM WRITTEN AS DATA IS READ BY THE ARMS THAT READ IT AS A TERM.
         //

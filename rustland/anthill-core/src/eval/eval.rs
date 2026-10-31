@@ -6011,10 +6011,16 @@ fn occurrence_is_lambda(occ: &std::rc::Rc<NodeOccurrence>) -> bool {
 }
 
 /// The operation a value names, read through the view on any carrier: a bare reference
-/// whose symbol is an operation. A free function for the reason
-/// [`occurrence_is_lambda`] is. See [`Interpreter::op_ref_of_applied_name`].
+/// whose symbol is an operation, or the reference the typer stored where a rule's nullary
+/// operation name is the function value (`applyThunk(seven, ?r)`). A free function for the
+/// reason [`occurrence_is_lambda`] is. See [`Interpreter::op_ref_of_applied_name`].
 fn applied_operation_name(kb: &KnowledgeBase, v: &Value) -> Option<Symbol> {
     use crate::kb::term_view::{TermView, ViewHead};
+    if let Value::Node(o) = v {
+        if let Some(&Expr::VarRef { name }) = o.as_expr() {
+            return kb.has_kind(name, crate::intern::SymbolKind::Operation).then_some(name);
+        }
+    }
     match TermView::head(v, kb) {
         ViewHead::Functor {
             functor,

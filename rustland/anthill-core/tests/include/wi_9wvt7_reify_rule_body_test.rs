@@ -320,7 +320,7 @@ fn an_unpinned_host_entry_is_refused_and_leaves_no_frame() {
 
 /// The shapes whose pattern slot the call builds no evidence for, each its own load so one
 /// refusal cannot stand for another.
-const UNFILLED_PATTERN_PROGRAMS: [(&str, &str); 7] = [
+const UNFILLED_PATTERN_PROGRAMS: [(&str, &str); 6] = [
     (
         "a rule variable's type beside a second label",
         r#"
@@ -407,19 +407,6 @@ namespace test.rrbo
 end
 "#,
     ),
-    (
-        "an operation named bare, read as its call",
-        r#"
-namespace test.rrbo
-  import anthill.prelude.{Int64, String, Error, Result}
-  sort Boom
-    entity boom(why: String)
-  end
-  operation raiseNow() -> Int64 effects {Error[Boom]} = Error.raise(boom("now"))
-  rule bareRaise(?r) :- Error.reify(raiseNow, ?r)
-end
-"#,
-    ),
 ];
 
 /// A rule-body call whose pattern slot it builds no evidence for is refused where it is
@@ -427,7 +414,7 @@ end
 /// 071 stage (d)): the raising call requires the `TypeValue` of that type, which the clause
 /// pins as little as the pattern, and is refused first (the rule variable's shapes, the open
 /// collection). A tuple is refused at both. Where the thunk raises nothing open — a spec as
-/// the payload, no `Error` label, an operation named bare — the refusal is the pattern's. The boundary catches by that evidence, and with none it refuses to run, so the
+/// the payload, no `Error` label — the refusal is the pattern's. The boundary catches by that evidence, and with none it refuses to run, so the
 /// call can never answer: with (d)'s load refusal backed out the programs load and
 /// `either(7, 7, ?r)` is undecided at every query. Before the boundary refused to run with
 /// no evidence it caught every payload, and `either(7, 7, ?r)` answered `err(other(n: 7))`,
@@ -556,7 +543,10 @@ fn a_generic_catcher_cited_from_a_rule_is_refused_at_its_raise() {
 /// The repairs the refusal names, each driven. "Pin the element at this call": the payload
 /// raised as a value of a sort the call names — a constructor's, or a rule variable's whose
 /// type is written — the thunk bound by a call whose result says what it raises, and an
-/// operation named bare written as a lambda that calls it.
+/// operation written as a lambda that calls it. Named bare at the thunk, the operation is the
+/// function value, as in an operation body (§5.4): `bareNamed` answers as `lambdaFixed` does,
+/// where it was refused, read as its call. FAILS with the walk's mark of a name written alone
+/// backed out.
 ///
 /// THE THUNK A GOAL BINDS is typed by that goal's result column since WI-20261013-WF14Z:
 /// `mkThunk(?f)` makes `?f` a `() -> Int64 @ {Error[Boom]}`, so the boundary reads `Boom`.
@@ -579,6 +569,7 @@ namespace test.rrbr
 
   rule fixedBoom(?r) :- Error.reify(lambda () -> raiseAt(boom("b")), ?r)
   rule lambdaFixed(?r) :- Error.reify(lambda () -> raiseNow(), ?r)
+  rule bareNamed(?r) :- Error.reify(raiseNow, ?r)
 
   operation mayFail(n: Int64) -> Int64 effects {Error[Boom]} =
     if n < 0 then Error.raise(boom("negative")) else n + 1
@@ -600,6 +591,8 @@ fn the_advised_repairs_answer() {
     let r = crate::common::one_definite(&mut kb, "test.rrbr.fixedBoom");
     assert_eq!(why(&kb, &r), "b");
     let r = crate::common::one_definite(&mut kb, "test.rrbr.lambdaFixed");
+    assert_eq!(why(&kb, &r), "now");
+    let r = crate::common::one_definite(&mut kb, "test.rrbr.bareNamed");
     assert_eq!(why(&kb, &r), "now");
     let r = crate::common::one_definite(&mut kb, "test.rrbr.viaVar");
     assert_eq!(why(&kb, &r), "negative");

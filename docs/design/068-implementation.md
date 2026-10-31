@@ -1195,6 +1195,10 @@ Not this part's, measured on the way, each the same on 083cb6b8:
 - A lambda in a query pattern, and an operation name passed as data and applied as a function
   value, are no function values at run time ("unknown operation: applyThunk.f").
 - A query's nullary call is the operation's name as data: `not(plainStamp() = "x")` holds.
+  Delivered by WI-20261023-6Q43W: a query builds the call, written with parentheses or alone,
+  as the rule-body walk does, and at a parameter its callee declares a function type the bare
+  name is the function. In a rule body the bare name at a function parameter is the function
+  value too (§5.4), where it was refused; at a relation's column it is still the call.
 - A `let` in a rule body's value slot, also in a call's argument, is bound unevaluated.
 - A constraint's goal is not walked by the clause typing (WI-20261023-76KZN):
   `constraint c :- plainStamp() = "2000"` loads. Delivered by that ticket: a constraint's goals

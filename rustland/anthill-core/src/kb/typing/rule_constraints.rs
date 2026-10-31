@@ -774,8 +774,26 @@ pub(super) fn collect_occurrence_type_constraints(
                 constrain_domain_test(kb, functor, pos_args, committed, st);
             }
             let bracket = call_bracket_instances(kb, occ, expr, functor);
-            let (nested, result) =
+            let (mut nested, result) =
                 constrain_application(kb, functor, pos_args, named_args, &bracket, position, st);
+            // A nullary operation named without parentheses where the call expects a function
+            // is that function (§5.4), typed with the call by the dispatch walk, which types
+            // the call whole at its parameters; its argument is no call's result.
+            let written_alone =
+                pos_args.iter().chain(named_args.iter().map(|(_, a)| a)).any(|a| a.is_paren_less());
+            if written_alone
+                && matches!(
+                    call_dispatch_shape(kb, occ, pos),
+                    Some(CallDispatch::Fragment | CallDispatch::Checked | CallDispatch::BodyLessSpecOp)
+                )
+            {
+                nested.retain(|(index, ty)| {
+                    let arg = pos_args
+                        .get(*index)
+                        .or_else(|| named_args.get(*index - pos_args.len()).map(|(_, a)| a));
+                    !arg.is_some_and(|arg| nullary_name_as_function(kb, &st.subst, arg, ty))
+                });
+            }
             // An equality declares no position for its sides, so a side that holds a lambda
             // gives the other its type itself: the operation-body typer's, read once the
             // clause types what the lambda's body reads. A data walk reads no lambda's type. A
@@ -873,6 +891,24 @@ pub(super) fn collect_occurrence_type_constraints(
         };
         collect_occurrence_type_constraints(kb, c, position, p, child_committed, st);
     }
+}
+
+/// Is `arg` a nullary operation's name written without parentheses, at `position`, where a
+/// function is expected and the operation's result is not one ([`nullary_name_is_function_value`])?
+fn nullary_name_as_function(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    arg: &Rc<NodeOccurrence>,
+    position: &Value,
+) -> bool {
+    let Some(&Expr::Apply { functor, .. }) = arg.as_expr() else {
+        return false;
+    };
+    if !arg.is_paren_less() || !operation_is_nullary(kb, functor) {
+        return false;
+    }
+    let position = walk_type_deep_value(kb, subst, position);
+    nullary_name_is_function_value(kb, functor, &position)
 }
 
 /// Is there a lambda in `value`, outside any other lambda's body?
