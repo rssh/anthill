@@ -13,7 +13,7 @@
 //! THE TERM IS UNTOUCHED. In a data slot the chain stays the chain — the term `fact
 //! f(Box.zero)` stores (WI-20260901-719FJ, WI-20260902-4NEKZ) — and the call is made
 //! where the chain is REDUCED as an operand (`Resolver::reduce_dot_value`), with the typer
-//! giving it the matching type (`dotted_citation_nullary_op`). So a goal argument still
+//! giving it the matching type (`dotted_citation_operation`). So a goal argument still
 //! matches its fact, which `the_term_still_matches_its_fact` pins.
 //!
 //! BACK-OUT, measured one axis at a time:
@@ -21,7 +21,8 @@
 //!    operation_binds_its_value`, `every_path_spelling_calls`, `a_bound_side_compares_
 //!    against_the_call`, `an_eq_operand_is_typed_and_run_as_the_call` (it loads, and
 //!    answers 0 rows).
-//!  * [T] the typer rung (`dotted_citation_nullary_op`) removed: RED —
+//!  * [T] the typer rung (`dotted_citation_nullary_op`, since WI-20261030-4BXDW
+//!    `dotted_citation_operation`, which reads every operation) removed: RED —
 //!    `an_eq_operand_is_typed_and_run_as_the_call` only (a load error), because the
 //!    resolver rows sit in a fixture with no `=` operand and still load.
 //!  * [G] its `in_rule_body()` gate removed: NOTHING reddens, measured. The gate is

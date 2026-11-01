@@ -1855,6 +1855,87 @@ fn const_goal_error(kb: &mut KnowledgeBase, goal: &Rc<NodeOccurrence>) -> Option
     })
 }
 
+/// The verdict on a QUERY's call of the operation `functor`: its arguments fill the parameter
+/// list, as a clause's call is judged at load — by the same binder and verdict
+/// ([`bind_call_arguments`], [`call_arity_error`]), so the two cannot come to admit different
+/// spellings. A query has no typer and no other check; before this, a call with too few was
+/// folded to the name or left undecided, and one with too many was read by its first
+/// arguments (WI-20261030-4BXDW). At a goal (`at_goal`) the positional result column is
+/// admitted, and a `result:` label, which a query does not read, is refused; in a value slot a
+/// `result:` label names no parameter, as anywhere. One refusal is the query's own: a parameter
+/// left out for its default, which the typer fills (proposal 069) and nothing does in a query —
+/// `?r <=> g()` over `g(n: Int64 = 5)` bound the name `g`. Declined, as at a clause's goal: an
+/// operation with a variadic capture, whose labels the typed call folds into the capture.
+pub(crate) fn query_call_arity_error(
+    kb: &mut KnowledgeBase,
+    functor: Symbol,
+    pos_count: usize,
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    at_goal: bool,
+    span: Span,
+) -> Option<TypeError> {
+    if kb.op_capture_param(functor).is_some() {
+        return None;
+    }
+    let rec = crate::kb::op_info::lookup_operation_info(kb, functor)?;
+    let span = Some(span);
+    if at_goal && named_args.iter().any(|(label, _)| is_result_label(kb, *label)) {
+        return Some(TypeError::Other {
+            site: TypeError::here(),
+            span,
+            context: TypeErrorContext::OperationArgument {
+                op_name: functor,
+                param: kb.intern("result"),
+            },
+            expected: "the result written as one more positional argument, after the call's \
+                       own — a query reads no `result:` column"
+                .to_string(),
+            actual: "a `result:` label".to_string(),
+        });
+    }
+    let mut binding =
+        bind_call_arguments(kb, &rec.params, pos_count, named_args, functor, "this operation", span);
+    let mut found = std::mem::take(&mut binding.label_errors);
+    let pos = if at_goal { NodePos::RuleBodyGoal } else { NodePos::Value };
+    found.extend(call_arity_error(
+        kb,
+        &rec.params,
+        &binding,
+        pos_count + named_args.len(),
+        None,
+        functor,
+        pos,
+        span,
+    ));
+    if found.is_empty() {
+        // Positional arguments rank among the parameters no label names
+        // ([`positional_param_indices`]), so the one left out is the first of those past them.
+        let left_out = rec
+            .params
+            .iter()
+            .filter(|(param, _)| !named_args.iter().any(|(label, _)| same_label(kb, *param, *label)))
+            .nth(pos_count);
+        if let Some((param, _)) = left_out {
+            found.push(TypeError::Other {
+                site: TypeError::here(),
+                span,
+                context: TypeErrorContext::OperationArgument {
+                    op_name: functor,
+                    param: *param,
+                },
+                expected: "an argument for every parameter — a query has no typer to fill a \
+                           parameter's default: write the argument"
+                    .to_string(),
+                actual: format!(
+                    "the call leaving `{}` out",
+                    short_name_of(kb.local_name_of(*param))
+                ),
+            });
+        }
+    }
+    (!found.is_empty()).then(|| aggregate_errors(found))
+}
+
 /// The verdict on a goal that CALLS a rule-less operation: its arguments fill the
 /// operation's parameter list (kernel §5.4) — at the declared arity, a `Bool` operation's
 /// condition, or, with no label, with one positional argument more: the functional-relation

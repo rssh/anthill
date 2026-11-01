@@ -25871,7 +25871,28 @@ fn convert_query_term_expecting(
                     (kb_sym, if bracket { occ } else { query_data_slot_name(kb, occ, child) })
                 })
                 .collect();
-            query_function_value_arguments(kb, kb_functor, &mut new_pos, &mut new_named);
+            let arg_ids: SmallVec<[ParseTermId; 4]> =
+                pos_args.iter().copied().chain(named_args.iter().map(|&(_, id)| id)).collect();
+            let dotted_op = |kb: &KnowledgeBase, i: usize| {
+                dotted_citation_name(parse_symbols, parse_terms, arg_ids[i])
+                    .and_then(|name| operation_named(kb, &name, scope))
+            };
+            let written_dotted = arg_ids.iter().any(|&id| parse_terms.is_minted(id));
+            query_function_value_arguments(
+                kb,
+                kb_functor,
+                &mut new_pos,
+                &mut new_named,
+                written_dotted,
+                dotted_op,
+            );
+            if !bracket {
+                let span = parse_terms.span(parse_id);
+                if let Some(e) = query_call_arity_refusal(kb, kb_functor, &new_pos, &new_named, fold, span)
+                {
+                    errors.push(e.located_in(parsed));
+                }
+            }
 
             // WI-433: DESUGAR a positional constructor QUERY to the canonical
             // NAMED form, mirroring the fact/rule term path
@@ -26156,7 +26177,8 @@ fn query_type_context_binding(
 /// opens an `Expr::Apply` and hands anything else back un-reduced. So a nullary
 /// OPERATION's application is kept the `Apply`, its call, as a rule body's is
 /// ([`Loader::nullary_op_call_or_ref`]): `?v <=> seven()` binds the value. Not in a quoted
-/// `Term` field, which holds the name.
+/// `Term` field, which holds the name. An argument-less application of an operation that
+/// declares parameters never reaches here: the query refuses it ([`query_call_arity_error`]).
 ///
 /// The TEST is `KnowledgeBase::nullary_name_canons_to_ref`, shared with the interned
 /// canon rather than re-spelled — two carriers deciding this two ways is how one
@@ -26212,18 +26234,25 @@ fn query_nullary_call(op: Symbol, paren_less: bool) -> Rc<NodeOccurrence> {
     )
 }
 
-/// A nullary operation named without parentheses where `functor`'s parameter expects a
-/// function is that function (§5.4), as in a rule body, where the typer reads it so: its name,
-/// which the call applies. A query has no typer, so the parameter's declared type decides.
+/// An operation named without parentheses where `functor`'s parameter expects a function is
+/// that function (§5.4), as in a rule body, where the typer reads it so: its name, which the
+/// call applies. A nullary one written alone is built as its call; one written as a dotted
+/// chain (`S.twice`, WI-20261030-4BXDW) is the operation `dotted_op` names for the argument
+/// at that index, the positional ones first, asked only where `written_dotted` says a chain
+/// may be written. A query has no typer, so the parameter's declared type decides.
 fn query_function_value_arguments(
     kb: &mut KnowledgeBase,
     functor: Symbol,
     pos_args: &mut [Rc<NodeOccurrence>],
     named_args: &mut [(Symbol, Rc<NodeOccurrence>)],
+    written_dotted: bool,
+    dotted_op: impl Fn(&KnowledgeBase, usize) -> Option<Symbol>,
 ) {
     let written_alone = |arg: &Rc<NodeOccurrence>| arg.is_paren_less();
     if kb.is_entity_constructor(functor)
-        || !(pos_args.iter().any(written_alone) || named_args.iter().any(|(_, a)| written_alone(a)))
+        || !(written_dotted
+            || pos_args.iter().any(written_alone)
+            || named_args.iter().any(|(_, a)| written_alone(a)))
     {
         return;
     }
@@ -26235,27 +26264,84 @@ fn query_function_value_arguments(
         return;
     };
     let ranks = super::typing::positional_param_indices(kb, &params, pos_args.len(), named_args);
-    let mut at: Vec<(Option<usize>, &mut Rc<NodeOccurrence>)> =
-        pos_args.iter_mut().zip(ranks).map(|(arg, p)| (p, arg)).collect();
-    for (label, arg) in named_args.iter_mut() {
+    // Each argument with the parameter it fills and its index among the call's arguments,
+    // positional then named — the order `dotted_op` reads them in.
+    let pos_len = pos_args.len();
+    let mut at: Vec<(usize, Option<usize>, &mut Rc<NodeOccurrence>)> = pos_args
+        .iter_mut()
+        .zip(ranks)
+        .enumerate()
+        .map(|(i, (arg, p))| (i, p, arg))
+        .collect();
+    for (k, (label, arg)) in named_args.iter_mut().enumerate() {
         let p = params
             .iter()
             .position(|(name, _)| kb.local_name_of(*name) == kb.local_name_of(*label));
-        at.push((p, arg));
+        at.push((pos_len + k, p, arg));
     }
-    for (p, arg) in at {
+    for (i, p, arg) in at {
         let Some((_, param_type)) = p.and_then(|p| params.get(p)) else {
             continue;
         };
-        let Some(&Expr::Apply { functor: op, .. }) = arg.as_expr() else {
-            continue;
+        let (op, dotted) = match arg.as_expr() {
+            Some(&Expr::Apply { functor: op, .. })
+                if arg.is_paren_less() && super::op_info::is_nullary_operation(kb, op) =>
+            {
+                (op, false)
+            }
+            _ if written_dotted => match dotted_op(kb, i) {
+                Some(op) => (op, true),
+                None => continue,
+            },
+            _ => continue,
         };
-        if arg.is_paren_less()
-            && super::op_info::is_nullary_operation(kb, op)
-            && super::typing::nullary_name_is_function_value(kb, op, param_type)
-        {
+        if super::typing::operation_name_is_function_value(kb, op, param_type) {
             *arg = expr_node(Expr::Ref(op));
+        } else if dotted {
+            // Elsewhere a dotted name is the node its one-segment name is: a nullary
+            // operation's call ([`query_resolved_name`]) — an operation evaluates its
+            // arguments, and only the resolver reduces a chain, so `idv(S.seven)` passed it on —
+            // and any other operation's name, which `idv(twice)` binds where `idv(S.twice)`
+            // bound the chain.
+            *arg = if super::op_info::is_nullary_operation(kb, op) {
+                query_nullary_call(op, true)
+            } else {
+                expr_node(Expr::Ref(op))
+            };
         }
+    }
+}
+
+/// A QUERY HAS NO TYPER, so an operation's call whose arguments do not fill its parameter list
+/// is refused here, by the verdict a clause's call gets at load
+/// ([`super::typing::query_call_arity_error`]). Not in a quoted `Term` field, which holds what
+/// is written; not for an entity constructor or a builtin, whose readings are their own.
+fn query_call_arity_refusal(
+    kb: &mut KnowledgeBase,
+    functor: Symbol,
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    fold: ConstFold,
+    span: Span,
+) -> Option<LoadError> {
+    if fold == ConstFold::Off
+        || !kb.has_kind(functor, SymbolKind::Operation)
+        || kb.is_entity_constructor(functor)
+        || kb.builtin_of(functor).is_some()
+    {
+        return None;
+    }
+    let at_goal = matches!(fold, ConstFold::Goal | ConstFold::GoalTuple);
+    super::typing::query_call_arity_error(kb, functor, pos_args.len(), named_args, at_goal, span)
+        .map(|e| e.to_load_error(kb))
+}
+
+/// The operation a dotted `name` denotes at `scope`, through a type alias too, or `None`.
+/// Quiet, for [`const_named`]'s reason.
+fn operation_named(kb: &KnowledgeBase, name: &str, scope: ScopeId) -> Option<Symbol> {
+    match resolve_name_in_kb(kb, name, scope) {
+        ResolveResult::Found(sym) if kb.has_kind(sym, SymbolKind::Operation) => Some(sym),
+        _ => None,
     }
 }
 
@@ -27364,7 +27450,17 @@ fn dotted_join(
 /// name written at a scope: the rule-body readers of a dotted name without parentheses.
 /// `None` when no alias is crossed or the member is not there.
 pub(crate) fn member_through_aliases(kb: &KnowledgeBase, path: &str) -> Option<Symbol> {
-    dotted_join(kb, None, || path.to_owned(), AliasReading::ReadThrough).map(|j| j.member)
+    member_and_alias_through_aliases(kb, path).map(|(member, _)| member)
+}
+
+/// [`member_through_aliases`] with the type alias the path read through, the receiver whose
+/// fixed bindings the member is read at (`CA` for `test.r.CA.wrap`), as
+/// [`dotted_alias_receiver`] answers a name written at a scope.
+pub(crate) fn member_and_alias_through_aliases(
+    kb: &KnowledgeBase,
+    path: &str,
+) -> Option<(Symbol, Option<Symbol>)> {
+    dotted_join(kb, None, || path.to_owned(), AliasReading::ReadThrough).map(|j| (j.member, j.through))
 }
 
 /// The type alias the call written `name` at `scope` reaches `callee` through, or `None`
@@ -28149,7 +28245,7 @@ struct Loader<'a> {
     //    and `wi_gfs6a_woven_call_waits_on_its_dictionary_test::a_dictionary_a_later_read_binds_answers`;
     //  * a SEGMENT of a written dotted name — a child of the converter's `field_access`
     //    chain, which in a rule body's data slot stays the chain the clause stores and is
-    //    read as a NAME where it is read (`dotted_citation_nullary_op`, §6.7). MEASURED
+    //    read as a NAME where it is read (`dotted_citation_operation`, §6.7). MEASURED
     //    with the chain not setting it: `dotted_nullary_op_call_test::an_eq_operand_is_-
     //    typed_and_run_as_the_call` — `0 = Box.zero` lost its citation reading to a
     //    recorded `Box`.
@@ -28158,6 +28254,15 @@ struct Loader<'a> {
     // sets it for each of its own children, so it never reaches past one level — the
     // arguments of a call inside a chain are values again.
     in_non_value_role: bool,
+    // True while the rule-body walk, or the term walk a fact rides, lowers the MEMBER NAME of a
+    // written dotted name — the selector of the converter's `field_access` chain, `seven` in
+    // `S.seven`. It is the name it spells: never the call a nullary operation's name in scope
+    // is built as, nor a const's value or an entity's instance. Built so, the chain spelled no
+    // name, and `?r <=> idv(S.seven)` beside `import S.{seven}` (or a const `seven` imported)
+    // reached the typer as its segments (WI-20261030-4BXDW). Both walks read it, so a goal and
+    // the fact it searches for still build one term. Set and cleared around that one leaf, as
+    // `in_non_value_role` is.
+    in_member_name: bool,
     // Set while a rule body's walk builds the arguments of an operation's application, and
     // kept for the constructions nested in them: a call there is written as an operation
     // body is (068 §3), so a type written in its arguments is built as the operation-body
@@ -28704,6 +28809,7 @@ impl<'a> Loader<'a> {
             in_body_goal: false,
             in_body_goal_wrapper: false,
             in_non_value_role: false,
+            in_member_name: false,
             in_call_argument: false,
             expr_body_bottom_recovery: false,
             defined_sorts: Vec::new(),
@@ -31637,6 +31743,11 @@ impl<'a> Loader<'a> {
     /// stands for, anything else its reference. One reading for the one-segment name, the
     /// written reference and a constructor's qualified name.
     fn resolved_name_term(&mut self, sym: Symbol, parse_id: ParseTermId, span: Span) -> Term {
+        // A dotted name's member is the name it spells, never a const's value
+        // ([`Self::in_member_name`]), as the rule-body walk builds it.
+        if self.in_member_name {
+            return self.bare_name_term(sym, span);
+        }
         if self.term_walk_at_goal() {
             if let Some(lit) = self.goal_const_value(sym) {
                 return Term::Const(lit);
@@ -32586,6 +32697,9 @@ impl<'a> Loader<'a> {
                 // The frame moves ONTO the stack and back off it, so there is exactly one
                 // of it and this flag is the record of where it currently is.
                 let mut binder_pushed = false;
+                // A WRITTEN DOTTED NAME's member is converted as the name it spells.
+                let member_chain = self.parsed.terms.is_minted(parse_id)
+                    && self.parsed.symbols.local_name(functor) == dt::FIELD_ACCESS;
 
                 let mut new_pos: SmallVec<[TermId; 4]> = pos_args
                     .iter()
@@ -32635,7 +32749,9 @@ impl<'a> Loader<'a> {
                                 .written_entity_field_types(new_functor)
                                 .and_then(|ft| ft.get(i).map(|(_, t)| t.clone()))
                         });
+                        self.in_member_name = member_chain && i == 1;
                         let converted = self.convert_arg_value(id, exp.clone());
+                        self.in_member_name = false;
                         self.wrap_bare_option_value(converted, exp.as_ref())
                     })
                     .collect();
@@ -37831,16 +37947,21 @@ impl<'a> Loader<'a> {
             Term::Var(Var::Rigid(_)) => unreachable!("Var::Rigid in stored parse term"),
             Term::Ref(sym) => {
                 let s = self.remap_symbol_strict(sym, self.parsed.terms.span(parse_id));
-                if self.in_body_goal && !self.in_body_goal_wrapper {
-                    if let Some(occ) = self.bare_entity_goal_occurrence(s, parse_id) {
+                // A dotted name's member is the name it spells ([`Self::in_member_name`]).
+                if self.in_member_name {
+                    Expr::Ref(s)
+                } else {
+                    if self.in_body_goal && !self.in_body_goal_wrapper {
+                        if let Some(occ) = self.bare_entity_goal_occurrence(s, parse_id) {
+                            return occ;
+                        }
+                    }
+                    if let Some(occ) = self.body_data_slot_name(s, parse_id, span) {
                         return occ;
                     }
+                    // WI-20261001-KDMQS — a const in a rule-body data slot is its value.
+                    self.body_resolved_name_expr(s, parse_id, span)
                 }
-                if let Some(occ) = self.body_data_slot_name(s, parse_id, span) {
-                    return occ;
-                }
-                // WI-20261001-KDMQS — a const in a rule-body data slot is its value.
-                self.body_resolved_name_expr(s, parse_id, span)
             }
             Term::Ident(sym) => {
                 // WI-742 §2.1 — the occurrence twin of `convert_term_inner`'s arm: a
@@ -37861,7 +37982,10 @@ impl<'a> Loader<'a> {
                 let new_sym = self.remap_symbol(sym, self.parsed.terms.span(parse_id));
                 // Promote to Ref if the symbol resolved to a defined name —
                 // mirrors `convert_term`'s Ident arm + `materialize`'s leaf map.
-                if self.kb.symbols.is_resolved(new_sym) {
+                if self.kb.symbols.is_resolved(new_sym) && self.in_member_name {
+                    // A dotted name's member is the name it spells ([`Self::in_member_name`]).
+                    Expr::Ref(new_sym)
+                } else if self.kb.symbols.is_resolved(new_sym) {
                     // WI-20260902-CZJ2N: §8.3's expansion in GOAL position; a DATA slot
                     // reads the name by its context just below (WI-20260902-JB6RS).
                     if self.in_body_goal && !self.in_body_goal_wrapper {
@@ -38296,11 +38420,13 @@ impl<'a> Loader<'a> {
                             None => {}
                         }
                         self.in_non_value_role = name_chain;
+                        self.in_member_name = name_chain && i == 1;
                         self.binding_slot = Some((new_functor, None));
                         pos.push(self.build_body_atom_occurrence(pid));
                         self.in_body_goal = false;
                         self.in_body_goal_wrapper = false;
                         self.in_non_value_role = false;
+                        self.in_member_name = false;
                     }
                     let mut named: Vec<(Symbol, Rc<NodeOccurrence>)> = Vec::new();
                     self.const_fold = node_fold.child(None);

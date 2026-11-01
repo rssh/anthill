@@ -1503,11 +1503,16 @@ fn refuse_performed_effects(
 /// Does `arg` hold a type written in the rule's own term — a dotted path (the `field_access`
 /// chain a goal's argument keeps), or a bracket with an entry no type value? A goal's
 /// arguments are built so, and the operation-body typer has no reading of them; a goal
-/// holding one keeps the reading it has as a goal.
-fn holds_a_type_as_the_rules_term(arg: &Rc<NodeOccurrence>) -> bool {
+/// holding one keeps the reading it has as a goal. A path that names an operation
+/// (`S.twice`) is not one: the typer reads it as the operation's one-segment name
+/// ([`dotted_citation_operation`], WI-20261030-4BXDW).
+fn holds_a_type_as_the_rules_term(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> bool {
     let mut stack = vec![Rc::clone(arg)];
     while let Some(o) = stack.pop() {
         if o.is_dot_chain() {
+            if dotted_operation_through(kb, &o).is_some() {
+                continue;
+            }
             return true;
         }
         match o.as_expr() {
@@ -1768,7 +1773,7 @@ pub(super) fn call_dispatch_shape(
                         && !pos_args
                             .iter()
                             .chain(named_args.iter().map(|(_, a)| a))
-                            .any(|a| holds_a_type_as_the_rules_term(a))
+                            .any(|a| holds_a_type_as_the_rules_term(kb, a))
                     {
                         return Some(CallDispatch::Fragment);
                     }
