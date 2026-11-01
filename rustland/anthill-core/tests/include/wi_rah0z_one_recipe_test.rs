@@ -164,6 +164,11 @@ const PINNED: &[(&str, usize, &str)] = &[
         "loads `stdlib/anthill/` WITHOUT its binding layer, which is refused",
     ),
     (
+        "include/wi930_declaration_records_typecheck_test.rs",
+        1,
+        "drives the typer by hand over a load that stops before it: a value-headed fact is asserted in between",
+    ),
+    (
         "include/wi946_belongs_to_readers_test.rs",
         6,
         "drives the typer by hand over a load that stops before it",

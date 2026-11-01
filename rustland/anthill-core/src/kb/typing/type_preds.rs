@@ -531,6 +531,33 @@ pub(crate) fn is_reflect_term_type<V: TermView>(kb: &KnowledgeBase, ty: &V) -> b
         TypeHead::SortRef(s) if kb.qualified_name_of(s) == "anthill.reflect.Term")
 }
 
+/// WI-930: whether a CLAUSE slot declared `ty` takes an argument by a conversion of its
+/// reflect type, where the slot's sort alone would refuse it — the one owner of that
+/// question for a fact's fields, a rule head's and a goal's arguments, and the fields of a
+/// construction inside any of them. `is_name`: the argument is a bare `Ref`.
+///
+///   * `Term` takes every value ([`is_reflect_term_type`], WI-946).
+///   * `Symbol` takes a NAME. A `Symbol` is stored as the `Ref` of what it names, and a
+///     constructor's name is the very term its nullary instance is (WI-20260902-JB6RS), so
+///     the slot's sort read `SortInfo(name: Duration)` as an instance of `Duration` and
+///     refused it. A literal or a construction is no name. A const reads as its value
+///     (kernel-language.md §4.4), and the loader has folded it to that value before any
+///     slot is read — measured in a fact, a rule head, a goal and a nested construction —
+///     so a `Ref` here never names one; clause text has no parameter.
+///
+/// Not an operation body's: there `red` evaluates to the instance, a value, and a value is
+/// no `Symbol` without a conversion (`validate_arg_against_param`).
+pub(crate) fn reflect_slot_admits<V: TermView>(kb: &KnowledgeBase, ty: &V, is_name: bool) -> bool {
+    let TypeHead::SortRef(s) = type_head(kb, ty) else {
+        return false;
+    };
+    match kb.qualified_name_of(s) {
+        "anthill.reflect.Term" => true,
+        "anthill.reflect.Symbol" => is_name,
+        _ => false,
+    }
+}
+
 /// WI-385: is this resolved type an `anthill.prelude.Option` — bare `Option` or
 /// applied `Option[T = …]`? The element peel for the WI-408 some-coercion
 /// (`pub(crate)`: the loader's fact-field wrap tests field types with it).

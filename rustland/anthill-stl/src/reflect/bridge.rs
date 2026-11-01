@@ -981,8 +981,8 @@ impl KB for KbBridge {
         );
         // The shared reader yields `effects` / `requires` / `ensures` as carrier-
         // faithful `Value`s. A `denoted` label / clause rides as a `Value::Node`,
-        // wrapped via `rterm` / `ReflectNodeOccurrence::new` — the struct fields
-        // are `Term` / `NodeOccurrence` carriers (newtypes over `Value`), so the
+        // wrapped via `rterm` — the struct fields are `Term` carriers (newtypes over
+        // `Value`; `requires` / `ensures` were `NodeOccurrence` until WI-930), so the
         // bridge holds it verbatim rather than skipping the op (the old
         // `facts_by_sort_name` Term-only drop is gone). `requires` includes the
         // loader's auto-inferred `EffectsRuntime[Effects=E]` clause (WI-320);
@@ -998,16 +998,8 @@ impl KB for KbBridge {
                     .collect(),
                 return_type: rterm(rec.return_type),
                 effects: rec.effects.into_iter().map(rterm).collect(),
-                requires: rec
-                    .requires
-                    .into_iter()
-                    .map(ReflectNodeOccurrence::new)
-                    .collect(),
-                ensures: rec
-                    .ensures
-                    .into_iter()
-                    .map(ReflectNodeOccurrence::new)
-                    .collect(),
+                requires: rec.requires.into_iter().map(rterm).collect(),
+                ensures: rec.ensures.into_iter().map(rterm).collect(),
                 type_params: rec.type_params.into_iter().map(term).collect(),
                 meta: term(rec.meta),
             })

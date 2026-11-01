@@ -7197,21 +7197,11 @@ impl KnowledgeBase {
     /// `anthill.realization.`; the kernel meta functors (`SortAlias`, `meta`)
     /// are registered qualified-only in [`load::register_prelude`] with these
     /// bare qualified names.
+    #[cfg(debug_assertions)]
     fn is_reserved_metadata_functor_name(qualified_name: &str) -> bool {
         qualified_name.starts_with("anthill.reflect.")
             || qualified_name.starts_with("anthill.realization.")
             || matches!(qualified_name, "SortAlias" | "meta")
-    }
-
-    /// True iff facts headed by `functor` are DECLARATION RECORDS — the reflect /
-    /// realization vocabulary the loader renders every declaration into
-    /// (`EntityInfo`, `SortInfo`, `MemberInfo`, `OperationInfo`, `ProofRecord`, …).
-    ///
-    /// The one owner of that question, shared with the WI-630 write-side tripwire
-    /// [`Self::check_metadata_head`] so the write side and the read side cannot
-    /// name different sets (WI-928).
-    pub(crate) fn is_metadata_functor(&self, functor: Symbol) -> bool {
-        Self::is_reserved_metadata_functor_name(self.qualified_name_of(functor))
     }
 
     /// WI-630 debug tripwire: panic if `functor` is not a reserved metadata
@@ -7220,7 +7210,7 @@ impl KnowledgeBase {
     #[cfg(debug_assertions)]
     fn check_metadata_head(&self, functor: Option<Symbol>) {
         let ok = functor
-            .map(|f| self.is_metadata_functor(f))
+            .map(|f| Self::is_reserved_metadata_functor_name(self.qualified_name_of(f)))
             .unwrap_or(false);
         if !ok {
             let shown = functor
@@ -11478,6 +11468,15 @@ impl KnowledgeBase {
             .by_qualified_name
             .get(name)
             .map(|&sym| self.symbols.local_name(sym))
+    }
+
+    /// WI-930: the term a DECLARATION RECORD names `sym` by — its `Ref`, the form a reflect
+    /// `Symbol` is stored in — for every record and every slot of one that names a
+    /// declaration. Not [`Self::make_name_term_from_sym`]: that application is the bare name
+    /// for every symbol but the three reflect collection forms, whose `TupleLiteral()` is the
+    /// empty literal `()`, which a `Symbol` slot refuses.
+    pub(crate) fn declaration_name_term(&mut self, sym: Symbol) -> TermId {
+        self.alloc(Term::Ref(sym))
     }
 
     /// Allocate a nullary functor term from an already-interned symbol.

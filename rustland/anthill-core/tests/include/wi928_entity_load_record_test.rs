@@ -206,8 +206,9 @@ fn neither_spelling_makes_the_name_a_member_of_itself() {
 /// NEGATIVE CONTROL — the whole corpus still loads. This is the measurement that
 /// scoped the change: turning the load-time passes on for 68 previously-invisible
 /// entities surfaced 685 reports over the loader's own DECLARATION RECORDS
-/// (`check_entity_facts` skips those — their slots hold reflect handles, and
-/// reaching a handle is a conversion, not subsumption) and 12 unbacked-provider
+/// (skipped by `check_entity_facts` then; WI-930 holds them to their fields, and
+/// this control is one of its back-out rows: 756 reports without the rule a
+/// `Symbol` slot reads a name by) and 12 unbacked-provider
 /// findings on four free-standing carriers (staged at the time; WI-931 closed all
 /// twelve and deleted the staging, so this control now covers them too).
 #[test]

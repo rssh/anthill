@@ -1538,17 +1538,18 @@ fn check_value_against_type(
     field_sym: Symbol,
     span: Option<Span>,
 ) -> Option<TypeError> {
-    // WI-946: a field declared `anthill.reflect.Term` holds a QUOTED term, and
-    // reflection (value → Term) is TOTAL — every value has a Term representation —
-    // so ANY value conforms. Shares the one owner of that rule
-    // ([`is_reflect_term_type`], whose doc carries the why, including why `Term` is
-    // NOT thereby a top type) rather than restating it. Stated here because until
-    // WI-946 it was never REACHED: the membership check below was skipped for the
-    // free-standing carriers reflect fields actually hold (`entity Holder(pat:
-    // Term)` + `fact Holder(pat: Thing(id: "z"))`, WI-716), so the accident stood
-    // in for the rule. A sort-NESTED carrier in the same field was refused, which
-    // is the §6.3 disagreement in reverse.
-    if is_reflect_term_type(kb, declared_type) {
+    // WI-946 / WI-930: the conversions of a reflect slot — a `Term` field takes every
+    // value (reflection is TOTAL; why `Term` is NOT thereby a top type is
+    // [`is_reflect_term_type`]'s), a `Symbol` field a name, which the arms below read as
+    // the instance of a constructor's sort. One owner, [`reflect_slot_admits`], shared
+    // with the clause walk's construction arguments (`argument_fits_field`). Stated here
+    // because until WI-946 the `Term` rule was never REACHED: the membership check below
+    // was skipped for the free-standing carriers reflect fields actually hold (`entity
+    // Holder(pat: Term)` + `fact Holder(pat: Thing(id: "z"))`, WI-716), so the accident
+    // stood in for the rule; and the `Symbol` rule is what lets a declaration record be
+    // checked at all (WI-930, [`checkable_field_types`]).
+    let is_name = matches!(kb.get_term(value), Term::Ref(_));
+    if reflect_slot_admits(kb, declared_type, is_name) {
         return None;
     }
     // WI-361: dispatch on the canonical form tag so a term-backed `Ref(S)` /
@@ -1934,8 +1935,10 @@ fn check_value_against_parameterized(
         // carrier-agnostically (WI-342) — a `Value::Node` field type is carried.
         let instantiated_type = walk_type_value(kb, &subst, declared_field_type);
 
+        // The field is the VALUE's constructor's (`cons.head`), as the clause walk names it;
+        // with the fact's entity it read `SortInfo.head`, a field `SortInfo` has not (WI-930).
         if let Some(err) =
-            check_value_against_type(kb, fval, &instantiated_type, entity_sym, *fsym, span)
+            check_value_against_type(kb, fval, &instantiated_type, val_functor, *fsym, span)
         {
             return Some(err);
         }
@@ -2013,39 +2016,17 @@ fn resolve_at_declaration(kb: &mut KnowledgeBase, goal: &SortGoal) -> Resolution
 }
 
 /// The declared field types a fact of `ctor_sym` is held to, or `None` when there is
-/// nothing to hold it to: a declaration record, a functor that declares no fields.
+/// nothing to hold it to: a functor that declares no fields.
+///
+/// A DECLARATION RECORD is held to its fields like any other fact (WI-930), and so is a
+/// fact of any reflect or realization functor a program writes. WI-928 skipped them
+/// (`is_metadata_functor`): measured then, 685 reports over the loader's own records, none
+/// a user fact. Two rules emptied that set — a `Term` slot takes any value (WI-946), a
+/// `Symbol` slot a name ([`reflect_slot_admits`]) — and the three reflect forms' records
+/// name them by `Ref`, not by their empty literal
+/// ([`KnowledgeBase::declaration_name_term`]). So `fact EntityInfo(name: "Foo", …)` is
+/// refused as a mismatch where it loaded.
 fn checkable_field_types(kb: &KnowledgeBase, ctor_sym: Symbol) -> Option<Vec<(Symbol, Value)>> {
-    // WI-928 — DECLARATION RECORDS are out of this check's domain, and the
-    // reason is what the check IS: `check_value_against_type` asks a SUBTYPE
-    // question, and a reflect record's slots do not hold values of their
-    // declared sorts — they hold reflect HANDLES. `EntityInfo.name: Symbol`
-    // holds the loader's name term for the entity, `ProofRecord.witness: Term`
-    // an axiom record, `OperationInfo.params: List[FieldInfo]` lowered field
-    // types. Reaching a handle from a value is a CONVERSION (`as_term` /
-    // `term_as_entity`, WI-406), deliberately NOT subsumption — `Term` is not a
-    // top type — so a subtype check over these slots reports a mismatch for
-    // every well-formed record the loader writes. MEASURED on stdlib + the Rust
-    // host bindings: 685 such reports, in 7 classes, ALL of them loader-emitted
-    // records and NONE a user fact.
-    //
-    // This is not a new exemption — it is the status quo, stated. These
-    // functors are declared as free-standing entities in reflect.anthill /
-    // realization.anthill, and until this ticket a free-standing entity emitted
-    // no `SortInfo`, so no constructor list ever named one and their facts were
-    // never reached here. What changed is that they are now reachable, so the
-    // boundary has to be written down instead of falling out of an omission.
-    // Whether the reflect schema and the loader's writes can be brought into
-    // agreement — declaring what these slots actually hold, or converting at the
-    // write — is WI-930, filed with this measurement.
-    //
-    // Keyed by [`KnowledgeBase::is_metadata_functor`], the same predicate the
-    // WI-630 write-side tripwire uses, so the set the loader may WRITE and the
-    // set this check SKIPS cannot drift apart. A user-written `fact
-    // Implementation(…)` (examples/webots-modelling) is skipped by the same
-    // rule and for the same reason: its slots hold the same handles.
-    if kb.is_metadata_functor(ctor_sym) {
-        return None;
-    }
     let field_types = kb.entity_field_types(ctor_sym)?;
     (!field_types.is_empty()).then(|| field_types.to_vec())
 }
@@ -2090,11 +2071,23 @@ fn check_entity_fact(
     // own reflect functors, so they never reach a user constructor's
     // rules_by_functor bucket anyway.
 
-    let Some(head) = kb.fact_head_term(rid) else {
-        return;
-    };
-    let named_args = match kb.get_term(head) {
-        Term::Fn { named_args, .. } => named_args.clone(),
+    // A VALUE head (WI-348) is a fact carrying an occurrence — `OperationParamDefault`'s
+    // `default`, an `OperationInfo` with a denoted effect label. Its fields carried as terms
+    // are checked as a term head's are (WI-930: the whole fact was skipped); a field carried
+    // on a value is the occurrence the head exists to carry, which this check, reading
+    // terms, does not read — `None` below.
+    let named_args: Vec<(Symbol, Option<TermId>)> = match kb.rule_head_value(rid) {
+        Value::Term { id, .. } => match kb.get_term(*id) {
+            Term::Fn { named_args, .. } => named_args.iter().map(|(s, v)| (*s, Some(*v))).collect(),
+            _ => return,
+        },
+        Value::Entity { named, .. } => named
+            .iter()
+            .map(|(s, v)| match v {
+                Value::Term { id, .. } => (*s, Some(*id)),
+                _ => (*s, None),
+            })
+            .collect(),
         _ => return,
     };
 
@@ -2116,8 +2109,8 @@ fn check_entity_fact(
     for (field_sym, declared_type) in field_types {
         let field_sym = *field_sym;
         let field_value = match named_args.iter().find(|(s, _)| *s == field_sym) {
-            Some((_, v)) => *v,
-            None => continue,
+            Some((_, Some(v))) => *v,
+            Some((_, None)) | None => continue,
         };
 
         if matches!(
@@ -2160,7 +2153,12 @@ fn check_entity_fact(
 /// bindings + one user file in one call: of 4 600 rule slots, 370 are bodyless clauses
 /// under a constructor outside the loop's sorts, and not one of those constructors
 /// declares checkable field types; no rule's domain is a sort outside them. The walk
-/// itself is 3 ms at opt-level 0, beside a 2 s load.
+/// itself is 3 ms at opt-level 0, beside a 2 s load. Measured again with declaration
+/// records checked (WI-930): still nothing in one call. A LATER load is where it reads
+/// them — the loader's records of the load's own declarations are clauses under
+/// reflect's constructors, an earlier load's sorts: for one `entity A` and a fact, its
+/// `SortInfo`, `EntityInfo`, `MemberInfo`, `DeclarationMeta` and three
+/// `SortProvidesInfo`.
 fn check_late_clauses(
     kb: &mut KnowledgeBase,
     loaded: &Loaded<'_>,

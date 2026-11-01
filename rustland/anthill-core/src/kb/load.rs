@@ -43929,22 +43929,22 @@ impl<'a> Loader<'a> {
             match item {
                 Item::Entity(e) if entity_is_direct_child(e) => {
                     let sym = self.remap_name(&e.name);
-                    ctor_refs.push(self.kb.alloc(Term::Ref(sym)));
+                    ctor_refs.push(self.kb.declaration_name_term(sym));
                 }
                 Item::Operation(o) => {
                     let sym = self.remap_name(&o.name);
-                    op_refs.push(self.kb.alloc(Term::Ref(sym)));
+                    op_refs.push(self.kb.declaration_name_term(sym));
                 }
                 Item::OperationBlock(ob) => {
                     for op in &ob.entries {
                         let sym = self.remap_name(&op.name);
-                        op_refs.push(self.kb.alloc(Term::Ref(sym)));
+                        op_refs.push(self.kb.declaration_name_term(sym));
                     }
                 }
                 Item::AbstractSort(abs) => {
                     if matches!(abs.definition, TypeExpr::Variable { .. }) {
                         let sym = self.remap_name(&abs.name);
-                        param_refs.push(self.kb.alloc(Term::Ref(sym)));
+                        param_refs.push(self.kb.declaration_name_term(sym));
                         let short = self.parsed.symbols.local_name(abs.name.last()).to_owned();
                         let key = self.kb.intern(&short);
                         let var = self.type_param_var(sym, &short);
@@ -43957,7 +43957,7 @@ impl<'a> Loader<'a> {
                 }
                 Item::SortWithBody(inner) if inner.is_type_param => {
                     let sym = self.remap_name(&inner.name);
-                    param_refs.push(self.kb.alloc(Term::Ref(sym)));
+                    param_refs.push(self.kb.declaration_name_term(sym));
                 }
                 Item::RequiresDecl(r) => {
                     // WI-366: `SortInfo.requires` is a reflection convenience (the
@@ -44353,7 +44353,7 @@ impl<'a> Loader<'a> {
         self.kb
             .register_entity_fields(sort_info_sym, field_order.clone());
 
-        let name_ref = self.kb.alloc(Term::Ref(sort_functor));
+        let name_ref = self.kb.declaration_name_term(sort_functor);
         let kind_sym = self.kb.intern(kind_str);
         let kind_term = self.kb.alloc(Term::Ident(kind_sym));
 
@@ -44602,7 +44602,7 @@ impl<'a> Loader<'a> {
         // can disagree, and `sort_of_head` needs none.
         if !is_sort_scope(self.kb, self.current_scope) {
             let ei_syms = self.entity_info_syms();
-            let ctor_term = self.kb.make_name_term_from_sym(functor);
+            let ctor_term = self.kb.declaration_name_term(functor);
             self.emit_entity_info(e, ctor_term, &lowered, &ei_syms, domain);
             // WI-925 / §6.3: `entity E` IS `sort E { entity E }`, and the whole
             // point of that wrapping is that an entity HAS a sort — so record it.
@@ -44634,7 +44634,7 @@ impl<'a> Loader<'a> {
             // same. `SortInfo.kind`'s domain gains this fourth value alongside
             // "sort"/"enum"/"abstract" (reflect.anthill, §6.3).
             self.defined_sorts.push(functor);
-            let self_ctor = self.kb.alloc(Term::Ref(functor));
+            let self_ctor = self.kb.declaration_name_term(functor);
             self.emit_sort_info(
                 functor,
                 true,
@@ -47065,7 +47065,7 @@ impl<'a> Loader<'a> {
         let meta_sym = self.kb.intern("meta");
 
         // name: Ref to operation symbol
-        let name_ref = self.kb.alloc(Term::Ref(functor));
+        let name_ref = self.kb.declaration_name_term(functor);
         let type_params_list = self.kb.build_list(&type_param_var_terms);
 
         // WI-348: assemble the OperationInfo named args ONCE, carrier-agnostically.
@@ -48151,7 +48151,8 @@ impl<'a> Loader<'a> {
     }
 
     fn load_describe(&mut self, d: &Describe, domain: Symbol) {
-        let target_term = self.name_to_sort_term(&d.target);
+        let target = self.remap_name(&d.target);
+        let target_term = self.kb.declaration_name_term(target);
         for content in &d.contents {
             self.emit_desc_fact(target_term, content, domain);
         }
@@ -49769,7 +49770,7 @@ impl<'a> Loader<'a> {
         if texts.is_empty() {
             return;
         }
-        let target = self.kb.make_name_term_from_sym(sym);
+        let target = self.kb.declaration_name_term(sym);
         for text in texts {
             self.emit_desc_fact(target, text, domain);
         }
@@ -50046,7 +50047,7 @@ impl<'a> Loader<'a> {
         let name_field = self.kb.intern("name");
         let kind_field = self.kb.intern("kind");
         let parent_field = self.kb.intern("parent");
-        let name_term = self.kb.make_name_term_from_sym(name_sym);
+        let name_term = self.kb.declaration_name_term(name_sym);
         let kind_term = self.member_kind_term(kind);
         let member_term = self.kb.alloc(Term::Fn {
             functor: member_sym,
@@ -50214,7 +50215,7 @@ impl<'a> Loader<'a> {
         let name_field = self.kb.intern("name");
         let kind_field = self.kb.intern("kind");
         let meta_field = self.kb.intern("meta");
-        let name = self.kb.alloc(Term::Ref(sym));
+        let name = self.kb.declaration_name_term(sym);
         let kind_term = self.member_kind_term(kind);
         let head = self.kb.alloc(Term::Fn {
             functor,
