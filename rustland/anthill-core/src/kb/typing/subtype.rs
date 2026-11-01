@@ -127,7 +127,10 @@ fn types_compatible_term_dispatch(
         // `List[T = Row]` must still satisfy a `List[T = Row]` return
         // annotation. Only the base sort identity is checked here; the
         // bindings on the parameterized side stand unconstrained
-        // against the bare side.
+        // against the bare side. A bare sort that REFINES the
+        // parameterized side's sort is no `S` with open slots: it is
+        // each instance its `requires` clauses give it, and those are
+        // checked against the bindings ([`bare_nominal_admits_applied`]).
         (Some("sort_ref"), Some("parameterized")) => {
             // WI-381: a structured (ground) defined-type / alias on the bare side
             // resolves to its underlying shape and re-dispatches as parameterized — so
@@ -152,8 +155,14 @@ fn types_compatible_term_dispatch(
                 parameterized_base_sym(kb, expected),
             ) {
                 (Some(a), Some(eb)) => {
-                    sort_sym_compatible(kb, a, eb)
-                        || bare_provider_binding_precise(kb, subst, a, &TermIdView(expected))
+                    bare_nominal_admits_applied(
+                        kb,
+                        subst,
+                        &TermIdView(actual),
+                        a,
+                        &TermIdView(expected),
+                        eb,
+                    ) || bare_provider_binding_precise(kb, subst, a, &TermIdView(expected))
                 }
                 _ => false,
             }
@@ -349,7 +358,7 @@ pub(super) fn types_compatible_view_structural<A: TermView, B: TermView>(
                 // Nominal base, then (WI-402) binding-precise provider admissibility —
                 // mirrors the term dispatch so the relation stays carrier-symmetric.
                 (Some(av), Some(eb)) => {
-                    sort_sym_compatible(kb, av, eb)
+                    bare_nominal_admits_applied(kb, subst, &a, av, &e, eb)
                         || bare_provider_binding_precise(kb, subst, av, &e)
                 }
                 _ => false,
@@ -745,6 +754,18 @@ pub(super) fn parameterized_compatible_view<A: TermView, B: TermView>(
         {
             return types_compatible(kb, subst, &actual_at_sort, &expected_at_sort);
         }
+    }
+
+    // A SORT THAT REFINES THE EXPECTED ONE is each instance of it its `requires` clauses give
+    // it ([`refinement_admits_applied`]). The base check below admits it by name, and the
+    // binding loop reads only the actual's own arguments (one sort) or a provision's (two), so
+    // a refining sort that provides nothing was refused at every expected binding, the
+    // instance its clause gives it included. Where no instance is admitted, a provision of the
+    // same spec is still read below.
+    if nominal_leg(kb, actual_base, expected_base) == Some(NominalLeg::Refines)
+        && refinement_admits_applied(kb, subst, actual, actual_base, expected, expected_base)
+    {
+        return true;
     }
 
     let actual_base_ty = kb.alloc(Term::Ref(actual_base));
@@ -2269,23 +2290,90 @@ pub(crate) fn sort_sym_compatible(
     actual_sym: Symbol,
     expected_sym: Symbol,
 ) -> bool {
+    nominal_leg(kb, actual_sym, expected_sym).is_some()
+}
+
+/// Which leg of [`sort_sym_compatible`] takes `actual_sym` to `expected_sym`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum NominalLeg {
+    /// The sort itself, or an entity of it: one sort's parameters on both sides, so an
+    /// application of `expected_sym` is compared with the actual's own arguments, and a bare
+    /// actual leaves every one of them open.
+    Same,
+    /// A sort that refines it through `requires`, itself or as an entity's sort: an
+    /// application of `expected_sym` reads the instances the clauses give the actual
+    /// ([`refinement_admits_applied`]).
+    Refines,
+}
+
+/// [`sort_sym_compatible`], saying which leg answered; `None` where none does.
+fn nominal_leg(
+    kb: &KnowledgeBase,
+    actual_sym: Symbol,
+    expected_sym: Symbol,
+) -> Option<NominalLeg> {
     if same_sort_canonical(kb, actual_sym, expected_sym) {
-        return true;
+        return Some(NominalLeg::Same);
     }
 
     // Entity subtyping: actual is entity of parent sort.
     // Check both direct match and transitive (parent's requires chain).
     if let Some(parent_sym) = kb.strict_parent_sort(actual_sym) {
-        if sort_sym_compatible(kb, parent_sym, expected_sym) {
-            return true;
+        if let Some(leg) = nominal_leg(kb, parent_sym, expected_sym) {
+            return Some(leg);
         }
     }
 
     // Requires/refines: A refines B if A requires B (directly or transitively)
-    if sort_refines(kb, actual_sym, expected_sym) {
-        return true;
-    }
+    sort_refines(kb, actual_sym, expected_sym).then_some(NominalLeg::Refines)
+}
 
+/// A bare `actual`, the sort `actual_sym`, at the application `expected` of the sort
+/// `expected_sym`, by [`nominal_leg`]: the same sort, whose arguments the bare side leaves
+/// open, or a sort that refines it, read as [`refinement_admits_applied`] reads it.
+fn bare_nominal_admits_applied<A: TermView, B: TermView>(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    actual: &A,
+    actual_sym: Symbol,
+    expected: &B,
+    expected_sym: Symbol,
+) -> bool {
+    match nominal_leg(kb, actual_sym, expected_sym) {
+        None => false,
+        Some(NominalLeg::Same) => true,
+        Some(NominalLeg::Refines) => {
+            refinement_admits_applied(kb, subst, actual, actual_sym, expected, expected_sym)
+        }
+    }
+}
+
+/// `actual`, headed by `actual_sym`, which refines `expected_sym` through `requires`, at the
+/// application `expected` of `expected_sym`: each instance of `expected_sym` the `requires`
+/// clauses give the actual, its own arguments put for the parameters a clause names
+/// ([`instances_through_requires`], the reader the run-time test `type_admits` uses), admitted
+/// where one of them is. So `sort Narrow requires Wide[W = Int64]` is admitted at `Wide[W =
+/// Int64]` and not at `Wide[W = String]`, and under `sort Narrow2 { sort Q = ?  requires
+/// Wide[W = Q] }` a `Narrow2[Q = String]` is admitted at `Wide[W = String]` and not at
+/// `Wide[W = Int64]`. A refinement that yields no instance admits nothing.
+fn refinement_admits_applied<A: TermView, B: TermView>(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    actual: &A,
+    actual_sym: Symbol,
+    expected: &B,
+    expected_sym: Symbol,
+) -> bool {
+    let Ok(instances) = instances_through_requires(kb, actual, actual_sym, expected_sym, 0) else {
+        return false;
+    };
+    for instance in &instances {
+        let mut probe = subst.clone();
+        if types_compatible(kb, &mut probe, instance, expected) {
+            *subst = probe;
+            return true;
+        }
+    }
     false
 }
 

@@ -45,12 +45,12 @@ pair=refinement,position=list-element	runs 1
 pair=refinement,position=lambda-argument	runs 1
 pair=refinement,position=provision	loads; drive refused NotAdmitted
 pair=refinement,position=type-admits	runs 1
-pair=refinement-other-args,position=argument	UNSOUND runs 1
-pair=refinement-other-args,position=let	UNSOUND runs 1
-pair=refinement-other-args,position=return	UNSOUND runs 1
-pair=refinement-other-args,position=field	UNSOUND runs 1
-pair=refinement-other-args,position=list-element	UNSOUND runs 1
-pair=refinement-other-args,position=lambda-argument	UNSOUND runs 1
+pair=refinement-other-args,position=argument	loads; drive refused NotAdmitted
+pair=refinement-other-args,position=let	loads; drive refused NotAdmitted
+pair=refinement-other-args,position=return	loads; drive refused NotAdmitted
+pair=refinement-other-args,position=field	loads; drive refused NotAdmitted
+pair=refinement-other-args,position=list-element	loads; drive refused NotAdmitted
+pair=refinement-other-args,position=lambda-argument	loads; drive refused NotAdmitted
 pair=refinement-other-args,position=provision	loads; drive refused NotAdmitted
 pair=refinement-other-args,position=type-admits	loads; drive refused NotAdmitted
 pair=open-slot,position=argument	runs 1
