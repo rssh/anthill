@@ -257,6 +257,10 @@ object Name:
 enum TypeExpr:
   case Simple(name: Name)
   case Parameterized(name: Name, bindings: IndexedSeq[SortBinding])
+  /** A type member read off a bracket, `Box[V = Int64].V`: the member `member` of the sort
+    * `name` at the parameters `bindings` binds (kernel-language.md §5.4). Without a bracket
+    * the member is the dotted `Simple` name `Box.V`. Mirrors rustland's `TypeExpr::Member`. */
+  case Member(name: Name, bindings: IndexedSeq[SortBinding], member: Name)
   case Variable(termId: ParseTermId, descriptions: IndexedSeq[String])
   case TupleType(fields: IndexedSeq[(TermSymbol, TypeExpr)])
   /** Arrow type: `(A) -> B`, `(A, B) -> C @ E`, or `(A) -> B @ {E1, E2}`.

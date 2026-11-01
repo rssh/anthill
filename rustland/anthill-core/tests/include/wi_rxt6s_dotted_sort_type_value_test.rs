@@ -336,10 +336,11 @@ fn a_member_past_the_sort_is_its_call() {
     assert_eq!(ints("rxt6spastbare", &call("Inner.deep")), [21]);
 }
 
-/// An eponymous sort is no written type by its bare name, and none by a path: as the
+/// An eponymous sort's bare name is its instance (§4.4), and so is a path to it: as the
 /// receiver of a dot the two spellings draw one refusal, in an operation body and in a
 /// rule body. In a rule body the path was left its chain, and drew the unresolved-name
-/// refusal where the bare name drew another.
+/// refusal where the bare name drew another. Its type is `Ep[]`, a receiver that denotes
+/// the sort (`wi_1y96b_eponymous_type_receiver_test`).
 #[test]
 fn an_eponymous_sort_by_a_path_is_refused_as_its_bare_name_is() {
     const EPON: &str = "  sort Ep\n    entity Ep(name: String)\n    operation em() -> Int64 = 8\n  end\n";
@@ -353,7 +354,7 @@ fn an_eponymous_sort_by_a_path_is_refused_as_its_bare_name_is() {
             sentences(&ns, &format!("{EPON}{}({receiver}).em(){}", wrap.0, wrap.1))
         };
         let bare = said("bare", "Ep");
-        assert!(!bare.is_empty(), "{row}: the bare spelling is refused today");
+        assert!(!bare.is_empty(), "{row}: the bare spelling is the instance, and is refused");
         assert_eq!(said("path", "test.NS.Ep"), bare, "{row}");
     }
 }

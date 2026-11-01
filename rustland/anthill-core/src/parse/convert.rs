@@ -908,6 +908,22 @@ impl<'a> Converter<'a> {
                     .collect();
                 TypeExpr::Parameterized { name, bindings }
             }
+            "type_member" => {
+                let Some(TypeExpr::Parameterized { name, bindings }) =
+                    self.field(node, "object").map(|o| self.convert_type(o))
+                else {
+                    self.err("type_member: its object is not an application", node);
+                    let sym = self.intern("?");
+                    return TypeExpr::Simple(Name::simple(sym, self.span(node)));
+                };
+                let member_node = self.field(node, "member").unwrap_or(node);
+                let member = Name::simple(self.intern(self.text(member_node)), self.span(member_node));
+                TypeExpr::Member {
+                    name,
+                    bindings,
+                    member,
+                }
+            }
             "variable_term" => {
                 let var_node = self.child_by_kind(node, "variable").unwrap_or(node);
                 let term_id = self.convert_variable_node(var_node);
@@ -1693,13 +1709,17 @@ impl<'a> Converter<'a> {
     ///
     /// The node is marked, because in an operation or const body paren-less is a rule
     /// citation or an operation's call and nothing else, and it is the loader, which knows
-    /// what `m` resolves to, that refuses any other member
-    /// (`Loader::refuse_paren_less_bracket_binding_nothing`).
+    /// what `m` resolves to, that reads any other member as the dot `(Sort[…]).m` the same
+    /// text makes. The mark carries that dot, built as that spelling builds it
+    /// (`Loader::citation_read_as_dot`).
     fn convert_paren_less_citation(&mut self, node: Node) -> ParseTermId {
         let span = self.span(node);
         let object = self
             .field(node, "object")
             .expect("paren-less citation: guarded on an `application` object");
+        let field = self
+            .field(node, "field")
+            .expect("paren-less citation: a `field_access` names its member");
         let recv_type = self.convert_type(object);
         let name = self.convert_name(node);
         let functor = self.intern_name(&name);
@@ -1712,7 +1732,42 @@ impl<'a> Converter<'a> {
             },
             span,
         );
-        self.terms.mark_paren_less_citation(tid);
+        let receiver = self.convert_instantiation_term(object);
+        let member = self.intern(self.text(field));
+        let member = self.terms.alloc(Term::Ident(member), self.span(field));
+        let dot = self.alloc_dot_apply(
+            SmallVec::from_slice(&[receiver, member]),
+            SmallVec::new(),
+            span,
+            true,
+        );
+        self.terms.mark_paren_less_citation(tid, dot);
+        tid
+    }
+
+    /// The `dot_apply(receiver, Ident(m), …)` a dot lowers to, `pos_args` starting with
+    /// the receiver and the member.
+    fn alloc_dot_apply(
+        &mut self,
+        pos_args: SmallVec<[ParseTermId; 4]>,
+        named_args: SmallVec<[(Symbol, ParseTermId); 2]>,
+        span: Span,
+        paren_less: bool,
+    ) -> ParseTermId {
+        let functor = self.intern(dt::DOT_APPLY);
+        let tid = self.terms.alloc(
+            Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            },
+            span,
+        );
+        // WI-618: accessor provenance, as for FieldAccess.
+        self.terms.mark_minted(tid);
+        if paren_less {
+            self.terms.mark_paren_less_dot(tid);
+        }
         tid
     }
 
@@ -2508,20 +2563,7 @@ impl<'a> Converter<'a> {
                     let type_args_key = self.intern("type_args");
                     named_args.push((type_args_key, aux_tid));
                 }
-                let functor = self.intern(dt::DOT_APPLY);
-                let tid = self.terms.alloc(
-                    Term::Fn {
-                        functor,
-                        pos_args,
-                        named_args,
-                    },
-                    span,
-                );
-                // WI-618: accessor provenance, as for FieldAccess above.
-                self.terms.mark_minted(tid);
-                if paren_less {
-                    self.terms.mark_paren_less_dot(tid);
-                }
+                let tid = self.alloc_dot_apply(pos_args, named_args, span, paren_less);
                 results.push(tid);
             }
             BuildFrame::SetLiteral { node, count } => {
@@ -2995,7 +3037,7 @@ impl<'a> Converter<'a> {
                         // constant keep `convert_term`.
                         let tid = match t.kind() {
                             "simple_type" | "application" | "tuple_type" | "arrow_type"
-                            | "effect_row" => self.convert_type_value(t),
+                            | "effect_row" | "type_member" => self.convert_type_value(t),
                             _ => self.convert_term(t),
                         };
                         pos_args.push(tid);
@@ -3102,7 +3144,7 @@ impl<'a> Converter<'a> {
             // A parse `Term` holds neither, an entry of a bracket is a type
             // argument, and the loader lowers the `TypeExpr` where each of its
             // walks meets the entry.
-            "effect_row" | "tuple_type" | "arrow_type" => {
+            "effect_row" | "tuple_type" | "arrow_type" | "type_member" => {
                 let te = self.convert_type(node);
                 self.terms
                     .alloc(Term::ParseAux(Box::new(ParseAux::EntryType(te))), span)
@@ -4400,7 +4442,7 @@ impl<'a> Converter<'a> {
                     *ty = TypeExpr::Simple(Name::simple(param, span));
                 }
             }
-            TypeExpr::Parameterized { bindings, .. } => {
+            TypeExpr::Parameterized { bindings, .. } | TypeExpr::Member { bindings, .. } => {
                 for b in bindings {
                     self.rewrite_type_variables(&mut b.bound, rename);
                 }

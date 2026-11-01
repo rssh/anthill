@@ -513,6 +513,8 @@ object Loader:
           case TypeExpr.TupleType(fs) => fs.map((n, t) => fileSym.name(n) + ":" + ty(t, scope)).mkString("(", ",", ")")
           case TypeExpr.Arrow(ps, r, es) => ps.map(ty(_, scope)).mkString("(", ",", ")") + "->" + ty(r, scope) + es.map(ty(_, scope)).mkString("@", ",", "")
           case TypeExpr.Denoted(v) => term(v)
+          case TypeExpr.Member(n, bs, m) =>
+            ty(TypeExpr.Parameterized(n, bs), scope) + "." + fileSym.name(m.last)
           case TypeExpr.EffectRow(es) => es.map(ty(_, scope)).mkString("{", ",", "}")
           case TypeExpr.EffectGuarded(t, gs) => ty(t, scope) + gs.map(term).mkString(":-", ",", "")
         def term(id: ParseTermId): String = file.terms.get(id) match
@@ -1193,6 +1195,10 @@ object Loader:
       case TypeExpr.Simple(name) => prefixes(name)
       case TypeExpr.Parameterized(name, bindings) =>
         prefixes(name) ++ bindings.flatMap(b => typeExprHeads(fileSym, b.bound))
+      // The member by the sort's path, as `Sort.Member` written names it.
+      case TypeExpr.Member(name, bindings, member) =>
+        prefixes(name) ++ prefixes(Name(name.segments ++ member.segments, name.span)) ++
+          bindings.flatMap(b => typeExprHeads(fileSym, b.bound))
       case TypeExpr.TupleType(fields) => fields.flatMap((_, t) => typeExprHeads(fileSym, t))
       case TypeExpr.Arrow(params, returnType, effects) =>
         (params :+ returnType).flatMap(typeExprHeads(fileSym, _)) ++

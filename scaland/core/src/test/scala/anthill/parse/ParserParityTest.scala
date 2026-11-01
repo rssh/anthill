@@ -109,3 +109,28 @@ class ParserParityTest extends munit.FunSuite:
     assert(op.body.exists(b => render(b).contains("lambda_expr(")), s"the body is the lambda: $op")
   }
 
+
+  /** A member after a bracket in a type is a type member read off it, `Box[V = Int64].V`,
+    * whose bracket a binding may commit inside (`E = {}`). An effect label takes no member,
+    * as rustland's `_effect_type` admits none. BACK-OUT: the member as an alternative of its
+    * own before `parameterizedType` fails every stdlib file with `E = {}` in a bracket
+    * (measured 2026-11-01); without the suffix the accept case does not parse. */
+  test("a member after a bracket is a type member, and an effect label takes none") {
+    val file = parsePath(corpusRoot.resolve("accept/type_member_off_a_bracket.anthill"))
+      .toOption.getOrElse(fail("the type-member parity case did not parse"))
+    val op = file.items.collectFirst { case Item.NamespaceItem(ns) => ns }.get
+      .items.collectFirst { case Item.OperationItem(o) => o }.get
+    op.returnType match
+      case TypeExpr.Member(n, bindings, member) =>
+        assertEquals(file.symbols.name(n.last), "Box")
+        assertEquals(bindings.length, 1)
+        assertEquals(file.symbols.name(member.last), "V")
+      case other => fail(s"`Box[V = Int64].V` must be a Member, got $other")
+    val committed = Parser.parse(
+      "namespace m\n  operation f(x: S[E = {}].T) -> Int64 = 1\nend\n", "committed.anthill")
+    assert(committed.isRight, s"a member after a committed binding: $committed")
+    def effects(label: String) = Parser.parse(
+      s"namespace m\n  operation f(x: Int64) -> Int64 effects { $label } = 1\nend\n", "effect.anthill")
+    assert(effects("Modify[x]").isRight, s"the effect label alone: ${effects("Modify[x]")}")
+    assert(effects("Modify[x].T").isLeft, "an effect label took a member")
+  }

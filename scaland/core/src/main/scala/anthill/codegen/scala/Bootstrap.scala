@@ -1790,6 +1790,8 @@ object Bootstrap:
     case TypeExpr.Simple(n) => Set(sym.name(n.last))
     case TypeExpr.Parameterized(n, bindings) =>
       bindings.foldLeft(Set(sym.name(n.last)))((acc, b) => acc ++ namesIn(sym, b.bound, self))
+    case TypeExpr.Member(n, bindings, _) =>
+      bindings.foldLeft(Set(sym.name(n.last)))((acc, b) => acc ++ namesIn(sym, b.bound, self))
     case TypeExpr.TupleType(fields) =>
       fields.foldLeft(Set.empty[String])((acc, f) => acc ++ namesIn(sym, f._2, self))
     case TypeExpr.Arrow(params, ret, effects) =>

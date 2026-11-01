@@ -674,11 +674,28 @@ private class AnthillParserImpl(
     * constructor's bare name is its instance (kernel-language.md §4.4), and in a type
     * position it is `Foo` itself — so it is built as the bare name, and no
     * `Parameterized` with nothing to bind reaches a reader. Rustland's grammar admits it
-    * in the one `application` node both positions share (tree-sitter `commaSep`). */
+    * in the one `application` node both positions share (tree-sitter `commaSep`).
+    *
+    * A member after the bracket, `Box[V = Int64].V`, is a type member read off it
+    * (rustland's `type_member` node). It is a suffix of this production rather than an
+    * alternative of its own: a binding may commit (`E = {}` cuts at the `{`), and an
+    * alternative that failed at the `.` after such a cut could not back out to this one. */
   private def parameterizedType[$: P]: P[TypeExpr] =
-    P(refName ~ "[" ~ sortBinding.rep(0, sep = ",") ~ "]").map { case (n, bs) =>
-      if bs.isEmpty then TypeExpr.Simple(n) else TypeExpr.Parameterized(n, bs.toIndexedSeq)
+    P(applied ~ ("." ~ simpleName).?).map {
+      case (n, bs, Some(member)) => TypeExpr.Member(n, bs, member)
+      case (n, bs, None)         => appliedAsType(n, bs)
     }
+
+  /** `Name[bindings]` with no member after it: an effect label, which takes none (rustland's
+    * `_effect_type` admits no `type_member`). */
+  private def appliedType[$: P]: P[TypeExpr] =
+    P(applied).map(appliedAsType)
+
+  private def applied[$: P]: P[(Name, IndexedSeq[SortBinding])] =
+    P(refName ~ "[" ~ sortBinding.rep(0, sep = ",") ~ "]").map((n, bs) => (n, bs.toIndexedSeq))
+
+  private def appliedAsType(n: Name, bs: IndexedSeq[SortBinding]): TypeExpr =
+    if bs.isEmpty then TypeExpr.Simple(n) else TypeExpr.Parameterized(n, bs)
 
   private def sortBinding[$: P]: P[SortBinding] =
     P(
@@ -764,7 +781,7 @@ private class AnthillParserImpl(
   /** `_simple_effect` (WI-327): a bare effect with no composite prefix —
     * what `+`/`-`/`:- guard` attach to. */
   private def simpleEffect[$: P]: P[TypeExpr] =
-    P(parameterizedType | variableType | simpleType)
+    P(appliedType | variableType | simpleType)
 
   /** WI-478 (proposal 048): a bare guarded effect-row element `E :- guard`. The
     * `:- guard` binds the SINGLE preceding effect, per-element — the row `,`
@@ -1540,6 +1557,14 @@ private class AnthillParserImpl(
     // WI-302: a denoted value-in-type rides as the raw literal term (rustland
     // retired the `make_denoted` wrapper in WI-366 — the value rides as a Node).
     case TypeExpr.Denoted(value) => value
+    // A type member read off a bracket lowers to an opaque `type_member(applied, member)`
+    // term: rustland's loader reads it as the member at the bracket's parameters, which
+    // needs the typer scaland does not have — so it rides as a plain functor term, as an
+    // effect row does below.
+    case TypeExpr.Member(n, bindings, member) =>
+      val applied = typeExprToRef(TypeExpr.Parameterized(n, bindings), enclosing)
+      val memberTid = terms.allocAt(Term.Ident(member.last), member.span)
+      terms.allocAt(Term.Fn(intern("type_member"), IArray(applied, memberTid), IArray.empty), n.span)
     // WI-375: a written effect-row lowers to an opaque `effects_rows(e1, …)`
     // term (rustland builds an EffectExpression; scaland has no effect
     // machinery, so the row rides as a plain functor term — this also subsumes

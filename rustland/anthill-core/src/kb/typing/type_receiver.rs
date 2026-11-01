@@ -170,10 +170,13 @@ fn written_sort_dot(
         ));
     }
 
+    // A constructor the written `Sort.ctor` names: one declared inside the sort. An
+    // eponymous constructor is the sort's own name, which `Sort.Sort` does not name.
+    let qualified = format!("{}.{short}", kb.qualified_name_of(head));
     let constructor = kb
         .constructors_of_sort(head)
         .into_iter()
-        .find(|c| short_name_of(kb.local_name_of(*c)) == short);
+        .find(|c| kb.qualified_name_of(*c) == qualified);
     if let Some(constructor) = constructor {
         if let Some(refusal) = hidden(kb, constructor) {
             return refusal;
@@ -217,7 +220,6 @@ fn written_sort_dot(
         ));
     }
 
-    let qualified = format!("{}.{short}", kb.qualified_name_of(head));
     let declared = kb.symbols.by_qualified_name.get(&qualified).copied();
 
     // A rule of the sort is the relation the written `Sort.rule(…)` cites, and `Sort.rule`
@@ -325,12 +327,18 @@ fn written_sort_dot(
     }
     // Declared in the sort, but not something a dot reaches: a constant. Saying "no such
     // member" of it would be false.
-    if declared.is_some() {
+    if let Some(found) = declared {
+        // A const is read by its name, which no bracket binds anything in.
+        let by_name = if kb.has_kind(found, crate::intern::SymbolKind::Const) {
+            format!("; a const is read by its name, `{}`", kb.qualified_name_of(found))
+        } else {
+            String::new()
+        };
         return refused(
             TypeError::here(),
             format!("an operation, a constructor, a rule or a type member of `{denoted}`"),
             format!(
-                "`{short}` is declared in `{denoted}` and is none of them; a receiver that denotes a sort reaches the sort's operations, constructors, rules and type members only"
+                "`{short}` is declared in `{denoted}` and is none of them; a receiver that denotes a sort reaches the sort's operations, constructors, rules and type members only{by_name}"
             ),
         );
     }
@@ -453,7 +461,7 @@ fn denoted_type_member(
 /// The type member `member` declares in `sort` — a nested sort, an alias, a parameter — by its
 /// qualified name, as the written `Sort.Member` names it. An eponymous sort's name is its
 /// constructor's, as the loader's `sort_named` reads it.
-pub(super) fn declared_type_member(kb: &KnowledgeBase, sort: Symbol, member: &str) -> Option<Symbol> {
+pub(crate) fn declared_type_member(kb: &KnowledgeBase, sort: Symbol, member: &str) -> Option<Symbol> {
     let qualified = format!("{}.{member}", kb.qualified_name_of(sort));
     kb.symbols
         .by_qualified_name
@@ -479,6 +487,29 @@ pub(crate) enum AliasMember {
 /// [`AliasMember`] of `alias` and `member`; `None` where `alias` is no such alias or its
 /// sort declares no type member `member`.
 pub(crate) fn alias_member(kb: &mut KnowledgeBase, alias: Symbol, member: &str) -> Option<AliasMember> {
+    // A clause's term is held as a term: the one place the member's type is lowered.
+    Some(match alias_bound_member(kb, alias, member)? {
+        BoundMember::Name(found) => AliasMember::Name(found),
+        BoundMember::Type(ty) => match crate::kb::node_occurrence::value_to_term(kb, &ty) {
+            Ok(id) => AliasMember::Type(id),
+            Err(_) => AliasMember::Open(format!(
+                "`{alias}.{member}` is a type that holds a value, which a clause's term does not hold",
+                alias = kb.local_name_of(alias),
+            )),
+        },
+        BoundMember::Open(why) => AliasMember::Open(why),
+    })
+}
+
+/// The type member `member` through `alias`, a type alias that owns no members and fixes
+/// parameters of the sort it stands for, read at what it fixes: `CQ.L` over `sort CQ = Q[A =
+/// Int64]` and `sort L = List[T = A]` is `List[T = Int64]`, as `Q[A = Int64].L` is. `None`
+/// where `alias` is no such alias or its sort declares no type member `member`.
+pub(crate) fn alias_bound_member(
+    kb: &mut KnowledgeBase,
+    alias: Symbol,
+    member: &str,
+) -> Option<BoundMember> {
     if !kb.is_scan_alias(alias) || owns_members(kb, alias) {
         return None;
     }
@@ -486,31 +517,68 @@ pub(crate) fn alias_member(kb: &mut KnowledgeBase, alias: Symbol, member: &str) 
     if fixed.is_empty() {
         return None;
     }
+    let base_ref = kb.make_sort_ref(base);
+    let receiver = Value::term(kb.make_parameterized_type(base_ref, &fixed));
+    let bindings: Vec<(Symbol, Value)> =
+        fixed.iter().map(|&(k, ty)| (k, Value::term(ty))).collect();
+    member_through(kb, base, &bindings, &receiver, member)
+}
+
+/// What a type member of a sort is through a receiver that binds some of its parameters.
+pub(crate) enum BoundMember {
+    /// The member, read as its written name is: a parameter the receiver leaves open, or
+    /// a member whose definition names none of the parameters it binds.
+    Name(Symbol),
+    /// The type it is at the receiver's parameters.
+    Type(Value),
+    /// Its definition names a parameter the receiver leaves open: the refusal's sentence.
+    Open(String),
+}
+
+/// The type member `member` of `base` through `receiver`, which is `base` applied to
+/// `bindings`: a parameter is the type bound to it, any other member is its definition at
+/// those bindings ([`member_at`]). `None` where `base` declares no type member `member`.
+fn member_through(
+    kb: &mut KnowledgeBase,
+    base: Symbol,
+    bindings: &[(Symbol, Value)],
+    receiver: &Value,
+    member: &str,
+) -> Option<BoundMember> {
     let found = declared_type_member(kb, base, member)?;
     if kb.type_params_of_sort(base).iter().any(|p| p == member) {
         return Some(
-            match fixed.iter().find(|(k, _)| short_name_of(kb.local_name_of(*k)) == member) {
-                Some((_, ty)) => AliasMember::Type(*ty),
-                None => AliasMember::Name(found),
+            match bindings.iter().find(|(k, _)| short_name_of(kb.local_name_of(*k)) == member) {
+                Some((_, ty)) => BoundMember::Type(ty.clone()),
+                None => BoundMember::Name(found),
             },
         );
     }
-    let base_ref = kb.make_sort_ref(base);
-    let receiver = Value::term(kb.make_parameterized_type(base_ref, &fixed));
-    Some(match member_at(kb, base, found, Some(&receiver)) {
-        MemberAt::Name => AliasMember::Name(found),
-        MemberAt::Definition(ty) => match crate::kb::node_occurrence::value_to_term(kb, &ty) {
-            Ok(id) => AliasMember::Type(id),
-            Err(_) => AliasMember::Open(format!(
-                "`{alias}.{member}` is a type that holds a value, which a clause's term does not hold",
-                alias = kb.local_name_of(alias),
-            )),
-        },
+    Some(match member_at(kb, base, found, Some(receiver)) {
+        MemberAt::Name => BoundMember::Name(found),
+        MemberAt::Definition(ty) => BoundMember::Type(ty),
         MemberAt::Open => {
             let (_, actual) = open_member_refusal(kb, base, found);
-            AliasMember::Open(actual)
+            BoundMember::Open(actual)
         }
     })
+}
+
+/// What `Sort[…].Member` written in a type is: the member of the sort `applied` names, at
+/// the parameters it binds — `Box[V = Int64].V` is `Int64`, `Q[A = Int64].L` over `sort L
+/// = List[T = A]` is `List[T = Int64]`. `applied` is the bracket as a type position lowers
+/// it, an alias read through. `None` where it is no applied sort, or the sort declares no
+/// type member `member`.
+pub(crate) fn bracket_member(
+    kb: &mut KnowledgeBase,
+    applied: &Value,
+    member: &str,
+) -> Option<(Symbol, BoundMember)> {
+    let TypeExtractor::Parameterized { base, bindings } = extract_type(kb, applied) else {
+        return None;
+    };
+    let read = member_through(kb, base, &bindings, applied, member)?;
+    Some((base, read))
 }
 
 /// What a type member of a sort that is no parameter is through a receiver of the sort.

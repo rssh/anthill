@@ -1,0 +1,12 @@
+namespace parity.papx0.member
+  -- A type member read off a bracket, `Box[V = Int64].V`, is a type: the member of the
+  -- sort at the parameters the bracket binds (kernel-language.md §5.4). Written as a
+  -- parameter's and a result's type, a `let` annotation, an entity field, a const's type
+  -- and an entry of another bracket, positional and named; as a value it stays the
+  -- paren-less dot it always was.
+  entity holder(x: Box[V = Int64].V)
+  const c: Box[Int64].V = 1
+  operation f(x: Q[A = Int64].L) -> Box[V = Int64].V =
+    let y: List[T = Box[V = Int64].V] = []
+    Box[V = Int64].V
+end

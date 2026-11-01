@@ -821,11 +821,11 @@ pub(super) fn spec_typed_value_at_carrier_error(
 /// [`TypeError::TypeMismatch::denoted`]. `None` for every other expression, and for a
 /// check with no occurrence to ask.
 ///
-/// Keyed on the CLASSIFICATION ([`Expr::TypeValue`], and the free-standing entity's bare
-/// name, which `check_bare_ref` classifies without recording), never on "the type came out
-/// as `Type`": a `Type`-valued expression that is not a written type — a call returning one,
-/// a variable holding one — denotes nothing at this source position, and a message
-/// inventing a surface for it would name a sort the author did not write.
+/// Keyed on the CLASSIFICATION ([`Expr::TypeValue`]), never on "the type came out as
+/// `Type`": a `Type`-valued expression that is not a written type — a call returning one, a
+/// variable holding one — denotes nothing at this source position, and a message inventing a
+/// surface for it would name a sort the author did not write. A constructor's bare name is
+/// its instance (§4.4), not a type value; its type is written `Leaf[]`.
 ///
 /// Printed through [`TermPrinter::print_occurrence`], which is the writer that already
 /// owes this shape its SOURCE spelling (`Cell[V = Int64]`, brackets and `=`, per its own

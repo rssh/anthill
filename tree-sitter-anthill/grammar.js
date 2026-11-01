@@ -1756,6 +1756,16 @@ module.exports = grammar({
       $._spec_instantiation,
       $.tuple_type,
       $.arrow_type,
+      $.type_member,
+    ),
+
+    // A type member read off a bracket, `Box[V = Int64].V`: the member of the sort at the
+    // parameters the bracket binds (kernel-language.md §5.4). Without a bracket the member
+    // is a dotted `name` (`Box.V`); only the applied form needs a node of its own.
+    type_member: $ => seq(
+      field('object', $.application),
+      '.',
+      field('member', $.identifier),
     ),
 
     // The forms that can NAME A SPEC: a bare name, an applied one, or a type variable.

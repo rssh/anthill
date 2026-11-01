@@ -243,6 +243,7 @@ object ReceiverType:
     case TypeExpr.TupleType(_) => Other("a tuple type")
     case TypeExpr.Variable(_, _) => Other("a type variable")
     case TypeExpr.Denoted(_) => Other("a value in a type position")
+    case TypeExpr.Member(_, _, _) => Other("a type member read off a bracket")
     case TypeExpr.EffectRow(_) | TypeExpr.EffectGuarded(_, _) => Other("an effect row")
 
 /** What ONE written type name denotes (WI-1081) — the ONE answer both the renderer

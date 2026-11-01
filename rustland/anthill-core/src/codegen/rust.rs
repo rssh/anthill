@@ -1359,6 +1359,19 @@ impl<'a> RustCodegen<'a> {
             // WI-478: a guarded effect is an effect-position construct, not a Rust
             // type — emit `()` like the other effect forms.
             TypeExpr::EffectGuarded { .. } => "()".to_owned(),
+            // The member's type is the knowledge base's to read, which this generator,
+            // working from the parse alone, does not; written as `Box.V` it is a
+            // projection off the sort.
+            TypeExpr::Member { name, member, .. } => {
+                self.error(format!(
+                    "the type member `{}[…].{}` is not generated: a member read off a bracket \
+                     is the type the knowledge base reads it as, which this generator does \
+                     not consult",
+                    self.symbols.local_name(name.last()),
+                    self.symbols.local_name(member.last()),
+                ));
+                "()".to_owned()
+            }
         }
     }
 
@@ -1577,7 +1590,10 @@ impl<'a> RustCodegen<'a> {
             TypeExpr::Simple(n) => self.resolve(n) == name,
             TypeExpr::Variable { .. } => false,
             TypeExpr::Tuple(fields) => fields.iter().any(|(_, t)| self.type_mentions(t, name)),
-            TypeExpr::Parameterized { name: n, bindings } => {
+            TypeExpr::Parameterized { name: n, bindings }
+            | TypeExpr::Member {
+                name: n, bindings, ..
+            } => {
                 self.resolve(n) == name
                     || bindings.iter().any(|b| self.type_mentions(&b.bound, name))
             }
@@ -2701,6 +2717,7 @@ impl<'a> RustCodegen<'a> {
             TypeExpr::Tuple(_) => {}
             TypeExpr::Arrow { .. } => {}
             TypeExpr::Denoted(_) => {}
+            TypeExpr::Member { .. } => {}
             // WI-327: `-E` doesn't contribute Modify/Error analysis.
             TypeExpr::EffectAbsent(_) => {}
             // WI-375: a written effect-row in a type-arg slot is not an
@@ -2857,6 +2874,7 @@ fn should_collapse_self(info: &SortInfo, symbols: &SymbolTable) -> bool {
             TypeExpr::EffectAbsent(_) => "EffectAbsent".to_owned(),
             TypeExpr::EffectRow(_) => "EffectRow".to_owned(),
             TypeExpr::EffectGuarded { .. } => "EffectGuarded".to_owned(),
+            TypeExpr::Member { member, .. } => symbols.local_name(member.last()).to_owned(),
         };
 
         if first_type != *param_name {
@@ -2979,6 +2997,7 @@ fn type_expr_name(symbols: &SymbolTable, ty: &TypeExpr) -> String {
         TypeExpr::EffectAbsent(_) => "EffectAbsent".to_owned(),
         TypeExpr::EffectRow(_) => "EffectRow".to_owned(),
         TypeExpr::EffectGuarded { .. } => "EffectGuarded".to_owned(),
+        TypeExpr::Member { member, .. } => symbols.local_name(member.last()).to_owned(),
     }
 }
 

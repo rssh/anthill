@@ -25,6 +25,10 @@ mod wi009_phase3_builtins_test;
 
 #[path = "include/wi_papx0_dot_receiver_split_test.rs"]
 mod wi_papx0_dot_receiver_split_test;
+#[path = "include/wi_papx0_written_type_member_test.rs"]
+mod wi_papx0_written_type_member_test;
+#[path = "include/wi_1y96b_eponymous_type_receiver_test.rs"]
+mod wi_1y96b_eponymous_type_receiver_test;
 #[path = "include/wi_a3fy2_rule_body_type_receiver_test.rs"]
 mod wi_a3fy2_rule_body_type_receiver_test;
 #[path = "include/wi_rxt6s_dotted_sort_type_value_test.rs"]

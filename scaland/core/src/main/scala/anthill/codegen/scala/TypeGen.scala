@@ -50,6 +50,14 @@ object TypeGen:
         "What it stands for is a typer question, and Bootstrap runs on the parse " +
         "IR alone (proposal 034)",
         scope.declSpan)
+    case TypeExpr.Member(n, _, member) =>
+      // What the member is at the bracket's parameters is a typer question, and
+      // Bootstrap runs on the parse IR alone.
+      throw BootstrapError(
+        s"${scope.decl}: the type member `${sym.name(n.last)}[…].${sym.name(member.last)}` " +
+        "has no Scala form here: it is the member at the bracket's parameters, which only " +
+        "a typer reads, and Bootstrap runs on the parse IR alone (proposal 034)",
+        scope.declSpan)
     case TypeExpr.Denoted(_) =>
       // WI-1055 B2. Value-in-type (`Vector[Int64, 3]`, WI-302) — Scala has no
       // dependent type slot to put the literal in. Emitted as `Any`, which

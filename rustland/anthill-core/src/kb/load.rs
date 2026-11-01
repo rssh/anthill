@@ -2686,22 +2686,6 @@ pub enum LoadError {
         problem: SelfTypeProblem,
         span: Span,
     },
-    /// WI-20260911-5G28A (L3) — a PAREN-LESS bracketed `Sort[…].m` in an operation or
-    /// const body whose `m` resolves to neither a rule nor an operation: a nested sort, a
-    /// const, a type parameter. A bracket before a dot is read by a rule citation
-    /// (`Wrap[T = Colour].tag`) or an operation's call (`Box[T = Int64].zero`) and by
-    /// nothing else, so here it would bind nothing.
-    ///
-    /// Its OWN variant, not [`Self::InvalidTypeArgument`]: the bracket may be perfectly
-    /// valid — it is the member that is wrong, and a message that opens "invalid type
-    /// argument" sends the author to the one part they wrote right.
-    ParenLessBracketBindsNothing {
-        /// The sort AS WRITTEN (`Outer`, `..ns.Outer`), so the repair quotes the source.
-        sort: String,
-        /// The member as written (`Inner`).
-        member: String,
-        span: Span,
-    },
     /// WI-840 (proposal 058 §4.2) — an operation declares a type parameter whose name
     /// already denotes something else in the ONE bracket list that binds it, so a
     /// written `op[N = …]` would have two possible targets. Refused at the
@@ -2775,9 +2759,10 @@ pub enum LoadError {
     },
     /// A clause DATA SLOT names a type member through a type alias (`CQ.L` over `sort CQ =
     /// Q[A = Int64]`) whose definition names a parameter the alias leaves open, so the
-    /// member is no type there (`typing::alias_member`). `why` is the sentence the dot on
-    /// the alias's type value is refused with in an operation body.
-    TypeMemberOpenThroughAlias {
+    /// member is no type there (`typing::alias_member`); or a type names one through a
+    /// bracket that leaves it open (`Q[B = Int64].L`, `typing::bracket_member`). `why` is
+    /// the sentence the dot on the type value is refused with in an operation body.
+    TypeMemberOpen {
         name: String,
         why: String,
         span: Span,
@@ -2929,16 +2914,6 @@ pub(crate) fn rule_body_relation_bracket_detail(kb: &KnowledgeBase, callee: Symb
          be dropped and the relation read at every instance. Cite the relation from an \
          operation body, where the bracket selects the instance, or write it without the \
          bracket{domain_hint}"
-    )
-}
-
-/// WI-20260911-5G28A (L3): the one wording of [`LoadError::ParenLessBracketBindsNothing`],
-/// shared by the two renderings so they cannot drift (WI-852).
-fn paren_less_bracket_detail(sort: &str, member: &str) -> String {
-    format!(
-        "`{sort}[…].{member}` names neither a rule nor an operation — a type bracket before \
-         a dot is read by a rule citation or an operation call and by nothing else, so here \
-         it would bind nothing; drop it (`{sort}.{member}`)"
     )
 }
 
@@ -3170,10 +3145,9 @@ impl LoadError {
             | LoadError::ForbiddenInternalAccess { span, .. }
             | LoadError::UnsafeNegatedUnify { span, .. }
             | LoadError::ConstValueUnavailableInDataSlot { span, .. }
-            | LoadError::TypeMemberOpenThroughAlias { span, .. }
+            | LoadError::TypeMemberOpen { span, .. }
             | LoadError::BindingInContract { span, .. }
             | LoadError::CallTypeArgsNotSupportedHere { span, .. }
-            | LoadError::ParenLessBracketBindsNothing { span, .. }
             | LoadError::SelfTypeMisuse { span, .. }
             | LoadError::TypeParamShadowsSlot { span, .. }
             | LoadError::FunctorOwnedByExtent { span, .. }
@@ -4297,13 +4271,6 @@ impl LoadError {
                     call_type_args_unsupported_detail(callee, *position),
                 )
             }
-            LoadError::ParenLessBracketBindsNothing { sort, member, span } => {
-                format!(
-                    "{}: {}",
-                    loc.format_start(*span),
-                    paren_less_bracket_detail(sort, member),
-                )
-            }
             LoadError::SelfTypeMisuse { problem, span } => {
                 format!(
                     "{}: {}",
@@ -4523,7 +4490,7 @@ impl LoadError {
                     const_unavailable_message(name, reason),
                 )
             }
-            LoadError::TypeMemberOpenThroughAlias { name, why, span } => {
+            LoadError::TypeMemberOpen { name, why, span } => {
                 format!("{}: `{name}` names no type here: {why}", loc.format_start(*span))
             }
             LoadError::UnsafeNegatedUnify { var_name, span } => {
@@ -5958,15 +5925,6 @@ impl std::fmt::Display for LoadError {
                     span.end,
                 )
             }
-            LoadError::ParenLessBracketBindsNothing { sort, member, span } => {
-                write!(
-                    f,
-                    "{} at {}..{}",
-                    paren_less_bracket_detail(sort, member),
-                    span.start,
-                    span.end,
-                )
-            }
             LoadError::SelfTypeMisuse { problem, span } => {
                 write!(
                     f,
@@ -6042,7 +6000,7 @@ impl std::fmt::Display for LoadError {
                     span.end,
                 )
             }
-            LoadError::TypeMemberOpenThroughAlias { name, why, span } => {
+            LoadError::TypeMemberOpen { name, why, span } => {
                 write!(f, "`{name}` names no type here: {why} at {}..{}", span.start, span.end)
             }
             LoadError::UnsafeNegatedUnify { var_name, span } => {
@@ -13569,6 +13527,12 @@ fn type_expr_base_name(parse_sym: &crate::intern::SymbolTable, ty: &TypeExpr) ->
         TypeExpr::EffectRow(_) => "TypeExtractor.EffectsRows".to_owned(),
         // WI-478: a guarded effect's base is its guarded label (peek past the guard).
         TypeExpr::EffectGuarded { label, .. } => type_expr_base_name(parse_sym, label),
+        // The member, by the sort's path: `Box[V = Int64].V`'s is `Box.V`.
+        TypeExpr::Member { name, member, .. } => format!(
+            "{}.{}",
+            join_segments(parse_sym, &name.segments),
+            join_segments(parse_sym, &member.segments)
+        ),
     }
 }
 
@@ -19178,7 +19142,7 @@ fn collect_written_type_vars(ty: &TypeExpr, out: &mut Vec<ParseTermId>) {
 fn for_each_type_expr(ty: &TypeExpr, f: &mut impl FnMut(&TypeExpr)) {
     f(ty);
     match ty {
-        TypeExpr::Parameterized { bindings, .. } => {
+        TypeExpr::Parameterized { bindings, .. } | TypeExpr::Member { bindings, .. } => {
             for b in bindings {
                 for_each_type_expr(&b.bound, f);
             }
@@ -19221,7 +19185,10 @@ fn collect_type_expr_heads(
     out: &mut Vec<String>,
 ) {
     for_each_type_expr(ty, &mut |t| {
-        let (TypeExpr::Simple(name) | TypeExpr::Parameterized { name, .. }) = t else {
+        let (TypeExpr::Simple(name)
+        | TypeExpr::Parameterized { name, .. }
+        | TypeExpr::Member { name, .. }) = t
+        else {
             return;
         };
         let mut joined = String::new();
@@ -19231,6 +19198,15 @@ fn collect_type_expr_heads(
             }
             joined.push_str(parse_sym.local_name(*seg));
             out.push(joined.clone());
+        }
+        // A member read off a bracket names the member by the sort's path, as `Sort.Member`
+        // written does.
+        if let TypeExpr::Member { member, .. } = t {
+            for seg in &member.segments {
+                joined.push('.');
+                joined.push_str(parse_sym.local_name(*seg));
+                out.push(joined.clone());
+            }
         }
     });
 }
@@ -28231,6 +28207,12 @@ struct Loader<'a> {
     // locally named `tuple`, so `rule r :- tuple(?a & ?b)` was refused while the
     // identical `ordinary(?a & ?b)` loaded — its ARGUMENT is data in both.
     in_body_goal_wrapper: bool,
+    // True while a rule body's occurrence walk builds a node ([`Self::build_body_atom_occurrence`]),
+    // and so while it converts that node's term. A paren-less `Sort[…].T` is read there, and
+    // in an operation body's term (`lowering_op_body_term`), as the dot `(Sort[…]).T`
+    // ([`Self::citation_read_as_dot`]); a clause's own term — a fact, a rule head — keeps the
+    // citation.
+    in_body_occurrence: bool,
     // WI-20260824-JM6ZW — true while the rule-body walk lowers a child whose ROLE is not
     // `ValueExpression` (design 055 §3: "a child whose role is head, callee, … member name
     // … or `TypeExpr` does not" admit a type value), so the walk's type-value record is not
@@ -28808,6 +28790,7 @@ impl<'a> Loader<'a> {
             lowering_op_body_term: false,
             in_body_goal: false,
             in_body_goal_wrapper: false,
+            in_body_occurrence: false,
             in_non_value_role: false,
             in_member_name: false,
             in_call_argument: false,
@@ -31729,7 +31712,7 @@ impl<'a> Loader<'a> {
         let name = self.dotted_name_rooted_at_no_binding(parse_id)?;
         let found = dotted_type_named(self.kb, &name, self.current_scope)?;
         if let DottedType::Open(why) = &found {
-            self.errors.push(LoadError::TypeMemberOpenThroughAlias {
+            self.errors.push(LoadError::TypeMemberOpen {
                 name,
                 why: why.clone(),
                 span: self.parsed.terms.span(parse_id),
@@ -32044,6 +32027,16 @@ impl<'a> Loader<'a> {
     }
 
     fn convert_term_inner(&mut self, parse_id: ParseTermId, expected: Option<Value>) -> TermId {
+        let dot = if self.in_body_occurrence || self.lowering_op_body_term {
+            self.citation_read_as_dot(parse_id)
+        } else {
+            parse_id
+        };
+        if dot != parse_id {
+            let converted = self.convert_term_inner(dot, expected);
+            self.term_map.insert(parse_id, converted);
+            return converted;
+        }
         if self.in_rule_head_bound && !self.parse_arg_type_is_applied(parse_id) {
             if let Some(name) = self.parse_arg_type_name(parse_id) {
                 if let Some(RuleTvar::Bounded(requirement)) = self.rule_head_tvar(&name) {
@@ -33554,6 +33547,7 @@ impl<'a> Loader<'a> {
         work: &mut Vec<LoadWorkOp>,
         results: &mut Vec<TermId>,
     ) {
+        let parse_id = self.citation_read_as_dot(parse_id);
         let parse_term = self.parsed.terms.get(parse_id).clone();
         match parse_term {
             Term::Fn {
@@ -34946,9 +34940,9 @@ impl<'a> Loader<'a> {
     /// What a PAREN-LESS dotted name cites in this walk (an operation or const body): a
     /// rule-ish `Goal` head functor or `Rule` label — or an `EquationFunctor`, which
     /// collapses too. ONE predicate for the bare `Sort.m` and the bracketed `Sort[…].m`
-    /// ([`Self::refuse_paren_less_bracket_binding_nothing`]), so the two spellings cannot
-    /// admit different members; an operation, which both spellings call, is the other
-    /// member they admit ([`Self::try_qualified_op_ref`]).
+    /// ([`Self::citation_read_as_dot`]), so the two spellings cannot admit different
+    /// members; an operation, which both spellings call, is the other member they admit
+    /// ([`Self::try_qualified_op_ref`]).
     ///
     /// WI-898: `EquationFunctor` collapses TOO, and deliberately — the rung asks "is this
     /// dotted name a rule-ish CITATION the typer should see?", not "is it a relation?"
@@ -34966,52 +34960,52 @@ impl<'a> Loader<'a> {
             || self.kb.has_kind(sym, SymbolKind::EquationFunctor)
     }
 
-    /// WI-20260911-5G28A (L3): refuse a paren-less `Sort[…].m` in an operation or const
-    /// body whose `m` resolves to neither a rule nor an operation —
-    /// [`LoadError::ParenLessBracketBindsNothing`]. The converter lowers the spelling to
-    /// the zero-argument call the applied `Sort[…].m()` builds, which is what a rule
-    /// citation and an operation's call are; a nested sort, a const or a type parameter
-    /// reads no bracket, and the call would be one the author did not write.
-    ///
-    /// AN UNRESOLVED `m` IS NOT REFUSED HERE. It has no kind to be "not a rule", and the
-    /// typer reports the name as an unknown functor; refusing it as well put a second
-    /// error on every typo, quoting the unresolved dotted name as the member (`Sort[…].
-    /// Wrap.tagg`). An AMBIGUOUS name and a hidden `internal` one are the same case:
-    /// their resolution reported them and handed back a bare intern, which has no kind.
-    ///
-    /// THE TYPER STILL SPEAKS AFTER THIS, and that is left on purpose: the node stays the
-    /// zero-argument call, so a non-callable member draws the unknown-functor error — the
-    /// verdict the applied `Sort[…].m()` draws. Suppressing it would mean substituting a
-    /// recovery leaf (WI-605's `expr_body_bottom_recovery`), which the rule-compound walk
-    /// that also reaches this frame does not honour.
-    ///
-    /// RULE BODIES ARE NOT THIS SITE. There the marked node keeps the applied reading the
-    /// converter gave it, and a rule's COMPOUND expression (`?y <=> (if c then Box[T =
-    /// Int64].zero else 1)`), which this walk lowers on the rule's behalf
-    /// (`lowering_rule_compound_expr`), reads it as its data slot does.
-    fn refuse_paren_less_bracket_binding_nothing(
-        &mut self,
-        parse_functor: Symbol,
-        kb_functor: Symbol,
-        parse_id: ParseTermId,
-    ) {
-        let def = self.kb.symbols.get(kb_functor);
-        if def.kinds().is_empty()
-            || def.has_kind(SymbolKind::Operation)
-            || self.is_paren_less_citation_target(kb_functor)
-        {
-            return;
+    /// The node a paren-less `Sort[…].m` is read as. A rule citation, an operation's call
+    /// and a constructor keep the citation, which reads the bracket as the call's; any
+    /// other member the sort declares — a type member, a const — is the dot `(Sort[…]).m`
+    /// the converter built beside it, so the written spelling is the parenthesized one's
+    /// node in both bodies (§5.4: a type member is read at the parameters the bracket
+    /// binds, `Box[V = Int64].V` is `Int64`, and anything else a receiver that denotes a
+    /// sort does not reach is refused there). So is a type member the name does not
+    /// resolve to from here — one reached through a pure alias (`CB[Int64].V` over `sort
+    /// CB = Box`), and an `internal` one, which the dot refuses as hidden. A member the sort
+    /// does not declare stays the citation, refused as an unknown name. The citation's
+    /// bracket is the dot's receiver, read there.
+    fn citation_read_as_dot(&mut self, parse_id: ParseTermId) -> ParseTermId {
+        let Some(dot) = self.parsed.terms.paren_less_citation_dot(parse_id) else {
+            return parse_id;
+        };
+        let Term::Fn { functor, .. } = self.parsed.terms.get(parse_id) else {
+            return parse_id;
+        };
+        let name = self.parsed.symbols.local_name(*functor);
+        let read_as_dot = match self.resolve_qualified_readonly(name) {
+            Some(sym) => {
+                !self.kb.has_kind(sym, SymbolKind::Operation)
+                    && !self.kb.has_kind(sym, SymbolKind::Entity)
+                    && !self.kb.is_entity_constructor(sym)
+                    && !self.is_paren_less_citation_target(sym)
+            }
+            None => name.rsplit_once('.').is_some_and(|(sort, member)| {
+                self.resolve_qualified_readonly(sort)
+                    .map(|sort| {
+                        let pure_alias = self.kb.is_scan_alias(sort)
+                            && !super::typing::owns_members(self.kb, sort);
+                        match pure_alias {
+                            true => self.kb.alias_head(sort).unwrap_or(sort),
+                            false => sort,
+                        }
+                    })
+                    .and_then(|head| super::typing::declared_type_member(self.kb, head, member))
+                    .is_some()
+            }),
+        };
+        if read_as_dot {
+            self.consumed_recv_types.insert(parse_id);
+            dot
+        } else {
+            parse_id
         }
-        let written = self.parsed.symbols.local_name(parse_functor);
-        let (sort, member) = written
-            .rsplit_once('.')
-            .expect("a paren-less citation's functor joins the bracket's sort and the member");
-        let (sort, member) = (sort.to_string(), member.to_string());
-        self.errors.push(LoadError::ParenLessBracketBindsNothing {
-            sort,
-            member,
-            span: self.parsed.terms.span(parse_id),
-        });
     }
 
     /// WI-304: push the native leaf `NodeOccurrence` for a just-built leaf
@@ -35535,21 +35529,18 @@ impl<'a> Loader<'a> {
 
                 // WI-20260911-5G28A (L3): the paren-less `Sort[…].m` reaches here as the
                 // zero-argument call the applied `Sort[…].m()` builds, so a rule citation and
-                // an operation's call take the one lowering below either way — and anything
-                // else is refused rather than read as a call the author did not write. An
-                // entity keeps its own route: its arm leaves the bracket unread and the
-                // end-of-file sweep reports it, as it does for the applied spelling.
-                // A rule's compound expression is a RULE BODY — see the refusal's doc.
-                if !is_entity
-                    && !self.lowering_rule_compound_expr
-                    && self.parsed.terms.is_paren_less_citation(outer_parse_id)
-                {
-                    self.refuse_paren_less_bracket_binding_nothing(
-                        parse_functor,
-                        kb_functor,
-                        outer_parse_id,
-                    );
-                }
+                // an operation's call take the one lowering below either way, and a
+                // constructor its own arm. Any other member was read as the dot
+                // `(Sort[…]).m` before this walk reached it ([`Self::citation_read_as_dot`]);
+                // a name that resolves to nothing is the typer's unknown functor.
+                debug_assert!(
+                    !self.parsed.terms.is_paren_less_citation(outer_parse_id)
+                        || is_entity
+                        || self.kb.symbols.get(kb_functor).kinds().is_empty()
+                        || self.kb.has_kind(kb_functor, SymbolKind::Operation)
+                        || self.is_paren_less_citation_target(kb_functor),
+                    "a paren-less citation of a member that is no call reached the call's frame"
+                );
 
                 let mut arg_terms: SmallVec<[TermId; 4]> = SmallVec::with_capacity(total);
                 for i in 0..pos_count {
@@ -36583,11 +36574,13 @@ impl<'a> Loader<'a> {
         let saved_type_binding = self.in_type_binding;
         let saved_slot = self.binding_slot;
         let saved_call_argument = self.in_call_argument;
+        let saved_body_occurrence = std::mem::replace(&mut self.in_body_occurrence, true);
         self.term_depth = saved + 1;
         let occ = match self.written_type_in_call_argument(parse_id) {
             Some(type_value) => type_value,
             None => self.build_body_atom_occurrence_inner(parse_id),
         };
+        self.in_body_occurrence = saved_body_occurrence;
         self.term_depth = saved;
         self.const_fold = saved_fold;
         self.in_type_binding = saved_type_binding;
@@ -36974,8 +36967,8 @@ impl<'a> Loader<'a> {
     /// ([`Self::lowering_rule_compound_expr`]): a type is not a term the clause matches.
     ///
     /// A path that names an eponymous sort or a free-standing entity is no written type,
-    /// as its bare name is none, and is handed back as the reference that bare name is
-    /// here — left a chain, it was refused as a name nothing declares where the bare name
+    /// as its bare name is none — the bare name is its instance (§4.4), its type `Ep[]` —
+    /// and is handed back as the reference that bare name is here — left a chain, it was refused as a name nothing declares where the bare name
     /// is read. `None` for any other receiver, and inside that walk, which is not
     /// re-entered.
     fn written_type_receiver_occurrence(
@@ -37900,6 +37893,7 @@ impl<'a> Loader<'a> {
     }
 
     fn build_body_atom_occurrence_inner(&mut self, parse_id: ParseTermId) -> Rc<NodeOccurrence> {
+        let parse_id = self.citation_read_as_dot(parse_id);
         // WI-753 — set by the `Term::Fn` arm when the node it builds is a reflect form
         // written as data, which the tail re-reads into its keyed occurrence.
         let mut reread_reflect_form = false;
@@ -39099,9 +39093,9 @@ impl<'a> Loader<'a> {
     /// here feed diagnostics only.
     fn type_expr_span(&self, ty: &TypeExpr) -> SourceSpan {
         match ty {
-            TypeExpr::Simple(n) | TypeExpr::Parameterized { name: n, .. } => {
-                SourceSpan::from_span(self.source_id, n.span)
-            }
+            TypeExpr::Simple(n)
+            | TypeExpr::Parameterized { name: n, .. }
+            | TypeExpr::Member { name: n, .. } => SourceSpan::from_span(self.source_id, n.span),
             _ => SourceSpan::new(self.source_id, 0, 0),
         }
     }
@@ -40245,6 +40239,21 @@ impl<'a> Loader<'a> {
                     ),
                 });
             }
+        } else {
+            // A member defined over a parameter the alias fixes is its definition there,
+            // as through a bracket (`CQ.L` over `sort CQ = Q[A = Int64]` is `List[T =
+            // Int64]`, as `Q[A = Int64].L` is).
+            match super::typing::alias_bound_member(self.kb, head, member_name) {
+                Some(super::typing::BoundMember::Type(ty)) => {
+                    let owner = self.current_owner;
+                    return Some(super::typing::value_to_type_child_at(self.kb, &ty, span, owner));
+                }
+                Some(super::typing::BoundMember::Open(why)) => {
+                    let name = format!("{}.{member_name}", self.kb.local_name_of(head));
+                    return Some(self.refused_type_member(name, why, span.span, head));
+                }
+                Some(super::typing::BoundMember::Name(_)) | None => {}
+            }
         }
         self.try_rigid_type_projection(base, written, member_name, span)
     }
@@ -41030,6 +41039,66 @@ impl<'a> Loader<'a> {
         child
     }
 
+    /// Refuse the type member `name` — `why` is the sentence — and stand a fresh variable
+    /// where it is written, so the refusal is the one error the type draws.
+    fn refused_type_member(
+        &mut self,
+        name: String,
+        why: String,
+        span: Span,
+        named_after: Symbol,
+    ) -> node_occurrence::TypeChild {
+        self.errors.push(LoadError::TypeMemberOpen { name, why, span });
+        let var = Var::Global(self.kb.fresh_var(named_after));
+        let site = SourceSpan::from_span(self.source_id, span);
+        self.kb.type_var_child(var, site, self.current_owner)
+    }
+
+    /// `Sort[…].Member` in a type: the member of the sort at the parameters the bracket
+    /// binds, as a dot on the type value reads it (§5.4) — `Box[V = Int64].V` is `Int64`,
+    /// `Q[A = Int64].L` over `sort L = List[T = A]` is `List[T = Int64]`. The bracket is
+    /// lowered as a type, so an alias is read through. A member the bracket leaves open
+    /// or does not bear on, and a sort that declares no such member, are the written
+    /// `Sort.Member`; a member defined over a parameter the bracket leaves open is refused.
+    fn bracket_member_child(
+        &mut self,
+        name: &Name,
+        bindings: &[SortBinding],
+        member: &Name,
+        span: SourceSpan,
+        owner: Option<Symbol>,
+        site: TypeSite,
+    ) -> node_occurrence::TypeChild {
+        let applied = TypeExpr::Parameterized {
+            name: name.clone(),
+            bindings: bindings.to_vec(),
+        };
+        let applied = self.type_expr_to_child_inner(&applied, span, owner, site);
+        let applied = node_occurrence::type_child_as_value(&applied);
+        let member_name = self.parsed.symbols.local_name(member.last()).to_owned();
+        let read = super::typing::bracket_member(self.kb, &applied, &member_name);
+        let written = || {
+            let mut segments = name.segments.clone();
+            segments.extend(member.segments.iter().copied());
+            TypeExpr::Simple(Name {
+                segments,
+                span: name.span,
+            })
+        };
+        match read {
+            Some((_, super::typing::BoundMember::Type(ty))) => {
+                super::typing::value_to_type_child_at(self.kb, &ty, span, owner)
+            }
+            Some((base, super::typing::BoundMember::Open(why))) => {
+                let name = format!("{}[…].{member_name}", self.kb.local_name_of(base));
+                self.refused_type_member(name, why, member.span, base)
+            }
+            Some((_, super::typing::BoundMember::Name(_))) | None => {
+                self.type_expr_to_child_inner(&written(), span, owner, site)
+            }
+        }
+    }
+
     /// What a type NAME lowers to once it has resolved to `sort_sym` — the tail of
     /// [`Self::type_expr_to_child_inner`]'s `Simple` arm, and what each of `Self`'s own
     /// parameters goes through ([`Self::self_type_child`]), so a parameter named by
@@ -41718,6 +41787,11 @@ impl<'a> Loader<'a> {
                 }
                 node_occurrence::TypeChild::Interned(kb_id)
             }
+            TypeExpr::Member {
+                name,
+                bindings,
+                member,
+            } => self.bracket_member_child(name, bindings, member, span, owner, site),
             TypeExpr::Denoted(t) => {
                 // WI-342: value-in-type literal (`3` in `Vector[Int64, 3]` / `g[3]`)
                 // — carried as a `Value::Node` `denoted` occurrence whose value is
@@ -42101,7 +42175,10 @@ impl<'a> Loader<'a> {
             // it by — `requires Mark[T = (A, Int64)]` was asked at `(?_, Int64)` beside a
             // provider of `Mark` at `(String, Int64)` (MEASURED). A row's tail stays the
             // variable it is in every row (`node_occurrence::type_in_clause_canon`).
-            TypeExpr::Tuple(_) | TypeExpr::Arrow { .. } | TypeExpr::EffectRow(_) => {
+            TypeExpr::Tuple(_)
+            | TypeExpr::Arrow { .. }
+            | TypeExpr::EffectRow(_)
+            | TypeExpr::Member { .. } => {
                 let as_a_type = self.type_expr_to_value(ty);
                 node_occurrence::value_in_clause_canon(self.kb, as_a_type)
             }
@@ -43097,6 +43174,11 @@ impl<'a> Loader<'a> {
                 TypeExpr::Parameterized {
                     name: sort,
                     bindings,
+                }
+                | TypeExpr::Member {
+                    name: sort,
+                    bindings,
+                    ..
                 } => {
                     this.binds_a_row_slot(sort, bindings, name)
                         || bindings.iter().any(|b| within(this, &b.bound, name))

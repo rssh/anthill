@@ -230,12 +230,15 @@ pub struct SimpleTermStore {
     /// converter lowers a PAREN-LESS bracketed citation `Sort[…].m` into — the same term
     /// the applied `Sort[…].m()` builds, so both spellings reach one lowering and the
     /// bracket is validated either way. Only the surface tells them apart, and the
-    /// loader needs it: in an operation or const body paren-less is a rule citation or an
-    /// operation's call, so a marked node whose functor resolves to anything else is
-    /// refused rather than silently read as a call
-    /// (`Loader::refuse_paren_less_bracket_binding_nothing`). Recorded like its siblings,
-    /// for their reason.
-    paren_less_citations: HashSet<ParseTermId>,
+    /// loader needs it: paren-less is a rule citation or an operation's call, so a marked
+    /// node whose functor resolves to anything else is not read as a call the author did
+    /// not write. Recorded like its siblings, for their reason.
+    ///
+    /// Each maps to the dot the same text makes with its receiver in parentheses,
+    /// `(Sort[…]).m`, which any other member is read as (`Loader::citation_read_as_dot`):
+    /// that dot reads a type member at the parameters the bracket binds, and refuses what
+    /// a receiver that denotes a sort does not reach.
+    paren_less_citations: HashMap<ParseTermId, ParseTermId>,
 
     /// The `dot_apply` a dot written WITHOUT PARENTHESES lowers to — `e.m`, `(Box).m`,
     /// and each member of `x.(a, b)` — where `e.m()` lowers to the same term with no
@@ -318,14 +321,20 @@ impl SimpleTermStore {
     }
 
     /// WI-20260911-5G28A: record that `id` was written as the paren-less citation
-    /// `Sort[…].m`, lowered to the zero-argument call — see [`Self::paren_less_citations`].
-    pub fn mark_paren_less_citation(&mut self, id: ParseTermId) {
-        self.paren_less_citations.insert(id);
+    /// `Sort[…].m`, lowered to the zero-argument call, and that `dot` is `(Sort[…]).m` —
+    /// see [`Self::paren_less_citations`].
+    pub fn mark_paren_less_citation(&mut self, id: ParseTermId, dot: ParseTermId) {
+        self.paren_less_citations.insert(id, dot);
     }
 
     /// WI-20260911-5G28A: was this call written paren-less, as `Sort[…].m`?
     pub fn is_paren_less_citation(&self, id: ParseTermId) -> bool {
-        self.paren_less_citations.contains(&id)
+        self.paren_less_citations.contains_key(&id)
+    }
+
+    /// The dot `(Sort[…]).m` of the paren-less citation `id`, `Sort[…].m`.
+    pub fn paren_less_citation_dot(&self, id: ParseTermId) -> Option<ParseTermId> {
+        self.paren_less_citations.get(&id).copied()
     }
 
     /// Record that the `dot_apply` `id` was written without parentheses — see
@@ -500,6 +509,14 @@ pub enum TypeExpr {
     Parameterized {
         name: Name,
         bindings: Vec<SortBinding>,
+    },
+    /// A type member read off a bracket, `Box[V = Int64].V`: the member `member` of the
+    /// sort `name` at the parameters `bindings` binds (kernel-language.md §5.4). Without
+    /// a bracket the member is the dotted `Simple` name `Box.V`.
+    Member {
+        name: Name,
+        bindings: Vec<SortBinding>,
+        member: Name,
     },
     /// Type variable: `?` or `?name`, with zero or more inline descriptions.
     Variable {

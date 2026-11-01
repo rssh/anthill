@@ -13,22 +13,24 @@
 //!    (it answered 0 rows while its bare twin answered 1 — a silent wrong answer, under which
 //!    `not(…)` would succeed; the row is `a_bracketed_goal_in_a_rule_body_is_refused` since
 //!    2026-10-21, and this axis was not measured again on it), `a_nested_sort_after_the_bracket_is_refused` (loads clean: the
-//!    bracket was erased on the way to `Outer.Inner.op`), `a_bracket_on_a_zero_field_
+//!    bracket was erased on the way to `Outer.Inner.op`; the row is `a_nested_sort_after_the_
+//!    bracket_is_its_member` since WI-20260824-PAPX0, and this axis was not measured again
+//!    on it), `a_bracket_on_a_zero_field_
 //!    constructor_meets_the_sweep` (loads clean) and `a_paren_less_bracket_on_an_operation_
 //!    is_refused` (on its message: "zero.name: expected resolved name"; the row is
 //!    `a_paren_less_bracket_on_an_operation_is_its_call` since WI-20261008-R653S, and this
 //!    axis was not measured again on it).
-//!  * [U] the unresolved skip — in `kb/load.rs`, `refuse_paren_less_bracket_binding_nothing` without its
-//!    `def.kinds().is_empty()` test. 1 red: `a_typo_after_the_bracket_draws_one_error`
-//!    (a second error, quoting the unresolved dotted name as the member).
-//!  * [R] the refusal — the `refuse_paren_less_bracket_binding_nothing` call removed. 1
-//!    red: `a_nested_sort_after_the_bracket_is_refused` (only the typer's "unknown functor"
-//!    is left, about a sort it knows). It also failed the operation's row until
-//!    WI-20261008-R653S made an operation without parentheses its call; the refusal no
-//!    longer reaches an operation.
+//!  * [U] the unresolved skip and [R] the refusal of a member that is no call were
+//!    measured on `refuse_paren_less_bracket_binding_nothing`, which WI-20260824-PAPX0
+//!    removed: a member that is no call — a nested sort, a type parameter, a const — is
+//!    read as the dot `(Sort[…]).m` (`Loader::citation_read_as_dot`), and an unresolved one
+//!    stays the citation, the typer's one unknown-functor error. Their rows are
+//!    `a_typo_after_the_bracket_draws_one_error` and `a_nested_sort_after_the_bracket_is_
+//!    its_member` here, and `wi_papx0_written_type_member_test`'s.
 //!  * [G] the rule-compound gate — `!self.lowering_rule_compound_expr` dropped from the
 //!    refusal's call site. 1 red: `a_rule_body_data_slot_takes_the_applied_reading` (a
-//!    load error on the `if`, one level below a data slot that loads).
+//!    load error on the `if`, one level below a data slot that loads). Measured on the
+//!    removed refusal too.
 //!
 //! The query-pattern twin of the refusal — `load::query_bracket_errors` — is a CLI row
 //! (`anthill-cli`'s `wi_5g28a_query_bracket_test`), because a pattern is converted there.
@@ -189,9 +191,10 @@ fn a_rule_body_data_slot_takes_the_applied_reading() {
     // it used to bind the data term `zero` (as the bare DOTTED `Box.zero` did until
     // `dotted_nullary_op_call_test`).
     //
-    // And a rule's COMPOUND expression is a rule body too: `refuse_paren_less_non_rule`
-    // is skipped under `lowering_rule_compound_expr`, so the `if` below loads. With that
-    // gate backed out it is a load error one `if` deeper than a spelling that loads.
+    // And a rule's COMPOUND expression is a rule body too, so the `if` below loads: the
+    // removed refusal of a member that is no call was skipped under
+    // `lowering_rule_compound_expr`, and with that gate backed out it was a load error one
+    // `if` deeper than a spelling that loads.
     let mut kb = crate::common::load_kb_with(
         "namespace zz5g28al3d\n\
          \x20 import anthill.prelude.{Int64, Bool}\n\
@@ -243,17 +246,18 @@ fn a_paren_less_bracket_on_an_operation_is_its_call() {
     }
 }
 
+/// `Inner` is a SORT, a type member of `Outer`: `Outer[T = Int64].Inner` is the member at
+/// the bracket's parameters, as `(Outer[T = Int64]).Inner` is (WI-20260824-PAPX0, §5.4), and
+/// `.op()` on it is `Inner`'s companion call. Before L3 the chain flattened to
+/// `Outer.Inner.op` with the bracket ERASED; L3 refused it; since PAPX0 it is the dot the
+/// parenthesized spelling makes, and the bracket is read there.
 #[test]
-fn a_nested_sort_after_the_bracket_is_refused() {
-    // `Inner` is a SORT: nothing on this path reads `Outer`'s bracket. Before, the chain
-    // flattened to `Outer.Inner.op` with the bracket ERASED and loaded clean. The second
-    // error is the typer's verdict on the zero-argument call the node stays — the one the
-    // applied `Outer[T = Int64].Inner()` draws — left standing on purpose (see
-    // `refuse_paren_less_non_rule`).
-    crate::common::expect_load_errors(
-        crate::common::try_load_kb_with(
-            "namespace zz5g28al3n\n\
-             \x20 import anthill.prelude.{Int64}\n\
+fn a_nested_sort_after_the_bracket_is_its_member() {
+    let go = |expr: &str| {
+        let ns = if expr.starts_with('(') { "zz5g28al3np" } else { "zz5g28al3n" };
+        let mut interp = crate::common::interp_for(&format!(
+            "namespace {ns}\n\
+             \x20 import anthill.prelude.{{Int64}}\n\
              \x20 sort Outer[T]\n\
              \x20   entity outer(v: T)\n\
              \x20   sort Inner\n\
@@ -261,16 +265,16 @@ fn a_nested_sort_after_the_bracket_is_refused() {
              \x20     operation op() -> Int64 = 1\n\
              \x20   end\n\
              \x20 end\n\
-             \x20 operation go() -> Int64 = Outer[T = Int64].Inner.op()\n\
+             \x20 operation go() -> Int64 = {expr}\n\
              end\n",
-        ),
-        &[
-            "`Outer[…].Inner` names neither a rule nor an operation — a type bracket before a \
-             dot is read by a rule citation or an operation call and by nothing else, so here \
-             it would bind nothing; drop it (`Outer.Inner`)",
-            "got unknown functor",
-        ],
-    );
+        ));
+        match interp.call(&format!("{ns}.go"), &[]) {
+            Ok(anthill_core::eval::Value::Int(n)) => n,
+            other => panic!("{expr}: expected an Int64, got {other:?}"),
+        }
+    };
+    assert_eq!(go("Outer[T = Int64].Inner.op()"), 1);
+    assert_eq!(go("(Outer[T = Int64]).Inner.op()"), 1);
 }
 
 #[test]
