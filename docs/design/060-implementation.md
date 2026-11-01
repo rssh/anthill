@@ -997,6 +997,17 @@ extended to it, because an uncovered bodied call folds the SPEC DEFAULT (`1`) ra
 dispatching on its value, so the direction alone would trade `9` for `1`. Filed as
 **WI-20260924-GP8JC**.
 
+DELIVERED 2026-10-31 (GP8JC). The premise had lapsed: an uncovered bodied call now dispatches
+on its value (`7`, `9`; the default `1` only for a carrier that supplies no member), and the typed
+`twoTyped` already answered `7, 9`. So the weave is carrier-directed for a bodied callee too, and a
+defaulted op is a DIRECT witness — body order, the bracket read (HRFR5) — instead of a last LIFO
+scan after the transitive and inherited ones; that scan now reads only a call no goal runs (a
+negand, a branch), the first in body order, where its body-less twin is still refused. Each half was a defect of its own: carrier-blind,
+`two` answered `7, 7`; scanned last, a citation's dictionary reached the call at the last carrier
+(`rankBoth`'s `heatAt` `1`), a defaulted call beside an operation that `requires` the spec was
+never covered (`30` → `1`), and two bracket-named `require`s were refused where the body-less twin
+loads. Rows and the per-half back-out: `wi_gp8jc_defaulted_weave_test.rs`.
+
 ### Decisions open
 
 - **D1 — ANSWERED BY PROPOSAL 060 §2.2, not a decision.** Its last bullet: an abstract `T`

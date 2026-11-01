@@ -1244,6 +1244,8 @@ pub(super) fn check_apply_iter(
         // WI-408: bare-`T`-vs-`Option[T]` args accepted via some-coercion —
         // (child-index, declared Option type), materialized after the loops.
         let mut some_wraps: Vec<(usize, Value)> = Vec::new();
+        // The parameters whose argument it wraps, for the second look ([`recheck_arguments_left_open`]).
+        let mut wrapped_params: Vec<Symbol> = Vec::new();
         for (i, _) in pos_args.iter().enumerate() {
             if let Ok(ref arg_result) = pos_results[i] {
                 // WI-374: validate against the param AS WRITTEN, not the
@@ -1296,7 +1298,10 @@ pub(super) fn check_apply_iter(
                             Some(&arg_result.node),
                         ) {
                             ArgValidation::Ok => {}
-                            ArgValidation::WrapSome { declared } => some_wraps.push((i, declared)),
+                            ArgValidation::WrapSome { declared } => {
+                                some_wraps.push((i, declared));
+                                wrapped_params.push(*param_sym);
+                            }
                             ArgValidation::Fail(err) => arg_type_errors.push(err),
                         }
                     }
@@ -1341,6 +1346,7 @@ pub(super) fn check_apply_iter(
                             ArgValidation::Ok => {}
                             ArgValidation::WrapSome { declared } => {
                                 some_wraps.push((pos_args.len() + i, declared));
+                                wrapped_params.push(*param_sym);
                             }
                             ArgValidation::Fail(err) => arg_type_errors.push(err),
                         }
@@ -1439,6 +1445,8 @@ pub(super) fn check_apply_iter(
         if !arg_type_errors.is_empty() {
             return Err(aggregate_errors(arg_type_errors));
         }
+        // What the argument check read, for its second look ([`recheck_arguments_left_open`]).
+        let checked_subst = subst.clone();
         // WI-408: materialize the recorded some-coercions — wrap each flagged
         // argument's typed node in a synthesized `some(...)` and reassemble
         // this apply from the new children. MUST run before any annotation
@@ -2075,6 +2083,22 @@ pub(super) fn check_apply_iter(
         // check, which then refuses only a parameter with no default. In a rule body too
         // (user, 2026-10-24).
         install_type_param_defaults(kb, &mut subst, &op);
+        let left_open = supplied_arg_pairs(kb, &written_params, &pos_call_params, pos_results, named_args, named_results)
+            .into_iter()
+            .map(|(p, declared, actual)| (p, effective_param_types.get(&p).cloned().unwrap_or(declared), actual))
+            .collect();
+        let refused = recheck_arguments_left_open(
+            kb,
+            &mut subst,
+            &checked_subst,
+            fn_sym,
+            left_open,
+            &wrapped_params,
+            span,
+        );
+        if !refused.is_empty() {
+            return Err(aggregate_errors(refused));
+        }
 
         // Proposal 069 §1.1 / §3 — and a parameter the call leaves out takes its value
         // default, typed here, at the instance the call has fixed: the call is complete
@@ -2652,7 +2676,7 @@ pub(super) fn check_apply_iter(
         // WI-1042 — "defaulted spec op" is [`defaulted_spec_op_parent`], the gate this
         // block OWNS and three other sites ask ([`dot_member_dispatch_decision`]'s
         // defaulted leg, [`call_dispatch_shape`]'s rule-body walk trigger,
-        // [`defaulted_spec_op_witness_grounds_soundly`]'s witness scan). It stood here as
+        // [`rewrite_find_dictionary_goal`]'s direct witness scan). It stood here as
         // `lookup_spec_op_dispatch(..).is_none() && spec_op_parent_sort(..)`, which asks
         // one question twice: `lookup_spec_op_dispatch` IS `spec_op_parent_sort` plus the
         // body-less test (and, since WI-20261011-RM247, the data-sort one).
@@ -6084,6 +6108,56 @@ fn supplied_arg_pairs(
         }
     }
     pairs
+}
+
+/// [`check_apply_iter`]'s second check of its arguments. [`validate_arg_against_param`] checks
+/// no argument whose parameter type is open when it runs, and the arguments do not fix every
+/// one: `idW[Y](x: Wide[W = Y])` given a sort whose `requires` clauses give it `Wide[W =
+/// Int64]` and `Wide[W = String]` leaves `Y` to the expected result. So once the call's
+/// inference is done — the expected result, the clauses, the defaults — each argument of
+/// `pairs` (`(parameter, declared type, argument type)`) whose parameter type was open under
+/// `checked`, the σ the first check read, and reads otherwise under `subst` is checked at what
+/// it reads now; the refusals. A wrap is what the first check decided for the parameters of
+/// `wrapped`, whose argument the call's node holds wrapped, and a refusal for any other: its node
+/// is built without one.
+fn recheck_arguments_left_open(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    checked: &Substitution,
+    fn_sym: Symbol,
+    pairs: Vec<(Symbol, Value, Value)>,
+    wrapped: &[Symbol],
+    span: Option<Span>,
+) -> Vec<TypeError> {
+    let mut errors = Vec::new();
+    for (param, declared, actual) in pairs {
+        let was = walk_view(kb, checked, &declared);
+        if resolved_type_is_determined(kb, &was) {
+            continue;
+        }
+        let was = walk_type_deep_value(kb, checked, &was);
+        if resolved_type_is_determined(kb, &was) {
+            continue;
+        }
+        let now = walk_type_deep_value(kb, subst, &declared);
+        if views_structurally_equal(kb, &was, &now) {
+            continue;
+        }
+        let context = TypeErrorContext::OperationArgument {
+            op_name: fn_sym,
+            param,
+        };
+        match validate_arg_against_param(kb, subst, &actual, &declared, span, context.clone(), None) {
+            ArgValidation::Ok => {}
+            ArgValidation::Fail(err) => errors.push(err),
+            ArgValidation::WrapSome { .. } if wrapped.contains(&param) => {}
+            ArgValidation::WrapSome { declared } => {
+                let actual = walk_type_deep_value(kb, subst, &actual);
+                errors.push(conformance_error(kb, declared, actual, span, context, None));
+            }
+        }
+    }
+    errors
 }
 
 /// [`check_apply_iter`]'s argument unification: `arg` against `param`. A parameter typed by the

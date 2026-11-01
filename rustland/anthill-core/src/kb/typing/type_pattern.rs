@@ -655,8 +655,12 @@ fn sort_below<A: TermView, B: TermView>(
 /// Int64]` gives `Narrow` the instance `Wide[W = Int64]`, and `sort Narrow2 { sort Q = ?
 /// requires Wide[W = Q] }` gives `Narrow2[Q = String]` the instance `Wide[W = String]`. A
 /// parameter `a` leaves out is left out of the instance too, an open slot. Every path of
-/// clauses to `sb`, one instance per path.
-fn instances_through_requires<A: TermView>(
+/// clauses to `sb`, one instance per path; a path does not enter a sort it has already passed
+/// through, as the `requires` tree does not (`build_requires_tree`), so a cycle of clauses
+/// (`A requires B`, `B requires A`) gives the instances its other clauses give. The typer's
+/// subtype relation reads a refinement through these instances too
+/// (`subtype::refinement_admits_applied`), so the two agree.
+pub(super) fn instances_through_requires<A: TermView>(
     kb: &KnowledgeBase,
     a: &A,
     sa: Symbol,
@@ -673,26 +677,32 @@ fn instances_through_requires<A: TermView>(
         })
         .collect();
     let mut instances = Vec::new();
-    instances_below(kb, sort, &sigma, sb, depth, &mut instances)?;
+    let mut path = Vec::new();
+    instances_below(kb, sort, &sigma, sb, depth, &mut path, &mut instances)?;
     Ok(instances)
 }
 
-/// [`instances_through_requires`] from `sort`, whose parameters `sigma` binds.
+/// [`instances_through_requires`] from `sort`, whose parameters `sigma` binds, along `path`,
+/// the sorts the clauses have passed through to reach it.
 fn instances_below(
     kb: &KnowledgeBase,
     sort: Symbol,
     sigma: &[(Symbol, Value)],
     target: Symbol,
     depth: usize,
+    path: &mut Vec<Symbol>,
     instances: &mut Vec<Value>,
 ) -> Result<(), UnjudgedType> {
     if depth > NESTING_LIMIT {
         return Err(UnjudgedType::TooDeep);
     }
+    path.push(sort);
     let params = kb.type_param_syms_of(sort);
     for entry in direct_requires(kb, sort) {
         let required = entry.required_sort;
-        if !sort_sym_compatible(kb, required, target) {
+        if !sort_sym_compatible(kb, required, target)
+            || path.iter().any(|&s| same_sort_canonical(kb, s, required))
+        {
             continue;
         }
         let Some((_, bindings)) = unwrap_spec_view_value(kb, &entry.spec) else {
@@ -716,9 +726,10 @@ fn instances_below(
                     binding_for_param(kb, &named, p, BindingKeyMatch::Label).map(|v| (p, v.clone()))
                 })
                 .collect();
-            instances_below(kb, required, &next, target, depth + 1, instances)?;
+            instances_below(kb, required, &next, target, depth + 1, path, instances)?;
         }
     }
+    path.pop();
     Ok(())
 }
 

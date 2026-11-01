@@ -33,8 +33,9 @@
 //! every `provision-by-parts` program ([`Program::refused`]).
 //!
 //! CONTROL: run with [`EXCEPTIONS`] empty, the family names exactly the programs they cover —
-//! measured when it was written and again after the `param-spec` decision (2026-10-25,
-//! `1373e04f`): 13 findings, over the six rows the exceptions name.
+//! measured when it was written, again after the `param-spec` decision (2026-10-25,
+//! `1373e04f`): 13 findings, over the six rows the exceptions name, and again once the typer
+//! read a refinement's clause (WI-20261020-G37HS, 2026-11-01): 6 findings, over five.
 
 use super::{opt, spelt, Exception, Family, Hole, Picks, Program, Property, Verdict};
 
@@ -141,25 +142,10 @@ pub static FAMILY: Family = Family {
 
 const TICKET_27050: &str = "WI-20261025-27050";
 const TICKET_053QV: &str = "WI-20261025-053QV";
-const TICKET_G37HS: &str = "WI-20261020-G37HS";
 const TICKET_05ZQE: &str = "WI-20260929-05ZQE";
 const TICKET_DYX5E: &str = "WI-20261017-DYX5E";
 
 const EXCEPTIONS: &[Exception] = &[
-    // The typer's refinement through `requires` ignores the clause's arguments: every typing
-    // position admits `Narrow` at `Wide[W = String]`; the provision and `type_admits` do not.
-    Exception {
-        property: Property::Sound,
-        when: &["pair=refinement-other-args"],
-        ticket: TICKET_G37HS,
-        why: "a `Narrow` is admitted at `Wide[W = String]` although it requires `Wide[W = Int64]`",
-    },
-    Exception {
-        property: Property::OneVerdict,
-        when: &["pair=refinement-other-args"],
-        ticket: TICKET_G37HS,
-        why: "the six typing positions admit what the provision and `type_admits` do not",
-    },
     // A value whose own sort provides the spec's instance is admitted at the spec. Provision
     // lookup does so already and is held; the typing positions (WI-20261025-053QV) and
     // `type_admits` (27050's C5) refuse it. P4 calls each of these live while any spelling of the

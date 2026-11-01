@@ -358,7 +358,7 @@ end
 
 /// The sort a symbol answer names, by qualified name — read through the view, since an
 /// answer may ride a `SymbolRef` or a nullary term.
-fn sort_named(kb: &KnowledgeBase, v: &Value) -> String {
+pub(crate) fn sort_named(kb: &KnowledgeBase, v: &Value) -> String {
     use anthill_core::kb::term_view::{TermView, ViewHead};
     match v.head(kb) {
         ViewHead::Ident(s)

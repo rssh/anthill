@@ -2007,6 +2007,8 @@ mod wi_p9qbf_lazy_truncation_test;
 
 #[path = "include/wi_hrfr5_witness_attribution_test.rs"]
 mod wi_hrfr5_witness_attribution_test;
+#[path = "include/wi_gp8jc_defaulted_weave_test.rs"]
+mod wi_gp8jc_defaulted_weave_test;
 
 #[path = "include/wi_nr6fj_operation_requires_test.rs"]
 mod wi_nr6fj_operation_requires_test;
@@ -2347,3 +2349,7 @@ mod wi_hh0ht_equality_is_its_value_test;
 mod wi_6q43w_nullary_operation_name_test;
 #[path = "include/wi_4bxdw_dotted_operation_name_test.rs"]
 mod wi_4bxdw_dotted_operation_name_test;
+#[path = "include/wi_g37hs_refinement_reads_clause_test.rs"]
+mod wi_g37hs_refinement_reads_clause_test;
+#[path = "include/wi_c580v_type_argument_through_requires_test.rs"]
+mod wi_c580v_type_argument_through_requires_test;

@@ -516,6 +516,15 @@ pub(super) fn unify_parameterized_view<A: TermView, B: TermView>(
         TypeExtractor::Parameterized { base, bindings } => (base, bindings),
         _ => return false,
     };
+    // Either side may be the refining one: a callback's parameter meets the declared callback's
+    // with the refined sort first — `ap(f: (n: Narrow2[Q = String]) -> Z)` given `idW[Y](x:
+    // Wide[W = Y]) -> Y` is at `Y = String`, so `Z = String`.
+    if a_base != b_base
+        && (unify_through_refinement(kb, subst, a, a_base, b, b_base)
+            || unify_through_refinement(kb, subst, b, b_base, a, a_base))
+    {
+        return true;
+    }
     // WI-453 (§5.4): when the two bases DIFFER, a type-param base (the marked
     // carrier `F`) resolves to its backing Var so `F[T=A] ≟ Option[T=X]` FILLS
     // `F := Option` (use-site) / skolem-compares (def-site). Same-functor unify
@@ -1425,9 +1434,40 @@ pub(super) fn unify_parameterized_with_sort_ref<P: TermView, S: TermView>(
         return unify_types(kb, subst, parameterized, &TermIdView(shape));
     }
     if pbase_sym != sref_sym {
-        return types_compatible(kb, subst, parameterized, sort_ref);
+        return unify_through_refinement(kb, subst, sort_ref, sref_sym, parameterized, pbase_sym)
+            || types_compatible(kb, subst, parameterized, sort_ref);
     }
     true
+}
+
+/// `refining`, headed by `sa`, which refines `sb`, the sort of the application `refined`, through
+/// `requires`, unified with it through the instance of `sb` the clauses give `refining`,
+/// where exactly one answer fits ([`refinement_unifiers`]): `takeAt[Y](x: Wide[W = Y])` given a
+/// `Narrow` under `requires Wide[W = Int64]` binds `Y` to `Int64`, and given a `Narrow2[Q =
+/// String]` under `requires Wide[W = Q]` binds it to `String`. `false`, binding nothing, where
+/// `refining`'s sort does not refine `refined`'s, where no instance fits, and where several give
+/// different answers (`requires Wide[W = Int64]` beside `requires Wide[W = String]`): no clause
+/// says which, and the caller reads the pair as it would without this. Its `true` is a binding,
+/// as unification's is, whichever side the caller put first: whether a value of the one type is
+/// admitted at the other is the subtype relation's question.
+fn unify_through_refinement<A: TermView, B: TermView>(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    refining: &A,
+    sa: Symbol,
+    refined: &B,
+    sb: Symbol,
+) -> bool {
+    if nominal_leg(kb, sa, sb) != Some(NominalLeg::Refines) {
+        return false;
+    }
+    match <[Substitution; 1]>::try_from(refinement_unifiers(kb, subst, refining, sa, refined, sb)) {
+        Ok([one]) => {
+            *subst = one;
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 /// Occurs check: does `vid` appear anywhere inside `term`?

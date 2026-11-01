@@ -254,14 +254,12 @@ pub(super) fn record_find_dictionary_grounding(kb: &mut KnowledgeBase) -> Vec<Ty
                     field: RuleField::Body,
                 },
                 expected: "each call to dispatch through ONE dictionary".into(),
-                // SAY WHAT IS CHECKED. An earlier wording claimed "this call names no
-                // carrier that tells them apart" — but nothing here reads the call's
-                // carrier: `collect_covered_calls` is spec-keyed and carrier-blind and
-                // returns the identical set for both `require`s. The message told an
-                // author to add a carrier that was often already there.
-                actual: "this clause binds two dictionaries for the spec, and every call \
-                         to one of its operations is covered by both — nothing decides \
-                         which instance this one dispatches on"
+                // SAY WHAT IS CHECKED: both dictionaries cover THIS call. A carrier-bearing
+                // call is covered only at the argument a dictionary was read from
+                // ([`collect_covered_calls`]), so this is a carrier-less call, or one at an
+                // argument both witnesses share.
+                actual: "this clause binds two dictionaries for the spec, and both cover \
+                         this call — nothing decides which instance it dispatches on"
                     .into(),
             });
             continue; // leave the rule un-rewritten; the load fails on the error above
@@ -339,30 +337,6 @@ pub(super) fn install_rule_provider_dictionaries(kb: &mut KnowledgeBase) -> Vec<
                 matches!(t.head(kb), ViewHead::Var(Var::DeBruijn(i)) if i == requirement.carrier)
                     .then(|| NodeOccurrence::new_expr(Expr::Var(Var::DeBruijn(*v)), anchor.span, anchor.owner))).collect();
             for call in collect_covered_calls(kb, &body, kb.canonical_sort_sym(spec), &at) {
-                let Some(Expr::Apply {
-                    functor,
-                    pos_args,
-                    named_args,
-                    ..
-                }) = call.as_expr()
-                else {
-                    unreachable!("a covered operation call is an application");
-                };
-                // A carrier-bearing call belongs to this type slot even when
-                // the spec supplies a default body for its operation.
-                if op_has_spec_carrier_param(kb, *functor, kb.canonical_sort_sym(spec))
-                    && !call_carrier_args(
-                        kb,
-                        *functor,
-                        pos_args,
-                        named_args,
-                        kb.canonical_sort_sym(spec),
-                    )
-                    .iter()
-                    .any(|arg| at.iter().any(|a| views_structurally_equal(kb, arg, a)))
-                {
-                    continue;
-                }
                 if targets
                     .iter()
                     .any(|(previous, _, _)| Rc::ptr_eq(previous, &call))
@@ -3312,7 +3286,7 @@ fn aligned_carrier_args(
 ///   cannot come back (`nar1x_carrier_less_spec_op_test::a_builtin_backed_spec_op_is_
 ///   still_not_woven`).
 ///
-/// * **A CARRIER-BEARING body-less callee is covered only AT THE DICTIONARY'S OWN
+/// * **A CARRIER-BEARING callee is covered only AT THE DICTIONARY'S OWN
 ///   CARRIER** — where one of its carrier arguments IS one of `at`, the arguments the
 ///   dictionary was read from (the witness's carrier arguments, or the anchored head
 ///   variable). A carrier-LESS one (`Zeroable.zero()`, WI-20260909-NAR1X) is covered
@@ -3339,10 +3313,12 @@ fn aligned_carrier_args(
 ///   ARGUMENT IDENTITY is what "at its carrier" can mean at load: a rule body's
 ///   variables are untyped, so a call sharing the witness's carrier VARIABLE is the
 ///   one call known to be at the dictionary's type. A PROJECTED anchor (`p.E`) names no
-///   argument at all, so it covers no carrier-bearing call. The BODIED population
-///   (`functional_relation_arity`) is left carrier-blind, as WI-1040 wove it: an
-///   uncovered bodied call folds the SPEC DEFAULT rather than dispatching on its value,
-///   so narrowing it would trade one wrong answer for another.
+///   argument at all, so it covers no carrier-bearing call.
+///
+///   A BODIED (defaulted) callee is held to the same direction: uncovered, it runs the
+///   member its carrier's value supplies, and the default only where the carrier supplies
+///   none, as a body-less call dispatches on its value. MEASURED carrier-blind, the same
+///   `two` with a defaulted `describe` answered `7, 7` (`wi_gp8jc_defaulted_weave_test`).
 ///
 /// * **Only where the typer did not already pin** (channel doc §5). Where
 ///   `check_apply_iter` resolved the call at compile stage the dispatch is decided
@@ -3397,14 +3373,12 @@ pub(super) fn collect_covered_calls(
         if !bodied && kb.body_less_relation_arity(*functor).is_none() {
             continue;
         }
-        // …and a CARRIER-BEARING body-less call only AT THE DICTIONARY'S CARRIER — one
-        // of its carrier arguments is one `at` names. See this function's doc for why,
-        // and for why the bodied population stays carrier-blind. Driven by
+        // …and a CARRIER-BEARING call only AT THE DICTIONARY'S CARRIER — one of its
+        // carrier arguments is one `at` names. See this function's doc for why. Driven by
         // `wi_5g28a_rule_dictionary_test::a_call_at_another_carrier_keeps_its_own_dispatch`
-        // (`7, 7` without it) and `wi_hrfr5…::a_typed_head_carrier_is_readable_too`
-        // (refused without it).
-        if !bodied
-            && op_has_spec_carrier_param(kb, *functor, spec_canon)
+        // (`7, 7` without it), `wi_hrfr5…::a_typed_head_carrier_is_readable_too` (refused
+        // without it) and, for a defaulted callee, `wi_gp8jc_defaulted_weave_test`.
+        if op_has_spec_carrier_param(kb, *functor, spec_canon)
             && !call_carrier_args(kb, *functor, pos_args, named_args, spec_canon)
                 .iter()
                 .any(|arg| at.iter().any(|a| views_structurally_equal(kb, arg, a)))
