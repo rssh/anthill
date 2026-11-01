@@ -447,7 +447,7 @@ fn optionally_named_cell_list(
 /// `synthesize_field_access`, and `register_prelude` pre-registers this name for the
 /// bootstrap KBs that never load reflect.anthill. Degrading instead would be the
 /// WI-1014 Part C defect on the surface WI-815 made a soundness one.
-fn apply_type_args_key(kb: &KnowledgeBase) -> Symbol {
+pub(crate) fn apply_type_args_key(kb: &KnowledgeBase) -> Symbol {
     reflect_ctor_sym(kb, "anthill.reflect.type_arg", "apply")
 }
 

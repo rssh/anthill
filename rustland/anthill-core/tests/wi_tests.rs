@@ -1971,6 +1971,8 @@ mod wi_r1w5a_call_typed_as_an_operation_body_test;
 mod wi_r1w5a_effectful_call_refused_test;
 #[path = "include/wi_rydnv_one_classification_test.rs"]
 mod wi_rydnv_one_classification_test;
+#[path = "include/wi_wpvvy_labelled_builtin_call_test.rs"]
+mod wi_wpvvy_labelled_builtin_call_test;
 #[path = "include/goal_list_is_a_conjunction_test.rs"]
 mod goal_list_is_a_conjunction_test;
 #[path = "include/rewrite_tag_off_equation_test.rs"]

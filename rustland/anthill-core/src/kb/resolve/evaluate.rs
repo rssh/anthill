@@ -909,6 +909,18 @@ impl KnowledgeBase {
         subst: &Substitution,
         faults: &mut ReduceFaults,
     ) -> BuiltinValue {
+        // A labelled call is read in its parameters' order, as at a goal
+        // ([`KnowledgeBase::builtin_call_in_param_order`]); one whose labels do not fill them
+        // has no value, and says so.
+        let positional = match self.builtin_call_in_param_order(call) {
+            BuiltinCallOrder::AsWritten => None,
+            BuiltinCallOrder::InParamOrder(positional) => Some(positional),
+            BuiltinCallOrder::NotFilled(why) => {
+                faults.fault(why);
+                return BuiltinValue::Declined;
+            }
+        };
+        let call = positional.as_ref().unwrap_or(call);
         // `PartialEq.eq(a, b)`, `neq` and `struct_eq` (`===`) are operations, `-> Bool`, and
         // each call denotes its value in a value slot as any other does (068 §1.3):
         // `(Int64, PartialEq.eq(1, 1))` is `(Int64, true)`. They were read as goals written

@@ -587,6 +587,17 @@ impl ReduceFaults {
     }
 }
 
+/// A builtin-tagged call read in its parameters' order
+/// ([`KnowledgeBase::builtin_call_in_param_order`]).
+enum BuiltinCallOrder {
+    /// No label to move, or a name that declares no parameters: read as written.
+    AsWritten,
+    /// The call with each argument at its parameter's position.
+    InParamOrder(Value),
+    /// Labels that do not fill the declared parameters, and why.
+    NotFilled(String),
+}
+
 /// Result of executing a builtin.
 enum BuiltinResult {
     /// Builtin succeeded; continue with current substitution unchanged.
@@ -2404,6 +2415,21 @@ impl SearchStream {
 
         // 4. Builtin goal — classify by functor read through TermView.
         let registered_builtin_tag = kb.get_builtin_view(&goal_val);
+
+        // Every handler below reads its operands by position, so a labelled call is put in
+        // its parameters' order first ([`KnowledgeBase::builtin_call_in_param_order`]) —
+        // here, above WI-899's split, so the written clauses beside the builtin match the
+        // same goal the builtin answers.
+        if registered_builtin_tag.is_some() {
+            match kb.builtin_call_in_param_order(&goal_val) {
+                BuiltinCallOrder::AsWritten => {}
+                BuiltinCallOrder::InParamOrder(positional) => goal_val = positional,
+                BuiltinCallOrder::NotFilled(why) => {
+                    self.record_error(ResolveError::new(why).located_at(&goal_val));
+                    return self.schedule_unanswerable_goal(kb, &goal_val, depth, delay_mode, None);
+                }
+            }
+        }
 
         // WI-899 — A BUILTIN IS AN ANSWER SOURCE, NOT AN EXCLUSIVE OWNER. If the
         // same predicate has written clauses, put the native implementation and
@@ -6230,6 +6256,140 @@ impl KnowledgeBase {
     }
 
     // ── Builtin execution ──────────────────────────────────────
+
+    /// A labelled call of a builtin-tagged operation in its parameters' order —
+    /// `Int64.lt(a: 1, b: 5)` as `lt(1, 5)`, `Int64.sub(b: 1, a: 5, result: ?c)` as
+    /// `sub(5, 1, ?c)`. A builtin's handler reads its operands by position, so read as
+    /// written a labelled call found no operand: `:- Int64.lt(a: 1, b: 5)` failed
+    /// definitely and `?c <=> Int64.sub(a: 5, b: 1)` stayed undecided, where their
+    /// positional twins answer.
+    ///
+    /// The arguments are bound to the parameters by [`super::typing::bound_args`], the owner
+    /// an ordinary operation's call is read through; a `result:` column is put after them
+    /// (kernel §5.3), and a call-site type-argument bracket is no label and stays. A call
+    /// with no label is read as written, and so is one of a name that declares no
+    /// parameters — `find_dictionary`, whose labels are its own. An occurrence is rebuilt
+    /// in place, so the typer's stamps on the call stay; any other carrier is read through
+    /// the view into an entity.
+    fn builtin_call_in_param_order(&self, call: &Value) -> BuiltinCallOrder {
+        let ViewHead::Functor {
+            functor,
+            pos_arity,
+            named_arity,
+        } = call.head(self)
+        else {
+            return BuiltinCallOrder::AsWritten;
+        };
+        if named_arity == 0 || self.symbols.arg_places(functor).is_empty() {
+            return BuiltinCallOrder::AsWritten;
+        }
+        if let Value::Node(occ) = call {
+            if let Some(Expr::Apply {
+                functor,
+                pos_args,
+                named_args,
+                type_args,
+                recv_type,
+            }) = occ.as_expr()
+            {
+                if named_args.is_empty() {
+                    return BuiltinCallOrder::AsWritten;
+                }
+                let Some(ordered) = self.builtin_args_in_param_order(*functor, pos_args, named_args)
+                else {
+                    return self.builtin_call_not_filled(*functor, pos_args.len(), named_args);
+                };
+                return BuiltinCallOrder::InParamOrder(Value::node(occ.rebuilt_expr(Expr::Apply {
+                    functor: *functor,
+                    pos_args: ordered,
+                    named_args: Vec::new(),
+                    type_args: type_args.clone(),
+                    recv_type: recv_type.clone(),
+                })));
+            }
+        }
+        let bracket = super::term_view::apply_type_args_key(self);
+        let child = |key: Symbol| {
+            call.named_arg(self, key)
+                .expect("a view reports every named child its keys list")
+                .to_value()
+        };
+        let (brackets, labels): (Vec<Symbol>, Vec<Symbol>) =
+            call.named_keys(self).into_iter().partition(|&key| key == bracket);
+        if labels.is_empty() {
+            return BuiltinCallOrder::AsWritten;
+        }
+        let pos: Vec<Value> = (0..pos_arity)
+            .map(|i| {
+                call.pos_arg(self, i)
+                    .expect("a view reports every positional child its head counts")
+                    .to_value()
+            })
+            .collect();
+        let named: Vec<(Symbol, Value)> = labels.iter().map(|&key| (key, child(key))).collect();
+        let Some(ordered) = self.builtin_args_in_param_order(functor, &pos, &named) else {
+            return self.builtin_call_not_filled(functor, pos.len(), &named);
+        };
+        let kept: Vec<(Symbol, Value)> =
+            brackets.into_iter().map(|key| (key, child(key))).collect();
+        BuiltinCallOrder::InParamOrder(Value::Entity {
+            functor,
+            pos: Rc::from(ordered),
+            named: Rc::from(kept),
+        })
+    }
+
+    /// [`Self::builtin_call_in_param_order`]'s binding, over either carrier's argument lists:
+    /// `None` where they do not fill the declared parameters exactly.
+    fn builtin_args_in_param_order<T: Clone>(
+        &self,
+        functor: Symbol,
+        pos: &[T],
+        named: &[(Symbol, T)],
+    ) -> Option<Vec<T>> {
+        let params = self.symbols.arg_places(functor);
+        let result = named
+            .iter()
+            .position(|(label, _)| super::typing::is_result_label(self, *label));
+        let labelled: Vec<(Symbol, T)> = named
+            .iter()
+            .enumerate()
+            .filter(|(k, _)| Some(*k) != result)
+            .map(|(_, arg)| arg.clone())
+            .collect();
+        if pos.len() + labelled.len() != params.len() {
+            return None;
+        }
+        let bound = super::typing::bound_args(self, params, pos.len(), &labelled)?;
+        let mut ordered: Vec<T> = bound.iter().map(|arg| arg.of(pos, &labelled).clone()).collect();
+        ordered.extend(result.map(|k| named[k].1.clone()));
+        Some(ordered)
+    }
+
+    /// Why a labelled call of a builtin-tagged operation has no operands: its arguments do
+    /// not fill the parameters the operation declares. Said, not answered as a failure —
+    /// `not(Int64.lt(x: 1, y: 5))` held over a call that compares nothing.
+    fn builtin_call_not_filled<T>(
+        &self,
+        functor: Symbol,
+        pos: usize,
+        named: &[(Symbol, T)],
+    ) -> BuiltinCallOrder {
+        let names = |syms: &mut dyn Iterator<Item = Symbol>| -> String {
+            syms.map(|s| super::typing::short_name_of(self.local_name_of(s)).to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        BuiltinCallOrder::NotFilled(format!(
+            "this call of `{}` does not fill the parameters it declares ({}): it writes {pos} \
+             positional argument{} and the labels {}, and its builtin reads its operands at \
+             those parameters",
+            self.qualified_name_of(functor),
+            names(&mut self.symbols.arg_places(functor).iter().copied()),
+            if pos == 1 { "" } else { "s" },
+            names(&mut named.iter().map(|(label, _)| *label)),
+        ))
+    }
 
     /// Dispatch a builtin by tag. The goal has already been identified as a
     /// builtin; this evaluates it against the current substitution.
