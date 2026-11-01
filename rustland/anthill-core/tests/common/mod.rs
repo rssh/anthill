@@ -2717,6 +2717,25 @@ pub fn query_pattern_term(
     panic!("query pattern `{pattern}` produced no fact item");
 }
 
+/// What converting the query `pattern` refuses, rendered — empty when it converts. The scan
+/// must be clean, as [`query_pattern_term`] asserts; a query's typer-free checks, such as a
+/// call that does not fill its operation's parameters, are made by the conversion.
+#[allow(dead_code)]
+pub fn query_pattern_refusals(kb: &mut KnowledgeBase, pattern: &str) -> Vec<String> {
+    let parsed = parse::parse(&format!("fact {pattern}")).expect("parse query pattern");
+    let errs = load::scan_query_definitions(kb, &[&parsed]);
+    assert!(errs.is_empty(), "query pattern `{pattern}` failed to scan: {errs:?}");
+    let anthill_core::parse::ir::Item::Fact(fact) = &parsed.items[0] else {
+        panic!("query pattern `{pattern}` produced no fact item");
+    };
+    let scope = kb.global_scope();
+    let mut var_map = std::collections::HashMap::new();
+    match load::convert_query_term(kb, &parsed, fact.term, scope, &mut var_map) {
+        Ok(_) => Vec::new(),
+        Err(errors) => errors.iter().map(|e| e.to_string()).collect(),
+    }
+}
+
 /// Several query goals, as [`query_pattern_term`] converts one, sharing their variables: a
 /// conjunction built at run time, which the load does not type — what a row asks whose subject
 /// is the run time over a clause the load would refuse, siblings and all.

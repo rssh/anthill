@@ -831,6 +831,23 @@ pub(super) fn paren_less_member_as_function(
     {
         return None;
     }
+    member_as_function(kb, env, flow, occ, functor, recv_type, expected, solving)
+}
+
+/// The operation `functor`, named without parentheses at `occ`, read as its one-segment
+/// name is ([`check_bare_ref`]) — the half of [`paren_less_member_as_function`] after its
+/// shape gate, which a rule body's dotted chain (`S.twice`, `CA.wrap`) is read by too
+/// ([`dotted_citation_operation`]). `None` for a nullary operation that is its call there.
+pub(super) fn member_as_function(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    flow: &FlowEnv,
+    occ: &Rc<NodeOccurrence>,
+    functor: Symbol,
+    recv_type: Option<&Value>,
+    expected: Option<&Value>,
+    solving: &mut WalkSolutions,
+) -> Option<Result<TypeResult, TypeError>> {
     if operation_is_nullary(kb, functor)
         && !expected.is_some_and(|exp| nullary_name_is_function_value(kb, functor, exp))
     {
@@ -854,7 +871,7 @@ pub(super) fn paren_less_member_as_function(
 /// Is the nullary operation `functor`, named without parentheses where `expected` is
 /// expected, the function value rather than its call (§5.4)? A function is expected there,
 /// and the operation's result is not one that fits it.
-pub(crate) fn nullary_name_is_function_value(
+pub(super) fn nullary_name_is_function_value(
     kb: &mut KnowledgeBase,
     functor: Symbol,
     expected: &Value,
@@ -862,6 +879,22 @@ pub(crate) fn nullary_name_is_function_value(
     arrow_parts(kb, expected).is_some()
         && !lookup_operation_return_type(kb, functor)
             .is_some_and(|ret| types_compatible(kb, &mut Substitution::new(), &ret, expected))
+}
+
+/// Is the operation `op`, named without parentheses where `expected` is expected, the
+/// function value (§5.4)? A function is expected there, and for a nullary operation its
+/// result is not one that fits ([`nullary_name_is_function_value`]). For a reader with no
+/// typer to refuse the other readings — a query pattern.
+pub(crate) fn operation_name_is_function_value(
+    kb: &mut KnowledgeBase,
+    op: Symbol,
+    expected: &Value,
+) -> bool {
+    if operation_is_nullary(kb, op) {
+        nullary_name_is_function_value(kb, op, expected)
+    } else {
+        arrow_parts(kb, expected).is_some()
+    }
 }
 
 /// `receiver` is the type an operation's name was written on without parentheses
@@ -1079,6 +1112,19 @@ pub(super) fn check_bare_ref(
                 }
             }
         }
+    }
+    // A QUOTED FIELD OF A CLAUSE MATCHED AS WRITTEN (WI-20261030-4BXDW). A fact pattern's
+    // field declared `anthill.reflect.Term` holds the term written there, matched against
+    // the term its fact holds (`Loader::entity_field_is_quoted`), so an operation's name
+    // there is that name and no value: neither reading below applies. Refused as denoting
+    // nothing, `held(t: twice)` could not find `fact held(t: twice)`. Not under a call
+    // typed whole, whose arguments are evaluated.
+    if let Some(term) = expected.filter(|e| {
+        !env.written_as_an_operation_body()
+            && is_reflect_term_type(kb, *e)
+            && kb.has_kind(sym, crate::intern::SymbolKind::Operation)
+    }) {
+        return Ok(TypeResult::pure_value(term.clone(), env.clone(), Rc::clone(occ)));
     }
     // WI-20260828-2TMB5 — THE ZERO-ARG-CALL READING BELOW IS A CALL, AND A CALL WITH NO
     // ARGUMENTS IS WELL-FORMED ONLY FOR A NULLARY OPERATION. It was never gated on that, so

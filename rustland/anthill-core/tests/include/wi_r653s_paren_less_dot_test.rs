@@ -45,7 +45,8 @@
 //!         an_internal_operation_is_refused_as_its_applied_name_is
 //!   [AR] the resolver's alias reading (`nullary_op_component`) — FAIL:
 //!         an_alias_in_a_rule_body_is_read_as_its_sort (`?x <=> CA.zero` binds the term)
-//!   [AT] the typer's alias reading (`dotted_citation_nullary_op`) — FAIL:
+//!   [AT] the typer's alias reading (`dotted_citation_nullary_op`, since WI-20261030-4BXDW
+//!        `dotted_citation_operation`) — FAIL:
 //!         an_alias_in_a_rule_body_is_read_as_its_sort (`5 = CA.zero` is refused)
 //!
 //! A MEMBER THAT TAKES ARGUMENTS, AND A ONE-SEGMENT NAME (user, 2026-10-22, "let fix both

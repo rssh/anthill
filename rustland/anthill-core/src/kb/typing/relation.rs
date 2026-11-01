@@ -410,22 +410,36 @@ pub(super) fn dotted_citation_relation(
     kb.cites_a_relation(sym).then_some(sym)
 }
 
-/// The NULLARY OPERATION a dotted paren-less name in a rule-body value slot calls
-/// (`Box.zero`), or `None` — [`dotted_citation_relation`]'s twin for the one other kind
-/// that has a value reading there. The resolver makes the call where it reduces the chain
-/// as an operand (`reduce_dot_value`); this is the typer's half of the same reading, so
-/// `0 = Box.zero` types as `0 = seven` does instead of walking into its segments. A name
-/// through a type alias is the operation of the sort the alias stands for (`CA.zero` over
-/// `sort CA = Box[V = Int64]`), as the applied `CA.zero()` is.
-pub(super) fn dotted_citation_nullary_op(
+/// The OPERATION a dotted paren-less name in a rule body names (`Box.zero`, `S.twice`,
+/// `CA.wrap`), with the type a type alias it was read through fixes for the receiver
+/// (`Box[V = Int64]` for `CA.wrap` over `sort CA = Box[V = Int64]`), or `None` —
+/// [`dotted_citation_relation`]'s twin for the other kind that has a value reading there.
+/// The chain stays the term a data slot holds; this is how the typer reads it where it is
+/// typed, as the operation body reads the call it lowers the chain to
+/// (`Loader::try_qualified_op_ref`), so `0 = Box.zero` types as `0 = seven` does instead of
+/// walking into its segments. A nullary operation's call is made by the resolver where it
+/// reduces the chain as an operand (`reduce_dot_value`).
+pub(super) fn dotted_citation_operation(
+    kb: &mut KnowledgeBase,
+    occ: &Rc<NodeOccurrence>,
+) -> Option<(Symbol, Option<Value>)> {
+    let (sym, alias) = dotted_operation_through(kb, occ)?;
+    let recv_type = alias.and_then(|a| alias_receiver_type(kb, a)).map(Value::term);
+    Some((sym, recv_type))
+}
+
+/// [`dotted_citation_operation`]'s operation, with the type alias the name was read
+/// through rather than the type it fixes.
+pub(super) fn dotted_operation_through(
     kb: &KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
-) -> Option<Symbol> {
+) -> Option<(Symbol, Option<Symbol>)> {
     let name = loader_chain_dotted_name(kb, occ)?;
-    let sym = kb
-        .try_resolve_symbol(&name)
-        .or_else(|| crate::kb::load::member_through_aliases(kb, &name))?;
-    crate::kb::op_info::is_nullary_operation(kb, sym).then_some(sym)
+    let (sym, alias) = match kb.try_resolve_symbol(&name) {
+        Some(sym) => (sym, None),
+        None => crate::kb::load::member_and_alias_through_aliases(kb, &name)?,
+    };
+    kb.has_kind(sym, crate::intern::SymbolKind::Operation).then_some((sym, alias))
 }
 
 /// WI-714 (proposal 052) — the APPLIED citation position: a rule NAME applied to

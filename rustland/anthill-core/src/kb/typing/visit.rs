@@ -565,29 +565,61 @@ pub(super) fn visit_type(
                     results.push(r);
                     return;
                 }
-                // A dotted name of a NULLARY OPERATION in a RULE BODY is that operation's
-                // CALL — the reading `seven` gets there from the loader, and the one the
-                // resolver gives the chain when it reduces it (`reduce_dot_value`). Typed
-                // through `check_bare_ref`'s zero-argument-call arm with NO expected type:
-                // the resolver calls the chain whatever slot it sits in, so a hint here
-                // could eta-lift `Box.zero` to a function value the resolver never
-                // produces, and the two must give the name one reading. The node stays
-                // the chain — the term the fact side stores — exactly as the relation rung
-                // above leaves it.
+                // A dotted name of an OPERATION in a RULE BODY is read as its one-segment
+                // name is, as the operation body reads the call the loader lowers the chain
+                // to (`Loader::try_qualified_op_ref`, [`member_as_function`]) — WI-20260902-
+                // CZJ2N for a nullary one, WI-20261030-4BXDW for the rest. At a parameter
+                // that expects a function it is that function value, typed as the reference
+                // the name is, which a call's stored fragment then applies (`apply1(S.twice,
+                // 3, ?r)`); elsewhere one that takes arguments denotes nothing, as `twice`
+                // does, and a nullary one is its CALL — the reading `seven` gets from the
+                // loader and the chain gets from the resolver where it reduces it as an
+                // operand (`reduce_dot_value`), typed as the call the operation body lowers
+                // the chain to, which a call's stored fragment then makes; a chain inside a data
+                // term the clause does not type (`?x <=> [S.seven, 1]`) stays the chain, as
+                // §6.7 keeps it in a data slot. A fact pattern's
+                // field is typed so too, as the one-segment name is — refused where it takes
+                // arguments and the field's type is no function — and keeps the chain as its
+                // term, the one its fact holds, as the relation rung above leaves it.
                 //
-                // RULE BODIES ONLY. An operation body never brings the chain here: the
-                // loader lowers `Box.zero` there to the applied call `Box.zero()`
-                // (`Loader::try_qualified_op_ref`), the node an operation body's call is
-                // typed as. MEASURED REDUNDANT TODAY, and kept as the statement of that
-                // scope: `loader_chain_dotted_name` needs the written-dot flag, and only
-                // the rule-body walk (and the materializer it falls back on) sets it. It
-                // becomes load-bearing the day an operation-body producer marks its dots
-                // too.
+                // RULE BODIES ONLY. An operation body never brings the chain here: its loader
+                // has lowered it already. MEASURED REDUNDANT TODAY, and kept as the statement
+                // of that scope: `loader_chain_dotted_name` needs the written-dot flag, and
+                // only the rule-body walk (and the materializer it falls back on) sets it. It
+                // becomes load-bearing the day an operation-body producer marks its dots too.
                 if env.in_rule_body() {
-                    if let Some(op) = dotted_citation_nullary_op(kb, &occ) {
-                        let r =
-                            check_bare_ref(kb, &*env, &env.flow, op, occ_span, &occ, None, None, solving);
-                        results.push(r);
+                    if let Some((op, recv_type)) = dotted_citation_operation(kb, &occ) {
+                        if let Some(r) = member_as_function(
+                            kb,
+                            &*env,
+                            &env.flow,
+                            &occ,
+                            op,
+                            recv_type.as_ref(),
+                            expected.as_ref(),
+                            solving,
+                        ) {
+                            results.push(r);
+                            return;
+                        }
+                        // The nullary operation's call, typed as the node the operation body
+                        // lowers the chain to, so a call's stored fragment makes it: `?r <=>
+                        // idv(S.seven)` passed the chain to `idv`, where `idv(seven)` passes 7.
+                        let pass = crate::kb::simp_rewrite::simp_pass(kb);
+                        let call = NodeOccurrence::synthesized_expr_written(
+                            Expr::Apply {
+                                functor: op,
+                                pos_args: Vec::new(),
+                                named_args: Vec::new(),
+                                type_args: Vec::new(),
+                                recv_type,
+                            },
+                            Rc::clone(&occ),
+                            pass,
+                            occ.owner,
+                            true,
+                        );
+                        push_visit_at(work, call, env, expected, fuel, pos);
                         return;
                     }
                 }
@@ -738,6 +770,16 @@ pub(super) fn visit_type(
                     Some(records),
                     site.as_ref(),
                 );
+                // A fact pattern's quoted field hands its `Term` to an operation's name written
+                // there, which is the term it spells (`check_bare_ref`'s quoted-field arm): an
+                // entity constructor has no operation record to hint its fields from.
+                if !env.written_as_an_operation_body() && kb.is_entity_constructor(functor) {
+                    for ((label, arg), hint) in named_args.iter().zip(named_hints.iter_mut()) {
+                        if hint.is_none() {
+                            *hint = quoted_field_hint(kb, functor, *label, arg);
+                        }
+                    }
+                }
                 // A `cons` / `nil` spine a rule body builds by its name, as the
                 // constructor arm hints the one an operation body builds (§4.6).
                 if let Some(fields) = is_list_spine_constructor(kb, functor)

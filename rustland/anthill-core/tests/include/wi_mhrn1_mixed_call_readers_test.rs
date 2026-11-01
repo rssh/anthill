@@ -253,8 +253,9 @@ fn a_label_is_read_against_the_operation_the_call_names() {
 /// arguments dropped. `sub2(1, 9, y: 5)` has one parameter open and two positional
 /// arguments: read by index it ran as `sub2(1, 9)` — the label lost to the positional
 /// argument at its parameter's index — and answered `-8`, definitely. Written in a clause it
-/// is refused at load, as in an operation body (WI-20261013-R1W5A); asked as a goal built at
-/// run time, which no typer sees, it is left standing.
+/// is refused at load, as in an operation body (WI-20261013-R1W5A); asked as a query, which no
+/// typer sees, it is refused where the pattern is converted, by the same verdict
+/// (WI-20261030-4BXDW) — it was left standing, one undecided row.
 #[test]
 fn a_labelled_call_with_a_positional_argument_left_over_does_not_run() {
     let errs = crate::common::load_errors_of(&program(
@@ -267,10 +268,10 @@ fn a_labelled_call_with_a_positional_argument_left_over_does_not_run() {
         "the written call",
     );
     let mut kb = crate::common::load_kb_with(&program("wimhrn1.surplus", ""));
-    let rows = query_first(&mut kb, "?c <=> wimhrn1.surplus.Util.sub2(1, 9, y: 5)");
-    assert!(
-        matches!(rows.as_slice(), [(_, false)]),
-        "one undecided row, the call un-reduced; got {rows:?}",
+    crate::common::assert_refused_naming(
+        &crate::common::query_pattern_refusals(&mut kb, "?c <=> wimhrn1.surplus.Util.sub2(1, 9, y: 5)"),
+        &["sub2.arity", "2 positional arguments for the 1 parameter no label names"],
+        "the query",
     );
 }
 

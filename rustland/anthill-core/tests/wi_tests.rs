@@ -2345,3 +2345,5 @@ mod wi_hh0ht_call_under_an_arrow_test;
 mod wi_hh0ht_equality_is_its_value_test;
 #[path = "include/wi_6q43w_nullary_operation_name_test.rs"]
 mod wi_6q43w_nullary_operation_name_test;
+#[path = "include/wi_4bxdw_dotted_operation_name_test.rs"]
+mod wi_4bxdw_dotted_operation_name_test;

@@ -22,6 +22,30 @@ pub(super) fn hof_arg_hint(
     }
 }
 
+/// The `Term` an entity's field `label` declares, handed to an operation's name written there,
+/// which in a fact pattern is the term it spells (`check_bare_ref`'s quoted-field arm), or
+/// `None`. An entity constructor has no operation record for [`hof_arg_hint`] to read.
+pub(super) fn quoted_field_hint(
+    kb: &KnowledgeBase,
+    entity: Symbol,
+    label: Symbol,
+    arg: &Rc<NodeOccurrence>,
+) -> Option<Value> {
+    let fields = kb.entity_field_types(entity)?;
+    let (_, ty) = fields.iter().find(|(f, _)| same_label(kb, *f, label))?;
+    (rule_operation_name(kb, arg) && is_reflect_term_type(kb, ty)).then(|| ty.clone())
+}
+
+/// Is `arg` an operation's name as a rule body's own term writes it — `Ref(op)`, or the
+/// dotted chain ([`dotted_operation_through`])? Not a lambda, and not an operation body's
+/// `VarRef`, which may name a local.
+fn rule_operation_name(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> bool {
+    match arg.as_expr() {
+        Some(Expr::Ref(s)) => kb.has_kind(*s, crate::intern::SymbolKind::Operation),
+        _ => arg.is_dot_chain() && dotted_operation_through(kb, arg).is_some(),
+    }
+}
+
 /// WI-485: the type of an argument occurrence that is a plain variable / operation
 /// REFERENCE, read straight from the typing env WITHOUT synthesizing it. The receiver
 /// arg `xs` of `findX(xs, lambda …)` (or the dot-call `xs.findX(…)`) is a `VarRef` whose
@@ -117,8 +141,13 @@ pub(super) fn relation_ref_arg_type(
 /// A rule body's own term writes a bare operation name as `Ref`, where an operation body
 /// writes it as `VarRef`: a call there is typed as an operation body is (068 §3), so that
 /// reference is one too. Any other `Ref` — a nullary constructor, a resolved name — is a
-/// value.
+/// value. And it keeps a dotted one as the `field_access` chain the operation body lowers to
+/// the member written without parentheses (`S.twice`, [`dotted_citation_operation`]), so
+/// that chain is one as well.
 pub(super) fn is_hof_shaped(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> bool {
+    if arg.is_dot_chain() {
+        return dotted_operation_through(kb, arg).is_some();
+    }
     match arg.as_expr() {
         Some(Expr::Lambda { .. } | Expr::VarRef { .. }) => true,
         Some(Expr::Ref(s)) => kb.has_kind(*s, crate::intern::SymbolKind::Operation),

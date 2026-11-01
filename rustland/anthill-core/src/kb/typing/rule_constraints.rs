@@ -767,8 +767,23 @@ pub(super) fn collect_occurrence_type_constraints(
         return;
     }
     let goal = matches!(pos, BodyPos::Goal(_) | BodyPos::GoalTuple(_));
-    // An arrow's components are data, walked below; the arrow itself is no call.
-    let nested = match clause_call_parts(expr).filter(|_| !rule_body_type_term(kb, expr)) {
+    // A dotted name of an OPERATION is read as its one-segment name is (WI-20261030-4BXDW,
+    // [`dotted_citation_operation`]): a nullary one is its call, `S.seven` as `seven()`, and any
+    // other is no call — its segments spell a name, and are no `field_access` application's
+    // arguments. Read as that application, `?f <=> S.seven` gave `?f` the chain's type and loaded
+    // beside `applyThunk(?f)`, undecided at run time, where `?f <=> seven` is refused.
+    let no_args: (&[Rc<NodeOccurrence>], &[(Symbol, Rc<NodeOccurrence>)]) = (&[], &[]);
+    let parts = match occ
+        .is_dot_chain()
+        .then(|| dotted_operation_through(kb, occ))
+        .flatten()
+    {
+        Some((op, _)) if operation_is_nullary(kb, op) => Some((op, no_args.0, no_args.1)),
+        Some(_) => None,
+        // An arrow's components are data, walked below; the arrow itself is no call.
+        None => clause_call_parts(expr).filter(|_| !rule_body_type_term(kb, expr)),
+    };
+    let nested = match parts {
         Some((functor, pos_args, named_args)) => {
             if goal {
                 constrain_domain_test(kb, functor, pos_args, committed, st);
@@ -776,11 +791,15 @@ pub(super) fn collect_occurrence_type_constraints(
             let bracket = call_bracket_instances(kb, occ, expr, functor);
             let (mut nested, result) =
                 constrain_application(kb, functor, pos_args, named_args, &bracket, position, st);
-            // A nullary operation named without parentheses where the call expects a function
-            // is that function (§5.4), typed with the call by the dispatch walk, which types
-            // the call whole at its parameters; its argument is no call's result.
-            let written_alone =
-                pos_args.iter().chain(named_args.iter().map(|(_, a)| a)).any(|a| a.is_paren_less());
+            // An operation named without parentheses where the call expects a function is that
+            // function (§5.4), typed with the call by the dispatch walk, which types the call
+            // whole at its parameters; its argument is no call's result. Written alone, as a
+            // member (`Box.inc`, an operation body's lowering of a dotted name inside a form),
+            // or as a rule body's dotted chain (`S.twice`).
+            let written_alone = pos_args
+                .iter()
+                .chain(named_args.iter().map(|(_, a)| a))
+                .any(|a| a.is_paren_less() || a.is_dot_chain());
             if written_alone
                 && matches!(
                     call_dispatch_shape(kb, occ, pos),
@@ -791,7 +810,7 @@ pub(super) fn collect_occurrence_type_constraints(
                     let arg = pos_args
                         .get(*index)
                         .or_else(|| named_args.get(*index - pos_args.len()).map(|(_, a)| a));
-                    !arg.is_some_and(|arg| nullary_name_as_function(kb, &st.subst, arg, ty))
+                    !arg.is_some_and(|arg| operation_name_as_function(kb, &st.subst, arg, ty))
                 });
             }
             // An equality declares no position for its sides, so a side that holds a lambda
@@ -893,22 +912,34 @@ pub(super) fn collect_occurrence_type_constraints(
     }
 }
 
-/// Is `arg` a nullary operation's name written without parentheses, at `position`, where a
-/// function is expected and the operation's result is not one ([`nullary_name_is_function_value`])?
-fn nullary_name_as_function(
+/// Is `arg` an operation's name written without parentheses — alone or as a member, an
+/// argument-less application marked so, or a rule body's dotted chain
+/// ([`dotted_operation_through`]) — at `position`, where it is the function value
+/// ([`operation_name_is_function_value`])?
+fn operation_name_as_function(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
     arg: &Rc<NodeOccurrence>,
     position: &Value,
 ) -> bool {
-    let Some(&Expr::Apply { functor, .. }) = arg.as_expr() else {
-        return false;
+    let op = match arg.as_expr() {
+        Some(Expr::Apply {
+            functor,
+            pos_args,
+            named_args,
+            ..
+        }) if arg.is_paren_less() && pos_args.is_empty() && named_args.is_empty() => *functor,
+        _ if arg.is_dot_chain() => match dotted_operation_through(kb, arg) {
+            Some((op, _)) => op,
+            None => return false,
+        },
+        _ => return false,
     };
-    if !arg.is_paren_less() || !operation_is_nullary(kb, functor) {
+    if !kb.has_kind(op, crate::intern::SymbolKind::Operation) {
         return false;
     }
     let position = walk_type_deep_value(kb, subst, position);
-    nullary_name_is_function_value(kb, functor, &position)
+    operation_name_is_function_value(kb, op, &position)
 }
 
 /// Is there a lambda in `value`, outside any other lambda's body?
