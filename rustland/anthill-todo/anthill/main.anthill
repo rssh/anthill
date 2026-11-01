@@ -2318,31 +2318,39 @@ namespace anthill.todo
         case nil() -> false
         case cons(m, rest) ->
           if eq(m, n) then reaches_any_other(row_map, n, rest)
-          else if row_reaches(row_map, n, m, nil()) then true
+          else if row_reaches(row_map, n, m) then true
           else reaches_any_other(row_map, n, rest)
 
     -- True when `from` transitively depends on `target`, walking through
-    -- ALL items (tagged or not). `seen` guards re-visits so a corrupt
-    -- cyclic store can't hang the view.
+    -- ALL items (tagged or not). The walk keeps a visited set, not a path:
+    -- each item is walked once, so a corrupt cyclic store can neither hang
+    -- the view nor walk every path through the cycle.
     operation row_reaches(row_map: Map[String, Row], from: String,
-                          target: String, seen: List[String]) -> Bool =
-      if list_contains_string(seen, from) then false
-      else
-        match get(row_map, from)
-          case none() -> false
-          case some(r) ->
-            match r
-              case Row(_, _, _, _, deps, _, _) ->
-                row_deps_reach(row_map, deps, target, cons(from, seen))
+                          target: String) -> Bool =
+      contains(row_deps_reached(row_map, target, row_deps(row_map, from), empty()), target)
 
-    operation row_deps_reach(row_map: Map[String, Row], deps: List[String],
-                             target: String, seen: List[String]) -> Bool =
-      match deps
-        case nil() -> false
-        case cons(d, rest) ->
-          if eq(d, target) then true
-          else if row_reaches(row_map, d, target, seen) then true
-          else row_deps_reach(row_map, rest, target, seen)
+    operation row_deps(row_map: Map[String, Row], id: String) -> List[String] =
+      match get(row_map, id)
+        case none() -> nil()
+        case some(r) ->
+          match r
+            case Row(_, _, _, _, deps, _, _) -> deps
+
+    -- `seen` with every id `ids` reach through their dependencies, `ids`
+    -- included; the walk stops once `target` is in it.
+    operation row_deps_reached(row_map: Map[String, Row], target: String,
+                               ids: List[String],
+                               seen: Map[String, Bool]) -> Map[String, Bool] =
+      if contains(seen, target) then seen
+      else
+        match ids
+          case nil() -> seen
+          case cons(d, rest) ->
+            if contains(seen, d) then row_deps_reached(row_map, target, rest, seen)
+            else
+              let below = row_deps_reached(row_map, target, row_deps(row_map, d),
+                                           put(seen, d, true))
+              row_deps_reached(row_map, target, rest, below)
 
     operation print_tagged_rows(ids: List[String],
                                 row_map: Map[String, Row],
@@ -2516,17 +2524,71 @@ namespace anthill.todo
 
     -- ── cmd_graph ─────────────────────────────────────────────────
 
-    -- Find rows whose depends_on list is empty (roots of the dependents
-    -- tree — no precondition).
-    operation find_roots(rows: List[Row]) -> List[Row] =
+    -- The ids of the rows whose depends_on list is empty (roots of the
+    -- dependents tree — no precondition).
+    operation root_ids(rows: List[Row]) -> List[String] =
       match rows
         case nil() -> nil()
         case cons(r, rest) ->
           match r
-            case Row(_, _, _, _, deps, _, _) ->
+            case Row(rid, _, _, _, deps, _, _) ->
               match deps
-                case nil() -> cons(r, find_roots(rest))
-                case cons(_, _) -> find_roots(rest)
+                case nil() -> cons(rid, root_ids(rest))
+                case cons(_, _) -> root_ids(rest)
+
+    -- Each id a row depends on that names no row, once, in the order the
+    -- store first names it.
+    operation missing_dep_ids(rows: List[Row], row_map: Map[String, Row],
+                              acc: List[String]) -> List[String] =
+      match rows
+        case nil() -> acc
+        case cons(r, rest) ->
+          match r
+            case Row(_, _, _, _, deps, _, _) ->
+              missing_dep_ids(rest, row_map, add_missing(deps, row_map, acc))
+
+    operation add_missing(deps: List[String], row_map: Map[String, Row],
+                          acc: List[String]) -> List[String] =
+      match deps
+        case nil() -> acc
+        case cons(d, rest) ->
+          if contains(row_map, d) then add_missing(rest, row_map, acc)
+          else if list_contains_string(acc, d) then add_missing(rest, row_map, acc)
+          else add_missing(rest, row_map, append_string(acc, d))
+
+    -- `seen` with every id `ids` reach through their dependents, `ids`
+    -- included. `seen` is a visited set, not a path: each item is walked
+    -- once, so a cyclic store costs its size.
+    operation reach_dependents(dep_map: Map[String, List[String]],
+                               ids: List[String],
+                               seen: Map[String, Bool]) -> Map[String, Bool] =
+      match ids
+        case nil() -> seen
+        case cons(i, rest) ->
+          if contains(seen, i) then reach_dependents(dep_map, rest, seen)
+          else
+            let below = reach_dependents(dep_map, direct_dependents_m(dep_map, i),
+                                         put(seen, i, true))
+            reach_dependents(dep_map, rest, below)
+
+    -- The items that reach themselves through their dependents: the items on
+    -- a cycle, which only a corrupt store has (`add-dependency` and `insert`
+    -- refuse one). Only an item with a dependency and a dependent can be on
+    -- one.
+    operation cyclic_items(rows: List[Row], dep_map: Map[String, List[String]],
+                           acc: Map[String, Bool]) -> Map[String, Bool] =
+      match rows
+        case nil() -> acc
+        case cons(r, rest) ->
+          match r
+            case Row(rid, _, _, _, deps, _, _) ->
+              let dependents = direct_dependents_m(dep_map, rid)
+              let on_cycle = match deps
+                case nil() -> false
+                case cons(_, _) ->
+                  contains(reach_dependents(dep_map, dependents, empty()), rid)
+              if on_cycle then cyclic_items(rest, dep_map, put(acc, rid, true))
+              else cyclic_items(rest, dep_map, acc)
 
     operation status_or_unknown(row_map: Map[String, Row], id: String) -> String =
       match status_for_m(row_map, id)
@@ -2537,30 +2599,30 @@ namespace anthill.todo
     -- legacy `print_tree` exactly: connector is "" at the root, "├─ "
     -- for non-last siblings, "└─ " for last; child_prefix continues
     -- with "│  " or "   " depending on whether `is_last` was true.
-    -- `seen` is the PATH from the root to this node, and re-entering a node
-    -- already on that path is where a corrupt cyclic store used to spin
-    -- forever. The two sibling walks over this same `dep_map` already guard
-    -- (`row_reaches`, `reaches_dep` -- "a corrupt cyclic store must not hang
-    -- the CLI"); this one did not, and `list` answering correctly on the same
-    -- data left nothing to hint the store was the problem.
     --
-    -- PATH-LOCAL, NOT GLOBAL, and the golden transcript is why: a DAG diamond
-    -- must still render under BOTH parents (`WI-003` appears under `WI-002`
-    -- AND under `WI-004`). A global visited set would break the cycle just as
-    -- well and silently DELETE the second rendering -- a correct-looking tree
-    -- that is missing a branch.
+    -- Every path is printed, so a DAG diamond renders under each of its
+    -- parents with everything below it (`WI-003` appears under `WI-002` AND
+    -- under `WI-004`). `path` is the path from the root to this node, and a
+    -- node already on it is printed with `(cycle)` and not descended into:
+    -- re-entering it is where a corrupt cyclic store used to spin forever.
+    -- An item on a cycle (`cyclic`) is descended into once: `expanded` holds
+    -- those already printed with their dependents, and a later occurrence
+    -- off the path prints `(shown above)`. Without it, items that depend on
+    -- each other print every path through them — 82,202 lines for seven.
+    -- The result is `expanded` with what this node printed.
     --
-    -- A cycle is MARKED, NOT SKIPPED: the node prints with `(cycle)` and the
-    -- descent stops there. Truncating silently would render a corrupt store as
-    -- a well-formed tree.
+    -- A cycle is MARKED, NOT SKIPPED: truncating silently would render a
+    -- corrupt store as a well-formed tree.
     operation print_tree(id: String,
                          is_root: Bool,
                          is_last: Bool,
                          prefix: String,
-                         seen: List[String],
+                         path: List[String],
+                         expanded: Map[String, Bool],
                          row_map: Map[String, Row],
-                         dep_map: Map[String, List[String]])
-      -> Unit
+                         dep_map: Map[String, List[String]],
+                         cyclic: Map[String, Bool])
+      -> Map[String, Bool]
       effects ConsoleOutput
     =
       let connector =
@@ -2568,53 +2630,104 @@ namespace anthill.todo
         else if is_last then "└─ "
         else "├─ "
       let status = status_or_unknown(row_map, id)
-      let cycle = list_contains_string(seen, id)
-      let marker = if cycle then " (cycle)" else ""
+      let cycle = list_contains_string(path, id)
+      let on_cycle = contains(cyclic, id)
+      let shown_above = if cycle then false else if on_cycle then contains(expanded, id) else false
+      let marker =
+        if cycle then " (cycle)"
+        else if shown_above then " (shown above)"
+        else ""
       let _ = println(console(),
                       concat(prefix,
                         concat(connector,
                           concat(id,
                             concat(" [", concat(status, concat("]", marker)))))))
-      if cycle then ()
+      if cycle then expanded
+      else if shown_above then expanded
       else
         let child_prefix =
           if is_root then "   "
           else if is_last then concat(prefix, "   ")
           else concat(prefix, "│  ")
         let children = direct_dependents_m(dep_map, id)
-        print_children(children, child_prefix, cons(id, seen), row_map, dep_map)
+        let now = if on_cycle then put(expanded, id, true) else expanded
+        print_children(children, child_prefix, cons(id, path), now,
+                       row_map, dep_map, cyclic)
 
     operation print_children(children: List[String],
                              prefix: String,
-                             seen: List[String],
+                             path: List[String],
+                             expanded: Map[String, Bool],
                              row_map: Map[String, Row],
-                             dep_map: Map[String, List[String]])
-      -> Unit
+                             dep_map: Map[String, List[String]],
+                             cyclic: Map[String, Bool])
+      -> Map[String, Bool]
       effects ConsoleOutput
     =
       match children
-        case nil() -> ()
+        case nil() -> expanded
         case cons(c, rest) ->
           let last = match rest
             case nil() -> true
             case cons(_, _) -> false
-          let _ = print_tree(c, false, last, prefix, seen, row_map, dep_map)
-          print_children(rest, prefix, seen, row_map, dep_map)
+          let after = print_tree(c, false, last, prefix, path, expanded,
+                                 row_map, dep_map, cyclic)
+          print_children(rest, prefix, path, after, row_map, dep_map, cyclic)
 
-    operation print_roots(roots: List[Row],
+    operation print_roots(roots: List[String],
+                          expanded: Map[String, Bool],
                           row_map: Map[String, Row],
-                          dep_map: Map[String, List[String]])
-      -> Unit
+                          dep_map: Map[String, List[String]],
+                          cyclic: Map[String, Bool])
+      -> Map[String, Bool]
       effects ConsoleOutput
     =
       match roots
-        case nil() -> ()
+        case nil() -> expanded
+        case cons(rid, rest) ->
+          let after = print_tree(rid, true, true, "", nil(), expanded,
+                                 row_map, dep_map, cyclic)
+          print_roots(rest, after, row_map, dep_map, cyclic)
+
+    -- Each row no tree printed (`reached`), as a root of its own, in store
+    -- order; with `only_cyclic`, only the rows on a cycle. An item no root
+    -- and no missing id reaches depends, through its dependencies, on a
+    -- cycle no root reaches, so starting at those prints it under what it
+    -- depends on rather than as a root of its own. The result is `reached`
+    -- and `expanded` after the rows printed.
+    operation print_unreached(rows: List[Row],
+                              only_cyclic: Bool,
+                              reached: Map[String, Bool],
+                              expanded: Map[String, Bool],
+                              row_map: Map[String, Row],
+                              dep_map: Map[String, List[String]],
+                              cyclic: Map[String, Bool])
+      -> Pair[Map[String, Bool], Map[String, Bool]]
+      effects ConsoleOutput
+    =
+      match rows
+        case nil() -> pair(reached, expanded)
         case cons(r, rest) ->
           match r
             case Row(rid, _, _, _, _, _, _) ->
-              let _ = print_tree(rid, true, true, "", nil(), row_map, dep_map)
-              print_roots(rest, row_map, dep_map)
+              let skip = if contains(reached, rid) then true
+                         else if only_cyclic then not(contains(cyclic, rid))
+                         else false
+              if skip then
+                print_unreached(rest, only_cyclic, reached, expanded,
+                                row_map, dep_map, cyclic)
+              else
+                let after = print_tree(rid, true, true, "", nil(), expanded,
+                                       row_map, dep_map, cyclic)
+                let now = reach_dependents(dep_map, cons(rid, nil()), reached)
+                print_unreached(rest, only_cyclic, now, after, row_map, dep_map, cyclic)
 
+    -- Every item is printed. The trees of the items that depend on nothing
+    -- come first; then the tree of each id the store depends on that names
+    -- no item, printed `[?]`; then each item neither reached, which only a
+    -- corrupt store has. Without the last two such a store printed nothing
+    -- of those items, and a store with no item free of dependencies printed
+    -- nothing at all.
     operation cmd_graph(s: Cell[State]) -> Int64
       effects {ConsoleOutput, Error}
     =
@@ -2625,8 +2738,17 @@ namespace anthill.todo
       else
         let dep_map = build_dep_map(raw_rows)
         let row_map = build_row_map(raw_rows)
-        let roots = find_roots(raw_rows)
-        let _ = print_roots(roots, row_map, dep_map)
+        let cyclic = cyclic_items(raw_rows, dep_map, empty())
+        let roots = root_ids(raw_rows)
+        let missing = missing_dep_ids(raw_rows, row_map, nil())
+        let expanded = print_roots(roots, empty(), row_map, dep_map, cyclic)
+        let after = print_roots(missing, expanded, row_map, dep_map, cyclic)
+        let reached = reach_dependents(dep_map, roots,
+                                       reach_dependents(dep_map, missing, empty()))
+        let cycles = print_unreached(raw_rows, true, reached, after,
+                                     row_map, dep_map, cyclic)
+        let _ = print_unreached(raw_rows, false, cycles.fst, cycles.snd,
+                                row_map, dep_map, cyclic)
         0
 
     -- ── cmd_dependents ────────────────────────────────────────────
@@ -2656,7 +2778,8 @@ namespace anthill.todo
               let raw_rows = rows_of_w(WorkItemStore.all(s))
               let dep_map = build_dep_map(raw_rows)
               let row_map = build_row_map(raw_rows)
-              let _ = print_tree(id, true, true, "", nil(), row_map, dep_map)
+              let cyclic = cyclic_items(raw_rows, dep_map, empty())
+              let _ = print_tree(id, true, true, "", nil(), empty(), row_map, dep_map, cyclic)
               match direct_dependents_m(dep_map, id)
                 case nil() ->
                   let _ = println(console(),
@@ -2904,32 +3027,39 @@ namespace anthill.todo
         case nil() -> none()
         case cons(d, rest) ->
           if eq(d, before) then some(d)
-          else if reaches_dep(s, d, before, nil()) then some(d)
+          else if reaches_dep(s, d, before) then some(d)
           else first_cycle_dep(s, rest, before)
 
-    -- True when `from` transitively depends on `target`. `seen` guards
-    -- against re-visiting (a corrupt cyclic store must not hang the CLI).
-    operation reaches_dep(s: Cell[State], from: String, target: String,
-                          seen: List[String]) -> Bool
+    -- True when `from` transitively depends on `target`. The walk keeps a
+    -- visited set, not a path: each item is walked once, so a corrupt cyclic
+    -- store can neither hang the CLI nor walk every path through the cycle.
+    operation reaches_dep(s: Cell[State], from: String, target: String) -> Bool
       effects Error
     =
-      if list_contains_string(seen, from) then false
-      else
-        match WorkItemStore.lookup(s, from)
-          case none() -> false
-          case some(wi) ->
-            any_dep_reaches(s, deps_of_w(wi), target, cons(from, seen))
+      contains(deps_reached(s, target, store_deps(s, from), empty()), target)
 
-    operation any_dep_reaches(s: Cell[State], deps: List[String],
-                              target: String, seen: List[String]) -> Bool
+    operation store_deps(s: Cell[State], id: String) -> List[String]
       effects Error
     =
-      match deps
-        case nil() -> false
-        case cons(d, rest) ->
-          if eq(d, target) then true
-          else if reaches_dep(s, d, target, seen) then true
-          else any_dep_reaches(s, rest, target, seen)
+      match WorkItemStore.lookup(s, id)
+        case none() -> nil()
+        case some(wi) -> deps_of_w(wi)
+
+    -- `seen` with every id `ids` reach through their dependencies, `ids`
+    -- included; the walk stops once `target` is in it.
+    operation deps_reached(s: Cell[State], target: String, ids: List[String],
+                           seen: Map[String, Bool]) -> Map[String, Bool]
+      effects Error
+    =
+      if contains(seen, target) then seen
+      else
+        match ids
+          case nil() -> seen
+          case cons(d, rest) ->
+            if contains(seen, d) then deps_reached(s, target, rest, seen)
+            else
+              let below = deps_reached(s, target, store_deps(s, d), put(seen, d, true))
+              deps_reached(s, target, rest, below)
 
     -- WI-1068: an omitted --acceptance embeds the WHOLE project-wide tool set.
     -- This is deliberately conservative for a multi-module project: a ticket
@@ -3651,7 +3781,7 @@ namespace anthill.todo
       -- Cycle guard (the legacy run_add_dependency check): adding
       -- id -> dep closes a cycle iff dep already transitively
       -- depends on id.
-      else if reaches_dep(s, dep, id, nil()) then
+      else if reaches_dep(s, dep, id) then
         let _ = eprintln(console(),
           concat("error: adding ", concat(id,
             concat(" -> ", concat(dep,
