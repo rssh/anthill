@@ -381,6 +381,23 @@ pub fn in_body_proof_goal(
     }
 }
 
+/// A condition that is a variable `b` says `b = value` in the branch where it is `value`:
+/// the spelling a guard or a precondition over `b` asks (`eq(b, true)`), beside the branch's
+/// own fact. `None` for any other condition.
+pub(super) fn variable_condition_is(
+    kb: &mut KnowledgeBase,
+    cond: &Value,
+    value: bool,
+) -> Option<Value> {
+    let fact = goal_form(kb, cond.clone());
+    let var_ref = kb.try_resolve_symbol("anthill.reflect.Expr.var_ref")?;
+    if fact.head(kb).functor_sym() != Some(var_ref) {
+        return None;
+    }
+    let eq = kb.eq_functor();
+    Some(kb.make_goal_value(eq, vec![fact, Value::Bool(value)]))
+}
+
 /// Constructively **refute** a guard: prove its negation from Γ (proposal
 /// 050 / 048). A guarded effect is dropped only on a positive proof of
 /// `¬guard`; an unrefutable guard (a symbolic parameter) stays present —
@@ -663,6 +680,7 @@ pub fn binding_gamma_fact(
 ///     (`case some(x)` ⟹ `eq(s, some(var_ref(x)))`, WI-550) — see
 ///     [`pattern_match_value`] (`admit_binders = true`). Absent when `pᵢ` denotes
 ///     no referenceable value (a wildcard, or a constructor with a wildcard hole).
+///     Beside it `struct_eq(scrutinee, value(pᵢ))`, since a match is structural.
 ///   - `neq(scrutinee, value(pⱼ))` for each earlier arm `j < i` whose pattern is
 ///     GROUND and UNGUARDED — the scrutinee is known to differ from `pⱼ`'s
 ///     value. `case 0 → … ; case _ → div(a, s)` thus carries `neq(s, 0)` into
@@ -687,6 +705,7 @@ pub fn match_arm_gamma_facts(
 ) -> Vec<Vec<Value>> {
     let eq_sym = kb.eq_functor();
     let neq_sym = kb.try_resolve_symbol("anthill.prelude.PartialEq.neq");
+    let struct_eq_sym = kb.try_resolve_symbol("anthill.kernel.struct_eq");
     let mut out: Vec<Vec<Value>> = Vec::with_capacity(arms.len());
     // Negations accumulated from earlier ground, unguarded arms.
     let mut earlier_neqs: Vec<Value> = Vec::new();
@@ -700,6 +719,11 @@ pub fn match_arm_gamma_facts(
         let mut facts: Vec<Value> = earlier_neqs.clone();
         if let Some(pv) = &positive {
             facts.push(kb.make_goal_value(eq_sym, vec![scrutinee.clone(), pv.clone()]));
+            // A match is structural, so the arm also shows `scrutinee === pattern` — what a
+            // guarded law's body asks (`isEmpty(?s) = true :- splitFirst(?s) === none`).
+            if let Some(struct_eq) = struct_eq_sym {
+                facts.push(kb.make_goal_value(struct_eq, vec![scrutinee.clone(), pv.clone()]));
+            }
         }
         out.push(facts);
         // A ground, unguarded arm excludes its value from every LATER arm: it

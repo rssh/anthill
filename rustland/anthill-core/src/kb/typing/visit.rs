@@ -324,6 +324,8 @@ pub(super) fn visit_type(
                     Value::Var(Var::Global(vid))
                 });
             let mut lambda_env = (*env).clone();
+            // What the body incurs is the function's row, incurred where it is applied.
+            lambda_env.hold_to_guarded_row(None);
             // Proposal 050.1: the lambda's scope begins here — its parameters and its body's
             // names are bound from now on.
             let memory_mark = lambda_env.memory_mark();
@@ -1154,15 +1156,19 @@ pub(super) fn visit_type(
             let fork = env.types.new_fork();
             // An `if` binds nothing of its own, so its branches keep the enclosing scope's mark.
             let mark = env.flow.scope_mark;
-            let then_env =
-                env.with_flow(env.flow.assume(kb, cond_fact.clone()).in_branch(fork, 0, mark));
-            let else_env = env.with_flow(
-                match negate_goal(kb, &cond_fact) {
-                    Some(neg) => env.flow.assume(kb, neg),
-                    None => env.flow.clone(),
-                }
-                .in_branch(fork, 1, mark),
-            );
+            let mut then_flow = env.flow.assume(kb, cond_fact.clone());
+            if let Some(is_true) = variable_condition_is(kb, &cond_fact, true) {
+                then_flow = then_flow.assume(kb, is_true);
+            }
+            let then_env = env.with_flow(then_flow.in_branch(fork, 0, mark));
+            let mut else_flow = match negate_goal(kb, &cond_fact) {
+                Some(neg) => env.flow.assume(kb, neg),
+                None => env.flow.clone(),
+            };
+            if let Some(is_false) = variable_condition_is(kb, &cond_fact, false) {
+                else_flow = else_flow.assume(kb, is_false);
+            }
+            let else_env = env.with_flow(else_flow.in_branch(fork, 1, mark));
             // Drain order [cond, then, else]: push reversed. The
             // condition is always `Bool` (no hint); both branches share
             // the if's `expected` (WI-270), now under their narrowed Γ.

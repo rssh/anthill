@@ -1961,6 +1961,19 @@ impl SearchStream {
         candidates
     }
 
+    /// WI-899 — a clause the builtin of its predicate answers beside: a source-written one
+    /// whose head is not an equality connective. Loader-derived rows are implementation
+    /// machinery, and an equation's storage functor is the `eq`/`unify` connective while its
+    /// language-level subject is its LHS. An explicitly written `rule eq(...)` is not
+    /// equational and remains eligible. In a proof from Γ, a guarded `=` law is a premise too
+    /// ([`KnowledgeBase::is_guarded_eq_law`]): `isEmpty(s)` is shown where Γ holds
+    /// `splitFirst(s) === none`.
+    fn answers_beside_builtin(&self, kb: &KnowledgeBase, rid: RuleId) -> bool {
+        kb.clause_origin(rid) == super::ClauseOrigin::Source
+            && (!kb.has_equational_head(rid)
+                || (self.config.gamma.is_some() && kb.is_guarded_eq_law(rid)))
+    }
+
     /// Proposal 050 (WI-537) — the Γ-overlay candidates for a goal: each
     /// local-interpretation fact that unifies with the (already σ-reified)
     /// `goal_value`, as a zero-body [`Candidate::Assumption`]. The
@@ -2094,6 +2107,16 @@ impl SearchStream {
             return None;
         }
         let subst = self.stack.last().unwrap().subst.clone();
+        // `eq`'s clauses in a proof from Γ: a call over a parameter of the body cannot run
+        // there, so the goal meets the clause heads as written — a guarded law's
+        // (`isEmpty(?s) = true :- …` at `eq(isEmpty(s), true)`).
+        if clauses_only
+            && self.config.gamma.is_some()
+            && f == kb.eq_functor()
+            && kb.value_has_open_world_ref(goal_val, &subst)
+        {
+            return None;
+        }
         let mut faults = ReduceFaults::default();
         let mut holes = Holes::default();
         let evaluated = kb.evaluate_goal_args(goal_val, &subst, &mut faults, &mut holes);
@@ -2438,16 +2461,11 @@ impl SearchStream {
         // evaluation, while the native candidate must receive the original goal
         // (notably for semantic equality's WI-580 inverse-operation bridge).
         //
-        // Only source-written, non-equational heads count. Loader-derived rows are
-        // implementation machinery, and an equation's storage functor is the
-        // `eq`/`unify` connective while its language-level subject is its LHS. An
-        // explicitly written `rule eq(...)` is not equational and remains eligible.
+        // Which clauses count is [`Self::answers_beside_builtin`].
         if registered_builtin_tag.is_some() && !builtin_only && !clauses_only {
             let has_written_clauses = goal_val.head(kb).functor_sym().is_some_and(|functor| {
-                kb.rules_by_functor_iter(functor).any(|rid| {
-                    kb.clause_origin(rid) == super::ClauseOrigin::Source
-                        && !kb.has_equational_head(rid)
-                })
+                kb.rules_by_functor_iter(functor)
+                    .any(|rid| self.answers_beside_builtin(kb, rid))
             });
             if has_written_clauses {
                 let f = self.stack.last_mut().unwrap();
@@ -2986,6 +3004,27 @@ impl SearchStream {
             if declared_arity == Some(pos_arity + named_arity)
                 && kb.dispatched_bool_relation(&goal_val, f)
             {
+                // In a proof from Γ, a hypothesis that is the goal as written answers it: an
+                // `if isEmpty(xs)` branch, a callee's own guard, a `forall` antecedent.
+                // Rewritten first, the goal heads `eq` and no such hypothesis matches it.
+                if self.config.gamma.is_some() {
+                    let found = self.hypothesis_candidates(kb, &goal_val);
+                    if !found.is_empty() {
+                        let f = self.stack.last_mut().unwrap();
+                        f.state = FrameState::ChoicePoint {
+                            delay_mode,
+                            original_goal: goal_val.clone(),
+                            candidates: found,
+                            next: 0,
+                            extent_rows: Vec::new(),
+                            extent_next: 0,
+                            any_delayed: false,
+                            child_solutions: 0,
+                            cut_barrier: None,
+                        };
+                        return Some(StepResult::Continue);
+                    }
+                }
                 let eq_sym = kb.eq_functor();
                 // WI-20260830-DQD5W — THE OPERAND GOES IN ON THE OCCURRENCE CARRIER, and
                 // that is not tidiness: `reduce_op_value` opens with `Value::Node(o) =>
@@ -3380,10 +3419,7 @@ impl SearchStream {
         // The clause-only child admits exactly the rows whose presence created
         // the combined choice point above.
         if clauses_only {
-            rule_candidates.retain(|(rid, _)| {
-                kb.clause_origin(*rid) == super::ClauseOrigin::Source
-                    && !kb.has_equational_head(*rid)
-            });
+            rule_candidates.retain(|(rid, _)| self.answers_beside_builtin(kb, *rid));
         }
 
         candidates.extend(

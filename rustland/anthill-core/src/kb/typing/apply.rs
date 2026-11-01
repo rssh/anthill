@@ -2476,6 +2476,7 @@ pub(super) fn check_apply_iter(
             // ([`wrap_bare_effect_expr_as_row`]'s doc). The pre-CTD6D `.flatten()` here
             // declassified any other carrier back to a plain atom, silently undoing this
             // very flatten.
+            let before = substituted_op_effects.len();
             let incurred = push_effect_with_guard_discharge(
                 kb,
                 flow,
@@ -2485,6 +2486,15 @@ pub(super) fn check_apply_iter(
                 walked,
                 &mut substituted_op_effects,
             );
+            hold_call_to_guarded_row(
+                kb,
+                env,
+                flow,
+                &guard_sigma,
+                &substituted_op_effects[before..],
+                fn_sym,
+                span,
+            )?;
             if let (true, None, Some(keys)) = (incurred, &leak, &keys) {
                 leak = placeless_modify(kb, keys, &op.params, own, &places.placeless);
             }
@@ -5284,6 +5294,17 @@ pub(super) fn check_apply_iter(
             // Omitting it dropped an effectful nested argument: `f(delayForce(m))`
             // lost the inner `delayForce(m)`'s effect (only `let a = delayForce(m);
             // f(a)` accumulated it), under-reporting a call's effect row.
+            hold_application_to_guarded_row(
+                kb,
+                env,
+                flow,
+                &fn_type,
+                &call_effects,
+                fn_sym,
+                pos_args,
+                named_args,
+                span,
+            )?;
             let mut effects = call_effects;
             for r in pos_results.iter().chain(named_results.iter()).flatten() {
                 merge_effects_into(kb, &mut effects, &r.effects);

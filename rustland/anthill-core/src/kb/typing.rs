@@ -24,8 +24,8 @@
 //!  * Instance synthesis and provisions — `synth`, `candidates`, `provides_index`,
 //!    `provision`, `carrier`, `coherence`.
 //!  * Type relations — `unify`, `subtype`, `type_pattern` (what a type pattern admits),
-//!    `effects`, `tuples` (under `tuple_align`), `sort_alias`, `type_preds`, `extract`,
-//!    `value_type`.
+//!    `effects`, `guarded_row` (a body held to the guarded elements of its own row),
+//!    `tuples` (under `tuple_align`), `sort_alias`, `type_preds`, `extract`, `value_type`.
 //!  * Declaration checks — `sorts` (`type_check_sorts`), `signature`, `elaborate`,
 //!    `op_bodies`.
 //!  * Rules — `rules`, `rule_requirements`, `anchor`, `rule_dispatch`, `rule_constraints`.
@@ -107,6 +107,7 @@ mod expr;
 mod extract;
 mod forms;
 mod gamma;
+mod guarded_row;
 mod join_instantiation;
 mod memory;
 mod op_bodies;
@@ -167,6 +168,7 @@ pub use expr::*;
 pub use extract::*;
 pub(crate) use forms::*;
 pub use gamma::*;
+pub(crate) use guarded_row::*;
 use join_instantiation::*;
 pub(crate) use memory::*;
 use op_bodies::*;

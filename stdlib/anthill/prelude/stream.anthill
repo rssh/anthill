@@ -39,10 +39,10 @@ sort anthill.prelude.Stream
   -- on an abstract/lazy stream the guard stays present and the caller must handle
   -- it. WI-818: the default body is the EVAL-side semantics — the WI-567
   -- follow-on ("no eval-side raise yet") lands as the `none` arm's raise,
-  -- typed by `Nothing <: s.T` (bottom) and admitted by the declared guarded
-  -- row conservatively CONTAINING its label. The law below stays the
-  -- SPECIFICATION the body is read against; a law alone is not backing
-  -- (only a body or a builtin is — WI-818's rule).
+  -- typed by `Nothing <: s.T` (bottom). The arm shows `splitFirst(s) === none`,
+  -- and the law `isEmpty(?s) = true :- splitFirst(?s) === none` below shows the
+  -- guard from it. A law alone is not backing (only a body or a builtin is —
+  -- WI-818's rule).
   operation head(s: Self) -> s.T effects { s.E, Error[EmptyStream] :- isEmpty(s) } =
     match splitFirst(s)
       case none() -> Error.raise(empty_stream)
@@ -139,6 +139,9 @@ sort anthill.prelude.Stream
   -- wall. Over an ABSTRACT stream the guard is under-determined and must SUSPEND (WI-067),
   -- which is what the firing engine does; tagging them today would add a guard that always
   -- declines. Tag them with WI-567.
+  --
+  -- A proof from Γ uses them as premises (kernel-language.md §5.3): `head` and `tail` are held
+  -- to their guard `isEmpty(s)` through the `isEmpty` law.
   --
   -- THE GUARD CONNECTIVE (WI-20260918-CKD4J): a guard that BINDS the witness the
   -- right-hand side uses is a match, `splitFirst(?s) <=> some(?p)` — the bind column;

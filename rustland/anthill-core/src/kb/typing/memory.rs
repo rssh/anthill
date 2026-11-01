@@ -764,9 +764,12 @@ pub(crate) fn charge_local_writes(
     };
     let mut out: Vec<Value> = Vec::with_capacity(effects.len());
     let push = crate::kb::region::push_effect_dedup;
-    for label in effects {
+    for written in effects {
+        // A guarded atom a call kept is charged as its label, as the boundary reads it.
+        let unguarded = guarded_effect_label(kb, written);
+        let label = unguarded.as_ref().unwrap_or(written);
         let Some(name) = is_local(kb, label) else {
-            push(kb, &mut out, label.clone());
+            push(kb, &mut out, written.clone());
             continue;
         };
         for charge in charges(kb, &scope, name, reader, mark) {

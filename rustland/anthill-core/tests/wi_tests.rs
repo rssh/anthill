@@ -2331,6 +2331,8 @@ mod wi_9wvt7_user_layer_reify_test;
 mod wi_wgjfn_error_handler_type_value_test;
 #[path = "include/wi_809jn_memory_regions_test.rs"]
 mod wi_809jn_memory_regions_test;
+#[path = "include/wi_627cm_guarded_row_test.rs"]
+mod wi_627cm_guarded_row_test;
 #[path = "include/wi_7b15v_applied_alias_test.rs"]
 mod wi_7b15v_applied_alias_test;
 #[path = "include/wi_50361_namespace_named_head_test.rs"]

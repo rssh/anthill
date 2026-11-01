@@ -487,7 +487,7 @@ namespace test.wi4gbqv.guard_holds
 
   operation touch(c: Cell[V = Int64], flag: Bool) -> Unit
     effects { Modify[c] :- eq(flag, true) }
-  = Cell.set(c, 1)
+  = if flag then Cell.set(c, 1) else ()
 
   operation via_app() -> Unit effects {} = touch(mk(), true)
 end
@@ -518,7 +518,7 @@ namespace test.wi4gbqv.guard_refuted
 
   operation touch(c: Cell[V = Int64], flag: Bool) -> Unit
     effects { Modify[c] :- eq(flag, true) }
-  = Cell.set(c, 1)
+  = if flag then Cell.set(c, 1) else ()
 
   operation via_app() -> Unit effects {} = touch(mk(), false)
 end
@@ -644,9 +644,18 @@ namespace test.wi4gbqv.selfrec
   = if fb then Cell.set(b, 1) else swap(b, mk(), false)
 end
 "#;
-    if let Err(errs) = load_result(guarded) {
-        panic!("the refuted guard drops the callee's `Modify[b]`; got: {errs:#?}");
-    }
+    // The self-call is not refused for `mk()`: the guard of the callee's own `Modify[b]` is
+    // refuted there. The operation is refused for its own row (§5.5): the self-call's
+    // `Modify[a]`, re-keyed onto `b`, writes `b` where `fb` is false.
+    let errs = refusals_of(guarded);
+    assert!(
+        !errs.iter().any(|e| e.contains("names no resource")),
+        "the refuted guard drops the callee's `Modify[b]`; got: {errs:#?}"
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("swap.effects") && e.contains("only where `eq(fb, true)` holds")),
+        "the self-call writes `b` for `fb` false; got: {errs:#?}"
+    );
     let unguarded = r#"
 namespace test.wi4gbqv.selfrec2
   import anthill.prelude.{Unit, Int64, Bool, Cell, Modify}

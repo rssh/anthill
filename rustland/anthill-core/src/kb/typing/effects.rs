@@ -1060,20 +1060,9 @@ fn guarded_atom_refuted(
     sigma: &HashMap<Symbol, TermId>,
     guard_value: &Value,
 ) -> bool {
-    // Read the guard's `List[reflect.Term]` conjunction CARRIER-AGNOSTICALLY: a
-    // GROUND-label atom (`Error[D] :- eq(b,0)`) hash-conses its guard as a
-    // `Value::Term` cons list; a DENOTED-label (Node-carried) atom
-    // (`Modify[c] :- eq(b,0)`) stores it via `build_value_list` as a
-    // `Value::Entity` value-cons spine — but its goal heads are still
-    // `Value::Term`. An unexpected carrier keeps the effect (sound).
-    let goals: Vec<Value> = match guard_value {
-        Value::Term { id: t, .. } => list_to_vec(kb, *t).into_iter().map(Value::term).collect(),
-        Value::Node(occ) => {
-            let t = crate::kb::node_occurrence::occurrence_to_term(kb, occ);
-            list_to_vec(kb, t).into_iter().map(Value::term).collect()
-        }
-        Value::Entity { .. } => crate::kb::op_info::value_list_to_vec(kb, guard_value),
-        _ => return false,
+    // An unexpected carrier keeps the effect (sound).
+    let Some(goals) = guard_conjuncts(kb, guard_value) else {
+        return false;
     };
     // `¬(g1 ∧ … ∧ gn)` follows from refuting ANY single conjunct, so the effect
     // drops as soon as one gᵢ is constructively refuted from Γ (`conjunct_refuted`,
@@ -1081,6 +1070,23 @@ fn guarded_atom_refuted(
     // Each list element is a single conjunct goal `Value`; ground + refute it via
     // the shared per-conjunct core carrier-neutrally (WI-621 — no reification).
     goals.iter().any(|g| conjunct_refuted(kb, flow, sigma, g))
+}
+
+/// The conjunct goals of a guarded atom's `guard` — its `List[reflect.Term]` Horn body —
+/// read CARRIER-AGNOSTICALLY: a GROUND-label atom (`Error[D] :- eq(b,0)`) hash-conses its
+/// guard as a `Value::Term` cons list; a DENOTED-label (Node-carried) atom (`Modify[c] :-
+/// eq(b,0)`) stores it via `build_value_list` as a `Value::Entity` value-cons spine — but
+/// its goal heads are still `Value::Term`. `None` for any other carrier.
+pub(super) fn guard_conjuncts(kb: &mut KnowledgeBase, guard_value: &Value) -> Option<Vec<Value>> {
+    Some(match guard_value {
+        Value::Term { id: t, .. } => list_to_vec(kb, *t).into_iter().map(Value::term).collect(),
+        Value::Node(occ) => {
+            let t = crate::kb::node_occurrence::occurrence_to_term(kb, occ);
+            list_to_vec(kb, t).into_iter().map(Value::term).collect()
+        }
+        Value::Entity { .. } => crate::kb::op_info::value_list_to_vec(kb, guard_value),
+        _ => return None,
+    })
 }
 
 /// The `(eq, neq)` spec-op functor symbols (`anthill.prelude.PartialEq.{eq,neq}` —

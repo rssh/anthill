@@ -541,17 +541,17 @@ fn the_stored_arm_pattern_is_ground_at_depth() {
     );
     assert_eq!(
         facts[0].len(),
-        1,
-        "arm 1 carries its own `eq` and nothing earlier"
+        2,
+        "arm 1 carries its own `eq` and `===` and nothing earlier"
     );
     assert_eq!(
         facts[1].len(),
-        2,
-        "arm 2 carries the earlier `neq(o, some(red))` BESIDE its own `eq` — the negation \
-         exists only because arm 1 is GROUND, which it is only because the nested `red` \
-         was rewritten"
+        3,
+        "arm 2 carries the earlier `neq(o, some(red))` BESIDE its own `eq` and `===` — the \
+         negation exists only because arm 1 is GROUND, which it is only because the nested \
+         `red` was rewritten"
     );
-    assert_eq!(facts[2].len(), 3, "and `none()` knows both earlier values");
+    assert_eq!(facts[2].len(), 4, "and `none()` knows both earlier values");
 }
 
 /// THE SECOND, QUIETER SYMPTOM the ticket named: the WI-580 unfold case-splits a

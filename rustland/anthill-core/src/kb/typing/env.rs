@@ -314,7 +314,16 @@ pub struct TypingEnv {
     ///
     /// Op-scoped by construction: `check_operation_bodies` builds a fresh `TypingEnv` per
     /// body, so nothing leaks between operations.
+    ///
+    /// A call refused for the guarded row of the operation it is written in
+    /// ([`hold_call_to_guarded_row`]) is recorded here too, for the same reason: the call's
+    /// type and effects are still read, and the operation's other verdicts still reported.
     deferred_preconditions: Option<Rc<std::cell::RefCell<Vec<TypeError>>>>,
+    /// The guarded elements of the enclosing operation's own row, which each call in its
+    /// body is held to ([`hold_call_to_guarded_row`]). Set by `check_operation_bodies` for an
+    /// operation whose row has one; cleared for a lambda's body, whose effects are incurred
+    /// where the function is applied.
+    guarded_row: Option<Rc<GuardedRow>>,
 }
 
 impl TypingEnv {
@@ -344,7 +353,18 @@ impl TypingEnv {
             // WI-20260830-JM7A8: OFF by default — see the field doc. Only a caller that
             // drains installs a sink.
             deferred_preconditions: None,
+            guarded_row: None,
         }
+    }
+
+    /// Hold the calls of this body to `row` (see the field doc); `None` for a body that is
+    /// held to none.
+    pub(super) fn hold_to_guarded_row(&mut self, row: Option<Rc<GuardedRow>>) {
+        self.guarded_row = row;
+    }
+
+    pub(super) fn guarded_row(&self) -> Option<&Rc<GuardedRow>> {
+        self.guarded_row.as_ref()
     }
 
     /// WI-20260830-JM7A8 — install this body's sink for deferred value-precondition

@@ -27,6 +27,7 @@ use anthill_core::kb::typing::{
 use anthill_core::kb::KnowledgeBase;
 use anthill_core::span::{SourceId, SourceSpan};
 use std::rc::Rc;
+use anthill_core::kb::term_view::{TermView, ViewHead};
 
 /// `f(args)` as a transient goal `Value` (an `Entity`, the carrier
 /// `make_goal_value` uses internally) — the shape the typer puts into Γ.
@@ -208,7 +209,12 @@ fn match_case_0_carries_neq_into_the_wildcard_arm() {
     let arms = vec![(lit_pat(0), false), (wildcard_pat(), false)];
     let facts = match_arm_gamma_facts(&mut kb, &s, &arms, &[]);
 
-    assert_eq!(facts[0].len(), 1, "case 0 ⇒ one pattern fact eq(s,0)");
+    assert_eq!(facts[0].len(), 2, "case 0 ⇒ the pattern fact eq(s,0) and s === 0");
+    let struct_eq = kb.try_resolve_symbol("anthill.kernel.struct_eq").expect("struct_eq");
+    assert!(
+        matches!(facts[0][1].head(&kb), ViewHead::Functor { functor, .. } if functor == struct_eq),
+        "a match is structural, so the arm also shows s === 0"
+    );
     assert_eq!(
         facts[1].len(),
         1,
@@ -317,8 +323,8 @@ fn match_nullary_ctor_arms_accumulate_negations() {
     ];
     let facts = match_arm_gamma_facts(&mut kb, &s, &arms, &[red, green]);
 
-    assert_eq!(facts[0].len(), 1, "red arm: eq(s,red)");
-    assert_eq!(facts[1].len(), 2, "green arm: neq(s,red) + eq(s,green)");
+    assert_eq!(facts[0].len(), 2, "red arm: eq(s,red) + s === red");
+    assert_eq!(facts[1].len(), 3, "green arm: neq(s,red) + eq(s,green) + s === green");
     assert_eq!(facts[2].len(), 2, "wildcard arm: neq(s,red) + neq(s,green)");
 
     let mut flow = FlowEnv::empty();
@@ -348,8 +354,8 @@ fn match_binding_arm_carries_alias_fact_but_no_negation() {
     let facts = match_arm_gamma_facts(&mut kb, &s, &arms, &[]);
     assert_eq!(
         facts[0].len(),
-        1,
-        "a binding arm carries the alias fact eq(s, x)"
+        2,
+        "a binding arm carries the alias fact eq(s, x), and s === x"
     );
     let flow = FlowEnv::empty().assume(&mut kb, facts[0][0].clone());
     assert!(
@@ -358,8 +364,8 @@ fn match_binding_arm_carries_alias_fact_but_no_negation() {
     );
     assert_eq!(
         facts[1].len(),
-        1,
-        "the literal arm carries only its own eq(s,0) — the binding arm negates nothing"
+        2,
+        "the literal arm carries only its own eq(s,0) and s === 0 — the binding arm negates nothing"
     );
 }
 
@@ -394,8 +400,8 @@ fn match_constructor_binder_arm_carries_destructure_fact() {
     let facts = match_arm_gamma_facts(&mut kb, &s, &arms, &[some, none]);
     assert_eq!(
         facts[0].len(),
-        1,
-        "the some(x) arm carries one destructure fact eq(s, some(x))"
+        2,
+        "the some(x) arm carries the destructure fact eq(s, some(x)), and s === some(x)"
     );
     let flow = FlowEnv::empty().assume(&mut kb, facts[0][0].clone());
     assert!(

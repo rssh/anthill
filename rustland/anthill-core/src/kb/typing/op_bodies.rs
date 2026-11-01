@@ -577,6 +577,11 @@ pub(super) fn check_operation_bodies(
             errors.push(err);
             continue;
         }
+        // Each call in the body, and in a parameter default, is held to the row's guarded
+        // elements where it incurs their label (§5.5).
+        let guarded_row =
+            GuardedRow::of(kb, op.op_sym, &op.rigidify, &effective_effects).map(Rc::new);
+        env.hold_to_guarded_row(guarded_row.clone());
 
         // WI-270: thread the declared return type as the body's
         // top-down `expected`. The body's `let v: T = …`-style
@@ -667,6 +672,7 @@ pub(super) fn check_operation_bodies(
                 continue;
             }
             let mut default_env = base_env.clone();
+            default_env.hold_to_guarded_row(guarded_row.clone());
             for (name, ty) in &op.params[..at] {
                 default_env.bind_var(*name, env.lookup_var(*name).unwrap_or_else(|| ty.clone()));
             }
@@ -1196,10 +1202,9 @@ fn undeclared_effects(
             // CONTAINS its label ([`guarded_effect_label`]'s reading),
             // so a body incurring raw `L` — `head`'s raise under the
             // declared `Error[EmptyStream] :- isEmpty(s)` — is within
-            // the declaration. The guard is a CALL-SITE discharge
-            // device (WI-067), not a body-side obligation — the
-            // author's asserted claim, exactly as for the body-less
-            // partial primitive `div`.
+            // the declaration here. Whether `L` is incurred only where
+            // `g` holds is asked at each call, where Γ says what holds
+            // ([`hold_call_to_guarded_row`]).
             //
             // WI-20260830-APWM3 LEFT THAT SECOND LEG FIRING NOWHERE, and it
             // is kept deliberately rather than by oversight. `guarded` is

@@ -10936,6 +10936,20 @@ impl KnowledgeBase {
         self.has_equational_head(id)
     }
 
+    /// A guarded `=` law — `isEmpty(?s) = true :- splitFirst(?s) === none`: a live rule with
+    /// a body whose head is the `eq` connective. A clause of `eq` that a proof from Γ takes as
+    /// a premise (kernel-language.md §5.3).
+    pub fn is_guarded_eq_law(&self, id: RuleId) -> bool {
+        let entry = &self.rules[id.index()];
+        !entry.retracted
+            && !entry.body_nodes.is_empty()
+            && matches!(
+                term_view::TermView::head(&entry.head, self),
+                term_view::ViewHead::Functor { functor, pos_arity: 2, .. }
+                    if self.eq_connective_sym == Some(functor)
+            )
+    }
+
     /// WI-20260820-8RJK8 — the EQUATION-HEAD shape alone: the canonical `eq` (`=`)
     /// or `unify` (`<=>`) connective at 2 positional args, on a live rule. Body-
     /// agnostic, and that is the whole difference from [`Self::is_equation`].

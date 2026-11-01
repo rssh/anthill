@@ -3823,6 +3823,7 @@ pub(super) fn dispatched_impl_effects_of(
             // `b` that the call's argument must be bound to; the caller names and orders the
             // SPEC op's params, which the loop above pairs through [`bound_arg`] — the
             // ranking ([`positional_param_indices`]) `build_call_guard_sigma` reads too.
+            let before = out.len();
             let incurred = push_effect_with_guard_discharge(
                 kb,
                 flow,
@@ -3832,6 +3833,15 @@ pub(super) fn dispatched_impl_effects_of(
                 walked,
                 &mut out,
             );
+            hold_call_to_guarded_row(
+                kb,
+                call.env,
+                flow,
+                &guard_sigma,
+                &out[before..],
+                impl_op_sym,
+                span,
+            )?;
             if let (true, None, Some(keys)) = (incurred, &leak, &keys) {
                 leak = placeless_modify(kb, keys, &impl_op.params, e, &places.placeless);
             }

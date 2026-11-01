@@ -3172,6 +3172,13 @@ Two boundaries are deliberate. A **guarded** equation — `lhs = rhs :- guard` �
 
 **The tag still decides, and the guard does not substitute for it.** `@[simp]` / `@[unfold]` remains the enablement (WI-881, above): an untagged guarded equation is exactly as inert as an untagged bodyless one. That is what keeps `field.anthill`'s `div(?a, ?b) = mul(?a, recip(?b)) :- neq(?b, 0)` a **law about** division rather than a rewrite that turns every division into a reciprocal multiply — the guard says *when the equation is true*, the tag says *whether to orient it*, and they are different questions. The corresponding obligation is on whoever tags one: a tagged guarded equation is a **rewrite**, so its right-hand side must be smaller than its left in whatever sense makes the normalizer stop. The stdlib tags only reducing ones and leaves `logical_stream.anthill`'s recursive `interleave` laws untagged with that reason written at them.
 
+**A guarded `=` law is a premise of a proof from what holds in a body.** Beside the `eq`
+builtin, resolution tries no clause whose head is an equality connective, so
+`rule isEmpty(?s) = true :- splitFirst(?s) === none` answers no `eq` goal of a rule body.
+Where the typer proves a goal from what holds at a point of an operation body — a guard's
+discharge, a precondition, an in-body `proof`, a guarded row (§5.5) — it does, tagged or
+not: `isEmpty(s)` is shown where `splitFirst(s) === none` holds.
+
 **Every firing site answers alike** — the resolver's rewriter, the typer's operation-body pass and the typer's dot-rule pass all share one guard evaluator — so a tagged rule means the same thing at a resolution goal, in the operation body that spells the same call, and at a method call. At the typer the redex is compile-time syntax, so most guards are simply under-determined and decline; the ones that fire are the ones already decidable from the program text (`nth(xs, -1)` under `nth(?_, ?i) = none :- lt(?i, 0)`), which is constant folding.
 
 A tagged equation may not put a call of a potentially effectful operation where it fires: one whose declared effect row is not empty, or is a row variable an effectful carrier can fill. Rewriting such a call duplicates, reorders or drops it, and an effectful operation is not equational. An operation the rule names, on either side or in its guard, is refused where the rule is loaded. The operation a dot reaches is the receiver's, known only where the rule fires, so three calls are refused at each call the rule rewrites, naming the rule: one a dot in the rule's text reaches, the one a dot rule replaces (what its member reaches on that receiver without the rule), and one the macro at the head of the right-hand side builds. The macro itself is not such a call, since it runs when the rule fires and leaves only what it builds. With `rule dr: dot_apply(?e, bump, ?x) <=> ?e.inner().risky(?x) @[simp]` in `Holder`, where `inner` returns an `Other` whose `risky` declares `effects Error[Boom]`, the rule loads and `h.bump(5)` is refused where it is written. A rule no call fires on is refused for none of the three.
@@ -3825,6 +3832,31 @@ promises the operation that `f` raises only where `x` is 0, and the operation's 
 row is checked on that promise. An argument whose row holds `Error[DivisionByZero]`,
 guarded or not, is refused there, because nothing shows it raises only where the
 guard holds. A parameter that writes the label unguarded admits it.
+
+An operation's body is held to the guarded elements of its own row. Where the row
+admits a label `L` only under a guard `g`, each call in the body that incurs `L` must
+show `g` from what holds at the call: the conditions and match arms it is under, the
+operation's preconditions and the laws of the knowledge base, with the callee's own
+guard for `L` assumed, its parameters substituted. A write through a `let`- or
+pattern-bound name is the write to the memory the name reaches at the call (§5.6).
+Otherwise the call is refused, naming `L` and `g`. A lambda's body is not held there:
+its effects are incurred where the function is applied.
+
+```
+operation always(s: Cell[V = Int64], b: Bool) -> Unit effects { Modify[s] :- eq(b, true) } =
+  Cell.set(s, 7)                          -- refused: nothing shows eq(b, true)
+operation onlyIf(s: Cell[V = Int64], b: Bool) -> Unit effects { Modify[s] :- eq(b, true) } =
+  if b then Cell.set(s, 7) else ()        -- loads: under `if b`, `b = true` holds
+operation safeDiv(a: Int64, b: Int64) -> Int64 effects { Error[DivisionByZero] :- eq(b, 0) } =
+  div(a, b)                               -- loads: `div`'s own guard is eq(b, 0)
+```
+
+A match arm shows that its scrutinee is its pattern, `=` and `===` both; the branches of
+`if b` show `b = true` and `b = false`; and a fact that holds answers a goal written as it
+is (`isEmpty(xs)` under `if isEmpty(xs)`). A callee's guard is not assumed where it names a
+parameter the call gives no argument term for.
+`Stream.head` raises in the `none()` arm of `match splitFirst(s)`; the law
+`isEmpty(?s) = true :- splitFirst(?s) === none` shows its guard `isEmpty(s)` there (§5.3).
 
 **An `eq`/`neq` guard is refuted by the carrier's OWN equality** (WI-755), because
 the refutation is an ordinary resolution of the negated goal and `=` is the

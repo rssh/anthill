@@ -78,7 +78,7 @@ namespace test.gcb
     Error.raise(division_by_zero(who))
 
   operation guardedSeven(b: Int64) -> Int64 effects {Error[DivisionByZero] :- eq(b, 0)} =
-    if b === 0 then raisesDbz("guardedSeven") else 7
+    if eq(b, 0) then raisesDbz("guardedSeven") else 7
 
   -- One label twice in one lambda's row, unguarded and guarded; no dispatch.
   operation bothCopies(b: Int64) -> Result[E = DivisionByZero, T = Int64] =

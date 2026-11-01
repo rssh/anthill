@@ -341,11 +341,11 @@ namespace test.x5sb4.e
     entity boom(why: String)
   end
   operation safe(n: Int64) -> Int64 effects { Error[Boom] :- eq(n, 0) } =
-    if n === 0 then Error.raise(boom("z")) else n
+    if eq(n, 0) then Error.raise(boom("z")) else n
   operation stampIf(b: Bool) -> String effects { Clock :- eq(b, true) } =
     if b then now() else "none"
   operation stampIfN(n: Int64) -> String effects { Clock :- eq(n, 1) } =
-    if n === 1 then now() else "none"
+    if eq(n, 1) then now() else "none"
 "#;
 
 fn with_safe(item: &str) -> String {
