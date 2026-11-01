@@ -3,9 +3,9 @@
 - id: WI-20261013-RYDNV-068-c1d-one-classification-per
 - created: 2026-10-13T08:03:31Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-10-13T08:03:31Z
+- status_at: 2026-11-01T07:54:58Z
 
 - acceptance: cargo-test
 
@@ -84,4 +84,8 @@ NINTH PART DELIVERED (6fe43e84; 068-implementation.md §6.21, kernel-language §
 ### 2026-10-31T22:32:36Z — feedback — claude
 
 TENTH PART DELIVERED (3b9f3425; 068-implementation.md §6.22, kernel-language §5.3, requirement-channel §5.2): a call under a lambda, let, match or if whose open instance a clause variable carries is a condition of its clause, read before the goal that holds the form — rule pick(?f, ?a, ?b, ?e) :- ?e <=> (if ?f then Util.sign(?a, ?b) else 1) answers 4 / -4 under Descending / Ascending (HEAD: refused at load), WeakOrd.compare under a form answers the citation (HEAD: -1, by value, under every citation), and a lambda keeps the dictionary it is built with. The read is labelled in_form: where no provider is at the carrier it binds the absence (NoProvider) instead of failing, so a branch not taken costs the clause nothing (pick(false, box(v: 1), …) answers 1) and a taken one fails at the call; an in-form slot read is derived by the bridge's resolve_bridge_requirements instead of being dropped as routing-only, and the evaluator applies a woven slots call (start_apply_with_woven_slots). Decided with the user: option 1 for the untaken branch. A call one of whose arguments names a form's own binder (a lambda parameter, a let's or a case's binder) keeps its class, decided as in an operation body (TypingEnv::clause_supplies_requirements). A @[simp] equation whose right-hand side holds a form now loads where it is used from a rule. MEASURED with five back-out switches, each reddening a row. Moved by design: P7VP4's untaken-branch row (restated and renamed), two wi_9wvt7 rows now refused at the catcher's pattern instead of the raise. NOT CHANGED, found: Error.raise / Error.reify's own requires are never clause conditions (the 28TAT site, stamp_op_scoped_dicts), at a goal or in a thunk; a spec operation on a lambda's own parameter stays value-directed. Full workspace 11,311 passed, families green. LEFT: nothing of the earlier LEFT lists; the ticket still depends on R1W5A and GFS6A.
+
+### 2026-11-01T07:54:57Z — feedback — claude
+
+DELIVERED (2026-11-01, on 3b72dbdc): every LEFT list is empty and both dependencies (R1W5A, GFS6A) are delivered. The description's rows are in place: the four classes of requirement-channel §5.2 (pinned, conditional, refused, value-directed) are read by the typer's refusal, its pin and the inference's weave from the one ClauseCondition stamp; ?c = Util.sign(?a, ?b) and PartialEq.eq(Util.sign(?a, ?b), ?c) are woven as the goal form (third part), Holder.hsign is the clause's condition (fourth), Mk.mk(?c) is refused in every position (third), a call with nothing at its carrier is refused unless a require supplies it (first), GBH5F's viaRule answers 7 (second), 0RRQP's dotOutside/valOutside flip to -4 (fifth), the walk gate reads no provider (seventh), SHED7's fromList has tiny-sat's 2 models (ninth), a call under a form is its clause's condition (tenth). The tenth part's NOT CHANGED finding is the spec's decided behaviour, not a part of this ticket: Error.reify's TypePattern and Error.raise's TypeValue are refused where the clause leaves the payload open, in a rule body as in a thunk (kernel-language §8.7). Full workspace 11,334 passed on HEAD. Unblocks Y6ZCD, DEY66, TC54R and SHED7; 7D48J still waits on 5G28A.
 

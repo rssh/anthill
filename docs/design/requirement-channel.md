@@ -487,7 +487,7 @@ provision at the carrier determines is read off that provision, as `Iterable.fin
 One provider does not pin a parameter the call leaves open: it is no evidence, and a provider a
 later load adds would turn the call into a refusal.
 
-As built so far (`068-implementation.md` §6.13–§6.22): the rigid carrier, in both bodies;
+As built (`068-implementation.md` §6.13–§6.22): the rigid carrier, in both bodies;
 the pinned class for an operation's own `requires`; for that requirement, the conditional class
 in every position the goal runs a call (an `=` operand included) and the refused class; the
 same for a member of a sort that `requires`, its woven call marked as carrying its chain's
