@@ -3,9 +3,9 @@
 - id: WI-20261014-VVRHJ-an-entity-s-field-is-read-as-a
 - created: 2026-10-14T12:34:32Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-10-14T12:34:32Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-11-01T11:24:44Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -43,4 +43,12 @@ MEASURED, the same mechanism from the variable side: a field named like a variab
 ### 2026-10-14T13:35:01Z — feedback — user
 
 NAMING DECIDED (user, 2026-10-14): docs/smtlib-forward-mapping.md §7.6, Names in a Document. An entity's field read as a constant is named by the entity's qualified name with the field (test.ent.A.cap), written by smt_symbol as an operation's name is; sanitize_smt_id goes with it. What stays to decide here is what a lift does with such a constant (carry it and its value with its declarations, read the field as a quantified variable its fact constrains, or refuse it).
+
+### 2026-11-01T11:23:18Z — feedback — claude
+
+BUILT, REVIEWED AND MEASURED 2026-11-01 (docs/measurements/test-infrastructure/field-constants-2026-11-01.txt). DECIDED (user, 2026-11-01): a lift reads the fact's value in place of the premise's variable and names no constant (option (b); (a) was to carry the constant with the lift's declarations); an entity of no fact is refused where a premise reads its field. WHAT IS BUILT (`anthill-smt-gen`): a field's constant is the entity's qualified name with the field (`Emitter::field_constant`, written by `smt_symbol`, §7.6); the harvest reads each field a premise binds off the entity's one fact and refuses several, none, a field the fact does not give and one of no number — the 0.0 placeholder is gone; a lift reads an entity premise by its row (`read_entity_row`), a field that is a variable leaving the variable quantified (`fact Lone(cap: ?any)` lifts, where it was refused), several facts refused through the choice point; `sanitize_smt_id` is gone, the bare-name fallback of `translate_expr` is a refusal (nothing reaches it, measured); WITNESS_FORMAT_VERSION 5 → 6. scaland (no lift): the naming, the refusals of no fact / several facts / a field of no number, and its free-variable scan reads `ns.E.var_0` whole. THE CONTROL: `small` COUNTEREXAMPLE, its twin proved; `plain` COUNTEREXAMPLE; the `var_0` field a verdict; a z3-proved lemma about `Lim` cited by a proof reading `B(cap: …)` — PROVED a false claim on 0e696fe2 — COUNTEREXAMPLE. 5 CLI rows (`wi_vvrhj_field_constant_test`), all five failing on 0e696fe2's binary; each part backed out alone fails its rows (Rust 3 switches, scaland 5). DOCUMENTS: lf1 16 — 5 to the byte, 11 moved by the constants' names alone; emitter suite 63 — 47 / 13 by names / 1 new (`kf32.emit.lone`'s lift); CLI suite 269 — 208 / 52 by names / 6 otherwise (the two lifts that named a constant, their consumers, `prove_ranking_test`'s sub-queries) / 12 new; each listed in the measurement file §5. `prove_ranking_test`'s fixture had no `State` fact and proved because `lt(?u, 0)` is false at 0.0 — vacuously true, never checked of every state; it now has `fact State(upc: ?u, upc_next: ?n)` and proves for its own reason. /code-review: 11 findings, 10 done. FOUND, NOT OF THIS: scaland does not resolve a rule named `none`.
+
+### 2026-11-01T11:24:43Z — feedback — claude
+
+Committed as 66da0a5d on 0e696fe2.
 
