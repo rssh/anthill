@@ -21,3 +21,7 @@ A NAME IS ITS SYMBOL IN EVERY SPELLING AND POSITION, AND A NAME NOTHING DECLARES
 
 MEASURED 2026-10-30 on 2c0ae33e: decision (b) has a function-slot case, filed as WI-20261030-4BXDW. A dotted operation name handed to a rule-body call's arrow-typed parameter (`apply1(S.twice, 3, ?r)`, `apply2(Int64.max, 3, 9, ?r)`) loads clean and is undecided at run time, and the value-slot spelling `?r <=> apply1(S.twice, 3)` is refused with the typer's internal-defect text, where the operation body's `apply1(S.twice, 3)` and the imported one-segment `twice` answer 6 (one-segment names passed as data are applied since WI-20261023-Y6QW2, 4903165d). Whichever reading (b) takes decides that ticket's fix.
 
+### 2026-11-01T00:12:09Z — feedback — user
+
+DECISION (b), PART OF IT — user, 2026-11-01, asked under WI-20261030-4BXDW: TYPE-DIRECTED. Where a call's parameter is function-typed, a dotted operation name (S.twice, CA.wrap, Int64.max) is the operation, typed and run as its one-segment name is (an eta at the slot's arrow; a body-less operation refused at the argument), in a rule body and in a query; elsewhere in a rule body's value slot one that takes arguments denotes nothing, as the one-segment name does. NOT decided, and left here: a dotted operation or rule name in every OTHER data slot — a fact's column, a relation goal's argument — keeps the chain (fact holds(S.twice) holds S.twice, found by holds(S.twice) and not by holds(twice)), and §6.7's fact holds(nsx.tgt) example stands. Decisions (a) and (c) untouched.
+
