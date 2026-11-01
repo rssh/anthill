@@ -210,7 +210,7 @@ pub(super) fn collect_provides_candidates(
 ) -> Vec<Candidate> {
     // WI-20261011-A3NND — a run of the provision check asks what it put here.
     note_candidate_search(kb, goal, sigma);
-    candidates_at(kb, goal, sigma, &[])
+    candidates_at(kb, goal, sigma, &[], GoalReading::CallSite)
 }
 
 /// WI-20261003-QGVB1 — what the provisions answering the slots a goal WRITES say of the slots
@@ -250,7 +250,7 @@ pub(super) fn open_slots_said(
 ) -> OpenSlotsSaid {
     note_open_slot_search();
     let (written, open_names) = written_slots(kb, goal, open);
-    let candidates = candidates_at(kb, &written, None, &open_names);
+    let candidates = candidates_at(kb, &written, None, &open_names, GoalReading::CallSite);
     let mut said: Option<Vec<Option<Value>>> = None;
     for cand in &candidates {
         let view = provision_fact_spec(kb, cand.row)
@@ -341,6 +341,99 @@ impl OpenSlotsNamedApart {
     }
 }
 
+/// Why no provision answers a `goal` that leaves a slot of a type in it unfixed: the
+/// provisions that answer it do so at instances of that slot only (§5.2). The slots, as
+/// `N` of `Buf`, and those providers.
+pub(super) struct UnfixedAtInstances {
+    /// Each slot, as the parameter's short name and its sort's.
+    slots: Vec<(String, String)>,
+    pub(super) providers: Vec<String>,
+}
+
+impl UnfixedAtInstances {
+    /// `None` where that is not why: the goal fixes every slot of every type it holds, a
+    /// provision answers it as it stands — one that holds at every value of the slot, whose
+    /// failure is then beneath it — or no provision answers it at any value of the slots it
+    /// leaves unfixed. Asked where only a search beneath had failed, a derived row generic in
+    /// the slot (`TypeValue[T = List[T = E]]` at a bare `List`) was named as one at an
+    /// instance, and its library's own repair dropped (MEASURED: `wi_n31xx…::a_library_spec_
+    /// with_no_answering_row_is_refused_naming_a_value`).
+    pub(super) fn of(
+        kb: &mut KnowledgeBase,
+        goal: &SortGoal,
+        sigma: Option<&SigmaCtx>,
+    ) -> Option<Self> {
+        let mut slots: Vec<(String, String)> = Vec::new();
+        for (_, v) in &goal.bindings {
+            unfixed_slots_of(kb, v, &mut slots);
+        }
+        if slots.is_empty() || !candidates_at(kb, goal, sigma, &[], GoalReading::CallSite).is_empty()
+        {
+            return None;
+        }
+        let mut providers: Vec<String> = Vec::new();
+        for cand in candidates_at(kb, goal, sigma, &[], GoalReading::AtAnyInstance) {
+            let name = kb.qualified_name_of(cand.impl_sort).to_string();
+            if !providers.contains(&name) {
+                providers.push(name);
+            }
+        }
+        (!providers.is_empty()).then_some(UnfixedAtInstances { slots, providers })
+    }
+
+    /// "nothing here fixes `N` of `Buf`, and `QB` provides `Store` only at an instance of
+    /// it: write it in the type of the value".
+    pub(super) fn account(&self, spec: &str) -> String {
+        let slots: Vec<String> = self
+            .slots
+            .iter()
+            .map(|(param, sort)| format!("`{param}` of `{sort}`"))
+            .collect();
+        let providers: Vec<String> = self.providers.iter().map(|p| format!("`{p}`")).collect();
+        let provide = if providers.len() == 1 { "provides" } else { "provide" };
+        let it = if slots.len() == 1 { "it" } else { "them" };
+        format!(
+            "nothing here fixes {}, and {} {provide} `{spec}` only at an instance of {it}: \
+             write {it} in the type of the value",
+            slots.join(", "),
+            providers.join(" and "),
+        )
+    }
+}
+
+/// Each slot of a sort in `ty` that `ty` leaves unfixed — left out, or given the
+/// placeholder of a parameter nothing named — as `N` of `Buf`, pushed to `out`.
+fn unfixed_slots_of(kb: &mut KnowledgeBase, ty: &Value, out: &mut Vec<(String, String)>) {
+    if !applies_a_sort_with_its_variables(kb, ty) {
+        return;
+    }
+    let Some((base, written)) = sort_application_parts(kb, ty) else {
+        return;
+    };
+    let sort_name = short_name_of(kb.local_name_of(base)).to_owned();
+    for param in kb.type_params_of_sort(base) {
+        let short = short_name_of(&param).to_owned();
+        if sort_param_is_effect_row(kb, base, &short) {
+            continue;
+        }
+        let value = written
+            .iter()
+            .find(|(k, _)| short_name_of(kb.local_name_of(*k)) == short)
+            .map(|(_, v)| v.clone());
+        match value {
+            Some(v) if !is_unfixed_element(kb, &v) => {
+                unfixed_slots_of(kb, &v, out)
+            }
+            _ => {
+                let slot = (short, sort_name.clone());
+                if !out.contains(&slot) {
+                    out.push(slot);
+                }
+            }
+        }
+    }
+}
+
 /// `goal` at the slots it writes, and the short names of the `open` ones it leaves out.
 fn written_slots(
     kb: &KnowledgeBase,
@@ -371,6 +464,7 @@ fn candidates_at(
     goal: &SortGoal,
     sigma: Option<&SigmaCtx>,
     open: &[String],
+    reading: GoalReading,
 ) -> Vec<Candidate> {
     // WI-660: the spec-base bucket (built index) or the full scan, re-filtered BY CANONICAL
     // SORT (WI-20260923-N3W68 #10 — see [`provides_rows_of_spec_in`]). Collected — the loop
@@ -514,7 +608,10 @@ fn candidates_at(
 
         let impl_param_set = impl_param_symbols(kb, impl_sort);
         let mut impl_subst: SmallVec<[(Symbol, Value); 2]> = SmallVec::new();
-        let mut notes = MatchNotes::default();
+        let mut notes = MatchNotes {
+            reading,
+            ..MatchNotes::default()
+        };
         let mut all_match = true;
         let mut resolved_head_bindings: SmallVec<[(Symbol, Value); 2]> = SmallVec::new();
         // Decoded here, for the rows the conversion test and the carrier filter kept.
@@ -1137,6 +1234,24 @@ pub(super) fn match_candidate_against_goal(
     if let Some(p) = impl_param_ref(kb, candidate_value, impl_params) {
         return match_impl_param(kb, sigma, p, per_call_value, impl_subst);
     }
+    // (1.2) WI-20261005-SGXYH — A SLOT NOTHING AT THE CALL FIXES IS MET ONLY BY A PARAMETER
+    // (§5.2): a provision that holds at every value of it answers, and one at an instance —
+    // `N = Bool`, `N = Option[T = Int64]`, an arrow — does not. Arm (3)'s subtype relation read
+    // the placeholder as compatible with anything, and the provision then chose the slot for
+    // the call: one at `N = Bool` answered `buf(v: 1)`, two tied, and beside a provision
+    // generic in `N` the instance won (MEASURED: 41 over 60). Arm (2) took the placeholder
+    // apart as an application of the `TypeVar` extractor, so a provision at a structured
+    // instance was never named, and two of them loaded and died at run time
+    // (`AmbiguousSpecOpDispatch`). A candidate that is a type parameter of another scope
+    // answers anywhere, as arm (3) says. A provision's head asked for its specificity is no
+    // call, and is read as before ([`GoalReading::ProvisionHead`]).
+    if is_unfixed_element(kb, per_call_value) && !is_type_param_view(kb, candidate_value) {
+        match notes.reading {
+            GoalReading::CallSite => return false,
+            GoalReading::AtAnyInstance => return true,
+            GoalReading::ProvisionHead => {}
+        }
+    }
     // One reading of the candidate's head serves the two arms that turn on it.
     let candidate_head = type_head(kb, candidate_value);
     // (1.5) Candidate side is an ARROW — matched part by part, the parts paired as two
@@ -1273,6 +1388,24 @@ pub(super) fn match_candidate_against_goal(
         if matches!(type_head(kb, per_call_value), TypeHead::Nothing) {
             note_open_at_bottom(kb, candidate_value, impl_params, notes);
             return true;
+        }
+        // A SORT WRITTEN WITH SLOTS LEFT OUT IS THAT SORT AT AN OPEN SLOT IN EACH (§8.1; see
+        // [`unwritten_slots_opened_at`]), so `Bag` is matched as `Bag[T = ?]` is.
+        if let Some(opened) = (notes.reading != GoalReading::ProvisionHead)
+            .then(|| unwritten_slots_opened_at(kb, per_call_value, c_base))
+            .flatten()
+        {
+            return match_candidate_against_goal(
+                kb,
+                impl_sort,
+                at,
+                candidate_value,
+                &opened,
+                impl_params,
+                impl_subst,
+                notes,
+                sigma,
+            );
         }
         // (2a) WI-20261001-80ZV8 — THE GOAL'S VALUE IS A CARRIER OF THE CANDIDATE'S SORT.
         // `sort Strm … provides Iter[C = Strm[T = T, E = E], …]` — the form `C = Self`
@@ -1549,6 +1682,76 @@ pub(super) fn match_candidate_against_goal(
     false
 }
 
+/// Is `ty` an element of a goal nothing at the call fixes ([`GoalReading`]): the anonymous
+/// placeholder a parameter no argument names is given (`buf(v: 1)`'s `N`), or a flexible
+/// variable — the one a bare sort is opened at, or one inference has not bound?
+///
+/// NOT the empty literal's element ([`EMPTY_LITERAL_ELEMENT`]): it stands for a type no
+/// value has, below every instance, and `Store.peek([])` beside a provision at `List[T =
+/// Int64]` answers as `let xs = []` does (MEASURED: read as unfixed it was refused, naming
+/// `T` of `List`, where the named spelling ran). Nor a named placeholder (`TypeVar[name =
+/// T]`, a sort's own parameter as a field reads it), nor a skolem: an opened existential is
+/// fixed, by the callee, and no type written at the call could say it.
+fn is_unfixed_element(kb: &KnowledgeBase, ty: &Value) -> bool {
+    match type_head(kb, ty) {
+        TypeHead::TypeVar(name) => anonymous_var_name(kb, name),
+        TypeHead::FlexVar(_) => true,
+        _ => false,
+    }
+}
+
+/// `value`, a reference to or an application of `base` itself that leaves some of its
+/// parameters out, at a fresh variable in each it leaves out; `None` for any other value.
+///
+/// WI-20261005-SGXYH — THE BARE SPELLING IS THE OPEN-SLOT SPELLING (§8.1), read in the
+/// matcher so that every reader of a goal reads it: a requirement's construction, the
+/// named-slot inference, a selection's check, a spec operation's dispatch. A result nothing
+/// has named is typed at the bare sort (`size(MutableStack.new())` owes `Iterable[C =
+/// MutableStack, …]`), and a provision binds the applied form (`Iterable[C = MutableStack[T],
+/// …]`), which the bare one did not match. WI-20261005-2KV4Y read it in the dictionary
+/// construction alone, and asked it only where the goal as written found nothing — so
+/// beside `Gen provides Store[State = X]`, which matches `Bag` as written, `User.go1(Bag.
+/// empty())` ran Gen (55) where `User[S = Bag[T = ?]].go1(…)` reached `PBag provides
+/// Store[State = Bag[T = E]]` (7), a selection of `PBag` was refused beside `Gen`, and a
+/// direct `Store.peek(Bag.empty())` ran Gen too (MEASURED). Each element is opened where it
+/// stands, so a bare sort is opened in whichever element of the goal it is written
+/// (`…a_bare_sort_is_opened_in_whichever_element_it_stands`).
+fn unwritten_slots_opened_at(kb: &mut KnowledgeBase, value: &Value, base: Symbol) -> Option<Value> {
+    let head = match type_head(kb, value) {
+        TypeHead::SortRef(sort) | TypeHead::Parameterized { base: sort } => sort,
+        _ => return None,
+    };
+    if !same_sort_canonical(kb, head, base) || !applies_a_sort_with_its_variables(kb, value) {
+        return None;
+    }
+    expand_sort_application(kb, value)
+}
+
+/// Is `ty` a reference to, or an application of, a sort that declares parameters and has a
+/// variable for each?
+///
+/// [`expand_sort_application`] rebuilds the application from those variables, and its
+/// reader ASSERTS on a declared parameter that has none ([`published_param_var`], WI-954).
+/// One shape has none: the dotted `sort Inner.T = ?` of a secondary entry, which the loader
+/// has already refused and the typer still walks. Expanded on the way to a refusal, such a
+/// sort turned the load's two errors into a panic (MEASURED: `wi1000`'s dotted fixture with
+/// its provision taken away; `wi_2kv4y_unfixed_carrier_test
+/// …a_sort_the_loader_has_refused_is_not_opened`). It is not a sort this reading can state,
+/// and the goal as written is what is reported for it.
+fn applies_a_sort_with_its_variables(kb: &KnowledgeBase, ty: &Value) -> bool {
+    let head = extract_sort_ref_sym(kb, ty).or_else(|| match extract_type(kb, ty) {
+        TypeExtractor::Parameterized { base, .. } => Some(base),
+        _ => None,
+    });
+    head.is_some_and(|sort| {
+        let declared = kb.type_param_syms_of(sort);
+        !declared.is_empty()
+            && declared
+                .iter()
+                .all(|&param| kb.canonical_type_param_var(param).is_some())
+    })
+}
+
 /// What matching a provision's head against a goal noted beside its verdict.
 #[derive(Clone, Debug, Default)]
 pub(super) struct MatchNotes {
@@ -1557,6 +1760,31 @@ pub(super) struct MatchNotes {
     /// conditions name one is no candidate ([`provider_conditions_name`]): which of its
     /// instances would answer is a guess.
     pub(super) open_at_bottom: SmallVec<[Symbol; 2]>,
+    /// What the goal side is, which decides how an element nothing fixes is met and whether
+    /// a sort written with slots left out is opened ([`GoalReading`]).
+    pub(super) reading: GoalReading,
+}
+
+/// What [`match_candidate_against_goal`]'s goal side is, and so how it meets an element
+/// nothing at the call fixes ([`is_unfixed_element`]): the placeholder a parameter no
+/// argument names is given (`buf(v: 1)`'s `N`), or a slot a sort written with parameters left
+/// out leaves open (`Bag.empty()`'s `T`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum GoalReading {
+    /// A call's goal: only a provision's own parameter meets such an element, so a provision
+    /// that holds at every value of the slot answers and one at an instance of it does not
+    /// (§5.2).
+    #[default]
+    CallSite,
+    /// A call's goal, any type meeting such an element. Asked only to name the provisions at
+    /// an instance that the call would need the slot written for ([`UnfixedAtInstances`]).
+    AtAnyInstance,
+    /// Another provision's head, asked whether a row answers there ([`head_answers_at`]): it
+    /// is compared as written. Opened, a bare head (`Desc[T = Box]`) and an applied one
+    /// (`Desc[T = Box[V = W]]`) answered each other and tied, where the applied one is the
+    /// more specific (MEASURED: `Store.peek(b)` at a `Box[V = Int64]` refused as ambiguous
+    /// where it answered through the applied head).
+    ProvisionHead,
 }
 
 /// Record in `notes` the provider's parameters the structured head `candidate_value` holds,
@@ -2203,7 +2431,10 @@ fn heads_more_specific(kb: &mut KnowledgeBase, a: &Option<RankedHead>, b: &Optio
 fn head_answers_at(kb: &mut KnowledgeBase, row: &RankedHead, asked: &RankedHead) -> bool {
     let goal = &asked.as_goal;
     let mut impl_subst: SmallVec<[(Symbol, Value); 2]> = SmallVec::new();
-    let mut notes = MatchNotes::default();
+    let mut notes = MatchNotes {
+        reading: GoalReading::ProvisionHead,
+        ..MatchNotes::default()
+    };
     for (key, candidate_value) in &row.written {
         let Some(asked_value) = goal_binding_value(kb, goal, *key).cloned() else {
             let short = kb.local_name_of(*key).to_string();

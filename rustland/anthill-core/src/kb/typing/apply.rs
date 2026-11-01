@@ -4172,6 +4172,39 @@ pub(super) fn check_apply_iter(
                             return Err(refusal);
                         }
                     }
+                    // A CARRIER THAT LEAVES A SLOT UNFIXED where only provisions at instances
+                    // of it would answer (WI-20261005-SGXYH, §5.2): passed through, the run
+                    // time's dispatch answered with the one such provision, or raised
+                    // `AmbiguousSpecOpDispatch` between two (MEASURED). A selected witness is
+                    // the author's choice of dictionary, and answers the slot as it stands
+                    // (WI-20260929-0RP29's `…dispatches_to_it_over_an_undecided_slot`); so is a
+                    // covering `requires` of the enclosing operation.
+                    //
+                    // IN A RULE BODY ONLY BETWEEN TWO PROVISIONS, which were refused there as a
+                    // tie before they stopped being candidates, a declared `requires(…)` or not.
+                    // One is left to the rule body's own owner ([`check_rule_body_requirements`]),
+                    // which reads a declared `requires(…)` as the rule's dictionary and which
+                    // this site cannot see: refused here, `r(?x) :- requires(Store[…]), ?x <=>
+                    // Store.peek(buf(v: 1))` was a refusal of a clause that names its dictionary
+                    // (MEASURED; it loads on the parent commit).
+                    if !pinned_spec && !op_requires_covers_call(kb, env, &subst, spec_sort) {
+                        let sigma = SigmaCtx {
+                            subst: &subst,
+                            param_rigids: env.param_rigids(),
+                        };
+                        let goal = sort_goal_from_subst(kb, &subst, spec_sort, None);
+                        let between_rivals_only = !env.in_evaluated_body();
+                        if let Some(refusal) = unfixed_slot_at_call(
+                            kb,
+                            &goal,
+                            &sigma,
+                            between_rivals_only,
+                            fn_sym,
+                            span,
+                        ) {
+                            return Err(refusal);
+                        }
+                    }
                     // WI-325: distinguish concrete-binding NoCandidates from
                     // abstract-binding NoCandidates with no covering `requires`
                     // (unsafe — dispatch will fail at first call site). A concrete

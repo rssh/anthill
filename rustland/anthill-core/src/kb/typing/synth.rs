@@ -1345,6 +1345,12 @@ pub(super) fn resolve_inner<'a>(
                     }
                 )
             }
+            // A goal that leaves a slot of a type unfixed, which provisions answer only at
+            // instances of it: the slot is the call's to write, and no row repairs it
+            // (WI-20261005-SGXYH).
+            None if let Some(unfixed) = UnfixedAtInstances::of(kb, goal, scope.sigma) => {
+                unfixed.account(kb.qualified_name_of(goal.spec_sort))
+            }
             // `provides`, not `fact`: WI-20260917-S8JYF retired `fact Spec[…]` as a
             // provision, so advising it sent the author back to this same `NoMatch`.
             None => {

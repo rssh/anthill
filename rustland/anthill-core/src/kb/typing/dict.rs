@@ -320,6 +320,10 @@ pub struct UnprovidedProvision {
     /// answered, or the spec of a condition a provision of it needed — the carrier's own
     /// `requires` included — which a row of `spec` would not repair.
     failed_at: Symbol,
+    /// The requirement leaves a slot of a type in it unfixed, and its rows answer only at
+    /// instances of that slot ([`UnfixedAtInstances`]): the search's account says so and
+    /// names the repair, which is no row.
+    unfixed_named: bool,
 }
 
 /// The spec of the goal a failed resolution failed at ([`UnprovidedProvision::failed_at`]):
@@ -506,6 +510,14 @@ impl RequirementRefusal {
                 "; the enclosing scope's {} covers only as a wildcard and is not forwarded — its element is a different type parameter under this {under} (WI-821)",
                 list.join(", "),
             ));
+        }
+        // A requirement that leaves a slot unfixed, which rows answer only at instances of: the
+        // search's account names the repair, which is no row, the library's included.
+        if self.unprovided.as_ref().is_some_and(|u| u.unfixed_named) {
+            if !self.construction.is_empty() {
+                msg.push_str(&format!("; {}", self.construction));
+            }
+            return msg;
         }
         // The library's specs take no written row, and every element is pinned here, so
         // a `requires` in scope only hands the same refusal to the caller: their repair
@@ -1337,6 +1349,7 @@ fn build_dispatching_dict_from_chain(
                                 provision_in_full: None,
                                 contract_unheld: None,
                                 failed_at: dep.required_sort,
+                                unfixed_named: false,
                             }
                         })
                     };
@@ -3177,6 +3190,7 @@ pub(super) fn unconstrained_for_want_of_a_provision(
                 provision_in_full: None,
                 contract_unheld: None,
                 failed_at: spec,
+                unfixed_named: false,
             }),
             untied: None,
         }),
@@ -3727,6 +3741,7 @@ fn open_slot_refusal(
             provision_in_full: None,
             contract_unheld: None,
             failed_at: failed_spec(nomatch, dep.required_sort),
+            unfixed_named: false,
         }),
         untied: None,
     }
@@ -3763,6 +3778,7 @@ fn unprovided_provision(
     let goal = goal_from_requires_entry(kb, dep)?;
     let carrier = pinned_goal_carrier(kb, &goal)?;
     let contract_unheld = library_contract_unheld(kb, &goal);
+    let unfixed_named = UnfixedAtInstances::of(kb, &goal, None).is_some();
     Some(UnprovidedProvision {
         carrier,
         spec: dep.required_sort,
@@ -3770,6 +3786,7 @@ fn unprovided_provision(
         provision_in_full: Some(format_goal(kb, &goal)),
         contract_unheld,
         failed_at,
+        unfixed_named,
     })
 }
 
@@ -3907,6 +3924,15 @@ enum ElementAt {
 /// a tie is left to the use ([`build_dispatching_dict_from_chain`]'s construction arm).
 /// Read as open here as well, it changed no verdict (MEASURED over this change's rows).
 fn element_at<V: TermView>(kb: &KnowledgeBase, ctx: &SigmaCtx, t: &V) -> ElementAt {
+    // The placeholder of a parameter no argument names (`buf(v: 1)`'s `N`) is open: the use
+    // that fixes it supplies the requirement (WI-20261005-SGXYH). Read as a type, the
+    // construction `user(buf(v: 1))` fixed every element and was refused where the call it is
+    // passed to fixes `N` (MEASURED, `wi_kssa4…::a_slot_the_construction_leaves_open_is_left_
+    // to_the_call`); it loaded only while two providers at `N` tied. The anonymous one only, as
+    // the matcher reads it ([`is_unfixed_element`]).
+    if matches!(type_head(kb, t), TypeHead::TypeVar(name) if anonymous_var_name(kb, name)) {
+        return ElementAt::Open;
+    }
     if !is_type_param_view(kb, t) {
         return ElementAt::Type;
     }
@@ -4215,7 +4241,48 @@ pub(super) fn unprovided_spec_at_carrier(
                 provision_in_full: in_full.then(|| format_goal(kb, goal)),
                 contract_unheld,
                 failed_at: goal.spec_sort,
+                unfixed_named: false,
             }),
+            untied: None,
+        }),
+    })
+}
+
+/// The refusal for calling an operation of spec `goal.spec_sort` where the call leaves a
+/// slot of its carrier unfixed and the provisions that answer it do so at instances of that
+/// slot only ([`UnfixedAtInstances`], §5.2). `None` where that is not why no provision
+/// answered, and where `between_rivals_only` and fewer than two providers answer. A callee
+/// the host implements is exempt, as at [`unprovided_spec_at_carrier`].
+pub(super) fn unfixed_slot_at_call(
+    kb: &mut KnowledgeBase,
+    goal: &SortGoal,
+    sigma: &SigmaCtx,
+    between_rivals_only: bool,
+    callee_op: Symbol,
+    span: Option<Span>,
+) -> Option<TypeError> {
+    if host_implements(kb, callee_op) {
+        return None;
+    }
+    let unfixed = UnfixedAtInstances::of(kb, goal, Some(sigma))?;
+    if between_rivals_only && unfixed.providers.len() < 2 {
+        return None;
+    }
+    Some(TypeError::UnsatisfiableRequirement {
+        span,
+        op: callee_op,
+        callee_sort: callee_op,
+        usage: RequirementUse::Call,
+        refusal: Box::new(RequirementRefusal {
+            account_names_every_repair: true,
+            no_scope_route: false,
+            construction_carries_repair: false,
+            dep_text: format_goal_as_written(kb, goal),
+            unconstrained: Vec::new(),
+            refused_covers: Vec::new(),
+            construction: unfixed.account(kb.qualified_name_of(goal.spec_sort)),
+            pinned: None,
+            unprovided: None,
             untied: None,
         }),
     })

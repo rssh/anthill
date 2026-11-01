@@ -70,7 +70,7 @@
 //!    [`a_call_that_fixes_nothing_is_refused_alike_in_both_spellings`] (at `typed`),
 //!    [`an_open_slot_is_not_filled_by_a_value_in_scope`],
 //!    [`a_hole_in_the_receiver_bracket_is_not_filled_either`],
-//!    [`a_tie_over_an_open_slot_is_refused_at_load_not_at_run_time`],
+//!    [`an_open_slot_reaching_an_operations_requirement_is_refused_at_load`],
 //!    [`a_requirement_declared_after_a_held_one_is_still_owed`] and
 //!    [`a_factory_that_leaves_its_sorts_requirement_unfixed_is_refused`]. Three die at run
 //!    time, "`__req_…` not bound in caller frame":
@@ -112,7 +112,7 @@
 //! 6. WI-20260929-020TH's CHAIN-END READ on its parent's read. 2 FAIL:
 //!    [`a_hole_in_the_receiver_bracket_is_not_filled_either`] (refused, but as "no impl
 //!    provides" rather than as the tie) and
-//!    [`a_tie_over_an_open_slot_is_refused_at_load_not_at_run_time`] (loads).
+//!    [`an_open_slot_reaching_an_operations_requirement_is_refused_at_load`] (loads).
 //! 7. THE ROUTE ANSWERING "NOTHING IS HELD". 3 FAIL, each refused at load:
 //!    [`an_operations_own_requirement_is_supplied_through_the_callers`] and
 //!    [`a_specs_own_operation_on_a_value_of_any_provider_runs`] — what says the cover does
@@ -127,12 +127,22 @@
 //!
 //! PASS UNDER EVERY ONE, by design: [`without_the_value_the_call_is_refused_the_same_way`],
 //! [`a_bracket_fixes_the_carrier_and_the_call_runs`],
-//! [`without_the_value_the_open_slot_is_the_same_tie`],
-//! [`one_provider_answers_an_open_slot`],
+//! [`without_the_value_the_open_slot_is_refused_the_same_way`],
 //! [`declared_before_the_held_one_it_is_refused_the_same_way`],
-//! [`a_factory_receiving_on_the_sorts_own_source_runs`], and the two that pin a case this change
-//! leaves as it was: [`beside_a_generic_provision_the_bare_spelling_runs_the_generic_one`]
+//! [`a_factory_receiving_on_the_sorts_own_source_runs`], and the two that pinned a case this
+//! change left as it was: [`beside_a_generic_provision_the_bare_spelling_reaches_the_one_at_bag`]
 //! and [`a_provision_at_one_instance_does_not_answer_a_bare_carrier`].
+//!
+//! WI-20261005-SGXYH — A SLOT NOTHING AT THE CALL FIXES IS ANSWERED ONLY BY A PROVISION THAT
+//! HOLDS AT EVERY VALUE OF IT (kernel-language §5.2), and the reading lives in the provision
+//! matcher, so the second asking of parts 4 and 5 is gone. The rows that pinned the two
+//! readings apart now read one answer: the bare `Bag` reaches the provision at `Bag[T = E]`
+//! beside a generic one (7, where it ran the generic 55), and an argument's undetermined `N`
+//! (`buf(v: 1)`) is no longer answered by a provision at one `N`
+//! ([`one_provider_at_an_instance_does_not_answer_an_open_slot`], which answered 41); two
+//! such provisions are one refusal naming both, not a tie. A cycle at the open slots is now
+//! reported as the cycle, at load. `wi_sgxyh_unfixed_slot_test` holds the rule's own rows
+//! and its ledger.
 
 use crate::common::{assert_refused_naming, load_errors_of, replace_in_fixture, run_int64};
 use crate::wi_020th_two_hop_chain_test::{at_each_spelling, Spelling, CHAIN_CALL, USER_SORT};
@@ -417,14 +427,18 @@ fn open_slot_program(ns: &str, caller: &str, entry: &str) -> String {
     program(ns, &body)
 }
 
-/// The refusal of a requirement whose carrier has an open slot two providers fit.
-fn assert_tie(errs: &[String], ns: &str, op: &str, why: &str) {
+/// The refusal of a requirement whose carrier leaves `N` open, which two providers answer
+/// at one `N` each: no tie, the slot is the call's to write.
+fn assert_slot_unfixed(errs: &[String], ns: &str, op: &str, why: &str) {
     assert_refused_naming(
         errs,
         &[
             &format!("`{ns}.Store[State = {ns}.Buf[T = anthill.prelude.Int64, N = "),
             &format!("cannot be supplied for call to `{ns}.User.{op}`"),
-            &format!("is ambiguous among providers: {ns}.PStr, {ns}.PBool"),
+            &format!(
+                "nothing here fixes `N` of `Buf`, and `{ns}.PStr` and `{ns}.PBool` provide \
+                 `{ns}.Store` only at an instance of it"
+            ),
         ],
         why,
     );
@@ -440,19 +454,19 @@ fn an_open_slot_is_not_filled_by_a_value_in_scope() {
         &format!("operation run(c: {BOOL}) -> Int64 = User.go1(buf(v: 1))"),
         "run(buf(v: 9))",
     );
-    assert_tie(&load_errors_of(&src), ns, "go1", "an open `N` beside a `c`");
+    assert_slot_unfixed(&load_errors_of(&src), ns, "go1", "an open `N` beside a `c`");
 }
 
 /// ITS CONTROL: the same call with no `c`. Passes with or without the change.
 #[test]
-fn without_the_value_the_open_slot_is_the_same_tie() {
+fn without_the_value_the_open_slot_is_refused_the_same_way() {
     let ns = "wi2kv4y.slotctl";
     let src = open_slot_program(
         ns,
         "operation run() -> Int64 = User.go1(buf(v: 1))",
         "run()",
     );
-    assert_tie(
+    assert_slot_unfixed(
         &load_errors_of(&src),
         ns,
         "go1",
@@ -471,7 +485,7 @@ fn a_hole_in_the_receiver_bracket_is_not_filled_either() {
         ),
         "run(buf(v: 9))",
     );
-    assert_tie(
+    assert_slot_unfixed(
         &load_errors_of(&src),
         ns,
         "go1",
@@ -479,25 +493,34 @@ fn a_hole_in_the_receiver_bracket_is_not_filled_either() {
     );
 }
 
-/// AN OPEN SLOT IS NOT A REFUSAL BY ITSELF: with ONE provider the slot is what that
-/// provider says, a dictionary is built, and the call runs it. Passes with or without the
-/// change — the control that the three rows above refuse the TIE.
+/// ONE PROVIDER AT AN INSTANCE DOES NOT ANSWER AN OPEN SLOT EITHER: `buf(v: 1)` fixes no
+/// `N`, and `PBool` holds at `N = Bool` only. It answered 41, the provider choosing `N` for
+/// the call; written, `N` is the call's, and the same provider answers.
 #[test]
-fn one_provider_answers_an_open_slot() {
+fn one_provider_at_an_instance_does_not_answer_an_open_slot() {
     let ns = "wi2kv4y.one";
-    let body = format!(
-        "{}{}\n  operation go() -> Int64 = User.go1(buf(v: 1))\n",
-        provider("PBool", BOOL, 40),
-        user(BOOL)
+    let body = |go: &str| {
+        format!(
+            "{}{}\n  operation go() -> Int64 = {go}\n",
+            provider("PBool", BOOL, 40),
+            user(BOOL)
+        )
+    };
+    assert_refused_naming(
+        &load_errors_of(&program(ns, &body("User.go1(buf(v: 1))"))),
+        &["nothing here fixes `N` of `Buf`, and `wi2kv4y.one.PBool` provides `wi2kv4y.one.Store` \
+           only at an instance of it"],
+        "one provider at `N = Bool`, `N` unwritten",
     );
-    assert_eq!(run_int64(&program(ns, &body), &format!("{ns}.go")), Ok(41));
+    let written = body(&format!("\n    let b: {BOOL} = buf(v: 1)\n    User.go1(b)"));
+    assert_eq!(run_int64(&program(ns, &written), &format!("{ns}.go")), Ok(41));
 }
 
 /// THE HOLDER ONE OF THE CALL'S OWN ARGUMENTS, the requirement on the OPERATION: the open
 /// `N` of `buf(v: 1)` reaches `S` through `mkS()`'s result, and `b` was taken to fill it.
 /// Loaded before and raised `AmbiguousRequirement` at run time; the tie is a load refusal.
 #[test]
-fn a_tie_over_an_open_slot_is_refused_at_load_not_at_run_time() {
+fn an_open_slot_reaching_an_operations_requirement_is_refused_at_load() {
     let ns = "wi2kv4y.owntie";
     let body = format!(
         "{}{}\n  sort Tag\n    sort T = ?\n    sort N = ?\n    entity tag\n  end\n  \
@@ -510,7 +533,7 @@ fn a_tie_over_an_open_slot_is_refused_at_load_not_at_run_time() {
         provider("PStr", STRING, 30),
         provider("PBool", BOOL, 40),
     );
-    assert_tie(
+    assert_slot_unfixed(
         &load_errors_of(&program(ns, &body)),
         ns,
         "go13",
@@ -568,20 +591,18 @@ fn a_carrier_written_as_its_bare_sort_gets_a_dictionary() {
     );
 }
 
-/// THE CASE THE BARE SPELLING STILL READS ITS OWN WAY, pinned so that it is seen when it
-/// moves: beside a provision GENERIC in the carrier, the bare sort is answered by that one
-/// as it is written — 55 — where the same carrier with its slot written open reaches the
-/// provision at `Bag` (7). The same on the parent commit; `resolve_opening_unwritten_slots`
-/// says why it is not closed here, and WI-20261005-SGXYH is the ticket that closes it.
+/// BESIDE A PROVISION GENERIC IN THE CARRIER, the bare sort reaches the provision at `Bag`
+/// as the same carrier with its slot written open does: 7 in both spellings. The bare one
+/// ran the generic provision, 55 (WI-20261005-SGXYH).
 #[test]
-fn beside_a_generic_provision_the_bare_spelling_runs_the_generic_one() {
+fn beside_a_generic_provision_the_bare_spelling_reaches_the_one_at_bag() {
     let ns = "wi2kv4y.baregen";
     let providers = format!(
         "{AT_BAG}\n  sort Gen\n    sort X = ?\n    provides Store[State = X]\n    \
          operation peek(s: X) -> Int64 = 55\n  end\n"
     );
     let bare = bag_program(ns, &providers);
-    assert_eq!(run_int64(&bare, &format!("{ns}.go")), Ok(55));
+    assert_eq!(run_int64(&bare, &format!("{ns}.go")), Ok(7));
     let open = replace_in_fixture(&bare, BARE_CALL, "User[S = Bag[T = ?]].go1(Bag.empty())");
     assert_eq!(run_int64(&open, &format!("{ns}.go")), Ok(7));
 }
@@ -638,7 +659,7 @@ fn two_provisions_generic_in_the_slot_are_a_tie() {
             &[
                 &format!("`{ns}.Store[State = {ns}.Bag]`"),
                 &format!(
-                    "constructing `{ns}.Store[State = {ns}.Bag[T = ?]]` is ambiguous among \
+                    "constructing `{ns}.Store[State = {ns}.Bag]` is ambiguous among \
                      providers: {ns}.PBag, {ns}.PBag2"
                 ),
             ],
@@ -647,12 +668,10 @@ fn two_provisions_generic_in_the_slot_are_a_tie() {
     }
 }
 
-/// THE OPEN SLOT IS A VARIABLE, so a provision at ONE instance does not answer it: beside
-/// `provides Store[State = Bag[T = Int64]]` alone the call is refused as the goal as written
-/// is, and beside two such it is the same refusal and not a tie. The same on the parent
-/// commit, and unlike a slot an argument's own type leaves undetermined, which one
-/// provision at an instance does answer ([`one_provider_answers_an_open_slot`]) —
-/// WI-20261005-SGXYH. Pinned so that it is seen when it moves.
+/// A PROVISION AT ONE INSTANCE DOES NOT ANSWER THE OPEN SLOT: beside `provides Store[State =
+/// Bag[T = Int64]]` alone the call is refused naming the slot, and beside two such it is the
+/// same refusal and not a tie — as for a slot an argument's own type leaves undetermined
+/// ([`one_provider_at_an_instance_does_not_answer_an_open_slot`]).
 #[test]
 fn a_provision_at_one_instance_does_not_answer_a_bare_carrier() {
     for (which, providers) in [
@@ -672,9 +691,8 @@ fn a_provision_at_one_instance_does_not_answer_a_bare_carrier() {
             &errs,
             &[
                 &format!("`{ns}.Store[State = {ns}.Bag]`"),
-                &format!(
-                    "`{ns}.Bag` does provide `{ns}.Store`, but no row of it answers at these bindings"
-                ),
+                &format!("nothing here fixes `T` of `Bag`, and `{ns}.PInt`"),
+                &format!("`{ns}.Store` only at an instance of it"),
             ],
             &format!("{which} provision at an instance of `Bag`"),
         );
@@ -685,11 +703,10 @@ fn a_provision_at_one_instance_does_not_answer_a_bare_carrier() {
     }
 }
 
-/// A CYCLE AT THE OPEN SLOTS LEAVES THE REFUSAL OF THE GOAL AS WRITTEN. Two conditional
-/// provisions that need each other: asked at the open slot the construction is cyclic, and
-/// the operation half reads a cycle as a slot to leave absent. Taken as the answer it made
-/// this program load and die "`__req_store` not bound in caller frame"; the parent commit
-/// refuses it, as this does.
+/// A CYCLE AT THE OPEN SLOTS IS REFUSED AT LOAD, as the cycle. Two conditional provisions
+/// that need each other: at the open slot the construction is cyclic. Taken by the operation
+/// half as a slot to leave absent it made this program load and die "`__req_store` not bound
+/// in caller frame"; it is refused naming the cycle.
 #[test]
 fn a_cycle_at_the_open_slots_is_refused_at_load() {
     let ns = "wi2kv4y.barecycle";
@@ -701,17 +718,21 @@ fn a_cycle_at_the_open_slots_is_refused_at_load() {
          provides Store[State = Bag[T = E]]\n    \
          operation peek(s: Bag[T = E]) -> Int64 = 7\n  end\n{LOOK}"
     );
-    let src = replace_in_fixture(&bag_program(ns, &providers), BARE_CALL, LOOK_CALL);
-    assert_refused_naming(
-        &load_errors_of(&src),
-        &[
-            &format!("`{ns}.Store[State = {ns}.Bag]` cannot be supplied for call to `{ns}.look`"),
-            &format!(
-                "`{ns}.Bag` does provide `{ns}.Store`, but no row of it answers at these bindings"
-            ),
-        ],
-        "a cyclic pair of conditional provisions at a bare carrier",
-    );
+    for (call, callee) in [(LOOK_CALL, format!("{ns}.look")), (BARE_CALL, format!("{ns}.User.go1"))] {
+        let src = replace_in_fixture(&bag_program(ns, &providers), BARE_CALL, call);
+        assert_refused_naming(
+            &load_errors_of(&src),
+            &[
+                &format!("`{ns}.Store[State = {ns}.Bag]`"),
+                &format!("cannot be supplied for call to `{callee}`"),
+                &format!(
+                    "construction is cyclic: {ns}.Store[State = {ns}.Bag] -> {ns}.Aux[T = \
+                     {ns}.PBag.E]"
+                ),
+            ],
+            &format!("a cyclic pair of conditional provisions at a bare carrier, `{call}`"),
+        );
+    }
 }
 
 /// A SORT THE LOADER HAS ALREADY REFUSED IS NOT OPENED. The dotted `sort Inner.T = ?` of a

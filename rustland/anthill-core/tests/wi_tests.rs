@@ -2123,6 +2123,8 @@ mod wi_020th_two_hop_chain_test;
 mod wi_jn09w_holder_gate_test;
 #[path = "include/wi_2kv4y_unfixed_carrier_test.rs"]
 mod wi_2kv4y_unfixed_carrier_test;
+#[path = "include/wi_sgxyh_unfixed_slot_test.rs"]
+mod wi_sgxyh_unfixed_slot_test;
 #[path = "include/wi_aaqt5_type_application_head_test.rs"]
 mod wi_aaqt5_type_application_head_test;
 #[path = "include/wi_9snr2_contract_clause_positional_test.rs"]
