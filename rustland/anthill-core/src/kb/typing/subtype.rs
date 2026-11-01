@@ -2295,7 +2295,7 @@ pub(crate) fn sort_sym_compatible(
 
 /// Which leg of [`sort_sym_compatible`] takes `actual_sym` to `expected_sym`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum NominalLeg {
+pub(super) enum NominalLeg {
     /// The sort itself, or an entity of it: one sort's parameters on both sides, so an
     /// application of `expected_sym` is compared with the actual's own arguments, and a bare
     /// actual leaves every one of them open.
@@ -2307,7 +2307,7 @@ enum NominalLeg {
 }
 
 /// [`sort_sym_compatible`], saying which leg answered; `None` where none does.
-fn nominal_leg(
+pub(super) fn nominal_leg(
     kb: &KnowledgeBase,
     actual_sym: Symbol,
     expected_sym: Symbol,
@@ -2375,6 +2375,38 @@ fn refinement_admits_applied<A: TermView, B: TermView>(
         }
     }
     false
+}
+
+/// What unifying `actual`, headed by `actual_sym`, which refines `expected_sym` through
+/// `requires`, with the application `expected` of `expected_sym` can answer: for each instance
+/// of `expected_sym` the clauses give the actual ([`instances_through_requires`], the instances
+/// [`refinement_admits_applied`] admits by), the substitution its unify with `expected` leaves
+/// under `subst`, one per type it makes of `expected` — so two paths of clauses to one instance
+/// are one answer. Empty where no instance unifies, or the clauses nest too deep to read.
+pub(super) fn refinement_unifiers<A: TermView, B: TermView>(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    actual: &A,
+    actual_sym: Symbol,
+    expected: &B,
+    expected_sym: Symbol,
+) -> Vec<Substitution> {
+    let Ok(instances) = instances_through_requires(kb, actual, actual_sym, expected_sym, 0) else {
+        return Vec::new();
+    };
+    let expected = walk_view(kb, subst, expected);
+    let mut answers: Vec<(Value, Substitution)> = Vec::new();
+    for instance in &instances {
+        let mut probe = subst.clone();
+        if !unify_types(kb, &mut probe, instance, &expected) {
+            continue;
+        }
+        let answer = walk_type_deep_value(kb, &probe, &expected);
+        if !answers.iter().any(|(seen, _)| views_structurally_equal(kb, seen, &answer)) {
+            answers.push((answer, probe));
+        }
+    }
+    answers.into_iter().map(|(_, probe)| probe).collect()
 }
 
 /// WI-344: provider admissibility — `actual_sym` (or, if it is an entity,

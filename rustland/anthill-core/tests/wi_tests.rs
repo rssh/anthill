@@ -2349,3 +2349,5 @@ mod wi_hh0ht_equality_is_its_value_test;
 mod wi_6q43w_nullary_operation_name_test;
 #[path = "include/wi_g37hs_refinement_reads_clause_test.rs"]
 mod wi_g37hs_refinement_reads_clause_test;
+#[path = "include/wi_c580v_type_argument_through_requires_test.rs"]
+mod wi_c580v_type_argument_through_requires_test;
