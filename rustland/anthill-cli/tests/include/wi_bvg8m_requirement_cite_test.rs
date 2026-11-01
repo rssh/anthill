@@ -69,8 +69,13 @@ end
 
 const REQUIRES_EQ: &str = "sort T = ?\n    requires anthill.prelude.Eq[T = T]";
 
-/// The proof's one assertion, as the document states it: emitted, so not refused.
-const THE_BODY: &str = "(assert (> scale 99.0))";
+/// The proof's one assertion, as the document states it — `scale` the constant of the
+/// row's own `Cfg` — emitted, so not refused.
+fn states_the_body(stdout: &str) -> bool {
+    stdout
+        .lines()
+        .any(|line| line.starts_with("(assert (> test.bvg8m.") && line.ends_with(".Cfg.scale 99.0))"))
+}
 
 fn assert_emitted(out: &Output) {
     assert_eq!(
@@ -80,7 +85,7 @@ fn assert_emitted(out: &Output) {
         out.stderr
     );
     assert!(
-        out.stdout.contains(THE_BODY),
+        states_the_body(&out.stdout),
         "the proof's document is emitted; stdout:\n{}",
         out.stdout
     );

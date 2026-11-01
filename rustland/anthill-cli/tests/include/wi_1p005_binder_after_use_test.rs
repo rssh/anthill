@@ -86,17 +86,17 @@ end
 /// A VARIABLE NAMED BEFORE ITS BINDER IS QUANTIFIED IN THE LIFT, and equated with what the
 /// binder gives it. On d7a8ffcb the lift of `eq_lemma` was `(forall ((var_1 Real)) (=> (>=
 /// var_0 1.0) (>= var_1 0.0)))`: `var_0` free, the consumer's `?w`, and `eq_user` proved;
-/// so did `ent_user` and `rel_user`. `ent_lemma`'s lift names the field constant `cap`,
-/// which its consumer does not declare — so does a lemma whose entity premise comes FIRST,
-/// on d7a8ffcb as now (`Lim(cap: ?c), gte(?c, 1.0), …`): the solver refuses the consumer's
-/// document, which is loud, and is not of this ticket.
+/// so did `ent_user` and `rel_user`. `ent_lemma`'s lift named the field constant `cap`,
+/// which its consumer does not declare, and the solver refused the consumer's document; it
+/// reads the fact's value in place of the variable since WI-20261014-VVRHJ, `(= var_0
+/// 5.0)`.
 #[test]
 fn a_variable_named_before_its_binder_is_quantified_in_the_lift() {
     let out = prove_dry_run("p1005_lifted", LIFTED);
     assert_eq!(errors(&out), Vec::<&str>::new(), "stderr:\n{}", out.stderr);
     for (user, premise) in [
         ("eq_user", "(>= var_0 1.0)"),
-        ("ent_user", "(>= var_0 1.0) (= var_0 cap)"),
+        ("ent_user", "(>= var_0 1.0) (= var_0 5.0)"),
         ("rel_user", "(test.p1005.lifted.related/2 var_0 1.0)"),
     ] {
         let lift = format!(
@@ -162,8 +162,8 @@ fn the_lemma_proved_by_the_solver_declares_it() {
         (
             "ent_lemma",
             [
-                vec!["(define-fun cap () Real 5.0)"],
-                lemma(&["(assert (= var_0 cap))"]),
+                vec!["(define-fun test.p1005.proved.Lim.cap () Real 5.0)"],
+                lemma(&["(assert (= var_0 test.p1005.proved.Lim.cap))"]),
             ]
             .concat(),
         ),
@@ -179,9 +179,9 @@ fn the_lemma_proved_by_the_solver_declares_it() {
     }
 }
 
-/// The verdicts: the five lemmas prove, and no false claim citing one does — two are
-/// COUNTEREXAMPLES, and `ent_user` the solver's refusal of the undeclared `cap` (see
-/// `a_variable_named_before_its_binder_is_quantified_in_the_lift`).
+/// The verdicts: the five lemmas prove, and no false claim citing one does — each is a
+/// COUNTEREXAMPLE. `ent_user` was the solver's refusal of the undeclared `cap` until
+/// WI-20261014-VVRHJ (see `a_variable_named_before_its_binder_is_quantified_in_the_lift`).
 #[test]
 fn the_verdicts() {
     if !z3_available() {
@@ -204,15 +204,10 @@ fn the_verdicts() {
         has(&out, &format!("✓ test.p1005.proved.{rule}: proved (z3: unsat)"));
     }
     let out = prove("lifted", LIFTED);
-    for user in ["eq_user", "rel_user"] {
+    for user in ["eq_user", "ent_user", "rel_user"] {
         has(
             &out,
             &format!("✗ test.p1005.lifted.{user}: COUNTEREXAMPLE (z3: sat)"),
         );
     }
-    assert!(
-        !out.stdout.contains("test.p1005.lifted.ent_user: proved"),
-        "`ent_user` is false:\n{}",
-        out.stdout
-    );
 }

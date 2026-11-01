@@ -680,7 +680,8 @@ end
 /// a call one clause answers, by its body and by a fact, and an entity premise of one
 /// fact, whose field is still a constant of the document. PASSES WITH THE CHANGE AND
 /// WITHOUT IT, by design: these are documents it must not move (the measurement file's
-/// §5 has every document of the suites and of lf1 before and after).
+/// §5 has every document of the suites and of lf1 before and after). The constant is
+/// named by its entity since WI-20261014-VVRHJ, which moved this document.
 #[test]
 fn a_body_that_meets_no_choice_is_the_document_it_was() {
     let out = dry_run(
@@ -706,7 +707,7 @@ end
          ; `unsat` ⇒ rule body has no solution ⇒ encoded property holds.\n\
          (set-logic LRA)\n\
          \n\
-         (define-fun top () Real 3.0)\n\
+         (define-fun test.kf32.none.One.top () Real 3.0)\n\
          \n\
          (declare-const var_0 Real)\n\
          (declare-const var_1 Real)\n\
@@ -714,7 +715,7 @@ end
          (assert (>= var_1 var_0))\n\
          (assert (<= 5.0 var_1))\n\
          ; Negated conclusion (from `-:` clause).\n\
-         (assert (not (<= 5.0 top)))\n\
+         (assert (not (<= 5.0 test.kf32.none.One.top)))\n\
          \n\
          (check-sat)"
     );

@@ -709,8 +709,9 @@ end
 /// slots and passes the others over: the lift was `(=> (>= var_1 cap) (>= var_1
 /// 100.0))`, the `kind` premise gone, and a proof about the `Mode` of kind 1 proved by
 /// citing a lemma about kind 2 (/code-review, measured — the lemma is vacuous, the proof
-/// false at y = 9). THE CONTROL: an entity premise whose slots are variables lifts as it
-/// did, its fields the constants the consumer's document defines.
+/// false at y = 9). THE CONTROL: an entity premise whose slots are variables lifts, the
+/// fact's values in place of its variables (WI-20261014-VVRHJ); the consumer's own premise
+/// of `Mode` is the constants its document defines.
 #[test]
 fn an_entity_premises_slot_that_is_no_variable_is_refused_in_a_lift() {
     let said = refusal(
@@ -744,10 +745,10 @@ end
     let out = dry_run("slot_open", ENTITY_SLOTS);
     assert_eq!(errors(&out), Vec::<&str>::new(), "stderr:\n{}", out.stderr);
     let doc = document(&out, "test.cdhsq.slot.uses");
-    assert_has(&doc, "(define-fun cap () Real 9.0)");
+    assert_has(&doc, "(define-fun test.cdhsq.slot.Mode.cap () Real 9.0)");
     assert_has(
         &doc,
-        "(assert (forall ((var_2 Real)) (=> (>= var_2 (+ cap 1.0)) (>= var_2 cap))))",
+        "(assert (forall ((var_2 Real)) (=> (>= var_2 (+ 9.0 1.0)) (>= var_2 9.0))))",
     );
 }
 

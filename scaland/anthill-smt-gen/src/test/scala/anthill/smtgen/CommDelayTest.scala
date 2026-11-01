@@ -74,9 +74,10 @@ class CommDelayTest extends munit.FunSuite:
       case Left(e)  => fail(s"emit failed: ${e.message}")
 
     assert(smt.contains("(set-logic QF_LRA)"), s"missing logic declaration:\n$smt")
-    assert(smt.contains("(define-fun range_max () Real 100.0)"),
+    assert(smt.contains("(define-fun test.smt_gen.lf1.LinkParameters.range_max () Real 100.0)"),
       s"missing range_max field-const:\n$smt")
-    assert(smt.contains("(define-fun control_period () Real 0.032)"),
+    assert(smt.contains(
+      "(define-fun test.smt_gen.lf1.KinematicAssumptions.control_period () Real 0.032)"),
       s"missing control_period field-const:\n$smt")
     assert(smt.contains("(define-fun var_") && smt.contains("() Real "),
       s"missing body define-fun for the result var:\n$smt")
@@ -115,8 +116,10 @@ class CommDelayTest extends munit.FunSuite:
       case Left(e)  => fail(s"emit failed: ${e.message}")
     // Body should contain prefix-form arithmetic, e.g. `(+ ... ...)`,
     // `(/ range_max signal_speed)`, etc.
-    assert(smt.contains("(/ range_max signal_speed)"),
+    assert(smt.contains(
+      "(/ test.smt_gen.lf1.LinkParameters.range_max test.smt_gen.lf1.LinkParameters.signal_speed)"),
       s"expected `(/ range_max signal_speed)` in body:\n$smt")
-    assert(smt.contains("(* packet_size byte_size)"),
+    assert(smt.contains(
+      "(* test.smt_gen.lf1.LinkParameters.packet_size test.smt_gen.lf1.LinkParameters.byte_size)"),
       s"expected `(* packet_size byte_size)` in body:\n$smt")
   }

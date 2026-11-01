@@ -86,7 +86,9 @@ class InlinedNamesTest extends munit.FunSuite:
     assertEquals(stated("eqTwice"), Seq("(assert (= 3.0 4.0))", "(assert (< 3.0 5.0))"))
     assertEquals(stated("oneNamed"), named("3.0"))
     assertEquals(stated("oneDefinedBy"), definedBy)
-    assertEquals(stated("entNamed"), "(define-fun cap () Real 5.0)" +: named("cap"))
+    assertEquals(
+      stated("entNamed"),
+      "(define-fun test.smt.fheek.Lim.cap () Real 5.0)" +: named("test.smt.fheek.Lim.cap"))
   }
 
   test("the one-argument form's own variable is named apart from the clause's") {

@@ -88,7 +88,7 @@ impl fmt::Display for SmtSort {
 /// `name` as an SMT-LIB symbol. A qualified name is a SIMPLE symbol as it stands — the
 /// standard admits `.` and `@` in one — and is written so, which keeps a document
 /// readable; anything else is quoted.
-fn smt_symbol(name: &str) -> String {
+pub(crate) fn smt_symbol(name: &str) -> String {
     let simple = |c: char| c.is_ascii_alphanumeric() || "~!@$%^&*_-+=<>.?/".contains(c);
     let starts_plain = name
         .chars()
@@ -393,7 +393,7 @@ pub fn lower_spec_law(
              KB, and a law is of every provider",
             emitter
                 .referenced_entities
-                .iter()
+                .keys()
                 .cloned()
                 .collect::<Vec<_>>()
                 .join(", ")

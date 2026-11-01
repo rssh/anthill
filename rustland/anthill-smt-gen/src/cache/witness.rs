@@ -53,7 +53,13 @@ use super::key::state_hash;
 /// clauses was proved by its first: each such proof has a v4 sidecar that says
 /// `Discharged`, of rules none of which has changed. The emitter now refuses all three,
 /// and a sidecar it would not write again is moved out of reach.
-pub const WITNESS_FORMAT_VERSION: u32 = 5;
+///
+/// v6 (WI-20261014-VVRHJ): the schema is v3's still, and it moves again for a
+/// soundness fix. A field read as a constant was named by its short name, so two
+/// entities with a field of one name were one constant, and a cited lemma's lift named
+/// a constant its consumer defined for another entity: false claims proved, of rules
+/// none of which has changed since.
+pub const WITNESS_FORMAT_VERSION: u32 = 6;
 
 /// Per-project witness sidecar directory.
 pub fn witness_subdir(cache_root: &Path, repo_root: &Path) -> PathBuf {

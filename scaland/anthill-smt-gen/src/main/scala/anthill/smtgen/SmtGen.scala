@@ -83,7 +83,7 @@ object SmtGen:
             "(only a function-like head `rule f(?r) :- …` can carry an upper bound)"))
       case Right(_) =>
         emitter.collectFactsForReferencedEntities()
-        Right(emitter.renderUpperBoundWith(obligation, config))
+          .map(_ => emitter.renderUpperBoundWith(obligation, config))
 
   /** Emit a satisfiability check for a rule's body, framed as a proof
     * obligation: `unsat` ⇒ body has no solution ⇒ encoded property
@@ -103,7 +103,7 @@ object SmtGen:
       case Left(err) => Left(err)
       case Right(_) =>
         emitter.collectFactsForReferencedEntities()
-        Right(emitter.renderSatisfiabilityWith(ruleQn, config))
+          .map(_ => emitter.renderSatisfiabilityWith(ruleQn, config))
 
   // ── Helpers (package-private) ─────────────────────────────────────
 
@@ -223,18 +223,16 @@ object SmtGen:
     else if v == math.floor(v) && math.abs(v) < 1e15 then f"$v%.1f"
     else v.toString
 
-  /** Keep alphanumerics and `_`; replace anything else with `_`. */
-  private[smtgen] def sanitizeSmtId(name: String): String =
-    val out = StringBuilder()
-    var i = 0
-    while i < name.length do
-      val c = name.charAt(i)
-      if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-        || (c >= '0' && c <= '9') || c == '_'
-      then out.append(c)
-      else out.append('_')
-      i += 1
-    out.toString
+  /** `name` as an SMT-LIB symbol, as rustland's `smt_symbol` writes it: a qualified name
+    * is a simple symbol as it stands — the standard admits `.` and `@` in one — and
+    * anything else is quoted.
+    */
+  private[smtgen] def smtSymbol(name: String): String =
+    val simple = (c: Char) =>
+      (c.isLetterOrDigit && c < 128) || "~!@$%^&*_-+=<>.?/".contains(c)
+    val startsPlain = name.headOption.exists(c => !c.isDigit && c != '.' && c != '@')
+    if startsPlain && name.forall(simple) then name
+    else "|" + name.map(c => if c == '|' || c == '\\' then '_' else c) + "|"
 
 
 // ── Implementation ──────────────────────────────────────────────────
@@ -254,11 +252,15 @@ private[smtgen] enum HeadShape:
 
 
 private[smtgen] final class Emitter(val kb: KnowledgeBase):
-  /** `(field_const, value)` pairs to emit at the top of the document.
-    * `TreeMap` for deterministic iteration order. */
+  /** `(field_const, value)` pairs to emit at the top of the document: each named by
+    * [[fieldConstant]], with the value of the entity's fact, which
+    * `collectFactsForReferencedEntities` reads. `TreeMap` for deterministic iteration order.
+    */
   val fieldConsts: TreeMap[String, Double] = TreeMap.empty
-  /** Entity QNs seen on rule body LHS that we'll need to materialise. */
-  val referencedEntities: TreeSet[String] = TreeSet.empty
+  /** The entities a premise reads as constants, each by its qualified name with the names
+    * of the fields read.
+    */
+  val referencedEntities: TreeMap[String, TreeSet[String]] = TreeMap.empty
   /** Final translated body equation: `(define-fun <result> () Real <expr>)`. */
   var bodySmtlib: String = ""
   /** Name of the rule's result variable. Empty for satisfiability mode. */
@@ -345,15 +347,17 @@ private[smtgen] final class Emitter(val kb: KnowledgeBase):
     if resultVar.nonEmpty then
       localBindings.get(resultVar) match
         case Some(rhs) =>
-          bodySmtlib = s"(define-fun ${SmtGen.sanitizeSmtId(resultVar)} () Real $rhs)"
+          bodySmtlib = s"(define-fun $resultVar () Real $rhs)"
         case None =>
           return Left(SmtGenError(
             s"rule body never bound the result variable '?$resultVar'"))
 
     // Free vars: any var_<i> referenced by an assertion expression
-    // (body or conclusion) that has no binding entry.
+    // (body or conclusion) that has no binding entry. A token is what stands between
+    // parentheses and blanks, as rustland's `smt_tokens` reads it: `var_0` inside a
+    // qualified name (a field's constant `ns.E.var_0`) is no variable.
     for assertion <- (assertions.iterator ++ conclusionAssertions.iterator) do
-      val tokens = assertion.split("[^a-zA-Z0-9_]+")
+      val tokens = assertion.split("[()\\s]+")
       var k = 0
       while k < tokens.length do
         val tok = tokens(k)
@@ -472,16 +476,18 @@ private[smtgen] final class Emitter(val kb: KnowledgeBase):
       if namedArgs.isEmpty && kb.entityFieldNames(functor).exists(_.nonEmpty) then
         return Left(SmtGenError(
           s"v0: entity premise '$qn' binds no field by name — write the fields it binds"))
-      referencedEntities += qn
+      val read = referencedEntities.getOrElseUpdate(qn, TreeSet.empty)
       var i = 0
       while i < namedArgs.length do
         val (fieldSym, valTerm) = namedArgs(i)
         kb.getTerm(valTerm) match
           case Term.Var(vid) =>
             val fieldName = kb.resolveSym(fieldSym)
-            val constName = SmtGen.sanitizeSmtId(fieldName)
-            bindVariable(syntheticVarName(vid.varId.id), constName, bindings)
-            if !fieldConsts.contains(constName) then fieldConsts(constName) = 0.0
+            read += fieldName
+            bindVariable(
+              syntheticVarName(vid.varId.id),
+              SmtGen.smtSymbol(fieldConstant(qn, fieldName)),
+              bindings)
           case _ => () // wildcards / literals
         i += 1
       return Right(())
@@ -687,8 +693,12 @@ private[smtgen] final class Emitter(val kb: KnowledgeBase):
           case None => Left(SmtGenError(
             s"`?$synth`, read inlined, has no name in the document: every variable of an " +
               "inlined rule is named when its frame is opened"))
-      case Term.Ref(s)   => Right(SmtGen.sanitizeSmtId(kb.resolveSym(s)))
-      case Term.Ident(s) => Right(SmtGen.sanitizeSmtId(kb.resolveSym(s)))
+      // Not its short name, which another thing of the document may have (rustland's
+      // `translate_expr` refuses the same).
+      case Term.Ref(s) => Left(SmtGenError(
+        s"`${kb.qualifiedNameOf(s)}` stands bare in an expression, and is no value of the document"))
+      case Term.Ident(s) => Left(SmtGenError(
+        s"`${kb.qualifiedNameOf(s)}` stands bare in an expression, and is no value of the document"))
       case f: Term.Fn[TermId] =>
         val op = kb.qualifiedNameOf(f.functor)
         SmtGen.mapUnaryOp(op) match
@@ -770,25 +780,50 @@ private[smtgen] final class Emitter(val kb: KnowledgeBase):
     * being read as a ground fact — its body is a condition this
     * reader cannot discharge.
     */
-  def collectFactsForReferencedEntities(): Unit =
-    val snapshot = referencedEntities.toVector
-    for entityQn <- snapshot do
-      Facts.bodylessFacts(kb, entityQn)
-        .find(f => f.namedArgs.exists { case (_, t) =>
-          SmtGen.literalAsReal(kb.getTerm(t)).isDefined
-        })
-        .foreach { f =>
-          var j = 0
-          while j < f.namedArgs.length do
-            val (fieldSym, valTerm) = f.namedArgs(j)
-            val fieldName = kb.resolveSym(fieldSym)
-            val constName = SmtGen.sanitizeSmtId(fieldName)
-            if fieldConsts.contains(constName) then
-              SmtGen.literalAsReal(kb.getTerm(valTerm)).foreach { v =>
-                fieldConsts(constName) = v
-              }
-            j += 1
+  def collectFactsForReferencedEntities(): Either[SmtGenError, Unit] =
+    val pending = referencedEntities.iterator.filter(_._2.nonEmpty)
+    while pending.hasNext do
+      val (entityQn, fields) = pending.next()
+      readFields(entityQn, fields) match
+        case Left(e)  => return Left(e)
+        case Right(_) => ()
+    Right(())
+
+  /** THE FIELDS A PREMISE READS, off the entity's ONE fact, as rustland's harvest reads
+    * them (WI-20261014-VVRHJ). A field's constant was made with 0.0 when the premise was
+    * read and set here from the first fact with any number, so an entity of no fact was
+    * 0.0, of several facts its first, and a field the fact gives no number stayed 0.0 —
+    * each refused now.
+    */
+  private def readFields(entityQn: String, fields: TreeSet[String]): Either[SmtGenError, Unit] =
+    Facts.bodylessFacts(kb, entityQn).toVector match
+      case Seq() => Left(SmtGenError(
+        s"the entity `$entityQn` has no fact, and a premise here reads its fields off one: " +
+          "a field no fact gives has no value"))
+      case Seq(fact) =>
+        val fieldValues = fact.namedArgs.map { case (sym, value) => kb.resolveSym(sym) -> value }.toMap
+        fields.foldLeft[Either[SmtGenError, Unit]](Right(())) { (done, field) =>
+          done.flatMap { _ =>
+            fieldValues.get(field).flatMap(value => SmtGen.literalAsReal(kb.getTerm(value))) match
+              case Some(v) =>
+                fieldConsts(fieldConstant(entityQn, field)) = v
+                Right(())
+              case None => Left(SmtGenError(
+                s"the premise `$entityQn` reads the field `$field` of the entity's fact, whose " +
+                  "value there is none or no number, as a constant of the document"))
+          }
         }
+      case several => Left(SmtGenError(
+        s"the entity `$entityQn` has ${several.length} facts, and a premise here reads its " +
+          "fields off ONE: it would be the first"))
+
+  /** THE CONSTANT OF AN ENTITY'S FIELD: the entity's qualified name with the field
+    * (`test.ent.A.cap`), as rustland's `field_constant` names it
+    * (`docs/smtlib-forward-mapping.md` §7.6). It was the field's short name, one constant
+    * for every entity with a field so named (WI-20261014-VVRHJ).
+    */
+  private[smtgen] def fieldConstant(entityQn: String, field: String): String =
+    s"$entityQn.$field"
 
   def renderUpperBoundWith(obligation: Obligation, config: ProofConfig): String =
     val logic = config.logic.getOrElse("QF_LRA")
@@ -802,7 +837,7 @@ private[smtgen] final class Emitter(val kb: KnowledgeBase):
     SmtGen.emitAbsPrelude(out, usesAbs, config)
 
     for (name, value) <- fieldConsts do
-      out.append(s"(define-fun $name () Real ${SmtGen.formatReal(value)})\n")
+      out.append(s"(define-fun ${SmtGen.smtSymbol(name)} () Real ${SmtGen.formatReal(value)})\n")
     out.append('\n')
 
     SmtGen.emitAssumptions(out, config)
@@ -811,7 +846,7 @@ private[smtgen] final class Emitter(val kb: KnowledgeBase):
     out.append("\n\n")
 
     out.append(s"; Obligation: $resultVar <= ${obligation.upperBound}\n")
-    out.append(s"(assert (not (<= ${SmtGen.sanitizeSmtId(resultVar)} ${SmtGen.formatReal(obligation.upperBound)})))\n")
+    out.append(s"(assert (not (<= $resultVar ${SmtGen.formatReal(obligation.upperBound)})))\n")
     config.tacticExpr match
       case Some(expr) => out.append(s"(check-sat-using $expr)\n")
       case None       => out.append("(check-sat)\n")
@@ -830,7 +865,7 @@ private[smtgen] final class Emitter(val kb: KnowledgeBase):
     SmtGen.emitAbsPrelude(out, usesAbs, config)
 
     for (name, value) <- fieldConsts do
-      out.append(s"(define-fun $name () Real ${SmtGen.formatReal(value)})\n")
+      out.append(s"(define-fun ${SmtGen.smtSymbol(name)} () Real ${SmtGen.formatReal(value)})\n")
     out.append('\n')
 
     for v <- freeVars do

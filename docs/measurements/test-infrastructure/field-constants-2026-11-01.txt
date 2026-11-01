@@ -1,0 +1,211 @@
+# An entity's field is the entity's (WI-20261014-VVRHJ) — what was there, the decisions, what is read now, what
+# fails when a part is backed out, which documents moved, what /code-review changed, what was found and is not of
+# this change. 2026-11-01.
+#
+# Tree:    main at 0e696fe2, and this change on it.
+# Machine: Intel Core Ultra 9 275HX (24 threads), WSL2 Linux 6.18. z3 5.1.0.
+# Every `anthill prove` below is `--no-cache`, the dev build. BEFORE is the binary of 0e696fe2, built and copied
+# aside before the first edit (`target/anthill-before`); AFTER is this tree's.
+
+== 1. what was there (0e696fe2) ==
+# The ticket's three faces, each run on BEFORE:
+#   `small: lte(?a, 2.0) :- A(cap: ?a), B(cap: ?b)` over `A(cap: 5.0)`, `B(cap: 1.0)`     ✓ proved (false: ?a = 5)
+#   its twin `gte(?a, 3.0)`                                                               ✗ COUNTEREXAMPLE (true)
+#   `plain` citing `lemma: gte(?a, 0.0) :- Lim(cap: ?c), gte(?c, 1.0), ?c = ?a + 1.0`     ? z3 "unknown constant cap"
+#   `E(var_0: Float)`, `f: gte(?x, 3.0) :- E(var_0: ?v), lte(?x, 1.0), lte(?v, 9.0)`       ? z3 "already defined var_0"
+# And the ticket's "a consumer reading another entity's field `cap` would give the lemma that one", run:
+#   `lemma: gte(?a, 10.0) :- Lim(cap: ?c), gte(?a, ?c + 5.0)` (Lim 5.0)                    ✓ proved (true)
+#   `user: gte(?x, 10.0) :- B(cap: ?b), gte(?x, 5.0)` (B 0.0) `using lemma`                ✓ proved (false: x = 7)
+#   — the lift named `cap`, and `user`'s document defined it as B's 0.0.
+# An entity of NO fact: its field was the constant 0.0, a value no fact gives.
+#   `bad: lte(?c, -1.0) :- Lim(cap: ?c)`, no `Lim` fact                                    ✗ COUNTEREXAMPLE at cap = 0
+#   `prove_ranking_test`'s fixture (`State`, no fact): both sub-queries unsat because `lt(?u, 0)` is false at 0,
+#   whatever they say of a state — with `lt(0, ?u)` replaced by `lt(?u, -3)`, boundedness violated at upc = -4,
+#   it still PROVED. Under the KB's reading (no fact, no state) that claim is vacuously true, so this is no
+#   unsound proof: the 0.0 reading only loses an `unsat` (1KF32's note). What it hid is that the fixture meant
+#   every state and never checked it.
+# Measured: of 1 044 documents (lf1 36, the emitter suite 164, the CLI suite 844, every one the emitter returned,
+# by a temporary instrument), two lifts named a field constant — `test.p1005.lifted.ent_lemma`,
+# `test.cdhsq.slot.open_lemma`, both controls. No lf1 lift did. Nothing reached the bare-name fallback of
+# `translate_expr` (`sanitize_smt_id(local_name)`); probes (a `const`, a bodied nullary operation, bare and
+# applied, a constructor) do not either — a `const` is inlined, a nullary operation is an application.
+
+== 2. the decisions ==
+# NAMING (user, 2026-10-14; docs/smtlib-forward-mapping.md §7.6): a field read as a constant is the entity's
+# qualified name with the field, written by `smt_symbol`; `sanitize_smt_id` goes.
+# THE LIFT (user, 2026-11-01, option (b) of the two put to them): a lift reads the fact's value in place of the
+# premise's variable — substituted where nothing wrote the variable yet, equated where something did — and names
+# no constant. Option (a) was to carry the constant and its value with the lift's declarations.
+# AN ENTITY OF NO FACT (user, 2026-11-01, as proposed): refused where a premise reads a field of it — in a
+# proof's body, a world, a lift, an obligation — with the text "has no fact, and a premise here reads its fields
+# off one: a field no fact gives has no value".
+
+== 3. what is read now ==
+#   small                            ✗ COUNTEREXAMPLE           twin   ✓ proved
+#   f (var_0 field)                  ✗ COUNTEREXAMPLE           g: gte(?v, 4.0) :- E(var_0: ?v), …  ✓ proved
+#   plain                            ✗ COUNTEREXAMPLE (x = -1)  its lift
+#     (assert (forall ((var_1 Real)) (=> (and (>= 5.0 1.0) (= 5.0 (+ var_1 1.0))) (>= var_1 0.0))))
+#   user (B's field, z3-proved lemma) ✗ COUNTEREXAMPLE
+#   bad (no fact)                    refused;  with `fact Lim(cap: ?any)` (every value) ✗ COUNTEREXAMPLE
+#   the ranking fixture, no fact     refused;  with `fact State(upc: ?u, upc_next: ?n)` ✓ proved, and its
+#                                    boundedness-violated variant ✗ COUNTEREXAMPLE
+# A lift of a fact whose field is a variable is now READ (the variable quantified), where it was refused:
+#   `lone: gte(?c, 0.0) :- Lone(cap: ?c)`, `fact Lone(cap: ?any)` lifts to
+#   `(assert (forall ((var_0 Real)) (=> true (>= var_0 0.0))))` — the lemma as stated; a solver proof of it is a
+#   COUNTEREXAMPLE, so it is citable only `by trust`.
+# A lift of several facts stays refused (through the row reader's choice point, which has no choices in a lift).
+# A fieldless entity premise (`Flag`) reads no row, as before.
+# The bare-name fallback is a refusal.
+# WITNESS_FORMAT_VERSION 5 → 6 (a soundness fix of the emitter moves it, as decided 2026-10-12).
+# scaland (no lift): the naming, the refusals of no fact, several facts and a field of no number (it read the
+# first fact with any number, and left the rest 0.0), and its free-variable scan reads tokens as `smt_tokens`
+# does (it split `ns.E.var_0` and declared `var_0`).
+
+== 4. what fails when a part is backed out ==
+# Rust, each part alone by a temporary environment switch in the emitter, one build; the touched CLI rows
+# (`wi_vvrhj`, `prove_ranking`, `wi_1p005`, `wi_cdhsq`, `wi_bvg8m`, `wi_fheek`, `wi_kf2sd`, `wi_zz7ph`, `wi_1kf32`)
+# and the whole emitter suite:
+#   NAME (the field's short name): wi_vvrhj two_entities…, a_field_named_like_a_variable…, a_lift_reads_the_facts_value;
+#     and every row that pins a name (wi_1kf32 a_body_that_meets_no_choice…, wi_1p005 the_lemma_proved…, the seven
+#     wi_bvg8m rows, wi_cdhsq an_entity_premises_slot…, wi_fheek every_place…, wi_kf2sd a_rule_named…, an_entity_premise…,
+#     wi_zz7ph a_sort_goes_down…; comm_delay ×2, inductive, step_distance)
+#   LIFT (the lift reads the constant): wi_vvrhj a_lift_reads_the_facts_value, a_lemma_about_one_entity…;
+#     wi_1p005 a_variable_named_before…, the_verdicts; wi_cdhsq an_entity_premises_slot…;
+#     wi_1kf32 (emitter) a_field_that_is_no_number_is_no_constant
+#   NOFACT (0.0): wi_vvrhj an_entity_of_no_fact_is_refused
+# `the_other_entity` program: NAME alone ✗ COUNTEREXAMPLE, LIFT alone ? "unknown constant test.other.Lim.cap",
+# both ✓ proved (BEFORE's verdict). The five wi_vvrhj rows run on BEFORE's binary (swapped in under the test
+# binary's path): all five FAIL; on AFTER all five pass.
+# scaland, each part alone by a temporary switch (a file the emitter reads, as sbt 2's server does not see the
+# client's environment), FieldConstantTest:
+#   NAME: two entities…, a field named like a variable… (and CommDelayTest, InlinedNamesTest, which pin names)
+#   NOFACT: an entity of no fact…      SEVERAL, NUMBER: an entity of several facts, and a field of no number…
+#   TOKEN: a field named like a variable…
+# None passes either way.
+
+== 5. which documents moved ==
+# The instrument wrote every document the emitter returned, under the three runs, on BEFORE's tree and on this
+# one; compared by rule and text. "By the names alone": the document with each field constant written by its
+# short name, its lines sorted (the constants are defined in the order of their names), is one it was.
+# lf1 (`prove -v --no-cache examples/webots-modelling/lf1`): 16 distinct documents before, 16 after; 5 there again to the byte; 11 rules moved (11 by the constants' names alone, 0 otherwise); 0 new; 0 gone
+#   moved by the names alone:
+#     check      anthill.examples.lf1.safety.gps.base_lower_violation
+#     check      anthill.examples.lf1.safety.gps.base_upper_violation
+#     check      anthill.examples.lf1.safety.gps.lower_violation
+#     check      anthill.examples.lf1.safety.gps.safety_max_distance
+#     check      anthill.examples.lf1.safety.gps.safety_min_distance
+#     check      anthill.examples.lf1.safety.gps.upper_violation
+#     check      anthill.examples.lf1.safety.transponder.bounded_excursion_lower_violation_transponder
+#     check      anthill.examples.lf1.safety.transponder.bounded_excursion_upper_violation_transponder
+#     check      anthill.examples.lf1.safety.transponder.lower_violation_transponder
+#     check      anthill.examples.lf1.safety.transponder.safety_bounded_excursion_transponder
+#     check      anthill.examples.lf1.safety.transponder.safety_no_collision_transponder
+# the emitter crate's suite: 63 distinct documents before, 64 after; 47 there again to the byte; 13 rules moved (13 by the constants' names alone, 0 otherwise); 1 new; 0 gone
+#   moved by the names alone:
+#     check      anthill.examples.lf1.safety.gps.lower_violation
+#     check      anthill.examples.lf1.safety.gps.upper_violation
+#     check      test.smt_gen.assumptions.violation
+#     check      test.smt_gen.gps.safety_min_distance
+#     check      test.smt_gen.invariant.lower_violation
+#     check      test.smt_gen.invariant.upper_violation
+#     check      test.smt_gen.qfnra_field.violation
+#     check      test.smt_gen.wi681.violation_direct
+#     check      test.smt_gen.wi681.violation_via_helper
+#     obligation anthill.examples.lf1.safety.gps.step_distance_bound
+#     obligation test.eqg4f.oblig.boundR
+#     obligation test.smt_gen.lf1.comm_delay_max
+#     obligation test.smt_gen.step.step_distance_bound
+#   new:
+#     lift       test.kf32.emit.lone
+# the CLI suite: 269 distinct documents before, 281 after; 208 there again to the byte; 58 rules moved (52 by the constants' names alone, 6 otherwise); 12 new; 0 gone
+#   moved by the names alone:
+#     check      anthill.examples.lf1.safety.gps.base_lower_violation
+#     check      anthill.examples.lf1.safety.gps.base_upper_violation
+#     check      anthill.examples.lf1.safety.gps.lower_violation
+#     check      anthill.examples.lf1.safety.gps.safety_max_distance
+#     check      anthill.examples.lf1.safety.gps.safety_min_distance
+#     check      anthill.examples.lf1.safety.gps.upper_violation
+#     check      anthill.examples.lf1.safety.transponder.bounded_excursion_lower_violation_transponder
+#     check      anthill.examples.lf1.safety.transponder.bounded_excursion_upper_violation_transponder
+#     check      anthill.examples.lf1.safety.transponder.lower_violation_transponder
+#     check      anthill.examples.lf1.safety.transponder.safety_bounded_excursion_transponder
+#     check      anthill.examples.lf1.safety.transponder.safety_no_collision_transponder
+#     check      t.bvg8m.UnderEq.Nested.deep
+#     check      t.bvg8m.UnderEq.r
+#     check      t.bvg8m.UnderLawless.r
+#     check      test.bvg8m.doc.Scope.r
+#     check      test.bvg8m.eq.Scope.r
+#     check      test.bvg8m.lawless.Scope.r
+#     check      test.bvg8m.nest.Outer.Inner.r
+#     check      test.bvg8m.ord.Scope.r
+#     check      test.bvg8m.two.Scope.r
+#     check      test.bvg8m.v.Scope.r
+#     check      test.bvg8m.vl.Scope.r
+#     check      test.bvg8m.wo.Scope.r
+#     check      test.bvg8m.woi.Scope.r
+#     check      test.cache.simple.simple_unsat
+#     check      test.fheek.sites.ent_defined_by
+#     check      test.fheek.sites.ent_named
+#     check      test.induction.fail.base_unsat
+#     check      test.induction.fail.step_sat
+#     check      test.induction.multi.c1
+#     check      test.induction.multi.c2
+#     check      test.induction.multi.c3
+#     check      test.induction.ok.base_violation
+#     check      test.induction.ok.step_violation
+#     check      test.kf2sd.ent.single
+#     check      test.kf2sd.legacy.legacy
+#     check      test.kf32.none.plain
+#     check      test.outcome.cache.sat_for_cache
+#     check      test.outcome.cores.cores_witness
+#     check      test.outcome.legacy.legacy
+#     check      test.outcome.live.sat_live
+#     check      test.outcome.sat.sat_witness
+#     check      test.p1005.proved.ent_lemma
+#     check      test.ranking.fail.bound_ok
+#     check      test.ranking.fail.decrease_bad
+#     check      test.stale.smt.simple_unsat
+#     check      test.tac.logic___LIA_.r
+#     check      test.tac.tactic__or_else_simplify__smt_.r
+#     check      test.tac.tactic__raw___then_simplify_smt___.r
+#     check      test.tac.tactic__smt_random_seed__42_.r
+#     check      test.tac.tactic__then_simplify__smt_.r
+#     check      test.zz7ph.down.Scope.field
+#   moved otherwise:
+#     check      test.cdhsq.slot.uses
+#     check      test.p1005.lifted.ent_user
+#     check      test.ranking.ok.bound_violation
+#     check      test.ranking.ok.decrease_violation
+#     lift       test.cdhsq.slot.open_lemma
+#     lift       test.p1005.lifted.ent_lemma
+#   new:
+#     check      test.vvrhj.lift.plain
+#     check      test.vvrhj.lift.reads
+#     check      test.vvrhj.none.bad
+#     check      test.vvrhj.other.lemma
+#     check      test.vvrhj.other.user
+#     check      test.vvrhj.rank.every.bound_violation
+#     check      test.vvrhj.two.small
+#     check      test.vvrhj.two.twin
+#     check      test.vvrhj.var.f
+#     check      test.vvrhj.var.g
+#     lift       test.vvrhj.lift.lemma
+#     lift       test.vvrhj.other.lemma
+# The six moved otherwise are what the change is about: the two lifts that named a field constant and their two
+# consumers (`cdhsq.slot.uses`, `p1005.lifted.ent_user` — the latter now a COUNTEREXAMPLE where it was z3's
+# error), and the ranking fixture's two sub-queries, its `State` now given a fact. lf1: its 14 proofs prove, and
+# `prove -v --no-cache`'s output is the same, the temporary file paths aside.
+
+== 6. what /code-review changed ==
+# Eleven findings; ten done, one not (a condition tested twice around the row read: the one-decision form must
+# fetch the rows either way and is not simpler).
+#   WITNESS_FORMAT_VERSION was not moved — done (v6).
+#   scaland: the harvest left a read field undefined where the fact gave no number (a solver error where it was
+#   0.0), read several facts as the first, and split qualified names in its free-variable scan — each done,
+#   with a row; the back-out claim of its test file was not measured — measured (§4).
+#   wi_vvrhj's header omitted a failing row and claimed BEFORE unmeasured — measured (§4).
+#   the bare-name refusal says at its site that nothing reaches it; two doc comments and 1KF32's header updated.
+
+== 7. found, and not of this change ==
+# scaland does not resolve a rule named `none` (`rule none :- …` in a namespace: "rule '….none' not found");
+# rustland proves the same program. Not measured further.

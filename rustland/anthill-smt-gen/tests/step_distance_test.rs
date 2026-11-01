@@ -106,25 +106,25 @@ fn step_distance_bound_inlines_called_rule() {
     // step_distance_bound expression — concretely, the propagation
     // term `(/ range_max signal_speed)` from the called rule.
     assert!(
-        smt.contains("(/ range_max signal_speed)"),
+        smt.contains("(/ test.smt_gen.step.LinkParameters.range_max test.smt_gen.step.LinkParameters.signal_speed)"),
         "comm_delay_max body should be inlined into step bound:\n{smt}"
     );
     // And the GPS term `(* 4.0 epsilon)` should appear.
     assert!(
-        smt.contains("(* 4.0 epsilon)"),
+        smt.contains("(* 4.0 test.smt_gen.step.GpsErrorBound.epsilon)"),
         "GPS noise term `(* 4.0 epsilon)` missing:\n{smt}"
     );
     // Three entities ⇒ three sets of consts.
     assert!(
-        smt.contains("(define-fun epsilon () Real 1.5)"),
+        smt.contains("(define-fun test.smt_gen.step.GpsErrorBound.epsilon () Real 1.5)"),
         "epsilon const missing:\n{smt}"
     );
     assert!(
-        smt.contains("(define-fun leader_speed_max () Real 8.0)"),
+        smt.contains("(define-fun test.smt_gen.step.KinematicAssumptions.leader_speed_max () Real 8.0)"),
         "leader_speed_max const missing:\n{smt}"
     );
     assert!(
-        smt.contains("(define-fun range_max () Real 100.0)"),
+        smt.contains("(define-fun test.smt_gen.step.LinkParameters.range_max () Real 100.0)"),
         "range_max const missing:\n{smt}"
     );
 }

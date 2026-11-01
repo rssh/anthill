@@ -16,7 +16,8 @@
 //! result's equation left out, `a_function_like_head_is_equated_in_each_world`; the
 //! entity's rows read as its constants, `a_lift_is_not_split_by_an_entitys_facts` and
 //! `a_field_that_is_no_number_is_no_constant`; the field left at 0.0 in the harvest, the
-//! second of those.
+//! second of those. (Since WI-20261014-VVRHJ the second's LIFT is read by the row, the
+//! field every value; backing out that reading fails it too.)
 
 use super::common::load_kb_with;
 use anthill_smt_gen::{emit_satisfiability_check_with_deps, lift_rule, ProofConfig};
@@ -98,9 +99,10 @@ fn a_function_like_head_is_equated_in_each_world() {
 }
 
 /// A LIFT IS NOT SPLIT BY THE FACTS OF AN ENTITY ITS PREMISE READS: a cited lemma is an
-/// implication spliced into its consumer, whose fields it names as the consumer's
-/// constants, and one of several facts has none. It is refused, as KF2SD refused it,
-/// where the proof of the same rule is a world for each fact.
+/// implication spliced into its consumer, which reads the fact's value in place of the
+/// premise's variable (WI-20261014-VVRHJ), and of several facts there is no one value. It
+/// is refused, as KF2SD refused it, where the proof of the same rule is a world for each
+/// fact.
 #[test]
 fn a_lift_is_not_split_by_an_entitys_facts() {
     let kb = load_kb_with(SOURCE);
@@ -122,21 +124,19 @@ fn a_lift_is_not_split_by_an_entitys_facts() {
     assert!(smt.contains("(not (>= (- 1.0) (- 1.0)))"), "{smt}");
 }
 
-/// A FIELD THAT IS NO NUMBER IS NO CONSTANT, in a lift either (/code-review). The one fact
-/// of `Lone` has a variable for its `cap`, and the constant `cap` was left at the 0.0 it
-/// was made with: on 79a6703f the proof of `lone` PROVED `gte(?c, 0.0)`. A proof reads it
-/// by its row, the slot free; a lift, which names the constant, refuses it.
+/// A FIELD THAT IS NO NUMBER IS NO CONSTANT (/code-review). The one fact of `Lone` has a
+/// variable for its `cap`, and the constant `cap` was left at the 0.0 it was made with: on
+/// 79a6703f the proof of `lone` PROVED `gte(?c, 0.0)`. A proof reads it by its row, the slot
+/// free. So does a lift, which reads the fact's value in place of the variable
+/// (WI-20261014-VVRHJ): the field is every value, and the variable stays quantified. The
+/// lift was refused while it named the field's constant.
 #[test]
 fn a_field_that_is_no_number_is_no_constant() {
     let kb = load_kb_with(SOURCE);
-    let err = lift_rule(&kb, "test.kf32.emit.lone").expect_err("no constant for a variable");
-    assert!(
-        err.message.contains(
-            "the premise `test.kf32.emit.Lone` reads the field `cap` of the entity's fact, \
-             whose value there is no number, as a constant of the document"
-        ),
-        "{}",
-        err.message
+    let lifted = lift_rule(&kb, "test.kf32.emit.lone").expect("the lift reads the row");
+    assert_eq!(
+        lifted.clauses,
+        vec!["(assert (forall ((var_0 Real)) (=> true (>= var_0 0.0))))".to_owned()]
     );
     let (smt, _) = emit_satisfiability_check_with_deps(
         &kb,
@@ -145,7 +145,7 @@ fn a_field_that_is_no_number_is_no_constant() {
     )
     .expect("the proof reads the row");
     assert!(
-        smt.contains("(declare-const var_0 Real)") && !smt.contains("define-fun cap"),
+        smt.contains("(declare-const var_0 Real)") && !smt.contains("Lone.cap"),
         "{smt}"
     );
 }

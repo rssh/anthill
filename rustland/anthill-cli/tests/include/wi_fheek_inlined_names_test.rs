@@ -241,14 +241,17 @@ fn every_place_a_variable_is_given_a_value_asks_what_was_written() {
         ]
     };
     assert_eq!(errors(&out), Vec::<&str>::new(), "stderr:\n{}", out.stderr);
-    let cap = "(define-fun cap () Real 5.0)".to_owned();
+    let cap = "(define-fun test.fheek.sites.Lim.cap () Real 5.0)".to_owned();
     for (rule, expected) in [
         ("eq_named", named("3.0")),
         ("eq_defined_by", defined_by("3.0")),
         ("one_named", named("3.0")),
         ("one_defined_by", defined_by("3.0")),
-        ("ent_named", [vec![cap.clone()], named("cap")].concat()),
-        ("ent_defined_by", [vec![cap.clone()], defined_by("cap")].concat()),
+        ("ent_named", [vec![cap.clone()], named("test.fheek.sites.Lim.cap")].concat()),
+        (
+            "ent_defined_by",
+            [vec![cap.clone()], defined_by("test.fheek.sites.Lim.cap")].concat(),
+        ),
     ] {
         assert_eq!(
             stated(&out, &format!("test.fheek.sites.{rule}")),

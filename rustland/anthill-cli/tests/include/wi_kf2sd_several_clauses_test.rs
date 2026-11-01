@@ -714,7 +714,7 @@ end
     );
     assert_eq!(
         assertions(&out, "test.kf2sd.ent.single"),
-        ["(assert (not (<= top 3.0)))"]
+        ["(assert (not (<= test.kf2sd.ent.One.top 3.0)))"]
     );
 }
 
@@ -1030,7 +1030,7 @@ end
     assert_eq!(errors(&out), Vec::<&str>::new(), "stderr:\n{}", out.stderr);
     assert_eq!(
         assertions(&out, "test.kf2sd.legacy.legacy"),
-        ["(assert (> scale 99.0))"]
+        ["(assert (> test.kf2sd.legacy.Cfg.scale 99.0))"]
     );
 }
 

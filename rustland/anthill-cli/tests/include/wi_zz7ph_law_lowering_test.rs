@@ -584,7 +584,7 @@ end
         &out,
         &[
             "(assert (< (+ var_1 var_0) 3.0))".to_owned(),
-            "(assert (> var_0 max))".to_owned(),
+            "(assert (> var_0 test.zz7ph.down.Limits.max))".to_owned(),
         ],
     );
     assert_eq!(

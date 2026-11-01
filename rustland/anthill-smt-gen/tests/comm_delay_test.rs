@@ -85,11 +85,11 @@ fn comm_delay_max_emits_a_well_formed_smtlib_doc() {
     );
     // User-asserted constants resolved from the matching fact
     assert!(
-        smt.contains("(define-fun range_max () Real 100.0)"),
+        smt.contains("(define-fun test.smt_gen.lf1.LinkParameters.range_max () Real 100.0)"),
         "range_max const missing:\n{smt}"
     );
     assert!(
-        smt.contains("(define-fun control_period () Real 0.032)"),
+        smt.contains("(define-fun test.smt_gen.lf1.KinematicAssumptions.control_period () Real 0.032)"),
         "control_period const missing:\n{smt}"
     );
     // Result variable bound to the rule body's RHS expression.
@@ -185,12 +185,12 @@ fn comm_delay_max_emits_arith_in_correct_smt_lib_order() {
     // The body should contain `(/ range_max signal_speed)` as the
     // propagation-delay sub-expression, NOT `(range_max / ...)`.
     assert!(
-        smt.contains("(/ range_max signal_speed)"),
+        smt.contains("(/ test.smt_gen.lf1.LinkParameters.range_max test.smt_gen.lf1.LinkParameters.signal_speed)"),
         "expected prefix-notation division of range_max / signal_speed:\n{smt}"
     );
     // And `(* packet_size byte_size)` for the bit count.
     assert!(
-        smt.contains("(* packet_size byte_size)"),
+        smt.contains("(* test.smt_gen.lf1.LinkParameters.packet_size test.smt_gen.lf1.LinkParameters.byte_size)"),
         "expected (* packet_size byte_size) for the bit-count expression:\n{smt}"
     );
 }

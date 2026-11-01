@@ -34,6 +34,11 @@ const SRC_BOTH_UNSAT: &str = r#"
       import anthill.prelude.PartialEq.{eq}
       import anthill.prelude.PartialOrd.{gte, lt}
       entity State(upc: Int64, upc_next: Int64)
+      -- Every state: a fact whose fields are variables. With no fact there is no state,
+      -- and the fields were read as 0.0, where `lt(?u, 0)` is false: both sub-queries
+      -- were unsat whatever they said of a state. An entity of no fact is refused now
+      -- (WI-20261014-VVRHJ).
+      fact State(upc: ?u, upc_next: ?n)
 
       -- Ranking function: R(upc) = -upc. Post-armed invariant: -6 ≤ upc < 0.
       -- Boundedness violation: a state where R < 0 (i.e. upc > 0).

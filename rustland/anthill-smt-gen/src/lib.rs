@@ -37,7 +37,7 @@ use anthill_core::kb::typing::{is_inferred_requirement_read, is_typed_head_domai
 use anthill_core::kb::{ClauseKind, KnowledgeBase, ProgramClause};
 use anthill_core::parse::desugar_target as dt;
 
-use sort::{document_logic, smt_tokens};
+use sort::{document_logic, smt_symbol, smt_tokens};
 
 #[derive(Debug)]
 pub struct SmtGenError {
@@ -384,7 +384,7 @@ fn render_worlds(
         hypotheses.push_str(&format!("  ; {}: {described}\n", at + 1));
         let mut conjuncts: Vec<String> = Vec::new();
         if let Some(value) = &world.result_value {
-            conjuncts.push(format!("(= {} {value})", sanitize_smt_id(&world.result_var)));
+            conjuncts.push(format!("(= {} {value})", world.result_var));
         }
         conjuncts.extend(world.assertions.iter().cloned());
         conjuncts.extend(world.negated_conclusion());
@@ -437,9 +437,11 @@ fn render_worlds(
 /// premises ⇒ conclusion implication. The author who wants to cite
 /// such a rule must rewrite it in positive form.
 ///
-/// Field consts (define-fun lines from entity destructure) are NOT
-/// re-emitted here — the consumer's preamble already declares them
-/// since the consumer chases the same facts.
+/// **An entity premise reads its fact's value** in place of its variable, and the lift
+/// names no field's constant (WI-20261014-VVRHJ). It named the constant, which a consumer
+/// that reads no such entity does not define — z3's "unknown constant" — and one that
+/// reads another entity's field of the name defined as that one's: a false claim proved
+/// citing a true lemma.
 ///
 /// **A premise that is a rule's predicate** (`conclusion :- related(?a, ?b)` — a
 /// bodied rule's, a fact's, a one-argument rule's alike) is neither chased into its
@@ -626,13 +628,13 @@ enum HeadShape {
 
 struct Emitter<'kb> {
     kb: &'kb KnowledgeBase,
-    /// `(field_const, value)` to emit at the top of the document.
-    /// `BTreeMap` for deterministic order.
+    /// `(field_const, value)` to emit at the top of the document: each named by
+    /// [`Self::field_constant`], with the value of the entity's one fact, which
+    /// `collect_facts_for_referenced_entities` reads. `BTreeMap` for deterministic order.
     field_consts: BTreeMap<String, f64>,
-    /// Entities seen on rule body LHS that we'll need to materialise.
-    /// Each is the entity's qualified name; we resolve facts at
-    /// `collect_facts_for_referenced_entities` time.
-    referenced_entities: BTreeSet<String>,
+    /// The entities a premise reads as constants, each by its qualified name with the
+    /// fields read; their facts are read at `collect_facts_for_referenced_entities` time.
+    referenced_entities: BTreeMap<String, Vec<Symbol>>,
     /// Final translated body equation: `(define-fun <result> () Real <expr>)`.
     body_smtlib: String,
     /// Name of the rule's result variable (the `?tau` in
@@ -896,7 +898,7 @@ impl<'kb> Emitter<'kb> {
         Self {
             kb,
             field_consts: BTreeMap::new(),
-            referenced_entities: BTreeSet::new(),
+            referenced_entities: BTreeMap::new(),
             body_smtlib: String::new(),
             result_var: String::new(),
             assertions: Vec::new(),
@@ -1093,11 +1095,8 @@ impl<'kb> Emitter<'kb> {
             match local_bindings.get(&self.result_var) {
                 Some(result_smt) => {
                     let sort = self.declared_var_sort(&self.result_var.clone());
-                    self.body_smtlib = format!(
-                        "(define-fun {} () {sort} {})",
-                        sanitize_smt_id(&self.result_var),
-                        result_smt
-                    );
+                    self.body_smtlib =
+                        format!("(define-fun {} () {sort} {result_smt})", self.result_var);
                     self.result_value = Some(result_smt.clone());
                 }
                 None if self.result_required => {
@@ -1341,7 +1340,7 @@ impl<'kb> Emitter<'kb> {
         // Entity-destructure goal: `EntityName(field: ?bind_var, ...)`.
         // For v0 we only handle named-arg destructures. Each
         // ?bind_var becomes an SMT const bound to the corresponding
-        // field's value from the matching ground fact.
+        // field's value from the matching ground fact — or, in a lift, the value itself.
         if self.is_known_entity(functor) {
             // WI-20261012-CDHSQ (/code-review) — IN A LIFT A SLOT THAT IS NO VARIABLE IS
             // REFUSED. `Mode(kind: 2.0, cap: ?c)` says which fact it is of, and the loop
@@ -1364,26 +1363,37 @@ impl<'kb> Emitter<'kb> {
                 }
             }
             let entity_qn = qn.to_string();
+            // A LIFT READS THE FACT'S VALUE IN PLACE OF THE VARIABLE, as a world does
+            // below: a lift is spliced into another proof's document, where a constant of
+            // the field is not defined unless that proof reads the entity too, and then
+            // it is that proof's (WI-20261014-VVRHJ). A premise with no field reads no
+            // row.
+            let lift = matches!(self.body_is, BodyIs::Antecedent) && !named_args.is_empty();
             // WI-20261013-1KF32 — AN ENTITY OF SEVERAL FACTS is the table of a call in an
             // entity's spelling: a world for each fact the premise's slots admit, its
             // fields bound in that world ([`Self::read_by_rows`]). Where the document is
-            // not split (a lift, an obligation), the harvest refuses it as before.
-            if self.choices.is_some() {
+            // not split (a lift, an obligation), one fact or refused.
+            if lift || self.choices.is_some() {
                 let rows = self.entity_rows(&entity_qn)?;
-                if self.read_by_rows(&rows, named_args) {
+                if lift || self.read_by_rows(&rows, named_args) {
                     return self.read_entity_row(&entity_qn, &rows, named_args, bindings);
                 }
             }
-            self.referenced_entities.insert(entity_qn.clone());
+            let mut read: Vec<Symbol> = Vec::new();
             for (field_sym, val_occ) in named_args {
                 let bind_idx = match val_occ.as_expr() {
                     Some(Expr::Var(Var::DeBruijn(i))) => *i,
                     _ => continue, // non-var slots (`field: ?` wildcards / literals)
                 };
-                let field_name = self.kb.local_name_of(*field_sym).to_string();
-                let const_name = sanitize_smt_id(&field_name);
-                self.bind_variable(synthetic_var_name(bind_idx), const_name.clone(), bindings);
-                self.field_consts.entry(const_name).or_insert(0.0); // resolved later
+                let constant = self.field_constant(&entity_qn, *field_sym);
+                self.bind_variable(synthetic_var_name(bind_idx), smt_symbol(&constant), bindings);
+                read.push(*field_sym);
+            }
+            let fields = self.referenced_entities.entry(entity_qn).or_default();
+            for field in read {
+                if !fields.contains(&field) {
+                    fields.push(field);
+                }
             }
             return Ok(());
         }
@@ -2570,7 +2580,15 @@ impl<'kb> Emitter<'kb> {
                 if let Some(constant) = self.nullary_constant(*s, None)? {
                     return Ok(constant);
                 }
-                Ok(sanitize_smt_id(self.kb.local_name_of(*s)))
+                // Not its short name, which another thing of the document may have
+                // (WI-20261014-VVRHJ). No program of the suites or of lf1 reaches this — a
+                // `const` is inlined before it and a bare nullary operation is an
+                // application — so no row drives the refusal (measured).
+                Err(SmtGenError::new(format!(
+                    "`{}` stands bare in an expression, and is no value of the document: a \
+                     bare name is read as a nullary operation of a spec at its carrier",
+                    self.kb.qualified_name_of(*s)
+                )))
             }
             // Conditional in expression position (WI-680): a bodied op's `if`
             // reduces to an `Expr::If` occurrence (the WI-669 defining-equation
@@ -3162,9 +3180,10 @@ impl<'kb> Emitter<'kb> {
         ))
     }
 
-    /// For each entity referenced in the rule body, find its
-    /// (single) ground fact in the KB and resolve every field to a
-    /// Real value. Multi-fact handling is a v1 concern.
+    /// For each entity a premise reads as constants, find its ONE ground fact in the KB
+    /// and read each field the premise binds as a Real value: an entity of several facts,
+    /// of no fact, and a field the fact gives no number are refused (a proof's own
+    /// document reads several facts as worlds, before this).
     ///
     /// Errs on any BODIED rule whose head is a referenced entity
     /// (WI-772): this reader head-matches facts and never evaluates a
@@ -3175,7 +3194,7 @@ impl<'kb> Emitter<'kb> {
     /// entity: candidate order (insertion order — source/file-load
     /// order) would otherwise decide which head the harvest picks.
     fn collect_facts_for_referenced_entities(&mut self) -> Result<(), SmtGenError> {
-        for entity_qn in self.referenced_entities.clone() {
+        for (entity_qn, fields) in self.referenced_entities.clone() {
             // WI-20261012-KF2SD (/code-review) — ONE SUCH FACT, OR REFUSED. "For v0 we
             // expect at most one fact per entity" was a comment, and the loop broke at
             // the first: an entity of several facts was read as its first, whichever
@@ -3190,41 +3209,53 @@ impl<'kb> Emitter<'kb> {
             // several is a document that is not split by them.
             let rows = self.entity_rows(&entity_qn)?;
             if rows.len() > 1 {
-                return Err(SmtGenError::new(format!(
-                    "the entity `{entity_qn}` has several facts, and a premise here reads its \
-                     fields off ONE: it would be the first, whichever fact the premise's own \
-                     slots name. A proof's document reads each fact in a world of its own \
-                     (WI-20261013-1KF32); a cited lemma's lift and an obligation are not \
-                     split by them"
-                )));
+                return Err(several_facts(&entity_qn));
             }
-            let Some(&head) = rows.first() else {
+            // A premise of an entity that has no field reads no value.
+            if fields.is_empty() {
                 continue;
+            }
+            // WI-20261014-VVRHJ — AN ENTITY OF NO FACT GIVES A FIELD NO VALUE, and is
+            // refused: the constant was made with 0.0 and left there, a value no fact
+            // gives — `lte(?c, -1.0) :- Lim(cap: ?c)` with no `Lim` was a COUNTEREXAMPLE
+            // at `cap` = 0.
+            let [row] = rows[..] else {
+                return Err(no_fact(&entity_qn));
             };
-            let Term::Fn { named_args, .. } = self.kb.get_term(head) else {
-                unreachable!("`entity_rows` keeps a row that is an application");
-            };
-            for (field_sym, val_term) in named_args {
-                let field_name = self.kb.local_name_of(*field_sym).to_string();
-                let const_name = sanitize_smt_id(&field_name);
-                if !self.field_consts.contains_key(&const_name) {
-                    continue;
-                }
+            for field in fields {
+                let field_name = self.kb.local_name_of(field);
+                let Some(value) = self.row_field(row, field) else {
+                    return Err(SmtGenError::new(format!(
+                        "the premise `{entity_qn}` reads the field `{field_name}`, which the \
+                         entity's fact does not give"
+                    )));
+                };
                 // WI-20261013-1KF32 (/code-review) — A FIELD THAT IS NO NUMBER IS REFUSED,
                 // and not left at the 0.0 its constant was made with: `fact Lim(cap: ?any)`
                 // was `cap` = 0.0, and proved `gte(?c, 0.0) :- Lim(cap: ?c)`. A proof's
                 // document reads such a fact by its row ([`Self::read_by_rows`]); what
-                // reaches this is a lift or an obligation.
-                let Some(v) = literal_as_real(self.kb.get_term(*val_term)) else {
+                // reaches this is an obligation.
+                let Some(v) = literal_as_real(self.kb.get_term(value)) else {
                     return Err(SmtGenError::new(format!(
                         "the premise `{entity_qn}` reads the field `{field_name}` of the entity's \
                          fact, whose value there is no number, as a constant of the document"
                     )));
                 };
-                self.field_consts.insert(const_name, v);
+                let constant = self.field_constant(&entity_qn, field);
+                self.field_consts.insert(constant, v);
             }
         }
         Ok(())
+    }
+
+    /// THE CONSTANT OF AN ENTITY'S FIELD, read off the entity's one fact: the entity's
+    /// qualified name with the field, `test.ent.A.cap` (`docs/smtlib-forward-mapping.md`
+    /// §7.6). A field's symbol is its name, one for every entity with a field so named,
+    /// and the constant was that name: `lte(?a, 2.0) :- A(cap: ?a), B(cap: ?b)` over
+    /// `A(cap: 5.0)`, `B(cap: 1.0)` was one `cap`, set to the fact read last, and proved
+    /// (WI-20261014-VVRHJ).
+    fn field_constant(&self, entity_qn: &str, field: Symbol) -> String {
+        format!("{entity_qn}.{}", self.kb.local_name_of(field))
     }
 
     /// THE FACTS OF AN ENTITY, by its qualified name: each a row of its fields. A bodied
@@ -3317,6 +3348,9 @@ impl<'kb> Emitter<'kb> {
         bindings: &mut BTreeMap<String, String>,
     ) -> Result<(), SmtGenError> {
         let kb = self.kb;
+        if rows.is_empty() {
+            return Err(no_fact(entity_qn));
+        }
         if let Some((slot, _)) = slots.iter().find(|(_, occ)| {
             !matches!(occ.as_expr(), Some(Expr::Var(_)))
                 && !matches!(self.known_argument(occ, bindings), Some(Known::Number(_)))
@@ -3364,7 +3398,7 @@ impl<'kb> Emitter<'kb> {
                 several,
                 "fact",
                 || format!("the entity `{entity_qn}` ({several} facts)"),
-                || unreachable!("asked only where the document is split by choices"),
+                || several_facts(entity_qn),
             )?,
         };
         let row = admitted[pick];
@@ -3420,7 +3454,8 @@ impl<'kb> Emitter<'kb> {
 
         for (name, value) in &self.field_consts {
             out.push_str(&format!(
-                "(define-fun {name} () Real {})\n",
+                "(define-fun {} () Real {})\n",
+                smt_symbol(name),
                 format_real(*value)
             ));
         }
@@ -3439,7 +3474,7 @@ impl<'kb> Emitter<'kb> {
         ));
         out.push_str(&format!(
             "(assert (not (<= {} {})))\n",
-            sanitize_smt_id(&self.result_var),
+            self.result_var,
             format_real(obligation.upper_bound)
         ));
         match &config.tactic_expr {
@@ -3547,7 +3582,8 @@ fn render_check(rule_qn: &str, config: &ProofConfig, parts: CheckParts<'_>) -> S
     parts.declarations.render(&mut out);
     for (name, value) in &parts.field_consts {
         out.push_str(&format!(
-            "(define-fun {name} () Real {})\n",
+            "(define-fun {} () Real {})\n",
+            smt_symbol(name),
             format_real(*value)
         ));
     }
@@ -3822,8 +3858,8 @@ fn nullary_ctor_sym(occ: &Rc<NodeOccurrence>) -> Option<Symbol> {
 
 /// Synthetic SMT identifier for a de Bruijn-indexed variable. The
 /// loaded rule has dropped the user-given names, so we use the index
-/// directly. Output is deterministic and collision-free with field
-/// names (which never start with `var_<digit>`).
+/// directly. Output is deterministic and collision-free with a field's
+/// constant, which is a qualified name and holds a `.` (§7.6 of the mapping).
 fn synthetic_var_name(idx: u32) -> String {
     format!("var_{idx}")
 }
@@ -4206,16 +4242,21 @@ fn numeral(term: &str) -> Option<f64> {
     }
 }
 
-/// Replace characters that aren't valid in an unquoted SMT-LIB
-/// identifier. Conservative: anthill names use a-z, A-Z, 0-9, `.`,
-/// `_`, `-` — we keep the alphanumerics and `_`, replace the rest.
-fn sanitize_smt_id(name: &str) -> String {
-    let mut out = String::with_capacity(name.len());
-    for c in name.chars() {
-        match c {
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '_' => out.push(c),
-            _ => out.push('_'),
-        }
-    }
-    out
+
+/// An entity premise of several facts where the document is not split by them.
+fn several_facts(entity_qn: &str) -> SmtGenError {
+    SmtGenError::new(format!(
+        "the entity `{entity_qn}` has several facts, and a premise here reads its fields off \
+         ONE: it would be the first, whichever fact the premise's own slots name. A proof's \
+         document reads each fact in a world of its own (WI-20261013-1KF32); a cited lemma's \
+         lift and an obligation are not split by them"
+    ))
+}
+
+/// An entity premise that reads a field of an entity with no fact.
+fn no_fact(entity_qn: &str) -> SmtGenError {
+    SmtGenError::new(format!(
+        "the entity `{entity_qn}` has no fact, and a premise here reads its fields off one: a \
+         field no fact gives has no value"
+    ))
 }

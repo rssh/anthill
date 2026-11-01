@@ -159,11 +159,11 @@ fn lower_violation_envelope_is_non_empty() {
     // aren't vacuous by confirming d_min and d_max are far enough
     // apart that the inner interval exists.
     assert!(
-        smt.contains("(define-fun d_min () Real 1.0)"),
+        smt.contains("(define-fun test.smt_gen.invariant.DistanceBounds.d_min () Real 1.0)"),
         "d_min const missing:\n{smt}"
     );
     assert!(
-        smt.contains("(define-fun d_max () Real 100.0)"),
+        smt.contains("(define-fun test.smt_gen.invariant.DistanceBounds.d_max () Real 100.0)"),
         "d_max const missing:\n{smt}"
     );
 }
