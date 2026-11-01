@@ -3,9 +3,9 @@
 - id: WI-20261017-1Y96B-an-eponymous-sort-s-bare-name
 - created: 2026-10-17T05:33:15Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-10-17T05:33:15Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-11-01T17:58:59Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -34,4 +34,10 @@ WHAT. Record a bare eponymous sort (and a free-standing entity, the same arm) as
 CONTROL. Each spelling above, in an operation body and a rule body. A forgotten-parentheses construction still names the type (`expected Ep, got Type (Ep)`). A member taking the value (`operation greet(self: Ep)`) reached as `(Ep).greet()` — state what it is refused as, and that the refusal says something useful. `Ep(name: "x").em()`, a dot on a CONSTRUCTED value, keeps the reading it has. Say at the test site which rows fail with the change backed out.
 
 DONE WHEN: the eponymous receiver spellings give the companion verdict the ordinary sort's do, in both bodies; §5.4 says so; the gate is green.
+
+## Changes
+
+### 2026-11-01T17:58:57Z — feedback — claude
+
+DELIVERED as closed by WI-20260902-JB6RS step 5 (user's go, 2026-11-01; rows in 8c96c440). The premise moved under the ticket: since JB6RS a constructor's bare name in a body is its INSTANCE and its type is written with the bracket, `Ep[]` (kernel-language §4.4). So bare `Ep` is no type value: `(Ep).em()` and `let t = Ep` + `t.em()` are refused as a construction without its field `name`, advising `Ep[]`; and every spelling of the type is the receiver that denotes the sort, which §5.4's "a written type" already covers, so no spec text is added. In an operation body `Ep.em()`, `Ep[].em()`, `(Ep[]).em()`, `(test.….Ep[]).em()` and `let t = Ep[]` + `t.em()` answer 8; in a rule body `(Ep[]).em()` and its path spelling bind 8; a fieldless `(Fl[]).em()` answers 9, and `(Fl).em()` is a dot on the value `Fl`, an arity error. THE TWO NOTES: (1) a bare reference constructs (JB6RS); (2) moot, the record is the bracket's `Expr::TypeValue`. THE WHAT LIST: `denoted_type_value` has no free-standing-entity arm (its doc corrected in 8c96c440); the RXT6S pin is turned to the instance reading; a constructor reached through the receiver is looked up by its written name, so `(Ep[]).Ep(name: "x")` is refused as `Ep[].Ep(name: "x")` is, where it constructed (PAPX0, 8c96c440). CONTROLS: `(Ep[]).greet()` over `greet(self: Ep)` is the call with no argument for `self`, refused naming it; `Ep(name: "x").greet()` answers 5 and `Ep(name: "x").em()` is an arity error, the dot passing the value as before. Rows: wi_1y96b_eponymous_type_receiver_test (3), controls only: nothing here changed the reading, so no back-out fails them; the `Ep` spellings answered the same on 6fcc35a5. Full workspace 11,401 passed; scaland 1 + 51 + 793.
 

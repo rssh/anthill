@@ -3,13 +3,13 @@
 - id: WI-20260824-PAPX0-decide-and-encode-the-dot
 - created: 2026-08-24T05:05:04Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-10-08T09:06:41Z
+- status_at: 2026-11-01T18:05:34Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
-- depends_on: WI-20260824-WAHB6-classify-a-nominal-type-once, WI-20261008-R653S-a-paren-less-dot-on-a-sort, WI-20261008-7B15V-an-applied-alias-is-refused-as, WI-20261012-TCSGT-a-structural-type-written-as
+- depends_on: WI-20260824-WAHB6-classify-a-nominal-type-once, WI-20261008-R653S-a-paren-less-dot-on-a-sort, WI-20261008-7B15V-an-applied-alias-is-refused-as, WI-20261012-TCSGT-a-structural-type-written-as, WI-20261017-1Y96B-an-eponymous-sort-s-bare-name
 
 - tags: proposal-055
 
@@ -508,4 +508,8 @@ The two gaps of the 2026-10-12 note are filed and are parts of this ticket (user
 ### 2026-10-12T06:17:07Z — feedback — claude
 
 The dependency on WI-20261008-A3FY2 is removed: it is delivered (7c82a84b), so nothing waits on it, and with the two parts filed today the `depends_on` line had passed the 255 characters the attributes chapter takes without a diagnostic on every command. Its delivery is in the note of 2026-10-12 above.
+
+### 2026-11-01T18:05:33Z — feedback — claude
+
+DELIVERED (8c96c440, f180223c; user's go on the spec text, 2026-11-01). The last measured break of "one type value, one answer in every spelling": a member written after a bracket, `Box[V = Int64].V`, was refused (WI-20260911-5G28A's L3) where `(Box[V = Int64]).V` and `let t = Box[V = Int64]` + `t.V` answered `Int64`. Now, in an operation body and a rule body, the paren-less `Sort[…].m` keeps the citation for a rule, an operation or a constructor and is the dot `(Sort[…]).m` the converter builds beside it for any other member (`Loader::citation_read_as_dot`); a clause's own term — a fact, a rule head — keeps the citation. In a type, `Sort[…].Member` is a grammar node (`type_member`, tree-sitter and scaland) read at the bracket's parameters through the carrier-neutral readers (`Loader::bracket_member_child`, `typing::bracket_member`), and so is `Alias.Member` where the alias fixes the parameters the member is defined over. Spec: kernel-language §5.4, §5.1 (the alias bullet), the `Type` grammar of §4 and §11. THE MATRIX after the change: the only row that moved is `Box[V = Int64].V`; the value positions agree for type members, `Q[A = Int64].L`, `CB[Int64].V` through a pure alias, a const (refused alike, advising its name), an internal member (one identical refusal) and `(Ep[]).Ep(…)` (refused as `Ep[].Ep(…)` is, where it constructed). WI-20261017-1Y96B delivered as closed by JB6RS step 5. Every part is delivered: WAHB6, R653S, 7B15V, TCSGT, 1Y96B, with A3FY2 and RXT6S. Review (high): 6 findings, all fixed, the last in f180223c (a query pattern refused a tuple type entry twice on the paren-less spelling). Rows: wi_papx0_written_type_member_test (12; each piece backed out alone fails its rows, ledger in the header), wi_1y96b_eponymous_type_receiver_test (3, controls), wi_5g28a_query_bracket_test (+1), a tree-sitter corpus case, a parser-parity file and row. NOT THIS TICKET'S, left open: gaps 9 and 10 of the note of 2026-09-13T23:57:53Z, against the anthill-todo graph guard (502d4e0c) — the guard bounds path depth, not path count, and `graph` over a store with no acyclic root prints nothing and exits 0; not re-measured (`find_roots` is unchanged since 502d4e0c), unfiled, raised with the user. Full workspace 11,402 passed; families green (node carrier too); scaland 1 + 51 + 793.
 
