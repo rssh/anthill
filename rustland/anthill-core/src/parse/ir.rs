@@ -337,6 +337,11 @@ impl SimpleTermStore {
         self.paren_less_citations.get(&id).copied()
     }
 
+    /// Every dot `(Sort[…]).m` paired with a paren-less citation.
+    pub fn paren_less_citation_dots(&self) -> impl Iterator<Item = ParseTermId> + '_ {
+        self.paren_less_citations.values().copied()
+    }
+
     /// Record that the `dot_apply` `id` was written without parentheses — see
     /// [`Self::paren_less_dots`].
     pub fn mark_paren_less_dot(&mut self, id: ParseTermId) {

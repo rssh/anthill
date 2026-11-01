@@ -9,6 +9,12 @@
 //! BACK-OUT: drop the `SourceRole::Query` call of `query_bracket_errors` in
 //! `scan_definitions_with_sources` and the three refusal rows panic (exit 101). The
 //! control passes either way, by design.
+//!
+//! WI-20260824-PAPX0 pairs the paren-less spelling with the dot `(Wrap[…]).holds`, which
+//! holds a second copy of the bracket. A query does not read it, and the sweep skips it:
+//! with the skip backed out a tuple type entry is refused a second time, as an entry, on
+//! the paren-less spelling only (`a_structural_entry_is_refused_once_in_either_spelling`
+//! fails; measured on 8c96c440's binary).
 
 use crate::common::{anthill, fixtures_dir};
 
@@ -52,6 +58,19 @@ fn a_call_site_bracket_is_refused() {
         "q5g28a.Wrap.holds[T = q5g28a.Colour]()",
         "call-site type arguments `q5g28a.Wrap.holds[…](…)` are not supported here",
     );
+}
+
+#[test]
+fn a_structural_entry_is_refused_once_in_either_spelling() {
+    for goal in [
+        "q5g28a.Wrap[T = (q5g28a.Colour, q5g28a.Colour)].holds",
+        "q5g28a.Wrap[T = (q5g28a.Colour, q5g28a.Colour)].holds()",
+    ] {
+        assert_refused(goal, "type bracket is not read in a query pattern");
+        let out = query(goal);
+        let errors = out.stderr.lines().filter(|l| l.starts_with("error:")).count();
+        assert_eq!(errors, 1, "`{goal}` must be refused once\nstderr:\n{}", out.stderr);
+    }
 }
 
 #[test]

@@ -7097,11 +7097,25 @@ fn query_application_errors(
 /// -> Int64])`) is refused here too. A program's walks lower one through the loader's
 /// type lowering, which a query pattern's walk does not have; a variable in its place
 /// (`holds(Box[V = ?v])`) answers with the stored type.
+///
+/// The dot a paren-less citation is paired with (`Loader::citation_read_as_dot`) holds a
+/// second copy of its bracket, which a query pattern does not read — the citation is
+/// refused for that bracket — so its terms are not swept.
 fn query_bracket_errors(file: &ParsedFile) -> Vec<LoadError> {
     let key = |name: &str| file.symbols.lookup(name);
     let (type_args_key, recv_type_key) = (key("type_args"), key("recv_type"));
+    let mut unread: HashSet<ParseTermId> = HashSet::new();
+    let mut stack: Vec<ParseTermId> = file.terms.paren_less_citation_dots().collect();
+    while let Some(id) = stack.pop() {
+        if unread.insert(id) {
+            stack.extend(file.terms.get(id).subterms());
+        }
+    }
     let mut errors = Vec::new();
     for id in file.terms.ids() {
+        if unread.contains(&id) {
+            continue;
+        }
         if let Term::ParseAux(aux) = file.terms.get(id) {
             if matches!(aux.as_ref(), ParseAux::EntryType(ty) if !matches!(ty, TypeExpr::EffectRow(_))) {
                 errors.push(
