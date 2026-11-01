@@ -43,6 +43,11 @@
 //!    requirement printed `N = wi9wxk2.opreq_bad.size`, a sort reference).
 //!
 //! PASS UNDER EVERY BACK-OUT, by design: none.
+//!
+//! THE ROWS THAT RUN `Store.peek` CALL WITH A VALUE TYPED AT THE BINDING (`let b: Buf[T =
+//! Int64, N = size] = buf(v: 7)`) since WI-20261005-SGXYH: `buf(v: …)` alone fixes no `N`, and
+//! a provision at one `N` answers no such call (kernel-language §5.2). The ledger above was
+//! measured on the `buf(v: …)` spelling and is not measured again.
 
 use crate::common::{assert_refused_naming, interp_for, try_load_kb_with};
 use anthill_core::eval::Value;
@@ -113,6 +118,12 @@ fn load_errors(src: &str) -> Vec<String> {
     try_load_kb_with(src).err().unwrap_or_default()
 }
 
+/// `Store.peek` of a `buf(v: v)` typed `ty`. A `buf(v: …)` alone fixes no `N`, and a
+/// provision at one `N` answers no such call (kernel-language §5.2).
+fn peek_at(ty: &str, v: i64) -> String {
+    format!("\n    let b: {ty} = buf(v: {v})\n    Store.peek(b)")
+}
+
 /// What makes a control measure the binding and not only the member it changes: the
 /// `fresh` member, at the provision's own type, is not refused beside it.
 fn assert_fresh_fits(errs: &[String]) {
@@ -132,7 +143,7 @@ fn assert_fresh_fits(errs: &[String]) {
 fn a_correct_member_loads_and_the_call_runs() {
     let body = carrier(PROVIDES_NAMED, NAMED, NAMED);
     assert_eq!(
-        answers("wi9wxk2.member", &body, "Store.peek(buf(v: 7))"),
+        answers("wi9wxk2.member", &body, &peek_at(NAMED, 7)),
         17
     );
 }
@@ -176,7 +187,7 @@ fn an_operation_bound_by_name_loads_and_the_call_runs() {
         answers(
             "wi9wxk2.bound",
             &bound_by_name(NAMED),
-            "Store.peek(buf(v: 7))"
+            &peek_at(NAMED, 7)
         ),
         27
     );
@@ -212,7 +223,7 @@ fn a_spec_alias_fixing_the_binding_loads_and_the_call_runs() {
         answers(
             "wi9wxk2.alias",
             &through_alias(NAMED),
-            "Store.peek(buf(v: 7))"
+            &peek_at(NAMED, 7)
         ),
         17
     );
@@ -262,7 +273,7 @@ fn a_nested_modify_target_loads_and_the_call_runs() {
         answers(
             "wi9wxk2.modify",
             &modify_target("slot"),
-            "Store.peek(buf(v: 7))"
+            &peek_at("Buf[T = Int64, N = Modify[slot]]", 7)
         ),
         17
     );
@@ -349,7 +360,7 @@ fn a_qualified_name_is_the_same_value() {
         NAMED,
     );
     assert_eq!(
-        answers("wi9wxk2.qualified", &body, "Store.peek(buf(v: 7))"),
+        answers("wi9wxk2.qualified", &body, &peek_at(NAMED, 7)),
         17
     );
 }
@@ -420,7 +431,11 @@ fn a_provision_condition_at_a_name_is_met() {
         carrier(PROVIDES_NAMED, NAMED, NAMED)
     );
     assert_eq!(
-        answers("wi9wxk2.cond", &body, "Tag.tag(wrap(a: buf(v: 1)))"),
+        answers(
+            "wi9wxk2.cond",
+            &body,
+            &format!("\n    let b: {NAMED} = buf(v: 1)\n    Tag.tag(wrap(a: b))"),
+        ),
         5
     );
 }

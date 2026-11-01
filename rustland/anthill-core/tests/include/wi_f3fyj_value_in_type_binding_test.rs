@@ -53,9 +53,9 @@
 //!    [`a_bare_value_binding_narrows_nothing`] and
 //!    [`a_bare_value_binding_narrows_nothing_through_an_alias`] (`got 3`).
 //! 4. THE LEAF ARM — `match_candidate_against_goal` reads `denoted` as a structured head
-//!    again. 4 FAIL: [`two_providers_at_different_values_are_ambiguous_at_load`],
+//!    again. 4 FAIL: [`two_providers_at_different_values_are_named_at_load`],
 //!    [`a_bracket_selects_the_provider_at_its_value`],
-//!    [`beside_a_typed_provider_the_call_is_still_ambiguous`],
+//!    [`beside_a_typed_provider_the_call_still_names_both`],
 //!    [`beside_a_typed_provider_a_bracket_selects_the_valued_one`].
 //! 5. THE VALUE GUARD — `dispatch_values_match` falls to its coarse head for a value. 1 FAILS:
 //!    [`a_sort_requirement_at_another_value_is_refused`] (`N = 4` supplied by `N = 3`).
@@ -69,15 +69,15 @@
 //! PASSES UNDER EVERY BACK-OUT, by design: [`the_ground_binding_is_the_baseline`], the ticket's
 //! "a ground nested binding loads", which never took the wrapper.
 //!
-//! NOT COVERED HERE, and why: a spec operation called with an argument whose STATIC type
-//! carries a value-in-type (`s: Buf[T = Int64, N = 3]; Store.peek(s)`) is a different
-//! question — how the CALL's binding reaches dispatch, not the provision's — and it tripped
-//! the typer's WI-348 "Phase C" `debug_assert` independent of this fix (with it backed out,
-//! with a GROUND provision, with no provision at all). The rows call with `buf(v: …)`, whose
-//! inferred type carries no denoted; that call is `wi_wbhtm_value_in_type_call_test`'s
-//! (WI-20260929-WBHTM). A value-in-type
-//! written as a NAME (`N = size`, a zero-arg operation) is the same divergence one spelling
-//! over, closed by WI-20260929-9WXK2 and driven in `wi_9wxk2_value_name_in_binding_test`.
+//! THE ROWS CALL WITH A VALUE TYPED AT THE BINDING (`let b: Buf[T = Int64, N = 3] = buf(v:
+//! 7)`) since WI-20261005-SGXYH. They called with `buf(v: …)` alone, whose inferred type
+//! fixes no `N`, and a provision at one `N` answers no such call (kernel-language §5.2): the
+//! two rows that asked two valued providers to tie now ask that both are named in that
+//! refusal. The ledger above was measured on the `buf(v: …)` spelling and is not measured
+//! again. A call's own binding reaching dispatch is `wi_wbhtm_value_in_type_call_test`'s
+//! (WI-20260929-WBHTM). A value-in-type written as a NAME (`N = size`, a zero-arg operation)
+//! is the same divergence one spelling over, closed by WI-20260929-9WXK2 and driven in
+//! `wi_9wxk2_value_name_in_binding_test`.
 
 use crate::common::{assert_refused_naming, definite_unary, interp_for, try_load_kb_with};
 use anthill_core::eval::Value;
@@ -144,6 +144,12 @@ fn load_errors(src: &str) -> Vec<String> {
     try_load_kb_with(src).err().unwrap_or_default()
 }
 
+/// `Store.peek` of a `buf(v: v)` typed `ty`. A `buf(v: …)` alone fixes no `N`, and a
+/// provision at one `N` answers no such call (kernel-language §5.2).
+fn peek_at(ty: &str, v: i64) -> String {
+    format!("\n    let b: {ty} = buf(v: {v})\n    Store.peek(b)")
+}
+
 // ── the carrier's own members ─────────────────────────────────────────────────────────
 
 /// THE TICKET'S PROGRAM, driven: the members fit the provision at the value-in-type
@@ -152,7 +158,7 @@ fn load_errors(src: &str) -> Vec<String> {
 #[test]
 fn a_correct_member_loads_and_the_call_runs() {
     let body = carrier(PROVIDES_VALUED, VALUED, VALUED);
-    assert_eq!(answers("wif3fyj.member", &body, "Store.peek(buf(v: 7))"), 7);
+    assert_eq!(answers("wif3fyj.member", &body, &peek_at(VALUED, 7)), 7);
 }
 
 /// THE CONTROL, at the parameter: `N = 4` is another type, refused naming both. The same
@@ -218,7 +224,7 @@ fn an_operation_bound_by_name_loads_and_the_call_runs() {
         answers(
             "wif3fyj.bound",
             &bound_by_name(VALUED),
-            "Store.peek(buf(v: 9))"
+            &peek_at(VALUED, 9)
         ),
         9
     );
@@ -254,7 +260,7 @@ fn a_spec_alias_fixing_the_binding_loads_and_the_call_runs() {
         answers(
             "wif3fyj.alias",
             &through_alias(VALUED),
-            "Store.peek(buf(v: 11))"
+            &peek_at(VALUED, 11)
         ),
         11
     );
@@ -289,7 +295,7 @@ fn sugar_carrier(provision: &str) -> String {
 fn the_bracketed_spelling_narrows_the_spec_member() {
     let body = sugar_carrier(PROVIDES_VALUED);
     assert_eq!(
-        answers("wif3fyj.sugar", &body, "Store.peek(buf(v: 13))"),
+        answers("wif3fyj.sugar", &body, &peek_at(VALUED, 13)),
         13
     );
 }
@@ -304,7 +310,7 @@ fn the_alias_spelling_narrows_alike() {
         sugar_carrier("provides BufStore")
     );
     assert_eq!(
-        answers("wif3fyj.sugar_alias", &body, "Store.peek(buf(v: 15))"),
+        answers("wif3fyj.sugar_alias", &body, &peek_at(VALUED, 15)),
         15
     );
 }
@@ -376,24 +382,29 @@ fn two_providers(c1_state: &str) -> String {
     )
 }
 
-fn assert_ambiguous_at_load(ns: &str, body: &str, why: &str) {
+/// `Store.peek(buf(v: 7))`, whose `N` nothing fixes, refused at load naming both providers:
+/// each answers at one instance of `N` only (kernel-language §5.2).
+fn assert_both_named_at_load(ns: &str, body: &str, why: &str) {
     let src = program(
         ns,
         &format!("{body}\n  operation go() -> Int64 = Store.peek(buf(v: 7))"),
     );
     assert_refused_naming(
         &load_errors(&src),
-        &["ambiguous dispatch of", "2 instances provide", "C1", "C2"],
+        &[
+            "nothing here fixes `N` of `Buf`",
+            &format!("`{ns}.C1` and `{ns}.C2` provide `{ns}.Store` only at an instance of it"),
+        ],
         why,
     );
 }
 
-/// TWO VALUES, NO BRACKET: a load error, as it is for two types. Was a clean load that died
-/// "ambiguous dispatch" at run time — the candidate matcher refused `denoted(4)` / `denoted(3)`
-/// as structured heads, so it saw NO candidate and deferred.
+/// TWO VALUES, NO BRACKET: a load error naming both, as it is for two types. Was a clean load
+/// that died "ambiguous dispatch" at run time — the candidate matcher refused `denoted(4)` /
+/// `denoted(3)` as structured heads, so it saw NO candidate and deferred.
 #[test]
-fn two_providers_at_different_values_are_ambiguous_at_load() {
-    assert_ambiguous_at_load(
+fn two_providers_at_different_values_are_named_at_load() {
+    assert_both_named_at_load(
         "wif3fyj.two_values",
         &two_providers(WRONG),
         "two providers at N = 4 / N = 3, unbracketed",
@@ -414,11 +425,11 @@ fn a_bracket_selects_the_provider_at_its_value() {
     );
 }
 
-/// BESIDE A TYPED PROVIDER (`N = Int64`), still a tie. Was a silent pick of the typed one —
-/// the valued provider never a candidate.
+/// BESIDE A TYPED PROVIDER (`N = Int64`), both are named still. Was a silent pick of the
+/// typed one — the valued provider never a candidate.
 #[test]
-fn beside_a_typed_provider_the_call_is_still_ambiguous() {
-    assert_ambiguous_at_load(
+fn beside_a_typed_provider_the_call_still_names_both() {
+    assert_both_named_at_load(
         "wif3fyj.mixed",
         &two_providers("Buf[T = Int64, N = Int64]"),
         "a typed and a valued provider, unbracketed",

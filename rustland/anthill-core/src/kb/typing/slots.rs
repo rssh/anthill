@@ -2780,11 +2780,10 @@ pub(super) fn infer_named_slot_bindings(
                     pin,
                     sub_goal_requires: &[],
                 };
-                // ASKED AS THE DICTIONARY BUILD ASKS IT ([`resolve_opening_unwritten_slots`]):
-                // a carrier written as its bare sort is read at its open slots by both, or
-                // this binds nothing where the build then constructs.
-                let asked =
-                    resolve_opening_unwritten_slots(kb, &goal, &scope, DefaultRung::Consult);
+                // ASKED AS THE DICTIONARY BUILD ASKS IT: a carrier written as its bare sort is
+                // read at its open slots by both (the provision matcher reads it so), or this
+                // binds nothing where the build then constructs.
+                let asked = resolve_with_rung(kb, &goal, &scope, DefaultRung::Consult);
                 let Some(provider) = (match asked {
                     ResolutionResult::Resolved(tree) => tree.impl_sort(),
                     // A tie or a miss binds nothing: the dictionary build's own refusal
@@ -2827,7 +2826,7 @@ pub(super) fn infer_named_slot_bindings(
                         pin,
                         sub_goal_requires: &[],
                     };
-                    match resolve_opening_unwritten_slots(kb, &goal, &scope, DefaultRung::Consult) {
+                    match resolve_with_rung(kb, &goal, &scope, DefaultRung::Consult) {
                         ResolutionResult::Resolved(tree) => tree.impl_sort(),
                         _ => None,
                     }

@@ -28,8 +28,9 @@
 //! still filled by any holder, and a carrier the call did not pin at all by any value. The
 //! one thing the swap was FOR — a carrier written as its bare sort, the type of a result
 //! nothing has named — is construction's to answer, and it does: a sort written with slots
-//! left out is asked at its open slots and a dictionary is built
-//! (`resolve_opening_unwritten_slots`). No value's type stands in for a carrier any more.
+//! left out is matched at its open slots and a dictionary is built (the provision matcher's
+//! `unwritten_slots_opened_at`, WI-20261005-SGXYH). No value's type stands in for a carrier
+//! any more.
 //!
 //! A refusal row asserts a LOAD verdict naming the requirement at the binding the call pinned
 //! — nothing there can run, the requirement having no provider — and fails naming every
@@ -41,8 +42,9 @@
 //! present-but-wrong, APPLIED AND RUN over this file's 8 rows. A row named without a
 //! spelling fails at both.
 //!
-//! 1. THE BARE CARRIER NOT OPENED (`resolve_opening_unwritten_slots` answering the goal as
-//!    written). 2 FAIL, each refused at load:
+//! 1. THE BARE CARRIER NOT OPENED (the goal answered as written; since WI-20261005-SGXYH the
+//!    matcher's `unwritten_slots_opened_at`, re-measured: the same two). 2 FAIL, each refused
+//!    at load:
 //!    [`an_unnamed_result_pins_the_bare_sort_and_gets_a_dictionary`] and
 //!    [`an_unnamed_stack_is_measured`].
 //! 2. THE CHAIN-END READ of WI-20260929-020TH (`spec_param_binding`, then
