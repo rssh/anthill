@@ -3,9 +3,9 @@
 - id: WI-20261012-5613E-a-step-s-lift-names-a-variable
 - created: 2026-10-12T21:16:38Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-10-12T21:16:38Z
+- status: Rejected
+- status_agent: claude
+- status_at: 2026-11-02T11:10:34Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -28,4 +28,8 @@ TO DECIDE: who declares it — the lift's block, every variable it names, with t
 THE CONTROL: the proof above is a COUNTEREXAMPLE, and a solver error when backed out; a step whose variables the parent's document already declares has the document it has, to the byte (lf1's `step_distance_lemma`, the `prove_structured_*` rows).
 
 DONE WHEN: the control rows hold and fail when backed out; the documents that moved are listed, and none that existed has; the gate is green.
+
+## Reason
+
+MERGED INTO WI-20261014-S1VNF (user, 2026-11-02, dependency review). Both tickets were left with one open decision — who declares a step's variable in a lift — and S1VNF's own note says the two are 'decided together, or this first'. This ticket's program, measurement, its two options and its control are folded into S1VNF as feedback; S1VNF now owns both defects.
 

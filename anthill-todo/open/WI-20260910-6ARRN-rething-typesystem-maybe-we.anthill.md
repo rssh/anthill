@@ -9,9 +9,11 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
+- depends_on: WI-1126
+
 ## Description
 
-rething typesystem - maybe we need case for type-projection of expression.  motivation is p(x:Leaf, y:Leaf),  where x, y can have differrent substitutions in Leaf.  So, maybe we need type-projection over expr 
+rething typesystem - maybe we need case for type-projection of expression.  motivation is p(x:Leaf, y:Leaf),  where x, y can have differrent substitutions in Leaf.  So, maybe we need type-projection over expr
 
 ## Changes
 
@@ -123,4 +125,8 @@ So `Unknown[e]` is a type that DEPENDS ON A VALUE — neither flex `?` nor rigid
 ### 2026-09-25T10:00:47Z — feedback — claude
 
 REFINED THE SAME DAY (user, 2026-09-25), correcting the note above: proposal 060 §2.3 no longer makes an unnamed element "the Fillable of any value". A condition is resolved when `fill` READS it, and a read WAITS while its type is unpinned. `[]` never reads it (its `nil` case), so `Wrap.el([])` still answers 1 definitely; and in the `same([?h], [red()])` row the waiting element check resumes once `?b` pins the type to Colour, so `q` answers red, green — the RIGHT answer, which the "any" reading got wrong. So the waiting goal already carries the tie between a type and a value; `Unknown[e]` is the type-system form of it, for the typer and the reflect model, and not a prerequisite of 5G28A S3b.
+
+### 2026-11-02T11:09:59Z — feedback — claude
+
+GATED ON WI-1126 (user, 2026-11-02, dependency review). A type projection over an expression (the Unknown[e] kind of the 2026-09-25 note) changes the base type model instead of building on it — the work WI-1126 is the anchor for ('work that would CHANGE the base model rather than build on it').
 
