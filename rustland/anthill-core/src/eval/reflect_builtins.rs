@@ -2651,9 +2651,9 @@ end
         // after: the ladder adds the implicit tier, not a global short-name scan
         // (WI-476). The error names the operation and the name.
         match looked_up_name(&mut interp, "Color") {
-            Err(EvalError::Internal(msg)) => assert!(
-                msg.contains("lookup_symbol") && msg.contains("Color"),
-                "got: {msg}",
+            Err(EvalError::HostNameUnresolved { detail }) => assert!(
+                detail.contains("lookup_symbol") && detail.contains("Color"),
+                "got: {detail}",
             ),
             other => panic!("expected a loud unknown-name error, got {other:?}"),
         }

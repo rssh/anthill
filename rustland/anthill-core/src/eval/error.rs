@@ -329,6 +329,14 @@ pub enum EvalError {
     TypePatternUnjudged {
         detail: String,
     },
+    /// A name a program handed a host function as text — `make_fn`'s functor,
+    /// `lookup_symbol`'s name — denotes no symbol at `<global>`, or several
+    /// (`resolve_host_name`). `detail` is the rendered reason, naming the operation and the
+    /// name. A PROGRAM error, not an evaluator invariant, so not [`Self::Internal`]: reached
+    /// from a rule body it is the goal's fault, where an internal error is asserted on.
+    HostNameUnresolved {
+        detail: String,
+    },
     Internal(String),
 }
 
@@ -686,6 +694,7 @@ impl EvalError {
             | EvalError::ReifyPayloadUnread { .. }
             | EvalError::RaiseTypeUnread { .. }
             | EvalError::TypePatternUnjudged { .. }
+            | EvalError::HostNameUnresolved { .. }
             | EvalError::Internal(_) => BridgeDisposition::Fault,
         }
     }
@@ -1019,6 +1028,7 @@ impl std::fmt::Display for EvalError {
             EvalError::ReifyPayloadUnread { detail } => write!(f, "{detail}"),
             EvalError::RaiseTypeUnread { detail } => write!(f, "{detail}"),
             EvalError::TypePatternUnjudged { detail } => write!(f, "type_admits: {detail}"),
+            EvalError::HostNameUnresolved { detail } => write!(f, "{detail}"),
             EvalError::Internal(s) => write!(f, "internal evaluator error: {s}"),
         }
     }

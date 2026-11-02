@@ -6835,16 +6835,20 @@ pub fn resolve_host_name(
                 .iter()
                 .map(|&s| interp.kb.qualified_name_of(s))
                 .collect();
-            Err(EvalError::Internal(format!(
-                "{ctx}: `{name}` is ambiguous at <global> — {} {}",
-                contested.candidates_label(),
-                names.join(", ")
-            )))
+            Err(EvalError::HostNameUnresolved {
+                detail: format!(
+                    "{ctx}: `{name}` is ambiguous at <global> — {} {}",
+                    contested.candidates_label(),
+                    names.join(", ")
+                ),
+            })
         }
-        crate::intern::ResolveResult::NotFound => Err(EvalError::Internal(format!(
-            "{ctx}: unknown symbol `{name}` — a bare name must be in the implicit \
-             tier or in scope at <global>, a qualified one spelled in full"
-        ))),
+        crate::intern::ResolveResult::NotFound => Err(EvalError::HostNameUnresolved {
+            detail: format!(
+                "{ctx}: unknown symbol `{name}` — a bare name must be in the implicit \
+                 tier or in scope at <global>, a qualified one spelled in full"
+            ),
+        }),
     }
 }
 
