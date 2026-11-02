@@ -816,11 +816,12 @@ pub(crate) struct EffectGuardSite {
 ///
 /// Recorded by the type lowerings that have a `TypeExpr::Parameterized` arm —
 /// `type_expr_to_child` (ordinary type positions) and `sort_binding_to_value` (a
-/// type written as a binding VALUE inside a `requires` / `provides` clause). Both
-/// record, because "the sole type lowering" is not one function: `type_expr_to_value`'s
-/// doc says it is, but the spec-clause path builds its own `SortView` and never
-/// routes through it, so a `requires Spec[C = Map[K = Float]]` escaped a check
-/// keyed on the ordinary lowering alone.
+/// type written as a binding VALUE inside a sort's `requires` / `provides` clause) —
+/// and, for a type nested in an OPERATION's `requires`, which no type lowering reads, by
+/// `convert_term` at the bracket ([`SiteOrigin::OperationRequires`]). Each records, because "the sole
+/// type lowering" is not one function: `type_expr_to_value`'s doc says it is, but the
+/// spec-clause path builds its own `SortView` and never routes through it, so a `requires
+/// Spec[C = Map[K = Float]]` escaped a check keyed on the ordinary lowering alone.
 ///
 /// The BINDINGS are recorded, not the assembled type term, for two reasons. The
 /// lowering has already mapped positional arguments onto declared parameter names,
@@ -840,26 +841,71 @@ pub(crate) struct ParameterizedSite {
     pub base: Symbol,
     /// EVERY binding, by DECLARED parameter name (positionals already mapped),
     /// CARRIER-FAITHFULLY: a ground type as `Value::Term`, a `denoted`-bearing one
-    /// (`Modify[clock]`, `Vector[Int64, 3]`) as the `Value::Node` it actually is.
+    /// (`Modify[clock]`, `Vector[Int64, 3]`) as the `Value::Node` it actually is — or, at an
+    /// operation's `requires`, the clause's term, a value's name there being its `denoted`
+    /// term (the clause holds no literal yet, WI-20261012-6SAAP).
     ///
     /// WI-20260831-V25N3 WIDENED THIS FROM GROUND-ONLY, and the reason is that ONE
     /// FIELD WAS ANSWERING TWO QUESTIONS. WI-835 recorded only `TermId`s, on the
     /// ground that "a `denoted` binding stands a VALUE in a type-argument position,
-    /// so it carries no `requires Spec[param]` obligation" — true of the `Eq`-key
-    /// question, and FALSE of "what row did the author write". A row is poisoned to
-    /// `Value::Node` by ONE denoted element, so `Spec[E = {Beep, Modify[clock]}]`
-    /// dropped its whole `E` binding and the unregistered `Beep` beside the lawful
-    /// place went unjudged — MEASURED loading clean, while the same row in a
-    /// `provides` clause was refused.
+    /// so it carries no `requires Spec[param]` obligation" — true of a bare value at
+    /// the `Eq`-key question, and FALSE of "what row did the author write". A row is
+    /// poisoned to `Value::Node` by ONE denoted element, so `Spec[E = {Beep,
+    /// Modify[clock]}]` dropped its whole `E` binding and the unregistered `Beep`
+    /// beside the lawful place went unjudged — MEASURED loading clean, while the same
+    /// row in a `provides` clause was refused.
     ///
     /// So the field records what was WRITTEN and each consumer applies its own
-    /// filter: [`crate::kb::typing::check_use_site_requires_eq`] keeps its
-    /// ground-only reading explicitly (a denoted binding names no carrier to look
-    /// up), and `check_written_row_bindings` reads every one.
+    /// filter: [`crate::kb::typing::check_use_site_requires_eq`] drops a binding that
+    /// IS a value at its root (`N = 3` names no carrier to look up) and judges a TYPE
+    /// that holds one like any other key (`K = Buf[T = Float, N = 3]` is refused as
+    /// its `N = Bool` twin is, WI-20260929-TJ3G4), and `check_written_row_bindings`
+    /// reads every one it is handed ([`WrittenTypeSites::for_row_check`]).
     pub bindings: SmallVec<[(Symbol, crate::eval::value::Value); 2]>,
-    /// Where the base name was written, for a `path:line:col` diagnostic. Carries
-    /// the `SourceId`: byte offsets alone repeat across files.
+    /// Where the base name was written, for a `path:line:col` diagnostic. Carries the
+    /// `SourceId`: byte offsets alone repeat across files.
     pub span: SourceSpan,
+    /// Which walk recorded it — see [`SiteOrigin`].
+    pub origin: SiteOrigin,
+}
+
+/// Which walk recorded a [`ParameterizedSite`], by which [`WrittenTypeSites`] hands it to
+/// the checks that read it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SiteOrigin {
+    /// A type lowering, at the type as written.
+    TypeLowering,
+    /// WI-20260929-TJ3G4 — a bracket written as a type argument in a goal of an operation's
+    /// `requires`, as `Loader::convert_term` builds it, its bindings read through the type aliases they
+    /// name. The clause is lowered as a term, so no type lowering records it, and the
+    /// use-site `Eq` check had nothing of it: `requires Holder[C = Map[K = Float, V =
+    /// Int64]]` loaded.
+    OperationRequires,
+}
+
+/// One load's [`ParameterizedSite`]s, in the order recorded, handed to each check as the
+/// sites it reads — each origin routed by a `match`, so a new [`SiteOrigin`] is routed where
+/// it is added and no reader filters the list itself.
+pub(crate) struct WrittenTypeSites {
+    sites: Vec<ParameterizedSite>,
+}
+
+impl WrittenTypeSites {
+    /// Every site — the `Eq`-key check's: a type an operation's `requires` holds is a key
+    /// like one its signature does.
+    pub(crate) fn for_eq_key_check(&self) -> &[ParameterizedSite] {
+        &self.sites
+    }
+
+    /// The written-row check's: not an operation's `requires`, which it reads whole, as
+    /// stored (its source 3) — handed these as well, it reported one label twice (MEASURED,
+    /// WI-20260929-TJ3G4's /code-review).
+    pub(crate) fn for_row_check(&self) -> impl Iterator<Item = &ParameterizedSite> {
+        self.sites.iter().filter(|site| match site.origin {
+            SiteOrigin::TypeLowering => true,
+            SiteOrigin::OperationRequires => false,
+        })
+    }
 }
 
 /// WI-20260913-KXNEX — one `provides` clause AS WRITTEN, recorded so the post-load
@@ -2227,7 +2273,7 @@ pub struct KnowledgeBase {
     entity_field_types: HashMap<Decl, Vec<(Symbol, crate::eval::value::Value)>>,
 
     // WI-835 — every PARAMETERIZED TYPE INSTANTIATION the author WRITES: see
-    // [`ParameterizedSite`] for what one is and which lowerings record them.
+    // [`ParameterizedSite`] for what one is and which walks record them.
     //
     // RECORDED rather than checked in place because the check needs a COMPLETE
     // `provides` relation: `eq_derive::run` is the last load pass to assert
@@ -2242,7 +2288,8 @@ pub struct KnowledgeBase {
     //
     // THE DRAIN IS THE CALLER'S, not a check's (WI-20260831-V25N3): TWO checks read this
     // batch now — `check_use_site_requires_eq` and `check_written_row_bindings` — and
-    // whichever one drained would have left the other silently seeing nothing.
+    // whichever one drained would have left the other silently seeing nothing. The drain
+    // hands each the sites it reads ([`WrittenTypeSites`]).
     parameterized_type_sites: Vec<ParameterizedSite>,
 
     // WI-20260913-KXNEX — every `provides` clause this load has WRITTEN, for
@@ -12779,9 +12826,10 @@ impl KnowledgeBase {
     }
 
     /// WI-835 — record one written parameterized type instantiation, for the
-    /// post-load use-site checks. Called from the type lowerings; see
+    /// post-load use-site checks. Called from the type lowerings, and from `convert_term`
+    /// at a bracket nested in an operation's `requires` ([`SiteOrigin`]); see
     /// [`ParameterizedSite`] and the `parameterized_type_sites` field comment.
-    /// A site with no ground bindings is not recorded — there is nothing to
+    /// A site with no bindings is not recorded — there is nothing to
     /// check, and `make_parameterized_type` collapses an empty binding list to a
     /// bare `Ref(base)` anyway (`List[]` ≡ `List`, and the over-applied
     /// non-parametric case), so recording one would bank an entry every reader
@@ -12832,9 +12880,12 @@ impl KnowledgeBase {
 
     /// WI-835 — take the recorded sites, leaving the registry empty. DRAINING, so
     /// a later `load_all` into this KB checks only its own sites instead
-    /// of re-walking (and re-reporting) every batch loaded before it.
-    pub(crate) fn take_parameterized_type_sites(&mut self) -> Vec<ParameterizedSite> {
-        std::mem::take(&mut self.parameterized_type_sites)
+    /// of re-walking (and re-reporting) every batch loaded before it. Handed out as
+    /// [`WrittenTypeSites`], so a check is given the sites it reads.
+    pub(crate) fn take_parameterized_type_sites(&mut self) -> WrittenTypeSites {
+        WrittenTypeSites {
+            sites: std::mem::take(&mut self.parameterized_type_sites),
+        }
     }
 
     /// WI-20260913-KXNEX — record one written `provides` clause, for the post-load

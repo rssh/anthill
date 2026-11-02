@@ -1002,7 +1002,9 @@ fn eq_holds_at(kb: &mut KnowledgeBase, eq_sym: Symbol, ty: &Value) -> bool {
 /// elsewhere. MEASURED covered, each by its own probe and pinned by its own test:
 /// an entity field; an operation PARAMETER and RETURN type; a `const`'s type; a
 /// `sort S = …` alias; a body `let` annotation; a typed lambda binder; a binding
-/// value inside a `requires` / `provides` clause; the positional spelling
+/// value inside a `requires` / `provides` clause, an operation's `requires` included
+/// (WI-20260929-TJ3G4: lowered as a term, it recorded nothing); a key whose type holds a
+/// value (`Buf[T = Float, N = 3]`); the positional spelling
 /// `Map[Float, Int64]`; a DENOTED-bearing instantiation's non-denoted siblings
 /// (`Map[K = Float, V = Buf[T = Int64, N = 3]]`); and any of those NESTED inside a
 /// tuple, an arrow parameter, or another instantiation (`Map[K = Set[T = Float]]`
@@ -1034,6 +1036,12 @@ fn eq_holds_at(kb: &mut KnowledgeBase, eq_sym: Symbol, ty: &Value) -> bool {
 /// (3) A container type the author never WRITES — one the typer infers at a call
 /// site — has no written instantiation to record; the declared signature it flows
 /// into or out of is what carries the refusal.
+///
+/// (4) An operation's `ensures` clause, a `fact`'s bracket and a rule body are lowered as
+/// terms, as an operation's `requires` is, and record no site: `ensures Holder[C = Map[K =
+/// Float, V = Int64]]`, `fact Holder[C = Map[K = Float, V = Int64]]` and `rule r(?x) :-
+/// known(Map[K = Float, V = Int64])` load (measured for WI-20260929-TJ3G4, which recorded
+/// the brackets written as type arguments in an operation's `requires` alone).
 pub(crate) fn check_use_site_requires_eq(
     kb: &mut KnowledgeBase,
     sites: &[crate::kb::ParameterizedSite],
