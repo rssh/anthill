@@ -546,6 +546,7 @@ impl NodeOccurrence {
                 compound_syntax,
                 classification: RefCell::new(None),
                 op_dicts: RefCell::new(SmallVec::new()),
+                closure_dicts: RefCell::new(SmallVec::new()),
                     clause_condition: Cell::new(None),
                 inferred_type: RefCell::new(None),
                 lowered_receiver: RefCell::new(None),
@@ -650,6 +651,7 @@ impl NodeOccurrence {
                     compound_syntax: self.is_compound_syntax(),
                     classification: RefCell::new(None),
                     op_dicts: RefCell::new(SmallVec::new()),
+                    closure_dicts: RefCell::new(SmallVec::new()),
                     clause_condition: Cell::new(None),
                     inferred_type: RefCell::new(None),
                     lowered_receiver: RefCell::new(None),
@@ -813,6 +815,7 @@ impl NodeOccurrence {
                 compound_syntax: self.is_compound_syntax(),
                 classification: RefCell::new(None),
                 op_dicts: RefCell::new(SmallVec::new()),
+                closure_dicts: RefCell::new(SmallVec::new()),
                     clause_condition: Cell::new(None),
                 inferred_type: RefCell::new(None),
                 lowered_receiver: RefCell::new(None),
@@ -843,6 +846,7 @@ impl NodeOccurrence {
                 compound_syntax: self.is_compound_syntax(),
                 classification: RefCell::new(None),
                 op_dicts: RefCell::new(SmallVec::new()),
+                closure_dicts: RefCell::new(SmallVec::new()),
                     clause_condition: Cell::new(None),
                 inferred_type: RefCell::new(None),
                 lowered_receiver: RefCell::new(None),
@@ -938,6 +942,7 @@ impl NodeOccurrence {
                 compound_syntax: _,
                 classification: dst_class,
                 op_dicts: dst_op_dicts,
+                closure_dicts: dst_closure_dicts,
                 clause_condition: dst_condition,
                 inferred_type: dst_ty,
                 lowered_receiver: _,
@@ -950,6 +955,7 @@ impl NodeOccurrence {
                 compound_syntax: _,
                 classification: src_class,
                 op_dicts: src_op_dicts,
+                closure_dicts: src_closure_dicts,
                 clause_condition: src_condition,
                 inferred_type: src_ty,
                 lowered_receiver: _,
@@ -969,6 +975,10 @@ impl NodeOccurrence {
         let src_dicts = src_op_dicts.borrow();
         if !src_dicts.is_empty() {
             *dst_op_dicts.borrow_mut() = src_dicts.clone();
+        }
+        let src_closure_dicts = src_closure_dicts.borrow();
+        if !src_closure_dicts.is_empty() {
+            *dst_closure_dicts.borrow_mut() = src_closure_dicts.clone();
         }
         if let Some(condition) = src_condition.get() {
             dst_condition.set(Some(condition));
@@ -1015,6 +1025,7 @@ impl NodeOccurrence {
                 compound_syntax: false,
                 classification: RefCell::new(None),
                 op_dicts: RefCell::new(SmallVec::new()),
+                closure_dicts: RefCell::new(SmallVec::new()),
                     clause_condition: Cell::new(None),
                 inferred_type: RefCell::new(None),
                 lowered_receiver: RefCell::new(None),
@@ -1265,13 +1276,15 @@ impl NodeOccurrence {
             Some(CallClass::ConcreteApplyWithin { fn_target_sym, .. }) => {
                 ApplyDispatch::NeedsDict(*fn_target_sym)
             }
-            // Named, not caught by a `_`: each of these three DOES describe the call,
+            // Named, not caught by a `_`: each of these DOES describe the call,
             // and none of them names an operation a caller may enter directly.
             // `DeferToRequirement` reads the impl out of a frame slot at dispatch time
-            // (there is no target until the frame exists); `UnresolvedSpecOp` is a
+            // (there is no target until the frame exists), `DeferToDictionary` out of
+            // the dictionary it evaluates there; `UnresolvedSpecOp` is a
             // diagnostic tag whose call resolves to nothing; `EtaOpRef` is a function
             // VALUE being minted, not a call being made.
             Some(CallClass::DeferToRequirement { .. })
+            | Some(CallClass::DeferToDictionary { .. })
             | Some(CallClass::UnresolvedSpecOp { .. })
             | Some(CallClass::EtaOpRef { .. }) => ApplyDispatch::Unclassified,
         }
@@ -1307,6 +1320,27 @@ impl NodeOccurrence {
     pub fn op_dicts(&self) -> SmallVec<[Option<TermId>; 2]> {
         match &self.kind {
             NodeKind::Expr { op_dicts, .. } => op_dicts.borrow().clone(),
+            _ => SmallVec::new(),
+        }
+    }
+
+    /// WI-20260929-6NMGQ — hand the lambda this application applies the dictionary
+    /// `dict` under `slot`, in place of one already handed under that slot. No-op on
+    /// non-Expr kinds. See the `closure_dicts` field.
+    pub fn hand_closure_dict(&self, slot: Symbol, dict: TermId) {
+        if let NodeKind::Expr { closure_dicts, .. } = &self.kind {
+            let mut dicts = closure_dicts.borrow_mut();
+            match dicts.iter_mut().find(|(s, _)| *s == slot) {
+                Some(entry) => entry.1 = dict,
+                None => dicts.push((slot, dict)),
+            }
+        }
+    }
+
+    /// The dictionaries [`Self::hand_closure_dict`] recorded, or empty.
+    pub fn closure_dicts(&self) -> SmallVec<[(Symbol, TermId); 1]> {
+        match &self.kind {
+            NodeKind::Expr { closure_dicts, .. } => closure_dicts.borrow().clone(),
             _ => SmallVec::new(),
         }
     }
@@ -1448,6 +1482,15 @@ pub enum NodeKind {
         /// measured `reqs=[]` at its dispatch site. See
         /// [`super::typing::stamp_op_scoped_dicts`] for the one writer.
         op_dicts: RefCell<SmallVec<[Option<TermId>; 2]>>,
+        /// WI-20260929-6NMGQ — the dictionaries an application of a LAMBDA hands it: one
+        /// per requirement the lambda's quantified type carries in its context (a call in
+        /// its body at the type of an unannotated parameter), keyed by the slot the call
+        /// reads, each the dictionary expression evaluated where this application runs.
+        /// `ho_apply_within(f, args, requirements)`, held as a stamp on the application
+        /// for the reason `op_dicts` is one: the dictionary is chosen once the walk has
+        /// solved the use's type, after this node is built. Empty everywhere else.
+        /// [`super::typing::WalkSolutions`]' discharge is the one writer.
+        closure_dicts: RefCell<SmallVec<[(Symbol, TermId); 1]>>,
         /// A rule-body call's requirement the typer left to its clause, which the requirement
         /// inference weaves (requirement-channel.md §5.2's conditional class). `None` for
         /// every other call: pinned, refused, value-directed, or owing nothing. Beside the

@@ -716,15 +716,20 @@ pub(super) fn type_check_node_gated_at(
     // WI-20260904-50B2K part (c) — THE DISCHARGE. A spec-op dispatch this walk held
     // because its carrier was a lambda binder is answered now, against what the binder's
     // own uses solved. See [`WalkSolutions::discharge`].
-    solving.discharge(kb);
+    let discharged = solving.discharge(kb);
     debug_assert_eq!(
         results.len(),
         1,
         "iterative typer: expected exactly one result"
     );
-    results
+    let result = results
         .pop()
-        .expect("iterative typer: missing final result")
+        .expect("iterative typer: missing final result");
+    // A refusal the discharge raises is the walk's, where the walk itself typed.
+    match (result, discharged) {
+        (Ok(_), Err(refusal)) => Err(refusal),
+        (result, _) => result,
+    }
 }
 
 /// Type-check a bare-identifier reference (Ref / Ident / VarRef) by
@@ -756,7 +761,10 @@ pub(super) fn eliminate_env_schema(
     name: Option<Symbol>,
     span: Option<Span>,
     ty: Value,
-) -> Result<Value, TypeError> {
+    // WI-20260929-6NMGQ: the reference itself — what the reference types INTO, unless the
+    // eliminated context requires dictionaries (below).
+    reference: &Rc<NodeOccurrence>,
+) -> Result<(Value, Rc<NodeOccurrence>), TypeError> {
     let Some(inst) = instantiate_poly_type(kb, &ty) else {
         // A ∀ THAT DECLINES TO ELIMINATE IS AN ERROR HERE TOO, matching `check_bare_ref`'s
         // eta arm. `extract_type` answers `Error` for a present-but-undecodable `context`, so
@@ -777,9 +785,47 @@ pub(super) fn eliminate_env_schema(
                     .to_string(),
             });
         }
-        return Ok(ty);
+        return Ok((ty, Rc::clone(reference)));
     };
-    if !inst.obligations.is_empty() && solving.note_instantiation(&inst.binder_map) == 0 {
+    // WI-20260929-6NMGQ — A REFERENCE HANDED ON, NOT APPLIED, IS WRAPPED: `f` becomes
+    // `lambda y -> f(y)`, whose application of `f` is where this instance's dictionaries are
+    // handed (`ho_apply_within(f, [y], [dict])`), so the value carries them to whoever
+    // applies it. Its own application of a lambda is the other site ([`check_apply_iter`]).
+    let (node, site) = match (name, inst.obligations.is_empty()) {
+        (_, true) => (Rc::clone(reference), Rc::clone(reference)),
+        (Some(functor), false) => match extract_callable_type(kb, &inst.ty) {
+            TypeExtractor::Arrow { arity, .. } => {
+                requirement_passing_wrapper(kb, reference, functor, arity)
+            }
+            _ => {
+                return Err(TypeError::Other {
+                    site: TypeError::here(),
+                    span,
+                    context: TypeErrorContext::LetBinding { var: functor },
+                    expected: "a function type for a value whose quantified type carries \
+                               requirements"
+                        .to_string(),
+                    actual: "a type no application can hand its dictionaries to".to_string(),
+                })
+            }
+        },
+        (None, false) => {
+            return Err(TypeError::Other {
+                site: TypeError::here(),
+                span,
+                context: TypeErrorContext::LetBinding {
+                    var: kb.intern("?"),
+                },
+                expected: "a named reference to a value whose quantified type carries \
+                           requirements"
+                    .to_string(),
+                actual: "a reference that names no binding, so no application can hand it \
+                         its dictionaries"
+                    .to_string(),
+            });
+        }
+    };
+    if !inst.obligations.is_empty() && solving.note_instantiation(&inst.binder_map, &site) == 0 {
         let named = match name {
             Some(n) => format!("`{}`", kb.local_name_of(n)),
             None => "this reference".to_string(),
@@ -801,7 +847,64 @@ pub(super) fn eliminate_env_schema(
             ),
         });
     }
-    Ok(inst.ty)
+    Ok((inst.ty, node))
+}
+
+/// WI-20260929-6NMGQ — `lambda (y₁, …, yₙ) -> functor(y₁, …, yₙ)` for a reference to
+/// `functor`, a lambda of `arity` parameters, and the application of `functor` in it — the
+/// wrapper [`eliminate_env_schema`] types a reference into, and the site its dictionaries
+/// are handed at.
+fn requirement_passing_wrapper(
+    kb: &mut KnowledgeBase,
+    reference: &Rc<NodeOccurrence>,
+    functor: Symbol,
+    arity: usize,
+) -> (Rc<NodeOccurrence>, Rc<NodeOccurrence>) {
+    let pass = kb.register_pass("anthill.typer.requirement_passing_wrapper");
+    let (span, owner) = (reference.span, reference.owner);
+    let names: Vec<Symbol> = (0..arity)
+        .map(|i| kb.intern(&format!("__ctx_arg{i}")))
+        .collect();
+    let binder = |name: Symbol| NodeOccurrence::new_pattern(Pattern::Var { name }, span, owner);
+    let param = match names.as_slice() {
+        [one] => binder(*one),
+        _ => NodeOccurrence::new_pattern(
+            Pattern::Tuple {
+                positional: names.iter().map(|n| binder(*n)).collect(),
+                labels: Vec::new(),
+            },
+            span,
+            owner,
+        ),
+    };
+    let args = names
+        .iter()
+        .map(|n| {
+            NodeOccurrence::synthesized_expr(Expr::Ident(*n), Rc::clone(reference), pass, owner)
+        })
+        .collect();
+    let apply = NodeOccurrence::synthesized_expr(
+        Expr::Apply {
+            recv_type: None,
+            functor,
+            pos_args: args,
+            named_args: Vec::new(),
+            type_args: Vec::new(),
+        },
+        Rc::clone(reference),
+        pass,
+        owner,
+    );
+    let wrapper = NodeOccurrence::synthesized_expr(
+        Expr::Lambda {
+            param,
+            body: Rc::clone(&apply),
+        },
+        Rc::clone(reference),
+        pass,
+        owner,
+    );
+    (wrapper, apply)
 }
 
 /// A member WRITTEN WITHOUT PARENTHESES on a sort — `Box.inc`, `Box[V = Int64].wrap`,
@@ -946,8 +1049,8 @@ pub(super) fn check_bare_ref(
         // variable still free in the bound value's type — which is a producer this slice
         // does not add. Pinned as `known_gap_an_unused_alias_of_a_generalized_lambda_is_
         // refused`.
-        let ty = eliminate_env_schema(kb, solving, Some(sym), span, ty)?;
-        return Ok(TypeResult::pure_value(ty, env.clone(), Rc::clone(occ)));
+        let (ty, node) = eliminate_env_schema(kb, solving, Some(sym), span, ty, occ)?;
+        return Ok(TypeResult::pure_value(ty, env.clone(), node));
     }
     // Proposal 039 / WI-084: a bare reference to a term-level constant is
     // value-denoting — it types as the const's DECLARED type, read fold-free off

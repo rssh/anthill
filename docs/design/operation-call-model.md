@@ -873,7 +873,7 @@ Evaluate `requirements[0]` (typically `var_ref(<req_name>)`, `requirement_at_sor
 | IR form | Eval-time requirement work |
 |---|---|
 | `apply_within(fn, args, requirements)` | Eval requirements; eval args; (if fn is a spec-op, resolve via dispatching dictionary); push frame with both populated. |
-| `ho_apply_within(closure_expr, args, requirements=[])` | Eval closure; eval args; push frame with `frame.requirements = closure.requirements` (closures override; see below). |
+| `ho_apply_within(closure_expr, args, requirements)` | Eval closure; eval args; push frame with `frame.requirements = closure.requirements` plus the lambda's own requirements the application hands it (see below). |
 | `constructor_within(name, args, requirements=[])` | requirements always empty; constructors don't dispatch through requirements. IR carries the slot for shape uniformity. |
 | `lambda_within(params, body, requirements)` | One-shot: snapshot locals + requirements from enclosing frame (each `requirements` entry is a `var_ref` / `requirement_at_sort` expression evaluated immediately); deliver `Value::Closure`. No new AwaitState needed. |
 
@@ -884,9 +884,11 @@ For `ho_apply_within(closure_value, args, requirements=...)`:
 2. Evaluate args.
 3. Push new frame: `frame.requirements = closure.requirements` (NOT the call site's requirements slot).
 
-This is the only place the uniform "callee.frame.requirements = caller.apply_within.requirements" rule is overridden — closures must run in the requirement scope where they were *created*, not where they were *invoked*. The call site's `requirements` slot for `ho_apply_within` therefore must be empty: **the typer rejects `ho_apply_within(closure, args, requirements = [<non-empty>])` at typing time.** Closures carry their full requirement scope via `closure.requirements`; a caller has no business injecting more.
+This is the only place the uniform "callee.frame.requirements = caller.apply_within.requirements" rule is overridden — closures must run in the requirement scope where they were *created*, not where they were *invoked*.
 
-This rejection rule keeps the IR honest: any non-empty requirements slot at a closure call site is a typer bug, not a silently-ignored override.
+The one thing an application hands a closure is the lambda's OWN requirement: the context of its inferred ∀ (kernel-language §4.4), what a call in its body needs at the type of an unannotated parameter. The `requirements` slot then holds those dictionaries, built at the application's types and keyed by the lambda's slot names (`__ctx_…`), and the frame is `closure.requirements` with them added — a handed dictionary in place of a captured one under the same name. They are the lambda's parameters, not the caller's scope, so the lexical rule above stands. A reference handed on unapplied is typed into `lambda y -> ho_apply_within(f, [y], [dict])`, so the value carries them.
+
+In a typed body the application stays an `Apply`, and the dictionaries ride its `closure_dicts` stamp, read by eval as this slot: they are chosen once the walk has solved the use's type, after the node is built — the reason a call's `op_dicts` are a stamp too.
 
 ### Why this is the right shape
 

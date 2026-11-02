@@ -541,12 +541,15 @@ pub(crate) struct WalkSolutions {
     /// [`report_call_solutions`]' scoping gate and by [`walk_minted_carriers`].
     pub(super) watermark: u32,
     /// Abstract spec-op dispatches this walk DEFERRED rather than refused — see
-    /// [`WalkSolutions::defer_abstract_dispatch`].
+    /// [`WalkSolutions::defer_binder_dispatch`].
     pub(super) deferred: Vec<DeferredSpecRequirement>,
 }
 
 /// WI-20260904-50B2K part (c) — an abstract spec-op dispatch whose carrier is a LAMBDA
-/// BINDER, held until the walk ends so the binder's own uses can answer it.
+/// BINDER, held until the walk ends so the binder's own uses can answer it — and
+/// (WI-20260929-6NMGQ) a deferral to the enclosing declaration's `requires` that covered
+/// such a call only because the binder was not solved yet. [`WalkSolutions::discharge`]
+/// decides both the same way ([`DeferredCall`]).
 ///
 /// The refusal it replaces demands a `requires` clause "on enclosing sort", and for this
 /// carrier there is NO SITE THE AUTHOR COULD WRITE ONE: a lambda binder is not a type
@@ -554,32 +557,16 @@ pub(crate) struct WalkSolutions {
 /// weakening — the question is not "did the author forget a declaration" but "does the
 /// evidence exist yet", and for a binder it arrives at the USE.
 pub(super) struct DeferredSpecRequirement {
-    /// The call occurrence to classify if the discharge fails.
+    /// The call occurrence the discharge classifies.
     pub(super) occ: Rc<NodeOccurrence>,
     /// The walk-minted variables this call's carrier arguments are typed at — the binders
     /// the requirement falls on. EVERY one must be answered for the call to be licensed.
     pub(super) carriers: SmallVec<[VarId; 2]>,
-    /// The spec each carrier must provide.
-    pub(super) spec_sort: Symbol,
-    /// The classification to raise if the discharge fails — built at the call site, where
-    /// the per-call σ that derived `abstract_params` is still in scope, and carried rather
-    /// than re-derived (the σ is gone by the time this is read).
+    /// The classification the call keeps where no use gives its carriers a type — the
+    /// refusal of the dispatch, or for a held deferral the deferral itself ([`DeferredCall::held`]).
+    /// Built at the call site, where the per-call σ that derived it is still in scope, and
+    /// carried rather than re-derived.
     pub(super) class: CallClass,
-    /// `(binder, concrete carrier)` for every use of these binders this walk has seen.
-    ///
-    /// **PER BINDER, NOT A FLAT SET.** The discharge's question is asked of EACH carrier
-    /// separately — "was this binder answered, and was every answer an instance?" — and a
-    /// flat list cannot state it: with `a` seen at `Int64` and `b` seen at nothing, a flat
-    /// `[Int64]` is non-empty and all-providing, and would license a call half of whose
-    /// carriers have no evidence at all.
-    ///
-    /// **NOT `solved` ALONE, AND THE DIFFERENCE IS A FAIL-OPEN.** [`report_call_solutions`]
-    /// is FIRST-WINS — a variable already bound is left alone, because the rest of the walk
-    /// has been typed against the first answer. Discharging against that one binding would
-    /// license `let g = lambda x -> x + x  let a = g(2)  g(bad)` on the strength of `g(2)`
-    /// alone. Observations are appended at the same site BEFORE that filter, so a second
-    /// use at a second carrier is seen even though it never becomes a solution.
-    observed: Vec<(VarId, Symbol)>,
     /// WI-20260904-50B2K part (c), step 2 — has this requirement MOVED INTO A TYPE?
     ///
     /// Set when [`WalkSolutions::generalize_for_arrow`] puts it in a lambda arrow's
@@ -598,6 +585,90 @@ pub(super) struct DeferredSpecRequirement {
     /// polymorphic — nothing used it, so nothing owes anything, and the constraint travels
     /// in the type to whoever eventually does.
     instances: SmallVec<[VarId; 2]>,
+    /// WI-20260929-6NMGQ — the call as it was typed, which the dictionaries its uses hand
+    /// it are built from.
+    call: Rc<DeferredCall>,
+    /// For each variable this entry watches, the variable of the call's σ a use's type is
+    /// bound to when its dictionary is built: a carrier's root in that σ
+    /// ([`walk_minted_elements`]), an instance's carrier's.
+    origin: SmallVec<[(VarId, VarId); 2]>,
+    /// The type each use gave a watched variable, PER VARIABLE: with `a` given `Int64` and
+    /// `b` nothing, a flat list of types would answer for a call half of whose carriers have
+    /// no evidence. Not [`WalkSolutions::solved`] alone, which is first-wins: `let g = lambda x -> x
+    /// + x  let a = g(2)  g(bad)` would be answered on `g(2)` alone. A use at the enclosing
+    /// declaration's own type parameter is recorded too, and is the use its `requires`
+    /// answers.
+    uses: Vec<(VarId, Value)>,
+    /// Each ∀-elimination of this entry's carriers: an instance, and the application of
+    /// the lambda that hands it the dictionary at the instance's type.
+    sites: Vec<(VarId, Rc<NodeOccurrence>)>,
+    /// The instances a rebinding put back into a quantified type
+    /// ([`WalkSolutions::generalize_at_binding`] spawns their entry): an application at one
+    /// forwards the slot the enclosing lambda is handed.
+    moved: SmallVec<[VarId; 2]>,
+}
+
+/// WI-20260929-6NMGQ — a spec-op call whose element is a lambda's unannotated parameter,
+/// as it was typed. The parameter is solved by the lambda's uses, after the call: where
+/// the walk generalized the lambda, each application hands it the dictionary at the type
+/// that application gives the parameter, under [`Self::slot`] (its quantified type's
+/// context is the lambda's requirement, kernel-language §4.4), and the call reads it;
+/// where the parameter has one type, the call reads the dictionary at it. Either is built
+/// as a call builds an operation's `requires` ([`lambda_requirement_dict`]): the enclosing
+/// declaration's own dictionary where its `requires` covers the type, a construction where
+/// a provider answers it, and a refusal otherwise.
+pub(super) struct DeferredCall {
+    /// The environment and σ the call was typed in.
+    pub(super) env: TypingEnv,
+    pub(super) subst: Substitution,
+    pub(super) fn_sym: Symbol,
+    pub(super) op_short_sym: Symbol,
+    pub(super) spec_sort: Symbol,
+    pub(super) span: Option<Span>,
+    /// The slot an application of the generalized lambda hands the dictionary under: one
+    /// per held call, so two calls on one parameter at two bindings read two.
+    pub(super) slot: Symbol,
+    /// The call deferred to the enclosing declaration's `requires` where it was typed,
+    /// covered only because its element was not solved yet — the classification it keeps
+    /// where no use gives the parameter a type, generalized or not.
+    pub(super) held: bool,
+}
+
+impl DeferredCall {
+    /// The call typed at `subst` in `env`, the `serial`-th this walk deferred; `held` where
+    /// it was a deferral to the enclosing declaration's `requires`. The slot is named by
+    /// its first carrier — a variable minted in this walk, so no other walk's — and the
+    /// serial.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn new(
+        kb: &mut KnowledgeBase,
+        env: &TypingEnv,
+        subst: &Substitution,
+        fn_sym: Symbol,
+        spec_sort: Symbol,
+        span: Option<Span>,
+        carriers: &[VarId],
+        serial: usize,
+        held: bool,
+    ) -> Self {
+        let op_short = short_name_of(kb.qualified_name_of(fn_sym)).to_string();
+        let op_short_sym = kb.intern(&op_short);
+        let slot = kb.intern(&format!(
+            "__ctx_{}_{}_{serial}",
+            short_name_of(kb.qualified_name_of(spec_sort)).to_lowercase(),
+            carriers[0].raw(),
+        ));
+        DeferredCall {
+            env: env.clone(),
+            subst: subst.clone(),
+            fn_sym,
+            op_short_sym,
+            spec_sort,
+            span,
+            slot,
+            held,
+        }
+    }
 }
 
 impl WalkSolutions {
@@ -609,22 +680,29 @@ impl WalkSolutions {
         }
     }
 
-    /// Hold an abstract dispatch instead of refusing it. See [`DeferredSpecRequirement`].
-    pub(super) fn defer_abstract_dispatch(
+    /// Hold a dispatch whose carrier is a lambda binder instead of deciding it — see
+    /// [`DeferredSpecRequirement`] and [`DeferredCall`]. `class` is raised where no use
+    /// gives the binder a type; `origin` maps each carrier to the variable of the call's
+    /// σ its type is bound to.
+    pub(super) fn defer_binder_dispatch(
         &mut self,
         occ: &Rc<NodeOccurrence>,
         carriers: SmallVec<[VarId; 2]>,
-        spec_sort: Symbol,
+        origin: SmallVec<[(VarId, VarId); 2]>,
         class: CallClass,
+        call: DeferredCall,
     ) {
         self.deferred.push(DeferredSpecRequirement {
             occ: Rc::clone(occ),
             carriers,
-            spec_sort,
             class,
-            observed: Vec::new(),
             generalized: false,
             instances: SmallVec::new(),
+            call: Rc::new(call),
+            origin,
+            uses: Vec::new(),
+            sites: Vec::new(),
+            moved: SmallVec::new(),
         });
     }
 
@@ -717,7 +795,7 @@ impl WalkSolutions {
             {
                 continue;
             }
-            let spec_sort = self.deferred[i].spec_sort;
+            let spec_sort = self.deferred[i].call.spec_sort;
             let Some(param) = spec_carrier_param_or_sole(kb, spec_sort) else {
                 continue;
             };
@@ -749,20 +827,21 @@ impl WalkSolutions {
                 .iter()
                 .copied()
                 // AND NOT ALREADY ANSWERED. The resolved-type test above catches an instance
-                // this walk has BOUND; this catches one it has merely OBSERVED, which is the
-                // same evidence in the channel the discharge actually reads. Two tests for
-                // one property is deliberate here: the guard whose absence produced a wrong
-                // accept twice in this ticket is the one that gets the belt and the braces.
-                .filter(|v| !d.observed.iter().any(|(w, _)| w == v))
+                // this walk has BOUND; this catches one a use has merely given a type, which
+                // is the same evidence in the channel the discharge actually reads. Two tests
+                // for one property is deliberate here: the guard whose absence produced a
+                // wrong accept twice in this ticket is the one that gets the belt and the
+                // braces.
+                .filter(|v| !d.uses.iter().any(|(w, _)| w == v))
                 .filter(|v| free.contains(v) && !env_free.contains(v))
                 .collect();
             if moved.is_empty() {
                 continue;
             }
-            let Some(param) = spec_carrier_param_or_sole(kb, d.spec_sort) else {
+            let Some(param) = spec_carrier_param_or_sole(kb, d.call.spec_sort) else {
                 continue;
             };
-            let base = kb.make_sort_ref(d.spec_sort);
+            let base = kb.make_sort_ref(d.call.spec_sort);
             for v in &moved {
                 let carrier_ty = Value::term(type_param_var_term(kb, Var::Global(*v)));
                 context.push(parameterized_value(
@@ -777,14 +856,19 @@ impl WalkSolutions {
                 }
             }
             d.instances.retain(|v| !moved.contains(v));
+            d.moved.extend(moved.iter().copied());
+            let origin = moved.iter().map(|v| (*v, d.origin_of(*v))).collect();
             spawned.push(DeferredSpecRequirement {
                 occ: Rc::clone(&d.occ),
                 carriers: moved,
-                spec_sort: d.spec_sort,
                 class: d.class.clone(),
-                observed: Vec::new(),
                 generalized: true,
                 instances: SmallVec::new(),
+                call: Rc::clone(&d.call),
+                origin,
+                uses: Vec::new(),
+                sites: Vec::new(),
+                moved: SmallVec::new(),
             });
         }
         self.deferred.extend(spawned);
@@ -810,7 +894,13 @@ impl WalkSolutions {
     /// leaves its entry in this list), and read anyway: the next producer this design plans
     /// — let-generalization at the `Let` frame — would otherwise lose its constraints here
     /// in silence.
-    pub(super) fn note_instantiation(&mut self, binder_map: &[(VarId, VarId)]) -> usize {
+    pub(super) fn note_instantiation(
+        &mut self,
+        binder_map: &[(VarId, VarId)],
+        // WI-20260929-6NMGQ: the application that hands the lambda its dictionary at this
+        // instance — the application itself, or the wrapper's for a reference handed on.
+        site: &Rc<NodeOccurrence>,
+    ) -> usize {
         let mut matched = 0usize;
         for d in &mut self.deferred {
             if !d.generalized {
@@ -837,6 +927,9 @@ impl WalkSolutions {
                     claimed_here = true;
                     if !d.instances.contains(new) {
                         d.instances.push(*new);
+                        let origin = d.origin_of(*old);
+                        d.origin.push((*new, origin));
+                        d.sites.push((*new, Rc::clone(site)));
                     }
                 }
             }
@@ -851,128 +944,304 @@ impl WalkSolutions {
         matched
     }
 
-    /// Record every concrete carrier this call's σ gives a deferred requirement's binders.
-    /// Runs BEFORE [`report_call_solutions`]' first-wins filter — see the `observed` doc.
+    /// Record the type this call's σ gives each variable a deferred requirement watches
+    /// ([`record_uses`]). Runs BEFORE [`report_call_solutions`]' first-wins filter, so a
+    /// second use at a second type is seen though it never becomes a solution.
     fn observe_deferred_carriers(
         &mut self,
-        kb: &KnowledgeBase,
+        kb: &mut KnowledgeBase,
         before: &Substitution,
         subst: &Substitution,
     ) {
         for d in &mut self.deferred {
-            // THE INSTANCES ARE OBSERVED TOO, and they are what the discharge asks about
-            // once the requirement has moved into a type (step 2). A generalized
-            // requirement's own carriers are quantified — no σ can pin them — so observing
-            // only those would leave every use unanswered and refuse every polymorphic
-            // application.
-            let watched: SmallVec<[VarId; 4]> = d
-                .carriers
-                .iter()
-                .chain(d.instances.iter())
-                .copied()
-                .collect();
-            for v in &watched {
-                // ATTRIBUTABLE TO THIS UNIFY OR NOT OBSERVED. A carrier already resolved in
-                // `before` was decided by an earlier argument, whose own unify may have
-                // FAILED after binding it — `unify_types` never rolls back. See
-                // [`report_walk_solutions`].
-                if resolved_carrier_sort(kb, before, *v).is_some() {
-                    continue;
-                }
-                let Some(c) = resolved_carrier_sort(kb, subst, *v) else {
-                    continue;
-                };
-                if !d.observed.contains(&(*v, c)) {
-                    d.observed.push((*v, c));
-                }
-            }
+            record_uses(kb, d, before, subst);
         }
     }
 
-    /// THE DISCHARGE, run once when the walk ends: a deferred requirement whose binders
-    /// were all seen at carriers that provide the spec is LICENSED — left as the spec op
-    /// for value-directed eval, exactly as WI-562's and WI-590's licences leave theirs.
-    /// Anything else is classified now, so the walk's refusal is the one it would have
-    /// raised at the call.
+    /// THE DISCHARGE, run once when the walk ends: each call held on a lambda binder is
+    /// decided by the types the walk's uses gave the binder (WI-20260929-6NMGQ,
+    /// [`DeferredCall`]).
     ///
-    /// **A REQUIREMENT WITH NO OBSERVATION IS REFUSED, NOT LICENSED.** A lambda nothing in
-    /// this walk applies (`operation mk() -> … = lambda x -> x + x`) has no evidence, and
-    /// the answer it wants is a `PolyType` CONTEXT that outlives the walk — part (c)'s
-    /// remaining half. Until that exists, the conservative verdict is today's refusal.
-    pub(super) fn discharge(self, kb: &mut KnowledgeBase) {
-        for d in self.deferred {
-            // WI-20260904-50B2K part (c), step 2 — ONCE THE REQUIREMENT IS IN A TYPE, THE
-            // QUESTION IS ASKED OF THE USES, NOT OF THE BINDERS. A quantified variable is
-            // answerable by nothing, so asking about it would refuse every generalized
-            // lambda; the instantiations are what a use actually pins.
-            //
-            // AND AN EMPTY INSTANCE LIST IS A LICENCE HERE WHERE AN EMPTY OBSERVATION LIST
-            // IS A REFUSAL, which looks like the same fail-open and is its opposite. Not
-            // generalized means the constraint has NOWHERE to live but this walk, so no
-            // evidence is a gap; generalized means it lives in the arrow's `PolyType`
-            // context, so no use is not missing evidence — there is nothing yet to
-            // discharge, and whoever eventually applies the value will be asked then.
-            let targets: &[VarId] = if d.generalized {
-                &d.instances
-            } else {
-                &d.carriers
-            };
-            // AND AN OBSERVATION OF A BINDER IS STILL EVIDENCE AFTER GENERALIZATION,
-            // WHICH THE FIRST CUT THREW AWAY. Switching `targets` to the instances made an
-            // empty instance list license unconditionally — including a walk that had
-            // WATCHED the binder itself and seen a carrier providing nothing, since
-            // `observe_deferred_carriers` records `carriers ∪ instances`. /code-review
-            // raised it as defence-in-depth beside the capture defect above, and it is
-            // worth having on its own terms: a licence must never be reached by DISCARDING
-            // evidence, whatever route left the instances empty.
-            let contradicted = d.observed.iter().any(|(v, c)| {
-                d.carriers.contains(v) && !carrier_provides_spec(kb, *c, d.spec_sort)
-            });
-            // EVERY binder answered, and EVERY answer an instance. Both halves are the
-            // licence: a binder with no observation has no evidence, and an observation
-            // that provides nothing is the requirement failing rather than deferring.
-            let licensed = !contradicted
-                && targets.iter().all(|v| {
-                    let mut answered = false;
-                    for (_, c) in d.observed.iter().filter(|(w, _)| w == v) {
-                        answered = true;
-                        if !carrier_provides_spec(kb, *c, d.spec_sort) {
-                            return false;
-                        }
-                    }
-                    answered
-                });
-            if !licensed {
-                classify(kb, &d.occ, d.class);
+    ///  * The lambda was generalized: the call reads the slot of the lambda's requirement,
+    ///    and each application hands the dictionary at the type it gives the parameter —
+    ///    or forwards the slot an enclosing lambda is handed, where a rebinding put the
+    ///    instance back into a quantified type.
+    ///  * The parameter has one type: the call reads the dictionary at that type.
+    ///  * No use gave the parameter a type: a call that covered a `requires` of the
+    ///    enclosing declaration keeps that deferral; any other is refused as the dispatch
+    ///    it is, unless the lambda was generalized and nothing applies it — its constraint
+    ///    lives in its type, and whoever applies the value is asked then.
+    ///
+    /// A dictionary no route builds is the walk's refusal, raised where the call is.
+    pub(super) fn discharge(self, kb: &mut KnowledgeBase) -> Result<(), TypeError> {
+        let mut refusal: Option<TypeError> = None;
+        let mut decided: Vec<*const NodeOccurrence> = Vec::new();
+        for d in &self.deferred {
+            let key = Rc::as_ptr(&d.occ);
+            if decided.contains(&key) {
+                continue;
             }
+            decided.push(key);
+            // The entries the call's binders spread to: a rebinding spawns one.
+            let group: Vec<&DeferredSpecRequirement> = self
+                .deferred
+                .iter()
+                .filter(|e| Rc::as_ptr(&e.occ) == key)
+                .collect();
+            if let Err(e) = self.decide_call(kb, &group) {
+                refusal.get_or_insert(e);
+            }
+        }
+        refusal.map_or(Ok(()), Err)
+    }
+
+    /// One held call, from the entries its binders spread to — the first is the call's own.
+    fn decide_call(
+        &self,
+        kb: &mut KnowledgeBase,
+        group: &[&DeferredSpecRequirement],
+    ) -> Result<(), TypeError> {
+        let own = group[0];
+        let call = &own.call;
+        let frame = DeferredFrame::of(kb, call)?;
+        // Not generalized, or generalized and applied nowhere: the call is decided at the
+        // types its carriers were given — evidence the walk saw is never discarded.
+        if !own.generalized || group.iter().all(|d| d.sites.is_empty()) {
+            let mut at: SmallVec<[(VarId, Value); 2]> = SmallVec::new();
+            for c in &own.carriers {
+                match self.one_type_of(kb, own, *c)? {
+                    Some(ty) => at.push((own.origin_of(*c), ty)),
+                    None => {
+                        self.unanswered(kb, own);
+                        return Ok(());
+                    }
+                }
+            }
+            let dict = lambda_requirement_dict(kb, call, &frame, &at, call.span)?;
+            classify(kb, &own.occ, call.reads(dict));
+            return Ok(());
+        }
+        let forward = build_req_var_ref(kb, &frame.syms, call.slot);
+        for d in group {
+            // One application instantiates every carrier of the entry at once.
+            let mut sites: Vec<(Rc<NodeOccurrence>, SmallVec<[VarId; 2]>)> = Vec::new();
+            for (v, site) in &d.sites {
+                match sites.iter_mut().find(|(s, _)| Rc::ptr_eq(s, site)) {
+                    Some((_, vars)) => vars.push(*v),
+                    None => sites.push((Rc::clone(site), SmallVec::from_elem(*v, 1))),
+                }
+            }
+            for (site, vars) in sites {
+                if vars.iter().any(|v| d.moved.contains(v)) {
+                    site.hand_closure_dict(call.slot, forward);
+                    continue;
+                }
+                // An application that leaves the parameter open is asked at the open type:
+                // one provider at every type answers it, and otherwise the refusal names the
+                // open element. Reported at the application, whose type it is.
+                let mut at: SmallVec<[(VarId, Value); 2]> = SmallVec::new();
+                for v in &vars {
+                    if let Some(ty) = self.one_type_of(kb, d, *v)? {
+                        at.push((d.origin_of(*v), ty));
+                    }
+                }
+                let dict = lambda_requirement_dict(kb, call, &frame, &at, Some(site.span.span))?;
+                site.hand_closure_dict(call.slot, dict);
+            }
+        }
+        classify(kb, &own.occ, call.reads(forward));
+        Ok(())
+    }
+
+    /// A held call no use gave a type: its deferral to the enclosing declaration's
+    /// `requires` where it had one; else, unless the lambda was generalized, the refusal
+    /// of the dispatch — no evidence was seen, and nothing outside this walk can supply it.
+    fn unanswered(&self, kb: &mut KnowledgeBase, d: &DeferredSpecRequirement) {
+        if d.call.held || !d.generalized {
+            classify(kb, &d.occ, d.class.clone());
+        }
+    }
+
+    /// The type the walk's uses gave `var`, through what it solved since: `None` while none
+    /// did, and a refusal where two uses gave it two ground types — one call cannot read
+    /// two dictionaries. A type recorded while a part of it was still open yields to the
+    /// ground one the part was solved to.
+    fn one_type_of(
+        &self,
+        kb: &mut KnowledgeBase,
+        d: &DeferredSpecRequirement,
+        var: VarId,
+    ) -> Result<Option<Value>, TypeError> {
+        let mut found: Option<Value> = None;
+        for (_, ty) in d.uses.iter().filter(|(w, _)| *w == var) {
+            let ty = resolve_type_deep_value(kb, &self.solved, ty);
+            match &found {
+                None => found = Some(ty),
+                Some(first) if views_structurally_equal(kb, first, &ty) => {}
+                Some(first) => match (type_is_ground(kb, first), type_is_ground(kb, &ty)) {
+                    (false, true) => found = Some(ty),
+                    (true, true) => {
+                        let first = type_display_name_value(kb, first);
+                        let second = type_display_name_value(kb, &ty);
+                        return Err(d.call.refusal(
+                            d.call.span,
+                            "one type for the lambda's parameter",
+                            &format!(
+                                "`{first}` at one use and `{second}` at another, and the call \
+                                 reads one dictionary — write a lambda for each"
+                            ),
+                        ));
+                    }
+                    _ => {}
+                },
+            }
+        }
+        Ok(match found {
+            Some(ty) => Some(ty),
+            None => decided_type(kb, &self.solved, var),
+        })
+    }
+}
+
+impl DeferredCall {
+    /// The call read through `dict`.
+    fn reads(&self, dict: TermId) -> CallClass {
+        CallClass::DeferToDictionary {
+            spec_op_sym: self.fn_sym,
+            op_short_sym: self.op_short_sym,
+            dict,
+        }
+    }
+
+    /// A refusal of the call, reported at `span`.
+    pub(super) fn refusal(&self, span: Option<Span>, expected: &str, actual: &str) -> TypeError {
+        TypeError::Other {
+            site: TypeError::here(),
+            span,
+            context: TypeErrorContext::OperationAsFunctionValue {
+                op_name: self.fn_sym,
+            },
+            expected: expected.to_string(),
+            actual: actual.to_string(),
         }
     }
 }
 
-/// WI-20260904-50B2K part (c) — the CONCRETE sort `var` stands for under `subst`, or
-/// `None` while it stands for nothing concrete.
-///
-/// Read at the END of σ's chain of variable links ([`sigma_chain_end`]): a call's σ routinely
-/// binds one variable to another before either reaches a type — `?param := ?T_callee`,
-/// `?T_callee := Int64` — and asking one link would read that as "not concrete", so the walk
-/// would refuse a call its own evidence answers. A chain that ends at a variable, unbound or
-/// its own, has no sort.
-///
-/// THE CHAIN IS WHAT MAKES AN ESCAPED CLOSURE WORK — WI-817's original question, answered
-/// here rather than by the ∀ beside it. `Applier.ap(g, leaf())` with
-/// `ap[X](fn: Function[A = X, B = Int64], a: X)` binds the closure's carrier to `X` and `X`
-/// to `Leaf`, two links. It answers `Leaf`, `Desc[Leaf]` holds, and the call is licensed: 1
-/// at `Leaf`, 12 at `Wrap[Leaf]`, 1012 for both through ONE closure. MEASURED WITH THE
-/// GENERALIZATION BACKED OUT, which is what attributes it here and not to step 2. A first
-/// cut read the link on the `Value::Var` carrier alone — the one a type variable is LEAST
-/// likely to arrive on, since `bind_resolved` routes a variable in type position to
-/// `bind_term` — and was a no-op on its own motivating case; /code-review found it.
-fn resolved_carrier_sort(kb: &KnowledgeBase, subst: &Substitution, var: VarId) -> Option<Symbol> {
-    sigma_chain_end(kb, subst, var).and_then(|end| sort_functor_of_view(kb, end))
+/// WI-20260929-6NMGQ — record `class`, a body call's deferral to a requirement of its
+/// frame, or hold it where the call's element is a lambda's unannotated parameter not
+/// solved yet ([`walk_minted_elements`]): an unsolved element matches every binding, so the
+/// requirement covered it for nothing, and the call is decided by the parameter's uses
+/// ([`DeferredCall`]).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn classify_or_hold_deferral(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    occ: &Rc<NodeOccurrence>,
+    subst: &Substitution,
+    spec_sort: Symbol,
+    pos_results: &[Result<TypeResult, TypeError>],
+    named_results: &[Result<TypeResult, TypeError>],
+    class: CallClass,
+    span: Option<Span>,
+    solving: Option<&mut WalkSolutions>,
+) {
+    let Some(w) = solving else {
+        return classify(kb, occ, class);
+    };
+    let held = walk_minted_elements(
+        kb,
+        subst,
+        spec_sort,
+        pos_results,
+        named_results,
+        w.watermark,
+    );
+    if held.is_empty() {
+        return classify(kb, occ, class);
+    }
+    let CallClass::DeferToRequirement {
+        spec_op_sym: fn_sym,
+        ..
+    } = class
+    else {
+        unreachable!("only a deferral to a requirement is held");
+    };
+    let mut carriers: SmallVec<[VarId; 2]> = SmallVec::new();
+    let mut origin: SmallVec<[(VarId, VarId); 2]> = SmallVec::new();
+    for (carrier, root) in &held {
+        if !carriers.contains(carrier) {
+            carriers.push(*carrier);
+            origin.push((*carrier, *root));
+        }
+    }
+    let serial = w.deferred.len();
+    let call = DeferredCall::new(
+        kb, env, subst, fn_sym, spec_sort, span, &carriers, serial, true,
+    );
+    w.defer_binder_dispatch(occ, carriers, origin, class, call);
 }
 
-/// WI-20260904-50B2K part (c) — does `carrier` supply `spec`? The discharge's question,
-/// asked through BOTH channels the abstract-dispatch guard itself reads: a sort's own
+impl DeferredSpecRequirement {
+    /// The variable of the held call's σ `var` stands for ([`Self::origin`]).
+    fn origin_of(&self, var: VarId) -> VarId {
+        self.origin
+            .iter()
+            .find(|(w, _)| *w == var)
+            .map_or(var, |(_, o)| *o)
+    }
+}
+
+/// WI-20260929-6NMGQ — record the type this call's σ gives each variable an entry
+/// watches: its carriers, and the instances that answer for them once the requirement has
+/// moved into a type (a quantified carrier no σ can pin). ATTRIBUTABLE TO THIS UNIFY OR NOT
+/// RECORDED: a variable `before` already decided was decided by an earlier argument, whose
+/// own unify may have FAILED after binding it — `unify_types` never rolls back (see
+/// [`report_walk_solutions`]). A variable the chain leaves unbound has no type yet.
+fn record_uses(
+    kb: &mut KnowledgeBase,
+    d: &mut DeferredSpecRequirement,
+    before: &Substitution,
+    subst: &Substitution,
+) {
+    let watched: SmallVec<[VarId; 4]> = d
+        .carriers
+        .iter()
+        .chain(d.instances.iter())
+        .copied()
+        .collect();
+    for v in watched {
+        if decided_type(kb, before, v).is_some() {
+            continue;
+        }
+        let Some(ty) = decided_type(kb, subst, v) else {
+            continue;
+        };
+        if !d
+            .uses
+            .iter()
+            .any(|(w, t)| *w == v && views_structurally_equal(kb, t, &ty))
+        {
+            d.uses.push((v, ty));
+        }
+    }
+}
+
+/// The type `var` stands for under `subst`, or `None` while the chain ends at an unbound
+/// variable. Read at the END of σ's chain of links ([`sigma_chain_end`]) and resolved through
+/// it: a call's σ binds one variable to another before either reaches a type — `?param :=
+/// ?T_callee`, `?T_callee := Int64` — and `Applier.ap(g, leaf())`, with `ap[X](fn:
+/// Function[A = X, B = Int64], a: X)`, gives the closure's carrier `X` and `X` `Leaf`, two
+/// links (WI-817).
+fn decided_type(kb: &mut KnowledgeBase, subst: &Substitution, var: VarId) -> Option<Value> {
+    let end = sigma_chain_end(kb, subst, var)?.clone();
+    if kb.value_global_var(&end).is_some() {
+        return None;
+    }
+    Some(walk_type_deep_value(kb, subst, &end))
+}
+
+/// WI-20260904-50B2K part (c) — does `carrier` supply `spec`? Asked through BOTH channels the
+/// abstract-dispatch guard itself reads: a sort's own
 /// out-edges ([`sort_provides`]) and a provision another sort declares FOR it
 /// ([`carrier_provided_by_witness`], WI-1043). Asking only the first would refuse a
 /// witness-supplied carrier the call can actually dispatch — the exact wrong answer that
@@ -1006,7 +1275,7 @@ pub(super) fn carrier_provides_spec(kb: &KnowledgeBase, carrier: Symbol, spec: S
 /// **THE CONVERSE IS NOT SYMMETRIC, AND MY FIRST DOC CLAIMED IT WAS.** A SUBSET is a LOOSER
 /// licence: a carrier this list omits is never demanded of the discharge, so the call is
 /// licensed on the other binders' evidence alone — the exact half-evidence case
-/// [`DeferredSpecRequirement::observed`] is per-binder to prevent. Raised by /code-review
+/// [`DeferredSpecRequirement::uses`] is per-variable to prevent. Raised by /code-review
 /// against the collector, and the reason this reads
 /// [`collect_value_type_and_bare_vars`] rather than the shared collector, whose missing
 /// `Value::Var` arm produces precisely that subset.
@@ -1030,19 +1299,65 @@ pub(super) fn walk_minted_carriers(
     out
 }
 
+/// WI-20260929-6NMGQ — the variables this walk minted that a call's element stands at — a
+/// lambda's unannotated parameter, solved by the lambda's uses and not yet where the call
+/// is typed — each with the root of its class in σ, the variable a use's type is bound to
+/// when the call's dictionary is built.
+///
+/// THE LINK RUNS EITHER WAY. Unifying the argument's type with the parameter's binds the
+/// argument's variable to the spec parameter's (`?x := Store.State`) as readily as the
+/// reverse, so a parameter σ leaves unbound is asked about too: the walk-minted variables
+/// the call's argument types are stated at ([`walk_minted_carriers`]) whose chain ends at
+/// it. A part of an element (`Buf[T = ?x]`) is not one: the element's sort is known, and a
+/// provision at it fixes the part.
+pub(super) fn walk_minted_elements(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    spec_sort: Symbol,
+    pos_results: &[Result<TypeResult, TypeError>],
+    named_results: &[Result<TypeResult, TypeError>],
+    watermark: u32,
+) -> SmallVec<[(VarId, VarId); 2]> {
+    let minted = walk_minted_carriers(kb, pos_results, named_results, watermark);
+    let mut out: SmallVec<[(VarId, VarId); 2]> = SmallVec::new();
+    for (_, vid) in spec_param_vars(kb, spec_sort) {
+        let Some(root) = sigma_root(kb, subst, vid) else {
+            continue;
+        };
+        if root.raw() >= watermark {
+            out.push((root, root));
+        }
+        for m in &minted {
+            if *m != root && sigma_root(kb, subst, *m) == Some(root) {
+                out.push((*m, root));
+            }
+        }
+    }
+    out
+}
+
+/// The variable `var`'s chain of links in σ ends at — `var` itself when σ leaves it
+/// unbound — or `None` when the chain ends at a type.
+pub(super) fn sigma_root(kb: &KnowledgeBase, subst: &Substitution, var: VarId) -> Option<VarId> {
+    match sigma_chain_end(kb, subst, var) {
+        None => Some(var),
+        Some(end) => kb.value_global_var(end),
+    }
+}
+
 /// WI-20260904-50B2K part (c) — the one call an argument-unification site makes: OBSERVE
 /// what this σ gives a deferred requirement's binders, then REPORT what it solved.
 ///
 /// The order is load-bearing. [`report_call_solutions`] is first-wins, and observation
 /// must see a second use's carrier even where the solving does not — see
-/// [`DeferredSpecRequirement::observed`].
+/// [`DeferredSpecRequirement::uses`].
 ///
 /// **`unified` GATES BOTH HALVES.** `unify_types` binds as it DESCENDS and never rolls
 /// back, so a pair that agrees partway and then disagrees — `Function[A = Int64, B = String]`
 /// against `?p -> ?p` binds `?p := Int64` before failing on `B` — leaves real bindings behind
-/// on a unification that did NOT hold. For the observation half the consequence is a LICENCE:
-/// [`WalkSolutions::discharge`] drops a requirement on the strength of what was observed, so
-/// an observation drawn from a failed unify would license a call on evidence the typer is
+/// on a unification that did NOT hold. For the observation half the consequence is a WRONG
+/// DICTIONARY: [`WalkSolutions::discharge`] builds a call's dictionary at the type a use was
+/// recorded at, so a type drawn from a failed unify would choose it on evidence the typer is
 /// elsewhere careful to say is not evidence.
 ///
 /// THE FIRST CUT GATED ONLY THAT HALF, and the argument it gave for the gate applies WORD FOR
@@ -1076,7 +1391,7 @@ pub(super) fn walk_minted_carriers(
 /// take it. The first cut gave it to neither, the second to the observation half only (and
 /// said in this very doc that both were covered), and /code-review found each in turn.
 pub(super) fn report_walk_solutions(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     solving: Option<&mut WalkSolutions>,
     before: &Substitution,
     subst: &Substitution,

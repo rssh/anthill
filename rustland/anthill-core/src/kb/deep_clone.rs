@@ -400,6 +400,7 @@ impl Copier {
                 compound_syntax,
                 classification,
                 op_dicts,
+                closure_dicts,
                 clause_condition,
                 inferred_type,
                 lowered_receiver,
@@ -429,6 +430,7 @@ impl Copier {
                             .map(|class| Box::new(self.call_class(class))),
                     ),
                     op_dicts: RefCell::new(plain(&*op_dicts.borrow())),
+                    closure_dicts: RefCell::new(plain(&*closure_dicts.borrow())),
                     clause_condition: std::cell::Cell::new(plain(&clause_condition.get())),
                     inferred_type: RefCell::new(
                         inferred_type.borrow().as_ref().map(|ty| self.value(ty)),
@@ -815,6 +817,15 @@ impl Copier {
                 proj_path: plain(proj_path),
                 enclosing_sort: plain(enclosing_sort),
                 enclosing_op: plain(enclosing_op),
+            },
+            CallClass::DeferToDictionary {
+                spec_op_sym,
+                op_short_sym,
+                dict,
+            } => CallClass::DeferToDictionary {
+                spec_op_sym: plain(spec_op_sym),
+                op_short_sym: plain(op_short_sym),
+                dict: plain(dict),
             },
             CallClass::UnresolvedSpecOp {
                 spec_op_sym,

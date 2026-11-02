@@ -34,6 +34,7 @@ fn commit_classifications(
         anthill_core::kb::node_occurrence::visit_classifications(body, &mut |_, c| {
             let names_commit = match c {
                 CallClass::DeferToRequirement { spec_op_sym, .. } => *spec_op_sym == commit_sym,
+                CallClass::DeferToDictionary { spec_op_sym, .. } => *spec_op_sym == commit_sym,
                 CallClass::ConcreteApplyWithin { spec_op_sym, .. } => *spec_op_sym == commit_sym,
                 CallClass::PinNow { spec_op_sym, .. } => *spec_op_sym == commit_sym,
                 CallClass::UnresolvedSpecOp { spec_op_sym, .. } => *spec_op_sym == commit_sym,

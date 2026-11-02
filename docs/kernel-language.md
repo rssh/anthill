@@ -430,8 +430,13 @@ per-binder bound** — a binder is `TypeParam ::= Name ['=' Type]` (§5.4) and h
 — and it does not give a **sort's** written `requires` a second owner, because the types that
 carry one have no declaration to write it at: a lambda's inferred ∀ is the whole record of what
 its binders demand. It is discharged at the **∀-elimination**, where the binders become concrete
-and the constraint becomes answerable. Full rationale on the `PolyType` declaration in
-`stdlib/anthill/prelude/sort.anthill`.
+and the constraint becomes answerable: each application hands the lambda the dictionary at the
+type it gives the binder, as a call supplies an operation's `requires` — the enclosing
+declaration's own where its `requires` covers that type, a provider's otherwise, and a load error
+where none or two answer. Under `requires Store[State = Other]`, `let f = lambda x ->
+Store.peek(x)` applied as `f(buf(v: 7))` reaches the provider at `Buf`; a lambda handed on
+unapplied takes its dictionary where it is referenced. Full rationale on the `PolyType`
+declaration in `stdlib/anthill/prelude/sort.anthill`.
 
 **Parameter lists correspond slot by slot** (WI-782). A parameter list is
 *applied positionally*, so one arrow conforms to another only when the two lists

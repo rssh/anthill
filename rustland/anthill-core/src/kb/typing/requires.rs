@@ -1311,10 +1311,10 @@ pub(super) fn op_requires_application_bindings(
 /// still named, so nothing desynchronizes, but it carries the bare shape and reads as
 /// binding-free — loud in debug, since a clause the loader accepted should decode here.
 fn normalize_op_requires_entry(kb: &mut KnowledgeBase, entry: &RequiresEntry) -> RequiresEntry {
-    let Some(sort_view) = kb.try_resolve_symbol("anthill.reflect.SortView") else {
+    if kb.try_resolve_symbol("anthill.reflect.SortView").is_none() {
         // No `anthill.reflect` in this KB — nothing reads a `SortView` either.
         return entry.clone();
-    };
+    }
     // Already sort-shaped: nothing to do. `unwrap_spec_view_value` cannot answer this —
     // it reports `(functor, no bindings)` for a BARE application too, which is the very
     // shape being normalized — so the test is on the HEAD FUNCTOR being `SortView`.
@@ -1350,20 +1350,32 @@ fn normalize_op_requires_entry(kb: &mut KnowledgeBase, entry: &RequiresEntry) ->
         };
         bindings.push((key, val));
     }
-    let base_ref = kb.alloc(Term::Ref(entry.required_sort));
-    // The hash-consed view it always was where every binding is a term; a binding that
-    // holds a value puts the view on the value carrier, read through `TermView` alike.
-    let spec = kb.fn_value(
-        sort_view,
-        vec![Value::term(base_ref)],
-        bindings.into_iter().collect(),
-    );
+    let spec = sort_view_value(kb, entry.required_sort, bindings)
+        .expect("`anthill.reflect.SortView` resolved above");
     RequiresEntry {
         required_sort: entry.required_sort,
         spec,
         supply: entry.supply,
         binder: entry.binder,
     }
+}
+
+/// The spec view `SortView(spec, …bindings)`: a requirement's `spec` as every reader decodes
+/// it, the bindings keyed by the spec's own parameter symbols. The hash-consed view where
+/// every binding is a term; a binding that holds a value puts the view on the value
+/// carrier, read through `TermView` alike. `None` with no `anthill.reflect` in the KB.
+pub(super) fn sort_view_value(
+    kb: &mut KnowledgeBase,
+    spec: Symbol,
+    bindings: impl IntoIterator<Item = (Symbol, Value)>,
+) -> Option<Value> {
+    let sort_view = kb.try_resolve_symbol("anthill.reflect.SortView")?;
+    let base_ref = kb.alloc(Term::Ref(spec));
+    Some(kb.fn_value(
+        sort_view,
+        vec![Value::term(base_ref)],
+        bindings.into_iter().collect(),
+    ))
 }
 
 /// WI-822 LEG 1 — `op_sym`'s OWN op-scoped `requires` entries **that are dictionary

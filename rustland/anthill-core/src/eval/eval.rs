@@ -442,6 +442,15 @@ impl Interpreter {
                         pos_args,
                         named_args,
                     ),
+                    Some(CallClass::DeferToDictionary {
+                        spec_op_sym, dict, ..
+                    }) => self.start_apply_through_dictionary(
+                        *spec_op_sym,
+                        *dict,
+                        &op_dicts,
+                        pos_args,
+                        named_args,
+                    ),
                     Some(CallClass::ConcreteApplyWithin {
                         fn_target_sym,
                         spec_op_sym,
@@ -478,6 +487,25 @@ impl Interpreter {
                         let target = occ.classified_apply_target().unwrap_or(*functor);
                         // WI-20260921-28TAT: …and the callee's own op-scoped slots, if
                         // it declares any. See [`Self::start_apply_with_op_slots`].
+                        //
+                        // WI-20260929-6NMGQ: and an application of a lambda hands it the
+                        // dictionaries its quantified type requires, evaluated here, where
+                        // the application runs (`ho_apply_within`; the `closure_dicts`
+                        // stamp).
+                        let closure_dicts = occ.closure_dicts();
+                        if !closure_dicts.is_empty() {
+                            let mut handed: SmallVec<[(Symbol, super::value::Dictionary); 2]> =
+                                SmallVec::new();
+                            for (slot, tid) in &closure_dicts {
+                                let dict_occ = crate::kb::node_occurrence::materialize_from_handle(
+                                    &self.kb, *tid,
+                                );
+                                handed.push((*slot, self.eval_requirement_chain_node(&dict_occ)?));
+                            }
+                            return self.dispatch_apply_with_requirements(
+                                target, handed, pos_args, named_args,
+                            );
+                        }
                         self.start_apply_with_op_slots(target, &op_dicts, pos_args, named_args)
                     }
                 }
@@ -2370,6 +2398,49 @@ impl Interpreter {
             let what = format!("requirement `{}`", self.kb.local_name_of(name_sym));
             dispatching_dict = self.project_requirement(&dispatching_dict, k, &what)?;
         }
+        self.apply_through_dictionary(
+            spec_op_sym,
+            dispatching_dict,
+            op_dicts,
+            pos_args,
+            named_args,
+        )
+    }
+
+    /// Runtime path for `CallClass::DeferToDictionary` (WI-20260929-6NMGQ): the call in a
+    /// lambda's body at the type of its parameter, through the dictionary `dict` evaluates
+    /// to in this frame — a slot an application of the lambda handed it, or the dictionary
+    /// at the one type the parameter has.
+    fn start_apply_through_dictionary(
+        &mut self,
+        spec_op_sym: Symbol,
+        dict: TermId,
+        op_dicts: &[Option<TermId>],
+        pos_args: &[Rc<NodeOccurrence>],
+        named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    ) -> Result<StepOutcome, EvalError> {
+        let dict_occ = crate::kb::node_occurrence::materialize_from_handle(&self.kb, dict);
+        let dispatching_dict = self.eval_requirement_chain_node(&dict_occ)?;
+        self.apply_through_dictionary(
+            spec_op_sym,
+            dispatching_dict,
+            op_dicts,
+            pos_args,
+            named_args,
+        )
+    }
+
+    /// The call of the spec operation `spec_op_sym` through `dispatching_dict`: the member
+    /// the dictionary's provider answers it with, entered with the dictionary's
+    /// sub-instances and the call's own op-scoped slots.
+    fn apply_through_dictionary(
+        &mut self,
+        spec_op_sym: Symbol,
+        dispatching_dict: super::value::Dictionary,
+        op_dicts: &[Option<TermId>],
+        pos_args: &[Rc<NodeOccurrence>],
+        named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    ) -> Result<StepOutcome, EvalError> {
         let target = self.dispatch_via_sort_ops_table(spec_op_sym, &dispatching_dict)?;
         let mut requirements =
             self.expand_dispatching_dict(spec_op_sym, target, &dispatching_dict)?;
@@ -2795,15 +2866,12 @@ impl Interpreter {
     ) -> Result<StepOutcome, EvalError> {
         match callable {
             Value::Closure(handle) => {
-                // Closures override apply.requirements with their own
-                // (the HO-call exception). The caller's `requirements`
-                // here are discarded — see closure invocation in the design.
-                // Type-args from the apply site are likewise dropped:
-                // closure invocation restores the lambda's captured
-                // not the caller's. See
-                // `docs/design/operation-call-model.md` §"Closures".
-                drop(requirements);
-                self.enter_closure(handle, args)
+                // A closure runs with the requirements captured where it was built (the
+                // HO-call exception, `docs/design/operation-call-model.md` §"Closures"),
+                // and with those this application hands it under the slots of its
+                // quantified type's context (WI-20260929-6NMGQ, `ho_apply_within`).
+                // Nothing else hands a closure any.
+                self.enter_closure(handle, args, requirements)
             }
             Value::OpRef {
                 op,
@@ -4261,6 +4329,9 @@ impl Interpreter {
         &mut self,
         handle: super::value::ClosureHandle,
         args: Vec<Value>,
+        // WI-20260929-6NMGQ: the dictionaries the application hands the lambda; each in
+        // place of a captured one under the same slot.
+        handed: SmallVec<[(Symbol, super::value::Dictionary); 2]>,
     ) -> Result<StepOutcome, EvalError> {
         // WI-223: closure invocation overrides the uniform
         // `frame.requirements = apply_within.requirements` rule with the
@@ -4271,11 +4342,17 @@ impl Interpreter {
         // inline size 1 (most lambdas need 0–1 reqs/type-args), the
         // frame-side has 2; collect across the size boundary. Single
         // arena borrow grabs param/body/both channels at once.
-        let (param_pattern, body, requirements, written_in) = handle.with(|c| {
+        let (param_pattern, body, mut requirements, written_in) = handle.with(|c| {
             let reqs: SmallVec<[(Symbol, super::value::Dictionary); 2]> =
                 c.requirements.iter().cloned().collect();
             (c.param_pattern.clone(), c.body.clone(), reqs, c.written_in)
         });
+        for (slot, dict) in handed {
+            match requirements.iter_mut().find(|(s, _)| *s == slot) {
+                Some(entry) => entry.1 = dict,
+                None => requirements.push((slot, dict)),
+            }
+        }
         let arg = Self::gather_closure_arg(&param_pattern, args)?;
         let bindings = match self.match_or_wait(&param_pattern, &arg, "a lambda parameter")? {
             Some(b) => b,

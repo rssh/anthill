@@ -126,8 +126,23 @@ pub(super) fn spec_param_bindings(
     subst: &Substitution,
     spec_sort: Symbol,
 ) -> SmallVec<[(Symbol, Value); 2]> {
-    let spec_qn = kb.qualified_name_of(spec_sort).to_string();
     let mut out: SmallVec<[(Symbol, Value); 2]> = SmallVec::new();
+    for (param, vid) in spec_param_vars(kb, spec_sort) {
+        if let Some(value) = spec_param_binding(kb, subst, vid) {
+            out.push((param, value));
+        }
+    }
+    out
+}
+
+/// Every parameter of `spec_sort`, by its declared (qualified) symbol, with the variable
+/// its alias stands at — the variable a call's σ binds it through.
+pub(super) fn spec_param_vars(
+    kb: &mut KnowledgeBase,
+    spec_sort: Symbol,
+) -> SmallVec<[(Symbol, VarId); 2]> {
+    let spec_qn = kb.qualified_name_of(spec_sort).to_string();
+    let mut out: SmallVec<[(Symbol, VarId); 2]> = SmallVec::new();
     for short in kb.type_params_of_sort(spec_sort) {
         let Some(param) = kb.try_resolve_symbol(&format!("{spec_qn}.{short}")) else {
             continue;
@@ -135,12 +150,8 @@ pub(super) fn spec_param_bindings(
         let Some(alias_target) = resolve_sort_alias(kb, param) else {
             continue;
         };
-        let Term::Var(Var::Global(vid)) = kb.get_term(alias_target) else {
-            continue;
-        };
-        let vid = *vid;
-        if let Some(value) = spec_param_binding(kb, subst, vid) {
-            out.push((param, value));
+        if let Term::Var(Var::Global(vid)) = kb.get_term(alias_target) {
+            out.push((param, *vid));
         }
     }
     out

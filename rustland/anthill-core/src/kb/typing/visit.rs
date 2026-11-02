@@ -1372,14 +1372,20 @@ pub(super) fn visit_type(
             // WI-20260904-50B2K part (c), step 2 — THE SAME ELIMINATION AS
             // `check_bare_ref`'s, through the one owner. `?g` and `g` name one binding; a ∀
             // that leaves only one of them gives one program two verdicts.
+            // WI-20260929-6NMGQ: what the reference types into — itself, or the wrapper
+            // that hands a quantified lambda its dictionaries.
+            let mut reference = Rc::clone(&occ);
             let bound = match bound {
                 Some(t) => {
                     let name = match var {
                         Var::Global(vid) => Some(vid.name()),
                         _ => None,
                     };
-                    match eliminate_env_schema(kb, solving, name, occ_span, t) {
-                        Ok(t) => Some(t),
+                    match eliminate_env_schema(kb, solving, name, occ_span, t, &occ) {
+                        Ok((t, node)) => {
+                            reference = node;
+                            Some(t)
+                        }
                         Err(e) => {
                             results.push(Err(e));
                             return;
@@ -1418,11 +1424,7 @@ pub(super) fn visit_type(
                 let fresh = kb.intern("?logical_var");
                 Value::term(kb.make_type_var(fresh))
             });
-            results.push(Ok(TypeResult::pure_value(
-                ty,
-                unwrap_env(env),
-                Rc::clone(&occ),
-            )));
+            results.push(Ok(TypeResult::pure_value(ty, unwrap_env(env), reference)));
         }
 
         // WI-279: a value-receiver dot form `?x.member(args)` / `?x.member`.
