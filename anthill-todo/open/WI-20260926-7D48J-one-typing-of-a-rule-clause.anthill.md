@@ -9,7 +9,7 @@
 
 - acceptance: cargo-test
 
-- depends_on: WI-20260925-P7VP4-a-rule-body-call-s-requires, WI-20261013-GGXCX-068-c1a-design-the-clause, WI-20261013-WF14Z-068-c1b-a-rule-variable-is, WI-20261013-R1W5A-068-c1c-a-call-or-a-binder, WI-20261013-RYDNV-068-c1d-one-classification-per, WI-20260911-5G28A-rule-head-type-variables-open
+- depends_on: WI-20260925-P7VP4-a-rule-body-call-s-requires, WI-20261013-GGXCX-068-c1a-design-the-clause, WI-20261013-WF14Z-068-c1b-a-rule-variable-is, WI-20261013-R1W5A-068-c1c-a-call-or-a-binder, WI-20261013-RYDNV-068-c1d-one-classification-per, WI-20261102-ATVC1-rule-rule-implicit-arguments-a
 
 - tags: proposal-068, typing
 
@@ -101,4 +101,8 @@ ROW FROM WI-905 (2026-10-22, measured on 7f78d774 and 3140a7ae, unchanged by it)
 ### 2026-11-01T23:30:38Z — feedback — claude
 
 A RULE BODY ANSWERS AN UNFIXED SLOT THROUGH A PROVISION AT AN INSTANCE, where an operation body is refused (measured 2026-11-01 on d6f92d5f, WI-20261005-SGXYH). kernel-language.md §5.2 now reads: a slot of a type the call states that nothing at the call fixes is answered only by a provision that holds at every value of it. Program: `sort Buf { sort T = ?; sort N = ?; entity buf(v: T) }`, `sort Store { sort State = ?; operation peek(s: State) -> Int64 }`, `sort QB { provides Store[State = Buf[T = Int64, N = Bool]]; operation peek(s: Buf[T = Int64, N = Bool]) -> Int64 = 41 }`. `operation go() -> Int64 = Store.peek(buf(v: 1))` is refused at load: "nothing here fixes `N` of `Buf`, and `QB` provides `Store` only at an instance of it: write it in the type of the value". `rule r(?x) :- ?x <=> Store.peek(buf(v: 1))` loads, and `r(?x)` answers `?x = 41`, as before SGXYH. Between two provisions at instances (`N = Bool`, `N = String`) the rule body is refused as the operation body is. SGXYH left the single provision to the rule body's own check (`check_rule_body_requirements`, the route "provider facts that determine exactly one dictionary"), because refusing it there outright also refused `requires(Store[State = Buf[T = Int64, N = Bool]]), ?x <=> Store.peek(buf(v: 1))`, which names its dictionary and loads. OPEN: whether that route counts a provision at an instance as determining the dictionary for an unfixed slot, or a declared `requires(…)` is the only way to discharge one. Pinned: `wi_sgxyh_unfixed_slot_test a_rule_body_call_is_refused_between_two_instances` (rows `rule_one`, `rule_one_decl` load clean; `rule_two`, `rule_two_decl` refused).
+
+### 2026-11-02T11:20:14Z — feedback — claude
+
+DEPENDENCY REWIRED (user, 2026-11-02, dependency review): from WI-20260911-5G28A to WI-20261102-ATVC1. This umbrella was wired to 5G28A on 2026-10-14 for S7 alone (rule → rule implicit arguments); S7 and its decision B row are now that ticket, split out of 5G28A, so this no longer waits on the rest of 5G28A or on SHED7 behind it.
 
