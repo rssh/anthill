@@ -1959,6 +1959,8 @@ mod wi_5g28a_rule_dictionary_test;
 mod wi_5g28a_citation_bracket_test;
 #[path = "include/wi_5g28a_sort_domain_test.rs"]
 mod wi_5g28a_sort_domain_test;
+#[path = "include/wi_shed7_default_body_sibling_test.rs"]
+mod wi_shed7_default_body_sibling_test;
 #[path = "include/wi_shed7_fillable_test.rs"]
 mod wi_shed7_fillable_test;
 #[path = "include/wi_shed7_reads_wait_test.rs"]

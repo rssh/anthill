@@ -26,11 +26,14 @@ pub(crate) fn impl_sorts_providing_spec(kb: &KnowledgeBase, spec_sort: Symbol) -
 /// - (a) the EXPECTED RETURN TYPE names a concrete carrier sort ⇒ that carrier
 ///   is PINNED; use its override (or give up — never silently pick a different
 ///   provider for an explicitly named carrier);
-/// - (b) no carrier pinned and 2+ providers ⇒ `Ambiguous` (a loud error).
+/// - (b) no carrier pinned and 2+ providers ⇒ `Ambiguous` (a loud error), save where the
+///   call is written in a body `entered_at_instance` of the spec ([`entered_at_an_instance_of`]):
+///   there no carrier pinned is the instance the body runs at, whatever the count.
 ///
 /// `None` keeps the caller's `NoCandidates` (no provider; ONE provider and no carrier
-/// pinned; a named carrier that does not provide the spec; or a provider whose nullary
-/// override needs a dispatch dict — see `nullary_carrier_impl_op`).
+/// pinned; a named carrier that does not provide the spec; a call at the instance a body
+/// runs at; or a provider whose nullary override needs a dispatch dict — see
+/// `nullary_carrier_impl_op`).
 ///
 /// ONE PROVIDER DOES NOT PIN THE CARRIER (kernel-language.md §5.4: a member's instance is
 /// fixed by an argument or the type expected of its result). It did — "information
@@ -43,6 +46,7 @@ pub(super) fn resolve_nullary_result_carrier(
     spec_sort: Symbol,
     spec_op_sym: Symbol,
     resolved_ret: &Value,
+    entered_at_instance: bool,
 ) -> Option<DispatchOutcome> {
     let spec_canon = kb.canonical_sort_sym(spec_sort);
     // (a) A concrete (non-type-param) carrier named by the expected return type
@@ -69,6 +73,9 @@ pub(super) fn resolve_nullary_result_carrier(
         }
     }
     // (b) No carrier pinned — ambiguous where several provide the spec.
+    if entered_at_instance {
+        return None;
+    }
     let providers = impl_sorts_providing_spec(kb, spec_sort);
     match providers.as_slice() {
         [] | [_] => None,

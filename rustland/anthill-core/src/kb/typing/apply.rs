@@ -3928,11 +3928,19 @@ pub(super) fn check_apply_iter(
             // pinning the carrier is a loud ambiguity. A `requires`-covered call
             // (a generic consumer over `requires MutableCollection`) already
             // took the Deferred path in `dispatch_spec_op_cached`, so this only
-            // fires for the concrete / standalone call.
+            // fires for the concrete / standalone call — or for a sibling called in a
+            // member of the spec, which runs at the instance it was entered with.
             let outcome =
                 if op.params.is_empty() && matches!(outcome, DispatchOutcome::NoCandidates) {
-                    resolve_nullary_result_carrier(kb, spec_sort, fn_sym, &resolved_ret)
-                        .unwrap_or(DispatchOutcome::NoCandidates)
+                    let entered_at_instance = entered_at_an_instance_of(kb, env, spec_sort);
+                    resolve_nullary_result_carrier(
+                        kb,
+                        spec_sort,
+                        fn_sym,
+                        &resolved_ret,
+                        entered_at_instance,
+                    )
+                    .unwrap_or(DispatchOutcome::NoCandidates)
                 } else {
                     outcome
                 };
