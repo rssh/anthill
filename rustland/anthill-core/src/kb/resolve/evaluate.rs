@@ -108,9 +108,10 @@ struct EvalCtx<'h> {
 }
 
 /// How many times a call's value may itself be a call to evaluate before the walk gives up
-/// on it (as SYMBOLIC — kept, never data). A value the bridge returns is a value; this
-/// bounds a FOLD whose result is again a call. It counts those re-evaluations only — never
-/// the depth of DATA, which is as deep as the value is (a 1000-element list is walked).
+/// on it (as SYMBOLIC — kept, never data). A value a call returns is a value; this bounds a
+/// PROJECTION whose result is again a call (`Box.zero`, a dotted nullary operation). It
+/// counts those re-evaluations only — never the depth of DATA, which is as deep as the value
+/// is (a 1000-element list is walked).
 const EVAL_DEPTH_CAP: usize = 64;
 
 impl KnowledgeBase {
@@ -581,6 +582,7 @@ impl KnowledgeBase {
         // to the carrier's own bodied `gt`. `reduce_op_value` reads that pin, and hands a
         // call back at once when its callee is a builtin — which then runs here.
         let r = self.reduce_op_value(call.clone(), subst, 0, true, None, faults);
+        let mut projected_call = false;
         let reduced = if !self.declined(&r, &call) {
             Some(r)
         } else {
@@ -595,6 +597,7 @@ impl KnowledgeBase {
                         self.run_builtin_for_value(BuiltinTag::FieldAccess, &call, subst, faults)
                             .into_value()?
                     } else {
+                        projected_call = true;
                         Some(projected)
                     }
                 }
@@ -605,8 +608,12 @@ impl KnowledgeBase {
             }
         };
         match reduced {
-            // A value may itself hold a call (a fold's result): evaluate it in turn.
-            Some(value) if self.value_holds_call(&value) => {
+            // A projection of a dotted nullary operation is that operation's call: evaluate
+            // it in turn. Nothing else a call returns is evaluated again — it is a value,
+            // whatever its shape: the term `make_fn("anthill.prelude.Int64.add", [as_term(1),
+            // as_term(2)])` builds is data (068 §1.3), and evaluated again it was run as
+            // `Int64.add(1, 2)` and printed "3".
+            Some(value) if projected_call && self.value_holds_call(&value) => {
                 self.evaluate_value_at_depth(value, subst, faults, depth + 1)
             }
             Some(value) => Ok(value),

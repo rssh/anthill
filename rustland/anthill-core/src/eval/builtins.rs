@@ -5331,15 +5331,19 @@ fn reflect_fresh_var(interp: &mut Interpreter, args: &[Value]) -> Result<Value, 
     Ok(Value::term(tid))
 }
 
-/// Walk a reflect cons-list `Value` into a `Vec`, applying `extract` to each
-/// element. Cons cells come in two shapes: `build_list_value` (Rust-side) emits
-/// named `head`/`tail` keys; anthill-source `cons(h, t)` emits positional args —
-/// try named first, fall back to positional. Field-name comparison stays
-/// string-based (the loader may qualify field symbols; the canonical short name
-/// is `head`/`tail`). A non-cons/nil cell or a malformed cons is a LOUD error,
-/// never a silently-dropped element. `ctx` prefixes the internal-error messages;
-/// `list_type` names the expected element list for the non-list `type_mismatch`.
-/// Shared by `make_fn` (element → `TermId`) and `make_apply` (element → occurrence).
+/// Walk a reflect cons-list into a `Vec`, applying `extract` to each element, on any
+/// carrier: read through the view, as a rule body hands its list over — a spine of
+/// occurrences (`Apply { cons, head, tail }` down to `Ref(nil)`) — and as an operation
+/// body builds one. Matched as a `Value::Entity` alone, `make_fn("…", [as_term(1)])` in a
+/// rule body was a type mismatch and the goal answered nothing. Cons cells come in two
+/// shapes: `build_list_value` (Rust-side) emits named `head`/`tail` keys; anthill-source
+/// `cons(h, t)` emits positional args — try named first, fall back to positional.
+/// Field-name comparison stays string-based (the loader may qualify field symbols; the
+/// canonical short name is `head`/`tail`). A non-cons/nil cell is a type mismatch and a
+/// malformed cons an internal error — LOUD, never a silently-dropped element. `ctx`
+/// prefixes the internal-error messages; `list_type` names the expected element list for
+/// the non-list `type_mismatch`. Shared by `make_fn` (element → `TermId`) and `make_apply` (element →
+/// occurrence).
 fn reflect_cons_to_vec<T>(
     interp: &Interpreter,
     list: Value,
@@ -5347,57 +5351,53 @@ fn reflect_cons_to_vec<T>(
     list_type: &'static str,
     mut extract: impl FnMut(Value) -> Result<T, EvalError>,
 ) -> Result<Vec<T>, EvalError> {
+    use crate::kb::term_view::ViewHead;
+    let kb = &interp.kb;
     let cons_sym = interp.reflect.cons;
     let nil_sym = interp.reflect.nil;
     let mut out: Vec<T> = Vec::new();
     let mut cursor = list;
     loop {
-        match cursor {
-            Value::Entity {
-                functor,
-                pos,
-                named,
-                ..
-            } => {
-                if Some(functor) == nil_sym {
-                    break;
-                }
-                if Some(functor) != cons_sym {
-                    let n = interp.kb.local_name_of(functor);
-                    return Err(EvalError::Internal(format!(
-                        "{ctx}: expected cons/nil, got {n}"
-                    )));
-                }
-                let (head, tail) = if !named.is_empty() {
-                    let h = named
-                        .iter()
-                        .find(|(s, _)| interp.kb.local_name_of(*s) == "head")
-                        .map(|(_, v)| v.clone())
-                        .ok_or_else(|| {
-                            EvalError::Internal(format!("{ctx}: cons missing head field"))
-                        })?;
-                    let t = named
-                        .iter()
-                        .find(|(s, _)| interp.kb.local_name_of(*s) == "tail")
-                        .map(|(_, v)| v.clone())
-                        .ok_or_else(|| {
-                            EvalError::Internal(format!("{ctx}: cons missing tail field"))
-                        })?;
-                    (h, t)
-                } else if pos.len() >= 2 {
-                    (pos[0].clone(), pos[1].clone())
-                } else {
-                    return Err(EvalError::Internal(format!(
-                        "{ctx}: cons cell shape unrecognized (pos={}, named={})",
-                        pos.len(),
-                        named.len(),
-                    )));
-                };
-                out.push(extract(head)?);
-                cursor = tail;
-            }
-            other => return Err(type_mismatch(list_type, &other, None)),
+        let ViewHead::Functor {
+            functor,
+            pos_arity,
+            named_arity,
+        } = cursor.head(kb)
+        else {
+            return Err(type_mismatch(list_type, &cursor, None));
+        };
+        if Some(functor) == nil_sym {
+            break;
         }
+        if Some(functor) != cons_sym {
+            return Err(type_mismatch(list_type, &cursor, None));
+        }
+        let (head, tail) = if named_arity > 0 {
+            let keys = cursor.named_keys(kb);
+            let field = |name: &str| {
+                keys.iter()
+                    .copied()
+                    .find(|s| kb.local_name_of(*s) == name)
+                    .and_then(|s| cursor.named_arg(kb, s))
+                    .map(|c| c.to_value())
+                    .ok_or_else(|| EvalError::Internal(format!("{ctx}: cons missing {name} field")))
+            };
+            (field("head")?, field("tail")?)
+        } else if pos_arity >= 2 {
+            let pos = |i| {
+                cursor
+                    .pos_arg(kb, i)
+                    .expect("a view reports every positional child its head counts")
+                    .to_value()
+            };
+            (pos(0), pos(1))
+        } else {
+            return Err(EvalError::Internal(format!(
+                "{ctx}: cons cell shape unrecognized (pos={pos_arity}, named={named_arity})",
+            )));
+        };
+        out.push(extract(head)?);
+        cursor = tail;
     }
     Ok(out)
 }

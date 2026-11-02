@@ -12666,15 +12666,15 @@ impl KnowledgeBase {
     /// (delay) instead of a native stack overflow.
     ///
     /// Soundness gates:
-    /// - **a value** — an arg that still holds a written call anywhere in it
-    ///   ([`Self::value_holds_call`], the evaluator's own reading) returns `None`. This
-    ///   is a different question from the next gate: a call over ground arguments IS
-    ///   ground, and a host function declaring a `Term` parameter would run on the call
-    ///   and read it as data. A rule body's own call never reaches here so — at `depth`
-    ///   0 the evaluator has handed `reduce_op_value` evaluated arguments, which only a
-    ///   debug build checks, as an assertion. The operation-body fold does, below the
-    ///   top — `viaAdd1() -> String = term_to_string(as_term(Int64.add(1, 2)))` printed
-    ///   "add(1, 2)" — and declined, its operation is run whole by the depth-0 bridge.
+    /// - **a value** — an arg of the operation-body fold's (`depth` above 0) that still
+    ///   holds a written call anywhere in it ([`Self::value_holds_call`], the evaluator's
+    ///   own reading) returns `None`. This is a different question from the next gate: a
+    ///   call over ground arguments IS ground, and a host function declaring a `Term`
+    ///   parameter would run on the call and read it as data — `viaAdd1() -> String =
+    ///   term_to_string(as_term(Int64.add(1, 2)))` printed "add(1, 2)". Declined, the
+    ///   operation is run whole by the depth-0 bridge. At `depth` 0 the arguments are the
+    ///   evaluator's, evaluated, and not asked: what is shaped like a call there is a value
+    ///   a call returned — the term `make_fn("anthill.prelude.Int64.add", …)` builds.
     /// - **ground** — each arg is reified under σ (the interpreter has no σ) and
     ///   must be deeply ground; `=`/`cmp` are tests that must not bind, so a
     ///   non-ground operand returns `None` (the resolver delays), never runs.
@@ -12758,13 +12758,7 @@ impl KnowledgeBase {
         for p in params {
             let a = self.reify_value(param_args.get(p)?, subst);
             // The first gate above: a value, not a call that did not run.
-            if (depth > 0 || cfg!(debug_assertions)) && self.value_holds_call(&a) {
-                debug_assert!(
-                    depth > 0,
-                    "bridge_op_to_eval: an argument of `{}` the evaluator handed over still \
-                     holds a call",
-                    self.qualified_name_of(op),
-                );
+            if depth > 0 && self.value_holds_call(&a) {
                 return None;
             }
             if !self.value_deep_ground(&a, subst) {

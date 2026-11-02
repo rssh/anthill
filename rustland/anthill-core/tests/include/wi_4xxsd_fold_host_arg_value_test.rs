@@ -28,9 +28,10 @@
 //!        as it runs a COMPLEX body.
 //!   g2 — `bridge_op_to_eval` refuses an argument of the fold's that still holds a written
 //!        call anywhere in it (`value_holds_call`), beside its ground check, which a call
-//!        over ground arguments passes; at depth 0, where the evaluator hands evaluated
-//!        arguments, a debug build asserts it. The needs-dictionary arm's own top-level
-//!        check is gone into it.
+//!        over ground arguments passes. At depth 0 the arguments are the evaluator's,
+//!        evaluated, and are not asked: a value shaped like a call there is data a call
+//!        returned (`make_fn_rule_body_term_test`). The needs-dictionary arm's own
+//!        top-level check is gone into it.
 //!
 //! BACK-OUT LEDGER, measured in one build with a temporary switch per gate; each test
 //! compares its whole table in one assertion, and its doc gives each row's back-out answer:
