@@ -18664,7 +18664,7 @@ fn load_phase_inner(
     // NonEq is visible.
     all_errors.extend(super::typing::check_use_site_requires_eq(
         kb,
-        &written_type_sites,
+        written_type_sites.for_eq_key_check(),
     ));
     mark!("check_use_site_requires_eq");
     // WI-347: operation-override refinement — a carrier's own op overriding a
@@ -18708,7 +18708,7 @@ fn load_phase_inner(
     // operation-row diagnostic first.
     all_errors.extend(super::typing::check_written_row_bindings(
         kb,
-        &written_type_sites,
+        written_type_sites.for_row_check(),
         super::typing::RowBindingRun::Judge,
     ));
     mark!("check_written_row_bindings");
@@ -28556,6 +28556,11 @@ struct Loader<'a> {
     // The flag scopes the rung to the contract clauses rather than widening the whole
     // term walk, where a dotted name is an ordinary reference and must stay one.
     in_op_contract_clause: bool,
+    /// WI-20260929-TJ3G4 — the term `convert_term` is converting is a TYPE ARGUMENT of a
+    /// bracket in an operation's `requires`: set by the bracket's arm over its own children
+    /// and put back after them, so a bracket under any other term — the goal itself, or a
+    /// goal under `not(…)`, a requirement and no use of its spec — is not one.
+    contract_bracket_arg: bool,
     /// The bindings of an operation's `requires` goal that were written through a type
     /// alias, each on the occurrence that holds the name
     /// ([`Self::clause_binding_as_written`]), keyed by the goal's parse term. Left by the
@@ -29004,6 +29009,7 @@ impl<'a> Loader<'a> {
             in_rule_head_bound: false,
             rule_head_bound_anchors: Vec::new(),
             in_op_contract_clause: false,
+            contract_bracket_arg: false,
             contract_goal_aliases: HashMap::new(),
             expr_syms,
             expr_work: Vec::with_capacity(64),
@@ -32882,6 +32888,15 @@ impl<'a> Loader<'a> {
                 // A quote's own field holds the code it quotes (`convert_arg_value`).
                 let in_quote = self.kb.is_quote_functor(new_functor);
 
+                // WI-20260929-TJ3G4 — whether this term is a type argument of a bracket in an
+                // operation's `requires` (`Self::contract_bracket_arg`), and so a use site if it is
+                // a bracket; its own arguments are one if it is a bracket there. The errors before
+                // them, so a bracket whose arguments were refused is not judged again as a key.
+                let is_contract_type_arg = std::mem::replace(
+                    &mut self.contract_bracket_arg,
+                    self.in_op_contract_clause && self.parsed.terms.is_type_application(parse_id),
+                );
+                let errors_before_args = self.errors.len();
                 let mut new_pos: SmallVec<[TermId; 4]> = pos_args
                     .iter()
                     .enumerate()
@@ -32991,6 +33006,8 @@ impl<'a> Loader<'a> {
                         (new_sym, self.wrap_bare_option_value(converted, exp.as_ref()))
                     })
                     .collect();
+                self.contract_bracket_arg = is_contract_type_arg;
+                let args_refused = self.errors.len() > errors_before_args;
 
                 // WI-20260911-073GH — the tail pop for the binder frame, if it is still
                 // on the stack. AFTER the named arguments, so a named child of a binder
@@ -33328,6 +33345,10 @@ impl<'a> Loader<'a> {
                 } else {
                     None
                 };
+                // A bracket that is a type argument in an operation's `requires`, whose arguments
+                // fit: the sort it instantiates, a use site recorded below once its bindings are
+                // final.
+                let mut contract_site: Option<Symbol> = None;
                 if let (true, true, Some(owner)) = (self.term_depth > 1, is_type_app, type_args_owner) {
                     let declared = self.kb.type_params_of_sort(owner);
                     let named_syms: SmallVec<[Symbol; 2]> =
@@ -33356,6 +33377,9 @@ impl<'a> Loader<'a> {
                         normalize_type_args(self.kb, owner, &mut pos, &mut named);
                         new_pos.extend(pos);
                         new_named.extend(named);
+                        if is_contract_type_arg && !args_refused {
+                            contract_site = Some(owner);
+                        }
                     }
                 } else if self.term_depth == 1
                     && self.in_op_contract_clause
@@ -33452,6 +33476,29 @@ impl<'a> Loader<'a> {
                             *child = self.contract_value_binding(head, Some(*key), *child);
                         }
                     }
+                }
+                // WI-20260929-TJ3G4 — a type written in an operation's `requires` is a use site
+                // like the same type in its signature (WI-835): `requires Holder[C = Map[K =
+                // Float, V = Int64]]` loaded, its key unjudged, while a sort's `requires` of the
+                // same refused it. No type lowering reads that clause, so a bracket written as a
+                // type argument there is recorded here, as written and at its own span; the goal's
+                // own application, a requirement, is no use of its spec, as a sort's clause's is
+                // not, and neither is one under `not(…)`. One whose arguments were refused
+                // (`Self` where it means nothing) is not judged again as a key. Its bindings
+                // are read through the type aliases they name, as the goal reads them once it is
+                // built (`term_read_through_aliases`, which it applies at every depth after this):
+                // as converted, `Set[T = LI]` over `sort LI = List[T = Int64]` was refused for
+                // `LI` (MEASURED, /code-review). A value's name is its `denoted` term here; the
+                // operation's own parameters are still names, made variables after the clause is
+                // converted (`var_ref_signature_places`).
+                if let Some(owner) = contract_site {
+                    let site = self.source_span_of(parse_id);
+                    let mut bindings: SmallVec<[(Symbol, crate::eval::value::Value); 2]> = SmallVec::new();
+                    for &(key, child) in new_named.iter() {
+                        let (read, _) = self.term_read_through_aliases(child, site);
+                        bindings.push((key, crate::eval::value::Value::term(read)));
+                    }
+                    self.record_type_application_site(owner, bindings, site, crate::kb::SiteOrigin::OperationRequires);
                 }
 
                 Term::Fn {
@@ -40344,11 +40391,15 @@ impl<'a> Loader<'a> {
     ///
     /// A head that owns no parameters at all — an unresolved name — records nothing: there
     /// is no declaration to hold a requirement against.
+    ///
+    /// `origin` says which walk wrote it: a type lowering, or `convert_term` at a bracket
+    /// nested in an operation's `requires` ([`crate::kb::SiteOrigin`]).
     fn record_type_application_site(
         &mut self,
         head: Symbol,
         bindings: SmallVec<[(Symbol, crate::eval::value::Value); 2]>,
         span: SourceSpan,
+        origin: crate::kb::SiteOrigin,
     ) {
         if let Some(base) = self.kb.type_arg_owner(head) {
             self.kb
@@ -40356,6 +40407,7 @@ impl<'a> Loader<'a> {
                     base,
                     bindings,
                     span,
+                    origin,
                 });
         }
     }
@@ -41495,7 +41547,7 @@ impl<'a> Loader<'a> {
         // value-in-type argument silently disabling the lawful-key check. The
         // WI-709 check is carrier-blind for the same reason; these two must
         // not disagree about which instantiations they see.
-        self.record_type_application_site(sort_sym, bindings, site_span);
+        self.record_type_application_site(sort_sym, bindings, site_span, crate::kb::SiteOrigin::TypeLowering);
         match built {
             Value::Term { id, .. } => node_occurrence::TypeChild::Interned(id),
             Value::Node(occ) => node_occurrence::TypeChild::Node(occ),
@@ -42219,7 +42271,7 @@ impl<'a> Loader<'a> {
                     return Value::term(self.kb.make_sort_ref(sort_sym));
                 }
                 let span = self.type_expr_span(ty);
-                self.record_type_application_site(sort_sym, named.iter().cloned().collect(), span);
+                self.record_type_application_site(sort_sym, named.iter().cloned().collect(), span, crate::kb::SiteOrigin::TypeLowering);
                 self.assemble_binding_value(sort_sym, named, span)
             }
             TypeExpr::Parameterized { name, .. } if self.is_self_type_name(name) => {
@@ -42343,7 +42395,7 @@ impl<'a> Loader<'a> {
                 // matching the other recorder. WI-20260831-V25N3: every binding is
                 // recorded CARRIER-FAITHFULLY (a denoted one included) and each consumer
                 // filters by its OWN rule — see `ParameterizedSite::bindings`.
-                self.record_type_application_site(base_sym, named.iter().cloned().collect(), span);
+                self.record_type_application_site(base_sym, named.iter().cloned().collect(), span, crate::kb::SiteOrigin::TypeLowering);
                 self.assemble_binding_value(base_sym, named, span)
             }
             // A sort's parameter written inside a tuple, an arrow or a row is its `Ref`, as at

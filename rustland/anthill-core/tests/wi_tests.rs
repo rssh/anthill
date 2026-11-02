@@ -1769,6 +1769,8 @@ mod prelude_emptiness_and_exists_test;
 mod n01py_witness_provision_subtype_test;
 #[path = "include/wi_2nmxa_denoted_provision_binding_test.rs"]
 mod wi_2nmxa_denoted_provision_binding_test;
+#[path = "include/wi_tj3g4_valued_key_positions_test.rs"]
+mod wi_tj3g4_valued_key_positions_test;
 
 #[path = "include/x13yv_map_map_chain_test.rs"]
 mod x13yv_map_map_chain_test;

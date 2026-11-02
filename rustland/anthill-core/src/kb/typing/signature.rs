@@ -4627,7 +4627,7 @@ pub(crate) enum RowBindingRun {
 /// 390 µs on a stdlib-sized KB in a debug build, against a load of the same KB in the
 /// hundreds of milliseconds. It runs only on the `run_typer: false` path.
 pub(crate) fn claim_written_row_bindings(kb: &mut KnowledgeBase) {
-    let errs = check_written_row_bindings(kb, &[], RowBindingRun::ClaimOnly);
+    let errs = check_written_row_bindings(kb, std::iter::empty(), RowBindingRun::ClaimOnly);
     debug_assert!(
         errs.is_empty(),
         "a ClaimOnly run judges nothing, so it can produce no diagnostic"
@@ -4679,7 +4679,9 @@ pub(crate) fn claim_written_row_bindings(kb: &mut KnowledgeBase) {
 ///    `let` annotation and a typed lambda binder — and any of those NESTED inside a
 ///    tuple, an arrow parameter, or another instantiation. It does NOT reach an
 ///    operation's own `requires` / `ensures`; that is source 3, and the distinction is
-///    load-bearing — see it.
+///    load-bearing — see it. (The registry holds the brackets written as type arguments in
+///    an operation's `requires` too, for the `Eq`-key check; this check is handed the type
+///    lowerings' sites alone, `crate::kb::WrittenTypeSites::for_row_check`.)
 ///
 /// 2. **The three SPEC-CLAUSE facts** — `SortProvidesInfo`, `SortRequiresInfo`,
 ///    `ProvidesConditionInfo`. `sort_inst_to_value` is the one `TypeExpr::Parameterized`
@@ -4709,9 +4711,9 @@ pub(crate) fn claim_written_row_bindings(kb: &mut KnowledgeBase) {
 /// shape RSRP5 shipped — and 0.42 ms with all three. For scale, its sibling gates
 /// (`check_modify_targets`, `check_effect_registration`) cost 0.15 ms each and
 /// `scan_definitions` alone costs 4.5 ms on the same load.
-pub(crate) fn check_written_row_bindings(
+pub(crate) fn check_written_row_bindings<'s>(
     kb: &mut KnowledgeBase,
-    sites: &[crate::kb::ParameterizedSite],
+    sites: impl IntoIterator<Item = &'s crate::kb::ParameterizedSite>,
     run: RowBindingRun,
 ) -> Vec<crate::kb::load::LoadError> {
     let judging = matches!(run, RowBindingRun::Judge);
@@ -4822,9 +4824,9 @@ pub(crate) fn check_written_row_bindings(
     // NOT WALKED BY A `ClaimOnly` RUN, and that is not an optimization: a site carries no
     // per-KB claim to leave behind (its registry is drained per load, and a check-less
     // load's sites are truncated away by `restore_load_check_marks`), so there is nothing
-    // here for a later batch to inherit. The caller passes `&[]` anyway; this says why
+    // here for a later batch to inherit. The caller passes no sites anyway; this says why
     // that is the right argument rather than an empty-looking accident.
-    for site in sites.iter().filter(|_| judging) {
+    for site in sites.into_iter().filter(|_| judging) {
         let row_params = row_params_of(kb, site.base, &mut row_params_by_spec);
         if row_params.is_empty() {
             continue;
