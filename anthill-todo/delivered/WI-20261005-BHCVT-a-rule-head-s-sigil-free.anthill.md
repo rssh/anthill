@@ -37,3 +37,7 @@ ONE LOWERING (user, 2026-11-02, yes): de8e8049 lowers an applied sigil-free boun
 
 BRACKET MEMBER (user, 2026-11-02, do inline): 875cbc86 — `x: Buf[T = Int64].T` and `x: IntBuf[N = Bool].T` are the type they name, as `?x:` reads them. Found on the way and fixed: `?x: Buf.N` / `?x: Buf[T = Int64].N` crashed the loader (both spellings, pre-existing); refused now. LEFT, measured: `x: Buf.N` without a bracket is `domain(?x, N)` (a dead clause) where `?x: Buf.N` is refused; `?x: Buf[T = Int64].tag` (an operation) is accepted as `domain(?x, tag)`. Full workspace 11,462 passed, node carrier too; families green.
 
+### 2026-11-02T10:11:58Z — feedback — claude
+
+ONE LOWERING FOR NAMES TOO, AND A VALUE IS NO TYPE (user, 2026-11-02): 23aac69b. Every sigil-free bound is lowered by the type door (`x: Buf.N` refused as `?x: Buf.N` is; the bare-name arm and its helpers deleted). An annotation whose type is an operation, a rule, a const, a parameter or a namespace is refused in every annotation position (`AnnotationNamesNoType`; kernel-language.md §4.4 amended). The parameter and field `FieldInfo` readers are one carrier-neutral builder — the old ones panicked on a refused open member at a parameter or field (pre-existing). Full workspace 11,463 passed, node carrier too; families green.
+
