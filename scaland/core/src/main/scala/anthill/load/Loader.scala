@@ -3678,9 +3678,20 @@ object Loader:
         def quotedField(field: Option[TermSymbol]): Boolean =
           quoted || field.exists(kb.isQuotedField(kbFunctor, _))
         val declaredFields = kb.entityFieldNames(kbFunctor)
+        // A written dotted name's member is the name it spells (§6.7), never the symbol the
+        // word resolves to where the chain is written: resolved in scope, `fact
+        // holds(ns.inner.seven)` written in `ns.outer` held `inner` as the namespace, and the
+        // goal written in another namespace met nothing. Mirrors rustland's
+        // `Loader::member_name`.
+        val memberChain = fileTerms.isMinted(termId) && DesugarTarget.is(name, DesugarTarget.FieldAccess)
+        def memberName(id: ParseTermId): Option[TermId] = fileTerms.get(id) match
+          case Term.Ref(sym) => Some(kb.alloc(Term.Ident(kb.intern(fileSym.name(sym)))))
+          case Term.Ident(sym) => Some(kb.alloc(Term.Ident(kb.intern(fileSym.name(sym)))))
+          case _ => None
         val kbPos = IArray.from(fn.posArgs.zipWithIndex.map((id, i) =>
-          reallocTerm(kb, fileTerms, fileSym, id, scope, errors, varMap, atGoal = goalSlots(i),
-            quoted = quotedField(declaredFields.flatMap(_.lift(i))))))
+          Option.when(memberChain && i == 1)(memberName(id)).flatten.getOrElse(
+            reallocTerm(kb, fileTerms, fileSym, id, scope, errors, varMap, atGoal = goalSlots(i),
+              quoted = quotedField(declaredFields.flatMap(_.lift(i)))))))
         val kbNamed = IArray.from(fn.namedArgs.map { (sym, id) =>
           val kbKeySym = kb.intern(fileSym.name(sym))
           (kbKeySym, reallocTerm(kb, fileTerms, fileSym, id, scope, errors, varMap,

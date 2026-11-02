@@ -1995,6 +1995,8 @@ mod wi_50zmn_two_requirements_of_one_sort_test;
 mod wi_prva2_pre_existing_defects_test;
 #[path = "include/dotted_nullary_op_call_test.rs"]
 mod dotted_nullary_op_call_test;
+#[path = "include/wi_tbz4t_dotted_member_one_term_test.rs"]
+mod wi_tbz4t_dotted_member_one_term_test;
 
 #[path = "include/nar1x_carrier_less_spec_op_test.rs"]
 mod nar1x_carrier_less_spec_op_test;

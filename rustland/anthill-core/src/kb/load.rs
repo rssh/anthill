@@ -24899,6 +24899,20 @@ fn query_goal_citation(kb: &mut KnowledgeBase, name: &str, scope: ScopeId) -> Rc
     expand_bare_entity_query_name(kb, expr_node(expr))
 }
 
+/// The symbol a written dotted name's member is held as, by every walk that builds the chain —
+/// a fact's, a rule body's, a query's: the word it spells, interned bare as a name that
+/// resolves to nothing is (kernel-language.md §6.7, "The member of the chain is read as a
+/// name"). Never what the word resolves to where the chain is written — so `zzf1.inner.seven`
+/// is one term in every namespace and in a query, and a goal written anywhere meets the fact
+/// holding it.
+fn dotted_member_symbol(
+    kb: &mut KnowledgeBase,
+    parse_symbols: &crate::intern::SymbolTable,
+    sym: Symbol,
+) -> Symbol {
+    kb.symbols.intern(parse_symbols.local_name(sym))
+}
+
 /// WI-20260902-JB6RS — a bare constructor name in a query's DATA slot is its INSTANCE
 /// (kernel-language.md §4.4), the clause converter's `bare_name_term` on the transient
 /// carrier: one that takes fields is the all-fields-fresh pattern, as at the pattern's
@@ -25813,10 +25827,20 @@ fn convert_query_term_expecting(
             // WI-20260902-JB6RS — a bracket's arguments are its bindings, a type context;
             // any other node's are data slots, where a bare constructor is its instance.
             let bracket = parse_terms.is_type_application(parse_id);
+            // A written dotted name's member is the name it spells, as the loader's walks hold
+            // it (`Loader::member_name`): resolved here, from the query's scope, it met no fact
+            // a namespace wrote.
+            let member_chain = parse_terms.is_minted(parse_id)
+                && parse_symbols.local_name(functor) == dt::FIELD_ACCESS;
             let mut new_pos: Vec<Rc<NodeOccurrence>> = pos_args
                 .iter()
                 .enumerate()
                 .map(|(i, &id)| {
+                    if member_chain && i == 1 {
+                        if let Term::Ident(m) | Term::Ref(m) = parse_terms.get(id) {
+                            return expr_node(Expr::Ident(dotted_member_symbol(kb, parse_symbols, *m)));
+                        }
+                    }
                     let exp = pos_field_type(kb, i);
                     let child = query_child_fold(
                         kb,
@@ -28252,12 +28276,16 @@ struct Loader<'a> {
     in_non_value_role: bool,
     // True while the rule-body walk, or the term walk a fact rides, lowers the MEMBER NAME of a
     // written dotted name — the selector of the converter's `field_access` chain, `seven` in
-    // `S.seven`. It is the name it spells: never the call a nullary operation's name in scope
-    // is built as, nor a const's value or an entity's instance. Built so, the chain spelled no
-    // name, and `?r <=> idv(S.seven)` beside `import S.{seven}` (or a const `seven` imported)
-    // reached the typer as its segments (WI-20261030-4BXDW). Both walks read it, so a goal and
-    // the fact it searches for still build one term. Set and cleared around that one leaf, as
-    // `in_non_value_role` is.
+    // `S.seven`, and `inner` in `zzf1.inner.seven`. It is the name it spells
+    // ([`Self::member_name`]): never the call a nullary operation's name in scope is built as,
+    // nor a const's value or an entity's instance, nor the symbol the word resolves to where the
+    // chain is written. Built so, the chain spelled no name, and `?r <=> idv(S.seven)` beside
+    // `import S.{seven}` (or a const `seven` imported) reached the typer as its segments
+    // (WI-20261030-4BXDW); built as that symbol, `fact holds(zzf1.inner.seven)` written in
+    // `zzf1.outer` held `inner` as `zzf1.inner`, and the same goal written in another namespace
+    // or a query, where `inner` names nothing, met nothing. Both walks and the query's read it,
+    // so a goal and the fact it searches for build one term wherever each is written. Set and
+    // cleared around that one leaf, as `in_non_value_role` is.
     in_member_name: bool,
     // Set while a rule body's walk builds the arguments of an operation's application, and
     // kept for the constructions nested in them: a call there is written as an operation
@@ -31735,16 +31763,16 @@ impl<'a> Loader<'a> {
         Some(found)
     }
 
+    /// [`dotted_member_symbol`] for this walk's file.
+    fn member_name(&mut self, sym: Symbol) -> Symbol {
+        dotted_member_symbol(self.kb, &self.parsed.symbols, sym)
+    }
+
     /// The term a clause holds for a resolved name `sym`: a `Bool` const at a goal the
     /// literal it holds, a const in a data slot its value, a type alias there the type it
     /// stands for, anything else its reference. One reading for the one-segment name, the
     /// written reference and a constructor's qualified name.
     fn resolved_name_term(&mut self, sym: Symbol, parse_id: ParseTermId, span: Span) -> Term {
-        // A dotted name's member is the name it spells, never a const's value
-        // ([`Self::in_member_name`]), as the rule-body walk builds it.
-        if self.in_member_name {
-            return self.bare_name_term(sym, span);
-        }
         if self.term_walk_at_goal() {
             if let Some(lit) = self.goal_const_value(sym) {
                 return Term::Const(lit);
@@ -33330,6 +33358,10 @@ impl<'a> Loader<'a> {
                     pos_args: new_pos,
                     named_args: new_named,
                 }
+            }
+            // A dotted name's member is the name it spells ([`Self::member_name`]).
+            Term::Ref(sym) | Term::Ident(sym) if self.in_member_name => {
+                Term::Ident(self.member_name(sym))
             }
             Term::Ref(sym) => {
                 let span = self.parsed.terms.span(parse_id);
@@ -37953,23 +37985,22 @@ impl<'a> Loader<'a> {
             }
             Term::Var(Var::DeBruijn(n)) => Expr::Var(Var::DeBruijn(n)),
             Term::Var(Var::Rigid(_)) => unreachable!("Var::Rigid in stored parse term"),
+            // A dotted name's member is the name it spells ([`Self::member_name`]).
+            Term::Ref(sym) | Term::Ident(sym) if self.in_member_name => {
+                Expr::Ident(self.member_name(sym))
+            }
             Term::Ref(sym) => {
                 let s = self.remap_symbol_strict(sym, self.parsed.terms.span(parse_id));
-                // A dotted name's member is the name it spells ([`Self::in_member_name`]).
-                if self.in_member_name {
-                    Expr::Ref(s)
-                } else {
-                    if self.in_body_goal && !self.in_body_goal_wrapper {
-                        if let Some(occ) = self.bare_entity_goal_occurrence(s, parse_id) {
-                            return occ;
-                        }
-                    }
-                    if let Some(occ) = self.body_data_slot_name(s, parse_id, span) {
+                if self.in_body_goal && !self.in_body_goal_wrapper {
+                    if let Some(occ) = self.bare_entity_goal_occurrence(s, parse_id) {
                         return occ;
                     }
-                    // WI-20261001-KDMQS — a const in a rule-body data slot is its value.
-                    self.body_resolved_name_expr(s, parse_id, span)
                 }
+                if let Some(occ) = self.body_data_slot_name(s, parse_id, span) {
+                    return occ;
+                }
+                // WI-20261001-KDMQS — a const in a rule-body data slot is its value.
+                self.body_resolved_name_expr(s, parse_id, span)
             }
             Term::Ident(sym) => {
                 // WI-742 §2.1 — the occurrence twin of `convert_term_inner`'s arm: a
@@ -37990,10 +38021,7 @@ impl<'a> Loader<'a> {
                 let new_sym = self.remap_symbol(sym, self.parsed.terms.span(parse_id));
                 // Promote to Ref if the symbol resolved to a defined name —
                 // mirrors `convert_term`'s Ident arm + `materialize`'s leaf map.
-                if self.kb.symbols.is_resolved(new_sym) && self.in_member_name {
-                    // A dotted name's member is the name it spells ([`Self::in_member_name`]).
-                    Expr::Ref(new_sym)
-                } else if self.kb.symbols.is_resolved(new_sym) {
+                if self.kb.symbols.is_resolved(new_sym) {
                     // WI-20260902-CZJ2N: §8.3's expansion in GOAL position; a DATA slot
                     // reads the name by its context just below (WI-20260902-JB6RS).
                     if self.in_body_goal && !self.in_body_goal_wrapper {

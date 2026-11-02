@@ -3,9 +3,9 @@
 - id: WI-20260902-TBZ4T-a-dotted-nullary-op-in-a-rule
 - created: 2026-09-02T13:45:03Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-02T13:45:03Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-11-02T00:06:31Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -58,4 +58,10 @@ holdsOp(ns.seven)` still answers 1 (measured — the store's nullary canon is wh
 one-segment spelling already proves it); a dotted citation of a RULE in a data slot stays
 the `Relation[T]` value (WI-714's `Queen.find`); and a dotted PREDICATE in a data slot
 keeps binding its name.
+
+## Changes
+
+### 2026-11-02T00:06:30Z — feedback — claude
+
+DELIVERED in 78c33c83 (2026-11-02). The ticket's defect was already closed by the later dotted-call work (kernel-language §6.7, a dotted nullary operation is its call where the chain is reduced as an operand): measured on d6f92d5f, `dBind` binds 7 as `oBind`, `oBindP` and `dBindP` do, and the three controls hold (`holdsOp(ns.seven)` met by its goal in one namespace; a dotted rule in a value slot is the relation, `?r <=> tbz.inner.isFlag` binds `isFlag`; a dotted predicate is its name, `flag`). Pinned as controls in wi_tbz4t_dotted_member_one_term_test. FOUND driving those rows from other namespaces, and fixed: a written chain's MEMBER was held as the symbol the word resolves to where the chain is written, so `fact holds(zzf1.inner.seven)` written in `zzf1.outer` (where `inner` names `zzf1.inner`) was met only from that namespace — not from `zzf2`, a sibling, a namespace importing `seven`, or a query; the bare `zzf1.inner` the same; a sort member imported where a fact or goal is written, or by a query's `-i`, met nothing. The member is now the bare intern of its word in the term walk, the rule-body walk and the query walk (`dotted_member_symbol`), and in scaland's `reallocTerm`; §6.7 already states it. LEFT, a question for the user: a relative spelling and the qualified one (`inner.seven`, `zzr.inner.seven`) are still two terms — a namespace receiver is not collapsed to its symbol as a sort's is; whether a qualified operation or namespace name in a data slot is its symbol is the 'qualified name is the symbol' question not yet asked for those kinds. Full workspace 11,434 passed; families green (node carrier too); scaland 51 + 797.
 

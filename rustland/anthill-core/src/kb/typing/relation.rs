@@ -348,9 +348,9 @@ fn loader_chain_dotted_name(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Opt
             && kb.try_resolve_symbol(dt::qualified(dt::FIELD_ACCESS)) == Some(*functor) =>
         {
             let base = loader_chain_dotted_name(kb, &pos_args[0])?;
-            // BOTH LEAF SPELLINGS. A resolved intermediate segment is a `Ref` and the
-            // final field is an `Ident` (the bare intern of the written word); the SHORT
-            // name is taken in either case, since `base` already carries the qualification.
+            // A written member is an `Ident`, the bare intern of the word it spells
+            // (`Loader::member_name`); the root alone is a `Ref`. The SHORT name is taken
+            // either way, since `base` already carries the qualification.
             let field = match pos_args[1].as_expr()? {
                 Expr::Ref(f) | Expr::Ident(f) => short_name_of(kb.local_name_of(*f)).to_string(),
                 _ => return None,
