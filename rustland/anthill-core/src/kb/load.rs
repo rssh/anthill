@@ -31687,6 +31687,29 @@ impl<'a> Loader<'a> {
         }
     }
 
+    /// The written arguments of a type application, in the order [`KnowledgeBase::fit_type_args`]
+    /// was given them, each under the declared parameter its slot names; one that binds nothing
+    /// is left out.
+    fn keyed_by_fit(
+        &mut self,
+        declared: &[String],
+        values: impl IntoIterator<Item = TermId>,
+        slots: &[Option<usize>],
+    ) -> Vec<(Symbol, TermId)> {
+        values
+            .into_iter()
+            .zip(slots)
+            .filter_map(|(value, slot)| slot.map(|i| (self.kb.intern(&declared[i]), value)))
+            .collect()
+    }
+
+    /// WI-710 — is a bracket this walk meets here a TYPE application? One nested in another
+    /// term is, where a top-level one is an instance claim; and a rule head's bound is a type
+    /// as a whole, so a bracket anywhere in it is, its own top level included.
+    fn bracket_reads_as_type(&self) -> bool {
+        self.term_depth > 1 || self.in_rule_head_bound
+    }
+
     /// The type a type alias stands for, where this walk is in a clause DATA slot — the
     /// twin of [`Self::data_slot_const_value`]: a type held in a data slot is a value, and an
     /// alias in a name is read through wherever it is used (§5.1), so `fact held(t: IntOpt)`
@@ -32931,17 +32954,12 @@ impl<'a> Loader<'a> {
                                 span: Some(self.parsed.terms.span(parse_id)),
                             });
                         }
-                        let values: Vec<_> = new_pos
+                        let values: SmallVec<[TermId; 4]> = new_pos
                             .drain(..)
                             .chain(new_named.drain(..).map(|(_, value)| value))
                             .collect();
                         new_named = fixed;
-                        for (value, slot) in values.into_iter().zip(fit.slots) {
-                            if let Some(index) = slot {
-                                let key = self.kb.intern(&declared[index]);
-                                new_named.push((key, value));
-                            }
-                        }
+                        new_named.extend(self.keyed_by_fit(&declared, values, &fit.slots));
                     }
                 }
 
@@ -33160,8 +33178,8 @@ impl<'a> Loader<'a> {
                 // this one), so without the same check a rule body could carry a type
                 // argument the sort never declared.
                 //
-                // Gated on `term_depth > 1` — i.e. NOT a top-level term. At top level the
-                // same syntax is an INSTANCE CLAIM, and its argument grammar is a
+                // Gated on [`Self::bracket_reads_as_type`] — NOT a top-level term. At top
+                // level the same syntax is an INSTANCE CLAIM, and its argument grammar is a
                 // different, richer language that this rule would wrongly reject: an
                 // op-bearing instance fact names OPERATIONS (`fact Monad[M = Option,
                 // pure = optionPure]`), and a positional on a non-parametric spec is the
@@ -33187,16 +33205,14 @@ impl<'a> Loader<'a> {
                 //
                 // A TYPE ALIAS'S APPLICATION is the sort the alias stands for, the bindings
                 // it fixes before the written ones, as in a type position (§5.1) — wherever
-                // a nested type application is read here but a quoted `Term` field and a
-                // rule head's bound, which has its own reader. In a data slot the term is
-                // otherwise as written (§5.4): `IntPair[B = String]` over `sort IntPair =
-                // Pair[A = Int64]` is the term `Pair[A = Int64, B = String]` is. An
-                // operation's equation reads its body through this walk as well as the
-                // occurrence walk does, which refuses the same rebinding at the same place
-                // (one report: `dedup_load_errors`).
-                if self.term_depth > 1
+                // a type application is read here ([`Self::bracket_reads_as_type`]) but a
+                // quoted `Term` field. In a data slot the term is otherwise as written
+                // (§5.4): `IntPair[B = String]` over `sort IntPair = Pair[A = Int64]` is the
+                // term `Pair[A = Int64, B = String]` is. An operation's equation reads its
+                // body through this walk as well as the occurrence walk does, which refuses
+                // the same rebinding at the same place (one report: `dedup_load_errors`).
+                if self.bracket_reads_as_type()
                     && is_type_app
-                    && !self.in_rule_head_bound
                     && !self.in_quoted_term
                     && self.kb.has_kind(new_functor, SymbolKind::Sort)
                 {
@@ -33226,30 +33242,53 @@ impl<'a> Loader<'a> {
                 } else {
                     None
                 };
-                if let (true, true, Some(owner)) = (self.term_depth > 1, is_type_app, type_args_owner) {
+                if let (true, true, Some(owner)) = (self.bracket_reads_as_type(), is_type_app, type_args_owner) {
                     let declared = self.kb.type_params_of_sort(owner);
                     let named_syms: SmallVec<[Symbol; 2]> =
                         new_named.iter().map(|(s, _)| *s).collect();
-                    if let Err(problem) = self.kb.check_sort_type_args(
+                    if self.in_rule_head_bound && !self.in_quoted_term {
+                        // A RULE HEAD'S BOUND binds its arguments as a type position does
+                        // ([`Self::type_application_keys`]): each under the parameter it
+                        // takes, and one that takes none is refused here and not built. The
+                        // `?x: T` spelling is lowered as a type, so `x: T` is too (§5.3, "The
+                        // parameter form").
+                        let written: SmallVec<[Option<Symbol>; 4]> = named_syms
+                            .iter()
+                            .map(|k| Some(*k))
+                            .chain(std::iter::repeat_n(None, new_pos.len()))
+                            .collect();
+                        let fit = self.kb.fit_type_args(&declared, &[], &written);
+                        if let Some(problem) = &fit.problem {
+                            self.errors.push(LoadError::InvalidTypeArgument {
+                                detail: problem.describe(self.kb, new_functor),
+                                span: Some(self.parsed.terms.span(parse_id)),
+                            });
+                        }
+                        let values: SmallVec<[TermId; 4]> =
+                            new_named.drain(..).map(|(_, v)| v).chain(new_pos.drain(..)).collect();
+                        let mut named = self.keyed_by_fit(&declared, values, &fit.slots);
+                        normalize_type_args(self.kb, owner, &mut Vec::new(), &mut named);
+                        new_named.extend(named);
+                    } else if let Err(problem) = self.kb.check_sort_type_args(
                         owner,
                         &declared,
                         &named_syms,
                         new_pos.len(),
                     ) {
-                        let detail = problem.describe(&self.kb, owner);
+                        let detail = problem.describe(&self.kb, new_functor);
                         self.errors.push(LoadError::InvalidTypeArgument {
                             detail,
                             span: Some(self.parsed.terms.span(parse_id)),
                         });
-                    } else if !self.in_rule_head_bound && !self.in_quoted_term {
+                    } else if !self.in_quoted_term {
                         // The application is the one term its type is
                         // ([`normalize_type_args`]) wherever this walk builds it: a
                         // clause's data slot, an operation's `requires` and `ensures`, an
-                        // operation body. Every reader of a nested binding reads its named
-                        // arguments, so a positional left here is a binding dropped —
-                        // `requires Store[State = Buf[Int64]]` was a requirement at `Buf[]`.
-                        // A rule head's bound has its own reader (above), and a quoted
-                        // `Term` field holds the text as written.
+                        // operation body, a rule head's bound (above). Every reader of a
+                        // nested binding reads its named arguments, so a positional left
+                        // here is a binding dropped — `requires Store[State = Buf[Int64]]`
+                        // was a requirement at `Buf[]`. A quoted `Term` field holds the
+                        // text as written.
                         let mut pos: Vec<TermId> = new_pos.drain(..).collect();
                         let mut named: Vec<(Symbol, TermId)> = new_named.drain(..).collect();
                         normalize_type_args(self.kb, owner, &mut pos, &mut named);

@@ -1905,6 +1905,8 @@ mod wi_m32c2_list_literal_at_a_slot_test;
 #[path = "include/wi_0qv5a_match_arm_guard_test.rs"]
 mod wi_0qv5a_match_arm_guard_test;
 
+#[path = "include/wi_bhcvt_parameter_bound_is_a_type_test.rs"]
+mod wi_bhcvt_parameter_bound_is_a_type_test;
 #[path = "include/wi_pw9a0_rule_tvar_in_bound_test.rs"]
 mod wi_pw9a0_rule_tvar_in_bound_test;
 
