@@ -484,11 +484,7 @@ pub(super) fn nothing_in_scope_selects(
     env: &TypingEnv,
     spec: Symbol,
 ) -> bool {
-    if env.enclosing_sort().is_some_and(|enclosing| {
-        same_sort_canonical(kb, enclosing, spec)
-            || (sort_provides(kb, enclosing, spec)
-                && !sort_is_data(kb, kb.canonical_sort_sym(enclosing)))
-    }) {
+    if entered_at_an_instance_of(kb, env, spec) {
         return false;
     }
     let spec_canon = kb.canonical_sort_sym(spec);
@@ -502,6 +498,23 @@ pub(super) fn nothing_in_scope_selects(
     !in_scope
         .into_iter()
         .any(|required| requirement_reaches(kb, required, spec_canon, &mut visited))
+}
+
+/// The body being typed is a member of `spec` itself, or of a sort without constructors
+/// that provides it, and so runs at the instance of `spec` it was entered with: a call of a
+/// member of `spec` there is that instance's member, taken from the frame's dictionary where
+/// no argument directs it (kernel-language.md §5.2, "A spec's default body is not such a
+/// dispatch").
+pub(super) fn entered_at_an_instance_of(
+    kb: &KnowledgeBase,
+    env: &TypingEnv,
+    spec: Symbol,
+) -> bool {
+    env.enclosing_sort().is_some_and(|enclosing| {
+        same_sort_canonical(kb, enclosing, spec)
+            || (sort_provides(kb, enclosing, spec)
+                && !sort_is_data(kb, kb.canonical_sort_sym(enclosing)))
+    })
 }
 
 /// WI-20260909-M8QWJ — what [`unselectable_spec_operation_call`] found: the sort that may
