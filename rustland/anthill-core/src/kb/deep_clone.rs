@@ -335,6 +335,7 @@ impl Copier {
                 query: self.shared(query, |c, q| Rc::new(c.value(q))),
                 columns: self.shared(columns, |_, cols| cols.iter().map(plain).collect()),
             },
+            Value::Quoted(inner) => Value::Quoted(self.shared(inner, |c, v| Rc::new(c.value(v)))),
             // Handles into ONE interpreter's arenas. See `DeepCloneError::ArenaHandle`.
             Value::Closure(_) => self.arena_handle("closure"),
             Value::Stream(_) => self.arena_handle("stream"),

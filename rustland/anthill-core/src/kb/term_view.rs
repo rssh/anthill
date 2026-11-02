@@ -162,6 +162,13 @@ impl ViewItem<'_> {
             ViewItem::Term(t) => Some(*t),
             ViewItem::Value(Value::Term { id: t, .. })
             | ViewItem::Owned(Value::Term { id: t, .. }) => Some(*t),
+            // A child of a quoted value rides marked (`quoted_child`); its term is the mark's.
+            ViewItem::Value(Value::Quoted(inner)) | ViewItem::Owned(Value::Quoted(inner)) => {
+                match &**inner {
+                    Value::Term { id: t, .. } => Some(*t),
+                    _ => None,
+                }
+            }
             _ => None,
         }
     }
@@ -2933,6 +2940,8 @@ impl TermView for Value {
             // WI-1019 — the two RESOLVED values read structurally; see the
             // section above for why these two and not the rest.
             Value::OpRef { .. } => opref_head(OpRefHalves::of(self), kb),
+            // A quoted value views as its content (`Value::Quoted`'s contract).
+            Value::Quoted(inner) => inner.head(kb),
             // WHAT IS STILL `Opaque`, AND WHY — a payload-free head is the right
             // answer for a carrier with no shape to present, NOT a gap. Equality
             // is carrier identity ([`Value::opaque_carrier_eq`]) and the key stays
@@ -2972,6 +2981,7 @@ impl TermView for Value {
             },
             Value::Entity { pos, .. } => pos.get(i).map(ViewItem::Value),
             Value::Node(occ) => occ_view_pos_arg(occ, kb, i),
+            Value::Quoted(inner) => inner.pos_arg(kb, i).map(|c| quoted_child(kb, c)),
             _ => None,
         }
     }
@@ -3061,6 +3071,7 @@ impl TermView for Value {
                     other => unreachable!("opref named_arg: no arm for key `{other}`"),
                 }))
             }
+            Value::Quoted(inner) => inner.named_arg(kb, sym).map(|c| quoted_child(kb, c)),
             _ => None,
         }
     }
@@ -3089,6 +3100,7 @@ impl TermView for Value {
                 .iter()
                 .map(|k| opref_key(kb, k))
                 .collect(),
+            Value::Quoted(inner) => inner.named_keys(kb),
             _ => Vec::new(),
         }
     }
@@ -3120,8 +3132,26 @@ impl TermView for Value {
             // De Bruijn binder thus indexes like a term head's, instead of
             // collapsing to `Opaque` and panicking at insert.
             Value::Node(occ) => occ_view_index_var(occ, kb),
+            Value::Quoted(inner) => inner.index_var(kb),
             _ => None,
         }
+    }
+}
+
+/// A child of a [`Value::Quoted`] value, marked in turn when it is compound: what a
+/// pattern binds out of quoted data is data too, so `add(1, mul(2, 3))`'s `mul(2, 3)`
+/// does not become a call by being read out of it. A leaf rides as it came.
+fn quoted_child<'a>(kb: &KnowledgeBase, child: ViewItem<'a>) -> ViewItem<'a> {
+    match child.head(kb) {
+        ViewHead::Functor {
+            pos_arity,
+            named_arity,
+            ..
+        } if pos_arity + named_arity > 0 => match child.to_value() {
+            already @ Value::Quoted(_) => ViewItem::Owned(already),
+            v => ViewItem::Owned(Value::Quoted(Rc::new(v))),
+        },
+        _ => child,
     }
 }
 

@@ -509,7 +509,8 @@ impl KnowledgeBase {
     /// A compound expression that computes ([`evaluated_form`]) is one too: it denotes its
     /// value, as the same text does in an operation body (kernel-language §5.9).
     pub(super) fn is_written_call(&self, v: &Value) -> bool {
-        if self.is_qualified_name(v) {
+        // A value a call returned is data, whatever its shape (`Value::Quoted`).
+        if v.is_quoted() || self.is_qualified_name(v) {
             return false;
         }
         if let Value::Node(o) = v {
@@ -545,6 +546,12 @@ impl KnowledgeBase {
     /// binder reference), whose calls run only when the form does and whose variables are
     /// bound by it; not into a type or a pattern.
     fn evaluation_descends(&self, v: &Value) -> bool {
+        // Nothing under the mark is a call to run (`Value::Quoted`). Not for the answer —
+        // a child read out of the mark is marked too, so the walk would find nothing — but
+        // so the walk does not go through the value at all.
+        if v.is_quoted() {
+            return false;
+        }
         if let Value::Node(o) = v {
             if o.as_expr().is_none() {
                 return false;
@@ -616,7 +623,7 @@ impl KnowledgeBase {
             Some(value) if projected_call && self.value_holds_call(&value) => {
                 self.evaluate_value_at_depth(value, subst, faults, depth + 1)
             }
-            Some(value) => Ok(value),
+            Some(value) => Ok(self.quote_returned_value(value)),
             // The bridge ran the callee and it read a requirement of its own that no
             // provider answers at these arguments: no value, as `div(1, 0)` has none.
             None if faults.no_provider_count() > no_provider_before => Err(Stuck::Absent),
@@ -636,7 +643,7 @@ impl KnowledgeBase {
     ) -> Result<Value, Stuck> {
         let no_provider_before = faults.no_provider_count();
         match self.bridge_form_to_eval(form, subst, faults) {
-            Some(value) => Ok(value),
+            Some(value) => Ok(self.quote_returned_value(value)),
             None if faults.no_provider_count() > no_provider_before => Err(Stuck::Absent),
             None => Err(self.stuck_state(form, None, subst)),
         }
@@ -656,6 +663,72 @@ impl KnowledgeBase {
                 self.is_written_call(r) && crate::kb::term_view::views_structurally_equal(self, r, call)
             }
         }
+    }
+
+    /// 068 §1.3 — a value a call returned, with each part of it shaped like a call
+    /// carried as DATA (`Value::Quoted`): the term `make_fn("anthill.prelude.Int64.add",
+    /// [as_term(1), as_term(2)])` builds is `add(1, 2)`, and every later reader of it —
+    /// `<=>`'s structural step in this goal, the evaluation of a goal it is spliced into, a
+    /// pattern binding a child of it — would otherwise take it for a call and run it as
+    /// `Int64.add(1, 2)`, or wait on it as a SYMBOLIC one. The PARTS, not the whole: the
+    /// list or option holding a term stays the spine it is, and a variable beside the term
+    /// (`some(pair(add(1, 2), ?tail))`, from `List.splitFirst` over a list being built)
+    /// stays outside the mark.
+    fn quote_returned_value(&self, value: Value) -> Value {
+        self.quote_call_shaped_parts(&value).unwrap_or(value)
+    }
+
+    /// `v` with each maximal part shaped like a call marked, or `None` when it holds none.
+    /// A spine above a marked part is rebuilt as a transient one, as [`Self::evaluate_at`]
+    /// rebuilds a spine whose call it replaced.
+    fn quote_call_shaped_parts(&self, v: &Value) -> Option<Value> {
+        if v.is_quoted() {
+            return None;
+        }
+        if self.is_written_call(v) {
+            return Some(Value::Quoted(Rc::new(v.clone())));
+        }
+        if !self.evaluation_descends(v) {
+            return None;
+        }
+        let ViewHead::Functor {
+            functor, pos_arity, ..
+        } = v.head(self)
+        else {
+            return None;
+        };
+        let mut changed = false;
+        let mut part = |c: Value| match self.quote_call_shaped_parts(&c) {
+            Some(q) => {
+                changed = true;
+                q
+            }
+            None => c,
+        };
+        let pos: Vec<Value> = (0..pos_arity)
+            .map(|i| {
+                part(v
+                    .pos_arg(self, i)
+                    .expect("a view reports every positional child its head counts")
+                    .to_value())
+            })
+            .collect();
+        let named: Vec<(Symbol, Value)> = v
+            .named_keys(self)
+            .into_iter()
+            .map(|k| {
+                let c = v
+                    .named_arg(self, k)
+                    .expect("a view reports a child for every key it lists")
+                    .to_value();
+                (k, part(c))
+            })
+            .collect();
+        changed.then(|| Value::Entity {
+            functor,
+            pos: Rc::from(pos),
+            named: Rc::from(named),
+        })
     }
 
     fn evaluate_value_at_depth(

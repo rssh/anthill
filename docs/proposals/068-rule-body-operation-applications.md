@@ -223,6 +223,18 @@ checked at load, and changes nothing above.
 With the rule, every row in the problem section answers its truth column — or undecided where
 the operation has no implementation (§2) — and `?v <=> box(v: C.tag(red()))` binds `box(v: 1)`.
 
+*Amended 2026-11-02* (WI-20261102-ED298, decided with the user): what a call returns stays a
+value in σ. A `Term` whose functor names an operation has the shape of a written call, and σ is
+applied into a goal before the goal is evaluated, so a binding cannot say what it holds. The
+value carries it instead: each part of a value evaluation produced that is shaped like a call
+is carried as QUOTED data — read through by matching, unification, printing and every reflect reader,
+run by no evaluation, and a part a pattern binds out of it stays data. An unmarked application
+of an operation stays a call: a query's or a guard's written goal, D7's symbolic call. So the
+quote's product is a `Term` carried as quoted data, not a plain one. A `Term` stored in a fact
+is unmarked — a term has no room for the mark — and one read back from a fact's field
+(`fact Holder(code: Int64.add(1, 2))` through `Holder(code: ?c)`) is still read as a call;
+that is not decided here.
+
 ## 2. When an application does not reduce: SUSPENDED or UNREDUCED
 
 An application that was not evaluated is in one of two states. They are close — neither is a value,

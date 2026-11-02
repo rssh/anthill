@@ -9527,6 +9527,10 @@ impl KnowledgeBase {
                 let (pos, named) = self.reify_value_children(pos, named, subst, carrier);
                 Value::Tuple { pos, named }
             }
+            // σ reaches a variable under the mark, and the mark stays.
+            Value::Quoted(inner) => {
+                Value::Quoted(Rc::new(self.reify_value_on(inner, subst, carrier)))
+            }
             other => other.clone(),
         }
     }
@@ -10717,6 +10721,9 @@ impl KnowledgeBase {
             Value::Tuple { pos, named } => {
                 children(self, pos, named).map(|(pos, named)| Value::Tuple { pos, named })
             }
+            Value::Quoted(inner) => self
+                .substituted_value(inner, leaf, node)
+                .map(|v| Value::Quoted(Rc::new(v))),
             Value::Var(_)
             | Value::Int(_)
             | Value::BigInt(_)

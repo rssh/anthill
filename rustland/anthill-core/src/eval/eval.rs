@@ -5703,6 +5703,7 @@ pub fn value_functor(kb: &KnowledgeBase, value: &Value) -> Option<Symbol> {
         | Value::FactRef(_)
         | Value::Var(_)
         | Value::Relation { .. } => None,
+        Value::Quoted(_) => unreachable!("`Value::carried` reads through a quote mark"),
     }
 }
 
@@ -5984,6 +5985,7 @@ pub(crate) fn runtime_carrier_sort(kb: &KnowledgeBase, value: &Value) -> Option<
         // Values that never name a spec receiver — no carrier sort. Listed
         // explicitly (no `_` arm) so a new `Value` variant forces a decision.
         Value::Unit | Value::Tuple { .. } | Value::Substitution(_) | Value::Var(_) => return None,
+        Value::Quoted(_) => unreachable!("`Value::carried` reads through a quote mark"),
     };
     if let Some(qn) = qualified {
         return kb.try_resolve_symbol(qn);

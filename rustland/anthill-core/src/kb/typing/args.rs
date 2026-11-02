@@ -2144,6 +2144,7 @@ pub(super) fn wrap_bare_effect_expr_as_row(kb: &mut KnowledgeBase, expr: &Value)
         | Value::FactRef(_)
         | Value::Var(_)
         | Value::SymbolRef(_)
+        | Value::Quoted(_)
         | Value::Relation { .. } => unreachable!(
             "effect row on a carrier no row rides: row-shaped by functor head, but not a \
              `Value::Term` or `Value::Node` the row IR mints, nor a `Value::Entity` spine σ \

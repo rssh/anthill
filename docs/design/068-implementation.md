@@ -371,6 +371,37 @@ stays a value; an in-body proof in a clause is a load error (`LoadError::ProofIn
   wrote a type form a rule writes as data (`holder(t: Box[V = (?a) -> Int64])`, answered) as
   the application `Arrow(param: String, …)`; it writes the type spelling, as the term walk.
 
+### 5.3 A value a call returned stays a value (WI-20261102-ED298, 2026-11-02)
+
+Proposal 068 §1.3's amendment. `Value::Quoted` (eval/value.rs) is a carrier: `TermView` reads
+it as its content, a compound child it hands out is marked again (`term_view::quoted_child`),
+and `Value::carried` reads through it, so the interpreter's readers see the term. Minted in
+one place, `evaluate.rs`'s `quote_returned_value`, on what `evaluate_call` and `evaluate_form`
+return: each maximal part of the value shaped like a call, so a spine holding a term and a
+variable beside it (`List.splitFirst` over a list whose tail is unbound) keeps the variable
+outside the mark; σ is applied under a mark (`reify_value_on`). Read in one place,
+`Value::is_quoted` (through a σ splice, `Expr::Spliced`), by the three call tests that must
+agree — `is_written_call`, and FDPJ8's `op_call_occurrence_to_reduce` / `is_unreduced_op_call`.
+Lowering to a `TermId` drops it.
+
+- **The two reads it repairs**, measured: `<=>`'s structural step (`unify_values` step 2) took
+  the value `make_fn` returned for a SYMBOLIC call in the same goal, so `?t <=> make_fn(…)`
+  bound nothing; and the goal walk splices a binding into the next goal before it is
+  evaluated (`substitute_occurrence` for an occurrence goal, `reify_value_transient` for a
+  term one), so `term_to_string(?t)` evaluated `add(1, 2)`. A list or an entity holding the
+  term and read back by a pattern answered "3", definite.
+- **Not a binding mark.** "Trust what σ holds, mark D7's call" was the other way; σ is applied
+  into the goal before evaluation, so it would need this mark on what the splice puts in,
+  beside a second one on the symbolic call.
+- **Measured back-outs** (`make_fn_rule_body_term_test`, one switch each): the mint and the
+  splice read in `is_quoted` each fail its four Q tests; the child re-mark fails two. A first
+  cut that marked a whole value, and none mentioning a variable, answered the term handed back
+  by `List.splitFirst` beside an unbound tail "3", definite. The two FDPJ8 checks and
+  `evaluation_descends`' check drive no row: the evaluator asks `is_written_call` first, and the
+  last only spares a walk.
+- **Left:** a `Term` held in a fact's field is unmarked and read as a call (proposal §1.3's
+  amendment).
+
 ## 6. 7D48J and DSEXA
 
 Their tickets hold their design questions: 7D48J — the clause environment, how far data is typed
