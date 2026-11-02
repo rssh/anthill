@@ -3054,3 +3054,33 @@ pub fn bare_sort_name(kb: &KnowledgeBase, v: &eval::Value) -> Option<String> {
         _ => None,
     }
 }
+
+/// `Cell` — what a BARE nominal type evaluates to, read through the view. Proposal 055 §7:
+/// the bare sort, not an application with bindings.
+#[allow(dead_code)]
+pub fn assert_bare_cell(kb: &KnowledgeBase, v: &eval::Value, what: &str) {
+    assert_eq!(
+        bare_sort_name(kb, v).as_deref(),
+        Some("Cell"),
+        "{what}: expected the bare sort `Cell`, got {v:?}"
+    );
+}
+
+/// `Cell[V = Int64]` — the parameterized type an APPLIED nominal type evaluates to, read
+/// through the view, argument included (the argument is classified by the same loader rule,
+/// so a row that stopped at the head would not notice it going back to a var-ref).
+#[allow(dead_code)]
+pub fn assert_applied_cell(kb: &KnowledgeBase, v: &eval::Value, what: &str) {
+    let Some((functor, named)) = type_application(kb, v) else {
+        panic!("{what}: expected `Cell[V = Int64]`, got {v:?}");
+    };
+    assert_eq!(kb.local_name_of(functor), "Cell", "{what}: the head sort");
+    assert_eq!(named.len(), 1, "{what}: one type argument");
+    assert_eq!(kb.local_name_of(named[0].0), "V", "{what}: the label");
+    assert_eq!(
+        bare_sort_name(kb, &named[0].1).as_deref(),
+        Some("Int64"),
+        "{what}: V binds Int64, got {:?}",
+        named[0].1
+    );
+}
