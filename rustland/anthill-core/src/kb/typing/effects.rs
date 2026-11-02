@@ -1810,8 +1810,10 @@ pub(super) fn value_is_row_shaped(kb: &KnowledgeBase, v: &impl TermView) -> bool
     }
     matches!(
         v.head(kb),
+        // Not the type face of the entity `EffectsRows`, a nominal type of its name.
         ViewHead::Functor { functor: sym, .. }
-            if kb.qualified_name_of(sym) == "anthill.prelude.TypeExtractor.EffectsRows"
+            if !sym.is_type_face()
+                && kb.qualified_name_of(sym) == "anthill.prelude.TypeExtractor.EffectsRows"
     )
 }
 

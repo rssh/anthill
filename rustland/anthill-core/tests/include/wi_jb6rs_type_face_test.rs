@@ -846,3 +846,93 @@ fn a_sort_has_one_reading_and_names_nothing_to_apply() {
     let printed = print::print_fact(&parsed, fact, None);
     assert!(printed.contains("Eq[T = Int64]"), "the parse side keeps the bracket: {printed}");
 }
+
+/// A constructor's type face is a nominal type whatever the constructor is named: the type of
+/// `TypeExtractor`'s entity `TypeVar` is no type variable, and that of `Arrow` no arrow type.
+/// A face shares its constructor's name, and the typer's head reader classified by the name,
+/// so `case TypeVar(n)` and `case Arrow(…)` over a `TypeExtractor` were refused "expected
+/// TypeExtractor, got TypeExtractor"; `case SortRef(n)` loaded, its name being no meta-form.
+/// BACKED OUT (the face arm of `type_head` taken out): FAILS, the program refused at both
+/// arms. The `SortRef` arm and the refusal of another sort's constructor pass either way.
+/// UNDRIVEN: the same face guard in `arg_hints::type_mentions_type_var` and
+/// `effects::value_is_row_shaped`, which key on `TypeVar`'s and `EffectsRows`' names; no row
+/// reaches either with a face, and each follows `type_head`'s reading.
+#[test]
+fn a_type_face_is_a_nominal_type_whatever_its_name() {
+    let src = r#"
+namespace test.jb6rs.extractor
+  import anthill.prelude.{TypeExtractor, Int64}
+  import anthill.prelude.TypeExtractor.{TypeVar, Arrow, SortRef}
+  import anthill.reflect.{extract, sort_as_term}
+  operation kindOf(e: TypeExtractor) -> Int64 = match e
+    case TypeVar(n) -> 1
+    case Arrow(p, r, ef, a, b) -> 2
+    case SortRef(n) -> 3
+    case _ -> 4
+  operation onArrow() -> Int64 =
+    let t = sort_as_term(Int64)
+    kindOf(Arrow(param: t, result: t, effects: t, arity: 1, binders: []))
+  operation onSort() -> Int64 = kindOf(extract(sort_as_term(Int64)))
+end
+"#;
+    assert_eq!(
+        crate::common::run_int64(src, "test.jb6rs.extractor.onArrow"),
+        Ok(2)
+    );
+    assert_eq!(
+        crate::common::run_int64(src, "test.jb6rs.extractor.onSort"),
+        Ok(3)
+    );
+    // The control: a pattern of another sort's constructor is still refused at the position.
+    let errs = load_errors_of(
+        r#"
+namespace test.jb6rs.extractorctl
+  import anthill.prelude.{TypeExtractor, Int64}
+  sort Shape
+    entity circle(r: Int64)
+  end
+  operation k(e: TypeExtractor) -> Int64 = match e
+    case circle(r) -> r
+    case _ -> 2
+end
+"#,
+    );
+    let refused = "pattern.circle (pattern-position): expected TypeExtractor, got Shape";
+    assert!(errs.iter().any(|e| e.contains(refused)), "{errs:?}");
+}
+
+/// The face of `TypeExtractor`'s entity `Nothing` prints as that entity's type, `Nothing[]`
+/// in data and its name in a type's binding, where the shared name printed the bottom type
+/// `nothing` — which reads back as another term, and the file store keys a fact by its print.
+/// BACKED OUT (the printer's two `Nothing` arms asking no face): FAILS, both prints.
+#[test]
+fn the_face_of_the_nothing_entity_prints_as_its_type() {
+    let mut kb = load_kb_with(
+        r#"
+namespace test.jb6rs.nothingface
+  import anthill.prelude.{Type, Int64}
+  import anthill.prelude.TypeExtractor.{Nothing}
+  sort Box
+    sort V = ?
+  end
+  fact held(Nothing[])
+  fact boxed(Box[V = Nothing])
+  rule r(?t) :- held(?t)
+  rule r(?t) :- boxed(?t)
+end
+"#,
+    );
+    let printed: Vec<String> = query_unary(&mut kb, "test.jb6rs.nothingface.r")
+        .into_iter()
+        .map(|(v, _)| anthill_core::persistence::print::TermPrinter::new(&kb).print_value(&v))
+        .collect();
+    assert!(printed.contains(&"Nothing[]".to_string()), "{printed:?}");
+    assert!(
+        printed.contains(&"Box[V = Nothing]".to_string()),
+        "{printed:?}"
+    );
+    assert!(
+        !printed.iter().any(|p| p.contains("nothing")),
+        "{printed:?}"
+    );
+}

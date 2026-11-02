@@ -265,6 +265,21 @@ pub(super) fn type_head<V: TermView>(kb: &KnowledgeBase, ty: &V) -> TypeHead {
     let Some(f) = head.functor_sym() else {
         return TypeHead::Error;
     };
+    // A constructor's TYPE FACE is a nominal type, the entity's, whatever the constructor is
+    // named (kernel-language §4.4): `TypeVar[]`, the type of `TypeExtractor`'s entity
+    // `TypeVar`, is no type variable, and `Arrow[]` no arrow type. A face shares its
+    // constructor's name, so read by the name below it was each meta-form: a pattern `case
+    // TypeVar(n)` over a `TypeExtractor` was refused "expected TypeExtractor, got
+    // TypeExtractor", and `case Arrow(…)` the same.
+    if f.is_type_face() {
+        return if is_bare_ref {
+            TypeHead::SortRef(f)
+        } else if named_arity > 0 {
+            TypeHead::Parameterized { base: f }
+        } else {
+            TypeHead::Error
+        };
+    }
     match kb.qualified_name_of(f) {
         "anthill.prelude.TypeExtractor.TypeVar" => match view_child_sym(kb, ty, "name") {
             Some(s) => TypeHead::TypeVar(s),

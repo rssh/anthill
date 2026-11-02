@@ -1167,7 +1167,10 @@ pub(super) fn type_mentions_type_var<V: TermView>(kb: &KnowledgeBase, v: &V) -> 
         ViewHead::Functor {
             functor, pos_arity, ..
         } => {
-            kb.qualified_name_of(functor) == "anthill.prelude.TypeExtractor.TypeVar"
+            // Not the type face of the entity `TypeVar`, which shares its name and is that
+            // entity's nominal type (`type_head`'s face arm).
+            (!functor.is_type_face()
+                && kb.qualified_name_of(functor) == "anthill.prelude.TypeExtractor.TypeVar")
                 || view_any_child(kb, v, pos_arity, |c| type_mentions_type_var(kb, c))
         }
         _ => false,

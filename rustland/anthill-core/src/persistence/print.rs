@@ -1620,7 +1620,11 @@ impl<'a, V: PrintView + ?Sized> TermPrinter<'a, V> {
     /// key that disagrees with its own twin's is the WI-425 cross-carrier wrong answer, not a
     /// cosmetic difference.
     pub fn write_symbol_ref(&self, sym: Symbol, buf: &mut String) {
-        if self.view.qualified_name(sym) == "anthill.prelude.TypeExtractor.Nothing" {
+        // The bottom type prints `nothing`; the TYPE FACE of `TypeExtractor`'s entity
+        // `Nothing`, which shares its name, is that entity's type and prints `Nothing[]`.
+        if !sym.is_type_face()
+            && self.view.qualified_name(sym) == "anthill.prelude.TypeExtractor.Nothing"
+        {
             buf.push_str("nothing");
         } else {
             buf.push_str(self.view.sym_name(sym));
@@ -1652,8 +1656,11 @@ impl<'a, V: PrintView + ?Sized> TermPrinter<'a, V> {
                 pos_arity: 0,
                 named_arity: 0,
             } => match self.view.qualified_name(s) {
-                // WI-511: the nullary `Nothing` type extractor is the canonical bare name.
-                "anthill.prelude.TypeExtractor.Nothing" => buf.push_str("nothing"),
+                // WI-511: the nullary `Nothing` type extractor is the canonical bare name —
+                // not the type face of `TypeExtractor`'s entity `Nothing`, named bare below.
+                "anthill.prelude.TypeExtractor.Nothing" if !s.is_type_face() => {
+                    buf.push_str("nothing")
+                }
                 // The empty row standing alone, as its occurrence was written: `{}`.
                 "anthill.prelude.EffectExpression.empty_row" => buf.push_str("{}"),
                 _ => buf.push_str(self.view.sym_name(s)),
