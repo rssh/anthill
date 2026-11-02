@@ -30432,7 +30432,7 @@ impl<'a> Loader<'a> {
     ///      is a variable or a datum (`rule f(from: ?a)`) is not the parameter form at
     ///      all and stays a named argument — reclassifying it would silently turn a
     ///      written argument into a variable named after its own label. So the value
-    ///      must be a bare name resolving to a SORT.
+    ///      must name a TYPE: a sort, or a constructor ([`Self::parse_arg_is_constructor_type`]).
     ///
     /// Everywhere else `name: Type` stays a named argument, because a sort is a legal
     /// argument VALUE (055): `f(kind: Int64)` at a call site passes the type as data.
@@ -30738,7 +30738,8 @@ impl<'a> Loader<'a> {
                     .expect("parse_arg_names_a_sort admitted a non-name");
                 let bound_sym = self
                     .parse_arg_sort_symbol(&name)
-                    .expect("parse_arg_names_a_sort resolved this name to a sort");
+                    .or_else(|| self.parse_arg_constructor_symbol(&name))
+                    .expect("parse_arg_names_a_sort resolved this name to a sort or a constructor");
                 // A head type variable names the spec its guard requires of the
                 // parameter's sort, not a type the parameter is written at.
                 if let Some(RuleTvar::Bounded(requirement)) = self.rule_head_tvar(&name) {
@@ -31557,16 +31558,24 @@ impl<'a> Loader<'a> {
             || self.parse_arg_is_constructor_type(value)
     }
 
-    /// Is this rule-head argument's written type a bracket applying a CONSTRUCTOR
-    /// (`x: Buf.buf[T = Int64]`)? That is the constructor's type (§8.2), as the `?x: T`
-    /// spelling reads it, so `x` is a parameter. A constructor written without a bracket
-    /// is its instance (§4.4), a datum, and the argument stays a named one.
+    /// Does this rule-head argument write a CONSTRUCTOR's type — its name (`x: Colour.red`)
+    /// or a bracket applying it (`x: Buf.buf[T = Int64]`)? After a parameter's `:` the
+    /// constructor is its type (§8.2), as the `?x: T` spelling reads it, so `x` is a
+    /// parameter. A call (`x: buf(v: 1)`) builds a value and stays a named argument.
     fn parse_arg_is_constructor_type(&self, value: ParseTermId) -> bool {
-        self.parsed.terms.is_type_application(value)
-            && self.parse_arg_type_name(value).is_some_and(|name| {
-                matches!(self.resolve_parse_arg_name(&name), ResolveResult::Found(r)
-                    if self.kb.is_constructor_symbol(r))
-            })
+        (self.parsed.terms.is_type_application(value) || !self.parse_arg_type_is_applied(value))
+            && self
+                .parse_arg_type_name(value)
+                .and_then(|name| self.parse_arg_constructor_symbol(&name))
+                .is_some()
+    }
+
+    /// The constructor a rule-head argument's written type name denotes, or `None`.
+    fn parse_arg_constructor_symbol(&self, name: &str) -> Option<Symbol> {
+        match self.resolve_parse_arg_name(name) {
+            ResolveResult::Found(r) if self.kb.is_constructor_symbol(r) => Some(r),
+            _ => None,
+        }
     }
 
     /// Proposal 070 §1.2 — is this rule-head argument's written type the bare `Self`,

@@ -28,9 +28,10 @@
 //!     an application that fits as the bound's does;
 //!   * an applied alias in the bound read as its own name (the alias reading gated off the bound
 //!     again) → [`an_applied_alias_is_the_sort_it_stands_for`], and nothing else.
-//!   * a bracket applying a constructor not taken for a type (`parse_arg_is_constructor_type`
-//!     answering `false`) → [`a_constructor_bracket_is_its_type`], and nothing else: the
-//!     `Buf.buf[W = Int64]` head is refused with the same message as a named argument's value.
+//!   * a constructor not taken for a type (`parse_arg_is_constructor_type` answering `false`)
+//!     → [`a_constructor_is_its_type`] but its call half, and nothing else: the
+//!     `Buf.buf[W = Int64]` head is refused with the same message as a named argument's value;
+//!     only a bracket taken for one → that row's `Buf.buf` and `Option.none` entries.
 //!
 //!   PASSES EITHER WAY, by design: [`a_well_formed_bound_filters`], the control the refusals and
 //!   the answers are read against; and so does the named `List[T = A]` half of
@@ -152,15 +153,24 @@ fn a_misfit_is_refused_once_and_not_built() {
     }
 }
 
-/// A BRACKET APPLYING A CONSTRUCTOR is that constructor's type (§8.2), so `x` is a parameter
-/// bounded by it, as `?x` is: over `:- true` the clause has one column, and `p(?z)` one
-/// answer, left waiting on the bound in both spellings. Before, the sigil-free `x` was a
-/// constant and `p(?z)` answered nothing. Whether the bound keeps `buf(v: 1)` is the
-/// constructor's own domain, which neither spelling decides yet (WI-20260925-SHED7's
-/// `SortDomain` per entity).
+/// A CONSTRUCTOR after the `:` — its name, or a bracket applying it — is that constructor's
+/// type (§5.3, §8.2), so `x` is a parameter bounded by it, as `?x` is: over `:- true` the
+/// clause has one column, and `p(?z)` one answer, left waiting on the bound in both
+/// spellings. Before, the sigil-free `x` was a constant and `p(?z)` answered nothing. Whether
+/// the bound keeps `buf(v: 1)` is the constructor's own domain, which neither spelling decides
+/// yet (WI-20260925-SHED7's `SortDomain` per entity).
+///
+/// A CALL builds a value, so `x: Option.some(1)` stays a named argument, and `p(?z)` has no
+/// column to answer. That half passes either way, by design: it is the fence.
 #[test]
-fn a_constructor_bracket_is_its_type() {
-    for bound in ["Buf.buf[T = Int64]", "Buf.buf[Int64]", "Option.some[T = Int64]"] {
+fn a_constructor_is_its_type() {
+    for bound in [
+        "Buf.buf[T = Int64]",
+        "Buf.buf[Int64]",
+        "Option.some[T = Int64]",
+        "Buf.buf",
+        "Option.none",
+    ] {
         for (spelling, rule) in both_spellings(bound) {
             let rule = rule.replace(":- q(x)", ":- true").replace(":- q(?x)", ":- true");
             let mut kb = load_kb_with(&program("bhcvtctorty", &rule));
@@ -169,6 +179,8 @@ fn a_constructor_bracket_is_its_type() {
             assert!(!found[0].1, "{spelling} `{bound}`: left waiting on the bound");
         }
     }
+    let mut kb = load_kb_with(&program("bhcvtctorcall", "rule p(x: Option.some(1)) :- true"));
+    assert_eq!(query_unary(&mut kb, "test.bhcvtctorcall.p").len(), 0, "a call is a datum");
 }
 
 /// THE CONTROL: a bound that fits answers the rows of its instance and no other, in both

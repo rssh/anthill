@@ -3020,9 +3020,12 @@ an ENTITY-CONSTRUCTOR head keeps its named arguments untouched (`fact
 palette(c: red())` is unchanged, and entities are commonly lowercase). It also
 requires the argument to actually be `name: Type` — a named argument whose value
 is a variable or a datum (`rule reaches(from: ?a, to: ?b)`) stays a named
-argument. Everywhere outside such a head, `name: Type` stays a named argument:
-a sort is a legal argument VALUE (055), so `f(kind: Int64)` passes the type as
-data.
+argument. A constructor's name after the `:`, or a bracket applying it, is the
+constructor's type (§8.2): `rule p(c: Colour.red)` is `rule p(?c: Colour.red)`,
+and `rule p(b: Buf.buf[T = Int64])` is `rule p(?b: Buf.buf[T = Int64])`; a call
+builds a value, so `c: red()` is a datum. Everywhere outside such a head,
+`name: Type` stays a named argument: a sort is a legal argument VALUE (055), so
+`f(kind: Int64)` passes the type as data.
 
 An unresolved bare name in a head stays what it has always been — a **symbolic
 constant**, not an implicit variable and not an error. `fact q(alpha, beta)`
