@@ -1971,6 +1971,8 @@ mod wi_5g28a_citation_bracket_test;
 mod wi_5g28a_sort_domain_test;
 #[path = "include/wi_shed7_default_body_sibling_test.rs"]
 mod wi_shed7_default_body_sibling_test;
+#[path = "include/wi_y9hsg_rule_body_default_body_test.rs"]
+mod wi_y9hsg_rule_body_default_body_test;
 #[path = "include/wi_shed7_fillable_test.rs"]
 mod wi_shed7_fillable_test;
 #[path = "include/wi_shed7_reads_wait_test.rs"]

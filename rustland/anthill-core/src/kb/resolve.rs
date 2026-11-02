@@ -1675,6 +1675,31 @@ enum WovenDispatch {
     /// evaluates each as eval's apply does and supplies the slots it can; one it cannot read
     /// — a forward into a caller's frame the bridge has not got — is derived as before.
     Stamped(SmallVec<[Option<TermId>; 2]>),
+    /// The dictionary the TYPER built for a call it classified `ConcreteApplyWithin`
+    /// ([`NodeOccurrence::classified_dispatch`]), for a callee with no `requires` of its own.
+    /// The bridge evaluates it and enters the callee through it, as eval's apply does
+    /// (`start_apply_same_sort`).
+    Classified { spec_op: Symbol, dict: TermId },
+}
+
+/// What a dispatch through a dictionary owes the operation it enters
+/// ([`KnowledgeBase::dictionary_owed_to`]), asked of the member the dispatch lands on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DictionaryOwed {
+    /// The member reads no slot and dispatches nothing through the dictionary: a leaf impl
+    /// (`Sum.zero() = 3`), or an operation of a sort the provider does not provide.
+    Nothing,
+    /// The member reads the slots of its sort's chain: a conditional provider's
+    /// (`Wrap provides Zeroable[T = Wrap] :- Zeroable[E]`), a refining spec's.
+    Slots,
+    /// The member writes a `requires` of its own, whose slots the call's stamps and the
+    /// derivation supply.
+    OwnSlots,
+    /// The member is declared in a spec the provider provides, other than the provider, so it
+    /// reads none of the provider's slots, yet dispatches a receiver-less sibling out of the
+    /// dictionary: a spec's default body the provider inherits (`emp()` in `fromL`,
+    /// kernel-language §5.2).
+    Environment,
 }
 
 impl SearchStream {
@@ -11968,31 +11993,10 @@ impl KnowledgeBase {
                 // of the dictionary in hand, so it is carried one hop further rather than
                 // dropped here — [`WovenDispatch`], read by `call_op_bridged`.
                 //
-                // The predicate is a SUBSET of `classify_pin_or_apply_within`'s (`needs_reqs
-                // || has_op_slots`), asked of the TARGET. It used to be the whole of it, and
-                // this comment said the two routes AGREE about which callees need a channel;
-                // WI-20260921-R10KC added a third disjunct there (`threads_instance` — a
-                // resolved tree pinning a provider the callee's parent is not) and did NOT
-                // add it here, so the claim is now false in one direction and stated rather
-                // than quietly left.
-                //
-                // WHAT THAT COSTS, named so it is not rediscovered as a new defect: a RULE
-                // BODY reaching R10KC's shape — a spec with an empty `requires` chain whose
-                // default body calls a body-less sibling — computes `None` here, so
-                // `call_op_bridged` gets no `dispatched_through`, the bridged frame carries no
-                // `__req_self`, and the sibling falls back to value-direction. The operation-
-                // body route is fixed and this one is not. It is left for a ticket rather than
-                // widened here because the dictionary IS already in hand at this site, so the
-                // change is a behaviour change on the resolver's own dispatch with no driver
-                // in this ticket's fixtures — and `WovenDispatch` feeds `reduce_op_value`,
-                // whose folding decisions it would also move.
+                // Asked of the TARGET ([`Self::dictionary_owed_to`]).
                 let woven_next = dict.and_then(|dict| {
-                    let parent = super::typing::impl_parent_of_op(self, target);
-                    let needs_reqs =
-                        parent.is_some() && super::typing::op_reads_requirement_slots(self, target);
-                    let has_op_slots = parent.is_some()
-                        && !super::typing::op_requires_chain_rc(self, target).is_empty();
-                    (needs_reqs || has_op_slots).then(|| WovenDispatch::Dispatched {
+                    let owed = self.dictionary_owed_to(dict.impl_sort(), target);
+                    (owed != DictionaryOwed::Nothing).then(|| WovenDispatch::Dispatched {
                         spec_op: *functor,
                         dict,
                     })
@@ -12356,7 +12360,36 @@ impl KnowledgeBase {
             .then(|| occ.op_dicts())
             .filter(|stamps| stamps.iter().any(Option::is_some))
             .map(WovenDispatch::Stamped);
-        let woven = woven.or(stamped.as_ref());
+        // THE DICTIONARY THE TYPER BUILT FOR THE CALL, as eval's apply enters the callee
+        // through it. A spec's default body its provider inherits, written
+        // `Pc[C = Bag[T = Bit]].fromL([t(), f()])` in a rule, takes it as its dispatch
+        // environment; derived from the argument types instead, the frame found no `C` and
+        // the body's `emp()` floundered. Handed over only where both engines enter the same
+        // member with it: the provider's table answers the classified callee itself (eval
+        // redirects through `dispatch_via_sort_ops_table`), the callee writes no `requires`
+        // of its own (whose slots the stamps and the derivation supply, slot by slot), and a
+        // callee reading its sort's slots finds them in the dictionary's layout — WI-1037's
+        // `LeafDesc`, a third sort the dispatch landed on, does not, and eval refuses that
+        // frame. Elsewhere the derivation answers as before.
+        let classified = (woven.is_none() && stamped.is_none())
+            .then(|| occ.classified_dispatch())
+            .flatten()
+            .filter(|&(spec_op, provider, _)| {
+                let covered = match self.dictionary_owed_to(provider, op) {
+                    DictionaryOwed::Environment => true,
+                    DictionaryOwed::Slots => {
+                        let spec =
+                            super::typing::dispatch_spec_of_op(self, spec_op).or_provider(provider);
+                        super::typing::dictionary_covers_target(self, spec, provider, op)
+                    }
+                    DictionaryOwed::Nothing | DictionaryOwed::OwnSlots => false,
+                };
+                covered
+                    && super::typing::resolve_op_target_checked(self, provider, op)
+                        .is_ok_and(|entered| entered == op)
+            })
+            .map(|(spec_op, _, dict)| WovenDispatch::Classified { spec_op, dict });
+        let woven = woven.or(stamped.as_ref()).or(classified.as_ref());
         if needs_dict {
             // Not with an argument that still holds a call: the bridge refuses one
             // (`bridge_op_to_eval`), and the call stays a call — inside a folded body it
@@ -12535,6 +12568,35 @@ impl KnowledgeBase {
         // cross". The symbol FINDS the member; running it is what needs the tree.
         let handle = self.dictionary_of_binding(&dict);
         Some((target, handle))
+    }
+
+    /// What a dispatch through a dictionary at `provider` owes `target`, the operation it
+    /// enters. The typer's `classify_pin_or_apply_within` asks the same three questions of
+    /// the callee (`needs_reqs`, `has_op_slots`, `threads_instance`).
+    ///
+    /// [`DictionaryOwed::Environment`] is WI-20260921-R10KC's `threads_instance`: without
+    /// the dictionary the bridged frame has no `__req_self`, a receiver-less sibling the body
+    /// calls has no argument to be dispatched by, and the call flounders with the dictionary
+    /// in hand. It is asked of a member of a spec the provider provides: an operation of a
+    /// namespace or of an unrelated sort has no sibling to find there, and is folded as a
+    /// leaf is. A target that reads no slot is covered by any layout
+    /// (`dictionary_covers_target`'s `names.is_empty()` arm), so its frame is the
+    /// dictionary's `__req_self` alone.
+    fn dictionary_owed_to(&mut self, provider: Symbol, target: Symbol) -> DictionaryOwed {
+        let Some(parent) = super::typing::impl_parent_of_op(self, target) else {
+            return DictionaryOwed::Nothing;
+        };
+        if !super::typing::op_requires_chain_rc(self, target).is_empty() {
+            DictionaryOwed::OwnSlots
+        } else if super::typing::op_reads_requirement_slots(self, target) {
+            DictionaryOwed::Slots
+        } else if !super::typing::same_sort_canonical(self, parent, provider)
+            && super::typing::sort_provides(self, provider, parent)
+        {
+            DictionaryOwed::Environment
+        } else {
+            DictionaryOwed::Nothing
+        }
     }
 
     /// A σ-walked dictionary binding as an eval [`crate::eval::value::Dictionary`], read
@@ -12796,20 +12858,21 @@ impl KnowledgeBase {
         // UNENFORCED at every future bridge site.
         // WI-20260909-NAR1X — the woven call's dictionary, read off the evidence this
         // frame was handed and passed to the bridged interpreter EXPLICITLY.
-        let (dispatched_through, supplied_slots, stamped) = match woven {
-            Some(WovenDispatch::Dispatched { spec_op, dict }) => {
-                (Some((*spec_op, dict)), &[][..], None)
-            }
-            Some(WovenDispatch::Slots(slots)) => (None, &slots[..], None),
-            Some(WovenDispatch::Stamped(stamps)) => (None, &[][..], Some(&stamps[..])),
-            None => (None, &[][..], None),
-        };
         let unknowns: Rc<[VarId]> = Rc::from(unknowns);
         let outcome = self.run_in_bridge_interp(|interp| {
             interp.bridge_unknowns = unknowns;
-            match stamped {
-                Some(stamps) => interp.call_op_bridged_stamped(op, &args, stamps),
-                None => interp.call_op_bridged(op, &args, dispatched_through, supplied_slots),
+            match woven {
+                Some(WovenDispatch::Dispatched { spec_op, dict }) => {
+                    interp.call_op_bridged(op, &args, Some((*spec_op, dict)), &[])
+                }
+                Some(WovenDispatch::Slots(slots)) => interp.call_op_bridged(op, &args, None, slots),
+                Some(WovenDispatch::Stamped(stamps)) => {
+                    interp.call_op_bridged_stamped(op, &args, stamps)
+                }
+                Some(WovenDispatch::Classified { spec_op, dict }) => {
+                    interp.call_op_bridged_through(op, &args, *spec_op, *dict)
+                }
+                None => interp.call_op_bridged(op, &args, None, &[]),
             }
         });
         self.bridged_value(op, outcome, faults)

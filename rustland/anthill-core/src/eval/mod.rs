@@ -993,6 +993,26 @@ impl Interpreter {
         self.call_op_bridged(sym, args, None, &slots)
     }
 
+    /// [`Self::call_op_bridged`] for a call the TYPER built its callee's dictionary for
+    /// (`CalleeFrame::Dict`), entered as eval's apply enters it (`start_apply_same_sort` →
+    /// `start_apply_within`): the dictionary evaluated and the callee's frame expanded from
+    /// it. A dictionary this frame-less entry cannot read — a forward into a caller's frame —
+    /// leaves the frame to the derivation, as [`Self::call_op_bridged_stamped`] leaves a stamp
+    /// it cannot read.
+    pub(crate) fn call_op_bridged_through(
+        &mut self,
+        sym: Symbol,
+        args: &[Value],
+        spec_op: Symbol,
+        dict: crate::kb::term::TermId,
+    ) -> Result<Value, EvalError> {
+        let node = crate::kb::node_occurrence::materialize_from_handle(&self.kb, dict);
+        match self.try_eval_requirement_chain_node(&node)? {
+            Some(dict) => self.call_op_bridged(sym, args, Some((spec_op, &dict)), &[]),
+            None => self.call_op_bridged(sym, args, None, &[]),
+        }
+    }
+
     pub(crate) fn call_op_bridged(
         &mut self,
         sym: Symbol,
