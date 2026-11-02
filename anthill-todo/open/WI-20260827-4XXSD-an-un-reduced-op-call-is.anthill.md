@@ -9,8 +9,6 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
-- depends_on: WI-20260827-XBHX3-a-host-call-nested-inside-the
-
 ## Description
 
 AN UN-REDUCED OP CALL IS HANDED TO A HOST FUNCTION AS DATA, and the only thing stopping it is the ground gate — which stops it BY ACCIDENT. Split out of WI-20260827-1ZG70's analysis; it is that ticket's PREREQUISITE and a wrong answer on its own today.
@@ -91,4 +89,8 @@ AND ONE ABOUT THE CONTROL FIXTURE, which was right: the attempt blessed `term_fu
 ### 2026-10-26T08:58:10Z — feedback — claude
 
 A NEIGHBOUR OF THIS DEFECT, found 2026-10-26 while delivering WI-20261024-QJ6X1: an operation PARAMETER, not an un-reduced call, reaches a host function as data. An operation whose body is ONE call expression, called from a rule body, is reduced by the resolver with its parameter references left as occurrences of their NAMES (`var_ref`), not replaced by the argument. Measured on 29106902 and on b86f9a97, identical, over `namespace test.qp` with `n: Int64`: `rule p1(?r) :- ?r <=> viaTerm(1)` with `viaTerm(n) = term_to_string(as_term(n))` answers "n", 1 DEFINITE; `viaAdd(n) = term_to_string(as_term(Int64.add(n, 0)))` answers "add(n, 0)", 1 DEFINITE — the call left un-reduced AND its argument unsubstituted. Controls, correct both ways: the same body behind a `let` (`let m = n` then `term_to_string(as_term(m))`) answers "1", and so does a `match` body (`term_as_int(as_term(n))`), both run by the interpreter; `term_to_string(as_term(1))` written in the rule answers "1"; `viaHost(n) = Int64.to_string(n)` answers "1" after a warning `Int64.to_string ... expected Int64, got Node` — a scalar host function refuses the occurrence and the answer comes from elsewhere, while the reflect family READS it. Through `replace_named_arg` it answered `var_ref(name: b)` once QJ6X1 let that builtin read an occurrence; before, it refused the occurrence and the un-reduced call printed instead (this ticket's f4 shape). So the reflect readers made carrier-neutral by QJ6X1 widen what reaches this: a refusal by carrier was hiding it. Not repaired there.
+
+### 2026-11-02T11:27:36Z — feedback — claude
+
+DEPENDENCY ON XBHX3 REMOVED (user, 2026-11-02, dependency review). It was added at filing (2026-08-27) because 'step (2) is its open question and a decision there decides the shape here'. Proposal 068 took that decision — its status line: 'Decided in discussion while reviewing WI-20260827-XBHX3', the SUSPENDED/UNREDUCED split (§2) — and WI-20260926-K4JGC delivered it: arguments are evaluated first, until a variable or a stuck call, so no binding holds an unevaluated call. What XBHX3 still holds is the unfold gate, which is WI-20261013-2HX69's part (XBHX3 now depends on it) and nothing this ticket reads. This ticket's last witness (the 2026-10-26 note: a one-call body reduced with its parameters left as var_ref names) is in reduce_op_value's call-by-name fold, which WI-20261013-DEY66 retires: re-measure it once DEY66 lands, before building here.
 
