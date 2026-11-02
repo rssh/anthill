@@ -30692,15 +30692,15 @@ impl<'a> Loader<'a> {
             // cannot acquire different behaviour.
             // THE BOUND IS THE WHOLE WRITTEN TYPE. A parameterized one
             // (`List[T = Int64]`) must keep its arguments — dropping them to the bare
-            // sort ref would silently widen the guard — so an APPLICATION is converted
-            // as the term it is, and only a bare / dotted NAME is re-minted as a sort
+            // sort ref would silently widen the guard — so an APPLICATION is lowered as
+            // the type it writes, and only a bare / dotted NAME is re-minted as a sort
             // ref (which `convert_term` would otherwise read as an ordinary reference).
             //
             // WI-20260908-PW9A0: both arms lower a rule-head BOUND, so both run under
             // the flag that makes a head-introduced type variable denote its guard-given
-            // bound ([`Self::rule_head_bound_alias`]) — the applied arm through
-            // `convert_term`'s name resolution at any depth, the bare arm through the
-            // shared [`Self::parse_arg_sort_symbol`].
+            // bound ([`Self::rule_head_bound_alias`]) — the applied arm through the type
+            // door's name resolution at any depth, the bare arm through the shared
+            // [`Self::parse_arg_sort_symbol`].
             let saved_bound_ctx = std::mem::replace(&mut self.in_rule_head_bound, true);
             self.rule_head_bound_anchors.clear();
             let bound_span = self.source_span_of(value);
@@ -30715,15 +30715,23 @@ impl<'a> Loader<'a> {
                 // parameter's sort, as in the sigil form.
                 self.rule_head_spec_member_anchor(spec, &member, bound_span)
             } else if self.parse_arg_type_is_applied(value) {
-                // Converted as a TERM, so it passes none of the doors that lower a written
-                // type — and needs none: a bare sort in a bound is any instance, the
-                // enclosing sort's as another's (proposal 070 §1.3).
-                // A TYPE, converted as the term it is written as: not a data slot.
-                self.const_fold = ConstFold::Off;
-                let bound = self.convert_term(value);
-                self.const_fold = data_fold;
-                let (bound, as_written) = self.rule_bound_read_through_aliases(bound, bound_span);
-                written = as_written;
+                // A bracket: the type it writes, lowered by the type door as the `?x: T`
+                // spelling's annotation is (§5.3, "the two lower to one internal form") —
+                // its arguments fitted and keyed, an alias read through, a head type
+                // variable, `Self`, a parameter of the enclosing sort and a spec's member
+                // each read as the annotation reads them.
+                let ty = self
+                    .parsed
+                    .terms
+                    .type_reading(value)
+                    .cloned()
+                    .expect("a bracket in a term position carries the type it writes");
+                let lowered = self.written_type_to_value(&ty);
+                let bound = node_occurrence::value_to_term(self.kb, &lowered)
+                    .expect("a written type has a term");
+                if let Value::Node(occ) = lowered {
+                    written = Some(occ);
+                }
                 bound
             } else if self.parse_arg_is_self_type(value) {
                 // Proposal 070 §1.2: the enclosing sort at its own parameters — the
@@ -31543,10 +31551,14 @@ impl<'a> Loader<'a> {
         self.parse_arg_sort_symbol(&name)
     }
 
-    /// WI-742 §2.1 — does this parse argument spell a TYPE: a name that resolves to a sort,
-    /// or a bracket applying a constructor? The second half of
+    /// WI-742 §2.1 — does this parse argument spell a TYPE: a sort, or a constructor, by name
+    /// or by a bracket applying it? A call is a value. The second half of
     /// [`Self::convert_rule_head_with_params`]'s discriminator.
     fn parse_arg_names_a_sort(&mut self, value: ParseTermId) -> bool {
+        // A call builds a value (`c: Leaf(name: "tip")`), whatever its head names.
+        if self.parse_arg_type_is_applied(value) && !self.parsed.terms.is_type_application(value) {
+            return false;
+        }
         self.parse_arg_is_self_type(value)
             || self
                 .parse_arg_type_name(value)
@@ -31561,13 +31573,11 @@ impl<'a> Loader<'a> {
     /// Does this rule-head argument write a CONSTRUCTOR's type — its name (`x: Colour.red`)
     /// or a bracket applying it (`x: Buf.buf[T = Int64]`)? After a parameter's `:` the
     /// constructor is its type (§8.2), as the `?x: T` spelling reads it, so `x` is a
-    /// parameter. A call (`x: buf(v: 1)`) builds a value and stays a named argument.
+    /// parameter. A call (`x: buf(v: 1)`) is refused before this is asked.
     fn parse_arg_is_constructor_type(&self, value: ParseTermId) -> bool {
-        (self.parsed.terms.is_type_application(value) || !self.parse_arg_type_is_applied(value))
-            && self
-                .parse_arg_type_name(value)
-                .and_then(|name| self.parse_arg_constructor_symbol(&name))
-                .is_some()
+        self.parse_arg_type_name(value)
+            .and_then(|name| self.parse_arg_constructor_symbol(&name))
+            .is_some()
     }
 
     /// The constructor a rule-head argument's written type name denotes, or `None`.
@@ -31715,29 +31725,6 @@ impl<'a> Loader<'a> {
         }
     }
 
-    /// The written arguments of a type application, in the order [`KnowledgeBase::fit_type_args`]
-    /// was given them, each under the declared parameter its slot names; one that binds nothing
-    /// is left out.
-    fn keyed_by_fit(
-        &mut self,
-        declared: &[String],
-        values: impl IntoIterator<Item = TermId>,
-        slots: &[Option<usize>],
-    ) -> Vec<(Symbol, TermId)> {
-        values
-            .into_iter()
-            .zip(slots)
-            .filter_map(|(value, slot)| slot.map(|i| (self.kb.intern(&declared[i]), value)))
-            .collect()
-    }
-
-    /// WI-710 — is a bracket this walk meets here a TYPE application? One nested in another
-    /// term is, where a top-level one is an instance claim; and a rule head's bound is a type
-    /// as a whole, so a bracket anywhere in it is, its own top level included.
-    fn bracket_reads_as_type(&self) -> bool {
-        self.term_depth > 1 || self.in_rule_head_bound
-    }
-
     /// The type a type alias stands for, where this walk is in a clause DATA slot — the
     /// twin of [`Self::data_slot_const_value`]: a type held in a data slot is a value, and an
     /// alias in a name is read through wherever it is used (§5.1), so `fact held(t: IntOpt)`
@@ -31746,7 +31733,6 @@ impl<'a> Loader<'a> {
     /// own reader (`rule_head_bound_read_through_aliases`).
     fn data_slot_alias_type(&mut self, sym: Symbol) -> Option<TermId> {
         if self.const_fold != ConstFold::Data
-            || self.in_rule_head_bound
             || !self.bare_name_denotes_type(sym)
         {
             return None;
@@ -31868,7 +31854,6 @@ impl<'a> Loader<'a> {
     fn bare_name_term(&mut self, sym: Symbol, span: Span) -> Term {
         let instance = self.const_fold == ConstFold::Data
             && !self.in_type_binding
-            && !self.in_rule_head_bound
             && !self.in_quoted_term
             && !sym.is_type_face();
         if instance && self.kb.entity_field_names(sym).is_some() {
@@ -32130,68 +32115,9 @@ impl<'a> Loader<'a> {
             self.term_map.insert(parse_id, converted);
             return converted;
         }
-        if self.in_rule_head_bound && !self.parse_arg_type_is_applied(parse_id) {
-            if let Some(name) = self.parse_arg_type_name(parse_id) {
-                if let Some(RuleTvar::Bounded(requirement)) = self.rule_head_tvar(&name) {
-                    self.rule_head_bound_anchors.push(RuleBoundAnchor {
-                        spec: requirement.spec,
-                        carrier: requirement.carrier,
-                        carrier_param: requirement.carrier_param,
-                    });
-                    return requirement.instance;
-                }
-            }
-        }
         if let Some(&mapped) = self.term_map.get(&parse_id) {
             return mapped;
         }
-        // Proposal 070 §1.2 — `Self` INSIDE A RULE HEAD'S APPLIED BOUND (`c: List[T =
-        // Self]`). The bound is written as a term and converted as one, so its names come
-        // through here and not through a type door; the bare bound `c: Self` is read
-        // before this is reached ([`Self::parse_arg_is_self_type`]), and this is the same
-        // question asked one level in. It was refused, "It means nothing here; write the
-        // sort's name" — and the sort's name there is ANY instance (proposal 070 §1.3),
-        // which is not what `Self` says (MEASURED, found by /code-review).
-        if self.in_rule_head_bound && self.parse_arg_is_self_type(parse_id) {
-            let term = self.self_type_term(self.parsed.terms.span(parse_id));
-            self.term_map.insert(parse_id, term);
-            return term;
-        }
-        // …AND A PARAMETER OF THE ENCLOSING SORT NAMED THERE (`c: Box[T = T]`, `c: Option[T
-        // = T]`) is that parameter's variable, as every type door lowers it
-        // ([`Self::type_name_child`]) — which is what `Self` just above is built from, and
-        // what the refusal of a part-written reference tells the author to write (`E = E`).
-        // Converted as the name it is, it was a reference to the parameter's symbol, which
-        // no value's type is: `rule twin(x: Box[T = T], y: Box[T = T]) :- y = x` LOADED
-        // CLEAN and answered NOTHING, where `?x: Box[T = T]` — lowered by the type door —
-        // answers (MEASURED; predates proposal 070, found while its advice was driven).
-        // A clause parameter or a rule's own type variable of the same name shadows it, as
-        // each does at its own arm below.
-        if self.in_rule_head_bound && !self.parse_arg_type_is_applied(parse_id) {
-            if let Some(name) = self.parse_arg_type_name(parse_id) {
-                if !self.rule_param_vars.contains_key(name.as_str())
-                    && self.rule_head_tvar(&name).is_none()
-                    && self.kb.symbols.is_type_param(self.current_scope, &name)
-                {
-                    if let Some(param) = self.parse_arg_sort_symbol(&name) {
-                        let term = self.type_param_var(param, &name);
-                        self.term_map.insert(parse_id, term);
-                        return term;
-                    }
-                }
-                // …AND A MEMBER OF ANOTHER SPEC NAMED THERE (`c: List[T = Summable.T]`) is
-                // that spec required of the element's sort, as the type door lowers it
-                // for `?c: List[T = Summable.T]`. Converted as the name it is, it was a
-                // field access no value's type is: the clause LOADED CLEAN and answered
-                // NOTHING where its sigil twin answers (MEASURED). Not memoized — each
-                // conversion records the use the bound's check reads.
-                if let Some((spec, member)) = self.rule_head_spec_member(&name) {
-                    let span = self.source_span_of(parse_id);
-                    return self.rule_head_spec_member_anchor(spec, &member, span);
-                }
-            }
-        }
-
         let parse_term = self.parsed.terms.get(parse_id).clone();
         let kb_term = match parse_term {
             Term::Const(lit) => Term::Const(lit),
@@ -32952,44 +32878,6 @@ impl<'a> Loader<'a> {
                 // field reading here removes the second, wrong reading, not the checking.
                 let is_type_app = self.parsed.terms.is_type_application(parse_id);
                 self.refuse_sort_applied_as_data(parse_id, new_functor);
-                if is_type_app && self.in_rule_head_bound {
-                    let written_name = self.parsed.symbols.local_name(functor).to_owned();
-                    if let Some(RuleTvar::Bounded(requirement)) = self.rule_head_tvar(&written_name)
-                    {
-                        let mut fixed = match self.kb.get_term(requirement.instance) {
-                            Term::Fn { named_args, .. } => named_args.clone(),
-                            _ => SmallVec::new(),
-                        };
-                        let declared = self.kb.type_params_of_sort(requirement.spec);
-                        let labels: SmallVec<[Symbol; 2]> =
-                            new_named.iter().map(|(key, _)| *key).collect();
-                        self.refuse_guard_rebinding(
-                            &written_name,
-                            &mut fixed,
-                            &labels,
-                            self.source_span_of(parse_id),
-                        );
-                        let given: SmallVec<[Symbol; 2]> =
-                            fixed.iter().map(|(key, _)| *key).collect();
-                        let slots: SmallVec<[Option<Symbol>; 4]> =
-                            std::iter::repeat_n(None, new_pos.len())
-                                .chain(labels.iter().copied().map(Some))
-                                .collect();
-                        let fit = self.kb.fit_type_args(&declared, &given, &slots);
-                        if let Some(problem) = &fit.problem {
-                            self.errors.push(LoadError::InvalidTypeArgument {
-                                detail: problem.describe(self.kb, requirement.spec),
-                                span: Some(self.parsed.terms.span(parse_id)),
-                            });
-                        }
-                        let values: SmallVec<[TermId; 4]> = new_pos
-                            .drain(..)
-                            .chain(new_named.drain(..).map(|(_, value)| value))
-                            .collect();
-                        new_named = fixed;
-                        new_named.extend(self.keyed_by_fit(&declared, values, &fit.slots));
-                    }
-                }
 
                 // WI-433: DESUGAR positional constructor args to NAMED. Positional
                 // and named constructor terms must share ONE in-KB shape — a stored
@@ -33206,8 +33094,8 @@ impl<'a> Loader<'a> {
                 // this one), so without the same check a rule body could carry a type
                 // argument the sort never declared.
                 //
-                // Gated on [`Self::bracket_reads_as_type`] — NOT a top-level term. At top
-                // level the same syntax is an INSTANCE CLAIM, and its argument grammar is a
+                // Gated on `term_depth > 1` — i.e. NOT a top-level term. At top level the
+                // same syntax is an INSTANCE CLAIM, and its argument grammar is a
                 // different, richer language that this rule would wrongly reject: an
                 // op-bearing instance fact names OPERATIONS (`fact Monad[M = Option,
                 // pure = optionPure]`), and a positional on a non-parametric spec is the
@@ -33233,13 +33121,12 @@ impl<'a> Loader<'a> {
                 //
                 // A TYPE ALIAS'S APPLICATION is the sort the alias stands for, the bindings
                 // it fixes before the written ones, as in a type position (§5.1) — wherever
-                // a type application is read here ([`Self::bracket_reads_as_type`]) but a
-                // quoted `Term` field. In a data slot the term is otherwise as written
+                // a nested type application is read here but a quoted `Term` field. In a data slot the term is otherwise as written
                 // (§5.4): `IntPair[B = String]` over `sort IntPair = Pair[A = Int64]` is the
                 // term `Pair[A = Int64, B = String]` is. An operation's equation reads its
                 // body through this walk as well as the occurrence walk does, which refuses
                 // the same rebinding at the same place (one report: `dedup_load_errors`).
-                if self.bracket_reads_as_type()
+                if self.term_depth > 1
                     && is_type_app
                     && !self.in_quoted_term
                     && self.kb.has_kind(new_functor, SymbolKind::Sort)
@@ -33270,34 +33157,11 @@ impl<'a> Loader<'a> {
                 } else {
                     None
                 };
-                if let (true, true, Some(owner)) = (self.bracket_reads_as_type(), is_type_app, type_args_owner) {
+                if let (true, true, Some(owner)) = (self.term_depth > 1, is_type_app, type_args_owner) {
                     let declared = self.kb.type_params_of_sort(owner);
                     let named_syms: SmallVec<[Symbol; 2]> =
                         new_named.iter().map(|(s, _)| *s).collect();
-                    if self.in_rule_head_bound && !self.in_quoted_term {
-                        // A RULE HEAD'S BOUND binds its arguments as a type position does
-                        // ([`Self::type_application_keys`]): each under the parameter it
-                        // takes, and one that takes none is refused here and not built. The
-                        // `?x: T` spelling is lowered as a type, so `x: T` is too (§5.3, "The
-                        // parameter form").
-                        let written: SmallVec<[Option<Symbol>; 4]> = named_syms
-                            .iter()
-                            .map(|k| Some(*k))
-                            .chain(std::iter::repeat_n(None, new_pos.len()))
-                            .collect();
-                        let fit = self.kb.fit_type_args(&declared, &[], &written);
-                        if let Some(problem) = &fit.problem {
-                            self.errors.push(LoadError::InvalidTypeArgument {
-                                detail: problem.describe(self.kb, new_functor),
-                                span: Some(self.parsed.terms.span(parse_id)),
-                            });
-                        }
-                        let values: SmallVec<[TermId; 4]> =
-                            new_named.drain(..).map(|(_, v)| v).chain(new_pos.drain(..)).collect();
-                        let mut named = self.keyed_by_fit(&declared, values, &fit.slots);
-                        normalize_type_args(self.kb, owner, &mut Vec::new(), &mut named);
-                        new_named.extend(named);
-                    } else if let Err(problem) = self.kb.check_sort_type_args(
+                    if let Err(problem) = self.kb.check_sort_type_args(
                         owner,
                         &declared,
                         &named_syms,
@@ -33312,11 +33176,10 @@ impl<'a> Loader<'a> {
                         // The application is the one term its type is
                         // ([`normalize_type_args`]) wherever this walk builds it: a
                         // clause's data slot, an operation's `requires` and `ensures`, an
-                        // operation body, a rule head's bound (above). Every reader of a
-                        // nested binding reads its named arguments, so a positional left
-                        // here is a binding dropped — `requires Store[State = Buf[Int64]]`
-                        // was a requirement at `Buf[]`. A quoted `Term` field holds the
-                        // text as written.
+                        // operation body. Every reader of a nested binding reads its named
+                        // arguments, so a positional left here is a binding dropped —
+                        // `requires Store[State = Buf[Int64]]` was a requirement at `Buf[]`.
+                        // A quoted `Term` field holds the text as written.
                         let mut pos: Vec<TermId> = new_pos.drain(..).collect();
                         let mut named: Vec<(Symbol, TermId)> = new_named.drain(..).collect();
                         normalize_type_args(self.kb, owner, &mut pos, &mut named);

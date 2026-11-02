@@ -3061,6 +3061,17 @@ impl<'a> Converter<'a> {
             span,
         );
         self.terms.mark_type_application(tid);
+        // The same node read as the type it writes. What the conversion above reported of it
+        // is not reported again; what only this reading finds is.
+        let reported = self.errors.len();
+        let ty = self.convert_type(node);
+        let found: Vec<ParseError> = self.errors.drain(reported..).collect();
+        for e in found {
+            if !self.errors.iter().any(|p| p.message == e.message && p.span == e.span) {
+                self.errors.push(e);
+            }
+        }
+        self.terms.set_type_reading(tid, ty);
         tid
     }
 

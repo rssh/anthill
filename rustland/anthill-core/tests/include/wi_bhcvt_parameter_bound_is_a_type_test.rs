@@ -1,42 +1,33 @@
 //! WI-20261005-BHCVT — a rule head's sigil-free parameter bound (`x: T`, kernel-language.md
-//! §5.3, "The parameter form") is a TYPE as a whole, its own top-level bracket included: the
-//! arguments bind the parameters they take, one that takes none is refused where it is written
-//! and not built, the application is the one term its type is (a positional keyed, a declared
-//! default filled), and a type alias applied anywhere in it is the sort it stands for. The
-//! `?x: T` spelling lowers its annotation as a type, and §5.3 says the two are one form.
+//! §5.3, "The parameter form") is lowered as the type it writes, by the door that lowers the
+//! `?x: T` spelling's annotation, so the two are one form: an argument binds the parameter it
+//! takes and one that takes none is refused where it is written and not built, a positional is
+//! keyed, a declared default filled, a value written by name kept (`N = 3`), a type alias read
+//! through at any depth; and a constructor after the `:` — its name, or a bracket applying it —
+//! is its type (§8.2). A call builds a value and stays a named argument.
 //!
-//! Before, the bound's top level was converted at the depth of a clause's instance claim, which
-//! nothing fits (`Loader::bracket_reads_as_type`), and a bracket nested in it skipped the alias
-//! reading and the normalization a nested bracket elsewhere gets. MEASURED on 3bf56e41: `rule
-//! p(x: Buf[W = Int64]) :- q(x)` loaded clean and answered nothing where `?x: Buf[W = Int64]`
-//! is refused; `x: Buf[Int64]` answered nothing where `?x: Buf[Int64]` answers `buf(v: 1)`;
-//! `x: IntBuf[N = Bool]` answered every row of `q` with a residual `domain(…, IntBuf[N =
-//! Bool])`; `x: List[T = IntBuf[N = Bool]]` was refused, "`IntBuf` … declares no type
-//! parameters".
+//! Before, the bound was converted as a TERM, at the depth of a clause's instance claim, which
+//! nothing fits, with the term walk's own readings of what a type door reads. MEASURED on
+//! 3bf56e41: `rule p(x: Buf[W = Int64]) :- q(x)` loaded clean and answered nothing where `?x:
+//! Buf[W = Int64]` is refused; `x: Buf[Int64]` answered nothing where `?x: Buf[Int64]` answers
+//! `buf(v: 1)`; `x: IntBuf[N = Bool]` answered every row of `q` with a residual `domain(…,
+//! IntBuf[N = Bool])`; `x: List[T = IntBuf[N = Bool]]` was refused, "`IntBuf` … declares no
+//! type parameters"; `x: Buf[Int64, N = 3]` was refused, "unresolved name '3'"; `x:
+//! Buf.buf[T = Int64]` and `x: Colour.red` were named arguments over a constant `x`.
 //!
 //! WHICH ROWS FAIL WITH THE CHANGE BACKED OUT — measured with each part switched off alone in
 //! one build, over this file:
 //!
-//!   * the bound's own top level read as a clause's top-level term is (`bracket_reads_as_type`
-//!     answering `term_depth > 1` alone) → [`the_tickets_heads_are_refused_where_written_once`]
-//!     (its top-level heads load clean), [`a_positional_argument_binds_the_parameter_it_takes`],
-//!     [`a_declared_default_is_filled`], [`an_applied_alias_is_the_sort_it_stands_for`] and the
-//!     positional `List[A]` half of [`a_head_type_variable_inside_the_bound_still_resolves`];
-//!   * the bound's arguments fitted as a data slot's are, reported and kept (the
-//!     `in_rule_head_bound` branch of the fit taken out) →
-//!     [`a_misfit_is_refused_once_and_not_built`], and nothing else: a data slot's fit normalizes
-//!     an application that fits as the bound's does;
-//!   * an applied alias in the bound read as its own name (the alias reading gated off the bound
-//!     again) → [`an_applied_alias_is_the_sort_it_stands_for`], and nothing else.
+//!   * the applied bound converted as a term again (`convert_term`, then its aliases read) →
+//!     every row but [`a_well_formed_bound_filters`] and [`a_constructor_is_its_type`];
+//!   * a call taken for a type (the call exclusion in `parse_arg_names_a_sort` taken out) →
+//!     [`a_constructor_is_its_type`]: its `x: Option.some(1)` is lowered as a bound, and the
+//!     load panics on a bracket that writes no type;
 //!   * a constructor not taken for a type (`parse_arg_is_constructor_type` answering `false`)
-//!     → [`a_constructor_is_its_type`] but its call half, and nothing else: the
-//!     `Buf.buf[W = Int64]` head is refused with the same message as a named argument's value;
-//!     only a bracket taken for one → that row's `Buf.buf` and `Option.none` entries.
+//!     → [`a_constructor_is_its_type`], and nothing else.
 //!
 //!   PASSES EITHER WAY, by design: [`a_well_formed_bound_filters`], the control the refusals and
-//!   the answers are read against; and so does the named `List[T = A]` half of
-//!   [`a_head_type_variable_inside_the_bound_still_resolves`] (WI-20260908-PW9A0's row, which
-//!   the fit now runs over).
+//!   the answers are read against.
 
 use anthill_core::eval::Value;
 use anthill_core::kb::node_occurrence::value_to_term;
@@ -181,6 +172,18 @@ fn a_constructor_is_its_type() {
     }
     let mut kb = load_kb_with(&program("bhcvtctorcall", "rule p(x: Option.some(1)) :- true"));
     assert_eq!(query_unary(&mut kb, "test.bhcvtctorcall.p").len(), 0, "a call is a datum");
+    // A call whose head names a SORT (`Leaf` is its own entity) builds a value too.
+    let mut kb = load_kb_with(
+        "namespace test.bhcvtleaf\n  import anthill.prelude.String\n  sort Leaf\n    entity \
+         Leaf(name: String)\n  end\n  rule p(c: Leaf(name: \"tip\")) :- true\nend\n",
+    );
+    assert_eq!(query_unary(&mut kb, "test.bhcvtleaf.p").len(), 0, "a sort-headed call is a datum");
+    let held = crate::common::query_pattern_term(&mut kb, "test.bhcvtleaf.p(c: ?v)");
+    assert_eq!(
+        kb.resolve(&[held], &anthill_core::kb::resolve::ResolveConfig::default()).len(),
+        1,
+        "the call is the named argument `c`'s value"
+    );
 }
 
 /// THE CONTROL: a bound that fits answers the rows of its instance and no other, in both
@@ -207,6 +210,7 @@ fn a_positional_argument_binds_the_parameter_it_takes() {
         ("Buf[Int64]", vec!["buf(v: 1)"]),
         ("Buf[Int64, Bool]", vec!["buf(v: 1)"]),
         ("Buf[String, N = Bool]", vec!["buf(v: \"s\")"]),
+        ("Buf[Int64, N = 3]", vec!["buf(v: 1)"]),
         ("Buf[?]", vec!["buf(v: \"s\")", "buf(v: 1)"]),
         ("Option[Int64]", vec!["some(value: 1)"]),
         ("List[Buf[T = Int64]]", vec!["[buf(v: 1)]"]),
@@ -242,6 +246,7 @@ fn an_applied_alias_is_the_sort_it_stands_for() {
     for (bound, rows) in [
         ("IntBuf[N = Bool]", vec!["buf(v: 1)"]),
         ("IntBuf[Bool]", vec!["buf(v: 1)"]),
+        ("IntBuf[N = 3]", vec!["buf(v: 1)"]),
         ("List[T = IntBuf[N = Bool]]", vec!["[buf(v: 1)]"]),
     ] {
         for (spelling, rule) in both_spellings(bound) {
@@ -262,8 +267,8 @@ fn an_applied_alias_is_the_sort_it_stands_for() {
 
 /// A HEAD-INTRODUCED TYPE VARIABLE inside an applied bound still denotes its guard's bound
 /// (WI-20260908-PW9A0), named and positional: the list whose element type provides `Summable`
-/// is kept, the other filtered. The named half passes either way, by design: it is PW9A0's
-/// row, which the fit now runs over; the positional half answered nothing before.
+/// is kept, the other filtered. The named half is PW9A0's row, now lowered by the type door;
+/// the positional half answered nothing before.
 #[test]
 fn a_head_type_variable_inside_the_bound_still_resolves() {
     for bound in ["List[T = A]", "List[A]"] {

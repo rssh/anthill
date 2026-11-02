@@ -167,6 +167,13 @@ pub struct SimpleTermStore {
     /// only here. Recorded like [`Self::minted`], for the same reason — provenance the
     /// consumer needs is carried, not re-derived from name/scope heuristics.
     type_applications: HashSet<ParseTermId>,
+    /// The type a term-position bracket WRITES, read off the same `application` node its
+    /// [`Self::type_applications`] term was converted from — `Buf[W = Int64]` as the
+    /// `TypeExpr` a type position holds. Recorded for the outermost bracket of a term
+    /// position (`convert_instantiation_term`), where one may stand for a type: a rule
+    /// head's parameter bound (`x: Buf[T = Int64]`, kernel-language.md §5.3), which is
+    /// lowered as the `?x: T` spelling's annotation is.
+    type_readings: HashMap<ParseTermId, TypeExpr>,
     /// WI-762: the named-tuple `Term::Fn` nodes this converter DESUGARED a
     /// distributive projection `x.(m1, …, mn)` into (§6.8; the sole producer is
     /// `BuildFrame::DistributiveProjection`). EVERY arity is recorded — since
@@ -304,6 +311,16 @@ impl SimpleTermStore {
     /// data constructor, whose named args are FIELDS.
     pub fn is_type_application(&self, id: ParseTermId) -> bool {
         self.type_applications.contains(&id)
+    }
+
+    /// Record the type the bracket `id` writes ([`Self::type_readings`]).
+    pub fn set_type_reading(&mut self, id: ParseTermId, ty: TypeExpr) {
+        self.type_readings.insert(id, ty);
+    }
+
+    /// The type the term-position bracket `id` writes, if it is one.
+    pub fn type_reading(&self, id: ParseTermId) -> Option<&TypeExpr> {
+        self.type_readings.get(&id)
     }
 
     /// WI-762: record that `id` is the named tuple a MULTI-member distributive
