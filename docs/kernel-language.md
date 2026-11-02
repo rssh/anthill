@@ -4981,6 +4981,42 @@ Consequences worth stating, because they are what the rule buys:
   Reification (Term → value) stays partial and explicit (`term_as_entity`), so the
   reverse is *not* accepted, and `Term` is therefore **not** a top type.
 
+- **A `Symbol` slot of a clause holds a NAME, so a bare name conforms whatever
+  declaration it names** (WI-930). A `Symbol` is stored as the `Ref` of what it names,
+  and a constructor's name is that very term — the one its nullary instance is (§4.4,
+  *A name has a reading in each context*) — so over `entity Holder(s: Symbol)` the
+  clause `Holder(s: red)` holds the name of a constructor `red`, as it holds a sort's or
+  an operation's. This is so wherever a clause writes the slot: a fact's field, a field
+  of a construction inside one (`L(xs: [red])` at `xs: List[T = Symbol]`), a rule head
+  and a goal of a rule's own term (`MemberInfo(name: red, kind: ?k, parent: ?)`). A
+  literal and a construction are no names, nor is the empty literal: `Holder(s: "red")`,
+  `Holder(s: rgb(r: 1))` and `Holder(s: ())` are refused, so `Symbol` is not a top type.
+  A const or a parameter reads as its value there (§4.4), and is judged as that value.
+  An OPERATION BODY does not store what it writes but evaluates it, and `red` there is
+  the instance of its sort, which is no `Symbol`: `operation mk() -> Holder =
+  Holder(s: red)` is refused, as is the same text under a `let` or a `match` of a rule
+  body.
+
+  This is what holds the loader's own **declaration records** to their declared fields
+  like any other fact. `SortInfo`, `EntityInfo`, `MemberInfo`, `OperationInfo`,
+  `DeclarationMeta` and `DescriptionInfo` name a declaration, and before this rule each
+  record naming a constructor in a `Symbol` slot was refused — 756 on the standard
+  library — so the check skipped every fact of a reflect or realization functor
+  (WI-928). It skips none now, the loader's or a program's: a hand-written `fact
+  EntityInfo(name: "Thing", fields: [])` is a type error, and so is an `Implementation`
+  whose `language` is not a `String`. A record's slots declare what the loader writes
+  in them: `OperationInfo.requires` and `ensures` hold the contract's goals, each a
+  quoted `Term` (proposal 048 §F), and were declared `List[NodeOccurrence]`, to which
+  the record of `requires Full(t)` did not conform. A record that carries an occurrence — a value
+  head, such as `OperationParamDefault`'s `default` — is checked at the fields it holds
+  as terms. A record writes a declaration's name as its `Ref` — `SortInfo`'s `name`,
+  `constructors`, `operations` and `parameters`, the `name` of `EntityInfo`,
+  `MemberInfo`, `OperationInfo` and `DeclarationMeta`, `DescriptionInfo.target` — and so
+  names the three reflect collection forms, whose nullary application is the empty
+  literal and not their name (§5.3, *A name with two readings*): `MemberInfo` holds
+  `TupleLiteral`, not `()`. A goal does not tell the two apart (`MemberInfo(name: (), …)`
+  answers the row too); the check does.
+
 - **A free-standing entity is a CONCRETE carrier, so its provisions are checked**
   (WI-931). `entity EulerAngles(roll: Float, pitch: Float, yaw: Float)` is as instantiable as the
   `sort` spelling, so a provision naming `Vec3` carries the same obligation any other

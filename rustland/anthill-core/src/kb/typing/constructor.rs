@@ -967,6 +967,20 @@ fn field_arg_type(kb: &mut KnowledgeBase, declared_type: &Value, r: &TypeResult)
         .unwrap_or_else(|| r.ty.clone())
 }
 
+/// WI-930 — a CLAUSE's own term stores an argument as written, so a field declared a reflect
+/// sort takes it by that sort's conversion ([`reflect_slot_admits`]): `Holder(s: red)` in a
+/// rule body is the name `red` at `s: Symbol`. Text written as an operation body is
+/// evaluated, and there `red` is the instance of `Colour`, judged by its type.
+fn clause_slot_admits(
+    kb: &KnowledgeBase,
+    env: &TypingEnv,
+    r: &TypeResult,
+    declared_type: &Value,
+) -> bool {
+    let is_name = matches!(r.node.as_expr(), Some(Expr::Ref(_)));
+    !env.written_as_an_operation_body() && reflect_slot_admits(kb, declared_type, is_name)
+}
+
 /// WI-1059 — VALIDATE one supplied field value against its declared field type: the raw
 /// inferred type first, and only on failure the [`field_arg_type`] rebuild.
 ///
@@ -1530,6 +1544,9 @@ pub(super) fn check_constructor_iter(
             .find(|(_, (s, _))| s == field_sym)
         {
             if let Ok(ref r) = named_results[idx] {
+                if clause_slot_admits(kb, env, r, declared_type) {
+                    continue;
+                }
                 match validate_field_arg(
                     kb,
                     &mut subst,
@@ -1551,6 +1568,9 @@ pub(super) fn check_constructor_iter(
     for (i, r_opt) in pos_results.iter().enumerate() {
         if let Some((field_sym, declared_type)) = field_types.get(i) {
             if let Ok(r) = r_opt {
+                if clause_slot_admits(kb, env, r, declared_type) {
+                    continue;
+                }
                 match validate_field_arg(
                     kb,
                     &mut subst,

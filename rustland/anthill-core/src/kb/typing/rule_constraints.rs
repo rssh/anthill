@@ -545,6 +545,9 @@ pub(super) trait ConstrainedArg {
     fn var_key(&self, kb: &KnowledgeBase) -> Option<u32>;
     /// The constructor an entity construction applies, or a constant constructor names.
     fn constructor(&self, kb: &KnowledgeBase) -> Option<Symbol>;
+    /// Whether the argument is a bare name — what a `Symbol` slot holds
+    /// ([`reflect_slot_admits`]).
+    fn is_name(&self, kb: &KnowledgeBase) -> bool;
     /// Where the argument was written, where it carries a place.
     fn span(&self) -> Option<crate::span::SourceSpan>;
 }
@@ -569,6 +572,9 @@ impl ConstrainedArg for TermId {
             _ => None,
         }
         .filter(|f| is_construction_functor(kb, *f))
+    }
+    fn is_name(&self, kb: &KnowledgeBase) -> bool {
+        matches!(kb.get_term(*self), Term::Ref(_))
     }
     fn span(&self) -> Option<crate::span::SourceSpan> {
         None
@@ -596,6 +602,9 @@ impl ConstrainedArg for Rc<NodeOccurrence> {
             _ => expr_call_parts(expr).map(|(functor, _, _)| functor),
         }
         .filter(|f| is_construction_functor(kb, *f))
+    }
+    fn is_name(&self, _kb: &KnowledgeBase) -> bool {
+        matches!(self.as_expr(), Some(Expr::Ref(_)))
     }
     fn span(&self) -> Option<crate::span::SourceSpan> {
         Some(self.span)
@@ -628,7 +637,7 @@ pub(super) fn constrain_arg<A: ConstrainedArg>(
     demand: Option<Demand>,
     st: &mut ClauseConstraints,
 ) -> bool {
-    if says_nothing_of_a_value(kb, expected_type) {
+    if reflect_slot_admits(kb, expected_type, arg.is_name(kb)) {
         return true;
     }
     if let Some(lit) = arg.literal(kb) {
@@ -1412,7 +1421,8 @@ fn is_construction_functor(kb: &KnowledgeBase, functor: Symbol) -> bool {
 
 /// Whether a construction's argument fits the field it fills, as an operation's argument is
 /// checked against its parameter: a literal's sort and a construction's sort, with the
-/// argument conversions (a `Term` field admits every value, an `Option[T]` field a bare `T`,
+/// argument conversions ([`reflect_slot_admits`]: a `Term` field admits every value, a
+/// `Symbol` field a name; an `Option[T]` field a bare `T`,
 /// a field at a bare spec a value of a sort that provides it). Any other argument — a variable, a call, a
 /// collection literal, a type written as a term — is met by its own position.
 fn argument_fits_field<A: ConstrainedArg>(
@@ -1421,7 +1431,11 @@ fn argument_fits_field<A: ConstrainedArg>(
     field: &Value,
     st: &ClauseConstraints,
 ) -> Result<(), Value> {
-    if says_nothing_of_a_value(kb, field) {
+    // The field as the clause has bound it — a parameter the construction's position fixed
+    // (`cons` at a `List[T = Sp]` slot) is that type, which the conversions and the provider
+    // question below read: `L(xs: [red])` over `xs: List[T = Symbol]` fills `cons.head: T`.
+    let field = &walk_type_deep_value(kb, &st.subst, field);
+    if reflect_slot_admits(kb, field, arg.is_name(kb)) {
         return Ok(());
     }
     let actual = if let Some(lit) = arg.literal(kb) {
@@ -1446,9 +1460,6 @@ fn argument_fits_field<A: ConstrainedArg>(
     } else {
         return Ok(());
     };
-    // The field as the clause has bound it — a parameter the construction's position fixed
-    // (`cons` at a `List[T = Sp]` slot) is that type, which the provider question below reads.
-    let field = &walk_type_deep_value(kb, &st.subst, field);
     // A field of the construction's own parameter reads what the clause has bound; one with
     // no variable in it needs nothing of the clause's substitution.
     let reads_subst = type_mentions_flex_var(kb, field);
@@ -2167,7 +2178,7 @@ fn constrain_occurrence_at(
     arg: &Rc<NodeOccurrence>,
     ty: &Value,
 ) -> bool {
-    if says_nothing_of_a_value(kb, ty) {
+    if reflect_slot_admits(kb, ty, arg.is_name(kb)) {
         return true;
     }
     if let Some(lit) = arg.literal(kb) {

@@ -6764,9 +6764,14 @@ namespace test.wi036_list_bad
 end
 "#;
     let errors = load_type_errors(source);
+    // The element is refused at the cons cell's field it fills, as the clause walk names
+    // it; this read `Holder.head` — the fact's entity with the cell's field — until WI-930.
     let field_errors: Vec<_> = errors
         .iter()
-        .filter(|e| format!("{}", e).contains("Holder"))
+        .filter(|e| {
+            let shown = format!("{}", e);
+            shown.contains("cons.head") && shown.contains("Gadget")
+        })
         .collect();
     assert!(
         !field_errors.is_empty(),

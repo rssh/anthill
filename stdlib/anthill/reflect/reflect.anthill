@@ -1044,9 +1044,10 @@ namespace anthill.reflect
   -- No block means meta(). Rule/fact tags remain clause metadata; OperationInfo.meta
   -- is unchanged.
   -- `name` is the declaration's symbol reference, the shape SortInfo.name has. It is
-  -- typed Term because one field holds every kind — a Symbol field refuses a
-  -- constructor — and, like SortInfo.name, a rule body cannot spell a sort or an
-  -- operation in it: bind it by a join, or pass the name in through a fact.
+  -- typed Term, chosen when a Symbol field refused a constructor's name (a clause's
+  -- Symbol slot reads one as the name since WI-930), and, like SortInfo.name, a rule
+  -- body cannot spell a sort or an operation in it: bind it by a join, or pass the name
+  -- in through a fact.
   -- `kind` is which declaration the row is for, in MemberInfo's vocabulary, so an
   -- eponymous sort and its constructor keep two rows (Sort, Constructor) even when
   -- their blocks are equal, and `MemberInfo(name: ?s, kind: ?k)` joins to the
@@ -1072,8 +1073,14 @@ namespace anthill.reflect
     params       : List[FieldInfo],
     return_type  : Term,                            -- return type expression
     effects      : List[Term],                      -- effect type expressions
-    requires     : List[NodeOccurrence],            -- precondition expressions (positioned)
-    ensures      : List[NodeOccurrence],            -- postcondition expressions (positioned)
+    -- The contract's goals, each a quoted Term: hash-consed, or on its occurrence
+    -- where a binding was written through an alias (proposal 048 §F — one carrier-
+    -- agnostic Term, no "List[Term] now, List[NodeOccurrence] later"). Declared
+    -- List[NodeOccurrence] until WI-930 held this record to its fields, and then the
+    -- record of `requires Full(t)` was refused: a constructor's goal read as an
+    -- instance of its sort.
+    requires     : List[Term],                      -- precondition goals
+    ensures      : List[Term],                      -- postcondition goals
     -- The operation's own type parameters, its bracket's, then the member sugar's, then
     -- the variables its parameter types write, as the logical variables the loader
     -- minted for them (`op_info::type_param_entries` decodes each back to its name).
