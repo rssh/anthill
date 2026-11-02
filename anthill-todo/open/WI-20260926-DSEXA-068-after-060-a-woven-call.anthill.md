@@ -9,7 +9,7 @@
 
 - acceptance: cargo-test
 
-- depends_on: WI-20260926-K4JGC-an-operation-call-in-a-rule, WI-20261013-GFS6A-068-d1a-a-woven-call-is, WI-20261013-DEY66-068-d1b-the-per-consumer, WI-20261013-2HX69-068-d1c-the-unfold-threads, WI-20261013-WPVVY-a-labelled-call-of-a-builtin, WI-20260911-5G28A-rule-head-type-variables-open
+- depends_on: WI-20260926-K4JGC-an-operation-call-in-a-rule, WI-20261013-GFS6A-068-d1a-a-woven-call-is, WI-20261013-DEY66-068-d1b-the-per-consumer, WI-20261013-2HX69-068-d1c-the-unfold-threads, WI-20261013-WPVVY-a-labelled-call-of-a-builtin, WI-20261102-ATVC1-rule-rule-implicit-arguments-a
 
 - tags: proposal-068
 
@@ -65,4 +65,8 @@ ONE MORE MEASURED ROW, found while WI-20261013-0GYW1's programs were run (a730f1
 ### 2026-10-27T18:36:50Z — feedback — claude
 
 A RULE-BODY CALL OF A MEMBER NOTHING CAN RUN ANSWERS NO SOLUTIONS, SILENTLY (found 2026-10-27 delivering 50d5e301 on WI-20260908-9WVT7; user: put it on a 068 ticket). Over a user effect layer `sort Err2 { sort T = ?; operation reify[Rho, X, T1](body: () -> X @ {Err2[T1], Rho}) -> Result[E = T1, T = X] effects {Rho} }` with nothing providing `Err2` and `reify` body-less, `rule viaRule(?r) :- Err2.reify(lambda () -> mayFail(1), ?r)` loads and `anthill query 'viaRule(?r)'` prints `no solutions` — the same on 8db14256 and on 50d5e301. In an operation body the same call is now refused at load ('nothing provides `Err2`'; 50d5e301 narrowed WI-20260909-M8QWJ's escape for a signature with type parameters), but that refusal is the operation body's (§5.4: 'At the call, in an operation body'). Point 1 above reads a call with no supplier for its member as UNREDUCED, an undecided goal; this one is a definite empty answer with no warning. Probe: /tmp scratch r2/site_rule.anthill (the program above with `mayFail(n) = 41`).
+
+### 2026-11-02T11:20:12Z — feedback — claude
+
+DEPENDENCY REWIRED (user, 2026-11-02, dependency review): from WI-20260911-5G28A to WI-20261102-ATVC1. This umbrella was wired to 5G28A on 2026-10-14 for S7 alone (rule → rule implicit arguments); S7 and its decision B row are now that ticket, split out of 5G28A, so this no longer waits on the rest of 5G28A or on SHED7 behind it.
 

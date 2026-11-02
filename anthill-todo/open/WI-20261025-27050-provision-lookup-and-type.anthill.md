@@ -9,6 +9,8 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
+- depends_on: WI-20261025-053QV-a-position-typed-at-a-spec
+
 - tags: typing
 
 ## Description
