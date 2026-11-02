@@ -1789,6 +1789,106 @@ pub(super) fn contested_slot_read(
     None
 }
 
+/// WI-20261020-VQPRP (kernel-language.md §4.8) — the first variable of a typed body that is
+/// read as a VALUE and that nothing binds, in source order, and its span. `in_scope` is what
+/// the body's frame binds — the operation's parameters, those before it for a parameter's
+/// default, none for a const.
+///
+/// THE TYPER'S BINDERS, AND ONLY THOSE: a parameter, and a `Pattern::Var` of a `let`, a
+/// `lambda` or a `match` arm ([`for_each_pattern_binder`]), over the continuation, the
+/// lambda's body, the arm's guard and body — what the body's env binds, `bind_var`'s two
+/// callers. A `?x` names the binder of its name ([`TypingEnv::lookup_var`], the exact
+/// symbol); one that names none is typed as a fresh type variable and accepted, and the
+/// evaluator read it as a call of its name — `unknown operation: _`, `unknown operation:
+/// y`, on a program that loaded clean (MEASURED).
+///
+/// ON THE STORED TREE, after `@[simp]` rewriting and the type-value frame, so what is
+/// judged is what runs: an argument a rewrite discards (`firstOf(4, ?)` over `firstOf(?a,
+/// ?_) <=> ?a`) is gone, and a type value's `?` argument is an open slot the typer left out
+/// of the bracket (`Boom[Reason = ?]`). WHAT THE WALK DOES NOT REACH is no value: a type
+/// position — a call's or a dot's bracket, an annotation, a pattern — is not an `Expr`
+/// child, an in-body proof's `conclude` is a proposition, skipped here, and an
+/// `Expr::Spliced` carries a value, which is not read by a name. Nor is a default a call
+/// takes judged where the call is: its text is the declaration's, judged there
+/// ([`is_spliced_default`]).
+///
+/// A parameter the signature writes inline (`m(y: ?t)`) is read as `?t`, and that read is
+/// [`rigid_value_reads`]' to judge ([`inline_param_read`]). A `Rigid` or `DeBruijn`
+/// variable is no binder's — the frame opens neither — so it is unbound too.
+pub(super) fn unbound_value_variable(
+    kb: &KnowledgeBase,
+    body: &Rc<NodeOccurrence>,
+    in_scope: &[Symbol],
+    param_rigids: &[(VarId, TermId)],
+) -> Option<(Var, Span)> {
+    type Scope = imbl::HashSet<Symbol>;
+    let binding = |scope: &Scope, pattern: &Rc<NodeOccurrence>| -> Scope {
+        let mut inner = scope.clone();
+        for_each_pattern_binder(pattern, |name| {
+            inner.insert(name);
+        });
+        inner
+    };
+    let mut stack: Vec<(Rc<NodeOccurrence>, Scope)> =
+        vec![(Rc::clone(body), in_scope.iter().copied().collect())];
+    while let Some((node, scope)) = stack.pop() {
+        let Some(expr) = node.as_expr() else { continue };
+        let mut children: Vec<(Rc<NodeOccurrence>, Scope)> = Vec::new();
+        match expr {
+            Expr::Var(var) => {
+                let bound = matches!(var, Var::Global(vid) if scope.contains(&vid.name()));
+                if bound
+                    || inline_param_read(kb, var, param_rigids).is_some()
+                    || is_spliced_default(kb, &node)
+                {
+                    continue;
+                }
+                return Some((*var, node.span.span));
+            }
+            Expr::Let {
+                pattern,
+                value,
+                body,
+            } => {
+                children.push((Rc::clone(value), scope.clone()));
+                children.push((Rc::clone(body), binding(&scope, pattern)));
+            }
+            Expr::Match {
+                scrutinee,
+                branches,
+            } => {
+                children.push((Rc::clone(scrutinee), scope.clone()));
+                for branch in branches {
+                    let arm = binding(&scope, &branch.pattern);
+                    if let Some(guard) = &branch.guard {
+                        children.push((Rc::clone(guard), arm.clone()));
+                    }
+                    children.push((Rc::clone(&branch.body), arm));
+                }
+            }
+            Expr::Lambda { param, body } => {
+                children.push((Rc::clone(body), binding(&scope, param)));
+            }
+            Expr::LambdaWithin {
+                param,
+                body,
+                requirements,
+            } => {
+                children.push((Rc::clone(body), binding(&scope, param)));
+                for r in requirements {
+                    children.push((Rc::clone(r), scope.clone()));
+                }
+            }
+            Expr::Proof { body, .. } => children.push((Rc::clone(body), scope)),
+            _ => crate::kb::node_occurrence::for_each_child(expr, |child| {
+                children.push((Rc::clone(child), scope.clone()))
+            }),
+        }
+        stack.extend(children.into_iter().rev());
+    }
+    None
+}
+
 /// WI-20260919-N31XX (proposal 065, "The rule") — the type parameters this body is
 /// ALLOWED to read as values: those `B` for which `TypeValue[T = B]` stands among the
 /// requirements in scope.

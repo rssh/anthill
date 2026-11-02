@@ -1335,7 +1335,9 @@ pub(super) fn visit_type(
         // `DeBruijn`, or a `Rigid` falls back to a fresh type-var — not a
         // typer-level error, so the surrounding apply / let still
         // type-checks and declared signatures resolve it on the consumer
-        // side.
+        // side. One that SURVIVES typing in a value position is refused on the
+        // stored body (`unbound_value_variable`, WI-20261020-VQPRP), whose
+        // binders are this env's: a new binder form binds there too.
         Expr::Var(var) => {
             // Exact-symbol lookup resolves any in-scope `?x` — let/lambda/match
             // binders share an intern with their body var, and WI-487 makes an

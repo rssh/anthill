@@ -2629,16 +2629,18 @@ pub fn for_each_child(expr: &Expr, mut f: impl FnMut(&Rc<NodeOccurrence>)) {
 /// invariant. Sub-pattern-only walks that legitimately exclude it call
 /// [`for_each_subpattern`] by name.
 #[inline]
-/// Every NAME an expression tree refers to: a reference (`Ref`, `Ident`, `VarRef`) and
-/// the callee an application names, at any depth, patterns' annotations included. A name
-/// a binder inside the tree declares is a symbol of its own (the loader's per-site
-/// binder), so a reference to it is never mistaken for an outer one of its spelling.
+/// Every NAME an expression tree refers to: a reference (`Ref`, `Ident`, `VarRef`), a
+/// variable (`?x` reads `x`, kernel-language.md §4.8) and the callee an application
+/// names, at any depth, patterns' annotations included. A name a binder inside the tree
+/// declares is a symbol of its own (the loader's per-site binder), so a reference to it is
+/// never mistaken for an outer one of its spelling.
 pub fn for_each_named_reference(occ: &Rc<NodeOccurrence>, mut f: impl FnMut(Symbol)) {
     let mut work: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(occ)];
     while let Some(node) = work.pop() {
         if let Some(expr) = node.as_expr() {
             match expr {
                 Expr::Ref(s) | Expr::Ident(s) | Expr::VarRef { name: s } => f(*s),
+                Expr::Var(Var::Global(v)) => f(v.name()),
                 Expr::Apply { functor, .. } | Expr::ApplyWithin { functor, .. } => f(*functor),
                 _ => {}
             }
@@ -2656,6 +2658,21 @@ pub fn for_each_pattern_child(occ: &NodeOccurrence, mut f: impl FnMut(&Rc<NodeOc
     for_each_subpattern(pattern, &mut f);
     if let Some(t) = type_ann {
         f(t);
+    }
+}
+
+/// Every name a pattern binds: each `Pattern::Var` in it and its sub-patterns, in source
+/// order. Not its annotation, which is a type and binds nothing.
+pub fn for_each_pattern_binder(pattern: &Rc<NodeOccurrence>, mut f: impl FnMut(Symbol)) {
+    let mut work: Vec<Rc<NodeOccurrence>> = vec![Rc::clone(pattern)];
+    while let Some(p) = work.pop() {
+        let Some(pat) = p.as_pattern() else { continue };
+        if let Pattern::Var { name, .. } = pat {
+            f(*name);
+        }
+        let mut subs: Vec<Rc<NodeOccurrence>> = Vec::new();
+        for_each_subpattern(pat, |c| subs.push(Rc::clone(c)));
+        work.extend(subs.into_iter().rev());
     }
 }
 

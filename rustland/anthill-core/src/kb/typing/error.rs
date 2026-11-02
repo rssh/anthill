@@ -866,6 +866,20 @@ pub enum TypeError {
         param: Symbol,
         op: Symbol,
     },
+    /// WI-20261020-VQPRP (kernel-language.md §4.8) — a variable read as a VALUE in an
+    /// executable body that nothing binds: an anonymous `?`, or a `?y` with no parameter
+    /// and no `let`, `lambda` or `match` binder named `y` in scope. Loaded, it was read
+    /// as a call of its name when the body ran: `unknown operation: _` (MEASURED). Found
+    /// on the typed body by [`unbound_value_variable`].
+    ///
+    /// `var` is the variable; `owner` the operation or const whose body reads it; `param`
+    /// the parameter whose default does.
+    UnboundVariableRead {
+        span: Option<Span>,
+        var: Var,
+        owner: Symbol,
+        param: Option<Symbol>,
+    },
     /// WI-20261001-80ZV8 (user, 2026-10-04: "we should have error in get definition —
     /// something like projection without carrier") — an operation's signature uses a
     /// parameter of its sort, takes a value of that sort at an OPEN slot for it, and has no
@@ -1206,6 +1220,41 @@ impl RuleField {
             RuleField::Whole => "rule",
         }
     }
+}
+
+/// The one wording of [`TypeError::UnboundVariableRead`], as the two halves a mismatch is
+/// rendered from, shared by the two renderings so they cannot drift.
+fn unbound_variable_detail(
+    kb: &KnowledgeBase,
+    var: Var,
+    owner: Symbol,
+    param: Option<Symbol>,
+) -> (String, String) {
+    let place = match param {
+        Some(p) => format!("the default of `{}` in `{}`", kb.local_name_of(p), kb.qualified_name_of(owner)),
+        None => format!("`{}`", kb.qualified_name_of(owner)),
+    };
+    let expected = "a value: a variable read where a body is evaluated is the parameter, or \
+                    the `let`, `lambda` or `match` binder, of its name (kernel-language.md §4.8)"
+        .to_string();
+    let got = match var {
+        Var::Global(v) if anonymous_var_name(kb, v.name()) => format!(
+            "`?`, which is no value when {place} runs — an anonymous variable stands where a \
+             type does (an annotation, a bracket, a type value's open slot) and where a \
+             `@[simp]` rewrite discards the argument"
+        ),
+        Var::Global(v) => {
+            let v = kb.local_name_of(v.name());
+            format!("`?{v}`, and nothing binds `{v}` here, so it has no value when {place} runs")
+        }
+        // Not a variable an author writes in a body: the frame opens neither form.
+        Var::Rigid(_) | Var::DeBruijn(_) => format!(
+            "a {} variable no frame opens, left in {place} — a defect in the pass \
+             that built this occurrence, not an error in the program",
+            if var.is_rigid() { "rigid" } else { "clause" },
+        ),
+    };
+    (expected, got)
 }
 
 /// The one wording of [`TypeError::SortParamWithoutCarrier`], as the two halves a mismatch
@@ -2300,6 +2349,12 @@ impl TypeError {
                     short_name_of(kb.qualified_name_of(*op)),
                 )
             }
+            TypeError::UnboundVariableRead {
+                var, owner, param, ..
+            } => {
+                let (expected, got) = unbound_variable_detail(kb, *var, *owner, *param);
+                format!("expected {expected}, got {got}")
+            }
             TypeError::UnsatisfiableRequirement {
                 op,
                 callee_sort,
@@ -2501,6 +2556,7 @@ impl TypeError {
             | TypeError::NoProvisionAtCarriers { span, .. }
             | TypeError::ChangesSealedCode { span, .. }
             | TypeError::TypeValueReadUnbacked { span, .. }
+            | TypeError::UnboundVariableRead { span, .. }
             | TypeError::SortParamWithoutCarrier { span, .. }
             | TypeError::AmbiguousConstrainedParamMember { span, .. }
             | TypeError::NoSuchTypeParam { span, .. }
@@ -3098,6 +3154,26 @@ impl TypeError {
                          whether this operation inspects `{p}` (proposal 065). Add the \
                          clause, or use `{p}` only in type position"
                     ),
+                    span: self.span(kb),
+                }
+            }
+            // The body that reads it is the entity's field: the operation's body, a
+            // parameter's default, a const's value.
+            TypeError::UnboundVariableRead {
+                var, owner, param, ..
+            } => {
+                let (expected_type, actual_type) = unbound_variable_detail(kb, *var, *owner, *param);
+                let field_name = match param {
+                    Some(p) => kb.local_name_of(*p).to_string(),
+                    None if kb.has_kind(*owner, crate::intern::SymbolKind::Const) => "value".to_string(),
+                    None => "body".to_string(),
+                };
+                LoadError::TypeMismatch {
+                    origin: None,
+                    entity_name: kb.qualified_name_of(*owner).to_string(),
+                    field_name,
+                    expected_type,
+                    actual_type,
                     span: self.span(kb),
                 }
             }

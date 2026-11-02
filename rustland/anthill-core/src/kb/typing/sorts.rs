@@ -589,6 +589,17 @@ pub(super) fn check_constant_bodies(
                     );
                     kb.set_const_body_node(symbol, Rc::clone(&result.node));
                 }
+                // WI-20261020-VQPRP — a const binds nothing, so every variable its value
+                // reads as one is unbound ([`unbound_value_variable`]).
+                if let Some((var, span)) = unbound_value_variable(kb, &result.node, &[], &[]) {
+                    errors.push(TypeError::UnboundVariableRead {
+                        span: Some(span),
+                        var,
+                        owner: symbol,
+                        param: None,
+                    });
+                    sources.push(Some(site.source));
+                }
                 // The slots the declaration leaves open are the value's to fill, so the
                 // two unify before they are compared, as an operation's result and its
                 // body do: `const d: Car[V = ?] = car(v: 3)` is a `Car[V = Int64]`.
