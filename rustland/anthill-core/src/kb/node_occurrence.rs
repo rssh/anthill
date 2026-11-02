@@ -7367,7 +7367,7 @@ fn subst_var_leaf(
         // spine's own leaves before splicing, or they ride into the match as
         // wildcards (the alias hole above, one level down). Guarded like the Node
         // arm: a spine that still mentions `cur` is spliced raw rather than recursed.
-        Some(other @ (Value::Entity { .. } | Value::Tuple { .. } | Value::Quoted(_))) => {
+        Some(other @ (Value::Entity { .. } | Value::Tuple { .. })) => {
             let applied = if kb.occurs_in_value(cur, other, subst) {
                 other.clone()
             } else {

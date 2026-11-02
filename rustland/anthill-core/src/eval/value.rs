@@ -311,23 +311,6 @@ pub enum Value {
         query: Rc<Value>,
         columns: Rc<[(Symbol, VarId)]>,
     },
-
-    /// WI-20261102-ED298 (proposal 068 §1.3) — a value a call RETURNED that is shaped
-    /// like a call: the term `make_fn("anthill.prelude.Int64.add", [as_term(1),
-    /// as_term(2)])` builds is the application `add(1, 2)`, and on every other carrier
-    /// a written call and that value are one shape. This carrier says which it is: the
-    /// resolver's evaluation never runs it, and `<=>` never takes it for a SYMBOLIC
-    /// call, wherever it is read later — through a binding, spliced into a goal, a
-    /// child of it bound by a pattern.
-    ///
-    /// A CARRIER, not a new kind of thing: it views as its content (head, children,
-    /// keys) to every structural reader, the interpreter's included, and
-    /// [`Self::carried`] reads through it; a child it hands out is marked again when it
-    /// is compound ([`crate::kb::term_view`]). Minted by the resolver's evaluation alone
-    /// (`kb/resolve/evaluate.rs`, `quote_returned_value`), on each part of a call's value
-    /// that is shaped like a call; σ is applied under it, and the mark stays. Lowering to
-    /// a `TermId` drops it: a value stored as a fact is its content.
-    Quoted(Rc<Value>),
 }
 
 /// A hash-consed `TermId` is the universal `Value::Term` carrier (WI-373). Lets
@@ -386,17 +369,6 @@ impl Value {
     /// so it cannot be done by borrowing, and no reader needs it — a var occurrence
     /// and a `Value::Var` already view identically (`ViewHead::Var`).
     pub fn carried(&self) -> &Value {
-        let mut cur = self.unspliced();
-        // A quoted value is its content to every reader but the evaluation.
-        while let Value::Quoted(inner) = cur {
-            cur = inner.unspliced();
-        }
-        cur
-    }
-
-    /// `self` with every `Node(Spliced(v))` wrapping cancelled — [`Self::carried`]'s first
-    /// half, which keeps a [`Value::Quoted`] mark.
-    fn unspliced(&self) -> &Value {
         use crate::kb::node_occurrence::Expr;
         let mut cur = self;
         while let Value::Node(occ) = cur {
@@ -406,12 +378,6 @@ impl Value {
             }
         }
         cur
-    }
-
-    /// Is `self` a [`Value::Quoted`] value — on its own carrier or spliced into an
-    /// occurrence?
-    pub fn is_quoted(&self) -> bool {
-        matches!(self.unspliced(), Value::Quoted(_))
     }
 
     /// Scalar-leaf equality. Tuples / Entities / Closures / Streams
@@ -656,7 +622,6 @@ impl Value {
             Value::Var(_) => "Var",
             Value::SymbolRef(_) => "SymbolRef",
             Value::Relation { .. } => "Relation",
-            Value::Quoted(inner) => inner.type_name(),
         }
     }
 }

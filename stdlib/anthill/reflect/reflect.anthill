@@ -29,6 +29,15 @@ namespace anthill.reflect
   -- but to inspect its structure, use reify() to get a TermRepr.
   sort Term = ?
 
+  -- A call held as data: the code `add(1, 2)`, not the call it spells, so nothing
+  -- that reads it runs it. Every application of an operation that is data stands
+  -- inside one, its own parts too — `make_fn` builds `quoted(term: add(quoted(term:
+  -- mul(2, 3)), 1))`, a call returned by a call is held so, and a call written in a
+  -- head's field declared `Term` is stored so. The code readers (`term_to_string`,
+  -- `term_functor_name`, `term_field`) read the code inside, and a query whose goal is one
+  -- runs the call.
+  entity quoted(term: Term)
+
   -- Source-neutral row reference. A Rust `FactRef` privately selects either
   -- a resident entry or an extent owner's native row key; application code can
   -- pass it to persistence mutation operations but cannot construct, print, or

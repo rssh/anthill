@@ -50,6 +50,10 @@ use std::rc::Rc;
 use smallvec::SmallVec;
 
 use crate::intern::{Decl, ResolveResult, ScopeId, Symbol, SymbolDef, SymbolKind, SymbolTable};
+
+/// The entity a call held as data stands in (proposal 068 §1.3): `quoted(term: add(1, 2))` is
+/// the code `add(1, 2)`, which nothing that reads it runs.
+pub(crate) const QUOTED_ENTITY: &str = "anthill.reflect.quoted";
 use crate::parse::desugar_target as dt;
 use crate::span::{SourceRegistry, SourceSpan};
 use discrim::SubstTree;
@@ -9527,10 +9531,6 @@ impl KnowledgeBase {
                 let (pos, named) = self.reify_value_children(pos, named, subst, carrier);
                 Value::Tuple { pos, named }
             }
-            // σ reaches a variable under the mark, and the mark stays.
-            Value::Quoted(inner) => {
-                Value::Quoted(Rc::new(self.reify_value_on(inner, subst, carrier)))
-            }
             other => other.clone(),
         }
     }
@@ -10721,9 +10721,6 @@ impl KnowledgeBase {
             Value::Tuple { pos, named } => {
                 children(self, pos, named).map(|(pos, named)| Value::Tuple { pos, named })
             }
-            Value::Quoted(inner) => self
-                .substituted_value(inner, leaf, node)
-                .map(|v| Value::Quoted(Rc::new(v))),
             Value::Var(_)
             | Value::Int(_)
             | Value::BigInt(_)

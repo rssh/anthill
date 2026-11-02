@@ -4417,6 +4417,8 @@ fn kb_execute(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalErr
 /// functor as a String for direct comparison (`eq(name, "Claimed")`).
 fn term_functor_name(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [arg] = expect_args::<1>("term_functor_name", args)?;
+    // A call held as data names the code's functor (`quoted(term: add(1, 2))` is `add`).
+    let arg = interp.kb.quote_content(&arg).unwrap_or(arg);
     let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
     let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
     let value_key = interp.kb.intern("value");
@@ -4704,6 +4706,8 @@ fn build_value_list(interp: &mut Interpreter, elems: Vec<Value>) -> Result<Value
 /// thread Symbol values through.
 fn term_field(interp: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [term_arg, name_arg] = expect_args::<2>("term_field", args)?;
+    // A call held as data reads the code's fields.
+    let term_arg = interp.kb.quote_content(&term_arg).unwrap_or(term_arg);
     let name = str_operand(interp.kb(), &name_arg)?.into_owned();
     let some_sym = require_symbol(interp, "anthill.prelude.Option.some", "some")?;
     let none_sym = require_symbol(interp, "anthill.prelude.Option.none", "none")?;
@@ -4792,7 +4796,10 @@ fn reflect_term_to_string(interp: &mut Interpreter, args: &[Value]) -> Result<Va
     // NOR ANY OTHER CARRIER (WI-20261022-DRGCP): an entity was still lowered with
     // `alloc_from_value` for want of a printer that read it, interning a tree into the store
     // per row for the same path. `print_value` reads every carrier through the view.
-    let printer = crate::persistence::print::TermPrinter::new(&interp.kb);
+    // The code a term holds: a call held as data prints as the call (`quoted(term: add(1,
+    // 2))` is "add(1, 2)"), at any depth.
+    let v = interp.kb.quote_content(&v).unwrap_or(v);
+    let printer = crate::persistence::print::TermPrinter::code(&interp.kb);
     if let Value::Node(occ) = v.carried() {
         return Ok(Value::Str(printer.print_occurrence(occ)));
     }
@@ -5494,11 +5501,13 @@ fn reflect_make_fn(interp: &mut Interpreter, args: &[Value]) -> Result<Value, Ev
                 })
             }
         };
-    Ok(Value::Entity {
+    let built = Value::Entity {
         functor,
         pos: pos.into(),
         named: named.into(),
-    })
+    };
+    // A call it builds is data (068 §1.3): `quoted(term: add(1, 2))`.
+    Ok(interp.kb.quoted_code(&built).unwrap_or(built))
 }
 
 /// WI-722 (proposal 043.1) — `anthill.reflect.make_apply(name: String,

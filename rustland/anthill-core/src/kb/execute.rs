@@ -270,8 +270,6 @@ impl Value {
             | Value::FactRef(_)
             | Value::Node(_)
             | Value::Relation { .. } => false,
-            // The mark is dropped where a value is lowered, so it lowers as its content.
-            Value::Quoted(inner) => inner.lowers_to_leaf_term(),
         }
     }
 }
@@ -416,8 +414,6 @@ impl KnowledgeBase {
             // data term. Its `query` payload IS a lowerable `LogicalQuery`, but the
             // relation wrapper itself has no term equivalent.
             Value::Relation { .. } => Err(LowerError::UnsupportedVariant("Relation")),
-            // A term has no room for the mark: a quoted value stored is its content.
-            Value::Quoted(inner) => self.alloc_from_value(inner),
         }
     }
 
@@ -532,7 +528,13 @@ impl KnowledgeBase {
         if let ViewHead::Opaque = v.head(self) {
             return Err(LowerError::UnsupportedVariant(v.type_name()));
         }
-        Ok(self.canonical_spine(v)?.unwrap_or_else(|| v.clone()))
+        // A leaf that is a call held as data is the goal `make_fn` built (`make_fn("…Int64.lt",
+        // …)` is `quoted(term: lt(…))`): a goal is run, so it is spliced back to the call (068
+        // §1.3). A quote INSIDE the goal stays data, as the same goal written in a rule body
+        // keeps it (§6): `Item(code: quoted(term: add(1, 2)))` finds the fact storing that
+        // code.
+        let v = self.quote_content(v).unwrap_or_else(|| v.clone());
+        Ok(self.canonical_spine(&v)?.unwrap_or(v))
     }
 
     /// `v` with every entity in its value spine in the form a fact is stored in, or `None`
@@ -1090,7 +1092,6 @@ mod tests {
             Value::SymbolRef(_) => "SymbolRef",
             Value::Node(_) => "Node",
             Value::Relation { .. } => "Relation",
-            Value::Quoted(inner) => variant_name(inner),
         }
     }
 

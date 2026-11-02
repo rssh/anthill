@@ -786,8 +786,6 @@ impl Interpreter {
                     got: v.type_name().to_string(),
                 });
             }
-            // Keyed as its content: the mark is not part of the value's identity.
-            Value::Quoted(inner) => self.write_value_canonical(inner, buf)?,
         }
         Ok(())
     }

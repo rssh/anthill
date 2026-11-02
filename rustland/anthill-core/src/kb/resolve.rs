@@ -10201,6 +10201,11 @@ impl KnowledgeBase {
                 if fa != fb || pa != pb || na != nb {
                     return UnifyOutcome::Fail; // step 4: fail-fast, no child reduction
                 }
+                // Two calls held as data (068 §1.3) unify as the data they are: nothing
+                // inside a quote is a call, so no part of one waits as a SYMBOLIC call.
+                if self.is_quote_functor(fa) {
+                    return eq_or(self.unify_match_values(a, b, work));
+                }
                 for i in 0..pa {
                     let (ca, cb) = match (a.pos_arg(self, i), b.pos_arg(self, i)) {
                         (Some(ca), Some(cb)) => (ca.to_value(), cb.to_value()),
@@ -11784,13 +11789,6 @@ impl KnowledgeBase {
     /// above, reading `Expr::ApplyWithin` directly, which is the carrier its only
     /// producer (`weave_calls`) writes to. Nothing here narrows that.
     fn op_call_occurrence_to_reduce(&mut self, v: &Value) -> Option<Rc<NodeOccurrence>> {
-        // A value a call returned is data, whatever its shape (`Value::Quoted`) — the
-        // answer `is_written_call` gives, so the evaluator, this reduction and its delay
-        // partner below cannot disagree about one value. No row drives this check or
-        // the partner's: the evaluator asks `is_written_call` first.
-        if v.is_quoted() {
-            return None;
-        }
         let ViewHead::Functor {
             functor: f,
             pos_arity,
@@ -13134,11 +13132,6 @@ impl KnowledgeBase {
     ///    answering for the shape that says it is a call. `reduce_op_value` draws the
     ///    line in exactly the same place, for the same WI-20260902-VZC2C reason.
     fn is_unreduced_op_call(&self, v: &Value) -> bool {
-        // A value a call returned is data (`Value::Quoted`); see
-        // `op_call_occurrence_to_reduce`.
-        if v.is_quoted() {
-            return false;
-        }
         if let Value::Node(occ) = v {
             match occ.as_expr() {
                 // WI-1040 — a WOVEN call (`apply_within(fn = …, requirements = [?d])`)
@@ -14813,7 +14806,6 @@ impl KnowledgeBase {
                     self.collect_unbound_vars_value(c, subst, out);
                 }
             }
-            Value::Quoted(inner) => self.collect_unbound_vars_value(inner, subst, out),
             _ => {}
         }
     }
