@@ -9,7 +9,7 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
-- depends_on: WI-20260911-RS2G4-type-args-a-call-site-bracket, WI-20260911-5G28A-rule-head-type-variables-open
+- depends_on: WI-20260911-RS2G4-type-args-a-call-site-bracket
 
 ## Description
 

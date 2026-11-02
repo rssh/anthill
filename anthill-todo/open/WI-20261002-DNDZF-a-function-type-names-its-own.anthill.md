@@ -9,6 +9,8 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
+- depends_on: WI-20261014-6T5C6-an-entity-field-s-arrow-type
+
 - tags: typing
 
 ## Description
