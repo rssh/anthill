@@ -9,7 +9,7 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
-- depends_on: WI-20260925-P7VP4-a-rule-body-call-s-requires, WI-20261013-WF14Z-068-c1b-a-rule-variable-is, WI-20261013-RYDNV-068-c1d-one-classification-per
+- depends_on: WI-20260925-P7VP4-a-rule-body-call-s-requires, WI-20261013-WF14Z-068-c1b-a-rule-variable-is, WI-20261013-RYDNV-068-c1d-one-classification-per, WI-20261102-Y9HSG-a-rule-body-call-woven-with, WI-20261102-F5T9W-a-rule-body-call-of-a-spec-s, WI-20261102-Q5X28-a-rule-body-call-reached
 
 - tags: typing
 
@@ -98,4 +98,8 @@ DECIDED ON WI-20261013-GGXCX (user, 2026-10-21; docs/design/068-implementation.m
 ### 2026-10-30T18:52:32Z — feedback — claude
 
 For increment (e), retiring domain: 28e9bd1a (WI-20261030-0JWYF) added a refusal tied to the domain(?x, T) spelling — a T that is no type (a lambda, an if) is a load error at the T, at every goal of a clause (constrain_domain_test, Misfit::NoType, TypeErrorContext::DomainGoal), with a spec sentence in kernel-language.md's clause-typing paragraph (94cf4895) and rows in wi_0jwyf_type_with_no_term_form_test that write domain(?v, lambda () -> 1). It exists because domain's operands are terms, so the grammar admits any expression there. In the SortDomain[T].fill(?x) spelling the parser refuses both (measured on 94cf4895: SortDomain[lambda () -> 1].fill(?v) is 'missing ]', SortDomain[T = if true then Int64 else String].fill(?v) a syntax error; SortDomain[Int64].fill(?v) loads). So when domain retires, the refusal, its spec sentence and its six refusal rows go with it rather than moving; the three lowering rows and controls of that file stay.
+
+### 2026-11-02T06:53:21Z — feedback — claude
+
+STEP 3 STATE (claude, 2026-11-02). Landscape §7 q2 answered: `fromList` is a default body of `PersistentCollection` (user, 2026-11-02). Its first obstacle is delivered in 5476eece: a spec default body calling its receiver-less sibling (`empty()`) runs at the instance it was entered with, and two providers no longer tie in the typer (kernel-language §5.2). With that, the §4.1 default body loads in the stdlib, but the acceptance does not run (the rule body `vs <=> PersistentCollection[C = C].fromList([?p, ?q, ?r])` in `Sat[C]`), so the stdlib prototype was reverted. Measured on a copy of the spec (`Pc2`), `Sat[C = Bag[T = Bit]].model` wanting 2 models: default body with the spec `requires Iterable` — refused at load, WI-20261102-F5T9W; default body, no `requires` — `relation_floundered`, the woven call holds `Dictionary(impl: Bag)` and never runs, WI-20261102-Y9HSG; no body, effect row with `Effect = {}` written at both provisions and in `requires` — `relation_floundered`, WI-20261102-Q5X28; no body, no effect row — 2 models. SHED7 depends on the three (user, 2026-11-02). Still open after them: landscape §7 q1 and q3, and 067 §5 q3 (the reading of the answer "c": the language has no value of type `Fillable[T = X]`, since §8.2 refuses a position typed at a spec).
 
