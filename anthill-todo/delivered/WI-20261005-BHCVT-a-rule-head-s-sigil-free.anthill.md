@@ -29,3 +29,7 @@ FOLLOW-UP in b2830d3a (user, 2026-11-02: "in rule head p(x: Buf.buf[T=Int64]) :-
 
 FOLLOW-UP in this commit's predecessor (user, 2026-11-02, "yes" to: does a constructor written without a bracket count as a type after `:`): `rule p(x: Colour.red) :- q(x)` is `rule p(?x: Colour.red) :- q(?x)`, bounded by `red[]`; a call (`x: red()`, `x: buf(v: 1)`) stays a datum. kernel-language.md §5.3 amended with one sentence. Deciding such a bound is WI-20260925-SHED7's, as for the bracket. Full workspace 11,460 passed; families green.
 
+### 2026-11-02T09:02:10Z — feedback — claude
+
+ONE LOWERING (user, 2026-11-02, yes): de8e8049 lowers an applied sigil-free bound through the type door from the bracket's parsed type, and deletes the term walk's readings of a bound (load.rs 175 lines shorter). `x: Buf[Int64, N = 3]` now answers as `?x:` does; a call (`c: Leaf(name: "tip")`) is no parameter. Left: `x: Buf[T = Int64].T` is still no parameter where `?x: Buf[T = Int64].T` is `Int64`. Full workspace 11,460 passed, node carrier too; families green.
+

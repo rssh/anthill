@@ -25,3 +25,9 @@ CONTROL. An integer, a string and a boolean, each as a fact's stored entry match
 
 DONE WHEN: a constant written by its parameter's name, and one a bracket down, is the constant the top-level positional spelling is; the two pinned rows say what was decided; the gate is green.
 
+## Changes
+
+### 2026-11-02T09:02:11Z — feedback — claude
+
+Measured beside WI-20261005-BHCVT (de8e8049): a rule head's sigil-free bound no longer meets this ticket's reading — it is lowered from the bracket's parsed type, so `rule p(x: Buf[Int64, N = 3]) :- q(x)` answers as `?x:` does. Every other position this ticket names (a fact's bracket, a goal, an operation body) is unchanged.
+
