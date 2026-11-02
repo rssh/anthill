@@ -31542,8 +31542,9 @@ impl<'a> Loader<'a> {
         self.parse_arg_sort_symbol(&name)
     }
 
-    /// WI-742 §2.1 — does this parse argument spell a name that resolves to a SORT?
-    /// The second half of [`Self::convert_rule_head_with_params`]'s discriminator.
+    /// WI-742 §2.1 — does this parse argument spell a TYPE: a name that resolves to a sort,
+    /// or a bracket applying a constructor? The second half of
+    /// [`Self::convert_rule_head_with_params`]'s discriminator.
     fn parse_arg_names_a_sort(&mut self, value: ParseTermId) -> bool {
         self.parse_arg_is_self_type(value)
             || self
@@ -31553,6 +31554,19 @@ impl<'a> Loader<'a> {
             || self
                 .parse_arg_type_name(value)
                 .is_some_and(|name| self.rule_head_spec_member(&name).is_some())
+            || self.parse_arg_is_constructor_type(value)
+    }
+
+    /// Is this rule-head argument's written type a bracket applying a CONSTRUCTOR
+    /// (`x: Buf.buf[T = Int64]`)? That is the constructor's type (§8.2), as the `?x: T`
+    /// spelling reads it, so `x` is a parameter. A constructor written without a bracket
+    /// is its instance (§4.4), a datum, and the argument stays a named one.
+    fn parse_arg_is_constructor_type(&self, value: ParseTermId) -> bool {
+        self.parsed.terms.is_type_application(value)
+            && self.parse_arg_type_name(value).is_some_and(|name| {
+                matches!(self.resolve_parse_arg_name(&name), ResolveResult::Found(r)
+                    if self.kb.is_constructor_symbol(r))
+            })
     }
 
     /// Proposal 070 §1.2 — is this rule-head argument's written type the bare `Self`,
@@ -31591,7 +31605,16 @@ impl<'a> Loader<'a> {
         if let Some(RuleTvar::Bounded(requirement)) = self.rule_head_tvar(name) {
             return Some(requirement.spec);
         }
-        let answer = if name.contains('.') {
+        match self.resolve_parse_arg_name(name) {
+            ResolveResult::Found(r) if self.kb.has_kind(r, SymbolKind::Sort) => Some(r),
+            _ => None,
+        }
+    }
+
+    /// What a rule-head argument's written type name resolves to in this scope, bare or
+    /// dotted, reporting nothing.
+    fn resolve_parse_arg_name(&self, name: &str) -> ResolveResult {
+        if name.contains('.') {
             resolve_dotted_in_kb(
                 self.kb,
                 name,
@@ -31600,10 +31623,6 @@ impl<'a> Loader<'a> {
             )
         } else {
             resolve_name_in_kb(self.kb, name, self.current_scope)
-        };
-        match answer {
-            ResolveResult::Found(r) if self.kb.has_kind(r, SymbolKind::Sort) => Some(r),
-            _ => None,
         }
     }
 

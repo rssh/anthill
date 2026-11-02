@@ -28,6 +28,9 @@
 //!     an application that fits as the bound's does;
 //!   * an applied alias in the bound read as its own name (the alias reading gated off the bound
 //!     again) → [`an_applied_alias_is_the_sort_it_stands_for`], and nothing else.
+//!   * a bracket applying a constructor not taken for a type (`parse_arg_is_constructor_type`
+//!     answering `false`) → [`a_constructor_bracket_is_its_type`], and nothing else: the
+//!     `Buf.buf[W = Int64]` head is refused with the same message as a named argument's value.
 //!
 //!   PASSES EITHER WAY, by design: [`a_well_formed_bound_filters`], the control the refusals and
 //!   the answers are read against; and so does the named `List[T = A]` half of
@@ -101,6 +104,11 @@ fn the_tickets_heads_are_refused_where_written_once() {
         ),
         ("twice", "Buf[T = Int64, T = Int64]", "binds the type parameter 'T' more than once"),
         ("nested", "List[T = Buf[W = Int64]]", "has no type parameter named 'W'"),
+        (
+            "ctor",
+            "Buf.buf[W = Int64]",
+            "`test.bhcvtctor.Buf.buf` has no type parameter named 'W' — its sort `test.bhcvtctor.Buf` declares",
+        ),
     ] {
         for (spelling, rule) in both_spellings(bound) {
             let errs = load_errors_of(&program(&format!("bhcvt{tag}"), &rule));
@@ -140,6 +148,25 @@ fn a_misfit_is_refused_once_and_not_built() {
                 errs.iter().any(|e| e.contains("type mismatch")),
                 "{spelling} `{bound}`: the typer prints the bound as built: {errs:#?}"
             );
+        }
+    }
+}
+
+/// A BRACKET APPLYING A CONSTRUCTOR is that constructor's type (§8.2), so `x` is a parameter
+/// bounded by it, as `?x` is: over `:- true` the clause has one column, and `p(?z)` one
+/// answer, left waiting on the bound in both spellings. Before, the sigil-free `x` was a
+/// constant and `p(?z)` answered nothing. Whether the bound keeps `buf(v: 1)` is the
+/// constructor's own domain, which neither spelling decides yet (WI-20260925-SHED7's
+/// `SortDomain` per entity).
+#[test]
+fn a_constructor_bracket_is_its_type() {
+    for bound in ["Buf.buf[T = Int64]", "Buf.buf[Int64]", "Option.some[T = Int64]"] {
+        for (spelling, rule) in both_spellings(bound) {
+            let rule = rule.replace(":- q(x)", ":- true").replace(":- q(?x)", ":- true");
+            let mut kb = load_kb_with(&program("bhcvtctorty", &rule));
+            let found = query_unary(&mut kb, "test.bhcvtctorty.p");
+            assert_eq!(found.len(), 1, "{spelling} `{bound}`: one answer: {found:?}");
+            assert!(!found[0].1, "{spelling} `{bound}`: left waiting on the bound");
         }
     }
 }
