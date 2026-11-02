@@ -197,8 +197,7 @@ end
         panic!("a cross-file namespace-qualified receiver must load; got: {errs:?}")
     });
     let mut interp = anthill_core::eval::Interpreter::new(kb);
-    anthill_core::eval::builtins::register_standard_builtins(&mut interp)
-        .expect("register builtins");
+    anthill_core::eval::builtins::register_standard_builtins(&mut interp);
     let call = |interp: &mut anthill_core::eval::Interpreter, op: &str| {
         interp
             .call(&format!("test.wi749ns.use.{op}"), &[])

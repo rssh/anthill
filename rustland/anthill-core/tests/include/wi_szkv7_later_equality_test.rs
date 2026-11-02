@@ -128,7 +128,7 @@ fn assert_later_load_refused(earlier: &str, later_source: &str, carrier: &str, a
 
 fn bool_of(kb: KnowledgeBase, op: &str) -> bool {
     let mut interp = Interpreter::new(kb);
-    eval::builtins::register_standard_builtins(&mut interp).expect("standard builtins");
+    eval::builtins::register_standard_builtins(&mut interp);
     match interp.call(op, &[]) {
         Ok(Value::Bool(b)) => b,
         other => panic!("`{op}` did not run to a Bool: {other:?}"),

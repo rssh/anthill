@@ -324,8 +324,7 @@ fn the_value_typed_again_is_the_same_value() {
     let copy = kb.deep_clone().expect("the KB copies");
     for (which, kb) in [("the KB typed twice", kb), ("its copy", copy)] {
         let mut interp = anthill_core::eval::Interpreter::new(kb);
-        anthill_core::eval::builtins::register_standard_builtins(&mut interp)
-            .expect("standard builtins");
+        anthill_core::eval::builtins::register_standard_builtins(&mut interp);
         match interp.call("test.q2again.rd", &[]) {
             Ok(anthill_core::eval::Value::Int(8)) => {}
             other => panic!("{which}: `rd` did not run to 8: {other:?}"),

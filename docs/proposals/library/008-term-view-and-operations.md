@@ -181,6 +181,12 @@ channel, so a malformed or unrunnable binding block should be reported, not
 crash the process. That much is repairable whichever way the lazy-vs-eager
 question is settled.
 
+**Resolved by that ticket, lazily** (user, 2026-11-02): an interpreter is built
+whatever the bindings say, and a binding the runtime cannot run raises
+`EvalError::UnrunnableHostBinding` at the call it backs (kernel-language.md
+§10.2). The query above answers; a goal that reaches a harness binding is
+reported, naming the operation and the key.
+
 ### 3. `TermRepr` and `KB.reify` are dead
 
 `KB.reify(kb: KB, t: Term) -> TermRepr` and `KB.reflect` have **no
@@ -268,9 +274,9 @@ real. `checked(?carrier, ?spec) :- SortProvidesInfo(sort_ref: ?carrier, spec:
 ?view), extract_sort_ref(?view, ?spec)` binds `?spec` to the provision's base
 sort, and since `WI-20260827-2YHZ3` landed `anthill query` DISPLAYS that binding
 too (it answers `?spec = PartialEq / Eq / FiniteCollection / Iterable / Monad /
-Stream`). Note §2b still applies for its own, unrelated reason: a query over the
-`examples/guardians` KB whose goal bridges a host op panics on the test harness's
-`operation_map` entries, so exercise the rule from a Rust test there.
+Stream`). §2b no longer applies: since `WI-20260828-0ZG83` a query over the
+`examples/guardians` KB answers every goal that reaches none of the test harness's
+`operation_map` entries, so the rule can be exercised from `anthill query`.
 
 ## Interaction with other proposals
 

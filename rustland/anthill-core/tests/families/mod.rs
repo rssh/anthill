@@ -438,7 +438,7 @@ fn judged(program: &Program) -> Verdict {
         return Verdict::Loads;
     };
     let mut interp = Interpreter::new(kb);
-    eval::builtins::register_standard_builtins(&mut interp).expect("register standard eval builtins");
+    eval::builtins::register_standard_builtins(&mut interp);
     match interp.call(entry, &[]) {
         Ok(eval::Value::Int(value)) => Verdict::Runs(value.to_string()),
         Ok(other) => Verdict::DriveFails(format!("NotAnInt64/{}", variant_name(&other))),

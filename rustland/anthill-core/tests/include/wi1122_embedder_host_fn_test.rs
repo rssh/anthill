@@ -21,8 +21,8 @@
 //!   * the ORDERING is enforced, not merely documented — a late registration is refused
 //!     (`a_host_fn_registered_after_load_is_refused`), because the unenforced failure is
 //!     SILENT in a release build;
-//!   * the registry stays CLOSED — an unregistered key is still fatal
-//!     (`an_unregistered_key_is_still_fatal`);
+//!   * the registry stays CLOSED — an unregistered key is still refused, at the call it
+//!     backs (`an_unregistered_key_is_still_refused_at_the_call`);
 //!   * and the PLACEMENT: the table is on the `KnowledgeBase`, so it survives the
 //!     scratch interpreter `run_in_bridge_interp` builds per bridged evaluation
 //!     (`an_embedder_function_survives_a_fresh_interpreter_over_the_same_kb`).
@@ -45,8 +45,16 @@
 //!
 //! Two pass under ALL THREE backouts, by design: `the_control_a_fresh_key_registers`
 //! (the control against a `register_host_fn` that refuses everything) and
-//! `an_unregistered_key_is_still_fatal` (the control against a fix that was "accept any
-//! key" — WI-876's closed-registry refusal must survive).
+//! `an_unregistered_key_is_still_refused_at_the_call` (the control against a fix that
+//! was "accept any key" — WI-876's closed-registry refusal must survive).
+//!
+//! WI-20260828-0ZG83 moved both refusals — the unknown key and the arity — from
+//! INTERPRETER BUILD to the CALL: an interpreter is built whatever the bindings say, and
+//! an operation whose binding this runtime cannot run raises
+//! `EvalError::UnrunnableHostBinding` when called. The two rows assert that, each beside a
+//! sibling operation of the same program that still runs. The three back-outs above were
+//! measured again on the moved rows (2026-11-02), one switch each: 6, 2 and 1 fail, the
+//! same rows, and the two controls pass under all three.
 //!
 //! TWO THINGS THE MEASUREMENT CAUGHT, recorded because both would have shipped:
 //!   * the arity test asserted `err.contains('1') && err.contains('2')` and passed with
@@ -117,17 +125,24 @@ fn interp_with_host_fn(
     key: &'static str,
     arity: usize,
     f: fn(&mut Interpreter, &[Value]) -> Result<Value, EvalError>,
-) -> Result<Interpreter, String> {
+) -> Interpreter {
     let kb = crate::common::try_load_kb_prepared(src, |kb| {
         kb.register_host_fn(key, arity, f)
             .expect("the embedder registration itself must succeed");
     })
     .unwrap_or_else(|errs| panic!("expected a clean load; got: {errs:?}"));
     let mut interp = Interpreter::new(kb);
-    match anthill_core::eval::builtins::register_standard_builtins(&mut interp) {
-        Ok(()) => Ok(interp),
-        Err(e) => Err(format!("{e:?}")),
-    }
+    anthill_core::eval::builtins::register_standard_builtins(&mut interp);
+    interp
+}
+
+/// `program`'s `Driver` with a second operation that reaches no binding: what still runs
+/// beside a binding this runtime cannot run.
+fn program_with_sibling(ns: &str, entry: &str) -> String {
+    program(ns, entry).replace(
+        "= Widget.answer(4)\n",
+        "= Widget.answer(4)\n    operation sibling(n: Int64) -> Int64 = n + 1\n",
+    )
 }
 
 // ── The capability ───────────────────────────────────────────────────
@@ -141,8 +156,7 @@ fn interp_with_host_fn(
 #[test]
 fn an_embedder_registered_function_is_callable_from_an_operation_map() {
     let src = program("wi1122.ok", "answer: \"embedder_answer\"");
-    let mut interp = interp_with_host_fn(&src, "embedder_answer", 1, embedder_answer)
-        .expect("a registered key must let the interpreter build");
+    let mut interp = interp_with_host_fn(&src, "embedder_answer", 1, embedder_answer);
 
     let v = interp
         .call("wi1122.ok.Driver.ask", &[Value::Int(0)])
@@ -158,9 +172,9 @@ fn an_embedder_registered_function_is_callable_from_an_operation_map() {
 /// `KnowledgeBase` because `run_in_bridge_interp` (`kb/resolve.rs`) `mem::take`s the
 /// KB and builds a FRESH `Interpreter` from it per bridged evaluation — one per
 /// `@[simp]` fire, per bridged `eq` dispatch — then registers builtins on THAT. A table
-/// held by the embedder's own interpreter is simply absent there, and since an unknown
-/// key is FATAL the scratch interpreter would fail to BUILD: one `operation_map` entry
-/// would break resolution program-wide, at call sites having nothing to do with it.
+/// held by the embedder's own interpreter is simply absent there, so the scratch
+/// interpreter would register the key as unknown and every embedder operation a rule
+/// reduces would raise at its call.
 ///
 /// Modeled here by the round-trip that `run_in_bridge_interp` performs: take the KB
 /// back out of one interpreter (`into_kb`) and build a second over it. That is not an
@@ -168,34 +182,30 @@ fn an_embedder_registered_function_is_callable_from_an_operation_map() {
 /// resolves through `Default`/`new`, so the scratch interpreter receives the KB by the
 /// same move this does, and gets its builtins registered by the same call.
 ///
-/// The second interpreter is what carries the assertions: it must BUILD (the fatal
-/// unknown-key refusal is what fires otherwise) and must RUN the operation to the same
-/// value. Every other test in this file uses only the interpreter the embedder itself
+/// The second interpreter is what carries the assertion: it must RUN the operation to
+/// the same value (the unknown-key error at the call is what comes back otherwise). Every other test in this file uses only the interpreter the embedder itself
 /// built, so all of them pass under an `Interpreter`-held table and this one does not
 /// — which is what makes it worth its own fixture.
 #[test]
 fn an_embedder_function_survives_a_fresh_interpreter_over_the_same_kb() {
     let src = program("wi1122.fresh", "answer: \"embedder_answer\"");
-    let first = interp_with_host_fn(&src, "embedder_answer", 1, embedder_answer)
-        .expect("the embedder's own interpreter must build");
+    let first = interp_with_host_fn(&src, "embedder_answer", 1, embedder_answer);
 
     // The move `run_in_bridge_interp` makes: the KB leaves the interpreter, and a new
     // interpreter is built over it and given its builtins.
     let kb = first.into_kb();
     let mut second = Interpreter::new(kb);
-    anthill_core::eval::builtins::register_standard_builtins(&mut second).unwrap_or_else(|e| {
-        panic!(
-            "the second interpreter must build: {e:?}\n\
-             an EvalError::Internal naming the host_fn key here means the embedder \
-             table did not ride the KB — i.e. it is held by the Interpreter, and every \
-             bridged evaluation in the program would fail this way"
-        )
-    });
+    anthill_core::eval::builtins::register_standard_builtins(&mut second);
 
     assert_eq!(
         second
             .call("wi1122.fresh.Driver.ask", &[Value::Int(0)])
-            .expect("the mapped operation must run on the second interpreter too")
+            .expect(
+                "the mapped operation must run on the second interpreter too; an \
+                 UnrunnableHostBinding naming the key here means the embedder table did \
+                 not ride the KB — it is held by the Interpreter, and every bridged \
+                 evaluation of the operation would fail this way",
+            )
             .literal_int64(second.kb()),
         Some(407),
         "and it must reach the SAME embedder function, not merely register something",
@@ -211,18 +221,28 @@ fn an_embedder_function_survives_a_fresh_interpreter_over_the_same_kb() {
 /// accepting this costs: the program loads clean, passes `anthill check`, and dies
 /// `ArityMismatch` at the first call.
 ///
-/// WHERE IT IS REFUSED: at INTERPRETER BUILD, not at `register_host_fn`. The seam
-/// cannot check it — no mapping exists on the KB when the embedder registers, so
-/// nothing there knows what the operation declares. `register_operation_mappings` is
-/// the earliest point that knows both, which is exactly what WI-876 said when it put
-/// the check there. (The fixture asserts the registration itself SUCCEEDS, via
+/// WHERE IT IS REFUSED: at the CALL of the operation (WI-20260828-0ZG83; it was at
+/// INTERPRETER BUILD), not at `register_host_fn`. The seam cannot check it — no mapping
+/// exists on the KB when the embedder registers, so nothing there knows what the
+/// operation declares. `register_operation_mappings` is the earliest point that knows
+/// both, which is exactly what WI-876 said when it put the check there; what it
+/// registers for the disagreement raises at the call, and the program's other
+/// operations run. (The fixture asserts the registration itself SUCCEEDS, via
 /// `interp_with_host_fn`.) The message must name both numbers so the repair is obvious.
 #[test]
 fn an_embedder_entry_of_the_wrong_arity_is_refused() {
-    let src = program("wi1122.arity", "answer: \"embedder_pair\"");
-    let err = interp_with_host_fn(&src, "embedder_pair", 2, embedder_pair)
-        .err()
-        .expect("an arity disagreement must refuse the interpreter build");
+    let src = program_with_sibling("wi1122.arity", "answer: \"embedder_pair\"");
+    let mut interp = interp_with_host_fn(&src, "embedder_pair", 2, embedder_pair);
+    assert_eq!(
+        interp
+            .call("wi1122.arity.Driver.sibling", &[Value::Int(1)])
+            .expect("an operation that reaches no binding runs beside the disagreement")
+            .literal_int64(interp.kb()),
+        Some(2),
+    );
+    let err =
+        crate::common::unrunnable_at_call(&mut interp, "wi1122.arity.Driver.ask", &[Value::Int(0)])
+            .to_string();
 
     // On the ARITY message specifically, not on the digits 1 and 2 appearing
     // anywhere: an earlier draft asserted `err.contains('1') && err.contains('2')`
@@ -249,8 +269,7 @@ fn an_embedder_entry_of_the_wrong_arity_is_refused() {
 #[test]
 fn the_control_a_matching_arity_runs() {
     let src = program("wi1122.arityok", "answer: \"embedder_answer\"");
-    let mut interp = interp_with_host_fn(&src, "embedder_answer", 1, embedder_answer)
-        .expect("matching arity must build");
+    let mut interp = interp_with_host_fn(&src, "embedder_answer", 1, embedder_answer);
     assert_eq!(
         interp
             .call("wi1122.arityok.Driver.ask", &[Value::Int(0)])
@@ -360,8 +379,7 @@ fn a_host_fn_registered_after_load_is_refused() {
 #[test]
 fn the_control_the_same_registration_before_load_is_accepted() {
     let src = program("wi1122.ontime", "answer: \"embedder_answer\"");
-    let mut interp = interp_with_host_fn(&src, "embedder_answer", 1, embedder_answer)
-        .expect("registering before load must be accepted");
+    let mut interp = interp_with_host_fn(&src, "embedder_answer", 1, embedder_answer);
     assert_eq!(
         interp
             .call("wi1122.ontime.Driver.ask", &[Value::Int(0)])
@@ -401,8 +419,7 @@ fn an_embedder_function_may_close_over_its_own_state() {
     .unwrap_or_else(|errs| panic!("expected a clean load; got: {errs:?}"));
 
     let mut interp = Interpreter::new(kb);
-    anthill_core::eval::builtins::register_standard_builtins(&mut interp)
-        .expect("a closure entry must let the interpreter build");
+    anthill_core::eval::builtins::register_standard_builtins(&mut interp);
     assert_eq!(
         interp
             .call("wi1122.closure.Driver.ask", &[Value::Int(0)])
@@ -417,18 +434,27 @@ fn an_embedder_function_may_close_over_its_own_state() {
 
 /// PASSES BOTH WITH AND WITHOUT THE CHANGE, BY DESIGN. WI-876's refusal is what keeps
 /// `operation_map` from binding to nothing, and the fix must not have been "accept any
-/// key": a mapping naming a function NEITHER registry has is still fatal, and still
-/// says so.
+/// key": a mapping naming a function NEITHER registry has is still refused, and still
+/// says so — at the call of the operation it maps (WI-20260828-0ZG83), while the
+/// program's other operations run.
 ///
 /// The embedder here registers a real function under a DIFFERENT key, so the miss is
 /// a POPULATED table not containing the key rather than an absent table — the two are
 /// distinct paths through the lookup, and only this one exercises the second half.
 #[test]
-fn an_unregistered_key_is_still_fatal() {
-    let src = program("wi1122.missing", "answer: \"no_such_host_function\"");
-    let err = interp_with_host_fn(&src, "embedder_answer", 1, embedder_answer)
-        .err()
-        .expect("a key in neither registry must refuse the interpreter build");
+fn an_unregistered_key_is_still_refused_at_the_call() {
+    let src = program_with_sibling("wi1122.missing", "answer: \"no_such_host_function\"");
+    let mut interp = interp_with_host_fn(&src, "embedder_answer", 1, embedder_answer);
+    assert_eq!(
+        interp
+            .call("wi1122.missing.Driver.sibling", &[Value::Int(1)])
+            .expect("an operation that reaches no binding runs beside the unknown key")
+            .literal_int64(interp.kb()),
+        Some(2),
+    );
+    let err =
+        crate::common::unrunnable_at_call(&mut interp, "wi1122.missing.Driver.ask", &[Value::Int(0)])
+            .to_string();
 
     assert!(
         err.contains("no_such_host_function"),

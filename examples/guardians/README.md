@@ -126,8 +126,11 @@ carrying `Permission[Llm]` — so the test double exercises the same authority
 path as production and differs only in whether the call leaves the process
 (`Permission` and `External` are orthogonal; proposal 064). Host functions are bound per carrier through
 `operation_map` + `KnowledgeBase::register_host_fn`, which must be called
-**before** load (WI-1122 — after load is refused, because the failure would be
-silent in release).
+**before** load (WI-1122 — after load is refused: an interpreter the load builds
+may already have read the keys, and a later one would then not be bound). A
+runtime that registers none of them — `anthill query`, `anthill run` — still
+runs every goal and operation that reaches none of these bindings, and reports
+one that does at its call.
 
 Each binding answers from its own value: the fake from its `fixture`, the live
 carrier with one OpenAI-compatible chat request to the `endpoint` and `model` it

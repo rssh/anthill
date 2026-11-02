@@ -52,7 +52,7 @@ fn box_facts(kb: &KnowledgeBase) -> usize {
 /// and may not leave the thread it was made on.
 fn doubled(kb: KnowledgeBase, n: i64) -> i64 {
     let mut interp = Interpreter::new(kb);
-    register_standard_builtins(&mut interp).expect("register standard eval builtins");
+    register_standard_builtins(&mut interp);
     match interp.call("test.d0sd4.double", &[Value::Int(n)]) {
         Ok(Value::Int(doubled)) => doubled,
         other => panic!("`double({n})` did not run to an Int64: {other:?}"),

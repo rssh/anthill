@@ -307,8 +307,7 @@ fn a_dictionary_that_is_no_pattern_is_refused_before_the_thunk_runs() {
     })
     .unwrap_or_else(|errs| panic!("the fixture must load: {errs:#?}"));
     let mut interp = anthill_core::eval::Interpreter::new(kb);
-    anthill_core::eval::builtins::register_standard_builtins(&mut interp)
-        .expect("register standard eval builtins");
+    anthill_core::eval::builtins::register_standard_builtins(&mut interp);
 
     TICKS.store(0, Ordering::SeqCst);
     let v = interp.call("test.ym8hd.standin.viaOp", &[]).expect("the control answers");
@@ -398,8 +397,7 @@ fn a_raise_at_the_depth_caps_last_frame_is_caught() {
                     ..Default::default()
                 },
             );
-            anthill_core::eval::builtins::register_standard_builtins(&mut interp)
-                .expect("register standard eval builtins");
+            anthill_core::eval::builtins::register_standard_builtins(&mut interp);
             let outcome = interp.call(&format!("test.ym8hd.deep.{op}"), &[]);
             let answer = match outcome {
                 Ok(v) => crate::common::scalar_int(interp.kb(), &v),

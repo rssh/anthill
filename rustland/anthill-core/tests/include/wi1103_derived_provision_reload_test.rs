@@ -124,8 +124,7 @@ fn two_phase_load_drives_a_derived_noneq_carrier() {
     load_phase_two(&mut kb, USER).expect("phase 2 must load into an already-loaded KB");
 
     let mut i = Interpreter::new(kb);
-    anthill_core::eval::builtins::register_standard_builtins(&mut i)
-        .expect("register standard eval builtins");
+    anthill_core::eval::builtins::register_standard_builtins(&mut i);
 
     // The PHASE-1-derived carrier, compared field-wise across the phase boundary.
     assert!(

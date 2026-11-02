@@ -71,7 +71,7 @@ fn build_cell_wis(interp: &mut Interpreter) -> Value {
 fn polymorphic_entry_op_runs_when_dict_supplied() {
     let kb = load_with_driver();
     let mut interp = Interpreter::new(kb);
-    eval::builtins::register_standard_builtins(&mut interp).expect("builtins");
+    eval::builtins::register_standard_builtins(&mut interp);
 
     let cell = build_cell_wis(&mut interp);
     let id_arg = Value::Str("WI-001".to_string());
@@ -117,7 +117,7 @@ fn polymorphic_entry_op_runs_when_dict_supplied() {
 fn arity_mismatch_when_requirements_count_wrong() {
     let kb = load_with_driver();
     let mut interp = Interpreter::new(kb);
-    eval::builtins::register_standard_builtins(&mut interp).expect("builtins");
+    eval::builtins::register_standard_builtins(&mut interp);
 
     let cell = build_cell_wis(&mut interp);
     let id_arg = Value::Str("WI-001".to_string());
@@ -148,7 +148,7 @@ fn plain_call_on_polymorphic_op_documents_the_gap() {
     // entry path.
     let kb = load_with_driver();
     let mut interp = Interpreter::new(kb);
-    eval::builtins::register_standard_builtins(&mut interp).expect("builtins");
+    eval::builtins::register_standard_builtins(&mut interp);
 
     let cell = build_cell_wis(&mut interp);
     let id_arg = Value::Str("WI-001".to_string());
@@ -210,7 +210,7 @@ fn nested_op_dispatches_spec_call_via_inherited_requires() {
     );
 
     let mut interp = Interpreter::new(kb);
-    eval::builtins::register_standard_builtins(&mut interp).expect("builtins");
+    eval::builtins::register_standard_builtins(&mut interp);
 
     let cell = build_cell_wis(&mut interp);
     let id_arg = Value::Str("WI-001".to_string());

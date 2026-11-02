@@ -275,8 +275,7 @@ fn some_of_set(kb: &mut KnowledgeBase, elems: &[i64]) -> Value {
 fn plain_interp() -> Interpreter {
     let kb = common::load_kb_with("namespace test.wi625.plain\nend\n");
     let mut i = Interpreter::new(kb);
-    anthill_core::eval::builtins::register_standard_builtins(&mut i)
-        .expect("register eval builtins");
+    anthill_core::eval::builtins::register_standard_builtins(&mut i);
     i
 }
 
@@ -289,8 +288,7 @@ fn bridge_interp() -> Interpreter {
             ..Default::default()
         },
     );
-    anthill_core::eval::builtins::register_standard_builtins(&mut i)
-        .expect("register eval builtins");
+    anthill_core::eval::builtins::register_standard_builtins(&mut i);
     i
 }
 
@@ -858,8 +856,7 @@ fn typed_op_body_eq_over_set_evaluates_via_bridge() {
     // WI-20260926-QCJ0B's. FAILS with K4JGC backed out: `Some(true)` / `Some(false)`.
     let kb = common::load_kb_with(TYPED_SET_EQ_SRC);
     let mut i = Interpreter::new(kb);
-    anthill_core::eval::builtins::register_standard_builtins(&mut i)
-        .expect("register standard eval builtins");
+    anthill_core::eval::builtins::register_standard_builtins(&mut i);
     for (x, y) in [(&[1, 2][..], &[2, 1][..]), (&[1, 2], &[1, 3])] {
         let a = Value::term(set_term(i.kb_mut(), x));
         let b = Value::term(set_term(i.kb_mut(), y));

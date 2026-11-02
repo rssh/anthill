@@ -47,6 +47,11 @@ pub enum EvalError {
     NotImplemented {
         running: Option<String>,
     },
+    /// An operation or a const whose `language rust` binding this runtime cannot run was
+    /// reached: its key names no host function here, or one that does not fit the
+    /// declaration. Raised at the call (the const's force), not when an interpreter is
+    /// built, so the rest of the program runs (kernel-language.md §10.2).
+    UnrunnableHostBinding(UnrunnableHostBinding),
     /// WI-20260827-T2470 — a constructor APPLICATION in an evaluated body gives more
     /// positional arguments than the entity has unfilled fields. The eval twin of
     /// [`crate::kb::execute::LowerError::OverArityConstructor`], raised from
@@ -347,6 +352,69 @@ pub enum RaisedType {
     Unknown,
 }
 
+/// A `language rust` binding this runtime cannot run ([`EvalError::UnrunnableHostBinding`]):
+/// what it maps, the key it names, and why the key does not serve. Built once, when the
+/// mappings are read, and raised at every call — so it is `Clone`, where `EvalError` is not.
+#[derive(Clone, Debug)]
+pub struct UnrunnableHostBinding {
+    /// The operation's or the const's qualified name.
+    pub mapped: String,
+    /// The binding's `host_fn` key.
+    pub key: String,
+    pub why: UnrunnableHostBindingWhy,
+}
+
+/// Why a binding's key does not serve what it maps.
+#[derive(Clone, Debug)]
+pub enum UnrunnableHostBindingWhy {
+    /// An `operation_map` key neither this runtime nor its embedder registered.
+    UnknownFunction,
+    /// A `const_map` key neither this runtime nor its embedder registered.
+    UnknownValue,
+    /// The host function's arity is not the operation's.
+    ArityDisagrees { declared: usize, host: usize },
+    /// A const's value source takes arguments; `force_const` passes none.
+    NotNullary { host: usize },
+}
+
+impl UnrunnableHostBinding {
+    /// What is wrong with the binding, as a clause about the operation or const it maps —
+    /// for a report whose subject already names it.
+    pub fn reason(&self) -> String {
+        let UnrunnableHostBinding { mapped, key, why } = self;
+        match why {
+            UnrunnableHostBindingWhy::UnknownFunction => format!(
+                "its `language rust` binding (`operation_map`) names host function {key:?}, \
+                 which this runtime does not provide"
+            ),
+            UnrunnableHostBindingWhy::UnknownValue => format!(
+                "its `language rust` binding (`const_map`) names host value {key:?}, which \
+                 this runtime does not provide"
+            ),
+            UnrunnableHostBindingWhy::ArityDisagrees { declared, host } => format!(
+                "its `language rust` binding (`operation_map`) names {key:?}, but `{mapped}` \
+                 takes {declared} argument(s) and {key:?} takes {host}"
+            ),
+            UnrunnableHostBindingWhy::NotNullary { host } => format!(
+                "its `language rust` binding (`const_map`) names {key:?}, which takes {host} \
+                 argument(s); a const's value source must be nullary"
+            ),
+        }
+    }
+}
+
+impl std::fmt::Display for UnrunnableHostBinding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let outcome = match self.why {
+            UnrunnableHostBindingWhy::UnknownFunction
+            | UnrunnableHostBindingWhy::ArityDisagrees { .. } => "cannot run here",
+            UnrunnableHostBindingWhy::UnknownValue
+            | UnrunnableHostBindingWhy::NotNullary { .. } => "has no value here",
+        };
+        write!(f, "`{}` {outcome}: {}", self.mapped, self.reason())
+    }
+}
+
 /// How a handler's answer was wrong ([`EvalError::HandlerError`]). The values and types are
 /// rendered where the answer is read: `Display` has no `KnowledgeBase`.
 #[derive(Debug)]
@@ -595,6 +663,8 @@ impl EvalError {
             // A hole a rule body reached: the goal has no value, and the author is told
             // which operation is not written yet.
             | EvalError::NotImplemented { .. }
+            // A binding this runtime cannot run, reached by the goal: told, as a hole is.
+            | EvalError::UnrunnableHostBinding(_)
             | EvalError::OverArityConstructor { .. }
             // THE TWO BUDGET EXHAUSTIONS AGREE, and an earlier draft had them
             // disagreeing — `DepthExceeded` as a silent truncation beside
@@ -739,6 +809,7 @@ impl std::fmt::Display for EvalError {
             EvalError::NotImplemented { running: None } => {
                 write!(f, "not implemented: `todo()` reached")
             }
+            EvalError::UnrunnableHostBinding(binding) => write!(f, "{binding}"),
             EvalError::OverArityConstructor {
                 functor,
                 given,

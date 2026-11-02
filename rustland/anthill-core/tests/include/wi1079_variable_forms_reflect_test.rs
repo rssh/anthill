@@ -143,7 +143,7 @@ fn extract_var(kb: &mut KnowledgeBase, v: Var) -> (Symbol, String, i64) {
     // (`?E`, `Rho`) minted an id past the other table's end and the row panicked out of bounds
     // instead of failing. Borrowing removes the hazard rather than documenting it.
     let mut interp = Interpreter::new(std::mem::replace(kb, KnowledgeBase::new()));
-    register_standard_builtins(&mut interp).expect("register builtins");
+    register_standard_builtins(&mut interp);
     let r = interp
         .call("anthill.reflect.extract", &[Value::term(ty)])
         .expect("extract should evaluate");
@@ -233,7 +233,7 @@ fn the_placeholder_type_var_is_neither_of_them() {
     let id_key = kb.intern("id");
 
     let mut interp = Interpreter::new(kb);
-    register_standard_builtins(&mut interp).expect("register builtins");
+    register_standard_builtins(&mut interp);
     let r = interp
         .call("anthill.reflect.extract", &[Value::term(tv)])
         .expect("extract should evaluate");
@@ -264,7 +264,7 @@ fn a_de_bruijn_var_is_not_one_of_these_forms() {
     let error_ctor = ctor(&kb, "Error");
 
     let mut interp = Interpreter::new(kb);
-    register_standard_builtins(&mut interp).expect("register builtins");
+    register_standard_builtins(&mut interp);
     let r = interp
         .call("anthill.reflect.extract", &[Value::term(ty)])
         .expect("extract should evaluate");

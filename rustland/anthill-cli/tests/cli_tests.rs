@@ -159,3 +159,5 @@ mod wi_fheek_inlined_names_test;
 mod wi_1p005_binder_after_use_test;
 #[path = "include/wi_vvrhj_field_constant_test.rs"]
 mod wi_vvrhj_field_constant_test;
+#[path = "include/wi_0zg83_unrunnable_binding_cli_test.rs"]
+mod wi_0zg83_unrunnable_binding_cli_test;

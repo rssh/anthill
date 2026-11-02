@@ -123,8 +123,7 @@ end
         panic!("a namespace-qualified rule-ref method call must load; got: {errs:?}")
     });
     let mut interp = anthill_core::eval::Interpreter::new(kb);
-    anthill_core::eval::builtins::register_standard_builtins(&mut interp)
-        .expect("register builtins");
+    anthill_core::eval::builtins::register_standard_builtins(&mut interp);
     let r = interp
         .call("test.wi729ns.use.aliceRows", &[])
         .expect("aliceRows drains the where-filtered bare-qualified relation");

@@ -154,8 +154,7 @@ fn eval_int(srcs: &[String], why: &str) -> i64 {
         Err(errs) => panic!("{why}; the program did not load: {errs:?}"),
     };
     let mut interp = anthill_core::eval::Interpreter::new(kb);
-    anthill_core::eval::builtins::register_standard_builtins(&mut interp)
-        .expect("register standard eval builtins");
+    anthill_core::eval::builtins::register_standard_builtins(&mut interp);
     match interp.call("wi845.use.Driver.drive", &[Value::Int(0)]) {
         Ok(Value::Int(n)) => n,
         other => panic!("{why}; got {other:?}"),

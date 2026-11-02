@@ -163,7 +163,7 @@ fn eval_int(src: &str, op: &str) -> Result<i64, String> {
     let kb = crate::common::try_load_kb_with(src)
         .unwrap_or_else(|errs| panic!("fixture must load clean; got {errs:#?}"));
     let mut interp = Interpreter::new(kb);
-    eval::builtins::register_standard_builtins(&mut interp).expect("register eval builtins");
+    eval::builtins::register_standard_builtins(&mut interp);
     match interp.call(op, &[]) {
         Ok(Value::Int(n)) => Ok(n),
         Ok(other) => Err(format!("expected Int, got {}", other.type_name())),

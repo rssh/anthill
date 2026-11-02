@@ -23,17 +23,13 @@ fn dump_eq_lt_rewrites() {
     // WI-1117: and coordination.anthill for `MirrorEntry`, which store.anthill
     // imports for the delete cascade — WITH its rust binding, which WI-20260922-BRT4Y
     // makes the declaration's condition of loading (its `Forge` operations are
-    // `@[host_implemented]`), and so with stand-ins for the host functions that binding
-    // names, registered on the KB before load.
+    // `@[host_implemented]`).
     files.extend(crate::common::anthill_todo_coordination_files());
     files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/store.anthill"));
     files.push(crate::common::workspace_root().join("rustland/anthill-todo/anthill/main.anthill"));
 
-    let (kb, load_result) = crate::common::load_outcome_files_prepared(
-        &crate::common::user_paths(&files),
-        crate::common::register_forge_host_stand_ins,
-    )
-    .into_parts();
+    let (kb, load_result) =
+        crate::common::load_outcome_files(&crate::common::user_paths(&files)).into_parts();
     match &load_result {
         Ok(_) => println!("[wi237] load OK"),
         Err(errs) => {

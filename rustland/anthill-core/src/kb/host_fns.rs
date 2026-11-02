@@ -8,7 +8,7 @@
 //! name its own functions at all.
 //!
 //! This is not a third registration tier. It is the missing half of the second one:
-//! the same keys, the same arity check, the same loud refusal on a miss — with the
+//! the same keys, the same arity check, the same loud error on a miss — with the
 //! table extensible at runtime instead of frozen at compile time.
 //!
 //! It reaches `const_map` as well as `operation_map`, because `register_const_mappings`
@@ -26,10 +26,9 @@
 //! (`kb/resolve.rs`) `mem::take`s the KB and constructs a FRESH `Interpreter` per
 //! bridged evaluation — one per `@[simp]` fire, per bridged `eq` dispatch — then runs
 //! `register_standard_builtins` on it. An embedder table held by the embedder's own
-//! interpreter is simply absent there, and because an unknown key is FATAL the
-//! scratch interpreter would fail to build at all: writing one `operation_map` entry
-//! would break resolution program-wide, at call sites having nothing to do with the
-//! mapping.
+//! interpreter is simply absent there, so every operation the embedder binds would be
+//! unrunnable in the scratch interpreter — an unknown key raises at the operation's
+//! call (`EvalError::UnrunnableHostBinding`) — and a rule could not reduce one.
 //!
 //! The KB is what survives the `mem::take`, so it is the only place the embedder's
 //! functions can be sitting when the scratch interpreter registers its builtins. The
@@ -47,8 +46,7 @@
 //! Not merely before the embedder's own interpreter. LOAD ITSELF builds interpreters
 //! — `build_host_op_mappings`' doc lists the crossings, and a `@[simp]` macro fire
 //! during load is one of them — so a table registered after `load_all` can already be
-//! too late, and the failure is the fatal unknown-key one rather than a missing
-//! implementation at the call.
+//! too late, and the operation raises the unknown-key error at its call.
 //!
 //! Registering early is also what makes the load-time promise honest:
 //! `is_interpreter_mapped_op` tells the typer that this process's interpreter has an
@@ -163,14 +161,11 @@ pub enum HostFnRegError {
     ///
     /// The ordering rule is in this module's header; what makes a late registration
     /// worth a hard refusal rather than a doc line is HOW it fails otherwise. The
-    /// scratch interpreter's build error is an `EvalError::Internal`, and both bridge
-    /// callers residualize one: `simp_rewrite.rs`'s macro-expansion arm and
-    /// `resolve.rs`'s `bridge_op_to_eval` each `debug_assert!` on `Internal` and then
-    /// return "no answer". In a DEBUG build that assert fires; in a RELEASE build the
-    /// macro silently does not expand and the rule silently does not answer, and the
-    /// program loads clean. A silent wrong answer is exactly what the repo's
-    /// loud-over-silent rule exists to prevent, so the refusal moves to the seam where
-    /// it can still be loud.
+    /// registration list is memoized per KB by the first interpreter built over it, and
+    /// load itself builds interpreters, so whether a later key is read depends on what the
+    /// load happened to evaluate: where it is not, the operation it backs raises the
+    /// unknown-key error at its call although the embedder did register it. The refusal is
+    /// at the seam, where the embedder's mistake is still the embedder's to see.
     AfterLoad { key: String },
 }
 

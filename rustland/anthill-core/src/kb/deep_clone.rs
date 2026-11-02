@@ -1015,20 +1015,23 @@ impl Copier {
     }
 
     /// The loader's host-mapping cache: a `fn` entry is copied, a closure refused
-    /// ([`host_fns::HostFn::deep_clone_with`]).
+    /// ([`host_fns::HostFn::deep_clone_with`]), a binding this runtime cannot run copied.
     fn host_op_registrations(
         &mut self,
-        cell: &std::cell::OnceCell<Result<Vec<(Symbol, host_fns::HostFn)>, String>>,
-    ) -> std::cell::OnceCell<Result<Vec<(Symbol, host_fns::HostFn)>, String>> {
+        cell: &std::cell::OnceCell<Vec<(Symbol, crate::eval::builtins::HostRegistration)>>,
+    ) -> std::cell::OnceCell<Vec<(Symbol, crate::eval::builtins::HostRegistration)>> {
         let copy = std::cell::OnceCell::new();
         if let Some(built) = cell.get() {
-            let built = match built {
-                Ok(entries) => Ok(entries
-                    .iter()
-                    .map(|(op, f)| (plain(op), f.deep_clone_with("a mapped operation", self)))
-                    .collect()),
-                Err(why) => Err(plain(why)),
-            };
+            let built = built
+                .iter()
+                .map(|(op, registration)| {
+                    let registration = match registration {
+                        Ok(f) => Ok(f.deep_clone_with("a mapped operation", self)),
+                        Err(binding) => Err(plain(binding)),
+                    };
+                    (plain(op), registration)
+                })
+                .collect();
             // A fresh cell: `set` cannot find it taken.
             let _ = copy.set(built);
         }

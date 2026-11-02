@@ -314,8 +314,7 @@ fn build_kb() -> Result<KnowledgeBase, String> {{
 fn run(argv: Vec<String>) -> Result<i64, String> {{
     let kb = build_kb()?;
     let mut interp = Interpreter::new(kb);
-    eval::builtins::register_standard_builtins(&mut interp)
-        .map_err(|e| format!("register builtins: {{e:?}}"))?;
+    eval::builtins::register_standard_builtins(&mut interp);
     interp.register_standard_effect_handlers()
         .map_err(|e| format!("register effects: {{e:?}}"))?;
     let args_value = build_string_list(&mut interp, argv);

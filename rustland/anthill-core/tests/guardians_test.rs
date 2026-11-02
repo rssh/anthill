@@ -2099,19 +2099,18 @@ fn late_host_fn_registration_is_refused() {
 }
 
 #[test]
-fn an_interpreter_can_be_built_over_this_kb() {
-    // Verifies the review's claim that four `operation_map` keys are declared and
-    // registered nowhere, so `register_operation_mappings` — which hard-errors on
-    // an unknown key for a `lang == "rust"` mapping — kills every interpreter
-    // built over this program. Loading does NOT surface it: the load-time check
-    // is on the mapping's LANGUAGE, not on the key resolving.
+fn every_binding_of_this_kb_runs_here() {
+    // Every `language rust` key the library writes is one `register_pipeline`
+    // registers. A key it missed would raise `UnrunnableHostBinding` at the call of the
+    // operation it backs, which the other rows reach only for the operations they call.
+    // Loading does NOT surface it: the load-time check is on the mapping's LANGUAGE,
+    // not on the key resolving.
     let kb = try_load_with_agent(Some("good"), register_pipeline)
         .unwrap_or_else(|e| panic!("load: {e:#?}"));
-    let mut interp = anthill_core::eval::Interpreter::new(kb);
-    let r = anthill_core::eval::builtins::register_standard_builtins(&mut interp);
+    let unrunnable = anthill_core::eval::builtins::unrunnable_bindings(&kb);
     assert!(
-        r.is_ok(),
-        "no interpreter can be built over the guardians KB: {r:?}"
+        unrunnable.is_empty(),
+        "bindings of the guardians KB this runtime cannot run: {unrunnable:?}"
     );
 }
 
@@ -2184,8 +2183,7 @@ fn checker_interp() -> anthill_core::eval::Interpreter {
 /// smaller reflect surface than production had (/code-review, WI-20260914-Z73FX).
 fn interp_over(kb: KnowledgeBase) -> anthill_core::eval::Interpreter {
     let mut interp = anthill_core::eval::Interpreter::new(kb);
-    anthill_core::eval::builtins::register_standard_builtins(&mut interp)
-        .expect("register standard eval builtins");
+    anthill_core::eval::builtins::register_standard_builtins(&mut interp);
     interp
 }
 

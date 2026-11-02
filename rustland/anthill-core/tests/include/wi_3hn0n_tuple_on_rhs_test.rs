@@ -111,8 +111,7 @@ fn assert_runs(src: &str, entry: &str, expected: i64) {
 #[track_caller]
 fn assert_the_body_written_value(name: &str, src: &str) {
     let mut interp = Interpreter::new(load_kb_with(src));
-    eval::builtins::register_standard_builtins(&mut interp)
-        .expect("register standard eval builtins");
+    eval::builtins::register_standard_builtins(&mut interp);
     let rewritten = interp
         .call(&format!("test.{name}.go"), &[])
         .unwrap_or_else(|e| panic!("the equation's value: {e:?}"));

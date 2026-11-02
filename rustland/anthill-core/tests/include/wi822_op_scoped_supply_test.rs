@@ -735,8 +735,7 @@ end
         let kb = crate::common::load_kb_with(src);
         let tag = kb.resolve_symbol(&format!("{ns}.Tag.tag"));
         let mut interp = anthill_core::eval::Interpreter::new(kb);
-        anthill_core::eval::builtins::register_standard_builtins(&mut interp)
-            .expect("register standard eval builtins");
+        anthill_core::eval::builtins::register_standard_builtins(&mut interp);
         interp.call(
             &format!("{ns}.Holder.probe"),
             &[Value::Entity {

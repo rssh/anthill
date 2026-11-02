@@ -1,0 +1,24 @@
+-- `squish` is bound to a key an embedder would register; the CLI does not.
+namespace p
+  import anthill.prelude.{Int64, List, String}
+  sort W
+    entity w(n: Int64)
+    operation squish(x: W) -> Int64 @[host_implemented]
+  end
+  provides W language rust
+    artifact "nowhere.rs"
+    operation_map { squish: "embedder_squish" }
+  end
+  operation plain(x: Int64) -> Int64 = x + 1
+  rule other(?r) :- ?r <=> plain(1)
+  rule uses(?r) :- ?r <=> W.squish(w(n: 3))
+
+  sort Reaches
+    requires anthill.cli.Main
+    operation main(args: List[T = String]) -> Int64 = plain(1) + W.squish(w(n: 3))
+  end
+  sort Avoids
+    requires anthill.cli.Main
+    operation main(args: List[T = String]) -> Int64 = plain(1)
+  end
+end

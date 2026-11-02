@@ -485,12 +485,11 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         // FOUND BY /code-review, and the comment this replaced justified the omission
         // with a claim that is FALSE: "a layer does not run the post-load pass". It
         // does — `kb_loaded` reaches `load_all` into a live KB -> `load_phase_inner` ->
-        // `build_host_op_mappings` -> `set_host_op_mappings`. The worst case is not a
-        // stale registration but a POISONED base: a layer whose `operation_map` names an
-        // unknown `host_fn` memoizes the refusal (the whole point of caching the `Err`),
-        // and after the discard every interpreter built over the base KB fails
-        // permanently for a mapping the base no longer has — defeating `kb_loaded`'s own
-        // contract that a failed `loaded` leaves the KB as it found it.
+        // `build_host_op_mappings` -> `set_host_op_mappings`. Unscoped, every
+        // interpreter built over the base KB after the discard would register the
+        // layer's entries — its host functions, and for a `host_fn` no registry has an
+        // entry that raises — for operations the base no longer declares, defeating
+        // `kb_loaded`'s own contract that a failed `loaded` leaves the KB as it found it.
         host_op_registrations: _,
         host_const_mappings: _,
         default_providers: _,
@@ -658,23 +657,23 @@ end
     /// LAYER's derivation. The per-interpreter re-derivation it replaced was self-healing,
     /// which is why nothing noticed.
     ///
-    /// THE POISONED-BASE SHAPE, driven here because it is the worst one and the only one
-    /// visible from outside: a binding block naming an unknown `host_fn` LOADS CLEAN —
+    /// THE POISONED-BASE SHAPE: a binding block naming an unknown `host_fn` LOADS CLEAN —
     /// `build_host_op_mappings` checks that the operation is declared, never that the key
     /// resolves, because which functions a runtime exposes is only that runtime's to know
-    /// (kernel-language.md §10.2). The refusal lands when an interpreter is built, and it
-    /// is CACHED, so without the fix every later interpreter over the BASE KB fails
-    /// permanently for a mapping the base does not have — defeating the discard's own
-    /// contract.
+    /// (kernel-language.md §10.2). The interpreter registers an entry that raises at the
+    /// operation's call, and the memo CACHES it, so without the fix every later
+    /// interpreter over the BASE KB registers the layer's entries, for operations the base
+    /// does not declare — defeating the discard's own contract.
     ///
     /// WHAT FAILS WHEN THE FIX IS BACKED OUT (drop `host_op_registrations` from
     /// `kb_scoped_fields!`): the LAST assertion, and only it. Everything before the
-    /// restore passes either way — those lines exist to prove the layer's broken mapping
-    /// really did poison the memo, so that "the base is clean afterwards" is not vacuously
-    /// true of a memo that was never populated.
+    /// restore passes either way — those lines exist to prove the layer's mapping really
+    /// did reach the memo, so that "the base is clean afterwards" is not vacuously true
+    /// of a memo that was never populated.
     ///
-    /// `register_standard_builtins` IS THE PROBE, not a full evaluation: it is the one
-    /// step that reads the memo, and reading it is the whole question.
+    /// THE PROBE READS THE MEMO, after `register_standard_builtins` filled it: an
+    /// interpreter is built whatever the bindings say, so building one shows nothing, and
+    /// the memo is the whole question.
     #[test]
     fn wi880_a_discarded_layers_operation_map_does_not_poison_the_base() {
         // A carrier declaring one body-less operation, mapped to a key `HOST_FNS` and the
@@ -693,22 +692,29 @@ namespace wi880.layerpoison
   end
 end
 "#;
-        let interp_builds = |kb: &mut KnowledgeBase| -> Result<(), String> {
+        // The keys of the memo's unrunnable entries, once an interpreter has been built.
+        let memoized_unrunnable = |kb: &mut KnowledgeBase| -> Vec<String> {
             // `Interpreter::new` MOVES the KB, so hand it a taken one and put it back —
             // the same `mem::take` shape `run_in_bridge_interp` uses, and the reason the
             // memo rides the KB at all.
             let taken = std::mem::take(kb);
             let mut interp = crate::eval::Interpreter::new(taken);
-            let verdict = crate::eval::builtins::register_standard_builtins(&mut interp)
-                .map_err(|e| format!("{e:?}"));
+            crate::eval::builtins::register_standard_builtins(&mut interp);
             *kb = interp.into_kb();
-            verdict
+            kb.host_op_registrations(|| {
+                panic!("an interpreter was just built over this KB, so the memo is filled")
+            })
+            .iter()
+            .filter_map(|(_, registration)| registration.as_ref().err())
+            .map(|binding| binding.key.clone())
+            .collect()
         };
 
         let mut kb = crate::kb::test_support::load_stdlib(None);
-        assert!(
-            interp_builds(&mut kb).is_ok(),
-            "the base KB must build an interpreter before the layer — otherwise the \
+        assert_eq!(
+            memoized_unrunnable(&mut kb),
+            Vec::<String>::new(),
+            "the base KB's memo holds no unrunnable entry before the layer — otherwise the \
              assertion after the discard would hold for a reason that has nothing to \
              do with the layer"
         );
@@ -721,22 +727,20 @@ end
              functions a runtime exposes. If this starts failing the fixture no longer \
              reaches the memo and the last assertion means nothing"
         );
-        let err = interp_builds(&mut kb).expect_err(
-            "the layer's mapping names a function no registry has, so building an \
-             interpreter over the LAYER must refuse — and that refusal is what gets \
-             memoized",
-        );
+        let in_layer = memoized_unrunnable(&mut kb);
         assert!(
-            err.contains("no_such_host_function"),
-            "the refusal must name the key, or the memo below holds something else: {err}"
+            in_layer.iter().any(|key| key == "no_such_host_function"),
+            "the layer's mapping names a function no registry has, so the memo over the \
+             LAYER holds its unrunnable entry: {in_layer:?}"
         );
 
         kb.restore_scoped(snap);
 
-        // THE ASSERTION. The base KB has no such mapping, so it must build interpreters
-        // again exactly as it did above.
-        assert!(
-            interp_builds(&mut kb).is_ok(),
+        // THE ASSERTION. The base KB has no such mapping, so its memo must hold no
+        // unrunnable entry again, exactly as above.
+        assert_eq!(
+            memoized_unrunnable(&mut kb),
+            Vec::<String>::new(),
             "a discarded layer's `operation_map` must not survive in the registration \
              memo — the base KB never named `no_such_host_function`"
         );

@@ -854,8 +854,7 @@ end
     let kb = crate::common::try_load_kb_with_files(&[DATA, USE])
         .unwrap_or_else(|errs| panic!("qualified applied reference must load; got: {errs:?}"));
     let mut interp = anthill_core::eval::Interpreter::new(kb);
-    anthill_core::eval::builtins::register_standard_builtins(&mut interp)
-        .expect("register builtins");
+    anthill_core::eval::builtins::register_standard_builtins(&mut interp);
     let r = interp
         .call("test.wi714q.use.bobsAges", &[])
         .expect("bobsAges runs the qualified-applied relation");
@@ -1076,8 +1075,7 @@ end
         panic!("bare-qualified namespace reference must load; got: {errs:?}")
     });
     let mut interp = anthill_core::eval::Interpreter::new(kb);
-    anthill_core::eval::builtins::register_standard_builtins(&mut interp)
-        .expect("register builtins");
+    anthill_core::eval::builtins::register_standard_builtins(&mut interp);
     let r = interp
         .call("test.wi714bq.use.rows", &[])
         .expect("rows() drains the bare-qualified relation");
@@ -1346,8 +1344,7 @@ end
     let kb = crate::common::try_load_kb_with_files(&[F1, F2])
         .unwrap_or_else(|errs| panic!("cross-sort rule-body call must load; got: {errs:?}"));
     let mut interp = anthill_core::eval::Interpreter::new(kb);
-    anthill_core::eval::builtins::register_standard_builtins(&mut interp)
-        .expect("register builtins");
+    anthill_core::eval::builtins::register_standard_builtins(&mut interp);
     let r = interp
         .call("test.wi714xsort.q2Rows", &[])
         .expect("q2Rows drains the relation whose clause calls a cross-sort rule");

@@ -34,16 +34,13 @@ pub const CLI_STEP_CAP: u64 = 100_000_000;
 
 /// Prepare `interp` to run a program: install the CLI runaway backstop (unless
 /// the embedder already set a `step_cap`), then register the standard builtins
-/// and effect handlers. On failure prints an `error: …` line and returns
-/// `Err(EXIT_RUNTIME)`; the caller forwards the code.
+/// and effect handlers. If the effect handlers fail it prints an `error: …` line and
+/// returns `Err(EXIT_RUNTIME)`; the caller forwards the code.
 pub fn register_runtime(interp: &mut Interpreter) -> Result<(), i32> {
     if interp.config().step_cap.is_none() {
         interp.config_mut().step_cap = Some(CLI_STEP_CAP);
     }
-    builtins::register_standard_builtins(interp).map_err(|e| {
-        eprintln!("error: registering builtins: {e}");
-        EXIT_RUNTIME
-    })?;
+    builtins::register_standard_builtins(interp);
     // WI-SPGBP wired the reflect introspection surface (`KB.sorts`, `Substitution.*`,
     // `qualified_name`, …) in here, as a second registrar after the standard set.
     // WI-20260923-9R5HN folded it into the first: those operations are `HOST_FNS` rows

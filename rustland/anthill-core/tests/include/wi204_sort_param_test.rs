@@ -133,7 +133,7 @@ end
 "#;
     let kb = load_bundle_context(driver_src).expect("load");
     let mut interp = Interpreter::new(kb);
-    eval::builtins::register_standard_builtins(&mut interp).expect("register builtins");
+    eval::builtins::register_standard_builtins(&mut interp);
 
     // Build a Value::Cell holding `wis(backend:)`. The backend does not need to
     // be registered for retrieve — this only confirms the call REACHES

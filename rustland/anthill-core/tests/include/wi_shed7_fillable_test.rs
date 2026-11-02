@@ -615,8 +615,7 @@ end
         panic!("the second phase loads: {:?}", errs.iter().map(|e| e.to_string()).collect::<Vec<_>>());
     }
     let mut interp = anthill_core::eval::Interpreter::new(kb);
-    anthill_core::eval::builtins::register_standard_builtins(&mut interp)
-        .expect("register standard eval builtins");
+    anthill_core::eval::builtins::register_standard_builtins(&mut interp);
     match interp.call("shed7phase2.Driver.go", &[]) {
         Ok(Value::Int(n)) => assert_eq!(n, 42, "the provision's `fill`"),
         other => panic!("expected an Int64, got {other:?}"),

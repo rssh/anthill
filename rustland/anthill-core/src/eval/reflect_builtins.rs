@@ -1228,7 +1228,7 @@ mod tests {
     fn load_stdlib_and_source(source: &str) -> Interpreter {
         let kb = crate::kb::test_support::load_stdlib(Some(source));
         let mut interp = Interpreter::new(kb);
-        eval::builtins::register_standard_builtins(&mut interp).expect("register builtins");
+        eval::builtins::register_standard_builtins(&mut interp);
         interp
     }
 
@@ -2433,7 +2433,7 @@ end
         let h = a.alloc_subst(from_a);
 
         let mut b = Interpreter::new(std::mem::take(a.kb_mut()));
-        eval::builtins::register_standard_builtins(&mut b).expect("register builtins");
+        eval::builtins::register_standard_builtins(&mut b);
         let decoy = bound_to(&mut b, 1);
         let in_b = b.alloc_subst(decoy);
         assert_eq!(

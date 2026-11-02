@@ -311,7 +311,8 @@ fn host_entry_comments(
 // ── Argument and result plumbing ─────────────────────────────────
 
 /// The operands, at the arity the binding block declared. A disagreement is
-/// caught at interpreter build (WI-876/WI-1122), so reaching this is a runtime
+/// caught where the mappings are registered (WI-876/WI-1122), and the operation
+/// raises at its call instead of entering here, so reaching this is a runtime
 /// invariant violation rather than a user-facing condition — but it is still
 /// surfaced rather than assumed away, because an EMBEDDER's declared arity is on
 /// trust: nothing can introspect a Rust function's expected argument count.

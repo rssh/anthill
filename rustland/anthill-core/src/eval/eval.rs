@@ -1094,7 +1094,16 @@ impl Interpreter {
         if let Some(builtin) = self.builtins.get(&sym).cloned() {
             self.const_cache
                 .insert(sym, super::ConstCacheEntry::Forcing);
-            let v = self.call_host(sym, &builtin, &[], SmallVec::new())?;
+            // On an error, drop the Forcing entry, as the body path below does: a value
+            // source that raises (an unrunnable binding raises at every force) is reported
+            // again by the next demand, not read as an in-progress cycle.
+            let v = match self.call_host(sym, &builtin, &[], SmallVec::new()) {
+                Ok(v) => v,
+                Err(e) => {
+                    self.const_cache.remove(&sym);
+                    return Err(e);
+                }
+            };
             self.const_cache
                 .insert(sym, super::ConstCacheEntry::Cached(v.clone()));
             return Ok(v);

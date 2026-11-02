@@ -393,7 +393,7 @@ fn a_rule_of_an_earlier_load_is_read_by_a_later_one() {
         panic!("the later load: {:?}", crate::common::rendered_load_errors(errs));
     }
     let mut interp = Interpreter::new(kb);
-    eval::builtins::register_standard_builtins(&mut interp).expect("register standard eval builtins");
+    eval::builtins::register_standard_builtins(&mut interp);
     assert_eq!(
         (
             call_int(&mut interp, "wi0rrqp.late.Driver.desc"),
@@ -443,7 +443,7 @@ fn a_column_the_citation_gives_no_type_pins_nothing() {
         panic!("the later load: {:?}", crate::common::rendered_load_errors(errs));
     }
     let mut interp = Interpreter::new(kb);
-    eval::builtins::register_standard_builtins(&mut interp).expect("register standard eval builtins");
+    eval::builtins::register_standard_builtins(&mut interp);
     assert_eq!(call_int(&mut interp, "wi0rrqp.mixedlate.desc"), 4, "`compare` through `Descending`");
 }
 

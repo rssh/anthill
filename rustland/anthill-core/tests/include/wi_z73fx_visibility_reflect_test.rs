@@ -149,7 +149,7 @@ fn both_spellings_publish_the_flag() {
     let mut kb = crate::common::load_kb_with(&format!("{SPELLINGS}{PROBE}"));
     let blocks = spelling_blocks(&mut kb);
     let mut interp = anthill_core::eval::Interpreter::new(kb);
-    anthill_core::eval::builtins::register_standard_builtins(&mut interp).unwrap();
+    anthill_core::eval::builtins::register_standard_builtins(&mut interp);
     // DRIVEN THROUGH THE DECLARED OPERATION, not the kernel helper behind it: `has` is
     // an anthill body calling `anthill.reflect.meta_has_flag`, which is how a renderer
     // of a candidate's view reads a block.
@@ -277,7 +277,7 @@ fn visible_from_answers_where_it_is_asked() {
             PROBE,
         ]));
         let mut interp = anthill_core::eval::Interpreter::new(kb);
-        anthill_core::eval::builtins::register_standard_builtins(&mut interp).unwrap();
+        anthill_core::eval::builtins::register_standard_builtins(&mut interp);
         for (s, scope, want, why) in [
             ("test.z73fx.box.Box.mk", "test.z73fx.box.Box", true, "its own sort"),
             ("test.z73fx.box.Box.mk", "test.z73fx.box.Box.Inner", true, "a sort nested in it"),
@@ -326,7 +326,7 @@ fn meta_readers_answer_from_a_body() {
     // `h`'s block is the valued one (`@[Marker, Key: 7]`).
     let meta = spelling_blocks(&mut kb).remove(5);
     let mut interp = anthill_core::eval::Interpreter::new(kb);
-    anthill_core::eval::builtins::register_standard_builtins(&mut interp).unwrap();
+    anthill_core::eval::builtins::register_standard_builtins(&mut interp);
 
     let some7 = probe_call(&mut interp, "value", &meta, "Key");
     let Value::Entity { named, .. } = &some7 else {

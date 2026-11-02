@@ -224,8 +224,7 @@ fn a_body_typed_again_by_a_later_load_answers() {
         anthill_core::kb::load::LoadOptions::default(),
     ));
     let mut interp = anthill_core::eval::Interpreter::new(kb);
-    anthill_core::eval::builtins::register_standard_builtins(&mut interp)
-        .expect("register standard eval builtins");
+    anthill_core::eval::builtins::register_standard_builtins(&mut interp);
     assert_ops_answer(
         &mut interp,
         &[("sameReason", true), ("otherReason", false), ("subsort", true)],

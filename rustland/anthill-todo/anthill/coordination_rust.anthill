@@ -5,14 +5,10 @@
 -- WHICH HOST FUNCTION realizes each operation, and WHICH TARGETS this host
 -- realizes at all, live here.
 --
--- IT IS NOT TIDINESS. A binding block naming a host function the runtime does
--- not have is FATAL — no interpreter can be built for the program, at any call
--- site. The five functions below are `anthill-todo`'s own, registered on the KB
--- before load through the WI-1122 seam, so a reader that loads the domain WITHOUT
--- this binary — anthill-core's own `store.anthill` type-check fixtures do exactly
--- that — must be able to take the declaration and leave the binding. Merged into
--- one file, adding `MirrorEntry` to `store.anthill`'s imports broke ten
--- anthill-core tests, which is how this was found.
+-- The five functions below are `anthill-todo`'s own, registered on the KB before
+-- load through the WI-1122 seam. A runtime that does not register them — the
+-- anthill CLI, anthill-core's own `store.anthill` type-check fixtures — runs the
+-- program all the same, and each `Forge` operation raises where it is called.
 
 -- ── The rust realization (proposal 038) ─────────────────────────
 --

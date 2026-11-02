@@ -1894,6 +1894,8 @@ mod wi_q0093_type_value_occurrence_matrix_test;
 mod wi_jm6zw_expectation_classifier_retired_test;
 #[path = "include/wi_zf3ak_umbrella_a_acceptance_test.rs"]
 mod wi_zf3ak_umbrella_a_acceptance_test;
+#[path = "include/wi_0zg83_unrunnable_binding_test.rs"]
+mod wi_0zg83_unrunnable_binding_test;
 
 #[path = "include/wi_7jdwy_hinted_literal_elements_test.rs"]
 mod wi_7jdwy_hinted_literal_elements_test;

@@ -144,7 +144,7 @@ fn a_claimed_operation_no_binding_supplies_is_a_load_error() {
 fn the_same_program_with_its_binding_layer_runs() {
     let kb = crate::common::expect_loaded(load(&[CLAIM, BINDING]));
     let mut interp = Interpreter::new(kb);
-    eval::builtins::register_standard_builtins(&mut interp).expect("register builtins");
+    eval::builtins::register_standard_builtins(&mut interp);
     match interp.call(READING, &[Value::Int(1)]) {
         Ok(Value::Int(42)) => {}
         other => panic!("{READING}(1) must run the host function and answer 42, got {other:?}"),
@@ -267,7 +267,7 @@ fn the_full_closure_loads() {
 fn every_operation_the_interpreter_registers_is_interpreter_mapped() {
     let kb = crate::common::load_kb_with("namespace brt4y.registry\nend\n");
     let mut interp = Interpreter::new(kb);
-    eval::builtins::register_standard_builtins(&mut interp).expect("register builtins");
+    eval::builtins::register_standard_builtins(&mut interp);
     let registered = interp.registered_builtin_symbols();
     let kb = interp.kb();
     let mut invisible: Vec<&str> = registered

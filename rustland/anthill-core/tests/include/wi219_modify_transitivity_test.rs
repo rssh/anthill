@@ -13,10 +13,7 @@ use anthill_core::parse;
 use crate::common::load_stdlib_kb;
 
 fn load_stdlib_and_project_kb() -> KnowledgeBase {
-    // The `Forge` stand-ins go on the FRESH KB, before the library phase seals the table
-    // (WI-1122) — see the coordination note below.
-    let (mut kb, _) =
-        crate::common::load_stdlib_kb_prepared(crate::common::register_forge_host_stand_ins);
+    let mut kb = load_stdlib_kb();
     // Load anthill-todo's domain.anthill to get stage0 / WorkItem / WorkStatus,
     // plus version.anthill for the bundle's `StoreFormat` entity that store.anthill
     // now imports (WI-434) — without it store.anthill's import is unresolved.

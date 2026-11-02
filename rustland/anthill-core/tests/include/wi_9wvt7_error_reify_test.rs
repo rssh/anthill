@@ -682,8 +682,7 @@ fn a_non_raised_error_is_not_caught() {
             ..Default::default()
         },
     );
-    anthill_core::eval::builtins::register_standard_builtins(&mut interp)
-        .expect("register standard eval builtins");
+    anthill_core::eval::builtins::register_standard_builtins(&mut interp);
     let err = interp
         .call("test.reify.deepInsideBoundary", &[])
         .expect_err("a depth overflow is not an Error effect and must not be caught");

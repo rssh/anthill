@@ -126,8 +126,7 @@ fn probe_entity(ns: &str, extra: &str, ctor: &str) -> Result<Value, EvalError> {
     let kb = crate::common::load_kb_with(&src);
     let sym = kb.resolve_symbol(&format!("{ns}.{ctor}"));
     let mut interp = anthill_core::eval::Interpreter::new(kb);
-    anthill_core::eval::builtins::register_standard_builtins(&mut interp)
-        .expect("register standard eval builtins");
+    anthill_core::eval::builtins::register_standard_builtins(&mut interp);
     let recv = Value::Entity {
         functor: sym,
         pos: Vec::new().into(),

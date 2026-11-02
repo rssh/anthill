@@ -370,8 +370,7 @@ fn bool_is_audited_and_ite_is_not_one_of_its_operations() {
     }
 
     let mut interp = Interp::new(kb);
-    anthill_core::eval::builtins::register_standard_builtins(&mut interp)
-        .expect("register standard eval builtins");
+    anthill_core::eval::builtins::register_standard_builtins(&mut interp);
     for (entry, want) in [
         ("wi884.siblings.B.dAnd", false),
         ("wi884.siblings.B.dOr", true),

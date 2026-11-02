@@ -293,8 +293,7 @@ fn an_unpinned_host_entry_is_refused_and_leaves_no_frame() {
     })
     .unwrap_or_else(|errs| panic!("the fixture must load: {errs:#?}"));
     let mut interp = anthill_core::eval::Interpreter::new(kb);
-    anthill_core::eval::builtins::register_standard_builtins(&mut interp)
-        .expect("register standard eval builtins");
+    anthill_core::eval::builtins::register_standard_builtins(&mut interp);
     let op = interp
         .kb()
         .try_resolve_symbol("test.rrb.Host.boomNow")

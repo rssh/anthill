@@ -139,8 +139,7 @@ fn sigma_dictionary(rule: &str) -> (Interpreter, Value) {
     // A FRESH interpreter needs its builtins bound — `register_standard_builtins`
     // is per-interpreter, not per-KB (WI-968).
     let mut interp = Interpreter::new(kb);
-    anthill_core::eval::builtins::register_standard_builtins(&mut interp)
-        .expect("register standard eval builtins");
+    anthill_core::eval::builtins::register_standard_builtins(&mut interp);
     (interp, value)
 }
 

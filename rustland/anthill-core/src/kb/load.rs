@@ -51071,8 +51071,7 @@ end
 
     fn interp() -> Interpreter {
         let mut interp = Interpreter::new(crate::kb::test_support::load_stdlib(Some(SRC)));
-        crate::eval::builtins::register_standard_builtins(&mut interp)
-            .expect("register standard eval builtins");
+        crate::eval::builtins::register_standard_builtins(&mut interp);
         interp
     }
 

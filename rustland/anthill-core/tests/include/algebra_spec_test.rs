@@ -247,8 +247,7 @@ fn a_field_needs_no_order() {
     }
 
     let mut interp = anthill_core::eval::Interpreter::new(kb);
-    anthill_core::eval::builtins::register_standard_builtins(&mut interp)
-        .expect("register standard eval builtins");
+    anthill_core::eval::builtins::register_standard_builtins(&mut interp);
     let r = interp
         .call("test.f5.F5.probe_recip", &[])
         .expect("call probe_recip");

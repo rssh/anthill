@@ -1,0 +1,7 @@
+-- A goal that bridges a host operation of the standard library and nothing else.
+namespace ctl
+  import anthill.reflect.{term_as_int, as_term}
+  import anthill.prelude.{Option, Int64}
+  import anthill.prelude.Option.{some}
+  rule read(1) :- term_as_int(as_term(7)) = some(7)
+end

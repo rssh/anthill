@@ -262,8 +262,7 @@ end
             ..Default::default()
         },
     );
-    anthill_core::eval::builtins::register_standard_builtins(&mut interp)
-        .expect("register standard eval builtins");
+    anthill_core::eval::builtins::register_standard_builtins(&mut interp);
     let v = interp
         .call("test.wi455.cycle.main", &[])
         .expect("mutually-shadowing OpRef params must resolve, not cycle");
@@ -303,8 +302,7 @@ end
             ..Default::default()
         },
     );
-    anthill_core::eval::builtins::register_standard_builtins(&mut interp)
-        .expect("register standard eval builtins");
+    anthill_core::eval::builtins::register_standard_builtins(&mut interp);
     let err = interp.call("test.wi455.ring.main", &[]).unwrap_err();
     match err {
         EvalError::StepsExhausted { chain, .. } => {
@@ -364,8 +362,7 @@ end
             ..Default::default()
         },
     );
-    anthill_core::eval::builtins::register_standard_builtins(&mut interp)
-        .expect("register standard eval builtins");
+    anthill_core::eval::builtins::register_standard_builtins(&mut interp);
     let err = interp.call("test.wi455.override.main", &[]).unwrap_err();
     match err {
         EvalError::StepsExhausted { chain, .. } => {

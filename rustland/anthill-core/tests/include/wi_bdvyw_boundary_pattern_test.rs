@@ -440,8 +440,7 @@ fn unknown_interp() -> Interpreter {
     })
     .unwrap_or_else(|errs| panic!("the fixture must load: {errs:#?}"));
     let mut interp = Interpreter::new(kb);
-    anthill_core::eval::builtins::register_standard_builtins(&mut interp)
-        .expect("register standard eval builtins");
+    anthill_core::eval::builtins::register_standard_builtins(&mut interp);
     interp
 }
 

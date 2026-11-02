@@ -45,11 +45,8 @@ const BUNDLE_SOURCES: &[(&str, &str)] = &[
         "anthill.stage0/coordination",
         include_str!("../anthill/coordination.anthill"),
     ),
-    // The rust binding for the `Forge` carrier, SEPARATE from its declaration —
-    // that file's header says why, and it is not tidiness: a binding block naming
-    // a host function the runtime does not have is fatal for the whole program,
-    // and anthill-core's own type-check fixtures load the declaration without
-    // this binary behind it.
+    // The rust binding for the `Forge` carrier, SEPARATE from its declaration, on
+    // the `anthill.persistence` precedent — that file's header says why.
     (
         "anthill.stage0/coordination_rust",
         include_str!("../anthill/coordination_rust.anthill"),

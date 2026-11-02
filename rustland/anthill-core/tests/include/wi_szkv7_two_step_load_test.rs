@@ -117,8 +117,7 @@ fn a_two_step_kb_runs_a_program_over_the_stdlib() {
     for recipe in [LoadRecipe::OneShot, LoadRecipe::TwoStep] {
         let (kb, _) = load(recipe);
         let mut interp = Interpreter::new(kb);
-        eval::builtins::register_standard_builtins(&mut interp)
-            .expect("register standard eval builtins");
+        eval::builtins::register_standard_builtins(&mut interp);
         match interp.call("test.szkv7.main", &[]) {
             Ok(eval::Value::Int(42)) => {}
             other => panic!("{recipe:?}: `main` did not run to 42: {other:?}"),

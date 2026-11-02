@@ -42,7 +42,7 @@ fn extract_sort_ref_reifies_sortref() {
     let ty = kb.make_sort_ref(int_sym);
 
     let mut interp = Interpreter::new(kb);
-    register_standard_builtins(&mut interp).expect("register builtins");
+    register_standard_builtins(&mut interp);
     let r = interp
         .call("anthill.reflect.extract", &[Value::term(ty)])
         .expect("extract should evaluate");
@@ -82,7 +82,7 @@ fn extract_parameterized_reifies_parameterized_with_typebinding() {
     let ty = kb.make_parameterized_type(base, &[(t_param, int_ref)]);
 
     let mut interp = Interpreter::new(kb);
-    register_standard_builtins(&mut interp).expect("register builtins");
+    register_standard_builtins(&mut interp);
     let r = interp
         .call("anthill.reflect.extract", &[Value::term(ty)])
         .expect("extract should evaluate");
@@ -123,7 +123,7 @@ fn extract_term_backed_ref_reifies_sortref() {
     let ty = kb.alloc(Term::Ref(int_sym));
 
     let mut interp = Interpreter::new(kb);
-    register_standard_builtins(&mut interp).expect("register builtins");
+    register_standard_builtins(&mut interp);
     let r = interp
         .call("anthill.reflect.extract", &[Value::term(ty)])
         .expect("extract should evaluate");
@@ -177,7 +177,7 @@ fn extract_term_backed_fn_reifies_parameterized() {
     });
 
     let mut interp = Interpreter::new(kb);
-    register_standard_builtins(&mut interp).expect("register builtins");
+    register_standard_builtins(&mut interp);
     let r = interp
         .call("anthill.reflect.extract", &[Value::term(ty)])
         .expect("extract should evaluate");
@@ -234,7 +234,7 @@ fn extract_non_type_reifies_error() {
     });
 
     let mut interp = Interpreter::new(kb);
-    register_standard_builtins(&mut interp).expect("register builtins");
+    register_standard_builtins(&mut interp);
     let r = interp
         .call("anthill.reflect.extract", &[Value::term(non_type)])
         .expect("extract should evaluate (total)");

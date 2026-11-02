@@ -737,8 +737,7 @@ fn specificity_does_not_choose_a_type_carried_slot() {
             |_| {},
         ));
         let mut interp = Interpreter::new(kb);
-        anthill_core::eval::builtins::register_standard_builtins(&mut interp)
-            .expect("register standard eval builtins");
+        anthill_core::eval::builtins::register_standard_builtins(&mut interp);
         interp
     };
     // The typed route reads `Flat` out of the argument's type — the answer to agree with.

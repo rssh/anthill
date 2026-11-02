@@ -403,13 +403,11 @@ end
 /// Register the standard eval builtins over `src`, returning the error instead of
 /// panicking — `common::interp_for` `.expect()`s this step, which is exactly the
 /// failure the runtime-owned arm below is about.
-fn registration_err(src: &str) -> String {
-    let kb = crate::common::load_kb_with(src);
-    let mut interp = anthill_core::eval::Interpreter::new(kb);
-    match anthill_core::eval::builtins::register_standard_builtins(&mut interp) {
-        Ok(()) => panic!("expected a registration error, but registration succeeded"),
-        Err(e) => format!("{e:?}"),
-    }
+/// Build an interpreter over `src` and call `op` with `nargs` placeholder arguments, which
+/// the entry an unrunnable binding registers does not read; the message it raises.
+fn unrunnable_message(src: &str, op: &str, nargs: usize) -> String {
+    let mut interp = crate::common::interp_for(src);
+    crate::common::unrunnable_at_call(&mut interp, op, &vec![Value::Int(0); nargs]).to_string()
 }
 
 /// A binding block carrying one `operation_map` entry, over a carrier declaring a
@@ -431,15 +429,15 @@ fn mapping_program(ns: &str, entry: &str) -> String {
 }
 
 /// THE CONTROL for the refusals below: a well-formed entry — a declared OPERATION, of
-/// matching arity, quoted, unique, in a HOST-language block — loads and registers.
+/// matching arity, quoted, unique, in a HOST-language block — loads, and registers its
+/// host function rather than an entry that raises.
 #[test]
 fn a_well_formed_mapping_over_a_declared_operation_loads() {
     let src = mapping_program("wi876.okmap", "squish: \"ordered_compare\"");
     loads_clean(&src, "a well-formed operation_map must load");
     let kb = crate::common::load_kb_with(&src);
-    let mut interp = anthill_core::eval::Interpreter::new(kb);
-    anthill_core::eval::builtins::register_standard_builtins(&mut interp)
-        .expect("a well-formed mapping must register");
+    let unrunnable = anthill_core::eval::builtins::unrunnable_bindings(&kb);
+    assert!(unrunnable.is_empty(), "a well-formed mapping runs here: {unrunnable:?}");
 }
 
 /// A host function name written UNQUOTED is refused at the PRODUCER. Not a
@@ -507,7 +505,9 @@ fn a_mapping_over_a_non_operation_is_refused_at_load() {
 /// loader knows the operation's arity but not another language's function set, and the
 /// closed host registry is the only thing that knows the host's. MEASURED before this
 /// guard: a 1-argument operation mapped to a 2-argument host function loaded clean,
-/// passed `anthill check`, and died `ArityMismatch` on the first call.
+/// passed `anthill check`, and died `ArityMismatch` on the first call. What the check
+/// registers for the disagreement raises at the operation's call, naming both arities
+/// (WI-20260828-0ZG83; the interpreter build failed before).
 #[test]
 fn a_host_function_of_the_wrong_arity_is_loud() {
     let src = "\nnamespace wi876.arity\n  \
@@ -515,7 +515,7 @@ fn a_host_function_of_the_wrong_arity_is_loud() {
         entity widget(v: Int64)\n    operation squish(a: Widget) -> Int64 @[host_implemented]\n  end\n  \
         provides Widget language rust\n    artifact \"nowhere.rs\"\n    \
         operation_map { squish: \"ordered_compare\" }\n  end\nend\n";
-    let err = registration_err(src);
+    let err = unrunnable_message(src, "wi876.arity.Widget.squish", 1);
     assert!(
         err.contains("wi876.arity.Widget.squish"),
         "names the operation: {err}"
@@ -566,13 +566,13 @@ fn an_operation_map_under_language_anthill_is_refused() {
 /// A mapping naming a host function the RUNTIME does not have stays the runtime's to
 /// answer — the loader cannot know another language's function set, and a cpp-only
 /// mapping must not be judged by whether the Rust interpreter can run it. Loud there,
-/// naming the key, rather than a silently unregistered operation that would later
-/// misreport as a missing implementation.
+/// at the operation's call, naming the key, rather than a silently unregistered
+/// operation that would later misreport as a missing implementation.
 #[test]
-fn an_unknown_host_function_is_loud_at_registration() {
+fn an_unknown_host_function_is_loud_at_its_call() {
     let src = mapping_program("wi876.badfn", "squish: \"no_such_host_function\"");
     loads_clean(&src, "the loader must not judge a host function name");
-    let err = registration_err(&src);
+    let err = unrunnable_message(&src, "wi876.badfn.Widget.squish", 2);
     assert!(
         err.contains("no_such_host_function"),
         "names the key: {err}"

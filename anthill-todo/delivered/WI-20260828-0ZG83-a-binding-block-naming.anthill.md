@@ -3,9 +3,9 @@
 - id: WI-20260828-0ZG83-a-binding-block-naming
 - created: 2026-08-28T04:27:03Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-08-28T04:27:03Z
+- status_at: 2026-11-02T12:03:25Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -56,4 +56,10 @@ Whichever is chosen, PANICKING IS WRONG INDEPENDENTLY OF THE FORK: `bridge_op_to
 ACCEPTANCE: `anthill query` over a KB containing `examples/guardians/lib` answers a goal that bridges a host op -- the CONTROL/TEST pair above driven as a test, with the control (guardians absent) asserted too so a fix that breaks bridging outright cannot pass; no panic remains on any path a malformed or unrunnable binding block can reach, with a diagnostic naming the block instead; whichever of (a)/(b)/(c) is taken is written at the site and in kernel-language.md, and if (a), `wi1122_embedder_host_fn_test`'s "refused at interpreter build" assertion is updated rather than deleted, since it is the current contract; full workspace green via rustland/scripts/test.sh.
 
 REFERENCE: `bridge_op_to_eval` and the raise site at `rustland/anthill-core/src/kb/resolve.rs:7815`; `register_operation_mappings` (`rustland/anthill-core/src/eval/builtins.rs`); WI-1122's `register_host_fn` and `wi1122_embedder_host_fn_test.rs`; WI-880 (b6805994) for the change that put a bridge on the common path; `docs/proposals/library/008-term-view-and-operations.md` §2b, which recorded this and is blocked by it; `examples/guardians/README.md` on the intended host-binding arrangement.
+
+## Changes
+
+### 2026-11-02T12:03:24Z — feedback — claude
+
+DELIVERED — option (a), lazy (user, 2026-11-02). Building an interpreter no longer judges the bindings: an operation_map / const_map entry this runtime cannot run (a key neither HOST_FNS nor the embedder registered, an arity that disagrees with the declaration, a const value source that is not nullary) registers an entry that raises EvalError::UnrunnableHostBinding at the call it backs (the const's force), naming the operation or const and the key. register_standard_builtins returns () — it cannot fail, ~110 callers updated. A rule body's bridge reports it as a fault (search incomplete, not(...) undecided); anthill run fails naming it; every goal and operation that reaches no such binding runs. MEASURED, the ticket's pair: anthill query -p ctl -p examples/guardians/lib 'ctl.read(1)' panicked (exit 101) and answers 1 solution; the control answers as before. The panic is gone on every path the probes reached (rule-body bridge, bodied eq dispatch, const force, anthill run) — the error is no longer EvalError::Internal, so bridged_value's debug_assert does not fire. builtins::unrunnable_bindings(kb) lists what an interpreter would raise, for an embedder that wants the check before any call; the stdlib census row asserts it is empty for the library, guardians_test asserts it for the guardians KB with the harness's keys. Found by /code-review and fixed: force_const's host branch left its Forcing mark on an error, so a second force of an unrunnable const read as ConstCycle. Spec: kernel-language.md §10.2 says the refusal is raised at the call. WI-1122's two build-time rows (unknown key, arity) assert the refusal at the call beside a sibling operation that runs; wi876 / wi889 likewise; the anthill-core forge stand-ins are gone (their reason was the build-time refusal). Rows: wi_0zg83_unrunnable_binding_test (7), wi_0zg83_unrunnable_binding_cli_test (3); back-outs measured in one build: the build-time refusal restored fails 10 rows (4 here + the 6 moved WI-1122/876/889 rows), the sentinel kept fails 1. Full workspace 11,489 passed, 0 failed; families green; scaland 51 + 797.
 

@@ -2693,15 +2693,14 @@ pub struct KnowledgeBase {
     // count from 25 to 50 and this ticket takes it past 60, so the multiplier grows with
     // every carrier that stops being served by a spec-op registration.
     //
-    // A `Result`, so a BROKEN binding block is diagnosed once and reported identically at
-    // every later crossing — the alternative caches nothing on the failing path and makes
-    // the error's cost depend on how often it is re-derived. The message is stored rather
-    // than the `EvalError` because building the error is the cheap half and `EvalError`
-    // is not `Clone`.
+    // A mapping this runtime cannot run is cached too, as the reason it cannot, which the
+    // entry registered in its place raises at the call: diagnosed once, reported the same
+    // at every crossing that reaches it.
     //
     // INVALIDATED BY `set_host_op_mappings`, its sole producer's sole writer, so the
     // cache cannot outlive the mappings it was derived from.
-    host_op_registrations: std::cell::OnceCell<Result<Vec<(Symbol, host_fns::HostFn)>, String>>,
+    host_op_registrations:
+        std::cell::OnceCell<Vec<(Symbol, crate::eval::builtins::HostRegistration)>>,
     // WI-889 — bodyless `const`s a binding block gave a host value source
     // (`const_map`). Written by `load::build_host_const_mappings`. No membership
     // index alongside it, unlike `host_op_mappings`: a const is a value source read
@@ -13620,18 +13619,11 @@ impl KnowledgeBase {
     /// the mappings, the two host-function registries and the operations' declared
     /// arities are all fixed by the time the loader writes the mappings, and the
     /// embedder table is `seal`ed in that same call.
-    ///
-    /// The error is returned by VALUE (a `String` the caller wraps) rather than borrowed,
-    /// so a caller holding `&mut Interpreter` can report it without keeping this borrow
-    /// alive across the registration loop.
     pub(crate) fn host_op_registrations(
         &self,
-        build: impl FnOnce() -> Result<Vec<(Symbol, host_fns::HostFn)>, String>,
-    ) -> Result<&[(Symbol, host_fns::HostFn)], String> {
-        match self.host_op_registrations.get_or_init(build) {
-            Ok(v) => Ok(v),
-            Err(msg) => Err(msg.clone()),
-        }
+        build: impl FnOnce() -> Vec<(Symbol, crate::eval::builtins::HostRegistration)>,
+    ) -> &[(Symbol, crate::eval::builtins::HostRegistration)] {
+        self.host_op_registrations.get_or_init(build)
     }
 
     /// WI-889 — the cached `const_map` entries, in load order. Read by the rust

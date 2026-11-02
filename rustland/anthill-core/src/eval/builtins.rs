@@ -32,10 +32,11 @@
 //! not naming.
 
 use std::rc::Rc;
+use std::sync::Arc;
 
 use super::reflect_builtins as rb;
 use super::value::Dictionary;
-use super::{EvalError, Interpreter, Value};
+use super::{EvalError, Interpreter, UnrunnableHostBinding, UnrunnableHostBindingWhy, Value};
 use crate::kb::resolve::TermUnification;
 // WI-20260827-2YHZ3 — the carrier-neutral operand accessors (`literal_int64`,
 // `literal_bool`, …) every scalar builtin below reads its arguments through.
@@ -60,7 +61,11 @@ use crate::parse::desugar_target as dt;
 /// `@[host_implemented]`, and a declared host operation no loaded binding supplies is a
 /// LOAD error — so the KB that used to lose them no longer loads, and a registration here
 /// has nothing left to skip.
-pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalError> {
+///
+/// It does not fail. A binding this runtime cannot run registers an entry that raises at
+/// the call it backs ([`EvalError::UnrunnableHostBinding`]), so no binding stops an
+/// interpreter from being built over the program.
+pub fn register_standard_builtins(interp: &mut Interpreter) {
     // WI-880 — `Additive.add`/`sub`/`neg` and `Multiplicative.mul` are NOT registered on
     // the SPEC op. They were, which is WI-876's defect A stated for the arithmetic family:
     // one host-scalar implementation was the backing for every carrier that never wrote
@@ -74,11 +79,10 @@ pub fn register_standard_builtins(interp: &mut Interpreter) -> Result<(), EvalEr
     // `PartialEq.eq`/`neq` ARE keyed to the spec op, and that is a design, not a leftover
     // — see `rustland/anthill-stl/anthill/eq.anthill` for why a dispatching implementation
     // cannot simply be re-keyed per carrier.
-    register_operation_mappings(interp)?;
+    register_operation_mappings(interp);
     // WI-889 — the const-level peer: register the `const_map` value sources (the Float
     // IEEE specials) against their const symbols, from the same `HOST_FNS` registry.
-    register_const_mappings(interp)?;
-    Ok(())
+    register_const_mappings(interp);
 }
 
 /// WI-876 — the host functions this runtime exposes to an `operation_map` clause,
@@ -460,18 +464,19 @@ use crate::kb::host_fns::{HostFn, HostFnImpl};
 /// `operation_map` clause, read from the `anthill.realization.OperationMapping`
 /// facts the loader emits.
 ///
-/// LOUD ON BOTH FAILURE MODES, per the repo's no-silent-skip rule — a mapping that
-/// registers nothing is invisible until the operation is called, and then it
-/// misreports as a missing implementation rather than as the broken binding it is:
-///   * an unknown `host_fn` key → [`EvalError::Internal`] naming the key;
-///   * a `<carrier>.<operation>` that does not resolve → the carrier did not
-///     DECLARE the operation, so nothing could ever dispatch to the registration.
-/// This is the reader that CAN complain; `build_host_op_mappings`, which caches the
-/// mappings, deliberately does not.
+/// A mapping this runtime cannot run — a `host_fn` key neither registry has, or a host
+/// function whose arity is not the operation's — registers an entry that raises
+/// [`EvalError::UnrunnableHostBinding`] when the operation is called. Not nothing: a
+/// mapping that registers nothing is invisible until the operation is called, and then it
+/// misreports as a missing implementation rather than as the binding it is. And not a
+/// refusal of the whole interpreter: a key this runtime lacks may be an embedder's
+/// (WI-1122) in a runtime that embedder did not build, and every other operation of the
+/// program runs here (kernel-language.md §10.2). A `<carrier>.<operation>` that does not
+/// resolve is the loader's refusal, and registers nothing.
 ///
 /// Mappings for another host language are skipped — a `provides X language cpp`
 /// block names cpp functions, which this runtime is right not to know.
-fn register_operation_mappings(interp: &mut Interpreter) -> Result<(), EvalError> {
+fn register_operation_mappings(interp: &mut Interpreter) {
     // WI-880 — DERIVED ONCE PER KB, not once per interpreter. This function runs for
     // every fresh interpreter, and `run_in_bridge_interp` builds one per bridged
     // evaluation; everything below the `register_on` calls is a pure function of the KB,
@@ -483,19 +488,38 @@ fn register_operation_mappings(interp: &mut Interpreter) -> Result<(), EvalError
     // is a `usize` plus a function pointer (or an `Arc::clone` for an embedder entry) —
     // the three `String` clones, the key scan, the arity lookup and the `canonical_sym`
     // hash that used to ride here are all gone.
-    let registrations: Vec<(crate::intern::Symbol, crate::kb::host_fns::HostFn)> = interp
+    let registrations: Vec<(crate::intern::Symbol, HostRegistration)> = interp
         .kb()
         .host_op_registrations(|| build_host_op_registrations(interp.kb()))
-        .map_err(EvalError::Internal)?
         .to_vec();
-    for (sym, host) in registrations {
-        host.register_on(interp, sym);
+    for (sym, registration) in registrations {
+        match registration {
+            Ok(host) => host.register_on(interp, sym),
+            Err(binding) => register_unrunnable(interp, sym, binding),
+        }
     }
-    Ok(())
+}
+
+/// What a mapping registers: the host function, or why this runtime cannot run it. The
+/// reason is shared, so the copy of the memo each interpreter takes clones no text.
+pub(crate) type HostRegistration = Result<HostFn, Arc<UnrunnableHostBinding>>;
+
+/// Bind under `sym` an entry that raises `binding` whenever it is called — the operation's
+/// call, or the const's force.
+fn register_unrunnable(
+    interp: &mut Interpreter,
+    sym: crate::intern::Symbol,
+    binding: Arc<UnrunnableHostBinding>,
+) {
+    interp.register_builtin_sym(sym, move |_: &mut Interpreter, _: &[Value]| {
+        Err(EvalError::UnrunnableHostBinding(
+            UnrunnableHostBinding::clone(&binding),
+        ))
+    });
 }
 
 /// WI-880 — resolve every `operation_map` entry this runtime is responsible for to the
-/// `(Symbol, HostFn)` pairs an interpreter registers, refusing both failure modes.
+/// `(Symbol, registration)` pairs an interpreter registers.
 /// Memoized by [`KnowledgeBase::host_op_registrations`]; see that field for why.
 ///
 /// A pure function of the KB, which is what makes memoizing it sound: the mappings, the
@@ -503,38 +527,55 @@ fn register_operation_mappings(interp: &mut Interpreter) -> Result<(), EvalError
 /// `set_host_op_mappings` runs, and that call `seal`s the embedder table.
 fn build_host_op_registrations(
     kb: &crate::kb::KnowledgeBase,
-) -> Result<Vec<(crate::intern::Symbol, crate::kb::host_fns::HostFn)>, String> {
+) -> Vec<(crate::intern::Symbol, HostRegistration)> {
     let mut out = Vec::new();
-    for m in kb.host_op_mappings() {
-        // WI-886 — the SAME constant `KnowledgeBase::is_interpreter_mapped_op`'s index
-        // is built from. That predicate promises this pass registered the operation, so
-        // the two filters must be one string.
-        if m.lang != crate::kb::load::INTERPRETER_LANG {
-            continue;
+    for (sym, registration) in kb
+        .host_op_mappings()
+        .iter()
+        .filter_map(|m| host_op_registration(kb, m))
+    {
+        // Under BOTH spellings, matching `set_host_op_mappings`' index: a qualified
+        // name can be interned under several `Symbol`s, and eval's builtin lookup is a
+        // RAW map hit, so whichever spelling reaches dispatch must find the same
+        // implementation the predicate promised.
+        let canon = kb.canonical_sym(sym);
+        if canon != sym {
+            out.push((canon, registration.clone()));
         }
-        let Some(host) = host_fn_by_key(kb, &m.host_fn) else {
-            // Loud, and it stops the whole interpreter — including the short-lived one
-            // the resolver builds per bridged evaluation, so an unrelated `@[simp]` fire
-            // or `eq` dispatch reports this too. That breadth is deliberate: a binding
-            // block naming a function the runtime does not have is broken for the whole
-            // program, not for one call. The message says so, because the site it
-            // surfaces at will often have nothing to do with the mapping.
-            return Err(format!(
-                "broken binding block: operation_map names host function {:?} for \
-                 {}, which the rust runtime does not provide. No interpreter can be \
-                 built for this program until the binding is fixed — this error may \
-                 surface at a call that has nothing to do with {}.",
-                m.host_fn, m.op_qn, m.op_qn
-            ));
-        };
-        // `op` is `None` only when the loader already refused this mapping (the
-        // operation is undeclared, or is not an operation at all), so the load errored
-        // and nothing should be registered against it.
-        let Some(sym) = m.op else { continue };
+        out.push((sym, registration));
+    }
+    out
+}
+
+/// What one `operation_map` entry registers in this runtime, against the operation's
+/// symbol; `None` for another language's entry and for one the loader refused.
+fn host_op_registration(
+    kb: &crate::kb::KnowledgeBase,
+    m: &crate::kb::load::HostOperationMapping,
+) -> Option<(crate::intern::Symbol, HostRegistration)> {
+    // WI-886 — the SAME constant `KnowledgeBase::is_interpreter_mapped_op`'s index
+    // is built from. That predicate promises this pass registered the operation, so
+    // the two filters must be one string.
+    if m.lang != crate::kb::load::INTERPRETER_LANG {
+        return None;
+    }
+    // `op` is `None` only when the loader already refused this mapping (the
+    // operation is undeclared, or is not an operation at all), so the load errored
+    // and nothing should be registered against it.
+    let sym = m.op?;
+    let unrunnable = |why| {
+        Arc::new(UnrunnableHostBinding {
+            mapped: m.op_qn.clone(),
+            key: m.host_fn.clone(),
+            why,
+        })
+    };
+    let registration = match host_fn_by_key(kb, &m.host_fn) {
+        None => Err(unrunnable(UnrunnableHostBindingWhy::UnknownFunction)),
         // The declared operation and the host function must AGREE ON ARITY. Checked
-        // at registration, which is the earliest point that knows both: the loader
-        // knows the operation's arity but not another language's function set, and
-        // this registry is the only thing that knows the host's.
+        // here, which is the earliest point that knows both: the loader knows the
+        // operation's arity but not another language's function set, and this
+        // registry is the only thing that knows the host's.
         //
         // Off the CACHED signature (WI-656) rather than `lookup_operation_info`, whose
         // record build clones every per-field `Vec` to be dropped after one `.len()` —
@@ -543,26 +584,68 @@ fn build_host_op_registrations(
         // asks the same question the same way — `op_record` being `pub(crate)`, it
         // could not before. The fact-scan fallback inside it is kept for a KB whose
         // signatures are not built yet, where the old reader would still have answered.
-        if let Some(n) = crate::kb::op_info::declared_arity(kb, sym) {
-            if n != host.arity {
-                return Err(format!(
-                    "operation_map maps {} to {:?}, but {} takes {n} \
-                     argument(s) and {:?} takes {}",
-                    m.op_qn, m.host_fn, m.op_qn, m.host_fn, host.arity
-                ));
+        Some(host) => match crate::kb::op_info::declared_arity(kb, sym) {
+            Some(declared) if declared != host.arity => {
+                Err(unrunnable(UnrunnableHostBindingWhy::ArityDisagrees {
+                    declared,
+                    host: host.arity,
+                }))
             }
-        }
-        // Under BOTH spellings, matching `set_host_op_mappings`' index: a qualified
-        // name can be interned under several `Symbol`s, and eval's builtin lookup is a
-        // RAW map hit, so whichever spelling reaches dispatch must find the same
-        // implementation the predicate promised.
-        let canon = kb.canonical_sym(sym);
-        if canon != sym {
-            out.push((canon, host.clone()));
-        }
-        out.push((sym, host));
+            _ => Ok(host),
+        },
+    };
+    Some((sym, registration))
+}
+
+/// What one `const_map` entry registers in this runtime, against the const's symbol;
+/// `None` for another language's entry and for one the loader refused. The const peer
+/// of [`host_op_registration`].
+fn host_const_registration(
+    kb: &crate::kb::KnowledgeBase,
+    m: &crate::kb::load::HostConstMapping,
+) -> Option<(crate::intern::Symbol, HostRegistration)> {
+    // Only this runtime's language: a cpp `const_map` names a C++ expression, which
+    // this runtime is right not to know. Same split as the operation peer.
+    if m.lang != crate::kb::load::INTERPRETER_LANG {
+        return None;
     }
-    Ok(out)
+    // `const_sym` is `None` only when the loader already refused this mapping (the
+    // const is undeclared, or is not a const at all), so the load errored and
+    // nothing should be registered against it.
+    let sym = m.const_sym?;
+    let registration = const_value_source(kb, &m.host_fn).map_err(|refusal| {
+        Arc::new(UnrunnableHostBinding {
+            mapped: m.const_qn.clone(),
+            key: m.host_fn.clone(),
+            why: match refusal {
+                ConstValueSourceRefusal::UnknownKey => UnrunnableHostBindingWhy::UnknownValue,
+                ConstValueSourceRefusal::NotNullary { arity } => {
+                    UnrunnableHostBindingWhy::NotNullary { host: arity }
+                }
+            },
+        })
+    });
+    Some((sym, registration))
+}
+
+/// Every `language rust` binding of the program that this runtime cannot run, in load
+/// order, operations first: what an interpreter built over `kb` raises at the calls they
+/// back. Running a program never asks it — a binding is judged where it is called. An
+/// embedder that wants its own bindings checked before any call asks it after the load;
+/// so does the census of the standard library's.
+pub fn unrunnable_bindings(kb: &crate::kb::KnowledgeBase) -> Vec<UnrunnableHostBinding> {
+    let ops = kb
+        .host_op_mappings()
+        .iter()
+        .filter_map(|m| host_op_registration(kb, m));
+    let consts = kb
+        .host_const_mappings()
+        .iter()
+        .filter_map(|m| host_const_registration(kb, m));
+    ops.chain(consts)
+        .filter_map(|(_, registration)| registration.err())
+        .map(Arc::unwrap_or_clone)
+        .collect()
 }
 
 /// WI-889 — register the per-carrier host VALUE SOURCES named by every loaded
@@ -571,64 +654,42 @@ fn build_host_op_registrations(
 /// replaces the three hardcoded `register_if_present("anthill.prelude.Float.infinity",
 /// …)` lines: the Float IEEE specials now reach eval as DATA, like `pi`/`e`/`tau`.
 ///
-/// LOUD ON BOTH FAILURE MODES, per the repo's no-silent-skip rule, exactly as its
-/// operation peer is: an unknown `host_fn` key is an [`EvalError::Internal`] naming the
-/// key; a `<carrier>.<const>` the loader already refused (undeclared, or not a const)
-/// arrives with `const_sym == None` and registers nothing.
+/// A value source this runtime cannot run — an unknown key, or a host function that
+/// takes arguments — registers an entry that raises [`EvalError::UnrunnableHostBinding`]
+/// when the const is forced, exactly as its operation peer does. A `<carrier>.<const>`
+/// the loader already refused (undeclared, or not a const) arrives with
+/// `const_sym == None` and registers nothing.
 ///
 /// The function is stored against the const's symbol in the SAME builtin map
 /// `force_const` reads (`self.builtins.get(&sym)`), so first demand of the const
 /// fetches the host value and caches it — the behavior WI-532 gave these three, now
 /// reached by data instead of a hardcoded qualified name.
-fn register_const_mappings(interp: &mut Interpreter) -> Result<(), EvalError> {
-    // Snapshot the cache before registering — `register_builtin_sym` mutates the
-    // interpreter — matching `register_operation_mappings`.
-    let mappings: Vec<crate::kb::load::HostConstMapping> = interp
+fn register_const_mappings(interp: &mut Interpreter) {
+    // Snapshot before registering — `register_builtin_sym` mutates the interpreter —
+    // matching `register_operation_mappings`.
+    let registrations: Vec<(crate::intern::Symbol, HostRegistration)> = interp
         .kb()
         .host_const_mappings()
         .iter()
-        // Only this runtime's language: a cpp `const_map` names a C++ expression, which
-        // this runtime is right not to know. Same split as the operation peer.
-        .filter(|m| m.lang == crate::kb::load::INTERPRETER_LANG)
-        .cloned()
+        .filter_map(|m| host_const_registration(interp.kb(), m))
         .collect();
-    for crate::kb::load::HostConstMapping {
-        const_sym,
-        const_qn,
-        host_fn,
-        ..
-    } in mappings
-    {
-        let host = match const_value_source(interp.kb(), &host_fn) {
-            Ok(host) => host,
-            Err(ConstValueSourceRefusal::UnknownKey) => {
-                return Err(EvalError::Internal(format!(
-                    "broken binding block: const_map names host value {host_fn:?} for \
-                     {const_qn}, which the rust runtime does not provide. No interpreter can \
-                     be built for this program until the binding is fixed."
-                )))
-            }
-            Err(ConstValueSourceRefusal::NotNullary { arity }) => {
-                return Err(EvalError::Internal(format!(
-                    "const_map maps {const_qn} to {host_fn:?}, but a const's value source \
-                     must be NULLARY and {host_fn:?} takes {arity} argument(s)"
-                )))
-            }
-        };
-        // `const_sym` is `None` only when the loader already refused this mapping (the
-        // const is undeclared, or is not a const at all), so the load errored and
-        // nothing should be registered against it.
-        let Some(sym) = const_sym else { continue };
+    for (sym, registration) in registrations {
         // Under BOTH spellings, for the same reason the operation peer does it: eval's
         // const lookup is a RAW `Symbol` map hit, so whichever spelling `force_const`
         // reaches must find the registration.
         let canon = interp.kb().canonical_sym(sym);
-        host.register_on(interp, sym);
-        if canon != sym {
-            host.register_on(interp, canon);
+        let spellings = if canon != sym {
+            vec![sym, canon]
+        } else {
+            vec![sym]
+        };
+        for at in spellings {
+            match &registration {
+                Ok(host) => host.register_on(interp, at),
+                Err(binding) => register_unrunnable(interp, at, Arc::clone(binding)),
+            }
         }
     }
-    Ok(())
 }
 
 /// Why a `const_map` key names no usable value source. See [`const_value_source`].

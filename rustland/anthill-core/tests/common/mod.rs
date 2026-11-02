@@ -106,9 +106,10 @@ fn collect_stdlib_and_rust_bindings() -> Vec<PathBuf> {
 /// declared operation no loaded `operation_map` supplies is a load error — so the
 /// declaration no longer loads without `coordination_rust.anthill`. WI-1117 had split the
 /// two so that a fixture could take the declaration and leave the binding; that split is
-/// exactly the "loads clean, dies at the first call" shape BRT4Y refuses. Pair with
-/// [`register_forge_host_stand_ins`]: the binding names host functions only the
-/// anthill-todo binary registers.
+/// exactly the "loads clean, dies at the first call" shape BRT4Y refuses. The binding
+/// names host functions only the anthill-todo binary registers; here each `Forge`
+/// operation raises at its call (`EvalError::UnrunnableHostBinding`), and no fixture
+/// reaches one.
 #[allow(dead_code)]
 pub fn anthill_todo_coordination_files() -> [PathBuf; 2] {
     let dir = workspace_root().join("rustland/anthill-todo/anthill");
@@ -136,48 +137,13 @@ pub fn anthill_todo_store_bundle_files() -> Vec<PathBuf> {
 }
 
 /// The stdlib, [`anthill_todo_store_bundle_files`] and each of `drivers` — a test's own
-/// sources over the bundle — through the one recipe, on a KB carrying the stand-ins for
-/// the `Forge` host functions the bundle's binding names
-/// ([`register_forge_host_stand_ins`] — before the load, WI-1122).
+/// sources over the bundle — through the one recipe.
 #[allow(dead_code)]
 pub fn load_anthill_todo_store_bundle(drivers: &[&str]) -> LoadOutcome {
     let files = anthill_todo_store_bundle_files();
     let mut user = user_paths(&files);
     user.extend(drivers.iter().map(|d| UserFile::Text(d)));
-    load_outcome_files_prepared(&user, register_forge_host_stand_ins)
-}
-
-/// The five `forge_*` keys `coordination_rust.anthill` names, with the arity each
-/// declared operation takes — the SAME table `anthill-todo`'s `forge::register` writes,
-/// which this crate cannot link.
-const FORGE_HOST_FNS: [(&str, usize); 5] = [
-    ("forge_target_name", 1),
-    ("forge_create_entry", 3),
-    ("forge_update_entry", 4),
-    ("forge_list_entries", 1),
-    ("forge_entry_comments", 2),
-];
-
-/// WI-20260922-BRT4Y — register STAND-INS for the anthill-todo host functions the
-/// `Forge` binding names, on a fresh KB, BEFORE load (WI-1122 refuses a later entry).
-///
-/// A stand-in is not a fallback: it is this test crate playing the embedder, with the
-/// embedder's keys and arities, and each one refuses LOUDLY if it is ever called. The
-/// fixtures that load anthill-todo's domain type-check it; none of them reaches a forge.
-/// A wrong arity is caught the way a real entry's is — at interpreter build, against the
-/// declaration (`register_operation_mappings`).
-#[allow(dead_code)]
-pub fn register_forge_host_stand_ins(kb: &mut KnowledgeBase) {
-    for (key, arity) in FORGE_HOST_FNS {
-        kb.register_host_fn(key, arity, move |_: &mut Interpreter, _: &[eval::Value]| {
-            Err(eval::EvalError::Internal(format!(
-                "`{key}` is an anthill-core TEST STAND-IN for the anthill-todo host \
-                 function of that name; it exists so anthill-todo's domain loads, and \
-                 must never be called"
-            )))
-        })
-        .unwrap_or_else(|e| panic!("register the `{key}` stand-in: {e:?}"));
-    }
+    load_outcome_files(&user)
 }
 
 /// Path to anthill-testcases/ relative to the anthill-core crate root.
@@ -1242,8 +1208,7 @@ pub fn unrendered_load_errors_of(source: &str) -> Vec<load::LoadError> {
 pub fn run_int64(source: &str, entry: &str) -> Result<i64, String> {
     let kb = try_load_kb_with(source).map_err(|errs| errs.join("\n"))?;
     let mut interp = Interpreter::new(kb);
-    eval::builtins::register_standard_builtins(&mut interp)
-        .expect("register standard eval builtins");
+    eval::builtins::register_standard_builtins(&mut interp);
     match interp.call(entry, &[]) {
         Ok(eval::Value::Int(v)) => Ok(v),
         other => Err(format!("`{entry}` did not run to an Int64: {other:?}")),
@@ -1256,9 +1221,22 @@ pub fn run_int64(source: &str, entry: &str) -> Result<i64, String> {
 pub fn interp_for(source: &str) -> Interpreter {
     let kb = load_kb_with(source);
     let mut interp = Interpreter::new(kb);
-    eval::builtins::register_standard_builtins(&mut interp)
-        .expect("register standard eval builtins");
+    eval::builtins::register_standard_builtins(&mut interp);
     interp
+}
+
+/// Call `entry` on `interp`; the call must raise [`eval::EvalError::UnrunnableHostBinding`],
+/// a `language rust` binding this runtime cannot run, reached at the call. The binding.
+#[allow(dead_code)]
+pub fn unrunnable_at_call(
+    interp: &mut Interpreter,
+    entry: &str,
+    args: &[eval::Value],
+) -> eval::UnrunnableHostBinding {
+    match interp.call(entry, args) {
+        Err(eval::EvalError::UnrunnableHostBinding(binding)) => binding,
+        other => panic!("`{entry}` must raise UnrunnableHostBinding at its call; got {other:?}"),
+    }
 }
 
 /// [`interp_for`] over MULTIPLE user sources, each its own file — for an eval test
@@ -1270,8 +1248,7 @@ pub fn interp_for(source: &str) -> Interpreter {
 pub fn interp_for_files(sources: &[&str]) -> Interpreter {
     let kb = expect_loaded(try_load_kb_with_files(sources));
     let mut interp = Interpreter::new(kb);
-    eval::builtins::register_standard_builtins(&mut interp)
-        .expect("register standard eval builtins");
+    eval::builtins::register_standard_builtins(&mut interp);
     interp
 }
 

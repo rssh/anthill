@@ -363,8 +363,7 @@ fn a_host_backed_operation_runs() {
     )
     .unwrap_or_else(|errs| panic!("the claimed and mapped operation loads: {errs:#?}"));
     let mut interp = anthill_core::eval::Interpreter::new(kb);
-    anthill_core::eval::builtins::register_standard_builtins(&mut interp)
-        .expect("register standard eval builtins");
+    anthill_core::eval::builtins::register_standard_builtins(&mut interp);
     let answer = interp.call("test.rm247host.go", &[]);
     assert!(matches!(answer, Ok(Value::Int(9))), "{answer:?}");
 }

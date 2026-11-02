@@ -121,8 +121,7 @@ fn call(interp: &mut Interpreter, op: &str) -> i64 {
 fn a_holder_of_a_total_composite_answers() {
     for (how, kb) in loaded_each_way() {
         let mut interp = Interpreter::new(kb);
-        anthill_core::eval::builtins::register_standard_builtins(&mut interp)
-            .expect("register standard eval builtins");
+        anthill_core::eval::builtins::register_standard_builtins(&mut interp);
         assert_eq!(call(&mut interp, "same"), 1, "{how}");
         assert_eq!(call(&mut interp, "other"), 0, "{how}");
         assert_eq!(call(&mut interp, "absent"), 0, "{how}");

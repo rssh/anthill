@@ -137,7 +137,7 @@ fn two_calls(lib: &str, program: &str) -> Result<KnowledgeBase, Vec<String>> {
 /// What each of `entries` evaluates to, in order.
 fn values(kb: KnowledgeBase, entries: &[&str]) -> Vec<i64> {
     let mut interp = Interpreter::new(kb);
-    eval::builtins::register_standard_builtins(&mut interp).expect("standard builtins");
+    eval::builtins::register_standard_builtins(&mut interp);
     entries
         .iter()
         .map(|entry| match interp.call(entry, &[]) {

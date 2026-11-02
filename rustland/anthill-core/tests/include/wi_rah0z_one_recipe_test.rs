@@ -228,6 +228,11 @@ const PINNED: &[(&str, usize, &str)] = &[
         "its census is a thread-local count, so the stdlib has to load on the test's thread",
     ),
     (
+        "include/wi_0zg83_unrunnable_binding_test.rs",
+        1,
+        "its control registers the program's embedder host functions before the load",
+    ),
+    (
         "include/wi1122_embedder_host_fn_test.rs",
         3,
         "registers an embedder's host function before the load, which is its subject",
@@ -241,16 +246,6 @@ const PINNED: &[(&str, usize, &str)] = &[
         "include/wi_rm247_data_sort_equation_test.rs",
         1,
         "backs a data sort's operation through an embedder's host function, registered before the load",
-    ),
-    (
-        "include/wi219_modify_transitivity_test.rs",
-        1,
-        "mounts the forge host stand-ins before the stdlib's own load, for its `LoadResult`",
-    ),
-    (
-        "include/wi237_diag_test.rs",
-        1,
-        "mounts the forge host stand-ins before loading anthill-todo's sources",
     ),
     (
         "include/wi345_warnings_channel_test.rs",

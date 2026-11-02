@@ -547,8 +547,7 @@ fn a_host_raise_carries_the_type_its_caller_threads() {
     })
     .unwrap_or_else(|errs| panic!("the fixture must load: {errs:#?}"));
     let mut interp = Interpreter::new(kb);
-    anthill_core::eval::builtins::register_standard_builtins(&mut interp)
-        .expect("register standard eval builtins");
+    anthill_core::eval::builtins::register_standard_builtins(&mut interp);
     // The `Ticker` handler THROWS for the operation it performs, `tick`, at the type `tick`'s
     // row raises (`Box[V = String]`); typed as unknown, the throw passed both boundaries.
     interp
@@ -930,8 +929,7 @@ fn a_host_raise_under_a_projected_row_is_refused() {
     })
     .unwrap_or_else(|errs| panic!("the fixture must load: {errs:#?}"));
     let mut interp = Interpreter::new(kb);
-    anthill_core::eval::builtins::register_standard_builtins(&mut interp)
-        .expect("register standard eval builtins");
+    anthill_core::eval::builtins::register_standard_builtins(&mut interp);
     match interp.call("test.c5p.caughtPull", &[]) {
         Err(e @ EvalError::RaiseTypeUnread { .. }) => assert!(
             e.to_string().contains("through a projection or a row variable"),

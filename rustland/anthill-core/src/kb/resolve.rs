@@ -12603,6 +12603,12 @@ impl KnowledgeBase {
                     )
                 }
             }
+            // The call is the mapped operation's own: the subject names it already.
+            EvalError::UnrunnableHostBinding(binding)
+                if form.is_none() && binding.mapped == self.qualified_name_of(op) =>
+            {
+                (binding.reason(), "")
+            }
             other => (other.to_string(), ""),
         };
         let subject = match form {
@@ -12898,8 +12904,9 @@ impl KnowledgeBase {
     /// another scratch interpreter; see [`Self::bridge_op_to_eval`]'s "pure" for why
     /// that stays read-only.
     /// Re-registering the builtins per call is the simple-correct choice (the
-    /// interpreter owns the lent KB, so they can't persist across calls); a
-    /// registration failure surfaces as `Some(Err(_))`, which callers residualize.
+    /// interpreter owns the lent KB, so they can't persist across calls). It cannot
+    /// fail: a binding this runtime cannot run raises at the call it backs, so a bridge
+    /// whose evaluation never reaches that call runs as it would without the binding.
     // WI-722: `pub(super)` so the `@[simp]` macro fire hook (`simp_rewrite.rs`) can
     // run a macro op body through the same compile-time scratch interpreter.
     pub(super) fn run_in_bridge_interp<F>(&mut self, f: F) -> Option<Result<Value, EvalError>>
@@ -12916,11 +12923,8 @@ impl KnowledgeBase {
             ..EvalConfig::default()
         };
         let mut interp = Interpreter::with_config(kb, config);
-        let outcome = match crate::eval::builtins::register_standard_builtins(&mut interp) {
-            Ok(()) => f(&mut interp),
-            Err(e) => Err(e),
-        };
-        let mut outcome = outcome;
+        crate::eval::builtins::register_standard_builtins(&mut interp);
+        let mut outcome = f(&mut interp);
         interp.release_layers_for_handback(&mut outcome);
         *self = interp.into_kb();
         BRIDGE_REENTRY_DEPTH.with(|d| d.set(d.get() - 1));

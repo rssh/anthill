@@ -44,16 +44,18 @@ fn load_errs(src: &str) -> Vec<String> {
         .unwrap_or_else(|| panic!("expected load errors, but this loaded clean:\n{src}"))
 }
 
-/// Build the interpreter for a program the way `registration_err` does in the wi876
-/// suite: load (clean), then run the eval-side `register_standard_builtins`, which is
-/// where `register_const_mappings` lives. Returns the registration error string.
-fn registration_err(src: &str) -> String {
-    let kb = crate::common::load_kb_with(src);
-    let mut interp = anthill_core::eval::Interpreter::new(kb);
-    match anthill_core::eval::builtins::register_standard_builtins(&mut interp) {
-        Ok(()) => panic!("expected a registration error, but registration succeeded"),
-        Err(e) => format!("{e:?}"),
-    }
+/// Load `const_mapping_program` with an operation that reads the const, build the
+/// interpreter (`register_standard_builtins`, where `register_const_mappings` lives),
+/// and run the reader: forcing the const must raise `UnrunnableHostBinding`. Its
+/// message. The peer of wi876's `unrunnable_message`.
+fn unrunnable_at_force(ns: &str, entry: &str) -> String {
+    let src = const_mapping_program(ns, entry).replace(
+        "const answer: Int64\n",
+        "const answer: Int64\n    operation read(n: Int64) -> Int64 = answer\n",
+    );
+    let mut interp = crate::common::interp_for(&src);
+    crate::common::unrunnable_at_call(&mut interp, &format!("{ns}.Widget.read"), &[Value::Int(0)])
+        .to_string()
 }
 
 /// The stdlib `Float` `const_map` reaches the KB as `ConstMapping` facts — the same
@@ -196,15 +198,12 @@ fn the_float_ieee_specials_evaluate_through_the_const_map_channel() {
 }
 
 /// A `const_map` naming a host value the RUNTIME does not have stays the runtime's to
-/// answer — loud there, naming the key, rather than a silently unregistered const that
-/// would later misreport as a value-unavailable const. The peer of wi876's
-/// `an_unknown_host_function_is_loud_at_registration`.
+/// answer — loud there, where the const is forced, naming the key, rather than a
+/// silently unregistered const that would later misreport as a value-unavailable const.
+/// The peer of wi876's `an_unknown_host_function_is_loud_at_its_call`.
 #[test]
-fn an_unknown_const_host_value_is_loud_at_registration() {
-    let err = registration_err(&const_mapping_program(
-        "wi889.badfn",
-        "answer: \"no_such_host_value\"",
-    ));
+fn an_unknown_const_host_value_is_loud_at_its_force() {
+    let err = unrunnable_at_force("wi889.badfn", "answer: \"no_such_host_value\"");
     assert!(err.contains("no_such_host_value"), "names the key: {err}");
     assert!(
         err.contains("wi889.badfn.Widget.answer"),
@@ -214,17 +213,14 @@ fn an_unknown_const_host_value_is_loud_at_registration() {
 
 /// A const's value source must be NULLARY — `force_const` invokes it with no args. A
 /// `host_fn` that takes arguments cannot be one; caught at registration, the earliest
-/// point that knows the host function's arity. (`ordered_compare` is a real key of
-/// arity 2.)
+/// point that knows the host function's arity, and raised where the const is forced.
+/// (`ordered_compare` is a real key of arity 2.)
 #[test]
-fn a_non_nullary_host_value_for_a_const_is_loud_at_registration() {
-    let err = registration_err(&const_mapping_program(
-        "wi889.arity",
-        "answer: \"ordered_compare\"",
-    ));
+fn a_non_nullary_host_value_for_a_const_is_loud_at_its_force() {
+    let err = unrunnable_at_force("wi889.arity", "answer: \"ordered_compare\"");
     assert!(
         err.contains("wi889.arity.Widget.answer"),
         "names the const: {err}"
     );
-    assert!(err.contains("NULLARY"), "says what is wrong: {err}");
+    assert!(err.contains("must be nullary"), "says what is wrong: {err}");
 }
