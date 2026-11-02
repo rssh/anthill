@@ -9,7 +9,7 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
-- depends_on: WI-20260911-RS2G4-type-args-a-call-site-bracket
+- depends_on: WI-20260911-RS2G4-type-args-a-call-site-bracket, WI-20260925-SHED7-inductive-relations-proposal
 
 ## Description
 
@@ -642,4 +642,19 @@ WHEN 5G28A LANDS, the whole of what is left here is:
       docs/design/060-implementation.md §7.1;
   (3) turn `a_parameterised_sorts_citation_names_its_owner` from a refusal row into an
       answering one, keeping bare `List.domain` refused as its control.
+
+### 2026-11-02T16:47:15Z — feedback — user
+
+RESTATED (user, 2026-11-02; written by claude): THE VALUE FACE IS SUPERSEDED, SO WHAT IS LEFT HERE IS RETIRING IT. Decided closing proposal 060 §2.3's open item: `<Sort>.domain` is superseded by `SortDomain[T].fill` and keeps no name as a surface. It names a SORT, so it cannot reach an abstract `T` (a caller's rigid `X`, a sort's parameter), and a value cannot stand in for the name: a value carries no type, and the one computed from it names only what its constructors name (`[]` is `List[T = ?t]`). Record: proposal 060 §2.3's decided item; docs/design/060-implementation.md §7.3, "DECIDED 2026-11-02 — `<Sort>.domain` is superseded by `SortDomain[T].fill`".
+
+WHAT THE 2026-09-12 ENTRY LEFT IS DONE AND MOOT. SHED7 step 1 lifted the parameterised refusal (`wi_wt8wg_domain_value_face_test::a_parameterised_sorts_value_face_is_cited_through_its_bracket`: `List[T = Letter].domain.takeN(5)` = 5, bare `List.domain` refused naming the bracket), so 5G28A no longer blocks this ticket. The stale "load error naming 5G28A" text is corrected in proposal 060 §2.2 and 060-implementation §0, §7 and §7.1 (2026-11-02); kernel-language.md §5.3 (~line 2940) still says it and goes with item 4.
+
+THE WORK NOW:
+1. The citation of `<Sort>.domain` deprecated or refused — decided at the work, with the user.
+2. `examples/classic-mini/map-colouring`'s `main` (`Colour.domain.takeN(9)`) and the `wi_wt8wg_domain_value_face_test` rows moved to typed rules. A domain as a value is a typed rule cited by name (`rule colours(?x: Colour) :- true`, `colours.takeN(5)`); the domain of a type variable is `rule el(?x: T) :- true` in `sort Wrap[T]`, cited as `Wrap[T = X].el` under `requires SortDomain[T = X]`.
+3. A sort that defines its own domain provides `SortDomain`'s `fill` — `S provides SortDomain[T = S]` with `rule fill(?x) :- …` — in place of `domain(?x)` written in its body, and the written relation is migrated to it. NOT BUILT: the loader takes a written domain only from a 1-ary relation `<Sort>.domain` in the sort's own scope (`load::derive_sort_domains`, recorded as `SortDomainKind::Written`).
+4. kernel-language.md §5.3's value-face, parameterised-face and written-domain paragraphs rewritten, beside SHED7's pending rewrite of its `domain_member` paragraphs, and proposed to the user before editing.
+The per-sort relation stays, as the internal target a `SortDomain` dictionary lands on (`SortDomainEntry::fill`).
+
+DEPENDS ON WI-20260925-SHED7, for item 3: an author-written implementation of `fill` is proposal 067's ("one an author writes", §1), which SHED7 tracks and its step 1 did not build. The older edge, RS2G4, is Delivered.
 

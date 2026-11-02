@@ -16,7 +16,7 @@ Measurements are against the Rust loader at `0c5e3621`, each with a stated back-
 | §2 `?x: T` on a relational head | `domain(?x, T)` body goal | WI-742 | **delivered** — §3–§5 |
 | §2.1 parameter form `p(x: T)` | sigil-free typed clause variable | WI-742 | **delivered** — §6 |
 | §2.2 a sort defines its `domain` | mode-(out) enumeration | WI-743 | **delivered** — §7 |
-| §2.2 the VALUE face `<Sort>.domain` | the domain cited as a `Relation` | **WI-20260911-WT8WG** | **delivered** for a sort with no type parameters — §7.1; the parameterised half waits on §7.3 |
+| §2.2 the VALUE face `<Sort>.domain` | the domain cited as a `Relation` | **WI-20260911-WT8WG** | **SUPERSEDED by `SortDomain[T].fill`** (user, 2026-11-02) — §7.3, "`<Sort>.domain` is superseded"; delivered for a sort with no type parameters (§7.1) and, with WI-20260925-SHED7 step 1, for a parameterised one; WT8WG now retires it as a surface |
 | §2.2 / §8.1 rule-head type VARIABLES | a bound's variable is a clause variable | **WI-20260911-5G28A** | **delivered** except the citation bracket — §7.2 |
 | §2.2 / §8.1 the citation BRACKET | which instance a citation means | **WI-20260911-5G28A** | **redesigned 2026-09-24 onto the requirement channel** — §7.3: L3, the projection gate, S1, S2 and S3a delivered; S3b onward redesigned 2026-09-25 (one domain mechanism) and waiting on [proposal 067](../proposals/067-fillable.md), WI-20260925-SHED7 |
 | §3 anchor (requirement half) | covered body call grounds the spec | WI-1040 | delivered |
@@ -339,10 +339,12 @@ OPERATION or a const named `domain`, not a field.)
   mechanism: it needs `domain` to be the member of a kernel finiteness spec AND a
   dictionary channel that carries a RELATION, which is WI-20260909-NAR1X (§8.10).
 * ~~The VALUE face.~~ **DELIVERED by WI-20260911-WT8WG for a sort with no type
-  parameters** — see §7.1. The PARAMETERISED half is not: `List[T = Letter].domain` is a
-  load error naming **WI-20260911-5G28A**, which delivered everything else in that ticket
-  (§7.2) and left exactly the citation BRACKET — a rule's head is its only interface, so an
-  enclosing sort's parameter has no slot to travel in.
+  parameters** — see §7.1 — and for a parameterised one with WI-20260925-SHED7 step 1
+  (§7.3), where the citation's bracket builds the `SortDomain` dictionary the relation reads.
+  Until then `List[T = Letter].domain` was a load error naming WI-20260911-5G28A: a rule's
+  head is its only interface, so an enclosing sort's parameter had no slot to travel in, and
+  the dictionary is that slot. The face itself is SUPERSEDED by `SortDomain[T].fill` (user,
+  2026-11-02) — §7.3, "`<Sort>.domain` is superseded".
 * A PARAMETERISED sort's hand-written `domain` — refused loudly: its clause head would
   have to bind the sort's type parameters from the caller's type argument, which only the
   derivation does.
@@ -353,6 +355,10 @@ OPERATION or a const named `domain`, not a field.)
   stating the predicate's schema. `:- true` is the clause spelling and it generates.
 
 ## 7.1 §2.2's VALUE face — `<Sort>.domain` — WI-20260911-WT8WG
+
+**SUPERSEDED (user, 2026-11-02)** by `SortDomain[T].fill` — §7.3, "`<Sort>.domain` is
+superseded". This section is the 2026-09-11 design: SHED7 retired `domain_member`, and
+`Colour.domain` is now the relation `SortDomain[T = Colour].fill` runs.
 
 The equation, and the whole of the design:
 
@@ -424,8 +430,9 @@ behind it, precisely so the citation can say whose ticket it is
 (`typing::domain_value_face_refusal`, reading
 `KnowledgeBase::domain_value_face_decline_reason`) instead of reporting an unknown member.
 
-**Not delivered here:** the parameterised value face (WI-20260911-5G28A, which also owns
-the general "receiver bracket on a rule citation" binding — RS2G4 did the OPERATION half);
+**Not delivered here:** the parameterised value face — delivered on the requirement channel
+by WI-20260925-SHED7 step 1 (§7.3), the citation's bracket building the dictionary (5G28A
+owned the general "receiver bracket on a rule citation" binding; RS2G4 did the OPERATION half);
 `Bool` (WI-20260910-5TK6B); fairness for two recursive positions (09E6M); abstract `T`
 (NAR1X).
 
@@ -918,6 +925,50 @@ home, `combine` at run time) and 067 §4 (MiniSat over a collection builder, aft
 2). A hand-written `Fillable` that is not a `SortDomain` — the builder's case — fills no field and
 no condition yet: both read `SortDomain`.
 
+### DECIDED 2026-11-02 — `<Sort>.domain` is superseded by `SortDomain[T].fill`
+
+User, 2026-11-02, closing proposal 060 §2.3's open item. That item asked only for the NAME the
+value face keeps, as SHED7's increment (f) did: the 2026-09-25 design above moved the existing
+face onto `SortDomain` (S3b: "S4 folds in"), and nobody asked whether the face should survive.
+
+**WHY.** `<Sort>.domain` names a SORT, so it reaches only a type written at the citation. An
+ABSTRACT `T` — a caller's rigid `X`, a sort's parameter — has no name to hang it on, and a VALUE
+cannot stand in for one: a value carries no type, and the type `value_type_term` computes from it
+names only what its constructors name (`[]` is `List[T = ?t]`; an unbound value has none). Only
+the caller knows `X`, so `X`'s domain arrives as the dictionary `SortDomain[T = X]`, which is
+what this section built. One name for two definitions misled as well: the face's 2026-09-11
+definition (§7.1's `Colour.domain(?x) == domain_member(?x, Colour)`, no dictionary, refused for a
+parameterised sort) and its 2026-09-25 one (the relation a `SortDomain` dictionary lands on) read
+alike.
+
+**WHAT REPLACES IT.**
+1. **The typed head is the surface** (proposal 060): `rule p(?x: T) :- body` ≡ `rule p(?x) :-
+   body, SortDomain[T].fill(?x)`, delivered above. A domain wanted as a VALUE is a typed rule
+   cited by name — `rule colours(?x: Colour) :- true`, then `colours.takeN(5)`; WT8WG's first
+   measurement (2026-09-11, its entry of 11:12) was exactly this, `rule dom(?x: Colour) :- true`
+   giving `Colour.dom.takeN(5)` = 3. It also reaches what no `.domain` can spell, the domain of a
+   type variable: `rule el(?x: T) :- true` in `sort Wrap[T]`, cited as `Wrap[T = X].el` under
+   `requires SortDomain[T = X]` (the `countAt` rows of `wi_5g28a_sort_domain_test` and
+   `wi_shed7_fillable_test`).
+2. **A sort that defines its own domain provides `SortDomain`'s `fill`** — `S provides
+   SortDomain[T = S]` with `rule fill(?x) :- …`, the form 060 §2.3 prints for the derived case —
+   in place of the `domain(?x)` written in the sort's body (060 §2.2's "user-definable" bullet).
+   NOT BUILT: today the loader takes a written domain only from a 1-ary relation `<Sort>.domain`
+   in the sort's own scope (`load::derive_sort_domains`, which records it as
+   `SortDomainKind::Written`); a written provision of `SortDomain` is not read as one.
+3. **The per-sort relation stays, internal** — the target a `SortDomain` dictionary lands on
+   (`SortDomainEntry::fill`), today under the name `<Sort>.domain`. Nothing cites it.
+4. **A hand-written `Fillable` is untouched.** It is not a `SortDomain` (060 §2.3), and is for
+   fills other than a type's domain — proposal 067.
+
+**THE WORK — WI-20260911-WT8WG, restated 2026-11-02:** the citation of `<Sort>.domain`
+deprecated or refused (decided at the work); `examples/classic-mini/map-colouring`'s `main` and
+the `wi_wt8wg_domain_value_face_test` rows moved to typed rules; item 2's provision built and the
+written `domain(?x)` migrated to it; kernel-language.md §5.3's value-face and written-domain
+paragraphs rewritten, beside SHED7's pending rewrite of its `domain_member` paragraphs. It depends
+on WI-20260925-SHED7 for item 2: an author-written implementation of `fill` is proposal 067's
+("one an author writes", §1), which SHED7 tracks and its step 1 did not build.
+
 ### The next case — MiniSat over a collection BUILDER: the collection's domain creates it
 
 Beyond S3b, recorded because it is what the mechanism is for (user, 2026-09-25), and carried on as
@@ -977,7 +1028,7 @@ own; S7 is the channel's general case.
 | **S3a** — **DELIVERED 2026-09-24** | A TYPE VARIABLE'S DOMAIN RIDES THE CHANNEL; a named sort's is its provider's member. (a) `anthill.reflect.SortDomain { sort T = ?; rule domain(?x) }`, the member DECLARED UNTYPED. (b) Its provisions DERIVED (`kb::sort_domain_derive`, HXGXF's shape: conditional per parameter), behind a DEMAND GATE — MEASURED, the rows for the stdlib's domain-bearing sorts cost ~55 ms per load in a debug build (`type_check_sorts` +36, `check_provider_requires` +12), so they are derived only when a requirement names the spec or a clause bound is a type variable; the stdlib has neither. (c) THE SWEEP: a bound naming a sort with no parameters calls `S.domain(?x)` — the provision's member, dispatched statically because the bound names the provider, `S.domain`'s own clause keeping `domain_member(?x, S)` as the bottom (060-typedomains §0); a TYPE-VARIABLE bound gets an implicit read `find_dictionary(SortDomain[T = <bound>], SortDomain, ?x, out: ?d)` and `apply_domain(?d, ?x)`, a new kernel builtin `step_init` lowers to the provider's `domain` goal once `?d` is bound (to `domain_member(?x, S)` where the loader declined `S.domain`), which delays while it is not. The read is S2's: a citation fills it from the caller's slot; unfilled, mode (in) DERIVES it from `?x`'s carried type and mode (out) flounders as the bound always did. (d) A RELATIONAL clause's enclosing-sort parameter joins its frame (`load::bound_var_joins_frame`); an equation's does not (pw9a0's control). `typing::relation_clause_columns` keeps that slot canonical at a citation, so S1's bracket still reads it — and builds the per-citation frame in DE BRUIJN order, which it had not: MEASURED, in position order the canonical slot landed in the other column and every S1 bracket refusal loaded clean (harmless before, when every slot was fresh). NOT YET: a parameterised bound still generates `domain_member(?x, T)` (S3b), so the CONCRETE row below still flounders. | `stdlib/anthill/reflect/reflect.anthill`, `kb/sort_domain_derive.rs`, `kb/load.rs`, `typing/rules.rs`, `typing/relation.rs`, `kb/resolve.rs` | RIGID — `countAt[X] requires SortDomain[T = X] = Wrap[T = X].el.takeN(5).length()` over `rule el(?x: T) :- true` in `sort Wrap[T]`: `3` under `Colour`, `2` under `Letter`; S1's pin `Wrap.dom(wrap(red()))` flounders → `1`. Full workspace 7560 passed. Five back-out axes, each alone over `wi_tests`: the `apply_domain` lowering reddens 2 rows, the sweep's type-variable branch 1, (d) 3, the gate's type-variable arm 2, and the named bound's static call none (by design: both calls answer alike). Rows: `wi_5g28a_sort_domain_test.rs` |
 | **S3b** | PARAMETERISED SORTS. The derived `domain` of a parametric sort reads ITS OWN dictionary as its one implicit parameter and recurses through it: `List.domain(?x) :- <?self = SortDomain[T = List[T = T]]>, ?x <=> nil() \| (?x <=> cons(head: ?h, tail: ?t), apply_domain(?self, ?t), ?e <=> Dictionary.sub(?self, 0), apply_domain(?e, ?h))` — the element's domain is the condition's slot, projected; no head argument (060 §5), and the tail needs no rule→rule channel because it recurses through `apply_domain` on the dictionary in hand. That IS S4's parameterised value face, so S4 folds in. The sweep then gives a parameterised bound the implicit read too — built at load for a ground one, routed or derived for a variable-bearing one. | `kb/load.rs`, `typing/rules.rs` | CONCRETE — `Wrap[T = Colour].dom.takeN(5)` = 3; `List[T = Letter].domain.takeN(5)` = 5. CONTROL: alphabet-words, tiny-sat, wi743 keep their answers |
 | **S3c** | (e) WHAT `domain_member(?x, T)` BECOMES once S3b moves the parametric clauses: its readers are then the derived `S.domain` clauses' bottom and a user's 2-ary spelling (no `.anthill` file in the corpus writes it; three test files do). Decided with the user. | — | — |
-| **S4** | W1 — WT8WG's parameterised value face: `emit_domain_value_face` derives `<Sort>.domain` for a parameterised sort; `domain_value_face_refusal` loses its parameterised arm. | `kb/load.rs`, `typing/relation.rs` | `List[T = Letter].domain.takeN(5)` = 5; bare `List.domain` refused by S1's rule |
+| **S4** — **DELIVERED 2026-09-25 with S3b (SHED7 step 1); the face SUPERSEDED 2026-11-02** | W1 — WT8WG's parameterised value face: `emit_domain_value_face` derives `<Sort>.domain` for a parameterised sort; `domain_value_face_refusal` loses its parameterised arm. | `kb/load.rs`, `typing/relation.rs` | `List[T = Letter].domain.takeN(5)` = 5; bare `List.domain` refused by S1's rule |
 | **S5** | THE TWO DEFECTS ABOVE, filed 2026-09-24 and not 5G28A's: a rule-body operation call whose argument is unbound WAITS (delays) instead of answering nothing — **WI-20260924-35E14**; a clause's `require` whose only provider is a witness sort is found — **WI-20260924-DG57J**, closed by P7VP4. | `kb/resolve.rs` | demo2 needs both |
 | **S6** | demo2 end to end. | — | `demo2_the_count_flounders` → `1`; `demo2_the_projected_spelling_loads_and_flounders` → `wrap(red())` under `ByHeat`, `wrap(blue())` under `ByName` |
 | **S7** | RULE → RULE implicit arguments (op-to-rule §7 step 2): every goal carries its implicit arguments through the seven goal-list constructions, written by the typer at the body edge. The 06:17 plan's row (g) — `rule again(?y) :- dom(?y)` inside `Wrap`, cited as `Wrap[T = Colour].again` — and op-to-rule §1's `a(3, nil())`. | `kb/resolve.rs`, `typing/` | — |
