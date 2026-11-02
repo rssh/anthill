@@ -679,8 +679,8 @@ pub(super) fn function_pairing_permutes_a(
 ///
 /// WI-20260824-Q0093 hangs one more thing on that: `actual_node` is the occurrence
 /// `actual` is the type OF, so a rejected proposal-055 type value can name what it
-/// DENOTES (`got Type (Cell[V = Int64])`, design §8) — see
-/// [`TypeError::TypeMismatch::denoted`]. Being the shared renderer is exactly why it
+/// IS (`got Type (Cell[V = Int64])`, `got Type (u)`, design §8) — see
+/// [`TypeError::TypeMismatch::quoted`]. Being the shared renderer is exactly why it
 /// belongs here: one place to fill, and the four channels above cannot answer it
 /// differently.
 pub(super) fn conformance_error(
@@ -702,7 +702,7 @@ pub(super) fn conformance_error(
         span,
         context,
         expected: declared,
-        denoted: denoted_type_value(kb, actual_node),
+        quoted: quoted_type_value(kb, actual_node, &actual),
         actual,
     }
 }
@@ -816,46 +816,48 @@ pub(super) fn spec_typed_value_at_carrier_error(
     })
 }
 
-/// WI-20260824-Q0093 (`docs/design/055-implementation.md` §8) — the SURFACE a rejected
-/// occurrence denotes, when it is a proposal-055 classified type value, for
-/// [`TypeError::TypeMismatch::denoted`]. `None` for every other expression, and for a
-/// check with no occurrence to ask.
+/// WI-20260824-Q0093 (`docs/design/055-implementation.md` §8) — what a mismatch quotes
+/// after `got Type`, for [`TypeError::TypeMismatch::quoted`]: the VALUE when the rejected
+/// expression is a type value — `got Type (Cell[V = Int64])`, and `(Int64)` for
+/// `Box[V = Int64].V` — and otherwise, when its type is `Type`, the expression AS WRITTEN —
+/// `got Type (u)` after `let u = Cell[Int64]`, `got Type (idT(Cell))`. `None` for an
+/// expression of another type, and for a check with no occurrence to ask.
 ///
-/// Keyed on the CLASSIFICATION ([`Expr::TypeValue`]), never on "the type came out as
-/// `Type`": a `Type`-valued expression that is not a written type — a call returning one, a
-/// variable holding one — denotes nothing at this source position, and a message inventing a
-/// surface for it would name a sort the author did not write. A constructor's bare name is
-/// its instance (§4.4), not a type value; its type is written `Leaf[]`.
+/// A `Type` a call returned, or a parameter, or a name a `let` bound, has no value known at
+/// this position; what the author wrote is always there.
 ///
-/// Printed through [`TermPrinter::print_occurrence`], which is the writer that already
-/// owes this shape its SOURCE spelling (`Cell[V = Int64]`, brackets and `=`, per its own
-/// `Expr::TypeValue` arm) — so the message quotes text that would load back as what was
-/// written, rather than a debug form. No interning: the occurrence is read as it stands,
-/// which is what CLAUDE.md's note asks of a transient term on a diagnostic path.
-pub(super) fn denoted_type_value(
+/// The value is printed through [`TermPrinter::print_occurrence`], which writes a type
+/// value in its source spelling (brackets and `=`). The expression is the SOURCE TEXT at
+/// the occurrence's span, its whitespace runs made one space so a multi-line `match`
+/// reads on one line: the printer writes what a body was lowered to — `xs.head()` as
+/// `head(xs)`, `tyOf()` as `tyOf`. `None` where the span holds no text — a source
+/// registered with none, a span a pass minted empty.
+pub(super) fn quoted_type_value(
     kb: &KnowledgeBase,
     node: Option<&Rc<NodeOccurrence>>,
+    actual: &Value,
 ) -> Option<String> {
     let mut node = node?;
     // THROUGH THE WRAPPERS WHOSE TYPE IS ALREADY THEIR CHILD'S, and only those. A `let`
     // reports its CONTINUATION's type (`TypeBuildFrame::LetFinal`) and an in-body `proof`
     // its continuation's too ("the proof is transparent to types",
-    // `TypeBuildFrame::ProofStmt`) — so where the rejected `Type` came from the child,
-    // the denotation does too, and stopping at the wrapper would print `got Type` about a
-    // type value standing in plain sight. Every other expression form contributes
-    // something of its own to the type it reports (a lambda's arrow, a tuple's components)
-    // and is NOT descended: its `actual` already shows the `Type` in the position that
-    // carries it, and naming one component's denotation as the whole expression's would be
-    // a different claim.
-    loop {
-        node = match node.as_expr() {
-            Some(Expr::TypeValue { .. }) => {
-                return Some(crate::persistence::print::TermPrinter::new(kb).print_occurrence(node))
-            }
-            Some(Expr::Let { body, .. }) | Some(Expr::Proof { body, .. }) => body,
-            _ => return None,
-        };
+    // `TypeBuildFrame::ProofStmt`) — so the rejected `Type` came from the child, and the
+    // child is what is quoted, not the block around it.
+    while let Some(Expr::Let { body, .. } | Expr::Proof { body, .. }) = node.as_expr() {
+        node = body;
     }
+    if matches!(node.as_expr(), Some(Expr::TypeValue { .. })) {
+        return Some(crate::persistence::print::TermPrinter::new(kb).print_occurrence(node));
+    }
+    let type_sym = kb.try_resolve_symbol("anthill.prelude.Type")?;
+    if sort_functor_of_view(kb, actual) != Some(type_sym) {
+        return None;
+    }
+    let site = node.span;
+    let (_, text) = kb.sources.provenance(site.source)?;
+    let written = text.get(site.span.start as usize..site.span.end as usize)?;
+    let quoted = written.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!quoted.is_empty()).then_some(quoted)
 }
 
 /// WI-20260824-Q0093 (`docs/design/055-implementation.md` §3, the `conditionals` and
@@ -945,7 +947,7 @@ pub(super) fn boolean_position_error(
             span,
             context,
             expected: bool_ty,
-            denoted: denoted_type_value(kb, node),
+            quoted: quoted_type_value(kb, node, ty),
             actual: ty.clone(),
         }),
     }

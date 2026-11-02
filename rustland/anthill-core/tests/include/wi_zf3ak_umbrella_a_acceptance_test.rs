@@ -7,7 +7,7 @@
 //! `wi_rxt6s_dotted_sort_type_value_test` drives it for a sort named by a dotted path;
 //! these rows drive it for a bare, an applied and a positional `Cell`, through an
 //! unannotated `let` and inside a collection, and show the inferred `T` meeting a
-//! destination as `Type`.
+//! destination as `Type`, the message quoting the expression as written.
 //!
 //! WHERE THE OTHER CLAUSES ARE PINNED:
 //! * `operation t() -> Type = Cell[Int64]` evaluates to the canonical type —
@@ -34,6 +34,20 @@
 //! unrecorded and is refused as `UnclassifiedTypeValue` ("expected a type value recorded
 //! where the sort is written"). `the_same_inference_without_a_type_value` passes either
 //! way by design: it measures the inference with no type value in it.
+//!
+//! THE QUOTE AFTER `got Type`, three back-outs of `quoted_type_value` measured over this
+//! file and the Q0093, JM6ZW, WI-206, RXT6S and B6QYA files:
+//! * a type value only, nothing for another expression (the rule before):
+//!   `the_inferred_parameter_meets_a_destination_as_type`,
+//!   `an_unannotated_let_meets_a_destination_as_type` and
+//!   `the_rejected_expression_is_quoted_as_written` fail;
+//! * the source text for a type value too: `the_rejected_expression_is_quoted_as_written`,
+//!   `wi_rxt6s_dotted_sort_type_value_test::a_path_in_a_slot_of_another_sort_is_an_ordinary_mismatch`
+//!   and two rows of `wi_b6qya_constructor_bracket_test` fail — a path or a constructor's
+//!   type is quoted as its value;
+//! * the occurrence printer in place of the source text:
+//!   `the_rejected_expression_is_quoted_as_written` fails (`head(xs)` for `xs.head()`).
+//! Every other row passes in all three.
 
 use crate::common::{assert_applied_cell, assert_bare_cell, interp_for, list_heads, load_errors_of};
 
@@ -99,18 +113,22 @@ fn a_generic_identity_infers_type_for_every_face() {
 }
 
 /// The inferred `T` is `Type`: the call's result meets a `String` or `Bool` destination as
-/// `Type`, as `idT(5)`'s meets it as `Int64`. The message names no sort — the destination
-/// sees the call's result, and a `Type` that a call returned denotes nothing at that
-/// position (`denoted_type_value`'s rule).
+/// `Type`, as `idT(5)`'s meets it as `Int64`, and the message quotes the call as written.
 #[test]
 fn the_inferred_parameter_meets_a_destination_as_type() {
     for (i, (body, said)) in [
-        ("sz(idT(Cell))", "sz.s (op-arg): expected String, got Type"),
-        ("sz(idT(Cell[V = Int64]))", "sz.s (op-arg): expected String, got Type"),
-        ("if idT(Cell) then 1 else 2", "if.condition (boolean-position): expected Bool, got Type"),
+        ("sz(idT(Cell))", "sz.s (op-arg): expected String, got Type (idT(Cell))"),
+        (
+            "sz(idT(Cell[V = Int64]))",
+            "sz.s (op-arg): expected String, got Type (idT(Cell[V = Int64]))",
+        ),
+        (
+            "if idT(Cell) then 1 else 2",
+            "if.condition (boolean-position): expected Bool, got Type (idT(Cell))",
+        ),
         (
             "if idT(Cell[V = Int64]) then 1 else 2",
-            "if.condition (boolean-position): expected Bool, got Type",
+            "if.condition (boolean-position): expected Bool, got Type (idT(Cell[V = Int64]))",
         ),
     ]
     .into_iter()
@@ -118,20 +136,22 @@ fn the_inferred_parameter_meets_a_destination_as_type() {
     {
         let errs = load_errors_of(&destination_program(i, body));
         assert!(
-            errs.iter().any(|e| e.contains(said) && !e.contains("got Type (")),
+            errs.iter().any(|e| e.contains(said)),
             "`{body}`: expected `{said}`, got {errs:?}"
         );
     }
 }
 
 /// An unannotated `let` infers `Type` too: its name meets the `String` destination as
-/// `Type`, bound to the written type or to `idT`'s result.
+/// `Type`, bound to the written type or to `idT`'s result, and the message quotes the name.
 #[test]
 fn an_unannotated_let_meets_a_destination_as_type() {
     for (i, body) in [
         "\n    let u = Cell[Int64]\n    sz(u)",
         "\n    let u = Cell\n    sz(u)",
         "\n    let u = idT(Cell[V = Int64])\n    sz(u)",
+        // A `let` written as the argument: its type is its continuation's, and so is the quote.
+        "sz(let u = Cell\n      u)",
     ]
     .into_iter()
     .enumerate()
@@ -139,8 +159,49 @@ fn an_unannotated_let_meets_a_destination_as_type() {
         let errs = load_errors_of(&destination_program(20 + i, body));
         assert!(
             errs.iter()
-                .any(|e| e.contains("sz.s (op-arg): expected String, got Type")),
+                .any(|e| e.contains("sz.s (op-arg): expected String, got Type (u)")),
             "`{body}`: {errs:?}"
+        );
+    }
+}
+
+/// A type value is quoted as its value: the bracket in its own spelling, a member read off
+/// a bracket as the type it is. Any other `Type`-valued expression is quoted as its source
+/// text, whitespace made one space: a dot call as a dot, a call with no arguments with its
+/// parentheses, a `match` written over three lines on one.
+#[test]
+fn the_rejected_expression_is_quoted_as_written() {
+    for (i, (body, quoted)) in [
+        ("sz(Cell[ V=Int64 ])", "got Type (Cell[V = Int64])"),
+        ("sz(Box[V = Int64].V)", "got Type (Int64)"),
+        ("sz(xs.head())", "got Type (xs.head())"),
+        ("sz(tyOf())", "got Type (tyOf())"),
+        (
+            "sz(match 0\n      case 0 -> Cell\n      case _ -> Cell[V = Int64])",
+            "got Type (match 0 case 0 -> Cell case _ -> Cell[V = Int64])",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let errs = load_errors_of(&format!(
+            r#"
+namespace test.zf3akquote{i}
+  import anthill.prelude.{{Cell, Int64, List, String, Type}}
+  sort Box
+    sort V = ?
+  end
+  operation tyOf() -> Type = Cell
+  operation sz(s: String) -> Int64 = 1
+  operation go(xs: List[T = Type]) -> Int64 =
+    {body}
+end
+"#
+        ));
+        assert!(
+            errs.iter()
+                .any(|e| e.contains(&format!("sz.s (op-arg): expected String, {quoted}"))),
+            "`{body}`: expected `{quoted}`, got {errs:?}"
         );
     }
 }

@@ -48,8 +48,8 @@ pub(super) fn validate_arg_against_param(
     span: Option<Span>,
     context: TypeErrorContext,
     // WI-20260824-Q0093: the occurrence `actual` is the type OF, when the caller has one
-    // — read only on the failure path, by [`denoted_type_value`], so a rejected
-    // proposal-055 type value can say what it denotes. `None` from a caller with no
+    // — read only on the failure path, by [`quoted_type_value`], so a rejected
+    // `Type`-valued expression is quoted. `None` from a caller with no
     // expression in hand (a relational result column, a declared/actual signature pair).
     actual_node: Option<&Rc<NodeOccurrence>>,
 ) -> ArgValidation {
@@ -285,7 +285,7 @@ fn some_coercion(
                         span,
                         context,
                         expected: declared_g,
-                        denoted: denoted_type_value(kb, actual_node),
+                        quoted: quoted_type_value(kb, actual_node, &actual_g),
                         actual: actual_g,
                     })
                 }
@@ -722,7 +722,7 @@ pub(super) fn validate_arrow_param_result(
         expected: walk_type_deep_value(kb, subst, declared),
         // A CALLBACK's arrow component against the slot's: the pair is two arrow types,
         // and neither side is an expression this call has an occurrence for.
-        denoted: None,
+        quoted: None,
         actual: walk_type_deep_value(kb, subst, actual),
     };
     // WI-792: ARITY, and it runs FIRST because it is THE ONE COMPONENT THIS CHECK
@@ -1673,7 +1673,7 @@ pub(super) fn result_column_error(
                 span,
                 context,
                 expected: declared,
-                denoted: None,
+                quoted: None,
                 actual: column_type.clone(),
             })
         }
@@ -1701,7 +1701,7 @@ pub(super) fn result_column_error(
                 surface: None,
             },
             expected: declared_return.clone(),
-            denoted: None,
+            quoted: None,
             actual: column_type.clone(),
         }),
     }

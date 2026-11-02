@@ -1416,7 +1416,7 @@ fn pattern_outside_position(
         context: TypeErrorContext::PatternPosition { pattern },
         expected: position,
         // Two types: the position's and the sort of what the pattern matches.
-        denoted: None,
+        quoted: None,
         actual,
     })
 }
@@ -1482,7 +1482,7 @@ fn binder_annotation_conflict(
         expected: context_ty.clone(),
         // The two sides are the binder's WRITTEN annotation and the type its context
         // threads in — both types, neither an expression.
-        denoted: None,
+        quoted: None,
         actual: annotation.clone(),
     })
 }

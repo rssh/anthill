@@ -286,7 +286,11 @@ Required diagnostics are local to classification or ordinary validation:
 - undeclared/duplicate/over-applied type binding: existing type-argument error
   at the bracket application;
 - wrong destination: `expected String, got Type (Cell[Int64])`, not an
-  unresolved nested name;
+  unresolved nested name. The parentheses hold the type value, or, for any
+  other expression of type `Type`, the expression as written: `got Type (u)`
+  after `let u = Cell[Int64]`, `got Type (idT(Cell))` for a call — a `Type`
+  known only at run time has no value to show, and its expression is always
+  there;
 - forgotten constructor parentheses in a `Type`-accepting position: the error
   or trace must name the denoted sort so the implicit reading is visible;
   *(WI-20260824-JM6ZW: the one name whose bare form denotes a type without a

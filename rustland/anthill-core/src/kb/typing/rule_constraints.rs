@@ -261,7 +261,7 @@ impl ClauseDisagreement {
                 expected: expected.clone(),
                 actual: actual.clone(),
                 site: TypeError::here(),
-                denoted: None,
+                quoted: None,
             },
             Misfit::SomeType {
                 expected,

@@ -134,23 +134,24 @@ pub enum TypeError {
         // can be traced to its construction site without hand-instrumenting.
         site: &'static std::panic::Location<'static>,
         /// WI-20260824-Q0093 (`docs/design/055-implementation.md` §8, *wrong
-        /// destination*) — WHAT THE REJECTED EXPRESSION DENOTES, rendered, when it is a
-        /// proposal-055 classified type value: `Some("Cell[V = Int64]")`, printed as
-        /// `expected String, got Type (Cell[V = Int64])`.
+        /// destination*) — WHAT THE MISMATCH QUOTES AFTER `got Type`: the value of a
+        /// rejected type value, `Some("Cell[V = Int64]")`, printed as `expected String, got
+        /// Type (Cell[V = Int64])`; for any other `Type`-valued expression its source text,
+        /// `Some("u")`, `Some("xs.head()")` ([`quoted_type_value`]).
         ///
         /// It cannot be read off `actual`, and that is the whole reason for the field.
-        /// `actual` is the expression's TYPE, and every classified type value has the
-        /// same one — `Type` — so the pair renderer can only ever say `got Type`. What
-        /// the author needs to see is the VALUE: which sort the name they wrote now
-        /// denotes, since a bare `Leaf` in a `String` slot is most often a `Leaf()` with
-        /// the parentheses left off, and §8 asks for exactly that to be visible.
+        /// `actual` is the expression's TYPE, and every type value has the same one —
+        /// `Type` — so the pair renderer can only ever say `got Type`. What the author
+        /// needs to see is which type, or which expression, it was: a bare `Leaf` in a
+        /// `String` slot is most often a `Leaf()` with the parentheses left off, and §8
+        /// asks for exactly that to be visible.
         ///
         /// `None` at every site that has no expression occurrence to ask — a check run
-        /// between two types alone (a branch join, a declared/actual signature pair)
-        /// knows the types and nothing about what produced them. Filled by
-        /// [`conformance_error`], which is the one renderer the op-argument,
-        /// entity-field, let-annotation and op-return channels all route through.
-        denoted: Option<String>,
+        /// between two types alone (a declared/actual signature pair) knows the types
+        /// and nothing about what produced them. Filled by [`conformance_error`], which
+        /// is the one renderer the op-argument, entity-field, let-annotation and
+        /// op-return channels all route through.
+        quoted: Option<String>,
     },
     NoParentSort {
         name: Symbol,
@@ -1674,18 +1675,18 @@ impl TypeError {
             TypeError::TypeMismatch {
                 expected,
                 actual,
-                denoted,
+                quoted,
                 ..
             } => {
                 // WI-795: the SAME pair renderer `to_load_error` uses. This is a
                 // second, currently-unreached rendering of the same two values —
                 // rendering them independently here would silently reintroduce the
                 // `expected X, got X` arity blindness on whichever path reaches it
-                // first. WI-20260824-Q0093: and the same denotation suffix, for the
+                // first. WI-20260824-Q0093: and the same quoted suffix, for the
                 // same reason — two renderings of one error may not say different
                 // things about it.
                 let (expected, actual) = render_mismatch_pair(kb, expected, actual);
-                let actual = match denoted {
+                let actual = match quoted {
                     Some(d) => format!("{actual} ({d})"),
                     None => actual,
                 };
@@ -2636,7 +2637,7 @@ impl TypeError {
                 context,
                 expected,
                 actual,
-                denoted,
+                quoted,
                 site,
                 ..
             } => {
@@ -2644,11 +2645,11 @@ impl TypeError {
                 // arity-only arrow mismatch is invisible to the per-side
                 // renderer. See [`render_mismatch_pair`].
                 let (expected_type, actual_type) = render_mismatch_pair(kb, expected, actual);
-                // WI-20260824-Q0093: …and the DENOTATION after the type, when the rejected
-                // expression was a classified type value — `got Type (Cell[V = Int64])`
-                // (design 055 §8). Appended rather than folded into the pair renderer:
+                // WI-20260824-Q0093: …and the type value, or the expression as written, after
+                // the type when that type is `Type` — `got Type (Cell[V = Int64])`, `got Type
+                // (u)` (design 055 §8). Appended rather than folded into the pair renderer:
                 // that renderer answers about the two TYPES, and this is the third thing.
-                let actual_type = match denoted {
+                let actual_type = match quoted {
                     Some(d) => format!("{actual_type} ({d})"),
                     None => actual_type,
                 };

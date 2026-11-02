@@ -34,9 +34,9 @@
 //! (2) THE WRONG-DESTINATION DIAGNOSTIC COULD NOT NAME WHAT WAS DENOTED. §8 asks for
 //!     `expected String, got Type (Cell[Int64])`; the message said `got Type`, because the
 //!     `actual` a mismatch carries is the expression's TYPE and every type value has the
-//!     same one. `TypeError::TypeMismatch.denoted` carries the surface now, filled by the
-//!     one renderer the op-argument / entity-field / let-annotation / op-return channels
-//!     share, and by the branch join for the `if` / `match` arm families.
+//!     same one. `TypeError::TypeMismatch.quoted` carries the expression as written now,
+//!     filled by the one renderer the op-argument / entity-field / let-annotation / op-return
+//!     channels share, and by the branch join for the `if` / `match` arm families.
 //!
 //! (3) THE CLASSIFIER ASKED THE PRIMARY KIND, WHICH IS A DECLARATION-ORDER QUESTION.
 //!     `bare_name_denotes_type` asked `kind_of` and its own doc asked this ticket for a row
@@ -86,7 +86,7 @@
 //!   [`a_boolean_position_refuses_a_type_value_and_says_which_slot`] and
 //!   [`the_boolean_destination_is_the_arguments_predicate_not_a_second_opinion`]. Nothing
 //!   else in the workspace changes, which is the other half of that arm's claim.
-//! * `denoted_type_value` FORCED TO `None`: **2 fail** —
+//! * `denoted_type_value` (now `quoted_type_value`) FORCED TO `None`: **2 fail** —
 //!   [`a_string_or_bool_destination_names_the_denoted_sort`] and the boolean-position row,
 //!   on the `(Cell…)` suffix alone. Every driving row stays green, because a denotation in
 //!   a message changes no program's meaning.

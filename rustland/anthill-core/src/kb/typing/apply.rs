@@ -2062,7 +2062,7 @@ pub(super) fn check_apply_iter(
                         expected: rt,
                         // A DECLARED projection return against a declared receiver return:
                         // two signatures, no expression between them to denote anything.
-                        denoted: None,
+                        quoted: None,
                         actual,
                     });
                 }

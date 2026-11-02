@@ -2036,10 +2036,9 @@ fn expected_is_unconstraining(kb: &KnowledgeBase, exp: &Value) -> bool {
 pub(super) fn compute_branch_join_type(
     kb: &mut KnowledgeBase,
     // WI-20260824-Q0093: per branch — its type, its span, and the OCCURRENCE that type
-    // came from. The third is read only on the failure path ([`denoted_type_value`]), so a
-    // branch rejected for denoting a type says which one; the branch families' negative
-    // destination is this check, so without it `if c then "a" else Cell` could only say
-    // `got Type`.
+    // came from. The third is read only on the failure path ([`quoted_type_value`]), so a
+    // branch rejected as a type value is quoted; the branch families' negative destination
+    // is this check, so without it `if c then "a" else Cell` could only say `got Type`.
     branch_tys: &[(Value, Option<Span>, Option<Rc<NodeOccurrence>>)],
     expected: Option<Value>,
     construct: &str,
@@ -2092,7 +2091,7 @@ pub(super) fn compute_branch_join_type(
                     span: *span,
                     context: branch_ctx,
                     expected: exp.clone(),
-                    denoted: denoted_type_value(kb, node.as_ref()),
+                    quoted: quoted_type_value(kb, node.as_ref(), &bt),
                     actual: bt.clone(),
                 });
             }
@@ -2150,7 +2149,7 @@ pub(super) fn compute_branch_join_type(
                     span,
                     context: branch_ctx,
                     expected: acc.clone(),
-                    denoted: denoted_type_value(kb, node.as_ref()),
+                    quoted: quoted_type_value(kb, node.as_ref(), &bt),
                     actual: bt.clone(),
                 })
             } else {
@@ -2164,7 +2163,7 @@ pub(super) fn compute_branch_join_type(
             span,
             context: branch_ctx,
             expected: acc.clone(),
-            denoted: denoted_type_value(kb, node.as_ref()),
+            quoted: quoted_type_value(kb, node.as_ref(), &bt),
             actual: bt.clone(),
         }),
     }

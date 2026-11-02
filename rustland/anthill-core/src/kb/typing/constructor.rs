@@ -412,7 +412,7 @@ pub(super) fn seq_literal_element_type(
                             span,
                             context,
                             expected: declared,
-                            denoted: denoted_type_value(kb, Some(&r.node)),
+                            quoted: quoted_type_value(kb, Some(&r.node), &r.ty),
                             actual: r.ty.clone(),
                         })
                     }
@@ -457,7 +457,7 @@ pub(super) fn seq_literal_element_type(
                                 source: ElementTypeSource::Siblings,
                             },
                             expected: acc,
-                            denoted: denoted_type_value(kb, Some(&r.node)),
+                            quoted: quoted_type_value(kb, Some(&r.node), &r.ty),
                             actual: r.ty.clone(),
                         })
                     }
