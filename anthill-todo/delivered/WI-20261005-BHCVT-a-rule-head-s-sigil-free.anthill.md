@@ -25,3 +25,7 @@ DELIVERED in 6954c229. The bound's own top level is now read as a type (`Loader:
 
 FOLLOW-UP in b2830d3a (user, 2026-11-02: "in rule head p(x: Buf.buf[T=Int64]) :- q(x), Buf.buf[T=Int64] should be parsed as type, because of ':'"). A bracket applying a constructor after a parameter's `:` is that constructor's type, so `x` is a parameter bounded by `buf[T = Int64]` and the clause is the one `?x: Buf.buf[T = Int64]` stores (`Loader::parse_arg_is_constructor_type`). A constructor written without a bracket (`x: Colour.red`) is still its instance (§4.4), a named argument — not asked. Deciding the bound is WI-20260925-SHED7's (user, 2026-11-02: it depends on SHED7): see the note there. Row a_constructor_bracket_is_its_type; full workspace 11,460 passed; families green.
 
+### 2026-11-02T08:23:43Z — feedback — claude
+
+FOLLOW-UP in this commit's predecessor (user, 2026-11-02, "yes" to: does a constructor written without a bracket count as a type after `:`): `rule p(x: Colour.red) :- q(x)` is `rule p(?x: Colour.red) :- q(?x)`, bounded by `red[]`; a call (`x: red()`, `x: buf(v: 1)`) stays a datum. kernel-language.md §5.3 amended with one sentence. Deciding such a bound is WI-20260925-SHED7's, as for the bracket. Full workspace 11,460 passed; families green.
+
