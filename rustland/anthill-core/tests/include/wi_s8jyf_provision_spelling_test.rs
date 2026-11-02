@@ -38,7 +38,7 @@
 //! | [`a_namespace_level_fact_records_no_provision`] | FAILS — the fact records one |
 //! | [`the_secondary_entry_records_what_the_fact_used_to`] | passes either way (BY DESIGN — the `provides` route is what the migration moves TO, and it must work before and after; it is here so no other row can pass vacuously against a loader that records nothing at all) |
 //! | [`the_provision_dispatches_and_the_fact_does_not`] | FAILS — its fact leg dispatches |
-//! | [`an_unresolved_bracketed_head_declares_a_predicate_rather_than_being_refused`] | passes either way (BY DESIGN — it pins the gate this ticket deliberately does NOT add; a gate that was built and removed) |
+//! | [`an_unresolved_bracketed_head_is_refused`] | passes either way (BY DESIGN — this ticket adds no gate at the head; the refusal is WI-20260823-53W12's bracket on a relation, and fails with that backed out) |
 //! | [`a_bracketed_fact_head_over_a_declared_sort_still_loads`] | passes either way (BY DESIGN — its control) |
 //! | [`a_parenthesised_head_records_no_provision`] | FAILS — the mirror defect: it banked a provision binding a spec parameter to the literal `1` |
 //! | [`an_effect_kind_registers_through_provides_only`] | FAILS on its fact leg — the fact registered the kind |
@@ -197,27 +197,18 @@ end
 
 // ── What the retirement does NOT add: a gate at the head ─────────────────────
 
-/// NO DIAGNOSTIC REPLACES THE SECOND READING, and this row is what says so rather
-/// than leaving it to be re-derived.
-///
-/// A gate was built and REMOVED. 055-implementation §7 lists the fact HEAD beside
-/// three sibling positions where a bracketed application over an unresolved name
-/// already reports — a rule-body goal (`rule r(1) :- NoSuchSpec[T = C]`) and a fact
-/// DATA slot (`fact p(NoSuchType[T = C])`) both say the name "names nothing" — and the
-/// head looked like the fourth. It is not. Those three are REFERENCE positions, where
-/// a name must resolve; a clause head is a DECLARATION (WI-20260821-RDGQC: a fact head
-/// declares its predicate at the scope it is written in), so a head that resolves to
-/// nothing is not an error but the ordinary way to introduce a predicate — including a
-/// bracketed one carrying a type argument, which
-/// `wi_c7anm_head_parameter_column_test::a_bracketed_head_binds_a_type_argument_not_a_
-/// parameter` drives. MEASURED: refusing an unresolved bracketed head took that test
-/// with it, and the only thing separating the two texts is that one name is
-/// capitalized — which §2.3 does not read.
-///
-/// So what closes the ticket's silence is the retirement, not a diagnostic: with one
-/// reading left there is no provision for a missing import to demote.
+/// THE MISSING IMPORT IS LOUD, by a rule that reads no capitalization (WI-20260823-53W12,
+/// user 2026-11-02). A clause head is a DECLARATION (WI-20260821-RDGQC), so a head that
+/// resolves to nothing introduces its predicate, and a gate refusing an unresolved
+/// bracketed head as an unresolved SPEC was built here and removed: it also refused
+/// `fact myrel[T = Red]`, a predicate declared with a bracket, and the two texts differed
+/// only in a capital letter, which §2.3 does not read. What refuses both now is the
+/// bracket: a rule is an operation (proposal 060 §2.1), a bracket on either binds its type
+/// parameters, and a relation is declared by its columns or with a type parameter. So the
+/// missing-import shape is refused where it is written, saying no sort of the name is in
+/// scope, and the column it stored before is written `myrel(T: Red)`.
 #[test]
-fn an_unresolved_bracketed_head_declares_a_predicate_rather_than_being_refused() {
+fn an_unresolved_bracketed_head_is_refused() {
     let src = r#"
 namespace s8jyf.head
   import anthill.prelude.{Int64}
@@ -226,23 +217,15 @@ namespace s8jyf.head
   end
   fact seedr(red())
   fact myrel[T = Red]
-  rule probe(?t) :- myrel[T = ?t]
+  rule probe(?t) :- myrel(T: ?t)
 end
 "#;
-    assert_eq!(
-        errors(src),
-        Vec::<String>::new(),
-        "a bracketed head introduces its predicate; the bracket binds a type argument"
-    );
-    let mut kb = crate::common::load_kb_with(src);
-    assert_eq!(
-        crate::common::query_unary(&mut kb, "s8jyf.head.probe")
-            .into_iter()
-            .map(|(v, _)| format!("{v:?}"))
-            .collect::<Vec<_>>()
-            .len(),
-        1,
-        "and the predicate answers — the head is a declaration, not a reference"
+    let errs = errors(src);
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert!(
+        errs[0].contains("`myrel[…]` declares the relation `myrel` with a bracket")
+            && errs[0].contains("No sort `myrel` is in scope here"),
+        "{errs:?}"
     );
 }
 

@@ -199,14 +199,16 @@ an effect row written as an entry (`Box[V = (Int64) -> Int64]`) have no term
 shape, so the converter carries each as a parse payload of its own
 (`ParseAux::EntryType`, apart from the build-site payloads a `let` annotation
 or a receiver rides) and the loader lowers it by `type_expr_to_child` where a
-walk meets the entry. The term walk and the rule-body occurrence walk hold the
-type's term. The operation-body walk carries it as the value it is — an
-`Expr::Spliced` of that term, typed `Type` — under the `Expr::TypeValue` of its
-bracket; it is a closed datum, so one that names a type parameter, a variable
+walk meets the entry. The term walk holds the
+type's term. The operation-body walk and the rule-body occurrence walk carry it
+as the value it is — an `Expr::Spliced` of that term, typed `Type`
+(`node_occurrence::structural_type_value_occ`) — under the `Expr::TypeValue` of
+its bracket; it is a closed datum, so one that names a type parameter, a variable
 or a projection off a value is refused where the rigid reads are checked. A
-clause's own term is not built from the resolved type value yet (§7), so a
-`@[simp]` rule that writes or takes out such an entry hands the body it fires
-in a former of the type meta-language.
+variable bound to such an entry is spliced back as the same node
+(`subst_var_leaf`): a `@[simp]` rule `nm(Box[V = ?v]) <=> idt(?v)` hands `idt`
+the type, where it handed the body it fired in a former of the type
+meta-language (WI-20260823-53W12).
 
 ## 6. Relationship to proposals 060 and 062
 
@@ -248,10 +250,17 @@ application as the `TypeValue` the operation-body walk builds, by the same
 predicates, and the node heads as the term it replaced, so no clause moves. It
 was the condition for retiring the expectation hint, which was still reading
 those occurrences: measured, every one of the hint's firings across the
-workspace was a rule body. What a rule body does NOT do is check a destination —
-`?x <=> needs_int("s")` loads — so a type value there is validated nowhere yet,
-which belongs with the declared-column validation below. The fact and rule-head
-path (`convert_term`) is unchanged.
+workspace was a rule body. What a rule body does NOT do is check a call's destination —
+`?x <=> needs_int("s")` loads (WI-20261017-JTA3E). A goal's declared column is
+checked: the operation-body typer reads the goal's `TypeValue` node.
+
+The fact and rule-head path (`convert_term`) holds no `TypeValue` node; its
+field check reads the decision off the stored term's head
+(`typing::is_type_written_as_data`, which asks `is_type_value_head`), and so
+does the clause walk for a construction's field inside a clause, by one judge
+(`value_type_fits_field`, WI-20260823-53W12). A `TypeExtractor` construction
+written in a clause is its constructor's instance: a structural type reaches a
+clause's term only as a bracket's entry.
 
 The last two paths must distinguish denotation from validation. A declared
 `Type` field accepts the value. A declared `Term` field accepts the structural
@@ -276,13 +285,13 @@ The existing gates remain:
 Required diagnostics are local to classification or ordinary validation:
 
 - unresolved head: `UnresolvedName` at the name — in a REFERENCE position. *(A
-  clause HEAD is exempt and must stay so: WI-20260821-RDGQC makes a fact head
-  declare its predicate, so `fact myrel[T = Red]` introduces `myrel` with a type
-  argument on it. WI-20260917-S8JYF built a refusal for a bracketed head whose
-  functor names no declared sort and REMOVED it on that measurement — the two
-  texts differ only in capitalization, which §2.3 does not read. What that ticket
-  closed instead is the reading: a `fact` is no longer a provision, so a missing
-  import demotes nothing.)*
+  clause HEAD is exempt: WI-20260821-RDGQC makes a fact head declare its predicate.
+  WI-20260917-S8JYF built a refusal for a bracketed head whose functor names no
+  declared sort and REMOVED it, because it also refused `fact myrel[T = Red]`, read
+  then as a predicate with a type argument. WI-20260823-53W12 refuses both by the
+  bracket instead: a bracket on a relation writes its type parameters (proposal 060
+  §2.1), so a bracketed head on a relation is refused whatever its capitalization,
+  and the missing-import shape is loud.)*
 - undeclared/duplicate/over-applied type binding: existing type-argument error
   at the bracket application;
 - wrong destination: `expected String, got Type (Cell[Int64])`, not an

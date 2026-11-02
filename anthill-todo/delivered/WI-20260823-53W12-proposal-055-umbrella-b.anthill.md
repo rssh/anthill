@@ -3,9 +3,9 @@
 - id: WI-20260823-53W12-proposal-055-umbrella-b
 - created: 2026-08-23T09:40:05Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-08-23T09:40:05Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-11-02T15:05:33Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -16,6 +16,7 @@
 ## Description
 
 Proposal 055 umbrella B — PRESERVE TYPE-VALUE DENOTATION THROUGH FACTS, RULES, AND PROPOSAL-062 GUARDS. Implement docs/design/055-implementation.md §§6–10 for convert_term and build_body_atom_occurrence using umbrella A's resolved TypeValue rather than independently reclassifying syntax. Separate denotation from validation: declared Type columns accept; declared Term columns accept the structural raw-term carrier; every other declared sort is a loud mismatch; undeclared relational columns preserve the type term and participate in relation-column inference. Keep logical variables in type applications, the top-level instance-claim depth gate, and the [] type/instance versus () construction surface gate. DRIVE proposal compatibility: requires Ord[X] remains a requirement edge; require[Ord[X]] remains proposal-060 dictionary acquisition; proposal-062 requires is_entity_of(Trust, TrustLevel) resolves as an ordinary two-argument goal whose arguments are the enclosing type parameter and sort type terms, substitutes, and actually resolves; is_entity_of[Trust, TrustLevel] is refused because the untyped rule declares no type parameters. ACCEPTANCE: Type- and String-declared fact-field controls, variable-bearing rule type term, instance-claim control, and the 060/062 forms above; tests state which fail on back-out; full Rust workspace via rustland/scripts/test.sh. This is an umbrella and may be split, but the existing proposal-062 implementation must remain blocked until this complete logical-carrier boundary is delivered.
+
 ## Changes
 
 ### 2026-10-12T11:17:56Z — feedback — claude
@@ -35,4 +36,8 @@ FOUND, NOT CHANGED (this ticket's "declared Type columns accept"): (1) a sort th
 ### 2026-10-23T14:26:18Z — feedback — claude
 
 MOVED BY WI-20261013-R1W5A (2026-10-23, its first part; decided with the user): a type written in the argument of a call in a VALUE SLOT (or of a dot) in a rule body is the type value it denotes, as in an operation body. Of the RXT6S rows above, the WRONG ANSWER ones now answer 21: `?x <=> which(Outer.Inner)`, the written call `H.keep(Outer.Inner)` and the dot `(H).keep(Outer.Inner)` (wi_r1w5a_call_typed_as_an_operation_body_test::a_type_in_a_calls_argument_is_its_type_value; RXT6S's pinned row is now wi_rxt6s_dotted_sort_type_value_test::a_rule_bodys_call_argument_is_the_sort). Unmoved: a goal's argument (`which(Outer.Inner, ?x)` still answers 0 — a goal's arguments stay the rule's own term, since whether a goal on an operation is its call or a relation is known only once every clause is loaded), the NO MATCH rows (`fact holds(Outer.Inner)` against the goal `holds(Inner)`, a goal's argument being the clause's own term), the `<=>` operand rows, and the REFUSED FOR THE BARE NAME rows (`Outer.Inner = Inner` etc.: a comparison's operands are the rule's own term too).
+
+### 2026-11-02T15:05:32Z — feedback — claude
+
+DELIVERED (2026-11-02, decided with the user). Measured first on 6c6ae4d0: most of the umbrella had been delivered by other tickets (JM6ZW, Q0093, PAPX0, RXT6S, TCSGT, 9WVT7, QK77S, R1W5A, 1Y96B) — a Type column takes bare/applied/variable-bearing types in facts and goals, a Term column takes them, a String column in a rule body refuses them, every RXT6S row answers as the bare name, 9WVT7's eponymous row and TCSGT's first @[simp] row work. What remained, and is now done: (G1) a type written as data in a fact's or a rule head's field of another type loaded (`fact num(i: Box)` over `num(i: Int64)`); it is refused as in an operation body, quoted (`expected Int64, got Type (Box)`), in a nested construction, a list element and an Option field too, a type face in a String field and a sort's parameter included — the fact check and the clause walk share one judge (`value_type_fits_field`), a type types its position as a literal does (`[Untrusted[], 3]` was refused as `expected Level`, `[Untrusted[], Untrusted]` loaded), and a TypeExtractor construction stays its constructor's instance. (G2) a tuple/arrow entry in a rule-body goal on a declared column was refused as a defect of the walk; the rule-body walk now builds the entry as the type value (`structural_type_value_occ`). (G3) a @[simp] variable bound to such an entry is spliced back as the type. (G4, user: a rule is an operation, proposal 060 §2.1) a bracket written alone on an operation or a relation binds its type parameters, never its arguments: `mine[1, 2]`, `is_entity_of[Colour, Colour]`, `two[1, 2]`, `idf[Int64]`, a bracket on a const, and (user, option (a)) a clause's own head `fact myrel[T = Red]` are refused in every position, rustland and scaland; C7ANM's and S8JYF's bracketed-head rows are refusal rows now. The 062 row 'substitutes and actually resolves' moved to WI-20260822-T70A2 (user); here a rule body's `Trust` is pinned as the parameter. Rows: wi_53w12_type_value_in_clause_test (15), scaland BracketOnCallableTest (4). Full workspace 11,507 passed; families green; scaland 1 + 51 + 802.
 

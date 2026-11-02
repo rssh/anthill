@@ -558,6 +558,37 @@ pub(crate) fn reflect_slot_admits<V: TermView>(kb: &KnowledgeBase, ty: &V, is_na
     }
 }
 
+/// Proposal 055 §2 — whether `value`, a term a clause stores, is a TYPE written as data, a
+/// value of `Type` wherever it stands: headed by a name that denotes only a type
+/// ([`KnowledgeBase::is_type_value_head`]: a sort with no data reading of its name, a
+/// constructor's type face), bare or applied. A clause's term carries no `TypeValue` mark;
+/// its head symbol keeps the decision (kernel-language.md §4.4).
+///
+/// Not a `TypeExtractor` construction: written in a clause it is the constructor's instance,
+/// as any constructor's is (`fact rec(x: Nothing)` over `x: TypeExtractor`). A structural
+/// type reaches a clause's term only as a bracket's entry, inside the type that holds it.
+pub(crate) fn is_type_written_as_data<V: TermView>(kb: &KnowledgeBase, value: &V) -> bool {
+    match value.head(kb) {
+        ViewHead::Functor { functor, .. } => kb.is_type_value_head(functor),
+        _ => false,
+    }
+}
+
+/// Proposal 055 §5 — whether `ty` is one of the structural types a bracket's entry is
+/// written as: an arrow type, a tuple type or an effect row. The other `TypeExtractor` forms
+/// are what `extract` answers, and no entry lowers to one.
+pub(crate) fn is_written_structural_type<V: TermView>(kb: &KnowledgeBase, ty: &V) -> bool {
+    matches!(
+        type_head(kb, ty),
+        TypeHead::Arrow | TypeHead::NamedTuple | TypeHead::EffectsRows
+    )
+}
+
+/// The type of types, `anthill.prelude.Type`, as a type.
+pub(crate) fn type_type_value(kb: &mut KnowledgeBase) -> Value {
+    Value::term(kb.make_sort_ref_by_name("anthill.prelude.Type"))
+}
+
 /// WI-385: is this resolved type an `anthill.prelude.Option` — bare `Option` or
 /// applied `Option[T = …]`? The element peel for the WI-408 some-coercion
 /// (`pub(crate)`: the loader's fact-field wrap tests field types with it).

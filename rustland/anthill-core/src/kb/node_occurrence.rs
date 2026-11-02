@@ -7381,6 +7381,16 @@ fn subst_var_leaf(
     // measured gain. 7YPGM therefore changed `step_init` ALONE.
     let applied = kb.reify(t, subst);
     match applied {
+        // A structural type is the type value it is (proposal 055 §5): the variable was
+        // bound by reading through a bracket's entry, `?v` of `nm(Box[V = ?v])` against
+        // `nm(Box[V = (Int64) -> Int64])`, and [`Value::node`] unwraps the entry's node to
+        // its term. Only the three forms an entry is written as: `extract`'s other forms
+        // (`TypeVar(…)`, `Parameterized(…)`) are values of `TypeExtractor`, materialized below.
+        Value::Term { id, .. }
+            if super::typing::is_written_structural_type(kb, &super::term_view::TermIdView(id)) =>
+        {
+            structural_type_value_occ(kb, id, occ.span, occ.owner)
+        }
         Value::Term { id, .. } => materialize_from_handle(kb, id),
         Value::Node(o) => o,
         other => match scalar_value_expr(&other) {
@@ -7481,6 +7491,28 @@ pub(crate) fn materialize_at(kb: &KnowledgeBase, root: TermId, site: SourceSpan)
             ..Rebuild::default()
         },
     )
+}
+
+/// Proposal 055 §5 — the node of a STRUCTURAL type where a value goes: a tuple type, an
+/// arrow type or an effect row written as a bracket's entry (`Box[V = (Int64) -> Int64]`),
+/// or a variable bound to one spliced back. It has no head to classify it by and nothing
+/// to evaluate, so the node carries the type as the value it is, typed `Type`.
+/// Materialized from its term instead, it is a construction in the type meta-language,
+/// whose own leaves are sort names no walk classified.
+///
+/// A program that loads without the standard library has no `Type`; the typer then
+/// reports the node as one it has no type for.
+pub(crate) fn structural_type_value_occ(
+    kb: &mut KnowledgeBase,
+    type_tid: TermId,
+    site: SourceSpan,
+    owner: Option<Symbol>,
+) -> Rc<NodeOccurrence> {
+    let occ = NodeOccurrence::new_expr(Expr::Spliced(Value::term(type_tid)), site, owner);
+    if let Some(type_ty) = kb.try_make_sort_ref_by_name("anthill.prelude.Type") {
+        occ.set_inferred_type(Value::term(type_ty));
+    }
+    occ
 }
 
 /// WI-753 — MATERIALIZE A LOWERING'S WRAPPER AROUND A CHILD THE LOADER BUILT.

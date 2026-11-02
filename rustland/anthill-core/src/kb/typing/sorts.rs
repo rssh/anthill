@@ -1563,6 +1563,16 @@ fn check_value_against_type(
     if reflect_slot_admits(kb, declared_type, is_name) {
         return None;
     }
+    if is_type_written_as_data(kb, &TermIdView(value)) {
+        return check_type_value_against_field(
+            kb,
+            value,
+            declared_type,
+            entity_sym,
+            field_sym,
+            span,
+        );
+    }
     // WI-361: dispatch on the canonical form tag so a term-backed `Ref(S)` /
     // `Fn{S,named}` routes to the same arms as the deep `sort_ref` / `parameterized`.
     // WI-342: the declared type is carrier-agnostic — read it through [`TermView`]
@@ -1590,6 +1600,57 @@ fn check_value_against_type(
         }
         _ => None, // type_var, arrow, nothing — skip for now
     }
+}
+
+/// Proposal 055 §2 — a type written as data ([`is_type_written_as_data`]) is a value of
+/// `Type`, and a field takes it as a construction's field in a clause does
+/// ([`value_type_fits_field`]); a field still at a type parameter takes it too, which the
+/// fact fixes. Any other field refuses it, quoting the type as the rule-body typer does
+/// (`got Type (Box[V = Int64])`), and at a spec over its parameter saying so, as the
+/// operation-body typer does. Read as the sort of a value, the type's head named no
+/// constructor and every field took it: `fact num(i: Box)` loaded beside `entity num(i:
+/// Int64)`, where the same goal in a rule body was refused. A constructor's type face
+/// (`red[]`, WI-20260902-JB6RS) is such a type too: it was refused only at a sort with
+/// constructors, so a `String` field took it.
+fn check_type_value_against_field(
+    kb: &mut KnowledgeBase,
+    value: TermId,
+    declared_type: &Value,
+    entity_sym: Symbol,
+    field_sym: Symbol,
+    span: Option<Span>,
+) -> Option<TypeError> {
+    if is_type_variable(kb, declared_type) {
+        return None;
+    }
+    let type_ty = type_type_value(kb);
+    if value_type_fits_field(kb, &Substitution::new(), declared_type, &type_ty) {
+        return None;
+    }
+    let context = TypeErrorContext::EntityField {
+        entity: entity_sym,
+        field: field_sym,
+    };
+    let written = crate::persistence::print::TermPrinter::new(kb).print_value(&Value::term(value));
+    let got = format!("Type ({written})");
+    // The note `check_value_sort_membership` gives a provider's value at such a field.
+    let note = extract_sort_ref_sym(kb, declared_type).and_then(|spec| {
+        let type_sym = sort_functor_of_view(kb, &type_ty)?;
+        let param = spec_over_parameter(kb, spec).filter(|_| sort_provides(kb, type_sym, spec))?;
+        Some(provider_is_not_the_spec_note(
+            kb, spec, param, type_sym, &context,
+        ))
+    });
+    Some(TypeError::Other {
+        site: TypeError::here(),
+        span,
+        context,
+        expected: declared_type_display(kb, declared_type),
+        actual: match note {
+            Some(note) => format!("{got} — {note}"),
+            None => got,
+        },
+    })
 }
 
 /// Check a value against a tuple type — `Unit` is the tuple of no components. The value's
@@ -1674,27 +1735,8 @@ fn check_value_against_sort_ref(
                 })
             }
         }
-        // WI-20260902-JB6RS — A TYPE WRITTEN AS DATA (`red[]`, `Foo[X = Int64]`, headed by
-        // a constructor's type face) is no instance of a data sort, so a field declared at
-        // one refuses it as it refuses an instance of another sort. Asked before the arms
-        // below, which would read the face's DECLARATION and find the field's own sort
-        // (`Foo[]` in a `Foo` field). A sort with no constructor — `Type`, `Term`,
-        // `Symbol`, a spec — is not judged here.
-        Term::Ref(face) | Term::Fn { functor: face, .. } if face.is_type_face() => {
-            if !kb.sort_has_constructors(declared_sym) {
-                return None;
-            }
-            Some(TypeError::Other {
-                site: TypeError::here(),
-                span,
-                context: TypeErrorContext::EntityField {
-                    entity: entity_sym,
-                    field: field_sym,
-                },
-                expected: declared_type_display(kb, declared_type),
-                actual: format!("Type ({}[])", kb.local_name_of(*face)),
-            })
-        }
+        // A type written as data — a constructor's type face (`red[]`) among them — never
+        // reaches here: [`check_type_value_against_field`] took it.
         // WI-946: the value's sort is the TOTAL belongs-to (`sort_of_constructor`).
         // The strict view answered `None` for an eponymous / free-standing carrier,
         // and `check_value_sort_membership`'s `parent?` turned that into a SILENT

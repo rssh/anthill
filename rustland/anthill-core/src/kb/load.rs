@@ -869,6 +869,21 @@ pub enum LoadError {
         /// Where the application is written.
         span: Span,
     },
+    /// Proposal 060 §2.1 — a bracket alone on an operation or a relation: `two[1, 2]`,
+    /// `mine[1, 2]`, and a clause's head `fact myrel[T = Red]`. A rule is an operation, and
+    /// a bracket on either binds its type parameters, never its arguments; it is read only
+    /// before a call's arguments, and a rule declares a type parameter as `rule g[A](…)`.
+    /// Without the parentheses it was read as the argument list: `mine[1, 2]` answered as
+    /// `mine(1, 2)`, `two[Int64]` passed the type as `two`'s first argument, and the head
+    /// `myrel[T = Red]` stored a column `T`, which `myrel(T: ?t)` found.
+    BracketOnCallable {
+        /// The name the bracket is written on, by its short name.
+        name: String,
+        /// What the name is, as the refusal says it.
+        on: BracketedName,
+        /// Where the bracket is written.
+        span: Span,
+    },
     /// WI-343: a carrier provides a spec whose own `requires` is not
     /// satisfied by that carrier — e.g. `fact PersistentCollection[List]`
     /// where `PersistentCollection requires Iterable` but `List` provides
@@ -3176,6 +3191,7 @@ impl LoadError {
             | LoadError::UndefinedRuleBodyTerm { span, .. }
             | LoadError::UndefinedHeadArgument { span, .. }
             | LoadError::SortAppliedAsData { span, .. }
+            | LoadError::BracketOnCallable { span, .. }
             | LoadError::ConstantInGoalPosition { span, .. }
             | LoadError::ConstInGoalPosition { span, .. }
             | LoadError::EquationSubjectInGoalPosition { span, .. }
@@ -3523,6 +3539,9 @@ impl LoadError {
             }
             LoadError::SortAppliedAsData { sort, span } => {
                 format!("{}: {}", loc.format_start(*span), sort_applied_as_data_message(sort))
+            }
+            LoadError::BracketOnCallable { name, on, span } => {
+                format!("{}: {}", loc.format_start(*span), bracket_on_callable_message(name, *on))
             }
             LoadError::UndefinedRuleBodyGoal { functor, span } => {
                 format!(
@@ -5312,6 +5331,13 @@ impl std::fmt::Display for LoadError {
                 span.start,
                 span.end
             ),
+            LoadError::BracketOnCallable { name, on, span } => write!(
+                f,
+                "{} at {}..{}",
+                bracket_on_callable_message(name, *on),
+                span.start,
+                span.end
+            ),
             LoadError::ConstInGoalPosition {
                 name,
                 problem,
@@ -7088,6 +7114,19 @@ fn query_application_errors(
             errors.push(
                 LoadError::SortAppliedAsData {
                     sort: kb.local_name_of(resolved).to_string(),
+                    span: file.terms.span(id),
+                }
+                .located_in(file),
+            );
+        }
+        let bracketed = (file.terms.is_type_application(id) && !file.terms.is_minted(id))
+            .then(|| bracketed_name(kb, resolved, false))
+            .flatten();
+        if let Some(on) = bracketed {
+            errors.push(
+                LoadError::BracketOnCallable {
+                    name: kb.local_name_of(resolved).to_string(),
+                    on,
                     span: file.terms.span(id),
                 }
                 .located_in(file),
@@ -17016,6 +17055,70 @@ pub(crate) fn sort_applied_as_data_message(sort: &str) -> String {
          operation to apply — it is a sort, and its type is written `{sort}[…]` \
          (kernel-language.md §4.4)"
     )
+}
+
+/// What a bracket of [`LoadError::BracketOnCallable`] is written on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BracketedName {
+    /// A clause's own head, which declares the relation it names.
+    Head,
+    /// An operation or a relation.
+    Callable,
+    /// Any other name that is no type: a const, a namespace, a parameter.
+    Other,
+}
+
+/// The ONE wording of [`LoadError::BracketOnCallable`]. At a clause's own head the bracket
+/// declares the relation it names, so the head is told both declarations — and that a sort
+/// of the name is not in scope, which is what the shape is when an import is missing.
+pub(crate) fn bracket_on_callable_message(name: &str, on: BracketedName) -> String {
+    match on {
+        BracketedName::Head => format!(
+            "`{name}[…]` declares the relation `{name}` with a bracket, which writes type \
+             arguments; a relation's columns are written in parentheses, `{name}(…)`, and a \
+             type parameter it declares with its bound, `rule {name}[T](…) :- Spec[T]`. No \
+             sort `{name}` is in scope here (kernel-language.md §5.4)"
+        ),
+        BracketedName::Callable => format!(
+            "`{name}[…]` is a bracket on an operation or a relation, which binds its type \
+             parameters and is read only before a call's arguments; the arguments are written \
+             in parentheses, `{name}(…)` (kernel-language.md §5.4)"
+        ),
+        BracketedName::Other => format!(
+            "`{name}[…]` writes type arguments of `{name}`, which takes none: only a sort or a \
+             constructor is applied to a bracket, and a call's bracket is written before its \
+             arguments (kernel-language.md §5.4)"
+        ),
+    }
+}
+
+/// What a bracket written alone on `sym` is, where it is refused: `None` for a name that is
+/// a type (a sort, a constructor, a face — an operation sharing its sort's name is the sort
+/// in a bracket) and for a name that resolves to nothing, which its own check reports. At a
+/// clause's own head the name is the relation the head declares, whatever it was minted as.
+fn bracketed_name(kb: &KnowledgeBase, sym: Symbol, at_head: bool) -> Option<BracketedName> {
+    if kb.has_type_reading(sym) {
+        return None;
+    }
+    if at_head {
+        return Some(BracketedName::Head);
+    }
+    let callable = [
+        SymbolKind::Operation,
+        SymbolKind::Goal,
+        SymbolKind::Fact,
+        SymbolKind::Rule,
+        SymbolKind::EquationFunctor,
+    ]
+    .into_iter()
+    .any(|kind| kb.has_kind(sym, kind));
+    if callable {
+        Some(BracketedName::Callable)
+    } else if kb.kinds(sym).is_empty() {
+        None
+    } else {
+        Some(BracketedName::Other)
+    }
 }
 
 /// WI-20260902-JB6RS — the ONE wording of [`LoadError::IncompleteConstruction`] and of the
@@ -31863,6 +31966,26 @@ impl<'a> Loader<'a> {
         });
     }
 
+    /// Proposal 060 §2.1 — refuse a bracket written alone on a name that is no type
+    /// ([`LoadError::BracketOnCallable`]): `mine[1, 2]` in a goal, a data slot or a value
+    /// slot of a clause, an operation body, and a clause's own head `fact myrel[T = Red]`,
+    /// which declares the relation (`at_head`). Not a node the converter minted. Answers
+    /// whether it refused.
+    fn refuse_bracket_on_a_callable(&mut self, parse_id: ParseTermId, functor: Symbol, at_head: bool) -> bool {
+        if !self.parsed.terms.is_type_application(parse_id) || self.parsed.terms.is_minted(parse_id) {
+            return false;
+        }
+        let Some(on) = bracketed_name(self.kb, functor, at_head) else {
+            return false;
+        };
+        self.errors.push(LoadError::BracketOnCallable {
+            name: self.kb.local_name_of(functor).to_string(),
+            on,
+            span: self.parsed.terms.span(parse_id),
+        });
+        true
+    }
+
     /// WI-20260902-JB6RS — a bare resolved name that is neither a const nor an alias, as a
     /// clause holds it. In a DATA slot a constructor is its INSTANCE (kernel-language.md
     /// §4.4): a fieldless one the bare name it already is, one that takes fields its
@@ -32897,6 +33020,8 @@ impl<'a> Loader<'a> {
                 // field reading here removes the second, wrong reading, not the checking.
                 let is_type_app = self.parsed.terms.is_type_application(parse_id);
                 self.refuse_sort_applied_as_data(parse_id, new_functor);
+                let clause_head = self.clause_head.is_some_and(|h| h.node == parse_id);
+                let _ = self.refuse_bracket_on_a_callable(parse_id, new_functor, clause_head);
 
                 // WI-433: DESUGAR positional constructor args to NAMED. Positional
                 // and named constructor terms must share ONE in-KB shape — a stored
@@ -35521,6 +35646,17 @@ impl<'a> Loader<'a> {
                 let is_type_value = !is_entity
                     && bracketed
                     && (self.kb.has_kind(kb_functor, SymbolKind::Sort) || names_constructor);
+                // And a bracket alone on an operation or a relation is neither: it would be
+                // read as the call's argument list (`two[1, 2]` as `two(1, 2)`).
+                // The body is not stored then, as for a bare arrow (WI-605): typed, the node
+                // is the call its bracket was misread as, and a second report follows.
+                if bracketed
+                    && !is_type_value
+                    && !self.parsed.terms.is_paren_less_citation(outer_parse_id)
+                    && self.refuse_bracket_on_a_callable(outer_parse_id, kb_functor, false)
+                {
+                    self.expr_body_bottom_recovery = true;
+                }
 
                 // WI-20260911-5G28A (L3): the paren-less `Sort[…].m` reaches here as the
                 // zero-argument call the applied `Sort[…].m()` builds, so a rule citation and
@@ -36149,10 +36285,9 @@ impl<'a> Loader<'a> {
     /// `TermId`. `None` when `pid` is not such an entry.
     fn lower_entry_type_aux_occ(&mut self, pid: ParseTermId) -> Option<Rc<NodeOccurrence>> {
         let type_tid = self.lower_entry_type_aux(pid)?;
-        // WI-753: the type is the canonical interned value, so its occurrence is that
-        // term's — but located at the entry the author WROTE, not through `term_spans`.
+        // WI-753: located at the entry the author WROTE, not through `term_spans`.
         let site = self.source_span_of(pid);
-        Some(node_occurrence::materialize_at(self.kb, type_tid, site))
+        Some(self.entry_type_value_occ(type_tid, site))
     }
 
     /// [`Self::lower_entry_type_aux_occ`] of an effect row, and `None` for any other
@@ -36168,28 +36303,23 @@ impl<'a> Loader<'a> {
         }
     }
 
-    /// The node of a structural type written as a bracket's entry in an operation
-    /// body: the type value it denotes, `(Int64) -> Int64` in `Box[V = (Int64) ->
-    /// Int64]`. A nominal entry is classified by its head ([`Expr::TypeValue`]) and
-    /// assembled from its own entries when it is evaluated; a tuple type, an arrow type
-    /// and an effect row have no head to classify by and nothing to evaluate, so the
-    /// node carries the lowered type as the value it is, typed `Type`.
+    /// The node of a structural type written as a bracket's entry, in an operation body
+    /// and in a clause alike: the type value it denotes, `(Int64) -> Int64` in `Box[V =
+    /// (Int64) -> Int64]` ([`node_occurrence::structural_type_value_occ`]). A nominal
+    /// entry is classified by its head ([`Expr::TypeValue`]) and assembled from its own
+    /// entries when it is evaluated.
     ///
     /// Materialized from the term instead, the entry was a construction in the type
-    /// meta-language: it evaluated to an entity where the bracket takes a type, and its
-    /// own leaves were sort names no rule had classified.
+    /// meta-language: in an operation body it evaluated to an entity where the bracket
+    /// takes a type, and in a rule body a declared column's check typed its leaves, sort
+    /// names no walk had classified — `held(t: Box[V = (Int64, String)], n: ?n)` over `t:
+    /// Type` was refused as a defect of the walk.
     ///
     /// Under a rule's compound expression the type may hold the clause's variables;
     /// they are closed and opened with the clause's
     /// ([`node_occurrence::node_to_debruijn`], [`node_occurrence::open_debruijn_node`]).
     fn entry_type_value_occ(&mut self, type_tid: TermId, site: SourceSpan) -> Rc<NodeOccurrence> {
-        let occ = NodeOccurrence::new_expr(Expr::Spliced(Value::term(type_tid)), site, None);
-        // A program that loads without the standard library has no `Type`; the typer
-        // then reports the node as one it has no type for.
-        if let Some(type_ty) = self.kb.try_make_sort_ref_by_name("anthill.prelude.Type") {
-            occ.set_inferred_type(Value::term(type_ty));
-        }
-        occ
+        node_occurrence::structural_type_value_occ(self.kb, type_tid, site, None)
     }
 
     /// WI-271: extract a parse-only `ParseAux` payload from a parent
@@ -38262,6 +38392,7 @@ impl<'a> Loader<'a> {
                 // clause converter's twin, restored by the wrapper.
                 self.in_type_binding = self.parsed.terms.is_type_application(parse_id);
                 self.refuse_sort_applied_as_data(parse_id, new_functor);
+                let _ = self.refuse_bracket_on_a_callable(parse_id, new_functor, false);
                 // A WRITTEN DOTTED NAME — the converter's `field_access` chain, the provenance
                 // test `dotted_citation_name` makes — hands its segments the non-value role.
                 let name_chain = self.parsed.terms.is_minted(parse_id)

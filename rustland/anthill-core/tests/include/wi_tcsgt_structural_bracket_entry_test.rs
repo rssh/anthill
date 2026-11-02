@@ -125,12 +125,11 @@
 //!       is a payload of another kind (`ParseAux::TypeExpr`) whatever its shape.
 //!     an_effect_row_entry_is_its_row (its fact row) — WI-366 B1's own route.
 //!
-//! THE BOUNDARY. Only the operation body's walk carries the entry as the type value it
-//! is. A clause's own term holds it as the term the clause matches, so a `@[simp]` rule
-//! that writes such a bracket on its right-hand side, or binds a variable to the entry on
-//! its left, hands the operation body it fires in a former of the type meta-language, and
-//! the load is refused at the sort names inside it. Reading every type written in a
-//! clause's term is WI-20260823-53W12's.
+//! THE BOUNDARY, MOVED. The operation body's walk and, since WI-20260823-53W12, the rule
+//! body's carry the entry as the type value it is, and a variable bound to one is spliced
+//! back as it; a clause's stored term holds it as the term the clause matches. Those rows
+//! — a rule-body goal on a declared `Type` column, a `@[simp]` rule that binds a variable to
+//! the entry — are `wi_53w12_type_value_in_clause_test`'s.
 
 use anthill_core::eval::Value;
 use anthill_core::kb::term_view::views_structurally_equal;

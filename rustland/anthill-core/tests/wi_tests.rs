@@ -63,6 +63,8 @@ mod wi_jmmhq_value_dot_internal_test;
 mod wi_rm247_data_sort_equation_test;
 #[path = "include/wi_4dyr6_every_sort_provides_itself_test.rs"]
 mod wi_4dyr6_every_sort_provides_itself_test;
+#[path = "include/wi_53w12_type_value_in_clause_test.rs"]
+mod wi_53w12_type_value_in_clause_test;
 #[path = "include/wi_3hn0n_tuple_on_rhs_test.rs"]
 mod wi_3hn0n_tuple_on_rhs_test;
 #[path = "include/wi_7g99a_unit_is_the_empty_tuple_test.rs"]

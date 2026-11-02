@@ -71,12 +71,13 @@ npx tree-sitter test       # run grammar corpus tests
 
 ```anthill
 namespace anthill.example
-  import anthill.prelude.{List, Option}
-  export MySort
+  import anthill.prelude.{Option, Int64, String}
+  import anthill.prelude.Option.{some}
+  import anthill.prelude.PartialEq.{eq}
 
   sort MySort
-    entity Variant1(field: Int)
-    entity Variant2(name: String, value: Option[T = Int])
+    entity Variant1(field: Int64)
+    entity Variant2(name: String, value: Option[T = Int64])
   end
 
   rule derived_fact(?x, ?y)
@@ -84,8 +85,8 @@ namespace anthill.example
 
   fact Variant1(field: 42)
 
-  constraint unique_name
-    :- Variant2(name: ?n, value: ?), Variant2(name: ?n, value: ?)
+  constraint unique_name: eq(?a, ?b)
+    :- Variant2(name: ?n, value: ?a), Variant2(name: ?n, value: ?b)
 end
 ```
 

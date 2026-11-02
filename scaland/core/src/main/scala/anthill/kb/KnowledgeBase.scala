@@ -120,6 +120,21 @@ class KnowledgeBase:
       d.hasKind(SymbolKind.Sort) && !d.hasKind(SymbolKind.Entity)
     }
 
+  /** WI-20260823-53W12 (rustland's `bracketed_name`) — what a bracket written alone on `sym`
+    * is, where it is refused ([[anthill.load.LoadError.BracketOnCallable]]): `None` for a
+    * name that is a type — a sort, a constructor, a face — and for a name that resolves to
+    * nothing, which its own check reports. At a clause's own head the name is the relation
+    * the head declares, whatever it was minted as. */
+  def bracketedName(sym: TermSymbol, atHead: Boolean): Option[anthill.load.BracketedName] =
+    import anthill.load.BracketedName
+    val d = symbols.get(sym)
+    if sym.isTypeFace || d.hasKind(SymbolKind.Sort) || d.hasKind(SymbolKind.Entity) then None
+    else if atHead then Some(BracketedName.Head)
+    else if Seq(SymbolKind.Operation, SymbolKind.Goal, SymbolKind.Fact, SymbolKind.Rule,
+        SymbolKind.EquationFunctor).exists(d.hasKind) then Some(BracketedName.Callable)
+    else if d.kindsSet.isEmpty then None
+    else Some(BracketedName.Other)
+
   /** The TYPE FACE of `sym`'s declaration — the symbol a TYPE CONTEXT names it by — when
     * that declaration is of kind `Entity`; the declaration's own symbol otherwise
     * (WI-20261020-80VNX; rustland's `type_face_of` / `type_context_face`).

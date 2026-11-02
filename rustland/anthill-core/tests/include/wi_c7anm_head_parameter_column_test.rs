@@ -47,10 +47,12 @@
 //!
 //! AXIS 3 — THE BRACKET DECLINE (`is_type_application` gate removed). 2 of 10 fail:
 //!
-//!  * `a_bracketed_head_binds_a_type_argument_not_a_parameter` — the `rule` spelling
-//!    stops meaning what the `fact` spelling means. Its `fact` half passes either way.
-//!  * `a_bracketed_head_may_carry_a_positional_argument_too` — a PANIC out of the
-//!    loader, from axis 1's own assert.
+//!  * `a_bracketed_head_is_refused_in_both_spellings` — the `rule` spelling is rebuilt
+//!    as a parameter head and refused at the goal for its shape, not for its bracket.
+//!    Its `fact` half passes either way.
+//!  * `a_bracketed_head_with_a_positional_argument_is_refused_not_a_panic` — a second
+//!    refusal, axis 1's "no written argument order was recorded" (before WI-20260823-53W12
+//!    refused the bracket, a PANIC out of the loader).
 //!
 //! AXIS 4 — ONE VARIABLE PER PARAMETER NAME PER RULE (a fresh var minted per head).
 //! 1 of 10 fails:
@@ -246,14 +248,15 @@ fn an_untyped_bare_head_name_is_still_a_constant() {
     assert!(column(&mut kb, "test.c7anm.p_untyped_wrong").is_empty());
 }
 
-/// A BRACKET is a type application, not a parameter list. `Spec[T = Red]` binds the
-/// spec's type argument `T`, and `T = Red` inside it is not §2.1's `name: Type`. The
-/// two are byte-identical once built, so only the written surface separates them —
-/// which is exactly what `SimpleTermStore::is_type_application` records.
+/// A BRACKET is a type application, not a parameter list, so `T = Red` inside one is not
+/// §2.1's `name: Type`. On a relation's own head it is refused (WI-20260823-53W12, user
+/// 2026-11-02: a rule is an operation, proposal 060 §2.1, and a bracket on either binds its
+/// type parameters): a relation is declared by its columns, `myrel(T: Red)`, or with a type
+/// parameter, `rule myrel[T](…)`. Before, the bracket stored a column `T`, which the
+/// parenthesized goal found. The §2.1 rebuild still declines it at the surface, so the one
+/// refusal is the bracket's and the `rule` spelling is not read as a parameter `T: Red`.
 ///
-/// The `fact` spelling is the CONTROL and the yardstick: it never routes through the
-/// §2.1 rebuild, so it always meant the type binding, and the `rule` spelling must mean
-/// the same thing.
+/// The column's own spelling is the CONTROL: `fact myrel(T: Red)` answers `myrel(T: ?t)`.
 fn bracket_src(head: &str) -> String {
     format!(
         r#"
@@ -263,36 +266,37 @@ namespace test.c7anm.bracket
     entity red
   end
   fact seedr(red())
-{head}  rule probe(?t) :- myrel[T = ?t]
+{head}  rule probe(?t) :- myrel(T: ?t)
 end
 "#
     )
 }
 
-#[test]
-fn a_bracketed_head_binds_a_type_argument_not_a_parameter() {
-    // Driven, both spellings, one answer — `?t = Red`, the sort the bracket bound.
-    let mut by_rule =
-        crate::common::load_kb_with(&bracket_src("  rule myrel[T = Red] :- seedr(?x)\n"));
-    assert_eq!(
-        column(&mut by_rule, "test.c7anm.bracket.probe"),
-        ["Red"],
-        "the `rule` spelling of a bracketed head must bind the type argument"
+/// The one refusal of `src`: the bracket's, at the head.
+fn the_heads_refusal(src: &str) {
+    let errs = crate::common::load_errors_of(src);
+    assert_eq!(errs.len(), 1, "one refusal: {errs:?}");
+    assert!(
+        errs[0].contains("`myrel[…]` declares the relation `myrel` with a bracket"),
+        "{errs:?}"
     );
-    let mut by_fact = crate::common::load_kb_with(&bracket_src("  fact myrel[T = Red]\n"));
-    assert_eq!(column(&mut by_fact, "test.c7anm.bracket.probe"), ["Red"]);
 }
 
 #[test]
-fn a_bracketed_head_may_carry_a_positional_argument_too() {
+fn a_bracketed_head_is_refused_in_both_spellings() {
+    the_heads_refusal(&bracket_src("  rule myrel[T = Red] :- seedr(?x)\n"));
+    the_heads_refusal(&bracket_src("  fact myrel[T = Red]\n"));
+    let mut by_column = crate::common::load_kb_with(&bracket_src("  fact myrel(T: Red)\n"));
+    assert_eq!(column(&mut by_column, "test.c7anm.bracket.probe"), ["Red"]);
+}
+
+#[test]
+fn a_bracketed_head_with_a_positional_argument_is_refused_not_a_panic() {
     // `Spec[Pos, T = Named]` is built by the BRACKET frame, which records no written
     // order — a bracket is not an argument list — so a §2.1 rebuild reaching it finds
-    // positional args it has no order to place, and ASSERTS. It has to decline at the
-    // surface instead: a compiler panic is not a diagnostic.
-    //
-    // Driven rather than load-only, so the row says what the head MEANS and not only
-    // that it survived: the bracket binds `T`, and the positional slot stays a slot.
-    let mut kb = crate::common::load_kb_with(
+    // positional args it has no order to place, and ASSERTS. It declines at the surface,
+    // and the head is refused for its bracket: a compiler panic is not a diagnostic.
+    the_heads_refusal(
         r#"
 namespace test.c7anm.bracket2
   import anthill.prelude.Int64
@@ -301,11 +305,10 @@ namespace test.c7anm.bracket2
   end
   fact seedr(red())
   rule myrel[Int64, T = Red] :- seedr(?x)
-  rule probe(?t) :- myrel[Int64, T = ?t]
+  rule probe(?t) :- myrel(Int64, T: ?t)
 end
 "#,
     );
-    assert_eq!(column(&mut kb, "test.c7anm.bracket2.probe"), ["Red"]);
 }
 
 /// A MULTI-HEAD rule: two heads, one shared body, one parameter name. The parameter map

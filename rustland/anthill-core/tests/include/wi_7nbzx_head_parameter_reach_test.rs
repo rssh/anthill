@@ -286,7 +286,9 @@ fn a_clause_on_an_entity_constructor_head_is_untouched() {
     //
     // Two rows for `palette(c: ?c)`: the `fact`, and this clause whose `c: Red` stayed a
     // named argument. Had the clause been reclassified its head would carry ONE
-    // POSITIONAL argument and match neither.
+    // POSITIONAL argument and match neither. The field is declared `Type`, which a sort
+    // written as data is a value of (WI-20260823-53W12: at a field declared `Red` the
+    // type `Red` is refused, as in an operation body).
     //
     // NOTE WHAT THIS IS NOT: the same text with the body removed IS refused, and
     // correctly — a body-less head DECLARES its own name (061), so `palette` there
@@ -300,9 +302,10 @@ namespace test.n7bzx.ctor
     entity red
   end
   sort Palette
-    entity palette(c: Red)
+    import anthill.prelude.Type
+    entity palette(c: Type)
   end
-  fact palette(c: red())
+  fact palette(c: Palette)
   rule any(?c) :- palette(c: ?c)
   rule palette(c: Red) :- true
 end

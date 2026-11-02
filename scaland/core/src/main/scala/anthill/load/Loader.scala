@@ -30,6 +30,16 @@ import scala.collection.mutable.{ArrayBuffer, HashMap, HashSet, LinkedHashMap}
   * from the wrong scope — the likelier next drift — so what got typed is the SCOPE
   * ([[anthill.intern.SymbolTable.ScopeId]]), which is what every filler now derives its name
   * from. */
+/** What a bracket of [[LoadError.BracketOnCallable]] is written on (rustland's
+  * `BracketedName`). */
+enum BracketedName:
+  /** A clause's own head, which declares the relation it names. */
+  case Head
+  /** An operation or a relation. */
+  case Callable
+  /** Any other name that is no type: a const, a namespace, a parameter. */
+  case Other
+
 enum LoadError:
   case UnresolvedName(name: String, span: Span, scopeName: String)
   case UnresolvedImport(path: String, span: Span)
@@ -52,6 +62,12 @@ enum LoadError:
     * is written `S[…]`. It used to BE the type in silence: `Eq(T: ?q)` answered from
     * `fact Eq[T = Int64]`, the two surfaces building one term. */
   case SortAppliedAsData(sort: String, span: Span)
+  /** WI-20260823-53W12 (rustland's `BracketOnCallable`) — a bracket written alone on an
+    * operation or a relation: `mine[1, 2]`, and a clause's head `fact myrel[T = Red]`
+    * (`atHead`). A rule is an operation (proposal 060 §2.1), and a bracket on either binds
+    * its type parameters, never its arguments. It was read as the argument list, the two
+    * surfaces building one term. */
+  case BracketOnCallable(name: String, on: BracketedName, span: Span)
   /** WI-20261029-50361 (rustland's `ClauseHeadNamesNoRelation` for a namespace) — a `fact`
     * or a `rule` clause whose head names a namespace, which holds no clauses. A head
     * reaches one only where a predicate of its own would take the namespace's name: in the
@@ -106,6 +122,20 @@ enum LoadError:
       span.render(s"`$sort(…)` is an application, and `$sort` names no constructor, predicate or " +
         s"operation to apply — it is a sort, and its type is written `$sort[…]` " +
         "(kernel-language.md §4.4)")
+    // Rustland's `bracket_on_callable_message`, word for word.
+    case BracketOnCallable(name, BracketedName.Head, span) =>
+      span.render(s"`$name[…]` declares the relation `$name` with a bracket, which writes type " +
+        s"arguments; a relation's columns are written in parentheses, `$name(…)`, and a type " +
+        s"parameter it declares with its bound, `rule $name[T](…) :- Spec[T]`. No sort `$name` " +
+        "is in scope here (kernel-language.md §5.4)")
+    case BracketOnCallable(name, BracketedName.Callable, span) =>
+      span.render(s"`$name[…]` is a bracket on an operation or a relation, which binds its type " +
+        "parameters and is read only before a call's arguments; the arguments are written in " +
+        s"parentheses, `$name(…)` (kernel-language.md §5.4)")
+    case BracketOnCallable(name, BracketedName.Other, span) =>
+      span.render(s"`$name[…]` writes type arguments of `$name`, which takes none: only a sort or a " +
+        "constructor is applied to a bracket, and a call's bracket is written before its " +
+        "arguments (kernel-language.md §5.4)")
     case NamespaceAsGoal(position, namespace, span) =>
       span.render(s"the $position `$namespace` names a namespace, and a namespace is not a " +
         "goal: it is not a relation and holds no clauses (kernel-language.md §5.3)")
@@ -3663,6 +3693,13 @@ object Loader:
         // scaland's parser mints is headed by a sort (measured: the gate failed no row).
         if !quoted && !isTypeApp && kb.namesOnlyAType(kbFunctor) then
           errors += LoadError.SortAppliedAsData(kb.resolveSym(kbFunctor), fileTerms.spanOf(termId))
+        // WI-20260823-53W12 — AND A BRACKET ON AN OPERATION OR A RELATION binds its type
+        // parameters, never its arguments (proposal 060 §2.1; rustland's
+        // `refuse_bracket_on_a_callable`): written alone it is refused, at a clause's own
+        // head too, where `mine[1, 2]` was the term `mine(1, 2)`.
+        if isTypeApp && !fileTerms.isMinted(termId) then
+          kb.bracketedName(resolved, atHead).foreach(on =>
+            errors += LoadError.BracketOnCallable(kb.resolveSym(resolved), on, fileTerms.spanOf(termId)))
         // A GOAL SLOT IS A GOAL: `not`'s negand is proved, not matched, so it is read
         // as a logical subject like the body goal it sits in — `not(ns.flag)` negates
         // the predicate `ns.flag`, where a data reading would negate a `field_access`

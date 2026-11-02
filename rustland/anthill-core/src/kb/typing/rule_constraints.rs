@@ -185,8 +185,14 @@ pub(super) struct ClauseDisagreement {
 /// What did not fit at a [`ClauseDisagreement`].
 #[derive(Clone, Debug)]
 pub(super) enum Misfit {
-    /// The position's type, and the type the clause gives what fills it.
-    Types { expected: Value, actual: Value },
+    /// The position's type, and the type the clause gives what fills it; `quoted`, the type
+    /// written where what fills it is a type written as data, as the operation-body typer
+    /// quotes one (`got Type (Box)`).
+    Types {
+        expected: Value,
+        actual: Value,
+        quoted: Option<String>,
+    },
     /// A demand on a variable a rule goal's column of some type takes, which nothing
     /// narrows: `expected` is the parameter's type (a dot's receiver has none), `column` the
     /// column, as relation and label.
@@ -204,11 +210,23 @@ impl Misfit {
     /// The two types, each read to the end through `subst`, a sort's parameter in them by its
     /// name.
     fn types(kb: &mut KnowledgeBase, subst: &Substitution, expected: &Value, actual: &Value) -> Self {
+        Self::types_quoting(kb, subst, expected, actual, None)
+    }
+
+    /// [`Self::types`], quoting what was written in the position.
+    fn types_quoting(
+        kb: &mut KnowledgeBase,
+        subst: &Substitution,
+        expected: &Value,
+        actual: &Value,
+        quoted: Option<String>,
+    ) -> Self {
         let expected = walk_type_deep_value(kb, subst, expected);
         let actual = walk_type_deep_value(kb, subst, actual);
         Misfit::Types {
             expected: parameters_named(kb, &expected),
             actual: parameters_named(kb, &actual),
+            quoted,
         }
     }
 }
@@ -241,7 +259,10 @@ impl ClauseDisagreement {
         subst: &Substitution,
         rigids: &[(VarId, VarId)],
     ) -> Self {
-        if let Misfit::Types { expected, actual } = &mut self.misfit {
+        if let Misfit::Types {
+            expected, actual, ..
+        } = &mut self.misfit
+        {
             for ty in [expected, actual] {
                 let walked = walk_type_deep_value(kb, subst, ty);
                 let walked = unrigidify_clause_types(kb, rigids, &walked);
@@ -255,13 +276,17 @@ impl ClauseDisagreement {
     pub(super) fn to_type_error(&self, kb: &KnowledgeBase) -> TypeError {
         let span = self.span.map(|s| s.span);
         match &self.misfit {
-            Misfit::Types { expected, actual } => TypeError::TypeMismatch {
+            Misfit::Types {
+                expected,
+                actual,
+                quoted,
+            } => TypeError::TypeMismatch {
                 span,
                 context: self.context.clone(),
                 expected: expected.clone(),
                 actual: actual.clone(),
                 site: TypeError::here(),
-                quoted: None,
+                quoted: quoted.clone(),
             },
             Misfit::SomeType {
                 expected,
@@ -548,6 +573,11 @@ pub(super) trait ConstrainedArg {
     /// Whether the argument is a bare name — what a `Symbol` slot holds
     /// ([`reflect_slot_admits`]).
     fn is_name(&self, kb: &KnowledgeBase) -> bool;
+    /// Whether the argument is a type written as data — a value of `Type` (proposal 055 §2).
+    fn is_type_value(&self, kb: &KnowledgeBase) -> bool;
+    /// The type the argument writes, printed as a mismatch quotes it, where
+    /// [`Self::is_type_value`]; `None` for any other argument.
+    fn type_value_text(&self, kb: &KnowledgeBase) -> Option<String>;
     /// Where the argument was written, where it carries a place.
     fn span(&self) -> Option<crate::span::SourceSpan>;
 }
@@ -575,6 +605,14 @@ impl ConstrainedArg for TermId {
     }
     fn is_name(&self, kb: &KnowledgeBase) -> bool {
         matches!(kb.get_term(*self), Term::Ref(_))
+    }
+    fn is_type_value(&self, kb: &KnowledgeBase) -> bool {
+        is_type_written_as_data(kb, &TermIdView(*self))
+    }
+    fn type_value_text(&self, kb: &KnowledgeBase) -> Option<String> {
+        self.is_type_value(kb).then(|| {
+            crate::persistence::print::TermPrinter::new(kb).print_value(&Value::term(*self))
+        })
     }
     fn span(&self) -> Option<crate::span::SourceSpan> {
         None
@@ -606,6 +644,13 @@ impl ConstrainedArg for Rc<NodeOccurrence> {
     fn is_name(&self, _kb: &KnowledgeBase) -> bool {
         matches!(self.as_expr(), Some(Expr::Ref(_)))
     }
+    fn is_type_value(&self, _kb: &KnowledgeBase) -> bool {
+        matches!(self.as_expr(), Some(Expr::TypeValue { .. }))
+    }
+    fn type_value_text(&self, kb: &KnowledgeBase) -> Option<String> {
+        self.is_type_value(kb)
+            .then(|| crate::persistence::print::TermPrinter::new(kb).print_occurrence(self))
+    }
     fn span(&self) -> Option<crate::span::SourceSpan> {
         Some(self.span)
     }
@@ -624,9 +669,9 @@ impl ConstrainedArg for Rc<NodeOccurrence> {
 /// `twoeq("a", 1)`. Reading the literal makes the columns `String` and `Int64`. The gate
 /// that scopes it is [`constrain_literal_arg`]'s.
 ///
-/// Anything neither a literal nor a variable constrains nothing here, and the answer is
-/// `false`: the position's type is then the argument's own to meet, where its walker
-/// reaches it ([`NestedPositions`]).
+/// A type written as data is read as a literal is, at `Type`. Anything else that is not a
+/// variable constrains nothing here, and the answer is `false`: the position's type is then
+/// the argument's own to meet, where its walker reaches it ([`NestedPositions`]).
 pub(super) fn constrain_arg<A: ConstrainedArg>(
     kb: &mut KnowledgeBase,
     arg: &A,
@@ -642,6 +687,16 @@ pub(super) fn constrain_arg<A: ConstrainedArg>(
     }
     if let Some(lit) = arg.literal(kb) {
         constrain_literal_arg(kb, &lit, expected_type, instantiated, &mut st.subst);
+        return true;
+    }
+    // A type written as data is a value of `Type`, as a literal is a value of its sort
+    // (proposal 055 §2). Walked as data instead, a constructor's type face read as the
+    // constructor: `[Untrusted[], 3]` typed its element `Level`, and refused the `3` for it.
+    if arg.is_type_value(kb) {
+        if instantiated {
+            let type_ty = type_type_value(kb);
+            unify_types(kb, &mut st.subst, expected_type, &type_ty);
+        }
         return true;
     }
     if let Some(vid) = arg.var_key(kb) {
@@ -1190,7 +1245,9 @@ pub(super) fn constrain_application<A: ConstrainedArg>(
                 let arg = &named_args[named].1;
                 if st.checks_constructions {
                     if let Err(actual) = argument_fits_field(kb, arg, &field_type, st) {
-                        let misfit = Misfit::types(kb, &st.subst, &field_type, &actual);
+                        let quoted = arg.type_value_text(kb);
+                        let misfit =
+                            Misfit::types_quoting(kb, &st.subst, &field_type, &actual, quoted);
                         st.found.push(ClauseDisagreement {
                             span: arg.span().or(st.at),
                             context: TypeErrorContext::EntityField {
@@ -1423,8 +1480,10 @@ fn is_construction_functor(kb: &KnowledgeBase, functor: Symbol) -> bool {
 /// checked against its parameter: a literal's sort and a construction's sort, with the
 /// argument conversions ([`reflect_slot_admits`]: a `Term` field admits every value, a
 /// `Symbol` field a name; an `Option[T]` field a bare `T`,
-/// a field at a bare spec a value of a sort that provides it). Any other argument — a variable, a call, a
-/// collection literal, a type written as a term — is met by its own position.
+/// a field at a bare spec a value of a sort that provides it), and a type written as data,
+/// which is a value of `Type` (proposal 055 §2): `wrap(inner: named(s: Box))` over `s:
+/// String` is refused as the same construction in a rule body is. Any other argument — a
+/// variable, a call, a collection literal — is met by its own position.
 fn argument_fits_field<A: ConstrainedArg>(
     kb: &mut KnowledgeBase,
     arg: &A,
@@ -1438,7 +1497,9 @@ fn argument_fits_field<A: ConstrainedArg>(
     if reflect_slot_admits(kb, field, arg.is_name(kb)) {
         return Ok(());
     }
-    let actual = if let Some(lit) = arg.literal(kb) {
+    let actual = if arg.is_type_value(kb) {
+        type_type_value(kb)
+    } else if let Some(lit) = arg.literal(kb) {
         literal_sort(kb, &lit)
     } else if let Some(ctor) = arg.constructor(kb) {
         if kb.is_ordered_product_functor(ctor) || SeqLiteral::of_constructor(kb, ctor).is_some()
@@ -1460,39 +1521,58 @@ fn argument_fits_field<A: ConstrainedArg>(
     } else {
         return Ok(());
     };
+    if value_type_fits_field(kb, &st.subst, field, &actual) {
+        Ok(())
+    } else {
+        Err(actual)
+    }
+}
+
+/// Whether a value of type `actual` fits a field declared `field`, as an operation's argument
+/// fits its parameter: by the relation an argument meets its slot by, a value of a sort that
+/// provides the field's bare spec, and a bare `T` at an `Option[T]` field. One judge for a
+/// field of a construction in a clause ([`argument_fits_field`]) and a fact's own field
+/// holding a type (`sorts::check_type_value_against_field`).
+pub(super) fn value_type_fits_field(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    field: &Value,
+    actual: &Value,
+) -> bool {
     // A field of the construction's own parameter reads what the clause has bound; one with
     // no variable in it needs nothing of the clause's substitution.
     let reads_subst = type_mentions_flex_var(kb, field);
-    let scratch = |st: &ClauseConstraints| {
+    let scratch = || {
         if reads_subst {
-            st.subst.clone()
+            subst.clone()
         } else {
             Substitution::new()
         }
     };
-    if unify_types(kb, &mut scratch(st), field, &actual)
-        || types_compatible(kb, &mut scratch(st), &actual, field)
+    if unify_types(kb, &mut scratch(), field, actual)
+        || types_compatible(kb, &mut scratch(), actual, field)
     {
-        return Ok(());
+        return true;
     }
     // A value of a sort that provides the field's bare spec, as at an operation's argument.
-    if let (Some(actual_base), Some(spec)) =
-        (type_base_sort_view(kb, &actual), extract_sort_ref_sym(kb, field))
-    {
+    if let (Some(actual_base), Some(spec)) = (
+        type_base_sort_view(kb, actual),
+        extract_sort_ref_sym(kb, field),
+    ) {
         if sort_provides_admissibly(kb, actual_base, spec) {
-            return Ok(());
+            return true;
         }
     }
-    if is_option_type(kb, field) && !is_option_type(kb, &actual) {
+    if is_option_type(kb, field) && !is_option_type(kb, actual) {
         if let Some(element) = extract_type_param(kb, field, "T") {
-            if unify_types(kb, &mut scratch(st), &element, &actual)
-                || types_compatible(kb, &mut scratch(st), &actual, &element)
+            if unify_types(kb, &mut scratch(), &element, actual)
+                || types_compatible(kb, &mut scratch(), actual, &element)
             {
-                return Ok(());
+                return true;
             }
         }
     }
-    Err(actual)
+    false
 }
 
 /// The type of a tuple, list or set literal — `functor` the reflect entity it is stored as —
@@ -1841,6 +1921,7 @@ impl FixedParameter {
             misfit: Misfit::Types {
                 expected: param,
                 actual: parameters_named(kb, &self.to),
+                quoted: None,
             },
         }
     }
