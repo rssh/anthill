@@ -3,9 +3,9 @@
 - id: WI-20260821-TZSAW-an-absorbed-predicate-s
 - created: 2026-08-21T13:25:37Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-08-21T13:25:37Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-11-02T12:39:42Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -54,4 +54,10 @@ ACCEPTANCE: with B present, file C still loads and `uses(?x)` answers BOTH claus
 qualified-citation spelling likewise. Control: dropping B leaves the program unchanged.
 Say at the site which rows fail on a back-out. cargo-test green via
 rustland/scripts/test.sh.
+
+## Changes
+
+### 2026-11-02T12:39:41Z — feedback — claude
+
+DELIVERED — option (a) (user, 2026-11-02): a head that joins an enclosing declaration names nothing at its own scope, and a citation of that name is refused. Re-measured on HEAD first. The ticket wrote its clauses body-less (rule p(1)), which since 061 declares and asserts nothing; written ':- true', the ticket's program (sibling clause undeclared) is now 845G7's visibility refusal at a.anthill:4:5 naming 'glib, glib.S', with nothing reported at the citing file, and the disputed 'holds no clauses' sentence is gone from the spec. What remained: the refusal's own first repair, 'rule p(?x)' at glib in the sibling file, makes S's unchanged head a clause of glib.p, glib.S.p is never minted, and the citing file fails with the ticket's two errors (control without the sibling: 1 answer). Decided intended. kernel-language.md §'A declaration and an explicit path are what join scopes' now says the head declares nothing at Rec and a citation of demo.Rec.p is refused, also when the declaration is in another file; a Rec.p others cite is §WI-896's case (declare it locally, a separate predicate). The visibility refusal's owner arm now says 'no other of those scopes then has a p of its own' (rustland and scaland). Rows: wi_tzsaw_inner_name_after_join_test (3: the join with both citation spellings refused, the undeclared sibling refused at the library head, a declaration in S keeping the name); scaland RuleHeadDeclarationTest 'TZSAW: …'. Back-outs measured: fqc85's pass-1 mint gated off fails 2 of the 3 Rust rows (the undeclared row passes by design); the new message clause removed fails the undeclared row alone in rustland and the TZSAW row alone in scaland. Full workspace 11,492 passed, 0 failed; scaland 51 + 798.
 

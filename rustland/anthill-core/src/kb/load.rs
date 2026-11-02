@@ -3942,10 +3942,11 @@ impl LoadError {
                     Some(o) => format!(
                         "Declare it (proposal 061): a body-less `rule {}(…)` in '{}', \
                          with a named import of that predicate in each non-enclosing \
-                         contributor, makes every one of those heads a clause of it. \
+                         contributor, makes every one of those heads a clause of it, and \
+                         no other of those scopes then has a `{}` of its own. \
                          Alternatively, one declaration in EACH scope says they are \
                          separate predicates.",
-                        name, o
+                        name, o, name
                     ),
                     // NO SCOPE IS REACHED BY ALL THE OTHERS — which a cycle produces
                     // and so does a chain, and so does a pair of siblings a third scope

@@ -1662,6 +1662,8 @@ mod wi_d0exd_equation_subject_owner_test;
 
 #[path = "include/wi_fqc85_rule_declaration_test.rs"]
 mod wi_fqc85_rule_declaration_test;
+#[path = "include/wi_tzsaw_inner_name_after_join_test.rs"]
+mod wi_tzsaw_inner_name_after_join_test;
 
 #[path = "include/wi_j38je_boolean_goal_test.rs"]
 mod wi_j38je_boolean_goal_test;

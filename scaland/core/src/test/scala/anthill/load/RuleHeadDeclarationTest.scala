@@ -539,6 +539,51 @@ class RuleHeadDeclarationTest extends munit.FunSuite:
     assertEquals(answers(kb, "sbz.body5.Rec.p", 2), 1)
   }
 
+  test("TZSAW: a sibling file's declaration at the namespace leaves the sort no name to cite") {
+    // rustland's `wi_tzsaw_inner_name_after_join_test`. `S`'s head declares `tzs.lib.S.p`
+    // while nothing encloses a declaration of `p`. A sibling file's `rule p(?x)` at
+    // `tzs.lib` makes the same unchanged head a clause of `tzs.lib.p`, so `tzs.lib.S.p` is
+    // not a name and a third file citing it is refused. Backed out (drop "no other of those
+    // scopes then has …" from the collision message's `Some(o)` arm), this row fails and
+    // nothing else in the suite does.
+    val lib = "namespace tzs.lib\n  sort S\n    entity s(n: Int64)\n    rule p(1) :- true\n" +
+      "  end\nend"
+    val libDecl = "namespace tzs.lib\n  sort S\n    entity s(n: Int64)\n    rule p(?x)\n" +
+      "    rule p(1) :- true\n  end\nend"
+    val sib = "namespace tzs.lib\n  rule p(2) :- true\nend"
+    val sibDecl = "namespace tzs.lib\n  rule p(?x)\n  rule p(2) :- true\nend"
+    val user = "namespace tzs.user\n  import tzs.lib.S.{p}\n  rule uses(?x) :- p(?x)\nend"
+    val user2 = "namespace tzs.user2\n  rule uses(?x) :- tzs.lib.S.p(?x)\nend"
+    // CONTROL — no sibling: both citations answer `S`'s clause.
+    val ctrl = loaded("a.anthill" -> lib, "c.anthill" -> user, "c2.anthill" -> user2)
+    assertEquals(clauses(ctrl, "tzs.lib.S.p"), Some(1))
+    assertEquals(answers(ctrl, "tzs.user.uses", 1), 1, "CONTROL: the import answers")
+    assertEquals(answers(ctrl, "tzs.user2.uses", 1), 1, "CONTROL: the qualified goal answers")
+    // THE JOIN — one predicate, both clauses, and no `tzs.lib.S.p`.
+    assertShared(loaded("a.anthill" -> lib, "b.anthill" -> sibDecl), "tzs.lib", "tzs.lib.S.p", 2)
+    // AND THE CITATIONS ARE REFUSED, at the citing files, in both spellings.
+    refused("c.anthill:2:21: unresolved name 'p' in scope 'tzs.lib.S'",
+      "a.anthill" -> lib, "b.anthill" -> sibDecl, "c.anthill" -> user)
+    refused("c2.anthill:2:20: unresolved name 'tzs.lib.S.p' in scope 'tzs.user2'",
+      "a.anthill" -> lib, "b.anthill" -> sibDecl, "c2.anthill" -> user2)
+    // THE SIBLING UNDECLARED — refused at the library's head, and the first repair the
+    // message offers says that it removes `tzs.lib.S.p`.
+    refusedAll(Seq("tzs.lib, tzs.lib.S", "a body-less `rule p(…)` in 'tzs.lib'",
+      "no other of those scopes then has a `p` of its own"),
+      "a.anthill" -> lib, "b.anthill" -> sib)
+    // DECLARED IN THE SORT — two predicates, and the citations keep answering `S`'s clause
+    // and only it.
+    val kept = loaded("a.anthill" -> libDecl, "b.anthill" -> sibDecl, "c.anthill" -> user,
+      "c2.anthill" -> user2)
+    assertEquals(clauses(kept, "tzs.lib.S.p"), Some(1))
+    assertEquals(clauses(kept, "tzs.lib.p"), Some(1))
+    for u <- Seq("tzs.user.uses", "tzs.user2.uses") do
+      assertEquals(answers(kept, u, 1), 1, u)
+      assertEquals(answers(kept, u, 2), 0, s"$u: not `tzs.lib.p`'s clause")
+    assertEquals(answers(kept, "tzs.lib.p", 2), 1)
+    assertEquals(answers(kept, "tzs.lib.p", 1), 0)
+  }
+
   /** Channel 2's fixture — a nested ordinary namespace. The inner scope is NOT a sort,
     * which is the point: the rule is about the enclosing CHAIN, not about sort-ness, and
     * a guard keyed on sorts would pass channel 1 and miss this. */

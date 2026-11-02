@@ -1749,7 +1749,8 @@ object Loader:
         case Some(o) =>
           s"Declare it (proposal 061): a body-less `rule ${c.name}(…)` in " +
           s"'${kb.scopeDisplayName(o)}', with a named import of that predicate in each " +
-          s"non-enclosing contributor, makes every one of those heads a clause of it. " +
+          s"non-enclosing contributor, makes every one of those heads a clause of it, and " +
+          s"no other of those scopes then has a `${c.name}` of its own. " +
           s"Alternatively, one declaration in EACH scope says they are separate predicates."
         case None =>
           // NO SCOPE IS REACHED BY ALL THE OTHERS — which a cycle produces, and so does a
