@@ -169,10 +169,11 @@ pub struct SimpleTermStore {
     type_applications: HashSet<ParseTermId>,
     /// The type a term-position bracket WRITES, read off the same `application` node its
     /// [`Self::type_applications`] term was converted from — `Buf[W = Int64]` as the
-    /// `TypeExpr` a type position holds. Recorded for the outermost bracket of a term
-    /// position (`convert_instantiation_term`), where one may stand for a type: a rule
-    /// head's parameter bound (`x: Buf[T = Int64]`, kernel-language.md §5.3), which is
-    /// lowered as the `?x: T` spelling's annotation is.
+    /// `TypeExpr` a type position holds; and a member read off one, paren-less (`Buf[T =
+    /// Int64].T`), as the type member it names. Recorded for the outermost bracket of a term
+    /// position (`convert_instantiation_term`, `convert_paren_less_citation`), where one may
+    /// stand for a type: a rule head's parameter bound (`x: Buf[T = Int64]`,
+    /// kernel-language.md §5.3), which is lowered as the `?x: T` spelling's annotation is.
     type_readings: HashMap<ParseTermId, TypeExpr>,
     /// WI-762: the named-tuple `Term::Fn` nodes this converter DESUGARED a
     /// distributive projection `x.(m1, …, mn)` into (§6.8; the sole producer is

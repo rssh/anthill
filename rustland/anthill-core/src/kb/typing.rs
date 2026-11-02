@@ -184,6 +184,7 @@ pub(crate) use relation::*;
 pub use requires::*;
 pub use result::*;
 use rule_constraints::*;
+pub(crate) use rule_constraints::is_structural_type_form;
 use rule_dispatch::*;
 pub(crate) use rule_requirements::*;
 pub use rules::is_typed_head_domain_goal;

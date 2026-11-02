@@ -1723,6 +1723,16 @@ impl<'a> Converter<'a> {
         let recv_type = self.convert_type(object);
         let name = self.convert_name(node);
         let functor = self.intern_name(&name);
+        // The type it writes where the member is one of the sort's types (`Buf[T =
+        // Int64].T`), as a type position reads the same text (`TypeExpr::Member`).
+        let reading = match &recv_type {
+            TypeExpr::Parameterized { name, bindings } => Some(TypeExpr::Member {
+                name: name.clone(),
+                bindings: bindings.clone(),
+                member: Name::simple(self.intern(self.text(field)), self.span(field)),
+            }),
+            _ => None,
+        };
         let recv_type_arg = self.recv_type_arg(recv_type, span);
         let tid = self.terms.alloc(
             Term::Fn {
@@ -1742,6 +1752,9 @@ impl<'a> Converter<'a> {
             true,
         );
         self.terms.mark_paren_less_citation(tid, dot);
+        if let Some(ty) = reading {
+            self.terms.set_type_reading(tid, ty);
+        }
         tid
     }
 

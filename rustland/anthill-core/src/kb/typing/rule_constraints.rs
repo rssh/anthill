@@ -1560,10 +1560,14 @@ fn type_written_as_term(kb: &KnowledgeBase, expr: &Expr) -> bool {
 /// Whether `functor` writes a type as a value: a sort's type face (`Item[]`), or one of
 /// `TypeExtractor`'s structural forms.
 fn is_type_form_functor(kb: &KnowledgeBase, functor: Symbol) -> bool {
-    functor.is_type_face()
-        || kb
-            .sort_of_constructor(functor)
-            .is_some_and(|s| kb.qualified_name_of(s) == "anthill.prelude.TypeExtractor")
+    functor.is_type_face() || is_structural_type_form(kb, functor)
+}
+
+/// Whether `functor` is one of `TypeExtractor`'s structural type forms — a rigid projection,
+/// an arrow, a tuple — which apply no sort.
+pub(crate) fn is_structural_type_form(kb: &KnowledgeBase, functor: Symbol) -> bool {
+    kb.sort_of_constructor(functor)
+        .is_some_and(|s| kb.qualified_name_of(s) == "anthill.prelude.TypeExtractor")
 }
 
 /// Read the positions of a clause the walk left for after it ([`LatePosition`]): the head's

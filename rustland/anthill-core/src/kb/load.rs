@@ -21663,6 +21663,21 @@ fn expand_unwritten_type_params(kb: &mut KnowledgeBase, t: TermId) -> TermId {
             for &c in &pos_args {
                 pos.push(expand_unwritten_type_params(kb, c));
             }
+            // A STRUCTURAL type form — a constructor of `TypeExtractor`, such as the member
+            // of a sort whose parameters are open (`Buf.N`, a rigid projection) — is no
+            // application of a sort: it has no parameter to fill, and is rebuilt as itself
+            // around what its arguments expand to.
+            if super::typing::is_structural_type_form(kb, functor) {
+                return if pos == pos_args && named == named_args {
+                    t
+                } else {
+                    kb.alloc(Term::Fn {
+                        functor,
+                        pos_args: pos,
+                        named_args: named,
+                    })
+                };
+            }
             if let Some(ps) = kb.domain_params_of(kb.canonical_sort_sym(functor)) {
                 let missing: Vec<Symbol> = ps
                     .iter()
@@ -30715,17 +30730,20 @@ impl<'a> Loader<'a> {
                 // parameter's sort, as in the sigil form.
                 self.rule_head_spec_member_anchor(spec, &member, bound_span)
             } else if self.parse_arg_type_is_applied(value) {
-                // A bracket: the type it writes, lowered by the type door as the `?x: T`
-                // spelling's annotation is (§5.3, "the two lower to one internal form") —
-                // its arguments fitted and keyed, an alias read through, a head type
-                // variable, `Self`, a parameter of the enclosing sort and a spec's member
-                // each read as the annotation reads them.
+                // A bracket, or a member read off one: the type it writes, lowered by the
+                // type door as the `?x: T` spelling's annotation is (§5.3, "the two lower to
+                // one internal form") — its arguments fitted and keyed, an alias read
+                // through, a head type variable, `Self`, a parameter of the enclosing sort
+                // and a spec's member each read as the annotation reads them.
                 let ty = self
                     .parsed
                     .terms
                     .type_reading(value)
                     .cloned()
                     .expect("a bracket in a term position carries the type it writes");
+                // A member read off a bracket carries the bracket as its receiver's type,
+                // which this reading is.
+                self.consumed_recv_types.insert(value);
                 let lowered = self.written_type_to_value(&ty);
                 let bound = node_occurrence::value_to_term(self.kb, &lowered)
                     .expect("a written type has a term");
@@ -31555,8 +31573,9 @@ impl<'a> Loader<'a> {
     /// or by a bracket applying it? A call is a value. The second half of
     /// [`Self::convert_rule_head_with_params`]'s discriminator.
     fn parse_arg_names_a_sort(&mut self, value: ParseTermId) -> bool {
-        // A call builds a value (`c: Leaf(name: "tip")`), whatever its head names.
-        if self.parse_arg_type_is_applied(value) && !self.parsed.terms.is_type_application(value) {
+        // A call builds a value (`c: Leaf(name: "tip")`), whatever its head names. What writes
+        // a type — a bracket, a member read off one — is asked by its name below.
+        if self.parse_arg_type_is_applied(value) && self.parsed.terms.type_reading(value).is_none() {
             return false;
         }
         self.parse_arg_is_self_type(value)
@@ -31568,6 +31587,31 @@ impl<'a> Loader<'a> {
                 .parse_arg_type_name(value)
                 .is_some_and(|name| self.rule_head_spec_member(&name).is_some())
             || self.parse_arg_is_constructor_type(value)
+            || self.parse_arg_is_bracket_member_type(value)
+    }
+
+    /// Does this rule-head argument read a TYPE member off a bracket (`x: Buf[T = Int64].T`,
+    /// `x: IntBuf[N = Bool].T`)? The member is one of the types the bracket's sort declares —
+    /// a type parameter or a nested sort — of the sort an alias stands for too, as the type
+    /// door reads it (§5.4).
+    fn parse_arg_is_bracket_member_type(&mut self, value: ParseTermId) -> bool {
+        let Some(TypeExpr::Member { name, member, .. }) = self.parsed.terms.type_reading(value) else {
+            return false;
+        };
+        let written = join_segments(&self.parsed.symbols, &name.segments);
+        let member = self.parsed.symbols.local_name(member.last()).to_owned();
+        let ResolveResult::Found(head) = self.resolve_parse_arg_name(&written) else {
+            return false;
+        };
+        if !self.kb.has_kind(head, SymbolKind::Sort) {
+            return false;
+        }
+        let (sort, _) = self.type_alias_application(head);
+        self.kb.type_param_sym_of(sort, &member).is_some()
+            || matches!(
+                self.resolve_parse_arg_name(&format!("{}.{member}", self.kb.qualified_name_of(sort))),
+                ResolveResult::Found(r) if self.kb.has_kind(r, SymbolKind::Sort)
+            )
     }
 
     /// Does this rule-head argument write a CONSTRUCTOR's type — its name (`x: Colour.red`)

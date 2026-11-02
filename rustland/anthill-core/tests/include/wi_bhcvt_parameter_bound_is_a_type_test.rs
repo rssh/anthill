@@ -13,7 +13,8 @@
 //! `buf(v: 1)`; `x: IntBuf[N = Bool]` answered every row of `q` with a residual `domain(…,
 //! IntBuf[N = Bool])`; `x: List[T = IntBuf[N = Bool]]` was refused, "`IntBuf` … declares no
 //! type parameters"; `x: Buf[Int64, N = 3]` was refused, "unresolved name '3'"; `x:
-//! Buf.buf[T = Int64]` and `x: Colour.red` were named arguments over a constant `x`.
+//! Buf.buf[T = Int64]` and `x: Colour.red` were named arguments over a constant `x`; `x:
+//! Buf[T = Int64].T` was refused as a companion receiver.
 //!
 //! WHICH ROWS FAIL WITH THE CHANGE BACKED OUT — measured with each part switched off alone in
 //! one build, over this file:
@@ -25,6 +26,14 @@
 //!     load panics on a bracket that writes no type;
 //!   * a constructor not taken for a type (`parse_arg_is_constructor_type` answering `false`)
 //!     → [`a_constructor_is_its_type`], and nothing else.
+//!   * a member read off a bracket given no type reading (`convert_paren_less_citation`
+//!     recording none) → [`a_member_read_off_a_bracket_is_its_type`], refused as a companion
+//!     receiver, and [`an_open_member_is_refused_not_a_crash`]'s sigil-free entry;
+//!   * a member asked of the sort an alias stands for no more (`parse_arg_is_bracket_member_type`
+//!     answering `false`) → [`a_member_read_off_a_bracket_is_its_type`], at `IntBuf[N =
+//!     Bool].T`: a member of the sort itself is a type parameter by its dotted name;
+//!   * a structural type form completed as a sort (`expand_unwritten_type_params` without its
+//!     `TypeExtractor` arm) → [`an_open_member_is_refused_not_a_crash`], which panics.
 //!
 //!   PASSES EITHER WAY, by design: [`a_well_formed_bound_filters`], the control the refusals and
 //!   the answers are read against.
@@ -184,6 +193,51 @@ fn a_constructor_is_its_type() {
         1,
         "the call is the named argument `c`'s value"
     );
+}
+
+/// A MEMBER READ OFF A BRACKET is the type it names at the bracket's arguments (§5.4), as a
+/// type position reads it: `List[T = Buf[T = Int64]].T` is `Buf[T = Int64]`, through an alias
+/// too. Before, the sigil-free spelling was refused, "a companion receiver's type bracket is not
+/// read here".
+#[test]
+fn a_member_read_off_a_bracket_is_its_type() {
+    for bound in ["List[T = Buf[T = Int64]].T", "List[T = IntBuf[N = Bool]].T"] {
+        for (spelling, rule) in both_spellings(bound) {
+            assert_eq!(answers("bhcvtmember", &rule), vec!["buf(v: 1)"], "{spelling} `{bound}`");
+        }
+    }
+    // At the bound's top level, through an alias: `IntBuf[N = Bool].T` is `Int64`.
+    for (spelling, rule) in both_spellings("IntBuf[N = Bool].T") {
+        let mut kb = load_kb_with(&format!(
+            "namespace test.bhcvtmemberalias\n  import anthill.prelude.{{Int64, String, Bool}}\n  \
+             sort Buf\n    sort T = ?\n    sort N = ?\n    entity buf(v: T)\n  end\n  sort IntBuf \
+             = Buf[T = Int64]\n  rule q(?x)\n  fact q(5)\n  fact q(\"s\")\n  {rule}\nend\n"
+        ));
+        let found = query_unary(&mut kb, "test.bhcvtmemberalias.p");
+        let rendered: Vec<String> = found.iter().map(|(v, _)| render(&mut kb, v)).collect();
+        assert_eq!(rendered, vec!["5"], "{spelling}: the `Int64` row");
+        assert!(found.iter().all(|(_, definite)| *definite), "{spelling}: definite");
+    }
+}
+
+/// A MEMBER THE BRACKET LEAVES OPEN, and a sort's member named without its arguments, is
+/// refused as a type the clause cannot check a value at, in both spellings. Before, `?x:
+/// Buf.N` and `?x: Buf[T = Int64].N` crashed the loader (`make_parameterized_type` handed the
+/// rigid projection `Buf.N` as a sort to complete).
+#[test]
+fn an_open_member_is_refused_not_a_crash() {
+    for (bound, spellings) in [
+        ("Buf[T = Int64].N", both_spellings("Buf[T = Int64].N").to_vec()),
+        ("Buf.N", vec![("sigil", "rule p(?x: Buf.N) :- q(?x)".to_owned())]),
+    ] {
+        for (spelling, rule) in spellings {
+            let errs = load_errors_of(&program("bhcvtopen", &rule));
+            assert!(
+                errs.iter().any(|e| e.contains("expected a well-formed type projection")),
+                "{spelling} `{bound}`: {errs:#?}"
+            );
+        }
+    }
 }
 
 /// THE CONTROL: a bound that fits answers the rows of its instance and no other, in both
