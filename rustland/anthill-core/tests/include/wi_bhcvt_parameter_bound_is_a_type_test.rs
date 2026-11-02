@@ -1,6 +1,7 @@
 //! WI-20261005-BHCVT — a rule head's sigil-free parameter bound (`x: T`, kernel-language.md
-//! §5.3, "The parameter form") is lowered as the type it writes, by the door that lowers the
-//! `?x: T` spelling's annotation, so the two are one form: an argument binds the parameter it
+//! §5.3, "The parameter form") is lowered as the type it writes — a name's, a bracket's, a
+//! member's read off one — by the door that lowers the `?x: T` spelling's annotation, so the
+//! two are one form: an argument binds the parameter it
 //! takes and one that takes none is refused where it is written and not built, a positional is
 //! keyed, a declared default filled, a value written by name kept (`N = 3`), a type alias read
 //! through at any depth; and a constructor after the `:` — its name, or a bracket applying it —
@@ -34,6 +35,14 @@
 //!     Bool].T`: a member of the sort itself is a type parameter by its dotted name;
 //!   * a structural type form completed as a sort (`expand_unwritten_type_params` without its
 //!     `TypeExtractor` arm) → [`an_open_member_is_refused_not_a_crash`], which panics.
+//!   * a bare or dotted name minted as a sort reference again, as the bound's name arm did →
+//!     [`an_open_member_is_refused_not_a_crash`]: `x: Buf.N` loads as `domain(?x, N)`, which
+//!     matches nothing;
+//!   * an annotation whose type is a value let through (`annotation_type_to_value`'s check
+//!     taken out) → [`a_value_is_no_type`];
+//!   * a `FieldInfo` record read by its type's carrier, a variable refused (`field_info_value`
+//!     taking a term or an occurrence only) → [`a_value_is_no_type`] and
+//!     [`an_open_member_is_refused_not_a_crash`], each by a panic.
 //!
 //!   PASSES EITHER WAY, by design: [`a_well_formed_bound_filters`], the control the refusals and
 //!   the answers are read against.
@@ -226,11 +235,8 @@ fn a_member_read_off_a_bracket_is_its_type() {
 /// rigid projection `Buf.N` as a sort to complete).
 #[test]
 fn an_open_member_is_refused_not_a_crash() {
-    for (bound, spellings) in [
-        ("Buf[T = Int64].N", both_spellings("Buf[T = Int64].N").to_vec()),
-        ("Buf.N", vec![("sigil", "rule p(?x: Buf.N) :- q(?x)".to_owned())]),
-    ] {
-        for (spelling, rule) in spellings {
+    for bound in ["Buf[T = Int64].N", "Buf.N"] {
+        for (spelling, rule) in both_spellings(bound) {
             let errs = load_errors_of(&program("bhcvtopen", &rule));
             assert!(
                 errs.iter().any(|e| e.contains("expected a well-formed type projection")),
@@ -238,6 +244,67 @@ fn an_open_member_is_refused_not_a_crash() {
             );
         }
     }
+    // A member its bracket leaves open at a parameter and at a field: the refusal's type rides
+    // a variable, which the records of both read as they read any other carrier.
+    for (tag, decl) in [
+        ("param", "  operation g(x: Q[B = Int64].L) -> Int64 = 1"),
+        ("field", "  sort Hold\n    entity h(f: Q[B = Int64].L)\n  end"),
+    ] {
+        let errs = load_errors_of(&format!(
+            "namespace test.bhcvtopen{tag}\n  import anthill.prelude.{{Int64, List}}\n  sort Q\n    \
+             sort A = ?\n    sort B = ?\n    sort L = List[T = A]\n  end\n{decl}\nend\n"
+        ));
+        assert_eq!(errs.len(), 1, "{tag}: one report: {errs:#?}");
+        assert!(errs[0].contains("`Q[…].L` names no type here"), "{tag}: {errs:#?}");
+    }
+}
+
+/// A VALUE IS NO TYPE: an annotation takes a name's type reading, and its data reading only
+/// where it has none (§4.4) — an operation, a rule, a const, a parameter — which stands in a
+/// type only as a bracket's argument. Refused once, in every position an annotation is
+/// written. Before, each loaded or was refused only by the mismatch the value then made.
+///
+/// The sigil-free `x: Buf.tag` is no parameter at all — `Buf.tag` names no type, so `x:` is a
+/// named argument holding the operation (§5.3) — and loads: the fence.
+#[test]
+fn a_value_is_no_type() {
+    let decls = "  sort Buf\n    sort T = ?\n    entity buf(v: T)\n    operation tag() -> Int64 = \
+                 1\n  end\n  sort Wrap\n    sort T = ?\n    rule dom(?x: T) :- true\n  end\n  \
+                 const c0: Int64 = 3\n  rule q(?x)\n  fact q(1)\n";
+    for (tag, decl, name) in [
+        ("bound", "rule p(?x: Buf.tag) :- q(?x)", "Buf.tag"),
+        ("member", "rule p(?x: Buf[T = Int64].tag) :- q(?x)", "Buf.tag"),
+        ("rule", "rule p(?x: Wrap.dom) :- q(?x)", "Wrap.dom"),
+        ("konst", "rule p(?x: c0) :- q(?x)", "c0"),
+        ("param", "operation g(x: Buf.tag) -> Int64 = 1", "Buf.tag"),
+        ("result", "operation g(x: Int64) -> Buf.tag = x", "Buf.tag"),
+        ("field", "entity e(f: Buf.tag)", "Buf.tag"),
+        ("const", "const k: Buf.tag = 1", "Buf.tag"),
+        ("let", "operation g(x: Int64) -> Int64 =\n    let y: c0 = x\n    y", "c0"),
+        ("byparam", "operation g(x: Int64, y: x) -> Int64 = 1", "x"),
+        ("binder", "operation g(x: Int64) -> Int64 =\n    let f = lambda(y: c0) -> y\n    1", "c0"),
+    ] {
+        let errs = load_errors_of(&format!(
+            "namespace test.bhcvtvalue{tag}\n  import anthill.prelude.Int64\n{decls}  {decl}\nend\n"
+        ));
+        assert_eq!(errs.len(), 1, "{tag}: one report: {errs:#?}");
+        assert!(
+            errs[0].contains(&format!("`{name}` names no type here: it is a value")),
+            "{tag}: {errs:#?}"
+        );
+    }
+    // A namespace is no value, and is said to be what it is.
+    let errs = load_errors_of(
+        "namespace test.bhcvtvaluens\n  import anthill.prelude.Int64\n  operation g(x: \
+         anthill.prelude) -> Int64 = 1\nend\n",
+    );
+    assert_eq!(errs.len(), 1, "namespace: one report: {errs:#?}");
+    assert!(errs[0].contains("`anthill.prelude` names no type here: it is a namespace"), "{errs:#?}");
+    let mut kb = load_kb_with(&format!(
+        "namespace test.bhcvtvaluefence\n  import anthill.prelude.Int64\n{decls}  rule p(x: Buf.tag) \
+         :- true\nend\n"
+    ));
+    assert_eq!(query_unary(&mut kb, "test.bhcvtvaluefence.p").len(), 0, "a named argument");
 }
 
 /// THE CONTROL: a bound that fits answers the rows of its instance and no other, in both
@@ -248,6 +315,7 @@ fn a_well_formed_bound_filters() {
         ("Buf[T = Int64]", vec!["buf(v: 1)"]),
         ("Buf[T = String]", vec!["buf(v: \"s\")"]),
         ("List[T = Buf[T = Int64]]", vec!["[buf(v: 1)]"]),
+        ("IntBuf", vec!["buf(v: 1)"]),
     ] {
         for (spelling, rule) in both_spellings(bound) {
             assert_eq!(answers("bhcvtwell", &rule), rows, "{spelling} `{bound}`");

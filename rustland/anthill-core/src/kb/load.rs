@@ -2767,6 +2767,16 @@ pub enum LoadError {
         why: String,
         span: Span,
     },
+    /// A type annotation — a parameter's, a result's, a field's, a const's, a `let`'s or a
+    /// binder's, a rule head's bound — whose type is no type: a VALUE (an operation, a rule, a
+    /// const, a parameter — a type context takes a name's data reading only where it has no
+    /// type reading, kernel-language.md §4.4, and a value stands in a type only as a bracket's
+    /// argument), or a name that is neither (a namespace). `what` says which.
+    AnnotationNamesNoType {
+        name: String,
+        what: String,
+        span: Span,
+    },
     /// WI-525 (proposal 049, NAF discipline): a BINDING `<=>` / `let` goal (both
     /// lower to `unify(?v, e)`) appears in a contract position — an operation
     /// `requires` / `ensures` clause, or a `constraint` body. Contracts TEST
@@ -3146,6 +3156,7 @@ impl LoadError {
             | LoadError::UnsafeNegatedUnify { span, .. }
             | LoadError::ConstValueUnavailableInDataSlot { span, .. }
             | LoadError::TypeMemberOpen { span, .. }
+            | LoadError::AnnotationNamesNoType { span, .. }
             | LoadError::BindingInContract { span, .. }
             | LoadError::CallTypeArgsNotSupportedHere { span, .. }
             | LoadError::SelfTypeMisuse { span, .. }
@@ -4492,6 +4503,9 @@ impl LoadError {
             }
             LoadError::TypeMemberOpen { name, why, span } => {
                 format!("{}: `{name}` names no type here: {why}", loc.format_start(*span))
+            }
+            LoadError::AnnotationNamesNoType { name, what, span } => {
+                format!("{}: `{name}` names no type here: it is {what}", loc.format_start(*span))
             }
             LoadError::UnsafeNegatedUnify { var_name, span } => {
                 format!(
@@ -6002,6 +6016,9 @@ impl std::fmt::Display for LoadError {
             }
             LoadError::TypeMemberOpen { name, why, span } => {
                 write!(f, "`{name}` names no type here: {why} at {}..{}", span.start, span.end)
+            }
+            LoadError::AnnotationNamesNoType { name, what, span } => {
+                write!(f, "`{name}` names no type here: it is {what} at {}..{}", span.start, span.end)
             }
             LoadError::UnsafeNegatedUnify { var_name, span } => {
                 write!(
@@ -24675,6 +24692,30 @@ pub(crate) fn build_value_list(
     list
 }
 
+/// A `FieldInfo` record — a parameter's or a field's name and its declared type — holding the
+/// type on whichever carrier it rides: a type on a term makes the record a hash-consed term,
+/// any other carrier (an occurrence, a variable a refused annotation lowered to) a value.
+/// `syms` are `FieldInfo`, its `name` key and its `type` key.
+fn field_info_value(
+    kb: &mut KnowledgeBase,
+    [field_info, name_key, type_key]: [Symbol; 3],
+    name_term: TermId,
+    type_value: Value,
+) -> Value {
+    match type_value {
+        Value::Term { id: type_term, .. } => Value::term(kb.alloc(Term::Fn {
+            functor: field_info,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_slice(&[(name_key, name_term), (type_key, type_term)]),
+        })),
+        type_value => Value::Entity {
+            functor: field_info,
+            pos: std::rc::Rc::from(Vec::new()),
+            named: std::rc::Rc::from(vec![(name_key, Value::term(name_term)), (type_key, type_value)]),
+        },
+    }
+}
+
 /// WI-341: a homogeneous `OperationInfo` list field (params, effects) as a
 /// carrier-agnostic `Value` plus its all-ground flag. All-`Value::Term` items
 /// build a hash-consed `Term` cons-list (`Value::Term`); any `Value::Node` builds
@@ -28043,17 +28084,6 @@ enum BindingSlot {
     Other,
 }
 
-/// The form a type parameter of the declaring sort takes where a type alias is read
-/// ([`Loader::term_read_through_aliases`]).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum AliasCanon {
-    /// A type position: the parameter is its canonical variable
-    /// ([`Loader::bare_alias_type`]).
-    Type,
-    /// A clause binding: the parameter is its `Ref` ([`Loader::clause_alias_type`]).
-    Clause,
-}
-
 /// A direct child of a clause's goal: where a binding stands in it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ClauseSlot {
@@ -29666,59 +29696,23 @@ impl<'a> Loader<'a> {
         }
     }
 
-    /// A rule-head bound written as a TERM — the parameter spelling, `x: T` — read as a
-    /// written type is: each type alias in it is the type it stands for
-    /// ([`Self::bare_alias_type`], the reading [`Self::bare_alias_read`] gives the `?x: T`
-    /// spelling), on the node that keeps its name.
-    ///
-    /// Left as the alias's own name the bound named no sort: over `rule boxes(x: IntBox)`,
-    /// `Box.peek(boxes.head.x)` was refused, "no impl matches", where the `?x: IntBox`
-    /// spelling typed (MEASURED).
-    ///
-    /// Answers the type's term, and the type as written on an occurrence where an alias
-    /// was read in it. An alias of a type parameter is that parameter's variable, and has
-    /// no node, as in a written type.
-    fn rule_bound_read_through_aliases(
-        &mut self,
-        t: TermId,
-        span: SourceSpan,
-    ) -> (TermId, Option<Rc<NodeOccurrence>>) {
-        self.term_read_through_aliases(t, span, AliasCanon::Type)
-    }
-
-    /// A type written as a TERM, with each type alias in it read as the type it stands
-    /// for, in the form `canon` holds a type parameter in: the type's term, and the type
-    /// as written on an occurrence where an alias was read in it.
+    /// A type written as a TERM in a clause, with each type alias in it read as the type it
+    /// stands for, a parameter of the declaring sort as its `Ref` ([`Self::clause_alias_type`]):
+    /// the type's term, and the type as written on an occurrence where an alias was read in it.
     fn term_read_through_aliases(
         &mut self,
         t: TermId,
         span: SourceSpan,
-        canon: AliasCanon,
     ) -> (TermId, Option<Rc<NodeOccurrence>>) {
         use node_occurrence::TypeChild;
         let owner = self.current_owner;
         match self.kb.get_term(t).clone() {
             // A bare name: read by the one reader of a bare alias its position has.
             Term::Ref(written) => {
-                let read = match canon {
-                    AliasCanon::Type => {
-                        let saved = std::mem::replace(&mut self.alias_nodes, true);
-                        let read = self.bare_alias_read(
-                            TypeChild::Interned(t),
-                            TypeSite::Type,
-                            span,
-                            owner,
-                        );
-                        self.alias_nodes = saved;
-                        read
-                    }
-                    AliasCanon::Clause => {
-                        let stands_for = self.clause_alias_type(written);
-                        match self.clause_binding_as_written(written, stands_for, span) {
-                            Value::Node(occ) => TypeChild::Node(occ),
-                            on_a_term => TypeChild::Interned(on_a_term.expect_term()),
-                        }
-                    }
+                let stands_for = self.clause_alias_type(written);
+                let read = match self.clause_binding_as_written(written, stands_for, span) {
+                    Value::Node(occ) => TypeChild::Node(occ),
+                    on_a_term => TypeChild::Interned(on_a_term.expect_term()),
                 };
                 match read {
                     TypeChild::Interned(ty) => (ty, None),
@@ -29738,14 +29732,14 @@ impl<'a> Loader<'a> {
                 let mut any_written = false;
                 let mut pos: SmallVec<[TermId; 4]> = SmallVec::new();
                 for &child in pos_args.iter() {
-                    let (read, _) = self.term_read_through_aliases(child, span, canon);
+                    let (read, _) = self.term_read_through_aliases(child, span);
                     changed |= read != child;
                     pos.push(read);
                 }
                 let mut named: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
                 let mut bindings: Vec<(Symbol, TypeChild)> = Vec::with_capacity(named_args.len());
                 for &(key, child) in named_args.iter() {
-                    let (read, as_written) = self.term_read_through_aliases(child, span, canon);
+                    let (read, as_written) = self.term_read_through_aliases(child, span);
                     changed |= read != child || as_written.is_some();
                     any_written |= as_written.is_some();
                     named.push((key, read));
@@ -30707,92 +30701,37 @@ impl<'a> Loader<'a> {
             // cannot acquire different behaviour.
             // THE BOUND IS THE WHOLE WRITTEN TYPE. A parameterized one
             // (`List[T = Int64]`) must keep its arguments — dropping them to the bare
-            // sort ref would silently widen the guard — so an APPLICATION is lowered as
-            // the type it writes, and only a bare / dotted NAME is re-minted as a sort
-            // ref (which `convert_term` would otherwise read as an ordinary reference).
+            // sort ref would silently widen the guard.
             //
-            // WI-20260908-PW9A0: both arms lower a rule-head BOUND, so both run under
-            // the flag that makes a head-introduced type variable denote its guard-given
-            // bound ([`Self::rule_head_bound_alias`]) — the applied arm through the type
-            // door's name resolution at any depth, the bare arm through the shared
-            // [`Self::parse_arg_sort_symbol`].
+            // WI-20260908-PW9A0: it is lowered under the flag that makes a head-introduced
+            // type variable denote its guard-given bound ([`Self::rule_head_bound_alias`]),
+            // at any depth.
             let saved_bound_ctx = std::mem::replace(&mut self.in_rule_head_bound, true);
             self.rule_head_bound_anchors.clear();
             let bound_span = self.source_span_of(value);
-            let spec_member = self
-                .parse_arg_type_name(value)
-                .filter(|_| !self.parse_arg_type_is_applied(value))
-                .and_then(|name| self.rule_head_spec_member(&name));
+            // The type the value writes — a bracket's, a member's read off one, a name's — lowered
+            // by the type door as the `?x: T` spelling's annotation is (§5.3, "the two lower to
+            // one internal form"): its arguments fitted and keyed, an alias read through, a head
+            // type variable, `Self`, a parameter of the enclosing sort, a spec's member and a
+            // constructor each read as the annotation reads them.
+            let ty = match self.parsed.terms.type_reading(value).cloned() {
+                Some(ty) => {
+                    // A member read off a bracket carries the bracket as its receiver's type,
+                    // which this reading is.
+                    self.consumed_recv_types.insert(value);
+                    ty
+                }
+                None => self
+                    .parse_arg_name_type(value)
+                    .expect("parse_arg_names_a_sort admitted a value that writes no type"),
+            };
+            let lowered = self.annotation_type_to_value(&ty);
+            let bound = node_occurrence::value_to_term(self.kb, &lowered)
+                .expect("a written type has a term");
             // The type as written, on an occurrence, where a type alias was read in it.
-            let mut written: Option<Rc<NodeOccurrence>> = None;
-            let bound = if let Some((spec, member)) = spec_member {
-                // WI-20261005-KSSA4: `x: Summable.T` — the spec required of the
-                // parameter's sort, as in the sigil form.
-                self.rule_head_spec_member_anchor(spec, &member, bound_span)
-            } else if self.parse_arg_type_is_applied(value) {
-                // A bracket, or a member read off one: the type it writes, lowered by the
-                // type door as the `?x: T` spelling's annotation is (§5.3, "the two lower to
-                // one internal form") — its arguments fitted and keyed, an alias read
-                // through, a head type variable, `Self`, a parameter of the enclosing sort
-                // and a spec's member each read as the annotation reads them.
-                let ty = self
-                    .parsed
-                    .terms
-                    .type_reading(value)
-                    .cloned()
-                    .expect("a bracket in a term position carries the type it writes");
-                // A member read off a bracket carries the bracket as its receiver's type,
-                // which this reading is.
-                self.consumed_recv_types.insert(value);
-                let lowered = self.written_type_to_value(&ty);
-                let bound = node_occurrence::value_to_term(self.kb, &lowered)
-                    .expect("a written type has a term");
-                if let Value::Node(occ) = lowered {
-                    written = Some(occ);
-                }
-                bound
-            } else if self.parse_arg_is_self_type(value) {
-                // Proposal 070 §1.2: the enclosing sort at its own parameters — the
-                // term the `?x: Self` form's annotation lowers to.
-                self.self_type_term(self.parsed.terms.span(value))
-            } else {
-                // Read through the SAME name reader the discriminator used — one
-                // spelling of the question, so a shape it admits cannot be one this
-                // cannot resolve.
-                let name = self
-                    .parse_arg_type_name(value)
-                    .expect("parse_arg_names_a_sort admitted a non-name");
-                let bound_sym = self
-                    .parse_arg_sort_symbol(&name)
-                    .or_else(|| self.parse_arg_constructor_symbol(&name))
-                    .expect("parse_arg_names_a_sort resolved this name to a sort or a constructor");
-                // A head type variable names the spec its guard requires of the
-                // parameter's sort, not a type the parameter is written at.
-                if let Some(RuleTvar::Bounded(requirement)) = self.rule_head_tvar(&name) {
-                    self.rule_head_bound_anchors.push(RuleBoundAnchor {
-                        spec: requirement.spec,
-                        carrier: requirement.carrier,
-                        carrier_param: requirement.carrier_param,
-                    });
-                    requirement.instance
-                } else if !self.rule_param_vars.contains_key(name.as_str())
-                    && self.rule_head_tvar(&name).is_none()
-                    && self.kb.symbols.is_type_param(self.current_scope, &name)
-                {
-                    // A PARAMETER OF THE ENCLOSING SORT, named bare (`x: C` in `sort S[C]`),
-                    // is that parameter's variable, as the type door lowers `?x: C` and as
-                    // the applied arm lowers it inside `x: Box[T = C]`. As a sort reference
-                    // it named a sort no value has: the generated goal checked the value
-                    // against `C` itself, never the caller's type, and `S[C = Bit].par`
-                    // floundered on `domain(?_, C)` where `?x: C` answers (WI-20260925-SHED7).
-                    self.type_param_var(bound_sym, &name)
-                } else {
-                    let named = self.kb.make_sort_ref(bound_sym);
-                    let (bound, as_written) =
-                        self.rule_bound_read_through_aliases(named, bound_span);
-                    written = as_written;
-                    bound
-                }
+            let written = match lowered {
+                Value::Node(occ) => Some(occ),
+                _ => None,
             };
             self.in_rule_head_bound = saved_bound_ctx;
             let noted = self.note_rule_head_bound_sorts(bound, bound_span);
@@ -31614,6 +31553,41 @@ impl<'a> Loader<'a> {
             )
     }
 
+    /// The type a rule-head argument's written NAME is, as a type position holds it: the
+    /// segments its term spells — `Colour`, `lib.Colour`, `..lib.Colour` (an absolute path's
+    /// marker rides on its head segment, as the type position's does) — or `None` for a value
+    /// that is no name.
+    fn parse_arg_name_type(&self, value: ParseTermId) -> Option<TypeExpr> {
+        if matches!(self.parsed.terms.get(value), Term::Fn { .. })
+            && dotted_citation_name(&self.parsed.symbols, &self.parsed.terms, value).is_none()
+        {
+            return None;
+        }
+        let mut segments: SmallVec<[Symbol; 2]> = SmallVec::new();
+        let mut cur = value;
+        loop {
+            match self.parsed.terms.get(cur) {
+                Term::Ref(s) | Term::Ident(s) => {
+                    segments.push(*s);
+                    break;
+                }
+                Term::Fn { pos_args, .. } => {
+                    let Term::Ident(field) = self.parsed.terms.get(pos_args[1]) else {
+                        return None;
+                    };
+                    segments.push(*field);
+                    cur = pos_args[0];
+                }
+                _ => return None,
+            }
+        }
+        segments.reverse();
+        Some(TypeExpr::Simple(Name {
+            segments,
+            span: self.parsed.terms.span(value),
+        }))
+    }
+
     /// Does this rule-head argument write a CONSTRUCTOR's type — its name (`x: Colour.red`)
     /// or a bracket applying it (`x: Buf.buf[T = Int64]`)? After a parameter's `:` the
     /// constructor is its type (§8.2), as the `?x: T` spelling reads it, so `x` is a
@@ -32303,7 +32277,7 @@ impl<'a> Loader<'a> {
                         Some(ty_expr) => {
                             let saved = std::mem::replace(&mut self.in_rule_head_bound, true);
                             self.rule_head_bound_anchors.clear();
-                            let value = self.written_type_to_value(&ty_expr);
+                            let value = self.annotation_type_to_value(&ty_expr);
                             self.in_rule_head_bound = saved;
                             match node_occurrence::value_to_term(&mut self.kb, &value) {
                                 Ok(t) => {
@@ -33115,13 +33089,13 @@ impl<'a> Loader<'a> {
                     let mut written: Vec<(ClauseSlot, Rc<NodeOccurrence>)> = Vec::new();
                     for (i, child) in new_pos.iter_mut().enumerate() {
                         let (read, as_written) =
-                            self.term_read_through_aliases(*child, span, AliasCanon::Clause);
+                            self.term_read_through_aliases(*child, span);
                         *child = read;
                         written.extend(as_written.map(|occ| (ClauseSlot::Pos(i), occ)));
                     }
                     for (key, child) in new_named.iter_mut() {
                         let (read, as_written) =
-                            self.term_read_through_aliases(*child, span, AliasCanon::Clause);
+                            self.term_read_through_aliases(*child, span);
                         *child = read;
                         written.extend(as_written.map(|occ| (ClauseSlot::Named(*key), occ)));
                     }
@@ -36347,7 +36321,7 @@ impl<'a> Loader<'a> {
         ty_expr: &TypeExpr,
         at: ParseTermId,
     ) -> (TermId, Option<Rc<NodeOccurrence>>) {
-        let value = self.written_type_to_value(ty_expr);
+        let value = self.annotation_type_to_value(ty_expr);
         let ann = self.lower_pattern_annotation(&value);
         let span = SourceSpan::from_span(self.source_id, self.parsed.terms.span(at));
         let written = node_occurrence::written_pattern_annotation(self.kb, &value, span);
@@ -39083,6 +39057,47 @@ impl<'a> Loader<'a> {
         value
     }
 
+    /// [`Self::written_type_to_value`] for a whole ANNOTATION — a parameter's, a result's, a
+    /// field's, a const's, a `let`'s or a binder's, a rule head's bound — which must be a type:
+    /// one that is a value, or a name that is no type, is refused
+    /// ([`LoadError::AnnotationNamesNoType`]). A bracket's argument may be a value, and a
+    /// call's bracket is lowered by the other entry.
+    fn annotation_type_to_value(&mut self, ty: &TypeExpr) -> crate::eval::value::Value {
+        let value = self.written_type_to_value(ty);
+        // A NAME, or a member read off a bracket: a bracket on a head that takes no argument
+        // is refused where it is lowered (`type_application_keys`).
+        if !matches!(ty, TypeExpr::Simple(_) | TypeExpr::Member { .. }) {
+            return value;
+        }
+        const A_VALUE: &str = "a value, which stands in a type only as an argument of a \
+                               bracket (`Modify[c]`, `Vector[Int64, N]`)";
+        let what = match super::typing::extract_type(self.kb, &value) {
+            super::typing::TypeExtractor::Denoted(_) => A_VALUE,
+            super::typing::TypeExtractor::SortRef(sym)
+                if self.kb.symbols.is_resolved(sym) && !self.kb.has_type_reading(sym) =>
+            {
+                if self.kb.has_kind(sym, SymbolKind::Namespace) {
+                    "a namespace"
+                } else {
+                    A_VALUE
+                }
+            }
+            _ => return value,
+        };
+        let name = type_expr_base_name(&self.parsed.symbols, ty);
+        let site = self.type_expr_span(ty);
+        self.errors.push(LoadError::AnnotationNamesNoType {
+            name: name.clone(),
+            what: what.to_owned(),
+            span: site.span,
+        });
+        // Refused, and not built: a later check would report the value again as the type.
+        let named = self.kb.intern(&name);
+        let var = Var::Global(self.kb.fresh_var(named));
+        let child = self.kb.type_var_child(var, site, self.current_owner);
+        node_occurrence::type_child_as_value(&child)
+    }
+
     /// [`Self::type_expr_to_value`] for an element of an operation's own `effects` clause
     /// ([`TypeSite::OwnRowElement`]).
     fn own_row_element_to_value(&mut self, ty: &TypeExpr) -> crate::eval::value::Value {
@@ -41395,18 +41410,6 @@ impl<'a> Loader<'a> {
         Some(self.kb.intern(crate::intern::SELF_TYPE_NAME))
     }
 
-    /// Proposal 070 §1.2 — `Self` as a hash-consed type TERM, for the rule-head
-    /// parameter form (`rule pick(c: Self)`), whose bound is a term.
-    fn self_type_term(&mut self, name_span: Span) -> TermId {
-        let span = SourceSpan::from_span(self.source_id, name_span);
-        match self.self_type_child(name_span, span, self.current_owner) {
-            node_occurrence::TypeChild::Interned(t) => t,
-            node_occurrence::TypeChild::Node(_) => {
-                unreachable!("`Self` binds each parameter to its own name, never to a value")
-            }
-        }
-    }
-
     /// Proposal 070 §1.2 — `Self` as a type: the enclosing sort applied to its OWN
     /// parameters, built as the written form is (`Cell[V = V]`) so that nothing after
     /// this lowering can tell the two apart. A sort without parameters is its bare name.
@@ -42592,7 +42595,7 @@ impl<'a> Loader<'a> {
             .fields
             .iter()
             .map(|f| {
-                let ty = self.written_type_to_value(&f.ty);
+                let ty = self.annotation_type_to_value(&f.ty);
                 (self.reintern(f.name), ty)
             })
             .collect();
@@ -44472,34 +44475,12 @@ impl<'a> Loader<'a> {
                     );
                 }
                 let name_term = self.kb.alloc(Term::Const(Literal::String(field_name_str)));
-                match type_value {
-                    Value::Node(_) => {
-                        // Denoted-bearing field type → value FieldInfo entity.
-                        let named: Vec<(Symbol, Value)> = vec![
-                            (syms.name, Value::term(name_term)),
-                            (syms.type_name, type_value.clone()),
-                        ];
-                        Value::Entity {
-                            functor: syms.field_info,
-                            pos: std::rc::Rc::from(Vec::new()),
-                            named: std::rc::Rc::from(named),
-                        }
-                    }
-                    Value::Term { id: type_term, .. } => {
-                        // Ground field type → hash-consed FieldInfo term.
-                        Value::term(self.kb.alloc(Term::Fn {
-                            functor: syms.field_info,
-                            pos_args: SmallVec::new(),
-                            named_args: SmallVec::from_slice(&[
-                                (syms.name, name_term),
-                                (syms.type_name, *type_term),
-                            ]),
-                        }))
-                    }
-                    // `type_expr_to_value` yields only `Value::Term` /
-                    // `Value::Node` (TypeChild has two variants).
-                    other => unreachable!("a field type is Term or Node, got {other:?}"),
-                }
+                field_info_value(
+                    self.kb,
+                    [syms.field_info, syms.name, syms.type_name],
+                    name_term,
+                    type_value.clone(),
+                )
             })
             .collect();
         let (fields_field, fields_all_ground) = value_or_ground_list(self.kb, field_values);
@@ -46552,7 +46533,7 @@ impl<'a> Loader<'a> {
         self.record_declaration_block(const_sym, MemberKind::Const, c.meta.as_ref(), domain);
 
         // Declared type — always present (grammar-mandatory); store it for the typer.
-        let declared_type = self.written_type_to_value(&c.ty);
+        let declared_type = self.annotation_type_to_value(&c.ty);
         self.kb.set_const_type(const_sym, declared_type);
 
         // Defining body, if any (bodyless = host-supplied; value source is a later phase).
@@ -46762,7 +46743,7 @@ impl<'a> Loader<'a> {
                     domain,
                 )
             }
-            None => self.written_type_to_value(&o.return_type),
+            None => self.annotation_type_to_value(&o.return_type),
         };
 
         // WI-489: record the `result` binder's static type so a `Modify[result.a]`
@@ -46825,7 +46806,7 @@ impl<'a> Loader<'a> {
                 // self-referential effect (`Modify[a]`) resolves to `<op>.f.a`.
                 // Cleared after so they never leak to the next param / the body.
                 self.set_arrow_binder_scope(field_sym);
-                let type_value = self.written_type_to_value(&p.ty);
+                let type_value = self.annotation_type_to_value(&p.ty);
                 self.arrow_binder_scope.clear();
                 // WI-489: record this param's static type so a value-in-type field
                 // projection off it (`Modify[c.backend]`) validates its field path in
@@ -46835,34 +46816,7 @@ impl<'a> Loader<'a> {
                 // projection (`b: a.head`) sees an earlier param's type.
                 self.signature_place_types
                     .insert(field_sym, type_value.clone());
-                match type_value {
-                    crate::eval::value::Value::Node(_) => {
-                        // Denoted-bearing param type → value FieldInfo entity.
-                        let named: Vec<(Symbol, crate::eval::value::Value)> = vec![
-                            (fi_name_sym, crate::eval::value::Value::term(name_term)),
-                            (fi_type_sym, type_value),
-                        ];
-                        crate::eval::value::Value::Entity {
-                            functor: field_info_sym,
-                            pos: std::rc::Rc::from(Vec::new()),
-                            named: std::rc::Rc::from(named),
-                        }
-                    }
-                    crate::eval::value::Value::Term { id: type_term, .. } => {
-                        // Ground param type → hash-consed FieldInfo term.
-                        crate::eval::value::Value::term(self.kb.alloc(Term::Fn {
-                            functor: field_info_sym,
-                            pos_args: SmallVec::new(),
-                            named_args: SmallVec::from_slice(&[
-                                (fi_name_sym, name_term),
-                                (fi_type_sym, type_term),
-                            ]),
-                        }))
-                    }
-                    // `type_expr_to_value` yields only `Value::Term` / `Value::Node`
-                    // (TypeChild has two variants), never `Value::Var`/entity.
-                    other => unreachable!("a param type is Term or Node, got {other:?}"),
-                }
+                field_info_value(self.kb, [field_info_sym, fi_name_sym, fi_type_sym], name_term, type_value)
             })
             .collect();
         let (params_field, params_all_ground) = value_or_ground_list(self.kb, param_field_values);

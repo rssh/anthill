@@ -627,6 +627,8 @@ A name has a **type reading** when it names a sort or a type parameter, and ever
 | a sort that shares its name with an operation (`Positive` beside `operation Positive(x)`) | its type (`requires Positive[T = A]`) | the operation |
 | a parameter, a local, a const (`c`, `N`) | the value (`Modify[c]`, `Vector[Int64, N]`) | the value |
 
+A value stands in a type only as an argument of a bracket. An annotation whose whole type is a value — an operation's name (`x: Buf.tag`), a rule's, a const's (`x: c`), a parameter's — names no type, and is refused.
+
 So a bare name's reading is decided by its context and by what it names, and by nothing else: not by the slot's expected type, not by which head a bracket follows, and not by how many fields a constructor declares. In a data context, dropping `()` changes nothing: `p(Foo)` is `p(Foo())`. A constructor that takes fields, written bare there, is its application with every field fresh — the pattern `account()` in a clause (§8.3), and an incomplete construction, refused, in an operation body.
 
 **Only a BARE name falls back.** A written surface decides by itself. `S(…)` is an application in either context, so it needs a constructor, predicate or operation named `S`: `Shape()` over a sort with no entity `Shape`, and `Eq(T: ?q)` over a spec, are load errors, not the type. `S[…]` is a type in either context.
