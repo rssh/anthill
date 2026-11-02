@@ -33,3 +33,7 @@ FOLLOW-UP in this commit's predecessor (user, 2026-11-02, "yes" to: does a const
 
 ONE LOWERING (user, 2026-11-02, yes): de8e8049 lowers an applied sigil-free bound through the type door from the bracket's parsed type, and deletes the term walk's readings of a bound (load.rs 175 lines shorter). `x: Buf[Int64, N = 3]` now answers as `?x:` does; a call (`c: Leaf(name: "tip")`) is no parameter. Left: `x: Buf[T = Int64].T` is still no parameter where `?x: Buf[T = Int64].T` is `Int64`. Full workspace 11,460 passed, node carrier too; families green.
 
+### 2026-11-02T09:31:16Z — feedback — claude
+
+BRACKET MEMBER (user, 2026-11-02, do inline): 875cbc86 — `x: Buf[T = Int64].T` and `x: IntBuf[N = Bool].T` are the type they name, as `?x:` reads them. Found on the way and fixed: `?x: Buf.N` / `?x: Buf[T = Int64].N` crashed the loader (both spellings, pre-existing); refused now. LEFT, measured: `x: Buf.N` without a bracket is `domain(?x, N)` (a dead clause) where `?x: Buf.N` is refused; `?x: Buf[T = Int64].tag` (an operation) is accepted as `domain(?x, tag)`. Full workspace 11,462 passed, node carrier too; families green.
+
