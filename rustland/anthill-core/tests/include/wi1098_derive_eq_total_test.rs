@@ -17,15 +17,25 @@
 //! Each claim below was MEASURED by backing the named change out and re-running this
 //! file, not predicted from reading it.
 //!
-//! Backing out `eq_derive::derive_total_eq` (its `load.rs` call) fails FIVE of the
-//! nine here — `contains_answers_for_a_provisionless_entity` (the headline; reverts to
-//! the `Internal(DeferToRequirement …)` above at BOTH the eval and the resolver
-//! entry), `a_recursive_composite_answers` (same error, one level of recursion in),
-//! `a_total_composite_derives_eq_and_partialeq`, and the two that carry a DERIVED row
-//! as their positive neighbour: `a_float_composite_still_derives_noneq_and_not_eq`
-//! (its `Plain`) and `a_float_behind_a_parametric_field_is_not_claimed_lawful` (its
-//! `HoldInt`). Those two are absence assertions, and the neighbour is what stops them
-//! passing on a KB where the derivation never ran at all.
+//! Backing out `eq_derive::derive_total_eq` (its `load.rs` call) failed FIVE of the
+//! nine here when this was written — `contains_answers_for_a_provisionless_entity`
+//! (the headline; reverts to the `Internal(DeferToRequirement …)` above at BOTH the
+//! eval and the resolver entry), `a_recursive_composite_answers` (same error, one level
+//! of recursion in), `a_total_composite_derives_eq_and_partialeq`, and the two that
+//! carry a DERIVED row as their positive neighbour:
+//! `a_float_composite_still_derives_noneq_and_not_eq` (its `Plain`) and
+//! `a_float_behind_a_parametric_field_is_not_claimed_lawful` (its `HoldInt`). Those two
+//! are absence assertions, and the neighbour is what stops them passing on a KB where
+//! the derivation never ran at all.
+//!
+//! IT NO LONGER DOES, MEASURED 2026-11-02 (WI-20260831-QF5JT): the same back-out fails
+//! ONE row, `a_parametric_sort_derives_a_conditional_row`, whose `Duration` gets a
+//! clause record (count 1, not 0). Since WI-20260918-CKD4J, `derive_conditional_eq`
+//! derives the same `Eq`+`PartialEq` pair, with no condition, for every composite the
+//! total pass leaves, so the five rows above stay green. The derivation as a whole is
+//! backed out only by skipping a sort in BOTH passes, as
+//! `wi300_rule_body_requires_test::a_carrier_whose_fields_provide_eq_derives_it_and_passes_the_guard`
+//! measures.
 //!
 //! Backing out only the `build_sort_ops_table(kb)` refresh beside the derivation —
 //! the delta that makes the derived provision inherit the spec's `eq` onto its
