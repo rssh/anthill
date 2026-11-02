@@ -200,9 +200,9 @@ fn sld_lookup_symbol_does_not_read_the_reflect_sorts() {
 /// INVERTED WITH ITS SIBLING ABOVE (WI-909's third pass). `make_fn` still resolves
 /// "by qualified-or-short name" exactly as `reflect.anthill` declares -- but a SHORT
 /// name now has nowhere to resolve, so the bare spelling is refused and the qualified
-/// one answers. The refusal is LOUD (`EvalError::Internal`), which is the whole reason
-/// this position needs no migration guard: a program handing `make_fn` a bare `cons`
-/// finds out.
+/// one answers. The refusal is LOUD (`EvalError::HostNameUnresolved`), which is the
+/// whole reason this position needs no migration guard: a program handing `make_fn` a
+/// bare `cons` finds out.
 #[test]
 fn make_fn_refuses_a_bare_prelude_name_and_takes_the_qualified_one() {
     let mut interp = interp_for(FIXTURE);
@@ -600,10 +600,41 @@ fn make_fn_is_loud_about_a_name_that_denotes_nothing() {
         )
         .expect_err("an unresolvable functor name is an error");
     match err {
-        EvalError::Internal(msg) => assert!(
-            msg.contains("make_fn") && msg.contains("no.such.Functor"),
-            "the error must name the operation and the name, got: {msg}",
+        EvalError::HostNameUnresolved { detail } => assert!(
+            detail.contains("make_fn") && detail.contains("no.such.Functor"),
+            "the error must name the operation and the name, got: {detail}",
         ),
-        other => panic!("expected EvalError::Internal, got {other:?}"),
+        other => panic!("expected EvalError::HostNameUnresolved, got {other:?}"),
     }
+}
+
+/// The same name handed over by a RULE BODY is the goal's fault, naming the name, and the
+/// goal has no definite answer. Raised as `EvalError::Internal`, the bridge took it for an
+/// evaluator invariant and asserted on it: a debug build PANICKED here (measured
+/// 2026-11-02 with `resolve_host_name` restored), a release build reported a fault. The
+/// argument list is an operation's value, so the row reads the name and nothing else.
+#[test]
+fn a_rule_body_naming_nothing_to_make_fn_is_the_goals_fault() {
+    let mut kb = load_kb_with(
+        r#"
+namespace test.wi913.rule
+  import anthill.prelude.{String, List}
+  import anthill.reflect.{Term, make_fn, as_term, term_to_string}
+
+  operation one() -> List[T = Term] = [as_term(1)]
+  rule bad(?r) :- ?r <=> term_to_string(make_fn("no.such.Functor", one()))
+end
+"#,
+    );
+    let goal = crate::common::query_pattern_term(&mut kb, "test.wi913.rule.bad(?r)");
+    let (sols, stats) = kb.resolve_with_stats(&[goal], &ResolveConfig::default());
+    assert!(
+        sols.iter().all(|s| !s.is_definite()),
+        "a call that could not be run answers nothing definite"
+    );
+    let errors: Vec<&str> = stats.errors.iter().map(|e| e.message.as_str()).collect();
+    assert!(
+        errors.iter().any(|e| e.contains("no.such.Functor")),
+        "the fault names the name: {errors:?}"
+    );
 }

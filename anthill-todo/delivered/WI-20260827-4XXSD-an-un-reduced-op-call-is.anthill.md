@@ -3,9 +3,9 @@
 - id: WI-20260827-4XXSD-an-un-reduced-op-call-is
 - created: 2026-08-27T11:16:05Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-08-27T11:57:02Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-11-02T18:26:52Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -93,4 +93,8 @@ A NEIGHBOUR OF THIS DEFECT, found 2026-10-26 while delivering WI-20261024-QJ6X1:
 ### 2026-11-02T11:27:36Z — feedback — claude
 
 DEPENDENCY ON XBHX3 REMOVED (user, 2026-11-02, dependency review). It was added at filing (2026-08-27) because 'step (2) is its open question and a decision there decides the shape here'. Proposal 068 took that decision — its status line: 'Decided in discussion while reviewing WI-20260827-XBHX3', the SUSPENDED/UNREDUCED split (§2) — and WI-20260926-K4JGC delivered it: arguments are evaluated first, until a variable or a stuck call, so no binding holds an unevaluated call. What XBHX3 still holds is the unfold gate, which is WI-20261013-2HX69's part (XBHX3 now depends on it) and nothing this ticket reads. This ticket's last witness (the 2026-10-26 note: a one-call body reduced with its parameters left as var_ref names) is in reduce_op_value's call-by-name fold, which WI-20261013-DEY66 retires: re-measure it once DEY66 lands, before building here.
+
+### 2026-11-02T18:26:51Z — feedback — claude
+
+DELIVERED 2026-11-02, re-measured before building. The ticket's own rows (f1/f2/f4) and the some(...)-wrapped rows of the 2026-08-27 note answer their VALUES on the tree as found (f2 some("some"), f4 "some(value: 7)", w1 "some(value: some(value: 7))", w2 "some(value: 3)"): WI-20260926-K4JGC evaluates a rule-body call's arguments first and runs no call whose argument is stuck, and WI-20260827-W1YKH made term_field read every carrier — so the acceptance's 'suspend' became 'answer'. The defect lived one level down, in reduce_op_value's call-by-name FOLD of an operation body a rule calls: the fold handed the body's calls unevaluated to the host functions inside it, and did not substitute a parameter spelled bare (n is an Expr::VarRef; only ?n is a variable) or called (f(3) through a function-typed parameter). Measured at HEAD, every answer definite, the interpreter's in brackets: viaAdd1() = term_to_string(as_term(Int64.add(1, 2))) 'add(1, 2)' ['3']; viaG7() over g(x) = Int64.add(x, 1) 'add(x, 1)' ['8']; viaTerm(1) 'n' ['1'] (the 2026-10-26 note); viaInt(1) none [some(1)] and not(viaInt(1) = some(1)) held; app(S.twice) over term_to_string(as_term(f(3))) 'f(3)' ['6']; an if argument printed as the form. REPAIR, two gates in kb/resolve.rs: g1, collect_param_var_bindings reports a body naming a parameter where the fold cannot bind it and reduce_op_value does not fold it (the depth-0 bridge runs it whole); g2, bridge_op_to_eval refuses an argument of the fold's that still holds a written call (value_holds_call), beside the ground check, and asserts it in debug at depth 0, where the evaluator hands evaluated arguments. The needs-dictionary arm's top-level is_unreduced_op_call check is gone into g2. Rows: wi_4xxsd_fold_host_arg_value_test (9), back-outs at the file head; with both gates backed out the full gate failed exactly the new rows (11,529 / 5), so the suite reaches this nowhere else, as the ticket said in August. The two unverified 2026-08-27 review leftovers: an if argument does NOT reach occurrence_to_term's assertion — the printer read the form (now a row, closed by g2); DEEP_GROUND.opaque was not driven here. The fold itself is WI-20261013-DEY66's to retire; g1 goes with it. Full workspace 11,535 passed, 0 failed; no Scala file changed, Scala suite not run.
 
