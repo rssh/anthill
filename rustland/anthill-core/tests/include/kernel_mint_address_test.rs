@@ -58,11 +58,8 @@
 //!       compare against. What they measure is stated at their own site.
 //!
 //! BOTH HALVES LOAD THE FULL CLOSURE (`common::load_kb_with`, stdlib + Rust host
-//! bindings). The guard rows used to load the stdlib ALONE, because with host bindings
-//! present their `Noeq(v: Int64)` stopped discriminating by carrier and every guard row
-//! answered 1 (WI-20260831-QF5JT); WI-20260922-BRT4Y made that load a refusal, and the
-//! guard fixture's `Noeq` now carries a field no closure gives `PartialEq`. Measured — see
-//! [`load_guard_kb`], which carries the control pair.
+//! bindings). The guard fixture's `Noeq` carries a field nothing gives equality, so it
+//! derives none — see [`load_guard_kb`] for why it must, and the control pair.
 //!
 //! THE RIVAL MUST BE A DECLARATION, NOT A RULE, and the first cut of this file got that
 //! wrong — recorded because the reason is a language rule and the wrong instrument is
@@ -569,16 +566,16 @@ fn guard_src(rival: &str) -> String {
 /// row here.
 ///
 /// `Noeq`'s field is typed by `Opaque`, a sort that provides NOTHING, and that is what
-/// keeps this fixture discriminating. With the field typed `Int64` (the shape
-/// `wi300_rule_body_requires_test` reduces from), the guard STOPS DISCRIMINATING BY
-/// CARRIER once the Rust host bindings load — `Noeq` answers 1 exactly as `Witheq` does —
-/// which is `WI-20260831-QF5JT`, not this file's subject. These rows ask whether a
-/// same-spelled declaration captures the `requires(X)` MINT and need a guard that
-/// discriminates at all. They used to get one by loading the stdlib WITHOUT its binding
-/// layer (`Int64` then provides no `PartialEq`); WI-20260922-BRT4Y made that load a
-/// refusal, since the stdlib's host-backed operations are declared
-/// `@[host_implemented]`. MEASURED under the full closure: `Noeq(v: Int64)` answers 1
-/// and `Noeq(v: Opaque)` answers 0, with `Witheq` answering 1 in both.
+/// makes `Noeq` a carrier with no equality. Typed `Int64`, it would HAVE one: a
+/// composite whose `eq` nothing supplies derives `PartialEq` and `Eq` from its fields
+/// (kernel-language §8.3; `eq_derive::derive_total_eq` and `derive_conditional_eq`,
+/// either of which derives it), `Int64` provides `Eq`, and the guard rightly admits
+/// it — MEASURED, `Noeq(v: Int64)` answers 1 and `Noeq(v: Opaque)` answers 0, with
+/// `Witheq` answering 1 in both. That was filed as the guard not discriminating
+/// (WI-20260831-QF5JT); the row that pins the derivation instead is
+/// `wi300_rule_body_requires_test::a_carrier_whose_fields_provide_eq_derives_it_and_passes_the_guard`.
+/// These rows ask whether a same-spelled declaration captures the `requires(X)` MINT,
+/// and need a carrier the guard refuses.
 fn load_guard_kb(rival: &str) -> KnowledgeBase {
     load_kb_with(&guard_src(rival))
 }
