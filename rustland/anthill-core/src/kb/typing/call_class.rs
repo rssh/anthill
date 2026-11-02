@@ -1804,6 +1804,17 @@ pub enum CallClass {
         /// can be named.
         enclosing_op: Option<Symbol>,
     },
+    /// WI-20260929-6NMGQ — a call in a lambda's body at the type of the lambda's
+    /// unannotated parameter, dispatched through the dictionary `dict` evaluates to where
+    /// the call runs. For a lambda the walk generalized, `dict` reads the slot each
+    /// application of the lambda hands it (`var_ref(__ctx_…)`, the `closure_dicts`
+    /// stamp); for one whose parameter the walk solved to one type, it is the dictionary
+    /// at that type, a forward of the enclosing frame's slot or a construction.
+    DeferToDictionary {
+        spec_op_sym: Symbol,
+        op_short_sym: Symbol,
+        dict: TermId,
+    },
     /// WI-325: dispatch returned `NoCandidates` AND the call's per-call
     /// substitution leaves at least one of the spec's type parameters
     /// abstract (`is_type_param_value`). The typer detects the abstract
@@ -2210,37 +2221,92 @@ pub(super) fn defer_to_op_scoped_slot(
     spec_sort: Symbol,
     fn_sym: Symbol,
     op_short_sym: Symbol,
-    enclosing_sort: Option<Symbol>,
     pinned_spec: bool,
 ) -> bool {
-    if pinned_spec {
+    let Some(class) =
+        op_scoped_defer_class(kb, env, subst, spec_sort, fn_sym, op_short_sym, pinned_spec)
+    else {
         return false;
+    };
+    classify(kb, occ, class);
+    true
+}
+
+/// [`defer_to_op_scoped_slot`]'s deferral, not yet recorded on the call.
+fn op_scoped_defer_class(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    subst: &Substitution,
+    spec_sort: Symbol,
+    fn_sym: Symbol,
+    op_short_sym: Symbol,
+    pinned_spec: bool,
+) -> Option<CallClass> {
+    if pinned_spec {
+        return None;
     }
     let sigma_ctx = SigmaCtx {
         subst,
         param_rigids: env.param_rigids(),
     };
     let chain = env.enclosing_frame_chain().clone();
-    let Some((slot, proj_path)) =
-        op_scoped_defer_location(kb, subst, spec_sort, &chain, Some(&sigma_ctx))
-    else {
-        return false;
-    };
-    let resolved_spec = chain.entries()[slot].clone();
-    classify(
-        kb,
-        occ,
-        CallClass::DeferToRequirement {
-            spec_op_sym: fn_sym,
-            op_short_sym,
-            resolved_spec,
-            slot,
-            proj_path,
-            enclosing_sort,
-            enclosing_op: env.enclosing_op(),
-        },
-    );
-    true
+    let (slot, proj_path) =
+        op_scoped_defer_location(kb, subst, spec_sort, &chain, Some(&sigma_ctx))?;
+    Some(CallClass::DeferToRequirement {
+        spec_op_sym: fn_sym,
+        op_short_sym,
+        resolved_spec: chain.entries()[slot].clone(),
+        slot,
+        proj_path,
+        enclosing_sort: env.enclosing_sort(),
+        enclosing_op: env.enclosing_op(),
+    })
+}
+
+/// The deferral of a body call of the spec operation `fn_sym` to a requirement of the
+/// enclosing frame, not yet recorded on the call: the sort's `requires` tree first
+/// (WI-239, [`find_requires_location`]), then the operation's own (WI-1091,
+/// [`op_scoped_defer_class`]). `None` when neither covers the call at `subst`, or the
+/// call pins the spec (058 §4.1 tier 1: a pin outranks the forward).
+///
+/// A class and not a verdict on the call, because the one place the call's element is
+/// not known yet — a lambda's unannotated parameter — asks it again at every use of the
+/// lambda ([`WalkSolutions::hold_requirement_cover`]).
+pub(super) fn requirement_defer_class(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    subst: &Substitution,
+    spec_sort: Symbol,
+    fn_sym: Symbol,
+    op_short_sym: Symbol,
+    pinned_spec: bool,
+) -> Option<CallClass> {
+    let enclosing_sort = env.enclosing_sort();
+    if !pinned_spec && !env.enclosing_requires().is_empty() {
+        let sigma_ctx = SigmaCtx {
+            subst,
+            param_rigids: env.param_rigids(),
+        };
+        if let Some(path) = enclosing_sort
+            .and_then(|encl| find_requires_location(kb, subst, spec_sort, encl, Some(&sigma_ctx)))
+        {
+            // `path` is non-empty on `Some`. Head = direct frame slot; tail = projection
+            // path into its bundled value.
+            let slot = path[0];
+            // WI-232: the matched direct-require entry rides on the class, so
+            // req_insertion::run can read it without re-indexing.
+            return Some(CallClass::DeferToRequirement {
+                spec_op_sym: fn_sym,
+                op_short_sym,
+                resolved_spec: env.enclosing_requires()[slot].clone(),
+                slot,
+                proj_path: path[1..].iter().copied().collect(),
+                enclosing_sort,
+                enclosing_op: env.enclosing_op(),
+            });
+        }
+    }
+    op_scoped_defer_class(kb, env, subst, spec_sort, fn_sym, op_short_sym, pinned_spec)
 }
 
 /// WI-20261013-50ZMN — a body's call of the spec operation `fn_sym`, READ FROM THE
@@ -2464,17 +2530,16 @@ fn frame_tree(kb: &mut KnowledgeBase, chain: &DictChain) -> Vec<RequiresNode> {
 /// measured — `viaop[U](x: U) requires Desc[T = Rich] = Desc.describe(x)` computing
 /// `Rich`'s 7 for a `plain()` — so the gate is shared with that route rather than
 /// re-derived here.
-pub(super) fn defer_defaulted_call_to_slot(
+pub(super) fn defaulted_call_defer_class(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
-    occ: &Rc<NodeOccurrence>,
     subst: &Substitution,
     spec_sort: Symbol,
     fn_sym: Symbol,
     op_short_sym: Symbol,
     selections: &[InstanceSelection],
     carrier_licensed: bool,
-) -> bool {
+) -> Option<CallClass> {
     // WI-841 tier 1 — A PIN AT THIS CALL OUTRANKS THE FORWARD, the same gate all three
     // sort-level defer sites keep. Not an early return: it is the gate on the SORT half
     // below and is handed to the op half, which asks it in its own words, so the two
@@ -2488,51 +2553,9 @@ pub(super) fn defer_defaulted_call_to_slot(
     // body — the walks' soft first-match tie-break is not let pick a clause for it.
     // DF0TS: a clause at this receiver's rigid carrier is instance-precise evidence too.
     if !carrier_licensed && !call_fixes_a_sort_param(kb, subst, spec_sort) {
-        return false;
+        return None;
     }
-    let enclosing_sort = env.enclosing_sort();
-    let enclosing_requires = env.enclosing_requires().to_vec();
-    if !pinned_spec && !enclosing_requires.is_empty() {
-        let sigma_ctx = SigmaCtx {
-            subst,
-            param_rigids: env.param_rigids(),
-        };
-        if let Some(path) = enclosing_sort
-            .and_then(|encl| find_requires_location(kb, subst, spec_sort, encl, Some(&sigma_ctx)))
-        {
-            // `path` is non-empty on `Some`. Head = direct frame slot; tail = projection
-            // path into its bundled value — the same encoding the body-less pre-check
-            // hands `CallClass::DeferToRequirement`.
-            let slot = path[0];
-            let proj_path: SmallVec<[usize; 2]> = path[1..].iter().copied().collect();
-            let resolved_spec = enclosing_requires[slot].clone();
-            classify(
-                kb,
-                occ,
-                CallClass::DeferToRequirement {
-                    spec_op_sym: fn_sym,
-                    op_short_sym,
-                    resolved_spec,
-                    slot,
-                    proj_path,
-                    enclosing_sort,
-                    enclosing_op: env.enclosing_op(),
-                },
-            );
-            return true;
-        }
-    }
-    defer_to_op_scoped_slot(
-        kb,
-        env,
-        occ,
-        subst,
-        spec_sort,
-        fn_sym,
-        op_short_sym,
-        enclosing_sort,
-        pinned_spec,
-    )
+    requirement_defer_class(kb, env, subst, spec_sort, fn_sym, op_short_sym, pinned_spec)
 }
 
 /// WI-822 LEG 1 — the frame slot of the enclosing OPERATION's OWN `requires` chain
@@ -2540,7 +2563,7 @@ pub(super) fn defer_defaulted_call_to_slot(
 /// COMPOSED chain's numbering (`chain.sort_len()` is added, so the answer indexes the
 /// same list [`CallClass::DeferToRequirement::slot`] does).
 ///
-/// THE ONE READER OF THE OP HALF, reached through [`defer_to_op_scoped_slot`].
+/// THE ONE READER OF THE OP HALF, reached through [`op_scoped_defer_class`].
 ///
 /// WI-822 called it from the `Ambiguous` arm ALONE — the route where nothing else can
 /// answer: a spec op with NO receiver argument (`zero() -> T`), whose providers tie

@@ -993,6 +993,134 @@ fn explain_dep_refusal(
     })
 }
 
+/// WI-20260929-6NMGQ — what every dictionary of one held call is built in: the enclosing
+/// declaration's frame chain, the direct sub-chain of each of its entries, and the forms.
+pub(super) struct DeferredFrame {
+    chain: DictChain,
+    sub_chains: Vec<Vec<RequiresEntry>>,
+    pub(super) syms: ProjectionSyms,
+}
+
+impl DeferredFrame {
+    pub(super) fn of(kb: &mut KnowledgeBase, call: &DeferredCall) -> Result<Self, TypeError> {
+        let Some(syms) = ProjectionSyms::resolve(kb) else {
+            return Err(call.refusal(
+                call.span,
+                "the requirement forms of `anthill.reflect`",
+                "none in this KB",
+            ));
+        };
+        let chain = call.env.enclosing_frame_chain().clone();
+        let sub_chains = chain
+            .iter()
+            .map(|entry| direct_requires_chain(kb, entry.required_sort))
+            .collect();
+        Ok(DeferredFrame {
+            chain,
+            sub_chains,
+            syms,
+        })
+    }
+}
+
+/// WI-20260929-6NMGQ — the dictionary a lambda's call reads, at the types `at` gives the
+/// variables of the call's σ ([`DeferredCall`]): `Spec[…]` at the call's bindings, built
+/// in the enclosing declaration's frame as a call builds a requirement of the operation it
+/// calls ([`build_dep_projection`]) — that declaration's own dictionary where its
+/// `requires` covers the type, a construction where a provider answers it. The refusal
+/// where neither does is the one such a call gets ([`TypeError::UnsatisfiableRequirement`]),
+/// reported at `span`.
+///
+/// A variable the call's σ binds already was decided at the call, and is not bound again.
+pub(super) fn lambda_requirement_dict(
+    kb: &mut KnowledgeBase,
+    call: &DeferredCall,
+    frame: &DeferredFrame,
+    at: &[(VarId, Value)],
+    // Where a refusal is reported: the application whose type it is, or the call.
+    span: Option<Span>,
+) -> Result<TermId, TypeError> {
+    let mut subst = call.subst.clone();
+    for (var, ty) in at {
+        if subst.resolve_as_value(*var).is_none() {
+            subst.bind_value(kb, *var, ty.clone());
+        }
+    }
+    let bindings = spec_param_bindings(kb, &subst, call.spec_sort);
+    let Some(spec) = sort_view_value(kb, call.spec_sort, bindings) else {
+        return Err(call.refusal(
+            span,
+            "the requirement forms of `anthill.reflect`",
+            "none in this KB",
+        ));
+    };
+    let dep = RequiresEntry {
+        required_sort: call.spec_sort,
+        spec,
+        supply: SupplySource::Required,
+        binder: None,
+    };
+    let DeferredFrame {
+        chain,
+        sub_chains,
+        syms,
+    } = frame;
+    let ctx = SigmaCtx {
+        subst: &subst,
+        param_rigids: call.env.param_rigids(),
+    };
+    let mut s3_failure: Option<ResolutionResult> = None;
+    let mut tie: Option<(Symbol, UnsuppliedDispatch)> = None;
+    if let Some(dict) = build_dep_projection(
+        kb,
+        &dep,
+        chain,
+        sub_chains,
+        syms,
+        Some(&ctx),
+        Some(&mut s3_failure),
+        Some(&mut tie),
+        None,
+        DefaultRung::Consult,
+    ) {
+        return Ok(dict);
+    }
+    let refusal = match tie {
+        Some((op, tie)) => DictRefusal::SupplierTie {
+            dep_text: render_requires_entry(kb, &dep),
+            op,
+            tie,
+        },
+        None => {
+            let refusal = explain_dep_refusal(
+                kb,
+                &dep,
+                chain.entries(),
+                sub_chains,
+                &ctx,
+                s3_failure.clone(),
+            )
+            .unwrap_or_else(|| RequirementRefusal {
+                dep_text: render_requires_entry(kb, &dep),
+                unconstrained: unconstrained_elements(kb, &dep, &ctx),
+                refused_covers: Vec::new(),
+                construction: s3_failure
+                    .as_ref()
+                    .map(|r| describe_resolution_failure(kb, r))
+                    .unwrap_or_default(),
+                construction_carries_repair: false,
+                account_names_every_repair: false,
+                no_scope_route: false,
+                pinned: None,
+                unprovided: None,
+                untied: None,
+            });
+            DictRefusal::Unsupplied(Box::new(refusal))
+        }
+    };
+    Err(refusal.into_type_error(span, call.fn_sym, call.spec_sort, RequirementUse::Call))
+}
+
 /// Shared core of the Direct-path dict build (`build_dispatching_dict_direct`)
 /// and the WI-415 concrete build (`build_concrete_dispatch_dict`): emit
 /// `Dictionary(<one projection per `chain` entry>, impl: callee_spec_sort)`,

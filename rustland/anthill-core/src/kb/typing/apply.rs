@@ -3331,10 +3331,9 @@ pub(super) fn check_apply_iter(
             {
                 let op_qn = kb.qualified_name_of(fn_sym).to_string();
                 let op_short_sym = kb.intern(short_name_of(&op_qn));
-                if defer_defaulted_call_to_slot(
+                if let Some(class) = defaulted_call_defer_class(
                     kb,
                     env,
-                    occ,
                     &subst,
                     spec_sort,
                     fn_sym,
@@ -3342,6 +3341,18 @@ pub(super) fn check_apply_iter(
                     &selections,
                     enclosing_requires_clause.is_some(),
                 ) {
+                    classify_or_hold_deferral(
+                        kb,
+                        env,
+                        occ,
+                        &subst,
+                        spec_sort,
+                        pos_results,
+                        named_results,
+                        class,
+                        span,
+                        solving.as_deref_mut(),
+                    );
                     stamp_spec_op_supply(
                         kb,
                         env,
@@ -3643,57 +3654,7 @@ pub(super) fn check_apply_iter(
                 });
             }
             let pinned_spec = pinned_witness_for(kb, &selections, spec_sort).is_some();
-            if !pinned_spec && !enclosing_requires.is_empty() {
-                // WI-613: the σ context lets `find_requires_location` disambiguate
-                // two same-spec `requires` over distinct element params by element
-                // identity, instead of blind first-match.
-                let sigma_ctx = SigmaCtx {
-                    subst: &subst,
-                    param_rigids: env.param_rigids(),
-                };
-                if let Some(path) = enclosing_sort.and_then(|encl| {
-                    find_requires_location(kb, &subst, spec_sort, encl, Some(&sigma_ctx))
-                }) {
-                    // `path` is non-empty on `Some`. Head = direct frame
-                    // slot; tail = projection path into its bundled value.
-                    let slot = path[0];
-                    let proj_path: SmallVec<[usize; 2]> = path[1..].iter().copied().collect();
-                    // WI-232: capture the matched direct-require entry so
-                    // req_insertion::run can read it without re-indexing.
-                    let resolved_spec = enclosing_requires[slot].clone();
-                    classify(
-                        kb,
-                        occ,
-                        CallClass::DeferToRequirement {
-                            spec_op_sym: fn_sym,
-                            op_short_sym,
-                            resolved_spec,
-                            slot,
-                            proj_path,
-                            enclosing_sort,
-                            enclosing_op: env.enclosing_op(),
-                        },
-                    );
-                    stamp_spec_op_supply(
-                        kb,
-                        env,
-                        occ,
-                        fn_sym,
-                        &subst,
-                        &selections,
-                        &projection_receivers,
-                        &held_views,
-                        span,
-                    )?;
-                    return Ok(TypeResult {
-                        ty: resolved_ret.clone(),
-                        env: env.clone(),
-                        effects,
-                        node: Rc::clone(occ),
-                    });
-                }
-            }
-
+            //
             // WI-1091 — THE OPERATION'S OWN `requires` IS READ AT THE SAME POINT, and
             // this is what makes the two spellings agree rather than merely coexist.
             //
@@ -3718,17 +3679,31 @@ pub(super) fn check_apply_iter(
             // order — an operation's slots follow its sort's ([`op_dict_entries`]) — and
             // `op_scoped_defer_location` answers in the COMPOSED numbering, so the two
             // arms hand `CallClass::DeferToRequirement` slots off one list.
-            if defer_to_op_scoped_slot(
+            //
+            // WI-20260929-6NMGQ: a call whose element is a lambda's unannotated parameter is
+            // covered here by any requirement, the element being unsolved where the call is
+            // typed; it is decided at the lambda's uses ([`classify_or_hold_deferral`]).
+            if let Some(class) = requirement_defer_class(
                 kb,
                 env,
-                occ,
                 &subst,
                 spec_sort,
                 fn_sym,
                 op_short_sym,
-                enclosing_sort,
                 pinned_spec,
             ) {
+                classify_or_hold_deferral(
+                    kb,
+                    env,
+                    occ,
+                    &subst,
+                    spec_sort,
+                    pos_results,
+                    named_results,
+                    class,
+                    span,
+                    solving.as_deref_mut(),
+                );
                 stamp_spec_op_supply(
                     kb,
                     env,
@@ -4287,7 +4262,6 @@ pub(super) fn check_apply_iter(
                             spec_sort,
                             fn_sym,
                             op_short_sym,
-                            enclosing_sort,
                             pinned_spec,
                         );
                     // WI-590 — an abstract dispatch the ENCLOSING SORT's `requires` covers
@@ -4510,8 +4484,10 @@ pub(super) fn check_apply_iter(
                             // evidence that decides it is not a declaration at all; it is
                             // what the binder's own USES solve, and those come later in
                             // the walk. So the classification is HELD, not dropped, and
-                            // [`WalkSolutions::discharge`] raises it at the walk's end
-                            // for every binder the uses failed to answer.
+                            // [`WalkSolutions::discharge`] decides the call at the walk's
+                            // end: it reads the dictionary the uses hand it at their types
+                            // (WI-20260929-6NMGQ), and this refusal is raised where no use
+                            // gave the binder a type.
                             //
                             // MEASURED: 3 of `wi_tests`' 79,414 abstract-dispatch
                             // classifications have a walk-minted carrier — see
@@ -4529,7 +4505,21 @@ pub(super) fn check_apply_iter(
                                 .unwrap_or_default();
                             match (minted.is_empty(), solving.as_deref_mut()) {
                                 (false, Some(w)) => {
-                                    w.defer_abstract_dispatch(occ, minted, spec_sort, class)
+                                    // WI-20260929-6NMGQ: each carrier's type is bound at the
+                                    // root of its class in this σ, where the dictionary its
+                                    // uses hand it is built.
+                                    // A carrier σ leaves at a type was decided here, and has
+                                    // no root to bind.
+                                    let origin = minted
+                                        .iter()
+                                        .filter_map(|c| sigma_root(kb, &subst, *c).map(|r| (*c, r)))
+                                        .collect();
+                                    let serial = w.deferred.len();
+                                    let call = DeferredCall::new(
+                                        kb, env, &subst, fn_sym, spec_sort, span, &minted, serial,
+                                        false,
+                                    );
+                                    w.defer_binder_dispatch(occ, minted, origin, class, call)
                                 }
                                 _ => {
                                     // An open carrier something grounds where the clause runs:
@@ -4707,7 +4697,6 @@ pub(super) fn check_apply_iter(
                                 spec_sort,
                                 fn_sym,
                                 op_short_sym,
-                                enclosing_sort,
                                 pinned_spec,
                             );
                         }
@@ -4785,7 +4774,6 @@ pub(super) fn check_apply_iter(
                         spec_sort,
                         fn_sym,
                         op_short_sym,
-                        enclosing_sort,
                         pinned_spec,
                     ) {
                         return Ok(TypeResult {
@@ -5282,7 +5270,7 @@ pub(super) fn check_apply_iter(
                 // all, which is the same absence and is reported the same way.
                 let claimed = solving
                     .as_deref_mut()
-                    .map(|w| w.note_instantiation(&inst.binder_map))
+                    .map(|w| w.note_instantiation(&inst.binder_map, occ))
                     .unwrap_or(0);
                 if !inst.obligations.is_empty() && claimed == 0 {
                     return Err(TypeError::Other {

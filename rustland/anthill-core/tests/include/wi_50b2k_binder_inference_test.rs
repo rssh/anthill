@@ -694,21 +694,22 @@ fn int_through_any_carrier(v: &anthill_core::eval::Value, kb: &KnowledgeBase) ->
 /// demand "`requires Additive[T = …]` on enclosing sort" — a repair with NOWHERE TO GO,
 /// because a lambda binder is not a type parameter of any sort or operation. Part (c)'s
 /// answer is that the constraint stays owing until the evidence arrives, and for a binder
-/// the evidence is at the USE: `g(2)` solves `x` at `Int64`, `Additive` provides `Int64`,
-/// and the call is licensed exactly as WI-562's and WI-590's declared-`requires` licences
-/// leave theirs — as the spec op, for value-directed eval.
+/// the evidence is at the USE: `g(2)` solves `x` at `Int64`, and hands the lambda the
+/// `Additive` dictionary at `Int64`, which the call reads (WI-20260929-6NMGQ; the call was
+/// left to value-directed eval before).
 ///
 /// **BACK-OUT, THREE AXES, EACH ITS OWN ROW HERE:**
-///  * Drop the fourth licence (`walk_minted_carriers` / `defer_abstract_dispatch`) and the
+///  * Drop the fourth licence (`walk_minted_carriers` / `defer_binder_dispatch`) and the
 ///    `single` arm is refused again. This row.
 ///  * Drop the Path 2 report (`report_walk_solutions` at the env-bound-arrow argument
 ///    loops) and the `single` arm is refused again, because `g(2)` calls an ARROW VALUE,
 ///    not a named operation — the walk sees the use through no other channel. Same row,
 ///    and the two are independent: the licence without the report defers a requirement
 ///    nothing can ever answer.
-///  * Drop the DISCHARGE's `observed`/`provides` test and `a_binder_used_at_a_carrier_-
-///    without_the_instance_is_still_refused` goes green-when-it-should-fail — that row is
-///    the one that says this is a licence and not a hole.
+///  * Leave the call to the value instead of building the dictionary at each use's type
+///    (the discharge, WI-20260929-6NMGQ) and `a_binder_used_at_a_carrier_without_the_-
+///    instance_is_still_refused` goes green-when-it-should-fail — that row is the one that
+///    says this is a licence and not a hole.
 ///
 /// **THE TUPLE ARM IS STILL REFUSED, AND IT IS A DIFFERENT GAP WITH AN OWNER.** It reaches
 /// the licence — measured, `minted=2` on `argtys=[??pat, ??pat]` — and is refused at the
@@ -748,15 +749,15 @@ fn known_gap_a_binder_list_lambdas_components_are_not_solved_by_the_slot() {
 }
 
 /// **THE LICENCE IS A LICENCE, NOT A HOLE** — the negative control, and the row that fails
-/// if the discharge stops asking whether the observed carrier PROVIDES the spec.
+/// if the discharge stops building the dictionary at the type the use gives the binder.
 ///
 /// `Bool` has no `Additive` instance. The binder is solved — `g(tt())` observes it at
 /// `Bool`, so this row is NOT the "no evidence" case below — and the requirement is
 /// raised at the walk's end exactly as it would have been at the call.
 ///
-/// BACK-OUT: make `WalkSolutions::discharge` license on `!observed.is_empty()` alone and
-/// this row loads, which is the whole difference between deferring a question and
-/// dropping it.
+/// BACK-OUT: make `WalkSolutions::discharge` leave the call to the value instead of building
+/// the dictionary at `Bool` and this row loads (measured, WI-20260929-6NMGQ), which is the
+/// whole difference between deferring a question and dropping it.
 #[test]
 fn a_binder_used_at_a_carrier_without_the_instance_is_still_refused() {
     let src = "namespace zz50b2k.patgap3\n  import anthill.prelude.{Int64, Bool}\n  \
@@ -822,7 +823,7 @@ fn part_c_a_binder_no_use_pins_is_generalized_into_a_polytype() {
 ///
 /// The reason is worth keeping: a use of an env-bound arrow goes through
 /// `check_apply_iter`'s Path 2, whose σ is FRESH per call, so the second use never sees the
-/// first one's binding; and the discharge reads `observed`, which is appended per use
+/// first one's binding; and the discharge reads each use's recorded type (`uses`), appended
 /// BEFORE `report_call_solutions`' first-wins filter. Multi-type USE was therefore already
 /// licensed by the walk-lifetime machinery, and the ∀ changes the mechanism without
 /// changing the answer.

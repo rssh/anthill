@@ -545,7 +545,8 @@ enum anthill.prelude.TypeExtractor
      `∀a. C a => t`. Each element is a spec application over the binders (`Additive[T = ?a]`),
      and an EMPTY list is the plain ∀ every producer before (c) built. Its consumer
      discharges it at the ∀-ELIMINATION, which is where the binders become concrete and the
-     constraint becomes answerable; see `check_bare_ref`. >}
+     constraint becomes answerable: the application hands the lambda the dictionary at its
+     types; see `check_bare_ref` and `WalkSolutions::discharge`. >}
   entity PolyType(binders: List[Term], context: List[Term], body: Term)
   entity Denoted(value: NodeOccurrence)
   {< WI-376: an expression-carried type projection `s.T` / `s.Self`. `value` is the

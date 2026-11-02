@@ -76,6 +76,10 @@ pub fn run(kb: &mut KnowledgeBase) -> Vec<(TypeError, crate::span::SourceId)> {
     let mut to_materialize: Vec<RawClassified> = Vec::with_capacity(raw_entries.len());
     for raw in raw_entries {
         match &raw.class {
+            // WI-20260929-6NMGQ: a call in a lambda's body through a dictionary the lambda
+            // is handed or is built at its parameter's one type — read where the call runs,
+            // by no `apply_within` this table can name. Nothing to materialize.
+            CallClass::DeferToDictionary { .. } => {}
             CallClass::UnresolvedSpecOp {
                 spec_op_sym,
                 spec_sort_sym,
@@ -206,6 +210,9 @@ pub fn run(kb: &mut KnowledgeBase) -> Vec<(TypeError, crate::span::SourceId)> {
                     slot,
                     &proj_path,
                 );
+            }
+            CallClass::DeferToDictionary { .. } => {
+                unreachable!("DeferToDictionary survived the pre-filter");
             }
             CallClass::UnresolvedSpecOp { .. } => {
                 // Pre-filtered above into `errors`. Unreachable.
