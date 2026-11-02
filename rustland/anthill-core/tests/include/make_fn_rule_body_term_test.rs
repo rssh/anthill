@@ -28,7 +28,7 @@
 //! call wherever a binding is read (the term- and entity-carried goal of
 //! WI-20260910-FDPJ8); nothing tells data apart there but a quote (WI-189). The rows are
 //! conditional, never a definite wrong answer — `through_a_variable_it_is_undecided`
-//! pins that.
+//! pins that. Tracked by WI-20261102-ED298.
 
 use anthill_core::kb::resolve::ResolveConfig;
 
