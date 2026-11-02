@@ -2937,11 +2937,11 @@ Its column is typed at the sort, so `Colour.domain.head.x` is a `Colour`. An
 infinite domain is a lazy stream like any other (`Nat.domain.takeN(4)` is `z`,
 `s(z)`, `s(s(z))`, `s(s(s(z)))`); a `Relation` has no full drain to flounder in.
 
-**A PARAMETERIZED sort has the goal face and no value face yet.** `List` keeps its
-derived clause and every typed head that reads it, but `List[T = Letter].domain`
-is a load error: a rule citation's query is built from the clause head alone, so
-the receiver bracket reaches no clause. Bare `List.domain` names no element type
-and is refused for the same reason (WI-20260911-5G28A).
+**`<Sort>.domain` is superseded by `SortDomain[T].fill`** (proposal 060 §2.3,
+2026-11-02). It still answers — `List[T = Letter].domain` through the dictionary its
+bracket builds; bare `List.domain` is refused — but a domain wanted as a value is a
+typed rule cited by name (`rule colours(?x: Colour) :- true`, then
+`colours.takeN(5)`), which also reaches the domain of a type variable.
 
 **Any sort may write its own `domain`**, as a relation `domain(?x)` in the sort's
 body, and it then REPLACES the derivation for that sort — today's wrapper pattern

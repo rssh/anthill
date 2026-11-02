@@ -188,8 +188,13 @@ follows; its column is typed at the sort, so `Colour.domain.head.x` is a
 `Colour`. The three readers — mode (in), mode (out), the citation — read ONE set
 of clauses and cannot disagree.
 
-**SUPERSEDED by §2.3 (2026-09-25):** the paragraph below designed the parameterised value
-face as a hidden head slot; §2.3 carries the element's domain in a dictionary instead.
+**SUPERSEDED.** The equation above is the 2026-09-11 design: §2.3 (2026-09-25) retired
+`domain_member`, and `Colour.domain` is the relation `SortDomain[T = Colour].fill` runs. The
+paragraph below designed the parameterised value face as a hidden head slot; §2.3 carries the
+element's domain in a dictionary instead, and `List[T = Letter].domain` answers through it
+since WI-20260925-SHED7 step 1, so the load error the paragraph describes is gone. And the
+value face itself is superseded by `SortDomain[T].fill` (user, 2026-11-02; §2.3's decided
+item): a domain wanted as a value is a typed rule cited by name.
 
 **A PARAMETERIZED sort has the goal face and no value face yet.** `List` keeps
 its derived clause and every typed head that reads it; `List[T = Letter].domain`
@@ -245,7 +250,9 @@ a free element type and deadlocks against the delay above.
   carry it (a field is no obstacle — it is reached through its entity, not
   through this name). A parameterized sort's hand-written `domain` is refused for
   now; its head would have to bind the sort's type parameters from the caller's
-  type argument, which only the derivation does.
+  type argument, which only the derivation does. **Superseded (user, 2026-11-02):** a
+  sort that defines its own domain will provide `SortDomain`'s `fill` instead (§2.3's
+  decided item).
 - **A clause of a written `S.domain` is never generated FROM.** It gets §2's
   conformance goal and not the member goal, so the natural annotated spelling
   `rule domain(?x: S) :- …` does not re-enter itself through the forwarding
@@ -398,9 +405,24 @@ entities' cases, so `SortDomain[List.cons]` — a nested entity as a TYPE ARGUME
 (kernel-language §6.3 makes a nested entity a constructor of its sort, not a sort) — is notation for
 the derivation's parts, and nothing at run time needs it.
 
-**Open:**
-- `<Sort>.domain`, the value face a citation reads (WI-20260911-WT8WG) — the name it keeps for
-  `SortDomain`'s `fill` at that sort.
+**Open — both since decided:**
+- ~~`<Sort>.domain`, the value face a citation reads (WI-20260911-WT8WG) — the name it keeps for
+  `SortDomain`'s `fill` at that sort.~~ **DECIDED (user, 2026-11-02): `<Sort>.domain` is
+  SUPERSEDED by `SortDomain[T].fill` and keeps no name as a surface.** It names a SORT, so it
+  reaches only a type written at the citation; an abstract `T` — a caller's rigid `X`, a sort's
+  parameter — has no name to hang it on, and a value cannot stand in for one: a value carries no
+  type, and the one computed from it names only what its constructors name (`[]` is
+  `List[T = ?t]`). So the typed head is the surface, and a domain wanted as a value is a typed
+  rule cited by name (`rule colours(?x: Colour) :- true`, then `colours.takeN(5)`) — which also
+  reaches the domain of a type variable (`rule el(?x: T) :- true` in `sort Wrap[T]`, cited as
+  `Wrap[T = X].el` under `requires SortDomain[T = X]`). A sort that defines its own domain
+  provides `SortDomain`'s `fill` — `S provides SortDomain[T = S]` with `rule fill(?x) :- …`, the
+  form printed above for the derived case — in place of §2.2's `domain(?x)` written in its body.
+  The per-sort relation stays only as the internal target a `SortDomain` dictionary lands on.
+  A hand-written `Fillable` is untouched: it is not a `SortDomain`, and is for fills other than a
+  type's domain (067). Retiring the surface is WI-20260911-WT8WG
+  ([`060-implementation.md`](../design/060-implementation.md) §7.3, "`<Sort>.domain` is
+  superseded").
 - ~~A condition that cannot be resolved yet.~~ **DECIDED (user, 2026-09-25): a value whose type
   does not name its element is a `List[?]`, and a condition is resolved when `fill` READS it — a
   read WAITS while its type is unpinned.** `rule elNil(1) :- Wrap.el([])` calls `el(?x: T)` —
