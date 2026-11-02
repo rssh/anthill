@@ -13,6 +13,26 @@
 
 use super::*;
 
+/// The pass a default spliced at a call is synthesized by ([`splice_default`]), so a node
+/// of the copy says it is the default's text, which is judged where the default is
+/// declared ([`is_spliced_default`]).
+const SPLICED_DEFAULT_PASS: &str = "anthill.kb.passes.spliced_default";
+
+fn spliced_default_pass(kb: &mut KnowledgeBase) -> crate::kb::occurrence::PassId {
+    kb.register_pass(SPLICED_DEFAULT_PASS)
+}
+
+/// Is this node part of a default spliced at a call — its own text, or an argument the call
+/// gives a parameter it names? By PROVENANCE, read on a shared borrow as
+/// [`is_inferred_requirement_read`] reads its own pass.
+pub(crate) fn is_spliced_default(kb: &KnowledgeBase, node: &NodeOccurrence) -> bool {
+    node.synthesized_by().is_some_and(|by| {
+        kb.symbols
+            .lookup(SPLICED_DEFAULT_PASS)
+            .is_some_and(|s| crate::kb::occurrence::PassId::from_symbol(s) == by)
+    })
+}
+
 /// The defaults a call of an operation takes, by parameter position: the operation's own,
 /// or — the operation a provider's member — those of the spec operation it provides,
 /// which owns them (§3; user, 2026-10-24: `box(n: 10).scale()` takes `Scaler.scale`'s).
@@ -338,7 +358,7 @@ pub(super) fn complete_defaulted_arguments(
             .zip(&args[..i])
             .filter_map(|(p, a)| a.as_ref().map(|a| (*p, Rc::clone(a))))
             .collect();
-        let spliced = splice_default(&at_instance, &named, occ, pass);
+        let spliced = splice_default(&at_instance, &named, occ, spliced_default_pass(kb));
         // A rule body has no channel for a call's bracket yet (`CallTypeArgsNotSupportedHere`,
         // the refusal a written one gets there): its requirement weave reads the argument
         // values, not the typer's σ the bracket binds, so a default writing one would have it
@@ -505,6 +525,14 @@ fn splice_default(
                     match node.as_expr() {
                         Some(Expr::Ref(s) | Expr::Ident(s) | Expr::VarRef { name: s }) => {
                             if let Some(arg) = named.get(s) {
+                                work.push(Op::Visit(Rc::clone(arg), false));
+                                continue;
+                            }
+                        }
+                        // `?x` names the parameter `x` as `x` does (WI-20261020-VQPRP): left
+                        // in the copy, it was read where the call is, in the caller's frame.
+                        Some(Expr::Var(Var::Global(vid))) => {
+                            if let Some(arg) = named.get(&vid.name()) {
                                 work.push(Op::Visit(Rc::clone(arg), false));
                                 continue;
                             }

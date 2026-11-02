@@ -2367,3 +2367,5 @@ mod wi_4bxdw_dotted_operation_name_test;
 mod wi_g37hs_refinement_reads_clause_test;
 #[path = "include/wi_c580v_type_argument_through_requires_test.rs"]
 mod wi_c580v_type_argument_through_requires_test;
+#[path = "include/wi_vqprp_unbound_variable_read_test.rs"]
+mod wi_vqprp_unbound_variable_read_test;

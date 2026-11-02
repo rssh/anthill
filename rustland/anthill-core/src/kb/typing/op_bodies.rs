@@ -705,6 +705,22 @@ pub(super) fn check_operation_bodies(
                     ) {
                         errors.push(err);
                     }
+                    // A default is evaluated as a body is, in the parameters before it.
+                    errors.extend(unbacked_value_reads(kb, op.op_sym, &result.node, &result.env));
+                    let in_scope: Vec<Symbol> = op.params[..at].iter().map(|(n, _)| *n).collect();
+                    if let Some((var, span)) = unbound_value_variable(
+                        kb,
+                        &result.node,
+                        &in_scope,
+                        result.env.param_rigids(),
+                    ) {
+                        errors.push(TypeError::UnboundVariableRead {
+                            span: Some(span),
+                            var,
+                            owner: op.op_sym,
+                            param: Some(*param),
+                        });
+                    }
                     // At the operation's boundary, as its body's: what the default makes
                     // fresh is the parameter's value, which escapes only where the
                     // operation returns it.
@@ -776,6 +792,19 @@ pub(super) fn check_operation_bodies(
                         receiver_param: None,
                     });
                 }
+                // WI-20261020-VQPRP — a variable read as a value that nothing binds, on the
+                // stored tree for the same reason ([`unbound_value_variable`]).
+                let in_scope: Vec<Symbol> = op.params.iter().map(|(n, _)| *n).collect();
+                if let Some((var, span)) =
+                    unbound_value_variable(kb, &result.node, &in_scope, result.env.param_rigids())
+                {
+                    errors.push(TypeError::UnboundVariableRead {
+                        span: Some(span),
+                        var,
+                        owner: op.op_sym,
+                        param: None,
+                    });
+                }
                 // TWO PARAMETERS OF ONE CARRIER, A READ THAT NAMES NEITHER: refused, on the
                 // stored tree, once per body ([`contested_slot_read`]).
                 // Only a frame that holds a contested slot can have such a read.
@@ -834,44 +863,7 @@ pub(super) fn check_operation_bodies(
                 // dot backstop above: the repair is a single clause on the signature, so
                 // reporting every read of the same parameter would be one fix told many
                 // times.
-                let (reads, open_entry) =
-                    rigid_value_reads(
-                        kb,
-                        &result.node,
-                        result.env.enclosing_frame_chain(),
-                        result.env.param_rigids(),
-                    );
-                if !reads.is_empty() {
-                    let backed = type_value_backed_params(kb, op.op_sym);
-                    if let Some((_, param, span)) =
-                        reads.into_iter().find(|(vid, _, _)| !backed.contains(vid))
-                    {
-                        errors.push(TypeError::TypeValueReadUnbacked {
-                            span,
-                            param,
-                            op: op.op_sym,
-                        });
-                    }
-                }
-                // A structural type written as a bracket's entry is one type, read when
-                // the body is loaded: see [`OpenStructuralEntry`].
-                if let Some(OpenStructuralEntry { entry, name }) = open_entry {
-                    let written =
-                        crate::persistence::print::TermPrinter::new(kb).print_occurrence(&entry);
-                    errors.push(TypeError::Other {
-                        site: TypeError::here(),
-                        span: Some(entry.span.span),
-                        context: TypeErrorContext::OperationTypeParams { op_name: op.op_sym },
-                        expected: "a tuple type, an arrow type or an effect row that names no \
-                                   type parameter, no variable and no value, where it is \
-                                   written as a bracket's entry in a value position"
-                            .to_string(),
-                        actual: format!(
-                            "`{written}`, which names `{name}`: the entry is read as one type \
-                             when the body is loaded, and nothing gives `{name}` a type there"
-                        ),
-                    });
-                }
+                errors.extend(unbacked_value_reads(kb, op.op_sym, &result.node, &result.env));
                 let mut subst = Substitution::new();
                 // WI-341/342: both sides are carrier-agnostic `Value` — the
                 // subtype check takes them directly (`Value: TermView`), where a
@@ -1331,4 +1323,49 @@ pub(super) fn collect_covered_entities(
             *has_wildcard = true;
         }
     }
+}
+
+/// WI-20260919-N31XX (proposal 065, "The rule") — the refusals of a typed body or default's
+/// value reads of a rigid ([`rigid_value_reads`]): the first read no `requires TypeValue[T =
+/// B]` in scope backs, and the first structural bracket entry left open
+/// ([`OpenStructuralEntry`]). A default is held to them as the body is (WI-20261020-VQPRP):
+/// both are evaluated in the operation's frame.
+fn unbacked_value_reads(
+    kb: &mut KnowledgeBase,
+    op_sym: Symbol,
+    node: &Rc<NodeOccurrence>,
+    env: &TypingEnv,
+) -> Vec<TypeError> {
+    let mut out = Vec::new();
+    let (reads, open_entry) =
+        rigid_value_reads(kb, node, env.enclosing_frame_chain(), env.param_rigids());
+    if !reads.is_empty() {
+        let backed = type_value_backed_params(kb, op_sym);
+        if let Some((_, param, span)) = reads.into_iter().find(|(vid, _, _)| !backed.contains(vid)) {
+            out.push(TypeError::TypeValueReadUnbacked {
+                span,
+                param,
+                op: op_sym,
+            });
+        }
+    }
+    // A structural type written as a bracket's entry is one type, read when the body is
+    // loaded: see [`OpenStructuralEntry`].
+    if let Some(OpenStructuralEntry { entry, name }) = open_entry {
+        let written = crate::persistence::print::TermPrinter::new(kb).print_occurrence(&entry);
+        out.push(TypeError::Other {
+            site: TypeError::here(),
+            span: Some(entry.span.span),
+            context: TypeErrorContext::OperationTypeParams { op_name: op_sym },
+            expected: "a tuple type, an arrow type or an effect row that names no \
+                       type parameter, no variable and no value, where it is \
+                       written as a bracket's entry in a value position"
+                .to_string(),
+            actual: format!(
+                "`{written}`, which names `{name}`: the entry is read as one type \
+                 when the body is loaded, and nothing gives `{name}` a type there"
+            ),
+        });
+    }
+    out
 }

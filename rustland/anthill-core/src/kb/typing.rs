@@ -38,9 +38,9 @@ use smallvec::SmallVec;
 use super::discrim::SubstTree;
 use super::load::LoadError;
 use super::node_occurrence::{
-    for_each_child, for_each_pattern_child, materialize_from_handle, pattern_annotation_value,
-    value_to_pattern_annotation, value_to_term, with_pattern_annotation, EffectExprNode, Expr,
-    MatchBranch, NodeKind, NodeOccurrence, Pattern, TypeChild, TypeNode,
+    for_each_child, for_each_pattern_binder, for_each_pattern_child, materialize_from_handle,
+    pattern_annotation_value, value_to_pattern_annotation, value_to_term, with_pattern_annotation,
+    EffectExprNode, Expr, MatchBranch, NodeKind, NodeOccurrence, Pattern, TypeChild, TypeNode,
 };
 use super::persist_subst::BindValue;
 use super::resolve::PositionalPlan;

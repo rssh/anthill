@@ -1011,6 +1011,21 @@ the surrounding declaration/body delimiter ends the last arm.  A guard after
 `|` is checked only for that arm.  Patterns bind lexically in their arm or
 continuation; a repeated source name at a later binder is a distinct binding.
 
+**A variable read as a value is the binder of its name, and one nothing binds is
+refused at load.**  In an operation body, a parameter's default and a const's value,
+`?x` reads what `x` reads: the parameter, or the `let`, `lambda` or `match` binder,
+named `x` in scope (a default sees the parameters before it, a const nothing).  An
+anonymous `?`, and a `?y` that no binder names, would have no value when the body
+runs, so the operation or const is refused, naming the variable.  A `?` that is not
+read as a value is untouched: a type position (a call's or a dot's bracket, an
+annotation, a pattern), a type value's argument, which is a slot left open (§8.1,
+`Boom[Reason = ?]`), a call argument a `@[simp]` rewrite discards (`ite(true, 4, ?)`),
+and an in-body proof's `conclude` proposition (§5.10).  The judgment is made on the
+body as it runs, after its rewrites.  A parameter the signature writes inline is read
+through its `TypeValue` slot (§5.4), and a type parameter is read by its name — `T`,
+not `?T`.  (WI-20261020-VQPRP — before it each such read loaded clean and died
+`unknown operation: _` where the body ran.)
+
 **A guard runs, and a false one falls through to the next arm.** An arm is taken
 when its pattern matches *and* its guard holds; the guard is evaluated after the
 pattern matches and before the body is entered, under the arm's own pattern

@@ -1052,7 +1052,7 @@ fn static_bool(occ: &Rc<NodeOccurrence>) -> Option<bool> {
 /// not substitute a parameter into an occurrence of that arm's own binder.
 fn shadow(env: &Env, pattern: &Rc<NodeOccurrence>) -> Env {
     let mut bound = Vec::new();
-    collect_bound_names(pattern, &mut bound);
+    super::node_occurrence::for_each_pattern_binder(pattern, |s| bound.push(s));
     if bound.is_empty() {
         return env.clone();
     }
@@ -1060,34 +1060,6 @@ fn shadow(env: &Env, pattern: &Rc<NodeOccurrence>) -> Env {
         .filter(|(s, _)| !bound.contains(s))
         .cloned()
         .collect()
-}
-
-fn collect_bound_names(pattern: &Rc<NodeOccurrence>, out: &mut Vec<Symbol>) {
-    let Some(pat) = pattern.as_pattern() else {
-        return;
-    };
-    match pat {
-        Pattern::Var { name, .. } => out.push(*name),
-        Pattern::Wildcard | Pattern::Literal { .. } => {}
-        Pattern::Constructor {
-            pos_args,
-            named_args,
-            ..
-        } => {
-            for p in pos_args {
-                collect_bound_names(p, out);
-            }
-            for (_, p) in named_args {
-                collect_bound_names(p, out);
-            }
-        }
-        // WI-803: `labels` names components, not binders — nothing to collect.
-        Pattern::Tuple { positional, .. } => {
-            for p in positional {
-                collect_bound_names(p, out);
-            }
-        }
-    }
 }
 
 fn reduce_vec(
