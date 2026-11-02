@@ -2383,3 +2383,5 @@ mod wi_g37hs_refinement_reads_clause_test;
 mod wi_c580v_type_argument_through_requires_test;
 #[path = "include/wi_vqprp_unbound_variable_read_test.rs"]
 mod wi_vqprp_unbound_variable_read_test;
+#[path = "include/wi_4xxsd_fold_host_arg_value_test.rs"]
+mod wi_4xxsd_fold_host_arg_value_test;

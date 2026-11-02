@@ -5578,27 +5578,50 @@ impl SearchStream {
 /// interned param Symbol (`vid.name()`), the by-symbol fold. Vars not naming a
 /// param are left unbound (`substitute_occurrence` keeps them as var leaves).
 ///
-/// This is NOT scope-aware: a `let`/`lambda`/`match` binder that SHADOWS a param
-/// name would be wrongly bound here. That is currently harmless because any body
-/// introducing such a binder is an `Expr::Let`/`Lambda`/`Match` node, which does
-/// not reduce to a value (COMPLEX) and so the folded result is discarded — no
-/// wrong value escapes. If foldability is ever extended to bodies with binders,
-/// this walk must become scope-aware (stop descending past a shadowing binder).
+/// `false` when the body names a parameter in a way `fold` cannot bind — a reference
+/// (the bare spelling `n` is an `Expr::VarRef`; only `?n` is a variable) or the callee
+/// of an application (`f(3)` through a function-typed `f`), the kinds
+/// [`node_occurrence::for_each_named_reference`] lists. The folded body would hold the
+/// parameter's name where its argument belongs, and a host function inside it reads
+/// whatever the fold hands it: `viaTerm(n: Int64) -> String = term_to_string(as_term(n))`
+/// answered "n" for `viaTerm(1)`, and `app(f: (n: Int64) -> Int64) -> String =
+/// term_to_string(as_term(f(3)))` answered "f(3)". The caller does not fold such a body.
+///
+/// A `let` / lambda / match binder is named by a symbol of its own (WI-550), so a
+/// reference naming a parameter's symbol is the parameter, and a binder never shadows
+/// one here.
 fn collect_param_var_bindings(
     kb: &KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
     param_args: &HashMap<Symbol, Value>,
     fold: &mut Substitution,
-) {
-    let Some(expr) = occ.as_expr() else { return };
-    if let Expr::Var(Var::Global(vid)) = expr {
-        if let Some(arg) = param_args.get(&vid.name()) {
-            fold.bind_value(kb, *vid, arg.clone());
+) -> bool {
+    let Some(expr) = occ.as_expr() else {
+        return true;
+    };
+    match expr {
+        Expr::Var(Var::Global(vid)) => {
+            if let Some(arg) = param_args.get(&vid.name()) {
+                fold.bind_value(kb, *vid, arg.clone());
+            }
         }
+        Expr::VarRef { name } | Expr::Ref(name) | Expr::Ident(name)
+            if param_args.contains_key(name) =>
+        {
+            return false;
+        }
+        Expr::Apply { functor, .. } | Expr::ApplyWithin { functor, .. }
+            if param_args.contains_key(functor) =>
+        {
+            return false;
+        }
+        _ => {}
     }
+    let mut bound = true;
     node_occurrence::for_each_child(expr, |c| {
-        collect_param_var_bindings(kb, c, param_args, fold)
+        bound &= collect_param_var_bindings(kb, c, param_args, fold)
     });
+    bound
 }
 
 // ── SLD Resolution ──────────────────────────────────────────────
@@ -12238,12 +12261,12 @@ impl KnowledgeBase {
         let mut param_args: HashMap<Symbol, Value> = HashMap::new();
         // WI-880 — REDUCE each argument for a HOST callee, do not merely σ-walk it.
         //
-        // A σ-walk lowers a nested op-call to a `Value` that still IS the call, and for
-        // most callees that is harmless: the bridge's deep-ground check declines and the
-        // whole call comes back un-reduced, so the goal SUSPENDS (VPEWK's documented
-        // remainder). It is NOT harmless when the parameter is declared `Term`, because
-        // an un-reduced call is a perfectly good term — the ground check PASSES, the host
-        // function RUNS on the call itself, and it commits to a wrong value.
+        // A σ-walk lowers a nested op-call to a `Value` that still IS the call, which the
+        // bridge refuses (its value gate), so the call would come back un-reduced where
+        // reducing the argument here answers. Before that gate the ground check PASSED
+        // such an argument — a call over ground arguments is ground — and a host function
+        // declaring a `Term` parameter RAN on the call itself and committed to a wrong
+        // value.
         //
         // MEASURED, and it is why this is scoped to the host arm rather than filed:
         // migrating the reflection surface to `operation_map` (this ticket) turned
@@ -12330,21 +12353,17 @@ impl KnowledgeBase {
             .map(WovenDispatch::Stamped);
         let woven = woven.or(stamped.as_ref());
         if needs_dict {
-            // NOT WITH AN ARGUMENT THAT IS STILL A CALL. The bridge takes values, and a call
-            // left standing is a ground term the body would run on, as WI-880's host arm
-            // records for its own route. Declined, the call stays a call: inside a folded
-            // body it rides the enclosing operation's single depth-0 bridge, which evaluates
-            // its arguments, as every nested call does; as a goal's own operand it delays
-            // (`is_unreduced_op_call`). MEASURED (WI-20261016-5CDN5): `keep(Error.reify(lambda
+            // Not with an argument that still holds a call: the bridge refuses one
+            // (`bridge_op_to_eval`), and the call stays a call — inside a folded body it
+            // rides the enclosing operation's single depth-0 bridge, which evaluates its
+            // arguments, as every nested call does; as a goal's own operand it delays.
+            // MEASURED (WI-20261016-5CDN5), when nothing refused it: `keep(Error.reify(lambda
             // () -> loadBad()))` in a body a rule folds, `keep[P]` declaring `requires
             // TypeValue[T = P]`, ran `keep` on the term `reify(lambda …)` and faulted
             // `match_failed`; `Result.reflect`, which declares that clause since proposal 071
             // stage (d), did the same.
-            if param_args.values().any(|a| self.is_unreduced_op_call(a)) {
-                return v;
-            }
             return self
-                .bridge_op_to_eval(op, &params, &param_args, subst, woven, faults)
+                .bridge_op_to_eval(op, &params, &param_args, subst, depth, woven, faults)
                 .unwrap_or(v);
         }
         // WI-1057 — a BODY-LESS spec op: there is no body to fold, so the eval
@@ -12358,7 +12377,7 @@ impl KnowledgeBase {
         // the call term and calling that a definite answer.
         let Some(body) = body else {
             return self
-                .bridge_op_to_eval(op, &params, &param_args, subst, woven, faults)
+                .bridge_op_to_eval(op, &params, &param_args, subst, depth, woven, faults)
                 .unwrap_or(v);
         };
         // Build the fold substitution: every op-body var named after a param maps
@@ -12366,7 +12385,16 @@ impl KnowledgeBase {
         // sharing the param Symbol), so bind every such VarId by Symbol — the
         // by-symbol fold (no string name-matching, no occurrence→term lowering).
         let mut fold = Substitution::new();
-        collect_param_var_bindings(self, &body, &param_args, &mut fold);
+        if !collect_param_var_bindings(self, &body, &param_args, &mut fold) {
+            // A body that reads a parameter by its name is run, not folded: at the top by
+            // the bridge, as a COMPLEX body is below; nested, by its enclosing operation's.
+            return if depth == 0 {
+                self.bridge_op_to_eval(op, &params, &param_args, subst, depth, woven, faults)
+                    .unwrap_or(v)
+            } else {
+                v
+            };
+        }
         let folded = node_occurrence::substitute_occurrence(self, &body, &fold);
         // Reduce the folded body via field-access reduction; recurse for a nested
         // op-call. A value (Term/scalar) ⇒ FOLDABLE; a residual `Node` (arith /
@@ -12389,7 +12417,7 @@ impl KnowledgeBase {
             // once per level. A complex body nested inside another op therefore
             // rides its enclosing op's single top-level bridge.
             Value::Node(_) if depth == 0 => self
-                .bridge_op_to_eval(op, &params, &param_args, subst, woven, faults)
+                .bridge_op_to_eval(op, &params, &param_args, subst, depth, woven, faults)
                 .unwrap_or(v),
             other => other,
         }
@@ -12638,6 +12666,15 @@ impl KnowledgeBase {
     /// (delay) instead of a native stack overflow.
     ///
     /// Soundness gates:
+    /// - **a value** — an arg that still holds a written call anywhere in it
+    ///   ([`Self::value_holds_call`], the evaluator's own reading) returns `None`. This
+    ///   is a different question from the next gate: a call over ground arguments IS
+    ///   ground, and a host function declaring a `Term` parameter would run on the call
+    ///   and read it as data. A rule body's own call never reaches here so — at `depth`
+    ///   0 the evaluator has handed `reduce_op_value` evaluated arguments, which only a
+    ///   debug build checks, as an assertion. The operation-body fold does, below the
+    ///   top — `viaAdd1() -> String = term_to_string(as_term(Int64.add(1, 2)))` printed
+    ///   "add(1, 2)" — and declined, its operation is run whole by the depth-0 bridge.
     /// - **ground** — each arg is reified under σ (the interpreter has no σ) and
     ///   must be deeply ground; `=`/`cmp` are tests that must not bind, so a
     ///   non-ground operand returns `None` (the resolver delays), never runs.
@@ -12694,6 +12731,8 @@ impl KnowledgeBase {
         params: &[Symbol],
         param_args: &HashMap<Symbol, Value>,
         subst: &Substitution,
+        // `reduce_op_value`'s fold depth: above 0 the arguments are the fold's.
+        depth: usize,
         // WI-20260909-NAR1X — the woven call's dictionary, handed to the bridged
         // interpreter EXPLICITLY. The design (`op-to-rule-requirement-channel.md` §5.2)
         // rules out the ambient alternative in as many words: a thread-local would make
@@ -12718,6 +12757,16 @@ impl KnowledgeBase {
         let mut unknowns: Vec<VarId> = Vec::new();
         for p in params {
             let a = self.reify_value(param_args.get(p)?, subst);
+            // The first gate above: a value, not a call that did not run.
+            if (depth > 0 || cfg!(debug_assertions)) && self.value_holds_call(&a) {
+                debug_assert!(
+                    depth > 0,
+                    "bridge_op_to_eval: an argument of `{}` the evaluator handed over still \
+                     holds a call",
+                    self.qualified_name_of(op),
+                );
+                return None;
+            }
             if !self.value_deep_ground(&a, subst) {
                 // Only the rule's flexible variables are unknowns a later binding answers. A
                 // RIGID one — a proof's eigenvariable — is bound by nothing, and a call over it
