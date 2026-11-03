@@ -646,16 +646,22 @@ pub(super) fn bind_and_label_pattern(
             // discharge belongs here, where it is read, rather than in what is kept. The
             // env is the same `Symbol -> type` resolver the let site used.
             //
-            // An undischargeable projection keeps the RAW annotation, and the reason is not
-            // "the let site already raised on it" — that covers `Expr::Let` only, while this
-            // function also serves LAMBDA and MATCH-BRANCH binders, which have no such site.
-            // The reason is that this call only COMPARES: it feeds
-            // `binder_annotation_conflict`, whose job is to report a contradiction the
-            // author wrote, and refusing here would report the ELIMINATION's failure under
-            // the binder-annotation context — a worse message for a different defect.
-            // Whoever owns a binder-annotation projection that cannot be discharged (no
-            // caller does today — the lambda paths thread a context type instead) should
-            // raise it where the projection is FORMED, not here.
+            // It is read as the `let` site and the lambda arm read theirs
+            // ([`read_written_annotation`]), so where one of them threads its reading in as
+            // the context — a `let`'s annotation holding a rigid, which is not written back,
+            // and a lambda's one parameter — the two are one type. One difference, as before
+            // SG16K: they read at the expression, this at the annotation, which carries no
+            // rewrite's origin — so in a lambda a `@[simp]` rule's right-hand side wrote, a
+            // denoting name's `internal` member is asked from the calling body's scope here
+            // and from the rule's there (not driven).
+            //
+            // A projection that does not read is REFUSED here, and the raw annotation is the
+            // binder's type, so the rest of the pattern still binds. Where the `let` site or
+            // the lambda arm read the same annotation, they refused it first and this is never
+            // reached; what reaches it is a binder of its own — one of several a lambda's
+            // parameter list or a `let`'s tuple names, a `match` arm's — which no other site
+            // reads. It was kept raw in silence (WI-20261103-SG16K's review: `lambda (s:
+            // List[T = x.Nope], b: Int64)` loaded).
             let ann_ty: Option<(&Rc<NodeOccurrence>, Value)> = type_ann.and_then(|ann| {
                 let v = pattern_annotation_value(kb, ann)?;
                 // WI-20261001-89WZR: and to the body's PARAMETERS, as the `let` site reads
@@ -663,22 +669,14 @@ pub(super) fn bind_and_label_pattern(
                 // parameter in scope can be compared with the context at all (below).
                 let v = written_type_at_body_rigids(kb, env, &v);
                 let v = if value_contains_projection(kb, &v) {
-                    let ctx = TypeErrorContext::LetBinding { var: *name };
-                    // A projection off a name that denotes a sort first, as the `let` site
-                    // reads it.
-                    let scope = written_scope(kb, env, ann);
-                    let v = read_denoted_projections(kb, env, scope, &v, &ctx, Some(ann.span.span))
-                        .unwrap_or(v);
-                    eliminate_type_projections(
-                        kb,
-                        &v,
-                        &env.var_bindings,
-                        Receivers::Own(Some(env)),
-                        None,
-                        &ctx,
-                        Some(ann.span.span),
-                    )
-                    .unwrap_or(v)
+                    let ctx = TypeErrorContext::BinderAnnotation { binder: *name };
+                    match read_written_annotation(kb, env, &v, &ctx, ann) {
+                        Ok(read) => read,
+                        Err(e) => {
+                            errors.push(e);
+                            v
+                        }
+                    }
                 } else {
                     v
                 };

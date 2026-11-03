@@ -3,9 +3,9 @@
 - id: WI-20261103-SG16K-a-typed-lambda-binder-whose
 - created: 2026-11-03T05:08:35Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-11-03T05:08:35Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-11-03T10:17:05Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
