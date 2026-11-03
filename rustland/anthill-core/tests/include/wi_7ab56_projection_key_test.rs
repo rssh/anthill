@@ -14,10 +14,9 @@
 //! one declares — is refused as not judged (`LoadError::KeyEqNotJudged`), never passed.
 //!
 //! Positions: a parameter, the return, the operation's own `requires`, a body `let`
-//! annotation and a typed lambda binder. The lambda binder is driven at an OPEN member and at
-//! `Float` only: at `x: Leaf[E = Int64]` the typer refuses the binder's annotation on its own
-//! ("expected Set[T = x.E], got Set[T = Int64]" — `List[T = x.E]` too, no key involved;
-//! WI-20261103-SG16K).
+//! annotation and a typed lambda binder. (The lambda binder at `x: Leaf[E = Int64]` loads since
+//! WI-20261103-SG16K; before it the typer refused the binder's annotation on its own, "expected
+//! Set[T = x.E], got Set[T = Int64]", no key involved.)
 //!
 //! NOT JUDGED, by the check's documented non-scope: an unlawful part beside an abstract one
 //! (`Set[T = (a: x.E, b: y.E)]`, `x.E` read to `Float` and `y.E` open, loads, as the
@@ -185,7 +184,7 @@ fn an_open_projection_key_loads_and_its_operation_runs() {
 }
 
 /// The key is the member the receiver's declared type fixes: refused at `Float`, loaded at
-/// `Int64`, at every position (the lambda binder at `Float` only, see the header).
+/// `Int64`, at every position.
 #[test]
 fn a_projection_key_is_judged_at_its_receivers_declared_type() {
     for position in POSITIONS {
@@ -195,9 +194,6 @@ fn a_projection_key_is_judged_at_its_receivers_declared_type() {
         );
         let why = format!("`Set[T = x.E]` over `x: Leaf[E = Float]` at the {position}");
         assert_unlawful(&src, "Set", "T", "anthill.prelude.Float", &why);
-        if position == "lambda" {
-            continue;
-        }
         let src = program(
             &format!("wi_7ab56.int.{position}"),
             &at(position, "Leaf[E = Int64]"),

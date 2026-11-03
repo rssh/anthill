@@ -1196,6 +1196,34 @@ pub(super) fn read_denoted_projections(
     .eliminate(kb, ty)
 }
 
+/// `ty`, an annotation written in a body, with each projection read where it is written: off a
+/// name that denotes a sort as that sort's member ([`read_denoted_projections`], in the scope
+/// `at`'s text is written in — [`written_scope`]), a let-aliased receiver as the path it names
+/// ([`canonicalize_projection_receivers`]), and every other one off its receiver's type in
+/// scope. A projection that does not read is the refusal, reported at `at`. `at` is the
+/// expression that writes the annotation where there is one — a `let`, a lambda: a pattern's
+/// annotation carries no rewrite's origin of its own ([`NodeOccurrence::rewritten_by`]).
+///
+/// THE BODY'S ONE READING of a written annotation: a `let`'s, a lambda's parameter and a pattern
+/// binder's go through it, so the type a lambda threads into its parameter's pattern is the type
+/// the binder check reads off the same annotation. WI-20261103-SG16K: the lambda's read the
+/// denoted names alone, and under `x: Leaf[E = Int64]` compared its `List[T = x.E]` with the
+/// binder's `List[T = Int64]` and refused. A sibling call reads its callee's signature further
+/// (`this_instance_member`); an annotation does not (WI-20261103-95S43).
+pub(super) fn read_written_annotation(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    ty: &Value,
+    ctx: &TypeErrorContext,
+    at: &NodeOccurrence,
+) -> Result<Value, TypeError> {
+    let span = Some(at.span.span);
+    let scope = written_scope(kb, env, at);
+    let ty = read_denoted_projections(kb, env, scope, ty, ctx, span)?;
+    let ty = canonicalize_projection_receivers(kb, env.receiver_aliases(), &ty, at.span);
+    Discharge::new(&env.var_bindings, Receivers::Own(Some(env)), ctx, span).eliminate(kb, &ty)
+}
+
 /// WI-20261003-P1PVT — WHOSE NAMES a projection's receivers are, which decides what names the
 /// open slots of a field path ([`field_type_at_path`]). Each discharge says, because the two
 /// differ exactly where a path's head is re-keyed to nothing: in a body that head is the body's

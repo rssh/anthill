@@ -94,8 +94,8 @@ pub(super) fn visit_type(
             // NOT concretely known in scope (a bare / abstract receiver, a missing
             // member) is a LOUD error here — never silently leaked to `unify_types`
             // (which now refuses an un-eliminated projection head, the WI-399 safety
-            // net). The env's `var_bindings` is exactly the `Symbol -> type` resolver
-            // `eliminate_type_projections` needs (the analog of `param_to_arg_type`).
+            // net). [`read_written_annotation`] reads the receivers off the env's
+            // `var_bindings`, the `Symbol -> type` resolver (the analog of `param_to_arg_type`).
             // WI-819: the elimination below REWRITES the annotation, and the
             // pattern is now where the binder reads it from — so the rewritten
             // type is written BACK onto the pattern (`pattern` is rebound). Left
@@ -107,39 +107,13 @@ pub(super) fn visit_type(
                 Some(ann) if value_contains_projection(kb, &ann) => {
                     let var = extract_pattern_var_name(&pattern).unwrap_or_else(|| kb.intern("_"));
                     let ctx = TypeErrorContext::LetBinding { var };
-                    // A projection off a name that denotes a sort is that sort's member:
-                    // `dd.T` under `let dd = D` is `D.T`, where the receiver's type, `Type`,
-                    // has no member `T`.
-                    let scope = written_scope(kb, &env, &occ);
-                    let ann = match read_denoted_projections(kb, &env, scope, &ann, &ctx, occ_span) {
-                        Ok(ann) => ann,
-                        Err(e) => {
-                            results.push(Err(e));
-                            return;
-                        }
-                    };
-                    // WI-400 increment C (eager let-alias): canonicalize the annotation's
-                    // projection receiver through the env's let-aliases BEFORE elimination,
-                    // so `let y = z; let k: y.M` resolves `y.M` against the SAME receiver as
-                    // `z.M` (`let y = z ⟹ y.M ≡ z.M`). A no-op when no alias applies.
-                    let ann = canonicalize_projection_receivers(
-                        kb,
-                        env.receiver_aliases(),
-                        &ann,
-                        occ.span,
-                    );
-                    // WI-459: a let-annotation is a BODY-site projection — the receiver is
-                    // the in-scope value itself, there is no call argument to re-key to
-                    // (`None`).
-                    match eliminate_type_projections(
-                        kb,
-                        &ann,
-                        &env.var_bindings,
-                        Receivers::Own(Some(&env)),
-                        None,
-                        &ctx,
-                        occ_span,
-                    ) {
+                    // A projection off a name that denotes a sort is that sort's member
+                    // (`dd.T` under `let dd = D` is `D.T`, where the receiver's type, `Type`,
+                    // has no member `T`); a let-aliased receiver is the path it names (WI-400
+                    // increment C: `let y = z; let k: y.M` reads `y.M` as `z.M`). WI-459: a
+                    // let-annotation is a BODY-site projection — the receiver is the in-scope
+                    // value itself, there is no call argument to re-key to.
+                    match read_written_annotation(kb, &env, &ann, &ctx, &occ) {
                         Ok(elim) => {
                             // WI-1059: the rewrite lands in the STORED tree (`LetFinal`
                             // reassembles the `Let` from its children so a rewrite in any
@@ -263,15 +237,18 @@ pub(super) fn visit_type(
                 let written = pattern_annotation_value(kb, ann_occ)?;
                 Some(written_type_at_body_rigids(kb, &env, &written))
             });
-            // A projection off a name that denotes a sort is that sort's member, as in a
-            // `let`'s annotation; every other projection stays the path type it is written.
+            // Each projection read where it is written ([`read_written_annotation`]) — the
+            // reading `bind_and_label_pattern` makes of this same annotation before comparing it
+            // with `param_type`, so at arity 1 the two are one type. WI-20261103-SG16K: this arm
+            // read only the projections off a name that denotes a sort, so `lambda (s: List[T =
+            // x.E])` under `x: Leaf[E = Int64]` was compared as `List[T = x.E]` with the binder's
+            // own `List[T = Int64]` and refused.
             let ann_type = match ann_type {
                 Some(ann) if value_contains_projection(kb, &ann) => {
                     let binder =
                         extract_pattern_var_name(&param).unwrap_or_else(|| kb.intern("_"));
                     let ctx = TypeErrorContext::BinderAnnotation { binder };
-                    let scope = written_scope(kb, &env, &occ);
-                    match read_denoted_projections(kb, &env, scope, &ann, &ctx, Some(occ.span.span)) {
+                    match read_written_annotation(kb, &env, &ann, &ctx, &occ) {
                         Ok(ann) => Some(ann),
                         Err(e) => {
                             results.push(Err(e));
