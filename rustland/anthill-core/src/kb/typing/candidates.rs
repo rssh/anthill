@@ -386,28 +386,40 @@ pub(super) fn bind_params_the_provisions_say(
 }
 
 /// Bind each parameter of `requirement`'s spec a call's `subst` leaves open to the type the
-/// requirement that answers the call writes for it, where that is ground: under `requires
-/// Pc[C = C, Element = Bit]`, `Pc.both()` is at `Element = Bit`, and so are its own `requires
-/// Unit[T = Element]` and its result. A parameter bound to one of the caller's rigid
-/// parameters (`rigids`) is not open. `false` where nothing was bound.
+/// requirement that answers the call writes for it, read at the body's rigids where it names
+/// a parameter in scope: under `requires Pc[C = C, Element = Bit]`, `Pc.both()` is at
+/// `Element = Bit`, and under `requires Pc[C = C, Element = E]` at the caller's `E`; so are
+/// its own `requires Unit[T = Element]` and its result. A parameter bound to one of the
+/// caller's own parameters is not open. `false` where nothing was bound.
 pub(super) fn bind_params_the_requirement_says(
     kb: &mut KnowledgeBase,
+    env: &TypingEnv,
     subst: &mut Substitution,
     requirement: &SortGoal,
-    rigids: &[(VarId, TermId)],
 ) -> bool {
+    let rigids = env.param_rigids();
     let mut bound = false;
     for (param, vid) in spec_param_vars(kb, requirement.spec_sort) {
-        let Some(said) = goal_binding_value(kb, requirement, param)
-            .filter(|v| type_is_ground(kb, v) && !type_mentions_type_var(kb, *v))
-            .cloned()
-        else {
+        let Some(written) = goal_binding_value(kb, requirement, param).cloned() else {
             continue;
         };
+        // Each name of a parameter in scope, at any depth, is the body's rigid for it.
+        let said = rewrite_type_leaves(kb, &written, &|kb, leaf| {
+            let var = match leaf.head(kb) {
+                ViewHead::Var(Var::Global(var)) => var,
+                _ => type_param_global_var(kb, ref_or_nullary_name_view(kb, leaf)?)?,
+            };
+            let (_, rigid) = rigids.iter().find(|(param, _)| *param == var)?;
+            Some(Value::term(*rigid))
+        })
+        .unwrap_or(written);
+        if !type_is_determined(kb, &said) || type_mentions_type_var(kb, &said) {
+            continue;
+        }
         let open = match spec_param_binding(kb, subst, vid) {
             None => vid,
             Some(bound) => match kb.value_global_var(&bound) {
-                Some(var) if !rigids.iter().any(|(rigid, _)| *rigid == var) => var,
+                Some(var) if !rigids.iter().any(|(param, _)| *param == var) => var,
                 _ => continue,
             },
         };

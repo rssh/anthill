@@ -758,7 +758,7 @@ impl Interpreter {
         );
         let mut requirements = requirements;
         if let Some(args) = args {
-            self.fill_missing_op_scoped_slots(op, &args, &mut requirements)?;
+            self.fill_missing_op_scoped_slots(op, &args, &mut requirements, None)?;
         }
         let name = crate::kb::typing::op_dict_entries(&mut self.kb, op).name_at(&mut self.kb, slot);
         let Some(evidence) =

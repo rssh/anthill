@@ -1134,7 +1134,12 @@ impl Interpreter {
                     }
                 }
             }
-            self.fill_missing_op_scoped_slots(sym, args, &mut requirements)?;
+            self.fill_missing_op_scoped_slots(
+                sym,
+                args,
+                &mut requirements,
+                Some(dict.impl_sort()),
+            )?;
             return self.invoke_op_with_requirements(sym, args, requirements);
         }
         // WI-20260925-P7VP4 — the calling clause's conditions stand in for their slots
@@ -1148,6 +1153,7 @@ impl Interpreter {
                 args,
                 crate::kb::typing::NamedSlotTies::Raise,
                 supplied_slots,
+                None,
             ) {
                 BridgeRequirements::NoneNeeded => smallvec::SmallVec::new(),
                 BridgeRequirements::Unresolvable { detail } => {

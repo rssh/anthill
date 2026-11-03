@@ -2800,12 +2800,7 @@ pub(super) fn check_apply_iter(
                         .rule_domain()
                         .and_then(|domain| the_one_requirement_of(kb, domain, spec_sort))
                     {
-                        if bind_params_the_requirement_says(
-                            kb,
-                            &mut subst,
-                            &requirement,
-                            env.param_rigids(),
-                        ) {
+                        if bind_params_the_requirement_says(kb, env, &mut subst, &requirement) {
                             resolved_ret = result_type(kb, &subst, &proj_return_type);
                         }
                     }
@@ -3464,9 +3459,9 @@ pub(super) fn check_apply_iter(
                             if let Some(requirement) = goal_from_requires_entry(kb, resolved_spec) {
                                 if bind_params_the_requirement_says(
                                     kb,
+                                    env,
                                     &mut subst,
                                     &requirement,
-                                    env.param_rigids(),
                                 ) {
                                     resolved_ret = result_type(kb, &subst, &proj_return_type);
                                 }

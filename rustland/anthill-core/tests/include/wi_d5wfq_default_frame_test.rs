@@ -24,6 +24,18 @@
 //!    `Unit[T = Bit]` and is stamped; the woven route carries the stamps to the default it
 //!    enters (`WovenDispatch::Dispatched.stamps`).
 //!
+//! 3. The same, where the requirement writes `Element` as the caller's own parameter (`sort
+//!    GSat[C, E] requires Pc2[C = C, Element = E]`, `viaG[X, Y]() requires Pc2[C = X, Element
+//!    = Y]`), measured on c0444525: in an operation body the call died `__req_unit not bound`
+//!    whether or not the caller declared `requires Unit[T = E]`, and its rule twin floundered
+//!    at `find_dictionary(Pc2, …)`. Now the parameter is read at the body's rigid for it
+//!    (`bind_params_the_requirement_says`, at any depth), so the call's own requirement is
+//!    `Unit[T = E]`, forwarded from the caller or refused naming the clause to add (§5.2). In
+//!    a rule, the citation's bracket writes `E`, which no column mentions: it reaches the
+//!    route of the clause's read of `Pc2` (`bracket_params_no_column_reads`), and the default
+//!    entered through that dictionary reads `Element` off its provider's provision
+//!    (`resolve_bridge_requirements_through`).
+//!
 //! ## Back-out
 //!
 //! Measured 2026-11-03 in one build, a temporary switch each:
@@ -41,9 +53,20 @@
 //! - the deferral's binding out: the operation-body rows of
 //!   `the_default_is_read_at_the_requirement_answering_it` (`opSat`, `opRev`, `opNum`,
 //!   `opReq`) die `__req_unit not bound`;
-//! - the rule sort's binding out, and the woven route's stamps out: its rule rows panic
-//!   `__req_unit not bound` (the first, `woven`, ends the test).
-//!
+//! - the rule sort's binding out, and the woven route's stamps out:
+//!   `a_parametric_provision_takes_the_call_sites_evidence` panics `__req_unit not bound`.
+//!   The rule rows of `the_default_is_read_at_the_requirement_answering_it` answer either way
+//!   since the provision read below: `Bag`'s provision says `Element = Bit` too;
+//! - the rigid reading out (the requirement's binding taken where ground, as before):
+//!   `the_default_is_read_at_the_callers_parameter` dies `__req_unit not bound`, and
+//!   `a_call_owing_evidence_at_the_callers_parameter_is_refused` loads clean — with one
+//!   provider of `Unit` that program answered, through the bridge's derivation;
+//! - the bracket's unopened parameters out of the citation's route: the rows of
+//!   `a_rule_reads_the_parameter_its_citation_writes` cited from outside the sort flounder at
+//!   `find_dictionary(Pc2, …)` (`ruleInner` answers either way, its citation reads the
+//!   enclosing instance);
+//! - the provision read out: every row of `a_rule_reads_the_parameter_its_citation_writes`
+//!   panics `__req_unit not bound` (the first, `ruleT`, ends the test);
 //! - the rule's exemption out (the full bracket refused in a rule whatever its sort
 //!   requires): `a_rule_whose_sort_requires_the_instance_is_not_refused`'s rule row is
 //!   refused `no impl matches`.
@@ -53,11 +76,13 @@
 //! operation-body row of `a_rule_whose_sort_requires_the_instance_is_not_refused` (the
 //! caller's `requires` covers it, `op_requires_covers_call`).
 //!
-//! NOT COVERED, measured before and after alike: under `sort Sat[C, E] requires Pc2[C = C,
-//! Element = E]` the requirement writes no ground `Element`, so `Pc2.both()` in an operation
-//! body still dies `__req_unit not bound` with two providers of `Unit` (it answers with one,
-//! from the derivation); its rule twin flounders at `find_dictionary(Pc2, …)` before the
-//! default is reached, with one provider as with two.
+//! NOT COVERED: a rule of `GSat[C, E]` cited at `GSat[C = PBox[T = Bit], E = Bit]` — a
+//! provision whose `Element` is its own parameter, under a requirement that writes `Element`
+//! as the sort's — panics `__req_unit not bound` where it floundered at `find_dictionary(Pc2,
+//! …)` before: neither the clause's typing nor the provision says `Element`, and only the
+//! citation knows it. A citation that leaves `E` unwritten, or writes one nothing provides
+//! `Pc2` at, floundered before and still does, as a citation of `Sat[C]` at an instance
+//! nothing provides does.
 
 use anthill_core::eval::value::Value;
 
@@ -168,6 +193,156 @@ namespace d5wfq.woven
     operation opRev() -> Rev = Sat[C = Rev].m()
     operation opNum() -> NBag = NSat[C = NBag].m()
     operation opReq() -> Bag = viaReq[X = Bag]()
+  end
+end
+"#;
+
+/// The requirement answering the call writes `Element` as the caller's own parameter, which a
+/// citation's bracket or a call's arguments fix: two providers of `Unit` throughout, three of
+/// `Pc2`, a witness among them, and a provision whose `Element` is its own parameter.
+const GENERIC: &str = r#"
+namespace d5wfq.generic
+  import anthill.prelude.{Int64, Error, List}
+  import anthill.prelude.List.{length, nil, cons}
+
+  sort Unit
+    sort T = ?
+    operation unit() -> T
+  end
+  sort Bit
+    entity t
+    entity f
+    provides Unit[T = Bit]
+    operation unit() -> Bit = t()
+  end
+  sort Num
+    entity num(n: Int64)
+    provides Unit[T = Num]
+    operation unit() -> Num = num(n: 0)
+  end
+  sort Pc2
+    sort C = ?
+    sort Element = ?
+    operation fill(xs: List[T = Element]) -> C
+    operation both() -> C requires Unit[T = Element] = fill([Unit.unit[T = Element]()])
+    operation fillOne(xs: List[T = Element]) -> C requires Unit[T = Element] =
+      fill([Unit.unit[T = Element]()])
+  end
+  sort Bag
+    entity bnil
+    entity bsome(b: Bit)
+    provides Pc2[C = Bag, Element = Bit]
+    operation fill(xs: List[T = Bit]) -> Bag = match xs
+      case nil() -> bnil()
+      case cons(x, rest) -> bsome(b: x)
+  end
+  sort NBag
+    entity nnil
+    entity nsome(n: Num)
+    provides Pc2[C = NBag, Element = Num]
+    operation fill(xs: List[T = Num]) -> NBag = match xs
+      case nil() -> nnil()
+      case cons(x, rest) -> nsome(n: x)
+  end
+  sort WBag
+    entity wnil
+    entity wsome(n: Num)
+  end
+  sort W
+    provides Pc2[C = WBag, Element = Num] where
+      operation fill(xs: List[T = Num]) -> WBag = match xs
+        case nil() -> wnil()
+        case cons(x, rest) -> wsome(n: x)
+    end
+  end
+  sort PBox[T]
+    entity pnil
+    entity psome(x: T)
+    provides Pc2[C = PBox[T = T], Element = T]
+    operation fill(xs: List[T = T]) -> PBox[T = T] = match xs
+      case nil() -> pnil()
+      case cons(x, rest) -> psome(x: x)
+  end
+  sort GSat[C, E]
+    requires Pc2[C = C, Element = E]
+    requires Unit[T = E]
+    operation m() -> C = Pc2.both()
+    rule model(vs: C) :- vs <=> Pc2.both()
+    rule modelArg(vs: C) :- vs <=> Pc2.fillOne([])
+    operation count() -> Int64 effects {Error} = model.takeN(5).length()
+  end
+  sort OSat[C, E]
+    requires Pc2[C = C, Element = E]
+    operation m() -> C requires Unit[T = E] = Pc2.both()
+  end
+  sort RSat[C, E]
+    requires Pc2[C = C, Element = E]
+    rule model(vs: C) :- vs <=> Pc2.both()
+  end
+  sort Sat[C]
+    requires Pc2[C = C, Element = Bit]
+    rule model(vs: C) :- vs <=> Pc2.both()
+  end
+  operation viaG[X, Y]() -> X requires Pc2[C = X, Element = Y], Unit[T = Y] = Pc2.both()
+
+  sort Driver
+    operation opBag() -> Bag = GSat[C = Bag, E = Bit].m()
+    operation opNum() -> NBag = GSat[C = NBag, E = Num].m()
+    operation opWit() -> WBag = GSat[C = WBag, E = Num].m()
+    operation opOwn() -> Bag = OSat[C = Bag, E = Bit].m()
+    operation opFn() -> Bag = viaG[X = Bag, Y = Bit]()
+    operation ruleT() -> Int64 effects {Error} = GSat[C = Bag, E = Bit].model(bsome(b: t())).takeN(5).length()
+    operation ruleF() -> Int64 effects {Error} = GSat[C = Bag, E = Bit].model(bsome(b: f())).takeN(5).length()
+    operation ruleOpen() -> Int64 effects {Error} = GSat[C = Bag, E = Bit].model.takeN(5).length()
+    operation ruleNum() -> Int64 effects {Error} =
+      GSat[C = NBag, E = Num].model(nsome(n: num(n: 0))).takeN(5).length()
+    operation ruleWit() -> Int64 effects {Error} =
+      GSat[C = WBag, E = Num].model(wsome(n: num(n: 0))).takeN(5).length()
+    operation ruleInner() -> Int64 effects {Error} = GSat[C = Bag, E = Bit].count()
+    operation ruleArg() -> Int64 effects {Error} =
+      GSat[C = Bag, E = Bit].modelArg(bsome(b: t())).takeN(5).length()
+    operation ruleNoReq() -> Int64 effects {Error} = RSat[C = Bag, E = Bit].model(bsome(b: t())).takeN(5).length()
+    operation boxT() -> Int64 effects {Error} = Sat[C = PBox[T = Bit]].model(psome(x: t())).takeN(5).length()
+    operation boxF() -> Int64 effects {Error} = Sat[C = PBox[T = Bit]].model(psome(x: f())).takeN(5).length()
+  end
+end
+"#;
+
+/// One provider of `Unit`, and a generic caller holding no `Unit[T = E]`.
+const ONE_UNIT: &str = r#"
+namespace d5wfq.one
+  import anthill.prelude.{List}
+  import anthill.prelude.List.{nil, cons}
+
+  sort Unit
+    sort T = ?
+    operation unit() -> T
+  end
+  sort Bit
+    entity t
+    provides Unit[T = Bit]
+    operation unit() -> Bit = t()
+  end
+  sort Pc2
+    sort C = ?
+    sort Element = ?
+    operation fill(xs: List[T = Element]) -> C
+    operation both() -> C requires Unit[T = Element] = fill([Unit.unit[T = Element]()])
+  end
+  sort Bag
+    entity bnil
+    entity bsome(b: Bit)
+    provides Pc2[C = Bag, Element = Bit]
+    operation fill(xs: List[T = Bit]) -> Bag = match xs
+      case nil() -> bnil()
+      case cons(x, rest) -> bsome(b: x)
+  end
+  sort NoUnit[C, E]
+    requires Pc2[C = C, Element = E]
+    operation m() -> C = Pc2.both()
+  end
+  sort Driver
+    operation op() -> Bag = NoUnit[C = Bag, E = Bit].m()
   end
 end
 "#;
@@ -353,4 +528,91 @@ fn the_default_is_read_at_the_requirement_answering_it() {
             ("opReq", "bsome(b: t)"),
         ],
     );
+}
+
+/// An operation body: the requirement answering the call writes `Element` as the caller's
+/// parameter, so the call's own requirement is `Unit[T = E]`, which the caller's `requires`
+/// answers — the sort's, the operation's own, a generic operation's — at both providers of
+/// `Unit`, and at a witness.
+#[test]
+fn the_default_is_read_at_the_callers_parameter() {
+    assert_answers(
+        GENERIC,
+        "d5wfq.generic",
+        &[
+            ("opBag", "bsome(b: t)"),
+            ("opNum", "nsome(n: num(n: 0))"),
+            ("opWit", "wsome(n: num(n: 0))"),
+            ("opOwn", "bsome(b: t)"),
+            ("opFn", "bsome(b: t)"),
+        ],
+    );
+}
+
+/// The same calls where the caller holds no `Unit[T = E]`: refused where they are written,
+/// naming the requirement and the clause to add — the caller's frame is the only thing that
+/// could supply it (kernel-language §5.2). Each loaded and died `__req_unit not bound`.
+#[test]
+fn a_call_owing_evidence_at_the_callers_parameter_is_refused() {
+    for (decl, requirement, owner) in [
+        (
+            "  sort NoUnit[C, E]\n    requires Pc2[C = C, Element = E]\n    \
+             operation m() -> C = Pc2.both()\n  end\n",
+            "d5wfq.generic.Unit[T = E]",
+            "d5wfq.generic.NoUnit",
+        ),
+        (
+            "  operation viaNo[X, Y]() -> X requires Pc2[C = X, Element = Y] = Pc2.both()\n",
+            "d5wfq.generic.Unit[T = Y]",
+            "d5wfq.generic.viaNo",
+        ),
+    ] {
+        let src = GENERIC.swap("  sort Driver\n", &format!("{decl}  sort Driver\n"));
+        assert_owes(&src, requirement, owner);
+    }
+    // One provider of `Unit`: the bridge's derivation chose it, and the call answered
+    // `bsome(b: t)`; the evidence is still the caller's to hold (§5.2).
+    assert_owes(ONE_UNIT, "d5wfq.one.Unit[T = E]", "d5wfq.one.NoUnit");
+}
+
+/// `src` loads with the one refusal of a call whose requirement `requirement` only `owner`'s
+/// frame could supply.
+fn assert_owes(src: &str, requirement: &str, owner: &str) {
+    let errors = crate::common::load_errors_of(src);
+    assert!(
+        errors.len() == 1
+            && errors[0].contains(&format!("requirement `{requirement}` cannot be supplied"))
+            && errors[0].contains(&format!("Declare `requires {requirement}` on `{owner}`")),
+        "one refusal naming `{requirement}` and `{owner}`; got {errors:#?}"
+    );
+}
+
+/// A rule: the citation's bracket writes `E`, which no column of the clause mentions, so the
+/// clause's read of `Pc2` is routed at it, and the default entered through that dictionary
+/// reads `Element` at the provider's provision — from outside the sort and from a member of
+/// it, at two providers of `Pc2`, at a witness, and where the sort requires no `Unit` (the
+/// citation's `Unit[T = Bit]` is constructed when the default enters).
+#[test]
+fn a_rule_reads_the_parameter_its_citation_writes() {
+    assert_answers(
+        GENERIC,
+        "d5wfq.generic",
+        &[
+            ("ruleT", "1"),
+            ("ruleF", "0"),
+            ("ruleOpen", "1"),
+            ("ruleNum", "1"),
+            ("ruleWit", "1"),
+            ("ruleInner", "1"),
+            ("ruleNoReq", "1"),
+            ("ruleArg", "1"),
+        ],
+    );
+}
+
+/// A provision whose `Element` is its own parameter says no type for it, so the default is
+/// read at the call's stamps: the rule sort's requirement writes `Element = Bit`.
+#[test]
+fn a_parametric_provision_takes_the_call_sites_evidence() {
+    assert_answers(GENERIC, "d5wfq.generic", &[("boxT", "1"), ("boxF", "0")]);
 }

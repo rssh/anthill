@@ -158,7 +158,56 @@ pub(crate) fn resolve_bridge_requirements(
     args: &[Value],
     named_slot_ties: NamedSlotTies,
 ) -> BridgeRequirements {
-    resolve_bridge_requirements_supplied(kb, op, args, named_slot_ties, &[])
+    resolve_bridge_requirements_supplied(kb, op, args, named_slot_ties, &[], None)
+}
+
+/// [`resolve_bridge_requirements`] for a body entered through a dictionary of `provider`: a
+/// parameter of the op's spec the arguments leave open is the one that provider's provision
+/// of the spec writes ([`bind_params_the_provision_says`]).
+pub(crate) fn resolve_bridge_requirements_through(
+    kb: &mut KnowledgeBase,
+    op: Symbol,
+    args: &[Value],
+    named_slot_ties: NamedSlotTies,
+    provider: Symbol,
+) -> BridgeRequirements {
+    resolve_bridge_requirements_supplied(kb, op, args, named_slot_ties, &[], Some(provider))
+}
+
+/// Bind each parameter of `spec` that `subst` leaves unbound (`[]` at `List[T = Element]` binds
+/// none) to what `provider`'s provision of it writes, where ground: the default `both() -> C
+/// requires Unit[T = Element]`, entered through a dictionary of `Bag provides Pc2[C = Bag,
+/// Element = Bit]`, runs at `Element = Bit`, so its own requirement is `Unit[T = Bit]`. A
+/// provider with two provisions of the spec says none: which one the dictionary holds is not
+/// read here.
+fn bind_params_the_provision_says(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    spec: Symbol,
+    provider: Symbol,
+) {
+    let spec_canon = kb.canonical_sort_sym(spec);
+    let rows: SmallVec<[ProvidesRow; 1]> = provides_rows_of_provider(kb, provider)
+        .filter(|row| kb.canonical_sort_sym(row.spec_base) == spec_canon)
+        .collect();
+    let [row] = rows.as_slice() else {
+        return;
+    };
+    let written = row.bindings(kb);
+    for (param, vid) in spec_param_vars(kb, spec) {
+        if subst.resolve_as_value(vid).is_some() {
+            continue;
+        }
+        let name = short_name_of(kb.local_name_of(param));
+        let Some((_, value)) = written
+            .iter()
+            .find(|(k, _)| short_name_of(kb.local_name_of(*k)) == name)
+            .filter(|(_, v)| type_is_ground(kb, v))
+        else {
+            continue;
+        };
+        subst.bind_value(kb, vid, value.clone());
+    }
 }
 
 /// [`resolve_bridge_requirements`] for a caller that already HOLDS dictionaries for some of
@@ -174,6 +223,7 @@ pub(crate) fn resolve_bridge_requirements_supplied(
     args: &[Value],
     named_slot_ties: NamedSlotTies,
     supplied: &[Option<crate::eval::value::Dictionary>],
+    through: Option<Symbol>,
 ) -> BridgeRequirements {
     let Some(parent) = impl_parent_of_op(kb, op) else {
         // A caller that SUPPLIED slots holds dictionaries for a chain this op must then have,
@@ -268,8 +318,11 @@ pub(crate) fn resolve_bridge_requirements_supplied(
     // types the pinning loop already computes. Two readers of one rule; a second spelling
     // of the discharge would drift from it.
     let entries_have_projection = chain.iter().any(|e| value_contains_projection(kb, &e.spec));
-    let (subst, param_arg_types) =
+    let (mut subst, param_arg_types) =
         pin_params_from_args(kb, op, &rec.params, args, entries_have_projection);
+    if let Some(provider) = through {
+        bind_params_the_provision_says(kb, &mut subst, parent, provider);
+    }
     // One resolved tree per requires slot, keyed by the frame requirement-param name.
     let names = chain.names(kb);
     // WI-822 LEG 1 — where the OP half starts. A failure in the SORT half aborts the
