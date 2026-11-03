@@ -112,10 +112,12 @@ rule: a function takes one argument, and several parameters are one tuple.
    expected when k is 1 or `A`'s component count — the rule a `Function` slot applies today
    (WI-801). It is checked where the callable becomes a value.
 6. A callable stands where a function type is expected when the expected `A` reaches the
-   callable's own tuple by the application match, component by component, by position: the
-   slot will apply it. The labels of the two tuples need not agree. A lambda's tuple is its
-   pattern's, so `lambda (a: Int64, b: Int64)` has `(Int64, Int64)`. An operation's tuple is
-   its parameters, so `two(a: Int64, b: Int64)` has `(a: Int64, b: Int64)`.
+   callable's own tuple by the application match: the slot will apply it. When the two tuples
+   carry the same labels, the components meet by label. Otherwise the labels are mapped by
+   position, the first component to the first. A lambda's tuple is its pattern's, so
+   `lambda (a: Int64, b: Int64)` has `(Int64, Int64)`, with no labels. An operation's tuple is
+   its parameters, so `two(a: Int64, b: Int64)` has `(a: Int64, b: Int64)`. The run time makes
+   the same match when the callable takes the tuple.
 
 **What it does to programs.** Each program is measured on `89500f50`.
 
@@ -204,11 +206,11 @@ end
 ```
 
 `foldLeft`'s `f` is `(acc: Acc, x: Element) -> Acc`, and `foldLeft` applies it as `f(acc, x)`:
-two positional arguments, which meet `a` and `b` by position. By the tuple match `(a: Int64,
-b: Int64)` would not meet `(acc: Int64, x: Int64)`; that match is not the one used here.
+two positional arguments. The lambda's tuple, `(Int64, Int64)`, has no labels, so `acc` maps
+to `a` and `x` to `b` by position. By the tuple match the two would not meet; that match is not
+the one used here.
 
-Parameters named in another order follow the application as written. This runs to 1, today and
-under the rule:
+Parameters named in another order meet by label. This runs to 1 today, and to 7 under the rule:
 
 ```anthill
 namespace fc2
@@ -219,31 +221,58 @@ namespace fc2
 end
 ```
 
-`f(7, 1)` is positional, so `impl` gets `y = 7` and `x = 1`, as the direct call `impl(7, 1)`
-would. With `y: Bool` the slot's `Int64` does not reach `impl`'s `Bool` at the first position, and
-the program is refused, today and under the rule. Before WI-782 its arrow-slot twin loaded and
-returned a `Bool` from an operation declared `-> Int64`.
+`take`'s `(x: Int64, y: Int64)` and `impl`'s `(y: Int64, x: Int64)` carry the same labels, so
+`take`'s `x` meets `impl`'s `x`. `f(7, 1)` gives `x = 7`, and `impl` returns 7. Today the values
+reach `impl` by position, `y = 7` and `x = 1`. With `y: Bool` the program is refused today. Under
+the rule it loads and returns 7, the `Int64` reaching `impl`'s `Int64` parameter. Before WI-782
+its arrow-slot twin loaded and returned a `Bool` from an operation declared `-> Int64`: the type
+check read the parameters by name and the run time by position.
+
+A named argument through a function value meets the value's type by label, and so reaches the
+callable the same way. This runs to 1 today, and to 7 under the rule:
+
+```anthill
+namespace fe2
+  import anthill.prelude.{Int64}
+  operation take(f: (x: Int64, y: Int64) -> Int64) -> Int64 = f(x: 7, y: 1)
+  operation impl(y: Int64, x: Int64) -> Int64 = x
+  operation main() -> Int64 = take(impl)
+end
+```
+
+With `f` written `Function[A = (x: Int64, y: Int64), B = Int64]` the named call is refused today,
+"the type of this function value records no parameter names to bind a label to". Under rule 1
+the two spellings are one type, and both load.
+
+Tuples that do not carry the same labels are mapped by position. Each of these runs to the
+value shown, today and under the rule:
+
+```anthill
+namespace fg1
+  import anthill.prelude.{Int64, List}
+  operation add2(a: Int64, b: Int64) -> Int64 = a + b
+  operation main() -> Int64 = List.foldLeft([1, 2, 3], 0, add2)
+end
+```
+
+6: `foldLeft`'s `(acc: Acc, x: Element)` shares no label with `(a: Int64, b: Int64)`, so `acc`
+maps to `a` and `x` to `b`.
+
+```anthill
+namespace fh1
+  import anthill.prelude.{Int64}
+  operation take(f: (x: Int64, y: Int64) -> Int64) -> Int64 = f(7, 1)
+  operation impl(z: Int64, x: Int64) -> Int64 = x
+  operation main() -> Int64 = take(impl)
+end
+```
+
+1: `(x: Int64, y: Int64)` and `(z: Int64, x: Int64)` share `x` but do not carry the same labels,
+so `x` maps to `z` and `y` to `x`.
 
 **Open questions.**
 
-1. *A named argument through a function value.* Today this runs to 1:
-
-   ```anthill
-   namespace fe2
-     import anthill.prelude.{Int64}
-     operation take(f: (x: Int64, y: Int64) -> Int64) -> Int64 = f(x: 7, y: 1)
-     operation impl(y: Int64, x: Int64) -> Int64 = x
-     operation main() -> Int64 = take(impl)
-   end
-   ```
-
-   The labels are matched to `f`'s type, `(x: Int64, y: Int64)`, and the arguments then handed to
-   `impl` by position. Matched to `impl`'s own tuple, the application would answer 7. With `f`
-   written `Function[A = (x: Int64, y: Int64), B = Int64]` the named call is refused today: "the
-   type of this function value records no parameter names to bind a label to". Which tuple is a
-   named argument's target: the type the application goes through, or the callable it reaches?
-
-2. *A call of an operation by its name.* `add2((1, 2))`, over `operation add2(a: Int64, b:
+1. *A call of an operation by its name.* `add2((1, 2))`, over `operation add2(a: Int64, b:
    Int64) -> Int64`, is refused today: "expected 2 arguments — the parameter list `add2`
    declares, got 1 argument". Does rule 3 reach a call by name, or does such a call keep the
    declared parameter list, with its named arguments, defaults and variadic capture?
