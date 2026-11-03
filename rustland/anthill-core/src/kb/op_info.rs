@@ -345,14 +345,33 @@ pub(crate) fn op_info_fact_rids(
 /// walk; the effects field decodes to `Vec<Value>` (term list → `Value::Term`s,
 /// value list → its elements verbatim, preserving `Value::Node` identity).
 pub fn lookup_operation_info(kb: &KnowledgeBase, op_sym: Symbol) -> Option<OpInfoRecord> {
+    // The body is read from the operation's record on either tier — mutated in place by
+    // `set_op_body_node`, so never a stale snapshot.
+    with_op_signature(kb, op_sym, |sig| {
+        op_info_from_signature(op_sym, sig, kb.op_body_node(op_sym).cloned())
+    })
+}
+
+/// WI-904 — `read` applied to `op_sym`'s declared signature, BY REFERENCE where it is
+/// cached; `None` when no `OperationInfo` fact carries `name = op_sym`, or when the first
+/// one that does is malformed (no `return_type`).
+///
+/// THE ONE OWNER of the two tiers, for every reader of a signature:
+/// [`lookup_operation_info`] is built on it, and so are the readers that need a field or
+/// two — [`declared_arity`], [`declared_type_param_var`], `typing::is_macro` — which used
+/// to copy the tiers by hand to avoid building an [`OpInfoRecord`], whose construction
+/// clones every per-field `Vec`. A reader built here cannot read another signature than
+/// the typer's.
+pub(crate) fn with_op_signature<R>(
+    kb: &KnowledgeBase,
+    op_sym: Symbol,
+    read: impl FnOnce(&OpSignature) -> R,
+) -> Option<R> {
     // WI-656 fast path: the operation's signature is cached in its record (built
     // once by `build_op_signatures`), so this is an O(1) map hit rather than an
-    // O(N_ops) scan of every `OperationInfo` fact. The body is read from the same
-    // record — mutated in place by `set_op_body_node`, so never a stale snapshot.
-    if let Some(rec) = kb.op_record(op_sym) {
-        if let Some(sig) = &rec.signature {
-            return Some(op_info_from_signature(op_sym, sig, rec.body.clone()));
-        }
+    // O(N_ops) scan of every `OperationInfo` fact.
+    if let Some(sig) = kb.op_record(op_sym).and_then(|r| r.signature.as_ref()) {
+        return Some(read(sig));
     }
     // Fallback: the fact read. Taken by any lookup that runs BEFORE
     // `build_op_signatures` — the eq-dispatch-table build (`load.rs`'s
@@ -386,12 +405,7 @@ pub fn lookup_operation_info(kb: &KnowledgeBase, op_sym: Symbol) -> Option<OpInf
         if head_name_ref(kb, head) != Some(op_sym) {
             continue;
         }
-        let sig = extract_signature_from_head(kb, head)?;
-        return Some(op_info_from_signature(
-            op_sym,
-            &sig,
-            kb.op_body_node(op_sym).cloned(),
-        ));
+        return extract_signature_from_head(kb, head).map(|sig| read(&sig));
     }
     None
 }
@@ -494,10 +508,9 @@ pub fn declared_op_with_no_definition(kb: &KnowledgeBase, sym: Symbol) -> bool {
 /// resolves to — the same two keyings WI-708 bridges in the other direction
 /// (`op_scoped_type_param_symbol`).
 ///
-/// [`declared_arity`]'s sibling in shape: the same two tiers (the WI-656 cached record,
-/// then [`lookup_operation_info`] for calls before `build_op_signatures`) and the same
-/// reason for existing — reading one variable should not build an [`OpInfoRecord`] on
-/// the path that already has the answer cached.
+/// [`declared_arity`]'s sibling in shape: read through [`with_op_signature`], for the
+/// same reason — reading one variable should not build an [`OpInfoRecord`] on the path
+/// that already has the answer cached.
 ///
 /// WI-20261006-XQGEW — a member's parameter is in that list and is NOT the bracket's
 /// ([`bracket_type_params`]): `operation mk(x: X.C, k: C.K) -> C ensures KVStore[C]` has
@@ -508,10 +521,7 @@ pub fn declared_type_param_var(kb: &KnowledgeBase, op_sym: Symbol, short: &str) 
             .find(|(n, _)| kb.local_name_of(*n) == short)
             .map(|(_, v)| v)
     };
-    if let Some(sig) = kb.op_record(op_sym).and_then(|r| r.signature.as_ref()) {
-        return pick(&sig.type_params);
-    }
-    pick(&lookup_operation_info(kb, op_sym)?.type_params)
+    with_op_signature(kb, op_sym, |sig| pick(&sig.type_params)).flatten()
 }
 
 /// WI-20261006-XQGEW — of the type parameters an operation's record lists, the ones its
@@ -559,10 +569,9 @@ pub fn is_nullary_operation(kb: &KnowledgeBase, sym: Symbol) -> bool {
 }
 
 /// WI-886 — how many parameters does `op_sym` DECLARE? [`operation_is_declared`]'s
-/// sibling: same two tiers (the WI-656 cached record, then the pre-
-/// `build_op_signatures` fact scan), and the same reason for existing — reading one
-/// number should not build an [`OpInfoRecord`], whose construction clones every
-/// per-field `Vec` to be dropped immediately.
+/// sibling, read through [`with_op_signature`] for the reason that function gives —
+/// reading one number should not build an [`OpInfoRecord`], whose construction clones
+/// every per-field `Vec` to be dropped immediately.
 ///
 /// ONE OWNER for a question two host backends ask of the same mappings. The rust
 /// runtime checks a registered `host_fn`'s arity against this at
@@ -572,14 +581,7 @@ pub fn is_nullary_operation(kb: &KnowledgeBase, sym: Symbol) -> bool {
 /// `kb.op_record`, which is `pub(crate)`, so a backend crate could only reach
 /// `lookup_operation_info` — the very call the rust side documents itself as avoiding.
 pub fn declared_arity(kb: &KnowledgeBase, op_sym: Symbol) -> Option<usize> {
-    if let Some(n) = kb
-        .op_record(op_sym)
-        .and_then(|r| r.signature.as_ref())
-        .map(|s| s.params.len())
-    {
-        return Some(n);
-    }
-    lookup_operation_info(kb, op_sym).map(|r| r.params.len())
+    with_op_signature(kb, op_sym, |sig| sig.params.len())
 }
 
 /// WI-656 — decode the body-independent [`OpSignature`] from an `OperationInfo`

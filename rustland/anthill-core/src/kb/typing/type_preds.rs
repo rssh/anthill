@@ -705,17 +705,25 @@ pub(crate) fn is_occurrence_type<V: TermView>(kb: &KnowledgeBase, ty: &V) -> boo
 /// EXACTLY an occurrence — not a container of one — is what makes it spliceable,
 /// separating a macro from a compile-time guard reader (`min_sort(occ) -> Sort`:
 /// expr in, value out).
+///
+/// WI-904 — the signature is read BY REFERENCE, through
+/// [`crate::kb::op_info::with_op_signature`]: this runs on every fired `@[simp]`
+/// rewrite, and an [`crate::kb::op_info::OpInfoRecord`] clones every per-field `Vec` to
+/// read two. `lookup_operation_info` is built on the same reader, so the two read one
+/// signature. Once the typer has cached the signatures, a symbol that is no operation
+/// costs a record miss and an empty index bucket; before that, a walk over every
+/// `OperationInfo` fact.
 pub fn is_macro(kb: &KnowledgeBase, op: Symbol) -> bool {
-    let Some(info) = lookup_operation_info_full(kb, op) else {
-        return false;
-    };
     // At least one parameter: a macro is FED the matched pattern-var occurrences
     // (043 §4.2's argument-domain rule assumes ≥1 occurrence arg), so a nullary
     // occurrence-returning op is a constructor-like value, not a macro — it is not
     // silently evaluated at compile time nor subjected to the purity gate.
-    !info.params.is_empty()
-        && is_occurrence_type(kb, &info.return_type)
-        && info.params.iter().all(|(_, t)| is_occurrence_type(kb, t))
+    crate::kb::op_info::with_op_signature(kb, op, |sig| {
+        !sig.params.is_empty()
+            && is_occurrence_type(kb, &sig.return_type)
+            && sig.params.iter().all(|(_, t)| is_occurrence_type(kb, t))
+    })
+    .unwrap_or(false)
 }
 
 /// WI-385: the base/head sort symbol of a ground type — `S` for a bare `S`, the

@@ -142,3 +142,70 @@ end
         "expected a macro-purity load error, got: {errs:?}",
     );
 }
+
+/// WI-904 — `is_macro` gives one verdict on both tiers it reads: the operation's cached
+/// signature, which the typer builds (`build_op_signatures`), and the `OperationInfo`
+/// fact, which is what a load stopped before the typer has. Each row is asked of a typed
+/// load and of an untyped one: a macro; an operation with an occurrence result and one
+/// value parameter; a value operation; a nullary occurrence operation; the stdlib's
+/// `make_apply` (occurrence result, a `String` and a `List` parameter); an entity
+/// constructor, a sort and a namespace, none of them an operation.
+///
+/// Each row also says whether its symbol is an operation, asked of `lookup_operation_info`,
+/// and the constructor row that it is a constructor, so a row cannot pass by naming
+/// something else.
+///
+/// Passes before and after WI-904's change by design: the change reads the cached
+/// signature by reference instead of cloning it into an `OpInfoRecord`, and moves no
+/// verdict. With the fact tier backed out (`false` where no signature is cached), the
+/// untyped half fails at `wrap`.
+#[test]
+fn classifier_verdict_is_one_on_both_tiers() {
+    use anthill_core::kb::typing::is_macro;
+    const TIERS: &str = r#"
+namespace test.wi904
+  import anthill.prelude.{Int64, todo}
+  import anthill.prelude.List.{cons, nil}
+  import anthill.reflect.{NodeOccurrence, make_apply}
+
+  sort Shape
+    entity circle(r: Int64)
+  end
+
+  operation plain(v: Int64) -> Int64 = v
+  operation wrap(x: NodeOccurrence) -> NodeOccurrence =
+    make_apply("test.wi904.plain", cons(x, nil()), x)
+  operation half(x: NodeOccurrence, n: Int64) -> NodeOccurrence = x
+  operation occ0() -> NodeOccurrence = todo()
+end
+"#;
+    // (symbol, is a macro, is an operation)
+    let rows: &[(&str, bool, bool)] = &[
+        ("test.wi904.wrap", true, true),
+        ("test.wi904.half", false, true),
+        ("test.wi904.plain", false, true),
+        ("test.wi904.occ0", false, true),
+        ("anthill.reflect.make_apply", false, true),
+        ("test.wi904.Shape.circle", false, false),
+        ("test.wi904.Shape", false, false),
+        ("test.wi904", false, false),
+    ];
+    let typed = crate::common::load_kb_with(TIERS);
+    let untyped = crate::common::try_load_kb_untyped_with(TIERS)
+        .unwrap_or_else(|errs| panic!("the untyped load must succeed: {errs:?}"));
+    for (kb, tier) in [(&typed, "typed"), (&untyped, "untyped")] {
+        for &(name, is_a_macro, is_an_operation) in rows {
+            let s = sym(kb, name);
+            assert_eq!(
+                anthill_core::kb::op_info::lookup_operation_info(kb, s).is_some(),
+                is_an_operation,
+                "{name} is an operation? on the {tier} load",
+            );
+            assert_eq!(is_macro(kb, s), is_a_macro, "is_macro({name}) on the {tier} load");
+        }
+        assert!(
+            kb.is_entity_constructor(sym(kb, "test.wi904.Shape.circle")),
+            "`circle` is the constructor row on the {tier} load",
+        );
+    }
+}

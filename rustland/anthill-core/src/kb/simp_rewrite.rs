@@ -1790,9 +1790,9 @@ fn try_expand_macro(
 ) -> Result<Option<Rc<NodeOccurrence>>, MacroRejection> {
     // Read the head and gate on `is_macro` BEFORE building the argument vector:
     // `try_expand_macro` runs on EVERY fired `@[simp]` rewrite, and the gate is false
-    // for all but a macro head. The structural conjuncts here are free; `is_macro`
-    // itself is NOT — it materializes an `OpInfoRecord` (WI-904 makes it zero-alloc,
-    // which is what would make this ordering pay off fully). The
+    // for all but a macro head. The structural conjuncts here are free, and so is
+    // `is_macro` once the typer has cached the signatures: it reads the operation's
+    // signature by reference (WI-904), so a head that is no macro allocates nothing. The
     // head must be a positional `apply` — a macro is called on the matched
     // pattern-var occurrences; named / type args are not part of the Inc-1 surface,
     // so a macro carrying those declines to expand and stays a template.
