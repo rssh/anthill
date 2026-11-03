@@ -1014,6 +1014,16 @@ pub enum TypeError {
         span: Option<Span>,
         namespace: Symbol,
     },
+    /// Proposal 062: a call or a construction makes an instance of a sort at which a goal
+    /// the sort declares over its parameters does not hold — the typer's face of
+    /// [`crate::kb::load::LoadError::SortGoalUnmet`], whose fields these are.
+    SortGoalUnmet {
+        span: Option<Span>,
+        sort: String,
+        goal: String,
+        bindings: String,
+        reason: String,
+    },
     /// WI-650: an `PartialEq.eq`/`PartialEq.neq` (`=`/`neq`) call whose operand's sort declares
     /// its OWN `eq` override with NO backing — no runnable body and no non-fact
     /// rules (e.g. `Map` once the relational eq/binds/strip_is apparatus was
@@ -1438,7 +1448,9 @@ pub enum TypeErrorContext {
         source: ElementTypeSource,
     },
     /// A construction of `ctor` that the program may not write: one of the runtime's
-    /// accounts ([`crate::kb::RuntimeAccount`]), which a program reads and does not build.
+    /// accounts ([`crate::kb::RuntimeAccount`]), which a program reads and does not build;
+    /// or one in a clause that makes an instance of its sort at which a goal of the sort
+    /// fails (proposal 062).
     Construction {
         ctor: Symbol,
     },
@@ -2392,6 +2404,13 @@ impl TypeError {
                 RULE_BODY_GOAL,
                 kb.qualified_name_of(*namespace),
             ),
+            TypeError::SortGoalUnmet {
+                sort,
+                goal,
+                bindings,
+                reason,
+                ..
+            } => crate::kb::load::sort_goal_unmet_message(sort, goal, bindings, reason),
             TypeError::EqOverrideUnbacked { carrier_sort, .. } => {
                 let carrier_qn = kb.qualified_name_of(*carrier_sort);
                 format!(
@@ -2594,6 +2613,7 @@ impl TypeError {
             | TypeError::ConstInGoalPosition { span, .. }
             | TypeError::EquationSubjectInGoalPosition { span, .. }
             | TypeError::NamespaceAsGoal { span, .. }
+            | TypeError::SortGoalUnmet { span, .. }
             | TypeError::EqOverrideUnbacked { span, .. }
             | TypeError::DotDispatchNoMatch { span, .. }
             | TypeError::ForbiddenInternalField { span, .. }
@@ -3289,6 +3309,19 @@ impl TypeError {
                 position: RULE_BODY_GOAL,
                 namespace: kb.qualified_name_of(*namespace).to_string(),
                 span: self.span(kb).unwrap_or_default(),
+            },
+            TypeError::SortGoalUnmet {
+                span,
+                sort,
+                goal,
+                bindings,
+                reason,
+            } => LoadError::SortGoalUnmet {
+                sort: sort.clone(),
+                goal: goal.clone(),
+                bindings: bindings.clone(),
+                reason: reason.clone(),
+                span: *span,
             },
             TypeError::EqOverrideUnbacked { carrier_sort, .. } => {
                 let carrier_qn = kb.qualified_name_of(*carrier_sort).to_string();

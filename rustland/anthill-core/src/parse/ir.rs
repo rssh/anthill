@@ -704,6 +704,7 @@ pub enum Item {
     Operation(Operation),
     Const(Const),
     RequiresDecl(RequiresDecl),
+    SortGoal(SortGoalDecl),
     // Sugar
     Entity(Entity),
     Fact(Fact),
@@ -967,6 +968,18 @@ pub struct RequiresDecl {
     /// the reasoning and does the splice.
     pub binder: Option<Name>,
     pub type_expr: TypeExpr,
+    pub span: Span,
+}
+
+/// Proposal 062: `requires <goal>` on a sort — a goal over the sort's type parameters
+/// that every instance of the sort must satisfy (`requires is_entity_of(Trust,
+/// TrustLevel)`). An item of its own rather than a [`RequiresDecl`]: a goal names no
+/// spec, and the requirement relation that a `RequiresDecl` feeds is read as subtyping
+/// and dispatch, which a goal is not.
+#[derive(Debug)]
+pub struct SortGoalDecl {
+    /// The goal as written, a call of a relation.
+    pub goal: ParseTermId,
     pub span: Span,
 }
 

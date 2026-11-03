@@ -1045,10 +1045,12 @@ so a design that wants ordering must declare it — silence gives you the safe
 default rather than the useful one. That is the right default and worth stating;
 it just is not a limit.
 
-**Related, and still open.** The label slot is also **untyped**: `sort Trust = ?`
-accepts anything, so `Text[Int64]` loads clean, and a `requires IsLevel[T = Trust]`
-does not constrain it either (both measured). Variance orders the labels; nothing
-requires the argument to *be* one.
+**Related, and since closed.** The label slot was also **untyped**: `sort Trust = ?`
+accepted anything, so `Text[Int64]` loaded clean, and a `requires IsLevel[T = Trust]`
+did not constrain it either (both measured). Variance orders the labels; nothing
+required the argument to *be* one. Proposal 062 gave a sort a goal over its
+parameters: `Text`, `Message` and `Prompt` declare `requires is_entity_of(Trust,
+TrustLevel)`, and `Text[Int64]` is refused at load.
 
 ## C5 · A computed region is not admissible in `Modify[…]`
 

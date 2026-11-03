@@ -4400,17 +4400,21 @@ pub fn occurrence_has_unbound_var(
                 for_each_pattern_child(&occ, |c| stack.push(Rc::clone(c)));
             }
             NodeKind::RuleHead { .. } => {}
-            // WI-378 step 2 / WI-342-P3: a var inside a Type/EffectExpr occurrence
-            // IS now walked — but via the type-field twins (`collect_value_type` /
-            // the `*_value_type` rewriters), reached where a type `Value` sits
-            // (`Apply.type_args`). This `for_each_child`-
-            // driven walk reaches a Type occurrence only once the deferred
-            // type-field→occurrence-child migration routes those fields through
-            // `for_each_child` — which must also thread `kb` here (this walker has
-            // none, so it can't read a ground `TypeChild::Interned(TermId)`). Until
-            // then a type occurrence reaching here is a bug, so assert.
+            // A type in a goal — a sort's goal with its parameter substituted by the type
+            // an instance binds (proposal 062), `not(is_entity_of(Int64, TrustLevel))` with
+            // `Int64` on the occurrence an alias writes — is walked by the type-field walk
+            // (`collect_value_type`), which `for_each_child` does not reach, and each of
+            // its variables is asked through σ as an answer link's is.
             NodeKind::Type(_) | NodeKind::EffectExpr(_) => {
-                debug_assert!(false, "type/effect occurrence in for_each_child var walk (type-field migration must thread kb here)");
+                let mut vars = Vec::new();
+                let mut seen = std::collections::HashSet::new();
+                collect_value_type(kb, &Value::Node(Rc::clone(&occ)), &mut vars, &mut seen);
+                if vars
+                    .iter()
+                    .any(|&v| !kb.value_is_ground(&Value::Var(Var::Global(v)), subst))
+                {
+                    return true;
+                }
             }
         }
     }

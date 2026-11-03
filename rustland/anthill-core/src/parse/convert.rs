@@ -5228,6 +5228,9 @@ impl<'a> Converter<'a> {
     /// A DOTTED binder cannot arrive (the grammar's binder is a single `identifier`),
     /// so the parameter's name is always the one segment written.
     fn convert_requires_items(&mut self, node: Node, owner: ItemOwner) -> Vec<Item> {
+        if let Some(goal) = self.field(node, "goal") {
+            return self.convert_sort_goal(node, goal, owner).into_iter().collect();
+        }
         let Some(mut decl) = self.convert_requires_decl(node) else {
             return Vec::new();
         };
@@ -5267,6 +5270,30 @@ impl<'a> Converter<'a> {
             span: decl.span,
         };
         vec![Item::AbstractSort(param), Item::RequiresDecl(decl)]
+    }
+
+    /// Proposal 062: `requires <goal>` — a goal over the enclosing sort's type
+    /// parameters. Refused outside a sort, where there are no parameters for it to be
+    /// over and so no instance it could be checked at.
+    fn convert_sort_goal(&mut self, node: Node, goal: Node, owner: ItemOwner) -> Option<Item> {
+        if owner == ItemOwner::NotASort {
+            let text = self.text(node).to_owned();
+            self.err(
+                format!(
+                    "`{text}`: a goal after `requires` is a sort's — it constrains the \
+                     sort's type parameters, and every instance of the sort must satisfy \
+                     it — so it is declared in the sort's own body, and a namespace's body, \
+                     a secondary entry of the sort included, declares none. Move it into \
+                     the sort whose parameters it names"
+                ),
+                node,
+            );
+            return None;
+        }
+        Some(Item::SortGoal(SortGoalDecl {
+            goal: self.convert_term(goal),
+            span: self.span(node),
+        }))
     }
 
     // ── Sugar: entity, fact, constraint ─────────────────────────

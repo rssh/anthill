@@ -73,8 +73,10 @@
 //!     a_call_and_a_type_keep_their_brackets — a call's arguments in parentheses, an
 //!       operation call's bracket before them, a sort's and a constructor's bracket.
 //!     the_heads_advice_loads — the two declarations the head's refusal advises.
-//!     a_sort_parameter_in_a_rule_body_is_the_parameter — proposal 062's guard is where
-//!       the parameter is substituted (WI-20260822-T70A2); here it is the parameter.
+//!     a_sort_parameter_in_a_rule_body_is_the_parameter — a sort's goal (proposal 062) is
+//!       where the parameter is substituted, driven by
+//!       wi_t70a2_sort_goal_test::the_parameter_is_substituted_by_its_type; here it is the
+//!       parameter.
 //!
 //! The 060 forms the ticket names are driven where they are owned: a `requires` clause's
 //! requirement edge by `wi_p7vp4_rule_body_requirements_test`, a rule body's `require[…]`
@@ -464,8 +466,8 @@ fn a_simp_binder_takes_a_structural_entry_as_its_type() {
 
 /// In a rule body inside a sort, the sort's parameter is the parameter, rigid: nothing
 /// substitutes it, so `is_entity_of(Trust, TrustLevel)` holds of no instance there, where
-/// the same goal over an entity of the sort holds. Proposal 062's guard is what will
-/// substitute it per instance (WI-20260822-T70A2).
+/// the same goal over an entity of the sort holds. A sort's `requires` goal is where it is
+/// substituted per instance (`wi_t70a2_sort_goal_test`).
 #[test]
 fn a_sort_parameter_in_a_rule_body_is_the_parameter() {
     let body = "  import anthill.reflect.typing.is_entity_of\n  enum TrustLevel\n    entity Public\n  end\n  \

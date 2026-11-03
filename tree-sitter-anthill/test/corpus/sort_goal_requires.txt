@@ -1,0 +1,95 @@
+==================================
+Proposal 062 sort goal — a parenthesised goal beside a requirement and an op clause
+==================================
+
+namespace m
+  enum Text
+    sort Trust = ?
+    requires is_entity_of(Trust, TrustLevel)
+    requires Eq[T = Trust]
+    requires anthill.reflect.typing.is_entity_of(Trust, TrustLevel)
+    entity text(raw: String)
+    operation pick(a: Text[Trust]) -> Unit
+      requires neq(a, a)
+  end
+end
+
+---
+
+; A sort-level `requires` whose operand is a call (`name(`) is a GOAL; one whose
+; operand is a type (`Eq[…]`) is a requirement, as before; and an operation's
+; trailing `requires` with a call stays the operation's clause (WI-448's tie).
+(source_file
+  (namespace_declaration
+    name: (name
+      (identifier))
+    (enum_declaration
+      name: (name
+        (identifier))
+      (abstract_sort
+        name: (name
+          (identifier))
+        definition: (variable_term
+          (variable)))
+      (requires_declaration
+        goal: (fn_term
+          name: (name
+            (identifier))
+          (name
+            (identifier))
+          (name
+            (identifier))))
+      (requires_declaration
+        type: (application
+          name: (name
+            (identifier))
+          (sort_binding
+            param: (name
+              (identifier))
+            type: (simple_type
+              (name
+                (identifier))))))
+      (requires_declaration
+        goal: (fn_term
+          name: (name
+            (identifier)
+            (identifier)
+            (identifier)
+            (identifier))
+          (name
+            (identifier))
+          (name
+            (identifier))))
+      (entity_declaration
+        name: (name
+          (identifier))
+        (field_decl
+          name: (identifier)
+          type: (simple_type
+            (name
+              (identifier)))))
+      (operation_declaration
+        name: (name
+          (identifier))
+        (param
+          name: (identifier)
+          type: (application
+            name: (name
+              (identifier))
+            (sort_binding
+              type: (simple_type
+                (name
+                  (identifier))))))
+        return_type: (simple_type
+          (name
+            (identifier)))
+        (operation_clause
+          (requires_clause
+            (requires_body
+              (fn_term
+                name: (name
+                  (identifier))
+                (name
+                  (identifier))
+                (name
+                  (identifier))))))))))

@@ -144,3 +144,62 @@ problem. Three things are, and the build order must answer them before step 3:
 - **SLD binds a free parameter existentially rather than suspending.** With `fact flows_to(Public, Public)` and `fact flows_to(Untrusted, Untrusted)`, the goal `flows_to(Untrusted, ?to)` answers `?to = Untrusted` (1 solution), while `flows_to(Untrusted, Public)` answers none. So "resolve the guard and see" does NOT distinguish under-determined from refuted, and resolving early would pin a parameter. This is why readiness is decided by groundness, structurally, before any resolution — §3 step 3.
 - `residual_constraints` (`subst.rs:606`) returns every entry in the store and its parent chain, with **no** filter on whether the variable is bound; `Type` entries are never deduped. Independent copies of one goal therefore survive as stale residuals after discharge.
 - `bind_waking` (`subst.rs:530`) returns `()`, and commits before its (inert) wake step. There is no bind API today that can refuse.
+
+## 7. Delivered (2026-11-03, WI-20260822-T70A2) — shape (A)
+
+Shape (A) of §2: the goal is judged where an instance of the sort is made, by one function,
+`typing::sort_goal_failures(kb, sort, bindings)` (`kb/typing/sort_goals.rs`). It reads the
+sort's `SortGoalInfo` rows, replaces each parameter a goal names with the instance's argument
+(a left-out parameter takes its declared default), and resolves. No `Constraint::Type` is
+produced; §2's substrate slot still has no producer, and no bind API gained a verdict.
+
+**Readiness** is `type_is_ground`: concrete, no variable and no type parameter, a rigid not
+accepted. A goal over a parameter that is not concrete at an instance is not resolved there.
+Measured with the gate backed out: the sort's own application, recorded where the sort is
+declared (`Text[Trust = ?]`), flounders, and every sort with a goal is refused — the gate is
+what lets one load.
+
+**Outcomes.** A definite solution holds; a complete search with none refutes; a search that
+is cut at `max_depth`, faults, or answers only with a residual is refused as undecided
+(`LoadError::SortGoalUnmet`, its `reason` saying which). For `is_entity_of(P, E)` the refusal
+lists `E`'s entities.
+
+**The sites that ask it**, each the place a parameter of the sort is bound:
+
+- every written instance — the WI-835 site record (`check_sort_goals_at_written_sites`,
+  after the load, from the drain the `Eq` check reads);
+- a call, at what it binds the callee's type parameters to: each declared type of the
+  callee that is not concrete as written, resolved through the call's σ (`check_apply_iter`
+  → `check_call_sort_goals`);
+- a construction in an operation body or a `const`: the sort's own application and the
+  fields' declared types, at what the fields, the sort's clauses and the expectation bound
+  (`check_constructor_iter` → `construction_sort_goal_failure`);
+- a construction in a clause — a fact, a rule head or body: the same two, recorded by the
+  clause collector (`ClauseConstraints::instances`) and judged once the clause is typed, so
+  an argument typed later in the clause still fixes the instance;
+- the declaration: a goal that names a namespace, or a relation or argument nothing
+  declares, is refused there (and decided nowhere else); one that names no parameter is
+  decided there once (`check_sort_goal_declarations`).
+
+A type handed to a construction (an expected type, an argument's) is not the construction's
+to judge: it is judged where it is made, so one mistake is one refusal. A goal that names a
+type parameter not the sort's own (an enclosing sort's) is refused at the declaration.
+
+A substituted goal can hold a type on an occurrence (an alias's, a type holding a value),
+and a negated one reaches the resolver's groundness gate with it: that gate
+(`occurrence_has_unbound_var`) reads a type occurrence's variables by the type-field walk,
+where it asserted no type reached it.
+
+**A parameter is substituted as a type.** The facts a goal reads are written over types:
+`fact flows_to(Untrusted[], Public[])` answers `flows_to(From, To)` at `Transfer[From =
+Untrusted, To = Public]`; `fact flows_to(Untrusted, Public)` holds of the instances
+(kernel-language §4.4) and does not. `is_entity_of` holds of a sort and itself, so
+`is_entity_of(Trust, TrustLevel)` admits `Text[TrustLevel]`.
+
+**Not covered.** A goal not decided at an instance is not carried anywhere. Where the
+instance is in an operation's signature (`join[L](a: Text[L]) -> Text[L]`), each call is held
+at what it binds `L` to, which is the proposal's reading. Where an operation makes the
+instance in its body at its own type parameter and its signature does not carry it —
+`k[Y](y: Y) -> Unit = { let t = mk(y)  () }` — a call `k(5)` is not held: the obligation
+would have to become `k`'s, and an operation's `requires` over a type variable gates nothing
+yet (guardians `measured.md` C2).

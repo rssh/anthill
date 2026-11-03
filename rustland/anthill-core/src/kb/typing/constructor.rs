@@ -1650,6 +1650,22 @@ pub(super) fn check_constructor_iter(
     // occurrence-typer and the value-typer ([`constructor_value_type`]) produce the SAME
     // type from one source (no drift). The field-unified `subst` pinned the params above.
     let ty = finish_constructor_type(kb, classify_sym, parent_sort, &subst);
+    // Proposal 062 — what the construction makes, held to the goals of the sorts it makes
+    // instances of: a field typed by a parameter binds it (`box(v: 5)` makes a `Box[V =
+    // Int64]`). The sort's own application and the declared field types are written over
+    // the variables `subst` binds.
+    if let Some(sort) = parent_sort.filter(|_| sorts_declare_goals(kb)) {
+        let own = Value::term(own_application(kb, sort));
+        let fields: Vec<Value> = kb
+            .entity_field_types(ctor_sym)
+            .map(|f| f.iter().map(|(_, ty)| ty.clone()).collect())
+            .unwrap_or_default();
+        if let Some((sort, failure)) =
+            construction_sort_goal_failure(kb, sort, &own, &fields, &subst)
+        {
+            return Err(sort_goal_unmet_error(kb, sort, &failure, span));
+        }
+    }
     Ok(TypeResult {
         ty,
         env: env.clone(),

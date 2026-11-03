@@ -11,8 +11,10 @@
    everything a mailbox hands back is `Message[Untrusted]`, and the parameter is
    what carries that fact into every signature the message reaches. >}
 enum guardians.Message
-  import guardians.{Text, Address, MessageId}
+  import anthill.reflect.typing.{is_entity_of}
+  import guardians.{Text, Address, MessageId, TrustLevel}
   sort Trust = ?
+  requires is_entity_of(Trust, TrustLevel)
   entity message(
     id       : MessageId,
     from     : Address,

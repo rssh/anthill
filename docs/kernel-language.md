@@ -2232,6 +2232,8 @@ The result column may be named `result:`, at any arity: `clamp(12, result: ?r)` 
 
 ```
 RequiresDecl ::= 'requires' [Identifier ':'] Type
+               | 'requires' Name '(' Args ')'          -- a goal, in a sort body
+               | 'requires' 'not' Atom
 ```
 
 An optional binder names the requirement slot (`requires O: Ord[T]`, proposal
@@ -2446,6 +2448,22 @@ sort banking {
 ```
 
 When loaded into the KB, a `requires` declaration emits a `Requirement` fact scoped to the enclosing sort or namespace.
+
+A `requires` followed by a call of a relation, where a requirement has a type, is a goal over the sort's parameters, which every instance of the sort must satisfy:
+
+```
+enum Text {
+  sort Trust = ?
+  requires is_entity_of(Trust, TrustLevel)
+  entity text(raw: String)
+}
+```
+
+At an instance, each parameter the goal names is replaced by the type the instance binds it to (a parameter left out takes its default), and the goal is resolved. `Text[Public]` loads; `Text[Int64]` is a load error wherever the instance is made: a written type, a call that binds an operation's type parameter (`mk[X](x: X) -> Text[X]` called as `mk(5)`), a construction whose field fixes the parameter, in a body or in a clause. A goal is resolved only once every parameter it names is bound to a concrete type, one that holds no variable and no type parameter: `join[L](a: Text[L], b: Text[L]) -> Text[L]` loads, and each call of it is held to the goal at what it binds `L` to. A goal that names none of the parameters is decided once, where it is declared. A search that is cut short, faults, or answers only under goals it cannot decide refuses the instance as undecided. The goal's own variables are existential (`requires level_rank(Trust, ?n)`).
+
+The parameter is substituted as the type it is bound to, so the facts a goal reads are written over types (§4.4): `fact flows_to(Untrusted[], Public[])` answers `requires flows_to(From, To)` at `Transfer[From = Untrusted, To = Public]`, and `fact flows_to(Untrusted, Public)`, which holds of the two instances, does not.
+
+A goal is not a requirement: it names no spec, so the sort does not refine one through it and no dictionary is passed for it. It is recorded as `SortGoalInfo(sort_ref, goal)` in `anthill.reflect`. Only a sort declares one; a namespace and a secondary entry may not. A goal that names a namespace, or a relation or an argument that nothing declares, is refused where it is written.
 
 **Operation-level `requires` over a spec** is an *op-scoped requirement*, not a precondition: when the clause names an algebraic spec, it declares that **this operation** — and not its sort — depends on that spec (`List.contains requires Eq[T]`, so a `List[NonEq]` still dispatches `IndexedSeq.nth`). It may name the operation's **own** type parameters as well as its enclosing sort's — one list, as for a call-site bracket key (§5.2), and renaming them does not change what the clause means. Its effect is to **license** the spec's operations over those parameters in the operation's body: the call stays the spec op and its implementation is chosen at evaluation from the argument's own carrier (value-directed dispatch).
 

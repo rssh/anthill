@@ -623,10 +623,35 @@ module.exports = grammar({
     // DECLARES a parameter, it does not reference one, so a dotted spelling has no
     // meaning here — and the single-token binder keeps `requires <type>` (whose
     // `_type` may itself begin with a dotted `name`) decidable on the `:` lookahead.
+    //
+    //
+    // Proposal 062: the same keyword with a PARENTHESISED goal, `requires
+    // is_entity_of(Trust, TrustLevel)`, is a goal over the sort's type parameters that
+    // every instance of the sort must satisfy. A goal is not a requirement: it names no
+    // spec, so the converter makes it an item of its own and it never reaches the
+    // requirement relation. The goal is a call of a relation by its name — a `fn_term`,
+    // as a rule body writes it — and the two forms part on the token after the name:
+    // `(` is the goal, anything else the type. A negation, `requires not(…)`, is a goal
+    // too: `not` starts no type. A goal takes no binder.
+    //
+    // The callee is a NAME, not every `fn_term` callee: a dotted callee off a bracket
+    // (`Box[V = T].holds(x)`) shares its prefix with the type member `Box[V = T].V`, and
+    // a parenthesised object with a tuple type, and neither is worth a declared conflict.
     requires_declaration: $ => seq(
       'requires',
-      optional(seq(field('binder', $.identifier), ':')),
-      field('type', $._type),
+      choice(
+        seq(
+          optional(seq(field('binder', $.identifier), ':')),
+          field('type', $._type),
+        ),
+        field('goal', choice(alias($._requires_goal_call, $.fn_term), $.prefix_term)),
+      ),
+    ),
+    _requires_goal_call: $ => seq(
+      field('name', choice($.name, $.absolute_name)),
+      '(',
+      commaSep($._fn_arg),
+      ')',
     ),
 
     // WI-448: a trailing `requires` after an operation's return type is the

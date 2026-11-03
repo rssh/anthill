@@ -1679,8 +1679,11 @@ impl<'a> RustCodegen<'a> {
                     }
                     self.emit_const(c, false);
                 }
+                // A sort's goal (proposal 062) constrains types, which erase: nothing of
+                // it reaches generated code.
                 Item::OperationBlock(_)
                 | Item::RequiresDecl(_)
+                | Item::SortGoal(_)
                 | Item::Describe(_)
                 | Item::Proof(_)
                 | Item::ProvidesClause(_)

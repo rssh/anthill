@@ -814,6 +814,18 @@ pub(crate) struct EffectGuardSite {
     pub dots_on_values: Vec<String>,
 }
 
+/// Proposal 062 — one `requires <goal>` of a sort, as the loader lowered it, for the
+/// post-load check ([`KnowledgeBase::record_sort_goal_declaration`]).
+#[derive(Clone, Debug)]
+pub(crate) struct SortGoalDeclaration {
+    /// The sort that declares the goal.
+    pub sort: Symbol,
+    /// The goal, as its `SortGoalInfo` fact holds it.
+    pub goal: TermId,
+    /// Where the goal is written.
+    pub at: crate::span::SourceSpan,
+}
+
 /// WI-835 — one written parameterized type instantiation (`Map[K = Float, V =
 /// Int64]`), as the post-load use-site checks need it: the base sort, the
 /// bindings that name a CARRIER, and where the base name was written.
@@ -904,6 +916,12 @@ impl WrittenTypeSites {
     /// Every site — the `Eq`-key check's: a type an operation's `requires` holds is a key
     /// like one its signature does.
     pub(crate) fn for_eq_key_check(&self) -> &[ParameterizedSite] {
+        &self.sites
+    }
+
+    /// Every site — the sort-goal check's (proposal 062): an instance of a sort is held to
+    /// its goals wherever it is written.
+    pub(crate) fn for_sort_goal_check(&self) -> &[ParameterizedSite] {
         &self.sites
     }
 
@@ -1311,6 +1329,9 @@ pub struct KnowledgeBase {
     /// One per goal of an effect guard the loader lowered, drained by the post-load
     /// undefined-name check. See [`Self::record_effect_guard_site`].
     effect_guard_sites: Vec<EffectGuardSite>,
+    /// One per `requires <goal>` a sort declares (proposal 062), drained by the post-load
+    /// check of the goal itself. See [`Self::record_sort_goal_declaration`].
+    sort_goal_declarations: Vec<SortGoalDeclaration>,
 
     /// WI-865 — WHY each `NoProvider` marker symbol records an absence.
     ///
@@ -2152,6 +2173,9 @@ pub struct KnowledgeBase {
     /// `anthill.reflect.TypePattern`, cached where the connectives are: the resolver asks of
     /// every goal whether it is a pattern's (`typing::synth`). `None` before the prelude loads.
     type_pattern_sym: Option<Symbol>,
+    /// `anthill.reflect.SortGoalInfo` (proposal 062), read where an instance of a sort is
+    /// made — at every call and construction the typer checks.
+    sort_goal_info_sym: Option<Symbol>,
 
     /// The runtime's accounts of what it could not do ([`RuntimeAccount`]), in
     /// [`RuntimeAccount::ALL`]'s order, cached where the connectives are: the bridge reads one
@@ -3040,6 +3064,7 @@ impl KnowledgeBase {
             constructor_symbols: HashSet::new(),
             head_argument_sites: Vec::new(),
             effect_guard_sites: Vec::new(),
+            sort_goal_declarations: Vec::new(),
             absence_records: HashMap::new(),
             absence_marker_syms: HashMap::new(),
             next_var: 0,
@@ -3105,6 +3130,7 @@ impl KnowledgeBase {
             reify_operation_sym: None,
             error_sort_sym: None,
             type_pattern_sym: None,
+            sort_goal_info_sym: None,
             runtime_account_syms: [None; RuntimeAccount::ALL.len()],
             induction_axioms: HashSet::new(),
             unify_connective_sym: None,
@@ -10934,6 +10960,7 @@ impl KnowledgeBase {
         self.reify_operation_sym = self.try_resolve_symbol("anthill.prelude.Error.reify");
         self.error_sort_sym = self.try_resolve_symbol("anthill.prelude.Error");
         self.type_pattern_sym = self.try_resolve_symbol("anthill.reflect.TypePattern");
+        self.sort_goal_info_sym = self.try_resolve_symbol("anthill.reflect.SortGoalInfo");
         self.runtime_account_syms =
             RuntimeAccount::ALL.map(|account| self.try_resolve_symbol(account.qualified_name()));
     }
@@ -12888,6 +12915,20 @@ impl KnowledgeBase {
         std::mem::take(&mut self.effect_guard_sites)
     }
 
+    /// Proposal 062 — record one goal a sort declares, for the post-load check of the goal
+    /// as written: what it names, and the verdict of a goal over none of the sort's
+    /// parameters, which is decided once, at the declaration. After the load, because a
+    /// relation the goal calls may be declared by a later file.
+    pub(crate) fn record_sort_goal_declaration(&mut self, decl: SortGoalDeclaration) {
+        self.sort_goal_declarations.push(decl);
+    }
+
+    /// Take the recorded sort goals, leaving the registry empty — draining, so a later
+    /// `load_all` into this KB judges only its own declarations.
+    pub(crate) fn take_sort_goal_declarations(&mut self) -> Vec<SortGoalDeclaration> {
+        std::mem::take(&mut self.sort_goal_declarations)
+    }
+
     /// WI-835 — take the recorded sites, leaving the registry empty. DRAINING, so
     /// a later `load_all` into this KB checks only its own sites instead
     /// of re-walking (and re-reporting) every batch loaded before it. Handed out as
@@ -13577,6 +13618,12 @@ impl KnowledgeBase {
     /// other connectives; `None` for a KB without the prelude.
     pub(crate) fn error_sort_sym(&self) -> Option<Symbol> {
         self.error_sort_sym
+    }
+
+    /// `anthill.reflect.SortGoalInfo` (proposal 062), resolved once with the other
+    /// connectives; `None` for a KB without the reflect library.
+    pub(crate) fn sort_goal_info_sym(&self) -> Option<Symbol> {
+        self.sort_goal_info_sym
     }
 
     /// `anthill.reflect.TypePattern`, resolved once with the other connectives; `None` for a

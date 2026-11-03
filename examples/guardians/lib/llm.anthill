@@ -9,8 +9,10 @@
 
 -- A prompt is a value carrying a trust label
 enum guardians.Prompt
-  import guardians.{Text}
+  import anthill.reflect.typing.{is_entity_of}
+  import guardians.{Text, TrustLevel}
   sort Trust = ?
+  requires is_entity_of(Trust, TrustLevel)
   entity prompt(body: Text[Trust])
 end
 

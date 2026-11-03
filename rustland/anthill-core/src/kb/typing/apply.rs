@@ -2576,6 +2576,12 @@ pub(super) fn check_apply_iter(
             }
         }
 
+        // Proposal 062 — the instances of sorts with goals this call makes, now that `subst`
+        // holds what it binds the callee's type parameters to.
+        if sorts_declare_goals(kb) {
+            check_call_sort_goals(kb, &subst, &op, span)?;
+        }
+
         // WI-272's per-call-site type-argument STAMP (`set_resolved_type_args`) was
         // written here, and WI-20260921-28TAT removed it with the channel it fed. What
         // it recorded — what each of the callee's `[T_i]` resolves to at THIS call — is

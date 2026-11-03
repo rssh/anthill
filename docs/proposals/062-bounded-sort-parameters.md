@@ -1,8 +1,8 @@
 # 062: A sort carries a GOAL over its type parameters
 
-**Canonical reference:** [`kernel-language.md` §5.4](../kernel-language.md) (sort type parameters), §8.2 (entity subtyping). **Mechanism:** [`../design/constrained-term-substrate.md`](../design/constrained-term-substrate.md).
+**Canonical reference:** [`kernel-language.md` §5.2](../kernel-language.md) ("a goal over the sort's parameters"), §8.2 (entity subtyping). **Mechanism:** [`../design/062-implementation.md`](../design/062-implementation.md) §7.
 
-## Status: Draft (2026-08-22), from WI-20260822-T70A2. Claims marked MEASURED were reproduced against the Rust loader at `b67def46` with a both-sides control.
+## Status: IMPLEMENTED (2026-11-03, WI-20260822-T70A2), Rust only. The mechanism is the design note's shape (A): one judge asked where an instance is made, not a `Constraint::Type` on a variable (062-implementation §7). Drafted 2026-08-22; claims marked MEASURED below were reproduced against the Rust loader at `b67def46` with a both-sides control.
 
 ## Relates to: WI-502 (the constraint substrate — this is its first `Type`-kind producer), WI-569 / WI-570 / WI-571 / WI-572 (Steps 0–3, delivered), WI-835 / WI-644 (the written-site walk, the eager half), WI-067 (never NAF-decide an under-determined guard), WI-539 / WI-840 (the op-clause `requires` overload this reuses), WI-1110 (the cost of conflating two meanings in one clause), examples/guardians (the consumer).
 

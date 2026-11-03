@@ -42,6 +42,10 @@ pub(super) struct ClauseConstraints {
     pub(super) unread_vars: HashSet<u32>,
     /// What the walk found that does not fit — a construction's argument against its field.
     pub(super) found: Vec<ClauseDisagreement>,
+    /// Proposal 062 — what each construction makes, judged once the clause is typed
+    /// ([`judge_construction_instances`]): a field's argument typed later in the clause
+    /// still fixes the instance.
+    pub(super) instances: Vec<ConstructionInstance>,
     /// Variables only a demand has typed so far — a call's argument at a parameter of a
     /// stated type —, with the first such demand; any other position, a test among them
     /// (`domain(?v, T)`, `<=>` against a construction or a literal, a head's bound), takes a
@@ -69,6 +73,7 @@ impl ClauseConstraints {
             unread: Vec::new(),
             unread_vars: HashSet::new(),
             found: Vec::new(),
+            instances: Vec::new(),
             demand_only: HashMap::new(),
             some_args: Vec::new(),
             some_typed: HashMap::new(),
@@ -90,6 +95,7 @@ impl ClauseConstraints {
             unread: self.unread.clone(),
             unread_vars: self.unread_vars.clone(),
             found: Vec::new(),
+            instances: Vec::new(),
             demand_only: self.demand_only.clone(),
             some_args: self.some_args.clone(),
             some_typed: self.some_typed.clone(),
@@ -111,6 +117,7 @@ impl ClauseConstraints {
         self.unread = trial.unread;
         self.unread_vars = trial.unread_vars;
         self.found.extend(trial.found);
+        self.instances.extend(trial.instances);
         self.demand_only = trial.demand_only;
         self.some_args = trial.some_args;
         self.some_typed = trial.some_typed;
@@ -204,6 +211,9 @@ pub(super) enum Misfit {
     /// A position that takes a type holds an expression that is none — an `if`, a lambda —
     /// named by its form.
     NoType { form: &'static str },
+    /// Proposal 062 — a construction makes an instance of a sort at which one of the
+    /// sort's goals over its parameters fails; the refusal, as the typer raises it.
+    SortGoal { error: TypeError },
 }
 
 impl Misfit {
@@ -316,6 +326,7 @@ impl ClauseDisagreement {
                 actual: format!("{form}, which is no type"),
                 site: TypeError::here(),
             },
+            Misfit::SortGoal { error } => error.clone(),
         }
     }
 }
@@ -1263,6 +1274,33 @@ pub(super) fn constrain_application<A: ConstrainedArg>(
                 }
             }
         }
+        if st.checks_constructions && sorts_declare_goals(kb) {
+            if let Some(sort) = kb.sort_of_constructor(functor) {
+                let own = Value::term(own_application(kb, sort));
+                let (own, _) = instantiate_declared_type(kb, &own, &mut inst);
+                let fields = field_types
+                    .iter()
+                    .filter_map(|(_, ty)| match instantiate_declared_type(kb, ty, &mut inst) {
+                        (ty, true) => Some(ty),
+                        (_, false) => None,
+                    })
+                    .collect();
+                // Where the construction is: its first argument that carries a place (an
+                // occurrence's), else the clause's.
+                let at = pos_args
+                    .iter()
+                    .chain(named_args.iter().map(|(_, a)| a))
+                    .find_map(|a| a.span())
+                    .or(st.at);
+                st.instances.push(ConstructionInstance {
+                    ctor: functor,
+                    sort,
+                    own,
+                    fields,
+                    at,
+                });
+            }
+        }
     }
     (nested, result)
 }
@@ -1402,14 +1440,44 @@ fn constrain_domain_test(
 pub(super) fn found_once(found: Vec<ClauseDisagreement>) -> Vec<ClauseDisagreement> {
     let mut once: Vec<ClauseDisagreement> = Vec::with_capacity(found.len());
     for d in found {
-        if !once
-            .iter()
-            .any(|o| o.span == d.span && o.context.kind_tag() == d.context.kind_tag())
-        {
+        if !once.iter().any(|o| {
+            o.span == d.span
+                && o.context.kind_tag() == d.context.kind_tag()
+                && same_sort_goal_refusal(&o.misfit, &d.misfit)
+        }) {
             once.push(d);
         }
     }
     once
+}
+
+/// Whether two misfits found at one place are one refusal: two constructions of a fact share
+/// the fact's place, and refusals of two of them by the goals of two sorts, or at two
+/// instances, are two (proposal 062). Every other misfit at one place is one.
+fn same_sort_goal_refusal(a: &Misfit, b: &Misfit) -> bool {
+    match (a, b) {
+        (
+            Misfit::SortGoal {
+                error:
+                    TypeError::SortGoalUnmet {
+                        sort: sa,
+                        goal: ga,
+                        bindings: ba,
+                        ..
+                    },
+            },
+            Misfit::SortGoal {
+                error:
+                    TypeError::SortGoalUnmet {
+                        sort: sb,
+                        goal: gb,
+                        bindings: bb,
+                        ..
+                    },
+            },
+        ) => (sa, ga, ba) == (sb, gb, bb),
+        _ => true,
+    }
 }
 
 /// Read the constructions a fact writes, as a clause's are read ([`argument_fits_field`]),
@@ -1450,7 +1518,37 @@ pub(super) fn check_fact_constructions(
         }
         _ => collect_term_type_constraints(kb, head, None, &mut st),
     }
+    judge_construction_instances(kb, &mut st);
     found_once(st.found)
+}
+
+/// Proposal 062 — one construction of a clause, as [`construction_sort_goal_failure`] reads
+/// it: its sort's application and its fields' declared types, each at the construction's
+/// instantiation of the sort's parameters.
+pub(super) struct ConstructionInstance {
+    ctor: Symbol,
+    sort: Symbol,
+    own: Value,
+    fields: Vec<Value>,
+    at: Option<crate::span::SourceSpan>,
+}
+
+/// Proposal 062 — what each of a clause's constructions makes
+/// ([`ClauseConstraints::instances`]), read through the clause's typing, held to the goals of
+/// its sorts; a failure is a finding of the clause.
+pub(super) fn judge_construction_instances(kb: &mut KnowledgeBase, st: &mut ClauseConstraints) {
+    for c in std::mem::take(&mut st.instances) {
+        if let Some((sort, failure)) =
+            construction_sort_goal_failure(kb, c.sort, &c.own, &c.fields, &st.subst)
+        {
+            let error = sort_goal_unmet_error(kb, sort, &failure, c.at.map(|s| s.span));
+            st.found.push(ClauseDisagreement {
+                span: c.at,
+                context: TypeErrorContext::Construction { ctor: c.ctor },
+                misfit: Misfit::SortGoal { error },
+            });
+        }
+    }
 }
 
 /// Whether `rid` is an equation — directional (`@[simp]`) or a guarded `lhs = rhs :- g`, its

@@ -3,9 +3,9 @@
 - id: WI-20260822-T70A2-a-sort-s-type-parameter-cannot
 - created: 2026-08-22T14:33:36Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-08-22T17:14:36Z
+- status_at: 2026-11-03T11:53:16Z
 
 - acceptance: cargo-test
 
@@ -116,4 +116,20 @@ NOT A GUARDIANS PREREQUISITE — measured. The guardians suite passes on main wi
 ### 2026-11-02T13:21:26Z — feedback — claude
 
 ACCEPTANCE ROW MOVED HERE FROM WI-20260823-53W12 (user, 2026-11-02). 53W12 asked that proposal 062's guard `requires is_entity_of(Trust, TrustLevel)` 'substitutes and actually resolves as an ordinary two-argument goal'. That needs 062's goal-form `requires` and its discharge per instance, which do not exist, so the row is this ticket's: over `enum TrustLevel { entity Public; entity Untrusted }` and `enum Text { sort Trust = ?; entity text(raw: String); requires is_entity_of(Trust, TrustLevel) }`, `Text[Public]` loads and `Text[Int64]` is refused, the goal resolved with `Trust` substituted. What 53W12 leaves for it, measured on 6c6ae4d0: in a rule body inside `Text`, `Trust` is the parameter's own name, rigid (`rule param(?t) :- ?t <=> Trust` binds `test.….Text.Trust`), and `rule guard(1) :- is_entity_of(Trust, TrustLevel)` holds of nothing — the term the producer substitutes. Pinned by wi_53w12_type_value_in_clause_test::a_sort_parameter_in_a_rule_body_is_the_parameter; that row turns, or is joined by the substituting one, here.
+
+### 2026-11-03T11:53:08Z — feedback — claude
+
+DELIVERED (2026-11-03). Proposal 062 as written, mechanism the design note's shape (A): one judge asked where an instance is made, no `Constraint::Type` producer. Measured first on ca94a52b: `requires is_entity_of(Trust, TrustLevel)` at a sort item was a syntax error, `operation nonsense(t: Text[Int64])` loaded.
+
+SURFACE: `requires <call>` / `requires not(…)` in a sort or enum body (tree-sitter `requires_declaration` gains a `goal` field; corpus `sort_goal_requires.txt`); the converter makes it `Item::SortGoal`, never a `RequiresDecl`, and refuses it in a namespace body, a secondary entry included. The loader emits `anthill.reflect.SortGoalInfo(sort_ref, goal)` (new stdlib entity), one per clause; no `SortRequiresInfo` row.
+
+SEMANTICS (kernel-language §5.2): at an instance each parameter the goal names is replaced by the type it is bound to (a default for one left out) and the goal is resolved, only once every such parameter is concrete (`type_is_ground`: no variable, no type parameter). Holds: a definite answer. Refused (`LoadError::SortGoalUnmet`, naming the sort, the goal as written, `Trust = Int64`, and for `is_entity_of` the admissible entities): a complete search with none. Refused as undecided: cut at depth, faulted, or answered only under goals it could not decide. Sites: every written instance (the WI-835 site record), a call at what it binds the callee's type parameters to (`mk(5)` over `mk[X](x: X) -> Text[X]`, a bracket, a rule body's value slot, a const), a construction in a body and in a clause (its own sort's application and its fields' declared types; a field typed later in the clause too). At the declaration: a goal naming a namespace, an undeclared relation or argument (`TrustLevl`), or another declaration's type parameter is refused once; one naming no parameter is decided there once. The parameter is substituted as a TYPE, so facts a goal reads are written over types (`fact flows_to(Untrusted[], Public[])`); `is_entity_of` is reflexive, so `Text[TrustLevel]` is admitted.
+
+GUARDIANS: `Text`, `Message`, `Prompt` declare the goal; 67 passed, `leak` still refused by the label diagnostic. 53W12's row `a_sort_parameter_in_a_rule_body_is_the_parameter` stays and is joined by `the_parameter_is_substituted_by_its_type`.
+
+FOUND ON THE WAY: the resolver's NAF groundness gate (`occurrence_has_unbound_var`) asserted that no type occurrence reaches it; a substituted negated goal holding a type on an occurrence (`Outside[Buf[E = Int64, N = 3]]`, and every type under ANTHILL_TEST_NODE_CARRIER) panicked there. It reads the type's variables by the type-field walk now.
+
+NOT COVERED (docs/design/062-implementation.md §7): an operation that makes the instance in its body at its own type parameter, its signature not carrying it (`k[Y](y: Y) -> Unit = { let t = mk(y)  () }`), is not held at its callers (`k(5)`): the obligation would have to become `k`'s, and an operation's `requires` over a type variable gates nothing yet (guardians measured.md C2, not filed). A construction refusal in a fact is located at the fact (its arguments carry no place); in a rule body at the construction's first argument.
+
+Rows: wi_t70a2_sort_goal_test (14; its header is the back-out ledger — every part measured with a switch, plus four after /code-review). /code-review (xhigh, 12 findings): fixed 11 — a goal naming no parameter re-decided at each instance, a goal over an enclosing sort's parameter misjudged, a definite answer behind residuals, two goal refusals of one fact kept as one, the clause refusal's place, the hot path's string lookup and allocation, goals resolved again by column inference, a dead doc link, spec emphasis, an undecided cause dropped, the admissible list read off the raw goal; skipped 1 — the goal's well-naming walk is done per decided instance, not cached (only goals that reach a verdict pay it).
 

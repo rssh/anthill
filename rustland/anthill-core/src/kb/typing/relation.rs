@@ -4178,6 +4178,10 @@ fn clause_goal_columns(kb: &mut KnowledgeBase, rid: RuleId) -> Option<Vec<GoalCo
     }
     let (term_slot_slots, term_slot_types): (Vec<SlotKey>, Vec<Value>) =
         term_slots.into_iter().unzip();
+    // What the clause's constructions make is the rule-body pass's to judge, and this pass
+    // reports no finding of the clause: resolved here, their goals would be resolved again
+    // per column read, for nothing.
+    st.instances.clear();
     let (typing, term_slot_types) = finish_clause_typing(kb, rid, head, st, term_slot_types);
     let mut columns = Vec::with_capacity(slots.len());
     // The slots whose variable nothing types and a goal that read nothing takes: such a column

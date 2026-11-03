@@ -1152,6 +1152,17 @@ namespace anthill.reflect
     spec     : Term                                 -- the view: SortView(Ref(Monoid), T=Int64(), ...)
   )
 
+  -- SortGoalInfo: one goal over a sort's type parameters (proposal 062).
+  -- Emitted for each `requires <goal>` clause on a sort, such as
+  -- `requires is_entity_of(Trust, TrustLevel)`. Every instance of the sort
+  -- must satisfy the goal with its parameters substituted. Not a
+  -- SortRequiresInfo: a goal names no spec, and that relation is read as
+  -- refinement. The parameters a goal constrains are the ones it names.
+  entity SortGoalInfo(
+    sort_ref : Term,                                -- the sort the clause is written on
+    goal     : Term                                 -- the goal, as written
+  )
+
   -- SortProvidesInfo: sort provides spec satisfaction (proposal 030
   -- phase α.8 / WI-119 Variant 3). Emitted for each `provides` clause
   -- on a sort. Declares the providing sort's intent: "I claim X

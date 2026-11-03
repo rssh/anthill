@@ -849,6 +849,45 @@ pub enum LoadError {
         /// Where the goal is written.
         span: Span,
     },
+    /// Proposal 062 — a sort's `requires <goal>` names a relation nothing declares, so it
+    /// would refute every instance of the sort, or name an argument nothing declares.
+    /// Load-blocking.
+    UndefinedSortGoal {
+        /// The sort that declares the goal, qualified.
+        sort: String,
+        /// The name the goal writes that names nothing.
+        functor: String,
+        /// Where the goal is written.
+        span: Span,
+    },
+    /// Proposal 062 — a sort's `requires <goal>` names a type parameter that is not the
+    /// sort's own — an enclosing sort's — which no instance of the sort binds. Load-blocking.
+    SortGoalNamesAnotherParameter {
+        /// The sort that declares the goal, qualified.
+        sort: String,
+        /// The parameter, qualified.
+        param: String,
+        /// Where the goal is written.
+        span: Span,
+    },
+    /// Proposal 062 — an instance of a sort at which a goal the sort declares over its
+    /// parameters does not hold, or cannot be decided (`Text[Int64]` under `requires
+    /// is_entity_of(Trust, TrustLevel)`). Load-blocking: a type whose substitution
+    /// carries a refuted goal is not a type of the program.
+    SortGoalUnmet {
+        /// The sort, qualified.
+        sort: String,
+        /// The goal as the sort declares it.
+        goal: String,
+        /// The parameters the goal names, each at the instance's argument (`Trust =
+        /// Int64`); empty for a goal that names none.
+        bindings: String,
+        /// What the goal does there: does not hold (with what is admissible, where that
+        /// can be read off the goal), or cannot be decided, and why.
+        reason: String,
+        /// Where the instance is written, or the call or construction that binds it.
+        span: Option<Span>,
+    },
     /// WI-1058 — the ARGUMENT-position twin of [`Self::UndefinedRuleBodyGoal`] (WI-895's
     /// remaining half): a COMPOUND TERM in a rule body's DATA slot whose functor names
     /// nothing. Raised by the typer's rule-body walk rather than by the loader's goal
@@ -3221,6 +3260,8 @@ impl LoadError {
             | LoadError::UndefinedRuleBodyGoal { span, .. }
             | LoadError::UndefinedContractGoal { span, .. }
             | LoadError::UndefinedEffectGuardGoal { span, .. }
+            | LoadError::UndefinedSortGoal { span, .. }
+            | LoadError::SortGoalNamesAnotherParameter { span, .. }
             | LoadError::HostImplementedUnsupplied { span, .. }
             | LoadError::HostImplementedWithBody { span, .. }
             | LoadError::HostRaiseWithoutTypeValue { span, .. }
@@ -3258,6 +3299,7 @@ impl LoadError {
             | LoadError::UnreducedEquationFunctor { span, .. }
             | LoadError::KeyWithoutEq { span, .. }
             | LoadError::KeyEqNotJudged { span, .. }
+            | LoadError::SortGoalUnmet { span, .. }
             | LoadError::WrittenEffectRowLabel { span, .. }
             | LoadError::UnselectedInstance { span, .. }
             | LoadError::ChangesSealedCode { span, .. }
@@ -3575,6 +3617,20 @@ impl LoadError {
                     undefined_effect_guard_goal_message(functor, *dot_on_value)
                 )
             }
+            LoadError::UndefinedSortGoal { sort, functor, span } => {
+                format!(
+                    "{}: {}",
+                    loc.format_start(*span),
+                    undefined_sort_goal_message(sort, functor)
+                )
+            }
+            LoadError::SortGoalNamesAnotherParameter { sort, param, span } => {
+                format!(
+                    "{}: {}",
+                    loc.format_start(*span),
+                    sort_goal_names_another_parameter_message(sort, param)
+                )
+            }
             LoadError::SortAppliedAsData { sort, span } => {
                 format!("{}: {}", loc.format_start(*span), sort_applied_as_data_message(sort))
             }
@@ -3775,6 +3831,19 @@ impl LoadError {
                 span,
             } => {
                 let msg = key_eq_not_judged_message(container, param, spec, key, reason);
+                match span {
+                    Some(sp) => format!("{}: {}", loc.format_start(*sp), msg),
+                    None => msg,
+                }
+            }
+            LoadError::SortGoalUnmet {
+                sort,
+                goal,
+                bindings,
+                reason,
+                span,
+            } => {
+                let msg = sort_goal_unmet_message(sort, goal, bindings, reason);
                 match span {
                     Some(sp) => format!("{}: {}", loc.format_start(*sp), msg),
                     None => msg,
@@ -5375,6 +5444,33 @@ impl std::fmt::Display for LoadError {
                     span.start,
                     span.end
                 )
+            }
+            LoadError::UndefinedSortGoal { sort, functor, span } => write!(
+                f,
+                "{} at {}..{}",
+                undefined_sort_goal_message(sort, functor),
+                span.start,
+                span.end
+            ),
+            LoadError::SortGoalNamesAnotherParameter { sort, param, span } => write!(
+                f,
+                "{} at {}..{}",
+                sort_goal_names_another_parameter_message(sort, param),
+                span.start,
+                span.end
+            ),
+            LoadError::SortGoalUnmet {
+                sort,
+                goal,
+                bindings,
+                reason,
+                span,
+            } => {
+                let msg = sort_goal_unmet_message(sort, goal, bindings, reason);
+                match span {
+                    Some(sp) => write!(f, "{} at {}..{}", msg, sp.start, sp.end),
+                    None => write!(f, "{}", msg),
+                }
             }
             LoadError::SortAppliedAsData { sort, span } => write!(
                 f,
@@ -11417,6 +11513,17 @@ impl SecondaryEntryPass<'_> {
                      qualified (`Show.show(x)`), which needs no clause",
                     r.span,
                 ),
+                // The converter refuses a goal in a namespace's body, which a secondary
+                // entry is, so only an item list built by hand reaches this arm.
+                Item::SortGoal(g) => self.refuse(
+                    sort,
+                    "requires",
+                    None,
+                    "a goal over the sort's parameters is a condition on every \
+                     instance of the type (proposal 062), and a secondary entry may \
+                     not narrow which instances a type has. Declare it in the sort",
+                    g.span,
+                ),
                 // ── Deferred: 059's NARROW RULE (WI-1001) ────────────────────
                 //
                 // A RULE. Not refused, and not admitted, HERE: both of 059's
@@ -11640,6 +11747,7 @@ impl SecondaryEntryPass<'_> {
                 // `proof` names the very target this set is consulted for.
                 Item::Fact(_)
                 | Item::RequiresDecl(_)
+                | Item::SortGoal(_)
                 | Item::ProvidesClause(_)
                 | Item::ProvidesBlock(_)
                 | Item::Describe(_)
@@ -12016,6 +12124,7 @@ fn declaration_at_dotted_address(item: &Item) -> Option<&Name> {
         | Item::Fact(_)
         | Item::Constraint(_)
         | Item::RequiresDecl(_)
+        | Item::SortGoal(_)
         | Item::ProvidesClause(_)
         | Item::ProvidesBlock(_)
         | Item::Describe(_)
@@ -13542,6 +13651,7 @@ impl<'f> ScopePass for RuleHeadCollectPass<'_, 'f> {
             | Item::Operation(_)
             | Item::Const(_)
             | Item::RequiresDecl(_)
+            | Item::SortGoal(_)
             | Item::Entity(_)
             | Item::Constraint(_)
             | Item::OperationBlock(_)
@@ -17219,6 +17329,38 @@ fn undefined_head_argument_message(functor: &str) -> String {
     )
 }
 
+/// The one wording of [`LoadError::UndefinedSortGoal`].
+fn undefined_sort_goal_message(sort: &str, functor: &str) -> String {
+    format!(
+        "the goal `{sort}` requires of its parameters names `{functor}`, which names \
+         nothing: {}, so the goal could hold of no instance of `{sort}`. {}",
+        no_declaration_census(),
+        undefined_name_repair(functor),
+    )
+}
+
+/// The one wording of [`LoadError::SortGoalNamesAnotherParameter`].
+fn sort_goal_names_another_parameter_message(sort: &str, param: &str) -> String {
+    format!(
+        "the goal `{sort}` requires of its parameters names `{param}`, a type parameter that \
+         is not `{sort}`'s own, and an instance of `{sort}` binds nothing to it. Declare the \
+         goal on the sort whose parameter it names"
+    )
+}
+
+/// The one wording of [`LoadError::SortGoalUnmet`]. A goal that names no parameter has no
+/// bindings to print, and is decided at its declaration.
+pub(crate) fn sort_goal_unmet_message(sort: &str, goal: &str, bindings: &str, reason: &str) -> String {
+    if bindings.is_empty() {
+        format!("'{sort}' requires `{goal}`, which names none of its parameters and {reason}")
+    } else {
+        format!(
+            "'{sort}' requires `{goal}` of its parameters, and at `{bindings}` it {reason}. \
+             Every instance of '{sort}' must satisfy the goals it declares"
+        )
+    }
+}
+
 /// The one wording of [`LoadError::UndefinedEffectGuardGoal`]: the census and repair its
 /// family shares, and the consequence that is the guard's own — the effect is dropped where
 /// the guard grounds and kept where it does not, so whether a call has it depended on how
@@ -18733,6 +18875,18 @@ fn load_phase_inner(
         written_type_sites.for_eq_key_check(),
     ));
     mark!("check_use_site_requires_eq");
+    // Proposal 062 — a sort's goals over its type parameters: each goal as written (what
+    // it names, and the verdict of one that names no parameter), then every written
+    // instance of a sort that declares one. After the whole load, so a relation a goal
+    // calls that a later file declares is there; from the same drain as the `Eq` check
+    // above, since both judge a written instance by what its sort asks of its arguments.
+    let goal_declarations = kb.take_sort_goal_declarations();
+    all_errors.extend(super::typing::check_sort_goal_declarations(kb, goal_declarations));
+    all_errors.extend(super::typing::check_sort_goals_at_written_sites(
+        kb,
+        written_type_sites.for_sort_goal_check(),
+    ));
+    mark!("check_sort_goals");
     // WI-347: operation-override refinement — a carrier's own op overriding a
     // spec op must refine it (effects no wider; pre/post next). Load-blocking
     // (unsound override), so it lands in `all_errors`.
@@ -48119,6 +48273,45 @@ impl<'a> Loader<'a> {
         }
     }
 
+    /// Proposal 062 — `requires <goal>` on the sort `domain`: one `SortGoalInfo` fact, and a
+    /// record for the post-load check of the goal as written
+    /// ([`check_sort_goal_declarations`]). Never a `SortRequiresInfo` row: that relation is
+    /// read as refinement and dispatch, and a goal is neither. A parameter of the sort the
+    /// goal names is the parameter's own name in the stored goal, as in a rule body of the
+    /// sort; each instance substitutes it ([`super::typing::sort_goal_failures`]).
+    fn load_sort_goal(&mut self, g: &SortGoalDecl, domain: Symbol) {
+        use crate::eval::value::Value;
+        // The goal is matched against facts as a rule body's goal is, so its data slots
+        // fold as one's do.
+        let prev_fold = std::mem::replace(&mut self.const_fold, ConstFold::Goal);
+        let goal = self.convert_term(g.goal);
+        self.const_fold = prev_fold;
+        let info = self.kb.resolve_symbol("anthill.reflect.SortGoalInfo");
+        let sort_ref_sym = self.kb.intern("sort_ref");
+        let goal_sym = self.kb.intern("goal");
+        self.kb
+            .register_entity_fields(info, vec![sort_ref_sym, goal_sym]);
+        let sort_term = self.kb.make_name_term_from_sym(domain);
+        self.kb.assert_metadata_fact_carrier(
+            info,
+            Vec::new(),
+            vec![
+                (sort_ref_sym, Value::term(sort_term)),
+                (goal_sym, Value::term(goal)),
+            ],
+            ClauseKind::Fact,
+            domain,
+            None,
+        );
+        let at = SourceSpan::from_span(self.source_id, g.span);
+        self.kb
+            .record_sort_goal_declaration(super::SortGoalDeclaration {
+                sort: domain,
+                goal,
+                at,
+            });
+    }
+
     /// WI-20261013-50ZMN — one `requires` line of the sort `domain`, kept beside the
     /// sort's others ([`Self::requires_lines`]), and the refusal of a line with NO name
     /// that two lines of the sort, under two names, state as well.
@@ -50559,6 +50752,7 @@ impl ScopePass for DeclarePass<'_, '_> {
             | Item::Rule(_)
             | Item::Operation(_)
             | Item::RequiresDecl(_)
+            | Item::SortGoal(_)
             | Item::Fact(_)
             | Item::Constraint(_)
             | Item::OperationBlock(_)
@@ -50678,6 +50872,10 @@ impl ScopePass for LoadPass<'_, '_> {
             Item::RequiresDecl(r) => {
                 self.loader.load_requires_decl(r, domain);
                 "RequiresDecl"
+            }
+            Item::SortGoal(g) => {
+                self.loader.load_sort_goal(g, domain);
+                "SortGoal"
             }
             Item::Entity(e) => {
                 // WI-929 item 8 — a dotted entity is loaded in the scope its prefix

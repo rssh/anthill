@@ -22,16 +22,11 @@ end
 -- signature: without it `Text` is one type and `Email.send(body: Text[Trusted])`
 -- cannot be written at all.
 --
--- The `= ?` IS one, AND THE DOORS BELOW HAVE MOSTLY CLOSED IT. `sort Trust = ?`
--- still admits anything as a written type — `Text[Int64]` in a signature loads
--- clean, measured — so `TrustLevel` remains what these arguments are MEANT to
--- inhabit rather than what the DECLARATION requires. What changed is that
--- nothing can PRODUCE one: the only two constructors are `untrusted` and
--- `trusted`, each pinning its own level, and the entity behind them is
--- `internal`. So the inhabited vocabulary is closed by construction even though
--- the declared one is open, and a `Text[Int64]` position is now uninhabitable
--- rather than merely unreachable. The residue T70A2 still names is the declared
--- side. WI-20260822-T70A2, proposal 062.
+-- WHAT IT RANGES OVER IS DECLARED: `requires is_entity_of(Trust, TrustLevel)` is a
+-- goal every instance of `Text` must satisfy (proposal 062), so `Text[Int64]` in a
+-- signature, or a call that would make one, is refused at load. The doors below
+-- close the inhabited side as well: the only two constructors are `untrusted` and
+-- `trusted`, each pinning its own level, and the entity behind them is `internal`.
 {< Text carrying its trust level in a type parameter. `Trust` is an ordinary
    type argument and unifies like any other, which is the whole
    information-flow mechanism: a sink written `Text[Trusted]` cannot be reached
@@ -43,9 +38,11 @@ end
    mean something rather than merely propagate. >}
 enum guardians.Text
   import anthill.prelude.{String, Permission}
-  import guardians.{Vouch, approved}
+  import anthill.reflect.typing.{is_entity_of}
+  import guardians.{Vouch, approved, TrustLevel}
   import guardians.TrustLevel.{Untrusted, Trusted}
   sort Trust = ?
+  requires is_entity_of(Trust, TrustLevel)
   internal entity text(raw: String)
 
   -- THE FREE DOOR. `Untrusted` is the restrictive label, so minting one asks no
