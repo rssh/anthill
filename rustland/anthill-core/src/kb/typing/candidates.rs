@@ -293,10 +293,148 @@ pub(super) fn open_slots_said(
     }
 }
 
+/// Each parameter of `goal`'s spec it leaves out — unbound, or bound to a variable nothing has
+/// fixed (the call's result, left open) — with what the provisions answering the ones it
+/// writes say of it ([`open_slots_said`]): at `Pc[C = Bag]`, `Element = Int64` beside `Bag
+/// provides Pc[C = Bag, Element = Int64]`, and at `Pc[C = Box[T = Int64]]` the same beside
+/// `Box[T] provides Pc[C = Box[T = T], Element = T]`. A goal that leaves a parameter out
+/// matches no provision as it stands, nor one a variable holds. Empty where it leaves none
+/// out, or where the provisions say none of them, or say them apart; a parameter they leave to
+/// one of their own is left out. Empty, too, where it writes none: `Desc.name()` names no
+/// instance, and the one provider of `Desc` is no answer for it (WI-20261017-CK7PP).
+pub(super) fn params_the_provisions_say(
+    kb: &mut KnowledgeBase,
+    goal: &SortGoal,
+) -> Vec<(Symbol, Value)> {
+    let Some((written, unwritten)) = left_out_of(kb, goal) else {
+        return Vec::new();
+    };
+    let OpenSlotsSaid::One(said) = open_slots_said(kb, &written, &unwritten) else {
+        return Vec::new();
+    };
+    unwritten
+        .into_iter()
+        .zip(said)
+        .filter_map(|(param, said)| Some((param, said?)))
+        .collect()
+}
+
+/// `goal` split into the parameters of its spec it writes and those it leaves out — unbound,
+/// or bound to a variable nothing has fixed ([`params_the_provisions_say`]). `None` where it
+/// leaves none out, or writes none.
+fn left_out_of(kb: &mut KnowledgeBase, goal: &SortGoal) -> Option<(SortGoal, Vec<Symbol>)> {
+    let unwritten: Vec<Symbol> = spec_param_vars(kb, goal.spec_sort)
+        .into_iter()
+        .map(|(param, _)| param)
+        .filter(|param| {
+            goal_binding_value(kb, goal, *param).is_none_or(|v| kb.value_global_var(v).is_some())
+        })
+        .collect();
+    let written = SortGoal {
+        spec_sort: goal.spec_sort,
+        bindings: goal
+            .bindings
+            .iter()
+            .filter(|(_, v)| kb.value_global_var(v).is_none())
+            .cloned()
+            .collect(),
+        carrier: goal.carrier.clone(),
+    };
+    (!unwritten.is_empty() && !written.bindings.is_empty()).then_some((written, unwritten))
+}
+
+/// `goal` with the parameters it leaves out that its provisions say
+/// ([`params_the_provisions_say`]).
+pub(super) fn goal_completed_by_provisions(kb: &mut KnowledgeBase, goal: &SortGoal) -> SortGoal {
+    let spec_qn = kb.qualified_name_of(goal.spec_sort).to_string();
+    let mut completed = goal.clone();
+    for (param, said) in params_the_provisions_say(kb, goal) {
+        let key = spec_param_key(kb, &spec_qn, kb.local_name_of(param), param);
+        let name = kb.local_name_of(key).to_owned();
+        completed.bindings.retain(|(k, _)| *k != key && kb.local_name_of(*k) != name);
+        completed.bindings.push((key, said));
+    }
+    completed
+}
+
+/// Bind each parameter of `spec` a call's `subst` leaves open to what its provisions say
+/// ([`params_the_provisions_say`]) — the variable it is bound to where it is bound to one — so
+/// the instance, the call's own `requires` read at it and its result are read at it. `false`
+/// where nothing was bound.
+pub(super) fn bind_params_the_provisions_say(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    spec: Symbol,
+) -> bool {
+    let goal = sort_goal_from_subst(kb, subst, spec, None);
+    let said = params_the_provisions_say(kb, &goal);
+    let vars = spec_param_vars(kb, spec);
+    for (param, said) in &said {
+        let (_, vid) = vars
+            .iter()
+            .find(|(p, _)| p == param)
+            .expect("a parameter the provisions say is one `spec_param_vars` named");
+        let open = match spec_param_binding(kb, subst, *vid) {
+            Some(bound) => kb
+                .value_global_var(&bound)
+                .expect("a parameter the provisions say is unbound or at an open variable"),
+            None => *vid,
+        };
+        subst.bind_value(kb, open, said.clone());
+    }
+    !said.is_empty()
+}
+
+/// Bind each parameter of `requirement`'s spec a call's `subst` leaves open to the type the
+/// requirement that answers the call writes for it, read at the body's rigids where it names
+/// a parameter in scope: under `requires Pc[C = C, Element = Bit]`, `Pc.both()` is at
+/// `Element = Bit`, and under `requires Pc[C = C, Element = E]` at the caller's `E`; so are
+/// its own `requires Unit[T = Element]` and its result. A parameter bound to one of the
+/// caller's own parameters is not open. `false` where nothing was bound.
+pub(super) fn bind_params_the_requirement_says(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    subst: &mut Substitution,
+    requirement: &SortGoal,
+) -> bool {
+    let rigids = env.param_rigids();
+    let mut bound = false;
+    for (param, vid) in spec_param_vars(kb, requirement.spec_sort) {
+        let Some(written) = goal_binding_value(kb, requirement, param).cloned() else {
+            continue;
+        };
+        // Each name of a parameter in scope, at any depth, is the body's rigid for it.
+        let said = rewrite_type_leaves(kb, &written, &|kb, leaf| {
+            let var = match leaf.head(kb) {
+                ViewHead::Var(Var::Global(var)) => var,
+                _ => type_param_global_var(kb, ref_or_nullary_name_view(kb, leaf)?)?,
+            };
+            let (_, rigid) = rigids.iter().find(|(param, _)| *param == var)?;
+            Some(Value::term(*rigid))
+        })
+        .unwrap_or(written);
+        if !type_is_determined(kb, &said) || type_mentions_type_var(kb, &said) {
+            continue;
+        }
+        let open = match spec_param_binding(kb, subst, vid) {
+            None => vid,
+            Some(bound) => match kb.value_global_var(&bound) {
+                Some(var) if !rigids.iter().any(|(param, _)| *param == var) => var,
+                _ => continue,
+            },
+        };
+        subst.bind_value(kb, open, said);
+        bound = true;
+    }
+    bound
+}
+
 /// WI-20261003-QGVB1 — why no provision answers a `goal` whose requirement leaves slots open
 /// that several provisions answer, each naming other types for them ([`open_slots_said`]):
 /// the slots, the providers and the goal they answer.
 pub(super) struct OpenSlotsNamedApart {
+    /// What leaves the slots unwritten: "the requirement", "the bracket".
+    writer: &'static str,
     slots: Vec<String>,
     providers: Vec<String>,
     answered: String,
@@ -319,14 +457,40 @@ impl OpenSlotsNamedApart {
             return None;
         };
         let (written, slots) = written_slots(kb, goal, &open);
-        Some(OpenSlotsNamedApart {
+        Some(Self::named(kb, "the requirement", slots, &providers, &written))
+    }
+
+    /// The same of a call's bracket, which leaves out the parameters [`left_out_of`] names:
+    /// `Pc[C = Bag].both()` beside `WInt provides Pc[C = Bag, Element = Int64]` and `WStr
+    /// provides Pc[C = Bag, Element = String]`.
+    pub(super) fn of_bracket(kb: &mut KnowledgeBase, goal: &SortGoal) -> Option<Self> {
+        let (written, unwritten) = left_out_of(kb, goal)?;
+        let OpenSlotsSaid::Apart(providers) = open_slots_said(kb, &written, &unwritten) else {
+            return None;
+        };
+        let slots = unwritten
+            .iter()
+            .map(|k| short_name_of(kb.local_name_of(*k)).to_owned())
+            .collect();
+        Some(Self::named(kb, "the bracket", slots, &providers, &written))
+    }
+
+    fn named(
+        kb: &KnowledgeBase,
+        writer: &'static str,
+        slots: Vec<String>,
+        providers: &[Symbol],
+        written: &SortGoal,
+    ) -> Self {
+        OpenSlotsNamedApart {
+            writer,
             slots,
             providers: providers
                 .iter()
                 .map(|p| kb.qualified_name_of(*p).to_string())
                 .collect(),
-            answered: format_goal(kb, &written),
-        })
+            answered: format_goal(kb, written),
+        }
     }
 
     /// "the requirement leaves `Q` unwritten, and `A` and `B` answer `Pair[P = Leaf]` naming
@@ -339,8 +503,8 @@ impl OpenSlotsNamedApart {
                 .join(sep)
         };
         format!(
-            "the requirement leaves {} unwritten, and {} answer `{}` naming different types \
-             for it",
+            "{} leaves {} unwritten, and {} answer `{}` naming different types for it",
+            self.writer,
             quote(&self.slots, ", "),
             quote(&self.providers, " and "),
             self.answered,

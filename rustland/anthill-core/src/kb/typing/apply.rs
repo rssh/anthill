@@ -2756,20 +2756,26 @@ pub(super) fn check_apply_iter(
                 named_results,
             );
             // Where the arguments are silent, what the call's own bracket or expected type
-            // bound the carrier parameter to. `.or_else`, so an argument-pinned carrier still
-            // wins.
-            let carrier =
-                statically_pinned_carrier(kb, &recv_carrier, carrier_param_sym, Some(spec_sort))
-                    .or_else(|| {
-                        carrier_the_call_binds(
-                            kb,
-                            &subst,
-                            spec_sort,
-                            &recv_carrier,
-                            carrier_param_sym,
-                            &op.params,
-                        )
-                    });
+            // bound the carrier parameter to. An argument-pinned carrier still wins. A
+            // requirement of the spec in scope — the caller's, or the clause's `require[…]` —
+            // answers what the bracket leaves open, and no provision is read in its place
+            // (`Tagger[Out = Int64].code()` under `requires Tagger[C = A, Out = Int64]`).
+            let pinned =
+                statically_pinned_carrier(kb, &recv_carrier, carrier_param_sym, Some(spec_sort));
+            let carrier_from_bracket = pinned.is_none();
+            let requirement_in_scope =
+                carrier_from_bracket && requirement_of_spec_in_scope(kb, env, spec_sort);
+            let carrier = pinned.or_else(|| {
+                carrier_the_call_binds(
+                    kb,
+                    &subst,
+                    spec_sort,
+                    &recv_carrier,
+                    carrier_param_sym,
+                    &op.params,
+                    requirement_in_scope,
+                )
+            });
             // WI-1093: the SELF-RECEIVER half alone, which is what
             // `dispatch_spec_op_cached` discriminates on — the carrier-param shape rides
             // in the per-call `subst` instead, so passing it here would put it in the goal
@@ -2784,8 +2790,34 @@ pub(super) fn check_apply_iter(
                 && spec_has_an_abstract_member(kb, spec_sort)
             {
                 dispatch_to_the_clause(kb, env, occ, fn_sym, spec_sort, span)?;
+                // Read at the one requirement of the spec the rule's sort writes, which the
+                // citation's dictionary is ([`bind_params_the_requirement_says`]).
+                if matches!(
+                    occ.clause_condition(),
+                    Some(ClauseCondition::SortRequires { .. })
+                ) {
+                    if let Some(requirement) = env
+                        .rule_domain()
+                        .and_then(|domain| the_one_requirement_of(kb, domain, spec_sort))
+                    {
+                        if bind_params_the_requirement_says(kb, env, &mut subst, &requirement) {
+                            resolved_ret = result_type(kb, &subst, &proj_return_type);
+                        }
+                    }
+                }
             }
             if let Some(carrier_sym) = carrier.as_ref().map(|c| c.sort) {
+                // A parameter a bracket leaves unwritten is the one the provisions answering
+                // the rest say ([`bind_params_the_provisions_say`]): `Pc[C = Bag].both()` is
+                // at `Bag`'s provision of `Pc`, which says its `Element` — for the instance,
+                // for the operation's own `requires` read at it, and for the result. A carrier
+                // an argument pins says them itself (`bind_spec_params_from_carrier`).
+                if carrier_from_bracket
+                    && !requirement_in_scope
+                    && bind_params_the_provisions_say(kb, &mut subst, spec_sort)
+                {
+                    resolved_ret = result_type(kb, &subst, &proj_return_type);
+                }
                 let op_qn = kb.qualified_name_of(fn_sym).to_string();
                 let op_short_sym = kb.intern(short_name_of(&op_qn));
                 // WI-1010: the impl may arrive by ANY of the three supply routes,
@@ -3188,14 +3220,20 @@ pub(super) fn check_apply_iter(
             // so the instance question is asked of the goal — for an operation with no
             // self-receiver, whose receiver would otherwise be the carrier (see
             // [`unclassified_goal_carrier`]). Those tests come first because they are
-            // compares, and they keep every `List` member and every rule body off the walks
-            // below. An abstract goal pins no carrier and passes untouched to the slot route.
+            // compares, and they keep every `List` member and every rule body's own term off
+            // the walks below. An abstract goal pins no carrier and passes untouched to the
+            // slot route. A rule body's call is asked only whether its bracket names an
+            // instance: it is typed as an operation body is (068 §3).
             if carrier.is_none()
                 && matches!(recv_carrier, ReceiverCarrier::NotApplicable)
-                && env.in_evaluated_body()
+                && (env.in_evaluated_body() || env.in_rule_body_evaluation())
             {
                 let goal = sort_goal_from_subst(kb, &subst, spec_sort, None);
-                if let Some(refusal) = unclassified_goal_carrier(kb, &goal).and_then(|c| {
+                let carrier_of_goal = env
+                    .in_evaluated_body()
+                    .then(|| unclassified_goal_carrier(kb, &goal))
+                    .flatten();
+                if let Some(refusal) = carrier_of_goal.and_then(|c| {
                     defaulted_call_at_non_instance(
                         kb,
                         env,
@@ -3209,6 +3247,74 @@ pub(super) fn check_apply_iter(
                 }) {
                     return Err(refusal);
                 }
+                let complete_and_ground = goal.bindings.len()
+                    == kb.type_params_of_sort(spec_sort).len()
+                    && goal
+                        .bindings
+                        .iter()
+                        .all(|(_, v)| type_is_ground(kb, v) && !type_mentions_type_var(kb, v));
+                // A CALL THAT NAMES NO CARRIER, ITS BRACKET WRITING AN INSTANCE NO PROVISION
+                // ANSWERS — `Pc[C = Foo, Element = Int64].both()` beside providers of `Pc` other
+                // than `Foo` — is refused as one at a carrier is (WI-20260829-H0YCE, above): its
+                // default would run at no instance and die at its first sibling. So is one whose
+                // bracket leaves out a parameter that the provisions answering the rest say
+                // apart (`Pc[C = Bag].both()` beside `WInt` at `Element = Int64` and `WStr` at
+                // `Element = String`, [`OpenSlotsNamedApart::of_bracket`]), where no requirement
+                // of the spec in scope answers it. Not a spec nothing provides, whose own
+                // operations run, nor one with no abstract member, nor a call the caller's
+                // `requires` covers ([`defaulted_call_at_non_instance`]).
+                let names_no_instance = (complete_and_ground || !requirement_in_scope)
+                    && call_names_no_carrier(
+                        kb,
+                        spec_sort,
+                        &recv_carrier,
+                        carrier_param_sym,
+                        &op.params,
+                    )
+                    && provides_rows_of_spec(kb, kb.canonical_sort_sym(spec_sort))
+                        .next()
+                        .is_some()
+                    && spec_has_an_abstract_member(kb, spec_sort)
+                    && !op_requires_covers_call(kb, env, &subst, spec_sort);
+                if names_no_instance && !complete_and_ground && !requirement_in_scope {
+                    if let Some(apart) = OpenSlotsNamedApart::of_bracket(kb, &goal) {
+                        return Err(TypeError::DispatchNoMatch {
+                            span,
+                            op: fn_sym,
+                            unmet: Some(Box::new(DispatchFailure {
+                                goal_text: format_goal(kb, &goal),
+                                hint: apart.account(),
+                            })),
+                        });
+                    }
+                }
+                // A rule's scope holds none of its sort's `requires`, which a citation supplies:
+                // there a requirement of the spec in scope answers the bracket, as the caller's
+                // `requires` does in an operation body.
+                if complete_and_ground
+                    && names_no_instance
+                    && !(env.in_rule_body_evaluation() && requirement_in_scope)
+                {
+                    let dispatch_sigma = SigmaCtx {
+                        subst: &subst,
+                        param_rigids: env.param_rigids(),
+                    };
+                    let scope = ResolutionScope {
+                        available_requires: env.enclosing_requires(),
+                        sigma: Some(&dispatch_sigma),
+                        pin: pinned_selection_for(kb, &selections, spec_sort),
+                        sub_goal_requires: env.sub_goal_requires(),
+                    };
+                    if let ResolutionResult::NoMatch { goal_text, hint, .. } =
+                        resolve(kb, &goal, &scope)
+                    {
+                        return Err(TypeError::DispatchNoMatch {
+                            span,
+                            op: fn_sym,
+                            unmet: Some(Box::new(DispatchFailure { goal_text, hint })),
+                        });
+                    }
+                }
                 // A GROUND GOAL A PROVISION ANSWERS THROUGH THE SUBTYPE RELATION: the carrier
                 // provides nothing itself, so no carrier was classified, and the instance is
                 // the provision's (`TOrd.cmp(dog(1), dog(2))` under `AscW provides TOrd[T =
@@ -3216,12 +3322,9 @@ pub(super) fn check_apply_iter(
                 // MEASURED before: `AscW`'s own `cmp` (30) was never reached, and the default
                 // body ran (20). Only at a carrier the goal pins ([`goal_pinned_carrier`]): a
                 // value of an abstract spec is some provider at run time, which chooses there.
-                let ground = goal_pinned_carrier(kb, &goal).is_some()
-                    && goal.bindings.len() == kb.type_params_of_sort(spec_sort).len()
-                    && goal
-                        .bindings
-                        .iter()
-                        .all(|(_, v)| type_is_ground(kb, v) && !type_mentions_type_var(kb, v));
+                let ground = env.in_evaluated_body()
+                    && complete_and_ground
+                    && goal_pinned_carrier(kb, &goal).is_some();
                 if ground {
                     let dispatch_sigma = SigmaCtx {
                         subst: &subst,
@@ -3341,6 +3444,30 @@ pub(super) fn check_apply_iter(
                     &selections,
                     enclosing_requires_clause.is_some(),
                 ) {
+                    // The requirement the call is deferred to says what the call leaves open
+                    // ([`bind_params_the_requirement_says`]), for its own `requires` and its
+                    // result.
+                    if let CallClass::DeferToRequirement {
+                        resolved_spec,
+                        proj_path,
+                        ..
+                    } = &class
+                    {
+                        if proj_path.is_empty()
+                            && same_sort_canonical(kb, resolved_spec.required_sort, spec_sort)
+                        {
+                            if let Some(requirement) = goal_from_requires_entry(kb, resolved_spec) {
+                                if bind_params_the_requirement_says(
+                                    kb,
+                                    env,
+                                    &mut subst,
+                                    &requirement,
+                                ) {
+                                    resolved_ret = result_type(kb, &subst, &proj_return_type);
+                                }
+                            }
+                        }
+                    }
                     classify_or_hold_deferral(
                         kb,
                         env,
@@ -6072,6 +6199,44 @@ fn defaulted_call_at_non_instance(
         return None;
     }
     unprovided_spec_at_carrier(kb, goal, carrier, fn_sym, span)
+}
+
+/// The requirement of `spec` the sort `domain`'s `requires` chain holds, where it holds one:
+/// `None` where it holds none, or two that name different types.
+fn the_one_requirement_of(
+    kb: &mut KnowledgeBase,
+    domain: Symbol,
+    spec: Symbol,
+) -> Option<SortGoal> {
+    let mut found: Option<SortGoal> = None;
+    for entry in requires_chain(kb, domain) {
+        if !same_sort_canonical(kb, entry.required_sort, spec) {
+            continue;
+        }
+        let goal = goal_from_requires_entry(kb, &entry)?;
+        match &found {
+            None => found = Some(goal),
+            Some(first) if goals_equal(kb, first, &goal) => {}
+            Some(_) => return None,
+        }
+    }
+    found
+}
+
+/// Is a requirement of `spec` in scope at a call — a `requires` of the enclosing declaration
+/// at `spec` or at a spec that provides it, the clause's `require[…]`, or the `requires` of
+/// the sort a rule is written in? It answers what a call's bracket leaves open.
+fn requirement_of_spec_in_scope(kb: &KnowledgeBase, env: &TypingEnv, spec: Symbol) -> bool {
+    env.enclosing_requires()
+        .iter()
+        .chain(env.sub_goal_requires())
+        .any(|entry| sort_provides(kb, entry.required_sort, spec))
+        || clause_requires_spec(kb, env, spec)
+        || env.rule_domain().is_some_and(|d| {
+            transitive_required_sorts(kb, d)
+                .iter()
+                .any(|s| sort_provides(kb, *s, spec))
+        })
 }
 
 /// What a call of a defaulted spec operation runs at the instance `tree`, and whether the

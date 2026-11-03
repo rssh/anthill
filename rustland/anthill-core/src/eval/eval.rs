@@ -4039,11 +4039,16 @@ impl Interpreter {
     /// COSTS ONE CACHED `is_empty()` on the universal path: an operation that writes no
     /// `requires` of its own returns at the first test, off `op_requires_chain_rc`'s
     /// per-op cache.
+    ///
+    /// `through` is the provider of the dictionary a woven call enters the body with: a
+    /// parameter of the spec the arguments leave open is then read at its provision
+    /// ([`crate::kb::typing::resolve_bridge_requirements_through`]).
     pub(super) fn fill_missing_op_scoped_slots(
         &mut self,
         target: Symbol,
         arg_values: &[Value],
         requirements: &mut SmallVec<[(Symbol, super::value::Dictionary); 2]>,
+        through: Option<Symbol>,
     ) -> Result<(), EvalError> {
         use crate::kb::typing::BridgeRequirements;
         // The universal early-out: nearly every operation writes no `requires`.
@@ -4068,16 +4073,27 @@ impl Interpreter {
         if missing.is_empty() {
             return Ok(());
         }
-        let (parent, trees) = match crate::kb::typing::resolve_bridge_requirements(
-            &mut self.kb,
-            target,
-            arg_values,
-            // As at the value-directed route, and for its reason: this gate ENTERS the
-            // frame and runs the body, so a named-slot tie is an absence the body may
-            // never read. The host entry raises instead because it is the outermost
-            // route and has no caller to attribute to; here there is one.
-            crate::kb::typing::NamedSlotTies::RecordAbsent,
-        ) {
+        // As at the value-directed route, and for its reason: this gate ENTERS the frame and
+        // runs the body, so a named-slot tie is an absence the body may never read. The host
+        // entry raises instead because it is the outermost route and has no caller to
+        // attribute to; here there is one.
+        let ties = crate::kb::typing::NamedSlotTies::RecordAbsent;
+        let resolved = match through {
+            Some(provider) => crate::kb::typing::resolve_bridge_requirements_through(
+                &mut self.kb,
+                target,
+                arg_values,
+                ties,
+                provider,
+            ),
+            None => crate::kb::typing::resolve_bridge_requirements(
+                &mut self.kb,
+                target,
+                arg_values,
+                ties,
+            ),
+        };
+        let (parent, trees) = match resolved {
             BridgeRequirements::Resolved(parent, trees) => (parent, trees),
             // A TIE IS RAISED, not entered-unsupplied — the rule both sibling routes
             // already apply, and the one place this gate must not be merely
@@ -4179,7 +4195,7 @@ impl Interpreter {
         // WI-20260921-159S9 — every route that enters a body passes HERE, so this is
         // where "an op-scoped slot is as good as a sort-scoped one" is made true for
         // the routes that fill none. See [`Self::fill_missing_op_scoped_slots`].
-        self.fill_missing_op_scoped_slots(target, &arg_values, &mut requirements)?;
+        self.fill_missing_op_scoped_slots(target, &arg_values, &mut requirements, None)?;
         let mut locals: SmallVec<[(Symbol, Value); 4]> = SmallVec::new();
         for (i, (pname, _ptype)) in params.iter().enumerate() {
             locals.push((*pname, arg_values[i].clone()));

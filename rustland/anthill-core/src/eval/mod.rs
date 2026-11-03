@@ -963,8 +963,21 @@ impl Interpreter {
         &mut self,
         sym: Symbol,
         args: &[Value],
+        dispatched_through: Option<(Symbol, &value::Dictionary)>,
         stamps: &[Option<crate::kb::term::TermId>],
     ) -> Result<Value, EvalError> {
+        let slots = self.stamped_slots(sym, stamps)?;
+        self.call_op_bridged(sym, args, dispatched_through, &slots)
+    }
+
+    /// The call site's op-scoped stamps for `sym`, evaluated, as the slots of `sym`'s whole
+    /// chain ([`Self::call_op_bridged`]'s `supplied_slots`): `None` at each of its sort's
+    /// slots and at a stamp this frame-less entry cannot read. Empty where it can read none.
+    fn stamped_slots(
+        &mut self,
+        sym: Symbol,
+        stamps: &[Option<crate::kb::term::TermId>],
+    ) -> Result<Vec<Option<value::Dictionary>>, EvalError> {
         let mut op_slots: Vec<Option<value::Dictionary>> = Vec::with_capacity(stamps.len());
         for stamp in stamps {
             op_slots.push(match stamp {
@@ -976,7 +989,7 @@ impl Interpreter {
             });
         }
         if op_slots.iter().all(Option::is_none) {
-            return self.call_op_bridged(sym, args, None, &[]);
+            return Ok(Vec::new());
         }
         let chain = crate::kb::typing::op_dict_entries(&mut self.kb, sym);
         let sort_len = chain.sort_len();
@@ -990,13 +1003,14 @@ impl Interpreter {
         }
         let mut slots: Vec<Option<value::Dictionary>> = vec![None; sort_len];
         slots.extend(op_slots);
-        self.call_op_bridged(sym, args, None, &slots)
+        Ok(slots)
     }
 
     /// [`Self::call_op_bridged`] for a call the TYPER built its callee's dictionary for
     /// (`CalleeFrame::Dict`), entered as eval's apply enters it (`start_apply_same_sort` →
     /// `start_apply_within`): the dictionary evaluated and the callee's frame expanded from
-    /// it. A dictionary this frame-less entry cannot read — a forward into a caller's frame —
+    /// it, then the call's `stamps` for the callee's own `requires` placed after it. A
+    /// dictionary this frame-less entry cannot read — a forward into a caller's frame —
     /// leaves the frame to the derivation, as [`Self::call_op_bridged_stamped`] leaves a stamp
     /// it cannot read.
     pub(crate) fn call_op_bridged_through(
@@ -1005,11 +1019,13 @@ impl Interpreter {
         args: &[Value],
         spec_op: Symbol,
         dict: crate::kb::term::TermId,
+        stamps: &[Option<crate::kb::term::TermId>],
     ) -> Result<Value, EvalError> {
         let node = crate::kb::node_occurrence::materialize_from_handle(&self.kb, dict);
+        let slots = self.stamped_slots(sym, stamps)?;
         match self.try_eval_requirement_chain_node(&node)? {
-            Some(dict) => self.call_op_bridged(sym, args, Some((spec_op, &dict)), &[]),
-            None => self.call_op_bridged(sym, args, None, &[]),
+            Some(dict) => self.call_op_bridged(sym, args, Some((spec_op, &dict)), &slots),
+            None => self.call_op_bridged(sym, args, None, &slots),
         }
     }
 
@@ -1021,7 +1037,9 @@ impl Interpreter {
         // WI-20260925-P7VP4 — the calling clause's conditions for `sym`'s dictionary chain,
         // one per slot in chain order (`op_dict_entries`): `Some` stands in for what the
         // argument values would derive for that slot, `None` leaves the derivation below
-        // in charge of it. Empty for every caller that is not a woven rule-body call.
+        // in charge of it. Empty for every caller that is not a woven rule-body call or one
+        // carrying the call site's stamps. Beside `dispatched_through` only its op-scoped
+        // half is read: the dictionary lays out the sort's.
         supplied_slots: &[Option<value::Dictionary>],
     ) -> Result<Value, EvalError> {
         // WI-20260923-9R5HN — THE RESOLVER→EVAL BOUNDARY CANCELS A SPLICED WRAPPER. A
@@ -1097,8 +1115,31 @@ impl Interpreter {
         // between them is an inconsistency rather than a program shape — which is what
         // makes the loud treatment the right one, and the census what says it is not
         // firing on something ordinary today.
+        //
+        // The callee's OWN `requires` follow the dictionary's half, as eval's apply places
+        // them (`push_op_scoped_slots`): what the call supplied for a slot, and for the rest
+        // the derivation from the argument values every entry into a body makes
+        // (`fill_missing_op_scoped_slots`). Expanded from the dictionary alone, the frame
+        // had no op-scoped slot, and a default body reading its own `requires`
+        // (`both() -> C requires Unit[T = Element]`) floundered in a rule.
         if let Some((dispatched_from, dict)) = dispatched_through {
-            let requirements = self.expand_dispatching_dict(dispatched_from, sym, dict)?;
+            let mut requirements = self.expand_dispatching_dict(dispatched_from, sym, dict)?;
+            if !supplied_slots.is_empty() {
+                let chain = crate::kb::typing::op_dict_entries(&mut self.kb, sym);
+                let sort_len = chain.sort_len();
+                let names = chain.names(&mut self.kb);
+                for (name, supplied) in names.iter().zip(supplied_slots).skip(sort_len) {
+                    if let Some(supplied) = supplied {
+                        requirements.push((*name, supplied.clone()));
+                    }
+                }
+            }
+            self.fill_missing_op_scoped_slots(
+                sym,
+                args,
+                &mut requirements,
+                Some(dict.impl_sort()),
+            )?;
             return self.invoke_op_with_requirements(sym, args, requirements);
         }
         // WI-20260925-P7VP4 — the calling clause's conditions stand in for their slots
@@ -1112,6 +1153,7 @@ impl Interpreter {
                 args,
                 crate::kb::typing::NamedSlotTies::Raise,
                 supplied_slots,
+                None,
             ) {
                 BridgeRequirements::NoneNeeded => smallvec::SmallVec::new(),
                 BridgeRequirements::Unresolvable { detail } => {
