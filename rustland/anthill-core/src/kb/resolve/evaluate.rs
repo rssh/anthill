@@ -543,7 +543,8 @@ impl KnowledgeBase {
     /// application, a tuple, a collection literal. Not into a reflected expression form
     /// (`anthill.reflect.Expr.*`: a lambda, `let`, `match`, `if`, an unresolved dot, a
     /// binder reference), whose calls run only when the form does and whose variables are
-    /// bound by it; not into a type or a pattern.
+    /// bound by it; not into a call held as data (`anthill.reflect.quoted`, 068 §1.3);
+    /// not into a type or a pattern.
     fn evaluation_descends(&self, v: &Value) -> bool {
         if let Value::Node(o) = v {
             if o.as_expr().is_none() {
@@ -553,9 +554,10 @@ impl KnowledgeBase {
         match v.head(self) {
             ViewHead::Functor {
                 functor: f, ..
-            } => !self
-                .qualified_name_of(f)
-                .starts_with(REFLECT_EXPR_PREFIX),
+            } => {
+                !self.qualified_name_of(f).starts_with(REFLECT_EXPR_PREFIX)
+                    && !self.is_quote_functor(f)
+            }
             _ => false,
         }
     }
@@ -616,7 +618,7 @@ impl KnowledgeBase {
             Some(value) if projected_call && self.value_holds_call(&value) => {
                 self.evaluate_value_at_depth(value, subst, faults, depth + 1)
             }
-            Some(value) => Ok(value),
+            Some(value) => Ok(self.quoted_code(&value).unwrap_or(value)),
             // The bridge ran the callee and it read a requirement of its own that no
             // provider answers at these arguments: no value, as `div(1, 0)` has none.
             None if faults.no_provider_count() > no_provider_before => Err(Stuck::Absent),
@@ -636,7 +638,7 @@ impl KnowledgeBase {
     ) -> Result<Value, Stuck> {
         let no_provider_before = faults.no_provider_count();
         match self.bridge_form_to_eval(form, subst, faults) {
-            Some(value) => Ok(value),
+            Some(value) => Ok(self.quoted_code(&value).unwrap_or(value)),
             None if faults.no_provider_count() > no_provider_before => Err(Stuck::Absent),
             None => Err(self.stuck_state(form, None, subst)),
         }
@@ -655,6 +657,135 @@ impl KnowledgeBase {
             _ => {
                 self.is_written_call(r) && crate::kb::term_view::views_structurally_equal(self, r, call)
             }
+        }
+    }
+
+    /// The code a `quoted(term: x)` holds — `x` — on whatever carrier it rides, or `None`
+    /// for any other value.
+    pub(crate) fn quote_content<V: TermView>(&self, v: &V) -> Option<Value> {
+        let ViewHead::Functor {
+            functor,
+            pos_arity: 0,
+            named_arity: 1,
+        } = v.head(self)
+        else {
+            return None;
+        };
+        if !self.is_quote_functor(functor) {
+            return None;
+        }
+        let key = v.named_keys(self).into_iter().next()?;
+        v.named_arg(self, key).map(|c| c.to_value())
+    }
+
+    /// Is `f` the functor of a call held as data, `anthill.reflect.quoted`?
+    pub(crate) fn is_quote_functor(&self, f: Symbol) -> bool {
+        self.qualified_name_of(f) == crate::kb::QUOTED_ENTITY
+    }
+
+    /// `v` in the shape a call held as data takes (068 §1.3), or `None` when it is in it
+    /// already: every application of an operation in it stands inside a `quoted(term: …)`,
+    /// its own parts too, so a part read out of one is quoted as well. A spine above a
+    /// part that moved is rebuilt as a transient one, as [`Self::evaluate_at`] rebuilds a
+    /// spine whose call it replaced; nothing is interned.
+    ///
+    /// The shape a value a call returns takes (`evaluate_call`, `evaluate_form`) — the term
+    /// `make_fn("anthill.prelude.Int64.add", [as_term(1), as_term(2)])` builds is
+    /// `quoted(term: add(1, 2))` wherever it is read later, and never `Int64.add(1, 2)` run
+    /// — and the shape the loader stores a call in a head's `Term` field in.
+    pub(crate) fn quoted_code(&self, v: &Value) -> Option<Value> {
+        if let Some(code) = self.quote_content(v) {
+            return self.quoted_parts(&code).map(|code| self.quote(code));
+        }
+        if self.is_call_shaped(v) {
+            let code = self.quoted_parts(v).unwrap_or_else(|| v.clone());
+            return Some(self.quote(code));
+        }
+        if !self.evaluation_descends(v) {
+            return None;
+        }
+        self.quoted_parts(v)
+    }
+
+    /// `v` with each child in [`Self::quoted_code`]'s shape, or `None` when none moved.
+    fn quoted_parts(&self, v: &Value) -> Option<Value> {
+        let ViewHead::Functor {
+            functor, pos_arity, ..
+        } = v.head(self)
+        else {
+            return None;
+        };
+        let mut moved = false;
+        let mut part = |c: Value| match self.quoted_code(&c) {
+            Some(q) => {
+                moved = true;
+                q
+            }
+            None => c,
+        };
+        let pos: Vec<Value> = (0..pos_arity)
+            .map(|i| {
+                part(v
+                    .pos_arg(self, i)
+                    .expect("a view reports every positional child its head counts")
+                    .to_value())
+            })
+            .collect();
+        let named: Vec<(Symbol, Value)> = v
+            .named_keys(self)
+            .into_iter()
+            .map(|k| {
+                let c = v
+                    .named_arg(self, k)
+                    .expect("a view reports a child for every key it lists")
+                    .to_value();
+                (k, part(c))
+            })
+            .collect();
+        moved.then(|| Value::Entity {
+            functor,
+            pos: Rc::from(pos),
+            named: Rc::from(named),
+        })
+    }
+
+    /// [`Self::quoted_code`] over a stored term — the loader's, for a call written in a
+    /// head's field declared `Term`. The term is the store's own form, so it is interned.
+    pub(crate) fn quoted_code_term(&mut self, t: TermId) -> TermId {
+        match self.quoted_code(&Value::term(t)) {
+            Some(v) => self
+                .alloc_from_value(&v)
+                .expect("a term with its calls quoted lowers back to a term"),
+            None => t,
+        }
+    }
+
+    /// Is `v` an application of an operation — a call written as [`Self::is_written_call`]
+    /// reads one, or an application whose functor is DECLARED an operation, which is how
+    /// the loader knows one before the operation's record is built? A qualified NAME
+    /// (`S.twice`, a `field_access` chain) is the name it spells, as there.
+    fn is_call_shaped(&self, v: &Value) -> bool {
+        self.is_written_call(v)
+            || (!self.is_qualified_name(v)
+                && matches!(v.head(self), ViewHead::Functor { functor, pos_arity, named_arity }
+                    if pos_arity + named_arity > 0
+                        && self.symbols.get(functor).has_kind(crate::intern::SymbolKind::Operation)))
+    }
+
+    /// `quoted(term: code)`.
+    fn quote(&self, code: Value) -> Value {
+        let qn = crate::kb::QUOTED_ENTITY;
+        let functor = self.try_resolve_symbol(qn).unwrap_or_else(|| {
+            panic!("`{qn}` is unregistered: a call is held as data only where reflect is loaded")
+        });
+        let field = self
+            .entity_field_names(functor)
+            .and_then(|fields| fields.first().copied())
+            .unwrap_or_else(|| panic!("`{qn}` declares no field"));
+        Value::Entity {
+            functor,
+            pos: Rc::from(Vec::new()),
+            named: Rc::from(vec![(field, code)]),
         }
     }
 
@@ -1109,6 +1240,7 @@ enum Implementation {
 /// The reflected expression forms' namespace — the twins a lambda, `let`, `match`, `if`,
 /// an unresolved dot and a binder reference read as through [`TermView`].
 const REFLECT_EXPR_PREFIX: &str = "anthill.reflect.Expr.";
+
 
 /// The keyword of a compound expression a rule body writes that is evaluated where it is
 /// written — an `if`, a `let`, a `match` (kernel-language §5.9), built from its syntax

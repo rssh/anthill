@@ -528,7 +528,13 @@ impl KnowledgeBase {
         if let ViewHead::Opaque = v.head(self) {
             return Err(LowerError::UnsupportedVariant(v.type_name()));
         }
-        Ok(self.canonical_spine(v)?.unwrap_or_else(|| v.clone()))
+        // A leaf that is a call held as data is the goal `make_fn` built (`make_fn("…Int64.lt",
+        // …)` is `quoted(term: lt(…))`): a goal is run, so it is spliced back to the call (068
+        // §1.3). A quote INSIDE the goal stays data, as the same goal written in a rule body
+        // keeps it (§6): `Item(code: quoted(term: add(1, 2)))` finds the fact storing that
+        // code.
+        let v = self.quote_content(v).unwrap_or_else(|| v.clone());
+        Ok(self.canonical_spine(&v)?.unwrap_or(v))
     }
 
     /// `v` with every entity in its value spine in the form a fact is stored in, or `None`

@@ -50,6 +50,10 @@ use std::rc::Rc;
 use smallvec::SmallVec;
 
 use crate::intern::{Decl, ResolveResult, ScopeId, Symbol, SymbolDef, SymbolKind, SymbolTable};
+
+/// The entity a call held as data stands in (proposal 068 §1.3): `quoted(term: add(1, 2))` is
+/// the code `add(1, 2)`, which nothing that reads it runs.
+pub(crate) const QUOTED_ENTITY: &str = "anthill.reflect.quoted";
 use crate::parse::desugar_target as dt;
 use crate::span::{SourceRegistry, SourceSpan};
 use discrim::SubstTree;

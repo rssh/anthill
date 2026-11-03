@@ -3,9 +3,9 @@
 - id: WI-20261102-Y9HSG-a-rule-body-call-woven-with
 - created: 2026-11-02T06:52:51Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-11-02T06:52:51Z
+- status_at: 2026-11-02T22:48:17Z
 
 - acceptance: cargo-test, scaland-sbt-test
 

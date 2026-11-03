@@ -32251,7 +32251,15 @@ impl<'a> Loader<'a> {
     /// would silently match only `E`s whose optional field is `none()`. Clear
     /// `in_value_position` for that field's subtree; every other field converts under
     /// the ambient context.
-    fn convert_arg_value(&mut self, parse_id: ParseTermId, expected: Option<Value>) -> TermId {
+    ///
+    /// `in_quote`: the field is `anthill.reflect.quoted`'s own — its content is the code a
+    /// quote holds, already data, and is not quoted again.
+    fn convert_arg_value(
+        &mut self,
+        parse_id: ParseTermId,
+        expected: Option<Value>,
+        in_quote: bool,
+    ) -> TermId {
         let quoted = expected
             .as_ref()
             .is_some_and(|e| super::typing::is_reflect_term_type(self.kb, e));
@@ -32287,6 +32295,23 @@ impl<'a> Loader<'a> {
         };
         self.in_quoted_term = prev_quoted;
         self.const_fold = prev_fold;
+        // A HEAD is a pattern, never evaluated (proposal 068 §5), so a call written in a
+        // head's field declared `Term` is stored as the data it is there — `fact Item(code:
+        // Int64.add(1, 2))` holds `quoted(term: add(1, 2))` — and a rule reading the field
+        // back reads the code, not a call (§1.3). The outermost quoted field only: what is
+        // inside it is shaped by the same walk. A body computes, as an operation body does,
+        // and is left alone.
+        // Not an equation's head (`lhs <=> rhs`): its replacement computes, and its subject
+        // matches the calls written in the bodies it rewrites.
+        if quoted
+            && !prev_quoted
+            && !in_quote
+            && self.clause_head.is_some_and(|h| h.connective.is_none())
+            && !self.in_body_occurrence
+            && !self.lowering_op_body_term
+        {
+            return self.kb.quoted_code_term(r);
+        }
         r
     }
 
@@ -32818,7 +32843,7 @@ impl<'a> Loader<'a> {
                         // WI-716: route through `convert_arg_value` so a `List[Term]`
                         // element (a quoted pattern) clears the value flag like a bare
                         // `Term` field — its omitted optionals stay vars, not `none()`.
-                        .map(|&id| self.convert_arg_value(id, elem_expected.clone()))
+                        .map(|&id| self.convert_arg_value(id, elem_expected.clone(), false))
                         .collect();
                     let kb_id = self.kb.build_list(&items);
                     self.term_map.insert(parse_id, kb_id);
@@ -32932,6 +32957,8 @@ impl<'a> Loader<'a> {
                 // A WRITTEN DOTTED NAME's member is converted as the name it spells.
                 let member_chain = self.parsed.terms.is_minted(parse_id)
                     && self.parsed.symbols.local_name(functor) == dt::FIELD_ACCESS;
+                // A quote's own field holds the code it quotes (`convert_arg_value`).
+                let in_quote = self.kb.is_quote_functor(new_functor);
 
                 // WI-20260929-TJ3G4 — whether this term is a type argument of a bracket in an
                 // operation's `requires` (`Self::contract_bracket_arg`), and so a use site if it is
@@ -32991,7 +33018,7 @@ impl<'a> Loader<'a> {
                                 .and_then(|ft| ft.get(i).map(|(_, t)| t.clone()))
                         });
                         self.in_member_name = member_chain && i == 1;
-                        let converted = self.convert_arg_value(id, exp.clone());
+                        let converted = self.convert_arg_value(id, exp.clone(), in_quote);
                         self.in_member_name = false;
                         self.wrap_bare_option_value(converted, exp.as_ref())
                     })
@@ -33047,7 +33074,7 @@ impl<'a> Loader<'a> {
                                         .map(|(_, t)| t.clone())
                                 })
                         });
-                        let converted = self.convert_arg_value(id, exp.clone());
+                        let converted = self.convert_arg_value(id, exp.clone(), in_quote);
                         (new_sym, self.wrap_bare_option_value(converted, exp.as_ref()))
                     })
                     .collect();

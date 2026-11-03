@@ -1,0 +1,27 @@
+## Attributes
+
+- id: WI-20261102-ED298-a-term-bound-to-a-variable-is
+- created: 2026-11-02T19:19:57Z
+
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-11-02T20:27:58Z
+
+- acceptance: cargo-test
+
+- tags: proposal-068
+
+## Description
+
+A TERM BOUND TO A VARIABLE IS READ AS A CALL WHEREVER THE BINDING IS READ, so a reflected term whose functor names an operation answers nothing once it passes through a variable (068 §1.2–1.3). Found with the user 2026-11-02, delivering 12151e4f (make_fn from a rule body). PROGRAM: namespace p / import anthill.prelude.{Int64, String, Option, List} / import anthill.prelude.Option.{none} / import anthill.reflect.{Term, term_to_string, as_term, make_fn, term_as_int} / rule inline(?r) :- ?r <=> term_to_string(make_fn("anthill.prelude.Int64.add", [as_term(1), as_term(2)])) / rule viaVar(?r) :- ?t <=> make_fn("anthill.prelude.Int64.add", [as_term(1), as_term(2)]), ?r <=> term_to_string(?t) / rule notNone(1) :- ?t <=> make_fn("anthill.prelude.Int64.add", [as_term(1), as_term(2)]), not(term_as_int(?t) = none) / end. MEASURED on 12151e4f: inline "add(1, 2)" definite — what the same text answers in an operation body, run by the interpreter; viaVar one CONDITIONAL row, two residual goals; notNone one conditional row. Truth: viaVar "add(1, 2)", notNone no row. Before 12151e4f's E repair viaVar answered "3" DEFINITE. MECHANISM: make_fn returns Value::Entity { functor: Int64.add, … }, the reflected term; <=> binds ?t to it, and every later read of the binding (the <=> walk, evaluate_at's chase into an argument) meets an operation-headed application on the Entity carrier, which WI-20260910-FDPJ8 made a CALL on the term and entity carriers (term-carried goals). 12151e4f stopped evaluate_call re-evaluating a value a call returned; a binding still cannot say it holds data. 068 §1.2: nothing stored in a binding is an unevaluated call; §1.3: a Term is a quote's product and the way back is a splice that evaluates (WI-189, open). The exception is design D7's SYMBOLIC call, kept in place where a value is built, which a test must still see as stuck. THE QUESTION: how a value evaluation produced stays a value in σ — a carrier that marks quoted data (what WI-189's quote produces), or the binding reader trusting §1.2 with D7's symbolic calls marked instead. Read 068 §1.2–1.3 and docs/design/068-implementation.md D7 first. ACCEPTANCE (cargo-test, driven): viaVar "add(1, 2)" definite and notNone no row; make_fn_rule_body_term_test::through_a_variable_it_is_undecided turned into those answers, with the back-out measured; D7's symbolic rows unchanged (a call over a proof's eigenvariable kept in a binding still delays a test); FDPJ8's term- and entity-carried goal rows (wi_fdpj8_op_call_carrier_test) unchanged.
+
+## Changes
+
+### 2026-11-02T20:27:49Z — feedback — claude
+
+Delivered, decided with the user 2026-11-02: option (a), mark the data. Each part of a value a call returns that is shaped like a call is carried as Value::Quoted (eval/value.rs), minted in one place (evaluate.rs quote_returned_value, on evaluate_call's and evaluate_form's result), read through by TermView (a compound child is marked again, term_view::quoted_child) and Value::carried, and stopped at by is_written_call, evaluation_descends and FDPJ8's two predicates (Value::is_quoted reads through a σ splice). σ applies under the mark; lowering to a TermId drops it. Measured: viaVar "add(1, 2)" definite, notNone no row; also repaired, each "3" DEFINITE before: the term read back out of a list, out of an entity, and handed back by List.splitFirst beside an unbound tail. D7's symbolic call is unmarked: wi_shed7_reads_wait's rigid row and wi_fdpj8_op_call_carrier_test pass under every back-out. Rows: make_fn_rule_body_term_test (7). Not covered: a Term held in a fact's field (fact Holder(code: Int64.add(1, 2)) through Holder(code: ?c)) is unmarked and still read as a call ("3") — the next question to the user. Full workspace 11,546 passed, 0 failed.
+
+### 2026-11-02T21:30:37Z — feedback — claude
+
+Representation replaced, decided with the user 2026-11-02 after delivery: the quote is a term, not a carrier mark. Value::Quoted is gone; a call held as data is the ordinary entity anthill.reflect.quoted(term: …) on whatever carrier it rides, its own call-shaped parts quoted too (quoted(term: add(quoted(term: mul(2, 3)), 1))), built as an entity spine and never interned at run time. Made by make_fn, by evaluate_call / evaluate_form on what a call returns (quoted_code), and by the loader (convert_arg_value) for a call written in a pattern head's field declared Term — so the fact case is fixed: fact Item(code: Int64.add(1, 2)) reads back "add(1, 2)" where it read "3", and so do a nested fact and a rule head. Not an equation's head (its subject matches written calls; quoted, the @[simp] rewrite stopped firing — measured). Read: evaluation_descends stops at a quote; unify_concrete unifies two quotes by unify_match_values; term_to_string prints the code (TermPrinter::code, both writers); term_functor_name / term_field read the code inside; execute runs a query whose goal is a quote and keeps a quote inside a goal as data, as its rule-body twin does (068 §6; a deep splice missed a fact storing code). A body's construction computes its Term field as an operation body does (15 for both). Prints as itself: ?t = quoted(term: add(1, 2)). Rows: make_fn_rule_body_term_test (12). Full workspace 11,550 passed, 0 failed; Scala suite not run (another session's sbt server).
+

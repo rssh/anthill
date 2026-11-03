@@ -373,6 +373,11 @@ pub struct TermPrinter<'a, V: PrintView + ?Sized> {
     /// spelling before printing it, which read a hash-consed goal only, and left a goal on
     /// any other carrier quoting `var_ref[name = k]`.
     source_spelling: bool,
+    /// The CODE a term holds: a call held as data, `quoted(term: add(1, 2))`, is written as
+    /// the code inside it, `add(1, 2)` — what `term_to_string` renders
+    /// ([`TermPrinter::code`]). Every other print writes the quote, which reloads as the
+    /// data it is.
+    code: bool,
 }
 
 impl<'a> TermPrinter<'a, KnowledgeBase> {
@@ -381,6 +386,7 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
             view: kb,
             reload_faithful: false,
             source_spelling: false,
+            code: false,
         }
     }
 
@@ -391,6 +397,17 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
             view: kb,
             reload_faithful: false,
             source_spelling: true,
+            code: false,
+        }
+    }
+
+    /// A printer of the code a term holds — see [`TermPrinter::code`].
+    pub fn code(kb: &'a KnowledgeBase) -> Self {
+        Self {
+            view: kb,
+            reload_faithful: false,
+            source_spelling: false,
+            code: true,
         }
     }
 
@@ -611,6 +628,11 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
                 // name: the markers are kernel addresses, and a user's own `forall_impl`
                 // shares only the short one.
                 let qname = self.view.qualified_name(*functor);
+                // The code a quote holds, as `source_name` writes it on the term side.
+                if self.code && qname == crate::kb::QUOTED_ENTITY && named_args.len() == 1 {
+                    self.write_occurrence(&named_args[0].1, buf);
+                    return;
+                }
                 if dt::is_control(qname, dt::FORALL_IMPL)
                     && pos_args.len() == 3
                     && named_args.is_empty()
@@ -1157,6 +1179,7 @@ impl<'a, V: PrintView + ?Sized> TermPrinter<'a, V> {
             view,
             reload_faithful: false,
             source_spelling: false,
+            code: false,
         }
     }
 
@@ -1168,6 +1191,7 @@ impl<'a, V: PrintView + ?Sized> TermPrinter<'a, V> {
             view,
             reload_faithful: true,
             source_spelling: false,
+            code: false,
         }
     }
 
@@ -1215,14 +1239,16 @@ impl<'a, V: PrintView + ?Sized> TermPrinter<'a, V> {
         self.view.named_child(item, key)
     }
 
-    /// The name a parameter reference is written by where the text quotes its author
-    /// ([`TermPrinter::source_spelling`]): the `name` child of the loader's `var_ref`
-    /// wrapper, which may stand in a data slot or in a type's binding (`holds(Box[V = n])`).
+    /// The item a wrapper is written as: the `name` child of the loader's `var_ref` wrapper
+    /// where the text quotes its author ([`TermPrinter::source_spelling`]) — it may stand
+    /// in a data slot or in a type's binding (`holds(Box[V = n])`) — and the code a
+    /// `quoted(term: …)` holds where the text is that code ([`TermPrinter::code`]).
     fn source_name(&self, item: &V::Item, f: Symbol) -> Option<V::Item> {
-        if !self.source_spelling || self.view.qualified_name(f) != "anthill.reflect.Expr.var_ref" {
-            return None;
+        match self.view.qualified_name(f) {
+            "anthill.reflect.Expr.var_ref" if self.source_spelling => self.child(item, "name"),
+            crate::kb::QUOTED_ENTITY if self.code => self.child(item, "term"),
+            _ => None,
         }
-        self.child(item, "name")
     }
 
     /// The last dotted segment of a symbol's name. The parse side names a functor as written,

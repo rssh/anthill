@@ -223,6 +223,21 @@ checked at load, and changes nothing above.
 With the rule, every row in the problem section answers its truth column — or undecided where
 the operation has no implementation (§2) — and `?v <=> box(v: C.tag(red()))` binds `box(v: 1)`.
 
+*Amended 2026-11-02* (WI-20261102-ED298, decided with the user): the quote is a term. A `Term`
+whose functor names an operation has the shape of a written call, and σ is applied into a goal
+before the goal is evaluated, so a binding cannot say what it holds; the value says it. A call
+held as data is the ordinary entity `anthill.reflect.quoted(term: …)`, on whatever carrier it
+rides, and each call-shaped part inside it is quoted too — `quoted(term: add(quoted(term: mul(2,
+3)), 1))` — so a part a pattern takes out of one is quoted as well. `make_fn` builds that shape,
+a value a call returns is put in it, and a call written in a head's field declared `Term` is
+stored in it: a head is never evaluated (§5), and the field holds data. No evaluation goes into
+a quote, `<=>` unifies two as data, the code readers read the code inside, and a query whose
+goal is a quote runs the call — the splice of this section; a quote inside a goal stays data, as
+the same goal written in a rule body keeps it (§6). It prints as itself, and reloads as the same
+data in any position. A construction in a body computes its fields, as the same construction in
+an operation body does, and an equation's head is read as its rewrites need it, so a slot
+declared `Term` is a quote context in a pattern head only.
+
 ## 2. When an application does not reduce: SUSPENDED or UNREDUCED
 
 An application that was not evaluated is in one of two states. They are close — neither is a value,

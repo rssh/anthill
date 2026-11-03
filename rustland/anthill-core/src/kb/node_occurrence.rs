@@ -1290,6 +1290,27 @@ impl NodeOccurrence {
         }
     }
 
+    /// The dictionary the typer built for a `ConcreteApplyWithin` call (its
+    /// [`CalleeFrame::Dict`](super::typing::CalleeFrame::Dict)), with the spec operation the
+    /// call dispatches and the provider the resolved tree names — what eval's apply enters
+    /// the callee through (`start_apply_same_sort`). `None` for any other class, a frame the
+    /// typer built no dictionary for, and a tree that pins no provider.
+    pub fn classified_dispatch(&self) -> Option<(Symbol, Symbol, TermId)> {
+        use super::typing::{CallClass, CalleeFrame};
+        let NodeKind::Expr { classification, .. } = &self.kind else {
+            return None;
+        };
+        match classification.borrow().as_deref() {
+            Some(CallClass::ConcreteApplyWithin {
+                spec_op_sym,
+                resolved_tree: Some(tree),
+                frame: CalleeFrame::Dict(dict),
+                ..
+            }) => Some((*spec_op_sym, tree.impl_sort()?, *dict)),
+            _ => None,
+        }
+    }
+
     /// The `PinNow` target alone — [`apply_dispatch`](Self::apply_dispatch) narrowed
     /// to the one verdict a caller with NO frame may act on. Eval's plain-apply arm
     /// reads this, and it is correct THERE only because the two classes that need a

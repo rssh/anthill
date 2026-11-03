@@ -371,6 +371,40 @@ stays a value; an in-body proof in a clause is a load error (`LoadError::ProofIn
   wrote a type form a rule writes as data (`holder(t: Box[V = (?a) -> Int64])`, answered) as
   the application `Arrow(param: String, …)`; it writes the type spelling, as the term walk.
 
+### 5.3 A call held as data is `quoted(term: …)` (WI-20261102-ED298, 2026-11-02)
+
+Proposal 068 §1.3's amendment, decided with the user: an ordinary reflect entity, no carrier of
+its own and no mark a reader must know about — it rides every carrier, is stored as any term
+is, and is never built as a `TermId` where a value is (the mint builds an entity spine).
+
+- **The shape** (`evaluate.rs`, `quoted_code`): every application of an operation in a value
+  stands inside a `quoted`, its own parts too. Made by `make_fn`, by `evaluate_call` and
+  `evaluate_form` on what a call returns, and by the loader (`convert_arg_value`) for a call
+  written in a head's field declared `Term`, where the field is known and the head is a
+  pattern — not an equation's head, whose subject matches written calls (quoted, the
+  `@[simp]` row stops firing). A body's construction computes, as an operation body's does
+  (the twin row measures 15 for both).
+- **Read**: `evaluation_descends` does not go into a quote (`is_quote_functor`, beside the
+  `anthill.reflect.Expr.*` forms); `unify_concrete` unifies two quotes by the structural
+  `unify_match_values`, since a quote's content is a call's shape; `term_to_string` prints the
+  code (`TermPrinter::code`), `term_functor_name` and `term_field` read the code inside
+  (`quote_content`); `execute` splices a query leaf that is itself a quote — the goal
+  `make_fn` built — back to the call (`lower_leaf`), and leaves a quote inside a goal as data,
+  as the rule-body goal does (068 §6; a deep splice made `execute` miss a fact storing code
+  that the rule-body goal finds).
+- **Measured back-outs** (`make_fn_rule_body_term_test`, one switch each): the evaluator's mint
+  and `make_fn`'s are each enough for a rule body's `make_fn` (both out fail four tests); the
+  loader's head wrap, its skip of an equation's head, `unify_concrete`'s quote arm, the code
+  readers and the splice fail one each; the stop in `evaluation_descends` five; the code
+  printer seven.
+- **Measured before**, every one definite or conditional where the truth is the term: `?t <=>
+  make_fn(…)` bound nothing; a term read back out of a list, an entity, or `List.splitFirst`
+  beside an unbound tail answered "3"; `fact Item(code: Int64.add(1, 2))` read back answered
+  "3".
+- **Not here:** `make_apply` builds a macro's OCCURRENCE, code to splice into a body, and is
+  not quoted. A `Term`-typed clause variable unified with a written `quoted(…)` is refused by the
+  clause typing, as with any entity (`?t <=> Box(v: 1)`).
+
 ## 6. 7D48J and DSEXA
 
 Their tickets hold their design questions: 7D48J — the clause environment, how far data is typed
