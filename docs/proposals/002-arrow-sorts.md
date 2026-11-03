@@ -270,12 +270,41 @@ end
 1: `(x: Int64, y: Int64)` and `(z: Int64, x: Int64)` share `x` but do not carry the same labels,
 so `x` maps to `z` and `y` to `x`.
 
-**Open questions.**
+**A call of an operation by its name takes one tuple too.** Rule 3 reaches it: `add2((1, 2))`
+is `add2(1, 2)`, and a named tuple meets the parameters by label, as the arguments written
+separately would. The reason is a generic operation that hands a value on:
 
-1. *A call of an operation by its name.* `add2((1, 2))`, over `operation add2(a: Int64, b:
-   Int64) -> Int64`, is refused today: "expected 2 arguments — the parameter list `add2`
-   declares, got 1 argument". Does rule 3 reach a call by name, or does such a call keep the
-   declared parameter list, with its named arguments, defaults and variadic capture?
+```anthill
+namespace fw
+  import anthill.prelude.{Int64}
+  operation forward[A, B](a: A, g: (A) -> B) -> B = g(a)
+  operation add2(a: Int64, b: Int64) -> Int64 = a * 10 + b
+  operation get_a(t: (a: Int64, b: Int64)) -> Int64 = t.a
+  operation main() -> Int64 = forward((a: 1, b: 2), add2)
+end
+```
+
+Today it is refused: "type mismatch in forward.g (op-arg): expected a 1-parameter function
+((a: Int64, b: Int64)) -> Int64, got a 2-parameter function (_1: Int64, _2: Int64) -> Int64".
+`forward((a: 1, b: 2), get_a)` runs to 1. Under the rule both stand: `A` is `(a: Int64, b:
+Int64)`, `add2`'s tuple carries the same labels, and `forward((a: 1, b: 2), add2)` runs to 12.
+The direct call `add2((a: 1, b: 2))`, refused today ("expected 2 arguments — the parameter list
+`fw.add2` declares, got 1 argument"), runs to 12 as well, as `g(a)` does inside `forward`.
+
+**Open question.** *One tuple that is also a value of the first parameter.* Today this runs to
+112:
+
+```anthill
+namespace fr1
+  import anthill.prelude.{Int64}
+  operation r(t: (Int64, Int64), n: Int64 = 100) -> Int64 = t._1 * 10 + t._2 + n
+  operation main() -> Int64 = r((1, 2))
+end
+```
+
+`(1, 2)` is `t`, and `n` takes its default. Read as the argument list, `(1, 2)` gives `t = 1`
+and `n = 2`, and the call is refused at `t`. Which reading does a call make when a parameter
+after the first has a default, so that both readings could stand?
 
 ## Term Application
 
