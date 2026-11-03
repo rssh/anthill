@@ -41,7 +41,12 @@
 //!    measured on e93e17e2 — loaded and floundered at `find_dictionary(Pc2, …)` when run,
 //!    while a call of the sort's operation there is refused at load (§5.2): the route of the
 //!    clause's read found no provision and routed nothing, silently. Now it is refused where
-//!    it is written, naming the requirement (`CarriedMisfit::Unprovided`).
+//!    it is written, naming the requirement (`CarriedMisfit::Unprovided`). So is a citation at
+//!    a caller's own parameter its `requires` does not cover (`GSat[C = Bag, E = Y]` in
+//!    `a[Y]()`), whose read is now routed from that `requires` where it does; and one that
+//!    fixes nothing for a parameter no column mentions and the read needs (`GSat[C =
+//!    Bag].model(…)`, `CarriedMisfit::Unfixed`), refused as an unfixed citation parameter is
+//!    (§8.1). Each loaded and floundered when run.
 //!
 //! ## Back-out
 //!
@@ -78,7 +83,11 @@
 //!   requires): `a_rule_whose_sort_requires_the_instance_is_not_refused`'s rule row is
 //!   refused `no impl matches`;
 //! - the citation's refusal out (the read left to the routes below, as before): every row of
-//!   `a_citation_at_an_instance_nothing_provides_is_refused` loads clean.
+//!   `a_citation_at_an_instance_nothing_provides_is_refused` loads clean;
+//! - the read at a caller's parameter out (the instance asked ground, as before): its
+//!   `callerParam` row loads clean;
+//! - the unfixed parameter's refusal out: every row of
+//!   `a_citation_leaving_a_parameter_its_read_needs_is_refused` loads clean.
 //!
 //! PASS EITHER WAY, BY DESIGN: `the_full_bracket_and_a_lone_provision_answer` (a bracket that
 //! names one instance, by writing it or by one provision completing it), and the
@@ -87,14 +96,14 @@
 //! `a_citation_is_refused_once_for_two_reads` (the load reports identical refusals once), and
 //! `a_citation_the_caller_supplies_or_a_rule_body_holds_loads`: its rule-body row is a
 //! subgoal, which is never typed as a citation (the citation sites are built outside a rule
-//! body), so the refusal cannot reach it.
+//! body), so the refusal cannot reach it, and its `generic` row, whose read the caller's
+//! `requires` answers, is also answered by the bridge's derivation from the value.
 //!
 //! NOT COVERED: a rule of `GSat[C, E]` cited at `GSat[C = PBox[T = Bit], E = Bit]` — a
 //! provision whose `Element` is its own parameter, under a requirement that writes `Element`
 //! as the sort's — panics `__req_unit not bound` where it floundered at `find_dictionary(Pc2,
 //! …)` before: neither the clause's typing nor the provision says `Element`, and only the
-//! citation knows it. A citation that leaves `E` unwritten (`GSat[C = Bag].model(…)`, no
-//! column mentions `E`) floundered before and still does.
+//! citation knows it.
 
 use anthill_core::eval::value::Value;
 
@@ -388,9 +397,24 @@ namespace d5wfq.cite
   sort GSat[C, E]
     requires Pc2[C = C, Element = E]
     rule model(vs: C) :- vs <=> Pc2.both()
+    rule plain(vs: C) :- vs = vs
+    operation count() -> Int64 effects {Error} = model.takeN(5).length()
   end
+  sort DSat[C, E = Bit]
+    requires Pc2[C = C, Element = E]
+    rule model(vs: C) :- vs <=> Pc2.both()
+  end
+  operation viaY[Y]() -> Int64 effects {Error} requires Pc2[C = Bag, Element = Y] =
+    GSat[C = Bag, E = Y].model(bnil()).takeN(5).length()
   sort Driver
     operation good() -> Int64 effects {Error} = Sat[C = Bag].model(bnil()).takeN(5).length()
+    operation written() -> Int64 effects {Error} =
+      GSat[C = Bag, E = Bit].model(bnil()).takeN(5).length()
+    operation plain() -> Int64 effects {Error} = GSat[C = Bag].plain(bnil()).takeN(5).length()
+    operation dflt() -> Int64 effects {Error} = DSat[C = Bag].model(bnil()).takeN(5).length()
+    operation dfltBare() -> Int64 effects {Error} = DSat.model(bnil()).takeN(5).length()
+    operation inner() -> Int64 effects {Error} = GSat[C = Bag, E = Bit].count()
+    operation generic() -> Int64 effects {Error} = viaY[Y = Bit]()
   end
 end
 "#;
@@ -705,6 +729,13 @@ fn a_citation_at_an_instance_nothing_provides_is_refused() {
             "d5wfq.cite.Pc2[C = d5wfq.cite.Bag, Element = d5wfq.cite.Foo]",
             "d5wfq.cite.GSat",
         ),
+        (
+            "callerParam",
+            "    operation a[Y]() -> Int64 effects {Error} =\n      \
+             GSat[C = Bag, E = Y].model(bnil()).takeN(5).length()\n",
+            "d5wfq.cite.Pc2[C = d5wfq.cite.Bag, Element = ?Y]",
+            "d5wfq.cite.GSat",
+        ),
     ];
     let wrong: Vec<String> = sites
         .iter()
@@ -723,6 +754,43 @@ fn a_citation_at_an_instance_nothing_provides_is_refused() {
         wrong.is_empty(),
         "one refusal naming the requirement; {wrong:#?}"
     );
+}
+
+/// A citation that fixes nothing for a parameter of the cited sort a read of its requirement
+/// needs, and no column mentions, is refused naming the parameter and the spelling that fixes
+/// it: `E` of `GSat[C = Bag].model(…)`, applied, bare and fixed by the argument alone. Each
+/// loaded and floundered at `find_dictionary(Pc2, …)` when run.
+#[test]
+fn a_citation_leaving_a_parameter_its_read_needs_is_refused() {
+    let sites = [
+        (
+            "applied",
+            "    operation a() -> Int64 effects {Error} = GSat[C = Bag].model(bnil()).takeN(5).length()\n",
+        ),
+        (
+            "bare",
+            "    operation a() -> Int64 effects {Error} = GSat[C = Bag].model.takeN(5).length()\n",
+        ),
+        (
+            "argument",
+            "    operation a() -> Int64 effects {Error} = GSat.model(bnil()).takeN(5).length()\n",
+        ),
+    ];
+    let wrong: Vec<String> = sites
+        .iter()
+        .filter_map(|(site, decl)| {
+            let src = CITE.swap("  sort Driver\n", &format!("  sort Driver\n{decl}"));
+            let errors = crate::common::load_errors_of(&src);
+            let named = errors.len() == 1
+                && errors[0].contains(
+                    "type parameter 'E' of `d5wfq.cite.GSat` is not determined at this citation \
+                     of `d5wfq.cite.GSat.model`",
+                )
+                && errors[0].contains("`GSat[E = …].model`");
+            (!named).then(|| format!("{site}: {errors:#?}"))
+        })
+        .collect();
+    assert!(wrong.is_empty(), "one refusal naming `E`; {wrong:#?}");
 }
 
 /// Two clauses of the cited relation read the requirement: the citation is refused once. Each
@@ -761,5 +829,17 @@ fn a_citation_the_caller_supplies_or_a_rule_body_holds_loads() {
         let errors = crate::common::load_errors_of(&src);
         assert!(errors.is_empty(), "`{decl}` loads clean; got {errors:#?}");
     }
-    assert_answers(CITE, "d5wfq.cite", &[("good", "1")]);
+    assert_answers(
+        CITE,
+        "d5wfq.cite",
+        &[
+            ("good", "1"),
+            ("written", "1"),
+            ("plain", "1"),
+            ("dflt", "1"),
+            ("dfltBare", "1"),
+            ("inner", "1"),
+            ("generic", "1"),
+        ],
+    );
 }
