@@ -293,6 +293,94 @@ pub(super) fn open_slots_said(
     }
 }
 
+/// Each parameter of `goal`'s spec it leaves out — unbound, or bound to a variable nothing has
+/// fixed (the call's result, left open) — with what the provisions answering the ones it
+/// writes say of it ([`open_slots_said`]): at `Pc[C = Bag]`, `Element = Int64` beside `Bag
+/// provides Pc[C = Bag, Element = Int64]`, and at `Pc[C = Box[T = Int64]]` the same beside
+/// `Box[T] provides Pc[C = Box[T = T], Element = T]`. A goal that leaves a parameter out
+/// matches no provision as it stands, nor one a variable holds. Empty where it leaves none
+/// out, or where the provisions say none of them, or say them apart; a parameter they leave to
+/// one of their own is left out. Empty, too, where it writes none: `Desc.name()` names no
+/// instance, and the one provider of `Desc` is no answer for it (WI-20261017-CK7PP).
+pub(super) fn params_the_provisions_say(
+    kb: &mut KnowledgeBase,
+    goal: &SortGoal,
+) -> Vec<(Symbol, Value)> {
+    let unwritten: Vec<Symbol> = spec_param_vars(kb, goal.spec_sort)
+        .into_iter()
+        .map(|(param, _)| param)
+        .filter(|param| {
+            goal_binding_value(kb, goal, *param).is_none_or(|v| kb.value_global_var(v).is_some())
+        })
+        .collect();
+    if unwritten.is_empty() {
+        return Vec::new();
+    }
+    let written = SortGoal {
+        spec_sort: goal.spec_sort,
+        bindings: goal
+            .bindings
+            .iter()
+            .filter(|(_, v)| kb.value_global_var(v).is_none())
+            .cloned()
+            .collect(),
+        carrier: goal.carrier.clone(),
+    };
+    if written.bindings.is_empty() {
+        return Vec::new();
+    }
+    let OpenSlotsSaid::One(said) = open_slots_said(kb, &written, &unwritten) else {
+        return Vec::new();
+    };
+    unwritten
+        .into_iter()
+        .zip(said)
+        .filter_map(|(param, said)| Some((param, said?)))
+        .collect()
+}
+
+/// `goal` with the parameters it leaves out that its provisions say
+/// ([`params_the_provisions_say`]).
+pub(super) fn goal_completed_by_provisions(kb: &mut KnowledgeBase, goal: &SortGoal) -> SortGoal {
+    let spec_qn = kb.qualified_name_of(goal.spec_sort).to_string();
+    let mut completed = goal.clone();
+    for (param, said) in params_the_provisions_say(kb, goal) {
+        let key = spec_param_key(kb, &spec_qn, kb.local_name_of(param), param);
+        let name = kb.local_name_of(key).to_owned();
+        completed.bindings.retain(|(k, _)| *k != key && kb.local_name_of(*k) != name);
+        completed.bindings.push((key, said));
+    }
+    completed
+}
+
+/// Bind each parameter of `spec` a call's `subst` leaves open to what its provisions say
+/// ([`params_the_provisions_say`]) — the variable it is bound to where it is bound to one — so
+/// the instance, the call's own `requires` read at it and its result are read at it. `false`
+/// where nothing was bound.
+pub(super) fn bind_params_the_provisions_say(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    spec: Symbol,
+) -> bool {
+    let goal = sort_goal_from_subst(kb, subst, spec, None);
+    let said = params_the_provisions_say(kb, &goal);
+    let vars = spec_param_vars(kb, spec);
+    for (param, said) in &said {
+        let (_, vid) = vars
+            .iter()
+            .find(|(p, _)| p == param)
+            .expect("a parameter the provisions say is one `spec_param_vars` named");
+        let open = match spec_param_binding(kb, subst, *vid) {
+            Some(bound) => kb
+                .value_global_var(&bound)
+                .expect("a parameter the provisions say is unbound or at an open variable"),
+            None => *vid,
+        };
+        subst.bind_value(kb, open, said.clone());
+    }
+    !said.is_empty()
+}
+
 /// WI-20261003-QGVB1 — why no provision answers a `goal` whose requirement leaves slots open
 /// that several provisions answer, each naming other types for them ([`open_slots_said`]):
 /// the slots, the providers and the goal they answer.

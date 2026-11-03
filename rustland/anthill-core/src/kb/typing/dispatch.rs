@@ -794,6 +794,11 @@ pub(super) fn call_names_no_carrier(
 /// A TYPE PARAMETER IS NOT A CARRIER ([`genuine_concrete_sort`]): over `Desc.tag[T = P]()`
 /// which provider `P` stands for is settled per call, and the slot deferral
 /// ([`defer_defaulted_call_to_slot`]) serves it.
+///
+/// A call that binds no carrier parameter is at the provider of the instance its bracket
+/// names ([`provider_of_the_instance`]): `Pc[C = Bag, Element = Int64].both()` over a `Pc`
+/// whose members take a value of neither parameter is at `Bag`. Unread, it was at no carrier,
+/// and its default ran with no instance.
 pub(super) fn carrier_the_call_binds(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
@@ -803,6 +808,8 @@ pub(super) fn carrier_the_call_binds(
     // [`call_names_no_carrier`], where confusing the two was a shipped wrong answer.
     classified_carrier_param: Option<Symbol>,
     op_params: &[(Symbol, Value)],
+    // A requirement of the spec in scope answers what the call's bracket leaves open.
+    requirement_in_scope: bool,
 ) -> Option<GoalCarrier> {
     if !call_names_no_carrier(
         kb,
@@ -819,16 +826,50 @@ pub(super) fn carrier_the_call_binds(
     // with operations of its own). Read as a carrier, the bracket's `String` was asked for an
     // instance of `User` and refused.
     provides_rows_of_spec(kb, canon_spec).next()?;
-    // WI-1102's two-rung ladder: a NULLARY spec op has no receiver to read the carrier off.
-    let carrier_param = spec_carrier_param_or_sole(kb, canon_spec)?;
     let goal = sort_goal_from_subst(kb, subst, canon_spec, None);
-    let bound = goal_binding_value(kb, &goal, carrier_param)?;
-    let base = match type_head(kb, bound) {
-        TypeHead::SortRef(s) | TypeHead::Parameterized { base: s } => s,
-        _ => return None,
+    // WI-1102's two-rung ladder: a NULLARY spec op has no receiver to read the carrier off.
+    let bound = spec_carrier_param_or_sole(kb, canon_spec)
+        .and_then(|carrier_param| goal_binding_value(kb, &goal, carrier_param));
+    let base = match bound {
+        Some(bound) => match type_head(kb, bound) {
+            TypeHead::SortRef(s) | TypeHead::Parameterized { base: s } => {
+                genuine_concrete_sort(kb, s)?
+            }
+            _ => return None,
+        },
+        None => provider_of_the_instance(kb, &goal, requirement_in_scope)?,
     };
-    let base = genuine_concrete_sort(kb, base)?;
     (!carrier_is_abstract_spec(kb, base)).then(|| GoalCarrier::bare(kb.canonical_sort_sym(base)))
+}
+
+/// The carrier of a call that binds no carrier parameter — the spec has none
+/// (`Pc { sort C = ?; sort Element = ?; emp() -> C; both() -> C = emp() }`), or the call
+/// leaves it open: the provider of the instance its bracket names, where a provision with no
+/// carrier parameter is dispatched ([`carrier_has_provision_row`]), its unwritten parameters
+/// as the provisions say them ([`goal_completed_by_provisions`]). `Pc[C = Bag, Element =
+/// Int64].both()` and `Pc[C = Bag].both()` are at `Bag`, and at a witness `W` where `W
+/// provides Pc[C = Bag, Element = Int64]`. Read off the provision that answers, never off a
+/// bracket's binding by its sort: `Pc[C = XBag, Element = X]` is no call at `X`, whatever
+/// `X` provides. Resolved by construction alone: a goal at a type parameter of the caller is
+/// the slot deferral's ([`defer_defaulted_call_to_slot`]). Where a requirement of the spec is
+/// in scope it answers what the bracket leaves open, so the bracket is read as written: it
+/// names an instance only by writing every parameter of it.
+fn provider_of_the_instance(
+    kb: &mut KnowledgeBase,
+    goal: &SortGoal,
+    requirement_in_scope: bool,
+) -> Option<Symbol> {
+    let goal = if requirement_in_scope {
+        goal.clone()
+    } else {
+        goal_completed_by_provisions(kb, goal)
+    };
+    match resolve_in_empty_scope(kb, &goal, DefaultRung::Consult) {
+        ResolutionResult::Resolved(
+            tree @ (ResolvedRequiresNode::Leaf { .. } | ResolvedRequiresNode::Conditional { .. }),
+        ) => tree.impl_sort(),
+        _ => None,
+    }
 }
 
 /// WI-1027 — the carrier a spec-op call pins STATICALLY, whichever of the two receiver

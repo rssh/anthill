@@ -3,9 +3,9 @@
 - id: WI-20261102-ME8WR-a-spec-s-default-body-that
 - created: 2026-11-02T22:55:36Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-11-02T22:55:36Z
+- status_at: 2026-11-03T00:07:05Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -37,3 +37,4 @@ MEASURED on 02de8910, the same on ee37ed91 (before Y9HSG):
 The bracketed call is classified `ConcreteApplyWithin { …, resolved_tree: None, frame: Absent }` where it fails (traced on the `requires Unit[T = Element]` variant of `both`, the first shape found), and `{ resolved_tree: Some(Leaf { impl_sort: Bag }), frame: Dict(…) }` where it answers. A one-parameter spec (`Mk { sort C = ?; e() -> C; viaDefault() -> C = e() }`, wi_shed7_default_body_sibling_test) answers with no other member.
 
 ACCEPTANCE (cargo-test via rustland/scripts/test.sh; every row driven, back-out stated at its site): the program above answers `bnil` in an operation body and in a rule; so does `Pc2[C = Bag].both()` (the provision completes `Element`) and the argument form with `emp` the only body-less member; a second provider builds its own value; a default with a `requires` of its own (`both() -> C requires Unit[T = Element]`, reading `Unit.unit[T = Element]()`) answers too — the resolver's classified route then owes it the op-scoped stamps after the dictionary and the derivation of those it cannot read (WI-20261102-Y9HSG left such a callee on the stamps alone: `DictionaryOwed::OwnSlots`, kb/resolve.rs; `spec_op_requirement_at_member_test`'s two rule-body rows). CONTROLS: the shapes that answer today are unchanged.
+
