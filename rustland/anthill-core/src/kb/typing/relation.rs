@@ -871,23 +871,32 @@ pub(super) fn settle_citation_routes(
     let mut refused = Vec::new();
     for pending in std::mem::take(&mut kb.pending_citation_routes) {
         let mut misfits = Vec::new();
-        let routes = citation_requirement_routes(
-            kb,
-            &pending.chain,
-            &pending.param_rigids,
-            pending.relation,
-            &pending.column_types,
-            &pending.bound_types,
-            &pending.subst,
-            &pending.unopened,
-            &mut misfits,
-        );
+        let routes = citation_requirement_routes(kb, &pending, &mut misfits);
         if !routes.is_empty() {
             pending.occ.set_op_dicts(routes);
         }
         let span = Some(pending.occ.span.span);
         for misfit in misfits {
             let error = match misfit {
+                CarriedMisfit::Unprovided {
+                    requirement,
+                    owner,
+                    why,
+                } => TypeError::Other {
+                    site: TypeError::here(),
+                    span,
+                    context: TypeErrorContext::Rule {
+                        name: pending.relation,
+                        field: RuleField::Whole,
+                    },
+                    expected: "a requirement suppliable at this citation".to_string(),
+                    actual: format!(
+                        "requirement `{requirement}` of `{}` cannot be supplied for the citation \
+                         of `{}`; {why}",
+                        kb.qualified_name_of(owner),
+                        kb.qualified_name_of(pending.relation),
+                    ),
+                },
                 CarriedMisfit::NotAnswered { witness, spec } => TypeError::WitnessDoesNotProvide {
                     span,
                     op: pending.relation,
@@ -1001,18 +1010,14 @@ pub(super) fn settle_citation_routes(
 /// `FromScope` a read of the caller's slot, a construction a `Dictionary(…)`. A resolution
 /// that cannot fill a slot routes nothing — it fails (WI-20260925-4ZZKZ), where it used to
 /// hand back a tree with a marker slot that had to be filtered out here.
-#[allow(clippy::too_many_arguments)]
 fn citation_requirement_routes(
     kb: &mut KnowledgeBase,
-    chain: &DictChain,
-    param_rigids: &[(VarId, TermId)],
-    sym: Symbol,
-    column_types: &[(Symbol, Value)],
-    bound_types: &[(Symbol, Value)],
-    subst: &Substitution,
-    unopened: &[(VarId, Value)],
+    pending: &PendingCitationRoutes,
     misfits: &mut Vec<CarriedMisfit>,
 ) -> SmallVec<[Option<TermId>; 2]> {
+    let sym = pending.relation;
+    let (column_types, bound_types, subst) =
+        (pending.column_types.as_slice(), pending.bound_types.as_slice(), &pending.subst);
     let Some(fd) = find_dictionary_symbol(kb) else {
         return SmallVec::new();
     };
@@ -1081,8 +1086,7 @@ fn citation_requirement_routes(
             };
             let route = route_requirement_read(
                 kb,
-                chain,
-                param_rigids,
+                pending,
                 rid,
                 pos_args,
                 named_args,
@@ -1090,10 +1094,6 @@ fn citation_requirement_routes(
                 &fresh,
                 &carrier_subst,
                 clause_types.as_ref(),
-                column_types,
-                bound_types,
-                subst,
-                unopened,
                 misfits,
             );
             any |= route.is_some();
@@ -1112,8 +1112,7 @@ fn citation_requirement_routes(
 #[allow(clippy::too_many_arguments)]
 fn route_requirement_read(
     kb: &mut KnowledgeBase,
-    chain: &DictChain,
-    param_rigids: &[(VarId, TermId)],
+    pending: &PendingCitationRoutes,
     rid: crate::kb::RuleId,
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
@@ -1121,12 +1120,12 @@ fn route_requirement_read(
     fresh: &[VarId],
     carrier_subst: &Substitution,
     clause_types: Option<&ClauseTypes>,
-    column_types: &[(Symbol, Value)],
-    bound_types: &[(Symbol, Value)],
-    subst: &Substitution,
-    unopened: &[(VarId, Value)],
     misfits: &mut Vec<CarriedMisfit>,
 ) -> Option<TermId> {
+    let (chain, param_rigids, subst) =
+        (&pending.chain, pending.param_rigids.as_slice(), &pending.subst);
+    let (column_types, bound_types) =
+        (pending.column_types.as_slice(), pending.bound_types.as_slice());
     let spec_sort = sort_functor_of_view(kb, &Value::Node(pos_args[0].clone()))?;
     if named_args
         .iter()
@@ -1185,18 +1184,16 @@ fn route_requirement_read(
     // requires Builds[C = C]`, cited at `Sat[C = List[T = Bit]]`, reads `Builds[C = List[T =
     // Bit]]`. No witness could say it: what the call is given carries nothing at the carrier.
     if !is_anchor_form(kb, spec_sort, op_functor) && !op_has_spec_carrier_param(kb, op_functor, spec_sort) {
-        if let Some(route) = sort_requirement_route(
-            kb,
-            chain,
-            param_rigids,
-            subst,
-            rid,
-            spec_sort,
-            fresh,
-            carrier_subst,
-            unopened,
-        ) {
-            return Some(route);
+        // A citation is typed outside a rule body only, where a requirement it cannot supply
+        // is refused as a call's is (kernel-language §5.2); in a rule body the relation is a
+        // subgoal and owes it nothing at load.
+        match sort_requirement_route(kb, pending, rid, spec_sort, fresh, carrier_subst) {
+            Some(Ok(route)) => return Some(route),
+            Some(Err(misfit)) => {
+                misfits.push(misfit);
+                return None;
+            }
+            None => {}
         }
     }
     let bracket = requirement_bracket(kb, &Value::Node(Rc::clone(&pos_args[0])));
@@ -1318,6 +1315,13 @@ fn route_requirement_read(
 /// Why a citation is refused at a requirement read of the cited clause
 /// ([`route_requirement_read`]).
 pub(crate) enum CarriedMisfit {
+    /// The cited sort's requirement, at the instance the citation fixes, which nothing
+    /// answers (`why`, the search's account).
+    Unprovided {
+        requirement: String,
+        owner: Symbol,
+        why: String,
+    },
     /// A named slot of a clause variable's type states the read, and the citation fixes it
     /// to a witness that does not answer it at the citation's types.
     NotAnswered { witness: Symbol, spec: Symbol },
@@ -1748,20 +1752,18 @@ impl ClauseTypes {
 /// in states ([`route_requirement_read`]): the entry, each of the sort's parameters read as the
 /// clause variable that stands for it — the one the clause was closed over, opened as `fresh` —
 /// through `pins`, the clause's typed heads met with the citation's column types, and a
-/// parameter no column mentions as the citation's bracket writes it (`unopened`). `None` where
-/// the sort states no such requirement, or the citation leaves a parameter of it open.
-#[allow(clippy::too_many_arguments)]
+/// parameter no column mentions as the citation's bracket writes it. `None` where the sort
+/// states no such requirement, or the citation leaves a parameter of it open; the misfit where
+/// the instance is ground and nothing answers it — `Sat[C = Foo].model(…)` under `sort Sat[C]
+/// requires Pc2[C = C, Element = Bit]` with no provision of `Pc2[C = Foo, Element = Bit]`.
 fn sort_requirement_route(
     kb: &mut KnowledgeBase,
-    chain: &DictChain,
-    param_rigids: &[(VarId, TermId)],
-    subst: &Substitution,
+    pending: &PendingCitationRoutes,
     rid: crate::kb::RuleId,
     spec_sort: Symbol,
     fresh: &[VarId],
     pins: &Substitution,
-    unopened: &[(VarId, Value)],
-) -> Option<TermId> {
+) -> Option<Result<TermId, CarriedMisfit>> {
     if pins.is_contradiction() {
         return None;
     }
@@ -1788,7 +1790,8 @@ fn sort_requirement_route(
             }
         }
         // A parameter no typed head reads is the one the citation's bracket writes.
-        unopened
+        pending
+            .unopened
             .iter()
             .find(|(canonical, _)| *canonical == vid)
             .map(|(_, written)| written.clone())
@@ -1798,7 +1801,15 @@ fn sort_requirement_route(
         return None;
     }
     let goal = goal_from_requires_entry(kb, &RequiresEntry { spec, ..entry })?;
-    resolve_route(kb, chain, param_rigids, subst, &goal)
+    match resolve_at_caller(kb, &pending.chain, &pending.param_rigids, &pending.subst, &goal, None) {
+        ResolutionResult::Resolved(tree) => emit_route(kb, &pending.chain, &tree).map(Ok),
+        failure @ ResolutionResult::NoMatch { .. } => Some(Err(CarriedMisfit::Unprovided {
+            requirement: format_goal(kb, &goal),
+            owner: kb.rule_domain(rid),
+            why: describe_resolution_failure(kb, &failure),
+        })),
+        _ => None,
+    }
 }
 
 /// The tail every route shares: resolve `goal` against the citing caller's frame `chain` —
@@ -1824,6 +1835,21 @@ fn resolve_against_caller(
     goal: &SortGoal,
     pin: Option<&InstanceSelection>,
 ) -> Option<ResolvedRequiresNode> {
+    match resolve_at_caller(kb, chain, param_rigids, subst, goal, pin) {
+        ResolutionResult::Resolved(tree) => Some(tree),
+        _ => None,
+    }
+}
+
+/// [`resolve_against_caller`]'s search, with its account where it fails.
+fn resolve_at_caller(
+    kb: &mut KnowledgeBase,
+    chain: &DictChain,
+    param_rigids: &[(VarId, TermId)],
+    subst: &Substitution,
+    goal: &SortGoal,
+    pin: Option<&InstanceSelection>,
+) -> ResolutionResult {
     let sigma = SigmaCtx {
         subst,
         param_rigids,
@@ -1834,10 +1860,7 @@ fn resolve_against_caller(
         pin,
         sub_goal_requires: &[],
     };
-    match resolve(kb, goal, &scope) {
-        ResolutionResult::Resolved(tree) => Some(tree),
-        _ => None,
-    }
+    resolve(kb, goal, &scope)
 }
 
 /// A resolved route as the projection the citation passes.

@@ -36,6 +36,13 @@
 //!    entered through that dictionary reads `Element` off its provider's provision
 //!    (`resolve_bridge_requirements_through`).
 //!
+//! 4. A citation at an instance where nothing provides the cited sort's requirement —
+//!    `Sat[C = Foo].model(foo())` under `sort Sat[C] requires Pc2[C = C, Element = Bit]`,
+//!    measured on e93e17e2 — loaded and floundered at `find_dictionary(Pc2, …)` when run,
+//!    while a call of the sort's operation there is refused at load (§5.2): the route of the
+//!    clause's read found no provision and routed nothing, silently. Now it is refused where
+//!    it is written, naming the requirement (`CarriedMisfit::Unprovided`).
+//!
 //! ## Back-out
 //!
 //! Measured 2026-11-03 in one build, a temporary switch each:
@@ -69,20 +76,25 @@
 //!   panics `__req_unit not bound` (the first, `ruleT`, ends the test);
 //! - the rule's exemption out (the full bracket refused in a rule whatever its sort
 //!   requires): `a_rule_whose_sort_requires_the_instance_is_not_refused`'s rule row is
-//!   refused `no impl matches`.
+//!   refused `no impl matches`;
+//! - the citation's refusal out (the read left to the routes below, as before): every row of
+//!   `a_citation_at_an_instance_nothing_provides_is_refused` loads clean.
 //!
 //! PASS EITHER WAY, BY DESIGN: `the_full_bracket_and_a_lone_provision_answer` (a bracket that
 //! names one instance, by writing it or by one provision completing it), and the
 //! operation-body row of `a_rule_whose_sort_requires_the_instance_is_not_refused` (the
-//! caller's `requires` covers it, `op_requires_covers_call`).
+//! caller's `requires` covers it, `op_requires_covers_call`),
+//! `a_citation_is_refused_once_for_two_reads` (the load reports identical refusals once), and
+//! `a_citation_the_caller_supplies_or_a_rule_body_holds_loads`: its rule-body row is a
+//! subgoal, which is never typed as a citation (the citation sites are built outside a rule
+//! body), so the refusal cannot reach it.
 //!
 //! NOT COVERED: a rule of `GSat[C, E]` cited at `GSat[C = PBox[T = Bit], E = Bit]` — a
 //! provision whose `Element` is its own parameter, under a requirement that writes `Element`
 //! as the sort's — panics `__req_unit not bound` where it floundered at `find_dictionary(Pc2,
 //! …)` before: neither the clause's typing nor the provision says `Element`, and only the
-//! citation knows it. A citation that leaves `E` unwritten, or writes one nothing provides
-//! `Pc2` at, floundered before and still does, as a citation of `Sat[C]` at an instance
-//! nothing provides does.
+//! citation knows it. A citation that leaves `E` unwritten (`GSat[C = Bag].model(…)`, no
+//! column mentions `E`) floundered before and still does.
 
 use anthill_core::eval::value::Value;
 
@@ -343,6 +355,42 @@ namespace d5wfq.one
   end
   sort Driver
     operation op() -> Bag = NoUnit[C = Bag, E = Bit].m()
+  end
+end
+"#;
+
+/// Citations of a sort's rule whose requirement no provision answers at the cited instance.
+const CITE: &str = r#"
+namespace d5wfq.cite
+  import anthill.prelude.{Int64, Error, Bool}
+
+  sort Pc2
+    sort C = ?
+    sort Element = ?
+    operation emp() -> C
+    operation both() -> C = emp()
+  end
+  sort Bit
+    entity t
+  end
+  sort Bag
+    entity bnil
+    provides Pc2[C = Bag, Element = Bit]
+    operation emp() -> Bag = bnil()
+  end
+  sort Foo
+    entity foo
+  end
+  sort Sat[C]
+    requires Pc2[C = C, Element = Bit]
+    rule model(vs: C) :- vs <=> Pc2.both()
+  end
+  sort GSat[C, E]
+    requires Pc2[C = C, Element = E]
+    rule model(vs: C) :- vs <=> Pc2.both()
+  end
+  sort Driver
+    operation good() -> Int64 effects {Error} = Sat[C = Bag].model(bnil()).takeN(5).length()
   end
 end
 "#;
@@ -615,4 +663,103 @@ fn a_rule_reads_the_parameter_its_citation_writes() {
 #[test]
 fn a_parametric_provision_takes_the_call_sites_evidence() {
     assert_answers(GENERIC, "d5wfq.generic", &[("boxT", "1"), ("boxF", "0")]);
+}
+
+/// A citation in an operation body at an instance where nothing provides the cited sort's
+/// requirement is refused where it is written, as a call of the sort's operation there is
+/// (kernel-language §5.2): the applied citation, the bare one, one in an `if` branch, one whose
+/// argument fixes the instance, and a generic sort's `E` written at a type nothing provides
+/// `Pc2` at. Each loaded and floundered at `find_dictionary(Pc2, …)` when run.
+#[test]
+fn a_citation_at_an_instance_nothing_provides_is_refused() {
+    let sites = [
+        (
+            "applied",
+            "    operation a() -> Int64 effects {Error} = Sat[C = Foo].model(foo()).takeN(5).length()\n",
+            "d5wfq.cite.Pc2[C = d5wfq.cite.Foo, Element = d5wfq.cite.Bit]",
+            "d5wfq.cite.Sat",
+        ),
+        (
+            "bare",
+            "    operation a() -> Int64 effects {Error} = Sat[C = Foo].model.takeN(5).length()\n",
+            "d5wfq.cite.Pc2[C = d5wfq.cite.Foo, Element = d5wfq.cite.Bit]",
+            "d5wfq.cite.Sat",
+        ),
+        (
+            "if",
+            "    operation a(b: Bool) -> Int64 effects {Error} =\n      \
+             if b then Sat[C = Foo].model(foo()).takeN(5).length() else 0\n",
+            "d5wfq.cite.Pc2[C = d5wfq.cite.Foo, Element = d5wfq.cite.Bit]",
+            "d5wfq.cite.Sat",
+        ),
+        (
+            "argument",
+            "    operation a() -> Int64 effects {Error} = Sat.model(foo()).takeN(5).length()\n",
+            "d5wfq.cite.Pc2[C = d5wfq.cite.Foo, Element = d5wfq.cite.Bit]",
+            "d5wfq.cite.Sat",
+        ),
+        (
+            "generic",
+            "    operation a() -> Int64 effects {Error} =\n      \
+             GSat[C = Bag, E = Foo].model(bnil()).takeN(5).length()\n",
+            "d5wfq.cite.Pc2[C = d5wfq.cite.Bag, Element = d5wfq.cite.Foo]",
+            "d5wfq.cite.GSat",
+        ),
+    ];
+    let wrong: Vec<String> = sites
+        .iter()
+        .filter_map(|(site, decl, requirement, owner)| {
+            let src = CITE.swap("  sort Driver\n", &format!("  sort Driver\n{decl}"));
+            let errors = crate::common::load_errors_of(&src);
+            let named = errors.len() == 1
+                && errors[0].contains(&format!(
+                    "requirement `{requirement}` of `{owner}` cannot be supplied for the citation \
+                     of `{owner}.model`"
+                ));
+            (!named).then(|| format!("{site}: {errors:#?}"))
+        })
+        .collect();
+    assert!(
+        wrong.is_empty(),
+        "one refusal naming the requirement; {wrong:#?}"
+    );
+}
+
+/// Two clauses of the cited relation read the requirement: the citation is refused once. Each
+/// read is a misfit of its own, and the load reports the identical refusals as one.
+#[test]
+fn a_citation_is_refused_once_for_two_reads() {
+    let src = CITE
+        .swap(
+            "    rule model(vs: C) :- vs <=> Pc2.both()\n  end\n  sort GSat",
+            "    rule model(vs: C) :- vs <=> Pc2.both()\n    \
+             rule model(vs: C) :- vs <=> Pc2.emp()\n  end\n  sort GSat",
+        )
+        .swap(
+            "  sort Driver\n",
+            "  sort Driver\n    operation a() -> Int64 effects {Error} = \
+             Sat[C = Foo].model(foo()).takeN(5).length()\n",
+        );
+    let errors = crate::common::load_errors_of(&src);
+    assert!(
+        errors.len() == 1 && errors[0].contains("cannot be supplied for the citation"),
+        "one refusal; got {errors:#?}"
+    );
+}
+
+/// CONTROL: a citation the caller's `requires` covers, and the relation as a subgoal of a rule
+/// body — where the requirement is not owed at load (§5.2) — load as before; a citation at a
+/// provided instance runs.
+#[test]
+fn a_citation_the_caller_supplies_or_a_rule_body_holds_loads() {
+    for decl in [
+        "    operation a() -> Int64 effects {Error} requires Pc2[C = Foo, Element = Bit] =\n      \
+         Sat[C = Foo].model(foo()).takeN(5).length()\n",
+        "  end\n  rule r(?n) :- Sat.model(foo()), ?n = 1\n  sort Rest\n",
+    ] {
+        let src = CITE.swap("  sort Driver\n", &format!("  sort Driver\n{decl}"));
+        let errors = crate::common::load_errors_of(&src);
+        assert!(errors.is_empty(), "`{decl}` loads clean; got {errors:#?}");
+    }
+    assert_answers(CITE, "d5wfq.cite", &[("good", "1")]);
 }
