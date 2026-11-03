@@ -1003,12 +1003,14 @@ impl Copier {
             bindings,
             span,
             origin,
+            operation,
         } = site;
         ParameterizedSite {
             base: plain(base),
             bindings: self.keyed_values(bindings),
             span: plain(span),
             origin: plain(origin),
+            operation: plain(operation),
         }
     }
 

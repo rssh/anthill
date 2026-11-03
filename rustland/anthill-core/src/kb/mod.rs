@@ -871,6 +871,12 @@ pub(crate) struct ParameterizedSite {
     pub span: SourceSpan,
     /// Which walk recorded it — see [`SiteOrigin`].
     pub origin: SiteOrigin,
+    /// WI-20261102-7AB56 — the operation the type is written in, its signature or its body:
+    /// its declared parameters are receivers a projection written there can name, so a key
+    /// `Set[T = x.E]` is read at `x`'s declared type. A binder of the body is a symbol of
+    /// its own, never a parameter's, so a projection off one is not read as off the
+    /// parameter it shadows. `None` outside an operation.
+    pub operation: Option<Symbol>,
 }
 
 /// Which walk recorded a [`ParameterizedSite`], by which [`WrittenTypeSites`] hands it to

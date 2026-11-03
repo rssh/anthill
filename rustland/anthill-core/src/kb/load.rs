@@ -369,6 +369,23 @@ fn written_effect_row_label_message(
     )
 }
 
+/// WI-20261102-7AB56 — ONE rendering for [`LoadError::KeyEqNotJudged`], shared by the
+/// located and the bare face so the two cannot drift: the bare face is the batch's dedup key.
+fn key_eq_not_judged_message(
+    container: &str,
+    param: &str,
+    spec: &str,
+    key: &str,
+    reason: &str,
+) -> String {
+    format!(
+        "'{container}' requires `{spec}` at its parameter `{param}`, and whether `{param} = \
+         {key}` provides it is not known: the projection does not read here ({reason}). A \
+         key's projection is read off the declared type of a parameter of the operation the \
+         key is written in; write the key off one, or as the type it stands for."
+    )
+}
+
 /// A diagnostic that BLOCKS the load — every variant, without exception. A
 /// `load_all` `Err` means the program will not run: callers print and exit,
 /// they do not triage.
@@ -1149,6 +1166,26 @@ pub enum LoadError {
         /// The carrier bound where lawful `Eq` is required (`anthill.prelude.Float`).
         carrier: String,
         /// WI-835: where the instantiation is written — the span of its base name.
+        span: Option<Span>,
+    },
+    /// WI-20261102-7AB56: the key [`Self::KeyWithoutEq`] would judge is a type projection
+    /// that does not read where it is written (`Set[T = y.E]` over `let y = x`, or with no
+    /// member `E`), so which type it is, and whether that type provides `Eq`, is not
+    /// known. A projection key is read off the declared type of a parameter of the
+    /// operation whose signature holds it; a body's binder is no such receiver. Refused
+    /// rather than passed: a key read past is a key not judged. Load-blocking.
+    KeyEqNotJudged {
+        /// The parametric sort being instantiated (`anthill.prelude.Set`).
+        container: String,
+        /// `container`'s own parameter carrying the requirement (`T`).
+        param: String,
+        /// The spec `container` requires at `param` (`anthill.prelude.Eq`).
+        spec: String,
+        /// The key as written (`y.E`).
+        key: String,
+        /// Why the projection does not read here.
+        reason: String,
+        /// Where the instantiation is written — the span of its base name.
         span: Option<Span>,
     },
     /// WI-431 (rule 2 — COHERENCE): two or more DISTINCT instance facts (op-valued
@@ -3220,6 +3257,7 @@ impl LoadError {
             | LoadError::BareMemberCall { span, .. }
             | LoadError::UnreducedEquationFunctor { span, .. }
             | LoadError::KeyWithoutEq { span, .. }
+            | LoadError::KeyEqNotJudged { span, .. }
             | LoadError::WrittenEffectRowLabel { span, .. }
             | LoadError::UnselectedInstance { span, .. }
             | LoadError::ChangesSealedCode { span, .. }
@@ -3723,6 +3761,20 @@ impl LoadError {
             } => {
                 let msg = format!("'{}' requires `{}` at its parameter `{}`, but `{} = {}` binds a type that does not provide `Eq` (its equality is not lawful — IEEE `nan != nan` — or there is none), so it is not a lawful key. Bind `{}` to a type that provides `Eq` (`TotalFloat` for floats) instead of '{}'.",
                     container, spec, param, param, carrier, param, carrier);
+                match span {
+                    Some(sp) => format!("{}: {}", loc.format_start(*sp), msg),
+                    None => msg,
+                }
+            }
+            LoadError::KeyEqNotJudged {
+                container,
+                param,
+                spec,
+                key,
+                reason,
+                span,
+            } => {
+                let msg = key_eq_not_judged_message(container, param, spec, key, reason);
                 match span {
                     Some(sp) => format!("{}: {}", loc.format_start(*sp), msg),
                     None => msg,
@@ -5443,6 +5495,20 @@ impl std::fmt::Display for LoadError {
                 // row that measures it, and it fails if EITHER key drops the file.
                 let msg = format!("'{}' requires `{}` at `{}`, but `{} = {}` does not provide `Eq` — not a lawful key; use `TotalFloat` for floats",
                     container, spec, param, param, carrier);
+                match span {
+                    Some(sp) => write!(f, "{} at {}..{}", msg, sp.start, sp.end),
+                    None => write!(f, "{}", msg),
+                }
+            }
+            LoadError::KeyEqNotJudged {
+                container,
+                param,
+                spec,
+                key,
+                reason,
+                span,
+            } => {
+                let msg = key_eq_not_judged_message(container, param, spec, key, reason);
                 match span {
                     Some(sp) => write!(f, "{} at {}..{}", msg, sp.start, sp.end),
                     None => write!(f, "{}", msg),
@@ -28674,6 +28740,11 @@ struct Loader<'a> {
     // and reject a non-existent field loudly. Empty outside an operation signature
     // (a local / cross-context head is absent ⇒ validation defers, never rejects).
     signature_place_types: HashMap<Symbol, Value>,
+    // WI-20261102-7AB56: the operation being lowered — its signature, body and parameter
+    // defaults — recorded on each type application written there
+    // ([`crate::kb::ParameterizedSite::operation`]), so the use-site `Eq` check reads a
+    // projection key off the receiver parameter's declared type. `None` outside one.
+    lowering_operation: Option<Symbol>,
     // WI-839: the parse `Term::Fn` nodes whose CALL-SITE BRACKET (`f[T = X](…)`, the
     // `type_args` ParseAux channel) was actually READ by a lowering that honours it.
     // The channel has exactly two honouring readers — `build_call_type_args` (an
@@ -29025,6 +29096,7 @@ impl<'a> Loader<'a> {
             requires_lines: Vec::new(),
             prelowered_provision_specs: HashMap::new(),
             signature_place_types: HashMap::new(),
+            lowering_operation: None,
             consumed_call_type_args: HashSet::new(),
             consumed_recv_types: HashSet::new(),
             rule_head_bracket_bindings: HashSet::new(),
@@ -40408,6 +40480,7 @@ impl<'a> Loader<'a> {
                     bindings,
                     span,
                     origin,
+                    operation: self.lowering_operation,
                 });
         }
     }
@@ -46841,6 +46914,9 @@ impl<'a> Loader<'a> {
         // `try_denoted_value_path` to validate value-in-type field projections.
         // Save/restore so it never leaks across operations.
         let prev_place_types = std::mem::take(&mut self.signature_place_types);
+        // WI-20261102-7AB56: every type application the operation writes, its signature's and
+        // its body's, names the operation.
+        let prev_lowering_operation = self.lowering_operation.replace(functor);
 
         let op_qualified = self.kb.qualified_name_of(functor).to_owned();
 
@@ -47216,6 +47292,7 @@ impl<'a> Loader<'a> {
 
         self.current_scope = prev_scope;
         self.current_owner = prev_owner;
+        self.lowering_operation = prev_lowering_operation;
         // WI-489: drop this signature's place→type map (restoring any enclosing one).
         self.signature_place_types = prev_place_types;
         self.signature_spec_members = prev_signature_members;
