@@ -861,23 +861,30 @@ of the *same* type, which no comparison of types can see.
 `send(body: Text[L = ?l]) requires flows_to(?l, Public)` — and let the KB hold
 the lattice as facts.
 
-**Fires** — `docs/measurements/guardians/d2c_callsite.anthill:33`, at the `leak()`
+**Fires** — `docs/measurements/guardians/d2c_callsite.anthill:36`, at the `leak()`
 body:
 
 ```
 type mismatch in smoke.c.send.requires:
-  expected precondition `flows_to(Untrusted, Public)` provable at the call site,
+  expected precondition `flows_to(Untrusted[], Public[])` provable at the call site,
   got unsatisfied precondition
 ```
 
-The argument's declared type binds `?l := Untrusted`, so the obligation is
-grounded to the lattice edge that is deliberately absent, and the call is
+The argument's declared type binds `?l` to the type `Untrusted`, so the obligation
+is grounded to the lattice edge that is deliberately absent, and the call is
 refused.
 
 **Control.** `ok()` in the same file — `Text[L = Public]` into the same sink —
-still loads: `flows_to(Public, Public)` is a fact. And `flows_to(Untrusted,
-Public)` correctly has **no solutions** when queried, so the lattice facts are
+still loads: `flows_to(Public[], Public[])` is a fact. And `flows_to(Untrusted[],
+Public[])` correctly has **no solutions** when queried, so the lattice facts are
 right in both directions.
+
+**The lattice is written over types** (2026-11-03, decided with the user). `?l` is
+bound from a type, `Text[L = Untrusted]`, so it holds the type `Untrusted`, which a
+fact or a goal writes `Untrusted[]`; a bare `Untrusted` there is the entity's value
+(kernel-language.md §4.4), and `fact flows_to(Public, Public)` does not answer
+`flows_to(Public[], …)`. Written with bare names, the control was refused too. A
+sort's `requires` goal reads its facts the same way (§5.2).
 
 **This row previously read `❌ by design (§8.5)`, and that was wrong twice
 over.** It loaded clean, which was measured correctly; the *citation* was not.

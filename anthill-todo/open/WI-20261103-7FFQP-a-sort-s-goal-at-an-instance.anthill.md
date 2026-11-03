@@ -28,3 +28,9 @@ A SORT'S GOAL AT AN INSTANCE MADE AT AN OPERATION'S OWN TYPE PARAMETER IS OWED B
 
 ACCEPTANCE: (2) `k[Y = Public]()` and `k(mk0[X = Public]())` load under `requires is_entity_of(Y, TrustLevel)`, `k[Y = Int64]()` is refused naming `is_entity_of(Int64, TrustLevel)`; (1) `k[Y](y: Y) = { mk(y) … }` is refused at `k` unless `k`'s `requires` states the goal at `Y`, and with it `k(5)` is refused and `k(TrustLevel.Public)` loads — driven by a row that RUNS the loading program; (3) decided with the user, d2c and measured.md C2 brought in line. Controls: proposal 062's rows (wi_t70a2_sort_goal_test), the `?l` rows above, guardians green.
 
+## Changes
+
+### 2026-11-03T12:13:12Z — feedback — claude
+
+(3) DECIDED with the user (2026-11-03) and DONE: a type-level variable holds a type, so the facts and the clause it is checked against are written over types — `fact flows_to(Public[], Public[])`, `requires flows_to(?l, Public[])` — as a sort's goal's are (kernel-language §4.4, §5.2); no new rule matches a type against an entity's value. docs/measurements/guardians/d2c_callsite.anthill is rewritten so (its body-less operations given `= todo()` / `= ()`): `leak()` refused with `flows_to(Untrusted[], Public[])`, `ok()` loads; measured.md C2 says so. Measured beside it: `type_value[Public]()` is no spelling of the type in a fact or a precondition — refused there, "call-site type arguments `type_value[…](…)` are not supported here" (a call written in a fact is a pattern and is not run); `Public[]` is. What remains of this ticket is (1) and (2).
+
