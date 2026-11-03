@@ -27,9 +27,9 @@
 //! clause whole through a source of its own, so it is handed the type lowerings' sites alone
 //! (`kb::WrittenTypeSites`), and a row nested there is judged once.
 //!
-//! A PROJECTION KEY (`Set[T = x.E]`) is refused at both positions, as in a signature before
-//! this: the check reads `x.E` as ground. That is right for `x: Leaf[E = Float]` and wrong
-//! for an open `E`; grounding it through the receiver's declared type is WI-20261102-7AB56.
+//! A PROJECTION KEY (`Set[T = x.E]`) was refused at both positions, as in a signature: the
+//! check read `x.E` as ground. WI-20261102-7AB56 reads it at the receiver's declared type, at
+//! both positions alike (`wi_7ab56_projection_key_test`).
 //! NOT JUDGED, and not measured here: a key in an `ensures` clause, or in a `fact`'s bracket
 //! (`check_use_site_requires_eq`'s non-scope (4)).
 //!

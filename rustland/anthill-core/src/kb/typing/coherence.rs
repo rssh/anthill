@@ -980,6 +980,105 @@ fn eq_holds_at(kb: &mut KnowledgeBase, eq_sym: Symbol, ty: &Value) -> bool {
     )
 }
 
+/// WI-20261102-7AB56 — the type a use-site key that holds a type projection stands for.
+/// `Ok(Some(ty))` is the key with its projections read; `Ok(None)` is a key that stays
+/// ABSTRACT, as a type parameter is — a projection that stays NEUTRAL, a member the
+/// receiver's declared type leaves open (`x.E` over `x: Leaf`) or a bound leaves unfixed
+/// (`P.Key` under `requires Storage[C = P]`), or a type variable written beside the
+/// projections, which no reading of them makes ground; `Err` says why a projection does not
+/// read here.
+///
+/// An expression-carried projection's receiver is read as a parameter of the operation the
+/// key is written in (`operation`), at its DECLARED type: the table the body check
+/// discharges the signature's projections against, so `x.E` over `x: Leaf[E = Float]` is
+/// `Float` here as it is there. A receiver that is no parameter — a binder of the body, a
+/// key written outside an operation — has no type here, and is the `Err`. A rigid
+/// projection (`P.Key`, `MemStore.Key`) names its declaration and reads through it with no
+/// table. A reading is read again while it changes: a member may be a projection off a
+/// sibling parameter (`x: Leaf[E = y.F]`) or a bound may fix it to another (`Key = Q.Key`),
+/// and each reading takes one step. A chain that does not settle within [`KEY_READINGS`]
+/// steps past the parameters is the `Err` too, never a pass: a chain without a cycle
+/// passes through each parameter and each bound once, and a cycle is refused at the
+/// declaration (`param_projection_cycle`).
+fn read_projection_key(
+    kb: &mut KnowledgeBase,
+    key: &Value,
+    operation: Option<Symbol>,
+    op_params: &mut HashMap<Symbol, Option<HashMap<Symbol, Value>>>,
+    (sort, param): (Symbol, Symbol),
+) -> Result<Option<Value>, String> {
+    if abstract_beside_projections(kb, key) {
+        return Ok(None);
+    }
+    let no_params = HashMap::new();
+    let params = match operation {
+        Some(op) => op_params
+            .entry(op)
+            .or_insert_with(|| {
+                crate::kb::op_info::lookup_operation_info(kb, op)
+                    .map(|info| info.params.into_iter().collect())
+            })
+            .as_ref()
+            .ok_or_else(|| {
+                format!(
+                    "the signature of `{}` is not recorded",
+                    kb.qualified_name_of(op)
+                )
+            })?,
+        None => &no_params,
+    };
+    let ctx = TypeErrorContext::SortParameter { sort, param };
+    let discharge = Discharge::new(params, Receivers::Own(None), &ctx, None);
+    let mut read = key.clone();
+    for _ in 0..params.len() + KEY_READINGS {
+        let mut receivers = Vec::new();
+        collect_projection_receivers(kb, &read, &mut receivers);
+        if let Some(head) = receivers.iter().find(|r| !params.contains_key(r)) {
+            let head = kb.local_name_of(*head);
+            return Err(match operation {
+                Some(op) => format!(
+                    "its receiver `{head}` is no parameter of `{}`",
+                    kb.qualified_name_of(op)
+                ),
+                None => format!("its receiver `{head}` is written outside an operation"),
+            });
+        }
+        let next = discharge
+            .eliminate(kb, &read)
+            .map_err(|e| delta_failure_text(&e))?;
+        if !value_contains_projection(kb, &next) {
+            return Ok(Some(next));
+        }
+        if views_structurally_equal(kb, &next, &read) {
+            return Ok(None);
+        }
+        read = next;
+    }
+    Err(format!(
+        "it does not settle in {} readings: its projections read through one another",
+        params.len() + KEY_READINGS
+    ))
+}
+
+/// The readings [`read_projection_key`] takes past one per parameter, for the bounds a chain
+/// reads through. Far past any chain a program writes; reaching it is refused, not passed.
+const KEY_READINGS: usize = 32;
+
+/// Is the key abstract BESIDE its projections — a type variable or a type parameter written
+/// outside them? Such a key is abstract whatever its projections read to.
+fn abstract_beside_projections(kb: &KnowledgeBase, key: &Value) -> bool {
+    type_any_part(kb, key, &|te| match te {
+        TypeExtractor::ExprCarried { .. } | TypeExtractor::RigidTypeProjection { .. } => {
+            Some(false)
+        }
+        TypeExtractor::TypeVar(_)
+        | TypeExtractor::FlexVar { .. }
+        | TypeExtractor::Skolem { .. } => Some(true),
+        TypeExtractor::SortRef(s) => is_sort_param_symbol(kb, *s).then_some(true),
+        _ => None,
+    })
+}
+
 /// WI-644 / WI-835 — USE-SITE `requires Eq` enforcement. A parametric sort with a
 /// `requires Eq[param]` clause (`Map requires Eq[T = K]`, `Set requires Eq[T]`),
 /// instantiated with `param` bound to a CONCRETE type that does not provide `Eq`, is a load
@@ -994,6 +1093,16 @@ fn eq_holds_at(kb: &mut KnowledgeBase, eq_sym: Symbol, ty: &Value) -> bool {
 /// composite and `Eq[S] :- Eq[T]` for a parametric one), and the negative check let a key
 /// with no equality at all load (user, 2026-10-26). An ABSTRACT binding (a type
 /// parameter) is not checked here: it is the requirement of the code that binds it.
+///
+/// A PROJECTION is judged as the type it stands for (WI-20261102-7AB56,
+/// [`read_projection_key`]): `Set[T = x.E]` at the member `x`'s declared type fixes —
+/// refused over `x: Leaf[E = Float]`, loaded over `x: Leaf[E = Int64]` — and `P.Key` at what
+/// the `requires` bounding `P` fixes. Where nothing fixes the member the projection is
+/// abstract, as a type parameter is. Read as written, `x.E` was a ground type of its own
+/// that provides nothing, so every such key was refused, and `P.Key` an abstract one, so
+/// none was. A projection that does not read where the key is written — its receiver a
+/// binder of the body, its member undeclared — is refused as not judged
+/// ([`crate::kb::load::LoadError::KeyEqNotJudged`]).
 ///
 /// SCOPE (WI-835) — EVERY written parameterized type instantiation, wherever the
 /// type is written. The sites are recorded at the type LOWERINGS (see
@@ -1042,6 +1151,15 @@ fn eq_holds_at(kb: &mut KnowledgeBase, eq_sym: Symbol, ty: &Value) -> bool {
 /// Float, V = Int64]]`, `fact Holder[C = Map[K = Float, V = Int64]]` and `rule r(?x) :-
 /// known(Map[K = Float, V = Int64])` load (measured for WI-20260929-TJ3G4, which recorded
 /// the brackets written as type arguments in an operation's `requires` alone).
+///
+/// (5) A key with an abstract part is skipped WHOLE, so an unlawful part beside it is not
+/// judged: `Set[T = (a: F, b: Float)]`, `F` a type parameter, loads, and since
+/// WI-20261102-7AB56 so does `Set[T = (a: x.E, b: y.E)]` with `x.E` read to `Float` and
+/// `y.E` neutral — WI-20261103-SWPHB.
+///
+/// (6) A projection off a binder of an operation's BODY (`let y = x`, a `match` arm's
+/// binder) is refused as not judged: this pass has the operation's declared parameters and
+/// not the body's scope — WI-20261103-BANCC.
 pub(crate) fn check_use_site_requires_eq(
     kb: &mut KnowledgeBase,
     sites: &[crate::kb::ParameterizedSite],
@@ -1070,6 +1188,10 @@ pub(crate) fn check_use_site_requires_eq(
     // `Result`, …), and it short-circuits the σ walk below — so those bases cost one
     // map hit per site instead of two `direct_requires_chain` clones.
     let mut eq_clauses: HashMap<Symbol, Vec<SortGoal>> = HashMap::new();
+    // An operation's declared parameters by symbol — `None` where its signature is not
+    // recorded — read once per operation a projection key is written in
+    // ([`read_projection_key`]).
+    let mut op_params: HashMap<Symbol, Option<HashMap<Symbol, Value>>> = HashMap::new();
     for site in sites {
         let (base, site_span) = (site.base, site.span);
         // σ = declared param name → bound type. The lowering already mapped any
@@ -1122,7 +1244,41 @@ pub(crate) fn check_use_site_requires_eq(
             .filter(|g| kb.canonical_sort_sym(g.spec_sort) == eq_canon)
             .collect();
         for (gi, goal) in goals.iter().enumerate() {
-            for (bi, (key, val)) in goal.bindings.iter().enumerate() {
+            for (bi, (key, written)) in goal.bindings.iter().enumerate() {
+                // WI-20261102-7AB56 — a projection is read for the type it stands for: a key
+                // `x.E` is no type `type_is_ground` can judge (it counts the path as closed,
+                // and nothing provides `Eq` at a projection).
+                let read;
+                let val = if value_contains_projection(kb, written) {
+                    let param = container_param(kb, raw_goals, &sigma, (gi, bi), *key);
+                    match read_projection_key(
+                        kb,
+                        written,
+                        site.operation,
+                        &mut op_params,
+                        (base, param),
+                    ) {
+                        Ok(Some(ty)) => {
+                            read = ty;
+                            &read
+                        }
+                        Ok(None) => continue, // abstract, as a type parameter is
+                        Err(reason) => {
+                            let err = LoadError::KeyEqNotJudged {
+                                container: kb.qualified_name_of(base).to_string(),
+                                param: kb.local_name_of(param).to_string(),
+                                spec: kb.qualified_name_of(goal.spec_sort).to_string(),
+                                key: format_value_for_goal(kb, written),
+                                reason,
+                                span: Some(site_span.span),
+                            };
+                            errors.push(err.located_in_kb_source(kb, site_span.source));
+                            continue;
+                        }
+                    }
+                } else {
+                    written
+                };
                 if !type_is_ground(kb, val) {
                     continue; // abstract binding: defer (not a concrete carrier)
                 }
@@ -1141,25 +1297,7 @@ pub(crate) fn check_use_site_requires_eq(
                 if eq_holds_at(kb, eq_sym, val) {
                     continue;
                 }
-                // The container's own parameter, from the raw clause. A clause that
-                // binds a CONCRETE carrier outright (`requires Eq[T = Float]`, an
-                // ill-formed sort no instantiation can fix) has no container param
-                // to name, so the spec's own binding key is reported instead.
-                let raw = raw_goals
-                    .get(gi)
-                    .and_then(|g| g.bindings.get(bi))
-                    .filter(|(k, _)| k == key)
-                    .map(|(_, raw)| raw);
-                let param = raw
-                    // The same "is this a bare name" rule σ-substitution applied, so
-                    // the parameter reported is the one that carried the carrier in.
-                    .and_then(|raw| view_ref_symbol(kb, raw))
-                    // Accept the raw name only when it is the one σ actually
-                    // substituted — the SAME comparison `subst_requires_value` makes
-                    // (bare `local_name_of` against the σ key), so the parameter
-                    // reported is exactly the parameter that carried the carrier in.
-                    .filter(|s| sigma.iter().any(|(n, _)| n == kb.local_name_of(*s)))
-                    .unwrap_or(*key);
+                let param = container_param(kb, raw_goals, &sigma, (gi, bi), *key);
                 if seen.insert((
                     kb.canonical_sort_sym(base),
                     kb.canonical_sort_sym(carrier),
@@ -1195,6 +1333,32 @@ pub(crate) fn check_use_site_requires_eq(
         }
     }
     errors
+}
+
+/// The container's own parameter that carries the binding `key` of `check_use_site_requires_eq`'s
+/// σ-substituted goal at `(goal, binding)`, read from the RAW clause aligned with it. A
+/// clause that binds a CONCRETE carrier outright (`requires Eq[T = Float]`, an ill-formed
+/// sort no instantiation can fix) has no container param to name, so the spec's own
+/// binding key is reported instead.
+fn container_param(
+    kb: &KnowledgeBase,
+    raw_goals: &[SortGoal],
+    sigma: &[(String, Value)],
+    (goal, binding): (usize, usize),
+    key: Symbol,
+) -> Symbol {
+    raw_goals
+        .get(goal)
+        .and_then(|g| g.bindings.get(binding))
+        .filter(|(k, _)| *k == key)
+        // The same "is this a bare name" rule σ-substitution applied, so the parameter
+        // reported is the one that carried the carrier in.
+        .and_then(|(_, raw)| view_ref_symbol(kb, raw))
+        // Accept the raw name only when it is the one σ actually substituted — the SAME
+        // comparison `subst_requires_value` makes (bare `local_name_of` against the σ key),
+        // so the parameter reported is exactly the parameter that carried the carrier in.
+        .filter(|s| sigma.iter().any(|(n, _)| n == kb.local_name_of(*s)))
+        .unwrap_or(key)
 }
 
 /// WI-363: provider-side **operation** coverage — the op-level twin of

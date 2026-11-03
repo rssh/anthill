@@ -3,9 +3,9 @@
 - id: WI-20261102-7AB56-the-use-site-eq-check-reads-a
 - created: 2026-11-02T20:05:11Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-11-02T20:05:11Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-11-03T07:12:24Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
