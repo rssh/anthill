@@ -20,23 +20,32 @@
 //! WI-20261103-95S43 — reading it through `this_instance_member` was tried here and backed out:
 //! with no gate for a projection an author writes, it loaded `let y: x.T = x` in a data sort).
 //!
-//! BACK-OUTS, MEASURED — each ONE part put back, over this file's 9 rows:
+//! BACK-OUTS, MEASURED — each ONE part put back, over this file's 10 rows:
 //!
-//!  * The lambda arm reading the denoted names alone (as before) — 5, each a lambda whose one
+//!  * The lambda arm reading the denoted names alone (as before) — 6, each a lambda whose one
 //!    parameter's annotation the binder check reads otherwise, refused at the binder or where the
 //!    unread type is used: `a_binder_projecting_a_fixed_member_is_the_member_it_reads_to`,
 //!    `the_lambda_applied_to_another_element_type_is_refused`,
 //!    `the_binder_reads_its_receiver_where_the_lambda_is_written`,
-//!    `the_binder_is_read_inside_any_type_its_annotation_writes` and
-//!    `a_compound_receiver_through_an_alias_is_the_path_it_names` (its lone binder). And
+//!    `the_binder_is_read_inside_any_type_its_annotation_writes`,
+//!    `a_compound_receiver_through_an_alias_is_the_path_it_names` and
+//!    `a_call_result_through_an_alias_meets_the_binder_through_it` (their lone binders). And
 //!    `wi_7ab56_projection_key_test`'s `a_projection_key_is_judged_at_its_receivers_declared_type`,
 //!    which drives the lambda position at `Int64`.
 //!  * The binder check keeping an unread projection raw, in silence (as before) — 1:
 //!    `a_binder_among_several_is_read_and_refused_as_one_alone_is` (`x.Nope` beside `b` loads).
-//!  * No alias step in `read_written_annotation` — 1:
-//!    `a_compound_receiver_through_an_alias_is_the_path_it_names`. And
-//!    `wi_0rp29_review9_regressions_test`'s `a_let_annotation_through_an_alias_names_its_target`,
-//!    the `let` spelling.
+//!  * No alias step in `read_written_annotation` — 2:
+//!    `a_compound_receiver_through_an_alias_is_the_path_it_names` and
+//!    `a_call_result_through_an_alias_meets_the_binder_through_it`, refused at `check(st, k)`,
+//!    "expected st.provider.K, got t.provider.K". And `wi_0rp29_review9_regressions_test`'s
+//!    `a_let_annotation_through_an_alias_names_its_target`, the `let` spelling.
+//!  * A call not reading its argument through the alias (no aliases given `call_arg_paths`, an
+//!    older step this file measures for WI-20261103-F9ZR9) — 1: `a_call_result_through_an_alias_meets_the_binder_through_it`,
+//!    refused at `get(t, j)`, "expected t.provider.K, got st.provider.K". And four rows of
+//!    `wi_0rp29_review9_regressions_test`: `a_let_annotation_through_an_alias_names_its_target`,
+//!    `a_lambda_hint_names_a_let_aliass_receiver_as_the_call_does`,
+//!    `a_returned_projection_names_a_let_aliass_receiver_as_its_parameters_do` and
+//!    `a_returned_projection_through_a_let_alias_meets_its_annotation`.
 //!
 //! PASS EITHER WAY BY DESIGN: `over_an_open_member_the_binder_stays_the_neutral_it_was`, the
 //! control (an open member reads to the neutral `x.E` both ways). Under the first part the
@@ -182,22 +191,15 @@ fn the_binder_reads_its_receiver_where_the_lambda_is_written() {
     }
 }
 
-/// A compound receiver through a `let` alias is the path the alias names, so `k: t.provider.K`
-/// under `let t = st` is `st.provider.K` — whose member is abstract, `State`'s `requires` lending
-/// it — and `check(st, k)` takes it, at a lambda's lone binder and at one of several; each runs.
-/// The `let` spelling is `wi_0rp29_review9_regressions_test`'s
-/// `a_let_annotation_through_an_alias_names_its_target`. Before SG16K both were refused at
-/// `check(st, k)`, "expected st.provider.K, got t.provider.K". NOT HERE: the projection nested in
-/// a type (`p: (k: t.provider.K, n: Int64)`) stays keyed to `t` and is refused there, in a `let`
-/// as well, the alias step's own boundary (WI-20261103-FV92R); and `h(get(t, j))` is refused with
-/// the lone binder as before, though the binder is bound at `st.provider.K` (WI-20261103-F9ZR9).
-#[test]
-fn a_compound_receiver_through_an_alias_is_the_path_it_names() {
-    let at = |ns: &str, lambda: &str, call: &str| {
-        program(
-            ns,
-            &format!(
-                "sort DataProvider
+/// `fwd` whose body is `let t = st` and then `body`, its lines after the first indented as a body
+/// line is. Beside it `check`, whose key is its `State`'s, `get`, which answers the key it is
+/// given at its `State`'s, and a second `State`, `u`, with a key `ju` of its own; `go` runs `fwd`
+/// at one `State` for both.
+fn alias_program(ns: &str, body: &str) -> String {
+    program(
+        ns,
+        &format!(
+            "sort DataProvider
     sort P = ?
     sort K = ?
   end
@@ -211,28 +213,95 @@ fn a_compound_receiver_through_an_alias_is_the_path_it_names() {
     provides DataProvider[P = MemStore, K = Int64]
   end
   operation check(s: State, k: s.provider.K) -> Int64 = 42
-  operation fwd(st: State, j: st.provider.K) -> Int64 =
+  operation get(s: State, k: s.provider.K) -> s.provider.K = k
+  operation fwd(st: State, u: State, j: st.provider.K, ju: u.provider.K) -> Int64 =
     let t = st
-    let h = {lambda}
-    {call}
+    {body}
   operation go() -> Int64 =
     let st: State[P = MemStore] = state(provider: mem(n: 1))
-    fwd(st, 41)"
+    fwd(st, st, 41, 41)"
+        ),
+    )
+}
+
+/// Each `(tag, body)` of `runs` runs to 42; each `(tag, body, refusal)` of `refused` is refused
+/// once, naming `refusal`.
+#[track_caller]
+fn assert_alias_rows(ns: &str, runs: &[(&str, &str)], refused: &[(&str, &str, &str)]) {
+    for (tag, body) in runs {
+        let ns = format!("{ns}.{tag}");
+        assert_eq!(run_int64(&alias_program(&ns, body), &format!("{ns}.go")), Ok(42), "{tag}");
+    }
+    for (tag, body, refusal) in refused {
+        assert_refused(&alias_program(&format!("{ns}.{tag}"), body), refusal, tag);
+    }
+}
+
+/// A compound receiver through a `let` alias is the path the alias names, so `k: t.provider.K`
+/// under `let t = st` is `st.provider.K` — whose member is abstract, `State`'s `requires` lending
+/// it — and `check(st, k)` takes it, at a lambda's lone binder and at one of several; each runs.
+/// Before SG16K the two were refused at `check(st, k)`, "expected st.provider.K, got
+/// t.provider.K". `check(u, k)` for another `State` is refused. The `let` spelling is
+/// `wi_0rp29_review9_regressions_test`'s `a_let_annotation_through_an_alias_names_its_target`.
+/// NOT HERE: the projection nested in a type (`p: (k: t.provider.K, n: Int64)`) stays keyed to `t`
+/// and is refused there, in a `let` as well, the alias step's own boundary (WI-20261103-FV92R).
+#[test]
+fn a_compound_receiver_through_an_alias_is_the_path_it_names() {
+    assert_alias_rows(
+        "wi_sg16k.alias",
+        &[
+            ("one", "let h = lambda (k: t.provider.K) -> check(st, k)\n    h(j)"),
+            ("several", "let h = lambda (k: t.provider.K, n: Int64) -> check(st, k)\n    h(j, 1)"),
+        ],
+        &[(
+            "other",
+            "let h = lambda (k: t.provider.K) -> check(u, k)\n    h(j)",
+            "type mismatch in check.k (op-arg): expected u.provider.K, got st.provider.K",
+        )],
+    );
+}
+
+/// A call's result meets the binder through the same alias: `get(t, j)` is `st.provider.K`, the
+/// call reading its argument `t` as the path it names, as the binder `k: t.provider.K` is read,
+/// so `h(get(t, j))` runs — at a lone binder, at one of several, at a binder written
+/// `st.provider.K`, and through two aliases, `let t2 = t` (WI-20261103-F9ZR9; before SG16K each
+/// but the third was refused at `check(st, k)`, "expected st.provider.K, got t.provider.K", the
+/// two aliases' "got t2.provider.K").
+/// Refused: the body handing `k` to `check(u, k)` for another `u`, through one alias and two, and
+/// the lone binder given `get(u, ju)`, which is `u`'s key. NOT HERE: a binder among several given
+/// `get(u, ju)` loads, the parameter list a fresh variable where no arrow is expected
+/// (WI-20261103-2N4QH).
+#[test]
+fn a_call_result_through_an_alias_meets_the_binder_through_it() {
+    let other = "type mismatch in check.k (op-arg): expected u.provider.K, got st.provider.K";
+    assert_alias_rows(
+        "wi_sg16k.alias.call",
+        &[
+            ("one", "let h = lambda (k: t.provider.K) -> check(st, k)\n    h(get(t, j))"),
+            (
+                "several",
+                "let h = lambda (k: t.provider.K, n: Int64) -> check(st, k)\n    h(get(t, j), 1)",
             ),
-        )
-    };
-    let one = at(
-        "wi_sg16k.alias.one",
-        "lambda (k: t.provider.K) -> check(st, k)",
-        "h(j)",
+            ("st_binder", "let h = lambda (k: st.provider.K) -> check(st, k)\n    h(get(t, j))"),
+            (
+                "chain",
+                "let t2 = t\n    let h = lambda (k: t2.provider.K) -> check(st, k)\n    h(get(t2, j))",
+            ),
+        ],
+        &[
+            ("other", "let h = lambda (k: t.provider.K) -> check(u, k)\n    h(get(t, j))", other),
+            (
+                "chain_other",
+                "let t2 = t\n    let h = lambda (k: t2.provider.K) -> check(u, k)\n    h(get(t2, j))",
+                other,
+            ),
+            (
+                "foreign",
+                "let h = lambda (k: t.provider.K) -> check(st, k)\n    h(get(u, ju))",
+                "type mismatch in h._1 (op-arg): expected st.provider.K, got u.provider.K",
+            ),
+        ],
     );
-    assert_eq!(run_int64(&one, "wi_sg16k.alias.one.go"), Ok(42));
-    let several = at(
-        "wi_sg16k.alias.several",
-        "lambda (k: t.provider.K, n: Int64) -> check(st, k)",
-        "h(j, 1)",
-    );
-    assert_eq!(run_int64(&several, "wi_sg16k.alias.several.go"), Ok(42));
 }
 
 /// A projection is read wherever the annotation writes it: in a function type's parameter, in a
