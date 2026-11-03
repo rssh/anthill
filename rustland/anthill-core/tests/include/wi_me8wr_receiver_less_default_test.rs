@@ -62,7 +62,10 @@
 //!   `a_default_with_its_own_requirement_answers_in_a_rule`;
 //! - the op-scoped half out of the bridge's dictionary entry (`call_op_bridged`):
 //!   `a_default_with_its_own_requirement_answers_in_a_rule` and
-//!   `a_woven_default_derives_its_own_requirement` raise `__req_unit not bound`.
+//!   `a_woven_default_derives_its_own_requirement` raised `__req_unit not bound`. Since
+//!   WI-20261103-D5WFQ both carry the call's stamps for it, and the derivation drives no row
+//!   of this file (measured 2026-11-03); it stays the last gate of that entry, as of every
+//!   entry into a body.
 //!
 //! PASS EITHER WAY, BY DESIGN: `the_full_bracket_at_a_member_naming_its_parameter` (the shapes
 //! that answered before: `one(e: Element)` or `size(c: C)` declared, every parameter in the
@@ -72,9 +75,9 @@
 //! instance (`Pc2[C = Bag].both()` inside `Gen[X] requires Pc2[C = X, …]`) is not completed:
 //! the bracket is then read as written.
 //!
-//! NOT COVERED, measured before and after alike: a woven call of such a default whose
-//! requirement's spec has a second provider (`Num provides Unit[T = Num]` beside `Bit`'s) —
-//! the clause's route stamps nothing, and the derivation cannot choose.
+//! A woven call of such a default whose requirement's spec has a second provider (`Num
+//! provides Unit[T = Num]` beside `Bit`'s) died `__req_unit not bound` here; it is
+//! WI-20261103-D5WFQ's (wi_d5wfq_default_frame_test).
 
 use anthill_core::eval::value::Value;
 
@@ -598,8 +601,8 @@ fn a_default_with_its_own_requirement_answers_in_a_rule() {
     );
 }
 
-/// The same default called through the clause's dictionary: its own `requires` derived from
-/// the provider facts, `Bit`'s being the one provision of `Unit`.
+/// The same default called through the clause's dictionary: its own `requires` read at the
+/// sort's requirement, `Unit[T = Bit]`.
 #[test]
 fn a_woven_default_derives_its_own_requirement() {
     let src = OWN_REQUIRES

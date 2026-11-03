@@ -1249,8 +1249,12 @@ fn inferred_demand(
 ///
 /// WI-883 widened the population from body-less members to a DEFAULTED member of a spec
 /// with an abstract one — its default's sibling calls need the instance just the same —
-/// and made this pass the ONLY owner of a rule-body spec-op call: the typer's
-/// operation-body refusal stays out of rule bodies, so one call gets one diagnosis.
+/// and made this pass the owner of a rule-body spec-op call: the typer's operation-body
+/// refusal stays out of rule bodies, so one call gets one diagnosis. One refusal is the
+/// typer's there too, for a call this pass reads no carrier of: a bracket that names no one
+/// instance (`Pc[C = Bag].both()` beside two provisions saying `Element` apart, `Pc[C = Foo,
+/// Element = Int64].both()` beside none), a rule body's call being typed as an operation
+/// body is (068 §3).
 ///
 /// Read-only: the arg carrier sorts come from the `inferred_type` the preceding
 /// `type_rule_bodies` stamped onto each body `Var` (WI-603), exactly as the typer's

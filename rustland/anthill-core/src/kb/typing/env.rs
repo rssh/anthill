@@ -428,6 +428,16 @@ impl TypingEnv {
         self.rule_body_dispatch != Some(RuleText::Term)
     }
 
+    /// Is the text typed here a rule body's, written as an operation body is: a call of its own
+    /// term or what stands under a compound expression ([`RuleText::Fragment`],
+    /// [`RuleText::Expression`])?
+    pub(super) fn in_rule_body_evaluation(&self) -> bool {
+        matches!(
+            self.rule_body_dispatch,
+            Some(RuleText::Fragment | RuleText::Expression)
+        )
+    }
+
     /// The env a call of a rule body's own term is typed in ([`RuleText::Fragment`]).
     /// `None` where this env types another text.
     pub(super) fn as_fragment(&self) -> Option<TypingEnv> {

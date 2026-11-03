@@ -1660,10 +1660,13 @@ enum UnstampedDispatch {
 /// is what the layout's two halves are counted against. Handing it the target instead
 /// would name the PROVIDER twice and mis-slice a chain the spec contributed to.
 enum WovenDispatch {
-    /// A spec-op call the clause's dictionary DISPATCHED (WI-1040 / NAR1X).
+    /// A spec-op call the clause's dictionary DISPATCHED (WI-1040 / NAR1X), with the call's
+    /// `stamps` for the callee's own `requires` where the dispatch enters the operation they
+    /// were built for, the spec's default — empty elsewhere, the member deriving its own.
     Dispatched {
         spec_op: Symbol,
         dict: crate::eval::value::Dictionary,
+        stamps: SmallVec<[Option<TermId>; 2]>,
     },
     /// WI-20260925-P7VP4 — an ordinary operation's call carrying the clause's conditions
     /// for its dictionary chain, one per slot in chain order: `Some` where the slot's read
@@ -12004,6 +12007,11 @@ impl KnowledgeBase {
                     owed.then(|| WovenDispatch::Dispatched {
                         spec_op: *functor,
                         dict,
+                        stamps: if target == *functor {
+                            occ.op_dicts()
+                        } else {
+                            SmallVec::new()
+                        },
                     })
                 });
                 let call = occ.rebuilt_expr(Expr::Apply {
@@ -12875,12 +12883,14 @@ impl KnowledgeBase {
         let outcome = self.run_in_bridge_interp(|interp| {
             interp.bridge_unknowns = unknowns;
             match woven {
-                Some(WovenDispatch::Dispatched { spec_op, dict }) => {
-                    interp.call_op_bridged(op, &args, Some((*spec_op, dict)), &[])
-                }
+                Some(WovenDispatch::Dispatched {
+                    spec_op,
+                    dict,
+                    stamps,
+                }) => interp.call_op_bridged_stamped(op, &args, Some((*spec_op, dict)), stamps),
                 Some(WovenDispatch::Slots(slots)) => interp.call_op_bridged(op, &args, None, slots),
                 Some(WovenDispatch::Stamped(stamps)) => {
-                    interp.call_op_bridged_stamped(op, &args, stamps)
+                    interp.call_op_bridged_stamped(op, &args, None, stamps)
                 }
                 Some(WovenDispatch::Classified {
                     spec_op,

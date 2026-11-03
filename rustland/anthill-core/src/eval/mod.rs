@@ -963,10 +963,11 @@ impl Interpreter {
         &mut self,
         sym: Symbol,
         args: &[Value],
+        dispatched_through: Option<(Symbol, &value::Dictionary)>,
         stamps: &[Option<crate::kb::term::TermId>],
     ) -> Result<Value, EvalError> {
         let slots = self.stamped_slots(sym, stamps)?;
-        self.call_op_bridged(sym, args, None, &slots)
+        self.call_op_bridged(sym, args, dispatched_through, &slots)
     }
 
     /// The call site's op-scoped stamps for `sym`, evaluated, as the slots of `sym`'s whole
