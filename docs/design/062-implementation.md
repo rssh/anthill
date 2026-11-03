@@ -201,5 +201,8 @@ instance is in an operation's signature (`join[L](a: Text[L]) -> Text[L]`), each
 at what it binds `L` to, which is the proposal's reading. Where an operation makes the
 instance in its body at its own type parameter and its signature does not carry it —
 `k[Y](y: Y) -> Unit = { let t = mk(y)  () }` — a call `k(5)` is not held: the obligation
-would have to become `k`'s, and an operation's `requires` over a type variable gates nothing
-yet (guardians `measured.md` C2).
+would have to become `k`'s, stated in `k`'s `requires` or refused at `k`. An operation's
+precondition over a logic variable in a parameter type (`k(t: Text[Trust = ?l]) requires
+is_entity_of(?l, TrustLevel)`) is held at its calls and owed by a wrapper; one over a named
+type parameter (`k[Y]() requires is_entity_of(Y, TrustLevel)`) is refused at every call,
+the holding ones too. Both are WI-20261103-7FFQP.
