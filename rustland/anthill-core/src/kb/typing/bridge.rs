@@ -1388,6 +1388,7 @@ pub(super) fn goal_from_requires_entry(
 ) -> Option<SortGoal> {
     let (_, raw_bindings) = unwrap_spec_view_value(kb, &entry.spec)?;
     let spec_qn = kb.qualified_name_of(entry.required_sort).to_string();
+    let left_open = unwritten_requires_slots(kb, entry.required_sort, &raw_bindings);
     let bindings: SmallVec<[(Symbol, Value); 2]> = raw_bindings
         .into_iter()
         .filter(|(k, _)| is_type_param_binding(kb, *k, &spec_qn))
@@ -1398,6 +1399,9 @@ pub(super) fn goal_from_requires_entry(
         // A `requires` entry resolves by its declared bindings; carrier
         // discrimination is a call-site concern (WI-350).
         carrier: None,
+        // WI-20261020-DNX0E — what the requirement leaves unwritten, which it holds as no
+        // binding: open, as the goal is asked.
+        left_open,
     })
 }
 

@@ -222,6 +222,7 @@ fn goal_at_own_params(
         spec_sort: goal.spec_sort,
         bindings,
         carrier: goal.carrier.clone(),
+        left_open: goal.left_open.clone(),
     }
 }
 

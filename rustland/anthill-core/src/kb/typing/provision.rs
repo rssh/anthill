@@ -1852,87 +1852,103 @@ pub(super) fn provider_requires_subgoals(
 /// says so, and fires if that ever stops being true, rather than letting a guessed goal
 /// decide a load.
 ///
-/// WI-20261003-QGVB1 — A SLOT THE CLAUSE LEAVES OPEN IS NOT SUBSTITUTED: it is said by the
-/// provision that answers the requirement ([`complete_open_slots_at_carrier`]). `requires
-/// Storage[C = P]` leaves `Key` and `Val` unwritten, which is `Storage[C = P, Key = ?, Val = ?]`
-/// (kernel-language §8.1), and the loader fills each with `Storage`'s own parameter
-/// ([`is_open_requires_slot`]). Asked as that, the goal at `P = MemStore` held the rigid
-/// `Storage.Key` against `MemStore`'s `Key = String` and no provider answered it: the
-/// provision of the requiring spec was refused, and a call on its carrier could not build the
-/// dictionary (MEASURED, both spellings). And σ by short name reached it as though it were
-/// written: a requiring spec with a parameter of its own named `Key` tied the slot to it.
+/// WI-20261003-QGVB1 — A SLOT THE CLAUSE LEAVES OPEN IS SAID by the provision that answers
+/// the requirement ([`complete_open_slots_at_carrier`]). `requires Storage[C = P]` leaves
+/// `Key` and `Val` unwritten, which is `Storage[C = P, Key = ?, Val = ?]` (kernel-language
+/// §8.1), held as no binding ([`unwritten_requires_slots`]). Asked at the spec's own
+/// parameter, the goal at `P = MemStore` held the rigid `Storage.Key` against `MemStore`'s
+/// `Key = String` and no provider answered it: the provision of the requiring spec was
+/// refused, and a call on its carrier could not build the dictionary (MEASURED, both
+/// spellings).
+///
+/// WI-20261020-DNX0E — and a provision's CONDITION is read so too: `Wrap provides Shows[T =
+/// T] :- Pairish[A = T]` leaves `Pairish`'s `B` unwritten, and the goal asked without it
+/// matched no provision (MEASURED: `Shows.show(dog)` refused "unresolved: Pairish[A = Dog]"
+/// where the same bound written `requires Pairish[A = T]` answered).
 pub(super) fn requires_chain_goals(
     kb: &mut KnowledgeBase,
     chain: &[RequiresEntry],
     substitute: &impl Fn(&mut KnowledgeBase, &Value) -> Value,
 ) -> Vec<SortGoal> {
-    let mut out: Vec<SortGoal> = Vec::with_capacity(chain.len());
-    for entry in chain {
-        let required = entry.required_sort;
-        let Some((_, entry_bindings)) = unwrap_spec_view_value(kb, &entry.spec) else {
-            debug_assert!(
-                false,
-                "WI-857: `requires {}` has no readable spec head — the dictionary slot \
-                 for it is a bindings-free guess",
-                kb.qualified_name_of(required),
-            );
-            out.push(SortGoal {
-                spec_sort: required,
-                bindings: SmallVec::new(),
-                carrier: None,
-            });
-            continue;
-        };
-        let spec_qn = kb.qualified_name_of(required).to_string();
-        let mut bindings: SmallVec<[(Symbol, Value); 2]> = SmallVec::new();
-        let mut open: SmallVec<[Symbol; 2]> = SmallVec::new();
-        for (k, v) in &entry_bindings {
-            if !is_type_param_binding(kb, *k, &spec_qn) {
-                continue;
+    chain
+        .iter()
+        .map(|entry| {
+            let mut goal = requirement_goal(kb, entry, substitute);
+            let open = goal.left_open.clone();
+            if !open.is_empty() {
+                complete_open_slots_at_carrier(kb, &mut goal, &open);
             }
-            if is_open_requires_slot(kb, required, *k, v) {
-                open.push(*k);
-                bindings.push((*k, v.clone()));
-                continue;
-            }
-            let substituted = substitute(kb, v);
-            bindings.push((*k, substituted));
-        }
-        let mut goal = SortGoal {
-            spec_sort: required,
-            bindings,
-            carrier: None,
-        };
-        if !open.is_empty() {
-            complete_open_slots_at_carrier(kb, &mut goal, &open);
-        }
-        out.push(goal);
-    }
-    out
+            goal
+        })
+        .collect()
 }
 
-/// WI-20261003-QGVB1 — does a `requires` clause leave the slot `key` of `required` open? A
-/// slot it does not write is held as `required`'s own parameter of that name — by the loader
-/// for a sort's clause, and for one written `?` too ([`is_written_wildcard`]); an operation's
-/// clause holds no binding for it at all.
-pub(super) fn is_open_requires_slot(
+/// One entry of [`requires_chain_goals`]: its goal at `substitute`, the slots it leaves open
+/// held [`SortGoal::left_open`] and not yet said.
+pub(super) fn requirement_goal(
+    kb: &mut KnowledgeBase,
+    entry: &RequiresEntry,
+    substitute: &impl Fn(&mut KnowledgeBase, &Value) -> Value,
+) -> SortGoal {
+    let required = entry.required_sort;
+    let Some((_, entry_bindings)) = unwrap_spec_view_value(kb, &entry.spec) else {
+        debug_assert!(
+            false,
+            "WI-857: `requires {}` has no readable spec head — the dictionary slot \
+             for it is a bindings-free guess",
+            kb.qualified_name_of(required),
+        );
+        return SortGoal {
+            spec_sort: required,
+            bindings: SmallVec::new(),
+            carrier: None,
+            left_open: SmallVec::new(),
+        };
+    };
+    let spec_qn = kb.qualified_name_of(required).to_string();
+    let mut bindings: SmallVec<[(Symbol, Value); 2]> = SmallVec::new();
+    for (k, v) in &entry_bindings {
+        if !is_type_param_binding(kb, *k, &spec_qn) {
+            continue;
+        }
+        let substituted = substitute(kb, v);
+        bindings.push((*k, substituted));
+    }
+    SortGoal {
+        spec_sort: required,
+        bindings,
+        carrier: None,
+        left_open: unwritten_requires_slots(kb, required, &entry_bindings),
+    }
+}
+
+/// WI-20261003-QGVB1 / WI-20261020-DNX0E — the type parameters of `required` a requirement's
+/// `bindings` leave open: those no binding names. A slot a clause does not write, or writes
+/// `?` ([`is_written_wildcard`]), is held as NO binding — by the loader for a sort's clause
+/// and a provision's condition, by `normalize_op_requires_entry` for an operation's — so
+/// nothing written reads as one. Held as `required`'s own parameter, it was the term
+/// `Mark[T = T]` written inside `Mark` makes, and that clause was read as `Mark` at any `T`
+/// (MEASURED: a provision's condition, and a contract substituted to `Named[T = Named.T]`).
+///
+/// A requirement that writes NO parameter (a bare `requires Desc`) leaves nothing open: it
+/// names no instantiation (WI-20260921-3G1YT), and a goal that writes none is answered by no
+/// one provision (`left_out_of`), so there is nothing the rest could say.
+pub(super) fn unwritten_requires_slots(
     kb: &KnowledgeBase,
     required: Symbol,
-    key: Symbol,
-    v: &Value,
-) -> bool {
-    let Some(s) = view_ref_symbol(kb, v) else {
-        return false;
+    bindings: &[(Symbol, Value)],
+) -> SmallVec<[Symbol; 2]> {
+    let params = kb.type_param_syms_of(required);
+    let written = |p: Symbol| {
+        let short = short_name_of(kb.local_name_of(p));
+        bindings
+            .iter()
+            .any(|(k, _)| short_name_of(kb.local_name_of(*k)) == short)
     };
-    let short = short_name_of(kb.local_name_of(key));
-    if short_name_of(kb.local_name_of(s)) != short {
-        return false;
+    if !params.iter().any(|p| written(*p)) {
+        return SmallVec::new();
     }
-    kb.type_param_sym_of(required, short).is_some_and(|p| {
-        p == s
-            || type_param_global_var(kb, p)
-                .is_some_and(|var| type_param_global_var(kb, s) == Some(var))
-    })
+    params.iter().copied().filter(|p| !written(*p)).collect()
 }
 
 /// WI-20261003-QGVB1 — is the binding `v` of a `requires` clause written `?`: an anonymous
@@ -1958,6 +1974,44 @@ pub(crate) fn is_written_wildcard(
         == 1
 }
 
+/// WI-20261003-QGVB1 — the bindings of a requirement that write their slot: each but those
+/// written `?` ([`is_written_wildcard`]), which are slots left unwritten. The one reading for
+/// every clause kind: a sort's (`resolve_requires_bindings`), an operation's
+/// (`normalize_op_requires_entry`) and a provision's condition ([`without_written_wildcards`]).
+pub(crate) fn bindings_written(
+    kb: &KnowledgeBase,
+    bindings: &[(Symbol, Value)],
+) -> Vec<(Symbol, Value)> {
+    bindings
+        .iter()
+        .filter(|(_, v)| !is_written_wildcard(kb, v, bindings))
+        .cloned()
+        .collect()
+}
+
+/// WI-20261020-DNX0E — a provision's lowered condition `spec` with each binding written `?`
+/// left out ([`bindings_written`]), as `resolve_requires_bindings` leaves one out of a sort's
+/// clause: `:- Pairish[A = T, B = ?]` is `:- Pairish[A = T]`. Kept, the variable was asked as
+/// a type and matched no provision (MEASURED: "unresolved: Pairish[A = Dog, B = ?]").
+pub(crate) fn without_written_wildcards(kb: &mut KnowledgeBase, spec: Value) -> Value {
+    let ViewHead::Functor {
+        functor, pos_arity, ..
+    } = spec.head(kb)
+    else {
+        return spec;
+    };
+    if !is_sort_view_functor(kb, functor) {
+        return spec;
+    }
+    let named = view_named_children(kb, &spec);
+    let kept = bindings_written(kb, &named);
+    if kept.len() == named.len() {
+        return spec;
+    }
+    let pos = view_pos_children(kb, &spec, pos_arity).into_vec();
+    kb.fn_value(functor, pos, kept)
+}
+
 /// WI-20261003-QGVB1 — the `open` slots of a requirement's goal as the provisions answering the
 /// rest say them ([`open_slots_said`]): `Storage[C = MemStore]` is asked as `Storage[C =
 /// MemStore, Key = String, Val = Int64]` where `MemStore` provides `Storage` at those, so the
@@ -1966,13 +2020,25 @@ pub(crate) fn is_written_wildcard(
 /// of the spec's own operation on it reads it ([`spec_instance_at_receiver`]): a variable of
 /// the call where the carrier leaves the parameter out.
 ///
-/// A slot nothing says stays as the clause has it, and the goal is refused: where no provision
-/// answers the rest, and where two answer it naming different types for the slot.
+/// A slot nothing says stays [`SortGoal::left_open`]: no provision matches the goal then (an
+/// omitted type parameter discriminates, WI-387), and it is refused where no provision answers
+/// the rest and where two answer it naming different types for the slot; a scope entry that
+/// writes it still covers it.
+///
+/// `open` are the slots to say, of the goal's `left_open`: all of them for a requirement asked
+/// whole, the one member a projection reads ([`member_through_lending_requirement`]), which
+/// another slot the provisions name apart does not make unread. Said, a slot takes its place in
+/// the goal's canonical order (the spec view's, which the clause it was held in by had), so the
+/// goal is the same goal however it was written.
 pub(super) fn complete_open_slots_at_carrier(
     kb: &mut KnowledgeBase,
     goal: &mut SortGoal,
     open: &[Symbol],
 ) {
+    debug_assert!(
+        open.iter().all(|o| goal.left_open.contains(o)),
+        "only a slot the goal holds open is said"
+    );
     let OpenSlotsSaid::One(said) = open_slots_said(kb, goal, open) else {
         return;
     };
@@ -1982,12 +2048,9 @@ pub(super) fn complete_open_slots_at_carrier(
         None
     };
     let spec = goal.spec_sort;
-    for (k, v) in goal.bindings.iter_mut() {
-        let Some(i) = open.iter().position(|o| o == k) else {
-            continue;
-        };
-        let value = match &said[i] {
-            Some(value) => value.clone(),
+    for (k, said) in open.iter().zip(said) {
+        let value = match said {
+            Some(value) => value,
             None => {
                 let Some(said) = at_carrier.as_ref().and_then(|instance| {
                     let pvid = type_param_vid_in_sort(kb, spec, *k)?;
@@ -1999,7 +2062,11 @@ pub(super) fn complete_open_slots_at_carrier(
                 said
             }
         };
-        *v = value;
+        goal.left_open.retain(|o| o != k);
+        goal.bindings.push((*k, value));
+    }
+    if let Some(view) = kb.try_resolve_symbol("anthill.reflect.SortView") {
+        kb.canonicalize_record_named_args(view, &mut goal.bindings);
     }
 }
 
@@ -2012,10 +2079,7 @@ fn instance_at_goal_carrier(kb: &mut KnowledgeBase, goal: &SortGoal) -> Option<S
     let carrier = goal
         .bindings
         .iter()
-        .find(|(k, v)| {
-            short_name_of(kb.local_name_of(*k)) == carrier_short
-                && !is_open_requires_slot(kb, spec, *k, v)
-        })
+        .find(|(k, _)| short_name_of(kb.local_name_of(*k)) == carrier_short)
         .map(|(_, v)| v.clone())?;
     let carrier_pvid = type_param_global_var(kb, carrier_param)?;
     spec_instance_at_receiver(kb, spec, carrier_pvid, &carrier)

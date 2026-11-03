@@ -800,6 +800,7 @@ pub(super) fn provisions_that_change_a_sealed_dispatch(
             spec_sort: row.spec_base,
             bindings,
             carrier: None,
+            left_open: SmallVec::new(),
         };
         // A provision put INTO a sealed sort beside one it already makes of this spec at
         // an overlapping head: the dispatcher reads the two as one candidate (WI-1032),
@@ -862,6 +863,7 @@ pub(super) fn provisions_that_change_a_sealed_dispatch(
                 spec_sort: other.spec_base,
                 bindings: theirs,
                 carrier: None,
+                left_open: SmallVec::new(),
             };
             let more_general = collect_provides_candidates(kb, &their_goal, None)
                 .iter()
@@ -933,6 +935,7 @@ pub(super) fn provisions_that_change_a_sealed_dispatch(
             spec_sort: row.spec_base,
             bindings: row.bindings(kb),
             carrier: None,
+            left_open: SmallVec::new(),
         };
         let message = format!(
             "this clause of the provision of {} is written for '{}', which a sealed load \

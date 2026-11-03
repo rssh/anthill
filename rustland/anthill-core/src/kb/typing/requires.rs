@@ -1329,13 +1329,13 @@ fn normalize_op_requires_entry(kb: &mut KnowledgeBase, entry: &RequiresEntry) ->
     // Undecodable (see [`op_requires_application_bindings`]): leave it as written rather
     // than pair positionals with the WRONG parameter names, which would be a fabricated
     // binding.
-    let Some((mut bindings, positional)) = op_requires_application_bindings(kb, entry) else {
+    let Some((bindings, positional)) = op_requires_application_bindings(kb, entry) else {
         return entry.clone();
     };
     // WI-20261003-QGVB1 — a binding written `?` is a slot left unwritten, which this clause's
     // shape holds as no binding.
-    let written = bindings.clone();
-    bindings.retain(|(_, v)| !is_written_wildcard(kb, v, &written));
+    let mut bindings: SmallVec<[(Symbol, Value); 2]> =
+        bindings_written(kb, &bindings).into_iter().collect();
     let spec_qn = kb.qualified_name_of(entry.required_sort).to_string();
     for (name, val) in positional {
         // The spec's OWN parameter symbol, which is what a `SortView`'s named args

@@ -71,6 +71,7 @@ fn candidates_at(kb: &mut KnowledgeBase, spec_qn: &str, carrier_qn: &str) -> Vec
         spec_sort: spec,
         bindings: smallvec::smallvec![(t, anthill_core::eval::Value::term(carrier_ref))],
         carrier: None,
+        left_open: Default::default(),
     };
     dispatch_candidate_impl_sorts(kb, &goal)
         .into_iter()

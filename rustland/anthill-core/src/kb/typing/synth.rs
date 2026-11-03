@@ -51,6 +51,15 @@ pub struct SortGoal {
     /// where the carrier IS a binding and dispatch is already pinned) and
     /// for transitive sub-goals — those resolve by binding alone.
     pub carrier: Option<GoalCarrier>,
+    /// WI-20261020-DNX0E — the parameters of `spec_sort` the requirement this goal is asked
+    /// for leaves open (kernel-language §8.1) that no provision answering the rest said
+    /// ([`complete_open_slots_at_carrier`]); none of them is a key of `bindings`. Such a slot is
+    /// any type, so a scope entry that writes it covers it ([`requires_entry_covers_goal`]),
+    /// where a parameter a CALL's goal leaves out is one the call did not determine, which a
+    /// scope entry does not decide. Held as the spec's own parameter in `bindings`, it was the
+    /// term a written binding substituted to that parameter makes (`Named[T = Named.T]`).
+    /// Empty for a goal no requirement is asked as.
+    pub left_open: SmallVec<[Symbol; 2]>,
 }
 
 /// WI-20260828-EKWDC — a dispatch goal's receiver carrier: its SORT, and the type
@@ -122,6 +131,7 @@ impl PartialEq for SortGoal {
         self.spec_sort == other.spec_sort
             && bindings_identity(&self.bindings).eq(bindings_identity(&other.bindings))
             && self.carrier == other.carrier
+            && self.left_open == other.left_open
     }
 }
 
@@ -134,6 +144,7 @@ impl std::hash::Hash for SortGoal {
             entry.hash(state);
         }
         self.carrier.hash(state);
+        self.left_open.hash(state);
     }
 }
 
@@ -956,6 +967,7 @@ fn pattern_goal_opened(kb: &mut KnowledgeBase, goal: &SortGoal) -> Option<SortGo
         spec_sort: goal.spec_sort,
         bindings: SmallVec::from_elem((*key, filled), 1),
         carrier: goal.carrier.clone(),
+        left_open: goal.left_open.clone(),
     })
 }
 
@@ -2101,8 +2113,8 @@ pub(super) fn substitute_impl_params_alloc(
 /// WI-826 — THE FIX, and it is leg 1 below: this walk used to visit only the
 /// ENTRY's keys, so a key the GOAL named and the entry did NOT was never examined.
 /// A bare bindingless `requires Desc` — no `SortView`, hence genuinely no
-/// bindings, the one spelling that produces a missing key (a BRACKETED `requires
-/// Pair[P = MT]` is filled by the loader with `Q = Pair.Q`, so it has no holes) —
+/// bindings (and, since WI-20261020-DNX0E, a BRACKETED `requires Pair[P = MT]`
+/// holds no key for its `Q` either) —
 /// therefore covered ANY goal of that spec, returning true before the σ mode was
 /// ever consulted and handing a concrete downstream goal the caller's abstract
 /// dictionary. Leg 1 is now the shared [`supply_covers_demanded_keys`], the
@@ -2123,7 +2135,9 @@ pub(super) fn substitute_impl_params_alloc(
 ///   the honest answer is "cannot tell", so it must not short-circuit: let the
 ///   candidates decide, and let WI-828 refuse if the element is genuinely
 ///   unconstrained. Silently taking the scope's dictionary for an undetermined
-///   element is the pre-WI-821 unsoundness in miniature.
+///   element is the pre-WI-821 unsoundness in miniature. An element the goal's
+///   REQUIREMENT leaves open ([`SortGoal::left_open`]) is not undetermined: it is
+///   any type, and the entry's binding is one (WI-20261003-QGVB1).
 ///
 /// Consequence, deliberate and currently unobservable: for the dual shape (entry
 /// names a key, goal names none) the two walks give OPPOSITE verdicts. Strategy 1
@@ -2151,12 +2165,16 @@ pub(super) fn requires_entry_covers_goal(
     }
     // Leg 2, through the same `binding_for_param` key rule leg 1 uses, so one
     // function cannot decide "entry names goal's key" and "goal names entry's
-    // key" by two different rules.
+    // key" by two different rules. A key the goal's requirement leaves OPEN is any
+    // type, which the entry's binding is one of (WI-20261003-QGVB1; WI-20261020-DNX0E
+    // holds it as `left_open`, not as a binding).
     for (k, _) in &entry_bindings {
         if !is_type_param_binding(kb, *k, &spec_qn) {
             continue;
         }
-        if binding_for_param(kb, &goal.bindings, *k, BindingKeyMatch::Label).is_none() {
+        if binding_for_param(kb, &goal.bindings, *k, BindingKeyMatch::Label).is_none()
+            && !goal.left_open.iter().any(|o| same_label(kb, *o, *k))
+        {
             return false;
         }
     }
@@ -2174,7 +2192,14 @@ pub(super) fn goals_equal(kb: &KnowledgeBase, a: &SortGoal, b: &SortGoal) -> boo
     if a.spec_sort != b.spec_sort {
         return false;
     }
-    if a.bindings.len() != b.bindings.len() {
+    if a.bindings.len() != b.bindings.len() || a.left_open.len() != b.left_open.len() {
+        return false;
+    }
+    if !a
+        .left_open
+        .iter()
+        .all(|k| b.left_open.iter().any(|kk| same_label(kb, *kk, *k)))
+    {
         return false;
     }
     a.bindings.iter().all(|(k, av)| {

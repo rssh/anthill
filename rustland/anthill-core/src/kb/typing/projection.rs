@@ -3589,23 +3589,19 @@ pub(super) fn resolve_rigid_projection(
             }
         }
         [entry] => match spec_binding_value(kb, &entry.spec, &member_str) {
-            // δ-through-the-bound. The stored application is AUTO-COMPLETED: an
-            // unwritten member's binding is a placeholder ref to the SPEC'S OWN param
-            // (`Key = Storage.Key`) — only THAT binding means "bound-open" (the rigid
-            // NEUTRAL); a sort's clause holds a written `?` so too. Any other leaf is a
-            // user-written binding and grounds: a concrete sort (`Key = String`), an opaque
-            // nominal (`Key = Token`), or a sibling param of the declaring sort (`Key = K` —
-            // grounds to `K`'s ref, resolved by the ordinary alias machinery downstream).
+            // δ-through-the-bound. A member the requirement leaves unwritten, or writes `?`,
+            // is no binding of it — the `None` arm, the rigid NEUTRAL (WI-20261020-DNX0E: it
+            // was held as the spec's own param, `Key = Storage.Key`, which a written binding
+            // could make too). A binding is written, and grounds: a concrete sort (`Key =
+            // String`), an opaque nominal (`Key = Token`), or a sibling param of the declaring
+            // sort (`Key = K` — grounds to `K`'s ref, resolved by the ordinary alias machinery
+            // downstream).
             Some(v) => {
                 let binding_key = subject_key_of(kb, &v);
-                let placeholder_key = spec_member_param_key(kb, entry.required_sort, &member_str);
-                let is_placeholder = match (binding_key, placeholder_key) {
-                    (Some(b), Some(p)) => subject_keys_equal(kb, b, p),
-                    // The spec's own param symbol is not identifiable: conservatively
-                    // treat a var-keyed leaf as the placeholder (sound — stays rigid).
-                    (Some(SubjectKey::Var(_)), None) => true,
-                    _ => false,
-                };
+                // The spec's own param symbol is not identifiable: conservatively treat a
+                // var-keyed leaf as open (sound — stays rigid).
+                let is_placeholder = matches!(binding_key, Some(SubjectKey::Var(_)))
+                    && spec_member_param_key(kb, entry.required_sort, &member_str).is_none();
                 // A binding to ANOTHER param of the DECLARING sort (`Key = K`, the
                 // carrier `C = P` included) stays rigid too: cross-param δ needs the
                 // rigid-substitution coherence of the call/body world (increment B) —
@@ -3675,28 +3671,22 @@ pub(super) fn member_through_lending_requirement(
     let key = subject_key_of(kb, subject)?;
     let name = kb.local_name_of(member).to_owned();
     let entry = lending_requirement(kb, chain, key, &name)?;
-    let mut goal = requires_chain_goals(kb, std::slice::from_ref(entry), &|kb, v| {
-        subst_requires_value(kb, v, sigma)
-    })
-    .pop()?;
-    // An operation's own clause holds no binding for a parameter it leaves unwritten, where a
-    // sort's holds the spec's own parameter: open both.
-    if !goal
-        .bindings
+    // The member alone is said, where the requirement leaves it unwritten: a slot the
+    // provisions name apart beside it does not leave it unread.
+    let mut goal = requirement_goal(kb, entry, &|kb, v| subst_requires_value(kb, v, sigma));
+    if let Some(open) = goal
+        .left_open
         .iter()
-        .any(|(k, _)| short_name_of(kb.local_name_of(*k)) == name)
+        .copied()
+        .find(|k| short_name_of(kb.local_name_of(*k)) == name)
     {
-        let param = kb.type_param_sym_of(goal.spec_sort, &name)?;
-        let open = Value::term(kb.alloc(Term::Ref(param)));
-        goal.bindings.push((param, open));
-        complete_open_slots_at_carrier(kb, &mut goal, &[param]);
+        complete_open_slots_at_carrier(kb, &mut goal, &[open]);
     }
-    let (k, v) = goal
+    let (_, v) = goal
         .bindings
         .iter()
         .find(|(k, _)| short_name_of(kb.local_name_of(*k)) == name)?;
-    (!is_open_requires_slot(kb, goal.spec_sort, *k, v) && !view_contains_type_param(kb, v))
-        .then(|| v.clone())
+    (!view_contains_type_param(kb, v)).then(|| v.clone())
 }
 
 /// WI-20261003-QGVB1 — the one entry of `chain` that lends `member` to the parameter keyed
@@ -3718,10 +3708,10 @@ pub(super) fn lending_requirement<'c>(
         .then_some(first)
 }
 
-/// WI-428: the [`SubjectKey`] of a spec's OWN member param (`Storage.Key`) — the
-/// identity the requires-tree's auto-completed placeholder binding carries for an
-/// unwritten member. `None` when the spec's param symbol is not registered under the
-/// expected qualified name.
+/// WI-428: the [`SubjectKey`] of a spec's OWN member param (`Storage.Key`); `None` when the
+/// param symbol is not registered under the expected qualified name. A requirement holds an
+/// unwritten member as no binding (WI-20261020-DNX0E), where it once held this param as a
+/// placeholder this key recognized.
 fn spec_member_param_key(
     kb: &KnowledgeBase,
     spec_sort: Symbol,

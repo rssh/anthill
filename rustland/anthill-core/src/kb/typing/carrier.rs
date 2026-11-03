@@ -203,6 +203,7 @@ pub fn sort_goal_from_subst(
         spec_sort,
         bindings,
         carrier,
+        left_open: SmallVec::new(),
     }
 }
 
@@ -1634,7 +1635,14 @@ pub(super) fn enclosing_requires_licensing_clause(
     else {
         return None;
     };
-    scope_clause_at_carrier(kb, env, spec_sort, carrier_pvid, recv_carrier)
+    scope_clause_at_carrier(
+        kb,
+        env,
+        spec_sort,
+        carrier_pvid,
+        recv_carrier,
+        OmittedMembers::OfTheInstance,
+    )
 }
 
 /// THE SCOPE'S OWN SORT AT ITS OWN CARRIER (WI-20261005-KSSA4): where the scope is a member of
@@ -1691,6 +1699,22 @@ fn scope_own_instance_at_carrier(
     })
 }
 
+/// What [`scope_clause_at_carrier`] reads a member its clause leaves unwritten as.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum OmittedMembers {
+    /// A call of the spec's own operation, which the clause's dictionary answers: the member
+    /// is that instance's unknown (GVGSQ).
+    OfTheInstance,
+    /// Another declaration's clause, asked what the spec is at the carrier
+    /// ([`bind_clause_params_at_carrier`]): its requirement is an instance of its own, which a
+    /// provision may answer at any member (`AnyPebble provides Pair[P = X, Q = Pebble]` for
+    /// `Callee`'s `Pair[P = CP, Q = CQ]` inside `requires Pair[P = MT]`), so nothing is read
+    /// for one. WI-20261020-DNX0E — read as the instance's, `Callee.c(x, pebble())` was refused
+    /// "expected Pair[P = MT].Q, got Pebble": for an operation's clause on the parent, and for
+    /// a sort's once its unwritten slot was left out as an operation's is (MEASURED).
+    Unread,
+}
+
 /// The `requires` clause of the scope being checked that says `spec_sort` AT `recv_carrier`
 /// — a type parameter of the scope, as the body sees it — with what it binds the spec's
 /// other parameters to. `None` where no clause of the scope binds the spec's carrier
@@ -1719,12 +1743,15 @@ fn scope_own_instance_at_carrier(
 /// resolution decides BOTH whether the clause is about the carrier and what each spec
 /// parameter binds to, so one false match would grant a licence and bind a wrong rigid
 /// together.
+///
+/// `omitted` — what a member the clause leaves unwritten is read as ([`OmittedMembers`]).
 pub(super) fn scope_clause_at_carrier(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
     spec_sort: Symbol,
     carrier_pvid: VarId,
     recv_carrier: TermId,
+    omitted: OmittedMembers,
 ) -> Option<LicensingClause> {
     let rigids = env.param_rigids();
     if rigids.is_empty() {
@@ -1804,7 +1831,11 @@ pub(super) fn scope_clause_at_carrier(
         // choose it (an Int64 operation returning a provider's String).
         // Only OMITTED slots are completed here: an explicitly written value
         // that failed the crossing above must retain its existing refusal.
-        for (param, _) in sort_type_params_as_pairs(kb, spec_sort).iter() {
+        let completed = match omitted {
+            OmittedMembers::OfTheInstance => sort_type_params_as_pairs(kb, spec_sort).to_vec(),
+            OmittedMembers::Unread => Vec::new(),
+        };
+        for (param, _) in completed.iter() {
             let vid = type_param_global_var(kb, *param)
                 .expect("a declared spec parameter has a canonical variable");
             if vid == carrier_pvid
@@ -1850,7 +1881,8 @@ pub(super) fn scope_clause_at_carrier(
                     .next()
                     .unwrap()
                     .to_owned();
-                let name = kb.mint_member_param_name(head, &member);
+                let at = declared_carrier_param(kb, &rigids, spec_sort, recv_carrier, &member);
+                let name = kb.mint_instance_member_name(head, &member, at);
                 let rigid = fresh_rigid_named(kb, name);
                 env.instance_member_rigids.borrow_mut().insert(key, rigid);
                 rigid
@@ -1863,6 +1895,37 @@ pub(super) fn scope_clause_at_carrier(
         });
     }
     None
+}
+
+/// WI-20261020-DNX0E — the canonical variable of the type parameter `P` the scope declares whose
+/// body rigid `recv_carrier` is, where the member `member` of `spec_sort`'s instance there is the
+/// projection `P.member` a signature writes ([`MintedParam::Member`]'s `at`, which the ζ arm reads
+/// as that projection). Minted apart from it, a body returning `Storage.get(x, k)` under
+/// `requires Storage[C = P]` was refused "expected P.Val, got Storage[C = P].Val" (MEASURED: for
+/// an operation's clause on the parent, and for a sort's once its unwritten slot was left out
+/// as an operation's is).
+///
+/// `None` at a minted parameter — no signature projects off one: the member sugar's (`x:
+/// Tagger.C`) names its member by writing it into the clause, and an inline `?t` or an unwritten
+/// slot has no projection (`t.Key` resolves to nothing) — and for an effect row, which is no
+/// type a projection stands for.
+fn declared_carrier_param(
+    kb: &mut KnowledgeBase,
+    rigids: &[(VarId, TermId)],
+    spec_sort: Symbol,
+    recv_carrier: TermId,
+    member: &str,
+) -> Option<VarId> {
+    let Term::Var(Var::Rigid(v)) = kb.get_term(recv_carrier) else {
+        return None;
+    };
+    if kb.minted_param(v.name()).is_some() || sort_param_is_effect_row(kb, spec_sort, member) {
+        return None;
+    }
+    rigids
+        .iter()
+        .find(|(_, r)| *r == recv_carrier)
+        .map(|(pv, _)| *pv)
 }
 
 /// What a `requires` clause over a spec says through that spec's OWN requirements, each
@@ -2432,7 +2495,16 @@ fn bind_clause_params_at_carrier(
             };
             let own = scope_own_instance_at_carrier(kb, env, spec, carrier_pvid, *carrier);
             let Some(scope) =
-                own.or_else(|| scope_clause_at_carrier(kb, env, spec, carrier_pvid, *carrier))
+                own.or_else(|| {
+                    scope_clause_at_carrier(
+                        kb,
+                        env,
+                        spec,
+                        carrier_pvid,
+                        *carrier,
+                        OmittedMembers::Unread,
+                    )
+                })
             else {
                 return;
             };

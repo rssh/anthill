@@ -2417,8 +2417,8 @@ fn sort_goal_with_wildcards(
             continue;
         }
         // The spec's OWN parameter symbol as the value — `is_type_param_value`'s
-        // wildcard, the same term a written `requires Spec[Element = Element]` clause
-        // carries for an element its author did not pin.
+        // wildcard. A `requires` clause holds an element its author did not pin as no
+        // binding (WI-20261020-DNX0E); this goal is a witness's, read by its own readers.
         let wildcard = Value::term(kb.alloc(Term::Ref(qualified)));
         bindings.push((key, wildcard));
     }
@@ -2427,6 +2427,7 @@ fn sort_goal_with_wildcards(
             spec_sort,
             bindings,
             carrier,
+            left_open: SmallVec::new(),
         },
         from_carried_types,
     }
