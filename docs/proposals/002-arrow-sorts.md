@@ -3,7 +3,7 @@
 **Canonical reference:** [`kernel-language.md` §§4.4 and 5.2](../kernel-language.md#52-sort),
 including the delivered higher-kinded sort-binder extensions.
 
-**Status:** Draft
+**Status:** Draft. Corrected 2026-11-03: every arrow is a `Function` (§"Correction (2026-11-03)"), with open questions.
 **Depends on:** [001-sort-domain-unification](001-sort-domain-unification.md)
 **Subsumes:** [003-effect-arrow-sorts](003-effect-arrow-sorts.md)
 **Affects:** Kernel Language Specification §4, §5.2, §5.4, §5.5–5.7, §8.2, §11
@@ -77,6 +77,149 @@ The arrow sort `(A) -> B` is sugar for `Function[A, B]` from stdlib. The existin
 (Int64) -> String
 Function[A = Int64, B = String]
 ```
+
+### Correction (2026-11-03): every arrow is a `Function`
+
+The rule above says what `(A) -> B` is and nothing about `(A, B) -> C`. The implementation
+answered with a parameter count carried beside the parameter type (WI-791): `(a: A, b: B) -> C`
+is a function of two parameters, `((a: A, b: B)) -> C` a function of one tuple, and the two are
+different types (kernel-language §4.4). The stdlib has no sort for the first. Its one function
+sort is `Function[A, B, E]`, whose `apply(f, x: A)` takes one argument. This section corrects the
+rule: a function takes one argument, and several parameters are one tuple.
+
+**The rule.**
+
+1. `(p₁: T₁, …, pₙ: Tₙ) -> R @ E` is `Function[A = (p₁: T₁, …, pₙ: Tₙ), B = R, E = E]` for
+   n ≠ 1, `(p: T) -> R` is `Function[A = T, B = R]`, and `() -> R` is `Function[A = (), B = R]`.
+   An arrow carries no parameter count, so `((a: A, b: B)) -> R` and `(a: A, b: B) -> R` are one
+   type.
+2. An application keeps its written form, `f(x₁, …, xₙ)`. It is checked as a call through a
+   `Function`-typed value is checked today: one argument against `A`, n arguments against `A`'s
+   n components. At load it is converted to the tupled form `f((l₁: x₁, …, lₙ: xₙ))`, with `A`'s
+   labels — the conversion a `Function`-typed value's call already gets (§4.4: a spread call "is
+   normalized at load into its whole-`A` form").
+3. What a callable does with the one tuple is its own. A lambda hands it to its pattern, which
+   destructures by label. An operation of several parameters takes them from its components,
+   the spread a `Function`-typed value's call already gets.
+4. How many parameters a callable has is a fact about the callable, not about its type. An
+   operation of k parameters, or a lambda of k binders, stands where `Function[A, B]` is
+   expected when k is 1 or `A`'s component count — the rule a `Function` slot applies today
+   (WI-801). It is checked where the callable becomes a value.
+
+**What it does to programs.** Each program is measured on `89500f50`.
+
+A lambda of several typed binders, with no type around it (WI-20261103-2N4QH):
+
+```anthill
+namespace q3
+  import anthill.prelude.{Int64}
+  operation main() -> Int64 =
+    let h = lambda (s: Int64, b: Int64) -> s + b
+    h("a", 1)
+end
+```
+
+Today it loads and stops at run time, "type mismatch: expected Int64, got String and Int64":
+the lambda's parameter is a fresh variable, so nothing checks the call. Under rule 1 `h` is
+`Function[A = (…: Int64, …: Int64), B = Int64]`, and the call is refused at load, at `"a"`, as
+`h(("a", 1))` is. `h(1, 2)` runs to 3. `h((1, 2))` depends on open question 1.
+
+The same type written by hand:
+
+```anthill
+namespace q6
+  import anthill.prelude.{Int64}
+  operation main() -> Int64 =
+    let h: (Int64, Int64) -> Int64 = lambda (s, b) -> s + b
+    h(1, 2) + h((1, 2))
+end
+```
+
+Today it is refused at `h((1, 2))`: "type mismatch in h.arity (op-arg): expected 2 arguments —
+the parameter list this function value declares, got 1 argument". Under rule 2 the one tuple is
+checked against `A = (Int64, Int64)`, and the program runs to 6.
+
+Today's `Function` slot already takes both shapes of operation, at either spelling of the call:
+
+```anthill
+namespace fa
+  import anthill.prelude.{Int64, Function}
+  operation get_a(t: (a: Int64, b: Int64)) -> Int64 = t.a
+  operation two(a: Int64, b: Int64) -> Int64 = a * 10 + b
+  operation main() -> Int64 =
+    let f: Function[A = (a: Int64, b: Int64), B = Int64] = get_a
+    let g: Function[A = (a: Int64, b: Int64), B = Int64] = two
+    f(1, 2)
+end
+```
+
+With `main` ending in each call in turn: `f(1, 2)` runs to 1, `f((a: 1, b: 2))` to 1, `g(1, 2)`
+to 12 and `g((a: 1, b: 2))` to 12. Under the rule every arrow behaves so.
+
+**What it retires from kernel-language §4.4.** "An arrow records its parameter ARITY" (WI-791),
+and the two relations the count selects — at a count other than 1 the parameter list, related
+slot by slot; at 1 the sole parameter's type, related as data. "The argument count must equal
+the declared arity" in "Applying a function value checks its arguments" (WI-792): rule 2 takes
+its place. The note "The equivalence is not exact in one remaining respect: `Function` states no
+arity", which becomes exact. And the `arity` field of `TypeExtractor.Arrow`.
+
+**Open questions.**
+
+1. *Which labels a callable's `A` has, and how two `A`s with different labels relate.* Today a
+   `Function` slot whose `A` is written positionally takes a two-parameter operation and refuses
+   one that takes a named tuple:
+
+   ```anthill
+   namespace fd
+     import anthill.prelude.{Int64, Function}
+     operation get_a(t: (a: Int64, b: Int64)) -> Int64 = t.a
+     operation two(a: Int64, b: Int64) -> Int64 = a * 10 + b
+     operation take2(f: Function[A = (Int64, Int64), B = Int64]) -> Int64 = f(1, 2)
+     operation main() -> Int64 = take2(two)
+   end
+   ```
+
+   `take2(two)` runs to 12. `take2(get_a)` is refused: "expected Function[A = (_1: Int64, _2:
+   Int64), B = Int64, E = {}], got ((a: Int64, b: Int64)) -> Int64". Under rule 1 the two
+   operations get the same kind of type. If `two`'s `A` is `(a: Int64, b: Int64)`, its parameter
+   names, it is `get_a`'s type, and both are taken or both refused. If it is `(_1: Int64, _2:
+   Int64)`, which is how an operation's value spells its parameters today, they stay different.
+   The same question decides `h((1, 2))` in `q3` and this program, which loads and runs to 6
+   today:
+
+   ```anthill
+   namespace q8
+     import anthill.prelude.{Int64, List}
+     operation main() -> Int64 =
+       let f = lambda (a: Int64, b: Int64) -> a + b
+       List.foldLeft([1, 2, 3], 0, f)
+   end
+   ```
+
+   `foldLeft`'s `f` is `(acc: Acc, x: Element) -> Acc`. Related by name, as §4.5 relates data
+   tuples, `(a: Int64, b: Int64)` does not meet `(acc: Int64, x: Int64)`. Related by position,
+   as a parameter list is related today (WI-782), it does.
+
+2. *Parameters named in another order, at equal types.* Today this loads and runs to 1:
+
+   ```anthill
+   namespace fc2
+     import anthill.prelude.{Int64, Function}
+     operation take(f: Function[A = (x: Int64, y: Int64), B = Int64]) -> Int64 = f(7, 1)
+     operation impl(y: Int64, x: Int64) -> Int64 = x
+     operation main() -> Int64 = take(impl)
+   end
+   ```
+
+   `f(7, 1)` gives `impl` 7 and 1 by position, so `impl`'s `x` is 1. Read by name, as rule 3's
+   tuple would let it be, `x` is 7. With different types (`y: Bool`) it is refused today. Its
+   arrow-slot twin, `take(f: (x: Int64, y: Bool) -> Int64)`, loaded before WI-782 and returned a
+   `Bool` from an operation declared `-> Int64`.
+
+3. *A call of an operation by its name.* `add2((1, 2))`, over `operation add2(a: Int64, b:
+   Int64) -> Int64`, is refused today: "expected 2 arguments — the parameter list `add2`
+   declares, got 1 argument". Does rule 2 reach a call by name, or does such a call keep the
+   declared parameter list, with its named arguments, defaults and variadic capture?
 
 ## Term Application
 
@@ -362,11 +505,11 @@ The arrow type grammar mirrors the existing Pratt operator table:
 ## Semantic Rules
 
 1. `(A1, ..., An) -> R` is a sort when all `Ai` and `R` are sorts.
-2. `(A) -> B` is equivalent to `Function[A, B]` from stdlib.
+2. `(A) -> B` is equivalent to `Function[A, B]` from stdlib, and `(A1, ..., An) -> R` to `Function[A = (A1, ..., An), B = R]`: an arrow carries no parameter count (§"Correction (2026-11-03)").
 3. Arrow sorts associate to the right: `(A) -> (B) -> C` = `(A) -> ((B) -> C)`.
 4. An operation name in term position, where an arrow sort is expected, denotes the operation as a function value (eta-expansion).
 5. Rules with function-sorted variables are restricted to the Miller pattern fragment. The kernel rejects non-pattern rules at declaration time.
-6. Term application `t(args)` where `t` is a term of arrow sort type-checks when args match the parameter sorts.
+6. Term application `t(args)` where `t` is a term of arrow sort type-checks when its one argument matches `A`, or its n arguments match `A`'s n components; at load it is converted to the tupled form (§"Correction (2026-11-03)").
 7. Effect subtyping: `E1 ⊆ E2` implies `(A) -> B @ E1 <: (A) -> B @ E2`.
 8. Pure arrows are subtypes of effectful arrows: `(A) -> B <: (A) -> B @ E` for any `E`.
 9. Composition typing: effects compose via union.
