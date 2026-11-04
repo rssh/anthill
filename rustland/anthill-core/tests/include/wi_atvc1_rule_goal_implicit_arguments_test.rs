@@ -395,3 +395,36 @@ fn an_operation_body_cites_through_an_alias_as_a_goal_does() {
         "CONTROL: nothing fixes `T`",
     );
 }
+
+/// A RESIDUAL IS PRINTED AS WRITTEN: a goal riding in its citation marker, delayed and left
+/// undischarged, prints as the goal it carries — `not(cmp(red, green, ?_))`, the residual of a
+/// negand held open by its anonymous variable. FAILS with the printer's marker reading backed
+/// out: it printed `not(__within_requirements(cmp(red, green, ?_), cmp, __unrouted))`.
+#[test]
+fn a_residual_goal_prints_as_written() {
+    use anthill_core::kb::resolve::ResolveConfig;
+    use anthill_core::kb::term::{Term, Var};
+    use anthill_core::persistence::print::TermPrinter;
+    let mut kb = crate::common::load_kb_with(
+        "namespace atvc1.res\n  import anthill.prelude.{Int64, WeakOrd}\n  \
+         sort Colour\n    entity red\n    entity green\n  end\n  \
+         rule cmp(?a, ?b, ?c) :- WeakOrd.compare(?a, ?b, ?c)\n  \
+         rule notCmp(1) :- not(cmp(red, green, ?))\nend\n",
+    );
+    let sym = kb.try_resolve_symbol("atvc1.res.notCmp").expect("`notCmp` is loaded");
+    let x = kb.intern("x");
+    let x = kb.fresh_var(x);
+    let x = kb.alloc(Term::Var(Var::Global(x)));
+    let goal = kb.alloc(Term::Fn {
+        functor: sym,
+        pos_args: smallvec::SmallVec::from_elem(x, 1),
+        named_args: smallvec::SmallVec::new(),
+    });
+    let solutions = kb.resolve(&[goal], &ResolveConfig::default());
+    let printer = TermPrinter::new(&kb);
+    let printed: Vec<String> = solutions
+        .iter()
+        .flat_map(|sol| sol.residual.iter().map(|g| printer.print_value(g)))
+        .collect();
+    assert_eq!(printed, ["not(cmp(red, green, ?_))"], "the residual as written");
+}

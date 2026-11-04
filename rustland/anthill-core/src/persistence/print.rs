@@ -145,6 +145,12 @@ pub trait PrintView: TermSource {
     /// whose view is its reflect-term twin and not the source it was written as; on the
     /// parse side a parse-only form.
     fn own_spelling(printer: &TermPrinter<'_, Self>, item: &Self::Item, buf: &mut String) -> bool;
+    /// The goal `item` carries where it is a goal riding in its citation marker, which is
+    /// printed in the marker's place: the dictionaries the marker passes are the resolver's,
+    /// and a residual or a stored clause is read as written. Only the knowledge base holds one.
+    fn carried_goal(&self, _item: &Self::Item) -> Option<Self::Item> {
+        None
+    }
 }
 
 impl PrintView for KnowledgeBase {
@@ -152,6 +158,21 @@ impl PrintView for KnowledgeBase {
 
     fn term_item(&self, id: TermId) -> Self::Item {
         ViewItem::Term(id)
+    }
+
+    fn carried_goal(&self, item: &Self::Item) -> Option<Self::Item> {
+        match item.head(self) {
+            ViewHead::Functor {
+                functor,
+                pos_arity,
+                ..
+            } if pos_arity >= 2
+                && self.builtin_of(functor) == Some(crate::kb::resolve::BuiltinTag::WithinRequirements) =>
+            {
+                PrintView::pos_arg(self, item, 0)
+            }
+            _ => None,
+        }
     }
 
     fn head(&self, item: &Self::Item) -> ViewHead {
@@ -572,6 +593,9 @@ impl<'a> TermPrinter<'a, KnowledgeBase> {
     }
 
     fn write_occurrence(&self, occ: &Rc<NodeOccurrence>, buf: &mut String) {
+        if let Some(goal) = self.view.carried_goal(&ViewItem::Node(Rc::clone(occ))) {
+            return self.write_item(&goal, buf);
+        }
         if occ.as_pattern().is_some() {
             self.write_pattern(occ, buf);
             return;
@@ -1262,6 +1286,9 @@ impl<'a, V: PrintView + ?Sized> TermPrinter<'a, V> {
 
     /// Write `item` as DATA: the surface a fact, a goal's argument and a query answer take.
     fn write_item(&self, item: &V::Item, buf: &mut String) {
+        if let Some(goal) = self.view.carried_goal(item) {
+            return self.write_item(&goal, buf);
+        }
         if V::own_spelling(self, item, buf) {
             return;
         }
