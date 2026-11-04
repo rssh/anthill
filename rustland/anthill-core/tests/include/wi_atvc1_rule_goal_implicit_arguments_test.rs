@@ -546,9 +546,17 @@ fn a_residual_goal_prints_as_written() {
 const PATTERN: &str = r#"
 namespace atvc1.pat
   import anthill.reflect.{TypeValue, TypePattern}
-  import anthill.prelude.{Int64, List, Error, Result}
+  import anthill.prelude.{Int64, String, List, Error, Result}
 
+  sort Base
+    entity base
+  end
+  sort Boom
+    requires Base
+    entity boom(why: String)
+  end
   sort Other
+    requires Base
     entity other(n: Int64)
   end
 
@@ -571,6 +579,10 @@ namespace atvc1.pat
   operation directCaught() -> Int64 effects {Error} = viaEither[P = List[T = Int64]]([], 0 - 1)
   operation outerCaught() -> Int64 effects {Error} = viaOuter[P = List[T = Int64]]([], 0 - 1)
   operation outerDeclined() -> Int64 effects {Error} = viaOuter[P = List[T = Int64]]([], 7)
+
+  operation wideDirect() -> Int64 effects {Error} = viaEither[P = Base](boom("b"), 7)
+  operation wideOuter() -> Int64 effects {Error} = viaOuter[P = Base](boom("b"), 7)
+  operation narrowOuter() -> Int64 effects {Error} = viaOuter[P = Boom](boom("b"), 7)
 end
 "#;
 
@@ -589,11 +601,31 @@ fn a_callers_pattern_reaches_a_reify_through_a_rule() {
     let ns = "atvc1.pat";
     assert_eq!(int(&mut interp, ns, "directCaught"), 1, "cited directly");
     assert_eq!(int(&mut interp, ns, "outerCaught"), 1, "through `outer`");
-    match interp.call(&format!("{ns}.outerDeclined"), &[]) {
+    other_escapes(&mut interp, ns, "outerDeclined");
+}
+
+/// A raise of `other(n: 7)` that no pattern on the way admits.
+fn other_escapes(interp: &mut anthill_core::eval::Interpreter, ns: &str, op: &str) {
+    match interp.call(&format!("{ns}.{op}"), &[]) {
         Err(e) => {
             let e = format!("{e:?}");
-            assert!(e.contains("other(n: 7)"), "the `Other` is not caught: {e}");
+            assert!(e.contains("other(n: 7)"), "{op}: the `Other` is not caught: {e}");
         }
-        Ok(v) => panic!("the `Other` is not caught, got {v:?}"),
+        Ok(v) => panic!("{op}: the `Other` is not caught, got {v:?}"),
     }
+}
+
+/// A PATTERN WIDER THAN THE PAYLOAD'S TYPE: `Boom` and `Other` both refine `Base`, and the
+/// caller chooses `P = Base` with the payload `boom("b")`. At `n = 7` the thunk raises
+/// `other(n: 7)`, which `Base` admits and `Boom` does not: caught cited directly and through
+/// `outer`. FAILS under [F]: through `outer` the clause reads the pattern off the value,
+/// `Boom`, and `other(n: 7)` escapes, as on the binary before this ticket. `wideDirect` and
+/// `narrowOuter` (`P = Boom`, the `Other` not caught) pass under [F] and on that binary.
+#[test]
+fn a_callers_wider_pattern_reaches_a_reify_through_a_rule() {
+    let mut interp = crate::common::interp_for(PATTERN);
+    let ns = "atvc1.pat";
+    other_escapes(&mut interp, ns, "narrowOuter");
+    assert_eq!(int(&mut interp, ns, "wideDirect"), 1, "`Base` admits the `Other`, cited directly");
+    assert_eq!(int(&mut interp, ns, "wideOuter"), 1, "`Base` admits the `Other`, through `outer`");
 }
