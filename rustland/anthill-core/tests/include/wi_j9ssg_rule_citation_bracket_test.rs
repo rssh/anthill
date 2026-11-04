@@ -451,3 +451,66 @@ fn several_requirements_at_one_parameter_are_an_operations() {
     ));
     assert_one_refusal(&errs, "names more than one requirement slot", "a spec's name over two slots");
 }
+
+/// `require WeakOrd[A]` IS THE GUARD `WeakOrd[A]` (§8.6): one requirement, written with the
+/// keyword, positional or named, alone or beside another at the parameter. A `require` that
+/// names no type parameter the head introduces is refused, where the guard written so loaded
+/// and answered nothing; so is the form under a name, which nothing reads yet, and the keyword
+/// anywhere but a rule's own body (a head, a constraint, an operation's `requires`), where
+/// it parsed as a syntax error before the keyword existed. The earlier
+/// `require[X]`, written as a goal and as `?d = require[X]`, reads as it did until §5 removes
+/// it — the controls, `-1` under every axis. FAILS with the grammar's `require_goal` backed
+/// out: no rule with the keyword parses. Under [N] (no refusal of a `require` that folds into
+/// no guard): `g` and `h` load.
+#[test]
+fn require_with_the_keyword_is_the_guard() {
+    let ns = "j9ssg.require";
+    let rules = format!(
+        "  rule rc[A](?a: A, ?b: A, ?c) :- require WeakOrd[A], WeakOrd.compare(?a, ?b, ?c)\n  \
+         rule rcNamed[A](?a: A, ?b: A, ?c) :- require WeakOrd[T = A], WeakOrd.compare(?a, ?b, ?c)\n  \
+         rule rcTwo[A](?a: A, ?b: A, ?c) :- require WeakOrd[T = A], require Eq[T = A],\n      \
+         WeakOrd.compare(?a, ?b, ?c)\n  \
+         rule old(?a, ?b, ?c) :- require[WeakOrd[T]], WeakOrd.compare(?a, ?b, ?c)\n  \
+         rule oldOut(?a, ?b, ?c) :- ?d = require[WeakOrd[T]], WeakOrd.compare(?a, ?b, ?c)\n  \
+         operation via[A](x: A, y: A) -> Int64 {EFFECTS} requires WeakOrd[T = A] = rc(x, y).head.c\n"
+    );
+    let got = answers(
+        ns,
+        &rules,
+        &[
+            ("viaDesc", "via[A = Int64, WeakOrd = Descending](1, 5)"),
+            ("viaAsc", "via[A = Int64, WeakOrd = Ascending](1, 5)"),
+            ("named", "rcNamed[A = Int64, WeakOrd = Descending](1, 5).head.c"),
+            ("two", "rcTwo[A = Int64, WeakOrd = Descending](1, 5).head.c"),
+            ("viaOld", "old(1, 5).head.c"),
+            ("viaOldOut", "oldOut(1, 5).head.c"),
+        ],
+    );
+    expect(
+        &got,
+        &[("viaDesc", 4), ("viaAsc", -4), ("named", 4), ("two", 4), ("viaOld", -1), ("viaOldOut", -1)],
+    );
+    for (rule, text) in [
+        (
+            "rule g(?a, ?b, ?c) :- require WeakOrd[T = Int64], WeakOrd.compare(?a, ?b, ?c)",
+            "and this one names none",
+        ),
+        ("rule h(?x) :- require(?x)", "and this one names none"),
+        (
+            "rule n[A](?a: A, ?b: A, ?c) :- require up: WeakOrd[T = A], WeakOrd.compare(?a, ?b, ?c)",
+            "`require up: …`",
+        ),
+        // Read only as a goal of a rule's own body: the grammar admits the keyword wherever a
+        // goal list stands, and elsewhere its term would stand alone — as a head, a
+        // constraint's goal, an operation's `requires` line.
+        ("rule require(?x) :- ?x <=> 1", "is read only as a goal of a rule's body"),
+        ("constraint c: false :- require WeakOrd[T = Int64]", "is read only as a goal of a rule's body"),
+        (
+            "operation f[A](x: A) -> Int64 requires require WeakOrd[T = A] = 1",
+            "is read only as a goal of a rule's body",
+        ),
+    ] {
+        let errs = crate::common::load_errors_of(&program(ns, &format!("  {rule}\n")));
+        assert_one_refusal(&errs, text, rule);
+    }
+}

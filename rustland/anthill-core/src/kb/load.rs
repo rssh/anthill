@@ -19601,6 +19601,7 @@ fn load_with_visited(
     // function returns early when the file interned no `type_args` symbol at all, so a
     // file whose only bracket is a receiver's would have swept nothing.
     loader.check_unconsumed_recv_types();
+    loader.check_unread_require_goals();
 
     if !loader.errors.is_empty() {
         return Err(RefusedFile {
@@ -28694,6 +28695,10 @@ struct Loader<'a> {
     // bracket is read (060.1 §2). A constraint's body is also converted for its guard, which
     // reads no bracket, so its goals keep the end-of-file sweep's refusal.
     in_rule_clause_body: bool,
+    // 060.1 §8.6: the `require …` goals a rule's body has read; every other one the grammar
+    // admits — a head, a constraint's body, a quantifier's, an operation's `requires` list —
+    // is refused at the end of the file ([`Loader::check_unread_require_goals`]).
+    read_require_goals: HashSet<ParseTermId>,
     // WI-20260824-JM6ZW — true while the rule-body walk lowers a child whose ROLE is not
     // `ValueExpression` (design 055 §3: "a child whose role is head, callee, … member name
     // … or `TypeExpr` does not" admit a type value), so the walk's type-value record is not
@@ -29291,6 +29296,7 @@ impl<'a> Loader<'a> {
             in_body_goal_wrapper: false,
             in_body_occurrence: false,
             in_rule_clause_body: false,
+            read_require_goals: HashSet::new(),
             in_non_value_role: false,
             in_member_name: false,
             in_call_argument: false,
@@ -31422,7 +31428,13 @@ impl<'a> Loader<'a> {
         // goes — `require[(A, B)]`, `require[{}]` — names no spec. Said here: lowered as
         // an entry it is a former of the type meta-language, which the grounding check
         // then reports as a spec with operations to call.
-        if self.is_entry_type_aux(parse_id) {
+        // So does a tuple or a record written as a term, `require[(a: Leaf, b: Leaf)]` at a
+        // goal's start, where the `require` keyword reads its bracket as a list's element
+        // (060.1 §8.6): neither a name nor a bracketed application.
+        let written_as_term = matches!(self.parsed.terms.get(parse_id), Term::Fn { .. })
+            && !self.parsed.terms.is_type_application(parse_id)
+            && dotted_citation_name(&self.parsed.symbols, &self.parsed.terms, parse_id).is_none();
+        if self.is_entry_type_aux(parse_id) || written_as_term {
             let written = self
                 .parsed
                 .source
@@ -36508,6 +36520,29 @@ impl<'a> Loader<'a> {
                 callee,
                 position,
                 span,
+            });
+        }
+    }
+
+    /// 060.1 §8.6 — refuse every `require …` goal no rule's body read: the grammar admits the
+    /// keyword wherever a goal list stands, and outside a rule's own body the term after it
+    /// would stand as a plain goal (a constraint's, an operation's `requires`) or a head.
+    fn check_unread_require_goals(&mut self) {
+        let mut unread: Vec<ParseTermId> = self
+            .parsed
+            .terms
+            .ids()
+            .filter(|id| self.parsed.terms.require_goal(*id).is_some() && !self.read_require_goals.contains(id))
+            .collect();
+        unread.sort_by_key(|id| self.parsed.terms.span(*id).start);
+        for id in unread {
+            let at = render_decl_site(self.kb, self.source_span_of(id));
+            self.errors.push(LoadError::Other {
+                message: format!(
+                    "`require` at {at} states a requirement of a rule, and is read only as a \
+                     goal of a rule's body; an operation states one with `requires`, and a \
+                     head, a constraint or a nested goal states none"
+                ),
             });
         }
     }
@@ -46352,6 +46387,35 @@ impl<'a> Loader<'a> {
                         ),
                     });
                 }
+            }
+        }
+
+        // 060.1 §8.6 — a goal written `require …` is a requirement of a type parameter the head
+        // introduces, which the scan above has folded into the head's bound; one it did not
+        // fold states nothing of the clause's parameters, and would load as a goal that
+        // answers nothing. The name `require up: …` gives is read by nothing yet.
+        for &gtid in r.body.iter().flatten() {
+            let Some(name) = self.parsed.terms.require_goal(gtid) else {
+                continue;
+            };
+            self.read_require_goals.insert(gtid);
+            let at = render_decl_site(self.kb, self.source_span_of(gtid));
+            if let Some(name) = name {
+                self.errors.push(LoadError::Other {
+                    message: format!(
+                        "a requirement written under a name, `require {}: …` at {at}, is not \
+                         read yet; write it unnamed, `require …`, or as the guard alone",
+                        self.parsed.symbols.local_name(name),
+                    ),
+                });
+            } else if !folded_guard_ids.contains(&gtid) {
+                self.errors.push(LoadError::Other {
+                    message: format!(
+                        "`require` at {at} states a requirement of a type parameter the rule's \
+                         head introduces, and this one names none: introduce it, `rule p[A](…) \
+                         :- require Spec[T = A], …`, and type a column at it (`?x: A`)"
+                    ),
+                });
             }
         }
 

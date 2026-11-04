@@ -1211,6 +1211,10 @@ impl<'a> Converter<'a> {
                 results.push(tid);
             }
             "fn_term" => self.push_fn_term(node, work),
+            "require_goal" => {
+                let tid = self.convert_require_goal(node);
+                results.push(tid);
+            }
             "let_binding" => {
                 // proposal 049: `let ?v = e` is sugar for `?v <=> e`; lower to the same
                 // `unify(?v, e)` IR pratt builds for `<=>` (WI-522). Per-goal depth is
@@ -5017,6 +5021,43 @@ impl<'a> Converter<'a> {
     /// literal of its own, so both sides were the same stale string and it stayed green;
     /// and no `.anthill` file in the corpus writes a goal-position `let`, so the suite
     /// never reached the loud error either.
+    /// Proposal 060.1 §8.6 — a requirement written with the `require` keyword. `require
+    /// WeakOrd[A]` is the guard `WeakOrd[A]`, the same term; `require up: WeakOrd[A]` is that
+    /// guard under the name `up` ([`SimpleTermStore::require_goal`]). `require[X]` written
+    /// as a goal reads as the keyword before a one-element list, and is the application
+    /// `require[X]` the earlier form wrote, lowered as that form is
+    /// ([`Self::rewrite_require_goal`]).
+    fn convert_require_goal(&mut self, node: Node) -> ParseTermId {
+        let span = self.span(node);
+        let Some(requirement) = self.field(node, "requirement") else {
+            self.err("`require` with no requirement after it", node);
+            return self.alloc_bottom(span);
+        };
+        let binder = self.field(node, "binder");
+        if requirement.kind() == "collection_literal" {
+            let mut cursor = requirement.walk();
+            let elements: Vec<Node> = requirement.named_children(&mut cursor).collect();
+            if let ([element], None) = (elements.as_slice(), binder) {
+                let spec = self.convert_term(*element);
+                let functor = self.intern("require");
+                let tid = self.terms.alloc(
+                    Term::Fn {
+                        functor,
+                        pos_args: SmallVec::from_elem(spec, 1),
+                        named_args: SmallVec::new(),
+                    },
+                    span,
+                );
+                self.terms.mark_type_application(tid);
+                return tid;
+            }
+        }
+        let tid = self.convert_term(requirement);
+        let name = binder.map(|b| self.intern(self.text(b)));
+        self.terms.set_require_goal(tid, name);
+        tid
+    }
+
     fn convert_let_binding(&mut self, node: Node) -> ParseTermId {
         let span = self.span(node);
         let var = self.field(node, "var").map(|n| self.convert_term(n));
@@ -6246,6 +6287,7 @@ fn is_term_kind(kind: &str) -> bool {
             // strips into a per-variable `Type` constraint.
             | "typed_var_arg"
             | "fn_term"
+            | "require_goal"
             | "nested_implication"
             | "bounded_quantification"
             | "application"
