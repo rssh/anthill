@@ -504,12 +504,12 @@ dropped, as the tuple match drops it. So
 7. A callable of several parameters refuses a component that meets none of them, as a call
 refuses an argument with no parameter (§5.4).
 
-How many parameters a callable has is checked where it becomes a value. An operation of `k`
-parameters, or a lambda of `k` binders, stands at `Function[A, B]` when `k` is 1 or `A`'s
-component count, and at no other: `Function[A = (Int64, Int64), B = Int64]` given a lambda of
-three binders is a load error. Where `A` is not a tuple, `k` is 1; where `A` is not yet known (a
-rigid type parameter), nothing is required, since a component count is what instantiation
-supplies.
+No parameter count stands beside the tuple: the callable's tuple says it. `lambda (a, b, c) -> …`
+has the three-component tuple `(_, _, _)`, so given to
+`take2(f: Function[A = (Int64, Int64), B = Int64])` it is refused by the application match, two
+arguments meeting three components, and an operation of three parameters is refused the same way.
+A callable of one parameter has its parameter's type for its tuple, which `A` meets whole. Where
+`A` is not yet known (a rigid type parameter), the match waits for it.
 
 The run time makes the same match where the callable takes the tuple: an operation of several
 parameters takes them from its components, by label or by position as above, and a lambda hands

@@ -110,7 +110,10 @@ rule: a function takes one argument, and several parameters are one tuple.
 5. How many parameters a callable has is a fact about the callable, not about its type. An
    operation of k parameters, or a lambda of k binders, stands where `Function[A, B]` is
    expected when k is 1 or `A`'s component count — the rule a `Function` slot applies today
-   (WI-801). It is checked where the callable becomes a value.
+   (WI-801). It is checked where the callable becomes a value. It is a consequence of rule 6
+   (decided with the user 2026-11-04): a lambda's or an operation's count is the size of its own
+   tuple, so `lambda (a, b, c)`, whose tuple is `(_, _, _)`, is refused where `A = (Int64,
+   Int64)` because two arguments do not meet three components. No count stands beside the tuple.
 6. A callable stands where a function type is expected when the expected `A` reaches the
    callable's own tuple by the application match: the slot will apply it. When the two tuples
    carry the same labels, the components meet by label. Otherwise the labels are mapped by

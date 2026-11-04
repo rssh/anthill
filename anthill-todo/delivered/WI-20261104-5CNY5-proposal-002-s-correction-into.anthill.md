@@ -29,3 +29,7 @@ Correction (user, 2026-11-04): a function value at another function type with un
 
 Decided with the user 2026-11-04: a function value drops nothing. Its type does not say how many parameters its callable has, so it is refused at a wider A whichever callable it holds. kernel-language §4.4 ("A function value at another function type"; the one-parameter drop is said of a callable written at the slot) and 002 state it. Measured on 0eaa2e86: w1g (`let g: ((age: Int64)) -> Int64 = age_of` then `app(g, (age: 7, name: "x"))`) 7 today, refused under the rule; w1h (`g: ((age: Int64, name: String)) -> Int64 = pair_of` at `app3`, A = (age, name, id)) 7 today, refused; w1i (`g: (age: Int64, name: String) -> Int64 = two` at `app3`) refused today by the count, refused under the rule for `id`. With no `id`, `app2(g, …)` and `app2(two, …)` are refused today by the count and run to 7 under the rule. Documentation only.
 
+### 2026-11-04T07:38:13Z — feedback — claude
+
+Decided with the user 2026-11-04: no parameter count stands beside the tuple. 002 rule 5 (WI-801) is a consequence of rule 6: a lambda's or an operation's count is the size of its own tuple, so `lambda (a, b, c)` (tuple `(_, _, _)`) given to `take2(f: Function[A = (Int64, Int64), B = Int64])` is refused by the application match, two arguments meeting three components (measured on 0eaa2e86: refused today, "expected a callback of 1 parameter … or 2 …, got a callback of 3 parameters"). kernel-language §4.4 replaces the separate count paragraph; 002 rule 5 notes it. Documentation only.
+
