@@ -307,10 +307,35 @@ fn route_goal(
             Some((offset, vars))
         })
         .flatten();
+    // Each position of the layout as the clause and the read it is, for the routes a declared
+    // requirement of the clause gives (`declared_route`).
+    let positions: Vec<(RuleId, usize)> = counts
+        .iter()
+        .flat_map(|&(r, n)| (0..n).map(move |k| (r, k)))
+        .collect();
+    let mut callee_reads: HashMap<RuleId, Vec<ImplicitParam>> = HashMap::new();
+    let declared: Vec<Option<Rc<NodeOccurrence>>> = positions
+        .iter()
+        .map(|&(crid, k)| {
+            let fd = routing.syms.fd;
+            let params = callee_reads
+                .entry(crid)
+                .or_insert_with(|| clause_implicit_params(kb, fd, kb.rule_body_nodes(crid)));
+            match params.get(k) {
+                Some(ImplicitParam::Read(read)) => {
+                    let read = Rc::clone(read);
+                    declared_route(kb, fd, rid, site, crid, &read)
+                }
+                _ => None,
+            }
+        })
+        .collect();
     let slots: Vec<GoalSlot> = (0..total)
         .map(|j| {
             if let Some(Some(t)) = built.get(j) {
                 GoalSlot::Built(*t)
+            } else if let Some(Some(var)) = declared.get(j) {
+                GoalSlot::Own(Rc::clone(var))
             } else if !inside {
                 GoalSlot::Forward
             } else if let Some(var) = own
@@ -366,6 +391,173 @@ fn route_goal(
         routing.syms.marker_pass,
         owner,
     ))
+}
+
+/// 060.1 §1 — A GOAL AT THE CALLER'S INSTANCE PASSES THE CALLER'S REQUIREMENT: where the
+/// callee's `read` is a guard its clause declares (`rule oddS[E](?l: List[T = E]) :- WeakOrd[T
+/// = E], …`) and the goal `site` writes it at a type parameter of the caller's clause `rid`
+/// that the caller's own guard states the same requirement at, the dictionary of the
+/// caller's guard read, `out` of its read. So `oddS(?t)` in `evenS[E](?l: List[T = E]) :-
+/// WeakOrd[T = E], ?l <=> cons(?h, ?t), …`, `?t` a `List[T = E]`, hands `oddS` what `evenS`
+/// holds, at every turn of the recursion, and a citation's bracket on `outer[A]` reaches the
+/// `cmp[A]` its body calls.
+///
+/// The instance is read off the goal: the callee column whose bound names the guard's
+/// carrier, met with the type the clause's typing stamps on the goal's argument there. `None`
+/// where no column says, where the carrier stands at another type than a parameter of the
+/// caller (a concrete one, `cmp(1, 2, ?c)`, or a larger one, `List[T = E]`), or where the
+/// caller declares no guard of the spec there: the route is then what it was.
+fn declared_route(
+    kb: &mut KnowledgeBase,
+    fd: Symbol,
+    rid: RuleId,
+    site: &Rc<NodeOccurrence>,
+    callee_clause: RuleId,
+    read: &Rc<NodeOccurrence>,
+) -> Option<Rc<NodeOccurrence>> {
+    let (spec, carrier, instance) = guard_read_parts(kb, read)?;
+    let Some(Expr::Apply {
+        pos_args: goal_pos,
+        named_args: goal_named,
+        ..
+    }) = site.as_expr()
+    else {
+        return None;
+    };
+    let name = kb.intern("declared_route");
+    let frame_len = (kb.rule_arity(callee_clause) as usize).max(kb.rule_globals(callee_clause).len());
+    let fresh: Vec<VarId> = (0..frame_len).map(|_| kb.fresh_var(name)).collect();
+    let slots = rule_head_var_slots(kb, callee_clause);
+    let mut at: Option<Value> = None;
+    for (column, bound) in kb.rule_type_bounds(callee_clause).to_vec() {
+        if !kb.mentions_var(&bound, &|v| v == Var::DeBruijn(carrier)) {
+            continue;
+        }
+        let Some((key, _, _)) = slots.iter().find(|(_, _, d)| *d == column) else {
+            continue;
+        };
+        let arg = match key {
+            SlotKey::Pos(i) => goal_pos.get(*i),
+            SlotKey::Named(k) => goal_named
+                .iter()
+                .find(|(n, _)| kb.local_name_of(*n) == kb.local_name_of(*k))
+                .map(|(_, a)| a),
+        };
+        let Some(arg_ty) = arg.and_then(|a| a.inferred_type()) else {
+            continue;
+        };
+        let (opened, _) = crate::kb::node_occurrence::open_value_type(kb, &bound, &fresh);
+        let mut pins = Substitution::new();
+        if !pin_type_vars(kb, &mut pins, &arg_ty, &opened) {
+            continue;
+        }
+        let x = walk_type_deep_value(kb, &pins, &Value::Var(Var::Global(fresh[carrier as usize])));
+        if !matches!(&x, Value::Var(Var::Global(v)) if *v == fresh[carrier as usize]) {
+            at = Some(x);
+            break;
+        }
+    }
+    // The caller's parameter the carrier stands at, as its frame numbers it.
+    let caller_carrier = caller_param_at(kb, rid, &at?)?;
+    if !kb.rule_type_params(rid).iter().any(|(_, d)| *d == caller_carrier) {
+        return None;
+    }
+    let body: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
+    clause_requirement_reads(kb, fd, &body).into_iter().find_map(|own| {
+        let (own_spec, own_carrier, own_instance) = guard_read_parts(kb, &own)?;
+        (own_carrier == caller_carrier
+            && same_sort_canonical(kb, own_spec, spec)
+            && same_instance_but_carrier(kb, &instance, carrier, &own_instance, own_carrier))
+        .then(|| requirement_read_out(kb, fd, &own).map(Rc::clone))
+        .flatten()
+    })
+}
+
+/// The type parameter of clause `rid` that `at` — a type its typing stamped on a body leaf —
+/// is, by its frame slot: each bound of the clause's head columns is met with the stamp on its
+/// column's variable, which is how the typing's variable for a parameter is told. `None` for
+/// any other type.
+/// The type the clause's typing stamped on each of `rid`'s variables, read off its first
+/// leaf in the body, by De Bruijn index.
+fn clause_var_stamps(kb: &KnowledgeBase, rid: RuleId) -> Vec<(u32, Value)> {
+    let mut stamps: Vec<(u32, Value)> = Vec::new();
+    for g in kb.rule_body_nodes(rid) {
+        for_each_var_leaf(g, &mut |var, leaf| {
+            let Var::DeBruijn(d) = var else { return };
+            if stamps.iter().any(|(seen, _)| *seen == d) {
+                return;
+            }
+            if let Some(ty) = leaf.inferred_type() {
+                stamps.push((d, ty));
+            }
+        });
+    }
+    stamps
+}
+
+pub(super) fn caller_param_at(kb: &mut KnowledgeBase, rid: RuleId, at: &Value) -> Option<u32> {
+    let crate::kb::term_view::ViewHead::Var(target) = crate::kb::term_view::TermView::head(at, kb) else {
+        return None;
+    };
+    let params: Vec<u32> = kb.rule_type_params(rid).iter().map(|(_, d)| *d).collect();
+    let stamps = clause_var_stamps(kb, rid);
+    let name = kb.intern("declared_route");
+    let frame_len = (kb.rule_arity(rid) as usize).max(kb.rule_globals(rid).len());
+    for (column, bound) in kb.rule_type_bounds(rid).to_vec() {
+        let Some((_, stamp)) = stamps.iter().find(|(d, _)| *d == column) else {
+            continue;
+        };
+        let fresh: Vec<VarId> = (0..frame_len).map(|_| kb.fresh_var(name)).collect();
+        let (opened, _) = crate::kb::node_occurrence::open_value_type(kb, &bound, &fresh);
+        let mut pins = Substitution::new();
+        if !pin_type_vars(kb, &mut pins, stamp, &opened) {
+            continue;
+        }
+        for &c in &params {
+            let x = walk_type_deep_value(kb, &pins, &Value::Var(Var::Global(fresh[c as usize])));
+            if matches!(crate::kb::term_view::TermView::head(&x, kb), crate::kb::term_view::ViewHead::Var(v) if v == target) {
+                return Some(c);
+            }
+        }
+    }
+    None
+}
+
+/// A guard's read (`find_dictionary(WeakOrd[T = ?#1], WeakOrd, ?#1, out: ?#0, carrier_type:
+/// true)`) as its spec, the frame slot of its carrier and its instance; `None` for any other
+/// read.
+pub(super) fn guard_read_parts(kb: &KnowledgeBase, read: &Rc<NodeOccurrence>) -> Option<(Symbol, u32, Value)> {
+    let Some(Expr::Apply {
+        pos_args,
+        named_args,
+        ..
+    }) = read.as_expr()
+    else {
+        return None;
+    };
+    if !named_args
+        .iter()
+        .any(|(k, _)| kb.local_name_of(*k) == PROVIDER_CARRIER_TYPE_LABEL)
+    {
+        return None;
+    }
+    let Some(Expr::Spliced(instance)) = pos_args.first()?.as_expr() else {
+        return None;
+    };
+    let Some(Expr::Var(Var::DeBruijn(carrier))) = pos_args.get(2)?.as_expr() else {
+        return None;
+    };
+    let spec = sort_functor_of_view(kb, instance)?;
+    Some((spec, *carrier, instance.clone()))
+}
+
+/// Are two guards' instances one requirement up to where each puts its carrier — `a`'s at
+/// slot `ca` of its frame, `b`'s at `cb` of its own? Every other binding is the same type,
+/// with no other variable of either frame.
+fn same_instance_but_carrier(kb: &KnowledgeBase, a: &Value, ca: u32, b: &Value, cb: u32) -> bool {
+    let carriers = (Var::DeBruijn(ca), Var::DeBruijn(cb));
+    let mut renamed = vec![carriers];
+    views_alike_up_to_renaming(kb, a, b, &mut renamed) && renamed == [carriers]
 }
 
 /// A sort's bracket on a relation named in `written` — a clause's body, or an equation's —
@@ -506,18 +698,7 @@ fn keeps_its_column_types(kb: &KnowledgeBase, rid: RuleId, goal: &Rc<NodeOccurre
     if head_pos.len() != pos_args.len() || head_named.len() != named_args.len() {
         return false;
     }
-    let mut stamps: Vec<(u32, Value)> = Vec::new();
-    for g in kb.rule_body_nodes(rid) {
-        for_each_var_leaf(g, &mut |var, leaf| {
-            let Var::DeBruijn(d) = var else { return };
-            if stamps.iter().any(|(seen, _)| *seen == d) {
-                return;
-            }
-            if let Some(ty) = leaf.inferred_type() {
-                stamps.push((d, ty));
-            }
-        });
-    }
+    let stamps = clause_var_stamps(kb, rid);
     let same = |column: TermId, arg: &Rc<NodeOccurrence>| {
         let Term::Var(Var::DeBruijn(d)) = kb.get_term(column) else {
             return false;

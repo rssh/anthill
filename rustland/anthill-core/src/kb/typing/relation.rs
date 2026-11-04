@@ -48,7 +48,8 @@ pub(super) fn relation_reference_type(
     // S2 — the bare citation's implicit arguments: no column is bound, so each read is
     // routed over the columns' own types at this citation. QUEUED, not computed — see
     // [`PendingCitationRoutes`].
-    queue_citation_routes(kb, site.env, occ, sym, column_types, Vec::new(), subst, unopened);
+    // A bare reference takes no bracket: the loader refuses one on a relation's name.
+    queue_citation_routes(kb, site.env, occ, sym, column_types, Vec::new(), subst, unopened, Vec::new());
     Ok(ty)
 }
 
@@ -571,7 +572,7 @@ pub(super) fn relation_reference_type_applied(
     occ: &Rc<NodeOccurrence>,
     site: CitationSite<'_>,
 ) -> Result<Value, TypeError> {
-    let mut columns = relation_columns_across_clauses(kb, sym, span, true)?;
+    let (mut columns, params) = relation_columns_and_params(kb, sym, span, true)?;
     // WI-20260911-5G28A S1 — the enclosing sort's parameters, opened for THIS citation and
     // seeded from its bracket / enclosing instance BEFORE the arguments bind columns, so an
     // argument meets `Wrap[T = ?t]` (a variable it can pin) or `Wrap[T = Colour]` (a type
@@ -611,6 +612,9 @@ pub(super) fn relation_reference_type_applied(
     if let Some((owner, params)) = &opened {
         seed_citation_params(kb, &mut subst, occ, sym, span, *owner, params, site.env)?;
     }
+    // 060.1 §2 — what the citation's bracket binds of what the rule declares, before an
+    // argument meets a column typed at a parameter.
+    let selections = seed_rule_citation_bracket(kb, &mut subst, site.env, occ, sym, &params, span)?;
     // S2: the type each bound column takes AT THIS CITATION — its argument's — read by the
     // edge check below, which routes the relation's requirement reads over them.
     let mut bound_types: Vec<(Symbol, Value)> = Vec::with_capacity(bound.len());
@@ -765,7 +769,7 @@ pub(super) fn relation_reference_type_applied(
         ty,
     )?;
     let ty = close_unfixed_clause_vars(kb, &column_types, &bound, &subst, ty);
-    queue_citation_routes(kb, site.env, occ, sym, column_types, bound_types, subst, unopened);
+    queue_citation_routes(kb, site.env, occ, sym, column_types, bound_types, subst, unopened, selections);
     Ok(ty)
 }
 
@@ -901,6 +905,11 @@ pub(crate) struct PendingCitationRoutes {
     /// one written in an operation body, one more for each goal a forward slot hands on
     /// ([`forwarded_routes`]).
     depth: usize,
+    /// The providers the citation's bracket selects for the requirements the rule's guards
+    /// state (060.1 §2, [`seed_rule_citation_bracket`]), pinned where a guard's read is
+    /// routed. Empty for a citation with no bracket, and for every goal a forward slot hands
+    /// on: a bracket is the cited relation's.
+    selections: Vec<InstanceSelection>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -913,6 +922,7 @@ fn queue_citation_routes(
     bound_types: Vec<(Symbol, Value)>,
     subst: Substitution,
     unopened: Vec<UnopenedParam>,
+    selections: Vec<InstanceSelection>,
 ) {
     kb.pending_citation_routes.push(PendingCitationRoutes {
         occ: Rc::clone(occ),
@@ -924,6 +934,7 @@ fn queue_citation_routes(
         param_rigids: env.param_rigids().to_vec(),
         unopened,
         depth: 0,
+        selections,
     });
 }
 
@@ -1012,6 +1023,25 @@ pub(super) fn citation_misfit_error(
     {
         let (first, second) = (kb.local_name_of(*first), kb.local_name_of(*second));
         let spec_short = short_name_of(kb.qualified_name_of(*spec)).to_string();
+        // The citation's own bracket chooses where the relation declares the requirement
+        // (060.1 §2); where it does not, the repair declares it first.
+        let rel = short_name_of(kb.qualified_name_of(relation)).to_string();
+        let declares = relation_declares_type_params(kb, relation)
+            && kb.rule_ids_by_qn(kb.qualified_name_of(relation)).iter().any(|&rid| {
+            kb.rule_provider_requirements(rid).iter().any(|r| {
+                sort_functor_of_view(kb, &TermIdView(r.instance))
+                    .is_some_and(|s| same_sort_canonical(kb, s, *spec))
+            })
+        });
+        let repair = if declares {
+            format!("write `{rel}[{spec_short} = {first}](…)` or `{rel}[{spec_short} = {second}](…)`")
+        } else {
+            format!(
+                "declare it on `{rel}` with the head's introducer and its guard (`rule \
+                 {rel}[A](…) :- {spec_short}[T = A], …`) and write `{rel}[{spec_short} = \
+                 {first}](…)` or `{rel}[{spec_short} = {second}](…)`"
+            )
+        };
         let error = TypeError::Other {
             site: TypeError::here(),
             span: Some(at.span),
@@ -1023,9 +1053,7 @@ pub(super) fn citation_misfit_error(
             actual: format!(
                 "the citation of `{}` needs `{requirement}`, which two requirements of the citing \
                  declaration hold, `{first}` and `{second}` — one sort at one type under two names, \
-                 two dictionaries — and nothing at the citation says which: cite it from an \
-                 operation that requires one `{spec_short}` and call that operation with \
-                 `[{spec_short} = {first}]` or `[{spec_short} = {second}]`",
+                 two dictionaries — and nothing at the citation says which: {repair}",
                 kb.qualified_name_of(relation),
             ),
         };
@@ -1584,6 +1612,7 @@ fn goal_edge_citation(
         param_rigids,
         unopened,
         depth,
+        selections: Vec::new(),
     };
     Ok((edge, unfixed))
 }
@@ -1621,6 +1650,69 @@ fn route_requirement_read(
         let instance = kb.term_from_debruijn(*id, fresh);
         let instance = walk_type_deep_value(kb, carrier_subst, &Value::term(instance));
         let bracket = requirement_bracket(kb, &instance);
+        // The provider the citation's bracket selects for the requirement this guard states
+        // (060.1 §2): nothing else is asked for it.
+        let selected = pending
+            .selections
+            .iter()
+            .find(|s| same_sort_canonical(kb, s.spec_sort, spec_sort))
+            .cloned();
+        if let Some(selection) = selected {
+            let demand = RequiresEntry {
+                required_sort: spec_sort,
+                spec: instance.clone(),
+                supply: SupplySource::Required,
+                binder: None,
+            };
+            if selection.enclosing().is_some() {
+                let sigma = SigmaCtx {
+                    subst,
+                    param_rigids,
+                };
+                let syms = ProjectionSyms::resolve(kb)?;
+                return match forward_by_name(kb, &demand, chain, &syms, Some(&sigma), Some(&selection)) {
+                    NamedForward::Forward(route) => Some(route),
+                    NamedForward::Refused(why) => {
+                        misfits.push(CarriedMisfit::Unprovided {
+                            requirement: render_requires_entry(kb, &demand),
+                            owner: pending.relation,
+                            why,
+                        });
+                        None
+                    }
+                    NamedForward::Unsaid => unreachable!("a selection of a requirement's name says it"),
+                };
+            }
+            let Some(Expr::Var(Var::DeBruijn(d))) = pos_args.get(2)?.as_expr() else {
+                return None;
+            };
+            // The witness provides the spec at a type: one the citation does not fix is refused,
+            // where the read would otherwise derive its own.
+            let Some(carrier) = carrier_subst.resolve_as_value(*fresh.get(*d as usize)?).cloned() else {
+                misfits.push(CarriedMisfit::Unprovided {
+                    requirement: render_requires_entry(kb, &demand),
+                    owner: pending.relation,
+                    why: format!(
+                        "the bracket selects `{}` for it, and nothing at the citation fixes the \
+                         type it is at — bind the parameter in the bracket or pass an argument \
+                         at it",
+                        kb.local_name_of(selection.provider.symbol()),
+                    ),
+                });
+                return None;
+            };
+            let built = anchor_sort_goal(kb, spec_sort, &[carrier], &bracket.written)?;
+            return match resolve_at_caller(kb, chain, param_rigids, subst, &built.goal, Some(&selection)) {
+                ResolutionResult::Resolved(tree) => emit_route(kb, chain, &tree),
+                _ => {
+                    misfits.push(CarriedMisfit::NotAnswered {
+                        witness: selection.provider.symbol(),
+                        spec: spec_sort,
+                    });
+                    None
+                }
+            };
+        }
         // Omitted companion elements impose no restriction. Forward a uniquely
         // covering caller slot using the existing sigma-precise requirement
         // cover, rather than inventing rigid defaults for those elements.
@@ -2679,6 +2771,17 @@ fn relation_columns_across_clauses(
     // ([`some_type_columns_at_citation`]).
     rigid: bool,
 ) -> Result<Vec<ClauseColumn>, TypeError> {
+    relation_columns_and_params(kb, sym, span, rigid).map(|(columns, _)| columns)
+}
+
+/// [`relation_columns_across_clauses`], and each declaring clause's variable for each type
+/// parameter it declares, as the columns read it ([`seed_rule_citation_bracket`]).
+fn relation_columns_and_params(
+    kb: &mut KnowledgeBase,
+    sym: Symbol,
+    span: Option<Span>,
+    rigid: bool,
+) -> Result<(Vec<ClauseColumn>, Vec<(Symbol, Value)>), TypeError> {
     let qn = kb.qualified_name_of(sym).to_string();
     let rids = kb.rule_ids_by_qn(&qn);
     let first = *rids.first().ok_or_else(|| {
@@ -2737,13 +2840,14 @@ fn relation_columns_across_clauses(
     // would lub unrelated columns. A clause whose free-slot SET differs (a
     // heterogeneous interface) is rejected loudly rather than silently dropped
     // (which would under-approximate the schema — unsound).
-    let mut columns = relation_clause_columns(kb, first);
+    let (mut columns, mut params) = relation_clause_columns(kb, first);
     // What the clauses' own type variables are bound to where two clauses' types for one
     // column meet ([`join_column_types`]); the columns are read through it once the fold
     // is done.
     let mut met = Substitution::new();
     for &rid in rids.iter().skip(1) {
-        let other = relation_clause_columns(kb, rid);
+        let (other, other_params) = relation_clause_columns(kb, rid);
+        params.extend(other_params);
         if !slot_keys_match(&columns, &other) {
             return Err(head_err(
                 kb,
@@ -2771,9 +2875,21 @@ fn relation_columns_across_clauses(
         for c in columns.iter_mut() {
             c.ty = walk_type_deep_value(kb, &met, &c.ty);
         }
+        for (_, p) in params.iter_mut() {
+            *p = walk_type_deep_value(kb, &met, p);
+        }
     }
     some_type_columns_at_citation(kb, &mut columns, rigid);
-    Ok(columns)
+    Ok((columns, params))
+}
+
+/// 060.1 §2 — does a clause of `relation` declare type parameters, which a citation's
+/// bracket binds?
+pub(super) fn relation_declares_type_params(kb: &KnowledgeBase, relation: Symbol) -> bool {
+    let qn = kb.qualified_name_of(relation).to_string();
+    kb.rule_ids_by_qn(&qn)
+        .iter()
+        .any(|&rid| !kb.rule_type_params(rid).is_empty())
 }
 
 /// WI-714 — the lub of ONE column's type across two clauses, where a clause that
@@ -3990,10 +4106,16 @@ pub(crate) fn rule_head_var_slots(kb: &KnowledgeBase, rid: RuleId) -> Vec<(SlotK
 /// a symbol shared by every call in the KB. So "unknown" still leaves this function spelled
 /// exactly one way, and the normalization that guaranteed it is gone because nothing
 /// arrives needing it.
-pub(super) fn relation_clause_columns(kb: &mut KnowledgeBase, rid: RuleId) -> Vec<ClauseColumn> {
+///
+/// And the variable each type parameter the clause declares is opened at (060.1 §2): what a
+/// citation's bracket binds by the parameter's name.
+fn relation_clause_columns(
+    kb: &mut KnowledgeBase,
+    rid: RuleId,
+) -> (Vec<ClauseColumn>, Vec<(Symbol, Value)>) {
     let head = match kb.rule_head_value(rid).clone() {
         Value::Term { id, .. } => id,
-        _ => return Vec::new(),
+        _ => return (Vec::new(), Vec::new()),
     };
     let body_nodes: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
     let typing = collect_rule_var_types(kb, rid, head, &body_nodes);
@@ -4022,6 +4144,7 @@ pub(super) fn relation_clause_columns(kb: &mut KnowledgeBase, rid: RuleId) -> Ve
     // Each fresh variable keeps its SLOT's OWN NAME, so a diagnostic rendering a column
     // type says `?x` / `?res` rather than one borrowed placeholder for every slot.
     let stored_bounds = kb.rule_type_bounds(rid).to_vec();
+    let mut params: Vec<(Symbol, Value)> = Vec::new();
     let type_bounds: Vec<(u32, Value)> = if stored_bounds.is_empty() {
         Vec::new()
     } else {
@@ -4046,6 +4169,11 @@ pub(super) fn relation_clause_columns(kb: &mut KnowledgeBase, rid: RuleId) -> Ve
             })
             .collect();
         kb.open_rule_provider_requirements(rid, &fresh_frame);
+        params = kb
+            .rule_type_params(rid)
+            .iter()
+            .map(|&(name, d)| (name, Value::Var(Var::Global(fresh_frame[d as usize]))))
+            .collect();
         stored_bounds
             .into_iter()
             .map(|(i, t)| {
@@ -4082,7 +4210,7 @@ pub(super) fn relation_clause_columns(kb: &mut KnowledgeBase, rid: RuleId) -> Ve
             some,
         });
     }
-    columns
+    (columns, params)
 }
 
 /// ONE TYPE PER CLAUSE VARIABLE, WRITTEN OR INFERRED (user, 2026-10-21: once typing is
@@ -4432,7 +4560,7 @@ pub(super) fn first_column_read_apart<'a>(
 
 /// `a` and `b` are one type but for the names of their variables, renamed one-to-one. Read
 /// through the view, so the two may ride different carriers.
-fn views_alike_up_to_renaming<A: TermView, B: TermView>(
+pub(super) fn views_alike_up_to_renaming<A: TermView, B: TermView>(
     kb: &KnowledgeBase,
     a: &A,
     b: &B,

@@ -56,7 +56,7 @@ fn two_ary_predicate_head_bounded_guard_folds_and_loads() {
         r#"
 namespace test.wi619.bounded
   import anthill.prelude.{Int64, Eq}
-  rule same_ty[t](?x, ?y) :- Eq[t]
+  rule same_ty[t](?x: t, ?y) :- Eq[t]
 end
 "#,
     );

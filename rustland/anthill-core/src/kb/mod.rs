@@ -478,6 +478,11 @@ struct RuleEntry {
     /// Provider obligations on carrier-type frame slots, closed against the same
     /// frame as type_bounds. These are spec instances, never value types.
     provider_requirements: Vec<RuleProviderRequirement>,
+    /// The type parameters the head's introducer declares (`rule cmp[A](…)`), in the
+    /// order written, each with the De Bruijn index of the frame slot its occurrences
+    /// share — what a citation's bracket binds by name or by position (060.1 §2).
+    /// Empty for a clause that declares none.
+    type_params: Vec<(Symbol, u32)>,
     /// WI-635: the stored head's `Var::Global`s, in first-occurrence order —
     /// empty when the head is ground. Collected carrier-agnostically at assert
     /// (`push_value_head_entry` → `collect_head_global_vars`) and read two ways,
@@ -5212,6 +5217,7 @@ impl KnowledgeBase {
             label: None,
             type_bounds: Vec::new(),
             provider_requirements: Vec::new(),
+            type_params: Vec::new(),
             head_vars,
             // WI-458: filled by the loader via `set_rule_head_span` once it has
             // this rule's RuleId; a synthesized head keeps `None`.
@@ -10296,6 +10302,32 @@ impl KnowledgeBase {
 
     pub(crate) fn rule_provider_requirements(&self, id: RuleId) -> &[RuleProviderRequirement] {
         &self.rules[id.index()].provider_requirements
+    }
+
+    /// Record the type parameters `id`'s head introduces, in the order written, each by its
+    /// name and the frame variable its occurrences share. A variable the frame does not hold
+    /// is one no head bound names, which the loader refuses before it asks.
+    pub(crate) fn install_rule_type_params(&mut self, id: RuleId, params: &[(Symbol, VarId)]) {
+        let globals = &self.rules[id.index()].globals;
+        let len = globals.len();
+        let closed: Vec<(Symbol, u32)> = params
+            .iter()
+            .map(|(name, vid)| {
+                let position = globals
+                    .iter()
+                    .position(|g| g == vid)
+                    .expect("a declared type parameter is a slot of its clause's frame");
+                (*name, (len - 1 - position) as u32)
+            })
+            .collect();
+        self.rules[id.index()].type_params = closed;
+    }
+
+    /// The type parameters `id`'s head introduces (`rule cmp[A](…)`), in the order written,
+    /// each with the De Bruijn index of its frame slot. Empty for a clause that declares
+    /// none.
+    pub(crate) fn rule_type_params(&self, id: RuleId) -> &[(Symbol, u32)] {
+        &self.rules[id.index()].type_params
     }
 
     /// Open both type and dictionary slots against the clause's own fresh frame.

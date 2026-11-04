@@ -107,7 +107,13 @@ pub(super) fn check_apply_iter(
     // are disjoint (`kind_of` gives a symbol ONE kind), so "not an operation" is
     // exactly "will not reach Path 1". The occurrence read comes first so a call
     // without a bracket — every call in practice — pays only a match, not a lookup.
-    if call_type_args_of(occ).is_some() && lookup_operation_info_full(kb, fn_sym).is_none() {
+    // 060.1 §2: a citation of a relation that declares type parameters has a list its
+    // bracket binds ([`seed_rule_citation_bracket`]), in functional code, where the
+    // citation arm below takes it.
+    if call_type_args_of(occ).is_some()
+        && lookup_operation_info_full(kb, fn_sym).is_none()
+        && !(!env.in_rule_body() && kb.cites_a_relation(fn_sym) && relation_declares_type_params(kb, fn_sym))
+    {
         return Err(TypeError::TypeArgsOnNonOperation {
             span,
             callee: fn_sym,

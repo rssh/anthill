@@ -344,7 +344,7 @@ fn lowercase_rule_type_var_arrow_still_loads() {
 namespace test.wi618.tvar
   import anthill.prelude.{Int64, Eq}
 
-  rule same_ty[t](?y)
+  rule same_ty[t](?x: t, ?y)
     :- Eq[t], ?y <=> (t -> t)
 end
 "#,

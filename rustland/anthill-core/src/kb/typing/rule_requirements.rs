@@ -630,8 +630,29 @@ pub(super) fn infer_rule_body_requirements(kb: &mut KnowledgeBase) {
         // goal's reads are its own, standing beside it in its slot, where the variables it
         // reads are bound.
         let top = body.len();
+        // 060.1 §1 — a call at a type parameter the clause declares a guard of the spec at is
+        // dispatched through that guard's dictionary, as one at a column typed by it is: `?h`
+        // of `?l <=> cons(?h, ?t)` under `rule evenS[E](?l: List[T = E]) :- WeakOrd[T = E]`
+        // is an `E`. It takes no read of its own.
+        let guards: Vec<(Symbol, u32, Rc<NodeOccurrence>)> = if kb.rule_type_params(rid).is_empty() {
+            Vec::new()
+        } else {
+            clause_requirement_reads(kb, fd_sym, &body)
+                .iter()
+                .filter_map(|read| {
+                    let (spec, carrier, _) = guard_read_parts(kb, read)?;
+                    let out = requirement_read_out(kb, fd_sym, read)?;
+                    Some((spec, carrier, Rc::clone(out)))
+                })
+                .collect()
+        };
+        let mut guarded: Vec<WeaveTarget> = Vec::new();
         let mut groups: Vec<(usize, SpecDemand, Vec<Rc<NodeOccurrence>>)> = Vec::new();
         for (gi, demand) in demands {
+            if let Some(out) = declared_guard_of(kb, rid, &guards, &demand) {
+                guarded.push((demand.call.call, vec![out], None));
+                continue;
+            }
             let same = groups.iter_mut().find(|(g, w, _)| {
                 (gi < top && *g < top || *g == gi)
                     && w.spec == demand.spec
@@ -653,7 +674,7 @@ pub(super) fn infer_rule_body_requirements(kb: &mut KnowledgeBase) {
             }
         }
         let mut reads_before: Vec<Vec<Rc<NodeOccurrence>>> = vec![Vec::new(); sites.len()];
-        let mut targets: Vec<WeaveTarget> = Vec::new();
+        let mut targets: Vec<WeaveTarget> = guarded;
         for (gi, witness, calls) in groups {
             let (read, out) = inferred_read(
                 kb,
@@ -1049,6 +1070,27 @@ struct SpecDemand {
     /// missing provider leaves instead of failing ([`REQUIREMENT_IN_FORM_LABEL`]). A group's
     /// read is so only when every call it serves is.
     in_form: bool,
+}
+
+/// The dictionary of the guard of clause `rid` (`guards`: its spec, its carrier's frame slot
+/// and its read's `out`) that `demand`'s call is at: the type the clause's typing stamped on
+/// the call's carrier argument is the parameter the guard states the call's spec at. `None`
+/// for a call at any other type.
+fn declared_guard_of(
+    kb: &mut KnowledgeBase,
+    rid: RuleId,
+    guards: &[(Symbol, u32, Rc<NodeOccurrence>)],
+    demand: &SpecDemand,
+) -> Option<Rc<NodeOccurrence>> {
+    if guards.is_empty() {
+        return None;
+    }
+    let at = demand.carriers.first()?.inferred_type()?;
+    let param = caller_param_at(kb, rid, &at)?;
+    guards
+        .iter()
+        .find(|(spec, carrier, _)| *carrier == param && same_sort_canonical(kb, *spec, demand.spec))
+        .map(|(_, _, out)| Rc::clone(out))
 }
 
 /// A SLOT demand ([`inferred_slot_demand`]): the spec of each slot of the callee's dictionary

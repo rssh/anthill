@@ -18984,6 +18984,8 @@ fn load_phase_inner(
     let phase_first_source = kb.last_load.first_source;
     all_errors.extend(check_one_arity_per_name(kb, phase_first_rule, phase_first_source));
     mark!("check_one_arity_per_name");
+    all_errors.extend(check_one_parameter_list_per_relation(kb, phase_first_rule));
+    mark!("check_one_parameter_list_per_relation");
     // WI-346: requires-shadow lint — advisory (non-fatal), so it lands in
     // `all_warnings`, not `all_errors`. A legal-but-suspicious same-named op on
     // a `requires`-user (which does NOT override) should be flagged, not block.
@@ -23428,6 +23430,77 @@ fn check_one_arity_per_name(
                 })
                 .collect(),
         });
+    }
+    errors
+}
+
+/// 060.1 §8.4 — ONE PARAMETER LIST PER RELATION: every clause of a relation that declares
+/// type parameters (`rule evenS[E](…)`) declares the same list, by name and in order, and a
+/// clause may declare none (a base case beside them). So a citation's bracket (§2) means one
+/// thing for the relation, as an operation's signature does. What each clause requires of
+/// its parameters is its own: `p[E] :- WeakOrd[T = E]` beside `p[E] :- Eq[T = E]` is one
+/// list.
+///
+/// Asked of each relation this load gave a clause, against every clause it has, as
+/// [`check_one_arity_per_name`] asks; reported once per relation, naming its first two
+/// lists.
+fn check_one_parameter_list_per_relation(kb: &KnowledgeBase, phase_first_rule: usize) -> Vec<LoadError> {
+    let mut names: Vec<Symbol> = Vec::new();
+    let mut seen: HashSet<Symbol> = HashSet::new();
+    for i in phase_first_rule..kb.rules.len() {
+        let rid = super::RuleId::from_index(i);
+        if kb.rules[i].retracted || kb.rule_type_params(rid).is_empty() {
+            continue;
+        }
+        if let Some((f, _)) = clause_head_arity(kb, rid) {
+            if seen.insert(f) {
+                names.push(f);
+            }
+        }
+    }
+    let render = |list: &[(Symbol, u32)]| {
+        let names: Vec<&str> = list.iter().map(|(n, _)| kb.local_name_of(*n)).collect();
+        format!("[{}]", names.join(", "))
+    };
+    let site = |rid: super::RuleId| {
+        kb.rule_head_span(rid)
+            .map_or_else(|| "a clause the loader derived".to_string(), |s| render_decl_site(kb, s))
+    };
+    let mut errors = Vec::new();
+    for f in names {
+        let mut first: Option<super::RuleId> = None;
+        for rid in kb.rules_by_functor_iter(f) {
+            let list = kb.rule_type_params(rid);
+            if list.is_empty() {
+                continue;
+            }
+            let Some(at) = first else {
+                first = Some(rid);
+                continue;
+            };
+            let same = list.len() == kb.rule_type_params(at).len()
+                && list
+                    .iter()
+                    .zip(kb.rule_type_params(at))
+                    .all(|((a, _), (b, _))| kb.local_name_of(*a) == kb.local_name_of(*b));
+            if !same {
+                errors.push(LoadError::Other {
+                    message: format!(
+                        "the clauses of `{}` declare different type-parameter lists, `{}` \
+                         at {} and `{}` at {}: a relation has one list, as an operation has \
+                         one signature, so a citation's bracket means one thing for it. \
+                         Declare the same list on every clause that declares one; a clause \
+                         may declare none",
+                        kb.qualified_name_of(f),
+                        render(kb.rule_type_params(at)),
+                        site(at),
+                        render(list),
+                        site(rid),
+                    ),
+                });
+                break;
+            }
+        }
     }
     errors
 }
@@ -45408,11 +45481,7 @@ impl<'a> Loader<'a> {
     /// introducer. A rule head mixing in a concrete binding (`keep[T, A = Int64](…)`)
     /// has that binding read by nobody, and leaving the node unmarked is what makes
     /// the sweep report it instead of dropping it.
-    fn collect_rule_tvar_names(
-        &mut self,
-        head_parse_id: ParseTermId,
-        out: &mut std::collections::HashSet<String>,
-    ) {
+    fn collect_rule_tvar_names(&mut self, head_parse_id: ParseTermId, out: &mut Vec<String>) {
         // For a connective head `keep[T](…) = rhs` the introducer rides on the LHS
         // operand (`pos_args[0]`), so read the type-args there rather than off the
         // whole `eq(lhs, rhs)` node. WI-619: recognize the connective head by its
@@ -45448,7 +45517,9 @@ impl<'a> Loader<'a> {
                 };
                 match introducer {
                     Some(name) => {
-                        out.insert(name);
+                        if !out.contains(&name) {
+                            out.push(name);
+                        }
                     }
                     None => all_introducers = false,
                 }
@@ -45771,7 +45842,7 @@ impl<'a> Loader<'a> {
             return None;
         };
         let head = *head;
-        let mut introducers = std::collections::HashSet::new();
+        let mut introducers = Vec::new();
         self.collect_rule_tvar_names(head, &mut introducers);
         if !introducers.is_empty() {
             return Some(
@@ -46064,13 +46135,15 @@ impl<'a> Loader<'a> {
         self.rule_tvar_bounds.clear();
         let mut folded_guard_ids: std::collections::HashSet<ParseTermId> =
             std::collections::HashSet::new();
-        let mut introducers: std::collections::HashSet<String> = std::collections::HashSet::new();
-        {
-            for h in &r.heads {
-                if let RuleHead::Term(tid) = h {
-                    self.collect_rule_tvar_names(*tid, &mut introducers);
-                }
+        // In the order written: a citation's positional bracket counts them so (060.1 §2).
+        let mut introducer_order: Vec<String> = Vec::new();
+        for h in &r.heads {
+            if let RuleHead::Term(tid) = h {
+                self.collect_rule_tvar_names(*tid, &mut introducer_order);
             }
+        }
+        let introducers: std::collections::HashSet<String> = introducer_order.iter().cloned().collect();
+        {
             if !introducers.is_empty() {
                 // WI-20260908-PW9A0 — AN INTRODUCER MAY NOT SHADOW A NAME IN SCOPE.
                 //
@@ -46499,6 +46572,20 @@ impl<'a> Loader<'a> {
         {
             self.refuse_rewrite_tags(r.meta.as_ref(), declaration);
         }
+        // 060.1 §2 — each declared type parameter with the frame variable its occurrences
+        // share, and whether some head's frame holds it.
+        let declared_params: Vec<(String, Option<VarId>)> = introducer_order
+            .iter()
+            .map(|name| {
+                let carrier = match self.rule_head_tvar(name) {
+                    Some(RuleTvar::Bounded(requirement)) => requirement.carrier,
+                    _ => None,
+                };
+                (name.clone(), carrier)
+            })
+            .collect();
+        let mut params_held = vec![false; declared_params.len()];
+        let kb_heads_equational = kb_heads.iter().any(|&h| is_equational_head(self.kb, h));
         for (head_idx, kb_head) in kb_heads.into_iter().enumerate() {
             // WI-20260911-5G28A — THIS HEAD'S BOUNDS CONTRIBUTE THEIR OWN VARIABLES TO
             // THE FRAME. `?t` in `?x: List[T = ?t]` is in neither the head term (the
@@ -46677,6 +46764,21 @@ impl<'a> Loader<'a> {
                     }
                 }
             }
+            // 060.1 §2 — the parameters this clause declares, which a citation's bracket
+            // binds. A parameter the guard names a provider at (`T[A]`, an enclosing
+            // sort's parameter) has no frame variable and is not one; one no head bound
+            // names is refused below.
+            if !declared_params.is_empty() {
+                let mut params: Vec<(Symbol, VarId)> = Vec::new();
+                for (i, (name, carrier)) in declared_params.iter().enumerate() {
+                    let Some(carrier) = carrier else { continue };
+                    if self.kb.rule_globals(rid).contains(carrier) {
+                        params_held[i] = true;
+                        params.push((self.kb.intern(name), *carrier));
+                    }
+                }
+                self.kb.install_rule_type_params(rid, &params);
+            }
             // WI-139: equational rules are cite-required by default. Deliberately
             // NOT folded into the tags read above: this asks about the head SHAPE
             // (an untagged equational head is a cite-required law whether or not it
@@ -46686,6 +46788,25 @@ impl<'a> Loader<'a> {
                 && !meta_has_flag(self.kb, meta, "unfold")
             {
                 self.kb.unindex_functor(rid);
+            }
+        }
+        // An introducer whose variable no head bound names, on a relational clause: its guard
+        // requires a spec of a type no value of the clause has, and was dropped with nothing
+        // reading it. An equation's introducer is its rewrite's (WI-582), and a citation reads
+        // no equation.
+        let relational = !kb_heads_equational;
+        for ((name, carrier), held) in declared_params.iter().zip(&params_held) {
+            if relational && carrier.is_some() && !held {
+                let at = positive_head_spans
+                    .first()
+                    .map_or_else(String::new, |s| format!(" (the rule at {})", render_decl_site(self.kb, *s)));
+                self.errors.push(LoadError::Other {
+                    message: format!(
+                        "rule type-variable `{name}` is the type of no head column{at}, so its \
+                         guard requires a spec at a type no value of the clause has; write \
+                         it in a column's type (`?x: {name}`, `?l: List[T = {name}]`)"
+                    ),
+                });
             }
         }
 
