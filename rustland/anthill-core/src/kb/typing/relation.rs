@@ -1680,10 +1680,31 @@ fn route_requirement_read(
         let bracket = requirement_bracket(kb, &instance);
         // The provider the citation's bracket selects for the requirement this guard states
         // (060.1 §2): nothing else is asked for it.
+        // A guard under a name is selected by its name, one with none by its spec's (§8.6).
+        let name = named_args
+            .iter()
+            .find(|(k, _)| kb.local_name_of(*k) == REQUIREMENT_OUT_LABEL)
+            .and_then(|(_, out)| match out.as_expr() {
+                Some(Expr::Var(Var::DeBruijn(d))) => Some(*d),
+                _ => None,
+            })
+            .and_then(|d| {
+                kb.rule_provider_requirements(rid)
+                    .iter()
+                    .find(|r| r.dictionary == d)
+                    .and_then(|r| r.name)
+            });
         let selected = pending
             .selections
             .iter()
-            .find(|s| same_sort_canonical(kb, s.spec_sort, spec_sort))
+            .find(|s| {
+                same_sort_canonical(kb, s.spec_sort, spec_sort)
+                    && match (name, s.slot) {
+                        (Some(n), SelectedSlot::Named(b)) => kb.local_name_of(n) == kb.local_name_of(b),
+                        (None, SelectedSlot::Unnamed) => true,
+                        _ => false,
+                    }
+            })
             .cloned();
         if let Some(selection) = selected {
             let demand = RequiresEntry {

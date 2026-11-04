@@ -29,7 +29,10 @@
 //!    name instead;
 //!  * [S] a second guard at one parameter refused, as before §8.5 — its row's load fails;
 //!  * [Q] two guards of one instance both covering a call refused — `p2` refused;
-//!  * [K] one bracket slot per spec, however many guards state it — the bracket on `p2` loads.
+//!  * [K] one bracket slot per spec, however many guards state it — the bracket on `p2` loads;
+//!  * [W] a call through a named requirement not lowered — `up.compare` names nothing;
+//!  * [Y] a bracket's named entries read as type parameters — `unknown type-param 'up'`;
+//!  * [Z] no refusal of a goal two of the clause's named requirements answer — it loads.
 //!
 //! The citation with no bracket, the bracket on a rule with no introducer, and the clauses
 //! that declare one list or none pass under every axis: the controls.
@@ -455,7 +458,7 @@ fn several_requirements_at_one_parameter_are_an_operations() {
 /// `require WeakOrd[A]` IS THE GUARD `WeakOrd[A]` (§8.6): one requirement, written with the
 /// keyword, positional or named, alone or beside another at the parameter. A `require` that
 /// names no type parameter the head introduces is refused, where the guard written so loaded
-/// and answered nothing; so is the form under a name, which nothing reads yet, and the keyword
+/// and answered nothing; so is the keyword
 /// anywhere but a rule's own body (a head, a constraint, an operation's `requires`), where
 /// it parsed as a syntax error before the keyword existed. The earlier
 /// `require[X]`, written as a goal and as `?d = require[X]`, reads as it did until §5 removes
@@ -496,10 +499,6 @@ fn require_with_the_keyword_is_the_guard() {
             "and this one names none",
         ),
         ("rule h(?x) :- require(?x)", "and this one names none"),
-        (
-            "rule n[A](?a: A, ?b: A, ?c) :- require up: WeakOrd[T = A], WeakOrd.compare(?a, ?b, ?c)",
-            "`require up: …`",
-        ),
         // Read only as a goal of a rule's own body: the grammar admits the keyword wherever a
         // goal list stands, and elsewhere its term would stand alone — as a head, a
         // constraint's goal, an operation's `requires` line.
@@ -512,5 +511,107 @@ fn require_with_the_keyword_is_the_guard() {
     ] {
         let errs = crate::common::load_errors_of(&program(ns, &format!("  {rule}\n")));
         assert_one_refusal(&errs, text, rule);
+    }
+}
+
+/// A REQUIREMENT UNDER A NAME (§8.6), `require up: WeakOrd[T = A]`: the body calls through it,
+/// `up.compare(…)`, reading that dictionary and no other, and a citation's bracket binds it by
+/// its name, `both[up = u, down = d](…)`, a witness or a requirement of the citing operation.
+/// Two names at one type are two dictionaries; one name beside an unnamed line of its instance
+/// is one requirement. Refused as an operation's would be: a call that names neither of two
+/// names, a goal that two names answer, one name written twice, an unnamed line beside two
+/// names, a member the spec does not declare, a name that also names something in scope (as an
+/// introducer's is), and a bracket keyed by the spec's name over a named requirement (`unknown
+/// type-param`, the operation's refusal). A call through a name reads its dictionary in a value
+/// slot and under `not` as at a goal. FAILS under [W] (a call
+/// through a name not lowered): `up.compare` names nothing; under [Y] (the bracket's named
+/// entries read as type parameters): every bracketed row is refused, `unknown type-param 'up'`;
+/// under [Z] (no refusal of a goal two names answer): its row loads, `up`'s taken.
+#[test]
+fn a_requirement_under_a_name_is_called_and_bound_by_it() {
+    let ns = "j9ssg.named";
+    let rules = format!(
+        "  import anthill.prelude.Numeric.{{add, mul}}\n  \
+         rule cmpN[A](?a: A, ?b: A, ?c) :- require up: WeakOrd[T = A], up.compare(?a, ?b, ?c)\n  \
+         rule both[A](?a: A, ?b: A, ?c) :- require up: WeakOrd[T = A], require down: WeakOrd[T = A],\n      \
+         up.compare(?a, ?b, ?u), down.compare(?a, ?b, ?d), ?c <=> add(mul(?u, 100), ?d)\n  \
+         rule one[A](?a: A, ?b: A, ?c, ?d) :- require up: WeakOrd[T = A], WeakOrd[T = A],\n      \
+         up.compare(?a, ?b, ?c), WeakOrd.compare(?a, ?b, ?d)\n  \
+         rule inValue[A](?a: A, ?b: A, ?c) :- require up: WeakOrd[T = A], ?c <=> up.compare(?a, ?b)\n  \
+         rule inNot[A](?a: A, ?b: A) :- require up: WeakOrd[T = A], not(up.compare(?a, ?b, 0))\n  \
+         operation via[A](x: A, y: A) -> Int64 {EFFECTS} requires WeakOrd[T = A] = cmpN(x, y).head.c\n  \
+         operation pass[A](x: A, y: A) -> Int64 {EFFECTS}\n    \
+         requires u: WeakOrd[T = A], d: WeakOrd[T = A] = both[up = u, down = d](x, y).head.c\n"
+    );
+    let got = answers(
+        ns,
+        &rules,
+        &[
+            ("own", "cmpN(1, 5).head.c"),
+            ("viaDesc", "via[A = Int64, WeakOrd = Descending](1, 5)"),
+            ("viaAsc", "via[A = Int64, WeakOrd = Ascending](1, 5)"),
+            ("passed", "pass[A = Int64, u = Ascending, d = Descending](1, 5)"),
+            ("witnesses", "both[A = Int64, up = Descending, down = Ascending](1, 5).head.c"),
+            ("oneNamed", "one[A = Int64, up = Descending](1, 5).head.c"),
+            ("oneUnnamed", "one[A = Int64, up = Descending](1, 5).head.d"),
+            ("valueSlot", "inValue[A = Int64, up = Descending](1, 5).head.c"),
+            ("notHolds", "if inNot[A = Int64, up = Descending](1, 5).isEmpty() then 0 else 1"),
+            ("notFails", "if inNot[A = Int64, up = Descending](3, 3).isEmpty() then 0 else 1"),
+        ],
+    );
+    expect(
+        &got,
+        &[
+            ("own", -1),
+            ("viaDesc", 4),
+            ("viaAsc", -4),
+            ("passed", -396),
+            ("witnesses", 396),
+            ("oneNamed", 4),
+            ("oneUnnamed", 4),
+            ("valueSlot", 4),
+            ("notHolds", 1),
+            ("notFails", 0),
+        ],
+    );
+    for (decl, text) in [
+        (
+            "rule g[A](?a: A, ?b: A, ?c) :- require up: WeakOrd[T = A], require down: WeakOrd[T = A],\n      \
+             WeakOrd.compare(?a, ?b, ?c)",
+            "write `up.compare(…)` or `down.compare(…)`",
+        ),
+        (
+            "rule cmp[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], WeakOrd.compare(?a, ?b, ?c)\n  \
+             rule g[A](?a: A, ?b: A, ?c) :- require up: WeakOrd[T = A], require down: WeakOrd[T = A],\n      \
+             cmp(?a, ?b, ?c)",
+            "the goal needs a requirement two of the clause's hold, `up` and `down`",
+        ),
+        (
+            "rule g[A](?a: A, ?b: A, ?c) :- require up: WeakOrd[T = A], require up: WeakOrd[T = A],\n      \
+             up.compare(?a, ?b, ?c)",
+            "two requirements are written under the name `up`",
+        ),
+        (
+            "rule g[A](?a: A, ?b: A, ?c) :- require up: WeakOrd[T = A], require down: WeakOrd[T = A],\n      \
+             WeakOrd[T = A], up.compare(?a, ?b, ?c)",
+            "an unnamed requirement stands beside 2 named ones",
+        ),
+        (
+            "rule g[A](?a: A, ?b: A, ?c) :- require up: WeakOrd[T = A], up.nope(?a, ?b, ?c)",
+            "declares no operation `nope`",
+        ),
+        (
+            "sort up\n    operation compare(a: Int64, b: Int64, c: Int64) -> Bool = true\n  end\n  \
+             rule g[A](?a: A, ?b: A, ?c) :- require up: WeakOrd[T = A], up.compare(?a, ?b, ?c)",
+            "the requirement name `up`",
+        ),
+        (
+            "rule g[A](?a: A, ?b: A, ?c) :- require up: WeakOrd[T = A], up.compare(?a, ?b, ?c)\n  \
+             operation t() -> Int64 effects {Error, Error[EmptyStream]} = g[WeakOrd = Descending](1, 5).head.c",
+            "unknown type-param 'WeakOrd'",
+        ),
+    ] {
+        let errs = crate::common::load_errors_of(&program(ns, &format!("  {decl}\n")));
+        assert_one_refusal(&errs, text, decl);
     }
 }

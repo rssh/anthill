@@ -315,6 +315,7 @@ fn route_goal(
         .flat_map(|&(r, n)| (0..n).map(move |k| (r, k)))
         .collect();
     let mut callee_reads: HashMap<RuleId, Vec<ImplicitParam>> = HashMap::new();
+    let mut tie: Option<(Symbol, Symbol)> = None;
     let declared: Vec<Option<Rc<NodeOccurrence>>> = positions
         .iter()
         .map(|&(crid, k)| {
@@ -325,12 +326,37 @@ fn route_goal(
             match params.get(k) {
                 Some(ImplicitParam::Read(read)) => {
                     let read = Rc::clone(read);
-                    declared_route(kb, fd, rid, site, crid, &read)
+                    declared_route(kb, fd, rid, site, crid, &read, &mut tie)
                 }
                 _ => None,
             }
         })
         .collect();
+    if let Some((first, second)) = tie {
+        refused.push((
+            TypeError::Other {
+                site: TypeError::here(),
+                span: Some(site.span.span),
+                context: TypeErrorContext::Rule {
+                    name: callee,
+                    field: RuleField::Whole,
+                },
+                expected: format!(
+                    "one requirement of the clause for the goal of `{}`",
+                    kb.qualified_name_of(callee)
+                ),
+                actual: format!(
+                    "the goal needs a requirement two of the clause's hold, `{}` and `{}` — one \
+                     sort at one type under two names, two dictionaries — and nothing at the goal \
+                     says which",
+                    kb.local_name_of(first),
+                    kb.local_name_of(second),
+                ),
+            },
+            Some(site.span.source),
+        ));
+        return None;
+    }
     let slots: Vec<GoalSlot> = (0..total)
         .map(|j| {
             if let Some(Some(t)) = built.get(j) {
@@ -422,6 +448,7 @@ fn declared_route(
     site: &Rc<NodeOccurrence>,
     callee_clause: RuleId,
     read: &Rc<NodeOccurrence>,
+    tie: &mut Option<(Symbol, Symbol)>,
 ) -> Option<Rc<NodeOccurrence>> {
     let (spec, carrier, instance) = guard_read_parts(kb, read)?;
     let Some(Expr::Apply {
@@ -471,14 +498,35 @@ fn declared_route(
         return None;
     }
     let body: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
-    clause_requirement_reads(kb, fd, &body).into_iter().find_map(|own| {
-        let (own_spec, own_carrier, own_instance) = guard_read_parts(kb, &own)?;
-        (own_carrier == caller_carrier
-            && same_sort_canonical(kb, own_spec, spec)
-            && same_instance_but_carrier(kb, &instance, carrier, &own_instance, own_carrier))
-        .then(|| requirement_read_out(kb, fd, &own).map(Rc::clone))
-        .flatten()
-    })
+    let held: Vec<(Rc<NodeOccurrence>, Option<Symbol>)> = clause_requirement_reads(kb, fd, &body)
+        .into_iter()
+        .filter_map(|own| {
+            let (own_spec, own_carrier, own_instance) = guard_read_parts(kb, &own)?;
+            if own_carrier != caller_carrier
+                || !same_sort_canonical(kb, own_spec, spec)
+                || !same_instance_but_carrier(kb, &instance, carrier, &own_instance, own_carrier)
+            {
+                return None;
+            }
+            let out = Rc::clone(requirement_read_out(kb, fd, &own)?);
+            let name = match out.as_expr() {
+                Some(Expr::Var(Var::DeBruijn(d))) => kb
+                    .rule_provider_requirements(rid)
+                    .iter()
+                    .find(|r| r.dictionary == *d)
+                    .and_then(|r| r.name),
+                _ => None,
+            };
+            Some((out, name))
+        })
+        .collect();
+    // Two of the caller's requirements under two names hold it: two dictionaries, and the goal
+    // says which of neither (§8.6), as a citation two named requirements answer is refused.
+    if let [(_, Some(first)), (_, Some(second)), ..] = held.as_slice() {
+        *tie = Some((*first, *second));
+        return None;
+    }
+    held.into_iter().next().map(|(out, _)| out)
 }
 
 /// The type parameter of clause `rid` that `at` — a type its typing stamped on a body leaf —

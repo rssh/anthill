@@ -28379,6 +28379,8 @@ struct RuleProviderRequirement {
     instance: TermId,
     carrier: Option<VarId>,
     carrier_param: Option<Symbol>,
+    /// The name the guard is written under, `require up: WeakOrd[A]` (060.1 §8.6).
+    name: Option<Symbol>,
 }
 
 #[derive(Clone, Copy)]
@@ -28835,6 +28837,9 @@ struct Loader<'a> {
     // A], Eq[T = A]`), each a requirement of the carrier the first gives
     // ([`Loader::register_further_guards`]). Cleared per rule with `rule_tvar_bounds`.
     rule_tvar_further_guards: Vec<(String, RuleProviderRequirement)>,
+    // 060.1 §8.6: the current rule's named requirements — each name, its spec and the
+    // variable its dictionary is read into — for a body call through one (`up.compare(…)`).
+    rule_named_requirements: Vec<(String, Symbol, VarId)>,
     // WI-20260908-PW9A0: are we lowering a rule-head TYPE BOUND (`?x: T` / the §2.1
     // `x: T` parameter form)? That is the one position where a head-introduced type
     // variable DENOTES its guard-given bound — see [`Loader::rule_head_tvar`], which is
@@ -29317,6 +29322,7 @@ impl<'a> Loader<'a> {
             rule_param_vars: HashMap::new(),
             rule_tvar_bounds: HashMap::new(),
             rule_tvar_further_guards: Vec::new(),
+            rule_named_requirements: Vec::new(),
             in_rule_head_bound: false,
             rule_head_bound_anchors: Vec::new(),
             in_op_contract_clause: false,
@@ -30203,11 +30209,28 @@ impl<'a> Loader<'a> {
         }
     }
 
-    /// 060.1 §8.5 — each guard of an introducer after its first, as a requirement of the
-    /// carrier the first gives: its instance with the carrier at the slot the guard writes it
-    /// at, as [`Self::materialize_rule_carrier_bound`] builds the first's. Two of one spec at
-    /// one type are two requirements, as two lines of an operation's `requires` are.
-    fn register_further_guards(&mut self) {
+    /// 060.1 §8.5 / §8.6 — each guard of an introducer after its first, as a requirement of
+    /// the carrier the first gives: its instance with the carrier at the slot the guard writes
+    /// it at, as [`Self::materialize_rule_carrier_bound`] builds the first's. Two of one spec at
+    /// one type are two requirements, as two lines of an operation's `requires` are; a guard
+    /// written under a name (`require up: WeakOrd[A]`) is that requirement under the name, and
+    /// the carrier's requirements are then read as an operation's lines are
+    /// ([`KnowledgeBase::normalize_type_var_provider_requirement_names`]). Answers the clause's
+    /// named requirements — each name with its spec and the variable its dictionary is read
+    /// into — for the body's calls through them ([`Self::named_requirement_call`]).
+    fn register_further_guards(&mut self) -> Vec<(String, Symbol, VarId)> {
+        let mut carriers: Vec<VarId> = Vec::new();
+        let firsts: Vec<(VarId, Option<Symbol>)> = self
+            .rule_tvar_bounds
+            .values()
+            .filter_map(|r| r.as_ref().and_then(|r| r.carrier.map(|c| (c, r.name))))
+            .collect();
+        for (carrier, name) in firsts {
+            if let Some(name) = name {
+                self.kb.name_first_type_var_provider_requirement(carrier, name);
+            }
+            carriers.push(carrier);
+        }
         // In the order the body writes them, which is the order of the clause's reads.
         let further: Vec<(String, RuleProviderRequirement)> =
             std::mem::take(&mut self.rule_tvar_further_guards);
@@ -30216,24 +30239,46 @@ impl<'a> Loader<'a> {
                 continue;
             };
             let Some(carrier) = first.carrier else { continue };
-            {
-                let param = guard
-                    .carrier_param
-                    .expect("a guard with a carrier names the parameter it stands at");
-                let ty = self.kb.alloc(Term::Var(Var::Global(carrier)));
-                let mut bindings = match self.kb.get_term(guard.instance).clone() {
-                    Term::Fn { named_args, .. } => named_args,
-                    _ => SmallVec::new(),
-                };
-                bindings.push((param, ty));
-                let instance = self.kb.alloc(Term::Fn {
-                    functor: guard.spec,
-                    pos_args: SmallVec::new(),
-                    named_args: bindings,
+            let param = guard
+                .carrier_param
+                .expect("a guard with a carrier names the parameter it stands at");
+            let ty = self.kb.alloc(Term::Var(Var::Global(carrier)));
+            let mut bindings = match self.kb.get_term(guard.instance).clone() {
+                Term::Fn { named_args, .. } => named_args,
+                _ => SmallVec::new(),
+            };
+            bindings.push((param, ty));
+            let instance = self.kb.alloc(Term::Fn {
+                functor: guard.spec,
+                pos_args: SmallVec::new(),
+                named_args: bindings,
+            });
+            self.kb
+                .add_further_type_var_provider_requirement(carrier, instance, guard.name);
+        }
+        let mut named = Vec::new();
+        carriers.sort_by_key(|c| c.raw());
+        carriers.dedup();
+        for carrier in carriers {
+            // A refused carrier keeps its requirements as written, so a call through one of
+            // its names is still read, and the refusal is the one fault reported.
+            if let Err(why) = self.kb.normalize_type_var_provider_requirement_names(carrier) {
+                self.errors.push(LoadError::Other {
+                    message: format!(
+                        "rule type-variable `{}`: {why}",
+                        self.kb.local_name_of(carrier.name())
+                    ),
                 });
-                self.kb.add_further_type_var_provider_requirement(carrier, instance);
+            }
+            for (instance, dictionary, name) in self.kb.type_var_provider_requirement_entries(carrier) {
+                if let Some(name) = name {
+                    let spec = super::typing::sort_functor_of_view(self.kb, &TermIdView(instance))
+                        .expect("a requirement names its spec");
+                    named.push((self.kb.local_name_of(name).to_owned(), spec, dictionary));
+                }
             }
         }
+        named
     }
 
     /// Separate the annotation's carrier type from its provider obligation.
@@ -32433,6 +32478,77 @@ impl<'a> Loader<'a> {
     /// `Expr::DotApply` chain the `?p.t.abs()` spelling lowers to, or `None` for any other
     /// node. A bracket on it (`p.t.m[T = Int64]()`) is left unread: a call of a rule's own
     /// term takes none, and the end-of-file sweep refuses it as it refuses one on `?p.t.m`.
+    /// 060.1 §8.6 — A CALL THROUGH A NAMED REQUIREMENT, `up.compare(?a, ?b, ?c)` under `require
+    /// up: WeakOrd[T = A]`: the spec's operation, dispatched through that requirement's
+    /// dictionary and no other — built as the call a guard's covered call is woven into
+    /// (`Expr::ApplyWithin`), its dictionary the variable the requirement's read binds. `None`
+    /// where the head of the dotted name is no named requirement of the rule being lowered.
+    fn named_requirement_call(&mut self, parse_id: ParseTermId, span: SourceSpan) -> Option<Rc<NodeOccurrence>> {
+        if self.rule_named_requirements.is_empty() {
+            return None;
+        }
+        let Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } = self.parsed.terms.get(parse_id)
+        else {
+            return None;
+        };
+        let (root, member) = self.parsed.symbols.local_name(*functor).split_once('.')?;
+        let (spec, dictionary) = self
+            .rule_named_requirements
+            .iter()
+            .find(|(name, _, _)| name == root)
+            .map(|(_, spec, dictionary)| (*spec, *dictionary))?;
+        let (root, member) = (root.to_owned(), member.to_owned());
+        let (pos_args, named_args) = (pos_args.clone(), named_args.clone());
+        let op = self
+            .kb
+            .try_resolve_symbol(&format!("{}.{member}", self.kb.qualified_name_of(spec)))
+            .filter(|op| self.kb.has_kind(*op, SymbolKind::Operation));
+        let Some(op) = op else {
+            self.errors.push(LoadError::Other {
+                message: format!(
+                    "`{root}.{member}` at {}: the requirement `{root}` is a `{}`, which declares no \
+                     operation `{member}`",
+                    render_decl_site(self.kb, span),
+                    self.kb.qualified_name_of(spec),
+                ),
+            });
+            return Some(NodeOccurrence::new_expr(Expr::Bottom, span, self.current_owner));
+        };
+        let owner = self.current_owner;
+        let args = pos_args
+            .iter()
+            .map(|&a| self.build_body_atom_occurrence(a))
+            .collect();
+        let named_args: Vec<(Symbol, ParseTermId)> = named_args
+            .iter()
+            .copied()
+            .filter(|&(_, a)| self.named_child_survives_walk(a))
+            .collect();
+        let named_args = named_args
+            .iter()
+            .map(|&(k, a)| {
+                let key = self.kb.intern(self.parsed.symbols.local_name(k));
+                (key, self.build_body_atom_occurrence(a))
+            })
+            .collect();
+        let requirement = NodeOccurrence::new_expr(Expr::Var(Var::Global(dictionary)), span, owner);
+        Some(NodeOccurrence::new_expr(
+            Expr::ApplyWithin {
+                functor: op,
+                args,
+                named_args,
+                requirements: vec![requirement],
+                type_args: Vec::new(),
+            },
+            span,
+            owner,
+        ))
+    }
+
     fn clause_param_method_call(
         &mut self,
         parse_id: ParseTermId,
@@ -38623,6 +38739,9 @@ impl<'a> Loader<'a> {
                     return occ;
                 }
                 if let Some(occ) = self.clause_param_method_call(parse_id, span) {
+                    return occ;
+                }
+                if let Some(occ) = self.named_requirement_call(parse_id, span) {
                     return occ;
                 }
                 // WI-20261001-KDMQS — a dotted chain naming a const in a DATA slot is its
@@ -45719,6 +45838,7 @@ impl<'a> Loader<'a> {
                     instance,
                     carrier: None,
                     carrier_param: None,
+                    name: None,
                 },
             ));
         }
@@ -45851,6 +45971,7 @@ impl<'a> Loader<'a> {
                 instance,
                 carrier: Some(carrier),
                 carrier_param,
+                name: None,
             },
         ))
     }
@@ -46257,6 +46378,7 @@ impl<'a> Loader<'a> {
         // introducer set is empty and `rule_tvar_bounds` stays empty.
         self.rule_tvar_bounds.clear();
         self.rule_tvar_further_guards.clear();
+        self.rule_named_requirements.clear();
         let mut folded_guard_ids: std::collections::HashSet<ParseTermId> =
             std::collections::HashSet::new();
         // In the order written: a citation's positional bracket counts them so (060.1 §2).
@@ -46325,9 +46447,34 @@ impl<'a> Loader<'a> {
                 self.rule_tvar_bounds = introducers.iter().map(|tv| (tv.clone(), None)).collect();
                 if let Some(body) = r.body.as_ref() {
                     for &gtid in body {
-                        if let Some((tvar, requirement)) =
+                        if let Some((tvar, mut requirement)) =
                             self.try_body_tvar_guard(gtid, &introducers)
                         {
+                            requirement.name = self
+                                .parsed
+                                .terms
+                                .require_goal(gtid)
+                                .flatten()
+                                .map(|n| self.reintern(n));
+                            // The name heads the body's calls through it (`up.compare(…)`), so one
+                            // that also names something in scope would read two ways, as an
+                            // introducer that does is refused for (above).
+                            if let Some(name) = requirement.name {
+                                let text = self.kb.local_name_of(name).to_owned();
+                                if !matches!(
+                                    self.kb.symbols.resolve_in_scope(&text, self.current_scope),
+                                    ResolveResult::NotFound
+                                ) {
+                                    self.errors.push(LoadError::Other {
+                                        message: format!(
+                                            "the requirement name `{text}` at {} also names something \
+                                             in scope, so `{text}.…` in the body would have two \
+                                             readings; rename the requirement",
+                                            render_decl_site(self.kb, self.source_span_of(gtid)),
+                                        ),
+                                    });
+                                }
+                            }
                             if let Some(RuleTvar::Bounded(first)) = self.rule_head_tvar(&tvar) {
                                 // 060.1 §8.5 — SEVERAL REQUIREMENTS AT ONE PARAMETER, as an
                                 // operation's `requires WeakOrd[T = A], Eq[T = A]`: the first
@@ -46393,22 +46540,14 @@ impl<'a> Loader<'a> {
         // 060.1 §8.6 — a goal written `require …` is a requirement of a type parameter the head
         // introduces, which the scan above has folded into the head's bound; one it did not
         // fold states nothing of the clause's parameters, and would load as a goal that
-        // answers nothing. The name `require up: …` gives is read by nothing yet.
+        // answers nothing.
         for &gtid in r.body.iter().flatten() {
-            let Some(name) = self.parsed.terms.require_goal(gtid) else {
+            if self.parsed.terms.require_goal(gtid).is_none() {
                 continue;
-            };
+            }
             self.read_require_goals.insert(gtid);
             let at = render_decl_site(self.kb, self.source_span_of(gtid));
-            if let Some(name) = name {
-                self.errors.push(LoadError::Other {
-                    message: format!(
-                        "a requirement written under a name, `require {}: …` at {at}, is not \
-                         read yet; write it unnamed, `require …`, or as the guard alone",
-                        self.parsed.symbols.local_name(name),
-                    ),
-                });
-            } else if !folded_guard_ids.contains(&gtid) {
+            if !folded_guard_ids.contains(&gtid) {
                 self.errors.push(LoadError::Other {
                     message: format!(
                         "`require` at {at} states a requirement of a type parameter the rule's \
@@ -46612,6 +46751,9 @@ impl<'a> Loader<'a> {
         // shared var identity across the body atoms and the (already-converted)
         // head, so `assert_rule_debruijn_with_nodes` can collect the rule's vars
         // from head + occurrences and close both to De Bruijn — no term body.
+        // The heads have lowered each introducer's first guard; the further ones, and the
+        // names, are read before the body, whose calls through a name read them.
+        self.rule_named_requirements = self.register_further_guards();
         let mut body_nodes: Vec<Rc<NodeOccurrence>> = Vec::new();
         if let Some(terms) = r.body.as_ref() {
             for &tid in terms {
@@ -46732,7 +46874,6 @@ impl<'a> Loader<'a> {
         {
             self.refuse_rewrite_tags(r.meta.as_ref(), declaration);
         }
-        self.register_further_guards();
         // 060.1 §2 — each declared type parameter with the frame variable its occurrences
         // share, and whether some head's frame holds it.
         let declared_params: Vec<(String, Option<VarId>)> = introducer_order

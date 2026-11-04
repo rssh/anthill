@@ -409,12 +409,16 @@ pub(crate) struct RuleProviderRequirement {
     pub carrier: u32,
     pub instance: TermId,
     pub dictionary: u32,
+    /// The name the clause writes it under, `require up: WeakOrd[A]` (060.1 §8.6): what the
+    /// body calls through and a citation's bracket binds. `None` for a guard with no name.
+    pub name: Option<Symbol>,
 }
 
 #[derive(Clone, Copy, Debug)]
 struct TypeVarProviderRequirement {
     instance: TermId,
     dictionary: VarId,
+    name: Option<Symbol>,
 }
 
 #[derive(Clone)]
@@ -10244,6 +10248,7 @@ impl KnowledgeBase {
                     carrier: (globals.len() - 1 - position) as u32,
                     instance: self.term_to_debruijn(requirement.instance, &globals),
                     dictionary: (globals.len() - 1 - dictionary_position) as u32,
+                    name: requirement.name,
                 });
             }
         }
@@ -10274,21 +10279,113 @@ impl KnowledgeBase {
             .push(TypeVarProviderRequirement {
                 instance,
                 dictionary,
+                name: None,
             });
     }
 
     /// One more provider obligation on `carrier`, kept beside an equal one: a clause's two
-    /// guards of one spec at one parameter are two requirements (060.1 §8.5).
-    pub(crate) fn add_further_type_var_provider_requirement(&mut self, carrier: VarId, instance: TermId) {
-        let name = self.intern("provider_dictionary");
-        let dictionary = self.fresh_var(name);
+    /// guards of one spec at one parameter are two requirements (060.1 §8.5), under `name`
+    /// where the clause writes one (§8.6).
+    pub(crate) fn add_further_type_var_provider_requirement(
+        &mut self,
+        carrier: VarId,
+        instance: TermId,
+        name: Option<Symbol>,
+    ) {
+        let label = self.intern("provider_dictionary");
+        let dictionary = self.fresh_var(label);
         self.type_var_provider_requirements
             .entry(carrier)
             .or_default()
             .push(TypeVarProviderRequirement {
                 instance,
                 dictionary,
+                name,
             });
+    }
+
+    /// Name the first obligation on `carrier` — the one its first guard registered as the head's
+    /// bound was lowered — `name` (060.1 §8.6, `require up: WeakOrd[A]` as that guard).
+    pub(crate) fn name_first_type_var_provider_requirement(&mut self, carrier: VarId, name: Symbol) {
+        if let Some(first) = self
+            .type_var_provider_requirements
+            .get_mut(&carrier)
+            .and_then(|r| r.first_mut())
+        {
+            first.name = Some(name);
+        }
+    }
+
+    /// 060.1 §8.6 — `carrier`'s obligations read as an operation's `requires` lines are: of one
+    /// instance, unnamed ones beside exactly one named are that one requirement; with no name
+    /// each is a requirement of its own; under two names, two. Refused, with the account, where
+    /// one name is written twice or an unnamed one stands beside two names, which it cannot
+    /// state both of.
+    pub(crate) fn normalize_type_var_provider_requirement_names(
+        &mut self,
+        carrier: VarId,
+    ) -> Result<(), String> {
+        let Some(entries) = self.type_var_provider_requirements.get(&carrier).cloned() else {
+            return Ok(());
+        };
+        let mut kept: Vec<TypeVarProviderRequirement> = Vec::new();
+        for (i, entry) in entries.iter().enumerate() {
+            let same: Vec<&TypeVarProviderRequirement> =
+                entries.iter().filter(|e| e.instance == entry.instance).collect();
+            let mut names: Vec<Symbol> = Vec::new();
+            for e in &same {
+                if let Some(n) = e.name {
+                    if names.contains(&n) {
+                        return Err(format!(
+                            "two requirements are written under the name `{}`",
+                            self.local_name_of(n)
+                        ));
+                    }
+                    names.push(n);
+                }
+            }
+            match (names.as_slice(), entry.name) {
+                // The one named requirement of the instance, which its unnamed lines state: kept
+                // once, at the first of them, under the name.
+                ([only], _) => {
+                    if entries[..i].iter().all(|e| e.instance != entry.instance) {
+                        kept.push(TypeVarProviderRequirement {
+                            name: Some(*only),
+                            ..*entry
+                        });
+                    }
+                }
+                ([_, _, ..], None) => {
+                    return Err(format!(
+                        "an unnamed requirement stands beside {} named ones of the one instance, \
+                         `{}`, and states neither; name it, or drop it",
+                        names.len(),
+                        names
+                            .iter()
+                            .map(|n| self.local_name_of(*n))
+                            .collect::<Vec<_>>()
+                            .join("`, `"),
+                    ));
+                }
+                _ => kept.push(*entry),
+            }
+        }
+        self.type_var_provider_requirements.insert(carrier, kept);
+        Ok(())
+    }
+
+    /// `carrier`'s obligations, each its instance, the variable its dictionary is read into
+    /// and its name (060.1 §8.6).
+    pub(crate) fn type_var_provider_requirement_entries(
+        &self,
+        carrier: VarId,
+    ) -> Vec<(TermId, VarId, Option<Symbol>)> {
+        self.type_var_provider_requirements
+            .get(&carrier)
+            .into_iter()
+            .flatten()
+            .map(|r| (r.instance, r.dictionary, r.name))
+            .collect()
     }
 
     pub(crate) fn type_var_provider_requirements(&self, carrier: VarId) -> Vec<TermId> {
@@ -10354,10 +10451,14 @@ impl KnowledgeBase {
                 .type_var_provider_requirements
                 .entry(carrier)
                 .or_default();
-            if !requirements.iter().any(|r| r.instance == instance) {
+            if !requirements
+                .iter()
+                .any(|e| e.instance == instance && e.name == r.name)
+            {
                 requirements.push(TypeVarProviderRequirement {
                     instance,
                     dictionary,
+                    name: r.name,
                 });
             }
         }

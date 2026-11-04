@@ -245,12 +245,20 @@ pub(super) fn seed_rule_citation_bracket(
     // requirement, reached by its sort's short name, which names more than one where a clause
     // writes two (060.1 §8.5, as two of an operation's `requires` lines are two slots).
     let mut specs: Vec<(Symbol, usize)> = Vec::new();
+    // A requirement written under a name (§8.6), by its name: `cmpN[up = down](…)`.
+    let mut named: Vec<(Symbol, Symbol)> = Vec::new();
     for &rid in &rids {
         let mut here: Vec<(Symbol, usize)> = Vec::new();
         for r in kb.rule_provider_requirements(rid).to_vec() {
             let Some(spec) = sort_functor_of_view(kb, &TermIdView(r.instance)) else {
                 continue;
             };
+            if let Some(name) = r.name {
+                if !named.iter().any(|(n, _)| kb.local_name_of(*n) == kb.local_name_of(name)) {
+                    named.push((name, spec));
+                }
+                continue;
+            }
             match here.iter_mut().find(|(s, _)| same_sort_canonical(kb, *s, spec)) {
                 Some((_, n)) => *n += 1,
                 None => here.push((spec, 1)),
@@ -277,7 +285,42 @@ pub(super) fn seed_rule_citation_bracket(
         declared: &declared,
         slots: &slots,
     };
-    let selections = seed_bracket_bindings(kb, subst, env, type_args, &scope, relation, span)?;
+    // An entry keyed by a named requirement selects its provider: a witness, or a requirement of
+    // the citing declaration by its name, as a named slot of an operation is selected.
+    let (by_name, rest): (Vec<(Option<Symbol>, Value)>, Vec<(Option<Symbol>, Value)>) =
+        type_args.iter().cloned().partition(|(key, _)| {
+            key.is_some_and(|k| named.iter().any(|(n, _)| kb.local_name_of(*n) == kb.local_name_of(k)))
+        });
+    let mut selections = seed_bracket_bindings(kb, subst, env, &rest, &scope, relation, span)?;
+    let mut concrete = None;
+    for (key, value) in by_name {
+        let key = key.expect("partitioned on a key");
+        let (binder, spec) = *named
+            .iter()
+            .find(|(n, _)| kb.local_name_of(*n) == kb.local_name_of(key))
+            .expect("partitioned on a named requirement");
+        let Some(provider) =
+            validate_written_selection(kb, env, relation, spec, &value, false, &mut concrete, span)?
+        else {
+            continue;
+        };
+        let witness_slots = match provider {
+            SelectedProvider::Witness(witness) => {
+                witness_value_slot_selections(kb, relation, witness, &value, span)?
+            }
+            SelectedProvider::Enclosing(_) => Vec::new(),
+        };
+        push_selection(
+            kb,
+            &mut selections,
+            spec,
+            SelectedSlot::Named(binder),
+            provider,
+            witness_slots,
+            relation,
+            span,
+        )?;
+    }
     for (name, var) in &declared {
         let bound = Value::Var(*var);
         let written = walk_type_deep_value(kb, subst, &bound);

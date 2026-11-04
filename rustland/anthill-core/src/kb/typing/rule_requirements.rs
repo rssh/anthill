@@ -288,6 +288,14 @@ pub(super) fn record_find_dictionary_grounding(kb: &mut KnowledgeBase) -> Vec<Ty
     errors
 }
 
+/// The operation an application calls, where `call` is one.
+fn call_functor(call: &NodeOccurrence) -> Option<Symbol> {
+    match call.as_expr() {
+        Some(Expr::Apply { functor, .. }) => Some(*functor),
+        _ => None,
+    }
+}
+
 /// Compile carrier obligations into reads of their separate dictionary slots.
 /// Written dictionary calls have already been woven and retain their selection.
 pub(super) fn install_rule_provider_dictionaries(kb: &mut KnowledgeBase) -> Vec<TypeError> {
@@ -324,8 +332,8 @@ pub(super) fn install_rule_provider_dictionaries(kb: &mut KnowledgeBase) -> Vec<
         });
         let mut goals = Vec::new();
         let mut targets: Vec<WeaveTarget> = Vec::new();
-        // The instance each target's dictionary is a requirement at.
-        let mut target_instances: Vec<TermId> = Vec::new();
+        // The instance each target's dictionary is a requirement at, and its name.
+        let mut target_instances: Vec<(TermId, Option<Symbol>)> = Vec::new();
         for requirement in requirements {
             let instance = requirement.instance;
             let spec = sort_functor_of_view(kb, &Value::term(instance))
@@ -346,7 +354,30 @@ pub(super) fn install_rule_provider_dictionaries(kb: &mut KnowledgeBase) -> Vec<
                     // Two requirements of one spec at one type, written twice: either is the
                     // call's, as in an operation's body under two equal `requires` lines
                     // (060.1 §8.5). The first stands.
-                    if target_instances[at] == instance {
+                    let (first_instance, first_name) = target_instances[at];
+                    if first_instance == instance && first_name.is_none() && requirement.name.is_none() {
+                        continue;
+                    }
+                    // Two names are two dictionaries (§8.6), and the call says neither, as an
+                    // operation's body call under two named `requires` lines is refused.
+                    if let (Some(first), Some(second)) = (first_name, requirement.name) {
+                        let member = kb.local_name_of(call_functor(&call).unwrap_or(spec)).to_string();
+                        errors.push(TypeError::Other {
+                            site: TypeError::here(),
+                            span: Some(call.span.span),
+                            context: TypeErrorContext::Rule {
+                                name: spec,
+                                field: RuleField::Body,
+                            },
+                            expected: "a call that names the requirement it reads".into(),
+                            actual: format!(
+                                "two requirements of the clause cover it, `{f}` and `{s}` — one \
+                                 sort at one type under two names — and the call names neither: \
+                                 write `{f}.{member}(…)` or `{s}.{member}(…)`",
+                                f = kb.local_name_of(first),
+                                s = kb.local_name_of(second),
+                            ),
+                        });
                         continue;
                     }
                     errors.push(TypeError::Other {
@@ -361,7 +392,7 @@ pub(super) fn install_rule_provider_dictionaries(kb: &mut KnowledgeBase) -> Vec<
                     });
                 } else {
                     targets.push((call, vec![out.clone()], None));
-                    target_instances.push(instance);
+                    target_instances.push((instance, requirement.name));
                 }
             }
             let spec_node = NodeOccurrence::new_expr(
