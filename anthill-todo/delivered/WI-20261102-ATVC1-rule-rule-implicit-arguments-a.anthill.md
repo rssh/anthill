@@ -3,9 +3,9 @@
 - id: WI-20261102-ATVC1-rule-rule-implicit-arguments-a
 - created: 2026-11-02T11:19:37Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-11-02T11:19:37Z
+- status_at: 2026-11-04T15:10:10Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -46,4 +46,8 @@ PATTERN-EVIDENCE ROWS REPLACED (user, 2026-11-04: 'can use probe.disc'). The tic
 ### 2026-11-04T14:22:11Z — feedback — claude
 
 A NON-TRIVIAL PAYLOAD ROW ADDED (user, 2026-11-04: payloads should be non-trivial; 'it just other test. ok'). Boom and Other both refine Base (sort Boom requires Base, sort Other requires Base); the caller chooses P = Base with the payload boom("b"), and at n = 7 the thunk raises other(n: 7), which Base admits and Boom does not. Measured on the binary before ATVC1 -> tree: cited directly 1 -> 1; through outer a fault (the clause read the pattern off the value, Boom) -> 1; P = Boom through outer a fault both (control). Row: wi_atvc1_rule_goal_implicit_arguments_test::a_callers_wider_pattern_reaches_a_reify_through_a_rule; forward routing backed out ([F]) gives wideOuter the raise. The [] rows are their own test now (/code-review: one test per mechanism so a back-out reads each). Full workspace 11655 passed, 0 failed before the split; the split pair passes.
+
+### 2026-11-04T15:10:09Z — feedback — claude
+
+CLOSED (user, 2026-11-04). Every acceptance row is driven: the WeakOrd rows through outer (4 / -4) and the P7VP4 row (4, -4, -1); the pattern-evidence rows as the user chose them — a caller's TypePattern[T = List[T = Int64]] reaching a reify through outer with the payload [] (0 -> 1), and a wider pattern, P = Base over Boom and Other both refining Base, catching other(n: 7) through outer (a fault -> 1); decision B's rows; row (g) refused at the citation (da4ef0b5); the direct citations unchanged; kernel-language §5.3/§5.4/§8.1 and 060-implementation §7.3 in line. The stated limit — a goal of another relation of the same recursion passes nothing (evenS/oddS) — is not fixed here: decided with the user the same day, a rule's dictionaries become written (proposal 060.1, WI-20261104-J9SSG), which withdraws this ticket's forward slots and the P7VP4 inference, keeps the citation marker, and passes a recursion's written requirements goal by goal. Commits 177ca1ff, e5cb95c1, fc97a897, da4ef0b5, 8b6fc534, 6c6df13a.
 
