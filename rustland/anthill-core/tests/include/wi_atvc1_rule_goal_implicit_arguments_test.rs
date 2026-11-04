@@ -23,7 +23,9 @@
 //!    type — the connective rows (`|`, `not`), whose variables have no stamp;
 //!  * [N] a forward slot nothing routed left unbound when its clause opens — the uncited `not`
 //!    rows, which flounder;
-//!  * [X] no refusal of an unread bracket — the two refusal rows.
+//!  * [X] no refusal of an unread bracket — the two refusal rows;
+//!  * [U] no refusal of a citation whose goal leaves a parameter of its callee's sort free —
+//!    the row (g) refusals.
 //!
 //! The direct citations, a goal at literals, a goal whose callee takes nothing and the
 //! mutually recursive pair pass under every axis, by design: they are the controls and the
@@ -331,6 +333,117 @@ fn a_bracket_nothing_reads_is_refused_and_its_repairs_answer() {
         "  rule colours(?x: Colour) :- true\n  rule filled(?x) :- colours(?x)\n",
     ));
     assert_eq!(crate::common::definite_unary(&mut kb, "atvc1.br.filled").len(), 2);
+}
+
+const FREE: &str = r#"
+namespace atvc1.free
+  import anthill.prelude.{Int64, String, Error, EmptyStream}
+  import anthill.reflect.SortDomain
+  sort Colour
+    entity red
+    entity green
+    entity blue
+  end
+  sort Wrap[T]
+    entity wrap(v: T)
+    rule dom(?x: Wrap[T = T]) :- true
+    rule again(?y) :- dom(?y)
+    rule againT(?y: Wrap[T = T]) :- dom(?y)
+    rule again2(?z) :- again(?z)
+    rule againOr(?y) :- dom(?y) | dom(?y)
+    rule el(?x: T) :- src(?x)
+    rule counted(1) :- dom(?w)
+    rule twice(?y) :- dom(?y), dom(?y)
+    rule twice(?y) :- dom(?y)
+    rule inner(?v) :- dom(wrap(?v))
+  end
+  fact src(1)
+  fact src("a")
+  fact src(red)
+  rule anyDom(?y) :- Wrap.dom(?y)
+  rule bare(?x) :- Wrap.el(?x)
+"#;
+
+fn free(ops: &str) -> String {
+    format!("{FREE}  sort Program\n{ops}  end\nend\n")
+}
+
+/// `operation <name>() -> Int64 … = <expr>`, for [`free`].
+fn free_op(name: &str, expr: &str) -> String {
+    format!("    operation {name}() -> Int64 effects {{Error, Error[EmptyStream]}} = {expr}\n")
+}
+
+/// ROW (g) — A CITATION THROUGH A GOAL THAT REACHES ITS CALLEE WITH A PARAMETER NOTHING TYPES IS
+/// REFUSED, at the citation (user, 2026-11-04): `again`'s `?y` has no type of its own, so the
+/// goal `dom(?y)` reaches `dom` with `Wrap`'s `T` free, and the bracket on `Wrap[T =
+/// Colour].again` fixes nothing `again` reads. It is the refusal the goal written as a
+/// citation in an operation gets (`Wrap.dom` with no bracket). Refused: the bracket, no
+/// bracket, two rules deep, a goal under `|`, a rule outside the sort, a goal over facts
+/// (`bare`, which answered 3 before, as each value's type was read off the value), a bracket at
+/// a caller's own parameter, a variable of the body, a column inside a construction
+/// (`dom(wrap(?v))`, named in the refusal), and a relation reaching `dom` from three goals in
+/// two clauses (refused once). The clause is not refused: a citation
+/// that types the goal's argument answers — the column's type written (`againT`, 3), a value
+/// for it (1, two rules deep too, and outside the sort), the caller's own parameter carried by
+/// the value (1). FAILS under [U]: every refused program loads, and each floundered at run
+/// time (measured) but `bare`'s. The answering rows pass under every axis.
+#[test]
+fn a_citation_through_a_goal_that_leaves_a_parameter_free_is_refused() {
+    let refused = [
+        ("Wrap[T = Colour].again.takeN(5).length()", "probe", "Wrap.again", "?y", "again"),
+        ("Wrap.again.takeN(5).length()", "noBracket", "Wrap.again", "?y", "again"),
+        ("Wrap[T = Colour].again2.takeN(5).length()", "twoDeep", "Wrap.again2", "?y", "again"),
+        ("Wrap[T = Colour].againOr.takeN(5).length()", "orGoal", "Wrap.againOr", "?y", "againOr"),
+        ("anyDom.takeN(5).length()", "outside", "anyDom", "?y", "anyDom"),
+        ("bare.takeN(5).length()", "facts", "bare", "?x", "bare"),
+        ("Wrap[T = Colour].twice.takeN(5).length()", "twice", "Wrap.twice", "?y", "twice"),
+        ("Wrap[T = Colour].inner.takeN(5).length()", "inner", "Wrap.inner", "?v", "inner"),
+    ];
+    for (expr, name, cited, column, clause) in refused {
+        let errs = crate::common::load_errors_of(&free(&free_op(name, expr)));
+        assert_eq!(errs.len(), 1, "{name}: one refusal, got {errs:?}");
+        crate::common::assert_refused_naming(
+            &errs,
+            &[
+                &format!("is not determined at this citation of `atvc1.free.{cited}`"),
+                &format!("in `{clause}` is given `{column}`"),
+                &format!("write the type of `{column}` in `{clause}`"),
+            ],
+            name,
+        );
+    }
+    let errs = crate::common::load_errors_of(&free(&free_op(
+        "deepWording",
+        "Wrap[T = Colour].again2.takeN(5).length()",
+    )));
+    crate::common::assert_refused_naming(&errs, &["or type the column of `again2` that passes it"], "deepWording");
+    let errs = crate::common::load_errors_of(&free(
+        "    operation atB[A]() -> Int64 effects {Error, Error[EmptyStream]} requires SortDomain[T = A] =\n      \
+         Wrap[T = A].again.takeN(5).length()\n",
+    ));
+    assert_eq!(errs.len(), 1, "a bracket at the caller's parameter: {errs:?}");
+    crate::common::assert_refused_naming(&errs, &["citation of `atvc1.free.Wrap.again`"], "atB");
+    let errs = crate::common::load_errors_of(&free(&free_op("body", "Wrap[T = Colour].counted.takeN(5).length()")));
+    assert_eq!(errs.len(), 1, "a variable of the body: {errs:?}");
+    crate::common::assert_refused_naming(&errs, &["is given a variable of its body that nothing types"], "body");
+
+    let ops = [
+        free_op("typed", "Wrap[T = Colour].againT.takeN(5).length()"),
+        free_op("valued", "Wrap.again(wrap(red)).takeN(5).length()"),
+        free_op("valuedDeep", "Wrap.again2(wrap(red)).takeN(5).length()"),
+        free_op("valuedOutside", "anyDom(wrap(red)).takeN(5).length()"),
+        "    operation at[A](w: Wrap[T = A]) -> Int64 effects {Error, Error[EmptyStream]} = \
+         Wrap.again(w).takeN(5).length()\n"
+            .to_string(),
+        free_op("rigid", "at[A = Colour](wrap(red))"),
+    ]
+    .concat();
+    let mut interp = crate::common::interp_for(&free(&ops));
+    let ns = "atvc1.free.Program";
+    assert_eq!(int(&mut interp, ns, "typed"), 3, "the column's type written");
+    for op in ["valued", "valuedDeep", "valuedOutside", "rigid"] {
+        assert_eq!(int(&mut interp, ns, op), 1, "{op}: a value types the column");
+    }
 }
 
 /// A LATER LOAD THAT GIVES A CALLEE ANOTHER CLAUSE routes its callers' goals again: `cmp`'s

@@ -925,14 +925,76 @@ pub(super) fn settle_citation_routes(
     refused
 }
 
+/// The wording of [`CarriedMisfit::UnfixedAtGoal`] at a citation of `cited`.
+fn unfixed_at_goal_text(
+    kb: &KnowledgeBase,
+    cited: Symbol,
+    clause_relation: Symbol,
+    callee: Symbol,
+    sort: Symbol,
+    param: Symbol,
+    columns: &[Symbol],
+) -> String {
+    let clause = short_name_of(kb.qualified_name_of(clause_relation)).to_string();
+    let head = format!(
+        "type parameter '{}' of `{}` is not determined at this citation of `{}`: the goal of `{}` in `{clause}`",
+        kb.local_name_of(param),
+        kb.qualified_name_of(sort),
+        kb.qualified_name_of(cited),
+        kb.qualified_name_of(callee),
+    );
+    let Some(first) = columns.first() else {
+        return format!("{head} is given a variable of its body that nothing types");
+    };
+    let names = columns
+        .iter()
+        .map(|c| format!("`?{}`", kb.local_name_of(*c)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let first = kb.local_name_of(*first);
+    let repair = if clause_relation == cited {
+        format!("pass this citation a value for `?{first}`")
+    } else {
+        format!(
+            "type the column of `{}` that passes it, or pass this citation a value that fixes it",
+            short_name_of(kb.qualified_name_of(cited))
+        )
+    };
+    format!(
+        "{head} is given {names}, whose type neither `{clause}` nor this citation fixes; \
+         write the type of `?{first}` in `{clause}`, or {repair}"
+    )
+}
+
 /// A citation's [`CarriedMisfit`] as the load error it is, at `at` — the citation of
-/// `relation`, or for a misfit a forward slot met, the goal it met it at — with that file.
+/// `relation`, or for a misfit a forward slot met, the goal it met it at, except a parameter
+/// a goal leaves free, which an argument at the citation fixes — with that file.
 pub(super) fn citation_misfit_error(
     kb: &KnowledgeBase,
     relation: Symbol,
     at: crate::span::SourceSpan,
     misfit: CarriedMisfit,
 ) -> (TypeError, Option<crate::span::SourceId>) {
+    if let CarriedMisfit::UnfixedAtGoal {
+        clause_relation,
+        callee,
+        sort,
+        param,
+        columns,
+    } = misfit.innermost()
+    {
+        let error = TypeError::Other {
+            site: TypeError::here(),
+            span: Some(at.span),
+            context: TypeErrorContext::Rule {
+                name: relation,
+                field: RuleField::Whole,
+            },
+            expected: format!("a type for '{}' at this citation", kb.local_name_of(*param)),
+            actual: unfixed_at_goal_text(kb, relation, *clause_relation, *callee, *sort, *param, columns),
+        };
+        return (error, Some(at.source));
+    }
     if let CarriedMisfit::Forwarded {
         relation,
         at,
@@ -943,7 +1005,9 @@ pub(super) fn citation_misfit_error(
     }
     let span = Some(at.span);
     let error = match misfit {
-        CarriedMisfit::Forwarded { .. } => unreachable!("read above"),
+        CarriedMisfit::Forwarded { .. } | CarriedMisfit::UnfixedAtGoal { .. } => {
+            unreachable!("read above")
+        }
         CarriedMisfit::Unfixed { param, sort } => TypeError::UnconstrainedCitationParam {
             span,
             relation,
@@ -1232,6 +1296,14 @@ fn forwarded_routes(
         let m = goal_marker(kb, marker).expect("a forward slot's marker");
         (Rc::clone(m.goal), m.relation)
     };
+    let Some(Expr::Apply {
+        pos_args,
+        named_args,
+        ..
+    }) = goal.as_expr()
+    else {
+        unreachable!("a goal a marker carries is an application");
+    };
     let (column_types, bound_types) =
         (pending.column_types.as_slice(), pending.bound_types.as_slice());
     let arg_type = |kb: &mut KnowledgeBase, arg: &Rc<NodeOccurrence>| -> Option<Value> {
@@ -1254,7 +1326,7 @@ fn forwarded_routes(
     // A goal no citation could be made of — a relation with no column interface, arguments
     // that align to no column — routes nothing, and its callee derives its own, as before a
     // goal passed anything.
-    let Ok(edge) = goal_edge_citation(
+    let Ok((edge, unfixed)) = goal_edge_citation(
         kb,
         &goal,
         callee,
@@ -1266,6 +1338,53 @@ fn forwarded_routes(
     ) else {
         return SmallVec::new();
     };
+    // The goal reaches its callee with a parameter of the callee's sort nothing types: the
+    // citation is refused, as the goal written as a citation in an operation body is
+    // ([`settle_citation_type`]). The clause is not: a citation that gives the goal's
+    // argument a type fixes it.
+    if let Some((sort, param, free)) = unfixed {
+        // The clause's columns the goal passes, bare or inside a construction.
+        let mut passed: Vec<Symbol> = Vec::new();
+        for arg in pos_args.iter().chain(named_args.iter().map(|(_, a)| a)) {
+            for_each_var_leaf(arg, &mut |var, _| {
+                let Var::DeBruijn(d) = var else { return };
+                if let Some((_, name, _)) = slots.iter().find(|(_, _, di)| *di == d) {
+                    if !passed.contains(name) {
+                        passed.push(*name);
+                    }
+                }
+            });
+        }
+        let mut columns = Vec::new();
+        for name in &passed {
+            let untyped = match citation_column_type(kb, *name, column_types, bound_types, &pending.subst) {
+                Some(ty) => {
+                    let ty = walk_type_deep_value(kb, &edge.subst, &ty);
+                    resolved_var(kb, &ty).is_some() || occurs_in_view(kb, free, &ty)
+                }
+                None => true,
+            };
+            if untyped {
+                columns.push(*name);
+            }
+        }
+        // One refusal per goal relation and parameter: another goal of the clause, or another
+        // clause, meeting it says nothing more.
+        let said = misfits.iter().any(|m| {
+            matches!(m.innermost(), CarriedMisfit::UnfixedAtGoal { clause_relation, callee: c, param: p, .. }
+                if *clause_relation == pending.relation && *c == callee && *p == param)
+        });
+        if !said {
+            misfits.push(CarriedMisfit::UnfixedAtGoal {
+                clause_relation: pending.relation,
+                callee,
+                sort,
+                param,
+                columns,
+            });
+        }
+        return SmallVec::new();
+    }
     let mut met = Vec::new();
     let routes = citation_requirement_routes(kb, &edge, &mut met);
     misfits.extend(met.into_iter().map(|misfit| CarriedMisfit::Forwarded {
@@ -1291,7 +1410,9 @@ pub(super) fn bracketed_goal_routes(
         Some(Expr::Const(lit)) => Some(literal_sort(kb, lit)),
         _ => arg.inferred_type(),
     };
-    let edge = goal_edge_citation(
+    // A parameter the bracket leaves free is not refused here: a rule body's goal owes its
+    // callee nothing at load, and the callee derives what no route gives.
+    let (edge, _) = goal_edge_citation(
         kb,
         goal,
         callee,
@@ -1310,7 +1431,8 @@ pub(super) fn bracketed_goal_routes(
 /// bound to the type `arg_type` gives it, and the caller's frame `chain` and σ `base` — the
 /// citing operation's, for a goal reached from one. The refusal where the relation has no
 /// column interface a citation could read, the bracket names another sort, or the goal's
-/// arguments do not align to its columns.
+/// arguments do not align to its columns. Beside the edge, the first parameter of the callee's
+/// sort that the bracket and the arguments leave free, with the variable it stands at.
 #[allow(clippy::too_many_arguments)]
 fn goal_edge_citation(
     kb: &mut KnowledgeBase,
@@ -1321,7 +1443,7 @@ fn goal_edge_citation(
     chain: DictChain,
     param_rigids: Vec<(VarId, TermId)>,
     depth: usize,
-) -> Result<PendingCitationRoutes, TypeError> {
+) -> Result<(PendingCitationRoutes, Option<(Symbol, Symbol, VarId)>), TypeError> {
     let Some(Expr::Apply {
         pos_args,
         named_args,
@@ -1389,8 +1511,15 @@ fn goal_edge_citation(
         }
         bound_types.push((*name, ty));
     }
+    let unfixed = opened.as_ref().and_then(|(owner, params)| {
+        params.iter().find_map(|p| {
+            let var_term = kb.alloc(Term::Var(Var::Global(p.var)));
+            resolved_var(kb, &walk_view(kb, &subst, &TermIdView(var_term)))
+                .map(|free| (*owner, p.param, free))
+        })
+    });
     let column_types: Vec<(Symbol, Value)> = columns.iter().map(|c| (c.name, c.ty.clone())).collect();
-    Ok(PendingCitationRoutes {
+    let edge = PendingCitationRoutes {
         occ: Rc::clone(goal),
         relation: callee,
         column_types,
@@ -1400,7 +1529,8 @@ fn goal_edge_citation(
         param_rigids,
         unopened,
         depth,
-    })
+    };
+    Ok((edge, unfixed))
 }
 
 /// One read's route for [`citation_requirement_routes`] — `pos_args` is the read's
@@ -1656,6 +1786,27 @@ pub(crate) enum CarriedMisfit {
         at: crate::span::SourceSpan,
         misfit: Box<CarriedMisfit>,
     },
+    /// A goal of `clause_relation`'s clause reaches `callee` with the parameter `param` of
+    /// `sort` free — the clause's `columns` it passes have no type and the citation gives
+    /// them none. Reported at the citation, however many goals down it is met: an argument
+    /// there is what would fix it.
+    UnfixedAtGoal {
+        clause_relation: Symbol,
+        callee: Symbol,
+        sort: Symbol,
+        param: Symbol,
+        columns: Vec<Symbol>,
+    },
+}
+
+impl CarriedMisfit {
+    /// The misfit a chain of [`Self::Forwarded`] ends at.
+    fn innermost(&self) -> &CarriedMisfit {
+        match self {
+            CarriedMisfit::Forwarded { misfit, .. } => misfit.innermost(),
+            other => other,
+        }
+    }
 }
 
 /// What a citation reads for a requirement read off the named slots of its clause's
