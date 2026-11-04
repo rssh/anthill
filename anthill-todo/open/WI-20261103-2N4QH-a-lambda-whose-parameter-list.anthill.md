@@ -9,6 +9,8 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
+- depends_on: WI-20261104-6HVXM-every-arrow-is-a-function-in
+
 - tags: typing
 
 ## Description

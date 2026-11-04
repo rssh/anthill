@@ -9,6 +9,8 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
+- depends_on: WI-20261104-6HVXM-every-arrow-is-a-function-in
+
 ## Description
 
 a binder-list lambda's arrow param is a variable where its arity says named_tuple
@@ -105,9 +107,14 @@ CONTROLS THIS OWES, all green today and all must stay green:
     component would turn a loud arity failure into an accepted program.
   * `wi_50b2k_binder_inference_test::the_tuple_binders_operation_body_twin_drives_and_is_unmoved`
     and `pat_a_tuple_binders_component_is_inferred_when_the_parent_type_is_a_hole`.
+
 ## Changes
 
 ### 2026-10-23T22:43:25Z — feedback — claude
 
 MEASURED AGAIN 2026-10-23 (during WI-20261014-EDPF6, built and taken out): the param minted as (_1: A, _2: B) where each component is the binder's OWN annotation (or its literal/constructor type, else a fresh variable) — not a fresh _i variable — passes obstacle (1): wi517's typed_tuple_binders_pin_elements_without_expected_context stays green. Obstacle (2) stands: wi_50b2k's a_direct_application_of_a_multi_binder_lambda_no_longer_aborts_the_typer fails, g((a: 1, b: 2)) refused 'expected 2 arguments … got 1 argument'. A THIRD: wi_12nkg's a_lambda_of_several_binders_is_refused_naming_the_brackets fails — Apply.run(lambda (x: Int64, y: Int64) -> x) beside a provider at (Int64, Int64) -> Int64 loads, where kernel-language section 8 says the parameters of a lambda of several binders take their types from the type around it. Gate otherwise green (10618/2). The hole this repairs, measured on 731ca528: let h = lambda (u: Int64, v: Int64) -> u * 10 + v then h("a", true) loads, and so does handing h to a slot (x: String, m: Bool) -> Int64; run, it stops 'type mismatch: expected Int64, got String and Int64'. Open decisions (user, 2026-10-23, asked): whether a single-tuple application of a minted list is refused as an arity error or converted by position (then g((b: 2, a: 1)) answers 2, not this ticket's 1), and whether section 8's sentence is rewritten.
+
+### 2026-11-04T06:53:03Z — feedback — claude
+
+Depends on WI-20261104-6HVXM (proposal 002 corrected with the user 2026-11-03/04: every arrow is a Function, no parameter count). The open decisions of the 2026-10-23 note are settled there: one tuple is always the argument list, so g((a: 1, b: 2)) over lambda (a, b) -> a is checked by the application match against the lambda's tuple. What g((b: 2, a: 1)) answers there, a named tuple against a lambda tuple that carries no labels, 002 does not state; this ticket's acceptance (flipping it to 1) is to be read against 002 when 6HVXM lands. 2026-11-04.
 
