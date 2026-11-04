@@ -13,7 +13,8 @@
 //! BACK-OUT, measured one axis at a time (each a temporary switch in one build, removed):
 //!  * [P] the pass off — no goal carries anything: every row through a rule answers the
 //!    callee's own (`-1`), the recursion row `(0, 0)`, every bracket row reads all instances;
-//!  * [F] forward slots routed as nothing — the rows through a non-recursive rule;
+//!  * [F] forward slots routed as nothing — the rows through a non-recursive rule, and the
+//!    row (g) refusals, which the forward routing raises;
 //!  * [R] a citation routing no forward slot — the same rows as [F];
 //!  * [O] a recursive goal passing nothing — `a_recursive_goal_hands_on_what_its_clause_took`;
 //!  * [B] a bracket's instance not built — the decision-B rows;
@@ -540,4 +541,59 @@ fn a_residual_goal_prints_as_written() {
         .flat_map(|sol| sol.residual.iter().map(|g| printer.print_value(g)))
         .collect();
     assert_eq!(printed, ["not(cmp(red, green, ?_))"], "the residual as written");
+}
+
+const PATTERN: &str = r#"
+namespace atvc1.pat
+  import anthill.reflect.{TypeValue, TypePattern}
+  import anthill.prelude.{Int64, List, Error, Result}
+
+  sort Other
+    entity other(n: Int64)
+  end
+
+  operation raiseEither[P](p: P, n: Int64) -> Int64 effects {Error[P], Error[Other]}
+      requires TypeValue[T = P] =
+    if n < 0 then Error.raise(p) else Error.raise(other(n))
+
+  operation catchP[P](p: P, n: Int64) -> Result[E = P, T = Int64] effects {Error[Other]}
+      requires TypeValue[T = P], TypePattern[T = P] =
+    Error.reify[T1 = P](lambda () -> raiseEither(p, n))
+
+  rule either(?p, ?n, ?r) :- catchP(?p, ?n, ?r)
+  rule outer(?p, ?n, ?r) :- either(?p, ?n, ?r)
+
+  operation viaEither[P](p: P, n: Int64) -> Int64 effects {Error}
+      requires TypeValue[T = P], TypePattern[T = P] = either(p, n).takeN(5).length()
+  operation viaOuter[P](p: P, n: Int64) -> Int64 effects {Error}
+      requires TypeValue[T = P], TypePattern[T = P] = outer(p, n).takeN(5).length()
+
+  operation directCaught() -> Int64 effects {Error} = viaEither[P = List[T = Int64]]([], 0 - 1)
+  operation outerCaught() -> Int64 effects {Error} = viaOuter[P = List[T = Int64]]([], 0 - 1)
+  operation outerDeclined() -> Int64 effects {Error} = viaOuter[P = List[T = Int64]]([], 7)
+end
+"#;
+
+/// THE PATTERN EVIDENCE: a caller's `TypePattern` reaches an `Error.reify` two rules down. The
+/// reify is in `catchP`, which `either` cites and `outer` reaches through `either`; the payload
+/// `[]` carries no element type, so the clause cannot build `TypePattern[T = List[T = Int64]]`
+/// from the value, and only the operation's `requires` has it. Raised at `n < 0`, the `[]` is
+/// caught: one answer, cited directly and through `outer`. Raised at `n = 7`, `other(n: 7)` is
+/// outside `reify[T1 = P]` and is not caught, through `outer` too. FAILS under [F]:
+/// `outerCaught` answers 0, as the binary before this ticket answers it (`1` / `0` for the two).
+/// `directCaught` (S2's citation) and `outerDeclined` pass under [F] and on that binary — the
+/// controls.
+#[test]
+fn a_callers_pattern_reaches_a_reify_through_a_rule() {
+    let mut interp = crate::common::interp_for(PATTERN);
+    let ns = "atvc1.pat";
+    assert_eq!(int(&mut interp, ns, "directCaught"), 1, "cited directly");
+    assert_eq!(int(&mut interp, ns, "outerCaught"), 1, "through `outer`");
+    match interp.call(&format!("{ns}.outerDeclined"), &[]) {
+        Err(e) => {
+            let e = format!("{e:?}");
+            assert!(e.contains("other(n: 7)"), "the `Other` is not caught: {e}");
+        }
+        Ok(v) => panic!("the `Other` is not caught, got {v:?}"),
+    }
 }
