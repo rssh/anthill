@@ -460,11 +460,9 @@ fn several_requirements_at_one_parameter_are_an_operations() {
 /// names no type parameter the head introduces is refused, where the guard written so loaded
 /// and answered nothing; so is the keyword
 /// anywhere but a rule's own body (a head, a constraint, an operation's `requires`), where
-/// it parsed as a syntax error before the keyword existed. The earlier
-/// `require[X]`, written as a goal and as `?d = require[X]`, reads as it did until §5 removes
-/// it — the controls, `-1` under every axis. FAILS with the grammar's `require_goal` backed
-/// out: no rule with the keyword parses. Under [N] (no refusal of a `require` that folds into
-/// no guard): `g` and `h` load.
+/// it parsed as a syntax error before the keyword existed. FAILS with the grammar's
+/// `require_goal` backed out: no rule with the keyword parses. Under [N] (no refusal of a
+/// `require` that folds into no guard): `g` and `h` load.
 #[test]
 fn require_with_the_keyword_is_the_guard() {
     let ns = "j9ssg.require";
@@ -473,8 +471,6 @@ fn require_with_the_keyword_is_the_guard() {
          rule rcNamed[A](?a: A, ?b: A, ?c) :- require WeakOrd[T = A], WeakOrd.compare(?a, ?b, ?c)\n  \
          rule rcTwo[A](?a: A, ?b: A, ?c) :- require WeakOrd[T = A], require Eq[T = A],\n      \
          WeakOrd.compare(?a, ?b, ?c)\n  \
-         rule old(?a, ?b, ?c) :- require[WeakOrd[T]], WeakOrd.compare(?a, ?b, ?c)\n  \
-         rule oldOut(?a, ?b, ?c) :- ?d = require[WeakOrd[T]], WeakOrd.compare(?a, ?b, ?c)\n  \
          operation via[A](x: A, y: A) -> Int64 {EFFECTS} requires WeakOrd[T = A] = rc(x, y).head.c\n"
     );
     let got = answers(
@@ -485,14 +481,9 @@ fn require_with_the_keyword_is_the_guard() {
             ("viaAsc", "via[A = Int64, WeakOrd = Ascending](1, 5)"),
             ("named", "rcNamed[A = Int64, WeakOrd = Descending](1, 5).head.c"),
             ("two", "rcTwo[A = Int64, WeakOrd = Descending](1, 5).head.c"),
-            ("viaOld", "old(1, 5).head.c"),
-            ("viaOldOut", "oldOut(1, 5).head.c"),
         ],
     );
-    expect(
-        &got,
-        &[("viaDesc", 4), ("viaAsc", -4), ("named", 4), ("two", 4), ("viaOld", -1), ("viaOldOut", -1)],
-    );
+    expect(&got, &[("viaDesc", 4), ("viaAsc", -4), ("named", 4), ("two", 4)]);
     for (rule, text) in [
         (
             "rule g(?a, ?b, ?c) :- require WeakOrd[T = Int64], WeakOrd.compare(?a, ?b, ?c)",
@@ -614,4 +605,131 @@ fn a_requirement_under_a_name_is_called_and_bound_by_it() {
         let errs = crate::common::load_errors_of(&program(ns, &format!("  {decl}\n")));
         assert_one_refusal(&errs, text, decl);
     }
+}
+
+/// `require[X]`, `?d = require[X]` AND `requires(X)` ARE NO LONGER WRITTEN (§5): each is
+/// refused where it stands, once — a goal, a nested goal (a negand's conjunct, a branch of
+/// `|`), with a space before the bracket, a constraint's goal, an operation's `requires`
+/// list — naming the introducer's guard, the `require` keyword and the named form to write
+/// instead, which the other rows of this file run. MEASURED on d39bd428: each loaded but
+/// the nested `require[X]` (refused, "legal only as a bare rule-body goal") and the
+/// constraint (refused by the typer, "expected a body call to one of `PartialEq`'s
+/// operations"). A first cut refused `requires(X)` at a goal's top only, and `… |
+/// requires(…)` loaded.
+#[test]
+fn the_removed_requirement_spellings_are_refused() {
+    for (decl, written) in [
+        (
+            "rule a(?a, ?b, ?c) :- require[WeakOrd[T]], WeakOrd.compare(?a, ?b, ?c)",
+            "`require[WeakOrd[T]]`",
+        ),
+        (
+            "rule b(?a, ?b, ?c) :- ?d = require[WeakOrd[T]], WeakOrd.compare(?a, ?b, ?c)",
+            "`?d = require[WeakOrd[T]]`",
+        ),
+        ("rule c(?x, ?y) :- requires(PartialEq[T]), PartialEq.eq(?x, ?y)", "`requires(PartialEq[T])`"),
+        ("rule d(?x) :- ?x <=> 1, not(?x <=> 2 & require[WeakOrd[T]])", "`require[WeakOrd[T]]`"),
+        (
+            "rule e(?a, ?b, ?c) :- require [WeakOrd[T]], WeakOrd.compare(?a, ?b, ?c)",
+            "`require [WeakOrd[T]]`",
+        ),
+        ("rule g(?x) :- ?x <=> 1 | requires(PartialEq[T = Int64])", "`requires(PartialEq[T = Int64])`"),
+        ("constraint k: false :- requires(PartialEq[T = Int64])", "`requires(PartialEq[T = Int64])`"),
+        (
+            "operation f(x: Int64) -> Int64 requires requires(PartialEq[T = Int64]) = 1",
+            "`requires(PartialEq[T = Int64])`",
+        ),
+    ] {
+        let errs = crate::common::parse_errs(&program("j9ssg.removed", &format!("  {decl}\n")));
+        assert_one_refusal(&errs, &format!("{written} is no longer written"), decl);
+        assert!(
+            errs[0].contains("`rule r[A](?x: A, …) :- Spec[T = A], …`")
+                && errs[0].contains("`require Spec[T = A]`")
+                && errs[0].contains("`require s: Spec[T = A]` and `s.op(…)`"),
+            "{decl}: the repair names the guard, the keyword and the named form: {errs:?}"
+        );
+    }
+}
+
+/// The kernel's dictionary read written by a name — its address, its qualified name, an
+/// import — is the removed form by another spelling, refused at load wherever it stands: a
+/// rule body, a constraint's, an operation's. MEASURED on d39bd428: each rule loaded, the
+/// typer rewriting the read as it rewrote `requires(X)`. With the loader's refusal backed out,
+/// every row fails: the rules and the constraint load, and the operation is refused by the
+/// typer alone, as an unknown functor. A program's own relation named `find_dictionary` is
+/// not the kernel's and answers, the control.
+#[test]
+fn the_kernel_read_written_by_its_name_is_refused() {
+    let program = |imports: &str, decl: &str| {
+        format!(
+            r#"namespace j9ssg.kread
+  import anthill.prelude.Int64
+{imports}
+  sort Desc
+    sort T = ?
+    operation describe(x: T) -> Int64
+  end
+  sort Leaf
+    entity leaf
+    provides Desc[T = Leaf]
+    operation describe(x: Leaf) -> Int64 = 7
+  end
+{decl}
+end
+"#
+        )
+    };
+    let address = "..anthill.kernel.find_dictionary";
+    for (imports, decl, name) in [
+        (
+            "",
+            "  rule a(?x, ?r) :- ..anthill.kernel.find_dictionary(Desc[T = Leaf]), \
+             Desc.describe(?x, ?r)",
+            address,
+        ),
+        (
+            "",
+            "  rule b(?x, ?r) :- ..anthill.kernel.find_dictionary(Desc[T = Leaf], out: ?d), \
+             Desc.describe(?x, ?r)",
+            address,
+        ),
+        (
+            "",
+            "  rule c(?x, ?r) :- anthill.kernel.find_dictionary(Desc[T = Leaf], out: ?d), \
+             Desc.describe(?x, ?r)",
+            "anthill.kernel.find_dictionary",
+        ),
+        (
+            "  import anthill.kernel.find_dictionary",
+            "  rule d(?x, ?r) :- find_dictionary(Desc[T = Leaf]), Desc.describe(?x, ?r)",
+            "find_dictionary",
+        ),
+        (
+            "",
+            "  constraint k: false :- ..anthill.kernel.find_dictionary(Desc[T = Leaf], out: ?d)",
+            address,
+        ),
+        (
+            "",
+            "  operation o(x: Leaf) -> Int64 = \
+             if ..anthill.kernel.find_dictionary(Desc[T = Leaf]) then 1 else 2",
+            address,
+        ),
+    ] {
+        let errs = crate::common::load_errors_of(&program(imports, decl));
+        assert!(
+            errs.iter().any(|e| e.contains(&format!("`{name}` is the kernel's dictionary read"))
+                && e.contains("`rule r[A](?x: A, …) :- Spec[T = A], …`")),
+            "{decl}: refused, naming the introducer's guard: {errs:?}"
+        );
+    }
+    let mut kb = crate::common::load_kb_with(&program(
+        "",
+        "  rule find_dictionary(?x) :- ?x <=> 7\n  rule own(?x) :- find_dictionary(?x)",
+    ));
+    assert_eq!(
+        crate::common::one_definite_int(&mut kb, "j9ssg.kread.own"),
+        Some(7),
+        "a program's own `find_dictionary` answers"
+    );
 }

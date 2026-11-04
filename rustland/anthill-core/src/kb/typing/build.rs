@@ -2146,7 +2146,6 @@ pub(crate) fn classify_pin_or_apply_within(
                 occ.span.source,
             ),
             ctx.param_arg_types,
-            ctx.held,
             Some(occ.span.span),
             RequirementUse::Call,
         )?;
@@ -2338,7 +2337,6 @@ pub(crate) fn stamp_spec_op_supply(
     subst: &Substitution,
     selected: &[InstanceSelection],
     param_arg_types: &HashMap<Symbol, Value>,
-    held: &[HeldSpecView],
     span: Option<Span>,
 ) -> Result<(), TypeError> {
     use crate::kb::node_occurrence::ApplyDispatch;
@@ -2358,7 +2356,6 @@ pub(crate) fn stamp_spec_op_supply(
         selected,
         OpSlotParkSite::for_call(kb, fn_sym, env.enclosing_op(), span, occ.span.source),
         param_arg_types,
-        held,
         span,
         RequirementUse::Call,
     )
@@ -2387,11 +2384,6 @@ pub(crate) struct OpSupplyCtx<'a> {
     /// grounds here needs nothing further, one that does not can only be forwarded, and
     /// forwarding is what this ticket does not build.
     pub(crate) param_arg_types: &'a HashMap<Symbol, Value>,
-    /// WI-20260921-3G1YT — the bracket route's slot source: the spec instances the
-    /// clause's `require[…]` brackets declare ([`held_spec_views`]). Rides here for the
-    /// same reason every field above does —
-    /// it is call-site information the op half's verdict needs and the dep cannot see.
-    pub(crate) held: &'a [HeldSpecView],
 }
 
 /// WI-606: the carrier's GENUINE self-receiver override of the spec op

@@ -7,7 +7,7 @@
 //!    `A` and `requires WeakOrd[T = A]` cites a rule that calls `compare` on its values.
 //!    Selected `[WeakOrd = Descending]`, the operation's OWN call answers through
 //!    `Descending` — and so, since S2, does the RULE: the citation routes the clause's
-//!    `require[WeakOrd[T]]` read to the caller's slot, eval captures the dictionary in the
+//!    requirement read to the caller's slot, eval captures the dictionary in the
 //!    relation's goal, and the resolver binds it when it opens the clause. Before S2 the
 //!    rule answered `Int64`'s own ordering whichever rival the caller selected — nothing
 //!    carried the dictionary across (`op-to-rule-requirement-channel.md` §5.1, crossing 2),
@@ -18,13 +18,12 @@
 //!    WEAVE: a carrier-bearing call in the clause dispatches through the passed dictionary,
 //!    at its own carrier only.
 //!
-//! 2. A DICTIONARY IS AN ORDINARY RULE ARGUMENT, AND ITS SUBTREE PROJECTS — the gate the
-//!    ticket set on 2026-09-12 ("if a dictionary cannot ride a generative rule call and be
-//!    projected, nothing else matters"). A dictionary DERIVED in one clause rides a
-//!    GENERATIVE call as an ordinary head argument, `Dictionary.sub(?d, 0)` projects the
-//!    ELEMENT's dictionary out of it, and the projection crosses a second head and is read
-//!    and CHECKED (WI-860) like any other. This is §4.1's `List.member(?x, ?d)` shape —
-//!    the tail keeps `?d`, the element takes `sub(?d, 0)` — driven with what exists.
+//! 2. (GONE.) A DICTIONARY AS AN ORDINARY RULE ARGUMENT, ITS SUBTREE PROJECTED — the gate the
+//!    ticket set on 2026-09-12: a dictionary derived in one clause, `?d = require[X]`, rode a
+//!    generative call as a head argument, and `Dictionary.sub(?d, 0)` projected the element's.
+//!    Proposal 060.1 §5 removed the form, and no clause binds a dictionary to a column now;
+//!    the element's dictionary reaching a call is
+//!    `nar1x_carrier_less_spec_op_test::the_selected_impls_own_requirement_is_filled_from_the_dictionary`.
 //!
 //! 3. THE WHOLE CASE — demo2: a GENERATIVE citation of a parameterised sort whose clause
 //!    both ENUMERATES its values and CALLS AN OPERATION on each, the operation's provider
@@ -35,13 +34,8 @@
 //!
 //! BACK-OUT, measured one axis at a time over the whole `wi_tests` binary (each run, not
 //! predicted):
-//!  * [V] the `from_view` fallback in `expect_dictionary` (`eval/builtins.rs`).
-//!    `the_element_dictionary_projects_out_of_a_passed_one` and
-//!    `a_projected_dictionary_is_read_and_checked` fail — `Dictionary.sub` refuses the
-//!    occurrence carrier a head-passed dictionary arrives on ("expected Dictionary, got
-//!    Node"), so `elemOfSum` answers one CONDITIONAL row with the whole tree in its
-//!    residual, and `agree` a CONDITIONAL `3`: `use`'s own derivation still answers, with
-//!    the projection left undecided beside it.
+//!  * [V] the `from_view` fallback in `expect_dictionary` (`eval/builtins.rs`) — section 2's
+//!    rows failed, which went with `require[X]`; no row here reaches that fallback now.
 //!  * S2's four links, each alone: [T] no routes (`settle_citation_routes` not run), [E] no
 //!    capture (`citation_requirements` answering nothing), [R] no bind
 //!    (`bind_citation_reads` binding nothing), [D] a supplied dictionary checked on the
@@ -61,9 +55,13 @@
 //! passing, which is what makes section 1's number about the RULE edge),
 //! `a_caller_without_a_dictionary_answers_as_before` and
 //! `a_carrier_bearing_call_without_a_passed_dictionary_answers_as_before` (no dictionary is
-//! passed, so the clause derives its own — the carrier's), and
-//! `a_dictionary_derived_in_the_clause_reads_as_before` (the value carrier, which
-//! `from_value` always read). Nothing else in `wi_tests` moved under any S2 axis.
+//! passed, so the clause derives its own — the carrier's). Nothing else in `wi_tests` moved
+//! under any S2 axis.
+//!
+//! The axes above were measured while the clauses wrote `require[X]`; since proposal 060.1
+//! §5 each declares its requirement at its head's introducer (`cmp[A](?a: A, ?b: A, ?c) :-
+//! WeakOrd[T = A]`, `cmpBare` under a name), and the answers are the same. They were not
+//! backed out again.
 
 use anthill_core::eval::Value;
 use anthill_core::kb::KnowledgeBase;
@@ -89,9 +87,10 @@ namespace wi5g28a.ord
     operation compare(a: Int64, b: Int64) -> Int64 = sub(b, a)
   end
 
-  -- a RULE that calls an operation of the requirement on its values, in both spellings
-  rule cmp(?a, ?b, ?c) :- ?d = require[WeakOrd[T]], WeakOrd.compare(?a, ?b, ?c)
-  rule cmpBare(?a, ?b, ?c) :- require[WeakOrd[T]], WeakOrd.compare(?a, ?b, ?c)
+  -- a RULE that calls an operation of the requirement on its values, the guard unnamed and
+  -- under a name
+  rule cmp[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], WeakOrd.compare(?a, ?b, ?c)
+  rule cmpBare[A](?a: A, ?b: A, ?c) :- require w: WeakOrd[T = A], w.compare(?a, ?b, ?c)
 
   sort Driver
     -- rigid `A`, with the requirement at `A`
@@ -146,22 +145,23 @@ fn an_operation_passes_its_dictionary_to_an_operation() {
 /// THE CASE — a rigid `A` passed WITH `WeakOrd[A]` into a rule (§7.3 S2). Before S2 both
 /// selections answered `-1`, `Int64`'s own `compare`: the citation `cmp(x, y)` built its
 /// query from the head alone, `viaRule`'s `WeakOrd[A]` dictionary stayed in `viaRule`'s
-/// frame, and `cmp`'s `require[WeakOrd[T]]` re-derived at the value's type, where the
-/// carrier's own provision is the default among three. Now the citation routes the read to
-/// `viaRule`'s slot, eval captures the dictionary, and the resolver binds it in the clause
-/// — so the answers are the ones the operation-to-operation control above gives. Both
-/// spellings of the read, the named `?d = require[…]` and the bare `require[…]`.
+/// frame, and `cmp`'s read re-derived at the value's type, where the carrier's own provision
+/// is the default among three. Now the citation routes the read to `viaRule`'s slot, eval
+/// captures the dictionary, and the resolver binds it in the clause — so the answers are the
+/// ones the operation-to-operation control above gives. Both spellings of the requirement,
+/// the guard and the guard under a name (they were `?d = require[…]` and the bare
+/// `require[…]`, removed by proposal 060.1 §5).
 #[test]
 fn a_rule_citation_passes_the_callers_dictionary() {
     assert_eq!(
         (drive("ruleDesc"), drive("ruleAsc")),
         (4, -4),
-        "the rule answers through the rival the CALLER selected (named `?d = require`)",
+        "the rule answers through the rival the CALLER selected (the guard)",
     );
     assert_eq!(
         (drive("bareDesc"), drive("bareAsc")),
         (4, -4),
-        "and through the bare `require[…]` spelling alike",
+        "and through the guard under a name alike",
     );
 }
 
@@ -227,9 +227,9 @@ namespace wi5g28a.rank
     operation rank(x: Shade) -> Int64 = 5
   end
 
-  rule rankOf(?a, ?r) :- require[Rank[T]], Rank.rank(?a, ?r)
-  -- ONE `require`, read at `?a` (the first call is its witness), and a second call at `?b`
-  rule rankBoth(?a, ?b, ?r1, ?r2) :- require[Rank[T]], Rank.rank(?a, ?r1), Rank.rank(?b, ?r2)
+  rule rankOf[A](?a: A, ?r) :- Rank[T = A], Rank.rank(?a, ?r)
+  -- ONE requirement, at `?a`'s type, and a second call at `?b`
+  rule rankBoth[A](?a: A, ?b, ?r1, ?r2) :- Rank[T = A], Rank.rank(?a, ?r1), Rank.rank(?b, ?r2)
 
   sort Driver
     operation viaRule[A](x: A) -> Int64 effects {Error, Error[EmptyStream]}
@@ -279,7 +279,7 @@ fn a_carrier_bearing_call_without_a_passed_dictionary_answers_as_before() {
 
 /// THE WEAVE IS CARRIER-DIRECTED: a dictionary covers the calls AT ITS OWN CARRIER, and a
 /// call at another argument keeps the dispatch its value gives it. `rankBoth` reads its one
-/// `require` at `?a`; `?b` is `dark()`, a `Shade`, whose own answer is `5`.
+/// requirement at `?a`; `?b` is `dark()`, a `Shade`, whose own answer is `5`.
 ///
 /// Without the direction the weave is carrier-blind, and each dictionary is threaded into
 /// BOTH calls: the passed `ByHeat` answers `30` at `dark()`, and the dictionary the clause
@@ -292,73 +292,9 @@ fn a_call_at_another_carrier_keeps_its_own_dispatch() {
     assert_eq!(drive_rank("ownOther"), 5, "nor does a DERIVED one");
 }
 
-// ── 2. a dictionary as a rule argument, projected ───────────────────────────
-
-/// NAR1X's conditional provider: `Wrap`'s `Zeroable` needs its element's, so the
-/// dictionary for `Zeroable[Wrap]` is `Dictionary(Dictionary(impl: <element>), impl:
-/// Wrap)` and `sub(0)` is the element's. `Sum` and `Prod` differ in every number, so a
-/// projection that answered a constant cannot pass.
-const GATE_PROGRAM: &str = r#"
-namespace wi5g28a.gate
-  import anthill.prelude.Int64
-  import anthill.realization.runtime.Dictionary
-
-  sort Zeroable
-    sort T = ?
-    operation zero() -> Int64
-    operation tag(x: T) -> Int64 = 0
-  end
-
-  sort Sum
-    import anthill.prelude.Int64
-    entity sum
-    provides Zeroable[T = Sum]
-    operation zero() -> Int64 = 3
-    operation tag(x: Sum) -> Int64 = 1
-  end
-
-  sort Prod
-    import anthill.prelude.Int64
-    entity prod
-    provides Zeroable[T = Prod]
-    operation zero() -> Int64 = 5
-    operation tag(x: Prod) -> Int64 = 2
-  end
-
-  sort Wrap
-    import anthill.prelude.Int64
-    sort E = ?
-    entity wrap(inner: E)
-    provides Zeroable[T = Self] :- Zeroable[E] where
-      operation zero() -> Int64 = Int64.add(Zeroable.zero[T = E](), 100)
-      operation tag(x: Self) -> Int64 = 9
-    end
-  end
-
-  -- a dictionary DERIVED in one clause, from a ground anchor
-  rule get(?x, ?d) :- ?d = require[Zeroable[T]], Zeroable.tag(?x, ?t)
-
-  -- GENERATIVE: `?w` is free and `?d` is an ordinary argument; the element's is PROJECTED.
-  -- `?w` is left unbuilt: `?w <=> wrap(inner: ?i)` here is a `Wrap` whose element nothing
-  -- fixes, and its column's domain check (WI-20260925-0RRQP: an inferred column type is the
-  -- column's bound) cannot fill `?i`, so every row below would answer conditionally —
-  -- pinned there as `a_value_whose_element_nothing_fixes_answers_conditionally`.
-  rule gen(?w, ?d, ?ed) :- ?ed <=> Dictionary.sub(?d, 0)
-
-  rule elemOfSum(?s) :- get(wrap(inner: sum()), ?d), gen(?w, ?d, ?ed), ?s <=> Dictionary.impl(?ed)
-  rule elemOfProd(?s) :- get(wrap(inner: prod()), ?d), gen(?w, ?d, ?ed), ?s <=> Dictionary.impl(?ed)
-  rule rootOfSum(?s) :- get(wrap(inner: sum()), ?d), ?s <=> Dictionary.impl(?d)
-
-  -- the projection crosses a SECOND head and is read by `require`, which CHECKS it
-  rule use(?e, ?ed, ?r) :- ?ed = require[Zeroable[T]], Zeroable.tag(?e, ?u), Zeroable.zero(?r)
-  rule agree(?r) :- get(wrap(inner: sum()), ?d), gen(?w, ?d, ?ed), use(sum(), ?ed, ?r)
-  rule disagree(?r) :- get(wrap(inner: prod()), ?d), gen(?w, ?d, ?ed), use(sum(), ?ed, ?r)
-end
-"#;
-
 /// The sort a symbol answer names, by qualified name — read through the view, since an
 /// answer may ride a `SymbolRef` or a nullary term.
-pub(crate) fn sort_named(kb: &KnowledgeBase, v: &Value) -> String {
+fn sort_named(kb: &KnowledgeBase, v: &Value) -> String {
     use anthill_core::kb::term_view::{TermView, ViewHead};
     match v.head(kb) {
         ViewHead::Ident(s)
@@ -369,62 +305,6 @@ pub(crate) fn sort_named(kb: &KnowledgeBase, v: &Value) -> String {
         } => kb.qualified_name_of(s).to_string(),
         _ => panic!("expected an answer naming a sort, got {v:?}"),
     }
-}
-
-/// The ONE definite answer of a unary relation, as the sort it names. Asserts that the
-/// relation answered exactly that and nothing conditional: under the back-out the row is
-/// one CONDITIONAL answer, which a definite-only count would miss as "no answer" rather
-/// than as the undecided goal it is.
-fn only_sort(kb: &mut KnowledgeBase, rel: &str) -> String {
-    let all = crate::common::query_unary(kb, rel);
-    assert!(
-        all.len() == 1 && all[0].1,
-        "{rel}: expected exactly one DEFINITE answer, got {all:?}",
-    );
-    sort_named(kb, &all[0].0)
-}
-
-/// The control — passes either way, BY DESIGN. A dictionary derived in the SAME clause
-/// is built by `fetch_dictionary` on the value carrier, which `Dictionary::from_value`
-/// has always read.
-#[test]
-fn a_dictionary_derived_in_the_clause_reads_as_before() {
-    let mut kb = crate::common::load_kb_with(GATE_PROGRAM);
-    assert_eq!(only_sort(&mut kb, "wi5g28a.gate.rootOfSum"), "wi5g28a.gate.Wrap");
-}
-
-/// THE GATE. The dictionary crosses `gen`'s head as an ordinary argument — `gen` has no
-/// value to derive anything from, `?w` is its output — and `sub(?d, 0)` is the ELEMENT's
-/// dictionary: `Sum` for one tree, `Prod` for the other, so it is read off the tree that
-/// arrived and not off anything `gen` knows.
-#[test]
-fn the_element_dictionary_projects_out_of_a_passed_one() {
-    let mut kb = crate::common::load_kb_with(GATE_PROGRAM);
-    assert_eq!(only_sort(&mut kb, "wi5g28a.gate.elemOfSum"), "wi5g28a.gate.Sum");
-    assert_eq!(only_sort(&mut kb, "wi5g28a.gate.elemOfProd"), "wi5g28a.gate.Prod");
-}
-
-/// The projection is a dictionary like any other: it crosses `use`'s head, `require`
-/// reads it, and WI-860's check holds it to `use`'s own derivation at `sum()`. The
-/// `Sum` projection agrees and the carrier-less `zero()` answers `Sum`'s `3`; the `Prod`
-/// projection DISAGREES and the clause answers nothing at all — which is what says the
-/// projected dictionary was read, since the local derivation alone would answer `3`
-/// for both.
-#[test]
-fn a_projected_dictionary_is_read_and_checked() {
-    let mut kb = crate::common::load_kb_with(GATE_PROGRAM);
-    let agree = crate::common::query_unary(&mut kb, "wi5g28a.gate.agree");
-    assert!(
-        agree.len() == 1 && agree[0].1 && crate::common::scalar_int(&kb, &agree[0].0) == Some(3),
-        "the agreeing projection answers `Sum`'s zero, 3, definitely; got {agree:?}",
-    );
-    let disagree = crate::common::query_unary(&mut kb, "wi5g28a.gate.disagree");
-    assert!(
-        disagree.is_empty(),
-        "a projected `Prod` dictionary checked against `use`'s own `Sum` derivation must \
-         answer NOTHING (WI-860) — not `3`, which would mean it was never read, and not a \
-         conditional row, which is the back-out's undecided `Dictionary.sub`; got {disagree:?}",
-    );
 }
 
 // ── 3. demo2: enumerate, and call the caller's operation on each value ──────
@@ -466,10 +346,12 @@ namespace wi5g28a.demo2
         case blue() -> 2
   end
 
-  -- ENUMERATES `Wrap[T = T]` (its typed head) and CALLS `score` on each element
+  -- ENUMERATES `Wrap[T = T]` (its typed head) and CALLS `score` on each element, whose
+  -- requirement is the sort's (060.1 §8.2)
   sort Wrap[T]
+    requires Score[T = T]
     entity wrap(v: T)
-    rule top(?x: Wrap[T = T]) :- ?d = require[Score[T]], ?x <=> wrap(?v), Score.score(?v, 3)
+    rule top(?x: Wrap[T = T]) :- ?x <=> wrap(?v), Score.score(?v, 3)
   end
 
   sort Driver
@@ -536,7 +418,10 @@ fn demo2_the_projected_spelling_loads_and_flounders() {
 /// BODY variable, so only the bracket `Score[T]`, written with `Wrap`'s own `T`, says which
 /// instance it is, and S2 routes a read from its witness's column; reading the bracket
 /// under the citation's σ is observable only once S3(d) lets a clause typed at the sort's
-/// parameter answer at all. (A `require` whose only provider is a WITNESS sort answered
+/// parameter answer at all. (The clause wrote that bracket as `?d = require[Score[T]]`; since
+/// proposal 060.1 §5 the requirement is the sort's own, `requires Score[T = T]`, which a rule
+/// of the sort uses as its operations do (§8.2) — measured, the count flounders the same
+/// with it and with no requirement written.) (A `require` whose only provider is a WITNESS sort answered
 /// nothing, WI-20260924-DG57J; that is closed, `wi_dg57j_witness_only_requirement_test`.)
 #[test]
 fn demo2_the_count_flounders() {

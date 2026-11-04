@@ -19,9 +19,24 @@
 //!    argument types and nothing else**.
 //!
 //! A carrier-less call has no operand to read, so all three answer nothing, and the
-//! clause's own `require[X]` dictionary is the ONLY thing in the program that says
-//! which instance the call means. That is why the weave is not an optimisation here:
-//! it is the whole dispatch.
+//! clause's own requirement is the ONLY thing in the program that says which instance
+//! the call means. That is why the dictionary is not an optimisation here: it is the
+//! whole dispatch.
+//!
+//! ## Since proposal 060.1 §5
+//!
+//! The clause's requirement was `require[Zeroable[T]]`, grounded by the witness call
+//! `Zeroable.tag(?x, ?t)`; §5 removed it. A clause declares it at its head's introducer, and
+//! a call that writes no instance — a carrier-less one — names the requirement it reads,
+//! `require z: Zeroable[T = A]` and `z.zero(?r)`, as an operation's body names its own
+//! (`t.code()`): an unnamed guard supplies the evidence for an instance a call names and
+//! does not say which instance that is, and the bare `Zeroable.zero(?r)` beside one is
+//! refused, as in an operation body. The named call is lowered at load to the call tied to
+//! that dictionary (an `Expr::ApplyWithin`), so it does not go through the WEAVE below; the
+//! WEAVE column was measured on `require[X]`, and the DICT and VIEW columns are the named
+//! call's too. The head crossing ([`a_dictionary_crossing_a_rule_head_is_read_on_its_own_carrier`])
+//! passed a dictionary as a column value, which no clause can bind now; it crosses a goal
+//! instead, the caller's named requirement handed to the callee's.
 //!
 //! ## THE TWO HALVES, AND WHAT EACH BACK-OUT FAILS — MEASURED, not reasoned
 //!
@@ -97,8 +112,8 @@ use anthill_core::eval::Value;
 /// control drawn from the same program:
 ///
 ///  * `zero() -> Int64` — body-less and **nullary**: carrier-less, the subject;
-///  * `tag(x: T) -> Int64 = 0` — defaulted and carrier-BEARING: the witness that
-///    grounds the clause's `require`, and the control call that needs no dictionary.
+///  * `tag(x: T) -> Int64 = 0` — defaulted and carrier-BEARING: the control call that
+///    needs no dictionary.
 ///
 /// Two carriers answering DIFFERENT numbers on both operations, so no assertion here
 /// can be satisfied by the spec's default or by the other carrier's supply.
@@ -156,10 +171,9 @@ fn answer(src: &str) -> i64 {
 /// THE HEADLINE. One polymorphic clause, two carriers, two numbers — and the number
 /// is the carrier's own `zero()`, which nothing at the call site names.
 ///
-/// The clause's `require[Zeroable[T]]` is grounded by the witness call
-/// `Zeroable.tag(?x, ?t)` (WI-300's transitive tier), so the dictionary is `Sum`'s or
-/// `Prod`'s according to what `?x` carries; `Zeroable.zero(?r)` names no carrier at
-/// all and dispatches through that dictionary.
+/// The clause's `require z: Zeroable[T = A]` is at the type of `?x`, so the dictionary is
+/// `Sum`'s or `Prod`'s according to what `?x` carries; `z.zero(?r)` names no carrier at all
+/// and dispatches through that dictionary.
 ///
 /// BACK-OUT: with `collect_covered_calls`' carrier-less admission removed, both rows
 /// answer `[]` — the call is not woven, the goal reaches the eval bridge on the SPEC
@@ -168,8 +182,7 @@ fn answer(src: &str) -> i64 {
 fn the_carrier_less_call_answers_the_carriers_own_number() {
     for (ctor, expected) in [("sum()", 3), ("prod()", 5)] {
         let src = two_carriers(&format!(
-            "  rule via(?x, ?r) :- require[Zeroable[T]], Zeroable.tag(?x, ?t), \
-                Zeroable.zero(?r)\n  \
+            "  rule via[A](?x: A, ?r) :- require z: Zeroable[T = A], z.zero(?r)\n  \
              rule answer(?r) :- via({ctor}, ?r)\n"
         ));
         assert_eq!(
@@ -186,10 +199,11 @@ fn the_carrier_less_call_answers_the_carriers_own_number() {
 /// classification (WI-1044), which is what carries the equivalent carrier-BEARING
 /// row below.
 ///
-/// Delete the `require` and the identical clause is REFUSED AT LOAD (WI-20261013-RYDNV):
+/// Delete the requirement and the identical clause is REFUSED AT LOAD (WI-20261013-RYDNV):
 /// `zero() -> Int64` writes nothing of `Zeroable`'s carrier `T`, so nothing at the call fixes
-/// it and no provision answers it at every `T` — the `require` is the repair the refusal
-/// names. The run-time half is the call asked as a query, which no load types: value-direction
+/// it and no provision answers it at every `T` — the instance at the call, or the call through
+/// a named requirement, is the repair the refusal names. So is the bare call beside an
+/// unnamed guard, as in an operation body. The run-time half is the call asked as a query, which no load types: value-direction
 /// reads the operands' carried types and a nullary call has none, so `Sum` and `Prod` TIE and
 /// no implementation is reachable — UNREDUCED (proposal 068 §2), one undecided row naming that
 /// cause. The clause loaded and answered that undecided row until RYDNV; it answered nothing,
@@ -203,8 +217,16 @@ fn the_same_clause_without_the_require_has_no_definite_answer() {
             "  rule via(?x, ?r) :- Zeroable.tag(?x, ?t), Zeroable.zero(?r)\n  \
                rule answer(?r) :- via(sum(), ?r)\n",
         )),
-        &["test.nar1x.Zeroable.zero", "require[Zeroable[T = …]]"],
+        &["test.nar1x.Zeroable.zero", "`require s: Zeroable[…]`", "`s.zero(…)`"],
         "without the clause dictionary nothing at the call fixes the carrier",
+    );
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&two_carriers(
+            "  rule via[A](?x: A, ?r) :- Zeroable[T = A], Zeroable.zero(?r)\n  \
+               rule answer(?r) :- via(sum(), ?r)\n",
+        )),
+        &["test.nar1x.Zeroable.zero", "`require s: Zeroable[…]`", "`s.zero(…)`"],
+        "an unnamed guard does not say which instance the call means",
     );
     let mut kb = crate::common::load_kb_with(&two_carriers(""));
     let goal = crate::common::query_pattern_term(&mut kb, "test.nar1x.Zeroable.zero(?r)");
@@ -235,8 +257,7 @@ fn the_same_clause_without_the_require_has_no_definite_answer() {
 #[test]
 fn the_carrier_less_call_at_operand_position_answers_the_same() {
     let src = two_carriers(
-        "  rule via(?x, ?r) :- require[Zeroable[T]], Zeroable.tag(?x, ?t), \
-            ?r <=> Zeroable.zero()\n  \
+        "  rule via[A](?x: A, ?r) :- require z: Zeroable[T = A], ?r <=> z.zero()\n  \
            rule answer(?r) :- via(sum(), ?r)\n",
     );
     assert_eq!(answer(&src), 3, "the operand position must dispatch too");
@@ -255,7 +276,7 @@ fn the_carrier_less_call_at_operand_position_answers_the_same() {
 fn a_carrier_bearing_call_answers_the_same_number_either_way() {
     for (ctor, expected) in [("sum()", 1), ("prod()", 2)] {
         let with = two_carriers(&format!(
-            "  rule via(?x, ?r) :- require[Zeroable[T]], Zeroable.tag(?x, ?r)\n  \
+            "  rule via[A](?x: A, ?r) :- Zeroable[T = A], Zeroable.tag(?x, ?r)\n  \
              rule answer(?r) :- via({ctor}, ?r)\n"
         ));
         let without = two_carriers(&format!(
@@ -275,7 +296,8 @@ fn a_carrier_bearing_call_answers_the_same_number_either_way() {
 /// PASSES EITHER WAY BY DESIGN — WI-1040's MEASURED REGRESSION, kept as a guard.
 ///
 /// That ticket recorded weaving a body-less spec op taking `require[PartialEq[T]],
-/// eq(?x, ?y)` from ONE solution to ZERO, because `eq` is ALSO builtin-tagged and an
+/// eq(?x, ?y)` (a guard at the introducer since proposal 060.1 §5, `PartialEq[T = A]`) from
+/// ONE solution to ZERO, because `eq` is ALSO builtin-tagged and an
 /// `Expr::ApplyWithin` at goal position is `ViewHead::Opaque` to builtin dispatch.
 /// The admission added here cannot reach it: `body_less_relation_arity` bails on
 /// `self.builtins.get(&f).is_some()`, so a builtin-backed callee is refused by the
@@ -286,7 +308,7 @@ fn a_builtin_backed_spec_op_is_still_not_woven() {
   import anthill.prelude.Int64
   import anthill.prelude.PartialEq
   import anthill.prelude.PartialEq.{eq}
-  rule via(?x, ?y, ?r) :- require[PartialEq[T]], eq(?x, ?y), ?r <=> 1
+  rule via[A](?x: A, ?y: A, ?r) :- PartialEq[T = A], eq(?x, ?y), ?r <=> 1
   rule answer(?r) :- via(1, 1, ?r)
 end
 "#;
@@ -345,7 +367,7 @@ fn the_selected_impls_own_requirement_is_filled_from_the_dictionary() {
       operation tag(x: Self) -> Int64 = 9
     end
   end
-  rule via(?x, ?r) :- require[Zeroable[T]], Zeroable.tag(?x, ?t), Zeroable.zero(?r)
+  rule via[A](?x: A, ?r) :- require z: Zeroable[T = A], z.zero(?r)
   rule answer(?r) :- via(wrap(inner: sum()), ?r)
 end
 "#;
@@ -397,7 +419,7 @@ fn the_filled_requirement_follows_the_element_and_is_not_a_constant() {
       operation tag(x: Self) -> Int64 = 9
     end
   end
-  rule via(?x, ?r) :- require[Zeroable[T]], Zeroable.tag(?x, ?t), Zeroable.zero(?r)
+  rule via[A](?x: A, ?r) :- require z: Zeroable[T = A], z.zero(?r)
   rule answer(?r) :- via(wrap(inner: {elem}), ?r)
 end
 "#
@@ -419,9 +441,10 @@ end
 ///
 /// `Holder.same[HT](a, b) requires PartialEq[T = HT]` defers its `eq` to the frame's
 /// dictionary; the carrier's `ceq` is defined by RULES, so the eq bridge hands the
-/// goal to the resolver (`prove_rule_predicate`, WI-1092's route). That clause holds
-/// `require[Zeroable[T]]` and asks the carrier-less `Zeroable.zero(?z)` for a number,
-/// which it then matches against the operand's own field. So `same(sum(v: 3), _)`
+/// goal to the resolver (`prove_rule_predicate`, WI-1092's route). That clause asks the
+/// carrier-less `zero()` for a number at its own sort, the instance written at the call
+/// (`Zeroable[T = Sum].zero(?z)`; it was `require[Zeroable[T]]` before the bare call,
+/// removed by proposal 060.1 §5), and matches it against the operand's own field. So `same(sum(v: 3), _)`
 /// holds and `same(sum(v: 5), _)` does not, while `Prod` is the other way round —
 /// the two carriers' `zero()`s, `3` and `5`, read off the outcome.
 ///
@@ -429,7 +452,8 @@ end
 /// `ceq` is what decides it. (Comparing a value with itself is how a fixture like
 /// this comes to measure nothing — WI-1092's own note.)
 ///
-/// BACK-OUT: with the carrier-less admission removed, ALL FOUR rows answer `0` —
+/// BACK-OUT, measured on `require[X]`: with the carrier-less admission removed, ALL FOUR rows
+/// answered `0` —
 /// including the two whose truth is `1`. That is a WRONG ANSWER and not a missing
 /// one: `ceq` IS defined, its clause simply cannot run the call, so the proof is
 /// `Refuted` and every caller renders that as `false`.
@@ -451,8 +475,7 @@ fn a_polymorphic_operation_entering_a_rule_reaches_the_carrier_less_op() {
     operation zero() -> Int64 = 3
     operation tag(x: Sum) -> Int64 = 1
     operation ceq(a: Sum, b: Sum) -> Bool
-    rule ceq(?a, ?b) :- require[Zeroable[T]], Zeroable.tag(?a, ?t),
-                        Zeroable.zero(?z), ?a <=> sum(v: ?z)
+    rule ceq(?a, ?b) :- Zeroable[T = Sum].zero(?z), ?a <=> sum(v: ?z)
     provides PartialEq[T = Sum, eq = ceq]
     provides Eq[T = Sum]
   end
@@ -464,8 +487,7 @@ fn a_polymorphic_operation_entering_a_rule_reaches_the_carrier_less_op() {
     operation zero() -> Int64 = 5
     operation tag(x: Prod) -> Int64 = 2
     operation ceq(a: Prod, b: Prod) -> Bool
-    rule ceq(?a, ?b) :- require[Zeroable[T]], Zeroable.tag(?a, ?t),
-                        Zeroable.zero(?z), ?a <=> prod(v: ?z)
+    rule ceq(?a, ?b) :- Zeroable[T = Prod].zero(?z), ?a <=> prod(v: ?z)
     provides PartialEq[T = Prod, eq = ceq]
     provides Eq[T = Prod]
   end
@@ -506,8 +528,12 @@ end
     }
 }
 
-/// THE THIRD AXIS — the dictionary crosses a rule HEAD, which is what decides WHICH
-/// CARRIER it arrives on.
+/// THE THIRD AXIS — the dictionary crosses into another clause, which is what decides WHICH
+/// CARRIER it arrives on. `mid`'s named requirement is handed to `use`'s at the goal `use(?x,
+/// ?r)`, the caller's dictionary at the callee's instance (a citation passes the caller's
+/// requirement, 060.1 §1). It was `get(?x, ?d)` binding `?d = require[…]` and `use(?x, ?d, ?r)`
+/// receiving it through its head, which proposal 060.1 §5 removed with every column a
+/// dictionary rides; the VIEW back-out below was measured on that crossing.
 ///
 /// One dictionary has three carriers (`requirement-channel.md` §9): a `TermId`, a
 /// `Value::Entity`, and a `NodeOccurrence` (`Expr::Dictionary`). Every row above
@@ -559,9 +585,9 @@ fn a_dictionary_crossing_a_rule_head_is_read_on_its_own_carrier() {
       operation tag(x: Self) -> Int64 = 9
     end
   end
-  rule get(?x, ?d) :- ?d = require[Zeroable[T]], Zeroable.tag(?x, ?t)
-  rule use(?x, ?d, ?r) :- ?d = require[Zeroable[T]], Zeroable.tag(?x, ?u), Zeroable.zero(?r)
-  rule answer(?r) :- get(wrap(inner: {elem}), ?d), use(wrap(inner: {elem}), ?d, ?r)
+  rule use[A](?x: A, ?r) :- require z: Zeroable[T = A], z.zero(?r)
+  rule mid[A](?x: A, ?r) :- require m: Zeroable[T = A], use(?x, ?r)
+  rule answer(?r) :- mid(wrap(inner: {elem}), ?r)
 end
 "#;
     // Both elements, so the row cannot pass on a constant — the same control the

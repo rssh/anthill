@@ -400,15 +400,17 @@ end
 }
 
 /// WI-20260922-0DK3H — **INVERTED, and it is one half of this ticket's sharpest pair.**
-/// A bare `size(?ls, ?n)` names no carrier, declares no `require[…]`, and nothing in the
+/// A bare `size(?ls, ?n)` names no carrier, writes no instance, and nothing in the
 /// clause types `?ls`: `FiniteCollection.size` owes `Iterable[C, Element, E]` with every
 /// element open. The dictionary could only ever come from the runtime value of `?ls`,
 /// which is the dispatch this ticket removes, so the clause is refused where it is
 /// written.
 ///
 /// THE OTHER HALF IS [`the_woven_spelling_is_the_repair`], and the two clauses differ by
-/// EXACTLY the `require[FiniteCollection[C = List[T = String]]]`. That is what makes this
-/// a measurement of the declared channel rather than of the goal shape.
+/// EXACTLY the instance `FiniteCollection[C = List[T = String]]` written on the call's
+/// receiver (it was the clause's `require[…]` of it until proposal 060.1 §5 removed that
+/// form). That is what makes this a measurement of the written instance rather than of the
+/// goal shape.
 ///
 /// WHAT IT USED TO ASSERT — that the goal SUSPENDS to a residual rather than enumerating
 /// — is not retracted as a statement about the relational view (WI-519/WI-580 §5: a sound
@@ -433,12 +435,15 @@ end
     );
 }
 
-/// WI-20260922-0DK3H — **THE REPAIR, DRIVEN, and the control for the row above.** The
+/// WI-20260922-0DK3H — **THE REPAIRS, DRIVEN, and the control for the row above.** The
 /// same `size(?ls, ?n)` over the same `List`, with the one thing the refused clause
-/// lacks: the clause DECLARES its dictionary.
+/// lacks, each of the two ways its refusal names: the instance written on the call's
+/// receiver, `FiniteCollection[C = List[T = String]].size(?ls, ?n)`, and the element pinned
+/// by the argument's type, `?ls: List[T = String]`. (The clause declared its dictionary with
+/// `require[…]`, which proposal 060.1 §5 removed.)
 ///
 /// IT ANSWERS BY VALUE, not merely loads — two `Box`es whose lengths DISAGREE (0 and 2),
-/// so a `require` that resolved nothing and bound nothing fails here as loudly as one
+/// so a spelling that resolved nothing and bound nothing fails here as loudly as one
 /// that answered a constant.
 #[test]
 fn the_woven_spelling_is_the_repair() {
@@ -454,25 +459,29 @@ namespace nx4fd_rep
   fact Box(items: ["a", "b"])
   fact Box(items: [])
 
-  rule woven(?ls, ?n) :- require[FiniteCollection[C = List[T = String]]], size(?ls, ?n)
+  rule woven(?ls, ?n) :- FiniteCollection[C = List[T = String]].size(?ls, ?n)
+  rule typed(?ls: List[T = String], ?n) :- size(?ls, ?n)
   rule answer(?n) :- Box(items: ?ls), woven(?ls, ?n)
+  rule answerTyped(?n) :- Box(items: ?ls), typed(?ls, ?n)
 end
 "#;
     let mut kb = load_kb_with(src);
-    let mut got: Vec<i64> = definite_unary(&mut kb, "nx4fd_rep.answer")
-        .iter()
-        .map(|v| match v {
-            anthill_core::eval::Value::Int(i) => *i,
-            other => panic!("expected an Int column, got {other:?}"),
-        })
-        .collect();
-    got.sort_unstable();
-    assert_eq!(
-        got,
-        vec![0, 2],
-        "the declared bracket must supply the dictionary and each `Box`'s length must \
-         come back DEFINITE"
-    );
+    for relation in ["answer", "answerTyped"] {
+        let mut got: Vec<i64> = definite_unary(&mut kb, &format!("nx4fd_rep.{relation}"))
+            .iter()
+            .map(|v| match v {
+                anthill_core::eval::Value::Int(i) => *i,
+                other => panic!("expected an Int column, got {other:?}"),
+            })
+            .collect();
+        got.sort_unstable();
+        assert_eq!(
+            got,
+            vec![0, 2],
+            "{relation}: the written instance must supply the dictionary and each `Box`'s \
+             length must come back DEFINITE"
+        );
+    }
 }
 
 /// FINDING FROM /code-review, DRIVEN — the completion arm's "exact rather than
@@ -662,6 +671,11 @@ end
 ///
 /// It still fails when NX4FD's effect clause is backed out — both spellings answer
 /// `[]`, so `assert_eq!` holds but the plain-spelling assertion above it does not.
+///
+/// PROPOSAL 060.1 §5 removed the clause's `require[…]`, and the woven spelling is the
+/// instance written on the call's receiver, `FiniteCollection[C = List[T = String]].size(…)`,
+/// which the weave does not reach (the call is pinned where it is typed). The effect clause's
+/// back-out was not measured on it again.
 #[test]
 fn the_woven_spelling_receives_the_win() {
     let src = r#"
@@ -675,7 +689,7 @@ namespace nx4fd_weave
 
   fact Box(items: ["a", "b"])
 
-  rule woven(?ls, ?n) :- require[FiniteCollection[C = List[T = String]]], size(?ls, ?n)
+  rule woven(?ls, ?n) :- FiniteCollection[C = List[T = String]].size(?ls, ?n)
 
   rule answer_woven(?n) :- Box(items: ?ls), woven(?ls, ?n)
 end

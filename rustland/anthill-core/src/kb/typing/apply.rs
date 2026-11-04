@@ -499,17 +499,6 @@ pub(super) fn check_apply_iter(
                 },
             )
         };
-        // A clause's `require[…]` of the spec at the receiver's carrier names the instance the
-        // call is at: its bindings are the view every reading of the carrier's provision takes
-        // below. Read from the provision, `require[Conv[A = Feet, B = String]], Conv.tag("km",
-        // ?r)` took `Meters`' `A` — the first provision at `String` — and ran its member.
-        let carrier_param_info = carrier_param_info.map(|mut info| {
-            let (spec_sort, carrier_sym, carrier_pvid) = (info.0, info.1, info.4);
-            if let Some(declared) = clause_required_view_at_carrier(kb, env, spec_sort, carrier_pvid, carrier_sym) {
-                info.3 = declared;
-            }
-            info
-        });
         // Two providers at the receiver's carrier that fix a parameter the call leaves open
         // apart ([`providers_apart_at_carrier`]): the call names neither, and is refused here,
         // before the carrier's provision is read for that parameter below — which reads the
@@ -551,7 +540,6 @@ pub(super) fn check_apply_iter(
             }
             let covered = || {
                 pinned_witness_for(kb, &selections, spec_sort).is_some()
-                    || clause_requires_spec(kb, env, spec_sort)
                     || env.enclosing_requires().iter().any(|r| {
                         same_sort_canonical(kb, r.required_sort, spec_sort)
                             && view_binds_param_to_sort(
@@ -581,12 +569,14 @@ pub(super) fn check_apply_iter(
                             format!("{name} = …")
                         });
                     }
-                    let in_rule = env.in_rule_own_term();
-                    let suggestion = if in_rule {
+                    // A rule's own term takes no call-site bracket, and the instance is written
+                    // on the call's receiver instead, `Conv[A = Meters, B = …].tag(…)`.
+                    let suggestion = if env.in_rule_own_term() {
                         format!(
-                            "require[{}[{}]]",
+                            "{}[{}].{}(…)",
                             short_name_of(kb.qualified_name_of(spec_sort)),
-                            bindings.join(", ")
+                            bindings.join(", "),
+                            kb.local_name_of(fn_sym)
                         )
                     } else {
                         let open_only: Vec<String> = open
@@ -605,7 +595,6 @@ pub(super) fn check_apply_iter(
                             .collect(),
                         providers: apart,
                         suggestion,
-                        in_rule_own_term: in_rule,
                     });
                 }
             }
@@ -2767,17 +2756,6 @@ pub(super) fn check_apply_iter(
         // by exactly the check a written one is.
         let selections = selections_from_slot_bindings(kb, &subst, &op, fn_sym, selections, span)?;
 
-        // WI-20260921-3G1YT — the slot source of the bracket route, for every
-        // classification block below: the spec instances this clause's `require[…]`
-        // brackets declare ([`held_spec_views`]).
-        //
-        // HERE, and not at the top of this function, because this statement is the
-        // lowest point that dominates all of them — everything above returns before any
-        // dictionary is built, so a call that builds none pays nothing. Both halves read
-        // it: the SORT half through [`build_concrete_dispatch_dict`] and the OP half
-        // through [`OpSupplyCtx::held`].
-        let held_views = held_spec_views(kb, env);
-
         // WI-841 (058 §4.4 check 1, binding-precise half): judge every selection
         // against the GOAL it will be applied to, now that argument unification has
         // filled `subst`.
@@ -2860,9 +2838,8 @@ pub(super) fn check_apply_iter(
         // call this cannot pin.
         //
         // WI-1042 — "defaulted spec op" is [`defaulted_spec_op_parent`], the gate this
-        // block OWNS and three other sites ask ([`dot_member_dispatch_decision`]'s
-        // defaulted leg, [`call_dispatch_shape`]'s rule-body walk trigger,
-        // [`rewrite_find_dictionary_goal`]'s direct witness scan). It stood here as
+        // block OWNS and two other sites ask ([`dot_member_dispatch_decision`]'s
+        // defaulted leg, [`call_dispatch_shape`]'s rule-body walk trigger). It stood here as
         // `lookup_spec_op_dispatch(..).is_none() && spec_op_parent_sort(..)`, which asks
         // one question twice: `lookup_spec_op_dispatch` IS `spec_op_parent_sort` plus the
         // body-less test (and, since WI-20261011-RM247, the data-sort one).
@@ -2902,7 +2879,6 @@ pub(super) fn check_apply_iter(
                     &subst,
                     &selections,
                     &projection_receivers,
-                    &held_views,
                     span,
                 )?;
                 return Ok(TypeResult {
@@ -3197,7 +3173,6 @@ pub(super) fn check_apply_iter(
                             selected: &selections,
                             enclosing_op: env.enclosing_op(),
                             param_arg_types: &projection_receivers,
-                            held: &held_views,
                         }),
                     )?;
                     return Ok(TypeResult {
@@ -3377,7 +3352,6 @@ pub(super) fn check_apply_iter(
                                 selected: &selections,
                                 enclosing_op: env.enclosing_op(),
                                 param_arg_types: &projection_receivers,
-                                held: &held_views,
                             }),
                         )?;
                         return Ok(TypeResult {
@@ -3560,7 +3534,6 @@ pub(super) fn check_apply_iter(
                                     selected: &selections,
                                     enclosing_op: env.enclosing_op(),
                                     param_arg_types: &projection_receivers,
-                                    held: &held_views,
                                 }),
                             )?;
                             return Ok(TypeResult {
@@ -3664,7 +3637,6 @@ pub(super) fn check_apply_iter(
                         &subst,
                         &selections,
                         &projection_receivers,
-                        &held_views,
                         span,
                     )?;
                     return Ok(TypeResult {
@@ -3822,7 +3794,6 @@ pub(super) fn check_apply_iter(
                                 selected: &selections,
                                 enclosing_op: env.enclosing_op(),
                                 param_arg_types: &projection_receivers,
-                                held: &held_views,
                             }),
                         )?;
                     }
@@ -3946,7 +3917,6 @@ pub(super) fn check_apply_iter(
                     &subst,
                     &selections,
                     &projection_receivers,
-                    &held_views,
                     span,
                 )?;
                 return Ok(TypeResult {
@@ -4015,7 +3985,6 @@ pub(super) fn check_apply_iter(
                     &subst,
                     &selections,
                     &projection_receivers,
-                    &held_views,
                     span,
                 )?;
                 return Ok(TypeResult {
@@ -4061,7 +4030,6 @@ pub(super) fn check_apply_iter(
                         &subst,
                         &selections,
                         &projection_receivers,
-                        &held_views,
                         span,
                     )?;
                     return Ok(TypeResult {
@@ -4137,7 +4105,6 @@ pub(super) fn check_apply_iter(
                     &subst,
                     &selections,
                     &projection_receivers,
-                    &held_views,
                     span,
                 )?;
                 return Ok(TypeResult {
@@ -4417,7 +4384,6 @@ pub(super) fn check_apply_iter(
                                 selected: &selections,
                                 enclosing_op: env.enclosing_op(),
                                 param_arg_types: &projection_receivers,
-                                held: &held_views,
                             }),
                         )?;
                         return Ok(TypeResult {
@@ -4751,13 +4717,10 @@ pub(super) fn check_apply_iter(
                         }
                         // A rule body — its own term and what stands under its compound
                         // expressions alike — has no `requires` to add and no later pass that
-                        // reports the classification below: the unfixed carrier is refused here,
-                        // unless the clause's own `require[…]` names the instance.
-                        if let Some(carrier) = carrier_param.filter(|_| {
-                            carrier_unfixed
-                                && env.in_rule_body()
-                                && !clause_requires_spec(kb, env, spec_sort)
-                        }) {
+                        // reports the classification below: the unfixed carrier is refused here.
+                        if let Some(carrier) =
+                            carrier_param.filter(|_| carrier_unfixed && env.in_rule_body())
+                        {
                             return Err(TypeError::MissingRequiresForSpecOp {
                                 span,
                                 spec_op_sym: fn_sym,
@@ -4959,7 +4922,6 @@ pub(super) fn check_apply_iter(
                                 selected: &selections,
                                 enclosing_op: env.enclosing_op(),
                                 param_arg_types: &projection_receivers,
-                                held: &held_views,
                             }),
                         )?;
                     }
@@ -5181,7 +5143,6 @@ pub(super) fn check_apply_iter(
                     &subst,
                     &selections,
                     &projection_receivers,
-                    &held_views,
                     span,
                 )?;
             } else if occ.classification_is_none()
@@ -5197,7 +5158,6 @@ pub(super) fn check_apply_iter(
                     &selections,
                     OpSlotParkSite::for_call(kb, fn_sym, env.enclosing_op(), span, occ.span.source),
                     &projection_receivers,
-                    &held_views,
                     span,
                     RequirementUse::Call,
                 )?;
@@ -5365,7 +5325,6 @@ pub(super) fn check_apply_iter(
                         // term leaves those to its clause, which supplies them as slots of the
                         // woven call, as its operation's own `requires` is left.
                         rule_body_callee,
-                        &held_views,
                         &subst,
                         parent_sym,
                         callee_provision,
@@ -5511,7 +5470,6 @@ pub(super) fn check_apply_iter(
                             occ.span.source,
                         ),
                         &projection_receivers,
-                        &held_views,
                         span,
                         RequirementUse::Call,
                     )?;
@@ -6225,14 +6183,13 @@ fn the_one_requirement_of(
 }
 
 /// Is a requirement of `spec` in scope at a call — a `requires` of the enclosing declaration
-/// at `spec` or at a spec that provides it, the clause's `require[…]`, or the `requires` of
-/// the sort a rule is written in? It answers what a call's bracket leaves open.
+/// at `spec` or at a spec that provides it, or the `requires` of the sort a rule is written
+/// in? It answers what a call's bracket leaves open.
 fn requirement_of_spec_in_scope(kb: &KnowledgeBase, env: &TypingEnv, spec: Symbol) -> bool {
     env.enclosing_requires()
         .iter()
         .chain(env.sub_goal_requires())
         .any(|entry| sort_provides(kb, entry.required_sort, spec))
-        || clause_requires_spec(kb, env, spec)
         || env.rule_domain().is_some_and(|d| {
             transitive_required_sorts(kb, d)
                 .iter()

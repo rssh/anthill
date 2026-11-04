@@ -1,59 +1,31 @@
-//! WI-20260917-HRFR5 — THE WRITTEN BRACKET CHOOSES A WITNESS, so two `require`s on one
-//! spec are admitted however they were grounded.
+//! WI-20260917-HRFR5 — THE WRITTEN BRACKET CHOSE A WITNESS, so two `require`s on one spec
+//! were admitted however they were grounded: the direct scan let a `require[Desc[T = Thing]]`
+//! choose among candidate calls by their carrier argument's STATIC sort, a ground
+//! constructor or a typed head parameter, and refused the pair where it could not — untyped
+//! carriers, or two calls at one carrier.
 //!
-//! Before this, they were admitted only where every one was grounded by a TYPED HEAD
-//! ANCHOR, because the anchor path was the only place the bracket was READ: reading it is
-//! what chose the head binding. A witness was picked by SCAN ORDER, so two `require`s both
-//! landed on the first call and nothing said which dictionary was which. The direct scan
-//! now lets the bracket choose among candidate calls by their carrier argument's STATIC
-//! sort, and `GroundedRequirement::anchored` is spelled `bracket_attributed` because
-//! "an anchor grounded it" was only ever a proxy for "the bracket chose it".
+//! ## Since proposal 060.1 §5
 //!
-//! ## What is readable at LOAD is the whole boundary
-//!
-//! A witness goal carries its arguments and the carrier decision happens at FIRE time —
-//! that is the design, and it is why `Desc.describe(?a, ?r)` at an ordinary variable can
-//! be attributed to no bracket at all. Two argument shapes do name a sort at load: a
-//! ground CONSTRUCTOR, and a TYPED head parameter (through the clause's own `bounds`, the
-//! channel the anchor path already reads). Those two are this ticket's population, and
-//! [`untyped_carriers_are_still_refused`] is the row that keeps the boundary honest.
-//!
-//! ## Why EXACTLY ONE match
-//!
-//! Two candidate calls at ONE carrier are two calls the same dictionary covers, and
-//! choosing between them would be scan order wearing the bracket's name — so a bracket
-//! that matches more than one candidate chooses nothing
-//! ([`two_calls_at_one_carrier_are_still_refused`]).
-//!
-//! ## What was built and MEASURED AWAY: narrowing the weave
-//!
-//! A first cut also filtered what a bracket-chosen `require` COVERS to the calls whose
-//! carrier it names, on the argument that two dictionaries would otherwise be woven into
-//! each other's calls. Backing that out failed ZERO rows — including the acceptance — and
-//! [`a_call_at_a_carrier_the_bracket_does_not_name_still_answers`] is why: the filter can
-//! only engage where a carrier argument is READABLE, and exactly there the call is
-//! VALUE-DIRECTED, so which dictionary it carries decides nothing. The weave decides
-//! dispatch only for a CARRIER-LESS op (WI-20260909-NAR1X), which exposes no carrier
-//! argument to select on. Deleted rather than shipped undriven.
-//!
-//! WI-20260911-5G28A S2 CHANGED THAT PREMISE, not the finding. A rule citation can now hand
-//! a clause the dictionary its CALLER chose, which the argument cannot name, so the weave
-//! covers a carrier-bearing body-less call too — AT ITS DICTIONARY'S CARRIER, narrowed by
-//! the witness's carrier ARGUMENT rather than by the bracket's sort
-//! (`collect_covered_calls`). [`a_typed_head_carrier_is_readable_too`] is what drives that
-//! narrowing: with it backed out, each call is covered by both `require`s and the clause
-//! is REFUSED by the one-dictionary-per-call check.
+//! `require[X]` is removed, and the requirements this file attributed were at CONCRETE
+//! carriers, which a call at a concrete type does not need: `Desc.describe(thing(), ?r1),
+//! Desc.describe(gadget(), ?r2)` answers 7 and 9 by type. What the bracket did — tell two
+//! requirements of one spec apart by the carrier each is at — the head's introducer does,
+//! two type parameters each with its guard, `two[A, B](a: A, b: B, …) :- Desc[T = A],
+//! Desc[T = B]`, each call covered by the guard at its own argument's parameter
+//! (`collect_covered_calls`, narrowed by the call's carrier argument). And two guards at ONE
+//! parameter are two requirements, as an operation's two equal `requires` lines are two
+//! slots (060.1 §8.5): the refusals of untyped carriers and of two calls at one carrier are
+//! lifted, a call covered by both reading the first.
 //!
 //! ## Back-out
 //!
-//! With the selection backed out (the `chosen` computation forced to `None`) the two
-//! acceptance rows fail: both `require`s go unattributed and the pair is refused, which is
-//! exactly the behaviour this ticket lifts. The refusal rows pass either way BY DESIGN —
-//! they are what says the lift did not become "admit two `require`s whenever a witness
-//! grounds them", and the full workspace measured EXACTLY ONE row moving when this
-//! landed: `wi_96ztm…::a_witness_grounded_pair_is_refused_whatever_the_bracket_says`,
-//! whose message assertion was re-aimed at the new sentence and whose two shapes still
-//! refuse.
+//! With HRFR5's selection backed out (the `chosen` computation forced to `None`) its two
+//! acceptance rows failed — measured on `require[X]`, whose scan the guard does not use. With
+//! the weave's narrowing backed out (the carrier check of `collect_covered_calls` skipped),
+//! [`a_typed_head_carrier_is_readable_too`] fails, measured on the guard: each call is covered
+//! by both guards and the clause is refused by the one-dictionary-per-call check ("covered by
+//! distinct carrier requirements"), as the written pair was. Its `describe` is body-less, so
+//! skipping the check for a bodied call alone leaves it passing.
 
 use anthill_core::eval::Value;
 
@@ -97,143 +69,84 @@ fn answer(ns: &str, clause: &str, query: &str) -> Option<i64> {
     }
 }
 
-fn refusal(ns: &str, clause: &str, query: &str) -> String {
-    crate::common::try_load_kb_with(&fixture(ns, clause, query))
-        .err()
-        .unwrap_or_else(|| panic!("expected a refusal; it loaded clean"))
-        .join("\n")
-}
+/// Two calls at GROUND carriers, no requirement written: each is dispatched by its type.
+const GROUND: &str = "  rule two(?r1, ?r2) :- Desc.describe(thing(), ?r1), Desc.describe(gadget(), ?r2)\n";
 
-/// Two `require`s, two calls, GROUND carriers — one clause answers both carriers' numbers.
-const GROUND: &str = "  rule two(?r1, ?r2) :- ?d1 = require[Desc[T = Thing]], \
-     ?d2 = require[Desc[T = Gadget]], Desc.describe(thing(), ?r1), \
-     Desc.describe(gadget(), ?r2)\n";
-
-/// The same pair with TYPED HEAD PARAMETERS as the carriers — read through the clause's
-/// `bounds`. The witness scans run BEFORE the anchor, so these `require`s are
-/// witness-grounded even though the head is typed; that is what made this shape the
-/// gate's own population.
-const TYPED: &str = "  rule two(a: Thing, b: Gadget, ?r1, ?r2) :- \
-     ?d1 = require[Desc[T = Thing]], ?d2 = require[Desc[T = Gadget]], \
+/// Two type parameters, each with its guard, and a call at each — the introducer's
+/// attribution of two requirements of one spec.
+const TYPED: &str = "  rule two[A, B](a: A, b: B, ?r1, ?r2) :- Desc[T = A], Desc[T = B], \
      Desc.describe(a, ?r1), Desc.describe(b, ?r2)\n";
 
-/// THE ACCEPTANCE — a witness-grounded pair LOADS and each call dispatches through the
-/// dictionary its own carrier names, asserted BY VALUE.
-///
-/// `describe` is body-less and each answer comes from a different provider, so 7 and 9
-/// can only have arrived through two different dictionaries. Both slots are read, because
-/// a single number would be satisfied by either dictionary reaching either call.
-///
-/// FAILS WITH THE SELECTION BACKED OUT — both `require`s go unattributed and the clause is
-/// refused, which is the behaviour this ticket lifts.
+/// Calls at ground carriers answer each its own carrier's number, asserted BY VALUE —
+/// `describe` is body-less and each answer comes from a different provider. The row was
+/// HRFR5's acceptance, a witness-grounded pair `?d1 = require[Desc[T = Thing]], ?d2 =
+/// require[Desc[T = Gadget]]` before the same calls, admitted when the bracket named each
+/// carrier; the calls need neither. PASSES EITHER WAY now.
 #[test]
 fn a_witness_grounded_pair_is_admitted_when_the_bracket_names_each_carrier() {
     assert_eq!(answer("test.hrfr5.g1", GROUND, "two(?r, ?)"), Some(7));
     assert_eq!(answer("test.hrfr5.g2", GROUND, "two(?, ?r)"), Some(9));
 }
 
-/// THE SAME PAIR THROUGH TYPED HEAD PARAMETERS, which is the shape the gate actually
-/// guarded: a typed head does NOT make these `require`s anchor-grounded, because the
-/// witness scans run first and a covered call is present.
+/// TWO REQUIREMENTS OF ONE SPEC, told apart by the parameters they are at: `A` and `B`, each
+/// with its guard, cited at `thing()` and `gadget()`, answer `Thing`'s 7 and `Gadget`'s 9.
+/// The row was the same pair through TYPED HEAD PARAMETERS (`a: Thing, b: Gadget`) and
+/// `require[Desc[T = Thing]]`, `require[Desc[T = Gadget]]`.
 #[test]
 fn a_typed_head_carrier_is_readable_too() {
     assert_eq!(answer("test.hrfr5.t1", TYPED, "two(thing(), gadget(), ?r, ?)"), Some(7));
     assert_eq!(answer("test.hrfr5.t2", TYPED, "two(thing(), gadget(), ?, ?r)"), Some(9));
 }
 
-/// UNTYPED CARRIERS ARE STILL REFUSED — the boundary of what load-time attribution can
-/// see, and the row that says this lift did not become "admit two `require`s whenever a
-/// witness grounds them".
-///
-/// `?a` and `?b` are ordinary variables: their sorts are a run-time fact, so neither
-/// bracket can name a call and admitting the pair would bind them by scan order. PASSES
-/// EITHER WAY BY DESIGN — before this ticket the same clause was refused because nothing
-/// was anchored.
+/// TWO GUARDS AT ONE PARAMETER ARE TWO REQUIREMENTS (060.1 §8.5), and the calls both cover
+/// read the first: `two[A](?a: A, ?b: A, …) :- Desc[T = A], Desc[T = A]` answers 7 at two
+/// `thing()`s, and nothing at `thing()` and `gadget()` — one `A` is not both. The row was the
+/// refusal of a pair over UNTYPED carriers, which no bracket could attribute; the introducer
+/// types them, and the refusal is lifted.
 #[test]
 fn untyped_carriers_are_still_refused() {
-    let errs = refusal(
-        "test.hrfr5.u",
-        "  rule two(?a, ?b, ?r1, ?r2) :- ?d1 = require[Desc[T = Thing]], \
-         ?d2 = require[Desc[T = Gadget]], Desc.describe(?a, ?r1), Desc.describe(?b, ?r2)\n",
-        "two(thing(), gadget(), ?r, ?)",
-    );
-    assert!(
-        errs.contains("unless the WRITTEN BRACKET says which carrier each one means"),
-        "got:\n{errs}"
-    );
+    let one = "  rule two[A](?a: A, ?b: A, ?r1, ?r2) :- Desc[T = A], Desc[T = A], \
+               Desc.describe(?a, ?r1), Desc.describe(?b, ?r2)\n";
+    assert_eq!(answer("test.hrfr5.u1", one, "two(thing(), thing(), ?, ?r)"), Some(7));
+    assert_eq!(answer("test.hrfr5.u2", one, "two(thing(), gadget(), ?r, ?)"), None);
 }
 
-/// TWO CALLS AT ONE CARRIER ARE STILL REFUSED — "exactly one match", not "the first
-/// match".
-///
-/// Both calls carry `thing()`, so `require[Desc[T = Thing]]` names both and choosing
-/// between them would be scan order again. The second `require` names a carrier no call
-/// has, so it is chosen by nothing either. PASSES EITHER WAY BY DESIGN.
+/// TWO CALLS AT ONE CARRIER UNDER TWO GUARDS AT ONE PARAMETER read the first (060.1 §8.5):
+/// 7 for each. The row was the refusal of `require[Desc[T = Thing]]` and
+/// `require[Desc[T = Gadget]]` beside two calls at `thing()` — "exactly one match", not
+/// "the first match"; two requirements of one spec at one parameter are the operation's two
+/// equal `requires` lines now.
 #[test]
 fn two_calls_at_one_carrier_are_still_refused() {
-    let errs = refusal(
-        "test.hrfr5.s",
-        "  rule two(?r1, ?r2) :- ?d1 = require[Desc[T = Thing]], \
-         ?d2 = require[Desc[T = Gadget]], Desc.describe(thing(), ?r1), \
-         Desc.describe(thing(), ?r2)\n",
-        "two(?r, ?)",
-    );
-    assert!(
-        errs.contains("unless the WRITTEN BRACKET says which carrier each one means"),
-        "got:\n{errs}"
-    );
+    let two = "  rule two[A](?a: A, ?r1, ?r2) :- Desc[T = A], Desc[T = A], \
+               Desc.describe(?a, ?r1), Desc.describe(?a, ?r2)\n";
+    assert_eq!(answer("test.hrfr5.s1", two, "two(thing(), ?r, ?)"), Some(7));
+    assert_eq!(answer("test.hrfr5.s2", two, "two(thing(), ?, ?r)"), Some(7));
 }
 
-/// ONE `require` STILL COVERS EVERY CALL IT COVERED — one `require[Desc[T = Thing]]` and
-/// two calls at `thing()`, both answering 7.
-///
-/// PASSES EITHER WAY BY DESIGN; it is the regression this change had to avoid, not
-/// evidence for it. It is also what a narrowing filter would have had to keep true, and
-/// checking that is how the filter came to be measured at all.
+/// ONE GUARD STILL COVERS EVERY CALL AT ITS PARAMETER — two calls at `?a: A`, both answering
+/// 7 at `thing()`. PASSES EITHER WAY BY DESIGN (it was one `require[Desc[T = Thing]]` and two
+/// calls at `thing()`); it is the regression a narrowing of the weave would have to avoid.
 #[test]
 fn one_require_still_covers_every_call_it_covered() {
-    assert_eq!(
-        answer(
-            "test.hrfr5.c1",
-            "  rule two(?r1, ?r2) :- ?d = require[Desc[T = Thing]], \
-             Desc.describe(thing(), ?r1), Desc.describe(thing(), ?r2)\n",
-            "two(?r, ?)",
-        ),
-        Some(7),
-    );
-    assert_eq!(
-        answer(
-            "test.hrfr5.c2",
-            "  rule two(?r1, ?r2) :- ?d = require[Desc[T = Thing]], \
-             Desc.describe(thing(), ?r1), Desc.describe(thing(), ?r2)\n",
-            "two(?, ?r)",
-        ),
-        Some(7),
-    );
+    let one = "  rule two[A](?a: A, ?r1, ?r2) :- Desc[T = A], \
+               Desc.describe(?a, ?r1), Desc.describe(?a, ?r2)\n";
+    assert_eq!(answer("test.hrfr5.c1", one, "two(thing(), ?r, ?)"), Some(7));
+    assert_eq!(answer("test.hrfr5.c2", one, "two(thing(), ?, ?r)"), Some(7));
 }
 
-
-/// A CALL AT A CARRIER THE BRACKET DOES NOT NAME STILL ANSWERS, and correctly — the row
-/// that says narrowing the weave would have bought nothing.
-///
-/// One `require[Desc[T = Thing]]` beside calls at BOTH `thing()` and `gadget()`: the
-/// second answers 9, its own carrier's number, though the only dictionary in the clause
-/// is `Thing`'s. A carrier-bearing spec op is VALUE-DIRECTED — it dispatches on its
-/// argument — so the dictionary woven into it does not decide its answer. That is the
-/// whole reason the first cut's filter was unmeasurable, and it is measured here rather
-/// than argued.
-///
-/// PASSES EITHER WAY BY DESIGN: it answered 7 and 9 before this ticket too. Its job is to
-/// pin WHY the shipped change is smaller than it first was.
+/// A CALL AT A CARRIER THE GUARD IS NOT AT STILL ANSWERS, and correctly: one guard at `A`,
+/// cited at `thing()`, beside calls at `?a` and at `gadget()` — the second answers 9, its own
+/// carrier's number, dispatched by its type and not covered by the guard. PASSES EITHER WAY BY
+/// DESIGN: the row was one `require[Desc[T = Thing]]` beside the two calls, answering 7 and 9.
 #[test]
 fn a_call_at_a_carrier_the_bracket_does_not_name_still_answers() {
-    const MIXED: &str = "  rule two(?r1, ?r2) :- ?d = require[Desc[T = Thing]], \
-         Desc.describe(thing(), ?r1), Desc.describe(gadget(), ?r2)\n";
-    assert_eq!(answer("test.hrfr5.m1", MIXED, "two(?r, ?)"), Some(7));
+    const MIXED: &str = "  rule two[A](?a: A, ?r1, ?r2) :- Desc[T = A], \
+         Desc.describe(?a, ?r1), Desc.describe(gadget(), ?r2)\n";
+    assert_eq!(answer("test.hrfr5.m1", MIXED, "two(thing(), ?r, ?)"), Some(7));
     assert_eq!(
-        answer("test.hrfr5.m2", MIXED, "two(?, ?r)"),
+        answer("test.hrfr5.m2", MIXED, "two(thing(), ?, ?r)"),
         Some(9),
-        "the `gadget()` call answers its OWN carrier's number with only `Thing`'s \
-         dictionary in scope — value direction, not the weave"
+        "the `gadget()` call answers its OWN carrier's number"
     );
 }

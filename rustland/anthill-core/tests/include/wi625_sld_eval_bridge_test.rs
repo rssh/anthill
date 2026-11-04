@@ -20,7 +20,6 @@ use crate::common;
 use anthill_core::eval::{EvalConfig, EvalError, Interpreter, Value};
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Literal, Term, TermId, Var};
-use anthill_core::kb::term_view::TermView;
 use anthill_core::kb::KnowledgeBase;
 use ordered_float::OrderedFloat;
 use smallvec::SmallVec;
@@ -294,12 +293,13 @@ fn bridge_interp() -> Interpreter {
 
 // ── WI-300 Tier B — transitive-requires rule (the integration goal) ──────────
 //
-// A rule whose `requires(Eq[T])` is grounded NOT by a direct Eq-op call but by a
-// body call to `List.contains` (which itself declares `requires Eq[T]`). The typer
-// accepts `member` as a TRANSITIVE witness and rewrites the guard to check the
-// element type at the concrete `contains(?xs, ?x)` call; at resolution the operand
-// runs through the gap-1 bridge (`member`'s abstract `eq(head, x)` is builtin-
-// backed at eval, so its own `Eq` obligation needs no threaded dict here).
+// A rule whose `Eq` requirement stands at the ELEMENT type of a list a body call to
+// `List.contains` (which itself declares `requires Eq[T]`) reads; the guard checks the
+// element type, and at resolution the operand runs through the gap-1 bridge (`member`'s
+// abstract `eq(head, x)` is builtin-backed at eval, so its own `Eq` obligation needs no
+// threaded dict here). It was `requires(Eq[T])`, grounded by `contains` as a TRANSITIVE
+// witness; proposal 060.1 §5 removed that form, and the guard is the head introducer's,
+// `has_elem[E](?xs: List[T = E], ?x: E) :- Eq[T = E]`, whose carrier no witness grounds.
 const CONTAINS_SRC: &str = r#"
     namespace gap3.membertest
       import anthill.prelude.{Int64, Float, List, Bool, Eq}
@@ -319,7 +319,7 @@ const CONTAINS_SRC: &str = r#"
       sort NoEq
         entity nt(v: Float)
       end
-      rule has_elem(?xs, ?x) :- requires(Eq[T]), eq(contains(?xs, ?x), true)
+      rule has_elem[E](?xs: List[T = E], ?x: E) :- Eq[T = E], eq(contains(?xs, ?x), true)
     end
 "#;
 
@@ -366,12 +366,13 @@ fn nt_entity(kb: &mut KnowledgeBase, n: i64) -> TermId {
 
 #[test]
 fn transitive_requires_rule_types_via_member() {
-    // The whole point: this rule did NOT type before Layer A — the grounding scan
-    // witnessed `requires(Eq[T])` only on a DIRECT Eq-op call, and neither `member`
-    // (a List op) nor the `eq(_, true)` (a PartialEq op over Bool) is one.
+    // This rule did NOT type before Layer A — the grounding scan witnessed
+    // `requires(Eq[T])` only on a DIRECT Eq-op call, and neither `member` (a List op) nor
+    // the `eq(_, true)` (a PartialEq op over Bool) is one. The introducer's guard needs no
+    // witness, so this row passes either way now.
     assert!(
         common::try_load_kb_with(CONTAINS_SRC).is_ok(),
-        "a rule whose requires(Eq[T]) is witnessed by a member() call must load",
+        "a rule whose Eq guard stands at the element `contains` reads must load",
     );
 }
 
@@ -409,8 +410,8 @@ fn transitive_requires_contains_decides_via_member() {
 fn transitive_requires_guard_blocks_non_eq_element() {
     // The requirement is enforced, not vacuous: `NoEq` declares no `Eq` instance, so
     // the guard `DontFire`s at a `NoEq` element even though `nt(1)` IS structurally in
-    // the list — the transitive witness checks the ELEMENT type, exactly as a direct
-    // `requires(Eq[T])` would. Without the guard (plain member) this would succeed.
+    // the list — the guard checks the ELEMENT type. Without the guard (plain member) this
+    // would succeed.
     let mut kb = common::load_kb_with(CONTAINS_SRC);
     let e1 = nt_entity(&mut kb, 1);
     let e2 = nt_entity(&mut kb, 2);
@@ -459,21 +460,18 @@ fn bridge_mode_suspends_on_buried_override() {
 
 #[test]
 fn transitive_requires_rejects_wrong_type_param_witness() {
-    // Soundness gate: `pick(t: T, u: U) requires Widget[U]` must NOT witness a rule's
-    // `requires(Widget[T])`. Its `Widget` obligation ranges over `U` (the `u`
-    // argument), but the fire-time guard keys on `Widget`'s type-param NAME ("T"), so it
-    // would read the name-coincident `t: T` — discharging the requirement against the
-    // WRONG argument. The transitive witness is declined and the rule is a loud load
-    // error. (Without the gate, `op_requires_covers` would accept `pick` because
-    // `Widget` is merely present in its requires-chain.)
+    // Soundness: the guard `Widget[T = A]` at `?t`'s type answers nothing of
+    // `pick(t: T, u: U) requires Widget[U]`, whose obligation ranges over `U` (the `u`
+    // argument). `uses(yes, no)` holds the guard at `Yes` and still answers nothing: `No`
+    // provides no `Widget`, and `pick` asks it of `?u`; `uses(no, yes)` is blocked by the
+    // guard; `uses(yes, yes)` answers.
     //
-    // `Widget` is a USER spec, not `Eq`, ON PURPOSE: the witness candidate `pick` is
-    // wrapped in `eq(…, true)` to form a body goal, and post-WI-625-Direction-A that
-    // `eq` (a `PartialEq` op) is itself an INHERITED witness for any spec that requires
-    // `PartialEq`. Were the requirement `Eq[T]`, the outer `eq` would legitimately
-    // ground it at `Bool` (a sound fallback) and the rule would load — masking the
-    // transitive gate under test. `Widget` requires no `PartialEq`, so the `eq` wrapper
-    // is NOT a fallback and `pick` is the sole candidate the gate must reject.
+    // The row was WI-300's soundness gate, `requires(Widget[T])` beside `pick(?t, ?u)`:
+    // its fire-time guard keyed on `Widget`'s type-param NAME ("T") and would read the
+    // name-coincident `t: T`, discharging the requirement against the WRONG argument, so
+    // `pick` was declined as a witness and the rule refused ("ground the requirement").
+    // Proposal 060.1 §5 removed `requires(X)`; the introducer names the guard's carrier,
+    // and no call witnesses it.
     let src = r#"
         namespace gap3.unsound
           import anthill.prelude.{Int64, Bool}
@@ -488,19 +486,28 @@ fn transitive_requires_rejects_wrong_type_param_witness() {
             entity mk(t: T, u: U)
             operation pick(t: T, u: U) -> Bool requires Widget[U] = widen(u)
           end
+          sort Yes
+            entity yes
+            provides Widget[T = Yes]
+            operation widen(x: Yes) -> Bool = true
+          end
+          sort No
+            entity no
+          end
           import gap3.unsound.Widget.{widen}
           import gap3.unsound.Two.{pick}
-          rule uses(?t, ?u) :- requires(Widget[T]), eq(pick(?t, ?u), true)
+          rule uses[A](?t: A, ?u) :- Widget[T = A], eq(pick(?t, ?u), true)
+          rule both(?r) :- uses(Yes.yes(), Yes.yes()), ?r <=> 1
+          rule guardOnly(?r) :- uses(Yes.yes(), No.no()), ?r <=> 1
+          rule pickOnly(?r) :- uses(No.no(), Yes.yes()), ?r <=> 1
         end
     "#;
-    let errs = match common::try_load_kb_with(src) {
-        Ok(_) => panic!("a witness requiring Widget over a DIFFERENT type-param must not ground"),
-        Err(errs) => errs,
-    };
-    assert!(
-        errs.iter().any(|e| e.contains("ground the requirement")),
-        "expected the ungroundable-requires error, got: {errs:?}",
-    );
+    let mut kb = common::load_kb_with(src);
+    assert_eq!(common::one_definite_int(&mut kb, "gap3.unsound.both"), Some(1), "both provide");
+    for rule in ["guardOnly", "pickOnly"] {
+        let rows = common::query_unary(&mut kb, &format!("gap3.unsound.{rule}"));
+        assert!(rows.is_empty(), "{rule}: `No` provides no `Widget`, got {rows:?}");
+    }
 }
 
 // ── WI-625 Layer B — bridged op dispatching a USER spec op via a real dict ────
@@ -634,16 +641,17 @@ fn layerb_unresolvable_provider_residualizes() {
 //
 // Post WI-644 `Eq` owns no operations: its `eq`/`neq` are inherited from the
 // `PartialEq` it requires (WI-614). So a rule `requires(Eq[T])` whose only comparison
-// is `eq(?x, ?y)` has NEITHER a direct `Eq`-op witness (none exist) NOR a transitive
-// one (`eq` doesn't declare `requires Eq`). Direction A accepts `eq` — a `PartialEq.eq`
-// call — as an INHERITED witness because `Eq requires PartialEq`, grounding the rule's
-// `Eq` requirement at the concrete argument type. The guard then enforces the DECLARED
+// was `eq(?x, ?y)` had NEITHER a direct `Eq`-op witness (none exist) NOR a transitive
+// one (`eq` doesn't declare `requires Eq`), and Direction A accepted `eq` — a
+// `PartialEq.eq` call — as an INHERITED witness because `Eq requires PartialEq`. Proposal
+// 060.1 §5 removed `requires(X)`, and the guard is the head introducer's, `same[A](?x: A,
+// ?y: A) :- Eq[T = A]`, whose carrier no witness grounds. The guard enforces the DECLARED
 // (stronger) `Eq`, not the `PartialEq` the call itself uses.
 const INHERITED_EQ_SRC: &str = r#"
     namespace dirA.eqtest
       import anthill.prelude.{Int64, Float, Bool, Eq}
       import anthill.prelude.PartialEq.{eq}
-      rule same(?x, ?y) :- requires(Eq[T]), eq(?x, ?y)
+      rule same[A](?x: A, ?y: A) :- Eq[T = A], eq(?x, ?y)
     end
 "#;
 
@@ -656,14 +664,13 @@ fn float_term(kb: &mut KnowledgeBase, f: f64) -> TermId {
 
 #[test]
 fn inherited_requires_eq_types_via_eq() {
-    // The whole point: this rule did NOT type before Direction A. `eq` is
+    // This rule did NOT type before Direction A, as `requires(Eq[T])`: `eq` is
     // `PartialEq.eq`, and `Eq` (which owns no ops) merely `requires PartialEq`, so
-    // neither the direct nor the transitive witness scan finds a ground for
-    // `requires(Eq[T])`.
+    // neither the direct nor the transitive witness scan found a ground. The introducer's
+    // guard needs none, so this row passes either way now.
     assert!(
         common::try_load_kb_with(INHERITED_EQ_SRC).is_ok(),
-        "a rule whose requires(Eq[T]) is witnessed by an eq() call \
-         (PartialEq's op, inherited by Eq) must load",
+        "a rule whose Eq guard is read beside an eq() call must load",
     );
 }
 
@@ -706,21 +713,20 @@ fn inherited_requires_eq_blocks_non_eq_float() {
     );
 }
 
-// `requires(WeakOrd[T])` witnessed by `gt` — `gt` is `PartialOrd.gt`, whose op-scoped
+// A `WeakOrd` guard beside `gt` — `gt` is `PartialOrd.gt`, whose op-scoped
 // `requires WeakOrd[T]` (it derives from `compare`) is what the inherited witness
-// grounds, exactly as the eq case grounds Eq.
+// grounded, exactly as the eq case grounded Eq, while the guard was `requires(WeakOrd[T])`
+// (removed by proposal 060.1 §5; the head introducer's guard needs no witness).
 //
-// WI-1109 — the spec is `WeakOrd`, not `Ord`, and that is the POINT rather than a
-// rename. `gt` needs a total order, not an antisymmetric one: it reads `compare` and
-// asks nothing about the kernel, so it witnesses the floor it actually requires.
-// MEASURED — `requires(Ord[T])` here now fails with "expected a body call to one of
-// `Ord`'s operations ... got no such call", which is the CORRECT refusal: `Ord`
-// declares no operation of its own, so no body call can witness it directly.
+// WI-1109 — the spec is `WeakOrd`, not `Ord`: `gt` needs a total order, not an
+// antisymmetric one, and reads `compare`, asking nothing about the kernel. As
+// `requires(Ord[T])` the guard was refused, "expected a body call to one of `Ord`'s
+// operations ... got no such call": `Ord` declares no operation of its own.
 const INHERITED_ORD_SRC: &str = r#"
     namespace dirA.ordtest
       import anthill.prelude.{Int64, Bool, WeakOrd}
       import anthill.prelude.PartialOrd.{gt}
-      rule bigger(?a, ?b) :- requires(WeakOrd[T]), gt(?a, ?b)
+      rule bigger[A](?a: A, ?b: A) :- WeakOrd[T = A], gt(?a, ?b)
     end
 "#;
 
@@ -728,8 +734,7 @@ const INHERITED_ORD_SRC: &str = r#"
 fn inherited_requires_ordered_types_and_decides_via_gt() {
     assert!(
         common::try_load_kb_with(INHERITED_ORD_SRC).is_ok(),
-        "a rule whose requires(WeakOrd[T]) is witnessed by a gt() call \
-         (PartialOrd's op, whose op-scoped requires IS WeakOrd) must load; got {:?}",
+        "a rule whose WeakOrd guard is read beside a gt() call must load; got {:?}",
         common::try_load_kb_with(INHERITED_ORD_SRC).err(),
     );
     let mut kb = common::load_kb_with(INHERITED_ORD_SRC);

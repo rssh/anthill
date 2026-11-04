@@ -158,9 +158,10 @@ end
     );
 }
 
-/// A RULE body's spec-op calls are `check_rule_body_requirements`' — the pass that holds
-/// the clause's declared `requires(…)` — so the sentence is its own, naming the carrier
-/// and offering the clause-level repair beside the provision.
+/// A RULE body's spec-op calls are `check_rule_body_requirements'` — the pass that holds
+/// the clause's declared requirements — so the sentence is its own, naming the carrier
+/// and offering the clause-level repair beside the provision: the head introducer's guard
+/// (it named the clause's `requires({short}[…])`, which proposal 060.1 §5 removed).
 fn assert_rule_body_refusal(text: &str, callee: &str, carrier: &str, spec: &str) {
     assert!(text.contains(callee), "the refusal must name `{callee}`; got:\n{text}");
     assert!(
@@ -169,7 +170,8 @@ fn assert_rule_body_refusal(text: &str, callee: &str, carrier: &str, spec: &str)
     );
     let short = spec.rsplit('.').next().unwrap();
     assert!(
-        text.contains(&format!("requires({short}[…])")),
+        text.contains(&format!("declares no `{short}` requirement of its own"))
+            && text.contains("with the rule head's introducer and a guard"),
         "…and the clause's own repair; got:\n{text}"
     );
 }

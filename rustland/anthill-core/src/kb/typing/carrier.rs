@@ -449,41 +449,6 @@ pub(super) fn provision_binds_param_to_carrier(
         .find(|view| binds_pvid_to_carrier(view))
 }
 
-/// The clause's `require[…]` instances of `spec_sort`, where a rule body declares one.
-fn clause_required_views<'a>(
-    kb: &'a KnowledgeBase,
-    env: &'a TypingEnv,
-    spec_sort: Symbol,
-) -> impl Iterator<Item = &'a Value> + 'a {
-    env.rule_declared_specs()
-        .iter()
-        .filter(move |v| sort_functor_of_view(kb, *v).is_some_and(|s| same_sort_canonical(kb, s, spec_sort)))
-}
-
-/// Does the clause's own `require[…]` name an instance of `spec_sort`?
-pub(super) fn clause_requires_spec(kb: &KnowledgeBase, env: &TypingEnv, spec_sort: Symbol) -> bool {
-    clause_required_views(kb, env, spec_sort).next().is_some()
-}
-
-/// The bindings of the clause's `require[…]` of `spec_sort` at `carrier_sym` — one that binds
-/// the carrier parameter `pvid` to it — where a rule body declares one. A bracket's instance
-/// there is the call its text wrote (`Conv(A: Feet, B: String)`), whose named children are the
-/// bindings.
-pub(super) fn clause_required_view_at_carrier(
-    kb: &KnowledgeBase,
-    env: &TypingEnv,
-    spec_sort: Symbol,
-    pvid: VarId,
-    carrier_sym: Symbol,
-) -> Option<SmallVec<[(Symbol, Value); 2]>> {
-    clause_required_views(kb, env, spec_sort)
-        .map(|v| match spec_view_bindings_value(kb, v) {
-            b if b.is_empty() => view_named_children(kb, v),
-            b => b,
-        })
-        .find(|b| view_binds_param_to_sort(kb, spec_sort, pvid, carrier_sym, b))
-}
-
 /// The provisions of `spec_sort` at `carrier_sym` — those that bind the carrier parameter
 /// `pvid` to it, the carrier's own and a witness's — each with its provider and bindings.
 pub(super) fn provisions_at_carrier(

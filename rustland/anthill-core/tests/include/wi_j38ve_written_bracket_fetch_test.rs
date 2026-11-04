@@ -1,5 +1,5 @@
-//! WI-20260913-J38VE — THE FETCH READS THE WRITTEN BRACKET: the elements a `require`
-//! bracket names are what select the provider row, where before they were replaced by
+//! WI-20260913-J38VE — THE FETCH READS THE WRITTEN BRACKET: the elements a requirement
+//! names are what select the provider row, where before they were replaced by
 //! WI-20260830-X9PB4's synthesized wildcard and the clause delayed.
 //!
 //! Design: `docs/design/060-implementation.md` §8.6.
@@ -13,53 +13,49 @@
 //! against a provider's CONCRETE binding, so `Red provides Sp[C = Red, P = Int64]`
 //! answered nothing: no candidate, `Undecided`, and the clause delayed on a clean load.
 //!
-//! Because a spec operation names only its carrier, "every other element" is EVERY
-//! element of every multi-parameter spec — not the corner §8.6 first recorded.
+//! ## Since proposal 060.1 §5
+//!
+//! The requirement was the clause's `?d = require[Sp[C = Red, P = Int64]]`, which §5
+//! removed. A clause declares it at the head's introducer, under a name since `tag()` takes
+//! no argument to name the instance by — `rule g[A](?x: A, ?r) :- require s: Sp[C = A, P =
+//! Int64], s.tag(?r)` — and its read reads the instance whole (`carrier_type: true`). Two
+//! things moved with it: an element left unwritten is open, read off the provision at the
+//! carrier as RYDNV reads it, so the wildcard controls that delayed answer `Red`'s 7; and the
+//! rows that select by the written element need a second provision at `C = Red`
+//! ([`BY_BOOL`]) to have something to select between. Over those two, an UNWRITTEN `P`
+//! answers `Red`'s 7: `Red`'s own provision is the default among a carrier's providers
+//! (058 §3.6), as `wi_x9pb4…::a_nullary_op_spec_takes_its_default_like_any_other` has it.
 //!
 //! ## The rows here, and what each one is for
 //!
-//! The two ACCEPTANCE rows live in `wi_qmfc5_typed_head_anchor_test.rs`, where they were
-//! pinned as delays and this ticket flips them. This file holds what those two cannot
-//! reach:
-//!
-//!  * the WITNESS route ([`a_written_element_the_witness_cannot_name_selects_the_row`]) —
-//!    the anchor rows measure only the typed-head producer, and the fix threads slot 0
-//!    into BOTH;
-//!  * the SUM with WI-20260909-S8CBV gate (1)
-//!    ([`a_projected_carrier_and_a_written_element_compose`]) — a bracket whose carrier is
-//!    a projection AND whose content is written, which needs both tickets and neither
-//!    alone;
-//!  * the TIE VERDICT ([`a_tie_a_written_element_does_not_cause_stays_a_delay`]) — the
-//!    regression a first cut of this ticket had, kept as a row rather than as a comment;
+//!  * the written element selecting between two provisions
+//!    ([`a_written_element_the_witness_cannot_name_selects_the_row`]);
+//!  * a projected carrier and a written element together — the introducer at the column's
+//!    element ([`a_projected_carrier_and_a_written_element_compose`]);
+//!  * the TIE VERDICT ([`a_tie_a_written_element_does_not_cause_stays_a_delay`]) — two
+//!    providers a carrier reaches alike, which delays and neither aborts nor picks;
 //!  * an APPLIED element
-//!    ([`an_applied_written_element_pins_what_the_author_actually_wrote`]) — a second
-//!    first-cut regression, found by `/code-review`: the lowering discarded the written
-//!    type's ARGUMENTS, which both lost the agreeing row and selected a disagreeing one.
+//!    ([`an_applied_written_element_pins_what_the_author_actually_wrote`]) — the written
+//!    type's arguments select, and a different argument selects nothing.
 //!
 //! Every fixture's spec op is `tag()`: NULLARY, so nothing in it can value-dispatch, and
-//! BODY-LESS in the carrier route's fixtures, so a `7` can only have come through a
-//! dictionary. The two parameters are at DIFFERENT types (`C = Red`, `P = Int64`) so an
-//! answer cannot be produced by a goal that keyed on the wrong one.
+//! BODY-LESS, so a `7` can only have come through a dictionary. The two parameters are at
+//! DIFFERENT types (`C = Red`, `P = Int64`) so an answer cannot be produced by a goal that
+//! keyed on the wrong one.
 //!
-//! ## What fails when each half is backed out — MEASURED, one restore between each
+//! ## What failed when each half was backed out — MEASURED on `require[…]`
 //!
 //! | backed out | rows | which |
 //! |---|---|---|
-//! | THE PREFERENCE (`written_element` → `None` at entry) | **4** | the two acceptance rows in `wi_qmfc5…`, plus [`a_written_element_the_witness_cannot_name_selects_the_row`] and [`a_projected_carrier_and_a_written_element_compose`] — each back to the residual it was |
-//! | the WITNESS call site (`witness_sort_goal` passes `&[]`) | **1** | [`a_written_element_the_witness_cannot_name_selects_the_row`] alone — the anchor rows are unmoved, which is what makes this a per-producer axis and not one switch |
-//! | the ANCHOR's PARAMETER branch (`anchor_sort_goal` passes `&[]` before `spec_carrier_param_or_sole`) | **2** | `wi_qmfc5…::a_multi_parameter_spec…` and [`a_projected_carrier_and_a_written_element_compose`] |
-//! | the ANCHOR's SELF-REPRESENTING branch (passes `&[]`) | **1** | `wi_qmfc5…::a_self_representing_spec…` alone — the two branches of one function are two call sites and are backed out separately |
-//! | the FLAG CLEARING (`sort_goal_with_wildcards`' one `from_carried_types = false` made conditional on `written_element` having declined, so only a MINT clears it) | **1** | [`a_tie_a_written_element_does_not_cause_stays_a_delay`], and it ABORTS rather than fails — `debug_assert!(false, "find_dictionary: two providers answer …")` |
-//! | the FAITHFUL LOWERING (`written_element` back to `type_value_as_term`) | **1** | [`an_applied_written_element_pins_what_the_author_actually_wrote`], and BOTH its assertions — the agreeing spelling stops answering AND the disagreeing one starts |
+//! | THE PREFERENCE (`written_element` → `None` at entry) | **4** | the two acceptance rows in `wi_qmfc5…`, plus the witness row and the projected-carrier row — each back to the residual it was |
+//! | the WITNESS call site (`witness_sort_goal` passes `&[]`) | **1** | the witness row alone |
+//! | the ANCHOR's PARAMETER branch (`anchor_sort_goal` passes `&[]` before `spec_carrier_param_or_sole`) | **2** | `wi_qmfc5…::a_multi_parameter_spec…` and the projected-carrier row |
+//! | the ANCHOR's SELF-REPRESENTING branch (passes `&[]`) | **1** | `wi_qmfc5…::a_self_representing_spec…` alone |
+//! | the FLAG CLEARING (`sort_goal_with_wildcards`' one `from_carried_types = false` made conditional on `written_element` having declined) | **1** | the tie row, which ABORTED rather than failed — `debug_assert!(false, "find_dictionary: two providers answer …")` |
+//! | the FAITHFUL LOWERING (`written_element` back to `type_value_as_term`) | **1** | the applied row, and BOTH its assertions |
 //!
-//! SINCE WI-20260829-2NMXA A GOAL'S BINDINGS RIDE ANY CARRIER, so `written_element` hands
-//! the written type over as it is and nothing is lowered; the last row's back-out is the
-//! written type reduced to its sort head again (`type_value_as_term` is gone).
-//!
-//! Each row below states which of those it moves under. The in-fixture controls — the
-//! spellings that write NOTHING for the element and must keep delaying — pass under ALL
-//! of them by design, and are what say the WRITTEN BINDING is doing the work rather than
-//! the fixture.
+//! Those are the removed form's readers. The guard's read was not backed out so; the rows
+//! below pin its answers, each beside a spelling that selects nothing.
 
 use anthill_core::eval::Value;
 
@@ -98,6 +94,12 @@ fn two_param(ns: &str, tail: &str) -> String {
     )
 }
 
+/// A second provision at `C = Red`, a witness at `P = Bool` — what a written `P` selects
+/// between.
+const BY_BOOL: &str = "  sort ByBool\n    import anthill.prelude.{Int64, Bool}\n    \
+                       provides Sp[C = Red, P = Bool]\n    operation tag() -> Int64 = 8\n    \
+                       operation crecv(x: Red) -> Int64 = 6\n  end\n";
+
 /// The single DEFINITE `Int64` of a solution list, or `None` for anything else — no
 /// solutions, an indefinite residual, or more than one.
 fn one_definite(got: &[(Value, bool)]) -> Option<i64> {
@@ -119,76 +121,71 @@ fn answer(ns: &str, tail: &str) -> Option<i64> {
 
 #[test]
 fn a_written_element_the_witness_cannot_name_selects_the_row() {
-    // THE WITNESS PRODUCER'S OWN ROW. `wi_qmfc5…`'s two acceptance rows both go through
-    // the typed-head ANCHOR; this clause has no typed head at all — `Sp.crecv(red(), ?c)`
-    // is the witness, and `witness_sort_goal` builds the goal. It pins `C` from that
-    // call's carried type and could never pin `P`, because no parameter of any `Sp`
-    // operation names `P`. That is the whole population: a spec op names its carrier, so
-    // every other element of every spec reaches the shared wildcard tail.
+    // THE WRITTEN ELEMENT SELECTS THE ROW. Two provisions at `C = Red`, `Red`'s at
+    // `P = Int64` (7) and `ByBool`'s at `P = Bool` (8): the requirement's written `P` is the
+    // only thing that tells them apart, and no parameter of any `Sp` operation names `P`.
     //
-    // ASSERTED BY VALUE. `7` is `Red`'s `tag()`; the spec's own `tag()` is body-less, so a
-    // clause that failed to thread the dictionary answers a residual, not a wrong number.
-    let witness = "  rule answer(?r) :- ?d = require[Sp[C = Red, P = Int64]], \
-                   Sp.crecv(red(), ?c), Sp.tag(?r)\n";
-    assert_eq!(
-        answer("test.j38ve.w", witness),
-        Some(7),
-        "the written `P = Int64` is what matches `Red provides Sp[C = Red, P = Int64]`",
-    );
-
-    // THE CONTROLS, IN THE SAME FIXTURE AND THE SAME CLAUSE SHAPE — the two spellings
-    // that say NOTHING about `P`. They must still delay: the wildcard is correct where
-    // the author named no element, and this ticket does not widen what a wildcard matches.
-    // They pass under every back-out in the file header, which is what makes the row above
-    // a measurement of the WRITTEN BINDING rather than of the fixture.
-    for (ns, bracket) in [("test.j38ve.wc", "Sp[C = Red]"), ("test.j38ve.wb", "Sp")] {
+    // ASSERTED BY VALUE. The spec's own `tag()` is body-less, so a clause that failed to
+    // thread the dictionary answers a residual, not a wrong number.
+    for (ns, element, want) in [
+        ("test.j38ve.wi", "Int64", 7),
+        ("test.j38ve.wb", "Bool", 8),
+        ("test.j38ve.wo", "?", 7),
+    ] {
         let tail = format!(
-            "  rule answer(?r) :- ?d = require[{bracket}], Sp.crecv(red(), ?c), Sp.tag(?r)\n"
+            "{BY_BOOL}  rule g[A](?x: A, ?r) :- require s: Sp[C = A, P = {element}], s.tag(?r)\n  \
+             rule answer(?r) :- g(red(), ?r)\n"
         );
         assert_eq!(
             answer(ns, &tail),
-            None,
-            "`{bracket}` names nothing for `P`, so the wildcard stands and the goal delays",
+            Some(want),
+            "`P = {element}` selects its provision (`?`, unwritten: the carrier's own, the default)"
         );
     }
+
+    // THE CONTROLS, beside `Red`'s provision alone: a written `P` that no provision states
+    // selects nothing, and an unwritten one is read off the provision at the carrier.
+    let alone = |ns: &str, bracket: &str| {
+        answer(
+            ns,
+            &format!(
+                "  rule g[A](?x: A, ?r) :- require s: {bracket}, s.tag(?r)\n  \
+                 rule answer(?r) :- g(red(), ?r)\n"
+            ),
+        )
+    };
+    assert_eq!(alone("test.j38ve.wn", "Sp[C = A, P = Bool]"), None, "no provision at `P = Bool`");
+    assert_eq!(alone("test.j38ve.wc", "Sp[C = A]"), Some(7), "`P` read off `Red`'s provision");
 }
 
 // ── the sum with WI-20260909-S8CBV gate (1) ────────────────────────────────
 
 #[test]
 fn a_projected_carrier_and_a_written_element_compose() {
-    // NEITHER TICKET ALONE REACHES THIS. The carrier is a PROJECTION (`C = p.E`, gate
-    // (1)'s δ at fire time) and the content is WRITTEN (`P = Int64`, this ticket). Before
-    // gate (1) the clause did not load; after it, and before this ticket, it loaded and
-    // residualized — δ resolved `p.E` to `Red` and then the synthesized `P` wildcard threw
-    // the row away again.
-    //
-    // AND IT IS THE ROW THAT SAYS THE TWO READS OF SLOT 0 SHARE ONE WALK: the projected
-    // member and the written bindings come off one `extract_type`
-    // (`requirement_bracket`), and a bracket that needs both is what would expose them
-    // disagreeing.
-    //
-    // FAILS under THE PREFERENCE and under the ANCHOR's PARAMETER branch.
+    // A CARRIER AT A COLUMN'S ELEMENT AND A WRITTEN CONTENT. The element of `p: Box[E = E]`
+    // is the carrier, which the citation fixes at `Red`, and `P = Int64` is written. The row
+    // was `require[Sp[C = p.E, P = Int64]]`, the carrier a PROJECTION (S8CBV gate (1)'s δ at
+    // fire time); proposal 060.1 §5 removed it, and the introducer names the element.
     assert_eq!(
         answer(
             "test.j38ve.p",
-            "  rule anchored(p: Box, ?r) :- ?d = require[Sp[C = p.E, P = Int64]], Sp.tag(?r)\n  \
+            "  rule anchored[E](p: Box[E = E], ?r) :- require s: Sp[C = E, P = Int64], s.tag(?r)\n  \
              rule answer(?r) :- anchored(box(v: red()), ?r)\n"
         ),
         Some(7),
-        "`p.E` is `Red` here and the written `P = Int64` is what completes the goal",
+        "the element is `Red` here and the written `P = Int64` is `Red`'s provision",
     );
 
-    // THE CONTROL: the same projected carrier with `P` left to the wildcard. Still a
-    // residual, so the `7` above is the written element's doing and not the projection's.
+    // THE CONTROL: the same element with a `P` no provision states selects nothing, so the
+    // `7` above is the written element's doing and not the carrier's alone.
     assert_eq!(
         answer(
             "test.j38ve.pc",
-            "  rule anchored(p: Box, ?r) :- ?d = require[Sp[C = p.E]], Sp.tag(?r)\n  \
+            "  rule anchored[E](p: Box[E = E], ?r) :- require s: Sp[C = E, P = Box[E = Red]], s.tag(?r)\n  \
              rule answer(?r) :- anchored(box(v: red()), ?r)\n"
         ),
         None,
-        "a projected carrier does not by itself decide the spec's other element",
+        "no provision of `Sp` at `C = Red` states `P = Box[E = Red]`",
     );
 }
 
@@ -225,8 +222,8 @@ fn tie(ns: &str, bracket: &str) -> String {
     provides MidB[N = Int64]
   end
 
-  rule dict(?x, ?d) :- ?d = require[{bracket}], Spec.probe(?x, ?ignored)
-  rule answer(?d) :- dict(carrier(), ?d)
+  rule dict[A](?x: A, ?r) :- {bracket}, Spec.probe(?x, ?r)
+  rule answer(?r) :- dict(carrier(), ?r)
 end
 "#
     )
@@ -253,11 +250,13 @@ fn a_tie_a_written_element_does_not_cause_stays_a_delay() {
     // exactly as a minted wildcard does — the flag asks the COARSE question "did anything
     // but a carried type decide this goal", not "which element did they tie on".
     //
-    // BACKING OUT the `from_carried_types = false` beside the written pin makes THIS ROW
-    // ABORT, and nothing else in the workspace moves.
+    // BACKING OUT the `from_carried_types = false` beside the written pin made THIS ROW
+    // ABORT, and nothing else in the workspace moved — measured while the requirement was
+    // `?d = require[Spec[C = Carrier, Note = Int64]]` (removed by proposal 060.1 §5). It is
+    // the introducer's guard at the call's carrier now, written and bare, and it delays.
     for (ns, bracket) in [
-        ("j38ve_tie_w", "Spec[C = Carrier, Note = Int64]"),
-        ("j38ve_tie_b", "Spec[C]"),
+        ("j38ve_tie_w", "Spec[C = A, Note = Int64]"),
+        ("j38ve_tie_b", "Spec[A]"),
     ] {
         let mut kb = crate::common::load_kb_with(&tie(ns, bracket));
         let sols = crate::common::query_unary(&mut kb, &format!("{ns}.answer"));
@@ -305,7 +304,7 @@ fn applied(ns: &str, provides: &str, bracket: &str) -> String {
     operation crecv(x: Red) -> Int64 = 5
   end
 
-  rule anchored(x: Red, ?r) :- ?d = require[Sp[C = Red, P = {bracket}]], Sp.tag(?r)
+  rule anchored[A](x: A, ?r) :- require s: Sp[C = A, P = {bracket}], s.tag(?r)
   rule answer(?r) :- anchored(red(), ?r)
 end
 "#
@@ -333,7 +332,8 @@ fn an_applied_written_element_pins_what_the_author_actually_wrote() {
     //   * the AGREEING spelling delayed — the goal pinned bare `Box` and the provider's
     //     applied `Box[E = Leaf]` refused it, so the ticket's headline capability simply
     //     did not hold for an applied element;
-    //   * and the DISAGREEING one ANSWERED — `require[…P = Box[E = Other]]` selected the
+    //   * and the DISAGREEING one ANSWERED — `require[…P = Box[E = Other]]` (removed by
+    //     proposal 060.1 §5; the requirement is the introducer's, under a name) selected the
     //     `Box[E = Leaf]` row, because both had been reduced to `Box`. That is the worse
     //     half: a wrong answer where the pre-ticket code delayed.
     //

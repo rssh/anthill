@@ -89,7 +89,6 @@ pub(super) fn build_dispatching_dict_direct(
         kb,
         // Diagnostic-only path (`require_complete = false`): it cannot act on an `Err`.
         None,
-        &[],
         callee_spec_sort,
         callee_provision,
         &callee_chain,
@@ -743,7 +742,7 @@ fn under_its_name(kb: &KnowledgeBase, entry: &RequiresEntry, goal: String) -> St
 /// WI-20260921-3G1YT deleted that question and the two walks behind it, because a
 /// declared `requires` is owed by the caller BECAUSE IT IS DECLARED. Every parked
 /// refusal is now reported; a dep some route discharges
-/// ([`scope_contract_covers_dep`] and the two rule-body rescues) never parks at all. The
+/// (the two rule-body rescues) never parks at all. The
 /// park itself survives for the reason above, which is about WHEN the answer exists and
 /// not about what the question is.
 #[derive(Clone)]
@@ -791,13 +790,12 @@ pub(super) fn report_unsuppliable_requirements(
         // admitted on the strength of a body it does not own breaks when that body
         // changes, with nothing at the call site having moved.
         //
-        // WHAT REPLACES IT IS NOT A LOOSER GATE BUT THREE DISCHARGE ROUTES, all read at
-        // the call site from the signature, and stated in full at kernel-language.md §8.7:
-        // the caller's own `requires` ([`build_dep_projection`] Strategies 1/2); a
-        // dictionary the CLAUSE declares, a written `require[Spec[…]]`
-        // ([`scope_contract_covers_dep`], over what [`held_spec_views`] collects); and
-        // provider facts that uniquely determine one
-        // ([`dep_completes_to_a_unique_provider`]). A dep no route discharges never parks.
+        // WHAT REPLACES IT IS NOT A LOOSER GATE BUT DISCHARGE ROUTES, read at the call site
+        // from the signature: the caller's own `requires` ([`build_dep_projection`]
+        // Strategies 1/2), and provider facts that uniquely determine one
+        // ([`dep_completes_to_a_unique_provider`]). kernel-language.md §8.7 names a third, a
+        // clause's written `require[Spec[…]]`, which proposal 060.1 §5 removed. A dep no
+        // route discharges never parks.
         // A value in scope is not a route: its type says nothing a dictionary could be
         // built from (WI-20261005-KSSA4).
         //
@@ -1168,9 +1166,6 @@ fn build_dispatching_dict_from_chain(
     // bodies are typed) nor be rescued by value-direction when the spec has no receiver.
     // See the use below.
     rule_body_callee: Option<Symbol>,
-    // WI-20260921-3G1YT — the bracket route's slot source; see
-    // [`build_concrete_dispatch_dict`]'s own note on this parameter.
-    held: &[HeldSpecView],
     callee_spec_sort: Symbol,
     // Proposal 066 §7 — the provision the called operation is a member of
     // ([`op_owner_provision`]): a parent bundle is the callee's FRAME, which is its
@@ -1338,8 +1333,7 @@ fn build_dispatching_dict_from_chain(
                 // FiniteCollection) = size(c)` owed `Iterable[…]` and `c`'s type was taken
                 // to say it held one. A value typed at a spec over a parameter is not a
                 // value of that parameter, the call is refused where it is written, and
-                // what the reading served is a `requires` clause's, which has a dictionary
-                // ([`scope_contract_covers_dep`]).
+                // what the reading served is a `requires` clause's, which has a dictionary.
                 //
                 // THE REST OF THE CHAIN IS STILL JUDGED (WI-20261005-2KV4Y). A held dep
                 // means no dictionary for this callee — the bundle is all-or-nothing — but
@@ -1350,10 +1344,6 @@ fn build_dispatching_dict_from_chain(
                 // `wi_2kv4y_unfixed_carrier_test
                 // …a_requirement_declared_after_a_held_one_is_still_owed`).
                 if let Some(sigma) = disambig {
-                    if scope_contract_covers_dep(kb, held, dep, sigma) {
-                        held_any = true;
-                        continue;
-                    }
                     // WI-20261005-KSSA4 — A CONSTRUCTION IS JUDGED ON WHAT IT FIXES. A call
                     // needs its dictionary now, so an element it leaves open is refused
                     // here (§5.2). A construction needs none: the value is typed with
@@ -1760,12 +1750,6 @@ pub(super) fn build_concrete_dispatch_dict(
     // bodies are typed) nor be rescued by value-direction when the spec has no receiver.
     // See the use below.
     rule_body_callee: Option<Symbol>,
-    // WI-20260921-3G1YT — the bracket route's slot source: the spec instances the
-    // clause's `require[…]` brackets declare ([`held_spec_views`]). Empty in an operation
-    // body, which declares none, and on the ETA and Direct paths, which have no
-    // environment to read one from; empty is simply "no bracket here", never a wrong
-    // verdict.
-    held: &[HeldSpecView],
     subst: &Substitution,
     callee_spec_sort: Symbol,
     // Proposal 066 §7 — the provision the called operation is a member of
@@ -1874,7 +1858,6 @@ pub(super) fn build_concrete_dispatch_dict(
     build_dispatching_dict_from_chain(
         kb,
         rule_body_callee,
-        held,
         callee_spec_sort,
         callee_provision,
         &concrete_chain,
@@ -2043,8 +2026,6 @@ pub(super) fn stamp_op_scoped_dicts(
     selected: &[InstanceSelection],
     park: Option<OpSlotParkSite>,
     param_arg_types: &HashMap<Symbol, Value>,
-    // WI-20260921-3G1YT — the bracket route's slot source; see [`build_op_scoped_dicts`].
-    held: &[HeldSpecView],
     span: Option<Span>,
     usage: RequirementUse,
 ) -> Result<(), TypeError> {
@@ -2057,7 +2038,6 @@ pub(super) fn stamp_op_scoped_dicts(
         selected,
         park,
         param_arg_types,
-        held,
         usage,
     )
     // WI-1091: a TIE in the op half is a load refusal, as the sort half's is.
@@ -2243,8 +2223,8 @@ pub(super) fn param_supplied_slot(
 /// this call supply the slot?", and the parked refusal is REPORTED by
 /// [`report_unsuppliable_requirements`]. Since WI-20260921-3G1YT it is reported
 /// unconditionally — the old "does the callee's body READ it?" gate is gone, and what
-/// keeps a legitimate call out of the park is a DISCHARGE ROUTE
-/// ([`scope_contract_covers_dep`]) rather than an excuse. See [`unprovided_provision`]
+/// keeps a legitimate call out of the park is a DISCHARGE ROUTE (the caller's `requires`,
+/// or provider facts that determine one) rather than an excuse. See [`unprovided_provision`]
 /// for the three conditions and [`OpSlotParkSite`] for the two the caller supplies.
 // WI-20260909-S8CBV added the 8th parameter (`param_arg_types`). Allowed rather than
 // bundled: the seven that were here are each a distinct call-site fact this function
@@ -2264,11 +2244,6 @@ pub(super) fn build_op_scoped_dicts(
     // requirement written at a projection. Empty for every callee whose chain carries
     // none, which is all of them but this ticket's shape.
     param_arg_types: &HashMap<Symbol, Value>,
-    // WI-20260921-3G1YT — the bracket route's slot source, the OP half's copy of the sort
-    // half's parameter ([`held_spec_views`]). Both halves ask the one predicate
-    // [`scope_contract_covers_dep`], so a dep discharged on one cannot be refused on the
-    // other.
-    held: &[HeldSpecView],
     // How the callee is used at `park`'s site, which a parked refusal says.
     usage: RequirementUse,
 ) -> Result<SmallVec<[Option<TermId>; 2]>, DictRefusal> {
@@ -2648,21 +2623,6 @@ pub(super) fn build_op_scoped_dicts(
             });
         }
         if projected.is_none() {
-            // WI-20260921-3G1YT — THE OBLIGATION IS HELD, by a `require[…]` bracket the
-            // clause declares. The OP half's copy of the arm
-            // [`build_dispatching_dict_from_chain`] states in full; one predicate
-            // ([`scope_contract_covers_dep`]) serves both, so a dep discharged on one
-            // half cannot be refused on the other.
-            //
-            // THE SLOT STAYS ABSENT, which is this half's own `Ok(None)`: the op half
-            // is best-effort and NAME-keyed, so a discharged dep leaves its own slot
-            // empty and its siblings supplied — where the sort half, being
-            // all-or-nothing (`require_complete`), drops the whole dictionary. Both mean
-            // "no dictionary here; the bracket's own supplies the frame".
-            if scope_contract_covers_dep(kb, held, &dep, &disambig) {
-                out.push(None);
-                continue;
-            }
             // WI-20260919-N31XX (proposal 065) — AN UNFILLED `TypeValue` SLOT IS NEVER
             // BENIGN, which is what takes it out of the silent-absence rule below.
             //
@@ -3412,15 +3372,15 @@ fn dep_completed_at_carrier(kb: &mut KnowledgeBase, dep: &RequiresEntry) -> Opti
 /// wording are one thing, and a copy would let the two drift the way WI-456(b) records for
 /// the tie repairs.
 ///
-/// `holder`: the spec whose `require[…]` bracket would hold this dep, where there is one to
-/// name — the callee's own sort, on the sort half, when it is a spec some sort provides. A
-/// bracket holds what its spec REQUIRES ([`scope_contract_covers_dep`] walks the declared
-/// spec's direct chain), so a bracket of the dep's own spec holds nothing here. The advice
-/// named that one until WI-20260925-P7VP4 ran it — MEASURED: `require[Iterable[C = List[T =
-/// String]]], size(?ls, ?n)` is refused with this same message where
-/// `require[FiniteCollection[C = List[T = String]]]` loads, and `require[WeakOrd[T]]` beside
-/// `?c = Util.sign(?a, ?b)` is refused the same way. An operation-level clause, and a
-/// sort-level one whose sort nothing provides, have no bracket to name and get none.
+/// `holder`: the spec whose instance, written on the call's receiver, would hold this dep,
+/// where there is one to name — the callee's own sort, on the sort half, when it is a spec
+/// some sort provides: `FiniteCollection[C = List[T = String]].size(?ls, ?n)` answers where
+/// `size(?ls, ?n)` is refused. An instance holds what its spec REQUIRES (its provision
+/// carries the spec's direct chain), so one of the dep's
+/// own spec holds nothing here. The advice named the clause's `require[…]` of the holder until
+/// proposal 060.1 §5 removed that form (and named the dep's own spec until WI-20260925-P7VP4
+/// ran it). An operation-level clause, and a sort-level one whose sort nothing provides, have
+/// no instance to name and get none.
 fn unrescuable_rule_body_refusal(
     kb: &KnowledgeBase,
     dep: &RequiresEntry,
@@ -3431,9 +3391,10 @@ fn unrescuable_rule_body_refusal(
 ) -> RequirementRefusal {
     let repairs = match holder {
         Some(holder) => format!(
-            "Declare `require[{}[…]]` in the clause, whose `requires` hold it, pin the \
+            "Write the instance at the call, `{}[…].{}(…)`, whose `requires` hold it, pin the \
              element at this call",
-            kb.qualified_name_of(holder),
+            short_name_of(kb.qualified_name_of(holder)),
+            kb.local_name_of(callee_op),
         ),
         None => "Pin the element at this call — by an argument whose type the clause \
                  knows, such as a constructor's value or a head variable written with its \
@@ -3449,7 +3410,7 @@ fn unrescuable_rule_body_refusal(
         refused_covers: Vec::new(),
         construction: format!(
             "this is a RULE-body goal, and nothing in the clause determines which \
-             `{spec}` instance it means: no `require[…]` the clause declares holds it, \
+             `{spec}` instance it means: no requirement the clause declares holds it, \
              this call pins no element, and `{spec}`'s provider facts do not decide one \
              either. Taking the dictionary from the argument's RUNTIME VALUE instead \
              would turn a load error into a run-time one — the clause would load and \
@@ -3525,185 +3486,13 @@ fn dep_completes_to_a_unique_provider(
     )
 }
 
-/// WI-20260922-0DK3H — A DECLARED `require[Spec[…]]` BRACKET HOLDS THAT SPEC'S `requires`
-/// CHAIN: §8.7's route (3). `require[FiniteCollection[C = List[T = String]]]` over a rule
-/// body supplies the `Iterable[…]` that `FiniteCollection` itself requires.
-///
-/// The other routes are the caller's own `requires` — (1), which
-/// [`build_dep_projection`]'s Strategies 1/2 answer by FORWARDING a slot — and, at a rule
-/// body, the provider facts, (4) ([`dep_completes_to_a_unique_provider`]). This one is
-/// neither a forward nor a search: it is a DISCHARGE.
-///
-/// NO DICTIONARY IS BUILT HERE. The obligation is met by what the clause states, and the
-/// callee is entered with the slot unfilled; a rule-body goal reaches its provider through
-/// the bridge, which resolves it from the argument values.
-///
-/// IT IS STRATEGY 2 WITH A DIFFERENT SLOT SOURCE, and deliberately so: Strategy 2 walks
-/// `direct_requires_chain` of each spec the caller's frame holds a DICTIONARY for; this
-/// walks the same chain for each spec the clause DECLARES. The composition is Strategy 2's
-/// with the map read off the bracket ([`held_view_subst_map`] + [`substitute_in_spec`]),
-/// the cover is its key walk ([`supply_covers_demanded_keys`]), the σ is the call's. So
-/// "binding-aware" is not a property re-implemented here — it is the one the forwarding
-/// strategies already enforce, asked of a second source.
-///
-/// BINDING-AWARENESS IS LOAD-BEARING AND WAS MEASURED TO BE. A first probe matched on the
-/// spec SORT alone (`does anything in scope require an Ord at all?`), and two rows are
-/// exactly that looseness biting: `wi456 …an_undeclared_ordering_is_refused_at_load` and
-/// `…the_refusal_names_the_repair_and_not_a_witness_choice` hold an `Ord[T = X]` while the
-/// dep wants `Ord[T = Y]`, and the sort-only cover wrongly silenced both refusals. With
-/// the key walk they stay refused.
-///
-/// A BRACKET IS ASKED FOR WHAT THE GOAL SAYS. It is the clause itself saying which
-/// instance its goals are at, over a body whose variables are untyped, so every element of
-/// the goal's requirement is open by construction (§5.2): the elements the call leaves
-/// open are left out of the demand, and the bracket supplies them.
-///
-/// A VALUE IN SCOPE HOLDS NOTHING (WI-20261005-KSSA4). This walk used to be asked of every
-/// value typed at a spec as well — `total(c: FiniteCollection) = size(c)` "held"
-/// `Iterable[…]` because `c`'s type said so — on the reading that a value typed at a spec
-/// is a value of the spec's carrier. It is not ([`spec_has_carrier_param`]): the call is
-/// refused where it is written, and what such a value was taken to hold is supplied by a
-/// `requires` clause, which has a dictionary.
-///
-/// ONE LEVEL, NOT TRANSITIVE, for Strategy 2's own reason: a dictionary bundles its spec's
-/// DIRECT sub-requires, and a dep reachable only past a second level is not something the
-/// declared instance's provision necessarily carries. A deeper dep falls through and is
-/// refused, which is a refusal WITHHELD from nothing — it is the conservative half.
-pub(super) fn scope_contract_covers_dep(
-    kb: &mut KnowledgeBase,
-    held: &[HeldSpecView],
-    dep: &RequiresEntry,
-    sigma: &SigmaCtx,
-) -> bool {
-    // The demand, decoded ONCE: it does not vary with the holder, and a dep whose spec
-    // does not decode is not a cover question for any of them.
-    let Some((_, demand)) = unwrap_spec_view_value(kb, &dep.spec) else {
-        return false;
-    };
-    // What the call SAYS of the requirement — [`sigma_class_terminal`]'s second component,
-    // the one `unconstrained_elements` reports from: `false` is a chase that ended at an
-    // unbound variable, an element nothing at this call determines, and it is left out. A
-    // RIGID ends `true` and is said.
-    let said: SmallVec<[(Symbol, Value); 2]> = demand
-        .iter()
-        .filter(|(_, v)| !matches!(sigma_class_terminal(kb, sigma, v), Some((_, false))))
-        .cloned()
-        .collect();
-    let spec_qn = kb.qualified_name_of(dep.required_sort).to_string();
-    for holder in held {
-        // The same same-sort pre-filter Strategies 2 and 2b apply, and for the same
-        // reason: composition never changes `required_sort`, so a chain with no
-        // same-sort entry must cost a symbol compare rather than a `HashMap` plus a
-        // substitution walk. This runs per dep, per call, on the load-time path.
-        let chain = direct_requires_chain(kb, holder.spec_sort);
-        if !chain
-            .iter()
-            .any(|e| same_sort_canonical(kb, e.required_sort, dep.required_sort))
-        {
-            continue;
-        }
-        let map = held_view_subst_map(kb, holder.spec_sort, &holder.view);
-        for entry in chain.iter() {
-            if !same_sort_canonical(kb, entry.required_sort, dep.required_sort) {
-                continue;
-            }
-            let composed = substitute_in_spec(kb, &entry.spec, &map);
-            // [`entries_cover`]'s key walk — its `same_sort_canonical` is already settled
-            // by the filter above — asked of the demand the call states.
-            let Some((_, supply)) = unwrap_spec_view_value(kb, &composed) else {
-                continue;
-            };
-            if supply_covers_demanded_keys(
-                kb,
-                Some(sigma),
-                &spec_qn,
-                Supply(&supply),
-                Demand(&said),
-            ) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-/// WI-20260921-3G1YT — IS `s` A SPEC, in the only sense a held bracket needs: something
-/// a CARRIER provides, as opposed to something that IS a carrier. A bracket over a carrier
-/// (`require[SortedSet[…]]`) declares no provision row to hold a chain.
-///
-/// Both legs are cheap and the first says what a bracket can HOLD: a sort with no type
-/// parameter gives a bracket no carrier to name, whichever sorts provide it, and nothing
-/// provides a sort with constructors ([`clause_is_dispatchable`], WI-20260921-28TAT).
+/// WI-20260921-3G1YT — IS `s` A SPEC, in the only sense a requirement's holder needs:
+/// something a CARRIER provides, as opposed to something that IS a carrier, which has no
+/// provision row to hold a chain. A sort with no type parameter gives a requirement no
+/// carrier to name, whichever sorts provide it, and nothing provides a sort with
+/// constructors ([`clause_is_dispatchable`], WI-20260921-28TAT).
 fn sort_is_a_provided_spec(kb: &KnowledgeBase, s: Symbol) -> bool {
     clause_is_dispatchable(kb, s) && spec_has_any_providers(kb, s)
-}
-
-/// WI-20260921-3G1YT — the composition map for a HELD view: the spec's own type
-/// parameters ↦ what this value's type binds them to, so a chain entry written in the
-/// spec's vocabulary (`Iterable[C = FiniteCollection.C, …]`) is rewritten into the
-/// value's (`Iterable[C = XC, …]`).
-///
-/// NOT [`build_child_subst_map`], and the difference is the whole reason this exists.
-/// That one decodes through [`unwrap_spec_view_value`], which recognizes the
-/// `SortView(base, …)` term a `requires` entry carries and answers "NO BINDINGS" for the
-/// PLAIN applied type `S[C = κ, …]`. A value's TYPE wears the plain spelling — MEASURED,
-/// `c: FiniteCollection` arrives as `Fn{FiniteCollection, C: …, Element: …, E: …}` — so
-/// composing through that one produced an EMPTY map, left every binding at the spec's own
-/// formal (`Iterable[C = FiniteCollection.C]`), and no cover could ever match.
-///
-/// Read over [`TermView`] so the three carriers (`Value::Term` / `Entity` / `Node`) decode
-/// identically, each binding on the carrier it rides: a type that holds a value (`Hold[C =
-/// Buf[T = Int64, N = 3]]`), and an argument of a written `require[…]` bracket, ride as
-/// occurrences and compose like any other. Non-type-param keys (the auto-bound `iterator`,
-/// `find`, …) are harmless: they key on `<spec>.<name>`, and a chain entry's own op
-/// bindings name the REQUIRED spec's operations, which no key here can collide with.
-///
-/// WHAT A BRACKET'S ARGUMENTS COMPOSE TO IS COMPARED WITH NOTHING YET. The demand a
-/// clause's goal makes of a bracket says none of the required spec's type parameters,
-/// whether or not the head types the goal's variables (MEASURED: the four asks in
-/// `wi_tests`, all `require[FiniteCollection[C = List[T = String]]]` over `size(?ls, ?n)`,
-/// and their typed twins), so [`scope_contract_covers_dep`] covers on the entry's sort
-/// alone. Kept to the term bindings, as this was — which is none of a bracket's — no row
-/// and no program found answers differently.
-fn held_view_subst_map(kb: &KnowledgeBase, base: Symbol, ty: &Value) -> HashMap<Symbol, Value> {
-    let mut map = HashMap::new();
-    let base_qn = kb.qualified_name_of(base).to_string();
-    for (key, v) in view_named_children(kb, ty) {
-        let qn = format!("{base_qn}.{}", kb.local_name_of(key));
-        if let Some(param) = kb.try_resolve_symbol(&qn) {
-            map.insert(param, v);
-        }
-    }
-    map
-}
-
-/// WI-20260922-0DK3H — one spec instance the clause DECLARES, as
-/// [`scope_contract_covers_dep`]'s slot source: the spec, and the bracket's view of it.
-#[derive(Clone)]
-pub(crate) struct HeldSpecView {
-    pub(super) spec_sort: Symbol,
-    pub(super) view: Value,
-}
-
-/// WI-20260922-0DK3H — the spec instances this clause's written `require[Spec[…]]`
-/// brackets declare ([`TypingEnv::rule_declared_specs`]): each a contract the clause holds.
-///
-/// IT IS A SPEC THAT HOLDS A CHAIN, NOT ANY PARAMETERISED SORT ([`sort_is_a_provided_spec`]).
-/// A declared instance's provision is what contains the spec's `requires` chain; a carrier
-/// has no provision row to hold a slot.
-///
-/// A VALUE'S TYPE IS NOT A SOURCE (WI-20261005-KSSA4) — see [`scope_contract_covers_dep`].
-pub(super) fn held_spec_views(kb: &KnowledgeBase, env: &TypingEnv) -> Vec<HeldSpecView> {
-    env.rule_declared_specs()
-        .iter()
-        .filter_map(|view| {
-            let spec_sort = sort_functor_of_view(kb, view)?;
-            sort_is_a_provided_spec(kb, spec_sort).then(|| HeldSpecView {
-                spec_sort,
-                view: view.clone(),
-            })
-        })
-        .collect()
 }
 
 /// WI-20260922-0DK3H — DOES THIS SPEC DECLARE NO OPERATIONS AT ALL? A spec that does not

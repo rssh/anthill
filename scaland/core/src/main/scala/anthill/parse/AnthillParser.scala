@@ -972,29 +972,54 @@ private class AnthillParserImpl(
     * (so `! atom` stays prefix negation `not(atom)` — only a bare `!`, where
     * `term` fails for lack of an operand, becomes the cut). */
   private def goalTerm[$: P]: P[ParseTermId] =
-    P(letGoal | requireBindingGoal | requirementGoal | term | cutGoal)
+    P(letGoal | removedRequirementGoal | term.map { t => refuseNestedRequirementForms(t); t } | cutGoal)
 
-  // ERF7T: control forms mint only the absolute target. DesugarTargetTest
-  // drives both requirement spellings, explicit outputs, and ordinary-call controls.
-  private def requirementGoal[$: P]: P[ParseTermId] =
-    P(
-      (spanOfToken(keyword("requires")) ~ "(" ~ term ~ ")").map {
-        case (span, spec) =>
-          terms.allocAt(Term.Fn(intern(DesugarTarget.FindDictionary), IArray(spec), IArray.empty), span)
-      } |
-      (spanOfToken(keyword("require")) ~ "[" ~/ term ~ "]").map {
-        case (span, spec) => dictionaryGoal(spec, varTermAt("", span), span)
-      }
-    )
-
-  private def requireBindingGoal[$: P]: P[ParseTermId] =
-    P(located(Tokens.variableToken) ~ "=" ~ keyword("require") ~ "[" ~/ term ~ "]").map {
-      case (name, span, spec) => dictionaryGoal(spec, varTermAt(name, span), span)
+  /** The removed dictionary-goal spellings — `requires(X)`, `require[X]`,
+    * `?d = require[X]` — refused, quoting what was written, in rustland's words
+    * (`refuse_removed_requirement_form`, proposal 060.1 §5). A rule declares a
+    * requirement on its head's introducer instead. `requires(X, Y)`, `require(X)`
+    * and a call named `find_dictionary` stay ordinary calls; DesugarTargetTest
+    * drives each. */
+  private def removedRequirementGoal[$: P]: P[ParseTermId] =
+    P(located(
+      (keyword("requires") ~ "(" ~ term ~ ")").map(_ => ()) |
+      (keyword("require") ~ "[" ~/ term ~ "]").map(_ => ()) |
+      (Tokens.variableToken ~ "=" ~ keyword("require") ~ "[" ~/ term ~ "]").map(_ => ())
+    )).map { case (_, span) =>
+      refuseRemovedRequirementForm(span, source.substring(span.start, span.end))
+      terms.allocAt(Term.Bottom, span)
     }
 
-  private def dictionaryGoal(spec: ParseTermId, out: ParseTermId, span: Span): ParseTermId =
-    terms.allocAt(Term.Fn(intern(DesugarTarget.FindDictionary), IArray(spec),
-      IArray((intern("out"), out))), span)
+  /** The same spellings standing inside a goal — a negand's conjunct, a branch of `|` —
+    * refused at any depth, as rustland's `refuse_removed_requirement_forms` walks the goal:
+    * `requires` with one argument, and `require` written with the bracket. */
+  private def refuseNestedRequirementForms(goal: ParseTermId): Unit =
+    val stack = scala.collection.mutable.Stack(goal)
+    while stack.nonEmpty do
+      val t = stack.pop()
+      terms.get(t) match
+        case fn: Term.Fn[ParseTermId] =>
+          val name = symbols.name(fn.functor)
+          val oneArg = fn.posArgs.length == 1 && fn.namedArgs.isEmpty
+          if oneArg && (name == "requires" || (name == "require" && terms.isTypeApplication(t))) then
+            // A bracketed application's span is its name's: the argument is quoted from its own.
+            val arg = terms.spanOf(fn.posArgs(0))
+            val (open, close) = if name == "requires" then ("(", ")") else ("[", "]")
+            refuseRemovedRequirementForm(
+              terms.spanOf(t), s"$name$open${source.substring(arg.start, arg.end)}$close")
+          else
+            fn.posArgs.foreach(stack.push)
+            fn.namedArgs.foreach((_, a) => stack.push(a))
+        case _ => ()
+
+  private def refuseRemovedRequirementForm(span: Span, written: String): Unit =
+    errors += ParseError(
+      s"`$written` is no longer written: a rule declares a requirement as an " +
+      "operation does — a type parameter on the head's introducer and a guard " +
+      "naming the spec at it, `rule r[A](?x: A, …) :- Spec[T = A], …`, or with " +
+      "the keyword, `require Spec[T = A]`; to call through it by name, " +
+      "`require s: Spec[T = A]` and `s.op(…)`. A call at a concrete type needs " +
+      "no requirement", span)
 
   /** Goal-position `let ?v = expr` (proposal 049) → `unify(?v, expr)`, the same
     * IR `<=>` builds. Distinct from the expression-position `let_chain` (which

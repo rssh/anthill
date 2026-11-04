@@ -1,6 +1,22 @@
-//! WI-1040 — `require[X]` brings a requirement dictionary into a rule clause's
+//! WI-1040 — `require[X]` brought a requirement dictionary into a rule clause's
 //! scope, so a body call that needs one can be PASSED it instead of only being
 //! checked against it.
+//!
+//! ## Since proposal 060.1 §5
+//!
+//! `require[X]`, `?d = require[X]` and `requires(X)` are removed. A clause declares its
+//! requirement as an operation does — a type parameter on the head's introducer and a guard
+//! at it, `rule via[A](?x: A, ?r) :- Desc[T = A]` — and its dictionary is read as the written
+//! one was (`find_dictionary(…, out: ?d, carrier_type: true)`) and woven into the calls at
+//! its carrier. A call that writes no instance names the requirement it reads, `require d:
+//! Desc[T = A]` and `d.name(?r)`. The rows below drive the same capabilities through those
+//! spellings and check the answers the dictionary gives; the table that follows was measured
+//! on the removed forms. Rows whose subject was the removed form itself went with it or were
+//! turned to the form that replaces it: the named spelling is the call through a name, the
+//! check-only spelling the guard, the two refusals the guard's own (an introducer no column
+//! names) and the removed form's. A dictionary handed through a rule HEAD went with every
+//! column a dictionary could ride; a caller's requirement crosses a goal instead, and a
+//! citation that would hand a clause a dictionary at another carrier is refused at load.
 //!
 //! Design: `docs/design/requirement-channel.md`; surface: proposal 060 §1.
 //!
@@ -227,14 +243,14 @@ fn refusal(src: &str) -> String {
 /// THE HEADLINE. The receiver is a rule VARIABLE bound only by the caller, so the
 /// typer cannot pin the call — which is the common case in a rule body and exactly
 /// why 058 §3.3 puts rule bodies out of scope for compile-stage selection. The
-/// clause's `require[Desc[T]]` resolves the dictionary from the runtime carried
+/// clause's declared `Desc[T = A]` resolves the dictionary from the runtime carried
 /// type and the covered call dispatches through it.
 #[test]
 fn a_covered_call_dispatches_through_the_clause_dictionary() {
     let ns = "test.wi1040.covered";
     let src = program(
         ns,
-        "  rule via(?x, ?r) :- require[Desc[T]], Desc.describe(?x, ?r)\n  \
+        "  rule via[A](?x: A, ?r) :- Desc[T = A], Desc.describe(?x, ?r)\n  \
            rule answer(?r) :- via(leaf(), ?r)\n",
     );
     assert_eq!(
@@ -299,7 +315,7 @@ fn every_covered_call_in_the_clause_is_woven() {
     let ns = "test.wi1040.multi";
     let src = program(
         ns,
-        "  rule via(?x, ?a, ?b) :- require[Desc[T]], Desc.describe(?x, ?a), \
+        "  rule via[A](?x: A, ?a, ?b) :- Desc[T = A], Desc.describe(?x, ?a), \
              Desc.describe(?x, ?b)\n  \
            rule answer(?r) :- via(leaf(), ?r, ?b), eq(?r, ?b)\n",
     );
@@ -333,13 +349,12 @@ fn a_covered_call_nested_in_another_covered_call_is_woven_with_it() {
            sort Rod\n    import anthill.prelude.Int64\n    import anthill.prelude.Numeric.{mul}\n    \
              entity rod\n    provides Scale[T = Rod]\n    \
              operation scale(n: Int64, y: Rod) -> Int64 = n\n  end\n  \
-           rule r(?a, ?b, ?s, ?r) :- ?dy = require[Desc[T]], ?dx = require[Scale[T]], \
+           rule r[A, B](?a: A, ?b: B, ?s, ?r) :- Desc[T = A], Scale[T = B], \
              Desc.describe(?a, ?s), Scale.scale(Desc.describe(?a), ?b, ?r)\n  \
            rule answer(?r) :- r(leaf(), rod(), ?s, ?r)\n",
     );
     let mut kb = crate::common::load_kb_with(&src);
-    // Every call to `describe` / `scale` in `r`'s stored body. The witness read of `Scale`
-    // carries the call's own arguments, so the nested `describe` is met there too.
+    // Every call to `describe` / `scale` in `r`'s stored body.
     let calls: Vec<(String, bool, Vec<String>)> = crate::common::body_calls(&kb, &format!("{ns}.r"))
         .into_iter()
         .filter(|(f, _, _)| f == "describe" || f == "scale")
@@ -364,8 +379,10 @@ fn answer_in(kb: &mut anthill_core::kb::KnowledgeBase, ns: &str) -> i64 {
     }
 }
 
-/// A BODY-LESS, builtin-backed spec op — the ordinary typeclass shape — must behave
-/// exactly as `requires(X)` does. It is deliberately NOT woven.
+/// A BODY-LESS, builtin-backed spec op — the ordinary typeclass shape — beside a requirement
+/// under a name must behave exactly as beside the unnamed guard. It is deliberately NOT
+/// woven. (The two spellings were `require[PartialEq[T]]` and the check-only
+/// `requires(PartialEq[T])`, removed by proposal 060.1 §5.)
 ///
 /// Review finding (2026-08-07), MEASURED before the gate: weaving it turned
 /// `require[PartialEq[T]], eq(?x, ?y)` from ONE solution into ZERO. An
@@ -374,9 +391,8 @@ fn answer_in(kb: &mut anthill_core::kb::KnowledgeBase, ns: &str) -> i64 {
 /// worked before the weave silently failing after it. `collect_covered_calls` now
 /// admits only callees the WI-938 hook recognizes.
 ///
-/// The `requires` spelling is the CONTROL, queried in the same KB: the claim is that
-/// the two AGREE, so asserting only the `require` side would keep passing if both
-/// broke together.
+/// The unnamed guard is the CONTROL, queried in the same KB: the claim is that the two
+/// AGREE, so asserting only the named side would keep passing if both broke together.
 #[test]
 fn a_body_less_builtin_spec_op_behaves_exactly_as_the_check_only_spelling() {
     let ns = "test.wi1040.bodyless";
@@ -395,8 +411,8 @@ fn a_body_less_builtin_spec_op_behaves_exactly_as_the_check_only_spelling() {
     provides PartialEq[T = Witheq]
     provides Eq[T = Witheq]
   end
-  rule checked(?x, ?y) :- requires(PartialEq[T]), eq(?x, ?y)
-  rule denoted(?x, ?y) :- require[PartialEq[T]], eq(?x, ?y)
+  rule checked[A](?x: A, ?y: A) :- PartialEq[T = A], eq(?x, ?y)
+  rule denoted[A](?x: A, ?y: A) :- require d: PartialEq[T = A], eq(?x, ?y)
   rule control(?r) :- checked(we(v: 1), we(v: 1)), ?r <=> 1
   rule answer(?r) :- denoted(we(v: 1), we(v: 1)), ?r <=> 1
 end
@@ -408,8 +424,8 @@ end
     assert_eq!(
         control.len(),
         1,
-        "the CONTROL itself must answer — `requires(X)` over a builtin-backed \
-         body-less spec op is the delivered WI-300 behaviour: {control:?}",
+        "the CONTROL itself must answer — the guard over a builtin-backed body-less spec \
+         op is the delivered WI-300 behaviour: {control:?}",
     );
     // Compared on CONTENT, not on the `Debug` rendering: two occurrences of the
     // same answer carry different source spans, which say nothing about whether the
@@ -423,130 +439,55 @@ end
     assert_eq!(
         shape(&denoted),
         shape(&control),
-        "`require[X]` over a body-less builtin-backed spec op must answer exactly \
-         what `requires(X)` answers — weaving it made the clause answer nothing",
+        "a named requirement beside a body-less builtin-backed spec op must answer exactly \
+         what the unnamed guard answers — weaving it made the clause answer nothing",
     );
 }
 
 // ── (b) the named spelling ─────────────────────────────────────────────────
 
-/// The author names the output and passes it by hand. What is asserted is that the
-/// binding is a real dictionary — the `Dictionary` node over the carrier that
-/// supplies the spec — not merely that the goal succeeded.
+/// The requirement under a NAME, and the call made through it: `d.describe(?x, ?r)` reads
+/// `d`'s dictionary, `Leaf`'s, and answers its 7. The row was `?d = require[Desc[T]]`, the
+/// author binding the dictionary by hand, and asserted the binding was the `Dictionary` node
+/// over `Leaf`; proposal 060.1 §5 removed the form — no clause binds a dictionary to a
+/// column — and the dictionary is read by the answer it gives.
 #[test]
 fn the_named_spelling_binds_the_dictionary_by_hand() {
     let ns = "test.wi1040.named";
     let src = program(
         ns,
-        "  rule dict(?x, ?d) :- ?d = require[Desc[T]], Desc.describe(?x, ?ignored)\n  \
-           rule answer(?d) :- dict(leaf(), ?d)\n",
+        "  rule via[A](?x: A, ?r) :- require d: Desc[T = A], d.describe(?x, ?r)\n  \
+           rule answer(?r) :- via(leaf(), ?r)\n",
     );
-    let mut kb = crate::common::load_kb_with(&src);
-    let sols = crate::common::query_unary(&mut kb, &format!("{ns}.answer"));
-    let [(v, true)] = sols.as_slice() else {
-        panic!("`?d = require[…]` must bind exactly one definite dictionary, got {sols:?}");
-    };
-    let (head, impl_sym) = dictionary_parts(&kb, v);
-    assert!(
-        head.ends_with("Dictionary"),
-        "the binding must present the ONE dictionary shape WI-1019 announces for a \
-         handle too (§9) — got head `{head}`",
-    );
-    assert!(
-        impl_sym.ends_with(".Leaf"),
-        "the dictionary must name the carrier that supplies `Desc`, got `{impl_sym}`",
-    );
+    assert_eq!(answer(ns, &src), 7, "`Leaf`'s own `describe`, through the named requirement");
 }
 
-/// `(head functor, impl_functor)` of a dictionary value, as qualified names.
-/// Panics on any other shape — a test whose subject is "what did `?d` bind to" may
-/// not shrug at an unexpected carrier.
-pub(crate) fn dictionary_parts(kb: &anthill_core::kb::KnowledgeBase, v: &Value) -> (String, String) {
-    use anthill_core::kb::term_view::{TermView, ViewHead};
-    // Read CARRIER-NEUTRALLY, through the same view an eval `RequirementHandle`
-    // answers under. That is the assertion: one shape, whichever side built it.
-    let ViewHead::Functor {
-        functor: ctor,
-        ..
-    } = v.head(kb)
-    else {
-        panic!("a dictionary must present a constructor head, got {v:?}")
-    };
-    let head = kb.qualified_name_of(ctor).to_string();
-    let impl_key = kb
-        .try_resolve_symbol("anthill.realization.runtime.Dictionary.impl")
-        .expect("the `Dictionary.impl` accessor must resolve");
-    let impl_child = v
-        .named_arg(kb, impl_key)
-        .unwrap_or_else(|| panic!("a dictionary must carry `impl`; head `{head}`"))
-        .to_value();
-    let ViewHead::Functor {
-        functor: s,
-        pos_arity: 0,
-        named_arity: 0,
-    } = impl_child.head(kb)
-    else {
-        panic!("`impl` must name a sort, got {impl_child:?}")
-    };
-    (head, kb.qualified_name_of(s).to_string())
-}
+// ── (c) a caller's requirement crosses into another clause ────────────────
 
-// ── (c) a supplied dictionary is CHECKED, per WI-860 ───────────────────────
-
-/// Acceptance (c) — a SUPPLIED dictionary is CHECKED, per WI-860.
+/// Acceptance (c) — a dictionary crosses a rule boundary. The caller's requirement is handed
+/// to the callee's at the goal `use(?x, ?r)` (a citation passes the caller's requirement,
+/// 060.1 §1), and `describe` dispatches through it: `Leaf`'s 7.
 ///
-/// `read_dictionary_into` performs bind and check as ONE `unify_values` call, so the
-/// check mode is the same line, taken when `out` is bound. A second `require` on one
-/// spec base cannot bind it (refused by the guard tier, channel doc §10 item 1); a
-/// dictionary handed through a rule HEAD does.
-///
-/// This row used to PIN the opposite — `use` re-deriving at its own carrier and
-/// answering `7`, "because the callee's `?d` is a fresh unbound Global at goal time".
-/// That was not a boundary of the design but a hole in the resolver's goal walk:
-/// `get` bound the caller's `?d` to the `Other` dictionary — a non-`Term` carrier —
-/// and the term-world walk of the next goal KEPT the var, so `use` matched it as a
-/// wildcard and its head match overwrote the binding (the same drop
-/// WI-20260905-N20EZ's review measured on an `Entity` answer link). With the walk
-/// σ-applying every carrier, the supplied `Other` dictionary reaches `use`'s
-/// `?d = require[Desc[T]]`, DISAGREES with the local `Leaf` row, and the clause
-/// fails — the answer the old doc reserved for exactly this day.
-#[test]
-fn a_clause_dictionary_crosses_a_rule_boundary_and_is_checked() {
-    let ns = "test.wi1040.cross";
-    let src = two_carriers(
-        ns,
-        "  rule get(?x, ?d) :- ?d = require[Desc[T]], Desc.describe(?x, ?i)\n  \
-           rule use(?x, ?d, ?r) :- ?d = require[Desc[T]], Desc.describe(?x, ?r)\n  \
-           rule answer(?r) :- get(other(), ?d), use(leaf(), ?d, ?r)\n",
-    );
-    let got = answers(ns, &src);
-    assert!(
-        got.is_empty(),
-        "the supplied `Other` dictionary must reach `use` and DISAGREE with its local \
-         `Leaf` row (WI-860): no answer. `7` means the caller's binding was dropped at \
-         the rule boundary and `use` re-derived at its own carrier; got {got:?}",
-    );
-}
-
-/// THE CONTROL for the row above, without which `[]` proves nothing: a candidate
-/// DROPPED on the way — a dictionary the WI-636 normalization could not lower, a
-/// spliced link with no term form — also answers `[]`. The same dictionary supplied
-/// from the SAME carrier must agree and answer, so the row above's `[]` is
-/// "checked and disagreed", not "never arrived".
+/// The row was a dictionary handed through a rule HEAD — `get(?x, ?d)` binding `?d =
+/// require[Desc[T]]` and `use(?x, ?d, ?r)` receiving it — and its twin handed `use` the
+/// `Other` dictionary at a `Leaf` call, which WI-860's check refused (no answer). Proposal
+/// 060.1 §5 removed every column a dictionary rides, and no spelling hands a clause a
+/// dictionary at another carrier now: a citation's bracket naming a witness that does not
+/// provide at the goal's type is refused at load
+/// (`wi_j9ssg_rule_citation_bracket_test`). The disagreeing twin is gone.
 #[test]
 fn a_clause_dictionary_crossing_a_rule_boundary_agrees_with_its_own_carrier() {
     let ns = "test.wi1040.cross_agree";
     let src = two_carriers(
         ns,
-        "  rule get(?x, ?d) :- ?d = require[Desc[T]], Desc.describe(?x, ?i)\n  \
-           rule use(?x, ?d, ?r) :- ?d = require[Desc[T]], Desc.describe(?x, ?r)\n  \
-           rule answer(?r) :- get(leaf(), ?d), use(leaf(), ?d, ?r)\n",
+        "  rule use[A](?x: A, ?r) :- Desc[T = A], Desc.describe(?x, ?r)\n  \
+           rule mid[A](?x: A, ?r) :- Desc[T = A], use(?x, ?r)\n  \
+           rule answer(?r) :- mid(leaf(), ?r)\n",
     );
     assert_eq!(
         answer(ns, &src),
         7,
-        "the `Leaf` dictionary supplied to `use` agrees with `use`'s own `Leaf` row, \
-         so the check passes and `describe` dispatches through it",
+        "the `Leaf` dictionary `mid` holds reaches `use`'s call, which dispatches through it",
     );
 }
 
@@ -595,7 +536,7 @@ fn an_unbound_carrier_delays_rather_than_reaching_a_definite_answer() {
     let src = program(
         ns,
         "  rule shape(?x) :- eq(?x, leaf())\n  \
-           rule via(?x, ?r) :- require[Desc[T]], Desc.describe(?x, ?r), shape(?x)\n  \
+           rule via[A](?x: A, ?r) :- Desc[T = A], Desc.describe(?x, ?r), shape(?x)\n  \
            rule answer(?r) :- via(?x, ?r)\n",
     );
     let got = answers(ns, &src);
@@ -614,29 +555,27 @@ fn an_unbound_carrier_delays_rather_than_reaching_a_definite_answer() {
 
 // ── (f) / the anchor rule / the position restriction ───────────────────────
 
-/// THE ANCHOR RULE (proposal 060 §3). A `require[X]` with nothing to project the
-/// spec's parameters from — no covered body call, no typed binding — is refused at
-/// typing, never left to delay forever.
+/// THE ANCHOR RULE (proposal 060 §3). A requirement with nothing to project the spec's
+/// parameters from is refused at load, never left to delay forever: an introducer no head
+/// column's type names has nothing to read its guard at. (The row was `?d = require[Desc[T]]`
+/// with no covered call and no typed binding, refused "to ground the requirement"; proposal
+/// 060.1 §5 removed the form.)
 #[test]
 fn a_require_with_no_anchor_is_refused_at_typing() {
     let ns = "test.wi1040.anchor";
-    let src = program(
-        ns,
-        "  rule answer(?r) :- ?d = require[Desc[T]], eq(?r, 1)\n",
-    );
+    let src = program(ns, "  rule answer[A](?r) :- Desc[T = A], eq(?r, 1)\n");
     let msg = refusal(&src);
     assert!(
-        msg.contains("to ground the requirement"),
-        "the refusal must say the requirement cannot be grounded: {msg}",
+        msg.contains("rule type-variable `A` is the type of no head column"),
+        "the refusal must name the introducer no column carries: {msg}",
     );
-    assert!(msg.contains("Desc"), "the spec must be named: {msg}");
 }
 
-/// THE POSITION RESTRICTION (channel doc §3). `require[X]` denotes a dictionary in
-/// the CLAUSE's scope, so there is no lifting rule that would give a nested
-/// occurrence a meaning. Refused loudly at parse, with its own sentence — not left
-/// to escape into scope resolution, which would report an unresolved name `require`
-/// and say nothing about which rule it belongs to.
+/// THE POSITION RESTRICTION (channel doc §3), and the removal (proposal 060.1 §5). A nested
+/// `require[X]` was refused at parse in its own sentence, "legal only as a bare rule-body
+/// goal"; the form is removed now, and a nested occurrence is refused as every other is, with
+/// the repair — not left to escape into scope resolution, which would report an unresolved
+/// name `require` and say nothing about which rule it belongs to.
 #[test]
 fn a_nested_require_is_refused_at_parse() {
     let ns = "test.wi1040.nested";
@@ -647,8 +586,8 @@ fn a_nested_require_is_refused_at_parse() {
     // raised in the parse phase and never reaches a load verdict.
     let msg = crate::common::parse_errs(&src).join("\n");
     assert!(
-        msg.contains("bare rule-body goal"),
-        "the refusal must name the two legal positions: {msg}",
+        msg.contains("`require[Desc[T]]` is no longer written"),
+        "the refusal must name the removed form and its repair: {msg}",
     );
 }
 
@@ -697,20 +636,20 @@ fn a_two_supplier_carrier_has_no_reading_through_the_dictionary_either() {
     provides Desc[T = Leaf, describe = otherDescribe]
   end
 
-  rule via(?x, ?r) :- {clause}Desc.describe(?x, ?r)
+  rule via{clause}Desc.describe(?x, ?r)
   rule answer(?r) :- via(leaf(), ?r)
 end
 "#
         )
     };
     // THE CONTROL, MEASURED AT THE SITE rather than predicted in the header: the same
-    // program with `require[…]` deleted answers NOTHING. Value-directed classification
+    // program with the requirement deleted answers NOTHING. Value-directed classification
     // (WI-1044) sees two suppliers for `Leaf` and declines to reduce the call, so the
     // WI-938 hook has nothing to `unify` the result column with. The woven clause below
     // now agrees with it.
     let without = answers(
         &format!("{ns}.control"),
-        &tie_program(&format!("{ns}.control"), ""),
+        &tie_program(&format!("{ns}.control"), "(?x, ?r) :- "),
     );
     assert!(
         !without
@@ -720,7 +659,7 @@ end
          reading, and the only Int a fold could produce is the spec's DEFAULT — got \
          {without:?}",
     );
-    let src = tie_program(ns, "require[Desc[T]], ");
+    let src = tie_program(ns, "[A](?x: A, ?r) :- Desc[T = A], ");
     let with = answers(ns, &src);
     assert!(
         !with
@@ -732,11 +671,13 @@ end
     );
 }
 
-/// THE WEAVE'S LIVE CONTROL. A CARRIER-LESS defaulted call — `Desc.name()` takes no
-/// operand — beside a carrier-bearing one that anchors `require[Desc[T]]` at `Leaf`. No
-/// value can direct it, so value direction runs the spec's default `1`, and only the
-/// clause dictionary reaches `Leaf`'s own `7`. The un-woven twin is asserted here, at
-/// the site, as the control: it is the identical clause with the `require` deleted.
+/// THE DICTIONARY'S LIVE CONTROL. A CARRIER-LESS defaulted call — `name()` takes no operand
+/// — made through the requirement the clause declares under a name at `Leaf`. No value can
+/// direct it, so value direction runs the spec's default `1`, and only the clause dictionary
+/// reaches `Leaf`'s own `7`. The un-woven twin is asserted here, at the site, as the control:
+/// it is the identical clause with the requirement deleted. (The clause wrote
+/// `require[Desc[T]]` and the bare `Desc.name(?r)`; proposal 060.1 §5 removed the form, and a
+/// call that writes no instance names the requirement it reads.)
 ///
 /// ADDED BY WI-20261025-ZAWX9, when the two-supplier row stopped discriminating. Its `7`
 /// does not depend on that ticket: `Leaf`'s own member answers through the dictionary on
@@ -744,11 +685,11 @@ end
 #[test]
 fn a_carrier_less_defaulted_call_answers_through_the_clause_dictionary() {
     let ns = "test.wi1040.carrierless";
-    let src = |ns: &str, clause: &str| {
+    let src = |ns: &str, clause: &str, name: &str| {
         program(
             ns,
             &format!(
-                "  rule via(?x, ?r) :- {clause}Desc.describe(?x, ?t), Desc.name(?r)\n  \
+                "  rule via{clause}Desc.describe(?x, ?t), {name}.name(?r)\n  \
                    rule answer(?r) :- via(leaf(), ?r)\n"
             ),
         )
@@ -762,7 +703,7 @@ fn a_carrier_less_defaulted_call_answers_through_the_clause_dictionary() {
         )
     };
     let control_ns = format!("{ns}.control");
-    let control = src(&control_ns, "");
+    let control = src(&control_ns, "(?x, ?r) :- ", "Desc");
     assert!(
         control.contains("operation name() -> Int64 = 7"),
         "fixture guard: both members must have been added"
@@ -773,46 +714,27 @@ fn a_carrier_less_defaulted_call_answers_through_the_clause_dictionary() {
         "the un-woven twin: a call with no operand is one value direction cannot direct"
     );
     assert_eq!(
-        answer(ns, &src(ns, "require[Desc[T]], ")),
+        answer(ns, &src(ns, "[A](?x: A, ?r) :- require d: Desc[T = A], ", "d")),
         7,
         "the clause dictionary is what reaches `Leaf`'s own `name`",
     );
 }
 
-/// ACCEPTANCE (f) — the check-only spelling is unchanged. It lowers to the SAME
-/// relation with no `out`, weaves nothing, and decides exactly what WI-300's guard
-/// decided: the clause fires where the carrier provides the spec, and does not SUPPLY
-/// anything to the call beside it.
-///
-/// PASSES EITHER WAY by design — that is the point. It is the sentinel for the
-/// structural claim in this file's header: were `out` positional, or were the weave
-/// keyed on anything but `out`'s presence, this test would move.
-///
-/// **WI-1044 changed the NUMBER and not the claim.** The assertion was `1`, on the
-/// reading "checking is not supplying, so the call still folds the spec's default" —
-/// but folding the default was never what "not supplying" MEANT. It is what an
-/// unclassified call happened to do, here and in
-/// [`the_same_clause_without_require_dispatches_by_value`] alike, and the resolver now
-/// classifies such a call from its argument values (see that test for why that is a
-/// correction). What acceptance (f) asserts is that this spelling weaves NOTHING, and
-/// the number that shows it is the one the plain clause gives — which is `7` for both.
-/// The sentinel is intact: a weave here would make this fixture behave like the
-/// headline's, and the two-supplier fixture above is where the two now visibly part.
+/// ACCEPTANCE (f) — the guard CHECKS: the clause fires where the carrier provides the spec,
+/// and does not where it provides none. It was the check-only `requires(Desc[T])`, which
+/// lowered to the same relation with no `out` and wove nothing; proposal 060.1 §5 removed
+/// it, and the guard is the one form — read with an `out`, woven into the call beside it. So
+/// the call answers `Leaf`'s 7 through the guard's dictionary, as it answered by value beside
+/// `requires(X)` (WI-1044), and a carrier with no provider is blocked as it was.
 #[test]
 fn the_check_only_spelling_is_unchanged() {
     let ns = "test.wi1040.checkonly";
     let src = program(
         ns,
-        "  rule via(?x, ?r) :- requires(Desc[T]), Desc.describe(?x, ?r)\n  \
+        "  rule via[A](?x: A, ?r) :- Desc[T = A], Desc.describe(?x, ?r)\n  \
            rule answer(?r) :- via(leaf(), ?r)\n",
     );
-    assert_eq!(
-        answer(ns, &src),
-        7,
-        "`requires(X)` CHECKS and does not supply — so the call beside it is decided \
-         exactly as the same call with no `requires` at all (WI-1044: by value), and \
-         NOT through a dictionary this spelling never builds",
-    );
+    assert_eq!(answer(ns, &src), 7, "the guard admits `Leaf`, and its call answers `Leaf`'s own");
 
     // …and it still blocks a carrier that provides nothing, which is the whole of
     // what the guard tier does.
@@ -830,7 +752,7 @@ fn the_check_only_spelling_is_unchanged() {
     entity bare
   end
 
-  rule via(?x, ?r) :- requires(Desc[T]), Desc.describe(?x, ?r)
+  rule via[A](?x: A, ?r) :- Desc[T = A], Desc.describe(?x, ?r)
   rule answer(?r) :- via(bare(), ?r)
 end
 "#
@@ -840,4 +762,3 @@ end
         "a carrier with no provider must not satisfy the guard",
     );
 }
-

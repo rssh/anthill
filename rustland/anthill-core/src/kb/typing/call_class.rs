@@ -95,9 +95,7 @@ pub(super) fn sort_is_parametric(kb: &KnowledgeBase, sort_sym: Symbol) -> bool {
 ///   * [`call_dispatch_shape`], the WI-1026 rule-body walk trigger — this gate and
 ///     nothing else since WI-1036 deleted its `!is_builtin` clause. WI-1043 turned that
 ///     site's ADMISSION into [`spec_op_call_parent`] (both halves) and left this gate
-///     naming WHICH half, which is what its error tail is keyed on;
-///   * the direct witness scan of [`rewrite_find_dictionary_goal`], which takes a
-///     defaulted op of the spec as a witness beside a body-less one.
+///     naming WHICH half, which is what its error tail is keyed on.
 ///
 /// The drift this closes is not hypothetical: the equivalence of the two spellings was
 /// held by a doc comment 30k lines away, so a clause added to the WI-444 block would
@@ -1683,7 +1681,6 @@ pub(super) fn dispatch_to_the_clause(
     }
     let supplied = spec_has_any_providers(kb, spec)
         || library_instances(kb, spec).is_some()
-        || clause_requires_spec(kb, env, spec)
         || sort_requires
         || env.rule_domain().is_some_and(|d| same_sort_canonical(kb, d, spec));
     if !supplied && !spec_warrants_abstract_check(kb, spec) {

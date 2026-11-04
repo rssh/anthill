@@ -448,24 +448,6 @@ pub(super) fn type_rule_bodies(
             // requirement frame this body must not acquire (see above); this field
             // is read by `referencing_scope` alone.
             env.set_rule_scope(kb.rule_domain(rid));
-            // WI-20260922-0DK3H — and what this clause DECLARES. See
-            // [`TypingEnv::rule_declared_specs`]: the brackets are the bracket route's
-            // slot source, so a rule-body call's dep is discharged by the clause's own
-            // `require[Spec[…]]`. Collected HERE because this is the only site holding the
-            // `RuleId`.
-            //
-            // The builtin is absent in a minimal KB that never registered it; then no
-            // rule can carry a bracket and the list is correctly empty — the same reason
-            // [`check_rule_body_requirements`] states at its own `fd_sym`.
-            if let Some(fd) = kb.try_resolve_symbol(crate::parse::desugar_target::qualified(
-                crate::parse::desugar_target::FIND_DICTIONARY,
-            )) {
-                let mut declared: Vec<Value> = Vec::new();
-                for node in &body_nodes {
-                    collect_declared_spec_views(kb, node, fd, &mut declared);
-                }
-                env.set_rule_declared_specs(declared);
-            }
             // WI-557 / WI-602: mark this as rule-body context so `check_apply_iter`
             // treats the WI-539 value-precondition `requires`-check as refutation-
             // aware — a rule body is SLD/relational with no call-site Γ, so a

@@ -79,8 +79,9 @@
 //! the parent answers 3), [`an_applied_head_still_outranks_a_bare_one`] (refused as a tie,
 //! the parent answers 2) and [`a_rule_body_call_is_refused_between_two_instances`] (with the
 //! refusal kept to operation bodies the two-provision clauses loaded clean, where the parent
-//! refused them as a tie; with it fired at one provision the clause that declares its
-//! `requires(…)` was refused, where the parent loads it). The six parts above were measured
+//! refused them as a tie; with it fired at one provision the clause that declared its
+//! `requires(…)` was refused, where the parent loads it — measured while a rule body could
+//! write `requires(…)`, which proposal 060.1 §5 removed). The six parts above were measured
 //! before the review gathered the unfixed rule into one check after the matcher's arm (1).
 //!
 //! GONE, MEASURED REDUNDANT: 2KV4Y's second asking of a goal at its open slots (restored, it
@@ -416,25 +417,29 @@ fn an_applied_head_still_outranks_a_bare_one() {
 }
 
 /// IN A RULE BODY THE CALL IS REFUSED BETWEEN TWO PROVISIONS AT INSTANCES, as the tie was,
-/// and one is left to the rule body's own check, which reads a declared `requires(…)` as the
-/// rule's dictionary. Refused at one, a clause that names its dictionary was refused.
+/// and one is left to the rule body's own check. The instance written on the call's
+/// receiver, `Store[State = Buf[T = Int64, N = Bool]].peek(…)`, fixes the slot — the
+/// refusal's repair — and answers `QB`'s 41 beside one provision and beside two. (The
+/// declared variant was the check-only `requires(Store[State = …])` before the call, which
+/// proposal 060.1 §5 removed; it named no dictionary, and beside two provisions it was
+/// refused as the bare call is.)
 #[test]
 fn a_rule_body_call_is_refused_between_two_instances() {
     let qb = at("QB", BUF_BOOL, 41);
     let qs = format!("{qb}{}", at("QS", BUF_STRING, 42));
-    let body = "?x <=> Store.peek(buf(v: 1))";
-    let declared = format!("requires(Store[State = {BUF_BOOL}]), {body}");
+    let body = "?x <=> Store.peek(buf(v: 1))".to_owned();
+    let written = format!("?x <=> Store[State = {BUF_BOOL}].peek(buf(v: 1))");
     for (ns, providers, goals, refused) in [
-        ("wisgxyh.rule_one", &qb, body.to_owned(), false),
-        ("wisgxyh.rule_one_decl", &qb, declared.clone(), false),
-        ("wisgxyh.rule_two", &qs, body.to_owned(), true),
-        ("wisgxyh.rule_two_decl", &qs, declared, true),
+        ("wisgxyh.rule_one", &qb, &body, false),
+        ("wisgxyh.rule_one_written", &qb, &written, false),
+        ("wisgxyh.rule_two", &qs, &body, true),
+        ("wisgxyh.rule_two_written", &qs, &written, false),
     ] {
         let rules = format!("{providers}\n  rule r(?x) :- {goals}\n");
-        let errs = load_errors_of(&program(ns, &rules, "0"));
+        let src = program(ns, &rules, "0");
         if refused {
             assert_refused_naming(
-                &errs,
+                &load_errors_of(&src),
                 &[
                     "nothing here fixes `N` of `Buf`",
                     &format!("`{ns}.QB` and `{ns}.QS` provide `{ns}.Store` only at an instance"),
@@ -442,7 +447,8 @@ fn a_rule_body_call_is_refused_between_two_instances() {
                 ns,
             );
         } else {
-            assert!(errs.is_empty(), "{ns}: left to the rule body's own check, got {errs:#?}");
+            let mut kb = crate::common::load_kb_with(&src);
+            assert_eq!(crate::common::one_definite_int(&mut kb, &format!("{ns}.r")), Some(41), "{ns}");
         }
     }
 }

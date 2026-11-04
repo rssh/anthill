@@ -2,22 +2,32 @@
 //! reaches a body-less one's: only at the carrier the dictionary was read from, and read at
 //! the call the direct witness scan chooses (body order, the bracket read).
 //!
-//! Two halves, each backed out on its own while this file was written:
+//! Two halves were backed out on `require[X]` while this file was written: the weave made
+//! carrier-blind for a bodied call, and the defaulted witness scanned last. Proposal 060.1 §5
+//! removed the form. The clause declares its dictionary at its head's introducer, the first
+//! call's argument typed at the parameter — `two[A](?x: A, ?y, …) :- Desc[T = A]` — so the
+//! dictionary is still read at that carrier and woven only into calls there. The witness scan
+//! is not the guard's, and the rows its back-out failed pass either way now. The weave's
+//! back-out, measured again on the guard (the carrier check of `collect_covered_calls` skipped
+//! for a bodied call):
 //!
-//! | row | weave carrier-blind for a bodied call | defaulted witness scanned last |
-//! |---|---|---|
-//! | `a_defaulted_call_at_another_carrier_keeps_its_own_dispatch` | FAILS (`7, 7`; `9, 9`) | ok |
-//! | `a_nested_defaulted_call_at_another_carrier_keeps_its_own_dispatch` | FAILS (`7, 7`) | ok |
-//! | `a_passed_dictionary_reaches_the_defaulted_call_at_its_carrier` | `heatOther` `30`, `ownOther` `1` | `heatAt` `1` |
-//! | `a_passed_dictionary_reaches_a_defaulted_call_beside_a_requiring_call` | ok | FAILS (`1`) |
-//! | `two_bracket_chosen_requires_read_each_its_own_carrier` | ok | FAILS (load refused) |
-//! | `a_defaulted_call_no_goal_runs_is_still_a_witness` | FAILS (`7` alone) | ok — see its site |
-//! | `the_body_less_twin_answers_the_same` | ok | ok — the control |
-//! | `a_typed_head_bracket_answers_at_each_carrier` | ok | ok — the control |
+//! | row | weave carrier-blind for a bodied call |
+//! |---|---|
+//! | `a_defaulted_call_at_another_carrier_keeps_its_own_dispatch` | FAILS (`7, 7, 9, 9`) |
+//! | `a_nested_defaulted_call_at_another_carrier_keeps_its_own_dispatch` | FAILS (`7, 7`) |
+//! | `a_passed_dictionary_reaches_the_defaulted_call_at_its_carrier` | FAILS (`heatOther` `30`) |
+//! | `a_passed_dictionary_reaches_a_defaulted_call_beside_a_requiring_call` | ok |
+//! | `two_bracket_chosen_requires_read_each_its_own_carrier` | FAILS (load refused: "covered by distinct carrier requirements") |
+//! | `a_defaulted_call_no_goal_runs_is_still_a_witness` | FAILS (`7, 7`) |
+//! | `the_body_less_twin_answers_the_same` | ok — the control |
+//! | `a_typed_head_bracket_answers_at_each_carrier` | ok — the control |
 //!
-//! With both halves backed out `two(thing(), gadget())` answers `9, 9` and `heatAt` `5`, the
-//! numbers the ticket measured. WI-1040's two calls at ONE carrier, both woven, are
-//! `wi1040_require_clause_dictionary_test::every_covered_call_in_the_clause_is_woven`.
+//! With the check skipped for a body-less call too, the twin fails as well (`7, 7, 9, 9, 7, 7`).
+//! WI-1040's two calls at ONE carrier, both woven, are
+//! `wi1040_require_clause_dictionary_test::every_covered_call_in_the_clause_is_woven`. The two
+//! `require`s at concrete carriers, and the dictionaries they bound, went with the form: a call
+//! at a concrete type needs no requirement, and two requirements of one spec are two
+//! introducers' guards.
 
 use anthill_core::eval::Value;
 
@@ -46,11 +56,10 @@ fn desc_program(ns: &str, defaulted: bool) -> String {
     operation describe(x: Gadget) -> Int64 = 9
   end
 
-  rule two(?x, ?y, ?r1, ?r2) :- ?d = require[Desc[T]], Desc.describe(?x, ?r1), Desc.describe(?y, ?r2)
-  rule twoTyped(a: Thing, b: Gadget, ?r1, ?r2) :-
-    ?d = require[Desc[T = Thing]], Desc.describe(a, ?r1), Desc.describe(b, ?r2)
-  rule nested(?x, ?y, ?r1, ?r2) :-
-    ?d = require[Desc[T]], ?r1 <=> Int64.add(Desc.describe(?x), 0), Desc.describe(?y, ?r2)
+  rule two[A](?x: A, ?y, ?r1, ?r2) :- Desc[T = A], Desc.describe(?x, ?r1), Desc.describe(?y, ?r2)
+  rule twoTyped(a: Thing, b: Gadget, ?r1, ?r2) :- Desc.describe(a, ?r1), Desc.describe(b, ?r2)
+  rule nested[A](?x: A, ?y, ?r1, ?r2) :-
+    Desc[T = A], ?r1 <=> Int64.add(Desc.describe(?x), 0), Desc.describe(?y, ?r2)
 
   rule tgFirst(?r) :- two(thing(), gadget(), ?r, ?)
   rule tgSecond(?r) :- two(thing(), gadget(), ?, ?r)
@@ -112,8 +121,10 @@ fn the_body_less_twin_answers_the_same() {
 }
 
 /// CONTROL — passes either way, by design: the head bindings are typed, so each call's
-/// carrier is known where the clause is typed. The ticket measured `9, 9` here on
-/// 2026-09-24; the tree answered `7, 9` before this change.
+/// carrier is known where the clause is typed, and a call at a concrete type needs no
+/// requirement (the clause wrote `?d = require[Desc[T = Thing]]`, which proposal 060.1 §5
+/// removed). The ticket measured `9, 9` here on 2026-09-24; the tree answered `7, 9` before
+/// this change.
 #[test]
 fn a_typed_head_bracket_answers_at_each_carrier() {
     let ns = "test.gp8jc.typed";
@@ -121,21 +132,21 @@ fn a_typed_head_bracket_answers_at_each_carrier() {
     assert_eq!(ints(&src, ns, &["typedFirst", "typedSecond"]), vec![7, 9]);
 }
 
-/// Two `require`s on `Desc`, each bracket naming the carrier of one call: the bracket
-/// chooses each witness, as HRFR5 has it choose for a body-less op, and each dictionary is
-/// its own bracket's, in either order. With the defaulted witness scanned last the bracket
-/// was not read and the clause was refused ("at most one `require` on spec `Desc` per
-/// rule …"), where its body-less twin loads.
-///
-/// `untyped`, whose calls name no carrier at load, is refused either way, by design — the
-/// boundary of `wi_hrfr5_witness_attribution_test::untyped_carriers_are_still_refused`.
+/// Two requirements on `Desc`, each at its own type parameter, and a call at each: each call
+/// reads its own parameter's dictionary, in either order of the guards. The row was two
+/// `require`s at the concrete `Leaf` and `Other`, each bracket choosing its call, refused
+/// with the defaulted witness scanned last ("at most one `require` on spec `Desc` per rule
+/// …"); and it read the dictionaries bound, `Dictionary.impl(?d1)`. Proposal 060.1 §5 removed
+/// the form: a call at a concrete type needs no requirement, two requirements of one spec are
+/// two introducers' guards, and what a dictionary is is read by the answer it gives. Its
+/// `untyped` twin — two requirements no call could be attributed to — is two guards at one
+/// parameter now, which 060.1 §8.5 admits (`wi_hrfr5_witness_attribution_test`).
 #[test]
 fn two_bracket_chosen_requires_read_each_its_own_carrier() {
     let ns = "test.gp8jc.tworeq";
     let src = format!(
         r#"namespace {ns}
   import anthill.prelude.Int64
-  import anthill.realization.runtime.Dictionary
   sort Desc
     sort T = ?
     operation describe(x: T) -> Int64 = 1
@@ -152,50 +163,26 @@ fn two_bracket_chosen_requires_read_each_its_own_carrier() {
     provides Desc[T = Other]
     operation describe(x: Other) -> Int64 = 9
   end
-  rule both(?a, ?b, ?i1, ?i2) :- ?d1 = require[Desc[T = Leaf]], ?d2 = require[Desc[T = Other]],
-    Desc.describe(leaf(), ?a), Desc.describe(other(), ?b),
-    ?i1 <=> Dictionary.impl(?d1), ?i2 <=> Dictionary.impl(?d2)
-  rule rev(?a, ?b, ?i1, ?i2) :- ?d2 = require[Desc[T = Other]], ?d1 = require[Desc[T = Leaf]],
-    Desc.describe(leaf(), ?a), Desc.describe(other(), ?b),
-    ?i1 <=> Dictionary.impl(?d1), ?i2 <=> Dictionary.impl(?d2)
-  rule bothA(?r) :- both(?r, ?, ?, ?)
-  rule bothB(?r) :- both(?, ?r, ?, ?)
-  rule bothI1(?r) :- both(?, ?, ?r, ?)
-  rule bothI2(?r) :- both(?, ?, ?, ?r)
-  rule revI1(?r) :- rev(?, ?, ?r, ?)
-  rule revI2(?r) :- rev(?, ?, ?, ?r)
+  rule both[A, B](?x: A, ?y: B, ?a, ?b) :- Desc[T = A], Desc[T = B],
+    Desc.describe(?x, ?a), Desc.describe(?y, ?b)
+  rule rev[A, B](?x: A, ?y: B, ?a, ?b) :- Desc[T = B], Desc[T = A],
+    Desc.describe(?x, ?a), Desc.describe(?y, ?b)
+  rule bothA(?r) :- both(leaf(), other(), ?r, ?)
+  rule bothB(?r) :- both(leaf(), other(), ?, ?r)
+  rule revA(?r) :- rev(leaf(), other(), ?r, ?)
+  rule revB(?r) :- rev(leaf(), other(), ?, ?r)
 end
 "#
     );
-    assert_eq!(ints(&src, ns, &["bothA", "bothB"]), vec![7, 9]);
-    let mut kb = crate::common::load_kb_with(&src);
-    let impls: Vec<String> = ["bothI1", "bothI2", "revI1", "revI2"]
-        .iter()
-        .map(|rel| match crate::common::query_unary(&mut kb, &format!("{ns}.{rel}")).as_slice() {
-            [(v, true)] => crate::wi_5g28a_rule_dictionary_test::sort_named(&kb, v),
-            other => panic!("`{rel}` must answer exactly one definite sort, got {other:?}"),
-        })
-        .collect();
-    let leaf = format!("{ns}.Leaf");
-    let other = format!("{ns}.Other");
-    assert_eq!(impls, vec![leaf.clone(), other.clone(), leaf, other]);
-
-    let untyped = src.replace(
-        "  rule bothA",
-        "  rule untyped(?x, ?y, ?a, ?b) :- ?d1 = require[Desc[T = Leaf]], \
-           ?d2 = require[Desc[T = Other]], Desc.describe(?x, ?a), Desc.describe(?y, ?b)\n  rule bothA",
-    );
-    let errors = crate::common::load_errors_of(&untyped);
-    assert!(
-        errors.iter().any(|e| e.contains("untyped.body") && e.contains("at most one `require` on spec `Desc`")),
-        "a pair whose calls name no carrier at load is refused: {errors:?}",
-    );
+    assert_eq!(ints(&src, ns, &["bothA", "bothB", "revA", "revB"]), vec![7, 9, 7, 9]);
 }
 
-/// A defaulted call that no goal runs is still a witness: one in a negand, and two in the
-/// branches of a disjunction, each at its own carrier. Fails with that scan backed out (the
-/// load refused: "no such call in the rule body"), and with the weave carrier-blind (`disj`
-/// at `(thing(), gadget())` answers `7` alone). Their body-less twin is refused, as it was.
+/// A defaulted call that no goal runs reads the clause's dictionary: one in a negand, and two
+/// in the branches of a disjunction, the first at the guard's parameter and the second at a
+/// carrier of its own. It was the witness of a `require[Desc[T]]` (removed by proposal 060.1
+/// §5) and FAILED with that scan backed out (the load refused: "no such call in the rule
+/// body"), which the introducer's guard does not use. With the weave carrier-blind it answers
+/// `7, 7`, measured on the guard.
 #[test]
 fn a_defaulted_call_no_goal_runs_is_still_a_witness() {
     let ns = "test.gp8jc.nested_form";
@@ -218,8 +205,8 @@ fn a_defaulted_call_no_goal_runs_is_still_a_witness() {
     provides Desc[T = Gadget]
     operation describe(x: Gadget) -> Int64 = 9
   end
-  rule notOne(?x) :- require[Desc[T]], not(Desc.describe(?x, 1))
-  rule disj(?x, ?y, ?r) :- require[Desc[T]], (Desc.describe(?x, ?r) | Desc.describe(?y, ?r))
+  rule notOne[A](?x: A) :- Desc[T = A], not(Desc.describe(?x, 1))
+  rule disj[A](?x: A, ?y, ?r) :- Desc[T = A], (Desc.describe(?x, ?r) | Desc.describe(?y, ?r))
   rule thingIsNotOne(?r) :- notOne(thing()), ?r <=> 1
   rule both(?r) :- disj(thing(), gadget(), ?r)
 end
@@ -242,8 +229,9 @@ end
 /// `wi_5g28a_rule_dictionary_test`'s Rank program with `rank` DEFAULTED: a citation hands
 /// `rankBoth` the caller's `ByHeat`, which reaches the call at the caller's carrier `?a`
 /// (`30`) and not the call at `dark()` (`Shade`'s own `5`). And `mixed` calls `rank` beside
-/// `Util.twice`, an operation that `requires Rank`: the defaulted call is the witness, as a
-/// body-less one is, so the passed dictionary reaches it.
+/// `Util.twice`, an operation that `requires Rank`, and the passed dictionary reaches it.
+/// Each clause declares `Rank[T = A]` at its head's introducer, `?a: A`; it wrote
+/// `require[Rank[T]]`, which proposal 060.1 §5 removed.
 const RANK_PROGRAM: &str = r#"
 namespace gp8jc.rank
   import anthill.prelude.{Int64, Error, EmptyStream}
@@ -280,8 +268,8 @@ namespace gp8jc.rank
     operation twice(x: T) -> Int64 requires Rank[T] = Int64.add(Rank.rank(x), Rank.rank(x))
   end
 
-  rule rankBoth(?a, ?b, ?r1, ?r2) :- require[Rank[T]], Rank.rank(?a, ?r1), Rank.rank(?b, ?r2)
-  rule mixed(?a, ?r1, ?r2) :- require[Rank[T]], Util.twice(?a, ?r1), Rank.rank(?a, ?r2)
+  rule rankBoth[A](?a: A, ?b, ?r1, ?r2) :- Rank[T = A], Rank.rank(?a, ?r1), Rank.rank(?b, ?r2)
+  rule mixed[A](?a: A, ?r1, ?r2) :- Rank[T = A], Util.twice(?a, ?r1), Rank.rank(?a, ?r2)
 
   sort Driver
     operation bothAt[A](x: A) -> Int64 effects {Error, Error[EmptyStream]}
@@ -311,9 +299,10 @@ fn drive_rank(entry: &str) -> i64 {
     }
 }
 
-/// `heatAt` fails with the defaulted witness scanned last (`1`: the dictionary was read at
-/// `dark()`'s call, and `red()`'s answered by value); `heatOther` and `ownOther` fail with the
-/// weave carrier-blind (`30` and `1`: the clause's dictionary reached `dark()`'s call).
+/// `heatAt` failed with the defaulted witness scanned last (`1`: the dictionary was read at
+/// `dark()`'s call, and `red()`'s answered by value), measured on `require[X]` — the witness
+/// scan's, which the introducer's guard does not use. With the weave carrier-blind `heatOther`
+/// answers `30`, the clause's dictionary reaching `dark()`'s call, measured on the guard.
 #[test]
 fn a_passed_dictionary_reaches_the_defaulted_call_at_its_carrier() {
     assert_eq!(drive_rank("heatAt"), 30, "the passed dictionary reaches the call at its carrier");
@@ -321,9 +310,10 @@ fn a_passed_dictionary_reaches_the_defaulted_call_at_its_carrier() {
     assert_eq!(drive_rank("ownOther"), 5, "nor does a derived one");
 }
 
-/// Fails with the defaulted witness scanned last (`1`): `Util.twice` was then the witness, and
-/// a witness that is not a call of `Rank`'s covers no call, so the direct call answered by
-/// value. `ownMixed` passes either way, by design: no dictionary is passed.
+/// Failed with the defaulted witness scanned last (`1`), measured on `require[X]`: `Util.twice`
+/// was then the witness, and a witness that is not a call of `Rank`'s covers no call, so the
+/// direct call answered by value. On the guard it passes under both back-outs. `ownMixed`
+/// passes either way, by design: no dictionary is passed.
 #[test]
 fn a_passed_dictionary_reaches_a_defaulted_call_beside_a_requiring_call() {
     assert_eq!(drive_rank("heatMixed"), 30);

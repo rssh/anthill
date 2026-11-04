@@ -511,11 +511,6 @@ pub enum TypeError {
         spec: Symbol,
         suggestion: String,
     },
-    /// A call of a body-less member `op` of `spec` that leaves spec parameters `open` with
-    /// nothing at the call to fix them, while the provisions at the parameters it does fix
-    /// name different types for them (`providers`): the requested instance conforms to none
-    /// of them for every type the open parameters could be. `suggestion` is the instance
-    /// written — the clause's `require[…]` in a rule body, the call's bracket elsewhere.
     /// A rule-body call of `op` whose instance of `spec` is open at a spec nothing provides,
     /// in a clause whose sort does not require it: no value can carry an instance, so no
     /// condition of the clause could hold (requirement-channel.md §5.2's refused class).
@@ -524,6 +519,12 @@ pub enum TypeError {
         op: Symbol,
         spec: Symbol,
     },
+    /// A call of a body-less member `op` of `spec` that leaves spec parameters `open` with
+    /// nothing at the call to fix them, while the provisions at the parameters it does fix
+    /// name different types for them (`providers`): the requested instance conforms to none
+    /// of them for every type the open parameters could be. `suggestion` is the instance
+    /// written — on the call's receiver in a rule body (`Conv[A = Meters, B = …].tag(…)`),
+    /// the call's bracket elsewhere.
     ParameterNamedApart {
         span: Option<Span>,
         op: Symbol,
@@ -531,7 +532,6 @@ pub enum TypeError {
         open: Vec<String>,
         providers: SmallVec<[Symbol; 2]>,
         suggestion: String,
-        in_rule_own_term: bool,
     },
     /// WI-841 (058 §4.2 rule 2): a bracket key matched the SPEC SHORT NAME of two or
     /// more of the callee's anonymous requirement slots — `requires Monoid[T],
@@ -1965,7 +1965,6 @@ impl TypeError {
                 open,
                 providers,
                 suggestion,
-                in_rule_own_term,
                 ..
             } => {
                 let quote = |xs: &mut dyn Iterator<Item = String>| {
@@ -1974,16 +1973,11 @@ impl TypeError {
                 format!(
                     "a call of `{}` that names no instance of `{}`: it leaves {} open, and {} \
                      provide `{1}` at what it fixes, naming different types for it. Write the \
-                     instance: {}",
+                     instance: `{suggestion}`",
                     kb.qualified_name_of(*op),
                     kb.qualified_name_of(*spec),
                     quote(&mut open.iter().cloned()),
                     quote(&mut providers.iter().map(|p| kb.qualified_name_of(*p).to_string())),
-                    if *in_rule_own_term {
-                        format!("declare `{suggestion}` in the clause")
-                    } else {
-                        format!("`{suggestion}`")
-                    },
                 )
             }
             TypeError::AmbiguousRequirementKey {
@@ -2250,7 +2244,7 @@ impl TypeError {
                 let clause = missing_requires_clause(kb, *spec_sort_sym, abstract_params);
                 format!(
                     "spec op `{op_qn}` called at abstract type — {}, or specialize to a concrete carrier",
-                    missing_requires_repair(kb, &clause, *site),
+                    missing_requires_repair(kb, &clause, *spec_sort_sym, *spec_op_sym, *site),
                 )
             }
             TypeError::ProvisionConditionOutOfScope {
@@ -2293,8 +2287,9 @@ impl TypeError {
                 format!(
                     "`{}` requires `{}` at carrier `{}`, and this clause can neither \
                      supply it nor declare it — `{}` provides no `{}`. Add a `provides \
-                     {}[…]` for `{}` (or a witness sort that provides it), or write \
-                     `requires({}[…])` in this clause to take the obligation on",
+                     {}[…]` for `{}` (or a witness sort that provides it), or declare it \
+                     with the rule head's introducer, `rule r[A](…) :- {}[…]`, to take the \
+                     obligation on",
                     kb.qualified_name_of(*callee_op),
                     spec_qn,
                     kb.qualified_name_of(*carrier_sym),
@@ -2316,8 +2311,8 @@ impl TypeError {
                 format!(
                     "`{}` requires `{}` at `{at}`, and no provision binds that — this clause \
                      can neither supply it nor declare it. Add a `provides {}[{at}]` (on a \
-                     sort, or a witness sort), or write `requires({}[…])` in this clause to \
-                     take the obligation on",
+                     sort, or a witness sort), or declare it with the rule head's \
+                     introducer, `rule r[A](…) :- {}[…]`, to take the obligation on",
                     kb.qualified_name_of(*callee_op),
                     spec_qn,
                     short_name_of(spec_qn),
@@ -3103,7 +3098,8 @@ impl TypeError {
                 let op_qn = kb.qualified_name_of(*spec_op_sym);
                 let spec_short = short_name_of(kb.qualified_name_of(*spec_sort_sym));
                 let clause = missing_requires_clause(kb, *spec_sort_sym, abstract_params);
-                let suggestion = format!("missing {}", missing_requires_place(kb, &clause, *site));
+                let suggestion =
+                    format!("missing {}", missing_requires_place(kb, &clause, *spec_sort_sym, *spec_op_sym, *site));
                 LoadError::TypeMismatch {
                     origin: None,
                     entity_name: op_qn.to_string(),
@@ -3214,9 +3210,10 @@ impl TypeError {
                     ),
                     actual_type: format!(
                         "`{carrier_qn}` provides no `{spec_qn}`, and this clause declares \
-                         no `requires({}[…])` of its own — so no call here can discharge \
-                         it. Add a `provides {}[…]` for `{carrier_qn}` (or a witness sort \
-                         that provides it), or take the obligation on in this clause",
+                         no `{}` requirement of its own — so no call here can discharge it. \
+                         Add a `provides {}[…]` for `{carrier_qn}` (or a witness sort that \
+                         provides it), or take the obligation on in this clause with the rule \
+                         head's introducer and a guard",
                         short_name_of(spec_qn),
                         short_name_of(spec_qn),
                     ),
@@ -3239,9 +3236,10 @@ impl TypeError {
                     expected_type: format!("a `{spec_qn}` provision binding `{at}`"),
                     actual_type: format!(
                         "no provision of `{spec_qn}` binds `{at}`, and this clause declares \
-                         no `requires({short}[…])` of its own — so no call here can \
-                         discharge it. Add a `provides {short}[{at}]` (on a sort, or a \
-                         witness sort), or take the obligation on in this clause"
+                         no `{short}` requirement of its own — so no call here can discharge \
+                         it. Add a `provides {short}[{at}]` (on a sort, or a witness sort), or \
+                         take the obligation on in this clause with the rule head's \
+                         introducer and a guard"
                     ),
                     span: self.span(kb),
                 }
@@ -3731,9 +3729,20 @@ fn missing_requires_clause(
     format!("{}[{}]", short_name_of(kb.qualified_name_of(spec)), params.join(", "))
 }
 
-/// Where that clause goes, as a repair: on the calling operation or its sort, or in the
-/// clause of a rule body.
-fn missing_requires_repair(kb: &KnowledgeBase, clause: &str, site: RequiresSite) -> String {
+/// Where that clause goes, as a repair: on the calling operation or its sort; in a rule body,
+/// the instance written at the call (`Conv[A = …].tag(…)`), or the call made through a
+/// requirement the clause declares under a name (`require s: Conv[…]`, `s.tag(…)`) — the one
+/// spelling that names an instance at the clause's own type parameter, which a rule-body
+/// call's bracket cannot write. Proposal 060.1 §5 removed the clause's `require[…]`; an
+/// unnamed guard supplies the evidence for an instance a call names, as an operation's
+/// `requires` line does, and does not say which instance that is.
+fn missing_requires_repair(
+    kb: &KnowledgeBase,
+    clause: &str,
+    spec: Symbol,
+    spec_op: Symbol,
+    site: RequiresSite,
+) -> String {
     match site {
         RequiresSite::Operation { op, sort: Some(sort) } => format!(
             "add `requires {clause}` to `{}` or to its sort `{}`",
@@ -3743,12 +3752,24 @@ fn missing_requires_repair(kb: &KnowledgeBase, clause: &str, site: RequiresSite)
         RequiresSite::Operation { op, sort: None } => {
             format!("add `requires {clause}` to `{}`", kb.qualified_name_of(op))
         }
-        RequiresSite::Clause => format!("declare `require[{clause}]` in the clause"),
+        RequiresSite::Clause => format!(
+            "write the instance at the call, `{clause}.{op}(…)`, or call it through a \
+             requirement the clause declares under a name, `require s: {spec}[…]` and \
+             `s.{op}(…)`",
+            op = kb.local_name_of(spec_op),
+            spec = short_name_of(kb.qualified_name_of(spec)),
+        ),
     }
 }
 
 /// The same place, as what is missing from it.
-fn missing_requires_place(kb: &KnowledgeBase, clause: &str, site: RequiresSite) -> String {
+fn missing_requires_place(
+    kb: &KnowledgeBase,
+    clause: &str,
+    spec: Symbol,
+    spec_op: Symbol,
+    site: RequiresSite,
+) -> String {
     match site {
         RequiresSite::Operation { op, sort: Some(sort) } => format!(
             "`requires {clause}` on `{}` or on its sort `{}`",
@@ -3758,7 +3779,13 @@ fn missing_requires_place(kb: &KnowledgeBase, clause: &str, site: RequiresSite) 
         RequiresSite::Operation { op, sort: None } => {
             format!("`requires {clause}` on `{}`", kb.qualified_name_of(op))
         }
-        RequiresSite::Clause => format!("`require[{clause}]` in the clause"),
+        RequiresSite::Clause => format!(
+            "the instance written at the call, `{clause}.{op}(…)`, or a call through a \
+             requirement the clause declares under a name (`require s: {spec}[…]`, \
+             `s.{op}(…)`)",
+            op = kb.local_name_of(spec_op),
+            spec = short_name_of(kb.qualified_name_of(spec)),
+        ),
     }
 }
 

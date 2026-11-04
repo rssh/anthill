@@ -109,7 +109,8 @@ fn a_rule_goal_hands_its_callee_the_callers_dictionary() {
     assert_eq!(int(&mut interp, ns, "plain"), -1, "CONTROL: uncited, `cmp` derives its own");
 }
 
-/// EVERY KIND OF READ A CALLEE TAKES, handed on through a rule: a WRITTEN `require`, the
+/// EVERY KIND OF READ A CALLEE TAKES, handed on through a rule: a DECLARED requirement (the
+/// introducer's guard; it was `?d = require[WeakOrd[T]]`, removed by proposal 060.1 §5), the
 /// SLOTS of an operation's own `requires` (`Util.sign`), and a read witnessed by a variable
 /// that is no column (`?x` of `?p <=> pr(a: ?x, b: ?y)`), whose instance the callee's clause
 /// typing gives from the column the goal binds. FAILS under [P], [F] and [R]: `(-1, -1)` each.
@@ -117,7 +118,7 @@ fn a_rule_goal_hands_its_callee_the_callers_dictionary() {
 fn every_kind_of_read_is_handed_on() {
     let ns = "atvc1.kinds";
     let body = format!(
-        "  rule cmpW(?a, ?b, ?c) :- ?d = require[WeakOrd[T]], WeakOrd.compare(?a, ?b, ?c)\n  \
+        "  rule cmpW[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], WeakOrd.compare(?a, ?b, ?c)\n  \
          rule outW(?a, ?b, ?c) :- cmpW(?a, ?b, ?c)\n  \
          rule cmpS(?a, ?b, ?c) :- Util.sign(?a, ?b, ?c)\n  \
          rule outS(?a, ?b, ?c) :- cmpS(?a, ?b, ?c)\n  \
@@ -133,7 +134,7 @@ fn every_kind_of_read_is_handed_on() {
         cite_pair("viaS", "outS"),
     );
     let mut interp = crate::common::interp_for(&program(ns, &body));
-    assert_eq!(pair(&mut interp, ns, "viaW"), (4, -4), "a written `require`");
+    assert_eq!(pair(&mut interp, ns, "viaW"), (4, -4), "a declared requirement");
     assert_eq!(pair(&mut interp, ns, "viaS"), (4, -4), "an operation's own `requires`");
     assert_eq!(pair(&mut interp, ns, "viaO"), (4, -4), "a read witnessed by a body variable");
 }

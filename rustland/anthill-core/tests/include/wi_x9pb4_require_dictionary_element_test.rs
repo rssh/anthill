@@ -1,5 +1,22 @@
-//! WI-20260830-X9PB4 — `require[X]` builds a dictionary for a spec whose elements
+//! WI-20260830-X9PB4 — `require[X]` built a dictionary for a spec whose elements
 //! the WITNESS CALL does not name, where before it built none at all.
+//!
+//! ## Since proposal 060.1 §5
+//!
+//! `require[X]` and `?d = require[X]` are removed. A requirement at a concrete instance is
+//! written on the call's receiver (`FiniteCollection[C = List[T = String]].size(?ls, ?n)`), a
+//! requirement at a type variable is the head introducer's guard (`via[A](?x: A, ?r) :-
+//! Desc[T = A]`), and the dictionary is read by the answer it gives, not bound to a column.
+//! The guard's read takes its instance whole (`carrier_type: true`) and an element it leaves
+//! unwritten is OPEN, read off the provision at the carrier as WI-20261013-RYDNV reads it —
+//! so the element is never synthesized for it, and the row that held a concretely pinned
+//! element refused answers now, through the one provision there is. The back-out table below
+//! was measured on `require[X]`'s witness goal (`witness_sort_goal`), which the inferred reads
+//! still build; it was not measured on the guard's read. Two rows read a bound dictionary's
+//! `impl` (`the_bound_dictionary_names_the_carrier_that_provides_the_spec`, and the
+//! self-representing spec's): the first is gone — its two candidates answer one number — and
+//! the second states its requirement by a head column typed at the spec, which receives on
+//! itself and has no guard (060.1 §5).
 //!
 //! THE ROW THE TICKET NAMES, one file, one `List`, two spellings of one goal:
 //!
@@ -120,7 +137,7 @@ namespace x9pb4
   fact Box(items: ["a", "b"])
   fact Box(items: [])
 
-  rule woven(?ls, ?n) :- require[FiniteCollection[C = List[T = String]]], size(?ls, ?n)
+  rule woven(?ls, ?n) :- FiniteCollection[C = List[T = String]].size(?ls, ?n)
 
   rule answer_woven(?n) :- Box(items: ?ls), woven(?ls, ?n)
 end
@@ -178,10 +195,10 @@ fn the_woven_spelling_answers_both_boxes() {
     assert_eq!(
         woven,
         vec![0, 2],
-        "`require[FiniteCollection[C = List[T = String]]], size(?ls, ?n)` must bind each \
-         Box's length. Before X9PB4 the woven rule yielded ONE INDEFINITE solution — the \
-         `find_dictionary` goal came back `Undecided` and the arity+1 site routed to \
-         `unify` and delayed"
+        "`FiniteCollection[C = List[T = String]].size(?ls, ?n)` must bind each Box's \
+         length. Before X9PB4 the woven rule, `require[…]` then, yielded ONE INDEFINITE \
+         solution — the `find_dictionary` goal came back `Undecided` and the arity+1 site \
+         routed to `unify` and delayed"
     );
 }
 
@@ -204,91 +221,8 @@ fn the_plain_spelling_is_refused_and_the_require_is_the_repair() {
         errs.iter()
             .any(|e| e.contains("Iterable") || e.contains("FiniteCollection")),
         "the refusal must name the spec whose evidence is missing, so the author is sent \
-         to the `require[…]` spelling the row above drives; got {errs:#?}"
+         to the written instance the row above drives; got {errs:#?}"
     );
-}
-
-/// AND IT IS THE RIGHT DICTIONARY, not merely the right number.
-///
-/// `size` also reaches `2` by value-directed dispatch (WI-1044), so an equal pair of
-/// numbers above is consistent with a `require` that resolved nothing and got
-/// rescued. This row reads the dictionary itself through the named spelling
-/// (`?d = require[…]`, WI-1040) and asserts the carrier it names.
-///
-/// `List` and NOT `FiniteStream`, and the rival is REAL rather than hypothetical.
-/// `dispatch_candidate_impl_sorts` (WI-1110's diagnostic reader) over this exact goal,
-/// MEASURED both ways:
-///
-/// ```text
-///   FiniteCollection[C = List[T = String]]                        ⇒ []
-///   FiniteCollection[C = List[T = String], Element = <wildcard>]  ⇒ [FiniteStream, List]
-/// ```
-///
-/// So the wildcard turns zero candidates into TWO — `FiniteStream provides
-/// FiniteCollection[C = FiniteStream, …]` matches a `List` carrier through
-/// `types_lesseq`, because `List provides FiniteStream` — and this row is what says
-/// the right one of them wins. Specificity decides: `C = List[T]` is a parametric head
-/// matched structurally and scores, `C = FiniteStream` is a bare ref.
-///
-/// FAILS WHEN BACKED OUT: `?d` binds nothing, so there is no carrier to name.
-#[test]
-fn the_bound_dictionary_names_the_carrier_that_provides_the_spec() {
-    let src = r#"
-namespace x9pb4_d
-  import anthill.prelude.{List, String, Bool, Int64, FiniteCollection}
-  import anthill.prelude.FiniteCollection.{size}
-  import anthill.prelude.Option.{none}
-
-  sort Box
-    entity Box(items: List[T = String])
-  end
-
-  fact Box(items: ["a", "b"])
-
-  rule dict(?ls, ?d) :- ?d = require[FiniteCollection[C = List[T = String]]], size(?ls, ?ignored)
-  rule answer(?d) :- Box(items: ?ls), dict(?ls, ?d)
-end
-"#;
-    let mut kb = load_kb_with(src);
-    let sols = query_unary(&mut kb, "x9pb4_d.answer");
-    let [(v, true)] = sols.as_slice() else {
-        panic!(
-            "`?d = require[FiniteCollection[…]]` must bind exactly one DEFINITE \
-             dictionary — before this ticket it bound none, got {sols:?}"
-        );
-    };
-    assert_eq!(
-        dictionary_impl(&kb, v),
-        "anthill.prelude.List",
-        "the dictionary must name the carrier the goal's own `C` selects. \
-         `anthill.prelude.FiniteStream` here would be a WRONG dictionary the \
-         wildcard element admitted — it provides `FiniteCollection` too, and a \
-         `List` matches its bare `C` carrier"
-    );
-}
-
-/// The `impl` carrier of a dictionary value, as a qualified name. Panics on any other
-/// shape — a test whose subject is "which provider did the goal select" may not shrug
-/// at an unexpected one. Read carrier-neutrally through the WI-1019 view, the same
-/// way `wi1040_require_clause_dictionary_test::dictionary_parts` reads it.
-fn dictionary_impl(kb: &anthill_core::kb::KnowledgeBase, v: &Value) -> String {
-    use anthill_core::kb::term_view::{TermView, ViewHead};
-    let impl_key = kb
-        .try_resolve_symbol("anthill.realization.runtime.Dictionary.impl")
-        .expect("the `Dictionary.impl` accessor must resolve");
-    let impl_child = v
-        .named_arg(kb, impl_key)
-        .unwrap_or_else(|| panic!("a dictionary must carry `impl`, got {v:?}"))
-        .to_value();
-    let ViewHead::Functor {
-        functor: s,
-        pos_arity: 0,
-        named_arity: 0,
-    } = impl_child.head(kb)
-    else {
-        panic!("`impl` must name a sort, got {impl_child:?}")
-    };
-    kb.qualified_name_of(s).to_string()
 }
 
 // ── the two-arm row: what a wildcard admits, and what it still refuses ──────
@@ -320,40 +254,33 @@ namespace x9pb4_n
     operation describe(x: Self) -> Int64 = 7
   end
 
-  rule dict(?x, ?d) :- ?d = require[Desc[T]], Desc.describe(?x, ?ignored)
-  rule answer(?d) :- dict(leaf(n: 1), ?d)
+  rule via[A](?x: A, ?r) :- Desc[T = A], Desc.describe(?x, ?r)
+  rule answer(?r) :- via(leaf(n: 1), ?r)
 end
 "#
     )
 }
 
-/// EVIDENCE ARM — a provider's OWN parameter for the un-named element is
-/// universally quantified, so it cannot discriminate anything, and the wildcard is
-/// what lets the goal say so. `?d` binds and names `Leaf`.
-///
-/// FAILS WHEN BACKED OUT: the goal omits `Note`, the omission is discriminating, the
-/// candidate is rejected, and `?d` binds nothing.
+/// EVIDENCE ARM — a provider's OWN parameter for the un-named element is universally
+/// quantified, so it cannot discriminate anything. The guard leaves `Note` open and the call
+/// answers `Leaf`'s 7 through it. (FAILED WHEN BACKED OUT, measured on `require[X]`: the goal
+/// omitted `Note`, the omission was discriminating, and `?d` bound nothing.)
 #[test]
 fn an_element_a_provider_leaves_open_is_answered() {
     let src = noted("N");
     let mut kb = load_kb_with(&src);
-    let sols = query_unary(&mut kb, "x9pb4_n.answer");
-    let [(v, true)] = sols.as_slice() else {
-        panic!(
-            "a provision whose `Note` is its OWN parameter constrains nothing, so the \
-             goal's wildcard must match it and bind a dictionary; got {sols:?}"
-        );
-    };
-    assert_eq!(
-        dictionary_impl(&kb, v),
-        "x9pb4_n.Leaf",
-        "and it must name the carrier that provides `Desc`"
+    assert!(
+        matches!(definite_unary(&mut kb, "x9pb4_n.answer").as_slice(), [Value::Int(7)]),
+        "a provision whose `Note` is its OWN parameter answers the guard's open `Note`"
     );
 }
 
-/// CONTROL — AND IT PASSES EITHER WAY, BY DESIGN. The same program with the
-/// provision naming a CONCRETE `Note`: `Int64` is a claim about the instance, so the
-/// goal — which has no opinion about `Note` — must not match it. `?d` binds nothing.
+/// THE SAME PROGRAM WITH THE PROVISION NAMING A CONCRETE `Note`, and the verdict INVERTED by
+/// the guard: an element the requirement leaves unwritten is open, read off the provision at
+/// the carrier (WI-20261013-RYDNV), so the one provision there is answers it — `Leaf`'s 7. The
+/// row was `require[Desc[T]]`'s witness goal, whose wildcard `Note` had no opinion and was
+/// refused against `Int64` (no dictionary bound), passing either way; the doc below is that
+/// row's.
 ///
 /// A wildcard is refused against a concrete candidate binding by
 /// `dispatch_values_match` (`types_lesseq` refuses a param ref against a sort, and
@@ -370,12 +297,9 @@ fn an_element_a_provider_leaves_open_is_answered() {
 fn an_element_a_provider_pins_concretely_is_still_discriminating() {
     let src = noted("Int64");
     let mut kb = load_kb_with(&src);
-    let sols = query_unary(&mut kb, "x9pb4_n.answer");
     assert!(
-        sols.iter().all(|(_, definite)| !definite),
-        "a provision that PINS `Note = Int64` says something the goal cannot confirm, \
-         so no dictionary may be built for it — a binding here would be the \
-         coherence hole the strict reject exists to refuse. Got {sols:?}"
+        matches!(definite_unary(&mut kb, "x9pb4_n.answer").as_slice(), [Value::Int(7)]),
+        "the guard's open `Note` is read off the one provision, `Note = Int64`"
     );
 }
 
@@ -405,7 +329,7 @@ namespace x9pb4_u
     operation describe(x: Leaf) -> Int64 = 7
   end
 
-  rule via(?x, ?r) :- require[Desc[T]], Desc.describe(?x, ?r)
+  rule via[A](?x: A, ?r) :- Desc[T = A], Desc.describe(?x, ?r)
   rule answer(?r) :- via(leaf(), ?r)
 end
 "#;
@@ -465,8 +389,8 @@ namespace x9pb4_e
     operation step(c: Src) -> Int64{op_effects} = 5
   end
 
-  rule dict(?x, ?d) :- ?d = require[Walk[C]], Walk.step(?x, ?ignored)
-  rule answer(?d) :- dict(src(), ?d)
+  rule via[A](?x: A, ?r) :- Walk[C = A], Walk.step(?x, ?r)
+  rule answer(?r) :- via(src(), ?r)
 end
 "#
         )
@@ -474,18 +398,10 @@ end
     for (label, row, op_effects) in [("{}", "{}", ""), ("Error", "Error", " effects Error")] {
         let src = program(row, op_effects);
         let mut kb = load_kb_with(&src);
-        let sols = query_unary(&mut kb, "x9pb4_e.answer");
-        let [(v, true)] = sols.as_slice() else {
-            panic!(
-                "`provides Walk[C = Src, E = {label}]` must still answer the \
-                 `require[Walk[C]]` goal — an effect row the witness does not name is \
-                 not this goal's to have an opinion about. Got {sols:?}"
-            );
-        };
-        assert_eq!(
-            dictionary_impl(&kb, v),
-            "x9pb4_e.Src",
-            "and the dictionary must name the one carrier that provides `Walk`"
+        assert!(
+            matches!(definite_unary(&mut kb, "x9pb4_e.answer").as_slice(), [Value::Int(5)]),
+            "`provides Walk[C = Src, E = {label}]` must answer the guard `Walk[C = A]` — an \
+             effect row the requirement does not name is not its to have an opinion about"
         );
     }
 }
@@ -555,8 +471,8 @@ namespace x9pb4_tie
     provides MidB[N = Int64]
   end
 
-  rule dict(?x, ?d) :- ?d = require[Spec[C]], Spec.probe(?x, ?ignored)
-  rule answer(?d) :- dict(carrier(), ?d)
+  rule via[A](?x: A, ?r) :- Spec[C = A], Spec.probe(?x, ?r)
+  rule answer(?r) :- via(carrier(), ?r)
 end
 "#;
     let mut kb = load_kb_with(src);
@@ -585,10 +501,11 @@ end
 /// element by its own parameter, WI-350's carrier filter still selects the impl, and a
 /// provision pinning `E` concretely would still be refused.
 ///
-/// FAILS WHEN THE WILDCARD LOOP IS BACKED OUT, measured: `?d` yields one INDEFINITE
-/// solution and no carrier, and `Bag.first` answers `Int(7)` INDEFINITELY. So this is
-/// evidence, not only a control — a self-representing spec's `require[X]` could not
-/// build a dictionary at all before.
+/// FAILED WHEN THE WILDCARD LOOP WAS BACKED OUT, measured on `require[Bag[E]]`: `?d` yielded
+/// one INDEFINITE solution and no carrier. Proposal 060.1 §5 removed the form; a spec that
+/// receives on itself has no guard at an introducer (no carrier parameter to bind), and a
+/// clause states its requirement by a head column typed at the spec, `x: Bag`, as an
+/// operation types a parameter. The call answers `IntBag`'s 7.
 #[test]
 fn a_self_representing_spec_receives_its_dictionary_too() {
     let src = r#"
@@ -607,23 +524,14 @@ namespace x9pb4_sr
     operation first(b: Self) -> Int64 = 7
   end
 
-  rule dict(?x, ?d) :- ?d = require[Bag[E]], Bag.first(?x, ?ignored)
-  rule answer(?d) :- dict(intBag(n: 1), ?d)
+  rule via(x: Bag, ?r) :- Bag.first(x, ?r)
+  rule answer(?r) :- via(intBag(n: 1), ?r)
 end
 "#;
     let mut kb = load_kb_with(src);
-    let sols = query_unary(&mut kb, "x9pb4_sr.answer");
-    let [(v, true)] = sols.as_slice() else {
-        panic!(
-            "a self-representing spec's `require[Bag[E]]` must bind a DEFINITE \
-             dictionary — before this ticket the goal had no bindings at all and \
-             every provision with head bindings was rejected. Got {sols:?}"
-        );
-    };
-    assert_eq!(
-        dictionary_impl(&kb, v),
-        "x9pb4_sr.IntBag",
-        "and it must name the carrier WI-350's filter selected"
+    assert!(
+        matches!(definite_unary(&mut kb, "x9pb4_sr.answer").as_slice(), [Value::Int(7)]),
+        "a column typed at a self-representing spec answers through its value's provider"
     );
 }
 
@@ -663,7 +571,9 @@ end
 /// Two providers of `Desc[T = Red]` where ONE OF THEM IS THE CARRIER: `Red` itself (7,
 /// and 058 §3.6's inferred `default_provider` row therefore names it) beside `Rival` (11).
 /// `tag()` is NULLARY and BODY-LESS, so nothing can value-direct it and no default body
-/// can stand in for the dictionary — the dispatch is the only thing under measurement.
+/// can stand in for the dictionary — the dispatch is the only thing under measurement. The
+/// instance is written on the call's receiver (it was `?d = require[Desc[T = Red]]` beside
+/// the bare call, removed by proposal 060.1 §5).
 fn two_providers(ns: &str, carrier_op: &str) -> String {
     format!(
         r#"namespace {ns}
@@ -687,7 +597,7 @@ fn two_providers(ns: &str, carrier_op: &str) -> String {
     operation tag() -> Int64 = 11
   end
 
-  rule tied(p: Red, ?r) :- ?d = require[Desc[T = Red]], Desc.tag(?r)
+  rule tied(p: Red, ?r) :- Desc[T = Red].tag(?r)
   rule answer(?r) :- tied(red(), ?r)
 end
 "#
@@ -698,10 +608,10 @@ end
 /// writes no inferred row and rung 2a has no winner to take. `RivalA` and `RivalB` have
 /// equal claims on `Desc[T = Red]`.
 ///
-/// THE WITNESS PATH, NOT THE ANCHOR, AND THAT IS FORCED. MEASURED: the anchored spelling
-/// (`rule tied(p: Red, …) :- ?d = require[Desc[T = Red]], …`) does not LOAD here — "this
-/// clause's head bound(s) — Red — provide no `Desc`" — and a bound that DOES provide is
-/// its own default. So after WI-20260916-8WRJC the anchor form cannot tie at all, and
+/// THE CALL AT A CONCRETE CARRIER, which needs no requirement written (it was the witness
+/// path of `?d = require[Desc[T]]`, removed by proposal 060.1 §5). MEASURED on that form: the
+/// anchored spelling did not LOAD here — "this clause's head bound(s) — Red — provide no
+/// `Desc`" — and a bound that DOES provide is its own default. So after WI-20260916-8WRJC the anchor form cannot tie at all, and
 /// the witness form is the arm's whole remaining population: the goal's element comes off
 /// `tag`'s ARGUMENT TYPE (`from_carried_types`, which is what makes a tie a `Defect`
 /// rather than an `Undecided`), and nothing gates the carrier on providing anything.
@@ -731,7 +641,7 @@ fn rival_pair(ns: &str) -> String {
     operation tag(x: Red) -> Int64 = 11
   end
 
-  rule tied(?r) :- ?d = require[Desc[T]], Desc.tag(red(), ?r)
+  rule tied(?r) :- Desc.tag(red(), ?r)
   rule answer(?r) :- tied(?r)
 end
 "#

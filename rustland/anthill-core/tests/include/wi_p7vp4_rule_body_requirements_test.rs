@@ -523,11 +523,13 @@ fn a_call_that_does_not_align_is_refused_not_a_panic() {
     assert!(errs.contains("describe"), "the typer names the call: {errs}");
 }
 
-/// A WRITTEN `requires(Derived[T])` grounded by an INHERITED witness — a call to an
-/// operation of `Base`, which `Derived` requires. The inference used to weave that call
-/// first (its spec, `Base`, is not the written `Derived`), and the witness scan (plain
-/// applications only) then found none: "no such call in the rule body". FAILS with
-/// `infer_rule_body_requirements` moved back before `record_find_dictionary_grounding`.
+/// A DECLARED `Derived` beside a call to an operation of `Base`, which `Derived` requires: the
+/// call answers `Leaf2`'s own `op`. The guard was `requires(Derived[T])`, grounded by that call
+/// as an INHERITED witness, and the inference used to weave the call first (its spec, `Base`,
+/// is not the written `Derived`), so the witness scan (plain applications only) found none —
+/// "no such call in the rule body"; the row FAILED with `infer_rule_body_requirements` moved
+/// back before `record_find_dictionary_grounding`. Proposal 060.1 §5 removed `requires(X)`, and
+/// the introducer's guard needs no witness: the row passes either way now.
 #[test]
 fn a_written_requires_keeps_its_inherited_witness() {
     let mut kb = crate::common::load_kb_with(&fix_program(
@@ -536,7 +538,7 @@ fn a_written_requires_keeps_its_inherited_witness() {
          sort Derived\n    sort T = ?\n    requires Base[T = T]\n  end\n  \
          sort Leaf2\n    entity leaf2\n    provides Base[T = Leaf2]\n    \
          provides Derived[T = Leaf2]\n    operation op(x: Leaf2) -> Int64 = 5\n  end\n  \
-         rule viaDerived(?x, ?r) :- requires(Derived[T]), Base.op(?x, ?r)\n  \
+         rule viaDerived[A](?x: A, ?r) :- Derived[T = A], Base.op(?x, ?r)\n  \
          rule derivedOne(?r) :- viaDerived(leaf2(), ?r)\n",
     ));
     assert_eq!(crate::common::one_definite_int(&mut kb, "wip7vp4.inherited.derivedOne"), Some(5), "`Leaf2`'s own `op`");
@@ -1007,7 +1009,7 @@ namespace wip7vp4.waitsdispatch
     end
   end
 
-  rule via(?x, ?r) :- require[Zeroable[T]], Zeroable.tag(?x, ?t), Zeroable.zeroPlus(?n, ?r), ?n <=> 1
+  rule via[A](?x: A, ?r) :- require z: Zeroable[T = A], z.tag(?x, ?t), z.zeroPlus(?n, ?r), ?n <=> 1
   rule sumAnswer(?r) :- via(wrap(inner: sum()), ?r)
   rule prodAnswer(?r) :- via(wrap(inner: prod()), ?r)
 end
@@ -1341,11 +1343,11 @@ fn a_rule_goal_passes_its_callee_the_callers_dictionary() {
 /// operand that calls an operation with `requires` (WI-20260926-DSEXA's item 3) — and so is a
 /// citation's answer of the woven `=` spelling.
 ///
-/// A `require[WeakOrd[T]]` does not discharge the call's own requirement — a bracket holds
-/// what its spec REQUIRES, not the spec (`scope_contract_covers_dep`) — and is refused as one
-/// no body call grounds, in every spelling (this one's goal twin as well); the refusal advised
-/// that bracket until P7VP4 ran it, and no longer does. Beside two typed head bindings a
-/// written `require[WeakOrd[T = Int64]]` names no one of them, refused for its own reason.
+/// The rows of a `require[WeakOrd[T]]` beside the call — refused as one no body call grounds,
+/// a bracket holding what its spec REQUIRES and not the spec (`scope_contract_covers_dep`) —
+/// and of a `require[WeakOrd[T = Int64]]` beside two typed head bindings, which named no one
+/// of them, went with the form (proposal 060.1 §5); the introducer's guard, `r5`, is the
+/// requirement the clause declares.
 #[test]
 fn an_operations_own_requires_is_its_clauses_condition_in_every_position() {
     let ns = "wip7vp4.operand";
@@ -1380,33 +1382,6 @@ fn an_operations_own_requires_is_its_clauses_condition_in_every_position() {
             .any(|rid| kb.rule_body_nodes(rid).iter().any(holds_woven_call));
         assert!(woven, "`{rule}`: the operand's call carries the clause's condition");
     }
-    for (spelling, clause) in [
-        ("operand", "  rule r3(?a, ?b, ?c) :- require[WeakOrd[T]], ?c = Util.sign(?a, ?b)\n"),
-        ("goal", "  rule r3(?a, ?b, ?c) :- require[WeakOrd[T]], Util.sign(?a, ?b, ?c)\n"),
-    ] {
-        let errs = crate::common::load_errors_of(&fix_program("wip7vp4.operandreq", clause));
-        crate::common::assert_refused_naming(
-            &errs,
-            &["expected a body call to one of `WeakOrd`'s operations"],
-            spelling,
-        );
-        assert!(
-            !errs.iter().any(|e| e.contains("Declare `require[")),
-            "no bracket holds an operation's own requirement, and none is advised: {errs:?}",
-        );
-    }
-    // Over a head typed `Int64` the call is no longer this refusal's: the head's bound
-    // reaches its element since WI-20261013-WF14Z ([`a_member_of_a_sort_that_requires_is_its_clauses_condition`]
-    // runs that clause). Beside two such bindings a written `require[WeakOrd[T = Int64]]`
-    // names no one of them, which is refused for its own reason, before and after.
-    crate::common::assert_refused_naming(
-        &crate::common::load_errors_of(&fix_program(
-            "wip7vp4.operandtwo",
-            "  rule r4(?a: Int64, ?b: Int64, ?c) :- require[WeakOrd[T = Int64]], ?c = Util.sign(?a, ?b)\n",
-        )),
-        &["expected one typed head binding anchoring `WeakOrd`, got 2 of them do"],
-        "a bracket that names no one of two typed head bindings",
-    );
 }
 
 /// A MEMBER OF A SORT THAT `requires` IS A CONDITION OF THE CLAUSE wherever its arguments are
@@ -1420,8 +1395,9 @@ fn an_operations_own_requires_is_its_clauses_condition_in_every_position() {
 /// sort's requirement checked as an operation body's again
 /// (`sort_requirements_carried_by_arguments` answering no): refused; and with the inference
 /// declining it as before (`woven_call_dispatches` read as `spec_op_call_parent`): -1, -1, -1.
-/// A `require[WeakOrd[T]]` holds no requirement of `Holder`'s, and is refused as one no body
-/// call grounds, as beside `Util.sign`.
+/// (A `require[WeakOrd[T]]` beside the call held no requirement of `Holder`'s and was refused as
+/// one no body call grounds; the form went with proposal 060.1 §5, and `memberintro` is the
+/// clause's declared requirement.)
 ///
 /// THE REPAIRS THE REFUSAL NAMED, each run, still answer: an argument whose type is known at
 /// load pins the chain (`lit`, `Int64`'s own); and `hsign` called from an operation that
@@ -1437,14 +1413,6 @@ fn a_member_of_a_sort_that_requires_is_its_clauses_condition() {
         let mut interp = crate::common::interp_for(&src);
         assert_eq!(cited(&mut interp, ns, "Driver"), (4, -4, -1), "{ns}");
     }
-    crate::common::assert_refused_naming(
-        &crate::common::load_errors_of(&fix_program(
-            "wip7vp4.memberreq",
-            &format!("{HOLDER}  rule m3(?a, ?b, ?c) :- require[WeakOrd[T]], Holder.hsign(?a, ?b, ?c)\n"),
-        )),
-        &["expected a body call to one of `WeakOrd`'s operations"],
-        "a bracket of the requirement's own spec holds nothing",
-    );
     // A HEAD TYPED `Int64` PINS THE CHAIN (068-implementation §6.2, decision 1; 7D48J's
     // 2026-10-08 note, row 3): the clause reads the head's bound, so `hsign` is at `Int64` and
     // decided at load, as at literals — `Int64`'s own `-1` for `(1, 5)`. Read without the
@@ -1460,17 +1428,6 @@ fn a_member_of_a_sort_that_requires_is_its_clauses_condition() {
     assert_eq!(
         crate::common::one_definite_int(&mut kb, "wip7vp4.memberhead.q4"),
         Some(-1)
-    );
-    crate::common::assert_refused_naming(
-        &crate::common::load_errors_of(&fix_program(
-            "wip7vp4.membertwo",
-            &format!(
-                "{HOLDER}  rule m5(?a: Int64, ?b: Int64, ?c) :- require[WeakOrd[T = Int64]], \
-                 Holder.hsign(?a, ?b, ?c)\n"
-            ),
-        )),
-        &["expected one typed head binding anchoring `WeakOrd`, got 2 of them do"],
-        "a bracket that names no one of two typed head bindings",
     );
     let ns = "wip7vp4.memberok";
     let repaired = format!(
@@ -1527,16 +1484,17 @@ fn a_requirement_no_argument_names_is_refused_in_every_position() {
 /// `FiniteCollection`'s `Iterable[…]` and is refused. The refusal named a bracket of the
 /// REQUIREMENT's spec, `require[Iterable[…]]`, which holds nothing — a bracket holds what
 /// its spec requires — and ended with the tail every such refusal gets, offering an explicit
-/// type argument, which a rule-body call refuses. It names the callee's spec now, and no
-/// tail:
-///   * the advised `require[FiniteCollection[C = List[T = String]]]` loads and answers the
-///     list's size, and so does an argument whose type is known at load (`pinned`);
-///   * the bracket advised before, and the type argument the tail offered, are each a load
-///     error.
+/// type argument, which a rule-body call refuses. It names the callee's spec, and no tail:
+///   * the advised instance written at the call, `FiniteCollection[C = List[T =
+///     String]].size(…)`, loads and answers the list's size, and so does an argument whose
+///     type is known at load (`pinned`);
+///   * the type argument the tail offered is a load error.
+/// (The advice was the clause's `require[FiniteCollection[…]]` until proposal 060.1 §5
+/// removed that form; the row also ran the `require[Iterable[…]]` advised before, refused.)
 /// FAILS with the advice naming the requirement's spec again, and with the tail appended
-/// again; the four verdicts pass either way
+/// again; the verdicts pass either way
 /// (`wi_nx4fd_functional_relation_row_param_test::the_woven_spelling_is_the_repair` is the
-/// bracket's own row).
+/// written instance's own row).
 #[test]
 fn the_refusal_names_no_repair_that_is_not_one() {
     let program = |clause: &str| {
@@ -1554,26 +1512,18 @@ fn the_refusal_names_no_repair_that_is_not_one() {
         &bare,
         &[
             "RULE-body goal",
-            "Declare `require[anthill.prelude.FiniteCollection[…]]` in the clause",
+            "Write the instance at the call, `FiniteCollection[…].size(…)`",
             "pin the element at this call",
         ],
-        "the bare goal is refused and told the bracket that holds `Iterable`",
+        "the bare goal is refused and told the instance that holds `Iterable`",
     );
     assert!(
-        !bare.iter().any(|e| e.contains("Declare `require[anthill.prelude.Iterable[")
-            || e.contains("explicit type argument")),
-        "neither a bracket that holds nothing nor a type argument is advised: {bare:?}",
+        !bare.iter().any(|e| e.contains("`Iterable[…].size(…)`") || e.contains("explicit type argument")),
+        "neither an instance that holds nothing nor a type argument is advised: {bare:?}",
     );
-    let mut kb = crate::common::load_kb_with(&program(
-        "require[FiniteCollection[C = List[T = String]]], size",
-    ));
+    let mut kb = crate::common::load_kb_with(&program("FiniteCollection[C = List[T = String]].size"));
     assert_eq!(crate::common::one_definite_int(&mut kb, "wip7vp4.advice.two"), Some(2));
     assert_eq!(crate::common::one_definite_int(&mut kb, "wip7vp4.advice.pinned"), Some(2));
-    crate::common::assert_refused_naming(
-        &crate::common::load_errors_of(&program("require[Iterable[C = List[T = String]]], size")),
-        &["RULE-body goal", "anthill.prelude.Iterable"],
-        "the bracket advised before holds nothing",
-    );
     crate::common::assert_refused_naming(
         &crate::common::load_errors_of(&program("size[C = List[T = String]]")),
         &["call-site type arguments"],

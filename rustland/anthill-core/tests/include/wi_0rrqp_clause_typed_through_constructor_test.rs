@@ -882,52 +882,46 @@ fn a_free_part_at_a_fixed_instance_is_filled_from_its_domain() {
 /// A VALUE WHOSE ELEMENT NOTHING FIXES ANSWERS CONDITIONALLY (user, 2026-10-21: it loads).
 /// `gen` builds `?w <=> wrap(inner: ?i)`, a `Wrap[E = e]`, and `elemOfSum` reaches `gen` as a
 /// rule goal and never reads `?w`: nothing fixes `e`, so the column's check cannot fill `?i`
-/// and the answer `Sum` stands on it. It was definite while the column had no check.
+/// and the answer `sum` stands on it. It was definite while the column had no check. The
+/// control, `elemT`, fixes the element at `genT`'s column and answers definitely. (The row
+/// handed a dictionary between the two rules as a value, `?d = require[Zeroable[?]]`, which
+/// proposal 060.1 §5 removed; measured on the earlier program, the same residual.)
 #[test]
 fn a_value_whose_element_nothing_fixes_answers_conditionally() {
     let src = r#"
 namespace wi0rrqp.g1
   import anthill.prelude.Int64
-  import anthill.realization.runtime.Dictionary
-  sort Zeroable
-    sort T = ?
-    operation zero() -> Int64
-    operation tag(x: T) -> Int64 = 0
-  end
   sort Sum
-    import anthill.prelude.Int64
     entity sum
-    provides Zeroable[T = Sum]
-    operation zero() -> Int64 = 3
-    operation tag(x: Sum) -> Int64 = 1
   end
   sort Wrap
-    import anthill.prelude.Int64
     sort E = ?
     entity wrap(inner: E)
-    provides Zeroable[T = Self] :- Zeroable[E] where
-      operation zero() -> Int64 = Int64.add(Zeroable.zero[T = E](), 100)
-      operation tag(x: Self) -> Int64 = 9
-    end
   end
   import wi0rrqp.g1.Sum.{sum}
   import wi0rrqp.g1.Wrap.{wrap}
-  rule get(?x, ?d) :- ?d = require[Zeroable[?]], Zeroable.tag(?x, ?t)
-  rule gen(?w, ?d, ?ed) :- ?ed <=> Dictionary.sub(?d, 0), ?w <=> wrap(inner: ?i)
-  rule elemOfSum(?s) :- get(wrap(inner: sum()), ?d), gen(?w, ?d, ?ed), ?s <=> Dictionary.impl(?ed)
+  rule gen(?w) :- ?w <=> wrap(inner: ?i)
+  rule elemOfSum(?s) :- gen(?w), ?s <=> sum()
+  rule genT(?w: Wrap[E = Sum]) :- ?w <=> wrap(inner: ?i)
+  rule elemT(?s) :- genT(?w), ?s <=> sum()
 end
 "#;
     let mut kb = crate::common::load_kb_with(src);
     let all = crate::common::query_unary(&mut kb, "wi0rrqp.g1.elemOfSum");
     assert_eq!(all.len(), 1, "one answer, got {all:?}");
     assert!(!all[0].1, "conditional on `?w`'s check, got {all:?}");
+    let fixed = crate::common::query_unary(&mut kb, "wi0rrqp.g1.elemT");
+    assert!(fixed.len() == 1 && fixed[0].1, "the element fixed at the column: definite, got {fixed:?}");
 }
 
 /// A VARIABLE PASSED TO A SPEC'S OPERATION GETS NO BOUND. `Bag.first(?x, ?r)` reads `?x` as
 /// `Bag[E = e]`, which says `?x`'s sort provides `Bag`; as a bound it is a type the value
 /// has, and `domain(?x, Bag[E = ?e])` refuses an `intBag(n: 1)` — no nominal spec is read as
 /// its providers there, as the written head `?x: Bag[E = ?e]` shows. Installed, `viaDict` and
-/// `answer` answered nothing.
+/// `answer` answered nothing. (`answer` read the dictionary of `dict(?x, ?d) :- ?d =
+/// require[Bag[?]], Bag.first(?x, ?r)`; proposal 060.1 §5 removed that form, and `Bag`
+/// receives on itself, so no guard of a head introducer states it — the pair is gone, and
+/// `viaDict` is the call it covered.)
 #[test]
 fn a_variable_passed_to_a_spec_operation_gets_no_bound() {
     let src = r#"
@@ -943,8 +937,6 @@ namespace wi0rrqp.b1
     provides Bag[E = N]
     operation first(b: Self) -> Int64 = 7
   end
-  rule dict(?x, ?d) :- ?d = require[Bag[?]], Bag.first(?x, ?r)
-  rule answer(?d) :- dict(intBag(n: 1), ?d)
   rule dict2(?x, ?r) :- Bag.first(?x, ?r)
   rule viaDict(?r) :- dict2(intBag(n: 1), ?r)
   rule written(?x: Bag[E = ?e], ?r) :- Bag.first(?x, ?r)
@@ -957,7 +949,6 @@ end
         via.len() == 1 && via[0].1 && crate::common::scalar_int(&kb, &via[0].0) == Some(7),
         "`IntBag`'s `first`, got {via:?}"
     );
-    assert_eq!(crate::common::query_unary(&mut kb, "wi0rrqp.b1.answer").len(), 1, "the dictionary");
     assert!(
         crate::common::query_unary(&mut kb, "wi0rrqp.b1.viaWritten").is_empty(),
         "the written twin, refused by its check"

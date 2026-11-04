@@ -16,7 +16,9 @@
 //!     `providers_at_the_carrier_that_fix_the_open_parameter_apart_are_refused` (both load and
 //!     answer `Meters`' 3);
 //!   * the clause's `require[…]` not read at the carrier (`clause_required_view_at_carrier`) —
-//!     `a_clause_require_names_the_instance_at_its_carrier` (`3`, `Meters`', for `Feet`'s 4).
+//!     `a_clause_require_names_the_instance_at_its_carrier` (`3`, `Meters`', for `Feet`'s 4),
+//!     measured while the clause could write `require[…]`; proposal 060.1 §5 removed it, and the
+//!     row writes the instance on the call's receiver, `Conv[A = Feet, B = String].tag(…)`.
 //!
 //!   * an operation's own `requires` left to the clause however the call's types fix it
 //!     (`own_requirements_fixed_at` answering no) — both rows of the pinned class here, and the
@@ -25,7 +27,9 @@
 //!     it — `wi_gfs6a`'s q2 and fwd rows (their refusal does not say no impl provides it).
 //!
 //!   * the witness of a written `require[…]` read off the body's goals alone
-//!     (`calls_run_with_their_goal`) — `a_requires_witness_in_a_value_slot_grounds_it`;
+//!     (`calls_run_with_their_goal`) — `a_requires_witness_in_a_value_slot_grounds_it`, while
+//!     the clause could write one (removed by 060.1 §5; the row is the instance written at a
+//!     call in a value slot now);
 //!   * the provider question left out of `own_requirements_carried_by_arguments` —
 //!     `a_requirement_at_a_spec_nothing_provides_is_refused_in_every_position`;
 //!   * that function answering yes whatever the parameters write — P7VP4's
@@ -42,7 +46,8 @@
 //! of theirs.
 //!
 //! Pass either way, by design: the repairs of the unfixed carrier, the one provider at a
-//! carrier, and providers at two carriers.
+//! carrier, providers at two carriers, and the two rows written with the instance at the call
+//! since 060.1 §5.
 
 use anthill_core::eval::Value;
 
@@ -128,8 +133,8 @@ fn an_unfixed_carrier_is_refused_in_both_bodies() {
             &[AT_A],
             "  rule t(?r) :- Conv.tag(\"km\", ?r)",
         )),
-        &["rydnv.unfixedrule.Conv.tag", "require[Conv[A = …]]"],
-        "a rule body names the clause's `require` as the repair",
+        &["rydnv.unfixedrule.Conv.tag", "the instance written at the call, `Conv[A = …].tag(…)`"],
+        "a rule body names the instance at the call as the repair",
     );
     crate::common::assert_refused_naming(
         &crate::common::load_errors_of(&program(
@@ -142,9 +147,11 @@ fn an_unfixed_carrier_is_refused_in_both_bodies() {
     );
 }
 
-/// THE REPAIRS, each run: the clause's `require[…]`, with its `B` written and without; the
-/// call's bracket; an operation's `requires`. Each names `Meters` and answers its 3, and a
-/// `require` naming `Feet` answers `Feet`'s 4. Pass either way.
+/// THE REPAIRS, each run: the instance written on the rule-body call's receiver, with its `B`
+/// written and without; the operation-body call's bracket; an operation's `requires`. Each
+/// names `Meters` and answers its 3, and an instance naming `Feet` answers `Feet`'s 4. Pass
+/// either way. (The rule-body repair was the clause's `require[Conv[A = Meters, B = String]]`,
+/// which proposal 060.1 §5 removed; the receiver's bracket answered the same on d39bd428.)
 #[test]
 fn the_repairs_of_an_unfixed_carrier_answer() {
     let ns = "rydnv.repairs";
@@ -155,9 +162,9 @@ fn the_repairs_of_an_unfixed_carrier_answer() {
          operation br() -> Int64 = Conv[A = Meters].tag(\"km\")\n    \
          operation viaReq[X](s: X) -> Int64 requires Conv[A = Meters, B = X] = Conv.tag(s)\n  \
          end\n  \
-         rule full(?r) :- require[Conv[A = Meters, B = String]], Conv.tag(\"km\", ?r)\n  \
-         rule part(?r) :- require[Conv[A = Meters]], Conv.tag(\"km\", ?r)\n  \
-         rule feet(?r) :- require[Conv[A = Feet, B = String]], Conv.tag(\"km\", ?r)\n  \
+         rule full(?r) :- Conv[A = Meters, B = String].tag(\"km\", ?r)\n  \
+         rule part(?r) :- Conv[A = Meters].tag(\"km\", ?r)\n  \
+         rule feet(?r) :- Conv[A = Feet, B = String].tag(\"km\", ?r)\n  \
          rule through(?r) :- ?r <=> U.viaReq(\"km\")",
     );
     let mut kb = crate::common::load_kb_with(&src);
@@ -187,7 +194,7 @@ fn providers_at_the_carrier_that_fix_the_open_parameter_apart_are_refused() {
         &[
             "names no instance of `rydnv.apartrule.Conv`: it leaves `A` open",
             "`rydnv.apartrule.Meters` and `rydnv.apartrule.Feet`",
-            "declare `require[Conv[A = …, B = String]]` in the clause",
+            "Write the instance: `Conv[A = …, B = String].tag(…)`",
         ],
         "the rule body",
     );
@@ -205,11 +212,14 @@ fn providers_at_the_carrier_that_fix_the_open_parameter_apart_are_refused() {
     );
 }
 
-/// THE CLAUSE'S `require[…]` NAMES THE INSTANCE AT ITS CARRIER: over the same two providers,
-/// `require[Conv[A = Feet, B = String]]` answers `Feet`'s 4. The typer read `A` off the first
-/// provision at `String` and pinned `Meters`' member, so the clause answered 3 under a
-/// `require` naming `Feet`. FAILS with the clause's `require` not read at the carrier: 3. The bracket in an operation body, `Conv[A = Feet].tag("km")`,
-/// answers 4 either way.
+/// THE INSTANCE WRITTEN AT THE CALL NAMES IT AT ITS CARRIER: over the same two providers,
+/// `Conv[A = Feet, B = String].tag("km", ?r)` answers `Feet`'s 4 — the repair the refusal above
+/// names. The clause wrote `require[Conv[A = Feet, B = String]]` before the call, which
+/// proposal 060.1 §5 removed; then the typer read `A` off the first provision at `String` and
+/// pinned `Meters`' member, so the clause answered 3 under a `require` naming `Feet`, and the
+/// row FAILED with the clause's `require` not read at the carrier. The receiver's bracket
+/// answered 4 on d39bd428 too, so the row passes either way now. The bracket in an operation
+/// body, `Conv[A = Feet].tag("km")`, answers 4 either way.
 #[test]
 fn a_clause_require_names_the_instance_at_its_carrier() {
     let ns = "rydnv.declared";
@@ -217,7 +227,7 @@ fn a_clause_require_names_the_instance_at_its_carrier() {
         ns,
         &[AT_B, FEET],
         "  sort U\n    operation br() -> Int64 = Conv[A = Feet].tag(\"km\")\n  end\n  \
-         rule t(?r) :- require[Conv[A = Feet, B = String]], Conv.tag(\"km\", ?r)",
+         rule t(?r) :- Conv[A = Feet, B = String].tag(\"km\", ?r)",
     );
     let mut kb = crate::common::load_kb_with(&src);
     assert_eq!(crate::common::one_definite_int(&mut kb, &format!("{ns}.t")), Some(4));
@@ -253,7 +263,7 @@ fn an_unfixed_carrier_under_a_let_is_refused_too() {
             &[AT_A],
             "  rule t(?r) :- ?r <=> (let s = \"km\"  Conv.tag(s))",
         )),
-        &["rydnv.unfixedlet.Conv.tag", "require[Conv[A = …]]"],
+        &["rydnv.unfixedlet.Conv.tag", "the instance written at the call, `Conv[A = …].tag(…)`"],
         "under a `let`",
     );
 }
@@ -401,18 +411,20 @@ fn a_requirement_at_a_projection_the_clause_leaves_open_is_its_condition() {
 
 // ── the class read in every position ──────────────────────────────────────────────────────
 
-/// A `require[…]`'S WITNESS MAY STAND IN A VALUE SLOT: `require[Conv[A = Meters, B = String]],
-/// ?r <=> Conv.tag("km")` answers `Meters`' 3, as its goal spelling does. The witness scan
-/// read the clause's top-level goals alone, so the clause was refused "no body call … to
-/// ground the requirement". FAILS with that scan restored (`calls_run_with_their_goal` read
-/// as the body's goals): refused.
+/// AN INSTANCE WRITTEN AT A CALL IN A VALUE SLOT: `?r <=> Conv[A = Meters, B =
+/// String].tag("km")` answers `Meters`' 3, as its goal spelling does. The row was the witness of
+/// a `require[Conv[A = Meters, B = String]]` standing in the value slot, which the witness scan
+/// read off the clause's top-level goals alone, refusing the clause "no body call … to ground
+/// the requirement" (FAILED with that scan restored, `calls_run_with_their_goal`). Proposal
+/// 060.1 §5 removed `require[…]`; the instance is written on the call now, and the row passes
+/// either way.
 #[test]
 fn a_requires_witness_in_a_value_slot_grounds_it() {
     let ns = "rydnv.valuewitness";
     let src = program(
         ns,
         &[AT_A],
-        "  rule t(?r) :- require[Conv[A = Meters, B = String]], ?r <=> Conv.tag(\"km\")",
+        "  rule t(?r) :- ?r <=> Conv[A = Meters, B = String].tag(\"km\")",
     );
     let mut kb = crate::common::load_kb_with(&src);
     assert_eq!(crate::common::one_definite_int(&mut kb, &format!("{ns}.t")), Some(3));

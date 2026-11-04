@@ -181,6 +181,14 @@ fn a_partially_applied_alias_member_retains_its_instance() {
     }
 }
 
+/// The written instance answers a carrier-less call (`Tagger.code()`) made through the
+/// requirement's name, `require t: Tagger[C = A, Out = Int64], t.code(?r)`: only its written
+/// `Out = Int64` selects `Red`'s `7`, and with `Out` left open both providers answer. An
+/// unnamed guard is refused before such a call, as an operation's `requires` line is before
+/// `Tagger.code()` — the requirement supplies the evidence for an instance a call names and
+/// does not say which instance that is — and the refusal names the call through a name.
+/// (The clause read the dictionary as `?d = require[Tagger[Out = Int64]]` beside the guard,
+/// which proposal 060.1 §5 removed.)
 #[test]
 fn the_written_instance_is_consumed_through_the_existing_dictionary_channel() {
     for guard in [
@@ -189,8 +197,7 @@ fn the_written_instance_is_consumed_through_the_existing_dictionary_channel() {
         "IntTagger[A]",
     ] {
         let mut kb = load_kb_with(&tagger(&format!(
-            "rule keep[A](?x: A, ?r) :- src(?x, ?), {guard}, \
-             ?d = require[Tagger[Out = Int64]], Tagger.code(?r)\n \
+            "rule keep[A](?x: A, ?r) :- src(?x, ?), require t: {guard}, t.code(?r)\n \
              rule answer(?r) :- keep(?x, ?r)"
         )));
         let answers = query_unary(&mut kb, "test.dxvkTag.answer");
@@ -199,6 +206,26 @@ fn the_written_instance_is_consumed_through_the_existing_dictionary_channel() {
             "{guard}: {answers:?}"
         );
     }
+    let mut kb = load_kb_with(&tagger(
+        "rule keep[A](?x: A, ?r) :- src(?x, ?), require t: Tagger[C = A], t.code(?r)\n \
+         rule answer(?r) :- keep(?x, ?r)",
+    ));
+    let mut answers: Vec<i64> = query_unary(&mut kb, "test.dxvkTag.answer")
+        .into_iter()
+        .map(|(v, definite)| match (v, definite) {
+            (Value::Int(n), true) => n,
+            other => panic!("a definite Int64, got {other:?}"),
+        })
+        .collect();
+    answers.sort();
+    assert_eq!(answers, vec![7, 9], "`Out` left open: both providers");
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&tagger(
+            "rule keep[A](?x: A, ?r) :- src(?x, ?), Tagger[C = A, Out = Int64], Tagger.code(?r)",
+        )),
+        &["`Tagger[C = …].code(…)`", "`require s: Tagger[…]`", "`s.code(…)`"],
+        "an unnamed guard before a call that writes no instance",
+    );
 }
 
 #[test]

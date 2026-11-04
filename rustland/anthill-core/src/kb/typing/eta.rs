@@ -593,9 +593,6 @@ pub(super) fn attach_eta_dispatch_dict(
         // The eta route's `Ok(None)` is ALREADY a load error (WI-420), so it has no use
         // for the rule-body verdict — see the parameter's own note.
         None,
-        // …and for the same reason no use for a `require[…]` bracket: it cannot act on
-        // the verdict either way.
-        &[],
         &subst,
         parent,
         callee_provision,
@@ -809,10 +806,6 @@ fn eta_op_scoped_dicts(
         // either: the eta's own caller chain is what a forwarded slot reads, exactly as it
         // is for every other dep this path cannot pin.
         &HashMap::new(),
-        // WI-20260921-3G1YT — no bracket route on the ETA path: the route is a rule clause's
-        // `require[…]` ([`held_spec_views`]), and a function value has no arrow to lift
-        // against in a rule body, so none reaches here from one.
-        &[],
         span,
         // The OPERATION owns an op-scoped clause, so it is what the refusal must name
         // as the declaration whose requirement could not be supplied — its parent sort

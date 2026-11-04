@@ -1,17 +1,19 @@
-//! WI-300 — rule-body `requires(X)` requirement guards (guard tier).
+//! WI-300 — a rule's requirement as a guard of the clause.
 //!
-//! A rule-body `requires(PartialEq[T])` desugars (converter) to
-//! `find_dictionary(PartialEq[T])`, the spec instance whole, which the typer sweep
-//! rewrites into `find_dictionary(<spec>, <op>, ?x, ?y)` using the body's `eq(?x, ?y)`
-//! call as the witness whose carrier types decide the instance. At resolution the guard
-//! checks `provides PartialEq` — the spec it names, not `Eq` — at the current binding,
-//! by a provision written or DERIVED (`Derived`, `Partial` below):
+//! WI-300 delivered the rule-body `requires(PartialEq[T])`, a check-only guard whose
+//! carrier the body's `eq(?x, ?y)` call witnessed; proposal 060.1 §5 removed it, and the
+//! guard is the head introducer's, `rule related[A](?x: A, ?y: A) :- PartialEq[T = A]`,
+//! read as `find_dictionary(PartialEq[T = A], PartialEq, A, out: ?d, carrier_type: true)` at
+//! the carrier the introducer names. At resolution the guard checks `provides PartialEq` —
+//! the spec it names, not `Eq` — at the current binding, by a provision written or DERIVED
+//! (`Derived`, `Partial` below), as `requires(X)` did (measured on d39bd428, the same
+//! answers):
 //!   * ground carrier WITH a provider     → the rule fires;
 //!   * ground carrier with NO provider     → the rule does not fire (even though the
 //!     structural `eq` would succeed — the guard is what blocks it);
 //!   * under-determined carrier            → SUSPEND (no definite solution).
 //! Body `eq` is `BuiltinTag::Eq` (structural), so the fire/don't-fire/suspend outcome
-//! is governed ENTIRELY by the `requires` guard.
+//! is governed ENTIRELY by the guard.
 
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Literal, Term, TermId, Var};
@@ -67,7 +69,9 @@ const SRC: &str = r#"
 
       -- Fires only when the argument type provides PartialEq; the inner `eq` is the
       -- structural builtin, so the guard alone decides fire / don't-fire.
-      rule related(?x, ?y) :- requires(PartialEq[T]), eq(?x, ?y)
+      rule related[A](?x: A, ?y: A) :- PartialEq[T = A], eq(?x, ?y)
+      -- A guard no call reads decides as well.
+      rule solo[A](?x: A) :- PartialEq[T = A]
     end
 "#;
 
@@ -212,12 +216,14 @@ fn a_carrier_whose_fields_provide_eq_derives_it_and_passes_the_guard() {
 }
 
 /// The guard asks for the spec it NAMES. `Partial(f: Float)` derives `PartialEq` and
-/// `NonEq` and no `Eq`, and `requires(PartialEq[T])` admits it — so the guard reads
+/// `NonEq` and no `Eq`, and the guard `PartialEq[T = A]` admits it — so the guard reads
 /// `PartialEq`, as the header says, not the `Eq` it once said.
 ///
-/// FAILS when the guard asks `Eq` where the goal names `PartialEq`, MEASURED (that
-/// substitution at `builtin_find_dictionary`'s spec read), and is the only row that
-/// does: every other carrier here that passes provides `Eq` as well. Passes under both
+/// FAILED when the guard asked `Eq` where the goal named `PartialEq`, MEASURED (that
+/// substitution at `builtin_find_dictionary`'s spec read) while the guard was
+/// `requires(PartialEq[T])`, and was the only row that did: every other carrier here that
+/// passes provides `Eq` as well. The introducer's guard reads the instance whole
+/// (`carrier_type: true`), and that substitution was not measured on it. Passes under both
 /// derivation back-outs above, which leave the Partial half alone. That half cannot be
 /// backed out under this row: a derived `NonEq` without its `PartialEq` is refused at
 /// load ("provides NonEq, which requires PartialEq"), MEASURED.
@@ -283,76 +289,81 @@ fn guard_suspends_on_under_determined_carrier() {
     );
 }
 
+/// A GUARD NO CALL READS STILL DECIDES. WI-300's `requires(PartialEq[T])` with no body
+/// call was refused, "cannot … ground the requirement": its carrier came from the call. The
+/// introducer names the carrier, so `solo[A](?x: A) :- PartialEq[T = A]` loads and holds at
+/// `Witheq` alone, as an operation's unread `requires` line does.
 #[test]
-fn ungroundable_requires_is_a_loud_error() {
-    // `requires(PartialEq[T])` with NO body call to any of Eq's operations cannot be
-    // grounded — the guard would never be decidable. That is reported as a hard
-    // error (loud, not a silent skip), not left to fail quietly at resolution.
-    let src = r#"
-        namespace test.wi300.bad
-          import anthill.prelude.{Int64, PartialEq, Eq}
-          import anthill.prelude.PartialEq.eq
-          sort Thing
-            entity thing(v: Int64)
-          end
-          rule solo(?x) :- requires(PartialEq[T])
-        end
-    "#;
-    let errs = try_load_with(src)
-        .err()
-        .expect("ungroundable requires must fail to load");
-    assert!(
-        errs.iter().any(|e| e.contains("ground the requirement")),
-        "expected a grounding error, got: {errs:?}"
-    );
+fn a_guard_no_call_reads_still_decides() {
+    let mut kb = load_with(SRC);
+    let solo = kb.try_resolve_symbol("test.wi300.solo").expect("test.wi300.solo in KB");
+    for (ctor, want) in [("test.wi300.Witheq.we", 1), ("test.wi300.Noeq.ne", 0)] {
+        let a = mk(&mut kb, ctor, 7);
+        let goal = kb.alloc(Term::Fn {
+            functor: solo,
+            pos_args: SmallVec::from_elem(a, 1),
+            named_args: SmallVec::new(),
+        });
+        let answers = kb.resolve(&[goal], &ResolveConfig::default());
+        assert_eq!(answers.len(), want, "{ctor}");
+        assert!(answers.iter().all(|s| s.is_definite()), "{ctor}: a conditional answer");
+    }
 }
 
+/// TWO EQUAL GUARDS ARE TWO REQUIREMENTS, as an operation's two equal `requires` lines are
+/// two slots (proposal 060.1 §8.5), and the call both cover reads the first: `twin` holds at
+/// `Witheq` and not at `Noeq`. WI-300 refused two equal `requires(…)`, "name a different
+/// instance"; that row's spelling, `requires(PartialEq[A]), requires(PartialEq[B])` over
+/// free names, is the guards over names nothing introduces now, each refused as the
+/// unresolved name it is.
 #[test]
-fn two_equal_requires_on_same_spec_is_a_loud_error() {
-    // TWO `requires` ON ONE SPEC ARE NO LONGER AN ERROR BY THEMSELVES —
-    // WI-20260909-96ZTM binds one dictionary per `require`, attributed by its own written
-    // bracket (`wi_96ztm…::the_two_dictionaries_are_attributed_to_their_own_carriers`).
-    // The old reason — "the guard tier strips the spec's type-args, so it cannot
-    // attribute which type-parameter each `requires` names" — went with
-    // WI-20260909-51W18's un-strip.
-    //
-    // WHAT IS STILL REFUSED IS TWO **EQUAL** ONES, and this fixture is one: `A` and `B`
-    // here are FREE names, not head-introduced type variables, so neither denotes
-    // anything, both requires lower to a bare `PartialEq`, and nothing distinguishes
-    // them.
-    //
-    // AND THE FIXTURE SAYS SO OUT LOUD NOW. The two leading errors are
-    // WI-20260909-51W18's: a bracket binding naming neither a sort nor one of the spec's
-    // own type parameters is REPORTED rather than silently dropped — which is what makes
-    // visible that this clause's `[A]`/`[B]` never distinguished anything.
+fn two_equal_guards_are_two_requirements() {
     let src = r#"
         namespace test.wi300.dup
           import anthill.prelude.{Int64, PartialEq, Eq}
-          import anthill.prelude.PartialEq.eq
           import anthill.prelude.PartialEq.{eq}
           sort Thing
             entity thing(v: Int64)
+          end
+          sort Opaque
+          end
+          sort Noeq
+            entity ne(v: Opaque)
           end
           namespace Thing
             provides PartialEq[T = Thing]
             provides Eq[T = Thing]
           end
-          rule twin(?a, ?b, ?c) :- requires(PartialEq[A]), requires(PartialEq[B]), eq(?a, ?b), eq(?b, ?c)
+          rule twin[A](?a: A, ?b: A, ?c: A) :- PartialEq[T = A], PartialEq[T = A], eq(?a, ?b), eq(?b, ?c)
         end
     "#;
-    let errs = try_load_with(src)
-        .err()
-        .expect("two requires on the same spec must fail to load");
+    let mut kb = load_with(src);
+    let twin = kb.try_resolve_symbol("test.wi300.dup.twin").expect("twin in KB");
+    for (ctor, want) in [("test.wi300.dup.Thing.thing", 1), ("test.wi300.dup.Noeq.ne", 0)] {
+        let a = mk(&mut kb, ctor, 7);
+        let goal = kb.alloc(Term::Fn {
+            functor: twin,
+            pos_args: SmallVec::from_slice(&[a, a, a]),
+            named_args: SmallVec::new(),
+        });
+        let answers = kb.resolve(&[goal], &ResolveConfig::default());
+        assert!(
+            answers.len() == want && answers.iter().all(|s| s.is_definite()),
+            "{ctor}: {} answer(s)",
+            answers.len()
+        );
+    }
+    let free = r#"
+        namespace test.wi300.free
+          import anthill.prelude.{Int64, PartialEq}
+          import anthill.prelude.PartialEq.{eq}
+          rule twin(?a, ?b, ?c) :- PartialEq[A], PartialEq[B], eq(?a, ?b), eq(?b, ?c)
+        end
+    "#;
+    let errs = try_load_with(free).err().expect("guards over free names must fail to load");
     assert!(
-        errs.iter().any(|e| e.contains("name a different instance")),
-        "expected an equal-requires refusal, got: {errs:?}"
-    );
-    assert!(
-        errs.iter()
-            .any(|e| e.contains("`A` in it names neither a sort"))
-            && errs
-                .iter()
-                .any(|e| e.contains("`B` in it names neither a sort")),
-        "expected both free names to be reported in their own right, got: {errs:?}"
+        errs.iter().any(|e| e.contains("unresolved name 'A'"))
+            && errs.iter().any(|e| e.contains("unresolved name 'B'")),
+        "expected both free names reported, got: {errs:?}"
     );
 }

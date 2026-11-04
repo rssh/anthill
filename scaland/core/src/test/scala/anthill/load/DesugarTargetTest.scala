@@ -6,7 +6,9 @@ import anthill.parse.{Parser, ParsedFile, ParseTermId, Item, DesugarTarget, Prat
 import anthill.term.{Term, TermId}
 
 /** ERF7T back-out measured: reverting the parser mints plus implicit reflect
-  * exposure fails 18/20 rows, including the runtime and loaded-identity rows.
+  * exposure fails 18/20 rows, including the runtime and loaded-identity rows
+  * (counted on the table as it stood then, with the three requirement mints that
+  * proposal 060.1 §5 has since removed).
   * The table and ordinary-call controls pass either way by design.
   * KnowledgeBaseTest separately measures the absolute equation reader (1 failure). */
 class DesugarTargetTest extends munit.FunSuite:
@@ -30,9 +32,6 @@ class DesugarTargetTest extends munit.FunSuite:
     "{1, 2}" -> DesugarTarget.SetLiteral,
     "(a: 1, b: 2)" -> DesugarTarget.TupleLiteral,
     "!" -> DesugarTarget.Cut,
-    "requires(Eq)" -> DesugarTarget.FindDictionary,
-    "require[Eq]" -> DesugarTarget.FindDictionary,
-    "?d = require[Eq]" -> DesugarTarget.FindDictionary,
     "(p(?x) -: p(?x))" -> DesugarTarget.ForallImpl,
     "(forall ?y in [1]: p(?y))" -> DesugarTarget.ForallIn,
     "(some ?y in [1]: p(?y))" -> DesugarTarget.SomeIn) do
@@ -71,17 +70,20 @@ class DesugarTargetTest extends munit.FunSuite:
     assert(functor(pf, goals(2)).startsWith(".."))
   }
 
-  test("requirement output is carried and ordinary control names remain ordinary") {
-    val (pf, goals) = body("require[Eq], ?d = require[Eq], requires(Eq), require(Eq), cut(1), find_dictionary(Eq), requires(Eq, Eq)")
-    for i <- 0 to 1 do
-      val fn = pf.terms.get(goals(i)).asInstanceOf[Term.Fn[ParseTermId]]
-      assertEquals(fn.namedArgs.map((k, _) => pf.symbols.name(k)).toSeq, Seq("out"))
-      assert(pf.terms.get(fn.namedArgs(0)._2).isInstanceOf[Term.Var])
-    assertEquals(pf.terms.get(goals(2)).asInstanceOf[Term.Fn[ParseTermId]].namedArgs.length, 0)
-    assertEquals(functor(pf, goals(3)), "require")
-    assertEquals(functor(pf, goals(4)), "cut")
-    assertEquals(functor(pf, goals(5)), "find_dictionary")
-    assertEquals(functor(pf, goals(6)), "requires")
+  // Proposal 060.1 §5. With the refusal dropped from `goalTerm`, the row fails at its
+  // first spelling: `requires(Eq)` parses; with the nested walk dropped, at the negand's
+  // `require[Eq]`, which parses. The ordinary calls pass either way.
+  test("the removed requirement spellings are refused and ordinary control names remain ordinary") {
+    for (src, written) <- Seq("requires(Eq)" -> "requires(Eq)", "require[Eq]" -> "require[Eq]",
+        "?d = require[Eq]" -> "?d = require[Eq]", "not(p(?x) & require[Eq])" -> "require[Eq]",
+        "p(?x) | requires(Eq)" -> "requires(Eq)") do
+      val errs = Parser.parse(s"rule probe(?x, ?d, ?P) :- $src").fold(identity, _ => fail(s"`$src` parsed"))
+      assert(errs.exists(_.message.startsWith(s"`$written` is no longer written")), errs.toString)
+    val (pf, goals) = body("require(Eq), cut(1), find_dictionary(Eq), requires(Eq, Eq)")
+    assertEquals(functor(pf, goals(0)), "require")
+    assertEquals(functor(pf, goals(1)), "cut")
+    assertEquals(functor(pf, goals(2)), "find_dictionary")
+    assertEquals(functor(pf, goals(3)), "requires")
     for address <- Seq(DesugarTarget.Cut, DesugarTarget.FindDictionary, DesugarTarget.ForallImpl,
         DesugarTarget.ForallIn, DesugarTarget.SomeIn, Pratt.unifyFunctor, Pratt.structEqFunctor) do
       intercept[IllegalArgumentException](DesugarTarget.is(DesugarTarget.short(address), address))

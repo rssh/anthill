@@ -9518,21 +9518,13 @@ impl KnowledgeBase {
         }
     }
 
-    /// WI-300 — the rule-body requirement guard. The converter desugars a
-    /// rule-body `requires(X)` to `find_dictionary(X)`; the typer sweep
-    /// ([`super::typing::record_find_dictionary_grounding`]) then rewrites it into
-    /// `find_dictionary(spec_base, op_functor, op_arg…)` — `spec_base` is spec X's
-    /// nominal sort, `op_functor` a body call to one of X's operations, and
-    /// `op_arg…` that call's carrier arguments (the witness redex whose types
-    /// decide the instance). At the current binding this reads each argument's
-    /// carried type and shares the WI-596 `provides` decision with the `@[simp]`
-    /// guard: `Success` iff every carrier provides X, `Failure` if a ground carrier
-    /// has no provider, `Delay` (suspend-as-residual, never NAF-decide; WI-519 /
-    /// WI-067) when a carrier type is under-determined. A goal with fewer than two
-    /// positional args — an un-rewritten `find_dictionary(X)`, which the typer sweep
-    /// turns into either the ≥2-arg form or a hard load error, so it is unreachable
-    /// from a clean load; only a direct hand-written call reaches it — declines to
-    /// fire (returns `Failure`) rather than wrongly succeeding.
+    /// A dictionary read, `find_dictionary(instance, op, carrier…, out: ?d)`: minted by the
+    /// typer for a rule's declared requirement (`install_rule_provider_dictionaries`)
+    /// and for an inferred one, never written by a program (the loader refuses it by any
+    /// name). Slot 0 is the spec instance, slot 1 the spec or the operation the read is for,
+    /// and the rest the carrier arguments whose types decide the instance; `out` is bound to
+    /// the dictionary. A read with fewer than two positional arguments, or with no `out`, is
+    /// a defect and said loudly.
     fn builtin_find_dictionary<V: TermView>(
         &mut self,
         goal: &V,
@@ -9543,7 +9535,9 @@ impl KnowledgeBase {
             _ => return BuiltinResult::Failure,
         };
         if pos_arity < 2 {
-            return BuiltinResult::Failure;
+            return BuiltinResult::Error(ResolveError::new(
+                "a dictionary read names no operation".into(),
+            ));
         }
         // A nominal-symbol argument (spec base / op functor) rides as a nullary
         // application (`Ref` / `make_name_term`, one head) or an as-yet-unresolved
@@ -9557,9 +9551,9 @@ impl KnowledgeBase {
                 _ => None,
             }
         }
-        // WALKED ONCE. Slot 0 is read for two things — the spec BASE and, since
-        // WI-20260909-S8CBV gate (1), the projected MEMBER — and `walk_arg` is on the
-        // per-goal path, so the value is taken once and both readers share it.
+        // WALKED ONCE. Slot 0 is read for two things — the spec BASE and the written
+        // bindings — and `walk_arg` is on the per-goal path, so the value is taken once
+        // and both readers share it.
         let Some(spec_arg_val) = self.walk_arg(goal.pos_arg(self, 0), subst) else {
             return BuiltinResult::Failure;
         };
@@ -9597,11 +9591,9 @@ impl KnowledgeBase {
             }
             return BuiltinResult::Success;
         }
-        // WI-20260913-J38VE — THE WRITTEN BRACKET, read off slot 0 ONCE for both of its
-        // consumers. Slot 2 holds the projection's ROOT (the head variable), because that
-        // is the value whose type is about to be read; the projected MEMBER and the
-        // written BINDINGS are the two things that cannot ride slot 2, and one walk of
-        // the instance yields both ([`super::typing::requirement_bracket`]).
+        // WI-20260913-J38VE — THE WRITTEN BINDINGS, read off slot 0 once
+        // ([`super::typing::requirement_bracket`]): slot 2 holds the carrier, the value
+        // whose type is about to be read, and the bindings cannot ride there.
         let bracket = super::typing::requirement_bracket(self, &spec_arg_val);
         let mut arg_vals: Vec<Value> = Vec::with_capacity(pos_arity - 2);
         for i in 2..pos_arity {
@@ -9610,17 +9602,12 @@ impl KnowledgeBase {
                 None => return BuiltinResult::Failure,
             }
         }
-        // WI-1040 — `out`, when present, is what makes this goal a READ rather than
-        // a check: `require[X]` lowered to `find_dictionary(…, out: ?d)` and the
-        // clause wants the dictionary bound. ABSENT is the whole of WI-300's
-        // behaviour, unchanged — the reads above are positional, so a no-`out` goal
-        // never reaches a line of the code below.
-        // Matched by LOCAL NAME, as the typer sweep matches it. A `Symbol` compare
-        // against a freshly-interned `"out"` would be a silent-skip seam: if the
-        // loader's remapping ever gave the stored label a different `Symbol`, the
-        // sweep would still weave the call while this read found no `out` and quietly
-        // fell back to check-only — a dispatch that stops happening with nothing
-        // saying so. One spelling of the question, on both sides.
+        // `out` is the dictionary the read binds. Every read minted has one — a guard's
+        // (`install_rule_provider_dictionaries`), an inferred one, a slot read handled above
+        // — and a program cannot write one (the loader refuses `find_dictionary` by any
+        // name), so a read without it is a defect, said loudly.
+        // Matched by LOCAL NAME, as the typer matches it: one spelling of the question, on
+        // both sides.
         let typed_instance = keys
             .iter()
             .any(|k| self.local_name_of(*k) == super::typing::PROVIDER_CARRIER_TYPE_LABEL)
@@ -9629,37 +9616,10 @@ impl KnowledgeBase {
             .into_iter()
             .find(|k| self.local_name_of(*k) == super::typing::REQUIREMENT_OUT_LABEL);
         let Some(out_sym) = out_sym else {
-            if let Some(instance) = typed_instance {
-                let Some(carrier_type) = arg_vals.first() else {
-                    return BuiltinResult::Error(ResolveError::new(
-                        "a provider read has no carrier type".into(),
-                    ));
-                };
-                return match super::typing::fetch_dictionary_from_type(
-                    self,
-                    subst,
-                    instance,
-                    carrier_type,
-                    super::typing::DefaultRung::Consult,
-                    None,
-                ) {
-                    super::typing::FindDictFetch::Fetched(_) => BuiltinResult::Success,
-                    super::typing::FindDictFetch::Guard(
-                        super::typing::FindDictOutcome::DontFire,
-                    ) => BuiltinResult::Failure,
-                    super::typing::FindDictFetch::Defect { detail } => {
-                        BuiltinResult::Error(ResolveError::new(detail))
-                    }
-                    _ => BuiltinResult::delay(),
-                };
-            }
-            return match super::typing::find_dictionary_guard(
-                self, subst, spec_sort, op_functor, &arg_vals, &bracket,
-            ) {
-                super::typing::FindDictOutcome::Fire => BuiltinResult::Success,
-                super::typing::FindDictOutcome::DontFire => BuiltinResult::Failure,
-                super::typing::FindDictOutcome::Suspend => BuiltinResult::delay(),
-            };
+            return BuiltinResult::Error(ResolveError::new(format!(
+                "a dictionary read of `{}` has no `out` to bind",
+                self.local_name_of(spec_sort)
+            )));
         };
         // σ-WALKED, not read raw. A caller-supplied dictionary reaches this goal as a
         // clause variable BOUND in σ, and unifying the unwalked variable leaf against

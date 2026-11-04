@@ -9,8 +9,8 @@
 //!
 //! The WI-292 distinction is the whole point (mirrors `find_dictionary_guard`):
 //!   * a CONCRETE carrier that provides no instance, undeclared  → LOAD ERROR;
-//!   * a rule that DECLARES the requirement (`requires(Spec[T])`) → loads clean
-//!     (its own WI-300 dictionary — propagates the obligation to the query);
+//!   * a rule that DECLARES the requirement (`rule r[A](?x: A) :- Spec[T = A]`, the head's
+//!     introducer and a guard) → loads clean (propagates the obligation to the query);
 //!   * a POLYMORPHIC rule whose carrier is under-determined       → loads clean
 //!     (suspends as a residual at fire time, never NAF-decided; WI-067).
 //!
@@ -83,18 +83,20 @@ end
     // WI-883: the carrier is a GROUND sort, so the sentence says so — the old one was the
     // ABSTRACT case's ("covering abstract type parameter … on enclosing sort"), wrong on
     // both counts for a rule. It names the carrier and offers both repairs, the clause's
-    // own `requires(…)` among them.
+    // own requirement among them — the introducer's guard, the form the next row runs
+    // (proposal 060.1 §5; it named `requires(Relatable[…])`, which is removed).
     assert!(
         formatted.contains("`test.wi642.no_instance.Blob` provides no `test.wi642.no_instance.Relatable`")
-            && formatted.contains("requires(Relatable[…])"),
-        "diagnostic should name the carrier and suggest `requires(Relatable[…])`; \
+            && formatted.contains("with the rule head's introducer and a guard"),
+        "diagnostic should name the carrier and suggest the introducer's guard; \
          got:\n{formatted}",
     );
 }
 
-/// ACCEPTANCE (declared-requires case): the same clause that DECLARES its
-/// requirement in-body (`requires(Relatable[T])`) loads clean — the rule threads its
-/// own dictionary (WI-300), propagating the obligation to whoever queries it.
+/// ACCEPTANCE (declared-requires case): the same clause that DECLARES its requirement —
+/// a type parameter on the head's introducer and the guard `Relatable[T = A]` at it —
+/// loads clean, propagating the obligation to whoever queries it. It wrote
+/// `requires(Relatable[T])` in the body, removed by proposal 060.1 §5.
 #[test]
 fn declared_in_body_requires_loads_clean() {
     let src = format!(
@@ -103,14 +105,14 @@ namespace test.wi642.declared
   import anthill.prelude.{{Int64, Bool}}
   import test.wi642.declared.Relatable.{{related}}
 {PRELUDE}
-  rule linked(?x, ?y) :- requires(Relatable[T]), I(b: ?x), I(b: ?y), related(?x, ?y)
+  rule linked[A](?x: A, ?y: A) :- Relatable[T = A], I(b: ?x), I(b: ?y), related(?x, ?y)
 end
 "#
     );
     let (_kb, errs) = try_load(&src);
     assert!(
         errs.is_empty(),
-        "a rule that declares `requires(Relatable[T])` should load clean; got:\n{}",
+        "a rule that declares `Relatable[T = A]` should load clean; got:\n{}",
         fmt_errs(&errs),
     );
 }

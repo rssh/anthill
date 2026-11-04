@@ -105,13 +105,22 @@ pub(crate) fn provider_requirement_goal_with_provider(
     let Some(spec) = sort_functor_of_view(kb, instance) else {
         return Err(TypeBoundVerdict::Refuted);
     };
-    let written = requirement_bracket(kb, &instance);
+    let carrier_param = spec_carrier_param_or_sole(kb, spec);
+    let mut written = requirement_bracket(kb, &instance);
+    // A sibling written as a variable nothing has bound — `Sp[C = A, P = ?]`, `P = ?p` — says
+    // nothing of the instance (`X[T = ?]` is `X`, WI-20261024-DK83Q; a variable is the
+    // unwritten case, WI-20260922-QHDGC), so it is read off the provision as an omitted one
+    // is. Kept as written, the goal held the variable and no provision's concrete binding
+    // met it: the guard answered nothing.
+    written.written.retain(|(key, value)| {
+        carrier_param.is_some_and(|p| same_label(kb, p, *key))
+            || !matches!(walk_type_deep_value(kb, subst, value).head(kb), ViewHead::Var(_))
+    });
     let Some(WitnessGoal { mut goal, .. }) =
         anchor_sort_goal(kb, spec, std::slice::from_ref(ty), &written.written)
     else {
         return Err(TypeBoundVerdict::Suspend);
     };
-    let carrier_param = spec_carrier_param_or_sole(kb, spec);
     for (key, _) in &mut goal.bindings {
         if carrier_param.is_some_and(|p| same_label(kb, p, *key)) {
             if let Some((_, written_ty)) = written

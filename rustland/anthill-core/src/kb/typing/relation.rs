@@ -880,12 +880,10 @@ fn some_type_columns_at_citation(kb: &mut KnowledgeBase, columns: &mut [ClauseCo
 ///
 /// LATER BECAUSE THE READS DO NOT EXIST YET. An operation body is typed before any rule
 /// body (`type_check_sorts`: the sort loop and the free operations, then
-/// `type_rule_bodies`), and a rule's `?d = require[X]` becomes a routable read —
-/// `find_dictionary(spec, op, witness…, out: ?d)` — only when
-/// `record_find_dictionary_grounding` picks its witness, which needs the rule bodies
-/// typed. MEASURED: routed at the citation, `cmp`'s read was still the one-argument
-/// `find_dictionary(WeakOrd[T], out: ?d)` and nothing could say which column carries
-/// `WeakOrd`. So everything the check reads AT the citation is captured here — the column
+/// `type_rule_bodies`), and a rule's declared requirement becomes a routable read —
+/// `find_dictionary(spec, op, carrier, out: ?d)` — only when
+/// [`install_rule_provider_dictionaries`] compiles its guard, after the rule bodies are
+/// typed. So everything the check reads AT the citation is captured here — the column
 /// types, each bound column's argument type, the citation's σ, and the caller's frame chain
 /// and rigids — and [`settle_citation_routes`] runs it once the sweep has rewritten every
 /// read, stamping the result on the very occurrence captured here (a citation's node is
@@ -939,8 +937,8 @@ fn queue_citation_routes(
 }
 
 /// WI-20260911-5G28A S2 — run every queued citation edge check ([`PendingCitationRoutes`])
-/// and stamp the routes it finds. AFTER `record_find_dictionary_grounding`, which is what
-/// makes the reads routable; drains the queue, so a later pass cannot see a stale entry.
+/// and stamp the routes it finds. AFTER [`install_rule_provider_dictionaries`], which is
+/// what makes the reads routable; drains the queue, so a later pass cannot see a stale entry.
 ///
 /// Answers the citations refused, each at the citation with the file it is written in: a
 /// named slot of a clause variable's type fixed to a witness that does not answer the read

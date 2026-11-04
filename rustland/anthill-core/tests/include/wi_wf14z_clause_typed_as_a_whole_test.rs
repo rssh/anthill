@@ -710,23 +710,33 @@ fn an_option_parameter_is_the_calls_placeholder() {
     );
 }
 
-/// A BRACKET ENTRY IS NO DATA: `p.E` in `require[Desc[T = p.E]]` is a projection written as a
-/// term, and the head parameter in it is not typed at its `value` field (`NodeOccurrence`).
-/// Typed there, the head's bound `Box` disagreed with it.
+/// A REQUIREMENT AT A HEAD COLUMN'S ELEMENT is declared at the introducer, and the column's
+/// element type is what the citation fixes: `anchored[E](p: Box[E = E], ?r) :- require d:
+/// Desc[T = E], d.tag(?r)` answers `Red`'s 7 over a red box and `Blue`'s 9 over a blue one
+/// (`tag()` takes no argument, so the call names the instance through the requirement's
+/// name). The row was `p.E` in
+/// `?d = require[Desc[T = p.E]]`, a projection written as a term whose head parameter the
+/// clause typing must not type at its `value` field (`NodeOccurrence`) — typed there, the
+/// head's bound `Box` disagreed with it. Proposal 060.1 §5 removed that form, and a guard's
+/// bindings are folded out of the body before the clause is typed, so nothing of that defect
+/// is reached now: the row passes either way.
 #[test]
-fn a_bracket_entry_types_nothing() {
+fn a_requirement_at_a_columns_element_is_declared_at_the_introducer() {
     assert_eq!(
         ints(
             "wiwf14z.bracketentry",
             "  sort Desc\n    sort T = ?\n    operation tag() -> Int64\n  end\n  \
              sort Red\n    import anthill.prelude.Int64\n    entity red\n    \
              provides Desc[T = Red]\n    operation tag() -> Int64 = 7\n  end\n  \
+             sort Blue\n    import anthill.prelude.Int64\n    entity blue\n    \
+             provides Desc[T = Blue]\n    operation tag() -> Int64 = 9\n  end\n  \
              sort Box\n    sort E = ?\n    entity box(v: E)\n  end\n  \
-             rule anchored(p: Box, ?r) :- ?d = require[Desc[T = p.E]], Desc.tag(?r)\n  \
-             rule g(?r) :- anchored(box(v: red()), ?r)\n",
-            &["g"],
+             rule anchored[E](p: Box[E = E], ?r) :- require d: Desc[T = E], d.tag(?r)\n  \
+             rule g(?r) :- anchored(box(v: red()), ?r)\n  \
+             rule h(?r) :- anchored(box(v: blue()), ?r)\n",
+            &["g", "h"],
         ),
-        [Some(7)]
+        [Some(7), Some(9)]
     );
 }
 

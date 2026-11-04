@@ -968,8 +968,11 @@ end
     );
 }
 
-/// A QUALIFIED CALL'S HEAD AND A `require[…]` BINDING ARE NOT TYPE POSITIONS `Self` IS READ
-/// IN: both are refused by those positions' own unknown-name refusals, not read as the sort.
+/// A QUALIFIED CALL'S HEAD AND A RULE-BODY REQUIREMENT'S BINDING ARE NOT TYPE POSITIONS `Self`
+/// IS READ IN: both are refused, not read as the sort — the call's head by its unknown-name
+/// refusal, the guard's binding as `Self` written as a term is. (The binding was
+/// `?d = require[Desc[T = Self]]`'s, refused as an unknown name; proposal 060.1 §5 removed
+/// that form.)
 #[test]
 fn self_as_a_call_head_or_a_require_binding_is_refused() {
     let head = r#"
@@ -997,14 +1000,14 @@ namespace wi80zv8.reqgoal1
   end
   sort Tag
     entity red
-    rule viaDict(?d) :- ?d = require[Desc[T = Self]]
+    rule viaDict(?r) :- Desc[T = Self], ?r <=> 1
   end
 end
 "#;
     assert_refused_naming(
         &load_errors(require),
-        &["`Self` in it names neither a sort"],
-        "`require[Desc[T = Self]]`",
+        &["`Self` is a type", "It means nothing here"],
+        "the guard `Desc[T = Self]`",
     );
 }
 

@@ -3,291 +3,6 @@
 
 use super::*;
 
-/// WI-300 — rewrite each rule body's `find_dictionary(X)` guard (the converter's
-/// desugaring of a rule-body `requires(X)`) into the resolver-ready
-/// `find_dictionary(spec_base, op_functor, op_arg…)` form.
-///
-/// The guard resolves its own requirement from the runtime binding, for two
-/// reasons — and NOT for the one this comment used to give. **"A rule has no
-/// caller" is FALSE** (it was inherited from
-/// `docs/design/requirement-dictionaries.md` §3.3, now corrected there): a rule has
-/// three callers — a parent rule body's goal, a top-level query (the only
-/// caller-less one), and an EVAL FRAME via `KnowledgeBase::prove_rule_predicate`,
-/// which holds `eval::Frame::requirements` and drops them at that crossing. What is
-/// missing is a *channel*, not a caller; `ResolverFrame::assumed_facts` (WI-108) is
-/// this engine's own proof that caller-to-callee environment threading works here.
-/// The true reasons the guard re-derives are that the resolver frame has no
-/// requirement field, and that a goal's carrier may be unbound at open time — which
-/// justifies a *delayable* resolution, not the absence of a channel. Making it
-/// relational (`find_dictionary(X, ?d)` BINDS) is WI-1040;
-/// `docs/design/requirement-channel.md` is the design.
-///
-/// `requires(X)` is grounded by the rule's
-/// own body: a call to one of X's operations (`eq(?x, ?y)` for `requires(Eq[T])`)
-/// is the WITNESS whose carrier arguments' runtime types decide the instance — the
-/// same redex a `@[simp]` rule fires on. This sweep finds that witness and records
-/// `(spec_base, op_functor, witness_args)` positionally in the goal, so the
-/// resolver's [`find_dictionary_guard`] reads the args' carried types and checks
-/// `provides` (sharing the WI-596 carrier decision) at fire time.
-///
-/// A `requires(X)` with NO body call to one of X's operations cannot be grounded —
-/// reported as a hard error (loud, not a silent skip): the guard would never be
-/// decidable. The chosen witness op must have a carrier parameter
-/// ([`op_has_spec_carrier_param`]); a nullary / all-content op (`Monoid.unit()`)
-/// is skipped.
-///
-/// Guard-tier scope (each a deliberate boundary, not a silent gap):
-///   * Only TOP-LEVEL rule-body goals are swept. A `requires` nested inside a
-///     `not` / implication / bounded quantifier is not rewritten here and, as
-///     before this feature, fails as an ordinary goal (never a false positive).
-///   * Two `require`s on one spec base are ADMITTED where EVERY one of them is grounded
-///     by a TYPED HEAD BINDING — WI-20260909-96ZTM, reading the written bracket
-///     WI-20260909-51W18 retained to choose which binding each names. Two EQUAL ones,
-///     and any pair where one is grounded by a body call instead, are rejected loudly
-///     above: a witness is chosen by scan ORDER, so the bracket cannot attribute there.
-///   * The requirement IS threaded as a dictionary the body ops dispatch through
-///     (WI-1040) — the older "CHECKED, not yet threaded (Tier B, deferred)" reading is
-///     retired.
-pub(super) fn record_find_dictionary_grounding(kb: &mut KnowledgeBase) -> Vec<TypeError> {
-    let mut errors: Vec<TypeError> = Vec::new();
-    let Some(fd_sym) = kb.try_resolve_symbol(crate::parse::desugar_target::qualified(
-        crate::parse::desugar_target::FIND_DICTIONARY,
-    )) else {
-        return errors; // builtin not registered — nothing to rewrite
-    };
-    // An un-rewritten guard is a `find_dictionary` with exactly one positional arg
-    // (the spec instance); the rewritten form has ≥ 2 (spec_base + op + args), so
-    // this gate is idempotent.
-    let is_unrewritten = |n: &Rc<NodeOccurrence>| {
-        matches!(n.as_expr(),
-            Some(Expr::Apply { functor, pos_args, .. })
-                if *functor == fd_sym && pos_args.len() == 1)
-    };
-    for rid in kb.live_rule_ids() {
-        if kb.is_fact(rid) {
-            continue;
-        }
-        if !kb.rule_body_nodes(rid).iter().any(&is_unrewritten) {
-            continue;
-        }
-        let body_nodes: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
-        // WI-20260909-QMFC5 — the clause's TYPED HEAD BINDINGS, proposal 060 §3's second
-        // anchor. Read here (not inside the rewrite) because this is the loop that holds
-        // the `RuleId`; empty for every untyped clause, which is what keeps the anchor
-        // scan off every rule that has no annotation to ground anything with.
-        let bounds: Vec<(u32, TermId)> = kb.rule_requirement_anchor_bounds(rid);
-        let rule_sym = match kb.rule_head_value(rid).clone() {
-            Value::Term { id, .. } => head_functor_sym(kb, id),
-            _ => None,
-        };
-        // TWO `require`s ON ONE SPEC ARE TWO DICTIONARIES (WI-20260909-96ZTM), each bound
-        // to its own variable and each attributed by its own WRITTEN BRACKET. The old
-        // refusal — "at most one `requires` on spec X per rule" — rested on the guard tier
-        // stripping the type arguments, which WI-20260909-51W18's un-strip removed.
-        //
-        // WHAT IS STILL REFUSED IS TWO **EQUAL** ONES. If the author wrote the same
-        // require twice, nothing distinguishes them: there is no answer to which
-        // dictionary is which, and admitting them would be the tool inventing a
-        // distinction the source does not make.
-        //
-        // EQUALITY IS `views_structurally_equal`, the codebase's own route for spec-value
-        // equality — NOT a hand-rolled key. An earlier attempt compared the base
-        // canonically but each binding VALUE by its head's SHORT name, so
-        // `Desc[T = Box[E = Leaf]]` and `Desc[T = Box[E = Other]]` both keyed
-        // `("T", "Box")`, compared EQUAL, and a valid program was refused — the very
-        // parameterized shape §8.8 measured as REQUIRING two dictionaries.
-        let mut seen_specs: Vec<Rc<NodeOccurrence>> = Vec::new();
-        let mut has_duplicate_spec = false;
-        for node in &body_nodes {
-            if !is_unrewritten(node) {
-                continue;
-            }
-            let Some(Expr::Apply { pos_args, .. }) = node.as_expr() else {
-                continue;
-            };
-            let Some(base) = occ_head_symbol(&pos_args[0]) else {
-                continue;
-            };
-            let inst = &pos_args[0];
-            if seen_specs
-                .iter()
-                .any(|prev| views_structurally_equal(kb, prev, inst))
-            {
-                errors.push(TypeError::Other {
-                    site: TypeError::here(),
-                    span: Some(node.span.span),
-                    context: TypeErrorContext::Rule {
-                        name: rule_sym.unwrap_or(fd_sym),
-                        field: RuleField::Body,
-                    },
-                    expected: format!(
-                        "each `require` on spec `{}` to name a different instance",
-                        kb.local_name_of(base)
-                    ),
-                    actual: "this clause writes the same one twice, and two identical \
-                             `require`s name no two carriers to tell their dictionaries \
-                             apart"
-                        .into(),
-                });
-                has_duplicate_spec = true;
-                break;
-            }
-            seen_specs.push(Rc::clone(inst));
-        }
-        if has_duplicate_spec {
-            continue; // leave the rule un-rewritten; the load fails on the error above
-        }
-        let mut new_body: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(body_nodes.len());
-        let mut changed = false;
-        // WI-1040 — `(covered call, the dictionary variable)` per `require[X]` in this
-        // clause, applied once the goal rewrites are done.
-        let mut weaves: Vec<(Rc<NodeOccurrence>, Rc<NodeOccurrence>)> = Vec::new();
-        // `(spec, was it ANCHOR-grounded)` per `require` seen in this clause — see the
-        // gate below.
-        let mut spec_groundings: Vec<(Symbol, bool)> = Vec::new();
-        for node in &body_nodes {
-            if !is_unrewritten(node) {
-                new_body.push(node.clone());
-                continue;
-            }
-            match rewrite_find_dictionary_goal(kb, node, &body_nodes, fd_sym, rule_sym, &bounds) {
-                Ok(found) => {
-                    // TWO `require`s ON ONE SPEC ARE ADMITTED ONLY WHERE EVERY ONE OF
-                    // THEM IS ANCHORED — where the written bracket chose the head
-                    // binding, which is the only place it is READ.
-                    //
-                    // The equality pre-pass above lifted the old blanket refusal for
-                    // EVERY grounding path, but the replacement attribution exists on
-                    // one. `/code-review` drove the cost: a body-less spec op is never a
-                    // covered call (`collect_covered_calls` gates on
-                    // `functional_relation_arity`), so `weaves` stays empty, the
-                    // one-dictionary-per-call refusal never fires, and
-                    // `?d1 = require[PartialEq[T = Thing]], ?d2 = require[PartialEq[T =
-                    // Gadget]], eq(?a, ?b)` LOADS CLEAN with both bound to `Thing`'s
-                    // dictionary. Five shapes, all of them "HEAD refused loudly, this
-                    // answers wrongly" — the worst direction to move in.
-                    if let Some(base) = goal_pos0(node).and_then(|i| occ_head_symbol(&i)) {
-                        let canon = kb.canonical_sort_sym(base);
-                        if let Some((_, prev_attributed)) =
-                            spec_groundings.iter().find(|(s, _)| *s == canon)
-                        {
-                            if !found.bracket_attributed || !*prev_attributed {
-                                errors.push(TypeError::Other {
-                                    site: TypeError::here(),
-                                    span: Some(node.span.span),
-                                    context: TypeErrorContext::Rule {
-                                        name: rule_sym.unwrap_or(fd_sym),
-                                        field: RuleField::Body,
-                                    },
-                                    expected: format!(
-                                        "at most one `require` on spec `{}` per rule, \
-                                         unless the WRITTEN BRACKET says which carrier \
-                                         each one means — by naming a typed head \
-                                         binding, or by naming the carrier of one body \
-                                         call among several",
-                                        kb.local_name_of(base)
-                                    ),
-                                    actual: "one of them was chosen by neither, and a \
-                                             witness the bracket does not name is picked \
-                                             by scan order — so nothing says which \
-                                             dictionary this is"
-                                        .into(),
-                                });
-                                continue;
-                            }
-                        }
-                        spec_groundings.push((canon, found.bracket_attributed));
-                    }
-                    // WI-1040 — step 2 of the transformation: the call this
-                    // dictionary covers is rewritten to carry it. Only when the goal
-                    // actually THREADS a dictionary (`out` present, i.e. the author
-                    // wrote `require[X]`); a check-only `requires(X)` leaves every
-                    // call in the body exactly as it found them, which is what makes
-                    // acceptance (f) structural.
-                    if let Some(out) = out_var_of_goal(kb, node, fd_sym) {
-                        for call in &found.covered_calls {
-                            weaves.push((Rc::clone(call), Rc::clone(&out)));
-                        }
-                    }
-                    // `None` — the requirement was decided at LOAD (the check tier under
-                    // a typed-head anchor), so the clause keeps no goal for it. `changed`
-                    // is still set: the body shrank, which is as much a rewrite as a
-                    // substitution is.
-                    if let Some(goal) = found.goal {
-                        new_body.push(goal);
-                    }
-                    changed = true;
-                }
-                Err(e) => {
-                    errors.push(e);
-                    new_body.push(node.clone());
-                }
-            }
-        }
-        // Weave AFTER the goal rewrites, over the rebuilt body: a covered call may sit
-        // anywhere in the clause (including nested inside another goal), so it is
-        // reached by identity through a rewriting walk rather than by position.
-        // A CALL CARRIES AT MOST ONE DICTIONARY, and that is the channel's MEANING rather
-        // than a limit to widen: `requirements` on an `ApplyWithin` answers "which
-        // instance does THIS CALL dispatch on", and one call dispatches on one instance —
-        // `dictionary_dispatch_target` destructures a one-element slice and eval rejects
-        // more. So a call that two dictionaries both claim is REFUSED here, loudly,
-        // rather than woven twice (which silently kept the last, and tripped the
-        // `debug_assert` below when the first weave had already rebuilt the node).
-        //
-        // N dictionaries AT A CALL SITE are not what this is: a callee's own `requires`
-        // travel the SLOT-indexed `op_dicts` channel (WI-822), which is N-ary, has a
-        // reader, and needs nothing from here.
-        let mut ambiguous: Option<crate::span::SourceSpan> = None;
-        for (i, (call, _)) in weaves.iter().enumerate() {
-            if weaves[..i].iter().any(|(c, _)| Rc::ptr_eq(c, call)) {
-                ambiguous = Some(call.span);
-                break;
-            }
-        }
-        if let Some(span) = ambiguous {
-            errors.push(TypeError::Other {
-                site: TypeError::here(),
-                span: Some(span.span),
-                context: TypeErrorContext::Rule {
-                    name: rule_sym.unwrap_or(fd_sym),
-                    field: RuleField::Body,
-                },
-                expected: "each call to dispatch through ONE dictionary".into(),
-                // SAY WHAT IS CHECKED: both dictionaries cover THIS call. A carrier-bearing
-                // call is covered only at the argument a dictionary was read from
-                // ([`collect_covered_calls`]), so this is a carrier-less call, or one at an
-                // argument both witnesses share.
-                actual: "this clause binds two dictionaries for the spec, and both cover \
-                         this call — nothing decides which instance it dispatches on"
-                    .into(),
-            });
-            continue; // leave the rule un-rewritten; the load fails on the error above
-        }
-        // ONE pass, every covered call matched by identity ([`weave_calls`], the inference's
-        // walk too). Weaving call after call lost an outer covered call around a woven inner
-        // one — `reassemble` hands the rebuilt parent back as a NEW node, which the later
-        // identity match cannot find: a debug build panicked at load and a release build
-        // left the outer call value-dispatched (WI-20260925-PRVA2 (a)).
-        let targets: Vec<WeaveTarget> =
-            weaves.into_iter().map(|(call, out)| (call, vec![out], None)).collect();
-        if !targets.is_empty() {
-            let mut reached = vec![false; targets.len()];
-            new_body = new_body.iter().map(|n| weave_calls(n, &targets, &mut reached)).collect();
-            debug_assert!(
-                reached.iter().all(|r| *r),
-                "WI-1040: a covered call chosen as witness was not found in the body it was \
-                 chosen from",
-            );
-            changed |= reached.iter().any(|r| *r);
-        }
-        if changed {
-            kb.set_rule_body_nodes(rid, new_body);
-        }
-    }
-    errors
-}
-
 /// The operation an application calls, where `call` is one.
 fn call_functor(call: &NodeOccurrence) -> Option<Symbol> {
     match call.as_expr() {
@@ -371,9 +86,9 @@ pub(super) fn install_rule_provider_dictionaries(kb: &mut KnowledgeBase) -> Vec<
                             },
                             expected: "a call that names the requirement it reads".into(),
                             actual: format!(
-                                "two requirements of the clause cover it, `{f}` and `{s}` — one \
-                                 sort at one type under two names — and the call names neither: \
-                                 write `{f}.{member}(…)` or `{s}.{member}(…)`",
+                                "two requirements of the clause cover it, `{f}` and `{s}`, and \
+                                 the call names neither: write `{f}.{member}(…)` or \
+                                 `{s}.{member}(…)`",
                                 f = kb.local_name_of(first),
                                 s = kb.local_name_of(second),
                             ),
@@ -388,7 +103,14 @@ pub(super) fn install_rule_provider_dictionaries(kb: &mut KnowledgeBase) -> Vec<
                             field: RuleField::Body,
                         },
                         expected: "one carrier requirement to select this call's dictionary".into(),
-                        actual: "the call is covered by distinct carrier requirements".into(),
+                        actual: {
+                            let member = kb.local_name_of(call_functor(&call).unwrap_or(spec)).to_string();
+                            format!(
+                                "the call is covered by distinct carrier requirements: name the \
+                                 one it reads, `require s: {spec}[…]`, and call `s.{member}(…)`",
+                                spec = short_name_of(kb.qualified_name_of(spec)),
+                            )
+                        },
                     });
                 } else {
                     targets.push((call, vec![out.clone()], None));
@@ -1317,47 +1039,6 @@ fn woven_goal_has_reader(
     relational || bool_view
 }
 
-/// The calls of `body` that run when their goal does, in body order: each top-level goal, and
-/// the calls in its value positions, reached through the argument lists of calls and data
-/// constructors ([`demand_walk_enters`]) — the positions a read placed before the goal can
-/// serve. The walk [`infer_rule_body_requirements`] makes for an inferred read, asked of a
-/// written one's witness.
-pub(super) fn calls_run_with_their_goal(
-    kb: &KnowledgeBase,
-    body: &[Rc<NodeOccurrence>],
-) -> Vec<Rc<NodeOccurrence>> {
-    fn walk(
-        kb: &KnowledgeBase,
-        node: &Rc<NodeOccurrence>,
-        top: bool,
-        out: &mut Vec<Rc<NodeOccurrence>>,
-    ) {
-        let Some(expr) = node.as_expr() else { return };
-        out.push(Rc::clone(node));
-        if !top && !demand_walk_enters(expr) {
-            return;
-        }
-        let mut children: SmallVec<[Rc<NodeOccurrence>; 8]> = SmallVec::new();
-        for_each_child(expr, |c| children.push(Rc::clone(c)));
-        let pos = if top {
-            BodyPos::Goal(GoalCommit::Top)
-        } else {
-            BodyPos::Value
-        };
-        let positions = child_body_positions(kb, expr, pos, children.len());
-        for (child, p) in children.iter().zip(positions) {
-            if p == BodyPos::Value {
-                walk(kb, child, false, out);
-            }
-        }
-    }
-    let mut out = Vec::new();
-    for goal in body {
-        walk(kb, goal, true, &mut out);
-    }
-    out
-}
-
 /// Does the demand walk of [`infer_rule_body_requirements`] look inside this DATA-position
 /// node? A call's arguments and a data constructor's fields are evaluated where the goal
 /// holding them runs; a lambda's, `let`'s, `match`'s or `if`'s calls later, inside the form,
@@ -1486,9 +1167,9 @@ fn inferred_demand(
 /// (proposal 052 §"Requirements in a clause body"). Making it a load error is the
 /// repo's "loud error over a silent skip".
 ///
-/// The WI-292 distinction is load-bearing, and this shares [`simp_guard_holds_core`]
-/// with the resolver's [`find_dictionary_guard`] so the two cannot disagree on which
-/// argument carries the spec or on the outcome:
+/// The WI-292 distinction is load-bearing, and this reads [`simp_guard_holds_core`], as the
+/// `@[simp]` guard does, so the two cannot disagree on which argument carries the spec or
+/// on the outcome:
 ///   * **`Fire`** — the carrier provides the spec → satisfiable, no error.
 ///   * **`Suspend`** — the carrier is under-determined (an abstract type-param: a
 ///     polymorphic rule that legitimately propagates its requirement to whoever
@@ -1608,7 +1289,7 @@ pub(super) fn check_rule_body_requirements(kb: &KnowledgeBase) -> Vec<TypeError>
 ///   * A RESOLVER BUILTIN is skipped, the same exemption and the same witness the sibling
 ///     pass takes (`PartialOrd.gt` never consults an `Ord` instance);
 ///   * `carrier_provides_spec`, not a bare `sort_provides`, so a WITNESS-supplied
-///     provision counts — the twin gate [`anchor_grounding`] documents.
+///     provision counts.
 pub(super) fn check_rule_body_operation_requires(kb: &mut KnowledgeBase) -> Vec<TypeError> {
     let mut errors: Vec<TypeError> = Vec::new();
     let fd_sym = kb.try_resolve_symbol(crate::parse::desugar_target::qualified(
@@ -2258,34 +1939,10 @@ fn operation_goal_arity_error(
     (!found.is_empty()).then(|| aggregate_errors(found))
 }
 
-/// WI-20260922-0DK3H — the spec INSTANCES a rule body declares, whole. The sibling of
-/// [`collect_find_dictionary_bases`], which takes only the base SYMBOL because its reader
-/// ([`check_one_spec_op_requirement`]) compares symbols; this one keeps the bracket's
-/// bindings, because its reader ([`scope_contract_covers_dep`], through
-/// [`held_spec_views`]) composes them — and the bindings are exactly what the deferred
-/// carrier-aware suppression needed.
-///
-/// SLOT 0 CARRIES THE INSTANCE WHOLE — `lower_require`'s "WHOLE, not stripped" and
-/// WI-20260909-51W18's retention. A bare `require[Desc]` therefore contributes
-/// `Ref(Desc)`, which [`sort_functor_of_view`] reads as the unparameterised view and the
-/// cover walk treats as binding nothing — the same "empty is a real answer" that
-/// [`RequirementBracket`] states for its own reader.
-pub(super) fn collect_declared_spec_views(
-    kb: &KnowledgeBase,
-    occ: &Rc<NodeOccurrence>,
-    fd_sym: Symbol,
-    out: &mut Vec<Value>,
-) {
-    for_each_find_dictionary_instance(kb, occ, fd_sym, |instance| {
-        out.push(Value::Node(Rc::clone(instance)));
-    });
-}
-
-/// WI-20260923-32XFQ — every in-body `find_dictionary(instance, …)` goal under `occ` the AUTHOR
-/// wrote, handed its slot-0 INSTANCE, in the walk's order — the one walk
-/// [`collect_declared_spec_views`] and [`collect_find_dictionary_bases`] each spelled, and
-/// which differ only in what they keep of the instance. An inferred read is no declaration, at
-/// the top of a body or in a connective's goal slot ([`is_inferred_requirement_read`]).
+/// WI-20260923-32XFQ — every in-body `find_dictionary(instance, …)` read under `occ` a
+/// declaration gave — a guard's — handed its slot-0 INSTANCE, in the walk's order. An inferred
+/// read is no declaration, at the top of a body or in a connective's goal slot
+/// ([`is_inferred_requirement_read`]).
 /// Iterative (explicit stack) so a deeply-nested body cannot overflow the host stack.
 fn for_each_find_dictionary_instance(
     kb: &KnowledgeBase,
@@ -2313,10 +1970,9 @@ fn for_each_find_dictionary_instance(
     }
 }
 
-/// Push the canonical spec base of every in-body `find_dictionary` goal reachable
-/// under `occ` into `out` (see [`check_rule_body_requirements`]). The spec base is
-/// the goal's first positional arg — `Ref(Eq)` (rewritten) or `Eq[T]`
-/// (un-rewritten) both reduce to `Eq` via [`occ_head_symbol`]. Iterative walk so a
+/// Push the canonical spec base of every in-body `find_dictionary` read reachable under
+/// `occ` into `out` (see [`check_rule_body_requirements`]). The spec base is the read's first
+/// positional arg, reduced to `Eq` via [`occ_head_symbol`]. Iterative walk so a
 /// deeply-nested body cannot overflow the host stack.
 fn collect_find_dictionary_bases(
     kb: &KnowledgeBase,
@@ -2551,9 +2207,7 @@ fn spec_op_call_carrier_outcome(
 ) -> (FindDictOutcome, Option<GuardRefusal>) {
     // Fold the call's positional + named arguments into the op's declared PARAMETER
     // order, so the carrier reader indexes them the way `simp_guard_holds_core`
-    // iterates parameters — the same alignment the resolver's `find_dictionary_guard`
-    // sees (its witness args were positionalized by `align_call_args_to_params` at
-    // rewrite time), so the static and runtime carrier decisions cannot disagree. A
+    // iterates parameters, so the static and runtime carrier decisions cannot disagree. A
     // partial call (some parameter unprovided) aligns to `None`; every arg then reads
     // headless → `Suspend` (declined, never a spurious error). Without this, a carrier
     // supplied BY NAME (or a positional arg displaced by an earlier named one) would
@@ -2683,178 +2337,6 @@ fn witness_carriers_of(kb: &KnowledgeBase, spec_sort: Symbol) -> Vec<Symbol> {
 /// spec carrier alike.
 pub(super) fn view_is_sort_view(kb: &KnowledgeBase, spec: &impl TermView) -> bool {
     matches!(spec.head(kb), ViewHead::Functor { functor: f, .. } if is_sort_view_functor(kb, f))
-}
-
-/// The head symbol NAME of a type-argument term (`Ref(T)` / `Ident(T)` / `T[…]` → `"T"`).
-/// Borrows from `kb` — no allocation.
-fn spec_arg_head_name<'k>(kb: &'k KnowledgeBase, arg: &Value) -> Option<&'k str> {
-    match arg.head(kb) {
-        ViewHead::Ident(s)
-        | ViewHead::Functor {
-            functor: s, ..
-        } => Some(kb.local_name_of(s)),
-        _ => None,
-    }
-}
-
-/// Shared soundness core of the WI-300 witness gates: does the spec-requirement term
-/// `spec_tid` (a `requires <S>[…]` clause binding spec `<S>`, qualified name `s_qn`)
-/// bind `<S>` over type-arguments that are ALL type-parameters whose NAME is one of
-/// `owner_tparams`? The fire-time guard ([`simp_guard_holds_core`]) picks carriers by
-/// matching a spec's type-param NAME against each parameter's type name
-/// ([`param_is_spec_carrier`]), so this predicate certifies the guard reads the
-/// argument the requirement ranges over rather than a name-coincident sibling.
-///
-/// Two clause shapes reach here, and the type-arguments live in different places:
-///   * a BARE application `Fn{functor: <S>, pos_args, named_args}` (from
-///     [`op_requires_entries`]) — positionals bind in type-param order, named args by
-///     param name (filtered by `s_qn`);
-///   * a `SortView` wrapper (from [`direct_requires`]) whose `pos_args[0]` is the
-///     inner `<S>[…]` and whose `named_args` carry the bindings (type-params AND the
-///     auto-bound spec ops `eq`/`neq`) — read via [`unwrap_spec_view`], keeping only
-///     the type-param bindings (`is_type_param_binding` filters the op ones out).
-/// A bare `Ref(<S>)` (no args) carries no keyable carrier → not sound.
-fn requirement_ranges_over_owner_tparams(
-    kb: &KnowledgeBase,
-    spec: &Value,
-    s_qn: &str,
-    owner_tparams: &[String],
-) -> bool {
-    // WI-662: one carrier-agnostic body. A ground `Value::Term` reads through
-    // `TermView` identically to the pre-WI-662 `get_term` walk, and a spec that holds a
-    // value decodes the same way, each argument on the carrier it rides — an argument
-    // that is a value names no type parameter, and is judged as one that does not. One
-    // body ⇒ the two carriers cannot silently diverge (the pre-fix denoted arm dropped
-    // the bare-`Fn` pos-args case).
-    let mut bound_type_args: Vec<Value> = Vec::new();
-    if view_is_sort_view(kb, spec) {
-        // SortView wrapper: only the named type-param bindings
-        // (`unwrap_spec_view_value` drops the `pos_args[0]` inner-spec carrier).
-        if let Some((_, bindings)) = unwrap_spec_view_value(kb, spec) {
-            for (key, val) in bindings.iter() {
-                if is_type_param_binding(kb, *key, s_qn) {
-                    bound_type_args.push(val.clone());
-                }
-            }
-        }
-    } else if let ViewHead::Functor { pos_arity, .. } = spec.head(kb) {
-        // Bare application `Fn{<S>, pos, named}` (op-`requires`): positionals bind
-        // in type-param order, named args by param name.
-        bound_type_args.extend(view_pos_children(kb, spec, pos_arity));
-        bound_type_args.extend(
-            view_named_children(kb, spec)
-                .into_iter()
-                .filter(|(key, _)| is_type_param_binding(kb, *key, s_qn))
-                .map(|(_, v)| v),
-        );
-    }
-    !bound_type_args.is_empty()
-        && bound_type_args.iter().all(|arg| {
-            spec_arg_head_name(kb, arg)
-                .is_some_and(|n| owner_tparams.iter().any(|tp| tp.as_str() == n))
-        })
-}
-
-/// A TRANSITIVE witness — a body call to an op that itself declares `requires
-/// spec_canon[…]` — grounds a rule's `requires(spec_canon[T])` SOUNDLY only when
-/// the fire-time guard's carrier selection lands on the argument the witness op's
-/// OWN requirement ranges over: the op's `requires spec_canon[P]` must bind the spec
-/// over a type-param `P` whose name IS one of `spec_canon`'s type-param names. Reject
-/// otherwise (→ the loud "no witness" error) rather than discharge the requirement
-/// against the WRONG argument: `foo[T, U](a: T, b: U) requires Eq[U]` must NOT ground
-/// a rule's `requires(Eq[T])` via the name-coincident `a: T`.
-///
-/// Restricted to a DIRECT op-requires (`entry.required_sort == spec_canon`); a
-/// witness that reaches the spec only through its OWN requires-chain is
-/// conservatively declined here (binding composition across the chain is not yet
-/// tracked — a sound extension, not a correctness gap).
-pub(super) fn transitive_witness_grounds_soundly(
-    kb: &KnowledgeBase,
-    functor: Symbol,
-    spec_canon: Symbol,
-) -> bool {
-    let spec_qn = kb.qualified_name_of(spec_canon);
-    let spec_tparams = kb.type_params_of_sort(spec_canon);
-    // The name-based soundness argument models only the fire-time guard's
-    // carrier-parameter-typeclass branch (`param_is_spec_carrier` matching the spec's
-    // type-param NAME against a param's type name). For a SELF-REPRESENTING spec (an
-    // op parameter typed with the spec SORT itself, e.g. `insert(s: Set, …)`) the
-    // guard instead reads the sort-typed parameter — which this name check does not
-    // constrain — so the gate's reasoning does not apply. Decline. (No self-representing
-    // spec is `require`d anywhere today; this is defense-in-depth against a future one.)
-    if let Some(rec) = crate::kb::op_info::lookup_operation_info(kb, functor) {
-        if spec_self_represented_by(kb, &rec.params, spec_canon) {
-            return false;
-        }
-    }
-    // `op_requires_entries` stores each clause as `Fn{functor: <spec>, …}`, so
-    // `entry.spec`'s functor IS `spec_canon` — its binding is keyed by `spec_qn`.
-    for entry in op_requires_entries(kb, functor) {
-        if kb.canonical_sort_sym(entry.required_sort) != spec_canon {
-            continue;
-        }
-        if requirement_ranges_over_owner_tparams(kb, &entry.spec, spec_qn, &spec_tparams) {
-            return true;
-        }
-    }
-    false
-}
-
-/// An INHERITED-SPEC-OP witness (WI-625 Direction A) — a body call to an operation
-/// that belongs to a spec `S′` which `spec_canon` (`X`) directly REQUIRES — grounds a
-/// rule's `requires(X[T])`. Post WI-644 `Eq` owns no operations (its `eq`/`neq` are
-/// inherited from the `PartialEq` it requires, WI-614), so a rule `requires(Eq[T])`
-/// whose only comparison is `eq(?x, ?y)` has NO direct or transitive witness: `eq` is
-/// `PartialEq.eq`, and `Eq requires PartialEq`, so the call is evidence the carrier
-/// needs an `Eq` dictionary (which subsumes the `PartialEq` the call itself uses).
-/// Likewise `requires(Ord[T])` witnessed by `gt` (`PartialOrd.gt`, and `Ord
-/// requires PartialOrd`).
-///
-/// Sound only when the guard reads the argument `X`'s requirement ranges over. `X`'s
-/// direct `requires S′[P]` must bind `S′` over a type-param `P` whose name is one of
-/// `X`'s own — exactly [`transitive_witness_grounds_soundly`]'s condition, applied to
-/// the SPEC's requires-chain rather than the OP's (`op_has_spec_carrier_param` in the
-/// scan then confirms the op exposes an `X`-keyed carrier parameter). Restricted to a
-/// DIRECT `requires` of `X` (`Eq requires PartialEq`, `Ord requires PartialOrd`
-/// are both direct); an inherited requirement reached only through `X`'s chain
-/// (`Ord requires Eq requires PartialEq`, witnessed by `eq`) is conservatively
-/// declined — sound incompleteness, not a gap.
-pub(super) fn inherited_spec_op_witness_grounds_soundly(
-    kb: &KnowledgeBase,
-    functor: Symbol,
-    spec_canon: Symbol,
-) -> bool {
-    // The op's OWN spec `S′`. A non-spec-op (no dispatch parent) is never a witness.
-    let Some(parent) = lookup_spec_op_dispatch(kb, functor) else {
-        return false;
-    };
-    let parent_canon = kb.canonical_sort_sym(parent);
-    // `S′ == X` is the DIRECT scan's job — this gate is only for the inherited case.
-    if parent_canon == spec_canon {
-        return false;
-    }
-    // Same self-representing carve-out as the transitive gate: the name-based argument
-    // only models the carrier-parameter-typeclass guard branch.
-    if let Some(rec) = crate::kb::op_info::lookup_operation_info(kb, functor) {
-        if spec_self_represented_by(kb, &rec.params, spec_canon) {
-            return false;
-        }
-    }
-    // `X` must DIRECTLY require `S′` over one of `X`'s own type-params. The requirement
-    // clause `X requires S′[…]` is keyed by `S′`'s params, but its type-arguments must
-    // be `X`'s type-params (so the guard, keyed on `X`'s type-param name, reads the arg
-    // the requirement ranges over).
-    let parent_qn = kb.qualified_name_of(parent_canon);
-    let spec_tparams = kb.type_params_of_sort(spec_canon);
-    for entry in direct_requires(kb, spec_canon) {
-        if kb.canonical_sort_sym(entry.required_sort) != parent_canon {
-            continue;
-        }
-        if requirement_ranges_over_owner_tparams(kb, &entry.spec, parent_qn, &spec_tparams) {
-            return true;
-        }
-    }
-    false
 }
 
 /// The spec + short symbols for the `eq`/`neq` family, resolved once per
@@ -3334,141 +2816,6 @@ pub(super) fn rule_is_general_eq_clause(
         && pos_args
             .iter()
             .all(|&a| matches!(kb.get_term(a), Term::Var(_)))
-}
-
-/// WI-1040 — the `out:` occurrence of an un-rewritten `find_dictionary(X, out: ?d)`
-/// goal: the clause variable the dictionary binds to, and the thing a covered call
-/// is woven to read. `None` for a check-only `requires(X)`.
-fn out_var_of_goal(
-    kb: &KnowledgeBase,
-    goal: &Rc<NodeOccurrence>,
-    fd_sym: Symbol,
-) -> Option<Rc<NodeOccurrence>> {
-    match goal.as_expr() {
-        Some(Expr::Apply {
-            functor,
-            named_args,
-            ..
-        }) if *functor == fd_sym => named_args
-            .iter()
-            .find(|(n, _)| kb.local_name_of(*n) == REQUIREMENT_OUT_LABEL)
-            .map(|(_, v)| Rc::clone(v)),
-        _ => None,
-    }
-}
-
-/// The spec-instance slot of a `find_dictionary` goal occurrence, or `None` when the
-/// occurrence is not one.
-///
-/// `Option`, not a fallback to the node itself: answering with the GOAL where the
-/// INSTANCE was asked for is a wrong value, and every caller here is deciding whether two
-/// `require`s name one spec — a question a wrong answer decides silently.
-fn goal_pos0(node: &Rc<NodeOccurrence>) -> Option<Rc<NodeOccurrence>> {
-    match node.as_expr() {
-        Some(Expr::Apply { pos_args, .. }) if !pos_args.is_empty() => Some(Rc::clone(&pos_args[0])),
-        _ => None,
-    }
-}
-
-/// The CARRIER a `require` bracket WRITES, as a bare sort symbol — `require[Desc[T =
-/// Leaf]]` ⟹ `Leaf`, and `None` for every bracket that names no carrier or names one this
-/// cannot read.
-///
-/// ONE OWNER, because two readers now ask it and they must agree: [`anchor_grounding`]
-/// uses it to choose between head bindings, and the witness selection below uses it to
-/// choose between CALLS. A disagreement would attribute one `require` two ways in one
-/// clause.
-///
-/// A BARE NAME ONLY. An APPLIED binding (`T = Box[E = Other]`) has arguments that decide
-/// which instance it means, and matching on its HEAD would discard them — `Box[E =
-/// Other]` would select an `?x: Box[E = Leaf]` anchor, silently. `/code-review` drove
-/// that. Declining here falls to the caller's refusal, which is the honest answer until
-/// the match compares applied brackets structurally.
-///
-/// A SORT, AND NOT THE SPEC ITSELF. The requirement anchor view projects an
-/// introduced carrier's obligation to `Desc`; its actual type bound stays `A`
-/// — and a written `require[Desc[T = Desc]]` would then "match" it by accidental symbol
-/// collision and silently pick the polymorphic head variable over the concrete one.
-/// Driven by `/code-review`: it answered the OTHER carrier's value on a clean load, where
-/// every neighbouring spelling is refused.
-pub(super) fn written_carrier_sort(
-    kb: &KnowledgeBase,
-    spec_arg: &Rc<NodeOccurrence>,
-    carrier_param: Symbol,
-    spec_canon: Symbol,
-) -> Option<Symbol> {
-    let Some(Expr::Apply { named_args, .. }) = spec_arg.as_expr() else {
-        return None;
-    };
-    named_args
-        .iter()
-        .find_map(|(k, v)| {
-            if !same_label(kb, *k, carrier_param) {
-                return None;
-            }
-            match v.as_expr() {
-                Some(Expr::Ref(w)) | Some(Expr::Ident(w)) => Some(*w),
-                _ => None,
-            }
-        })
-        .filter(|w| {
-            kb.has_kind(*w, crate::intern::SymbolKind::Sort)
-                && kb.canonical_sort_sym(*w) != spec_canon
-        })
-}
-
-/// The sort an argument denotes AT LOAD, where it denotes one at all: a TYPED head
-/// parameter (through this clause's `bounds`, the same channel [`anchor_grounding`] and
-/// [`written_projection_anchor`] read) or a ground CONSTRUCTOR.
-///
-/// `None` FOR AN ORDINARY VARIABLE, and that is the boundary of load-time attribution
-/// rather than a gap in this reader: a witness goal carries its arguments and the carrier
-/// decision happens at FIRE time, so a variable's sort is a run-time fact. It is why
-/// `Desc.describe(?a, ?r)` can be attributed to no bracket at all.
-fn static_arg_sort(
-    kb: &KnowledgeBase,
-    arg: &Rc<NodeOccurrence>,
-    bounds: &[(u32, TermId)],
-) -> Option<Symbol> {
-    match arg.as_expr()? {
-        Expr::Var(Var::DeBruijn(i)) => bounds
-            .iter()
-            .find(|(b, _)| b == i)
-            .and_then(|(_, t)| sort_functor_of_view(kb, &TermIdView(*t))),
-        // A nested CALL lands here too, and answers `None` through
-        // `sort_of_constructor` — an operation is no constructor.
-        Expr::Apply { functor, .. } => kb.sort_of_constructor(*functor),
-        Expr::Ref(f) | Expr::Ident(f) => kb.sort_of_constructor(*f),
-        _ => None,
-    }
-}
-
-/// WI-20260917-HRFR5 — does this candidate call's CARRIER ARGUMENT statically name the
-/// carrier the bracket wrote?
-///
-/// FALSE COVERS TWO DIFFERENT SITUATIONS ON PURPOSE — the call names a different sort,
-/// and no carrier argument names any sort readable at load — because the one caller does
-/// the same thing with both: it does not SELECT this call. Telling them apart would
-/// matter to a reader that EXCLUDED calls, and a first cut had one (it narrowed what a
-/// bracket-chosen `require` covers); backing that out failed zero rows, so the
-/// distinction went with it rather than sitting here as a shape nothing asks for.
-///
-/// THE CARRIER RULE IS THE GUARD'S OWN ([`param_is_spec_carrier`] /
-/// [`spec_self_represented_by`], WI-596's two shapes), so which arguments count as
-/// carriers here cannot drift from which ones decide the instance at fire time.
-pub(super) fn call_names_carrier(
-    kb: &KnowledgeBase,
-    functor: Symbol,
-    pos_args: &[Rc<NodeOccurrence>],
-    named_args: &[(Symbol, Rc<NodeOccurrence>)],
-    spec_canon: Symbol,
-    bounds: &[(u32, TermId)],
-    written: Symbol,
-) -> bool {
-    let wc = kb.canonical_sort_sym(written);
-    call_carrier_args(kb, functor, pos_args, named_args, spec_canon)
-        .iter()
-        .any(|arg| static_arg_sort(kb, arg, bounds).is_some_and(|s| kb.canonical_sort_sym(s) == wc))
 }
 
 /// The CARRIER ARGUMENTS of a call to one of `spec_canon`'s operations — the arguments

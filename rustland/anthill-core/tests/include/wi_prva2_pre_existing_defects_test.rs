@@ -323,10 +323,13 @@ fn a_variable_binds_its_parameters_alike() {
 }
 
 /// (c) — a carrier at a parameter that is not the spec's CARRIER parameter asks the provision
-/// too, though it is the call's only one. `Conv.tag(b: B)` stands at `B`: the clause names the
+/// too, though it is the call's only one. `Conv.tag(b: B)` stands at `B`: the clause named the
 /// instance, `require[Conv[A = Meters, B = String]]`, and the read's guard asked `String` to
 /// provide `Conv`, refused, and failed the clause where the operation-body twin answers `3`.
-/// FAILS with the question routed on "carriers at two distinct parameters": `t` is empty.
+/// FAILED with the question routed on "carriers at two distinct parameters": `t` was empty.
+/// Proposal 060.1 §5 removed `require[…]`, and the instance is written on the call's
+/// receiver, `Conv[A = Meters, B = String].tag("km", ?r)`, which answered `3` on d39bd428 too:
+/// the row passes either way now.
 #[test]
 fn a_carrier_at_a_non_carrier_parameter_asks_the_provision() {
     const TAG: &str = r#"
@@ -347,7 +350,7 @@ namespace wiprva2.tag
     operation tag(b: String) -> Int64 = 3
   end
 
-  rule t(?r) :- require[Conv[A = Meters, B = String]], Conv.tag("km", ?r)
+  rule t(?r) :- Conv[A = Meters, B = String].tag("km", ?r)
 end
 "#;
     let mut kb = crate::common::load_kb_with(TAG);
