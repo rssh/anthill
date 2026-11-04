@@ -496,8 +496,9 @@ the first. Over `take(f: (x: Int64, y: Int64) -> Int64) -> Int64 = f(7, 1)`,
 position: `List.foldLeft([1, 2, 3], 0, lambda (a: Int64, b: Int64) -> a + b)` hands `foldLeft`'s
 `acc` to `a` and its `x` to `b`.
 
-A callable of **one** parameter takes the whole tuple as that parameter's value, and to it the
-tuple is data: a component its tuple lacks is dropped, as the tuple match drops it. So
+A callable of **one** parameter, written where the function type is expected, takes the whole
+tuple as that parameter's value, and to it the tuple is data: a component its tuple lacks is
+dropped, as the tuple match drops it. So
 `lambda (p: (age: Int64)) -> p.age` stands where `A = (age: Int64, name: String)`, and over
 `age_of(p: (age: Int64)) -> Int64`, `age_of(person)` with `person = (name: "x", age: 7)` returns
 7. A callable of several parameters refuses a component that meets none of them, as a call
@@ -515,14 +516,18 @@ parameters takes them from its components, by label or by position as above, and
 the tuple to its pattern (§4.7).
 
 **A function value at another function type.** A value whose type is a function type meets
-another function type only where the two tuples agree on which component is which: they carry the
-same labels in the same order, or one of them is positional (its labels the synthetic `_1.._n`)
-and the two are mapped by position. Any other pair is refused, labels in another order and
-unrelated labels alike, since the mapping the value's callable takes was fixed where it became a
-value (WI-1088). With `inner(g: (x: Int64, y: Int64) -> Int64)`, `inner(f)` stands for
-`f: (x: Int64, y: Int64) -> Int64` and for `f: (Int64, Int64) -> Int64`, and is refused for
-`f: (y: Int64, x: Int64) -> Int64` and for `f: (p: Int64, q: Int64) -> Int64`, while `inner`
-given an operation or a lambda written at the slot meets it as above.
+another function type only where the two tuples have the same components and agree on which is
+which: they carry the same labels in the same order, or one of them is positional (its labels the
+synthetic `_1.._n`) and the two are mapped by position. Any other pair is refused, labels in
+another order and unrelated labels alike, since the mapping the value's callable takes was fixed
+where it became a value (WI-1088). With `inner(g: (x: Int64, y: Int64) -> Int64)`, `inner(f)`
+stands for `f: (x: Int64, y: Int64) -> Int64` and for `f: (Int64, Int64) -> Int64`, and is refused
+for `f: (y: Int64, x: Int64) -> Int64` and for `f: (p: Int64, q: Int64) -> Int64`, while `inner`
+given an operation or a lambda written at the slot meets it as above. A function value drops
+nothing: its type does not say how many parameters its callable has, so a value of type
+`(age: Int64, name: String) -> Int64` does not stand where `A = (age: Int64, name: String,
+id: Int64)`, whichever callable it holds, and a value of type `((age: Int64)) -> Int64` does not
+stand where `A = (age: Int64, name: String)`, though `age_of` written there does.
 
 > An arrow formed from a lambda or an operation records its own parameters beside its type. A
 > row label naming one (`Modify[k]` of `lambda (k: Cell[V = Int64]) -> put(k, 5)`) is that

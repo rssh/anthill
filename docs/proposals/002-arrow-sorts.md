@@ -336,6 +336,31 @@ With `main` ending in each in turn: `age_of(person)`, `app(age_of, (age: 7, name
 `app(lambda (p: (age: Int64)) -> p.age, (age: 7, name: "x"))`. A callable of several parameters
 refuses a component that meets none of them, as `pair(a: 1, bogus: 2)` is refused.
 
+*A function value drops nothing* (decided with the user 2026-11-04). Its type does not say how
+many parameters its callable has, so it is refused at a wider `A`, whichever callable it holds:
+
+```anthill
+namespace w1i
+  import anthill.prelude.{Int64, String}
+  operation two(age: Int64, name: String) -> Int64 = age
+  operation pair_of(p: (age: Int64, name: String)) -> Int64 = p.age
+  operation app3(f: ((age: Int64, name: String, id: Int64)) -> Int64, v: (age: Int64, name: String, id: Int64)) -> Int64 = f(v)
+  operation main() -> Int64 =
+    let g: (age: Int64, name: String) -> Int64 = two
+    app3(g, (age: 7, name: "x", id: 3))
+end
+```
+
+Under the rule it is refused at `g`: `app3`'s `A` has `id`, `g`'s has not. Today it is refused
+for another reason, the count ("expected a 1-parameter function ((age: Int64, name: String, id:
+Int64)) -> Int64, got a 2-parameter function"). With `let g: ((age: Int64, name: String)) ->
+Int64 = pair_of` it runs to 7 today and is refused under the rule, `g` having the same type as
+`two`'s. Over `w1` above, `let g: ((age: Int64)) -> Int64 = age_of` then
+`app(g, (age: 7, name: "x"))` runs to 7 today and is refused under the rule, while
+`app(age_of, …)` runs to 7. With no `id` the count is all that refuses it today: `app2(f: ((age:
+Int64, name: String)) -> Int64, v: (age: Int64, name: String)) -> Int64 = f(v)` given `g` or
+`two` is refused ("expected a 1-parameter function"), and runs to 7 under the rule.
+
 *A function value keeps the mapping it was minted at* (WI-1088). A value whose type is a
 function type meets another function type only where the two tuples carry the same labels in the
 same order, or one of them is positional and the two are mapped by position. Labels in another
