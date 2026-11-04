@@ -241,21 +241,31 @@ pub(super) fn seed_rule_citation_bracket(
         .iter()
         .map(|&name| (name, Var::Global(kb.fresh_var(name))))
         .collect();
-    // Each spec a clause's guard states, once: an unnamed requirement, reached by its sort's
-    // short name.
-    let mut specs: Vec<Symbol> = Vec::new();
+    // Each spec the clauses' guards state, as many times as one clause states it: an unnamed
+    // requirement, reached by its sort's short name, which names more than one where a clause
+    // writes two (060.1 §8.5, as two of an operation's `requires` lines are two slots).
+    let mut specs: Vec<(Symbol, usize)> = Vec::new();
     for &rid in &rids {
+        let mut here: Vec<(Symbol, usize)> = Vec::new();
         for r in kb.rule_provider_requirements(rid).to_vec() {
             let Some(spec) = sort_functor_of_view(kb, &TermIdView(r.instance)) else {
                 continue;
             };
-            if !specs.iter().any(|s| same_sort_canonical(kb, *s, spec)) {
-                specs.push(spec);
+            match here.iter_mut().find(|(s, _)| same_sort_canonical(kb, *s, spec)) {
+                Some((_, n)) => *n += 1,
+                None => here.push((spec, 1)),
+            }
+        }
+        for (spec, n) in here {
+            match specs.iter_mut().find(|(s, _)| same_sort_canonical(kb, *s, spec)) {
+                Some((_, most)) => *most = (*most).max(n),
+                None => specs.push((spec, n)),
             }
         }
     }
     let slots: Vec<CalleeSlot> = specs
         .into_iter()
+        .flat_map(|(spec, n)| std::iter::repeat_n(spec, n))
         .map(|spec| CalleeSlot {
             spec,
             named: false,

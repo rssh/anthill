@@ -10277,6 +10277,20 @@ impl KnowledgeBase {
             });
     }
 
+    /// One more provider obligation on `carrier`, kept beside an equal one: a clause's two
+    /// guards of one spec at one parameter are two requirements (060.1 §8.5).
+    pub(crate) fn add_further_type_var_provider_requirement(&mut self, carrier: VarId, instance: TermId) {
+        let name = self.intern("provider_dictionary");
+        let dictionary = self.fresh_var(name);
+        self.type_var_provider_requirements
+            .entry(carrier)
+            .or_default()
+            .push(TypeVarProviderRequirement {
+                instance,
+                dictionary,
+            });
+    }
+
     pub(crate) fn type_var_provider_requirements(&self, carrier: VarId) -> Vec<TermId> {
         self.type_var_provider_requirements
             .get(&carrier)

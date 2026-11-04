@@ -28826,6 +28826,10 @@ struct Loader<'a> {
     // decides whether an unresolved name is a typo, and "what does it denote" is only
     // askable of the bounded half.
     rule_tvar_bounds: HashMap<String, Option<RuleProviderRequirement>>,
+    // 060.1 §8.5: the guards of an introducer after its first (`rule p[A](…) :- WeakOrd[T =
+    // A], Eq[T = A]`), each a requirement of the carrier the first gives
+    // ([`Loader::register_further_guards`]). Cleared per rule with `rule_tvar_bounds`.
+    rule_tvar_further_guards: Vec<(String, RuleProviderRequirement)>,
     // WI-20260908-PW9A0: are we lowering a rule-head TYPE BOUND (`?x: T` / the §2.1
     // `x: T` parameter form)? That is the one position where a head-introduced type
     // variable DENOTES its guard-given bound — see [`Loader::rule_head_tvar`], which is
@@ -29306,6 +29310,7 @@ impl<'a> Loader<'a> {
             rule_head_type_bounds: Vec::new(),
             rule_param_vars: HashMap::new(),
             rule_tvar_bounds: HashMap::new(),
+            rule_tvar_further_guards: Vec::new(),
             in_rule_head_bound: false,
             rule_head_bound_anchors: Vec::new(),
             in_op_contract_clause: false,
@@ -30189,6 +30194,39 @@ impl<'a> Loader<'a> {
                 (read, written)
             }
             _ => (t, None),
+        }
+    }
+
+    /// 060.1 §8.5 — each guard of an introducer after its first, as a requirement of the
+    /// carrier the first gives: its instance with the carrier at the slot the guard writes it
+    /// at, as [`Self::materialize_rule_carrier_bound`] builds the first's. Two of one spec at
+    /// one type are two requirements, as two lines of an operation's `requires` are.
+    fn register_further_guards(&mut self) {
+        // In the order the body writes them, which is the order of the clause's reads.
+        let further: Vec<(String, RuleProviderRequirement)> =
+            std::mem::take(&mut self.rule_tvar_further_guards);
+        for (tvar, guard) in further {
+            let Some(RuleTvar::Bounded(first)) = self.rule_head_tvar(&tvar) else {
+                continue;
+            };
+            let Some(carrier) = first.carrier else { continue };
+            {
+                let param = guard
+                    .carrier_param
+                    .expect("a guard with a carrier names the parameter it stands at");
+                let ty = self.kb.alloc(Term::Var(Var::Global(carrier)));
+                let mut bindings = match self.kb.get_term(guard.instance).clone() {
+                    Term::Fn { named_args, .. } => named_args,
+                    _ => SmallVec::new(),
+                };
+                bindings.push((param, ty));
+                let instance = self.kb.alloc(Term::Fn {
+                    functor: guard.spec,
+                    pos_args: SmallVec::new(),
+                    named_args: bindings,
+                });
+                self.kb.add_further_type_var_provider_requirement(carrier, instance);
+            }
         }
     }
 
@@ -46183,6 +46221,7 @@ impl<'a> Loader<'a> {
         // from the body. The inline `?x: Spec` form needs none of this — the
         // introducer set is empty and `rule_tvar_bounds` stays empty.
         self.rule_tvar_bounds.clear();
+        self.rule_tvar_further_guards.clear();
         let mut folded_guard_ids: std::collections::HashSet<ParseTermId> =
             std::collections::HashSet::new();
         // In the order written: a citation's positional bracket counts them so (060.1 §2).
@@ -46254,19 +46293,24 @@ impl<'a> Loader<'a> {
                         if let Some((tvar, requirement)) =
                             self.try_body_tvar_guard(gtid, &introducers)
                         {
-                            if matches!(self.rule_head_tvar(&tvar), Some(RuleTvar::Bounded(_))) {
-                                // A type-variable's bound must be declared once; a
-                                // second `Spec[T]` guard would be silently lost
-                                // (overwrite + drop). Reject loudly. Still fold it
-                                // out of the body to avoid a confusing secondary
-                                // "unresolved name T" error.
-                                self.errors.push(LoadError::Other {
-                                    message: format!(
-                                        "WI-582: rule type-variable `{tvar}` is bounded by more \
-                                         than one guard; declare its bound once (a compound bound \
-                                         spanning several guards is not yet supported)"
-                                    ),
-                                });
+                            if let Some(RuleTvar::Bounded(first)) = self.rule_head_tvar(&tvar) {
+                                // 060.1 §8.5 — SEVERAL REQUIREMENTS AT ONE PARAMETER, as an
+                                // operation's `requires WeakOrd[T = A], Eq[T = A]`: the first
+                                // guard lowers the head's bound and gives the carrier, and
+                                // each further one is a requirement of that carrier
+                                // ([`Self::register_further_guards`]). A guard that names an
+                                // enclosing sort's parameter has no carrier to share.
+                                if first.carrier.is_none() || requirement.carrier.is_none() {
+                                    self.errors.push(LoadError::Other {
+                                        message: format!(
+                                            "rule type-variable `{tvar}` is bounded by a guard \
+                                             naming an enclosing sort's parameter and by another \
+                                             guard; such a guard bounds its variable alone"
+                                        ),
+                                    });
+                                } else {
+                                    self.rule_tvar_further_guards.push((tvar, requirement));
+                                }
                                 folded_guard_ids.insert(gtid);
                                 continue;
                             }
@@ -46624,6 +46668,7 @@ impl<'a> Loader<'a> {
         {
             self.refuse_rewrite_tags(r.meta.as_ref(), declaration);
         }
+        self.register_further_guards();
         // 060.1 §2 — each declared type parameter with the frame variable its occurrences
         // share, and whether some head's frame holds it.
         let declared_params: Vec<(String, Option<VarId>)> = introducer_order

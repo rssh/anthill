@@ -8,7 +8,8 @@
 //! declared requirement supplies: a call at the clause's type parameter reads the guard's
 //! dictionary however the parameter reached its argument, and a goal of a rule that declares the
 //! same requirement at the caller's parameter passes the caller's own — at every turn of a
-//! recursion. A relation has one parameter list (§8.4).
+//! recursion. A relation has one parameter list (§8.4), and a parameter takes several
+//! requirements, as an operation's does (§8.5).
 //!
 //! BACK-OUT, measured one axis at a time (each a temporary switch in one build, removed):
 //!  * [B] a rule's bracket refused as on a callee with no type-parameter list — every bracket
@@ -25,7 +26,10 @@
 //!    refusals its routing raises load;
 //!  * [M] the bracket left on the goal its marker wraps — the goal matches no clause;
 //!  * [O] no refusal of the clause's own type parameter in a goal's bracket — an unresolved
-//!    name instead.
+//!    name instead;
+//!  * [S] a second guard at one parameter refused, as before §8.5 — its row's load fails;
+//!  * [Q] two guards of one instance both covering a call refused — `p2` refused;
+//!  * [K] one bracket slot per spec, however many guards state it — the bracket on `p2` loads.
 //!
 //! The citation with no bracket, the bracket on a rule with no introducer, and the clauses
 //! that declare one list or none pass under every axis: the controls.
@@ -393,4 +397,57 @@ fn a_rule_body_goals_bracket_is_refused_where_nothing_reads_it() {
         let errs = crate::common::load_errors_of(&program(ns, &format!("  {rule}\n")));
         assert_one_refusal(&errs, text, rule);
     }
+}
+
+/// SEVERAL REQUIREMENTS AT ONE TYPE PARAMETER (§8.5), as an operation's `requires`: two specs at
+/// `A` each cover their own calls and a citation's bracket selects either, and one spec written
+/// twice with no name is two requirements — the clause loads, a caller's dictionary reaches it,
+/// and a bracket selecting by the spec's name is refused as naming two, the operation's refusal.
+/// FAILS under [S] (a second guard refused, as before): the load fails. Under [Q] (two
+/// guards of one instance both covering the call refused): `p2` is refused, "covered by
+/// distinct carrier requirements". Under [K] (one bracket slot per spec): the bracket on `p2`
+/// loads.
+#[test]
+fn several_requirements_at_one_parameter_are_an_operations() {
+    let ns = "j9ssg.several";
+    let rules = format!(
+        "  rule p[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], Eq[T = A], WeakOrd.compare(?a, ?b, ?c)\n  \
+         rule same[A](?a: A, ?b: A) :- WeakOrd[T = A], Eq[T = A], Eq.eq(?a, ?b, true)\n  \
+         rule p2[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], WeakOrd[T = A], WeakOrd.compare(?a, ?b, ?c)\n  \
+         operation both[A](x: A, y: A) -> Int64 {EFFECTS} requires WeakOrd[T = A], Eq[T = A] =\n    \
+         p(x, y).head.c\n  \
+         operation one[A](x: A, y: A) -> Int64 {EFFECTS} requires WeakOrd[T = A] = p2(x, y).head.c\n"
+    );
+    let got = answers(
+        ns,
+        &rules,
+        &[
+            ("own", "p(1, 5).head.c"),
+            ("bracket", "p[A = Int64, WeakOrd = Descending](1, 5).head.c"),
+            ("caller", "both[A = Int64, WeakOrd = Descending](1, 5)"),
+            ("eqHolds", "if same(3, 3).isEmpty() then 0 else 1"),
+            ("eqFails", "if same(3, 4).isEmpty() then 0 else 1"),
+            ("twiceOwn", "p2(1, 5).head.c"),
+            ("twiceCaller", "one[A = Int64, WeakOrd = Descending](1, 5)"),
+        ],
+    );
+    expect(
+        &got,
+        &[
+            ("own", -1),
+            ("bracket", 4),
+            ("caller", 4),
+            ("eqHolds", 1),
+            ("eqFails", 0),
+            ("twiceOwn", -1),
+            ("twiceCaller", 4),
+        ],
+    );
+    let errs = crate::common::load_errors_of(&program(
+        ns,
+        &format!(
+            "{rules}  operation t() -> Int64 {EFFECTS} = p2[WeakOrd = Descending](1, 5).head.c\n"
+        ),
+    ));
+    assert_one_refusal(&errs, "names more than one requirement slot", "a spec's name over two slots");
 }

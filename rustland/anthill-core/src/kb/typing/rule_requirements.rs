@@ -324,6 +324,8 @@ pub(super) fn install_rule_provider_dictionaries(kb: &mut KnowledgeBase) -> Vec<
         });
         let mut goals = Vec::new();
         let mut targets: Vec<WeaveTarget> = Vec::new();
+        // The instance each target's dictionary is a requirement at.
+        let mut target_instances: Vec<TermId> = Vec::new();
         for requirement in requirements {
             let instance = requirement.instance;
             let spec = sort_functor_of_view(kb, &Value::term(instance))
@@ -337,10 +339,16 @@ pub(super) fn install_rule_provider_dictionaries(kb: &mut KnowledgeBase) -> Vec<
                 matches!(t.head(kb), ViewHead::Var(Var::DeBruijn(i)) if i == requirement.carrier)
                     .then(|| NodeOccurrence::new_expr(Expr::Var(Var::DeBruijn(*v)), anchor.span, anchor.owner))).collect();
             for call in collect_covered_calls(kb, &body, kb.canonical_sort_sym(spec), &at) {
-                if targets
+                if let Some(at) = targets
                     .iter()
-                    .any(|(previous, _, _)| Rc::ptr_eq(previous, &call))
+                    .position(|(previous, _, _)| Rc::ptr_eq(previous, &call))
                 {
+                    // Two requirements of one spec at one type, written twice: either is the
+                    // call's, as in an operation's body under two equal `requires` lines
+                    // (060.1 §8.5). The first stands.
+                    if target_instances[at] == instance {
+                        continue;
+                    }
                     errors.push(TypeError::Other {
                         site: TypeError::here(),
                         span: Some(call.span.span),
@@ -353,6 +361,7 @@ pub(super) fn install_rule_provider_dictionaries(kb: &mut KnowledgeBase) -> Vec<
                     });
                 } else {
                     targets.push((call, vec![out.clone()], None));
+                    target_instances.push(instance);
                 }
             }
             let spec_node = NodeOccurrence::new_expr(
