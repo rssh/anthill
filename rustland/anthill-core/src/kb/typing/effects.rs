@@ -2782,6 +2782,33 @@ pub(super) fn subtype_effect_rows<EA: TermView, EB: TermView>(
 /// multi-tail arm and the both-open arm ([`bind_both_open_tails`]) are one code; the flag
 /// decides EXACTLY five things, each marked `DIRECTIONAL` below — the label pairing, the
 /// multi-tail flag (the one [`multi_tail_rows_compat`] already took), and three tail arms.
+/// WI-20261103-JGW88 — each of `tails` that is the instance member a `requires` clause leaves
+/// unwritten, taken out with the one of `labels` that is its projection
+/// ([`atom_is_projected_instance_member`]); see [`relate_effect_rows`].
+fn cancel_instance_member_tails(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    tails: &mut Vec<TermId>,
+    labels: &mut Vec<Value>,
+) {
+    if labels.is_empty() {
+        return;
+    }
+    tails.retain(|&t| {
+        let tail = Value::term(walk_type(kb, subst, t));
+        match labels
+            .iter()
+            .position(|l| atom_is_projected_instance_member(kb, l, &tail))
+        {
+            Some(i) => {
+                labels.remove(i);
+                false
+            }
+            None => true,
+        }
+    });
+}
+
 fn relate_effect_rows<EA: TermView, EB: TermView>(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
@@ -2803,14 +2830,22 @@ fn relate_effect_rows<EA: TermView, EB: TermView>(
     // WI-339 F13: decompose returns None on malformed input — propagate
     // as a rejection so the typer surfaces the row-shape error
     // instead of proceeding on incomplete decomposition.
-    let (a_present, a_tails, a_absent) = match decompose_effect_row(kb, subst, a_effects) {
+    let (mut a_present, mut a_tails, a_absent) = match decompose_effect_row(kb, subst, a_effects) {
         Some(p) => p,
         None => return false,
     };
-    let (b_present, b_tails, b_absent) = match decompose_effect_row(kb, subst, b_effects) {
+    let (mut b_present, mut b_tails, b_absent) = match decompose_effect_row(kb, subst, b_effects) {
         Some(p) => p,
         None => return false,
     };
+    // WI-20261103-JGW88 — a row a `requires` clause leaves unwritten is the projection `P.E` the
+    // signature writes for it: such a rigid tail of one row and that label of the other are one
+    // row, which neither has left over for what follows to relate. Without it a body's `let f:
+    // () -> Int64 @ {P.E} = lambda () -> Strm.step(x)` was refused "expected () -> Int64 @ {P.E},
+    // got () -> Int64 @ {Strm[C = P].E}" where the body's own row check admitted the call
+    // (MEASURED, /code-review).
+    cancel_instance_member_tails(kb, subst, &mut a_tails, &mut b_present);
+    cancel_instance_member_tails(kb, subst, &mut b_tails, &mut a_present);
 
     // WI-20260929-0RP29 (user decisions, 2026-10-01) — an absence over a ROW VARIABLE in the
     // expected row (`{EffP, -R}`): the actual holds neither the variable itself nor, beside a

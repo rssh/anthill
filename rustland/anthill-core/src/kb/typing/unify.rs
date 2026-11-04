@@ -167,6 +167,29 @@ fn projection_is_instance_member(
     Some(same_param && same_qname(kb, *member, r.name()))
 }
 
+/// WI-20261103-JGW88 — is the effect atom `incurred` the row a body's `requires` clause leaves
+/// unwritten, of its instance at the type parameter the written atom `declared` projects off —
+/// `Strm[C = P].E` against `effects {P.E}` under `requires Strm[C = P]`? The ζ arm's identity
+/// ([`projection_is_instance_member`]) asked of a row's atoms, which the row checks compare
+/// structurally and do not unify: a body's coverage ([`undeclared_effects`]) and a row against
+/// a row ([`relate_effect_rows`]).
+pub(super) fn atom_is_projected_instance_member(
+    kb: &KnowledgeBase,
+    declared: &Value,
+    incurred: &Value,
+) -> bool {
+    // The incurred side first: almost no atom is such a member, and asking costs a lookup
+    // where reading the declared one's projection builds its extractor.
+    let head = incurred.head(kb);
+    let ViewHead::Var(Var::Rigid(r)) = head else {
+        return false;
+    };
+    if !matches!(kb.minted_param(r.name()), Some(MintedParam::Member { at: Some(_), .. })) {
+        return false;
+    }
+    projection_is_instance_member(kb, &extract_type(kb, declared), head) == Some(true)
+}
+
 /// **WHAT SURVIVES A `false` — the rule ~16 discarding callers depend on** (WI-20260904-60143).
 ///
 /// This relation does NOT roll back. Everything it bound on the way down stays in `subst`

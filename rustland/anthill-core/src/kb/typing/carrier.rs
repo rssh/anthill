@@ -1798,13 +1798,16 @@ pub(super) fn scope_clause_at_carrier(
             continue;
         };
         // The clause must be about THIS carrier.
-        let licenses = bindings.iter().any(|(p, t)| {
-            type_param_vid_in_sort(kb, spec_sort, *p) == Some(carrier_pvid)
-                && rigid_of(kb, t) == Some(recv_carrier)
-        });
-        if !licenses {
+        let Some(carrier_binding) = bindings
+            .iter()
+            .find(|(p, t)| {
+                type_param_vid_in_sort(kb, spec_sort, *p) == Some(carrier_pvid)
+                    && rigid_of(kb, t) == Some(recv_carrier)
+            })
+            .map(|(_, t)| t.clone())
+        else {
             continue;
-        }
+        };
         let mut out: Vec<(VarId, Value)> = Vec::new();
         for (p, t) in &bindings {
             let Some(spec_vid) = type_param_vid_in_sort(kb, spec_sort, *p) else {
@@ -1881,7 +1884,15 @@ pub(super) fn scope_clause_at_carrier(
                     .next()
                     .unwrap()
                     .to_owned();
-                let at = declared_carrier_param(kb, &rigids, spec_sort, recv_carrier, &member);
+                let at = declared_carrier_param(
+                    kb,
+                    env,
+                    &rigids,
+                    spec_canon,
+                    recv_carrier,
+                    &carrier_binding,
+                    &member,
+                );
                 let name = kb.mint_instance_member_name(head, &member, at);
                 let rigid = fresh_rigid_named(kb, name);
                 env.instance_member_rigids.borrow_mut().insert(key, rigid);
@@ -1898,34 +1909,54 @@ pub(super) fn scope_clause_at_carrier(
 }
 
 /// WI-20261020-DNX0E — the canonical variable of the type parameter `P` the scope declares whose
-/// body rigid `recv_carrier` is, where the member `member` of `spec_sort`'s instance there is the
-/// projection `P.member` a signature writes ([`MintedParam::Member`]'s `at`, which the ζ arm reads
-/// as that projection). Minted apart from it, a body returning `Storage.get(x, k)` under
-/// `requires Storage[C = P]` was refused "expected P.Val, got Storage[C = P].Val" (MEASURED: for
-/// an operation's clause on the parent, and for a sort's once its unwritten slot was left out
-/// as an operation's is).
+/// body rigid `recv_carrier` is, where the member `member` of the instance of `spec` (canonical)
+/// that a clause binding `P` (`carrier_binding`) leaves unwritten is the projection `P.member` a
+/// signature writes ([`MintedParam::Member`]'s `at`, which the ζ arm reads as that projection).
+/// Minted apart from it, a body returning `Storage.get(x, k)` under `requires Storage[C = P]`
+/// was refused "expected P.Val, got Storage[C = P].Val" (MEASURED: for an operation's clause on
+/// the parent, and for a sort's once its unwritten slot was left out as an operation's is).
+///
+/// An effect row is such a member too (WI-20261103-JGW88): `effects {P.E}` is the row the
+/// instance's `E` raises, which the row checks read as one atom with it
+/// ([`atom_is_projected_instance_member`]). Minted apart, a body calling `Strm.step(x)` under
+/// `requires Strm[C = P]` was refused "expected declared: [P.E], got undeclared effect: Strm[C =
+/// P].E" (MEASURED: for an operation's clause and for a sort's).
+///
+/// ONLY THE SPEC `P.member` IS READ THROUGH ([`rigid_projection_lender`], in the declaration
+/// that declares `P`). Another clause at `P` leaving a member of that name unwritten is another
+/// instance's: with `A` requiring `B[C = C]`, `g[P](x: P) -> P.Val requires A[C = P] =
+/// B.get(x)` returned `B`'s `Int64` as `A`'s `String`, and `effects {P.E}` covered `B.op(x)`'s
+/// `Error` where callers read `A`'s `{}` (MEASURED, /code-review; the type half since DNX0E).
 ///
 /// `None` at a minted parameter — no signature projects off one: the member sugar's (`x:
 /// Tagger.C`) names its member by writing it into the clause, and an inline `?t` or an unwritten
-/// slot has no projection (`t.Key` resolves to nothing) — and for an effect row, which is no
-/// type a projection stands for.
+/// slot has no projection (`t.Key` resolves to nothing).
 fn declared_carrier_param(
     kb: &mut KnowledgeBase,
+    env: &TypingEnv,
     rigids: &[(VarId, TermId)],
-    spec_sort: Symbol,
+    spec: Symbol,
     recv_carrier: TermId,
+    carrier_binding: &Value,
     member: &str,
 ) -> Option<VarId> {
     let Term::Var(Var::Rigid(v)) = kb.get_term(recv_carrier) else {
         return None;
     };
-    if kb.minted_param(v.name()).is_some() || sort_param_is_effect_row(kb, spec_sort, member) {
+    if kb.minted_param(v.name()).is_some() {
         return None;
     }
-    rigids
+    let param = rigids
         .iter()
         .find(|(_, r)| *r == recv_carrier)
-        .map(|(pv, _)| *pv)
+        .map(|(pv, _)| *pv)?;
+    let key = subject_key_of(kb, carrier_binding)?;
+    let decl = match env.enclosing_op() {
+        Some(op) if op_bracket_declares(kb, op, key) => op,
+        _ => env.enclosing_sort()?,
+    };
+    let lender = rigid_projection_lender(kb, decl, key, member)?;
+    (kb.canonical_sort_sym(lender) == spec).then_some(param)
 }
 
 /// What a `requires` clause over a spec says through that spec's OWN requirements, each
