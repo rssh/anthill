@@ -438,155 +438,102 @@ Store.peek(x)` applied as `f(buf(v: 7))` reaches the provider at `Buf`; a lambda
 unapplied takes its dictionary where it is referenced. Full rationale on the `PolyType`
 declaration in `stdlib/anthill/prelude/sort.anthill`.
 
-**Parameter lists correspond slot by slot** (WI-782). A parameter list is
-*applied positionally*, so one arrow conforms to another only when the two lists
-have the **same arity** and their slots correspond by **position**. Binder names
-are not *paired up* to build that correspondence — the zip is by index — but they
-do decide whether the zip is **admissible** at all (see below): `(acc: A, x: B) ->
-R` accepts a value typed `(_1: A, _2: B) -> R`, which is what lets a named-binder
-callback take an operation's eta-expanded arrow. A permuted list is therefore compared
-slot-for-slot rather than paired by name, so `(y: Bool, x: Int64) -> R` fails
-against `(x: Int64, y: Bool) -> R` on the component types; and a two-parameter
-value does not conform to a three-parameter one. A positionally consumed list
-admits neither permutation nor width. **Data tuples are different**: every reader
-of one is name-keyed — `t.x` access (§Field access, mode 3) and destructuring
-alike (§"Destructuring binds by LABEL") — so **width and permutation are both
-subtyping rules** for them, with components dropped from anywhere. See §4.5.
+**Every arrow is a `Function`** (proposal 002). `(p₁: T₁, …, pₙ: Tₙ) -> R @ E` is
+`Function[A = (p₁: T₁, …, pₙ: Tₙ), B = R, E = E]`: the parameter list is the tuple `A`, and an
+arrow carries no parameter count. So `(a: A, b: B) -> R` and `((a: A, b: B)) -> R` are one type,
+and `(Int64, Int64) -> Int64` is `Function[A = (Int64, Int64), B = Int64]`. One parameter is not
+a one-component tuple: `(p: T) -> R` is `Function[A = T, B = R]`, so the binder name of
+`(v: Int64) -> Int64` is no part of its type, and `() -> R` is `Function[A = (), B = R]`. The
+parameter list is a tuple type, so its labels are distinct (§4.5): `(a: Int64, a: Int64) -> Int64`
+is refused where it is written.
 
-Because names are not matched up, the zip is admitted only when the two lists
-agree on which slot is which — the names line up, or one side carries the
-synthetic `_1.._n` convention. Two equal-arity lists with unrelated names do not
-conform.
+**Two matches relate tuples, and they are different.**
 
-**An arrow records its parameter ARITY** (WI-791), and that count — not the shape
-of the parameter type — decides which of the two relations applies:
+* The **tuple match** relates a value of one tuple type to an expected tuple type: by name, with
+  width and permutation (§4.5). `(name: "x", age: 7)` meets `(age: Int64)`.
+* The **application match** relates the arguments of an application to its **target**, the tuple
+  of the function applied: a positional argument meets the component at its position, a named
+  argument the component with its label, and each component is met once. A call's arguments meet
+  an operation's parameters so (§5.4). Over `f: (x: Int64, y: Int64) -> Int64`, `f(7, y: 1)` gives
+  `x = 7` and `y = 1`.
 
-* **arity ≠ 1** — the parameter position *is* the list, and the rules above hold:
-  same arity, slot-by-slot, no permutation and no width.
-* **arity 1** — the parameter position is the sole parameter's TYPE. A tuple there
-  is *data*, so it is related as data: name-keyed, with width AND permutation
-  (§4.5). A callback reading only `(a: A)` therefore accepts a wider
-  `(a: A, b: B)`, and `(t: (x: A, y: B)) -> R` accepts a callback declared
-  `(u: (y: B, x: A)) -> R`.
+`(Int64, Int64)` reaches `(a: Int64, b: Int64)` by the application match, by position, and does
+not meet it by the tuple match, which relates no named tuple to a positional one (§4.5).
 
-Arity is thus what tells `(t: (a: A, b: B))` — one tuple-typed parameter — from
-`(a: A, b: B)` — two parameters. They are different types: neither conforms to the
-other, and the mismatch is a **load error**, not a run-time trap. Write the
-one-parameter form as `((a: A, b: B)) -> R` when there is no binder to name it;
-that is also how it prints.
+**One tuple is always the argument list.** `f((x₁, …, xₙ))` is the application `f(x₁, …, xₙ)`,
+and so is `f(t)` for any one argument `t` whose type is a tuple: its components are the
+arguments, named where the tuple names them. This holds for a call through a function value and
+for a call of an operation by its name alike (§5.4). Over `r(t: (Int64, Int64), n: Int64 = 100)`,
+`r((1, 2))` gives `t = 1` and `n = 2`, and is refused at `t`; naming the parameter,
+`r(t: (1, 2))`, passes the tuple as `t`.
 
-> An arrow formed from a lambda or an operation records its own parameters,
-> beside `param` as it records its arity. A row label naming one (`Modify[k]` of
-> `lambda (k: Cell[V = Int64]) -> put(k, 5)`) is that parameter, by its position,
-> wherever the value goes (the callback row check below); a callback parameter's
-> place says its position itself. The relations above do not read them: `(v: A) -> R` and `(w: A) -> R` are
-> the same type, and a named argument cannot be resolved against a single-parameter
-> arrow.
+**Applying a function value checks its arguments** by the application match against its `A`, so
+a wrong-typed value in any position is a **load error**, not a run-time trap. Where `A` is not a
+tuple, the one argument is `A`. The call-side conversions of any other argument position apply,
+notably the `Option` some-coercion (a bare `T` supplied for a declared `Option[T]` is wrapped). At
+load the application is converted to its tupled form, `f(7, 1)` over `(x: Int64, y: Int64) -> R`
+to `f((x: 7, y: 1))`: the conversion needs `A`'s labels, which the run time does not have.
 
-**Applying a function value checks its arguments** (WI-792). The rules above
-relate one arrow to another; this is the other half — which *arguments* fit an
-arrow. Calling a value of arrow type `f(a₁, …, aₙ)` is checked exactly as calling
-a named operation is:
+The same check reaches a callback whose declared type is still **polymorphic**
+(`apply2[T](f: (x: T, y: T) -> R, …)`). A component type is deferred only while it is
+*genuinely* polymorphic — a variable the call has already pinned is **resolved and then
+decided**, including one pinned by a *sibling* argument, so `both[X](f: (x: X) -> R, g: (x: X) ->
+R)` refuses a `g` that contradicts the `X` its `f` fixed (WI-1084 for the result position, WI-1085
+for the parameter; the same rule that makes two `List[T = X]` arguments agree, WI-836). How many
+components `A` has is decided regardless, since instantiation does not change it.
 
-* the argument **count** must equal the declared arity;
-* argument `i` is checked against parameter slot `i`, and a **named** argument
-  against the slot its label resolves to (§named arguments) — so a wrong-typed
-  value in any position is a **load error**, not a run-time trap;
-* the same call-side conversions apply as at any other argument position, notably
-  the `Option` some-coercion (a bare `T` supplied for a declared `Option[T]` is
-  wrapped).
+**A callable where a function type is expected.** An operation or a lambda stands where
+`Function[A, B]` is expected when the expected `A` reaches the callable's own tuple by the
+application match: the slot will apply it so. An operation's tuple is its parameters:
+`two(a: Int64, b: Int64)` has `(a: Int64, b: Int64)`. A lambda's tuple is its pattern's:
+`lambda (a: Int64, b: Int64) -> …` has `(Int64, Int64)`, with no labels. A callable of one
+parameter, or of one binder, has that parameter's type. When the two tuples carry the same
+labels, the components meet by label; otherwise the labels are mapped by position, the first to
+the first. Over `take(f: (x: Int64, y: Int64) -> Int64) -> Int64 = f(7, 1)`,
+`impl(y: Int64, x: Int64) -> Int64 = x` carries the same labels, so `take(impl)` gives `impl`
+`x = 7` and returns 7; `impl2(z: Int64, x: Int64) -> Int64 = x` does not, so `x` maps to `z` and
+`y` to `x`, and `take(impl2)` returns 1. A lambda of several binders is therefore mapped by
+position: `List.foldLeft([1, 2, 3], 0, lambda (a: Int64, b: Int64) -> a + b)` hands `foldLeft`'s
+`acc` to `a` and its `x` to `b`.
 
-A `Function[A, B, E]` states no arity (see the note below), so neither the count
-nor the slot-wise check is stated over it — both `f(3, 10)` and `f((3, 10))`
-remain legal at a `Function[(A, B), R]` parameter.
+A callable of **one** parameter takes the whole tuple as that parameter's value, and to it the
+tuple is data: a component its tuple lacks is dropped, as the tuple match drops it. So
+`lambda (p: (age: Int64)) -> p.age` stands where `A = (age: Int64, name: String)`, and over
+`age_of(p: (age: Int64)) -> Int64`, `age_of(person)` with `person = (name: "x", age: 7)` returns
+7. A callable of several parameters refuses a component that meets none of them, as a call
+refuses an argument with no parameter (§5.4).
 
-The same checks reach a callback argument whose declared type is still
-**polymorphic** (`apply2[T](f: (x: T, y: T) -> R, …)`). A component type is
-deferred only while it is *genuinely* polymorphic — a variable the call has already
-pinned is **resolved and then decided**, including one pinned by a *sibling*
-argument, so `both[X](f: (x: X) -> R, g: (x: X) -> R)` refuses a `g` that
-contradicts the `X` its `f` fixed (WI-1084 for the result position, WI-1085 for the
-parameter; the same rule that makes two `List[T = X]` arguments agree, WI-836).
-**Arity** is decided regardless, since a parameter count is not something
-instantiation can change.
+How many parameters a callable has is checked where it becomes a value. An operation of `k`
+parameters, or a lambda of `k` binders, stands at `Function[A, B]` when `k` is 1 or `A`'s
+component count, and at no other: `Function[A = (Int64, Int64), B = Int64]` given a lambda of
+three binders is a load error. Where `A` is not a tuple, `k` is 1; where `A` is not yet known (a
+rigid type parameter), nothing is required, since a component count is what instantiation
+supplies.
 
-The positional rule above relates two parameter *lists*, so it applies when both sides
-are arrows — whether or not either was reached through a variable. It applies to a
-`Function[A, B, E]` too, but only at the **spread** reading: when the callback's arity
-is `A`'s component count (and not 1), `A`'s components *are* that callback's parameter
-list, so they align positionally with the synthetic `_1.._n` escape (WI-1087). At the
-**whole-`A`** reading — arity 1 — `A` is one argument's data type and is compared by
-name, which is what keeps a permuted `(b, a)` conforming to `(a, b)` there.
+The run time makes the same match where the callable takes the tuple: an operation of several
+parameters takes them from its components, by label or by position as above, and a lambda hands
+the tuple to its pattern (§4.7).
 
-That distinction is forced. An operation's eta arrow always spells its parameter list
-`_1, _2, …` (an arrow drops its binder names), so a by-name comparison would refuse
-*every* spread the arity rule admits, leaving the second reading reachable only for a
-lambda — which adopts `A` as its parameter type and matches it by construction. It
-would also make the verdict depend on how `A`'s components were *labelled*:
-`Function[A = (Int64, Int64), B]` admitted a two-parameter operation and
-`Function[A = (acc: Int64, x: Int64), B]` did not, though the runtime spreads either
-and reads no label.
+**A function value at another function type.** A value whose type is a function type meets
+another function type by the application match too, its tuple being its own type's `A`, and where
+the two tuples carry the same labels they must also stand in the same order: the mapping its
+callable takes was fixed where it became a value (WI-1088). With
+`inner(g: (x: Int64, acc: Int64) -> Int64)`, `outer(f: (acc: Int64, x: Int64) -> Int64) -> Int64
+= inner(f)` is refused, while `inner` given an operation or a lambda written at the slot meets it
+as above.
 
-**The reader spreads by label.** Under the spread reading the callee's parameter `i` is
-`A`'s component `i` positionally, while the *value* conforms to `A` by name and may
-present its components in another order. So the components are handed over by `A`'s
-labels, not in the value's source order — the same discipline destructuring follows
-(§"Destructuring binds by LABEL"), and what makes an operation and a lambda
-interchangeable in the slot.
-
-**Two `Function` slots must agree on `A`'s order.** A `Function[A, B, E]` states no arity,
-so *both* readings above stay open for any value standing in it — and the mapping a spread
-uses is fixed where the value is **minted**, not where it is later re-typed. So when a
-`Function`-typed value flows into another `Function` parameter, the two `A`s owe the
-*intersection* of the two readings: by name, **and** in the same order. A pairing whose two
-`A`s are permutations of each other is refused (WI-1088). Without it,
-`inner(g: Function[A = (x, acc), B])` accepted an `f: Function[A = (acc, x), B]` and
-`inner`'s declared `A` was silently not the mapping used — one program answering `7` called
-directly and `-7` through the second slot, on a clean load. The refusal is on the **order**
-axis alone; width and names are unchanged, and the whole-`A` reading still admits a
-permuted argument at a single slot.
-
-None of this relates a named tuple to a positional one as **data**: rule 4 stands, and
-`A` in the spread reading is a parameter list rather than a data tuple.
+> An arrow formed from a lambda or an operation records its own parameters beside its type. A
+> row label naming one (`Modify[k]` of `lambda (k: Cell[V = Int64]) -> put(k, 5)`) is that
+> parameter, by its position, wherever the value goes (the callback row check below); a callback
+> parameter's place says its position itself. The type does not read them: `(v: A) -> R` and
+> `(w: A) -> R` are the same type, and the binder name of a function of one parameter is no
+> label, so `f(v: 1)` over `f: (v: Int64) -> R` is refused.
 
 The `@` token annotates effects on the arrow, consistent with the term-level Pratt operator where `a -> b @ c` desugars to `arrow_effect(a, b, c)`. A pure arrow `(A) -> B` desugars to `arrow(params..., B)` in the KB; an effectful arrow `(A) -> B @ E` desugars to `arrow_effect(params..., B, E)`.
 
-The braced annotation `@ {…}` admits the proposal-045 row algebra: bare labels (present), an explicit row variable (`?` anonymous, `?r` named, or a declared row binder `E` — an **open** row, §5.5), and `-e` absence atoms (`lacks` constraints). `@ {}` is the explicit closed-empty (pure) row, identical to no annotation. An absence-only annotation (`@ -Modify[x]`) is a **closed** row carrying the lacks constraint; the co-finite "anything except `e`" is written with an explicit open base — `@ {?, -Modify[x]}` or `@ {Eff, -Modify[x]}` (WI-440 row-openness decision: an implicit fresh tail would be unnameable by the enclosing operation, which must declare the row it incurs when applying the callback). A callback parameter's row is checked at each call site against the argument operation's declared row, with the callback's binder places aligned positionally to the argument's own parameters (`Modify[c]` on the argument's param 0 matches `Modify[x]`/`-Modify[x]` on the callback's param 0); an unresolved place in a `-…` absence label is a load-blocking error (the constraint would be vacuous). **An absence over a row VARIABLE** (`-R` — written, or spliced from `-s.E` over a row whose tail is a variable, `E = {Error[Foo], R}`) denies that whole row, not a label (WI-20260929-0RP29, user decision 2026-10-01): a row holding `R` itself violates it — `{R, -R}` is uninhabitable as `{e, -e}` is, and a callback raising `R` is refused where `-R` is required — and beside a RIGID `R` (the enclosing operation's own row, unknown where the check runs) neither a label nor another rigid row variable can be shown outside it (`{Error[Foo]}` or `{Q}` where `{EffP, -R}` is required), so each is refused — unless the callback's own row lacks `R`. An **unwritten** row is such a row as well: inside `use(s: Strm[T = Int64], …)` the stream's row is the projection `s.E` — `use`'s own, unknown there — so an absence over it (`-s.E`) is held exactly as `-R` is. A callback typed by the enclosing operation STATES it — `g: (x: Int64) -> Bool @ {Q, -R}`, `@ {Error[Foo], -s.E}` — and that type holds the operation's own callers to it (an instantiation making `Q` and `R` overlap is `{e, -e}`, refused at that call); the refusal names this repair. The rule holds of every callback argument however it is written — an operation, a lambda, a parameter, a name bound by a `let` or a pattern, a field (`h.f`), a call's result — and under a call-site bracket as without one; a label an absence denies, and a closed row, are judged of each alike. The ALIGNMENT is read off the argument's type, whatever the value came through: a label naming one of the parameters the type records (above) is read at that parameter's position, so a lambda taken out of a tuple, by a pattern or out of a list is aligned as the lambda written at the call is. A label naming a value in scope names that value, and one naming a callback parameter's place says its position itself where the type records no parameters of its own. A label left naming a binder out of its scope that the type does not record — an enclosing lambda's, named by a lambda it returned, or a part of a parameter the lambda destructures — is refused where the declared row speaks of one of its own binders in the same effect. A row variable of the argument's row is judged as well. The declared row is read as the call fixes it: a row parameter of the called operation is what the call's bracket says, or what the arguments determine, and one that neither fixes takes the callback's own row. What is left in the declared row is labels and row parameters of the enclosing operation. Such a parameter stands for a row chosen by the enclosing operation's own caller, unknown where the check runs, so nothing but the parameter itself can be shown to lie inside it: a callback raising `R` conforms to a declared row that holds `R`, whatever stands beside it, and a label the declared row does not write, another row parameter `Q`, or a write to the callback's own parameter where the row names none is refused. The caller says the row whole (`run[EffP = {R, Error[Foo]}](…)`). What the callback's row lacks does not exempt what it presents. The row a call tests is the row as that call reads it: an absence spliced from a projection denies what the argument's row holds, so `@ {EffP, -s.E}` at `EffP = {Error[Foo]}` over a stream raising `Error[Foo]` is `{e, -e}`. An operation's OWN row holding and lacking one row parameter (`effects {Q, -Q}`) is refused at its declaration, as `{e, -e}` is. The constraint is a lacks constraint, not a row difference: nothing subtracts `R` from `Q`. Read as a label, the variable matched none and `-R` constrained nothing.
+The braced annotation `@ {…}` admits the proposal-045 row algebra: bare labels (present), an explicit row variable (`?` anonymous, `?r` named, or a declared row binder `E` — an **open** row, §5.5), and `-e` absence atoms (`lacks` constraints). `@ {}` is the explicit closed-empty (pure) row, identical to no annotation. An absence-only annotation (`@ -Modify[x]`) is a **closed** row carrying the lacks constraint; the co-finite "anything except `e`" is written with an explicit open base — `@ {?, -Modify[x]}` or `@ {Eff, -Modify[x]}` (WI-440 row-openness decision: an implicit fresh tail would be unnameable by the enclosing operation, which must declare the row it incurs when applying the callback). A callback parameter's row is checked at each call site against the argument operation's declared row, with the callback's binder places aligned to the argument's own parameters by the mapping the argument meets the slot with (above): by label where the two tuples carry the same labels, by position otherwise (`Modify[c]` on the first parameter of `(c: Cell, d: Cell)` matches `Modify[x]`/`-Modify[x]` on the first of `(x: Cell, y: Cell)`); an unresolved place in a `-…` absence label is a load-blocking error (the constraint would be vacuous). **An absence over a row VARIABLE** (`-R` — written, or spliced from `-s.E` over a row whose tail is a variable, `E = {Error[Foo], R}`) denies that whole row, not a label (WI-20260929-0RP29, user decision 2026-10-01): a row holding `R` itself violates it — `{R, -R}` is uninhabitable as `{e, -e}` is, and a callback raising `R` is refused where `-R` is required — and beside a RIGID `R` (the enclosing operation's own row, unknown where the check runs) neither a label nor another rigid row variable can be shown outside it (`{Error[Foo]}` or `{Q}` where `{EffP, -R}` is required), so each is refused — unless the callback's own row lacks `R`. An **unwritten** row is such a row as well: inside `use(s: Strm[T = Int64], …)` the stream's row is the projection `s.E` — `use`'s own, unknown there — so an absence over it (`-s.E`) is held exactly as `-R` is. A callback typed by the enclosing operation STATES it — `g: (x: Int64) -> Bool @ {Q, -R}`, `@ {Error[Foo], -s.E}` — and that type holds the operation's own callers to it (an instantiation making `Q` and `R` overlap is `{e, -e}`, refused at that call); the refusal names this repair. The rule holds of every callback argument however it is written — an operation, a lambda, a parameter, a name bound by a `let` or a pattern, a field (`h.f`), a call's result — and under a call-site bracket as without one; a label an absence denies, and a closed row, are judged of each alike. The ALIGNMENT is read off the argument's type, whatever the value came through: a label naming one of the parameters the type records (above) is read at that parameter's position, so a lambda taken out of a tuple, by a pattern or out of a list is aligned as the lambda written at the call is. A label naming a value in scope names that value, and one naming a callback parameter's place says its position itself where the type records no parameters of its own. A label left naming a binder out of its scope that the type does not record — an enclosing lambda's, named by a lambda it returned, or a part of a parameter the lambda destructures — is refused where the declared row speaks of one of its own binders in the same effect. A row variable of the argument's row is judged as well. The declared row is read as the call fixes it: a row parameter of the called operation is what the call's bracket says, or what the arguments determine, and one that neither fixes takes the callback's own row. What is left in the declared row is labels and row parameters of the enclosing operation. Such a parameter stands for a row chosen by the enclosing operation's own caller, unknown where the check runs, so nothing but the parameter itself can be shown to lie inside it: a callback raising `R` conforms to a declared row that holds `R`, whatever stands beside it, and a label the declared row does not write, another row parameter `Q`, or a write to the callback's own parameter where the row names none is refused. The caller says the row whole (`run[EffP = {R, Error[Foo]}](…)`). What the callback's row lacks does not exempt what it presents. The row a call tests is the row as that call reads it: an absence spliced from a projection denies what the argument's row holds, so `@ {EffP, -s.E}` at `EffP = {Error[Foo]}` over a stream raising `Error[Foo]` is `{e, -e}`. An operation's OWN row holding and lacking one row parameter (`effects {Q, -Q}`) is refused at its declaration, as `{e, -e}` is. The constraint is a lacks constraint, not a row difference: nothing subtracts `R` from `Q`. Read as a label, the variable matched none and `-R` constrained nothing.
 
 The arrow sort `(A) -> B` is equivalent to `Function[A, B, E = {}]` from stdlib — the empty effect row, written. The effectful arrow `(A) -> B @ E` is equivalent to `Function[A, B, E]`. `Function` declares its row `effects E = ? default {}`, so a `Function[A, B]` that leaves `E` unwritten takes the default and is the pure arrow too, in every position — a parameter, a return, an annotation, a rule's bound, an alias — and a callable raising anything is refused there. `Function[A, B, ?]` is the effect-polymorphic spelling: the explicit `?` keeps the row open (§8.1). `Function` is the unified sort for all callable values — pure and effectful. Effect subtyping applies: a pure function can be passed where an effectful function is expected (`Function[A, B, E = {}] <: Function[A, B, E]` for any `E`).
-
-> The equivalence is not exact in one remaining respect: **`Function` states no
-> arity.** `A` is the one argument `apply(f, x: A)` passes, so `Function[(A, B),
-> R]` denotes both a single-tuple-argument callback *and* — by the run-time
-> convention that spreads one tuple argument across a multi-parameter operation —
-> a two-parameter one. The arrow spelling now distinguishes those, so
-> `((A, B)) -> R` accepts only the former while `Function[(A, B), R]` accepts
-> either. (Before WI-791 the two disagreed the other way round, on permutation and
-> width of a tuple parameter; that half is resolved — both relate a lone tuple
-> parameter as data, slot-by-slot with names agreeing, per §4.5.)
->
-> Stating no arity means no argument *count* can be **required** at a `Function`
-> slot — but a count can be **observed** at the call, and the arguments **are**
-> checked (WI-788): one argument is related to `A` itself, `n` arguments to `A`'s
-> `n` components. A call that matches neither reading is a load error naming both
-> admissible counts. This is not a special case for `Function` so much as the two
-> spellings of application it genuinely permits.
->
-> Symmetrically, the *callback's own* arity is checked against `A` (WI-801). Two
-> readings are admitted and no others, so where `A` has `n` components a callback
-> of arity `k ∉ {1, n}` is a **load error** — it fits neither `A -> B` nor `A`'s
-> components spread, and no call form at the slot could reach it. Where `A` is a
-> non-tuple the sole admissible arity is 1; where `A` is not yet known (a rigid
-> type parameter) nothing is required, since a component count is exactly what
-> instantiation supplies. This closes the dual of the paragraph above: the *call*
-> was checked against `A` and the *callback* was not, so `Function[(X, Y), R]`
-> given a three-binder lambda loaded clean and trapped at run time.
->
-> The two admitted arities and the two admitted call forms compose freely — all
-> four combinations evaluate. A spread call against a callback that takes the whole
-> `A` is **normalized at load** into its whole-`A` form, which is the only place it
-> can be: gathering `f(v₁, …, vₙ)` into `(l₁: v₁, …, lₙ: vₙ)` needs `A`'s component
-> labels, and those are gone by run time.
 
 Import and instantiation are separate concepts: `import` makes names visible, inline `Name[bindings]` instantiates sort parameters. They are not bundled together.
 
@@ -672,8 +619,8 @@ names and make `(a: A)` the same type as `(_1: A)`, which rule 4 refuses. Both
 coordinates are checked; neither is discarded.
 
 Order is identity because a tuple's components are read *positionally* wherever
-names are unavailable or not what is being asked: an arrow's parameter list is
-applied by position (§Arrow types), and unification asks whether two tuples are
+names are unavailable or not what is being asked: an application's positional arguments
+meet its target's components by position (the application match, §4.4), and unification asks whether two tuples are
 the same type, which a reordering changes. Where a *consumer* reads by name, order
 does not participate — that is `<:`, and the two must not be conflated.
 
@@ -763,7 +710,8 @@ It is checked wherever a tuple is **built from names the author wrote** — thre
 each reporting a located error naming the repeated label:
 
 - the **literal**, `(a: 1, b: 2, a: 3)`;
-- the **type**, `(a: Int64, a: String)`;
+- the **type**, `(a: Int64, a: String)`, and an arrow's parameter list with it,
+  `(a: Int64, a: Int64) -> Int64`, which is the tuple `A` of a `Function` (§4.4);
 - a **variadic capture**'s leftover named arguments, `cap(1, a: 2, a: "ess")`, which
   become a tuple without ever being written as one.
 
@@ -773,13 +721,8 @@ relation and `t.a`): agreeing on which component to read leaves the unread one s
 unreadable. Refusing the duplicate where it is built is what makes the question
 unreachable.
 
-The rule is scoped to a **tuple**, not to every parenthesized name list. An arrow's
-**parameter list** shares the surface production (`(a: Int64, a: Int64) -> Int64`) but
-not the reading. A repeated binder name there does shadow — the body reads the *last*
-such parameter, the opposite occurrence from the one a tuple reader takes — but every
-parameter is still **applied positionally**, so the shadowed one's declared type is
-checked against an argument at every call. Nothing is silently unchecked, which is what
-this rule is about; whether to reject duplicate binder names is a separate question
+The rule is scoped to a **tuple**, not to every parenthesized name list: whether an
+operation's or a lambda's repeated parameter names are refused is a separate question
 about shadowing, and it would have to answer for entity fields too. Synthetic `_N`
 labels are generated from each component's own index and cannot collide; a user
 `_`-prefixed label (`_b`, `_0`, a `_2` off its slot) is an ordinary name and is
@@ -878,9 +821,9 @@ The `lambda` keyword is **required**. A keyword-less `(x, acc) -> body` (or `x -
 
 A lambda's type is the arrow sort `(P) -> R`: `P` is the parameter pattern's type, `R` the body's type, and any effects the body performs annotate the arrow (`@ {E}`). A lambda captures its enclosing bindings (a closure).
 
-**Applying a lambda** (WI-784). Binding one pattern does not mean a lambda is applied to one *argument*: an `n`-binder lambda is applied as `f(a₁, …, aₙ)`, the spelling the standard library's callbacks use (`foldLeft(t, f(init, h), f)`). The arguments are gathered into the tuple its binder list destructures, so a nullary thunk is forced as `t()` and a two-binder callback is called `f(3, 10)`. A **single** argument is always passed to the pattern unchanged, so a caller that builds the tuple itself (`f((3, 10))`) destructures exactly as before — both spellings of a two-binder call therefore work. Any *other* argument count must equal the binder count, else it is an arity error reported against that count. This is the mirror of the `Function[(A, B), R]` ⇒ `op(a, b)` eta convention for operation references, and it is what makes a lambda and a named operation **interchangeable as function values** — the same call site accepts either. The reverse adaptation — `n` arguments *gathered* into a callback that takes the whole tuple — is **not** performed here, and cannot be: it needs the component labels, which live in the static `A`. It is performed at load instead, by normalizing the call (WI-801, §`Function` states no arity); the run-time arity error above is what remains for a call whose slot type never said what those labels were.
+**Applying a lambda.** A lambda is applied as every function value is (§4.4): the arguments of the application are one tuple, checked against the lambda's `A`, and the lambda hands that tuple to its pattern. A two-binder callback is called `f(3, 10)` or `f((3, 10))`, which are one application, and a nullary thunk is forced as `t()`. The pattern destructures the tuple by label (§6.7, "Destructuring binds by LABEL"), the labels being those of the type the lambda stands at: at `(x: Int64, y: Int64) -> R`, `lambda (a, b)` binds `a` to `x` and `b` to `y`. So a lambda and a named operation are **interchangeable as function values**: the same call site applies either.
 
-A lambda binder may carry an **optional `: Type` annotation**, written in parens: a single binder `lambda (x: T) -> …`, or per-element in a tuple `lambda (a: A, b: B) -> …` (WI-517). The parens are required — a bare `lambda x: T -> …` would clash with the `->` separator. The annotation pins the binder's type, so a lambda can be written **without** an expected-type context (e.g. `let f = lambda (x: Int64) -> add(x, 1)`, where no use site supplies the parameter type) and so foldLeft-style callbacks can document their parameters. When an expected arrow type is also available at the use site, the annotation must be consistent with it — a genuine contradiction is rejected (for a single binder, the lambda's arrow carries the annotation and is checked against the expected type; for tuple binders, the surrounding component type drives the binding, so a conflict surfaces through the body's use of the binder). A binder written without an annotation infers its type from the expected arrow at the use site (the HOF parameter's declared type, the operation's return type, etc.).
+A lambda binder may carry an **optional `: Type` annotation**, written in parens: a single binder `lambda (x: T) -> …`, or per-element in a tuple `lambda (a: A, b: B) -> …` (WI-517). The parens are required — a bare `lambda x: T -> …` would clash with the `->` separator. The annotation pins the binder's type, and the annotations are the lambda's own tuple (§4.4), so a lambda can be written **without** an expected-type context and so foldLeft-style callbacks can document their parameters: `let h = lambda (s: Int64, b: Int64) -> s + b` is `(Int64, Int64) -> Int64`, and `h("a", 1)` is refused at load, at `"a"`. When an expected arrow type is also available at the use site, the lambda meets it as any callable does (§4.4, "A callable where a function type is expected"), so an annotation that contradicts the component its binder is mapped to is refused there, for one binder or one of several alike: `apply2(lambda (a: Int64, b: String) -> a)` over `apply2(f: (a: Int64, b: Int64) -> Int64)` is a load error. A binder written without an annotation infers its type from the expected arrow at the use site (the HOF parameter's declared type, the operation's return type, etc.).
 
 A **`let` binding** may carry the same `: Type` annotation, and on **any** pattern — `let x: Int64 = …`, `let (a, b): (a: Int64, b: String) = …`, and `let _: T = …`, which asserts the value's type and binds nothing. The annotation supplies the expected type for the value and fixes the bound names' types for the continuation, so a later use can disambiguate against it. A slot the annotation leaves out, or writes `?`, is the value's to say (`let t: Box = b` and `let t: Box[T = ?] = b` bind `t` at `b`'s `T`): the annotation states what it writes and no more. A slot neither says — the value is a call that fixed none of it — is closed at the name (§5.4): `let e = Bag.empty()` and `let e: Bag = Bag.empty()` bind `e` at `Bag[T = e.T]`, and in a covariant position at the bottom type — `let xs = nil` binds `xs` at `List[T = Nothing]`. It is **one** annotation channel with the lambda binder's, not a parallel one: `let (x: T) = …` and `let x: T = …` write the same slot on the same pattern, so writing **both** (`let (x: T1): T2 = …`) is rejected — the two types name one slot and there is nowhere to put the loser (WI-819). A per-element binder annotation inside a destructuring is a different slot on a different (sub-)pattern, so `let (a: A, b): T = …` is fine.
 
@@ -3716,7 +3659,7 @@ An entry of a bracket written in a term is a type argument, so a tuple type, an 
 
 **A requirement whose carrier is a STRUCTURAL FORMER and has no provider is refused at the call** (065 open question 3). A `provides` row is written on a **sort**, and a tuple or an arrow is not one, so a former cannot CARRY a provision; the derived instances (§8.4) cover sorts only. When nothing provides the spec at that former the slot can never be filled, and the call is refused rather than left to die at run time. **A former is not unprovidable, though** — a *sort* may carry a row whose spec binding is a former (`sort Wrapper … provides TT[T = (a: Int64, b: String)]`), and that satisfies `requires TT[T = B]` at the tuple. So the refusal is about this program having no such row, and its repair names the one that would work: give some sort `provides Spec[… = <the former>]`, or pass a value whose type is a sort. For `TypeValue` and `TypePattern`, none of whose instances may be written, no row can stand in, and the repair is a sort alone — the type of the value passed, or the one named; for these two the same holds at a sort with a former among its type arguments (`Option[T = (a: Int64, b: String)]`), since a sort's instance of either holds only where each type argument has one. It is located at the **call**, or at the construction of a value whose sort requires the spec, because a body reading `B` cannot see that some caller will pass a tuple. Where the carrier is the former itself the verdict is carrier-shaped, not spec-shaped: the refusal is the same for every spec, a user's included, and only its repair differs. At a sort holding one it is the library specs' alone, since a row of any other spec may name that sort. A body-less callee is held to it too: `Error.reify` declares `requires TypePattern[T = T1]` and has no anthill body on purpose (the boundary is a frame the interpreter installs by symbol), and at a tuple payload it is refused at the call, since its boundary would have no pattern to catch by; and `Error.raise`, host-implemented, declares `requires TypeValue[T = T]`, so a raise at a tuple payload is refused at the raise, since it would have no type to carry (§8.7). In a rule body the call gets the same refusal (§8.7).
 
-A call of a body-less spec operation at a tuple or an arrow is refused the same way where no provision of the spec answers at that type. A value of such a type has no sort whose member could answer when the call runs, so a provision matched where the call is written is the only supplier. `Apply.run(lambda (x: String) -> 1)`, with `Apply` provided at `(Int64) -> Int64` alone, is a load error that names the row some sort would have to carry. Where the type names a type parameter of the enclosing declaration, the provision is each caller's to supply, and the error asks for the `requires`. Where the type has a part nothing states — the parameter of a lambda written without its type, or the parameters of a lambda of several binders, which take their types from the type around it — a provision is matched at the type as the call states it, and the error asks for the type, in the parameter or in the call's brackets. A call that a `requires` in scope covers, a call in a rule body, and an operation the host implements are not refused.
+A call of a body-less spec operation at a tuple or an arrow is refused the same way where no provision of the spec answers at that type. A value of such a type has no sort whose member could answer when the call runs, so a provision matched where the call is written is the only supplier. `Apply.run(lambda (x: String) -> 1)`, with `Apply` provided at `(Int64) -> Int64` alone, is a load error that names the row some sort would have to carry. Where the type names a type parameter of the enclosing declaration, the provision is each caller's to supply, and the error asks for the `requires`. Where the type has a part nothing states — a lambda binder written without its type, which takes its type from the type around it — a provision is matched at the type as the call states it, and the error asks for the type, in the parameter or in the call's brackets. A call that a `requires` in scope covers, a call in a rule body, and an operation the host implements are not refused.
 
 **Every `TypeValue` instance is derived** (065 §2, WI-20260919-HXGXF). A sort's instance is the loader's; a parametric sort's is conditional on its parameters (`Box provides TypeValue[T = Box[V = V]] requires TypeValue[T = V]`). A hand-written `provides TypeValue[…]` is a load error: a forgeable instance would make every type read a claim instead of a fact, and one answering the wrong type would route a reify boundary, a `facts_of` or an error tag to the wrong sort, silently. `Nothing` has its own instance, and so does `List[T = Nothing]`: at the bottom type its own provision is more specific than every other (§8.7, *Which one a call gets*).
 
@@ -3728,7 +3671,7 @@ A call of a member of a sort that may be provided, whose signature names nothing
 
 **Variadic capture parameter** (`...name: R`, proposal 056 / WI-727) — a leading `...` marks the one **trailing** parameter that **collects every named argument not matched to a declared parameter** into a single **named-tuple record** value. Its type is an ordinary explicit type parameter (`R`, inferred from the call, exactly as `join[L, R]` infers its schemas). This lets an operation whose "arguments" are a **variadic set of names** — not a fixed parameter list — resolve through the ordinary call path: the leftover `(x: 1, z: 2)` binds `R = (x: Int64, z: Int64)` and reaches the body/runtime as a plain named tuple (a `Value::Tuple`), with no macro and nothing keyed on the operation's identity. At most one, trailing (a second `...`, or a non-trailing one, is a load error). **The slot is a position too** (WI-1130): a **positional** leftover binds the capture parameter **directly**, `R` taking that argument's own type rather than a record wrapping it — so `cap(5)` and `cap(rest: 5)` denote the same thing. The two channels are **exclusive**: one positional leftover *or* any number of named ones, never both. Mixing them is a load error naming the **named argument the author wrote** and saying a positional argument already fills the slot; a *second* positional leftover is the ordinary arity error below. A positional residue is therefore **not collected** — `...name: R` is variadic in the **named** direction only. The record is consumed by an ordinary type constructor — e.g. `Without[T, Drop]` (the dual of `Concat`) drops from a schema every column named in the captured record: `fix[R](p: Relation, ...args: R) -> Relation[T = Without[T = p.T, Drop = R]]`, the driving client. Its **peer** is the rule-head rest pattern `...?args` (§5.3), the same capture surfaced as *syntax* for a compile-time macro rather than as a value — reach for that one when the construct must lift a captured **name** to the type level, which this face cannot (a captured argument arrives as its TYPE, and §4.5 has no singleton types). See proposal 056.
 
-**A call must fill the parameter list exactly** (WI-1100). Every declared parameter takes exactly one argument, or its default (below), and no argument may occupy a slot the declaration has not got. This is the rule §4.4 states of an arrow application — "the argument **count** must equal the declared arity" — written there as what a named operation's call is *already* checked by; until WI-1100 it was checked at neither. With **named** arguments it is a coverage question rather than a count: `pair(b: 2, a: 1)` fills both slots and `pair(a: 1, bogus: 2)` fills one, though both write two arguments. A **variadic capture** slot may be filled by the capture rewrite rather than by the caller, so `r.fix()` is complete — or **positionally by the caller** (see the **variadic capture parameter** paragraph above), in which case it counts as an ordinary argument — so a capture-bearing operation admits **one more** positional argument than its fixed list holds, and one beyond that is this error. Anything else is a **load error** naming the operation, its declared arity and the count given — there is no partial application in this language, and an under-applied call denotes nothing. One position admits one more count: a rule-body **goal** may be written at arity **+ 1**, which is the functional-relation view of §5.3 (`vec_add(a, b, ?c)`), the extra positional column receiving the result; a column named `result:` receives it at any arity (§5.3). **It is a position, not a rule body** (WI-1104): the same call written as a *value* inside a goal — `?y = concat("a", "b", "c")` — is refused exactly as it is in an operation body, and the extra column is itself **checked against the operation's declared return type**, since that is what it receives (`Desc.describe(leaf(), "s")` against `-> Int64` is a load error, while an unbound `?r` is left to resolution). What the check replaces is a run-time `ArityMismatch` on the first execution to reach the call — and, on the resolution path, nothing at all: the goal answered *no solutions*, indistinguishable from one that legitimately has none.
+**A call must fill the parameter list exactly** (WI-1100). Every declared parameter takes exactly one argument, or its default (below), and no argument may occupy a slot the declaration has not got. This is the application match of §4.4, which checks a call through a function value the same way, and so one tuple is the argument list here too: a call of one argument whose type is a tuple passes its components, `add2((1, 2))` being `add2(1, 2)` and `add2((b: 2, a: 1))` meeting the parameters by label. An operation of **one** parameter takes its arguments as that parameter's value, the parameter's type being its tuple (§4.4): over `get_a(t: (a: Int64, b: Int64))`, `get_a((a: 1, b: 2))` and `get_a(1, 2)` both pass `(a: 1, b: 2)`, and a wider tuple's extra components are dropped. Its call by name may still name the parameter, `get_a(t: (a: 1, b: 2))` and `inc(n: 5)`, which a call through a function value cannot (§8.6). With **named** arguments it is a coverage question rather than a count: `pair(b: 2, a: 1)` fills both slots and `pair(a: 1, bogus: 2)` fills one, though both write two arguments. A **variadic capture** slot may be filled by the capture rewrite rather than by the caller, so `r.fix()` is complete — or **positionally by the caller** (see the **variadic capture parameter** paragraph above), in which case it counts as an ordinary argument — so a capture-bearing operation admits **one more** positional argument than its fixed list holds, and one beyond that is this error. Anything else is a **load error** naming the operation, its declared arity and the count given — there is no partial application in this language, and an under-applied call denotes nothing. One position admits one more count: a rule-body **goal** may be written at arity **+ 1**, which is the functional-relation view of §5.3 (`vec_add(a, b, ?c)`), the extra positional column receiving the result; a column named `result:` receives it at any arity (§5.3). **It is a position, not a rule body** (WI-1104): the same call written as a *value* inside a goal — `?y = concat("a", "b", "c")` — is refused exactly as it is in an operation body, and the extra column is itself **checked against the operation's declared return type**, since that is what it receives (`Desc.describe(leaf(), "s")` against `-> Int64` is a load error, while an unbound `?r` is left to resolution). What the check replaces is a run-time `ArityMismatch` on the first execution to reach the call — and, on the resolution path, nothing at all: the goal answered *no solutions*, indistinguishable from one that legitimately has none.
 
 A parameter may declare a default, which a call that leaves the parameter out takes: over `clamp(x: Int64, low: Int64 = 0, high: Int64 = 100)`, `clamp(12)` is `clamp(12, 0, 100)` and `clamp(12, high: 20)` is `clamp(12, 0, 20)`. Positional arguments fill the next parameter left, so `connect(port: 5432)` leaves out a `host` declared before `port`; a parameter with no default is still required. A default may name the parameters declared before it, the operation's and its sort's type parameters, and what its declaration's scope names, and its names mean what they mean there, whatever a caller binds under the same spelling. It is checked at the declaration as an argument of its parameter, and its effects are the operation's.
 
@@ -5470,10 +5413,11 @@ This reader is what lets `<:` be name-keyed at all (§4.5). While it read by
 while the checker had typed it from another, and an operation declared `-> Int64`
 could return a `String` on a clean load (WI-788).
 
-An arrow's parameter list is likewise applied positionally, but its binder names
-are not free: they gate whether two lists may be zipped at all (§Arrow types,
-"Parameter lists correspond slot by slot"), so an arrow spelled `(p: A, q: B) ->
-R` does *not* currently conform to one spelled `(x: A, y: B) -> R`.
+An arrow's parameter list is not read by this reader: it is the target of an
+application, met by the application match (§4.4, "Every arrow is a `Function`").
+Where one function type meets another, the two tuples meet by label when they carry
+the same labels and by position otherwise, so an arrow spelled `(p: A, q: B) -> R`
+stands where `(x: A, y: B) -> R` is expected, `p` mapped to `x`.
 
 **Disambiguation from qualified names.** At parse time, `a.b` in term position is parsed as `field_access(a, b)` — a variable or identifier followed by `.identifier`. Qualified names (`Namespace.Sort`) continue to be parsed as `name` nodes within `fn_term` and `instantiation_term`, which require `(...)` or `{...}` to follow the name. There is no ambiguity: `A.B(x)` parses as `fn_term(name: A.B, args: [x])`, while `A.B` alone in term position parses as `field_access(A, B)`.
 
@@ -6971,21 +6915,22 @@ alone: an **unknown** label (it must be matched against the callee's parameters)
 a label that re-binds a parameter already filled **positionally** (`f(3, acc: 10)`).
 
 **Named arguments to a function value.** Where the callee is not a named operation
-but a **variable of arrow type**, the label resolves against that *arrow type's*
-declared binder names: with `f: (acc: Int64, x: Int64) -> Int64`, both `f(x: 10,
-acc: 3)` and `f(acc: 3, x: 10)` bind `acc` to the first parameter and `x` to the
-second. The **declared** names govern, not those of whichever function is finally
-passed — an arrow's parameter list is applied positionally, so an operation whose
-own binders read `(a, b)` remains a legal argument for `(acc, x)` (§ arrow
-conformance) and declared slot *i* is that callee's slot *i*. An unknown label is a
-load error, as for an operation call; a duplicated one is refused earlier still, by
-the syntactic rule above.
+but a **value of function type**, a label meets the component of that type's `A`
+that carries it (the application match, §4.4): with `f: (acc: Int64, x: Int64) ->
+Int64`, both `f(x: 10, acc: 3)` and `f(acc: 3, x: 10)` give `acc = 3` and `x = 10`,
+and so do they with `f` written `Function[A = (acc: Int64, x: Int64), B = Int64]`,
+the same type. The value's **type** governs, not the parameters of whichever callable
+is finally passed: that callable met the type where it became a value (§4.4), by
+label where the two tuples carry the same labels and by position otherwise, so an
+operation whose own parameters read `(a, b)` remains a legal argument for
+`(acc, x)`. An unknown label is a load error, as for an operation call; a
+duplicated one is refused earlier still, by the syntactic rule above.
 
-Two arrow types record **no** binder names, and a label there is rejected with a
-located error rather than resolved: a **one-parameter** arrow, whose binder name the
-type does not retain (`(v: Int64) -> Int64` is `Int64 -> Int64`), and
-`Function[A, B]`, whose `A` is one tuple-typed *argument* rather than a parameter
-list. Both take positional arguments.
+A function of **one** parameter has no binder name in its type, so a label naming it
+is rejected with a located error rather than resolved: `(v: Int64) -> Int64` is
+`Function[A = Int64, B = Int64]`, and `f(v: 1)` is refused. Where that parameter's
+type is a tuple, a label meets its components: over `(t: (a: Int64, b: Int64)) ->
+Int64`, `f(a: 1, b: 2)` is `f((a: 1, b: 2))`.
 
 **Inherited operations.** When a sort gains an operation through `requires`
 (spec auto-binding, §8.7), a derived rule it supplies for that operation binds

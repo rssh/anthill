@@ -3,7 +3,7 @@
 **Canonical reference:** [`kernel-language.md` §§4.4 and 5.2](../kernel-language.md#52-sort),
 including the delivered higher-kinded sort-binder extensions.
 
-**Status:** Draft. Corrected 2026-11-03: every arrow is a `Function` (§"Correction (2026-11-03)"); kernel-language §4.4 not yet changed.
+**Status:** Draft. Corrected 2026-11-03: every arrow is a `Function` (§"Correction (2026-11-03)"); kernel-language §§4.4, 4.5, 4.7, 5.4, 6.7 and 8.6 state the correction (WI-20261104-5CNY5), the implementation does not yet (WI-20261104-6HVXM).
 **Depends on:** [001-sort-domain-unification](001-sort-domain-unification.md)
 **Subsumes:** [003-effect-arrow-sorts](003-effect-arrow-sorts.md)
 **Affects:** Kernel Language Specification §4, §5.2, §5.4, §5.5–5.7, §8.2, §11
@@ -306,6 +306,65 @@ end
 and `n = 2`, and the call is refused at `t`. The repair names the parameter, `r(t: (1, 2))`,
 which loads today and under the rule. One reading for every call: a generic first parameter,
 `v[T](t: T, n: Int64 = 0)` called as `v((1, 2))`, is `T = Int64` and `n = 2`.
+
+**Four more consequences, decided with the user 2026-11-04.** Each program is measured on
+`0eaa2e86`.
+
+*One tuple is any one argument of tuple type*, not only a tuple written at the call. Over `r`
+above, `let p = (1, 2)` then `r(p)` runs to 112 today; under the rule it is refused at `t`, as
+`r((1, 2))` is, and `r(t: p)` is the repair. An operation of one parameter called by its name may
+still name the parameter: over `get_a(t: (a: Int64, b: Int64))`, `get_a(t: (a: 1, b: 2))` runs to
+1, today and under the rule. A call through a function value cannot, since the type of a function
+of one parameter has no binder name.
+
+*A callable of one parameter drops what its tuple lacks.* To it the one tuple is data, so a
+component its tuple does not name is dropped, as the tuple match drops it. Each of these runs to 7,
+today and under the rule:
+
+```anthill
+namespace w1
+  import anthill.prelude.{Int64, String}
+  operation age_of(p: (age: Int64)) -> Int64 = p.age
+  operation app(f: ((age: Int64, name: String)) -> Int64, v: (age: Int64, name: String)) -> Int64 = f(v)
+  operation main() -> Int64 =
+    let person = (name: "x", age: 7)
+    age_of(person)
+end
+```
+
+With `main` ending in each in turn: `age_of(person)`, `app(age_of, (age: 7, name: "x"))` and
+`app(lambda (p: (age: Int64)) -> p.age, (age: 7, name: "x"))`. A callable of several parameters
+refuses a component that meets none of them, as `pair(a: 1, bogus: 2)` is refused.
+
+*A function value keeps the order it was minted at* (WI-1088). A value whose type is a function
+type meets another function type by the application match, and where the two tuples carry the
+same labels they must also stand in the same order:
+
+```anthill
+namespace w3
+  import anthill.prelude.{Int64}
+  operation inner(g: (x: Int64, acc: Int64) -> Int64) -> Int64 = g(7, 1)
+  operation outer(f: (acc: Int64, x: Int64) -> Int64) -> Int64 = inner(f)
+  operation main() -> Int64 = outer(lambda (acc, x) -> acc * 10 + x)
+end
+```
+
+It is refused, today ("expected (x: Int64, acc: Int64) -> Int64, got (acc: Int64, x: Int64) ->
+Int64") and under the rule: the lambda's binders took `f`'s labels by position where it became a
+value, and `inner`'s `g(7, 1)` means `x = 7`. The `Function[A = …]` spelling is refused the same
+way. An operation or a lambda written at `inner`'s slot meets it by label (rule 6).
+
+*An arrow's parameter list has distinct labels.* `(a: Int64, a: Int64) -> Int64` is
+`Function[A = (a: Int64, a: Int64)]`, a tuple type with a repeated label, which kernel-language
+§4.5 refuses. Today `app(f: (a: Int64, a: Int64) -> Int64) -> Int64 = f(1, 2)` given
+`lambda (x, y) -> x * 10 + y` runs to 12; under the rule the arrow is refused where it is
+written. An operation's repeated parameter names (`dup(a: Int64, a: Int64)`, which loads and
+reads the last) are a separate question about shadowing, not this one.
+
+Rule 6 reaches a callback's effect row as well: its binder places are aligned to the argument's
+parameters by the mapping the argument meets the slot with, by label where the two tuples carry
+the same labels, so `impl(y: Cell, x: Cell) effects {Modify[x]}` meets
+`(x: Cell, y: Cell) -> Int64 @ {Modify[x]}`.
 
 ## Term Application
 
