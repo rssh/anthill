@@ -3,7 +3,7 @@
 **Canonical reference:** [`kernel-language.md` §§4.4 and 5.2](../kernel-language.md#52-sort),
 including the delivered higher-kinded sort-binder extensions.
 
-**Status:** Draft. Corrected 2026-11-03: every arrow is a `Function` (§"Correction (2026-11-03)"), with open questions.
+**Status:** Draft. Corrected 2026-11-03: every arrow is a `Function` (§"Correction (2026-11-03)"); kernel-language §4.4 not yet changed.
 **Depends on:** [001-sort-domain-unification](001-sort-domain-unification.md)
 **Subsumes:** [003-effect-arrow-sorts](003-effect-arrow-sorts.md)
 **Affects:** Kernel Language Specification §4, §5.2, §5.4, §5.5–5.7, §8.2, §11
@@ -291,8 +291,8 @@ Int64)`, `add2`'s tuple carries the same labels, and `forward((a: 1, b: 2), add2
 The direct call `add2((a: 1, b: 2))`, refused today ("expected 2 arguments — the parameter list
 `fw.add2` declares, got 1 argument"), runs to 12 as well, as `g(a)` does inside `forward`.
 
-**Open question.** *One tuple that is also a value of the first parameter.* Today this runs to
-112:
+One tuple is always the argument list, also where it is a value of the first parameter. Today
+this runs to 112:
 
 ```anthill
 namespace fr1
@@ -302,9 +302,10 @@ namespace fr1
 end
 ```
 
-`(1, 2)` is `t`, and `n` takes its default. Read as the argument list, `(1, 2)` gives `t = 1`
-and `n = 2`, and the call is refused at `t`. Which reading does a call make when a parameter
-after the first has a default, so that both readings could stand?
+`(1, 2)` is `t`, and `n` takes its default. Under the rule `(1, 2)` is the argument list, `t = 1`
+and `n = 2`, and the call is refused at `t`. The repair names the parameter, `r(t: (1, 2))`,
+which loads today and under the rule. One reading for every call: a generic first parameter,
+`v[T](t: T, n: Int64 = 0)` called as `v((1, 2))`, is `T = Int64` and `n = 2`.
 
 ## Term Application
 
