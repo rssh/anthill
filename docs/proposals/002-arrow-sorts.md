@@ -336,9 +336,10 @@ With `main` ending in each in turn: `age_of(person)`, `app(age_of, (age: 7, name
 `app(lambda (p: (age: Int64)) -> p.age, (age: 7, name: "x"))`. A callable of several parameters
 refuses a component that meets none of them, as `pair(a: 1, bogus: 2)` is refused.
 
-*A function value keeps the order it was minted at* (WI-1088). A value whose type is a function
-type meets another function type by the application match, and where the two tuples carry the
-same labels they must also stand in the same order:
+*A function value keeps the mapping it was minted at* (WI-1088). A value whose type is a
+function type meets another function type only where the two tuples carry the same labels in the
+same order, or one of them is positional and the two are mapped by position. Labels in another
+order are refused:
 
 ```anthill
 namespace w3
@@ -352,7 +353,13 @@ end
 It is refused, today ("expected (x: Int64, acc: Int64) -> Int64, got (acc: Int64, x: Int64) ->
 Int64") and under the rule: the lambda's binders took `f`'s labels by position where it became a
 value, and `inner`'s `g(7, 1)` means `x = 7`. The `Function[A = …]` spelling is refused the same
-way. An operation or a lambda written at `inner`'s slot meets it by label (rule 6).
+way. Unrelated labels are refused too (decided with the user 2026-11-04), unlike a callable's,
+which rule 6 maps by position: over `inner(g: (x: Int64, y: Int64) -> Int64) -> Int64 = g(7, 1)`
+given `lambda (p, q) -> p * 10 + q` through `outer`, `outer(f: (p: Int64, q: Int64) -> Int64)`
+is refused, today ("expected (x: Int64, y: Int64) -> Int64, got (p: Int64, q: Int64) -> Int64")
+and under the rule, in both spellings; `f: (Int64, Int64) -> Int64`, positional, runs to 71, and
+so does `f: (x: Int64, y: Int64) -> Int64`; with `inner`'s `g` positional, `f: (p: Int64, q: Int64) -> Int64` runs to 71 too.
+An operation or a lambda written at `inner`'s slot meets it as rule 6 says.
 
 *An arrow's parameter list has distinct labels.* `(a: Int64, a: Int64) -> Int64` is
 `Function[A = (a: Int64, a: Int64)]`, a tuple type with a repeated label, which kernel-language

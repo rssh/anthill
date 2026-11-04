@@ -515,12 +515,14 @@ parameters takes them from its components, by label or by position as above, and
 the tuple to its pattern (§4.7).
 
 **A function value at another function type.** A value whose type is a function type meets
-another function type by the application match too, its tuple being its own type's `A`, and where
-the two tuples carry the same labels they must also stand in the same order: the mapping its
-callable takes was fixed where it became a value (WI-1088). With
-`inner(g: (x: Int64, acc: Int64) -> Int64)`, `outer(f: (acc: Int64, x: Int64) -> Int64) -> Int64
-= inner(f)` is refused, while `inner` given an operation or a lambda written at the slot meets it
-as above.
+another function type only where the two tuples agree on which component is which: they carry the
+same labels in the same order, or one of them is positional (its labels the synthetic `_1.._n`)
+and the two are mapped by position. Any other pair is refused, labels in another order and
+unrelated labels alike, since the mapping the value's callable takes was fixed where it became a
+value (WI-1088). With `inner(g: (x: Int64, y: Int64) -> Int64)`, `inner(f)` stands for
+`f: (x: Int64, y: Int64) -> Int64` and for `f: (Int64, Int64) -> Int64`, and is refused for
+`f: (y: Int64, x: Int64) -> Int64` and for `f: (p: Int64, q: Int64) -> Int64`, while `inner`
+given an operation or a lambda written at the slot meets it as above.
 
 > An arrow formed from a lambda or an operation records its own parameters beside its type. A
 > row label naming one (`Modify[k]` of `lambda (k: Cell[V = Int64]) -> put(k, 5)`) is that
@@ -5415,9 +5417,10 @@ could return a `String` on a clean load (WI-788).
 
 An arrow's parameter list is not read by this reader: it is the target of an
 application, met by the application match (§4.4, "Every arrow is a `Function`").
-Where one function type meets another, the two tuples meet by label when they carry
-the same labels and by position otherwise, so an arrow spelled `(p: A, q: B) -> R`
-stands where `(x: A, y: B) -> R` is expected, `p` mapped to `x`.
+Its binder names are not free where a function value meets another function type:
+the two tuples must carry the same labels in the same order, or one of them be
+positional (§4.4, "A function value at another function type"), so a value typed
+`(p: A, q: B) -> R` does not stand where `(x: A, y: B) -> R` is expected.
 
 **Disambiguation from qualified names.** At parse time, `a.b` in term position is parsed as `field_access(a, b)` — a variable or identifier followed by `.identifier`. Qualified names (`Namespace.Sort`) continue to be parsed as `name` nodes within `fn_term` and `instantiation_term`, which require `(...)` or `{...}` to follow the name. There is no ambiguity: `A.B(x)` parses as `fn_term(name: A.B, args: [x])`, while `A.B` alone in term position parses as `field_access(A, B)`.
 
