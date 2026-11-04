@@ -312,30 +312,20 @@ fn function_slot_admits_both_application_forms() {
     assert_eq!(run_int(&spread, "test.wi788.formspread.drive"), -7);
 }
 
-/// A LABELLED argument at a `Function` slot must report the LABEL, not a count.
-/// The count check compares `A`'s components against the POSITIONAL count while
-/// the diagnostic renders the TOTAL, so counting labelled arguments produced a
-/// self-contradictory "expected … or 2 …, got 2 arguments" AND preempted the
-/// accurate error. Found by `/code-review` on this ticket's own change.
+/// A LABELLED argument at a `Function` slot meets the component with its label
+/// (kernel-language §4.4: every arrow is a `Function`, and its `A` names its components),
+/// so `f(a: 1, b: 2)` over `A = (a: Int64, b: Int64)` hands `(p, q)` its tuple and runs to
+/// `1 - 2` [refused before WI-20261104-6HVXM, the `Function` spelling naming no parameter].
 #[test]
-fn labelled_argument_at_a_function_slot_reports_the_label() {
-    let msg = load_errs(&fn_slot_case(
+fn a_labelled_argument_at_a_function_slot_meets_its_component() {
+    let src = fn_slot_case(
         "test.wi788.fnlabel",
         "Int64, Function",
         "(a: Int64, b: Int64)",
         "a: 1, b: 2",
         "lambda (p, q) -> p - q",
-    ))
-    .join(" | ");
-    assert!(
-        msg.contains("named argument"),
-        "a label at a `Function` slot must be reported as a label; got: {msg}",
     );
-    assert!(
-        !msg.contains("got 2 arguments"),
-        "must NOT report a count that equals the expected count — the \
-         expected-X-got-X shape this check reintroduced; got: {msg}",
-    );
+    assert_eq!(run_int(&src, "test.wi788.fnlabel.drive"), -1);
 }
 
 /// Width stops short of the unit type. `()` has exactly one value, which a

@@ -35,6 +35,12 @@
 //! from A's arity is a load error"): that would refuse arity 1, which is simply
 //! what `(X, Y) -> B` means.
 //!
+//! WI-20261104-6HVXM RETIRED THE COUNT (proposal 002 §"Correction (2026-11-03)"): every arrow
+//! is a `Function`, and a callable's count is the size of its own tuple — a lambda's is its
+//! pattern's — so hole 1 is the application match refusing three binders at two components,
+//! at the lambda's pattern, and hole 2 is the one-tuple form every application now takes. The
+//! history below is the ticket's.
+//!
 //! THE FIX, in one owner. `kb/call_form.rs` states the rule once
 //! (`classify_application`); the conformance gate, the call-site check and both of
 //! eval's adapters read it. Hole 1 becomes a load error. Hole 2 is removed at the
@@ -81,14 +87,12 @@ end
 "#,
     )
     .join(" | ");
+    // WI-20261104-6HVXM: no count stands beside the tuple. The lambda's tuple is its
+    // pattern's, three components, refused at the pattern against `A`'s two.
     assert!(
-        msg.contains("callback of 3 parameters"),
-        "the diagnostic must name the callback's OWN arity (3); got: {msg}",
-    );
-    assert!(
-        msg.contains("1 parameter") && msg.contains("2 (its components spread)"),
-        "and BOTH admissible readings (1, or A's 2 components spread), since a \
-         `Function` admits two and the reader needs to know which were open; got: {msg}",
+        msg.contains("pattern-position")
+            && msg.contains("expected (_1: Int64, _2: Int64), got (_1: ??param, _2: ??param, _3: ??param)"),
+        "the refusal must set the lambda's own three-component tuple against `A`; got: {msg}",
     );
 }
 
@@ -110,7 +114,11 @@ end
 "#,
     )
     .join(" | ");
-    assert!(msg.contains("callback of 3 parameters"), "got: {msg}");
+    assert!(
+        msg.contains("pattern-position")
+            && msg.contains("expected (_1: Int64, _2: Int64), got (_1: Int64, _2: Int64, _3: Int64)"),
+        "got: {msg}"
+    );
 }
 
 /// A NON-tuple `A` is ONE indivisible value, so only arity 1 can take it. This is
@@ -132,9 +140,9 @@ end
     )
     .join(" | ");
     assert!(
-        msg.contains("no components to spread"),
-        "a scalar `A` must say WHY only arity 1 fits, rather than offering a \
-         spread reading that does not exist; got: {msg}",
+        msg.contains("pattern-position") && msg.contains("expected Int64, got (_1:"),
+        "a scalar `A` takes a lambda of one binder only, and the refusal must set the \
+         two-binder tuple against it; got: {msg}",
     );
 }
 
@@ -186,8 +194,8 @@ end
     for (channel, src) in cases {
         let msg = load_errs(src).join(" | ");
         assert!(
-            msg.contains("callback of 3 parameters"),
-            "{channel}: must name the callback's arity; got: {msg}",
+            msg.contains("pattern-position") && msg.contains("_3: ??param"),
+            "{channel}: must set the lambda's three-component tuple against `A`; got: {msg}",
         );
         assert!(
             !msg.contains("-> Int64"),

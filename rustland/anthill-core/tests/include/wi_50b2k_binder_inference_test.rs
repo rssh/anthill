@@ -711,15 +711,16 @@ fn int_through_any_carrier(v: &anthill_core::eval::Value, kb: &KnowledgeBase) ->
 ///    instance_is_still_refused` goes green-when-it-should-fail — that row is the one that
 ///    says this is a licence and not a hole.
 ///
-/// **THE TUPLE ARM IS STILL REFUSED, AND IT IS A DIFFERENT GAP WITH AN OWNER.** It reaches
+/// **THE TUPLE ARM WAS STILL REFUSED, AND IT WAS A DIFFERENT GAP WITH AN OWNER.** It reaches
 /// the licence — measured, `minted=2` on `argtys=[??pat, ??pat]` — and is refused at the
 /// discharge for want of an observation. `apply2(g, …)` DOES solve the lambda's arrow
 /// against `Function[A = (a: Int64, b: Int64), B = Int64]`, but that binds the arrow's
 /// PARAM, and a binder-list lambda's `?pat` components are separate variables the param
 /// does not mention: nothing links `?param` to `named_tuple(a: ?pat_a, b: ?pat_b)`. That
 /// link is WI-20260904-34J8Z ("a binder-list lambda's arrow param is a variable where its
-/// arity says `named_tuple`"), not this licence — so the arm is kept, DRIVEN, and asserted
-/// at its wrong value rather than deleted.
+/// arity says `named_tuple`"), not this licence — so the arm was kept, DRIVEN, and asserted
+/// at its wrong value rather than deleted. WI-20261104-6HVXM made the link (the lambda's own
+/// tuple), and the arm answers: [`a_binder_list_lambdas_components_are_solved_by_the_slot`].
 #[test]
 fn part_c_a_binder_the_body_leaves_free_is_answered_by_its_use() {
     let src = "namespace zz50b2k.patgap\n  import anthill.prelude.{Int64}\n  \
@@ -729,23 +730,22 @@ fn part_c_a_binder_the_body_leaves_free_is_answered_by_its_use() {
     assert_eq!(only_int(&mut kb, "zz50b2k.patgap.viaop"), 4);
 }
 
-/// The TUPLE arm of the row above, kept because the program is part (c)'s own acceptance
-/// and asserted at the value it actually has. See that row for why the link it needs is
-/// WI-20260904-34J8Z's and not this licence's.
+/// The TUPLE arm of the row above, part (c)'s own acceptance. It was a known gap (the link
+/// was WI-20260904-34J8Z's, see that row): refused for an unresolved `Additive`. Since
+/// WI-20261104-6HVXM a binder list with no type around it has its own tuple, a positional one
+/// of its binders' variables (kernel-language §4.7), so the arrow's `A` IS the tuple of the
+/// components: `g` meets `apply2`'s `(a: Int64, b: Int64)` by position, `a` and `b` are
+/// solved at `Int64`, `Additive` resolves, and `1 + 2` answers.
 #[test]
-fn known_gap_a_binder_list_lambdas_components_are_not_solved_by_the_slot() {
+fn a_binder_list_lambdas_components_are_solved_by_the_slot() {
     let src = "namespace zz50b2k.patgap2\n  import anthill.prelude.{Int64, Function}\n  \
                operation apply2(f: Function[A = (a: Int64, b: Int64), B = Int64], \
                p: (a: Int64, b: Int64)) -> Int64 = f(p)\n  \
                operation viaop() -> Int64 = \
                let g = lambda (a, b) -> a + b  apply2(g, (a: 1, b: 2))\nend\n";
-    let errs = crate::common::try_load_kb_with(src)
-        .err()
-        .expect("expected a refusal, but it loaded — WI-20260904-34J8Z may have landed");
-    assert!(
-        errs.iter().any(|e| e.contains("anthill.prelude.Additive")),
-        "expected an unresolved `Additive`, got: {errs:?}",
-    );
+    let mut kb = crate::common::try_load_kb_with(src)
+        .unwrap_or_else(|errs| panic!("must load; got: {errs:?}"));
+    assert_eq!(only_int(&mut kb, "zz50b2k.patgap2.viaop"), 3);
 }
 
 /// **THE LICENCE IS A LICENCE, NOT A HOLE** — the negative control, and the row that fails
@@ -1024,37 +1024,32 @@ fn both_spellings_of_an_alias_agree() {
 /// arms abort. In RELEASE the assert is absent and the same shape silently returns `None`,
 /// which is the withholding this fix makes the debug build agree with.
 ///
-/// THE PERMUTED ARM IS A KNOWN GAP, DRIVEN AND ASSERTED AT ITS WRONG VALUE: `g((b: 2,
-/// a: 1))` answers 2, not 1. Nothing declares this lambda's parameter type, so
-/// `bind_and_label_pattern` has no labels and `match_tuple_pattern` falls to source order
-/// — kernel-language.md §6.7's documented fallback, and the reason it cannot be closed
-/// here is WI-20260904-34J8Z: the labels would have to be INVENTED, and WI-803 takes them
-/// from the expected type.
+/// SINCE WI-20261104-6HVXM A BINDER LIST IS THE LAMBDA'S OWN TUPLE, positional, and its binder
+/// names name its arguments in a call of its value (kernel-language §4.4): one tuple is the
+/// argument list, so `g((a: 1, b: 2))` is `g(a: 1, b: 2)`, each named argument meeting the binder
+/// of its name. That closes the permuted arm's known gap at the right value: `g((b: 2, a: 1))`
+/// answered 2, the tuple read in its written order, and answers 1. The positional spellings,
+/// `g((1, 2))` and `g(1, 2)`, answer 1 too.
 #[test]
 fn a_direct_application_of_a_multi_binder_lambda_no_longer_aborts_the_typer() {
-    for (tag, binders, arg, want) in [
-        ("unannotated", "(a, b)", "(a: 1, b: 2)", 1),
-        (
-            "annotated control",
-            "(a: Int64, b: Int64)",
-            "(a: 1, b: 2)",
-            1,
-        ),
-        (
-            "known gap: permuted binds by SLOT, not by name",
-            "(a, b)",
-            "(b: 2, a: 1)",
-            2,
-        ),
-    ] {
-        let src = format!(
+    let src = |binders: &str, arg: &str| {
+        format!(
             "namespace zz50b2k.direct\n  import anthill.prelude.{{Int64, Function}}\n  \
              operation viaop() -> Int64 = let g = lambda {binders} -> a  g({arg})\n  \
              rule value(?r) :- ?r <=> viaop()\nend\n"
-        );
-        let mut kb = crate::common::try_load_kb_with(&src)
+        )
+    };
+    for (tag, binders, arg) in [
+        ("unannotated", "(a, b)", "(a: 1, b: 2)"),
+        ("annotated control", "(a: Int64, b: Int64)", "(a: 1, b: 2)"),
+        ("permuted, by name", "(a, b)", "(b: 2, a: 1)"),
+        ("positional", "(a, b)", "(1, 2)"),
+        ("annotated positional", "(a: Int64, b: Int64)", "(1, 2)"),
+        ("spread", "(a, b)", "1, 2"),
+    ] {
+        let mut kb = crate::common::try_load_kb_with(&src(binders, arg))
             .unwrap_or_else(|errs| panic!("{tag} must load; got:\n{}", errs.join("\n")));
-        assert_eq!(only_int(&mut kb, "zz50b2k.direct.value"), want, "{tag}");
+        assert_eq!(only_int(&mut kb, "zz50b2k.direct.value"), 1, "{tag}");
     }
 }
 

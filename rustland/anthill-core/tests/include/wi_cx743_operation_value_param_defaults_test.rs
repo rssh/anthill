@@ -453,7 +453,7 @@ fn a_call_that_leaves_out_a_parameter_with_no_default_is_refused() {
         ),
         (
             "  operation r() -> Int64 =\n    let f: (Int64, Int64, Int64) -> Int64 = clamp\n    f(12)",
-            &["expected 3 arguments — the parameter list this function value declares"],
+            &["expected 3 arguments — the components of the tuple this function value takes"],
             "a function value has no defaults",
         ),
     ]);

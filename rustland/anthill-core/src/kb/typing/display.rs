@@ -168,59 +168,10 @@ fn type_child_display_name(kb: &KnowledgeBase, child: &TypeChild, spelling: Spel
     }
 }
 
-/// WI-791: decode a non-negative `Const(Int)` term — the arrow `arity` child's
-/// carrier. `None` for any other shape, which the display path treats as "arity
-/// not stated" (a `Function[A, B]`, or a term this cannot read).
-pub(super) fn const_usize_of(kb: &KnowledgeBase, t: TermId) -> Option<usize> {
-    match kb.get_term(t) {
-        Term::Const(Literal::Int(n)) if *n >= 0 => Some(*n as usize),
-        _ => None,
-    }
-}
-
-/// WI-791: render an arrow's param slot for a DIAGNOSTIC. At arity one the slot
-/// holds the sole parameter's TYPE, so a TUPLE there needs its own
-/// parameter-list parens: without them `(t: (a: A, b: B)) -> R` and
-/// `(a: A, b: B) -> R` render to the same text, and a rejection reading
-/// `expected (p: A, q: B) -> R, got (a: A, b: B) -> R` restates the very
-/// confusion it is reporting.
-///
-/// `param_is_tuple` is a STRUCTURAL test, not "does the rendering start with a
-/// paren": a nested arrow param renders `((a: A, b: B)) -> R`, which also opens
-/// with `(`, and wrapping that would print `(((a: A, b: B)) -> R) -> S` where
-/// every other non-tuple arity-1 param takes no parens at all (`Int64 -> R`).
-fn display_arrow_param(rendered: String, arity: Option<usize>, param_is_tuple: bool) -> String {
-    if arity == Some(1) && param_is_tuple {
-        format!("({rendered})")
-    } else {
-        rendered
-    }
-}
-
-/// WI-795: render a type mismatch's `(expected, actual)` pair for a diagnostic.
-///
-/// Each side normally renders independently via [`type_display_name_value`], and
-/// for every mismatch but one that is enough. The exception is two arrows
-/// differing ONLY in their WI-791 `arity` child: the arrow renderer walks the
-/// param spine and never the arity, so both sides come out byte-identical and
-/// the message reads `expected X, got X` — it tells the user two types disagree
-/// while showing the same type twice, and says nothing about the parameter COUNT
-/// that is the actual fault. That message is the one WI-794's per-binder
-/// annotation check deliberately defers every misaligned-arity case to (blaming a
-/// specific annotation when a parameter is missing is worse than saying nothing),
-/// so a handoff target that cannot express an arity defect makes the deferral a
-/// downgrade rather than a delegation.
-///
-/// When both sides are arrows whose arities DIFFER, each is qualified with its
-/// own parameter count. A side whose param slot is NOT its own additionally drops
-/// the rendered arrow: a lambda takes its parameter types from the CONTEXT, so a
-/// 2-binder lambda at a 3-parameter slot carries the slot's 3-component list
-/// under an arity of 2 — printing that list is what made the original message
-/// unreadable, and it contradicts the count standing beside it.
-///
-/// Every other mismatch renders exactly as before, including an arrow pair
-/// differing in a param TYPE: the qualification is gated on both arities being
-/// present and UNEQUAL, which no param-type difference satisfies.
+/// WI-795: render a type mismatch's `(expected, actual)` pair for a diagnostic. Each side
+/// renders through [`type_display_name_value`], led by the type as its author wrote it where
+/// that is another spelling; two sides that still render alike are named as such
+/// ([`render_mismatch_pair_as_types`]).
 pub(super) fn render_mismatch_pair(
     kb: &KnowledgeBase,
     expected: &Value,
@@ -256,7 +207,10 @@ fn render_mismatch_pair_as_types(
     expected: &Value,
     actual: &Value,
 ) -> (String, String) {
-    let (e, a) = render_mismatch_pair_by_cause(kb, expected, actual);
+    let (e, a) = (
+        type_display_name_value(kb, expected),
+        type_display_name_value(kb, actual),
+    );
     // WI-776's 1-COLLAPSE NOTE WAS DELETED HERE (WI-20260818-YQB1Y), not moved. It explained
     // an `expected (a: Int64), got Int64` pair in which BOTH sides were correct — the two
     // faces of the schema 1-collapse, which the reader had no way to know about. 052 OQ5
@@ -265,14 +219,11 @@ fn render_mismatch_pair_as_types(
     // and a materialized one-column row are all `(a: A)` now. Every surviving instance of that
     // pair is an ordinary author error whose two rendered types state the whole fault, and a
     // note attributing it to a collapse that no longer exists would be a WRONG explanation.
-    // WI-795: the CAUSE-AGNOSTIC backstop. Everything above fixes one KNOWN way
-    // for two unequal types to render alike (the unwalked `arity` child). This
-    // catches the rest without having to name them.
+    // WI-795: the CAUSE-AGNOSTIC backstop for two unequal types that render alike.
     //
     // Two identical sides are never a legitimate diagnostic: either the renderer
-    // failed to express a distinction the checker made — the WI-795 defect, of
-    // which `arity` was one instance and others plausibly remain in any child no
-    // display arm walks — or the mismatch is spurious and the two types really
+    // failed to express a distinction the checker made — the WI-795 defect, whose
+    // first instance was an arrow's unwalked parameter-count child, since retired — or the mismatch is spurious and the two types really
     // are equal, which is a worse bug in the check. Both deserve to be seen
     // rather than printed as a tautology the reader is left to decode.
     //
@@ -285,7 +236,7 @@ fn render_mismatch_pair_as_types(
     // WI-872: ONE CAUSE NAMED OUT OF THE BACKSTOP'S RESIDUE, and it is the residue's
     // most likely member — two sorts that differ ONLY in namespace render alike by
     // construction, because every type rendering here is by SHORT name. Checked inside
-    // the `e == a` guard rather than beside the arity cause: it is not a re-rendering
+    // the `e == a` guard: it is not a re-rendering
     // (there is no qualified renderer, and adding a parallel one to name a namespace
     // would duplicate the renderer), it is a NOTE, so it belongs exactly where the
     // untargeted note would otherwise go.
@@ -598,99 +549,6 @@ const IDENTICAL_RENDERING_NOTE: &str =
     "(these render alike but are not the same type — the difference is in a \
      component this diagnostic does not print; please report it)";
 
-/// WI-795: the cause-directed half of [`render_mismatch_pair`] — renders each side
-/// and qualifies BOTH with their parameter counts when the sides are arrows whose
-/// arities differ. Split out so the identical-rendering backstop above wraps every
-/// return path rather than just the fallthrough.
-fn render_mismatch_pair_by_cause(
-    kb: &KnowledgeBase,
-    expected: &Value,
-    actual: &Value,
-) -> (String, String) {
-    let (e, a) = (
-        type_display_name_value(kb, expected),
-        type_display_name_value(kb, actual),
-    );
-    // `lookup_symbol`, not `intern`: a diagnostic renders off `&KnowledgeBase`. A
-    // KB that never interned "arity" holds no arrow, so there is nothing to qualify.
-    let Some(arity_key) = kb.lookup_symbol("arity") else {
-        return (e, a);
-    };
-    match (
-        arrow_display_arity(kb, expected, arity_key),
-        arrow_display_arity(kb, actual, arity_key),
-    ) {
-        (Some(ne), Some(na)) if ne != na => (
-            arity_qualified_arrow(kb, expected, ne, e),
-            arity_qualified_arrow(kb, actual, na, a),
-        ),
-        _ => (e, a),
-    }
-}
-
-/// WI-795: the stated parameter-list arity of a type that IS an `arrow`, else
-/// `None`. Unlike [`agreed_arrow_arity`] this runs on an arbitrary mismatched
-/// pair rather than from an `(arrow, arrow)` dispatch arm, so the head is tested
-/// rather than assumed.
-///
-/// BELT AND BRACES, stated honestly: the obvious way to reach this without the
-/// head test — a non-arrow type with a parameter literally named `arity` bound to
-/// an integer — does NOT in fact slip through, because a value-in-type binding is
-/// a WI-302 `denoted` wrapper and [`const_usize_of`] already rejects it (measured
-/// on `Vec[arity = 3]` vs `Vec[arity = 2]`, which renders identically with the
-/// test removed). So this guards a shape no current spelling produces. It is kept
-/// because the alternative is relying on that coincidence of two unrelated
-/// encodings, but it should not be read as load-bearing.
-fn arrow_display_arity(kb: &KnowledgeBase, ty: &Value, arity_key: Symbol) -> Option<usize> {
-    if !matches!(type_head(kb, ty), TypeHead::Arrow) {
-        return None;
-    }
-    arrow_arity(kb, ty, arity_key)
-}
-
-/// WI-795: qualify one side of an arity mismatch with its parameter count. The
-/// rendered arrow is kept only when its param slot is the side's OWN parameter
-/// list — see [`render_mismatch_pair`].
-fn arity_qualified_arrow(kb: &KnowledgeBase, ty: &Value, arity: usize, rendered: String) -> String {
-    if arrow_param_list_is_own(kb, ty, arity) {
-        format!("a {arity}-parameter function {rendered}")
-    } else {
-        format!("a {arity}-parameter function")
-    }
-}
-
-/// WI-795: does this arrow's `param` slot hold the parameter list its own `arity`
-/// child describes? This is WI-791's consistency question read off one arrow: at
-/// arity `n != 1` the slot IS the parameter list, so it must be a `named_tuple`
-/// of exactly `n` components.
-///
-/// A `false` means the slot came from somewhere other than the side's own
-/// written parameters — in practice a lambda that was handed the context's
-/// parameter list, which is precisely the shape that renders identically to the
-/// type it is being refused against.
-///
-/// ARITY 1 IS A KNOWN INCOMPLETENESS, not a proof of ownership. There the slot is
-/// the sole parameter's TYPE, and every type is a well-formed sole-parameter type,
-/// so consistency cannot distinguish a written parameter from an inherited one and
-/// this answers `true` unconditionally. A 1-binder lambda at a 2-parameter slot
-/// therefore still renders the context's list as its own
-/// (`a 1-parameter function ((a: Int64, b: Int64)) -> Int64` — measured, and pinned
-/// by `a_one_binder_lambda_still_shows_an_inherited_sole_parameter_type`). That is
-/// tolerable where the n-parameter case was not: the count is stated, the two sides
-/// differ (WI-791's arity-1 paren wrap sees to that), and the reported fault is
-/// still the arity. Closing it needs provenance — whether the type was WRITTEN —
-/// which no amount of looking at the finished arrow can recover.
-fn arrow_param_list_is_own(kb: &KnowledgeBase, ty: &Value, arity: usize) -> bool {
-    if arity == 1 {
-        return true;
-    }
-    let Some(param) = view_child_value(kb, ty, "param") else {
-        return false;
-    };
-    matches!(type_head(kb, &param), TypeHead::NamedTuple)
-        && named_tuple_fields(kb, &param).len() == arity
-}
-
 /// The name a diagnostic shows for a hash-consed type — the `TermId` face of the ONE
 /// walk every carrier goes through. See [`type_display_name_view`].
 pub fn type_display_name(kb: &KnowledgeBase, ty: TermId) -> String {
@@ -794,22 +652,24 @@ fn type_display_name_view<V: TermView>(kb: &KnowledgeBase, v: &V, spelling: Spel
                 },
             };
             match form {
-                // Arrow(param, result, effects, arity) — WI-307/WI-331: `effects` is a
-                // singular `EffectsRows(EffectExpression)` Type, not a legacy `List[Type]`.
+                // Arrow(param, result, effects) — WI-307/WI-331: `effects` is a singular
+                // `EffectsRows(EffectExpression)` Type, not a legacy `List[Type]`.
                 "Arrow" => {
                     let r = named_child_display(kb, v, "result", spelling);
-                    // WI-791: an arity-1 tuple param is ONE parameter, not a list.
-                    let arity = named_child(kb, v, "arity")
-                        .and_then(|c| c.literal_int64(kb))
-                        .and_then(|n| usize::try_from(n).ok());
-                    // A nullary arrow's parameter list is written `()`.
-                    let p = match arity {
-                        Some(0) => "()".to_string(),
+                    // Every arrow is a `Function` (kernel-language §4.4): a tuple `A` IS the
+                    // parameter list, written as one (`(a: A, b: B) -> R`, which
+                    // `((a: A, b: B)) -> R` is too), and the empty one `()`.
+                    let param = named_child(kb, v, "param");
+                    let p = match &param {
+                        Some(c)
+                            if matches!(type_head(kb, c), TypeHead::NamedTuple)
+                                && named_tuple_fields(kb, c).is_empty() =>
+                        {
+                            "()".to_string()
+                        }
                         _ => named_child_display(kb, v, "param", spelling),
                     };
-                    let param_is_tuple = named_child(kb, v, "param")
-                        .is_some_and(|c| matches!(type_head(kb, &c), TypeHead::NamedTuple));
-                    let arrow = format!("{} -> {}", display_arrow_param(p, arity, param_is_tuple), r);
+                    let arrow = format!("{p} -> {r}");
                     // A reader's arrow is `param -> result`, and its row is shown only
                     // where two arrows differ in nothing else ([`arrow_rows_that_differ`]).
                     // A name has no pair to compare: the row is part of it, always.

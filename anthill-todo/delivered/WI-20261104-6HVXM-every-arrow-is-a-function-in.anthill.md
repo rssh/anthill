@@ -3,9 +3,9 @@
 - id: WI-20261104-6HVXM-every-arrow-is-a-function-in
 - created: 2026-11-04T06:52:49Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-11-04T06:52:49Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-11-04T12:44:10Z
 
 - acceptance: cargo-test, scaland-sbt-test
 

@@ -192,12 +192,10 @@ end
 /// `ArityMismatch{expected:1, got:2}` at eval — a load error converted into
 /// exactly the load-clean-then-trap shape WI-782 exists to remove.
 ///
-/// It is still refused, but the REASON moved: WI-791 records arity on the arrow,
-/// so this is 1 ≠ 2 rather than a question about names, and the gate that used to
-/// carry it is no longer asked. That shows in the message — the actual now reads
-/// `((a: Int64, b: Int64)) -> Int64`, the one-tuple-parameter spelling, where the
-/// two spellings used to render identically. WI-795 says the arity in words on
-/// top of that.
+/// Still refused, and since WI-20261104-6HVXM for the reason the names give again: every
+/// arrow is a `Function`, `get_a`'s tuple is its parameter's, `(a: Int64, b: Int64)`, and a
+/// callable of one parameter takes the slot's `(p: Int64, q: Int64)` whole by the tuple match,
+/// which relates no two tuples naming different components (kernel-language §4.4).
 #[test]
 fn tuple_typed_parameter_does_not_satisfy_a_name_disjoint_two_parameter_list() {
     assert_refused_naming(
@@ -212,8 +210,8 @@ namespace test.wi782.collapsedisjoint
     = take2(get_a)
 end
 "#,
-        "a 2-parameter function (p: Int64, q: Int64) -> Int64",
-        "a 1-parameter function ((a: Int64, b: Int64)) -> Int64",
+        "(p: Int64, q: Int64) -> Int64",
+        "(a: Int64, b: Int64) -> Int64",
     );
 }
 
@@ -239,11 +237,10 @@ namespace test.wi782.arity
     = pass2(impl2)
 end
 "#,
-        // WI-795: the arity clause is the whole subject here — this is the
-        // ticket's own `expected 3, got 2` shape, and both sides state a
-        // parameter list they actually wrote, so both keep their spelling.
-        "a 3-parameter function (a: Int64, b: Int64, c: Int64) -> Int64",
-        "a 2-parameter function (a: Int64, b: Int64) -> Int64",
+        // A function value drops nothing (kernel-language §4.4): two components do not
+        // stand where three are handed.
+        "(a: Int64, b: Int64, c: Int64) -> Int64",
+        "(a: Int64, b: Int64) -> Int64",
     );
 }
 

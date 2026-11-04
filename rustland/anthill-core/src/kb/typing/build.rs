@@ -458,6 +458,21 @@ pub(super) fn build_type(
                     return;
                 }
             }
+            // ONE TUPLE IS ALWAYS THE ARGUMENT LIST (kernel-language §4.4): a call handed one
+            // tuple where it takes several arguments is typed again as the call of its
+            // components ([`spread_one_tuple_argument`]). Decided here, where the argument's
+            // type is known and the rewrite can be visited.
+            let spread = match spread_one_tuple_argument(kb, &env, &node, &pos_results) {
+                Ok(spread) => spread,
+                Err(e) => {
+                    results.push(Err(e));
+                    return;
+                }
+            };
+            if let Some(spread) = spread.or_else(|| gather_one_parameter_arguments(kb, &env, &node)) {
+                push_visit_at(work, spread, env, expected, fuel.saturating_sub(1), pos);
+                return;
+            }
             let span = Some(node.span.span);
             let r = check_apply_iter(
                 kb,
@@ -1746,11 +1761,6 @@ pub(super) fn build_type(
             // `Modify[c]` body effect) is CARRIED as a poisoned child rather than
             // re-grounded; a ground child rides as `TypeChild::Interned`. The
             // op-boundary return check compares it cross-carrier via `TermView`.
-            // WI-791: the lambda's arity is its WRITTEN binder count, read from the
-            // param pattern — `param_type` cannot supply it (an unannotated lambda's
-            // is a fresh type var, and a tuple-typed one is indistinguishable from a
-            // binder list). See `lambda_written_arity`.
-            let arity = lambda_written_arity(&occ);
             // WI-20260904-50B2K part (c) — THE ARROW REFLECTS WHAT THE BODY SOLVED.
             //
             // `param_type` is the value minted at VISIT time, before the body ran, so an
@@ -1794,7 +1804,6 @@ pub(super) fn build_type(
                 &param_type,
                 &body_ty,
                 &body_effects,
-                arity,
                 &binders,
                 occ.span,
                 occ.owner,

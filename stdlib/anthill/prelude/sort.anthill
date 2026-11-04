@@ -489,23 +489,20 @@ enum anthill.prelude.TypeExtractor
   entity FlexVar(name: Symbol, id: Int64)
   entity Skolem(name: Symbol, id: Int64)
   entity Parameterized(base: Symbol, bindings: List[TypeBinding])
-  {< WI-791: `arity` is the arrow's PARAMETER-LIST LENGTH as written. It is what
-     says how to read `param`: at arity one `param` is the sole parameter's TYPE
-     (the list collapses and the binder name is dropped), at any other arity it is
-     the parameter LIST — a `NamedTuple` of exactly `arity` components. Without it
-     `(t: (a: A, b: B)) -> R` and `(a: A, b: B) -> R` are the same term, and each
-     is accepted where the other is required. It sits OUTSIDE `param` because an
-     encoding a type variable can bind to is one substitution can introduce and
-     erase; a ground count sibling is not.
+  {< Every arrow is a `Function` (kernel-language §4.4): `param` is its `A`, the tuple
+     `(p₁: T₁, …, pₙ: Tₙ)` for n ≠ 1, the parameter's type for one, `()` for none. No
+     parameter count stands beside it, so `((a: A, b: B)) -> R` and `(a: A, b: B) -> R` are
+     one term (proposal 002, WI-20261104-6HVXM).
 
      `binders` are the arrow's own parameters by position: each the place as a type holds
      it (`Denoted`), or the positional label `_i` at a position that binds no single name.
      A row label naming one (`Modify[k]` of `lambda (k: Cell[V = Int64]) -> put(k, 5)`) is
      read as that position, whatever the value came through. A lambda's and an operation's
      arrow write them; a written arrow leaves the field out, the places its row names being
-     a callback parameter's, which say their position themselves. It sits outside `param`
-     for the reason `arity` does. >}
-  entity Arrow(param: Term, result: Term, effects: Term, arity: Int64, binders: List[Term])
+     a callback parameter's, which say their position themselves. It sits outside `param`:
+     for one parameter `param` is that parameter's type, which a type variable may be bound
+     to. >}
+  entity Arrow(param: Term, result: Term, effects: Term, binders: List[Term])
   {< WI-1083: a UNIVERSALLY QUANTIFIED type — `forall A. (x: A) -> A`. FORALL BY
      CONSTRUCTION, storing no quantifier: in anthill every binder is attached to a
      DECLARATION (`operation map[Dst, EffP](…)`, `sort [F] { … }`, `sort T = ?`) and

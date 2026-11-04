@@ -267,7 +267,6 @@ pub(super) fn type_mentions_spec_param(
             param,
             result,
             effects,
-            arity: _,
             binders: _,
         } => recur(&param) || recur(&result) || recur(&effects),
         TypeExtractor::NamedTuple(fields) => fields.iter().any(|(_, v)| recur(v)),
@@ -856,10 +855,11 @@ pub(super) fn bind_spec_params_for_hint(
 }
 
 /// WI-20261013-M32C2 — the parameter list a call of a FUNCTION VALUE (`fn_type`, the type
-/// the scope gives the callee) is checked against, for the hints its arguments take: the
-/// slots [`positional_arg_expectations`] gives the check (Path 2 of `check_apply_iter`), or
-/// `None` where it gives none — a count that cannot be right, a callee whose type states no
-/// argument.
+/// the scope gives the callee) is checked against, for the hints its arguments take: its `A`
+/// read by the application match ([`application_target`], what Path 2 of `check_apply_iter`
+/// checks against) — the components where the call writes as many arguments as `A` has, the
+/// whole `A` where it writes one — or `None` where it gives none: a count that cannot be
+/// right, a callee whose type states no `A`.
 ///
 /// Without it such a call took no slot hint of any kind, so a named operation and a function
 /// value with the same parameter disagreed: with `f: (c: Colour.red) -> Int64`, `f(red(v: 1))`
@@ -877,10 +877,16 @@ pub(super) fn function_value_param_slots(
     total: usize,
 ) -> Option<Vec<(Symbol, Value)>> {
     let callee_ty = extract_callable_type(kb, fn_type);
-    let declared = arrow_declared_param_list(kb, &callee_ty);
-    match positional_arg_expectations(kb, &callee_ty, declared.as_deref(), positional, total) {
-        ArgExpectations::Slots { slots, .. } => Some(slots),
-        ArgExpectations::CountMismatch { .. } | ArgExpectations::NoVerdict => None,
+    let whole = |kb: &mut KnowledgeBase, a: Value| Some(vec![(kb.intern(&positional_label(0)), a)]);
+    match application_target(kb, &Substitution::new(), &callee_ty) {
+        ApplicationTarget::Tuple(fields) if total == fields.len() => Some(fields),
+        // One argument for a wider tuple may be the tuple itself.
+        ApplicationTarget::Tuple(fields) if total == 1 && positional == 1 => {
+            let a = named_tuple_value(kb, &fields, crate::kb::node_occurrence::empty_span(), None);
+            whole(kb, a)
+        }
+        ApplicationTarget::Whole(a) if total == 1 && positional == 1 => whole(kb, a),
+        _ => None,
     }
 }
 

@@ -150,10 +150,12 @@ impl TupleAlign {
     /// positionally, so slot `i` is slot `i` and there are exactly as many slots
     /// as the call site passes arguments.
     ///
-    /// WI-791: selected by the arrow's own `arity` child, never by the param
-    /// slot's shape, so it is reached ONLY for a real parameter list (arity ≠ 1).
-    /// A lone tuple-typed parameter is a DATA tuple and takes the [`Self::DATA`]
-    /// road with everything else at arity one.
+    /// Every arrow is a `Function` (kernel-language §4.4): a function type's `A` that is a
+    /// tuple IS its parameter list, so two function types whose `A`s are both tuples relate
+    /// them here, whichever spelling wrote them — a one-tuple parameter `((a: A, b: B)) -> R`
+    /// is the list `(a: A, b: B) -> R`. This is the relation of a function VALUE at another
+    /// function type, which drops nothing and keeps its mapping; a callable WRITTEN at a slot
+    /// meets it by rule 6 instead (`callable_at_slot`).
     ///
     /// WI-782: no by-name rung, which is why a permutation is not admitted by
     /// matching names up — the runtime performs no such reordering, so

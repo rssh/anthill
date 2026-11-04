@@ -139,13 +139,10 @@ fn mixed_keying_tuple_literal_is_refused_by_the_parser() {
 /// parameters. A 3-component tuple against a 2-parameter operation is refused.
 ///
 /// WI-1087 MOVED THIS FROM EVAL TO LOAD, which is the direction WI-792/WI-801 have been
-/// moving it all along — "the typer's accepted set is a subset of the evaluator's". The
-/// count was always decidable here; what hid it is that `A` is spelled as the VARIABLE
-/// `T`, and `function_slot_arity_error` read the slot AS WRITTEN, where a variable states
-/// no component count. Resolving it through σ first — `T` is pinned to the 3-component
-/// tuple by the sibling argument — hands WI-801's decider the count it needed, and it
-/// renders the disagreement as ITSELF rather than as a structural type mismatch (WI-795:
-/// report the pair that actually differs).
+/// moving it all along — "the typer's accepted set is a subset of the evaluator's". What hid
+/// it is that `A` is spelled as the VARIABLE `T`; the slot waits for the sibling argument to
+/// pin it to the 3-component tuple (kernel-language §4.4), and `sub2` then meets that tuple by
+/// the application match, two parameters against three components.
 #[test]
 fn arity_mismatch_is_refused_at_load() {
     let src = poly_src("test.wi787arity", "(a: 1, b: 2, c: 3)");
@@ -153,9 +150,11 @@ fn arity_mismatch_is_refused_at_load() {
         .err()
         .expect("a 3-component tuple must not spread across 2 parameters");
     let msg = errs.join(" | ");
+    // WI-20261104-6HVXM: no count stands beside either tuple. `sub2`'s two parameters meet
+    // the three components `T` is pinned to by the application match, and do not.
     assert!(
-        msg.contains("1 parameter") && msg.contains("or 3") && msg.contains("2 parameters"),
-        "the refusal must name BOTH admissible counts and the one supplied; got: {msg}",
+        msg.contains("apT.f (op-arg)") && msg.contains("(a: Int64, b: Int64, c: Int64)"),
+        "the refusal must name the three-component tuple the slot hands; got: {msg}",
     );
 }
 

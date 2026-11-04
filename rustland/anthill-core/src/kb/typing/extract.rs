@@ -36,16 +36,10 @@ pub enum TypeExtractor {
         base: Symbol,
         bindings: Vec<(Symbol, Value)>,
     },
-    /// An arrow type — `arrow(param, result, effects, arity)`. WI-791: `arity` is
-    /// the parameter-list LENGTH as written, and is what says how to read `param`
-    /// (arity 1 ⇒ the sole parameter's type; otherwise ⇒ the parameter list, a
-    /// `named_tuple` of exactly `arity` fields).
-    ///
-    /// DECODED here, like the sibling `Symbol` fields, rather than handed on as a
-    /// raw `Value`: this is the boundary whose job is to turn a term's children
-    /// into Rust values, and leaving arity undecoded made every consumer write its
-    /// own `Const(Int)` reader. An arrow whose child is missing or unreadable is
-    /// [`TypeExtractor::Error`], not an arrow with a guessed count.
+    /// An arrow type — `arrow(param, result, effects)`, which is `Function[A = param, B =
+    /// result, E = effects]` (kernel-language §4.4): `param` is the tuple `A`, and no
+    /// parameter count stands beside it. An arrow whose child is missing is
+    /// [`TypeExtractor::Error`].
     ///
     /// `binders` are the arrow's own places by position, where its type names one
     /// ([`node_occurrence::TypeNode::Arrow`]) — the raw list, read by
@@ -54,7 +48,6 @@ pub enum TypeExtractor {
         param: Value,
         result: Value,
         effects: Value,
-        arity: usize,
         binders: Option<Value>,
     },
     /// WI-1083 — a UNIVERSALLY QUANTIFIED type, `∀ binders. body`: the type of an
@@ -456,16 +449,11 @@ pub fn extract_type<V: TermView>(kb: &KnowledgeBase, ty: &V) -> TypeExtractor {
             view_child_value(kb, ty, "param"),
             view_child_value(kb, ty, "result"),
             view_child_value(kb, ty, "effects"),
-            view_child_value(kb, ty, "arity").and_then(|a| match a {
-                Value::Term { id, .. } => const_usize_of(kb, id),
-                _ => None,
-            }),
         ) {
-            (Some(param), Some(result), Some(effects), Some(arity)) => TypeExtractor::Arrow {
+            (Some(param), Some(result), Some(effects)) => TypeExtractor::Arrow {
                 param,
                 result,
                 effects,
-                arity,
                 binders: view_child_value(kb, ty, "binders"),
             },
             _ => TypeExtractor::Error,

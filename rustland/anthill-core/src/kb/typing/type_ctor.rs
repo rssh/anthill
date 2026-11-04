@@ -228,12 +228,10 @@ fn walk_type_heads(kb: &KnowledgeBase, ty: &Value, bare: bool, visit: &mut impl 
                 walk_type_heads(kb, v, bare, visit);
             }
         }
-        // WI-791: `arity` is a COUNT, not a type — no sort can hide in it.
         TypeExtractor::Arrow {
             param,
             result,
             effects,
-            arity: _,
             binders: _,
         } => {
             walk_type_heads(kb, &param, bare, visit);

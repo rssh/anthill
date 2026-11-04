@@ -1858,10 +1858,10 @@ pub enum CallClass {
     /// is an eta, not a call" signal.
     EtaOpRef {
         dict: Option<TermId>,
-        /// WI-1087: `A`'s component labels, in declared order, when the slot this
-        /// reference is lifted into reads `A` as the callback's PARAMETER LIST — see
-        /// [`Value::OpRef`](crate::eval::Value)'s field of the same name for what the
-        /// runtime does with them and why the value cannot re-derive them.
+        /// The labels of the slot's `A` this reference met, in `A`'s order, where that `A` is
+        /// a tuple (rule 6 of proposal 002, [`callable_at_slot`]) — see
+        /// [`Value::OpRef`](crate::eval::Value)'s field of the same name for what the runtime
+        /// does with them and why the value cannot re-derive them.
         spread_labels: Option<std::rc::Rc<[Symbol]>>,
         // WI-1091's op half — the OPERATION'S OWN `requires` slots, built at the eta
         // site by the very `build_op_scoped_dicts` a written call site uses — LIVED

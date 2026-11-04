@@ -276,14 +276,13 @@ pub(super) fn map_type_bottom_up(
             param,
             result,
             effects,
-            arity,
             binders,
         } => {
             let p = map_type_bottom_up(kb, &param, f);
             let r = map_type_bottom_up(kb, &result, f);
             (p.is_some() || r.is_some()).then(|| {
                 let (p, r) = (p.unwrap_or(param), r.unwrap_or(result));
-                arrow_value(kb, &p, &r, &effects, arity, binders, sp, owner)
+                arrow_value(kb, &p, &r, &effects, binders, sp, owner)
             })
         }
         _ => None,
@@ -295,13 +294,11 @@ pub(super) fn map_type_bottom_up(
 /// An arrow rebuilt around its children — an occurrence, as every arrow the typer builds is
 /// (WI-470: an arrow is a binder, and is not hash-consed). Its own `binders` are handed on
 /// as the arrow being rebuilt had them.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn arrow_value(
     kb: &mut KnowledgeBase,
     param: &Value,
     result: &Value,
     effects: &Value,
-    arity: usize,
     binders: Option<Value>,
     span: crate::span::SourceSpan,
     owner: Option<Symbol>,
@@ -309,7 +306,7 @@ pub(super) fn arrow_value(
     let p = value_to_type_child_at(kb, param, span, owner);
     let r = value_to_type_child_at(kb, result, span, owner);
     let e = value_to_type_child_at(kb, effects, span, owner);
-    Value::Node(kb.make_arrow_occ(p, r, e, arity, binders, span, owner))
+    Value::Node(kb.make_arrow_occ(p, r, e, binders, span, owner))
 }
 
 /// WI-20260929-0RP29 — [`expand_sort_application_as`] at EVERY depth, on any carrier:
@@ -501,7 +498,6 @@ fn expand_slots(kb: &mut KnowledgeBase, ty: &Value, how: SlotExpansion) -> Optio
             param,
             result,
             effects,
-            arity,
             binders,
         } => {
             let p = expand_slots(kb, &param, how.under_param());
@@ -517,7 +513,7 @@ fn expand_slots(kb: &mut KnowledgeBase, ty: &Value, how: SlotExpansion) -> Optio
                     r.unwrap_or(result),
                     e.unwrap_or(effects),
                 );
-                arrow_value(kb, &p, &r, &e, arity, binders, sp, owner)
+                arrow_value(kb, &p, &r, &e, binders, sp, owner)
             })
         }
         TypeExtractor::EffectsRows(_) if how.rows => expand_row_labels(kb, ty, how),

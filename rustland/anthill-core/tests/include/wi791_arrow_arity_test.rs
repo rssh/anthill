@@ -1,37 +1,18 @@
-//! WI-791 — an arrow records its PARAMETER-LIST ARITY, so a one-tuple-parameter
-//! operation is no longer the same type as an n-parameter one.
+//! WI-791 — an arrow recorded its PARAMETER-LIST ARITY, so a one-tuple-parameter operation was
+//! not the same type as an n-parameter one. WI-20261104-6HVXM RETIRED the count (proposal 002
+//! §"Correction (2026-11-03)", kernel-language §4.4): every arrow is a `Function`, its parameter
+//! list is its tuple `A`, and `((a: A, b: B)) -> R` and `(a: A, b: B) -> R` are ONE type. What
+//! WI-791 refused because the counts differed is read here by the rules that replaced the count:
 //!
-//! An arity-1 parameter list collapsed to its parameter's bare type, so
-//! `(t: (a: A, b: B)) -> R` and `(a: A, b: B) -> R` built the IDENTICAL term.
-//! Each was accepted where the other was required, and the program then trapped
-//! at eval — the load-clean-then-trap shape WI-782 exists to remove, left open
-//! there as its case 3.
+//!   * a callable WRITTEN at a slot meets the slot's `A` by label where the two tuples carry the
+//!     same labels, by position otherwise — and a callable of one parameter takes the whole tuple,
+//!     which a positional slot hands it by position (`get_a(t: (a: Int64, b: Int64))` at `(Int64,
+//!     Int64) -> Int64` reads `t.a` as the first component);
+//!   * where neither reaches the other — labels that are no tuple's of the other, a tuple against
+//!     a sort — the callable is refused with both types side by side.
 //!
-//! THE FIX is one ground child on the arrow: `arity`. That placement is the
-//! whole lesson. WI-782 first tried the encoding INSIDE the param slot (wrap an
-//! arity-1 list whose parameter is itself a tuple) and reverted it: the wrap was
-//! decided from the SPELLING at mint time but read back AFTER substitution, so a
-//! type variable bound to the slot picked it up and `apply1(get_a, (a: 1, b: 2))`
-//! — a working program — broke. A count sibling is not a type σ acts on, so
-//! substitution can neither introduce nor erase it. `type_parameter_instantiated
-//! _at_a_tuple_still_applies` below is that exact program, kept green.
-//!
-//! Recording arity also settles WHICH RELATION the param slot gets, which is
-//! what repays the cost WI-782 knowingly paid:
-//!
-//!   * arity ≠ 1 — the slot IS the parameter list, applied positionally: equal
-//!     arity, index zip, no permutation and no width (WI-782's rules, unchanged;
-//!     they live in `wi782_param_list_alignment_test.rs`);
-//!   * arity 1 — the slot is the sole parameter's TYPE. A tuple there is DATA,
-//!     read by name, so a permuted or narrower one conforms again (the two
-//!     `*_tuple_typed_parameter_still_applies` tests in that same file).
-//!
-//! Every rejection below is paired with a neighbouring program that must still
-//! load AND EVALUATE — a fix that merely rejected more would satisfy the
-//! rejections alone. All of them were measured on the parent commit in an
-//! isolated worktree: the five rejections all loaded clean there and trapped (or,
-//! for `two_parameter_operation_is_refused_for_a_tuple_argument_arrow`, evaluated
-//! through eval's tuple-spread), and every control already passed.
+//! The programs are WI-791's, kept so each of its repros is pinned at the value the rule gives;
+//! the bracket in each doc is what the program did before WI-20261104-6HVXM.
 
 use crate::common::{interp_for, load_kb_with, try_load_kb_with};
 
@@ -45,35 +26,19 @@ fn run_int(interp: &mut anthill_core::eval::Interpreter, op: &str) -> i64 {
     }
 }
 
-/// Assert the program is refused AND that the diagnostic names both arrow
-/// spellings adjacently, in the loader's own `expected …, got …` phrasing.
-///
-/// Pinning the exact text matters more here than elsewhere: before WI-791 the
-/// two spellings RENDERED IDENTICALLY, so a message-agnostic assertion would
-/// pass on a fix that rejected the program while still reporting
-/// `expected (a: Int64, b: Int64) -> Int64, got (a: Int64, b: Int64) -> Int64`
-/// — restating the confusion it is reporting. The extra parens in the expected
-/// text are the one-tuple-parameter spelling.
-///
-/// WI-795: each side is now given as `(parameter count, rendering)`, and the
-/// count is asserted alongside the spelling, because the loader states it in
-/// words. Every rejection in this file is an arity disagreement, so the count is
-/// the fixture's real subject; passing it separately rather than folding it into
-/// the literal keeps a fixture from pairing a count with the wrong side — the one
-/// mistake a hand-written `"a 2-parameter function (…)"` string invites.
-fn assert_refused_naming(src: &str, expected: (usize, &str), got: (usize, &str)) {
-    let (expected_arity, expected_type) = expected;
-    let (got_arity, got_type) = got;
+/// `src` loaded and its `drive` run.
+fn drives(src: &str, op: &str) -> i64 {
+    let mut interp = interp_for(src);
+    run_int(&mut interp, op)
+}
+
+/// Assert the program is refused with a type mismatch naming both arrows, `expected …, got …`.
+fn assert_refused_naming(src: &str, expected: &str, got: &str) {
     let errs = match try_load_kb_with(src) {
-        Ok(_) => panic!(
-            "must NOT load: `{got_type}` and `{expected_type}` take a different number of parameters"
-        ),
+        Ok(_) => panic!("must NOT load: `{got}` does not stand where `{expected}` is expected"),
         Err(errs) => errs,
     };
-    let wanted = format!(
-        "expected a {expected_arity}-parameter function {expected_type}, \
-         got a {got_arity}-parameter function {got_type}"
-    );
+    let wanted = format!("expected {expected}, got {got}");
     assert!(
         errs.iter()
             .any(|e| e.contains("type mismatch") && e.contains(&wanted)),
@@ -83,15 +48,12 @@ fn assert_refused_naming(src: &str, expected: (usize, &str), got: (usize, &str))
 
 // ── the ticket's two repros ────────────────────────────────────
 
-/// REPRO 1. `get_a` takes ONE tuple-typed parameter; the annotation declares TWO
-/// parameters. Measured on the parent commit: loaded clean, then trapped
-/// `Internal("field_access: tuple has no component 'a'")` — `f((7, 8))` passed
-/// the positional pair as the single tuple `t`, whose components are `_1`/`_2`,
-/// so `t.a` found nothing.
+/// REPRO 1. `get_a` takes ONE tuple-typed parameter; the annotation declares a positional
+/// `A`. `get_a` takes the whole tuple, and the positional `(7, 8)` reaches its `t: (a: Int64,
+/// b: Int64)` by position [refused, count; before WI-791 it trapped, `t.a` finding nothing].
 #[test]
-fn one_tuple_parameter_operation_is_refused_for_a_two_parameter_arrow() {
-    assert_refused_naming(
-        r#"
+fn a_one_tuple_parameter_operation_takes_a_positional_slot_by_position() {
+    let src = r#"
 namespace test.wi791.repro1
   import anthill.prelude.{Int64}
   operation get_a(t: (a: Int64, b: Int64)) -> Int64
@@ -100,19 +62,16 @@ namespace test.wi791.repro1
     = let f: (_1: Int64, _2: Int64) -> Int64 = get_a
       f((7, 8))
 end
-"#,
-        (2, "(_1: Int64, _2: Int64) -> Int64"),
-        (1, "((a: Int64, b: Int64)) -> Int64"),
-    );
+"#;
+    assert_eq!(drives(src, "test.wi791.repro1.drive"), 7);
 }
 
-/// REPRO 2, the DUAL. A 2-parameter operation into a one-tuple-parameter
-/// annotation. Measured on the parent commit: loaded clean, then trapped
-/// `ArityMismatch { expected: 2, got: 1 }`.
+/// REPRO 2, the DUAL. A 2-parameter operation at a one-tuple-parameter annotation, which is the
+/// two-parameter `(a: Int64, b: Int64) -> Int64`: the same labels, met by label, `7 - 8`
+/// [refused, count].
 #[test]
-fn two_parameter_operation_is_refused_for_a_one_tuple_parameter_arrow() {
-    assert_refused_naming(
-        r#"
+fn a_two_parameter_operation_takes_the_one_tuple_spelling_by_label() {
+    let src = r#"
 namespace test.wi791.repro2
   import anthill.prelude.{Int64}
   operation two(a: Int64, b: Int64) -> Int64
@@ -121,24 +80,17 @@ namespace test.wi791.repro2
     = let f: (t: (a: Int64, b: Int64)) -> Int64 = two
       f((a: 7, b: 8))
 end
-"#,
-        (1, "((a: Int64, b: Int64)) -> Int64"),
-        (2, "(_1: Int64, _2: Int64) -> Int64"),
-    );
+"#;
+    assert_eq!(drives(src, "test.wi791.repro2.drive"), -1);
 }
 
 // ── the two spellings WI-782's name gate could not catch ───────
 
-/// BYPASS 1, the IDIOMATIC spelling. A positionally-written tuple type mints its
-/// components `_1, _2` (`intern_positional_label`), which is exactly the
-/// synthetic shape WI-782's admissibility gate ADMITS — so the shorter and more
-/// common way to write a 2-parameter callback disarmed the gate. Measured on the
-/// parent commit: loaded clean, trapped `ArityMismatch { expected: 1, got: 2 }`.
-/// It is not refused by a better name test; it is refused because 1 ≠ 2.
+/// BYPASS 1, the positional spelling: `take2(get_a)` is proposal 002's `fd` program, 1
+/// [refused, count].
 #[test]
-fn positionally_spelled_two_parameter_callback_is_refused() {
-    assert_refused_naming(
-        r#"
+fn a_positionally_spelled_slot_takes_a_one_tuple_parameter_operation() {
+    let src = r#"
 namespace test.wi791.bypass1
   import anthill.prelude.{Int64}
   operation get_a(t: (a: Int64, b: Int64)) -> Int64
@@ -148,22 +100,13 @@ namespace test.wi791.bypass1
   operation drive() -> Int64
     = take2(get_a)
 end
-"#,
-        (2, "(_1: Int64, _2: Int64) -> Int64"),
-        (1, "((a: Int64, b: Int64)) -> Int64"),
-    );
+"#;
+    assert_eq!(drives(src, "test.wi791.bypass1.drive"), 1);
 }
 
-/// BYPASS 2, LEADING ZEROS. `parse::<usize>()` accepts `_01`, so the gate read
-/// `(_01: Int64, _02: Int64)` as the synthetic convention and admitted the zip —
-/// while eval's `is_synthetic_positional_label` calls `_01` a USER label
-/// (WI-786's `leading_zero_label_is_not_synthetic`), the cross-boundary
-/// divergence WI-789/WI-790 predict. Measured on the parent commit: loaded
-/// clean, trapped `ArityMismatch { expected: 1, got: 2 }`.
-///
-/// The divergence itself is NOT fixed here and does not need to be: this refusal
-/// never consults a name. That is the point — the gate stopped being what decides
-/// whether a tuple is a parameter list.
+/// BYPASS 2, LEADING ZEROS. `_01` is a USER label (WI-790), so `(_01: Int64, _02: Int64)` names
+/// its components, and `(p: Int64, q: Int64)` names others: a callable of one parameter takes
+/// the whole tuple by the tuple match, which relates no two such tuples. Refused, as it was.
 #[test]
 fn leading_zero_component_names_do_not_make_a_parameter_list() {
     assert_refused_naming(
@@ -178,32 +121,16 @@ namespace test.wi791.bypass2
     = take2(get_a)
 end
 "#,
-        (2, "(p: Int64, q: Int64) -> Int64"),
-        (1, "((_01: Int64, _02: Int64)) -> Int64"),
+        "(p: Int64, q: Int64) -> Int64",
+        "(_01: Int64, _02: Int64) -> Int64",
     );
 }
 
-/// The BEHAVIOR CHANGE this fix knowingly makes, pinned so it is a decision
-/// rather than a surprise. Measured on the parent commit, this LOADED and
-/// EVALUATED to -1: eval's `spread_eta_args` spreads a single POSITIONAL tuple
-/// argument across a multi-parameter operation (the WI-275 convention), so
-/// `f((10, 3))` reached `minus(10, 3)`.
-///
-/// It is refused now because the two types genuinely differ — `((Int64, Int64))
-/// -> Int64` takes one tuple, `minus` takes two scalars — and because accepting
-/// it is the SAME relation as repro 2 above, which the ticket requires refusing.
-/// The two only looked different: repro 2 trapped solely because its tuple is
-/// NAME-keyed and so has nothing in `.pos` for the spread to find. Leaving the
-/// relation to depend on how a caller happens to build its tuple is the
-/// incoherence this ticket removes.
-///
-/// The spread convention itself is untouched and still reachable — through the
-/// `Function` spelling (see `function_spelling_states_no_arity_and_still_bridges`)
-/// and through a direct positional call.
+/// A 2-parameter operation at the one-tuple spelling of a positional `A`: the same type as the
+/// positional list, met by position, `minus(10, 3)` [refused, count; before WI-791 it ran].
 #[test]
-fn two_parameter_operation_is_refused_for_a_tuple_argument_arrow() {
-    assert_refused_naming(
-        r#"
+fn a_two_parameter_operation_takes_the_positional_one_tuple_spelling() {
+    let src = r#"
 namespace test.wi791.spread
   import anthill.prelude.{Int64}
   operation minus(a: Int64, b: Int64) -> Int64
@@ -213,20 +140,14 @@ namespace test.wi791.spread
   operation drive() -> Int64
     = take(minus)
 end
-"#,
-        (1, "((_1: Int64, _2: Int64)) -> Int64"),
-        (2, "(_1: Int64, _2: Int64) -> Int64"),
-    );
+"#;
+    assert_eq!(drives(src, "test.wi791.spread.drive"), 7);
 }
 
 // ── what must keep working ─────────────────────────────────────
 
-/// THE program the reverted in-slot encoding broke, and the reason `arity` is a
-/// sibling of `param` rather than something inside it. `apply1`'s callback slot
-/// is written `(x: T) -> Int64`, so its arity is 1 at the mint and stays 1 after
-/// `T := (a: Int64, b: Int64)`; the sibling `v: T` therefore still sees the plain
-/// tuple. Under the wrapper, `T` bound to the WRAPPED param and `v` was rejected
-/// with `expected (_1: (a: Int64, b: Int64)), got (a: Int64, b: Int64)`.
+/// A callback slot written `(x: T) -> Int64` at `T := (a: Int64, b: Int64)`: the sibling `v: T`
+/// sees the plain tuple, and `get_a` takes it whole.
 #[test]
 fn type_parameter_instantiated_at_a_tuple_still_applies() {
     let src = r#"
@@ -240,13 +161,11 @@ namespace test.wi791.typaram
     = apply1(get_a, (a: 7, b: 8))
 end
 "#;
-    let mut interp = interp_for(src);
-    assert_eq!(run_int(&mut interp, "test.wi791.typaram.drive"), 7);
+    assert_eq!(drives(src, "test.wi791.typaram.drive"), 7);
 }
 
-/// The same generic shape in the MULTI-parameter direction: a 2-parameter
-/// callback slot taking a 2-parameter operation, driven to a value. Without this,
-/// a fix that refused every generic callback would pass the test above.
+/// The same generic shape in the MULTI-parameter direction: a 2-parameter callback slot taking a
+/// 2-parameter operation, by position.
 #[test]
 fn generic_two_parameter_callback_still_applies() {
     let src = r#"
@@ -260,13 +179,10 @@ namespace test.wi791.generic2
     = apply2(minus, 10, 3)
 end
 "#;
-    let mut interp = interp_for(src);
-    assert_eq!(run_int(&mut interp, "test.wi791.generic2.drive"), 7);
+    assert_eq!(drives(src, "test.wi791.generic2.drive"), 7);
 }
 
-/// A one-tuple-parameter arrow APPLIED, so the spelling this ticket makes
-/// distinct is shown to be usable and not merely rejectable. `get_a` reads `t.a`,
-/// so this also proves the tuple reaching the callee is NAME-keyed.
+/// A one-tuple-parameter arrow APPLIED: `get_a` reads `t.a` of the tuple it is handed.
 #[test]
 fn one_tuple_parameter_arrow_applies_end_to_end() {
     let src = r#"
@@ -279,22 +195,13 @@ namespace test.wi791.onetuple
       f((a: 7, b: 8))
 end
 "#;
-    let mut interp = interp_for(src);
-    assert_eq!(run_int(&mut interp, "test.wi791.onetuple.drive"), 7);
+    assert_eq!(drives(src, "test.wi791.onetuple.drive"), 7);
 }
 
-/// WHY there is no arity check on the `arrow`-vs-`Function` arm, shown rather
-/// than asserted in a comment. `Function[A, B, E]` states no arity and cannot:
-/// its `A` is the ONE argument `apply(f, x: A)` passes, yet `Function[(T, T), R]`
-/// has ALSO denoted a 2-parameter operation's eta arrow since WI-775 — which is
-/// what this drives. Demanding arity 1 of the arrow side would break it;
-/// demanding a MATCH would need a count `Function` does not have.
-///
-/// Contrast `two_parameter_operation_is_refused_for_a_tuple_argument_arrow`: the
-/// same program in the ARROW spelling is refused. That residual disagreement
-/// between the two spellings is recorded in the spec's `Function` note.
+/// The `Function` spelling of `a_two_parameter_operation_takes_the_positional_one_tuple_spelling`,
+/// which is the same type and runs alike.
 #[test]
-fn function_spelling_states_no_arity_and_still_bridges() {
+fn the_function_spelling_is_the_same_type() {
     let src = r#"
 namespace test.wi791.fnspelling
   import anthill.prelude.{Int64, Function}
@@ -306,24 +213,17 @@ namespace test.wi791.fnspelling
     = take(minus)
 end
 "#;
-    let mut interp = interp_for(src);
-    assert_eq!(run_int(&mut interp, "test.wi791.fnspelling.drive"), 7);
+    assert_eq!(drives(src, "test.wi791.fnspelling.drive"), 7);
 }
 
 // ── the representation, observed through the printer ───────────
 
-/// The two spellings must PRINT differently, and each printing must reparse to
-/// the arrow it came from. Both halves are load-bearing:
-///
-///   * DISTINCT — the diagnostics above depend on it, and before WI-791 both
-///     rendered `(a: Int64, b: Int64) -> Int64`;
-///   * STABLE — the reverted in-slot encoding gained a wrapper layer per
-///     print/reparse round until the third generation no longer parsed. Here the
-///     wrap is decided by `arity`, and reparsing `((a: Int64, b: Int64)) -> R`
-///     yields a ONE-parameter list again, so nothing accumulates. The test does a
-///     full second generation to say so rather than assert it.
+/// The two spellings are one type and PRINT alike, `(a: Int64, b: Int64) -> Int64`, and the
+/// printing reparses to that type — a second generation prints the same, so nothing accumulates.
+/// [Before WI-20261104-6HVXM they printed apart, `((a: Int64, b: Int64)) -> Int64` for the
+/// first.]
 #[test]
-fn the_two_arrow_spellings_print_distinctly_and_round_trip() {
+fn the_two_arrow_spellings_print_alike_and_round_trip() {
     fn printed_params(src: &str) -> Vec<String> {
         let kb = load_kb_with(src);
         ["test.wi791.print.one", "test.wi791.print.two"]
@@ -338,8 +238,6 @@ fn the_two_arrow_spellings_print_distinctly_and_round_trip() {
             .collect()
     }
 
-    // `one` takes a callback of ONE tuple-typed parameter; `two` takes a callback
-    // of TWO parameters. Same components, different arity.
     let gen1 = printed_params(
         r#"
 namespace test.wi791.print
@@ -354,14 +252,12 @@ end
     assert_eq!(
         gen1,
         vec![
-            "((a: Int64, b: Int64)) -> Int64",
+            "(a: Int64, b: Int64) -> Int64",
             "(a: Int64, b: Int64) -> Int64"
         ],
-        "the one-tuple-parameter and two-parameter spellings must render differently",
+        "the one-tuple-parameter and two-parameter spellings are one type",
     );
 
-    // Second generation: feed each printing back through the parser in the same
-    // position and print again. Identical output ⇒ the encoding is a fixpoint.
     let gen2 = printed_params(&format!(
         r#"
 namespace test.wi791.print
@@ -380,36 +276,12 @@ end
     );
 }
 
-// ── the gap this ticket left open, CLOSED by WI-792 ────────────
-
-/// WAS `known_gap_generic_callback_arrow_is_not_conformance_checked`, which
-/// asserted the opposite — that this LOADS and then traps `ArityMismatch` at
-/// eval. WI-792 closed it, and the assertion is inverted here rather than the
-/// test deleted, because the program is WI-791's own relation reached through a
-/// different door and it must stay pinned at both.
-///
-/// The gap was that a callback argument to a TYPE-PARAMETERIZED operation was
-/// never conformance-checked, so `positionally_spelled_two_parameter_callback_is_-
-/// refused` above and this program — the same mismatch, one generic — disagreed,
-/// with genericity the whole difference. `validate_arg_against_param` gates on
-/// `resolved_type_is_ground` for BOTH sides, and a declared `(x: T, y: T) ->
-/// Int64` is non-ground while `T` is free, so `types_compatible` (where the arity
-/// equality above lives) never ran; the non-ground path delegates to
-/// `validate_arrow_param_result`, which was arity-blind.
-///
-/// WI-792's fix is that arity is THE ONE COMPONENT that check can always decide —
-/// a ground `Const(Int)` however polymorphic the param and result are — so it now
-/// runs there too, ahead of the groundness-gated component checks.
-///
-/// WI-1085 — the EXPECTED side now reads `(x: Int64, y: Int64)` where it read
-/// `(x: ?T, y: ?T)`. `validate_arrow_param_result` renders its verdict through σ,
-/// because every check it makes now compares σ-resolved components and printing the
-/// slot AS WRITTEN describes a comparison it did not perform. `?T` is pinned to
-/// `Int64` by the sibling arguments `v: T, w: T` (7 and 8), so the reader is shown
-/// what the slot actually demanded here rather than the variable it is spelled with.
-/// The ARITY claim this row makes is untouched — it is the counts that disagree.
+/// A callback of a TYPE-PARAMETERIZED slot is checked as a written one is (WI-792): `get_a`'s
+/// tuple `(a: Int64, b: Int64)` and the slot's `(x: T, y: T)` name different components, so the
+/// one parameter does not take the slot's tuple. The expected side is rendered through σ, `T`
+/// pinned to `Int64` by the sibling arguments (WI-1085).
 #[test]
-fn generic_callback_arrow_arity_is_conformance_checked() {
+fn generic_callback_is_conformance_checked() {
     assert_refused_naming(
         r#"
 namespace test.wi791.knowngap
@@ -422,7 +294,7 @@ namespace test.wi791.knowngap
     = apply2(get_a, 7, 8)
 end
 "#,
-        (2, "(x: Int64, y: Int64) -> Int64"),
-        (1, "((a: Int64, b: Int64)) -> Int64"),
+        "(x: Int64, y: Int64) -> Int64",
+        "(a: Int64, b: Int64) -> Int64",
     );
 }

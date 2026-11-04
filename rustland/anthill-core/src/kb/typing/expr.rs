@@ -794,8 +794,11 @@ pub(super) fn eliminate_env_schema(
     let (node, site) = match (name, inst.obligations.is_empty()) {
         (_, true) => (Rc::clone(reference), Rc::clone(reference)),
         (Some(functor), false) => match extract_callable_type(kb, &inst.ty) {
-            TypeExtractor::Arrow { arity, .. } => {
-                requirement_passing_wrapper(kb, reference, functor, arity)
+            TypeExtractor::Arrow { param, .. } => {
+                // One binder per component of a tuple `A`, else one for the whole value: the
+                // wrapper's own application then hands `f` the tuple as written.
+                let binders = named_tuple_field_pairs(kb, &param).map_or(1, |f| f.len());
+                requirement_passing_wrapper(kb, reference, functor, binders)
             }
             _ => {
                 return Err(TypeError::Other {
@@ -1202,6 +1205,23 @@ pub(super) fn check_bare_ref(
                     };
                     let fn_ty = open_declaring_sort_params(kb, sym, &fn_ty, receiver, Some(exp))
                         .map_err(|at| receiver_not_an_instance(kb, sym, span, &at, receiver))?;
+                    // RULE 6 OF PROPOSAL 002 (kernel-language §4.4, "A callable where a function
+                    // type is expected"): the operation's own tuple meets the slot's `A` by
+                    // label where the two carry the same labels, by position otherwise, and an
+                    // operation of one parameter takes the whole tuple. Re-expressed at the slot,
+                    // the reference HAS the slot's type from here on, so every later relation —
+                    // a `let`'s annotation, a field's, an argument's — reads it as the slot
+                    // does. A slot whose `A` is still a variable (a call's type parameter)
+                    // leaves the operation's own tuple; the call meets it there
+                    // ([`callable_written_at_slot`]).
+                    let params = CallableParams::of_operation(kb, sym);
+                    let mut at = Substitution::new();
+                    let (fn_ty, slot_labels) = match callable_at_slot(kb, &mut at, &fn_ty, params, exp) {
+                        CallableAtSlot::AtSlot { ty, slot_labels } => {
+                            (walk_type_deep_value(kb, &at, &ty), slot_labels)
+                        }
+                        CallableAtSlot::Waits | CallableAtSlot::Refused => (fn_ty, None),
+                    };
                     // WI-420: resolve + attach the op's requirement dispatch dict
                     // (the `expected` arrow pins its element type) so eval captures
                     // it on the OpRef. A cross-sort unsatisfiable requirement is a
@@ -1210,7 +1230,7 @@ pub(super) fn check_bare_ref(
                     // WI-1083: handed the ORIGINAL `fn_ty` — the ∀ — not the instantiation
                     // above, because the dictionary's dependencies are keyed by the
                     // declaring sort's canonical variables. See [`poly_type_body`].
-                    attach_eta_dispatch_dict(kb, env, sym, occ, &original_fn_ty, exp)?;
+                    attach_eta_dispatch_dict(kb, env, sym, occ, &original_fn_ty, exp, slot_labels)?;
                     return Ok(TypeResult::pure_value(fn_ty, env.clone(), Rc::clone(occ)));
                 }
             }
@@ -1305,9 +1325,8 @@ pub(super) fn check_bare_ref(
             // it minted the arrow and pinned the dictionary against the operation's OWN
             // arrow for want of anything better. Self-pinning imposes nothing, which is
             // exactly the problem — `attach_eta_dispatch_dict` reads the expected arrow to
-            // pin BOTH the requirement dictionary and the argument-spread labels
-            // (`function_slot_spread_labels`, WI-1087), and an arrow unified with itself
-            // pins neither. `via_option(some(sub2))`, with `sub2(x, acc)` reaching an
+            // pin BOTH the requirement dictionary and the slot labels the value takes its
+            // tuple by (WI-1087), and an arrow unified with itself pins neither. `via_option(some(sub2))`, with `sub2(x, acc)` reaching an
             // `Option[T = Function[A = (x: Int64, acc: Int64), …]]` field and applied to
             // `(acc: 3, x: 10)`, returned **-7** where its arrow-slot twin `direct(sub2)`
             // returned 7 — the labels went unpinned and eval spread by source order. On

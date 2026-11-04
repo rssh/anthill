@@ -15503,7 +15503,6 @@ pub fn register_prelude(kb: &mut KnowledgeBase) {
     // isn't yet registered — keeping `type_node_keys` consistent with the
     // `named_arity` `type_node_head` reports. A full load interns these via the
     // reflect entity defs; this makes lighter `register_prelude` setups agree.
-    // WI-791 added `Arrow.arity`; it is read through the same walk, so it interns here too.
     // WI-1013 adds `name` / `head` / `tail` for the same reason: an `Expr::Apply`'s
     // CALL-SITE TYPE-ARGUMENT bracket rides as a named child holding a `List[type_arg]`,
     // whose cells key on `name`/`value`/`head`/`tail`, and the view resolves every one
@@ -15515,7 +15514,6 @@ pub fn register_prelude(kb: &mut KnowledgeBase) {
         "param",
         "result",
         "effects",
-        "arity",
         "effects_expr",
         "fields",
         "name",
@@ -42116,13 +42114,9 @@ impl<'a> Loader<'a> {
                 // the param/return TYPE positions (mirror `type_expr_to_child`),
                 // restore it for the effects.
                 let saved = std::mem::take(&mut self.arrow_binder_scope);
-                // WI-791: the written parameter-list LENGTH, carried on the arrow as
-                // its own child. It is read off the parse IR here — the only place a
-                // declared signature still HAS the list — because the `param` child
-                // built just below collapses at arity one and cannot report it back:
-                // `(t: (a: A, b: B)) -> R` and `(a: A, b: B) -> R` produce the same
-                // `named_tuple` param.
-                let arity = params.len();
+                // The arrow's `A` (kernel-language §4.4): the parameter list is the tuple for
+                // n ≠ 1, the parameter's type for one, so `(t: (a: A, b: B)) -> R` and
+                // `(a: A, b: B) -> R` are one type.
                 let param_child = if params.len() == 1 {
                     self.type_expr_to_child(&params[0].1, span, owner)
                 } else {
@@ -42185,7 +42179,7 @@ impl<'a> Loader<'a> {
                     let effect_ts: Vec<TermId> = effect_children.into_iter().map(ground).collect();
                     return TypeChild::Interned(
                         self.kb
-                            .make_arrow_type(param_t, result_t, &effect_ts, arity),
+                            .make_arrow_type(param_t, result_t, &effect_ts),
                     );
                 }
                 // WI-377: fold the effect children into an `effects_rows`
@@ -42201,7 +42195,6 @@ impl<'a> Loader<'a> {
                     param_child,
                     result_child,
                     effects_child,
-                    arity,
                     None,
                     span,
                     owner,

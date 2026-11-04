@@ -11915,40 +11915,27 @@ impl KnowledgeBase {
         crate::kb::load::build_value_list(self, elems)
     }
 
-    /// `arrow(param, result, effects, arity)` carried as a Type occurrence.
-    /// Occurrence peer of [`Self::make_arrow_type`].
-    ///
-    /// WI-791: `arity` is the parameter-list LENGTH as written — `op.params.len()`
-    /// at an eta mint, `params.len()` at a declared signature, the lambda's binder
-    /// count at a lambda mint, the source arrow's own (decoded) arity at a rebuild
-    /// (projection elimination rewrites the parameter TYPES, never their count).
-    /// It is REQUIRED, not derived: deriving it from
-    /// `param`'s shape is exactly the ambiguity this ticket closes (a lone
-    /// tuple-typed parameter presents the same `named_tuple` an n-parameter list
-    /// does). Pass 1 whenever the arrow has a single parameter, INCLUDING when that
-    /// parameter's type is itself a tuple.
+    /// `arrow(param, result, effects)` carried as a Type occurrence.
+    /// Occurrence peer of [`Self::make_arrow_type`]. `param` is the arrow's `A`
+    /// ([`node_occurrence::TypeNode::Arrow`]); no parameter count stands beside it.
     ///
     /// `binders` is the arrow's own places ([`node_occurrence::TypeNode::Arrow`]): built
     /// by [`Self::make_arrow_binders`] where the arrow is formed, handed on as found
     /// where one is rebuilt, `None` where the type names no parameter of its own.
-    #[allow(clippy::too_many_arguments)]
     pub fn make_arrow_occ(
         &mut self,
         param: node_occurrence::TypeChild,
         result: node_occurrence::TypeChild,
         effects: node_occurrence::TypeChild,
-        arity: usize,
         binders: Option<crate::eval::value::Value>,
         span: crate::span::SourceSpan,
         owner: Option<Symbol>,
     ) -> Rc<NodeOccurrence> {
-        let arity = node_occurrence::TypeChild::Interned(self.make_arity_term(arity));
         NodeOccurrence::new_type(
             node_occurrence::TypeNode::Arrow {
                 param,
                 result,
                 effects,
-                arity,
                 binders,
             },
             span,
@@ -11979,19 +11966,6 @@ impl KnowledgeBase {
             })
             .collect();
         crate::kb::load::build_value_list(self, elems)
-    }
-
-    /// WI-791: the arrow `arity` child — a ground `Const(Int)`. Interned like any
-    /// other literal, so the occurrence carrier and its hash-consed term twin
-    /// carry the SAME child and compare structurally equal.
-    ///
-    /// `pub` because a test that hand-builds an arrow term (to control its
-    /// `effects` child directly, bypassing `make_arrow_type`'s canonicalization)
-    /// must still give it an arity — an arrow without one is refused by
-    /// `agreed_arrow_arity` before any other child is looked at, which silently
-    /// empties such a test of the coverage it was written for.
-    pub fn make_arity_term(&mut self, arity: usize) -> TermId {
-        self.alloc(Term::Const(crate::kb::term::Literal::Int(arity as i64)))
     }
 
     /// WI-1083 — `poly_type(binders, body)` carried as a Type occurrence: a
@@ -12261,21 +12235,12 @@ impl KnowledgeBase {
     /// `TypeExtractor.Arrow`); a KB constructed without `register_prelude` panics
     /// at the first builder call with a clear `resolve_symbol` message
     /// rather than silently producing malformed terms.
-    /// WI-791: `arity` is the parameter-list LENGTH as written — see
-    /// [`Self::make_arrow_occ`] for why it is a required argument rather than
-    /// something read back off `param`.
-    pub fn make_arrow_type(
-        &mut self,
-        param: TermId,
-        result: TermId,
-        effects: &[TermId],
-        arity: usize,
-    ) -> TermId {
+    pub fn make_arrow_type(&mut self, param: TermId, result: TermId, effects: &[TermId]) -> TermId {
         let effects_rows_term = self.build_canonical_effects_rows(effects);
-        self.make_arrow_from_effects_rows(param, result, effects_rows_term, arity)
+        self.make_arrow_from_effects_rows(param, result, effects_rows_term)
     }
 
-    /// Build `arrow(param, result, effects, arity)` from an ALREADY-canonical
+    /// Build `arrow(param, result, effects)` from an ALREADY-canonical
     /// `effects_rows(EffectExpression)` Type — the `effects` child is a row, not a
     /// raw label list, so it must NOT be re-canonicalized.
     /// [`Self::make_arrow_type`] canonicalizes a raw label list, then calls this.
@@ -12284,35 +12249,29 @@ impl KnowledgeBase {
         param: TermId,
         result: TermId,
         effects_rows: TermId,
-        arity: usize,
     ) -> TermId {
-        let arity_term = self.make_arity_term(arity);
-        self.make_arrow_from_effects_rows_arity_term(param, result, effects_rows, arity_term, None)
+        self.make_arrow_from_effects_rows_binders(param, result, effects_rows, None)
     }
 
-    /// [`Self::make_arrow_from_effects_rows`] with the `arity` child already built
-    /// — the occurrence→term lowering (`type_node_to_term`) has the exact child the
-    /// occurrence carried and must transplant it rather than re-derive a number, and
-    /// the arrow's own `binders` with it ([`node_occurrence::TypeNode::Arrow`]).
-    pub(crate) fn make_arrow_from_effects_rows_arity_term(
+    /// [`Self::make_arrow_from_effects_rows`] with the arrow's own `binders`
+    /// ([`node_occurrence::TypeNode::Arrow`]) — the occurrence→term lowering
+    /// (`type_node_to_term`) has the exact list the occurrence carried and transplants it.
+    pub(crate) fn make_arrow_from_effects_rows_binders(
         &mut self,
         param: TermId,
         result: TermId,
         effects_rows: TermId,
-        arity: TermId,
         binders: Option<TermId>,
     ) -> TermId {
         let arrow_sym = self.resolve_symbol("anthill.prelude.TypeExtractor.Arrow");
         let param_key = self.intern("param");
         let result_key = self.intern("result");
         let effects_key = self.intern("effects");
-        let arity_key = self.intern("arity");
 
         let mut named_args: SmallVec<[(Symbol, TermId); 2]> = SmallVec::new();
         named_args.push((effects_key, effects_rows));
         named_args.push((param_key, param));
         named_args.push((result_key, result));
-        named_args.push((arity_key, arity));
         if let Some(binders) = binders {
             named_args.push((self.intern("binders"), binders));
         }
@@ -16509,7 +16468,6 @@ mod tests {
             TypeChild::Interned(param_ty),
             TypeChild::Interned(result_ty),
             TypeChild::Node(Rc::clone(&effects_rows_occ)),
-            1,
             None,
             span,
             None,
@@ -16527,12 +16485,12 @@ mod tests {
             matches!(
                 head,
                 ViewHead::Functor {
-                    named_arity: 4,
+                    named_arity: 3,
                     pos_arity: 0,
                     ..
                 }
             ),
-            "arrow exposes param/result/effects + the WI-791 arity, got {head:?}",
+            "arrow exposes param/result/effects, got {head:?}",
         );
 
         // arrow.param / arrow.result are ground (no denoted) → hash-consed Terms.

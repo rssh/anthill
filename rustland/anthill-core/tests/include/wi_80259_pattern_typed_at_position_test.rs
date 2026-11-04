@@ -920,15 +920,16 @@ fn a_tuple_pattern_where_no_tuple_can_stand() {
         &one_arm("Box", "()", "box(v: 7)"),
         &["pattern.tuple", "expected Box, got Unit"],
     );
-    // A lambda's binder LIST is its parameters and no tuple pattern: two binders where the
-    // callback takes one `Box` is the arity check's to refuse, in its own words. Passes
-    // either way.
+    // A lambda's binder LIST is its parameters, its own tuple: two binders where the callback
+    // takes one `Box` are refused at the lambda's pattern, the tuple against the slot's `A`
+    // (WI-20261104-6HVXM, kernel-language §4.4; before it the arity check refused it, "expected
+    // a 1-parameter function, got a 2-parameter function"). Passes either way of this ticket.
     refused(
         "wi80259.tuple.lambda",
         "  operation ap(g: (a: Box) -> Int64, b: Box) -> Int64 = g(b)\n  \
          operation f(b: Box) -> Int64 = ap(lambda (x, y) -> 1, b)\n  \
          operation go() -> Int64 = f(box(v: 7))",
-        &["expected a 1-parameter function", "got a 2-parameter function"],
+        &["pattern.tuple", "pattern-position", "expected Box, got (_1: "],
     );
     // A tuple pattern INSIDE the list is one.
     refused(

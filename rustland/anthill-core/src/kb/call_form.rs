@@ -1,28 +1,19 @@
-//! WI-801 — THE single owner of the spread-vs-whole decision at a function-value
-//! application.
+//! How a callable takes the tuple an application hands it — the one owner of the questions
+//! the typer and eval must answer alike (kernel-language §4.4, "Every arrow is a `Function`").
 //!
-//! Three sites have to agree on how many values a callable is handed, and before
-//! this module they each derived it from a DIFFERENT quantity:
+//! An application of a function value hands its callable ONE argument: the tuple `A` the
+//! typer gathered the written arguments into (`f(7, 1)` over `(x: Int64, y: Int64) -> R` is
+//! `f((x: 7, y: 1))`), or the one value of a non-tuple `A`. What the callable does with it is
+//! its own: an operation of several parameters takes them from the components — by label where
+//! its parameter names are `A`'s labels, by position otherwise ([`meets_slot_by_label`]) — a
+//! lambda hands the tuple to its pattern, and a callable of one parameter takes it whole.
 //!
-//!   * the TYPER's argument check (`positional_arg_expectations`, kb/typing.rs)
-//!     pivoted on `A`'s COMPONENT COUNT at a `Function[A, B, E]` slot;
-//!   * the TYPER's conformance check (`arrow_function_compatible`) read neither —
-//!     it skipped arity entirely, on the true-but-incomplete ground that a
-//!     `Function` states none;
-//!   * EVAL (`spread_eta_args` / `gather_closure_arg`, eval/eval.rs) pivoted on
-//!     the CALLEE's OWN arity (`params.len()` / [`Pattern::binder_arity`]).
+//! [`classify_application`] relates the values a HOST call hands a callable (a builtin applying
+//! a closure to two arguments) to the callable's own count; the typer's own applications are
+//! already in the one-tuple form.
 //!
-//! They coincide only when the callback's arity is one the slot can actually
-//! reach, and nothing established that: a 3-binder lambda at a 2-component `A`
-//! LOADED CLEAN and trapped `ArityMismatch { expected: 3, got: 2 }` at eval — the
-//! load-clean-then-trap class WI-782/791/792/788 exist to remove. (The OPERATION
-//! spelling of the same program was already refused at load, because an op's
-//! parameter list is a CONCRETE tuple type that fails the param comparison; an
-//! unannotated lambda ADOPTS `A` as its param type (kb/typing.rs, `Expr::Lambda`),
-//! so its param matches trivially and only its arity disagrees.)
-//!
-//! [`Pattern::binder_arity`] (kb/node_occurrence.rs) owns the count of binders a
-//! pattern WRITES. This module owns what that count MEANS at an application.
+//! [`Pattern::binder_arity`] (kb/node_occurrence.rs) owns the count of binders a pattern
+//! WRITES.
 //!
 //! [`Pattern::binder_arity`]: crate::kb::node_occurrence::Pattern::binder_arity
 
@@ -44,7 +35,7 @@ pub enum CallForm {
     /// spread across it. Carries a DYNAMIC obligation the classifier cannot
     /// discharge on counts alone: that one value must really have `arity`
     /// components. Eval checks it against the value (`spread_eta_args`); the
-    /// typer checks it against `A` ([`arity_admitted_at_function_slot`]).
+    /// typer checks it against `A` (the application match).
     Spread,
     /// The callee takes ONE parameter and was handed several values, so they are
     /// that parameter's components and must be gathered into it.
@@ -78,43 +69,35 @@ pub fn classify_application(arity: usize, supplied: usize) -> CallForm {
     }
 }
 
-/// WI-801: may a callable of `arity` parameters stand where a
-/// `Function[A, B, E]` is declared?
+/// Rule 6 of proposal 002 (kernel-language §4.4, "A callable where a function type is
+/// expected"): does a callable of several parameters meet a slot's `A` BY LABEL? It does when
+/// the two tuples carry the same labels — the callable's parameter names are `A`'s component
+/// labels, in any order — and otherwise the components meet the parameters BY POSITION, the
+/// first to the first. A positional `A` (`_1.._n`) carries no labels of its own to agree on,
+/// and a lambda's tuple has none either.
 ///
-/// `a_components` is `Some(n)` when `A` is a TUPLE type with `n` components, and
-/// `None` when `A` is a known NON-tuple — one indivisible value. The caller must
-/// pass no verdict at all (skip the check) when `A` is not yet known, so a
-/// generic `Function[A = T, B]` stays unconstrained.
-///
-/// The rule is the spec's (docs/kernel-language.md §"the equivalence is not
-/// exact"): a `Function[(A, B), R]` "accepts either" a single-tuple-argument
-/// callback OR a two-parameter one, so exactly TWO call counts are reachable at
-/// the slot — ONE whole `A` (WI-775) and `A`'s components spread (WI-784). A
-/// callable that stands here will meet both, so it must handle both; anything
-/// else typechecks and then traps.
-///
-/// Stated THROUGH [`classify_application`] rather than as the equivalent
-/// `arity == 1 || Some(arity) == a_components`, deliberately: the admissible
-/// arities are a CONSEQUENCE of what the call forms do, not an independent fact,
-/// and spelling them independently is exactly how this site and eval came to
-/// disagree.
-///
-/// ONE `supplied` suffices, though the slot admits two call counts. Asking the
-/// classifier about both is redundant, not thorough: `supplied = 1` and
-/// `supplied = |A|` provably yield the same verdict for every input (each reduces
-/// to `arity == 1 || arity == |A|`), so the second question can only ever repeat
-/// the first's answer. The SPREAD count is the one asked, because it is the count
-/// whose `Spread` obligation is discharged below.
-///
-/// That obligation is what makes this more than an arity equality: `Spread` is
-/// admissible only when `A` really HAS `arity` components, which is what keeps a
-/// 2-binder callback out of a scalar `Function[A = Int64, B]` slot — `A`
-/// contributes no components to spread, so only arity 1 can take it.
-pub fn arity_admitted_at_function_slot(a_components: Option<usize>, arity: usize) -> bool {
-    match classify_application(arity, a_components.unwrap_or(1)) {
-        CallForm::AsWritten | CallForm::Gather => true,
-        CallForm::Spread => a_components == Some(arity),
-        CallForm::Mismatch => false,
+/// THE ONE OWNER, read by the typer where it re-expresses the callable at the slot and by eval
+/// where an operation value takes the tuple (`spread_eta_args`), so the two cannot map one call
+/// differently. Labels are compared by SHORT name, as `TupleComponents::by_label_index` reads a
+/// tuple's components.
+pub fn meets_slot_by_label(own: &[&str], slot: &[&str]) -> bool {
+    own.len() == slot.len()
+        && !own.is_empty()
+        && own.iter().all(|o| slot.contains(o))
+        && slot.iter().all(|l| own.contains(l))
+}
+
+/// For each of a callable's parameters, the index of the slot's `A` component it takes — by
+/// label where [`meets_slot_by_label`] holds, by position otherwise. `None` when the counts
+/// differ: two arguments do not meet three components (the application match).
+pub fn slot_components_of_params(own: &[&str], slot: &[&str]) -> Option<Vec<usize>> {
+    if own.len() != slot.len() {
+        return None;
+    }
+    if meets_slot_by_label(own, slot) {
+        own.iter().map(|o| slot.iter().position(|l| l == o)).collect()
+    } else {
+        Some((0..own.len()).collect())
     }
 }
 
@@ -132,62 +115,16 @@ mod tests {
         assert_eq!(classify_application(3, 2), CallForm::Mismatch);
     }
 
-    /// The equivalence [`arity_admitted_at_function_slot`]'s doc asserts, checked
-    /// rather than claimed — both that the routed form matches the direct rule,
-    /// and that the `supplied` it drops could not have changed the verdict.
+    /// Rule 6: the same labels in another order meet by label; any other labels, a lambda's
+    /// positional tuple, or a positional slot, by position; different counts not at all.
     #[test]
-    fn the_admitted_set_is_exactly_one_or_the_component_count() {
-        for components in (0..8).map(Some).chain(std::iter::once(None)) {
-            for arity in 0..8 {
-                let direct = arity == 1 || Some(arity) == components;
-                assert_eq!(
-                    arity_admitted_at_function_slot(components, arity),
-                    direct,
-                    "components={components:?} arity={arity}",
-                );
-            }
-        }
-    }
-
-    /// THE WI-801 defect, at the level of the rule: a 3-binder callback at a
-    /// 2-component `A` fits neither reading.
-    #[test]
-    fn a_callback_fitting_neither_reading_is_refused() {
-        assert!(!arity_admitted_at_function_slot(Some(2), 3));
-        assert!(!arity_admitted_at_function_slot(Some(2), 0));
-        assert!(!arity_admitted_at_function_slot(Some(3), 2));
-    }
-
-    /// Both readings the spec names stay admitted — this is what forbids the
-    /// ticket's broader "binder count differs from A's arity" phrasing. Arity ONE
-    /// is the CANONICAL inhabitant of `Function[A = (X, Y), B]`: `lambda t ->
-    /// t._1` simply IS an `(X, Y) -> B`.
-    #[test]
-    fn both_admissible_readings_survive() {
-        assert!(arity_admitted_at_function_slot(Some(2), 1));
-        assert!(arity_admitted_at_function_slot(Some(2), 2));
-        assert!(arity_admitted_at_function_slot(Some(3), 1));
-        assert!(arity_admitted_at_function_slot(Some(3), 3));
-        assert!(arity_admitted_at_function_slot(Some(1), 1));
-    }
-
-    /// The unit slot: `Function[A = (), B]` forced as `f()`. Arity 0 is admitted
-    /// because it EQUALS the component count, not because 0 is special — the
-    /// nullary thunk (`prelude/delay.anthill`) rides this arm.
-    #[test]
-    fn a_nullary_thunk_is_admitted_at_a_unit_slot() {
-        assert!(arity_admitted_at_function_slot(Some(0), 0));
-        assert!(arity_admitted_at_function_slot(Some(0), 1));
-    }
-
-    /// A NON-tuple `A` is one indivisible value, so only arity 1 can take it.
-    /// Without `Spread`'s obligation being discharged against `A`, a 2-binder
-    /// callback would slip in here: `classify_application(2, 1)` is a `Spread`,
-    /// and it is admissible ONLY because `A` really has 2 components.
-    #[test]
-    fn a_scalar_slot_admits_only_arity_one() {
-        assert!(arity_admitted_at_function_slot(None, 1));
-        assert!(!arity_admitted_at_function_slot(None, 2));
-        assert!(!arity_admitted_at_function_slot(None, 0));
+    fn a_callable_meets_a_slot_by_label_or_by_position() {
+        assert_eq!(slot_components_of_params(&["y", "x"], &["x", "y"]), Some(vec![1, 0]));
+        assert_eq!(slot_components_of_params(&["z", "x"], &["x", "y"]), Some(vec![0, 1]));
+        assert_eq!(slot_components_of_params(&["a", "b"], &["_1", "_2"]), Some(vec![0, 1]));
+        assert_eq!(slot_components_of_params(&["_1", "_2"], &["acc", "x"]), Some(vec![0, 1]));
+        assert_eq!(slot_components_of_params(&["a", "b", "c"], &["_1", "_2"]), None);
+        assert_eq!(slot_components_of_params(&[], &[]), Some(vec![]));
+        assert!(!meets_slot_by_label(&["x", "x"], &["x", "y"]));
     }
 }

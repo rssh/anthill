@@ -3340,23 +3340,17 @@ pub(super) fn arrow_params_compatible<A: TermView, B: TermView>(
     subst: &mut Substitution,
     sub: &A,
     sup: &B,
-    arity: usize,
 ) -> bool {
-    // NOTE the deliberate asymmetry with [`unify_arrow_params`], which walks
-    // before classifying: there, a bound-var param slot would fall through to
-    // `unify_types` and be REJECTED under name alignment, so walking restores
-    // the pre-WI-775 verdict. Here the fallthrough is `types_compatible`, whose
-    // `type_var` arm is a wildcard returning `true` — the pre-WI-775 verdict
-    // already. Walking would make this path STRICTER than it has ever been, on
-    // inputs no measurement covers, so it stays unwalked.
-    // WI-791: at arity one the slot is the sole parameter's TYPE, not a list —
-    // fall through to `types_compatible`, which relates a tuple there as the DATA
-    // it is (by name, width-subtyping). See `unify_arrow_params` for the two
-    // measured programs this restores.
-    if arity != 1 && both_named_tuples(kb, sub, sup) {
-        return named_tuple_compatible_as(kb, subst, sub, sup, TupleAlign::PARAM_LIST);
+    // WALKED, as [`unify_arrow_params`] walks: a slot holding a variable σ bound to a tuple is
+    // that tuple, and read unwalked it would fall to `types_compatible`'s DATA relation — by
+    // name, width-subtyping — which is the tuple match, not the parameter-list one. No count
+    // selects the relation: every arrow is a `Function`, and a one-tuple parameter and the
+    // list are one type (kernel-language §4.4).
+    let (sub_w, sup_w) = (walk_view(kb, subst, sub), walk_view(kb, subst, sup));
+    if both_named_tuples(kb, &sub_w, &sup_w) {
+        return named_tuple_compatible_as(kb, subst, &sub_w, &sup_w, TupleAlign::PARAM_LIST);
     }
-    types_compatible(kb, subst, sub, sup)
+    types_compatible(kb, subst, &sub_w, &sup_w)
 }
 
 // ── Unified type checking ──────────────────────────────────────

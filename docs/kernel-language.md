@@ -474,6 +474,16 @@ notably the `Option` some-coercion (a bare `T` supplied for a declared `Option[T
 load the application is converted to its tupled form, `f(7, 1)` over `(x: Int64, y: Int64) -> R`
 to `f((x: 7, y: 1))`: the conversion needs `A`'s labels, which the run time does not have.
 
+**A lambda's binder names name its arguments** where its own value is applied. Its tuple has no
+labels (below), but a named argument of a call of the lambda's value meets the binder of that
+name, as it would meet the component of that label: over `let g = lambda (a, b) -> a`,
+`g(a: 1, b: 2)`, `g((a: 1, b: 2))` and `g((b: 2, a: 1))` each give 1, and `g(c: 1, b: 2)` is
+refused at `c`. The names are no part of the type. Wherever the value meets another function type
+it does so as the positional tuple it is, so `let f = lambda (a: Int64, b: Int64) -> a + b` then
+`List.foldLeft([1, 2, 3], 0, f)` gives 6, and through a parameter of a function type it is that
+type's labels, not the binders', that a call names. A binder that is no single name (`_`, a
+literal, a nested pattern) names nothing, and only a positional argument reaches it.
+
 The same check reaches a callback whose declared type is still **polymorphic**
 (`apply2[T](f: (x: T, y: T) -> R, …)`). A component type is deferred only while it is
 *genuinely* polymorphic — a variable the call has already pinned is **resolved and then
@@ -486,7 +496,8 @@ components `A` has is decided regardless, since instantiation does not change it
 `Function[A, B]` is expected when the expected `A` reaches the callable's own tuple by the
 application match: the slot will apply it so. An operation's tuple is its parameters:
 `two(a: Int64, b: Int64)` has `(a: Int64, b: Int64)`. A lambda's tuple is its pattern's:
-`lambda (a: Int64, b: Int64) -> …` has `(Int64, Int64)`, with no labels. A callable of one
+`lambda (a: Int64, b: Int64) -> …` has `(Int64, Int64)`, with no labels (its binder names name
+its arguments only in a call of its own value, above). A callable of one
 parameter, or of one binder, has that parameter's type. When the two tuples carry the same
 labels, the components meet by label; otherwise the labels are mapped by position, the first to
 the first. Over `take(f: (x: Int64, y: Int64) -> Int64) -> Int64 = f(7, 1)`,
@@ -5393,7 +5404,8 @@ has no way to *spell* a label (its elements are patterns or `name: Type` typed
 binders), so a binder name is a fresh binder rather than a selector — matching
 binder names against labels would leave `lambda (a, b)` no meaning at all over a
 named tuple. Position still selects *which label*; it no longer selects which
-value.
+value. (A lambda's binder names do name its ARGUMENTS where its own value is applied, §4.4: a
+named argument is placed at its binder's position before the pattern reads the tuple.)
 
 Two consequences:
 

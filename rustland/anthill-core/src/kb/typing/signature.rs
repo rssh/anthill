@@ -2427,7 +2427,6 @@ fn bind_member_vars_along(
             TypeExtractor::Arrow {
                 param: sp,
                 result: sr,
-                arity,
                 ..
             },
             TypeExtractor::Arrow {
@@ -2436,11 +2435,9 @@ fn bind_member_vars_along(
                 ..
             },
         ) => {
-            // A parameter LIST aligns by position (WI-782); a sole parameter is its type.
+            // A parameter LIST aligns by position (WI-782); a non-tuple `A` is its type.
             match (extract_type(kb, &sp), extract_type(kb, &mp)) {
-                (TypeExtractor::NamedTuple(sf), TypeExtractor::NamedTuple(mf))
-                    if arity != 1 && both_named_tuples(kb, &sp, &mp) =>
-                {
+                (TypeExtractor::NamedTuple(sf), TypeExtractor::NamedTuple(mf)) => {
                     bind_member_fields_along(kb, subst, &sf, &mf, TupleAlign::PARAM_LIST, !flipped);
                 }
                 _ => bind_member_vars_along(kb, subst, &sp, &mp, !flipped),

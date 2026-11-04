@@ -12,46 +12,23 @@ use super::*;
 /// only a parameter list is applied positionally (WI-775).
 ///
 /// WI-782 first RETIRED this gate (letting any two equal-arity lists zip) and
-/// then restored it, because dropping it made `operation get_a(t: (a: Int64, b:
-/// Int64))` satisfy a genuinely 2-parameter `(p: Int64, q: Int64) -> Int64` — a
-/// lone tuple-typed parameter collapsed to the tuple's own 2-field term, and no
-/// name test could tell the two apart.
+/// then restored it: a list that NAMES its components makes a claim about which slot is
+/// which, and zipping it by position against another naming is the unsoundness this gate
+/// refuses. A `_1.._n` list makes no such claim.
 ///
-/// WI-791 TOOK THAT JOB AWAY, and this gate is better for it. Arity is now a
-/// child of the arrow, so a collapsed tuple parameter never reaches
-/// [`TupleAlign::PARAM_LIST`] at all — [`unify_arrow_params`] routes arity one to
-/// the ordinary type relation. The gate no longer stands between a data tuple and
-/// a parameter list; it is asked only about two genuine parameter LISTS of equal
-/// length, where its question — do these agree on which slot is which? — is the
-/// only one it was ever sound to answer.
-///
-/// That also closes the two spellings it demonstrably could NOT catch, both
-/// MEASURED to load clean and then trap `ArityMismatch` at eval, and both
-/// PRE-EXISTING rather than WI-782 regressions:
-///
-///   * the POSITIONAL spelling `(t: (Int64, Int64))`, whose components are minted
-///     `_1, _2` by `intern_positional_label` — the idiomatic spelling was the one
-///     that slipped through; and
-///   * a LEADING-ZERO spelling `(t: (_01: Int64, _02: Int64))`, which the reading
-///     below used to admit as synthetic (it was a bare `parse::<usize>()`, and
-///     that accepts leading zeros). WI-790 closed that: `_01` is a USER label
-///     here as it already was in eval, and the decision went eval's way — if
-///     `_01` is a user label, a list spelling its binders `_01, _02` is a NAMED
-///     list making a real claim about which slot is which, so zipping it against
-///     `(p, q)` by position is precisely the unsoundness this gate exists to
-///     refuse, not a courtesy to surface intent.
-///
-/// Neither is refused by a better name test — each is refused because 1 ≠ 2. That
-/// stayed true through WI-790: the leading-zero program above is refused on ARITY
-/// by `leading_zero_component_names_do_not_make_a_parameter_list`, one gate
-/// earlier, so nothing depended on this function admitting it.
+/// Since every arrow is a `Function` (kernel-language §4.4), a one-tuple parameter is no
+/// separate case: `get_a(t: (a: Int64, b: Int64))` has the tuple `(a: Int64, b: Int64)` and
+/// does not stand for `(p: Int64, q: Int64) -> Int64` as a value, the labels differing; a
+/// one-parameter operation written at the slot meets it by the tuple match instead
+/// ([`callable_at_slot`]). A LEADING-ZERO spelling `(_01: …, _02: …)` is a USER label
+/// (WI-790), so a list spelling its components so is a named list, not a positional one.
 ///
 /// The index check requires the field at position `i` to be named `_{i+1}`, so it
 /// (and the zip in `align_named_tuple_slots`) relies on [`named_tuple_fields`]
 /// yielding fields in construction/declaration order — which it does (it reads
 /// the `fields` list spine in order; only the per-element record args are
 /// name-sorted, not the list).
-fn is_positional_tuple_names(kb: &KnowledgeBase, fields: &[(Symbol, Value)]) -> bool {
+pub(super) fn is_positional_tuple_names(kb: &KnowledgeBase, fields: &[(Symbol, Value)]) -> bool {
     !fields.is_empty()
         && fields
             .iter()
@@ -292,80 +269,31 @@ pub(super) fn unify_named_tuple_as<A: TermView, B: TermView>(
     }
 }
 
-/// WI-791: the parameter count two arrows AGREE on, or `None` when they do not
-/// (or when either fails to state one) — in which case they are unrelatable and
-/// both the unify and the subtype path refuse.
+/// WI-775: relate two function types' `A`s — an arrow's `param`, a `Function`'s `A`
+/// ([`unify_function_types`]). Identical to [`unify_types`] except that two named tuples align
+/// in [`TupleAlign::PARAM_LIST`] mode: a parameter list is applied by position, so a named-binder
+/// callback `(acc, x)` unifies against a positional `(_1, _2)` (WI-442), while two lists that
+/// name their components otherwise, or in another order, do not (kernel-language §4.4, "A
+/// function value at another function type"). Everything the list CONTAINS is an ordinary type
+/// again — a nested tuple component is data.
 ///
-/// This is the whole of the ticket's fix, and it is one equality because the
-/// count is a ground child rather than something inferred from the param slot's
-/// shape: `operation get_a(t: (a: Int64, b: Int64))` mints arity 1 and a declared
-/// `(p: Int64, q: Int64) -> R` mints arity 2, so the two stop being the same term
-/// and stop standing in for each other. Every spelling that used to slip past the
-/// name-shape gate — the positional `(Int64, Int64)`, whose components are minted
-/// `_1, _2`, and the leading-zero `(_01: …, _02: …)`, which `parse::<usize>()`
-/// accepted — fails here instead, because none of them is a question about names.
-/// Both callers reach this only from an `(arrow, arrow)` dispatch arm, so a side
-/// that states NO arity is a MALFORMED arrow, not a legitimate absence — the two
-/// are folded into one `None` here because the relation has no diagnostic channel
-/// (it returns `bool`), but they are not the same thing, and a malformed arrow
-/// silently comparing as "not conformant" hides real defects: WI-791 shipped a
-/// first draft in which two hand-built test arrows lost their `arity` child, and
-/// both tests kept passing while covering nothing. The `debug_assert` makes that
-/// loud where it can be — under test, which is the only place a hand-built arrow
-/// term exists.
-pub(super) fn agreed_arrow_arity<A: TermView, B: TermView>(
-    kb: &mut KnowledgeBase,
-    a: &A,
-    b: &B,
-) -> Option<usize> {
-    // Intern once, not once per side — this runs on every arrow comparison.
-    let arity_key = kb.intern("arity");
-    let (na, nb) = (arrow_arity(kb, a, arity_key), arrow_arity(kb, b, arity_key));
-    debug_assert!(
-        na.is_some() && nb.is_some(),
-        "WI-791: an `arrow` must state its parameter-list arity; \
-         a term reaching the arrow-vs-arrow relation without one is malformed \
-         (build it with `make_arrow_type` / `make_arrow_occ`, or add the `arity` \
-         child explicitly via `make_arity_term`)",
-    );
-    (na? == nb?).then_some(na?)
-}
-
-/// WI-775: relate an arrow's two param slots, at an arity both sides agree on
-/// (WI-791 established it in the caller). Identical to [`unify_types`] except
-/// that two named-tuple PARAMETER LISTS align in [`TupleAlign::PARAM_LIST`] mode,
-/// so a named-binder callback `(acc, x)` still unifies against a multi-param op's
-/// eta arrow `(_1, _2)` (WI-442). Everything the param list CONTAINS is an
-/// ordinary type again — a nested tuple component is data, and recursing through
-/// `unify_types` re-imposes name alignment on it.
-///
-/// WI-791: `arity` selects WHICH relation applies, which is the second half of
-/// the fix. At arity ONE the slot is not a list at all — it is the sole
-/// parameter's TYPE — so it relates as an ordinary type, and a tuple there is
-/// DATA, aligned by name with width subtyping. WI-782 had to route a lone
-/// tuple-typed parameter through `PARAM_LIST` (it could not tell one from a list)
-/// and knowingly paid for it by false-rejecting correct programs:
-/// `get_x(t: (x: Int64, y: Bool))` handed to a `(u: (y: Bool, x: Int64)) -> R`
-/// callback, and the narrower `(a: Int64)` against `(a: Int64, b: Int64)`. Both
-/// load again, and for the right reason: the consumer reads `t.x` by NAME.
+/// No count selects the relation: every arrow is a `Function` and its `A` is the tuple of its
+/// parameters, so a one-tuple parameter `((a: A, b: B)) -> R` and the list `(a: A, b: B) -> R`
+/// are one type and take one relation.
 pub(super) fn unify_arrow_params<A: TermView, B: TermView>(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
     a: &A,
     b: &B,
-    arity: usize,
 ) -> bool {
     // WALK FIRST, then classify. A param slot routinely holds a bound var —
     // `unify_types` opens with the same two `walk_view`s for exactly that reason
     // (see its head). Classifying the RAW carrier would read `type_var`, miss the
     // arm, and fall through to `unify_types`, which walks, sees `named_tuple`,
-    // and dispatches to the EQUALITY `unify_named_tuple` — silently downgrading
-    // the mode on the one path that most needs it. WI-799 made that downgrade
-    // STRICTER, not laxer (exact width, and no synthetic escape), so the
-    // fallthrough now REFUSES a positional eta arrow rather than mis-relating it
-    // — still wrong, still silent, and still what the walk prevents.
+    // and dispatches to the EQUALITY `unify_named_tuple` — silently changing the
+    // mode on the one path that most needs it.
     let (aw, bw) = (walk_view(kb, subst, a), walk_view(kb, subst, b));
-    if arity != 1 && both_named_tuples(kb, &aw, &bw) {
+    if both_named_tuples(kb, &aw, &bw) {
         return unify_named_tuple_as(kb, subst, &aw, &bw, TupleAlign::PARAM_LIST);
     }
     unify_types(kb, subst, &aw, &bw)
@@ -421,13 +349,10 @@ pub(super) fn arrow_part_pairs<A: TermView, B: TermView>(
     a: &A,
     b: &B,
 ) -> Option<ArrowPartPairs> {
-    let (param_a, result_a, effects_a, arity_a) = arrow_children(kb, a)?;
-    let (param_b, result_b, effects_b, arity_b) = arrow_children(kb, b)?;
-    if arity_a != arity_b {
-        return None;
-    }
+    let (param_a, result_a, effects_a) = arrow_children(kb, a)?;
+    let (param_b, result_b, effects_b) = arrow_children(kb, b)?;
     let mut pairs = SmallVec::new();
-    if arity_a != 1 && both_named_tuples(kb, &param_a, &param_b) {
+    if both_named_tuples(kb, &param_a, &param_b) {
         let a_fields = named_tuple_fields(kb, &param_a);
         let b_fields = named_tuple_fields(kb, &param_b);
         let slots = align_named_tuple_slots(kb, &a_fields, &b_fields, TupleAlign::PARAM_LIST)?;
@@ -452,24 +377,22 @@ pub(super) struct ArrowPartPairs {
     pub(super) rows: (Value, Value),
 }
 
-/// An arrow's parameter slot, result, effect row and parameter count; `None` for a type
-/// that is no arrow. A term headed as an arrow that does not read as one — no parameter
-/// count — is malformed, and asserted: taken for "no arrow" it would relate to nothing,
-/// in silence ([`agreed_arrow_arity`] says the same of it).
-fn arrow_children<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Option<(Value, Value, Value, usize)> {
+/// An arrow's parameter slot, result and effect row; `None` for a type that is no arrow. A
+/// term headed as an arrow that does not read as one — a child missing — is malformed, and
+/// asserted: taken for "no arrow" it would relate to nothing, in silence.
+fn arrow_children<V: TermView>(kb: &KnowledgeBase, ty: &V) -> Option<(Value, Value, Value)> {
     match extract_type(kb, ty) {
         TypeExtractor::Arrow {
             param,
             result,
             effects,
-            arity,
             binders: _,
-        } => Some((param, result, effects, arity)),
+        } => Some((param, result, effects)),
         _ => {
             debug_assert!(
                 !matches!(type_head(kb, ty), TypeHead::Arrow),
-                "an `arrow` must state its parameter-list arity; a term headed as one that \
-                 does not read as one is malformed (build it with `make_arrow_type` / \
+                "an `arrow` must carry its `param`, `result` and `effects`; a term headed as \
+                 one that does not read as one is malformed (build it with `make_arrow_type` / \
                  `make_arrow_occ`)",
             );
             None

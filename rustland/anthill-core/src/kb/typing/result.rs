@@ -429,11 +429,10 @@ pub(super) fn entity_type_on_builders(kb: &mut KnowledgeBase, v: &Value) -> Resu
             param,
             result,
             effects,
-            arity,
             binders,
         } => {
             let (p, r, e) = (child(kb, param)?, child(kb, result)?, child(kb, effects)?);
-            Ok(Value::Node(kb.make_arrow_occ(p, r, e, arity, binders, sp, owner)))
+            Ok(Value::Node(kb.make_arrow_occ(p, r, e, binders, sp, owner)))
         }
         TypeExtractor::EffectsRows(expr) => {
             let e = child(kb, expr)?;
@@ -648,13 +647,11 @@ pub(super) fn thread_expected_tuple_fields(
 /// anything else is known to be no parameter of this function. Recorded even where the row
 /// names none: `lambda (k) -> g(d)` writes `g.y`, a callback parameter's place, which is no
 /// parameter of the lambda and must not be read at `y`'s position, as `g` itself would be.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn make_arrow_value(
     kb: &mut KnowledgeBase,
     param: &Value,
     result: &Value,
     effects: &[Value],
-    arity: usize,
     binders: &[Option<Symbol>],
     span: crate::span::SourceSpan,
     owner: Option<Symbol>,
@@ -722,19 +719,7 @@ pub(super) fn make_arrow_value(
     let binders = (!binders.is_empty()).then(|| kb.make_arrow_binders(binders, span, owner));
     let param_child = value_to_type_child_at(kb, param, span, owner);
     let result_child = value_to_type_child_at(kb, result, span, owner);
-    // WI-791: `arity` is passed in, never read back off `param` — the caller is the
-    // only one that still knows whether a `named_tuple` param is a parameter LIST
-    // or one tuple-typed parameter.
-    let arrow = kb.make_arrow_occ(
-        param_child,
-        result_child,
-        effects_child,
-        arity,
-        binders,
-        span,
-        owner,
-    );
-    Value::Node(arrow)
+    Value::Node(kb.make_arrow_occ(param_child, result_child, effects_child, binders, span, owner))
 }
 
 /// An arrow's own places by position, as [`node_occurrence::TypeNode::Arrow`] records them
@@ -1252,7 +1237,6 @@ pub(super) fn rewrite_type_occ_deep(
                 param,
                 result,
                 effects,
-                arity,
                 binders,
             } => {
                 let (p, r, e) = (
@@ -1260,15 +1244,12 @@ pub(super) fn rewrite_type_occ_deep(
                     child(kb, subst, result, ground, &mut changed),
                     child(kb, subst, effects, ground, &mut changed),
                 );
-                // WI-791: arity is TRANSPLANTED, not rewritten — it is a count, not a
-                // type, so σ / rigidify / δ-ground have nothing to say about it. This
-                // is the property the reverted in-slot encoding lacked. The arrow's own
-                // binders are places, transplanted for the same reason.
+                // The arrow's own binders are places, not types, so σ / rigidify / δ-ground
+                // have nothing to say about them: TRANSPLANTED, not rewritten.
                 Some(NodeKind::Type(TypeNode::Arrow {
                     param: p,
                     result: r,
                     effects: e,
-                    arity: arity.clone(),
                     binders: binders.clone(),
                 }))
             }

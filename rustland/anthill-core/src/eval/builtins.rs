@@ -4476,7 +4476,6 @@ fn extract_type_builtin(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
     let param_key = interp.kb.intern("param");
     let result_key = interp.kb.intern("result");
     let effects_key = interp.kb.intern("effects");
-    let arity_key = interp.kb.intern("arity");
     let effects_expr_key = interp.kb.intern("effects_expr");
     let term_key = interp.kb.intern("term");
     let base_key = interp.kb.intern("base");
@@ -4550,29 +4549,14 @@ fn extract_type_builtin(interp: &mut Interpreter, args: &[Value]) -> Result<Valu
                 ],
             )
         }
-        // WI-791: `arity` reifies alongside the other three. A program that
-        // `case`s over an `Arrow` needs it to tell a one-tuple-parameter arrow
-        // from an n-parameter one — the same distinction the typer needs — and
-        // dropping it here would make `extract` lossy against the stdlib
-        // `entity Arrow(param, result, effects, arity)` it is defined to mirror.
         TypeExtractor::Arrow {
             param,
             result,
             effects,
-            arity,
             binders,
         } => {
-            // `arity` arrives decoded; re-mint the `Const(Int)` the stdlib entity's
-            // `arity: Int64` field holds, through the same builder the typer uses so
-            // a reified arrow is structurally identical to the one it came from. The
-            // arrow's own `binders` ride along where it has them, as the entity's do.
-            let arity_val = Value::term(interp.kb.make_arity_term(arity));
-            let mut fields = vec![
-                (param_key, param),
-                (result_key, result),
-                (effects_key, effects),
-                (arity_key, arity_val),
-            ];
+            // The arrow's own `binders` ride along where it has them, as the entity's do.
+            let mut fields = vec![(param_key, param), (result_key, result), (effects_key, effects)];
             if let Some(binders) = binders {
                 fields.push((interp.kb.intern("binders"), binders));
             }

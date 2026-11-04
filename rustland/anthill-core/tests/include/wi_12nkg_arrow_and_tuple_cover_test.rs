@@ -35,11 +35,14 @@
 //!    [`the_call_is_no_cover_wherever_it_is_written`],
 //!    [`a_callers_requirement_at_another_arrow_is_not_forwarded`], and three that load
 //!    where a refusal is owed: [`an_open_part_is_not_forwarded_across_a_call`],
-//!    [`a_requirement_of_another_shape_is_not_named_as_a_near_miss`] and
+//!    `a_requirement_of_another_shape_is_not_named_as_a_near_miss` (since WI-20261104-6HVXM
+//!    [`a_requirement_at_a_tuple_of_the_open_part_is_named_as_a_near_miss`]) and
 //!    [`a_call_a_requirement_at_another_arrow_does_not_cover_is_refused_with_no_provider`].
 //! 2. THE COARSE VERDICT (`coarse_pair_verdict` answering by `dispatch_values_match` either
-//!    way, as it did). 1 FAILS: [`a_requirement_of_another_shape_is_not_named_as_a_near_miss`]
-//!    — the refusal's account is the one reader that takes the coarse verdict alone.
+//!    way, as it did). 1 FAILED: `a_requirement_of_another_shape_is_not_named_as_a_near_miss`
+//!    — the refusal's account is the one reader that takes the coarse verdict alone. Since
+//!    WI-20261104-6HVXM that row's near miss is one (a one-parameter arrow over `T` is the
+//!    two-parameter arrow at a tuple `T`), and the row asserts it named.
 //! 3. THE OPEN PART (`part_verdict` holding a part nothing has determined to
 //!    `sigma_pair_verdict`). 1 FAILS: [`a_lambda_without_its_parameters_type_reads_the_requirement`]
 //!    (refused by part 4; with that backed out too, it loads and dies when it runs).
@@ -48,7 +51,8 @@
 //!    [`a_call_at_an_arrow_or_a_tuple_nothing_provides_is_refused`],
 //!    [`a_call_a_requirement_at_another_arrow_does_not_cover_is_refused_with_no_provider`],
 //!    [`a_lambda_without_its_parameters_type_and_no_requirement_is_refused`],
-//!    [`a_lambda_of_several_binders_is_refused_naming_the_brackets`],
+//!    `a_lambda_of_several_binders_is_refused_naming_the_brackets` (since WI-20261104-6HVXM
+//!    [`a_lambda_of_several_typed_binders_states_its_own_tuple`], which answers),
 //!    [`a_call_at_an_arrow_over_a_type_parameter_is_refused_naming_the_requires`] and
 //!    [`a_parameter_received_operation_of_a_self_receiving_spec_is_refused_too`] — the last
 //!    also with the refusal skipping a self-representing spec, as the sort-carrier one does.
@@ -572,31 +576,36 @@ fn an_open_part_is_not_forwarded_across_a_call() {
     }
 }
 
-/// … and a requirement that could NOT be the one is not named as a near miss. The caller
-/// holds `Apply` at an arrow of TWO parameters; the callee's is at an arrow of one. The call
-/// was forwarded that dictionary and ran its provider (40). Refused, the message used to add
-/// "`requires Apply[F = (Int64, Int64) -> Int64]` covers only as a wildcard — its element is a
-/// different type parameter", which is the COARSE cover's verdict read alone, and false: no
-/// parameter makes a two-parameter arrow a one-parameter one.
+/// … and so is a requirement at an arrow of two parameters, which a one-parameter arrow over
+/// `T` IS at `T := (Int64, Int64)`: an arrow's parameter list is its tuple `A`, so `(T) ->
+/// Int64` and `(Int64, Int64) -> Int64` are one type there (WI-20261104-6HVXM, kernel-language
+/// §4.4). The caller's requirement covers only as a wildcard, the refusal says so, and the
+/// element pinned there reaches the caller's dictionary — `AtTwo`'s 40. [Before
+/// WI-20261104-6HVXM the arrow had a count, no parameter made a two-parameter arrow a
+/// one-parameter one, and the near miss was not named — the coarse cover's verdict read alone
+/// had named it, and this row was that back-out's.]
 #[test]
-fn a_requirement_of_another_shape_is_not_named_as_a_near_miss() {
-    let src = program(
-        "wi12nkg.open_other_shape",
-        &format!(
-            "{}\n  operation go() -> Int64 = Caller.call()",
-            open_callee("(Int64, Int64) -> Int64", "Callee.inner(lambda x -> 1)")
-        ),
-    );
-    let errs = load_errors_of(&src);
+fn a_requirement_at_a_tuple_of_the_open_part_is_named_as_a_near_miss() {
+    let at = |call: &str| open_callee("(Int64, Int64) -> Int64", call);
     assert_refused_naming(
-        &errs,
-        &["cannot be supplied", "wi12nkg.open_other_shape.Apply[F = "],
-        "a callee's requirement at a one-parameter arrow under a caller holding a two-parameter one",
+        &load_errors_of(&program(
+            "wi12nkg.open_other_shape",
+            &format!("{}\n  operation go() -> Int64 = Caller.call()", at("Callee.inner(lambda x -> 1)")),
+        )),
+        &[
+            "cannot be supplied",
+            "wi12nkg.open_other_shape.Apply[F = ",
+            "covers only as a wildcard and is not forwarded",
+        ],
+        "a callee's requirement at `(T) -> Int64` under a caller holding a two-parameter arrow",
     );
-    assert!(
-        !errs.iter().any(|e| e.contains("covers only as a wildcard")),
-        "a two-parameter arrow is no cover of a one-parameter one, as a wildcard or otherwise; \
-         got {errs:#?}"
+    assert_eq!(
+        answers(
+            "wi12nkg.open_other_shape_pinned",
+            &at("Callee.inner[T = (Int64, Int64)](lambda x -> 1)"),
+            "Caller.call()"
+        ),
+        40
     );
 }
 
@@ -669,12 +678,14 @@ fn a_lambda_without_its_parameters_type_and_no_requirement_is_refused() {
     );
 }
 
-/// A LAMBDA OF SEVERAL BINDERS STATES NO PARAMETER TYPE OF ITS OWN, written or not — the type
-/// around it supplies them — so `Apply.run(lambda (x: Int64, y: Int64) -> x)` is at `(?) ->
-/// Int64` too. The refusal names the repair that reaches it, the type in the call's brackets;
-/// that one and binding the lambda to a name of the type both run.
+/// A LAMBDA OF SEVERAL TYPED BINDERS STATES ITS OWN TUPLE: with no type around it, the
+/// annotations are the lambda's tuple (kernel-language §4.7), so `Apply.run(lambda (x: Int64,
+/// y: Int64) -> x)` is at `(Int64, Int64) -> Int64` and `AtTwo` answers it, as it does with the
+/// type in the call's brackets or the lambda bound to a name of the type. [Refused before
+/// WI-20261104-6HVXM: the lambda stated no parameter type, and the refusal named the
+/// brackets.]
 #[test]
-fn a_lambda_of_several_binders_is_refused_naming_the_brackets() {
+fn a_lambda_of_several_typed_binders_states_its_own_tuple() {
     const TWO: &str = "(Int64, Int64) -> Int64";
     let with = |body: &str| {
         format!(
@@ -682,30 +693,19 @@ fn a_lambda_of_several_binders_is_refused_naming_the_brackets() {
             provider("AtTwo", TWO, 30)
         )
     };
-    assert_refused_naming(
-        &load_errors_of(&program(
-            "wi12nkg.unprovided_binders",
-            &with("Apply.run(lambda (x: Int64, y: Int64) -> x)"),
-        )),
-        &[NO_PROVISION[0], "in the call's brackets (`[F = …]`)"],
-        "`Apply.run` on a lambda of two typed binders, with nothing around it to type them",
-    );
-    assert_eq!(
-        answers(
-            "wi12nkg.unprovided_binders_bracket",
-            &with(&format!("Apply.run[F = {TWO}](lambda (x: Int64, y: Int64) -> x)")),
-            "use()"
+    for (name, body) in [
+        ("unprovided_binders", "Apply.run(lambda (x: Int64, y: Int64) -> x)".to_owned()),
+        (
+            "unprovided_binders_bracket",
+            format!("Apply.run[F = {TWO}](lambda (x: Int64, y: Int64) -> x)"),
         ),
-        30
-    );
-    assert_eq!(
-        answers(
-            "wi12nkg.unprovided_binders_named",
-            &with(&format!("let f: {TWO} = lambda (x: Int64, y: Int64) -> x  Apply.run(f)")),
-            "use()"
+        (
+            "unprovided_binders_named",
+            format!("let f: {TWO} = lambda (x: Int64, y: Int64) -> x  Apply.run(f)"),
         ),
-        30
-    );
+    ] {
+        assert_eq!(answers(&format!("wi12nkg.{name}"), &with(&body), "use()"), 30, "`{body}`");
+    }
 }
 
 /// AN ARROW OVER A TYPE PARAMETER OF THE ENCLOSING SORT, and no `requires`: the provision is

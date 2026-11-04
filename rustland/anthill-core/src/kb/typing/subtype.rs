@@ -10,14 +10,14 @@ use super::*;
 /// Lattice `≤` on type terms — `actual <: expected` with reflexivity. The strict
 /// (irreflexive) version is [`is_subtype`].
 ///
-/// WI-326: takes `&mut KnowledgeBase` because [`arrow_compatible_view`] now
+/// WI-326: takes `&mut KnowledgeBase` because [`function_types_compatible`] now
 /// invokes row subtyping, which allocates fresh row-tail vars in the
 /// both-open case.
 ///
 /// WI-335: takes `&mut Substitution` so nested arrow checks (e.g.
 /// `arrow_compatible`'s param + result + effects sub-checks, plus any
 /// recursive descent through [`parameterized_compatible_view`] /
-/// [`named_tuple_compatible`] / [`arrow_function_compatible`]) thread
+/// [`named_tuple_compatible`] / [`function_types_compatible`]) thread
 /// **one** substitution through the whole sub-tree. This makes row-var
 /// bindings from one sub-position visible to sibling positions —
 /// fixing the soundness gap where nested arrows sharing a row var
@@ -215,14 +215,12 @@ fn types_compatible_term_dispatch(
                 _ => false,
             }
         }
-        (Some("arrow"), Some("arrow")) => {
-            arrow_compatible_view(kb, subst, &TermIdView(actual), &TermIdView(expected))
-        }
-        // `arrow` is the typer's shorthand for the stdlib `Function[A, B, E]`
-        // (see `arrow_parts`), so a lambda's `arrow(Int, Int)` body satisfies
-        // a declared `Function[Int, Int]` return and vice versa. (WI-289)
-        (Some("arrow"), Some("parameterized")) | (Some("parameterized"), Some("arrow")) => {
-            arrow_function_compatible(kb, subst, &TermIdView(actual), &TermIdView(expected))
+        // Every arrow is a `Function` (kernel-language §4.4; WI-289 for the two spellings),
+        // so either relates against either through the one relation.
+        (Some("arrow"), Some("arrow"))
+        | (Some("arrow"), Some("parameterized"))
+        | (Some("parameterized"), Some("arrow")) => {
+            function_types_compatible(kb, subst, &TermIdView(actual), &TermIdView(expected))
         }
         (Some("named_tuple"), Some("named_tuple")) => {
             named_tuple_compatible(kb, subst, &TermIdView(actual), &TermIdView(expected))
@@ -315,7 +313,6 @@ pub(super) fn types_compatible_view_structural<A: TermView, B: TermView>(
         // subtyping between distinct carried values) — the same relation unify
         // computes, so the two directions agree.
         (Some("denoted"), Some("denoted")) => unify_denoted_view(kb, &a, &e),
-        (Some("arrow"), Some("arrow")) => arrow_compatible_view(kb, subst, &a, &e),
         (Some("effects_rows"), Some("effects_rows")) => subtype_effect_rows(kb, subst, &a, &e),
         (Some("parameterized"), Some("parameterized")) => {
             parameterized_compatible_view(kb, subst, &a, &e)
@@ -325,9 +322,9 @@ pub(super) fn types_compatible_view_structural<A: TermView, B: TermView>(
         // `Value::Node` arrow checks against a `Function` without a lossy bridge.
         // Dispatch is now canonical (`type_head`), so a term-backed `Fn{Function,
         // named}` reports `parameterized` and hits this arm directly too.
-        (Some("arrow"), Some("parameterized")) | (Some("parameterized"), Some("arrow")) => {
-            arrow_function_compatible(kb, subst, &a, &e)
-        }
+        (Some("arrow"), Some("arrow"))
+        | (Some("arrow"), Some("parameterized"))
+        | (Some("parameterized"), Some("arrow")) => function_types_compatible(kb, subst, &a, &e),
         (Some("named_tuple"), Some("named_tuple")) => named_tuple_compatible(kb, subst, &a, &e),
         // Bare `S` vs `B[…]`: nominal base-sort compatibility, then WI-402
         // binding-precise provider admissibility (mirrors
@@ -475,70 +472,51 @@ pub(super) fn types_compatible_view_structural<A: TermView, B: TermView>(
     }
 }
 
-/// WI-342: the sole arrow subtyping, carrier-agnostic over [`TermView`] (both
-/// the `TermId` dispatch via [`TermIdView`] and the `Value` carrier route here).
-/// Contravariant param (`expected.param <: actual.param`), covariant result,
-/// covariant effects via the carrier-agnostic [`subtype_effect_rows`]. A missing
-/// effects field is the empty (pure) row.
-pub(super) fn arrow_compatible_view<A: TermView, B: TermView>(
+/// THE ONE SUBTYPING OF TWO FUNCTION TYPES, whichever spelling each is written in — an
+/// `arrow`, a `Function[A, B, E]`, or one of each (WI-289; kernel-language §4.4, "Every arrow
+/// is a `Function`"). A VALUE whose type is `actual` stands where `expected` is: contravariant
+/// `A` (`expected.A <: actual.A`, through [`arrow_params_compatible`], so two tuples are two
+/// parameter lists — the same components, with the same labels in the same order or one of
+/// them positional, and nothing dropped: a function value keeps the mapping it was minted at,
+/// WI-1088), covariant result, covariant row ([`subtype_effect_rows`]).
+///
+/// A CALLABLE WRITTEN at the slot — an operation, a lambda — is not judged here: it meets the
+/// slot by label or by position, and a callable of one parameter drops what its tuple lacks
+/// ([`callable_at_slot`], which re-expresses it at the slot before this relation reads it).
+///
+/// A missing `A` (a `Function` that binds none) is POLYMORPHIC and constrains nothing; so is a
+/// missing row, which only the `Function` spelling can leave out (an arrow always carries its
+/// `effects` child). WI-335: one σ across the three parts, so a row variable bound in one is
+/// visible in the others. Carrier-agnostic over [`TermView`] (WI-342/WI-361): a `Value::Node`
+/// callback arrow is read natively, never re-grounded.
+pub(super) fn function_types_compatible<A: TermView, E: TermView>(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
     actual: &A,
-    expected: &B,
+    expected: &E,
 ) -> bool {
-    let param_sym = kb.intern("param");
-    let result_sym = kb.intern("result");
-    let effects_sym = kb.intern("effects");
-
-    // WI-791: parameter COUNT is invariant — a function of a different arity is
-    // neither a subtype nor a supertype, it is uncallable in the other's place.
-    // (Width subtyping over a parameter list was already refused by WI-782; this
-    // is the same statement made where the count is actually recorded.)
-    let Some(arity) = agreed_arrow_arity(kb, actual, expected) else {
+    let Some((a_param, a_result, a_eff)) = arrow_parts(kb, actual) else {
         return false;
     };
-
-    // Contravariant param: expected.param <: actual.param.
-    match (
-        named_child_value(kb, actual, param_sym),
-        named_child_value(kb, expected, param_sym),
-    ) {
-        (Some(ap), Some(ep)) => {
-            // WI-775: a PARAMETER LIST, not a data tuple — see `unify_arrow_params`.
-            if !arrow_params_compatible(kb, subst, &ep, &ap, arity) {
-                return false;
-            }
+    let Some((b_param, b_result, b_eff)) = arrow_parts(kb, expected) else {
+        return false;
+    };
+    if let (Some(ap), Some(bp)) = (&a_param, &b_param) {
+        // Contravariant: the slot's `A` is what the value will be handed.
+        if !arrow_params_compatible(kb, subst, bp, ap) {
+            return false;
         }
-        _ => return false,
     }
-    // Covariant result: actual.result <: expected.result.
-    match (
-        named_child_value(kb, actual, result_sym),
-        named_child_value(kb, expected, result_sym),
-    ) {
-        (Some(ar), Some(er)) => {
-            if !types_compatible(kb, subst, &ar, &er) {
-                return false;
-            }
+    if !types_compatible(kb, subst, &a_result, &b_result) {
+        return false;
+    }
+    match (a_eff, b_eff) {
+        (None, _) | (_, None) => true,
+        (Some(ae), Some(ee)) => {
+            let ae = callable_row(kb, actual, ae);
+            let ee = callable_row(kb, expected, ee);
+            subtype_effect_rows(kb, subst, &ae, &ee)
         }
-        _ => return false,
-    }
-    // Covariant effects: actual ⊆ expected (open-tail subsumption). A missing
-    // side is the empty row (mirrors `arrow_compatible`).
-    match (
-        named_child_value(kb, actual, effects_sym),
-        named_child_value(kb, expected, effects_sym),
-    ) {
-        (Some(ae), Some(ee)) => subtype_effect_rows(kb, subst, &ae, &ee),
-        (None, None) => true,
-        (Some(ae), None) => match kb.try_make_empty_effects_rows() {
-            Some(er) => subtype_effect_rows(kb, subst, &ae, &TermIdView(er)),
-            None => false,
-        },
-        (None, Some(ee)) => match kb.try_make_empty_effects_rows() {
-            Some(er) => subtype_effect_rows(kb, subst, &TermIdView(er), &ee),
-            None => false,
-        },
     }
 }
 
@@ -779,39 +757,15 @@ pub(super) fn parameterized_compatible_view<A: TermView, B: TermView>(
         return false;
     }
 
-    // WI-1088: `Function`/`Function`, where BOTH readings of `A` are still open and the
-    // relation owed is their INTERSECTION — order-preserving. The per-binding loop below
-    // relates the two `A`s with the ordinary `types_compatible`, which is the whole-`A`
-    // (data) reading and order-free since WI-803; the spread reading also has an opinion
-    // and it is the one a value's already-pinned mapping obeys. See
-    // [`function_pairing_permutes_a`] for the two programs that measured it.
-    //
-    // HERE, and not at [`arrow_function_compatible`]: that function is reached only from
-    // the `(arrow, parameterized)` dispatch arms, so it never sees two `Function`s. This
-    // is the ONE site both carrier routes decompose a `Function`-vs-`Function` pairing at
-    // (`types_compatible_term_dispatch` and `types_compatible_view_structural` both land
-    // here), so the guard is stated once.
-    //
-    // Through [`function_spec_parts`], the WI-802 owner, on the base + bindings already in
-    // hand — so a `Function` is recognized the one way the rest of the file recognizes it
-    // and no binding is re-extracted. The EXPECTED side is asked first: it is one
-    // `qualified_name_of` compare, and a non-`Function` slot (every other parameterized
-    // comparison in the corpus) stops there.
-    // The two `A`s are CLONED out of the borrows before the call: `function_spec_parts`
-    // borrows `bindings`, the predicate needs `&mut kb` to σ-resolve them, and a binding is
-    // an `Rc`-carried `Value`, so the clone is a refcount bump rather than a deep copy.
-    let permuting_as = function_spec_parts(kb, expected_base, &expected_bindings)
-        .and_then(|(d_a, _, _)| Some(d_a?.clone()))
-        .zip(
-            function_spec_parts(kb, actual_base, &actual_bindings)
-                .and_then(|(a_a, _, _)| Some(a_a?.clone())),
-        );
-    if let Some((d_a, a_a)) = permuting_as {
-        // Neither side is an `arrow` — both are parameterized types this arm decoded —
-        // so the arities the predicate gates on are `None` by construction.
-        if function_pairing_permutes_a(kb, subst, None, None, &d_a, &a_a) {
-            return false;
-        }
+    // Two `Function`s are two function types, and relate as every pair of them does
+    // ([`function_types_compatible`]): their `A`s as parameter lists, not as two data tuples —
+    // a value keeps the mapping it was minted at (WI-1088), so a permuted `A` is refused.
+    // Through [`function_spec_parts`], the WI-802 owner, on the bases + bindings already in
+    // hand; a `Function` that binds no `B` is no callable and takes the binding loop below.
+    if function_spec_parts(kb, expected_base, &expected_bindings).is_some()
+        && function_spec_parts(kb, actual_base, &actual_bindings).is_some()
+    {
+        return function_types_compatible(kb, subst, actual, expected);
     }
 
     // WI-764: how to compare the two sides' binding KEYS — see [`binding_for_param`].
@@ -1135,136 +1089,6 @@ fn provision_leaves_param_open(kb: &KnowledgeBase, spec: Symbol, param: Symbol) 
     spec_carrier_param(kb, spec).and_then(|c| type_param_vid_in_sort(kb, spec, c)) != Some(vid)
 }
 
-/// Compatibility between the typer's `arrow(param, result, effects)` and the
-/// stdlib `Function[A, B, E]` (in either order) — they denote the same callable
-/// type. Carrier-agnostic over [`TermView`] (WI-361/WI-342): routed here from
-/// BOTH the `TermId` dispatch ([`types_compatible_term_dispatch`], via
-/// [`TermIdView`]) AND the `Value`-carrier dispatch
-/// ([`types_compatible_view_structural`]), so a `Value::Node` callback arrow
-/// checks against a `Function[A, B, E]` directly — natively, with no re-grounding
-/// bridge. Decomposes both via [`arrow_parts`] (which yields
-/// `None` for a non-`Function` parameterized type, so `arrow` vs `List[T]` stays
-/// incompatible), checks contravariant param + covariant result, and (WI-332)
-/// covariant effects via the carrier-agnostic [`subtype_effect_rows`]. WI-289.
-pub(super) fn arrow_function_compatible<A: TermView, E: TermView>(
-    kb: &mut KnowledgeBase,
-    subst: &mut Substitution,
-    actual: &A,
-    expected: &E,
-) -> bool {
-    let (a_param, a_result, a_eff) = match arrow_parts(kb, actual) {
-        Some(parts) => parts,
-        None => return false,
-    };
-    let (b_param, b_result, b_eff) = match arrow_parts(kb, expected) {
-        Some(parts) => parts,
-        None => return false,
-    };
-
-    // WI-791: no arity EQUALITY check on this arm, and that is a decision rather
-    // than an omission. A `Function[A, B, E]` states no arity and cannot: its `A`
-    // is the ONE argument `apply(f, x: A)` passes, so `Function[(T, T), Bool]` has
-    // denoted both the single-tuple-argument reading and the eta arrow of a
-    // 2-parameter op since WI-775. Demanding arity 1 of the arrow side would break
-    // the latter; demanding a match would need a count `Function` does not have.
-    // What DOES hold here is the by-name param comparison below, which is what
-    // WI-775 installed to keep `(acc, x)` from bridging to `(_1, _2)`.
-    //
-    // WI-801: what ALSO holds is that the two readings above are the ONLY two.
-    // Stating no arity bounds the check to a SET rather than an equality; it does
-    // not remove it. The param comparison below cannot stand in for that, because
-    // an unannotated lambda adopts `A` as its param type and so passes it
-    // regardless of how many binders it wrote.
-    //
-    // This is the GROUND path's decider (the non-ground path's is
-    // `validate_arrow_param_result`). It only decides — being inside
-    // `types_compatible`, it returns `bool` and the two types are not in scope
-    // where a message would be built; [`conformance_error`] renders the verdict
-    // at the sites that do have them. `b_param` IS the `A` the check needs, so it
-    // is handed over rather than re-extracted: this runs per comparison,
-    // including every one that succeeds.
-    let arity_key = kb.intern("arity");
-    if let (Some(a_arity), Some(bp)) = (arrow_arity(kb, actual, arity_key), b_param.clone()) {
-        if arrow_arity(kb, expected, arity_key).is_none()
-            && function_slot_arity_counts_for(kb, &bp, a_arity).is_some()
-        {
-            return false;
-        }
-    }
-    // Param is contravariant (expected param <: actual param), result
-    // covariant — matching `arrow_compatible`. A missing param on either side
-    // (a bare `Function` without an `A` binding, polymorphic) is unconstrained.
-    let params_ok = match (&a_param, &b_param) {
-        // WI-775: BY NAME at the WHOLE-`A` reading — a `Function[A = …]`'s `A` is the
-        // argument's DATA type (it is what flows to `apply(f, x: A)`), so bridging
-        // `(acc, x)` to `(_1, _2)` THERE is the unsoundness that ticket closed:
-        // measured on the pre-WI-775 tree, `apply2(add2)` with `f: Function[A = (acc:
-        // Int64, x: Int64), B = Int64]` loaded clean and trapped at eval with
-        // `ArityMismatch { expected: 2, got: 1 }`.
-        //
-        // WI-1087: AND POSITIONALLY AT THE SPREAD READING, which is the OTHER of the two
-        // call counts WI-801 admits at this slot and which the by-name rule was silently
-        // refusing outright — see [`function_slot_reads_a_as_param_list`] for the
-        // conflict and its measurement. The WI-775 trap above is not reachable through
-        // this arm: it was an `ArityMismatch` at eval, and WI-784/WI-787 have since
-        // taught the runtime to spread a tuple — name-keyed included — across a
-        // multi-parameter operation. The arity SET is still enforced, one block up.
-        //
-        // ONE DIRECTION ONLY — the `Function` must be the EXPECTED slot and the arrow the
-        // ACTUAL value. This function is routed here from both dispatch orders, so the
-        // mirror (a `Function`-typed ARGUMENT at an `arrow` slot) reaches it too, and it must
-        // NOT take this relation: an arrow slot states a hard arity and applies its value
-        // with exactly that many arguments, while a `Function`-typed value states no arity
-        // and may be either reading, so matching the slot's `n` against `|A|` proves nothing
-        // about the callable inside. See `validate_arrow_param_result`'s `None` arm for the
-        // program that measured it — load-clean, `ArityMismatch` at eval.
-        (Some(ap), Some(bp)) => match (
-            arrow_arity(kb, actual, arity_key),
-            arrow_arity(kb, expected, arity_key),
-        ) {
-            (Some(n), None) if function_slot_reads_a_as_param_list(kb, bp, n) => {
-                arrow_params_compatible(kb, subst, bp, ap, n)
-            }
-            // NO `Function`/`Function` ARM HERE, and WI-1088 measured why rather than
-            // leaving it to be re-derived: this function is reached only from the
-            // `(arrow, parameterized)` dispatch arms, so one side is always an `arrow`
-            // and an arrow always carries an `arity` child. The pairing WI-1088 refuses
-            // decomposes through [`parameterized_compatible_view`] instead, which is
-            // where its guard lives.
-            _ => types_compatible(kb, subst, bp, ap),
-        },
-        _ => true,
-    };
-    if !params_ok {
-        return false;
-    }
-    if !types_compatible(kb, subst, &a_result, &b_result) {
-        return false;
-    }
-
-    // WI-332: covariant effects via [`subtype_effect_rows`], consistent with
-    // `arrow_compatible`. **Missing E** is treated symmetrically with missing A:
-    // omitting the binding means *polymorphic* (accept any), NOT *empty* — so
-    // `Function[A, B]` (no E) accepts an effectful actual, while the explicit
-    // `Function[A=…, B=…, E={}]` form keeps the closed-empty semantic and rejects
-    // effectful actuals (regression-tested). The arrow side always synthesizes an
-    // `effects` field, so its `None` arm is defensive only.
-    //
-    // WI-335: the threaded subst is shared across the param/result/effects
-    // sub-checks so a row var bound in one position is visible in the others.
-    match (a_eff, b_eff) {
-        // Either side polymorphic in E → accept.
-        (None, _) | (_, None) => true,
-        (Some(ae), Some(ee)) => {
-            // Normalize a legacy `List[Type]` E binding to a canonical row; an
-            // already-canonical row (or a `Value::Node` row) passes through.
-            let ae = canonical_effects_row(kb, &ae);
-            let ee = canonical_effects_row(kb, &ee);
-            subtype_effect_rows(kb, subst, &ae, &ee)
-        }
-    }
-}
-
 /// The `base` sort_ref of a `parameterized(base, bindings)` type term.
 /// The base sort symbol of a parameterized type, form-agnostic (WI-361): the
 /// deep `parameterized(base: sort_ref(S), …)` base field or the term-backed
@@ -1280,7 +1104,7 @@ fn parameterized_base_sym(kb: &KnowledgeBase, ty: TermId) -> Option<Symbol> {
 /// `is_subtype(A, A)` is false. `is_subtype(red, Color)` is true.
 ///
 /// WI-326: takes `&mut KnowledgeBase` (transitively, via
-/// [`types_compatible`] → [`arrow_compatible_view`] → row subtyping).
+/// [`types_compatible`] → [`function_types_compatible`] → row subtyping).
 ///
 /// WI-335: does NOT take a `&mut Substitution` argument. Unlike
 /// [`types_compatible`], `is_subtype` is a context-free lattice
@@ -1560,26 +1384,21 @@ fn open_slots_said_by(kb: &mut KnowledgeBase, ty: &Value, other: &Value) -> Opti
             param,
             result,
             effects,
-            arity,
             binders,
         } => {
             let TypeExtractor::Arrow {
                 result: their_result,
-                arity: their_arity,
                 ..
             } = extract_type(kb, other)
             else {
                 return None;
             };
-            if arity != their_arity {
-                return None;
-            }
             let said = open_slots_said_by(kb, &result, &their_result)?;
             let p = value_to_type_child(kb, &param);
             let r = value_to_type_child(kb, &said);
             let e = value_to_type_child(kb, &effects);
             let span = crate::kb::node_occurrence::empty_span();
-            return Some(Value::Node(kb.make_arrow_occ(p, r, e, arity, binders, span, None)));
+            return Some(Value::Node(kb.make_arrow_occ(p, r, e, binders, span, None)));
         }
         _ => return None,
     };

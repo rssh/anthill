@@ -277,28 +277,30 @@ fn a_row_parameter_callbacks_in_options_share_is_their_union_in_either_order() {
 }
 
 /// TWO TYPES THAT DIFFER ONLY IN THE ROW OF AN ARROW BELOW THEIR TOP ARE PRINTED WITH THEIR ROWS:
-/// an operation reference in an option at a pure option — refused on every build, by the
-/// whole-type relation — and a `let` annotation printed `expected Option[T = () -> Int64], got
-/// Option[T = () -> Int64] (these render alike …)`.
+/// a `let` annotation printed `expected Option[T = () -> Int64], got Option[T = () -> Int64]
+/// (these render alike …)`. An operation reference in an option at a pure option — refused on
+/// every build — is named by its row, as its lambda twin `opt_clock` is: a callback typed ground
+/// meets the check that names a callback's row (WI-20261104-6HVXM; before it, the whole-type
+/// relation printed `got Option[T = () -> Int64 @ {Clock}]`).
 #[test]
 fn a_mismatch_of_nested_arrows_prints_their_rows() {
-    for (tag, declares, body, actual) in [
-        ("print_eta", "Clock", "    run_opt(some(clocked))", "got Option[T = () -> Int64 @ {Clock}]"),
-        (
-            "print_let",
-            "",
-            "    let o: Option[T = () -> Int64 @ {}] = some(lambda () -> put(r, 4))\n    run_opt(o)",
-            "got Option[T = () -> Int64 @ {Modify[T = r]}]",
-        ),
-    ] {
-        let errs = refused(tag, declares, body);
-        assert_refused_naming(&errs, &["expected Option[T = () -> Int64 @ {}]", actual], &format!("`{}`", body.trim()));
-        assert!(
-            errs.iter().all(|e| !e.contains("render alike")),
-            "`{}`: the rows say the difference, got {errs:#?}",
-            body.trim()
-        );
-    }
+    let body = "    let o: Option[T = () -> Int64 @ {}] = some(lambda () -> put(r, 4))\n    run_opt(o)";
+    let errs = refused("print_let", "", body);
+    assert_refused_naming(
+        &errs,
+        &["expected Option[T = () -> Int64 @ {}]", "got Option[T = () -> Int64 @ {Modify[T = r]}]"],
+        &format!("`{}`", body.trim()),
+    );
+    assert!(
+        errs.iter().all(|e| !e.contains("render alike")),
+        "`{}`: the rows say the difference, got {errs:#?}",
+        body.trim()
+    );
+    assert_refused_naming(
+        &refused("print_eta", "Clock", "    run_opt(some(clocked))"),
+        &["run_opt.o (op-arg)", "an arrow inside the declared type (a closed row)", "Clock"],
+        "`run_opt(some(clocked))`",
+    );
 }
 
 /// A FUNCTION VALUE'S PARAMETER HOLDS ITS CALLBACK TO ITS ROW: `h(lambda () -> put(r, 4))` over

@@ -231,7 +231,9 @@ fn two_element_types_in_one_program() {
 }
 
 /// A 2-parameter operation does not belong in a 1-parameter arrow slot, and a `[A]` on it
-/// never made that less true. With the eta refused, the reference typed as the bare variable
+/// never made that less true. Since WI-20261104-6HVXM the slot's `A` is `Int64`, no tuple, so
+/// the one argument meets `two`'s first component and nothing its second (the application
+/// match) — the two tuples side by side, no count. With the eta refused, the reference typed as the bare variable
 /// `?A` and the whole disagreement was invisible.
 ///
 /// CONTROL: [`an_arity_disagreement_is_refused_for_a_monomorphic_operation`] below is the same
@@ -248,8 +250,8 @@ fn an_arity_disagreement_is_refused() {
          end\n",
     );
     assert!(
-        msg.contains("1-parameter") && msg.contains("2-parameter"),
-        "the refusal must name both arities: {msg}",
+        msg.contains("expected Int64 -> Int64, got (x: ?A, y: ?A) -> ?A"),
+        "the refusal must show both tuples, the slot's `Int64` and `two`'s two parameters: {msg}",
     );
 }
 
@@ -265,7 +267,7 @@ fn an_arity_disagreement_is_refused_for_a_monomorphic_operation() {
          \x20 operation use_it() -> Int64 = callit(twom)\n\
          end\n",
     );
-    assert!(msg.contains("1-parameter") && msg.contains("2-parameter"), "{msg}");
+    assert!(msg.contains("expected Int64 -> Int64, got (x: Int64, y: Int64) -> Int64"), "{msg}");
 }
 
 /// A RESULT-TYPE DISAGREEMENT IS REFUSED — closed by WI-1084, and this row was a

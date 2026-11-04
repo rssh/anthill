@@ -1,5 +1,5 @@
-//! Callable shapes: the `Function` spec recognizer, arrow parts and arity, conformance
-//! errors, and positional argument expectations.
+//! Callable shapes: the `Function` spec recognizer, arrow parts, conformance errors, and
+//! what an application of a function value meets (the application match).
 
 use super::*;
 
@@ -265,14 +265,12 @@ fn callable_with(kb: &mut KnowledgeBase, ty: &Value, result: Option<&Value>, row
             param,
             result: own_result,
             effects,
-            arity,
             binders,
         } => Some(arrow_value(
             kb,
             &param,
             result.unwrap_or(&own_result),
             row.unwrap_or(&effects),
-            arity,
             binders,
             sp,
             owner,
@@ -303,7 +301,7 @@ fn callable_with(kb: &mut KnowledgeBase, ty: &Value, result: Option<&Value>, row
 /// HERE, not `extract_type`: hoisting a bare extraction above the first
 /// `arrow_parts` call would move it in front of the interning it depends on.
 pub(super) fn extract_callable_type<V: TermView>(kb: &mut KnowledgeBase, ty: &V) -> TypeExtractor {
-    for key in ["param", "result", "effects", "arity", "base"] {
+    for key in ["param", "result", "effects", "base"] {
         kb.intern(key);
     }
     extract_type(kb, ty)
@@ -329,16 +327,10 @@ fn arrow_parts_extracted(
     // clone here would re-copy the binding vector this split exists to stop
     // rebuilding.
     match ty {
-        // WI-791: `arity` is deliberately NOT returned here. This decomposition is
-        // shared with `Function[A, B, E]`, which states no arity, so a caller that
-        // needs one is asking a question only an `arrow` can answer and must ask it
-        // separately via [`arrow_arity`]. Folding it into this tuple would hand
-        // every `Function` consumer an absence to invent a default for.
         TypeExtractor::Arrow {
             param,
             result,
             effects,
-            arity: _,
             binders: _,
         } => Some((Some(param.clone()), result.clone(), Some(effects.clone()))),
         TypeExtractor::Parameterized { base, bindings } => {
@@ -349,333 +341,10 @@ fn arrow_parts_extracted(
     }
 }
 
-/// WI-791: an arrow's declared PARAMETER-LIST LENGTH, carrier-agnostic. `None`
-/// when the type states none — which is NOT a defensive fallback but the one
-/// meaningful absence in the system:
-///
-///   * a `Function[A, B, E]` (the stdlib surface spelling [`arrow_parts`] also
-///     decomposes) carries no arity binding and cannot: its `A` is the ONE
-///     argument `apply(f, x: A)` passes, so `Function[(T, T), Bool]` denotes both
-///     the single-tuple-argument reading and the eta arrow of a 2-parameter op,
-///     and has denoted both since WI-775. An arrow-vs-`Function` check therefore
-///     compares parameter DATA types by name and asks nothing about arity;
-///   * anything that is not a callable type at all.
-///
-/// Every `arrow` the engine mints states its arity — the three producers that
-/// know it ([`operation_as_function_value`], the loader's `TypeExpr::Arrow` arm,
-/// the `LambdaBody` frame) all pass it, and the rebuild sites transplant it — so
-/// a `None` from an `arrow` head means the term is malformed, and the callers
-/// below treat that as "not comparable" rather than inventing a count.
-/// `arity_key` is passed in already interned: the sole caller reads two arrows in
-/// a row on the hot conformance path and should pay one symbol lookup, not two.
-pub(super) fn arrow_arity<V: TermView>(
-    kb: &KnowledgeBase,
-    ty: &V,
-    arity_key: Symbol,
-) -> Option<usize> {
-    match named_child_value(kb, ty, arity_key)? {
-        Value::Term { id, .. } => const_usize_of(kb, id),
-        _ => None,
-    }
-}
-
-/// WI-801: `A`'s COMPONENT COUNT, as [`arity_admitted_at_function_slot`] reads it
-/// — `Some(Some(n))` for a tuple type of `n` components, `Some(None)` for a known
-/// NON-tuple (one indivisible value), and `None` for a type that states neither
-/// yet.
-///
-/// The outer `None` is the load-bearing one. A rigid type parameter, an
-/// unresolved projection, a free inference var — a generic
-/// `operation ap[T](f: Function[A = T, B = R])` must stay unconstrained, since a
-/// component count is exactly what instantiation supplies. Gating on
-/// [`resolved_type_is_ground`] rather than on the [`extract_type`] shape is what
-/// separates "not a tuple" from "not yet known": both fall out of the match's
-/// `_` arm, and only the first may be read as "one value".
-fn function_param_component_count(kb: &mut KnowledgeBase, a: &Value) -> Option<Option<usize>> {
-    if !resolved_type_is_ground(kb, a) {
-        return None;
-    }
-    match extract_type(kb, a) {
-        TypeExtractor::NamedTuple(fields) => Some(Some(fields.len())),
-        _ => Some(None),
-    }
-}
-
-/// WI-801: `(A's components, the callback's arity)` when `actual`'s arity is NOT
-/// one a DECLARED `Function[A, B, E]` slot can apply — the half of the conformance
-/// question [`arrow_arity`]'s `None` leaves open.
-///
-/// "A `Function` states no arity" is true and was taken to mean nothing about
-/// arity is decidable here. It is not: `A` states a component count, and the slot
-/// reaches exactly two call counts (one whole `A`, or `A`'s components spread), so
-/// exactly two arities can stand in it. Everything else typechecks and traps —
-/// measured: a 3-binder lambda at a 2-component `A` loaded clean and trapped
-/// `ArityMismatch { expected: 3, got: 2 }`.
-///
-/// Why the LAMBDA spelling alone needed this. An op reference's eta arrow carries
-/// its parameter list as a CONCRETE tuple type, so a wrong count already fails the
-/// PARAM comparison its callers run (`validate_arrow_param_result`,
-/// `arrow_function_compatible`) — `got (_1: Int64, _2: Int64, _3: Int64) -> Int64`.
-/// An unannotated lambda ADOPTS the expected `A` as its param type (the
-/// `Expr::Lambda` visit case), so its param matches `A` by construction and its
-/// arity is the ONLY quantity left that can disagree — free-floating, and until
-/// now unread.
-///
-/// Yields the two counts — `(A's components, the callback's arity)` — so the
-/// DIAGNOSTIC can name them; see [`function_slot_arity_error`] on why a generic
-/// type mismatch cannot. `None` is NO VERDICT, never a guess, whenever either
-/// side is silent: `declared` stating an arity means it is an `arrow`, whose own
-/// equality check owns the comparison; `actual` stating none means it is not a
-/// callable this can count; an `A` that is not yet known states no component
-/// count, and a generic callback slot must stay unconstrained.
-fn function_slot_arity_counts<D: TermView, A: TermView>(
-    kb: &mut KnowledgeBase,
-    declared: &D,
-    actual: &A,
-    arity_key: Symbol,
-) -> Option<(Option<usize>, usize)> {
-    if arrow_arity(kb, declared, arity_key).is_some() {
-        return None;
-    }
-    let a_arity = arrow_arity(kb, actual, arity_key)?;
-    let (Some(d_param), _, _) = arrow_parts(kb, declared)? else {
-        return None;
-    };
-    function_slot_arity_counts_for(kb, &d_param, a_arity)
-}
-
-/// WI-801: the verdict with `A` ALREADY IN HAND — for a caller that has extracted
-/// it, so the check costs no second [`arrow_parts`]. That matters at
-/// [`arrow_function_compatible`], which runs per arrow-vs-`Function` comparison
-/// including the ones that SUCCEED, and already holds `A` as its `b_param`;
-/// re-deriving it there was a full `extract_callable_type` (five interns plus an
-/// `extract_type`) for a value sitting in scope.
-pub(super) fn function_slot_arity_counts_for(
-    kb: &mut KnowledgeBase,
-    a: &Value,
-    a_arity: usize,
-) -> Option<(Option<usize>, usize)> {
-    let components = function_param_component_count(kb, a)?;
-    if crate::kb::call_form::arity_admitted_at_function_slot(components, a_arity) {
-        return None;
-    }
-    Some((components, a_arity))
-}
-
-/// WI-1087: at a `Function[A, B, E]` slot given a callback of `a_arity` parameters,
-/// is `A` being read as the callback's PARAMETER LIST rather than as one argument's
-/// DATA type?
-///
-/// A `Function` slot admits exactly two call counts (WI-801,
-/// [`arity_admitted_at_function_slot`]): ONE whole `A`, or `A`'s components SPREAD.
-/// Under the first, `A` is the argument's data type and relates BY NAME — WI-775's
-/// rule, and the reason a permuted `(b, a)` still satisfies `(a, b)` there. Under
-/// the SECOND, `A`'s components ARE the callback's parameters, applied positionally,
-/// and the relation owed is [`TupleAlign::PARAM_LIST`]'s.
-///
-/// The two rules were in outright conflict before this ticket, and the by-name one
-/// won by default at both conformance sites. An operation's eta arrow always spells
-/// its parameter list with the synthetic `_1.._n` (an arrow drops its binder names,
-/// WI-783), so a by-name comparison refuses EVERY spread WI-801 admits — leaving that
-/// second reading reachable only for a LAMBDA, which ADOPTS `A` as its param type and
-/// so matches it by construction. Measured: two programs byte-identical but for
-/// whether `A`'s components carry user labels, `Function[A = (Int64, Int64)]` given a
-/// 2-parameter operation evaluating to -7 while `Function[A = (acc: …, x: …)]` was
-/// refused. The positional spelling passed only because its labels COINCIDE with the
-/// synthetic escape, and eval reads no label at all.
-///
-/// ARITY 1 IS NOT THIS READING even when `A` has one component: there the two call
-/// counts coincide, `A` is the sole parameter's TYPE, and a tuple in that position is
-/// DATA (WI-791). Kept out explicitly rather than left to fall out of the count, so
-/// this predicate answers the same question [`unify_arrow_params`] and
-/// [`arrow_params_compatible`] ask of an arrow.
-///
-/// NARROW BY DECISION (user, 2026-08-12). This does not make a named tuple relatable
-/// to a positional one in general — proposal 004 rule 4 and §4.5 stand. It says only
-/// that `A` in the spread reading is not a data tuple in the first place.
-pub(super) fn function_slot_reads_a_as_param_list(
-    kb: &mut KnowledgeBase,
-    a: &Value,
-    a_arity: usize,
-) -> bool {
-    a_arity != 1 && function_param_component_count(kb, a) == Some(Some(a_arity))
-}
-
-/// WI-1087: the mapping an eta'd operation needs to be SPREAD correctly at the slot
-/// it is lifted into — `A`'s component labels in declared order, or `None` when the
-/// slot does not read `A` as a parameter list.
-///
-/// WHY THE VALUE CANNOT DERIVE THIS. In the spread call form `f(t)`, the callee's
-/// parameter `i` is `A`'s component `i` — that is what
-/// [`function_slot_reads_a_as_param_list`] established, positionally — while the
-/// tuple `t` conforms to `A` BY NAME and may present its components in another order,
-/// since WI-803 made `<:` on a data tuple order-free. The operation's own parameter
-/// names are unrelated to `A`'s (`sub2(a, b)` at `A = (acc, x)`), so nothing at the
-/// apply site can recover which component each parameter wants. Measured without it:
-/// `f((x: 10, acc: 3))` answering 7 where the labels say `3 - 10`.
-///
-/// ONLY AT A `Function` SLOT, and that is not a narrowing but the whole reachable set:
-/// an `arrow` slot states its arity, so a one-argument call against a 2-parameter one
-/// is an arity error long before any spread. The spread call form exists only where
-/// the slot states no arity.
-///
-/// READ AS WRITTEN, not through σ, and the case that makes the difference is the one
-/// that needs nothing: an `A` spelled as a VARIABLE (`apT[T](f: Function[A = T], t:
-/// T)`) binds to the argument's OWN tuple type, so `A`'s declared order IS the value's
-/// source order and reading it in source order is already right — `wi787_eta_spread_-
-/// named_tuple_test` is four rows of exactly that. What a written-out `A` adds is an
-/// order INDEPENDENT of the value's, which is precisely when the mapping is needed.
-pub(super) fn function_slot_spread_labels(
-    kb: &mut KnowledgeBase,
-    sym: Symbol,
-    expected: &Value,
-) -> Option<std::rc::Rc<[Symbol]>> {
-    let arity_key = kb.intern("arity");
-    // An `arrow` slot states an arity and never spreads — see above.
-    if arrow_arity(kb, expected, arity_key).is_some() {
-        return None;
-    }
-    let (Some(a), _, _) = arrow_parts(kb, expected)? else {
-        return None;
-    };
-    let arity = lookup_operation_info_full(kb, sym)?.params.len();
-    if !function_slot_reads_a_as_param_list(kb, &a, arity) {
-        return None;
-    }
-    let fields = named_tuple_fields(kb, &a);
-    // The predicate above already agreed on the count; the equality is what lets the
-    // reader zip without a length test of its own.
-    (fields.len() == arity).then(|| fields.into_iter().map(|(s, _)| s).collect())
-}
-
-/// WI-1088: at a `Function`/`Function` pairing, do the two `A`s name the SAME
-/// components in a DIFFERENT ORDER?
-///
-/// WHY A PERMUTATION MUST BE REFUSED HERE AND ONLY HERE. A `Function[A, B, E]` slot
-/// admits TWO readings of `A` (WI-801) and the VALUE at it may be applied under
-/// either, at a call site this pairing cannot see:
-///
-///  * the WHOLE-`A` reading — `A` is one argument's DATA type, related BY NAME and
-///    order-free since WI-803, because the consumer reads components by label;
-///  * the SPREAD reading — `A` IS the callback's parameter list, applied
-///    POSITIONALLY, where order is identity (WI-782, §4.5).
-///
-/// `A` at a `Function` slot has to satisfy BOTH, so the admissible relation is their
-/// INTERSECTION, and on the ORDER axis that intersection is
-/// [`TupleOrder::Preserved`]. The by-name relation alone took the first reading's
-/// answer for a pairing the second also has an opinion about.
-///
-/// WHAT IT COST, measured on the WI-1087 tree, loading clean and running:
-///
-/// ```text
-/// operation inner(g: Function[A = (x: Int64, acc: Int64), B = Int64]) -> Int64 = g((acc: 3, x: 10))
-/// operation outer(f: Function[A = (acc: Int64, x: Int64), B = Int64]) -> Int64 = inner(f)
-/// inner(sub2) => 7      -- `inner`'s own `A` says parameter 1 <- `x`
-/// outer(sub2) => -7     -- the MINT site's `A` won; `inner`'s declared `A` is not the mapping used
-/// ```
-///
-/// The mapping a spread reads is pinned where the value is MINTED
-/// ([`Value::OpRef::spread_labels`], and `Pattern::Tuple.labels` for the lambda
-/// spelling — both spellings measured identically, so WI-784 holds and this is not a
-/// WI-1087 regression). Re-typing at a second slot cannot move it: an `OpRef` in
-/// flight is a value, and the slot it flows through is not a re-mint. So either the
-/// second slot's `A` agrees with the first on order, or one of the two declarations
-/// is silently not the mapping used — which is the class of wrong answer WI-1087 was
-/// filed to close, one hop away.
-///
-/// ONLY `Function` vs `Function`, which is what the two `None` arities gate. Every
-/// other pairing already answers the order question elsewhere and must not be moved:
-/// an ARROW states its arity, so at the spread arity [`arrow_params_compatible`]
-/// relates the lists under [`TupleAlign::PARAM_LIST`] (order Preserved already), and
-/// at arity 1 the whole-`A` reading is the only one the value admits — a
-/// one-parameter callable receives the tuple and reads it by label, so order-free is
-/// correct there. The arrow-SLOT mirror keeps the by-name reading WI-1085 measured.
-///
-/// AND A PERMUTATION ONLY — not "the labels differ". A label SET disagreement is the
-/// by-name relation's own refusal and renders as the ordinary mismatch; this
-/// predicate speaks for the one case that relation ACCEPTS and the parameter-list
-/// reading does not. Width and names are left exactly as WI-775/§4.5 have them: the
-/// order axis is the one the measurement above names, and tightening the other two
-/// on this pairing would refuse programs nothing has measured.
-///
-/// THE CALLER READS `A` THROUGH [`function_spec_parts`], which yields nothing for a
-/// `Function` that binds no `B` — and that is the right reader here rather than a hole
-/// this predicate should route around. MEASURED: a `Function[A = …]` slot with no `B` is
-/// not a callback slot at all, so the spread this guard protects cannot occur behind it.
-/// `inner(g: Function[A = (x, acc)]) -> Int64 = g(…)` is refused with `expected Int64,
-/// got g.B`, and passing a 2-parameter operation into such a slot is refused before that
-/// with `expected Function[A = (x: Int64, acc: Int64)], got Int64` — the eta lift needs
-/// the result type. So the pairing this skips is one that cannot reach a spread, and
-/// asking a SECOND, `B`-free question about what a `Function` is would be the one-name-
-/// two-questions defect rather than a widening.
-pub(super) fn function_pairing_permutes_a(
-    kb: &mut KnowledgeBase,
-    subst: &Substitution,
-    d_arity: Option<usize>,
-    a_arity: Option<usize>,
-    declared_a: &Value,
-    actual_a: &Value,
-) -> bool {
-    if d_arity.is_some() || a_arity.is_some() {
-        return false;
-    }
-    // σ-RESOLVED HERE, so the two call sites cannot hand this different operands while
-    // both claim to consult "the same predicate" — the drift a review caught before it
-    // was live. [`validate_arrow_param_result`] had already walked its pair;
-    // [`parameterized_compatible_view`] passes the `A` bindings as `extract_type` read
-    // them, and `named_tuple_fields` answers EMPTY for a variable, so an `A` that σ has
-    // bound to a named tuple would have made this answer `false` — an under-refusal, and
-    // a silent one. Owning the walk is what makes the two sites' claim true rather than
-    // nearly true; walking an already-walked value is an identity.
-    let labels = |kb: &mut KnowledgeBase, ty: &Value| -> Vec<Symbol> {
-        let resolved = walk_type_deep_value(kb, subst, ty);
-        named_tuple_fields(kb, &resolved)
-            .into_iter()
-            .map(|(s, _)| s)
-            .collect()
-    };
-    // A non-tuple `A` (and one σ leaves unknown) has NO fields, so the sequence test
-    // answers `false` on its own — no second gate to keep in step with
-    // [`function_param_component_count`]. Likewise `|A| <= 1`: a sequence of at most one
-    // label cannot differ from itself by order alone. The DECLARED side is read first
-    // and short-circuits, so a `Function` slot whose `A` is a bare type (the common
-    // higher-order shape) pays one walk rather than two.
-    let d = labels(kb, declared_a);
-    if d.is_empty() {
-        return false;
-    }
-    let a = labels(kb, actual_a);
-    if d == a {
-        return false;
-    }
-    // BY `Symbol` IDENTITY, which is what [`align_named_tuple_slots`] compares labels by
-    // — deliberately the same keying as the relation this narrows, not a second opinion
-    // about when two labels are one label. Two `A`s whose labels interned to DIFFERENT
-    // symbols never reach here as a permutation, because that walk would not have matched
-    // them up either and the pairing is refused by name (see [`TupleOrder::Free`] on the
-    // Symbol-vs-short-name split, which predates this and bounds both sides alike).
-    let sorted = |v: &[Symbol]| {
-        let mut k: Vec<u32> = v.iter().map(|s| s.to_bits()).collect();
-        k.sort_unstable();
-        k
-    };
-    sorted(&d) == sorted(&a)
-}
-
 /// WI-801: the ONE renderer for "`actual` does not conform to `declared`" at a
-/// site that has both types in hand — a [`TypeError::TypeMismatch`], except where
-/// the disagreement is an ARITY, which [`function_slot_arity_error`] renders as
-/// itself.
-///
-/// It has to be a renderer shared by the FAILURE paths rather than a check run
-/// ahead of them. The two sites that DECIDE the arity case —
-/// [`arrow_function_compatible`] and [`validate_arrow_param_result`] — cannot SAY
-/// it: the first is inside `types_compatible` and returns `bool`, so the pair is
-/// not in scope where the verdict is reached. Running the check at the ENTRY of
-/// every conformance test instead was measured at 1383 invocations to serve 9,
-/// each paying a `kb.intern` the surrounding code deliberately hoists — and it
-/// still reached only ONE of the three channels that render this error. The three
-/// are the op-ARGUMENT, the let-ANNOTATION and the op-RETURN; all now route here.
+/// site that has both types in hand — a [`TypeError::TypeMismatch`], except where the
+/// disagreement is a provider's value at a spec, which says what it is. The three channels
+/// — the op-ARGUMENT, the let-ANNOTATION and the op-RETURN — all route here.
 ///
 /// WI-20260824-Q0093 hangs one more thing on that: `actual_node` is the occurrence
 /// `actual` is the type OF, so a rejected proposal-055 type value can name what it
@@ -691,9 +360,6 @@ pub(super) fn conformance_error(
     context: TypeErrorContext,
     actual_node: Option<&Rc<NodeOccurrence>>,
 ) -> TypeError {
-    if let Some(err) = function_slot_arity_error(kb, &declared, &actual, span, &context) {
-        return err;
-    }
     if let Some(err) = provider_at_a_spec_type_error(kb, &declared, &actual, span, &context) {
         return err;
     }
@@ -953,58 +619,19 @@ pub(super) fn boolean_position_error(
     }
 }
 
-/// WI-801: the arity disagreement at a `Function[A, B, E]` slot, rendered as
-/// ITSELF rather than as a structural type mismatch. `None` when the arities
-/// agree or nothing is decidable — see [`function_slot_arity_counts`].
-///
-/// A generic mismatch cannot state this one. A callback's arrow carries `A` as
-/// its `param`, because an unannotated lambda ADOPTS the expected type (the
-/// `Expr::Lambda` visit case), so both sides print the SAME parameter list and
-/// only the unprinted `arity` child differs. The measured text was `expected
-/// Function[A = (_1: Int64, _2: Int64), B = Int64], got (_1: Int64, _2: Int64) ->
-/// Int64` — true, useless, and the expected-X-got-X shape WI-795 exists to keep
-/// out. The remedy is WI-795's: render the PAIR that actually differs. The printer
-/// is deliberately NOT the place to fix it — its arrow rendering is a faithful
-/// round trip, and an arity/param-count disagreement is a shape it is not meant
-/// to spell.
-///
-/// Names BOTH admissible counts, because `Function` admits two readings and a
-/// reader who has just been refused needs to know which ones were open — the same
-/// discipline the count diagnostic in [`positional_arg_expectations`] follows,
-/// including its collapse at ONE (where the two readings coincide, so offering a
-/// choice between 1 and 1 would read as a formatting bug). The two messages stay
-/// separate strings deliberately: that one counts call ARGUMENTS and this one
-/// callback PARAMETERS, and a shared wording would have to lie about one of them.
-pub(super) fn function_slot_arity_error<D: TermView, A: TermView>(
-    kb: &mut KnowledgeBase,
-    declared: &D,
-    actual: &A,
-    span: Option<Span>,
-    context: &TypeErrorContext,
-) -> Option<TypeError> {
-    let arity_key = kb.intern("arity");
-    let (components, a_arity) = function_slot_arity_counts(kb, declared, actual, arity_key)?;
-    // At a NON-tuple `A`, and at a 1-component one, the two readings coincide on
-    // 1 — offering a choice between 1 and 1 would read as a formatting bug.
-    let expected = match components {
-        Some(n) if n != 1 => format!(
-            "a callback of 1 parameter (taking the whole argument type) or {n} (its \
-             components spread)",
-        ),
-        _ => "a callback of 1 parameter — this function's argument type has no \
-              components to spread"
-            .to_string(),
-    };
-    Some(TypeError::Other {
-        site: TypeError::here(),
-        span,
-        context: context.clone(),
-        expected,
-        actual: format!(
-            "a callback of {a_arity} parameter{}",
-            if a_arity == 1 { "" } else { "s" },
-        ),
-    })
+/// The row of the callable `ty` whose effects child [`arrow_parts`] read as `row`, as the row
+/// relations take it: an ARROW's `effects` child is a row already and is handed on as it is; a
+/// `Function`'s `E` binding is whatever was written there, read as the row it denotes
+/// ([`canonical_effects_row`]). Canonicalizing an arrow's child too would build a row out of a
+/// shape no arrow is minted with — a bare variable on a hand-built arrow in a KB with no
+/// prelude, where building one is a panic (`types_compatible_bootstrap_safe_when_prelude_not_-
+/// registered`).
+pub(super) fn callable_row<V: TermView>(kb: &mut KnowledgeBase, ty: &V, row: Value) -> Value {
+    if matches!(type_head(kb, ty), TypeHead::Arrow) {
+        row
+    } else {
+        canonical_effects_row(kb, &row)
+    }
 }
 
 /// Normalize a raw effects-row [`Value`] (the third element of [`arrow_parts`])
@@ -1313,354 +940,279 @@ pub(super) fn extract_function_type_parts(
     Some((result, effects))
 }
 
-/// WI-783: the DECLARED PARAMETER LIST of a callable type — `(acc: T, x: U)` of
-/// `(acc: T, x: U) -> R` — as `(binder-name, type)` pairs in declaration order.
-/// This is what resolves a NAMED argument at a function-VALUE application
-/// (`f(x: 10, acc: 3)`) to a parameter slot, the way a named operation's
-/// `op.params` does for a direct call.
-///
-/// `None` means "this callee's type records no parameter names", which is NOT
-/// the same as "no parameters" (`Some(vec![])`) — the caller must then reject
-/// named arguments rather than guess, since it can neither order them nor tell a
-/// valid label from a typo. Three shapes deliberately yield `None`:
-///
-///  - A ONE-parameter arrow. `(v: Int64) -> Int64` extracts its param as the
-///    bare `Int64`: the binder name `v` is dropped when the arrow type is built,
-///    so it is simply not recoverable here (measured — this is a property of the
-///    arrow representation, not of this function).
-///  - `Function[A, B, E]`. WI-775 settled that `A` is the ARGUMENT's data type —
-///    what flows to `apply(f, x: A)` — so a named-tuple `A` is ONE tuple-typed
-///    argument, not a two-slot parameter list. Reading binder names off it would
-///    re-conflate the two positions WI-775 split apart.
-///  - A param that is not a named tuple at all (a type variable, a projection).
-///
-/// Gating on [`TypeExtractor::Arrow`] — not on [`arrow_parts`], which maps both
-/// spellings onto one `param` — is what keeps the `Function` case out.
-///
-/// The former KNOWN AMBIGUITY here is CLOSED by WI-791: an arrow taking ONE
-/// tuple-typed parameter used to carry the same `named_tuple` param an
-/// n-parameter list does, so this read the former as an n-slot list and resolved
-/// `f(a: 1, b: 2)` against a DATA tuple's component names. The arrow now records
-/// its `arity`, and arity one lands on the first `None` case above — those names
-/// are the tuple's components, reachable as `f((a: 1, b: 2))`, and are not
-/// parameter labels.
-///
-/// WI-798: takes the callee's ALREADY-EXTRACTED type rather than its carrier —
-/// see [`positional_arg_expectations`] on what a second classification costs.
-/// Both of this function's callers sit on a path that has just classified the
-/// same value.
-pub(super) fn arrow_declared_param_list(
-    kb: &KnowledgeBase,
-    fn_type: &TypeExtractor,
-) -> Option<Vec<(Symbol, Value)>> {
-    let (param, arity) = match fn_type {
-        TypeExtractor::Arrow { param, arity, .. } => (param, *arity),
-        _ => return None,
-    };
-    // WI-791: only a real parameter LIST carries binder names to resolve against.
-    if arity == 1 {
-        return None;
-    }
-    match extract_type(kb, param) {
-        // The list holds exactly `arity` slots by construction at every producer.
-        // It is not re-checked here: this reader only needs the binder NAMES, and
-        // a disagreement means an ill-formed arrow, which the conformance relation
-        // rejects on its own — asserting it here would turn that type error into a
-        // panic.
-        TypeExtractor::NamedTuple(fields) => Some(fields),
-        _ => None,
-    }
-}
-
-/// WI-788: what a positional application must check its arguments against — a
-/// TOTAL answer, so that "nothing to check" is a named outcome rather than an
-/// anonymous fallthrough.
-///
-/// The three-way split exists because the two callable spellings fail
-/// differently. An `arrow` states its arity, so a count disagreement is decidable
-/// there. A `Function[A, B, E]` states none — WI-775 settled that `f(3, 10)` and
-/// `f((3, 10))` are both legal at that slot — so no count can be REQUIRED of it,
-/// only OBSERVED at the call; and when its `A` is not yet a known tuple, nothing
-/// about the components is statable at all. Collapsing that last case into the
-/// same `None` as "not a callable" is what left the `Function` slot checking
-/// nothing (WI-788): the absence was real, but unnamed, so it read as "handled".
-pub(super) enum ArgExpectations {
-    /// Check argument `i` against slot `i`; the count is already agreed.
-    ///
-    /// WI-801: `gather` carries `A` when these arguments are `A`'s COMPONENTS
-    /// spread across the call at a `Function[A, B, E]` slot, and the call must
-    /// therefore be normalized into ONE whole-`A` tuple before eval — see
-    /// [`gather_spread_args_into_tuple`]. `None` everywhere else: at an `arrow`
-    /// slot the arguments are genuine separate parameters, and at a `Function`
-    /// slot given ONE argument the call is already in whole-`A` form.
-    ///
-    /// It carries `A` ALONE; the component LABELS the rewrite needs are `slots`'
-    /// own keys, taken by the consumer. Carrying them here too would store the
-    /// same extraction twice — and re-deriving them from `A` downstream is the
-    /// `extract_type`-per-application the typer's WI-798 notes exist to prevent.
-    Slots {
-        slots: Vec<(Symbol, Value)>,
-        gather: Option<Value>,
-    },
-    /// The supplied count cannot be right. `expected` describes what would be.
-    CountMismatch { expected: String },
-    /// The callee's argument type is not known well enough to state anything.
-    /// The one GENUINE absence here — distinct from a count or type disagreement,
-    /// and the only case that is silent by design.
+/// What an application of a function value meets: the function's `A`, read by the
+/// APPLICATION MATCH (kernel-language §4.4) — a TOTAL answer, so that "nothing to check" is a
+/// named outcome rather than an anonymous fallthrough. Both spellings, `arrow` and
+/// `Function[A, B, E]`, are read alike: every arrow is a `Function`, and no parameter count
+/// stands beside `A`.
+pub(super) enum ApplicationTarget {
+    /// `A` is a tuple, its components in `A`'s order: a positional argument meets the component
+    /// at its position, a named one the component with its label, each component once. A
+    /// one-component or empty tuple is no special case.
+    Tuple(Vec<(Symbol, Value)>),
+    /// `A` is one value, not a tuple: the one argument is `A` (`(v: Int64) -> R`'s binder name
+    /// is no part of its type, so `f(v: 1)` is refused).
+    Whole(Value),
+    /// `A` is a variable not yet bound — an un-annotated lambda's `?param`: the arguments say
+    /// what it is.
+    Var(Value),
+    /// The type binds no `A` at all (a `Function` without one). The one genuine absence,
+    /// silent by design.
     NoVerdict,
 }
 
-/// WI-788: the sole reader behind the positional argument check, covering BOTH
-/// callable spellings so the two cannot drift into checking different things.
-///
-/// `positional` and `total` differ only for an `arrow`: it resolves LABELS to
-/// slots, so a labelled argument occupies one and the count must include it. A
-/// `Function` has no declared binder names to resolve a label against, so a label
-/// there is rejected outright by [`arrow_declared_param_list`]'s `None` path in
-/// the caller — counting it here as well would report the same mistake twice.
-///
-/// WI-798: `fn_type` arrives ALREADY EXTRACTED. The two readers below are
-/// disjoint on the variant — [`TypeExtractor::Arrow`] vs `Parameterized` — so
-/// classifying the callee once and handing both the result loses no dispatch,
-/// while each `extract_type` it removes costs a head classify plus a fresh
-/// binding vector with every bound type cloned into it. This runs per
-/// application.
-pub(super) fn positional_arg_expectations(
+/// The [`ApplicationTarget`] of a callee ALREADY CLASSIFIED by [`extract_callable_type`]
+/// (WI-798: the application path reads one extraction for its result, its effects and this).
+/// `A` is read through σ, so a variable an earlier argument pinned is the type it was pinned
+/// to.
+pub(super) fn application_target(
     kb: &mut KnowledgeBase,
+    subst: &Substitution,
     fn_type: &TypeExtractor,
-    declared: Option<&[(Symbol, Value)]>,
-    positional: usize,
-    total: usize,
-) -> ArgExpectations {
-    if let Some(slots) = arrow_positional_param_slots(kb, fn_type, declared) {
-        // ARITY FIRST. A call whose count is wrong has no slot-wise correspondence
-        // to report against, and eval refuses it outright (`spread_eta_args`
-        // demands an exact count), so the verdict must be ONE arity error rather
-        // than a cascade of mis-aligned type mismatches — or, worse, silence when
-        // the truncated prefix happens to typecheck.
-        if total != slots.len() {
-            return ArgExpectations::CountMismatch {
-                expected: format!(
-                    "{} argument{} — the parameter list this function value declares",
-                    slots.len(),
-                    if slots.len() == 1 { "" } else { "s" },
-                ),
+) -> ApplicationTarget {
+    let Some((Some(a), _, _)) = arrow_parts_extracted(kb, fn_type) else {
+        return ApplicationTarget::NoVerdict;
+    };
+    let a = walk_type_deep_value(kb, subst, &a);
+    match extract_type(kb, &a) {
+        TypeExtractor::NamedTuple(fields) => ApplicationTarget::Tuple(fields),
+        TypeExtractor::FlexVar { .. } | TypeExtractor::TypeVar(_) => ApplicationTarget::Var(a),
+        TypeExtractor::Error => ApplicationTarget::NoVerdict,
+        _ => ApplicationTarget::Whole(a),
+    }
+}
+
+/// The components a call through a value of type `callee` names its arguments by
+/// (kernel-language §4.4, "A lambda's binder names name its arguments"): `A`'s own labels, or —
+/// where `A` is positional, a lambda's own tuple — the binder names its arrow records at those
+/// positions. The names are no part of the type: only the application match of a call of this
+/// value reads them, and the tuple the call hands over stays positional. A position whose binder
+/// is no single name keeps its positional label. An arrow recording one binder for a tuple of
+/// several components (a lambda of one binder taking the whole tuple) names no component.
+pub(super) fn components_named_by_binders(
+    kb: &mut KnowledgeBase,
+    callee: &Value,
+    fields: Vec<(Symbol, Value)>,
+) -> Vec<(Symbol, Value)> {
+    if !is_positional_tuple_names(kb, &fields) {
+        return fields;
+    }
+    match arrow_own_binders(kb, callee) {
+        Some(binders) if binders.len() == fields.len() => fields
+            .into_iter()
+            .zip(binders)
+            .map(|((label, ty), binder)| match binder {
+                Some(binder) => {
+                    let name = short_name_of(kb.local_name_of(binder)).to_owned();
+                    (kb.intern(&name), ty)
+                }
+                None => (label, ty),
+            })
+            .collect(),
+        _ => fields,
+    }
+}
+
+/// The components of a function type's `A` when `A` is a tuple — the parameter list a call
+/// through a value of this type names its arguments by. `None` for a function whose `A` is no
+/// tuple, and for a type that is no function.
+pub(super) fn function_param_tuple(kb: &mut KnowledgeBase, ty: &Value) -> Option<Vec<(Symbol, Value)>> {
+    let (Some(a), _, _) = arrow_parts(kb, ty)? else {
+        return None;
+    };
+    named_tuple_field_pairs(kb, &a)
+}
+
+/// How many parameters a callable WRITTEN at a slot has — the one fact about it its type does
+/// not state (kernel-language §4.4: `((a: A, b: B)) -> R` and `(a: A, b: B) -> R` are one type,
+/// while `get_a(t: (a: A, b: B))` and `two(a: A, b: B)` are two callables).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum CallableParams {
+    /// One parameter, or one binder: the callable takes the whole tuple as its value.
+    One,
+    /// Any other count, its own tuple the list of its parameters (a lambda's carries no labels).
+    Many,
+}
+
+impl CallableParams {
+    /// An operation taken as a value: its signature's parameter list — the one eval's
+    /// `spread_eta_args` reads the count off, so the two cannot disagree on it.
+    pub(super) fn of_operation(kb: &KnowledgeBase, op: Symbol) -> Self {
+        let info = crate::kb::op_info::lookup_operation_info(kb, op).unwrap_or_else(|| {
+            panic!(
+                "`{}` taken as a function value has no signature record",
+                kb.qualified_name_of(op)
+            )
+        });
+        if info.params.len() == 1 {
+            CallableParams::One
+        } else {
+            CallableParams::Many
+        }
+    }
+}
+
+/// A callable WRITTEN at a function-typed slot — an operation or a lambda — as the slot reads
+/// it: rule 6 of proposal 002 (kernel-language §4.4, "A callable where a function type is
+/// expected"). TOTAL, so "the slot does not say yet" is a named outcome.
+pub(super) enum CallableAtSlot {
+    /// The callable re-expressed at the slot's `A`, as the type it has from here on: `A`'s
+    /// components in `A`'s order and with `A`'s labels, each the type of the parameter that
+    /// takes it, with the callable's own result and row — so a function value keeps the mapping
+    /// it was minted at, and every later relation reads it as the slot's. `slot_labels` is what
+    /// an operation value carries to take the positional tuple an application hands it
+    /// (`Value::OpRef::spread_labels`): for several parameters `A`'s labels in `A`'s order, which
+    /// map each parameter to its component (`slot_components_of_params`); for one parameter the
+    /// labels it relabels the tuple to.
+    AtSlot {
+        ty: Value,
+        slot_labels: Option<Rc<[Symbol]>>,
+    },
+    /// The slot's `A` is not known yet (a variable a later argument may pin): the callable
+    /// keeps its own type, and the match waits for `A`.
+    Waits,
+    /// `A` does not reach the callable's tuple — two components meeting three parameters, a
+    /// tuple its one parameter does not accept, several parameters at a non-tuple `A`. The
+    /// callable keeps its own type, which the conformance relation then refuses with both types
+    /// in the message.
+    Refused,
+}
+
+/// [`CallableAtSlot`] for the callable whose own type is `own_ty` — an arrow over its own tuple,
+/// an operation's parameters (`two(a: Int64, b: Int64)` has `(a: Int64, b: Int64)`) or a
+/// lambda's pattern (`lambda (a: Int64, b: Int64)` has `(Int64, Int64)`, no labels) — at the
+/// slot `slot_ty`, read through σ.
+///
+/// * ONE parameter: the slot hands it the whole tuple, which is data to it, so `A` meets the
+///   parameter's type by the TUPLE MATCH — a component the parameter does not name is dropped
+///   (`age_of(p: (age: Int64))` stands where `A = (age: Int64, name: String)`).
+/// * SEVERAL: the components meet the parameters by label where the two tuples carry the same
+///   labels, by position otherwise ([`crate::kb::call_form::slot_components_of_params`], the
+///   owner eval reads too), and the counts must agree — the application match. The arrow's own
+///   binders are reordered with the components, so a row label over parameter `x` stays over
+///   the component `x` takes (the callback row check aligns by position).
+pub(super) fn callable_at_slot(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    own_ty: &Value,
+    params: CallableParams,
+    slot_ty: &Value,
+) -> CallableAtSlot {
+    let Some((Some(own_a), own_result, Some(own_row))) = arrow_parts(kb, own_ty) else {
+        return CallableAtSlot::Refused;
+    };
+    let Some((slot_a, _, _)) = arrow_parts(kb, slot_ty) else {
+        return CallableAtSlot::Refused;
+    };
+    let Some(slot_a) = slot_a else {
+        return CallableAtSlot::Waits;
+    };
+    let slot_a = walk_type_deep_value(kb, subst, &slot_a);
+    let own_binders = match extract_callable_type(kb, own_ty) {
+        TypeExtractor::Arrow { binders, .. } => binders,
+        _ => None,
+    };
+    let (sp, owner) = site_of(own_ty);
+    let slot_fields = match extract_type(kb, &slot_a) {
+        TypeExtractor::FlexVar { .. } | TypeExtractor::TypeVar(_) | TypeExtractor::Error => {
+            return CallableAtSlot::Waits;
+        }
+        TypeExtractor::NamedTuple(fields) => Some(fields),
+        _ => None,
+    };
+    match params {
+        CallableParams::One => {
+            // Bind what the parameter's type leaves open (an instantiated `T`) before the
+            // judgement; the boolean is the relation's, not this unify's — EQUALITY refuses the
+            // width the tuple match admits. On a TRIAL σ, kept only where the callable meets the
+            // slot: a refused one must not leave the call's variables pinned to its types.
+            let mut trial = subst.clone();
+            let _ = unify_types(kb, &mut trial, &own_a, &slot_a);
+            // `A`'s components meet the parameter's tuple as an application's arguments do: a
+            // POSITIONAL `A` by position (`take2(get_a)`, `(Int64, Int64)` reaching `(a: Int64,
+            // b: Int64)` — the value is relabelled where it is taken, `Value::at_tuple_labels`),
+            // a labelled one by label, a component the parameter's type does not name dropped as
+            // the tuple match drops it.
+            let meets = match (&slot_fields, named_tuple_field_pairs(kb, &own_a)) {
+                (Some(slot), Some(own))
+                    if is_positional_tuple_names(kb, slot) && !is_positional_tuple_names(kb, &own) =>
+                {
+                    slot.len() == own.len()
+                        && slot
+                            .iter()
+                            .zip(&own)
+                            .all(|((_, s), (_, o))| types_compatible(kb, &mut trial, s, o))
+                }
+                _ => types_compatible(kb, &mut trial, &slot_a, &own_a),
             };
-        }
-        return ArgExpectations::Slots {
-            slots,
-            gather: None,
-        };
-    }
-    let Some(param_ty) = function_spec_param_type(kb, fn_type) else {
-        // Neither spelling — a type variable, a projection, a malformed callee.
-        // Not a callable this check can read, so it states nothing.
-        return ArgExpectations::NoVerdict;
-    };
-    // A LABELLED argument at a `Function` slot is always an error — there are no
-    // declared binder names to bind it to — and the caller reports exactly that,
-    // naming the offending label. Counting labelled arguments here would compare
-    // `A`'s component count against the POSITIONAL count only, and the caller
-    // renders `actual` from the TOTAL, so a fully-labelled call produced a
-    // self-contradictory "expected … or 2 …, got 2 arguments" that also preempted
-    // the accurate diagnostic. Two currencies; say nothing and let the precise
-    // error through.
-    if total != positional {
-        return ArgExpectations::NoVerdict;
-    }
-    // ONE argument IS `A`; N arguments are `A`'s components spread across the
-    // call. Both are legal (WI-775), so the count is read, not required.
-    //
-    // DYNAMIC TWIN: eval's `spread_eta_args` / `gather_closure_arg` pivot on the
-    // CALLEE's own arity (`params.len()` / `Pattern::binder_arity`), whereas this
-    // pivots on `A`'s component count. The two coincide exactly when the callback
-    // conforms to `Function[A, …]`, which the arrow/lambda conformance check
-    // establishes separately — see `Pattern::binder_arity` (kb/node_occurrence.rs)
-    // on why the quantities the two sides agree on must be kept in view.
-    if positional == 1 {
-        return ArgExpectations::Slots {
-            slots: vec![(kb.intern(&positional_label(0)), param_ty)],
-            // Already the whole-`A` form; nothing to normalize.
-            gather: None,
-        };
-    }
-    match extract_type(kb, &param_ty) {
-        TypeExtractor::NamedTuple(fields) if fields.len() == positional => {
-            // WI-801: THE spread form. The typer is the only party that can act
-            // on it — the gather needs `A`'s component LABELS, which are erased
-            // by the time eval runs — so it normalizes the call to `f((a: …, b:
-            // …))` here rather than leaving eval to guess a spelling.
-            //
-            // This fires at every count but ONE, including ZERO: `f()` at
-            // `Function[A = (), B]` reaches a 1-binder callback as a Gather of
-            // zero arguments and trapped exactly as `f(1, 2)` did. Arity one is
-            // the sole count that is already whole, and it returned above.
-            ArgExpectations::Slots {
-                slots: fields,
-                gather: Some(param_ty),
+            if !meets {
+                return CallableAtSlot::Refused;
             }
+            *subst = trial;
+            let ty = arrow_value(kb, &slot_a, &own_result, &own_row, own_binders, sp, owner);
+            // What the parameter reads the positional tuple an application hands it by: the
+            // slot's labels where the slot names its components, its own type's where the slot
+            // is positional (`get_a(t: (a: Int64, b: Int64))` at `(Int64, Int64)`), none where
+            // neither names any.
+            let named = |f: &Option<Vec<(Symbol, Value)>>| -> Option<Rc<[Symbol]>> {
+                f.as_ref()
+                    .filter(|f| !f.is_empty() && !is_positional_tuple_names(kb, f))
+                    .map(|f| f.iter().map(|(l, _)| *l).collect())
+            };
+            let slot_labels = named(&slot_fields).or_else(|| named(&named_tuple_field_pairs(kb, &own_a)));
+            CallableAtSlot::AtSlot { ty, slot_labels }
         }
-        TypeExtractor::NamedTuple(fields) => ArgExpectations::CountMismatch {
-            // At component count ONE the two readings coincide — the lone
-            // argument is both "the tuple" and "its only component spread" — so
-            // offering a choice between 1 and 1 would read as a formatting bug.
-            expected: if fields.len() == 1 {
-                "1 argument".to_string()
-            } else {
-                format!(
-                    "1 argument (the tuple itself) or {} (its components spread)",
-                    fields.len(),
-                )
-            },
-        },
-        // `A` is not a tuple TYPE — a rigid type parameter, a projection, anything
-        // unresolved. The spread form is a claim about `A`'s COMPONENTS, and a type
-        // with no known components neither satisfies nor refutes it. A generic
-        // `operation ap[A](f: Function[A, R])` whose body spreads `f(x, y)` reaches
-        // eval and is checked by the matcher against the closure's real binder count.
-        _ => ArgExpectations::NoVerdict,
-    }
-}
-
-/// WI-788: the single argument type `A` of the stdlib `Function[A, B, E]`
-/// spelling, and ONLY that spelling — `None` for a real `arrow`, which states an
-/// arity and is checked through [`arrow_positional_param_slots`], and `None` for
-/// everything else.
-///
-/// The two are deliberately disjoint rather than one reader: an `arrow` can be
-/// asked how many slots it has, a `Function` cannot (WI-775 settled that its `A`
-/// is the ONE argument `apply(f, x: A)` passes, so `f(3, 10)` and `f((3, 10))`
-/// are both legal at a `Function` slot). Folding them together would hand the
-/// arity-checking caller an absence to invent a default for — which is exactly
-/// how the `Function` slot ended up checking NOTHING.
-///
-/// WI-798: reads `A` out of the bindings the CALLER's extraction already built,
-/// rather than delegating to [`arrow_parts`] — that would classify the same value
-/// a second time, re-allocating the binding vector and re-cloning every bound
-/// type. The disjointness above is what makes one extraction safe to share: this
-/// arm fires only on `Parameterized`, its peer reader only on `Arrow`. Nothing
-/// here interns, which is why `kb` is shared rather than `&mut`.
-fn function_spec_param_type(kb: &KnowledgeBase, fn_type: &TypeExtractor) -> Option<Value> {
-    match fn_type {
-        TypeExtractor::Parameterized { base, bindings } => {
-            function_spec_parts(kb, *base, bindings).and_then(|(param, _, _)| param.cloned())
+        CallableParams::Many => {
+            let Some(slot_fields) = slot_fields else {
+                return CallableAtSlot::Refused;
+            };
+            // An operation of other than one parameter has the tuple of its parameters for `A`
+            // (`()` for none), as its eta arrow is built.
+            let own_fields = named_tuple_field_pairs(kb, &own_a)
+                .expect("a callable of several parameters has a tuple for its `A`");
+            let own_names: Vec<&str> = own_fields
+                .iter()
+                .map(|(l, _)| short_name_of(kb.local_name_of(*l)))
+                .collect();
+            let slot_names: Vec<&str> = slot_fields
+                .iter()
+                .map(|(l, _)| short_name_of(kb.local_name_of(*l)))
+                .collect();
+            let Some(takes) = crate::kb::call_form::slot_components_of_params(&own_names, &slot_names)
+            else {
+                return CallableAtSlot::Refused;
+            };
+            // `takes[j]` is the component parameter `j` takes; read the other way round, the
+            // parameter at each component.
+            let mut at_component: Vec<usize> = vec![0; takes.len()];
+            for (j, &i) in takes.iter().enumerate() {
+                at_component[i] = j;
+            }
+            let fields: Vec<(Symbol, Value)> = slot_fields
+                .iter()
+                .zip(&at_component)
+                .map(|((label, _), &j)| (*label, own_fields[j].1.clone()))
+                .collect();
+            let param = named_tuple_value(kb, &fields, sp, owner);
+            let binders = own_binders.map(|b| {
+                // An arrow's binders are its own parameters by position (the `Arrow` entity's
+                // doc), so there is one for each component the parameters were mapped to.
+                let places = value_list_elements(kb, &b);
+                assert_eq!(
+                    places.len(),
+                    at_component.len(),
+                    "an arrow's binders are one per parameter: {} binders beside {} parameters",
+                    places.len(),
+                    at_component.len(),
+                );
+                let reordered = at_component.iter().map(|&j| places[j].clone()).collect();
+                crate::kb::load::build_value_list(kb, reordered)
+            });
+            let ty = arrow_value(kb, &param, &own_result, &own_row, binders, sp, owner);
+            let slot_labels = slot_fields.iter().map(|(l, _)| *l).collect();
+            CallableAtSlot::AtSlot { ty, slot_labels: Some(slot_labels) }
         }
-        _ => None,
     }
-}
-
-/// WI-792: the POSITIONAL parameter SLOTS of a callable type — one
-/// `(name, type)` per parameter, in declaration order. A positional application
-/// checks argument `i` against slot `i`, and must supply exactly `len()` of them.
-///
-/// The POSITIONAL peer of [`arrow_declared_param_list`], differing from it in
-/// exactly one place, deliberately: an arity-ONE arrow. That reader returns
-/// `None` there because the arrow representation DROPS a lone binder's name, so a
-/// LABEL has nothing to resolve against. A positional argument needs no name —
-/// the sole parameter's type IS the `param` slot — so it is checkable here, and
-/// reported against the synthetic position `_1`. That synthetic name is for the
-/// DIAGNOSTIC only: nothing resolves a label through this list, so minting one
-/// cannot make `f(_1: 5)` start binding at arity one.
-///
-/// `None` means the callee's type STATES NO ARITY, and that absence is
-/// load-bearing rather than defensive. A `Function[A, B, E]` carries no arity and
-/// cannot: WI-775 settled that its `A` is the ONE argument `apply(f, x: A)`
-/// passes, so `f(3, 10)` and `f((3, 10))` are BOTH legal at a `Function` slot
-/// (`operations_and_lambdas_are_interchangeable_in_both_application_forms`) and
-/// neither a count nor a slot-wise type check can be stated over it. Gating on
-/// [`TypeExtractor::Arrow`] — not on [`arrow_parts`], which maps both spellings
-/// onto one `param` — is what keeps `Function` out; reading that `A` as a single
-/// parameter would read `f(3, 10)` as two arguments against one slot and refuse
-/// a program the runtime handles by design.
-///
-/// WI-798: reads the extraction its caller already performed — see
-/// [`positional_arg_expectations`] on why sharing one costs no dispatch — and
-/// takes `declared` as the caller's ONE [`arrow_declared_param_list`] reading,
-/// rather than deriving its own. That the two readers agree on the slots is the
-/// point of the arm below; taking the same list makes them agree by construction
-/// instead of by both walking to the same answer.
-fn arrow_positional_param_slots(
-    kb: &mut KnowledgeBase,
-    fn_type: &TypeExtractor,
-    declared: Option<&[(Symbol, Value)]>,
-) -> Option<Vec<(Symbol, Value)>> {
-    match fn_type {
-        // Arity ONE: the sole parameter's TYPE is the slot, and the arrow dropped
-        // the binder name, so the position stands in for it. `declared` is `None`
-        // here BY DESIGN — this is the one place the two readers diverge — so it
-        // is deliberately not consulted.
-        TypeExtractor::Arrow {
-            param, arity: 1, ..
-        } => Some(vec![(kb.intern(&positional_label(0)), param.clone())]),
-        // Every other arity: the parameter list IS the slot list, which is exactly
-        // what [`arrow_declared_param_list`] already read for the caller.
-        TypeExtractor::Arrow { .. } => {
-            let slots = declared.map(|d| d.to_vec());
-            // A non-arity-1 `arrow` carries its list as a `named_tuple` at every
-            // producer THAT KNOWS ITS PARAMETER TYPE — a NULLARY one carries the EMPTY
-            // tuple, measured, so zero reaches this arm as `Some(vec![])` and its
-            // applications ARE arity-checked. Anything else is a malformed arrow, and
-            // returning `None` for it would SILENTLY DISABLE the whole argument check at
-            // that call — precisely the WI-791 failure mode, where a hand-built arrow
-            // missing a child left two tests green while covering nothing. Loud where it
-            // can be: under test, the only place such a term exists.
-            //
-            // THE ONE PRODUCER THAT DOES NOT KNOW IT, and this assert used to claim it
-            // away (WI-20260904-50B2K). An UN-ANNOTATED BINDER LIST mints its arrow with
-            // `arity` = the WRITTEN binder count and `param` = whatever the type ladder
-            // could supply, and rung 3 supplies a variable — `lambda_written_arity`'s own
-            // comment says so in as many words ("`param_type` cannot supply it — an
-            // unannotated lambda's is a fresh type var"). So the two comments
-            // CONTRADICTED each other and this one was the wrong half: driven,
-            // `let g = lambda (a, b) -> a  g((a: 1, b: 2))` aborted a debug build here,
-            // and its ANNOTATED twin `lambda (a: Int64, b: Int64)` aborted identically —
-            // per-binder annotations are read one level down, so the arrow's param is a
-            // variable either way and the mint form is not what decides it.
-            //
-            // AN UNDETERMINED PARAM IS A WITHHOLDING, NOT A MALFORMED TERM, and `None` is
-            // the same answer the rest of the typer gives for one: `validate_arg_against_
-            // param`'s "everything above this line treats 'not ground' as 'not mine to
-            // decide'". There is no parameter list to check against yet, and inventing
-            // one would invent its LABELS — which WI-803 takes from the EXPECTED type,
-            // never from the binder names. Making the arrow's param a real
-            // `named_tuple` of per-component variables is the deeper repair (it would
-            // also let one unification at a use site solve every component at once); it
-            // is a change to what a binder-list lambda's param type IS, so it is
-            // WI-20260904-34J8Z and not this assert.
-            debug_assert!(
-                slots.is_some() || arrow_param_is_undetermined(kb, fn_type),
-                "WI-792: an `arrow` of arity != 1 must carry its parameter list as a \
-                 `named_tuple`; a term reaching here without one is malformed and would \
-                 silently skip the argument check (build it with `make_arrow_type` / \
-                 `make_arrow_occ`)",
-            );
-            slots
-        }
-        _ => None,
-    }
-}
-
-/// WI-20260904-50B2K — is an arrow's parameter type UNDETERMINED, so that no parameter
-/// list can be read off it yet?
-///
-/// The one legitimate reason [`arrow_positional_param_slots`] finds no `named_tuple` at
-/// arity != 1: a lambda's arity is its WRITTEN binder count and its param type comes from
-/// a ladder whose bottom rung is a variable, so the two can disagree while the term is
-/// perfectly well formed. Everything else reaching that arm without a list IS malformed.
-///
-/// BOTH UNDETERMINED FORMS, because rung 3 has minted each in turn: `TypeVar` is the
-/// inert placeholder it minted before WI-20260904-50B2K and still mints for a type nobody
-/// can name, `FlexVar` is the inference variable it mints now. `Skolem` is deliberately
-/// NOT here — a rigidified parameter is DETERMINED (opaque, but decided), so an arrow
-/// whose param is one and whose arity says "list" really is malformed.
-fn arrow_param_is_undetermined(kb: &KnowledgeBase, fn_type: &TypeExtractor) -> bool {
-    let TypeExtractor::Arrow { param, .. } = fn_type else {
-        return false;
-    };
-    matches!(
-        extract_type(kb, param),
-        TypeExtractor::TypeVar(_) | TypeExtractor::FlexVar { .. }
-    )
 }
 
 /// The param type of a callable (`arrow` or `Function[A, B, E]`), used to type a

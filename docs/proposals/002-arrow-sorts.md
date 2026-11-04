@@ -3,7 +3,7 @@
 **Canonical reference:** [`kernel-language.md` §§4.4 and 5.2](../kernel-language.md#52-sort),
 including the delivered higher-kinded sort-binder extensions.
 
-**Status:** Draft. Corrected 2026-11-03: every arrow is a `Function` (§"Correction (2026-11-03)"); kernel-language §§4.4, 4.5, 4.7, 5.4, 6.7 and 8.6 state the correction (WI-20261104-5CNY5), the implementation does not yet (WI-20261104-6HVXM).
+**Status:** Draft. Corrected 2026-11-03: every arrow is a `Function` (§"Correction (2026-11-03)"); kernel-language §§4.4, 4.5, 4.7, 5.4, 6.7 and 8.6 state the correction (WI-20261104-5CNY5), and the typer and the run time implement it (WI-20261104-6HVXM).
 **Depends on:** [001-sort-domain-unification](001-sort-domain-unification.md)
 **Subsumes:** [003-effect-arrow-sorts](003-effect-arrow-sorts.md)
 **Affects:** Kernel Language Specification §4, §5.2, §5.4, §5.5–5.7, §8.2, §11
@@ -400,6 +400,16 @@ Rule 6 reaches a callback's effect row as well: its binder places are aligned to
 parameters by the mapping the argument meets the slot with, by label where the two tuples carry
 the same labels, so `impl(y: Cell, x: Cell) effects {Modify[x]}` meets
 `(x: Cell, y: Cell) -> Int64 @ {Modify[x]}`.
+
+**One more, decided with the user 2026-11-04 (WI-20261104-6HVXM).** *A lambda's binder names name
+its arguments* where its own value is applied, while its tuple stays positional. Over
+`let g = lambda (a, b) -> a`, `g((a: 1, b: 2))` and `g((b: 2, a: 1))` each run to 1 (on
+`50d54d05`, 1 and 2, the second reading the tuple in its written order; refused by the
+application match against the positional tuple alone). The names are no part of the type, so
+every relation between two function types still sees the positional tuple: q8, `let f = lambda
+(a: Int64, b: Int64) -> a + b` then `List.foldLeft([1, 2, 3], 0, f)`, runs to 6, and
+`take(lambda (y, x) -> x)` over `take(f: (x: Int64, y: Int64) -> Int64) = f(7, 1)` to 1, by
+position.
 
 ## Term Application
 
