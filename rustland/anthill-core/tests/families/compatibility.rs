@@ -18,7 +18,12 @@
 //! NOT PROGRAMS, and skipped ([`skips`]): each provision option at the pairs the other one
 //! covers; `type_admits` at a tuple or an arrow, which it leaves unjudged by design, and at a
 //! variant, whose type the matrix has no value spelling for (`Colour.red` bare is a
-//! construction).
+//! construction); and a lambda's argument at a TUPLE `B`, which asks another question: `let f =
+//! lambda (x: B) -> 1` is a function value whose `A` is `B` itself, and one tuple is the argument
+//! list (kernel-language §4.4, WI-20261104-6HVXM), so `f(mkA())` is the application match of
+//! `A`'s components against `B`'s, not `A` standing at `B` — `(a, b, c)` at `(a, c)` is refused
+//! there, `b` meeting no component, a function value dropping nothing. Those programs are
+//! `wi_6hvxm_every_arrow_is_a_function_test`'s.
 //!
 //! AN ANSWER IS ADMITTED OR NOT ([`judge`]): a position that runs is admitted; one refused by
 //! a type mismatch — whatever the position's context kind — is not, and so is `type_admits`
@@ -234,6 +239,7 @@ fn skips(picks: &Picks<'_>) -> bool {
         "provision" => is_former(p),
         "provision-by-parts" => !is_former(p),
         "type-admits" => is_former(p) || is_variant(p),
+        "lambda-argument" => p.starts_with("tuple-"),
         _ => false,
     }
 }

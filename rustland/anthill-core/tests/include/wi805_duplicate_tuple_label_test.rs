@@ -330,23 +330,22 @@ fn labels_do_not_collide_across_distinct_tuples() {
     );
 }
 
-/// An ARROW PARAMETER LIST is not a tuple TYPE and is deliberately NOT covered.
-/// The two share one grammar production (WI-766) but not one reading, and
-/// `convert_arrow_type` walks its params itself rather than calling
-/// `convert_tuple_type` — the same seam that lets `(A) -> B` be a parameter list
-/// while `(A)` is not a type.
-///
-/// The exemption is not an oversight: a parameter list is applied POSITIONALLY, so
-/// a repeated binder name leaves NO parameter unreachable, and the one channel that
-/// does read those names — a named argument — already refuses a duplicate at the
-/// call (`bind_call_arguments`, "binds a parameter already given"). Nothing
-/// here is silently wrong, which is what this file is about. Recorded rather than
-/// widened, so that a later decision to reject duplicate binder names is taken on
-/// its own terms.
+/// An ARROW PARAMETER LIST is covered too since WI-20261104-6HVXM: every arrow is a `Function`
+/// and its parameter list IS the tuple `A` (kernel-language §4.4), so its labels are a tuple's
+/// and must be distinct (§4.5) — `(a: Int64, a: Int64) -> Int64` is refused where it is written,
+/// at the repeated label. [This file recorded it as deliberately not covered, a parameter list
+/// being applied by position; through a function value's labelled `A` the second `a` is
+/// reachable by neither its name nor its position, as a tuple's is.] An OPERATION's repeated
+/// parameter names are a separate question (proposal 002, "An arrow's parameter list has
+/// distinct labels"), and not this rule.
 #[test]
-fn an_arrow_parameter_list_is_not_covered() {
-    parses_clean(
+fn an_arrow_parameter_list_is_covered() {
+    let errs = parse_errs(
         "namespace test.wi805.arrow\n  import anthill.prelude.Int64\n  \
          operation useit(f: (a: Int64, a: Int64) -> Int64) -> Int64 = f(1, 2)\nend\n",
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("duplicate arrow parameter label `a`")),
+        "a repeated arrow label must be refused, naming `a`; got: {errs:?}",
     );
 }

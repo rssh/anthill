@@ -166,7 +166,7 @@ fn anonymous_declaration_descriptions_are_refused_not_dropped() {
 fn the_four_stdlib_entity_blocks_are_no_longer_silent() {
     let kb = load_kb_with("");
     const EXPECTED: [(&str, &str); 4] = [
-        ("anthill.prelude.TypeExtractor.Arrow", "WI-791"),
+        ("anthill.prelude.TypeExtractor.Arrow", "WI-20261104-6HVXM"),
         ("anthill.prelude.TypeExtractor.ExprCarried", "WI-376"),
         (
             "anthill.prelude.TypeExtractor.RigidTypeProjection",

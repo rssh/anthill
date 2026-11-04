@@ -305,18 +305,30 @@ fn a_return_wider_by_width_and_through_a_provider_fits() {
 }
 
 /// A CALLBACK's parameter, where the relation turns over and the carrier is on the member's
-/// side: `f: (u: (a: Box[T = W], b: Int64)) -> Int64` behind `f: (u: (a: Describe[K = T])) ->
-/// Int64`.
+/// side: `f: (u: (a: Box[T = W])) -> Int64` behind `f: (u: (a: Describe[K = T])) -> Int64`
+/// fits through the provider. Wider by width it does not: a function type's tuple is its
+/// parameter list and a function value drops nothing (WI-20261104-6HVXM, kernel-language
+/// §4.4), so `f: (u: (a: Box[T = W], b: Int64)) -> Int64` would hand the spec's callback a
+/// `b` it lacks [fitted, and ran to 42, before WI-20261104-6HVXM].
 #[test]
-fn a_callback_parameter_wider_by_width_and_through_a_provider_fits() {
+fn a_callback_parameter_through_a_provider_fits_and_wider_by_width_does_not() {
     runs(
+        "callback_through",
+        BOX,
+        "Sp[T = Int64]",
+        ", f: (u: (a: Describe[K = T])) -> Int64, y: T) -> Int64",
+        "op[W](c: Car, f: (u: (a: Box[T = W])) -> Int64, y: W) -> Int64 = \
+         f((a: box(n: 41, t: y))) + 1",
+        "Sp.op(car(n: 1), lambda (u) -> Describe.tag(u.a), 7)",
+    );
+    refused(
         "callback_width",
         BOX,
         "Sp[T = Int64]",
         ", f: (u: (a: Describe[K = T])) -> Int64, y: T) -> Int64",
         "op[W](c: Car, f: (u: (a: Box[T = W], b: Int64)) -> Int64, y: W) -> Int64 = \
          f((a: box(n: 41, t: y), b: 1)) + 1",
-        "Sp.op(car(n: 1), lambda (u) -> Describe.tag(u.a), 7)",
+        "parameter 2 (`f: (a: Box[T = ?W], b: Int64) -> Int64`) takes less than the spec's",
     );
     refused(
         "callback_width_bad",

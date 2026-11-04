@@ -3539,7 +3539,7 @@ fn lower_node(
                 return lower_constructor_literal_node(kb, ctx, *functor, pos_args, named_args);
             }
             let mut args = Vec::new();
-            for a in combined_args(pos_args, named_args) {
+            for a in function_value_call_args(kb, *functor, pos_args, named_args) {
                 args.push(lower_node(kb, ctx, a)?);
             }
             // WI-886: the CARRIER's own cpp implementation is asked FIRST, ahead of
@@ -3703,6 +3703,39 @@ fn lower_node(
             ),
         }),
     }
+}
+
+/// The arguments a call is lowered with. A call through a FUNCTION VALUE — a functor that is
+/// no operation, a parameter or a local — is typed in its tupled form, `f((_1: a, _2: b))`
+/// (kernel-language §4.4: an application hands its callable `A`'s components as one positional
+/// tuple, `gather_args_into_tuple`), while [`lower_arrow_type`] lowers a tuple `A` as the
+/// `std::function`'s parameter list: so the tuple literal's components are the call's arguments,
+/// `f(a, b)`. The typer gathers exactly where `A` reads as a tuple, the condition
+/// [`lower_arrow_type`] lowers by, so only a literal it SYNTHESIZED is spread; one the source
+/// wrote is a tuple-typed argument at an `A` that is no tuple (a type parameter), and stays one.
+/// Every other call keeps its arguments as written.
+fn function_value_call_args<'a>(
+    kb: &KnowledgeBase,
+    functor: Symbol,
+    pos_args: &'a [std::rc::Rc<anthill_core::kb::node_occurrence::NodeOccurrence>],
+    named_args: &'a [(
+        Symbol,
+        std::rc::Rc<anthill_core::kb::node_occurrence::NodeOccurrence>,
+    )],
+) -> Vec<&'a std::rc::Rc<anthill_core::kb::node_occurrence::NodeOccurrence>> {
+    use anthill_core::kb::node_occurrence::Expr;
+    if anthill_core::kb::op_info::lookup_operation_info(kb, functor).is_none() && named_args.is_empty() {
+        if let [only] = pos_args {
+            if let (Some(Expr::Constructor { name, pos_args, named_args, .. }), Some(_)) =
+                (only.as_expr(), only.synthesized_by())
+            {
+                if kb.qualified_name_of(*name) == dt::qualified(dt::TUPLE_LITERAL) {
+                    return combined_args(pos_args, named_args);
+                }
+            }
+        }
+    }
+    combined_args(pos_args, named_args)
 }
 
 /// Concatenate positional + named arg slices into a single iteration
@@ -5230,12 +5263,7 @@ fn lower_type(
         // A bare name `extract_sort_ref_sym` did not answer for: a type parameter
         // written by its own name.
         TypeExtractor::SortRef(sym) | TypeExtractor::TypeVar(sym) => sort_to_cpp(kb, ctx, sym),
-        TypeExtractor::Arrow {
-            param,
-            result,
-            arity,
-            ..
-        } => lower_arrow_type(kb, ctx, &param, &result, arity),
+        TypeExtractor::Arrow { param, result, .. } => lower_arrow_type(kb, ctx, &param, &result),
         TypeExtractor::NamedTuple(fields) if fields.is_empty() => match unit_mapping(kb, ctx)? {
             Some(hit) => Ok(hit.host_type),
             None => Err(CppCodegenError {
@@ -5296,29 +5324,17 @@ fn lower_arrow_type(
     ctx: &CodegenContext,
     param: &Value,
     result: &Value,
-    arity: usize,
 ) -> Result<String, CppCodegenError> {
     let r = lower_type(kb, ctx, result)?;
 
-    // A multi-param / nullary arrow carries its params as a `named_tuple`; a
-    // unary arrow carries the single param type directly. Decode through the
-    // same typed extractor so both forms (and both carriers) read uniformly.
-    // A `named_tuple` param is taken to BE the parameter list (this is the
-    // WI-575 contract: "the param named_tuple becomes Args...").
-    //
-    // WI-791: WHICH form this is is now read off the arrow's `arity` child
-    // rather than guessed. The loader used to build `(a: A, b: B) -> R` and the
-    // single tuple-typed parameter `((A, B)) -> R` into the identical
-    // `named_tuple([A, B])` param, so the multi-arg reading won and silently
-    // flattened the latter into a two-argument `std::function` the anthill side
-    // calls with one `std::tuple`. Arity one now lowers as ONE argument.
-    let args: Vec<String> = if arity == 1 {
-        vec![lower_type(kb, ctx, param)?]
-    } else {
-        match extract_type(kb, param) {
-            TypeExtractor::NamedTuple(fields) => lower_tuple_elem_types(kb, ctx, &fields)?,
-            _ => vec![lower_type(kb, ctx, param)?],
-        }
+    // Every arrow is a `Function` (kernel-language §4.4): its `param` is the tuple `A`, so a
+    // `named_tuple` param IS the parameter list (the WI-575 contract: "the param named_tuple
+    // becomes Args...") — `(a: A, b: B) -> R` and `((a: A, b: B)) -> R` are one type and lower
+    // alike — and any other param is the one argument. Decoded through the typed extractor so
+    // both carriers read uniformly.
+    let args: Vec<String> = match extract_type(kb, param) {
+        TypeExtractor::NamedTuple(fields) => lower_tuple_elem_types(kb, ctx, &fields)?,
+        _ => vec![lower_type(kb, ctx, param)?],
     };
 
     ctx.requested_includes

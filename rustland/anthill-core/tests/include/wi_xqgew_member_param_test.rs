@@ -496,24 +496,36 @@ fn an_override_is_shown_the_specs_member() {
 }
 
 /// A FUNCTION VALUE CARRIES THE MEMBER TOO. An operation used as a value is instantiated
-/// at a copy of each of its parameters, and the copy is the same member: `tagIt` handed
-/// where a two-parameter function is wanted is shown as `Tagger.C -> Int64`. Was `?C ->
-/// Int64`, beside a body that printed the same parameter `Tagger.C`.
+/// at a copy of each of its parameters, and the copy is the same member: `tagIt` written at
+/// `(a: A) -> String` takes the slot's `A` for its `Tagger.C` (kernel-language §4.4, a
+/// callable of one parameter takes the slot's tuple), so the refusal shows `A -> Int64` and
+/// nothing else is refused — the requirement is supplied at `A` through the copy — and at
+/// `(a: A) -> Int64` the call runs, `A`'s `tag`. Was `?C -> Int64`, beside a body that
+/// printed the same parameter `Tagger.C`. [Before WI-20261104-6HVXM this row wrote a
+/// two-parameter slot and pinned `got a 1-parameter function Tagger.C -> Int64`; the count is
+/// gone, and at such a slot the member is the slot's tuple, where no provision can be.]
 #[test]
 fn an_operation_used_as_a_value_is_shown_its_member() {
     let ns = "xqgew.value";
-    let errs = load_errors_of(&program(
-        ns,
-        &[TWO_SPECS],
-        "  operation tagIt(x: Tagger.C) -> Int64 effects {Tagger.E} = Tagger.tag(x)\n  \
-         operation app2(f: (a: Int64, b: Int64) -> Int64) -> Int64 = f(1, 2)\n  \
-         operation go() -> Int64 = app2(tagIt)",
-    ));
+    let src = |result: &str, body: &str| {
+        program(
+            ns,
+            &[TWO_SPECS],
+            &format!(
+                "  operation tagIt(x: Tagger.C) -> Int64 effects {{Tagger.E}} = Tagger.tag(x)\n  \
+                 operation app1(f: (a: A) -> {result}) -> Int64 = {body}\n  \
+                 operation go() -> Int64 = app1(tagIt)"
+            ),
+        )
+    };
+    let errs = load_errors_of(&src("String", "0"));
+    assert_eq!(errs.len(), 1, "the requirement is supplied at `A`: {errs:#?}");
     assert_refused_naming(
         &errs,
-        &["got a 1-parameter function Tagger.C -> Int64"],
+        &["expected A -> String, got A -> Int64"],
         "the value's parameter is the member",
     );
+    assert_eq!(run_int64(&src("Int64", "f(a)"), "xqgew.value.go"), Ok(1));
 }
 
 /// A PARAMETER TWO ARGUMENTS DISAGREE ON IS NAMED AS IT IS WRITTEN. `same` takes two

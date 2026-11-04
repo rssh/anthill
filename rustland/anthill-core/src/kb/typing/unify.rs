@@ -196,8 +196,8 @@ pub(super) fn atom_is_projected_instance_member(
 /// whatever it answers, and that is DELIBERATE: the argument-unification sites discard the
 /// boolean by design (unify is EQUALITY, argument passing is SUBTYPING plus conversions, so a
 /// unify-`false` must not by itself reject), and what they take from the call is the
-/// SUBSTITUTION. [`unify_arrow_function_view`]'s doc states it for its own arm — "its job is
-/// to BIND" — and it is the whole relation's contract. A rollback was BUILT AND MEASURED on
+/// SUBSTITUTION — the whole relation's contract (WI-1084's mixed `arrow`/`Function` arm was
+/// added to BIND). A rollback was BUILT AND MEASURED on
 /// this tree and costs four rows, each a groundness-gated refusal reached *by* the partial
 /// binding: `wi1084_arrow_function_unify_tests::the_two_spellings_of_one_slot_answer_alike`,
 /// `wi1078_unbound_return_var_test::the_tie_survives_the_opening`,
@@ -208,8 +208,7 @@ pub(super) fn atom_is_projected_instance_member(
 /// **SO NO AUTHORIAL ORDER MAY DECIDE WHICH OF THEM SURVIVE.** That is the whole of the fix,
 /// and it is narrower than "descend totally". A list whose slot order is the AUTHOR'S — a
 /// parameterized type's bindings (`Pair[A = …, B = …]` or `Pair[B = …, A = …]`), a tuple's
-/// fields, an arrow's parameter LIST (in the `arrow` spelling; the `Function[A, B, E]` one
-/// does not unify a multi-parameter list at all — see [`unify_arrow_function_view`]) —
+/// fields, a function type's parameter list `A` (either spelling, [`unify_function_types`]) —
 /// unifies EVERY slot and returns their CONJUNCTION, so
 /// what a `false` leaves behind is "every slot that agreed" and not "the slots written before
 /// the one that did not" ([`unify_parameterized_view`], [`unify_named_tuple_as`];
@@ -219,10 +218,10 @@ pub(super) fn atom_is_projected_instance_member(
 ///
 /// An arrow's `param` / `result` / `effects` are NOT such a list — their order is fixed by the
 /// FORM, so stopping at the first disagreeing part is already a function of the two types
-/// alone. Those keep the short-circuit, and [`unify_arrow_view`] carries the measurement that
+/// alone. Those keep the short-circuit, and [`unify_function_types`] carries the measurement that
 /// says they must: continuing past a disagreeing `param` fills unwritten carrier params from
 /// a unify that failed, and turns a refusal into a clean load. A HEAD mismatch — differing
-/// functors, differing arity, a missing component — exits hard for the same reason: those are
+/// functors, a missing component — exits hard for the same reason: those are
 /// unrelatable shapes, not disagreeing slots.
 ///
 /// **WHAT A CALLER MAY THEREFORE ASSUME — AND THE BINDINGS ARE NOT ALL OF IT.** On `false`,
@@ -360,12 +359,11 @@ fn unify_view_structural<A: TermView, B: TermView>(
         (Some("sort_ref"), Some("parameterized")) => {
             unify_parameterized_with_sort_ref(kb, subst, b, a)
         }
-        (Some("arrow"), Some("arrow")) => unify_arrow_view(kb, subst, a, b),
-        // WI-1084: the two spellings of ONE type — see [`unify_arrow_function_view`]. Without
-        // these two arms the pair fell to the `_ =>` subtype fallback below, which decomposes
-        // but cannot BIND, so unification through a `Function[…]`-typed slot learned nothing.
-        (Some("arrow"), Some("parameterized")) => unify_arrow_function_view(kb, subst, a, b),
-        (Some("parameterized"), Some("arrow")) => unify_arrow_function_view(kb, subst, b, a),
+        // Every arrow is a `Function` — see [`unify_function_types`], which relates either
+        // spelling against either.
+        (Some("arrow"), Some("arrow"))
+        | (Some("arrow"), Some("parameterized"))
+        | (Some("parameterized"), Some("arrow")) => unify_function_types(kb, subst, a, b),
         (Some("named_tuple"), Some("named_tuple")) => unify_named_tuple(kb, subst, a, b),
         // WI-441 (was the weaker WI-320 structural unify): a top-level row
         // pair takes the FULL row algorithm — the structural inner-unify was
@@ -589,6 +587,15 @@ pub(super) fn unify_parameterized_view<A: TermView, B: TermView>(
         TypeExtractor::Parameterized { base, bindings } => (base, bindings),
         _ => return false,
     };
+    // Two `Function`s are two function types, and relate as every pair of them does
+    // ([`unify_function_types`]): their `A`s as parameter lists, not as two data tuples.
+    if is_function_spec(kb, a_base)
+        && is_function_spec(kb, b_base)
+        && function_spec_parts(kb, a_base, &a_bindings).is_some()
+        && function_spec_parts(kb, b_base, &b_bindings).is_some()
+    {
+        return unify_function_types(kb, subst, a, b);
+    }
     // Either side may be the refining one: a callback's parameter meets the declared callback's
     // with the refined sort first — `ap(f: (n: Narrow2[Q = String]) -> Z)` given `idW[Y](x:
     // Wide[W = Y]) -> Y` is at `Y = String`, so `Z = String`.
@@ -656,199 +663,56 @@ pub(super) fn unify_parameterized_view<A: TermView, B: TermView>(
     ok
 }
 
-/// WI-342: the sole `arrow` unification, carrier-agnostic over [`TermView`]
-/// (both the `TermId` dispatch via [`TermIdView`] and the `Value` carrier route
-/// here). `param`/`result` unify via the generic [`unify_types`]; `effects` via
-/// the carrier-agnostic [`unify_effect_rows`]. A missing effects field is
-/// treated as the empty row.
-/// WI-1084 — UNIFY across the TWO SPELLINGS OF ONE TYPE: an `arrow` against a
-/// `Function[A, B, E]`. `docs/kernel-language.md` §4.4 says outright that these are the
-/// same type (`A` = param, `B` = result, `E` = effects); SUBTYPING has honoured that since
-/// WI-289 via [`arrow_function_compatible`], and unification did not.
+/// THE ONE UNIFICATION OF TWO FUNCTION TYPES, whichever spelling each is written in — an
+/// `arrow`, a `Function[A, B, E]`, or one of each. Every arrow is a `Function`
+/// (kernel-language §4.4: `(p₁: T₁, …, pₙ: Tₙ) -> R @ E` is `Function[A = (p₁: T₁, …), B = R,
+/// E = E]`), so the two spellings decompose through [`arrow_parts`] onto the same three parts
+/// and relate the same way. `A` through [`unify_arrow_params`]; the result through
+/// [`unify_types`]; the rows through [`unify_effect_rows`].
 ///
-/// WHAT WENT WRONG WITHOUT IT, and it is not that the pair was refused — it is that it was
-/// never DECOMPOSED. `unify_types`' dispatch had only `(arrow, arrow)`, so the pair took the
-/// `_ =>` fallback to [`types_compatible`], which decomposes correctly but CANNOT BIND: it is
-/// a subtype check, and a component pair like `Int64` vs a flexible `?A1` has no arm there
-/// (WI-1079 deliberately gives a variable no dispatch tag, on the grounds that "unification
-/// binds or refuses it first" — which is exactly what did not happen here). So the whole-type
-/// unify answered `false` with ZERO bindings, for a correct pair as readily as a wrong one,
-/// and every caller inferring through a `Function[…]`-typed slot learned nothing.
+/// WI-1084 is why the mixed pair has an arm at all: without one it fell to the subtype fallback,
+/// which decomposes but cannot BIND, so `idp[A](x: A) -> A` instantiated to `(x: ?A1) -> ?A1`
+/// learned nothing from a `Function[A = Int64, B = Int64]` slot.
 ///
-/// MEASURED, `idp[A](x: A) -> A` instantiated to `(x: ?A1) -> ?A1` against four slots — the
-/// arrow spellings are the control, and they were always right:
+/// A missing `A` (a `Function` that binds none) is POLYMORPHIC and constrains nothing; so is a
+/// missing row — only the `Function` spelling can leave one out, an arrow always carries its
+/// `effects` child.
 ///
-/// | slot | before | after |
-/// |---|---|---|
-/// | `(v: Int64) -> Int64` | true, binds `?A1 := Int64` | unchanged |
-/// | `(v: Int64) -> String` | false, binds `?A1 := Int64` | unchanged |
-/// | `Function[A = Int64, B = Int64, E = {}]` | **false, 0 bindings** | true, binds `?A1` |
-/// | `Function[A = Int64, B = String, E = {}]` | false, **0 bindings** | false, binds `?A1` |
-///
-/// BY WHOLE `A`, NOT POSITIONALLY, which is the one rule this must not get wrong: WI-775
-/// settled that a `Function[A = …]`'s `A` is the ARGUMENT's data type — what flows to
-/// `apply(f, x: A)` — so a named-tuple `A` is ONE tuple-typed argument, not a parameter list.
-/// Routing this through [`unify_arrow_view`] would apply `unify_arrow_params`' positional
-/// alignment and bridge `(acc, x)` to `(_1, _2)`, re-opening precisely the unsoundness WI-775
-/// closed. Each component is unified WHOLE.
-///
-/// ARITY IS READ, BUT NO ARITY VERDICT IS RETURNED — the distinction matters. This function
-/// consults the arrow's arity only to decide whether its `param` and the `Function`'s `A` are
-/// the same KIND of thing (see the comment at the param component); it never refuses a pair
-/// FOR its arity, because a `Function` states none and cannot ([`arrow_function_compatible`]'s
-/// reason). Deciding arity stays with the checkers — [`arrow_function_compatible`] on the
-/// ground path, [`validate_arrow_param_result`] / [`function_slot_arity_error`] on the
-/// non-ground one.
-///
-/// ITS JOB IS TO BIND. The arg-unify loop discards this boolean by design (unify is equality,
-/// argument passing is subtyping, and a unify-false would over-reject the legitimate
-/// conversions), so what this contributes is the SUBSTITUTION the deciders then read — which
-/// is why "answered false having bound nothing" was a defect and "answers false having bound
-/// `?A1`" is the fix.
-fn unify_arrow_function_view<AR: TermView, FN: TermView>(
-    kb: &mut KnowledgeBase,
-    subst: &mut Substitution,
-    arrow: &AR,
-    function: &FN,
-) -> bool {
-    let (Some(a_parts), Some(f_parts)) = (arrow_parts(kb, arrow), arrow_parts(kb, function)) else {
-        return false;
-    };
-    let (a_param, a_result, a_eff) = a_parts;
-    let (f_param, f_result, f_eff) = f_parts;
-    // A missing param is POLYMORPHIC, not empty — a bare `Function` without an `A` binding
-    // constrains nothing, exactly as it constrains nothing in the subtype twin.
-    //
-    // AND THE PARAM COMPONENT IS UNIFIED ONLY AT ARROW ARITY 1, which is where the two sides
-    // are the SAME KIND OF THING. WI-791: an arrow's `param` is the sole parameter's TYPE at
-    // arity 1 and the parameter LIST at any other arity, while a `Function`'s `A` is always
-    // ONE argument's data type. At arity 1 those are one category and unify outright — that
-    // is the case this arm exists for, `Function[A = Int64, …]` pinning an instantiated
-    // `∀A. A -> A`'s `?A1`, and it binds var-to-var as readily as var-to-concrete.
-    //
-    // At any other arity they are related by the WI-775/WI-787 SPREAD convention — a
-    // named-tuple `A` admits a 2-parameter operation's eta arrow, because `f(3, 10)` and
-    // `f((3, 10))` are both legal at that slot — and a convention about how a CALL is
-    // written is not a type identity. Unifying anyway BINDS `A` to the positional `(_1: …,
-    // _2: …)` spelling, and that binding is then read by the callee's OTHER parameters,
-    // where a data tuple is name-keyed (WI-788/WI-803) and `(x: Int64, acc: Int64)` no
-    // longer matches. MEASURED: `wi787_eta_spread_named_tuple_test`, 4 rows, failing at a
-    // SIBLING argument with `expected (_1: Int64, _2: Int64), got (x: Int64, acc: Int64)`.
-    //
-    // NOT a groundness gate, which was the first cut and was wrong for the reason it is
-    // worth recording: it also refused `A ~ ?X`, a var-to-var unification the substitution
-    // handles natively (`bind_compressed`'s path compression IS the equality class), and so
-    // threw away legitimate inference to dodge a problem that is not about variables at all.
-    let a_arity = kb.intern("arity");
-    let spread_shaped = arrow_arity(kb, arrow, a_arity) != Some(1);
-    // WI-20260904-60143 — THE SHORT-CIRCUIT STAYS, in step with [`unify_arrow_view`]'s (see
-    // its note for the measured reason): both arms stop at the first disagreeing PART, so
-    // neither spelling of one type answers differently about what a failed unify leaves
-    // behind — the parity WI-1084 closed here.
-    //
-    // THAT PARITY IS ABOUT THE SHORT-CIRCUIT AND NOTHING ELSE, and the `spread_shaped` guard
-    // below is where the two spellings genuinely diverge: at any arity but 1 this arm does
-    // not unify the param AT ALL (WI-787 — a `Function`'s `A` is one argument's data type,
-    // an arrow's `param` at that arity is a parameter LIST, and the two are related by a
-    // calling convention rather than an identity), while [`unify_arrow_view`] sends its
-    // parameter list through [`unify_named_tuple_as`] and therefore through this ticket's
-    // every-slot loop. So a multi-parameter arrow's parameter list is author-ordered and
-    // total in the arrow spelling and SKIPPED WHOLESALE in this one. Pre-existing and
-    // deliberate; named here because the paragraph above would otherwise read as claiming a
-    // parity on that axis too. Found by `/code-review`.
-    if let (Some(x), Some(y)) = (&a_param, &f_param) {
-        if !spread_shaped && !unify_types(kb, subst, x, y) {
-            return false;
-        }
-    }
-    if !unify_types(kb, subst, &a_result, &f_result) {
-        return false;
-    }
-    // Same reading of a missing `E`: polymorphic. The arrow side always synthesizes an
-    // `effects` child, so only the `Function` side can be `None` in practice.
-    match (a_eff, f_eff) {
-        (None, _) | (_, None) => true,
-        (Some(ae), Some(ee)) => {
-            let ae = canonical_effects_row(kb, &ae);
-            let ee = canonical_effects_row(kb, &ee);
-            unify_effect_rows(kb, subst, &ae, &ee)
-        }
-    }
-}
-
-fn unify_arrow_view<A: TermView, B: TermView>(
+/// WI-20260904-60143 — THE PARTS KEEP THE SHORT-CIRCUIT, and that is the line that ticket drew.
+/// What had to become total is a list whose order is AUTHORIAL — a parameterized type's
+/// bindings, a tuple's fields, and the parameter list `A` reaching [`unify_named_tuple_as`] —
+/// because there "which bindings survive a `false`" was a function of how the slots were
+/// spelled. `A` / result / row are fixed by the FORM. AND CONTINUING HERE IS UNSOUND, MEASURED:
+/// a disagreeing `A` means the two are not the same function, so a result binding taken across
+/// it is drawn from two unrelated types —
+/// `wi_mdwew_bare_spec_arg_provision_test::ambient_requires_compound_clause_value_is_not_bound_verbatim`
+/// went from REFUSED to a clean load with it made total.
+pub(super) fn unify_function_types<A: TermView, B: TermView>(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
     a: &A,
     b: &B,
 ) -> bool {
-    let param_sym = kb.intern("param");
-    let result_sym = kb.intern("result");
-    let effects_sym = kb.intern("effects");
-
-    // WI-791: two arrows relate only if they take the SAME NUMBER of parameters,
-    // and the count also says how to read the param slot below.
-    let Some(arity) = agreed_arrow_arity(kb, a, b) else {
+    let (Some(a_parts), Some(b_parts)) = (arrow_parts(kb, a), arrow_parts(kb, b)) else {
         return false;
     };
-
-    // WI-20260904-60143 — AN ARROW'S PARTS KEEP THE SHORT-CIRCUIT, and that is the line the
-    // ticket drew rather than an omission. What had to become total is a list whose order is
-    // AUTHORIAL — a parameterized type's bindings, a tuple's fields, and this arrow's own
-    // parameter LIST, which reaches [`unify_named_tuple_as`] through [`unify_arrow_params`]
-    // — because there "which bindings survive a `false`" was a function of how the author
-    // happened to write the slots. (The `Function[A, B, E]` spelling does NOT reach it for a
-    // multi-parameter list; [`unify_arrow_function_view`]'s `spread_shaped` guard says why.) `param` / `result` / `effects`
-    // are fixed by the FORM, so stopping at the first disagreeing part is already determined
-    // by the two types and not by anyone's spelling.
-    //
-    // AND CONTINUING HERE IS UNSOUND, MEASURED. A disagreeing `param` means the two arrows
-    // are not the same function, so a `result` binding taken across it is drawn from two
-    // unrelated types. Made total, it FILLS UNWRITTEN CARRIER PARAMS from a unify that
-    // failed and `wi_mdwew_bare_spec_arg_provision_test::ambient_requires_compound_clause_-
-    // value_is_not_bound_verbatim` goes from REFUSED to a clean load — "grant a licence and
-    // bind a wrong rigid together", which is the exact shape that test exists to forbid.
-    // (Three more rows moved with it: that file's `foreign_provision_binding_is_refused_-
-    // like_its_concrete_twin` and two in `wi599_carrier_arg_provision_test`.)
-    match (
-        named_child_value(kb, a, param_sym),
-        named_child_value(kb, b, param_sym),
-    ) {
-        (Some(x), Some(y)) => {
-            // WI-775: a PARAMETER LIST, not a data tuple — positional alignment
-            // is admissible here (and only here).
-            if !unify_arrow_params(kb, subst, &x, &y, arity) {
-                return false;
-            }
+    let (a_param, a_result, a_eff) = a_parts;
+    let (b_param, b_result, b_eff) = b_parts;
+    if let (Some(x), Some(y)) = (&a_param, &b_param) {
+        if !unify_arrow_params(kb, subst, x, y) {
+            return false;
         }
-        _ => return false,
     }
-    match (
-        named_child_value(kb, a, result_sym),
-        named_child_value(kb, b, result_sym),
-    ) {
-        (Some(x), Some(y)) => {
-            if !unify_types(kb, subst, &x, &y) {
-                return false;
-            }
+    if !unify_types(kb, subst, &a_result, &b_result) {
+        return false;
+    }
+    match (a_eff, b_eff) {
+        (None, _) | (_, None) => true,
+        (Some(ae), Some(ee)) => {
+            let ae = callable_row(kb, a, ae);
+            let ee = callable_row(kb, b, ee);
+            unify_effect_rows(kb, subst, &ae, &ee)
         }
-        _ => return false,
-    }
-
-    match (
-        named_child_value(kb, a, effects_sym),
-        named_child_value(kb, b, effects_sym),
-    ) {
-        (Some(x), Some(y)) => unify_effect_rows(kb, subst, &x, &y),
-        (None, None) => true,
-        (Some(x), None) => match kb.try_make_empty_effects_rows() {
-            Some(er) => unify_effect_rows(kb, subst, &x, &TermIdView(er)),
-            None => false,
-        },
-        (None, Some(y)) => match kb.try_make_empty_effects_rows() {
-            Some(er) => unify_effect_rows(kb, subst, &TermIdView(er), &y),
-            None => false,
-        },
     }
 }
 
@@ -1338,15 +1202,12 @@ fn occ_contains_var(kb: &KnowledgeBase, vid: VarId, occ: &Rc<NodeOccurrence>) ->
                 child(kb, base) || bindings.iter().any(|(_, c)| child(kb, c))
             }
             TypeNode::EffectsRows { effects_expr } => child(kb, effects_expr),
-            // WI-791: a ground `Const(Int)` `arity` can hold no var; walked for
-            // totality over the node's children.
             TypeNode::Arrow {
                 param,
                 result,
                 effects,
-                arity,
                 binders: _,
-            } => child(kb, param) || child(kb, result) || child(kb, effects) || child(kb, arity),
+            } => child(kb, param) || child(kb, result) || child(kb, effects),
             // WI-361: `fields` is the `Value`-carried `List[TypeField]`; the
             // view-walking `occurs_in_view` descends its cons cells + records and
             // into any poisoned (`Value::Node`) field type via `occ_contains_var`.
@@ -1390,7 +1251,7 @@ fn occ_contains_var(kb: &KnowledgeBase, vid: VarId, occ: &Rc<NodeOccurrence>) ->
 /// [`unify_types`] only when both sides resolve to a hash-consed `Term`.
 ///
 /// WI-342 dispatch consolidation: the `parameterized` and `arrow` arms now route
-/// through the carrier-agnostic [`unify_parameterized_view`] / [`unify_arrow_view`]
+/// through the carrier-agnostic [`unify_parameterized_view`] / [`unify_function_types`]
 /// (wrapping each ground `TermId` in [`TermIdView`]) — one implementation per
 /// relation, shared with the `Value`-carrier path in [`unify_view_structural`].
 /// The remaining arms stay `TermId`-specific because they have no `Value`-carried
@@ -1431,15 +1292,11 @@ fn unify_term_dispatch(
             &TermIdView(b_resolved),
             &TermIdView(a_resolved),
         ),
-        (Some("arrow"), Some("arrow")) => {
-            unify_arrow_view(kb, subst, &TermIdView(a_resolved), &TermIdView(b_resolved))
-        }
-        // WI-1084: the term-dispatch twin of the view arms — one type, two spellings.
-        (Some("arrow"), Some("parameterized")) => {
-            unify_arrow_function_view(kb, subst, &TermIdView(a_resolved), &TermIdView(b_resolved))
-        }
-        (Some("parameterized"), Some("arrow")) => {
-            unify_arrow_function_view(kb, subst, &TermIdView(b_resolved), &TermIdView(a_resolved))
+        // The term-dispatch twin of the view arms — one type, two spellings.
+        (Some("arrow"), Some("arrow"))
+        | (Some("arrow"), Some("parameterized"))
+        | (Some("parameterized"), Some("arrow")) => {
+            unify_function_types(kb, subst, &TermIdView(a_resolved), &TermIdView(b_resolved))
         }
         (Some("named_tuple"), Some("named_tuple")) => {
             unify_named_tuple(kb, subst, &TermIdView(a_resolved), &TermIdView(b_resolved))

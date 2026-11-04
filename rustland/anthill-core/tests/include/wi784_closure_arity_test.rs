@@ -334,10 +334,12 @@ end
         .err()
         .expect("`T` is pinned to Int64 by `x`, so the 2-binder callback is decidable");
     let msg = errs.join(" | ");
+    // WI-20261104-6HVXM: the lambda's tuple is its pattern's, two components, and `A` is
+    // `Int64`, no tuple: refused at the pattern, the application match's own verdict.
     assert!(
-        msg.contains("1 parameter") && msg.contains("no components to spread"),
-        "a scalar `A` admits ONE reading only, and the refusal must say so rather than \
-         offer a spread that has nothing to spread; got: {msg}",
+        msg.contains("pattern-position") && msg.contains("expected Int64, got (_1:"),
+        "a scalar `A` takes a callable of one binder only, and the refusal must name the \
+         lambda's two-binder tuple against it; got: {msg}",
     );
 }
 
@@ -382,7 +384,7 @@ end
     // satisfied incidentally by a span like `3:2`, so it would still pass if the
     // counts regressed to the hardcoded 1 this test exists to forbid.
     assert!(
-        msg.contains("or 2 (its components spread)") && msg.contains("got 3 arguments"),
+        msg.contains("expected 2 arguments") && msg.contains("got 3 arguments"),
         "the diagnostic must report A's component count (2) and the supplied count (3), \
          not a hardcoded 1; got: {msg}",
     );

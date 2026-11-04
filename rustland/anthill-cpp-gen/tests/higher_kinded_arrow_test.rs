@@ -303,3 +303,31 @@ fn hk_monad_traits_compiles() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// WI-20261104-6HVXM — A CALL THROUGH A FUNCTION VALUE IS LOWERED WITH `A`'S COMPONENTS AS ITS
+/// ARGUMENTS. The typer gives every such application its tupled form, `f((_1: 7, _2: 1))`
+/// (kernel-language §4.4), and a tuple `A` lowers as the `std::function`'s parameter list, so
+/// the call is `f(7, 1)` — for the one-tuple spelling `((x: Int64, y: Int64)) -> Int64` too,
+/// which is the same type. A one-parameter callback is called with its one argument.
+///
+/// BACKED OUT (`function_value_call_args` returning the arguments as written): FAILS, the body
+/// reads `f({7, 1})`, one brace-initialized argument to a two-argument `std::function`, which
+/// does not compile.
+#[test]
+fn a_call_through_a_function_value_passes_the_components() {
+    let source = r#"
+        namespace test.fncall
+          import anthill.prelude.{Int64}
+          sort Calc
+            operation run(f: (x: Int64, y: Int64) -> Int64) -> Int64 = f(7, 1)
+            operation runTupled(f: ((x: Int64, y: Int64)) -> Int64) -> Int64 = f((x: 7, y: 1))
+            operation run1(f: (x: Int64) -> Int64) -> Int64 = f(7)
+          end
+        end
+    "#;
+    let mut kb = load_kb_with(source);
+    let cpp = emit_traits_struct(&mut kb, "test.fncall.Calc").expect("emit Calc");
+    assert_eq!(cpp.matches("std::function<int64_t(int64_t, int64_t)> f").count(), 2, "{cpp}");
+    assert_eq!(cpp.matches("return f(7, 1);").count(), 2, "both spellings call with the components:\n{cpp}");
+    assert!(cpp.contains("std::function<int64_t(int64_t)> f") && cpp.contains("return f(7);"), "{cpp}");
+}

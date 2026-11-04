@@ -12,7 +12,7 @@ use std::rc::Rc;
 use smallvec::SmallVec;
 
 use crate::intern::{is_positional_label_at, Symbol};
-use crate::kb::call_form::{classify_application, CallForm};
+use crate::kb::call_form::{classify_application, slot_components_of_params, CallForm};
 use crate::kb::node_occurrence::{Expr, MatchBranch, NodeKind, NodeOccurrence, Pattern};
 use crate::kb::resolve::PositionalPlan;
 use crate::kb::term::{Literal, Term, TermId};
@@ -22,7 +22,7 @@ use super::closure::Closure;
 use super::error::EvalError;
 use super::frame::{AwaitState, ChildFrameContext, Frame};
 use super::pattern::{constructor_pattern_name, match_pattern};
-use super::value::Value;
+use super::value::{TupleComponents, Value};
 use super::FrameReqFailure;
 use super::Interpreter;
 
@@ -326,7 +326,10 @@ impl Interpreter {
                 scrutinee,
                 branches,
             } => self.start_match(scrutinee, branches),
-            Expr::Lambda { param, body } => self.reduce_lambda(Rc::clone(param), body.clone()),
+            Expr::Lambda { param, body } => {
+                let relabel = lambda_relabel(&self.kb, occ, param);
+                self.reduce_lambda(Rc::clone(param), body.clone(), relabel)
+            }
             Expr::Proof { body, .. } => {
                 // WI-538: an in-body proof is a static (type-level)
                 // construct — it discharges an obligation at type-check
@@ -1337,6 +1340,7 @@ impl Interpreter {
         &mut self,
         param: Rc<NodeOccurrence>,
         body: Rc<NodeOccurrence>,
+        relabel: Option<Rc<[Symbol]>>,
     ) -> Result<StepOutcome, EvalError> {
         // WI-511: `param` is a Pattern-kind Rc<NodeOccurrence>, stored
         // directly on the closure and read by `match_pattern` on the Pattern
@@ -1371,6 +1375,7 @@ impl Interpreter {
             env,
             requirements,
             written_in: self.stack.top().map(|f| f.op),
+            relabel,
         });
         Ok(StepOutcome::Deliver(Value::Closure(handle)))
     }
@@ -3673,26 +3678,35 @@ impl Interpreter {
         }
     }
 
-    /// WI-275: adapt the arguments of an eta'd operation reference (a
-    /// `Value::OpRef`) applied as a function value to the operation's own
-    /// parameter arity. An arity-matched call passes through unchanged
-    /// (`inc(n)`); a single tuple argument — the `Function[(A, B), R]` ⇒
-    /// `op(a, b)` convention, e.g. `cmp((x, y))` — is spread across a
-    /// multi-parameter operation. Anything else is a genuine arity error.
+    /// WI-275: adapt the arguments of an eta'd operation reference (a `Value::OpRef`) applied
+    /// as a function value to the operation's own parameters. Nothing here is decided: the
+    /// typer hands every application ONE value — the POSITIONAL tuple of `A`'s components in
+    /// `A`'s order (`gather_args_into_tuple`, kernel-language §4.4), or the one value of a
+    /// non-tuple `A` — and recorded, where the value was minted, how this operation takes it
+    /// (`spread_labels`, `Value::OpRef`):
+    ///
+    /// * SEVERAL parameters: the slot's `A` labels in `A`'s order. Parameter `j` takes the
+    ///   component rule 6 of proposal 002 maps it to — by label where the parameter names are
+    ///   those labels, by position otherwise ([`slot_components_of_params`], the owner the typer
+    ///   read too). A positional tuple is read at that component's position; a name-keyed one —
+    ///   the value of a type parameter's instance, which no application gathers — by its label.
+    /// * ONE parameter: the labels its type reads the tuple by, which a positional tuple takes,
+    ///   by position ([`Value::at_tuple_labels`]).
+    ///
+    /// A HOST call (a builtin applying the value to as many arguments as it has parameters)
+    /// arrives with them in the slot's order, and takes the same mapping.
     fn spread_eta_args(
         &mut self,
         op: Symbol,
         arg_values: Vec<Value>,
         spread_labels: Option<&[crate::intern::Symbol]>,
     ) -> Result<Vec<Value>, EvalError> {
-        // Eta-expansion (`reduce_var`) mints an `OpRef` for a body-having op, so
-        // its arity comes from the body. WI-577's reflect `Dictionary.resolveOp`
-        // / `ops` additionally mint an OpRef for a native-builtin-backed op (no
-        // anthill body, e.g. `PartialEq.eq`), which must stay callable — so fall back to
-        // the arity declared in the op's SIGNATURE (`OperationInfo.params`) when
-        // there is no body. The apply path's builtin-dispatch step (step 2) then
-        // runs the builtin. `UnknownOperation` only when the op has no signature
-        // at all — genuinely unknown, surfaced loudly rather than mis-applied.
+        // Eta-expansion (`reduce_var`) mints an `OpRef` for a body-having op, so its parameters
+        // come from the body. WI-577's reflect `Dictionary.resolveOp` / `ops` additionally mint
+        // an OpRef for a native-builtin-backed op (no anthill body, e.g. `PartialEq.eq`), which
+        // must stay callable — so fall back to the parameters declared in the op's SIGNATURE
+        // (`OperationInfo.params`) when there is no body. `UnknownOperation` only when the op
+        // has no signature at all — genuinely unknown, surfaced loudly rather than mis-applied.
         let arity = match self.cached_operation_body(op) {
             Some((_, params)) => params.len(),
             None => match crate::kb::op_info::lookup_operation_info(&self.kb, op) {
@@ -3704,118 +3718,109 @@ impl Interpreter {
                 }
             },
         };
-        // WI-801: the decision itself is `classify_application`'s, shared with the
-        // closure adapter below and with the typer's conformance gate, so the
-        // three cannot drift into pivoting on different quantities.
         let mismatch = || EvalError::ArityMismatch {
             op: "function-value application",
             expected: arity,
             got: arg_values.len(),
         };
+        // The slot's component each parameter takes; `None` where the value carries no slot.
+        let takes: Option<Vec<usize>> = match spread_labels {
+            Some(labels) if arity != 1 => {
+                let params: Vec<crate::intern::Symbol> = match self.cached_operation_body(op) {
+                    Some((_, params)) => params.iter().map(|(p, _)| *p).collect(),
+                    None => crate::kb::op_info::lookup_operation_info(&self.kb, op)
+                        .expect("the arity above was read off this record")
+                        .params
+                        .iter()
+                        .map(|(p, _)| *p)
+                        .collect(),
+                };
+                let short = |s: &crate::intern::Symbol| {
+                    crate::kb::typing::short_name_of(self.kb.local_name_of(*s))
+                };
+                let own: Vec<&str> = params.iter().map(short).collect();
+                let slot: Vec<&str> = labels.iter().map(short).collect();
+                Some(slot_components_of_params(&own, &slot).ok_or_else(mismatch)?)
+            }
+            _ => None,
+        };
         match classify_application(arity, arg_values.len()) {
-            CallForm::AsWritten => Ok(arg_values),
+            CallForm::AsWritten if arity == 1 => {
+                let relabelled = match spread_labels {
+                    Some(labels) => arg_values[0]
+                        .at_tuple_labels(&self.kb, labels)
+                        .map_err(|got| EvalError::TypeMismatch {
+                            expected: "the tuple an operation of one parameter was typed at",
+                            got,
+                        })?,
+                    None => None,
+                };
+                Ok(match relabelled {
+                    Some(v) => vec![v],
+                    None => arg_values,
+                })
+            }
+            CallForm::AsWritten => match takes {
+                Some(takes) => Ok(takes.iter().map(|&i| arg_values[i].clone()).collect()),
+                None => Ok(arg_values),
+            },
             CallForm::Spread => {
-                // `Spread`'s dynamic obligation, discharged here against the VALUE
-                // (the typer discharges the same obligation against `A`).
-                //
-                // WI-787: read BOTH halves through `Value::tuple_components`,
-                // which owns the `pos ++ named` invariant. This site used `pos`
-                // alone, so a name-keyed tuple presented as ZERO components and
-                // the spread never fired — and a relation ROW is built all-named,
-                // which is how mapping a two-parameter OPERATION over rows trapped
-                // while the byte-identical `lambda (p, q) -> …` spelling evaluated.
-                // WI-803 CALLED THIS "THE LATENT TWIN of the destructuring reader" and
-                // WI-1087 CASHED THE PREDICTION — it is worth keeping the shape of that
-                // note, because it was right about the mechanism and about what would
-                // make it live. It read a name-keyed tuple in SOURCE order and did not go
-                // through `TupleComponents::by_label`, even though `<:` admits a PERMUTED
-                // value, which is the shape that made binder `i` receive a component the
-                // typer typed from a different field (WI-788), here in its operation
-                // spelling rather than its lambda one.
-                //
-                // It was UNREACHABLE, "and only incidentally": an eta'd operation's arrow
-                // carries the synthetic `_1/_2` labels (an arrow drops its binder names,
-                // WI-783), so it could not conform to a `Function[A = (a: …, b: …)]` slot
-                // at all — the mismatch reported `got (_1: Int64, _2: Int64) -> Int64`.
-                // That barrier was a consequence of WI-783, not a stated invariant, and
-                // WI-1087 removed it deliberately: `A` at the spread arity IS the
-                // callback's parameter list, so the synthetic labels zip against it and
-                // the pairing is admitted. MEASURED at the moment the relation changed and
-                // before this read did: `f((x: 10, acc: 3))` at `A = (acc, x)` with
-                // `sub2(a, b) = a - b` answering 7 where the labels say `3 - 10`.
-                //
-                // So the note's own remedy is what is below — route through the labels —
-                // and WI-784's rule that a lambda and an operation are INTERCHANGEABLE is
-                // the reason it is not optional.
+                // `Spread`'s dynamic obligation, discharged here against the VALUE (the typer
+                // discharged it against `A`). WI-787: through `Value::tuple_components`, which
+                // owns the `pos ++ named` invariant, so a name-keyed tuple — a relation ROW is
+                // built all-named — presents its components.
                 let Some(components) = arg_values[0].tuple_components(&self.kb) else {
                     return Err(mismatch());
                 };
                 if components.len() != arity {
                     return Err(mismatch());
                 }
-                // WI-1087: BY LABEL when the slot supplied a mapping. `spread_labels`
-                // is `A`'s components in DECLARED order, so label `i` names the
-                // component parameter `i` wants — and the value may present them in
-                // another order, since `<:` on a data tuple is order-free (WI-803).
-                // This is the operation spelling of `match_tuple_pattern`'s by-label
-                // arm, which the lambda spelling has read since WI-803; WI-784's rule
-                // is that the two are interchangeable, and until this they were not.
-                let Some(labels) = spread_labels else {
+                let (Some(labels), Some(takes)) = (spread_labels, takes) else {
                     return Ok(components.iter().cloned().collect());
                 };
-                // NO `is_name_keyed` GATE, unlike `match_tuple_pattern`'s by-label arm,
-                // and the difference is that this reader cannot be handed the shape that
-                // gate exists for. A POSITIONAL carrier reaches a labelled `A` only if it
-                // conforms to it, and proposal 004 rule 4 keeps a positional tuple out of a
-                // name-keyed type entirely (WI-1087 left that standing) — so `labels` here
-                // are `_1.._n` whenever the carrier is positional, which `by_label` resolves
-                // through its own `_N` arm. Tried as a gate first and it could not be
-                // driven: every fixture reaching it was refused at load. What is left is a
-                // LOUD raise if the two ever disagree, which is the right answer for a
-                // conformance the checker claimed to have made.
-                // THROUGH `by_label_index`, NOT `by_label`, and for the reason its own doc
-                // gives: a caller resolving SEVERAL labels against one tuple has to know
-                // whether two of them landed on the SAME component, which a returned
-                // `&Value` cannot answer. Two labels collide either by being equal or — since
-                // the scan compares SHORT names — by being distinct qualified names sharing a
-                // last segment. Serving one component to two parameters while never reading
-                // another is a WRONG ANSWER rather than a failed spread, and only half of it
-                // would surface as the raise below. `match_tuple_pattern`, the reader this
-                // arm mirrors, uses the index form for exactly this.
-                let mut taken: Vec<usize> = Vec::with_capacity(labels.len());
-                let mut out = Vec::with_capacity(labels.len());
-                for l in labels {
-                    let name = self.kb.local_name_of(*l).to_string();
-                    let idx = components.by_label_index(&self.kb, &name).ok_or_else(|| {
-                        EvalError::Internal(format!(
-                            "spread_eta_args: the argument has no component '{name}' to \
-                             fill this operation's parameter — the slot's `A` and the \
-                             value disagreed after conformance accepted them (WI-1087)"
-                        ))
-                    })?;
+                // A name-keyed value is read by the labels it was typed with (WI-803, WI-1087:
+                // `<:` on a data tuple is order-free, so its components may stand in another
+                // order); a positional one, and any value at a positional slot, by position.
+                let by_label = components.is_name_keyed()
+                    && !TupleComponents::labels_are_positional(&self.kb, labels);
+                // THROUGH `by_label_index`, NOT `by_label`, so two parameters resolving to the
+                // SAME component — equal labels, or qualified ones sharing a last segment — are
+                // caught rather than one fed twice and another never read.
+                let mut taken: Vec<usize> = Vec::with_capacity(arity);
+                let mut out = Vec::with_capacity(arity);
+                for &i in &takes {
+                    let idx = if by_label {
+                        let name = self.kb.local_name_of(labels[i]).to_string();
+                        components.by_label_index(&self.kb, &name).ok_or_else(|| {
+                            EvalError::Internal(format!(
+                                "spread_eta_args: the argument has no component '{name}' to \
+                                 fill this operation's parameter — the slot's `A` and the \
+                                 value disagreed after conformance accepted them (WI-1087)"
+                            ))
+                        })?
+                    } else {
+                        i
+                    };
                     if taken.contains(&idx) {
                         return Err(EvalError::Internal(format!(
-                            "spread_eta_args: two of this slot's `A` components resolve to \
-                             the same argument component ('{name}'), so one parameter would \
-                             be fed twice and another never read (WI-1087)"
+                            "spread_eta_args: two of this operation's parameters take the same \
+                             component of the argument (index {idx}), so one parameter would be \
+                             fed twice and another never read (WI-1087)"
                         )));
                     }
                     taken.push(idx);
                     out.push(
                         components
                             .component_at(idx)
-                            .expect("by_label_index answers an in-range component")
+                            .expect("an in-range component")
                             .clone(),
                     );
                 }
                 Ok(out)
             }
-            // WI-801: a gather needs the component LABELS, which live in the
-            // static `A` and are gone by now. At a slot whose type was known the
-            // TYPER already rewrote this call into its whole-`A` form, so reaching
-            // here means no static type said what the labels were — guessing a
-            // positional spelling would bind a name-keyed callee's components to
-            // nothing. Raise instead.
+            // A gather needs the component LABELS, which live in the static `A` and are gone
+            // by now; the typer gathered every application it typed. Reaching here means no
+            // static type said what the labels were, so raise rather than guess.
             CallForm::Gather | CallForm::Mismatch => Err(mismatch()),
         }
     }
@@ -3856,16 +3861,16 @@ impl Interpreter {
             .as_pattern()
             .map(Pattern::binder_arity)
             .unwrap_or(1);
-        // WI-801: on `classify_application`, the rule `spread_eta_args` and the
-        // typer's conformance gate also read.
+        // WI-801: on `classify_application`, the rule `spread_eta_args` also reads.
         match classify_application(arity, args.len()) {
-            // ONE value goes to the pattern untouched, under BOTH readings that
-            // reach it: at arity 1 it IS the binder's value, and at arity n it is
-            // the tuple the binder list destructures (`match_tuple_pattern`).
-            // Since the hand-off is identical they share this arm — and the guard
-            // is load-bearing only for `AsWritten` (`Spread` already implies one
-            // value). It is not a fast path: it is the whole reason `f((3, 10))`,
-            // where the CALLER built the tuple, destructures.
+            // ONE value goes to the pattern untouched: at arity 1 it IS the binder's
+            // value, and at arity n it is the tuple the binder list destructures
+            // (`match_tuple_pattern`). The typer spreads one tuple argument of an
+            // operation body's application into the argument list (kernel-language
+            // §4.4), so arity n meets one value where no such rewrite ran: a rule
+            // body's `f((3, 10))` (`spread_one_tuple_argument` leaves rule bodies).
+            // The guard is load-bearing only for `AsWritten` (`Spread` already implies
+            // one value).
             CallForm::AsWritten | CallForm::Spread if args.len() == 1 => {
                 Ok(args.into_iter().next().unwrap())
             }
@@ -3874,7 +3879,7 @@ impl Interpreter {
                 named: Vec::new().into(),
             }),
             // WI-801: see `spread_eta_args` on why a gather cannot be performed
-            // here. The typer normalizes it away wherever `A` is known.
+            // here. The typer gathers every application it types into one tuple.
             CallForm::Spread | CallForm::Gather | CallForm::Mismatch => {
                 Err(EvalError::ArityMismatch {
                     op: "closure",
@@ -4271,6 +4276,7 @@ impl Interpreter {
         let Some(Expr::Lambda { param, body }) = occ.as_expr() else {
             return v.clone();
         };
+        let relabel = lambda_relabel(&self.kb, occ, param);
         let handle = self.closures.alloc(super::closure::Closure {
             param_pattern: Rc::clone(param),
             body: Rc::clone(body),
@@ -4278,6 +4284,7 @@ impl Interpreter {
             requirements: SmallVec::new(),
             // A rule wrote it: no operation holds its source (`Closure::written_in`).
             written_in: None,
+            relabel,
         });
         Value::Closure(handle)
     }
@@ -4358,10 +4365,10 @@ impl Interpreter {
         // inline size 1 (most lambdas need 0–1 reqs/type-args), the
         // frame-side has 2; collect across the size boundary. Single
         // arena borrow grabs param/body/both channels at once.
-        let (param_pattern, body, mut requirements, written_in) = handle.with(|c| {
+        let (param_pattern, body, mut requirements, written_in, relabel) = handle.with(|c| {
             let reqs: SmallVec<[(Symbol, super::value::Dictionary); 2]> =
                 c.requirements.iter().cloned().collect();
-            (c.param_pattern.clone(), c.body.clone(), reqs, c.written_in)
+            (c.param_pattern.clone(), c.body.clone(), reqs, c.written_in, c.relabel.clone())
         });
         for (slot, dict) in handed {
             match requirements.iter_mut().find(|(s, _)| *s == slot) {
@@ -4370,6 +4377,21 @@ impl Interpreter {
             }
         }
         let arg = Self::gather_closure_arg(&param_pattern, args)?;
+        // A lambda of ONE binder whose type is a labelled tuple takes the positional tuple an
+        // application hands it at those labels (`Closure::relabel`, recorded from its type
+        // where it was built), as an operation of one parameter does ([`Self::spread_eta_args`]).
+        let arg = match &relabel {
+            Some(labels) => match arg.at_tuple_labels(&self.kb, labels) {
+                Ok(relabelled) => relabelled.unwrap_or(arg),
+                Err(got) => {
+                    return Err(EvalError::TypeMismatch {
+                        expected: "the tuple a lambda of one binder was typed at",
+                        got,
+                    })
+                }
+            },
+            None => arg,
+        };
         let bindings = match self.match_or_wait(&param_pattern, &arg, "a lambda parameter")? {
             Some(b) => b,
             // WI-610: route the match failure through the Error handler so an
@@ -6168,6 +6190,33 @@ fn applied_operation_name(kb: &KnowledgeBase, v: &Value) -> Option<Symbol> {
             pos_arity: 0,
             named_arity: 0,
         } if kb.has_kind(functor, crate::intern::SymbolKind::Operation) => Some(functor),
+        _ => None,
+    }
+}
+
+/// What a lambda of ONE binder reads the positional tuple an application hands it by
+/// (`Closure::relabel`): the labels of its parameter type, read off the type the typer stamped
+/// on the lambda (its arrow's `A`) where that is a tuple naming its components. `None` for a
+/// lambda of several binders, which takes the components by slot, and where the typer stamped
+/// no such type.
+fn lambda_relabel(kb: &KnowledgeBase, lambda: &Rc<NodeOccurrence>, param: &Rc<NodeOccurrence>) -> Option<Rc<[Symbol]>> {
+    if param.as_pattern().map(Pattern::binder_arity) != Some(1) {
+        return None;
+    }
+    use crate::kb::typing::{extract_type, TypeExtractor};
+    let TypeExtractor::Arrow { param: a, .. } = extract_type(kb, &lambda.inferred_type()?) else {
+        return None;
+    };
+    match extract_type(kb, &a) {
+        TypeExtractor::NamedTuple(fields)
+            if !fields.is_empty()
+                && !TupleComponents::labels_are_positional(
+                    kb,
+                    &fields.iter().map(|(l, _)| *l).collect::<Vec<_>>(),
+                ) =>
+        {
+            Some(fields.into_iter().map(|(l, _)| l).collect())
+        }
         _ => None,
     }
 }

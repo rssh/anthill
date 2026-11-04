@@ -2661,9 +2661,8 @@ impl TypeError {
                 site,
                 ..
             } => {
-                // WI-795: rendered as a PAIR, not as two independent sides — an
-                // arity-only arrow mismatch is invisible to the per-side
-                // renderer. See [`render_mismatch_pair`].
+                // WI-795: rendered as a PAIR, not as two independent sides — two sides
+                // that render alike are named as such. See [`render_mismatch_pair`].
                 let (expected_type, actual_type) = render_mismatch_pair(kb, expected, actual);
                 // WI-20260824-Q0093: …and the type value, or the expression as written, after
                 // the type when that type is `Type` — `got Type (Cell[V = Int64])`, `got Type

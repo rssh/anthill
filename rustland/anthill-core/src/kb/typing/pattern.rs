@@ -1436,8 +1436,7 @@ fn pattern_outside_position(
 /// unresolved projection into the binder, and an annotation is a legitimate way to PIN
 /// it — rejecting there would refuse correct programs. Deliberately conservative: this
 /// closes the decided case and leaves the polymorphic slot to unification, alongside the
-/// same-family gap WI-791 pins as
-/// `known_gap_generic_callback_arrow_is_not_conformance_checked`.
+/// same-family gap pinned as `known_gap_generic_callback_arrow_is_not_conformance_checked`.
 ///
 /// DECIDED IS THE DETERMINED READING (WI-20261001-89WZR): a body's RIGID counts, a
 /// flexible variable does not. WI-794 gated on the CONCRETE reading, which skipped
@@ -1500,34 +1499,6 @@ pub(super) fn extract_pattern_type_ann(
     pattern.pattern_type_ann()
 }
 
-/// WI-791: how many PARAMETERS a lambda writes — the arity its arrow type
-/// records. A lambda holds ONE param occurrence, so the count lives in that
-/// pattern's shape: `lambda (a, b) -> …` is a `Pattern::Tuple` of two, and
-/// everything else (`lambda x -> …`, `lambda (u: (a: A, b: B)) -> …`) is one.
-///
-/// The written count is also the count the RUNTIME accepts: WI-784 taught
-/// `gather_closure_arg` to gather an n-argument application into the tuple the
-/// binder list destructures, so a multi-binder lambda handed to a genuinely
-/// n-parameter callback now applies instead of trapping. (Before that, minting 1
-/// here was the considered alternative; it was rejected because the defect was
-/// the runtime's missing gather, not the program's — and reporting the written
-/// count preserved every load verdict a multi-binder lambda already got.)
-///
-/// Both sides read the SAME rule, `Pattern::binder_arity` — see its doc for why
-/// they must not drift.
-///
-/// Grouping is transparent (WI-620: `(p)` unwraps to `p` at conversion), so
-/// `lambda ((a, b)) -> …` is the same two-binder lambda as `lambda (a, b) -> …`
-/// — the surface has no spelling for "one tuple-shaped binder" other than naming
-/// it (`lambda (u: (a: A, b: B)) -> …`), which lands on the arity-1 arm here.
-pub(super) fn lambda_written_arity(lambda_occ: &Rc<NodeOccurrence>) -> usize {
-    let param = match lambda_occ.as_expr() {
-        Some(Expr::Lambda { param, .. }) | Some(Expr::LambdaWithin { param, .. }) => param,
-        _ => return 1,
-    };
-    param.as_pattern().map(Pattern::binder_arity).unwrap_or(1)
-}
-
 /// WI-706: the ordered top-level binder slots of a lambda parameter pattern — the places
 /// its arrow records ([`make_arrow_value`]). One slot per top-level parameter POSITION, so
 /// the `Vec` length is the lambda's arity: a `Var` slot carries its binder symbol; every
@@ -1554,6 +1525,68 @@ pub(super) fn lambda_binder_slots(param: &Rc<NodeOccurrence>) -> Vec<Option<Symb
         Some(Pattern::Wildcard | Pattern::Literal { .. } | Pattern::Constructor { .. }) | None => {
             vec![None]
         }
+    }
+}
+
+/// A lambda's OWN TUPLE where its pattern is a list of binders — `lambda (a, b) -> …`,
+/// `lambda () -> …` — and no type around it says its `A` (kernel-language §4.4: "A lambda's tuple
+/// is its pattern's"). Positional, its components what each binder writes: its annotation, the
+/// type a literal or a constructor written there states, else a variable left for the body and
+/// the call to pin. So `let h = lambda (s: Int64, b: Int64) -> s + b` is `(Int64, Int64) -> Int64`
+/// and `h("a", 1)` is refused at the argument (WI-20261103-2N4QH). `None` for a pattern of one
+/// binder, whose own type is that binder's.
+///
+/// The annotation is the binder's own, read as [`bind_and_label_pattern`] reads it, so the
+/// component and the binder it types are one type and the comparison there agrees by
+/// construction — not a fresh variable beside the annotation, which is what made a synthesized
+/// context displace the user's annotations (34J8Z's first obstacle).
+pub(super) fn lambda_own_tuple(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    param: &Rc<NodeOccurrence>,
+) -> Option<Value> {
+    let Some(Pattern::Tuple { positional, .. }) = param.as_pattern() else {
+        return None;
+    };
+    let mut fields: Vec<(Symbol, Value)> = Vec::with_capacity(positional.len());
+    for (i, sub) in positional.iter().enumerate() {
+        // As [`bind_and_label_pattern`] reads it: at the body's parameters, each projection
+        // read where it is written. One that does not read is refused there, and the raw
+        // annotation stands here as it does there.
+        let written = extract_pattern_type_ann(sub)
+            .and_then(|ann| {
+                let w = pattern_annotation_value(kb, ann)?;
+                let w = written_type_at_body_rigids(kb, env, &w);
+                if !value_contains_projection(kb, &w) {
+                    return Some(w);
+                }
+                let binder = extract_pattern_var_name(sub).unwrap_or_else(|| kb.intern("_"));
+                let ctx = TypeErrorContext::BinderAnnotation { binder };
+                Some(read_written_annotation(kb, env, &w, &ctx, ann).unwrap_or(w))
+            })
+            .or_else(|| pattern_own_type(kb, sub));
+        let ty = written.unwrap_or_else(|| {
+            let fresh = kb.intern("?param");
+            Value::Var(Var::Global(kb.fresh_var(fresh)))
+        });
+        fields.push((kb.intern(&positional_label(i)), ty));
+    }
+    Some(named_tuple_value(kb, &fields, param.span, param.owner))
+}
+
+/// Does the `A` of the function type a lambda is checked against FIT the lambda's pattern, so
+/// that the lambda takes it as its parameter type (WI-517: the context beats the binder's own
+/// annotation)? A lambda of one binder takes any `A` whole; one of `n` binders, a tuple of `n`
+/// components. Any other `A` — a tuple of another width, a non-tuple, a variable no argument has
+/// pinned yet — leaves the lambda its own tuple ([`lambda_own_tuple`]), and the slot's relation
+/// then judges the two as they are: `lambda (a, b, c)` at `A = (Int64, Int64)` is refused there,
+/// three components meeting two (WI-801's check, which is the application match).
+pub(super) fn context_fits_lambda(kb: &KnowledgeBase, a: &Value, param: &Rc<NodeOccurrence>) -> bool {
+    match param.as_pattern() {
+        Some(Pattern::Tuple { positional, .. }) => {
+            matches!(extract_type(kb, a), TypeExtractor::NamedTuple(f) if f.len() == positional.len())
+        }
+        _ => true,
     }
 }
 

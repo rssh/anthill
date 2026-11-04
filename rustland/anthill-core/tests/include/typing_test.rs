@@ -3022,8 +3022,8 @@ end
     let color_sym = kb.resolve_symbol("Color");
     let red_ty = kb.make_sort_ref(red_sym);
     let color_ty = kb.make_sort_ref(color_sym);
-    let specific = kb.make_arrow_type(int_ty, red_ty, &[], 1);
-    let general = kb.make_arrow_type(int_ty, color_ty, &[], 1);
+    let specific = kb.make_arrow_type(int_ty, red_ty, &[]);
+    let general = kb.make_arrow_type(int_ty, color_ty, &[]);
     assert!(
         types_compatible(&mut kb, specific, general),
         "(Int64 -> red) <: (Int64 -> Color)"
@@ -3044,8 +3044,8 @@ end
     let color_sym = kb.resolve_symbol("Color");
     let red_ty = kb.make_sort_ref(red_sym);
     let color_ty = kb.make_sort_ref(color_sym);
-    let general_param = kb.make_arrow_type(color_ty, int_ty, &[], 1);
-    let specific_param = kb.make_arrow_type(red_ty, int_ty, &[], 1);
+    let general_param = kb.make_arrow_type(color_ty, int_ty, &[]);
+    let specific_param = kb.make_arrow_type(red_ty, int_ty, &[]);
     assert!(
         types_compatible(&mut kb, general_param, specific_param),
         "(Color -> Int64) <: (red -> Int64)"
@@ -3383,8 +3383,8 @@ fn subtype_arrow_pure_subtype_of_effectful() {
     let int_ty = kb.make_sort_ref_by_name("Int64");
     let e_sym = kb.intern("SomeEffect");
     let effect = kb.make_sort_ref(e_sym);
-    let pure_fn = kb.make_arrow_type(int_ty, int_ty, &[], 1);
-    let effectful_fn = kb.make_arrow_type(int_ty, int_ty, &[effect], 1);
+    let pure_fn = kb.make_arrow_type(int_ty, int_ty, &[]);
+    let effectful_fn = kb.make_arrow_type(int_ty, int_ty, &[effect]);
     assert!(
         types_compatible(&mut kb, pure_fn, effectful_fn),
         "pure <: effectful"
@@ -3400,8 +3400,8 @@ fn subtype_arrow_fewer_effects() {
     let e2_sym = kb.intern("E2");
     let e1 = kb.make_sort_ref(e1_sym);
     let e2 = kb.make_sort_ref(e2_sym);
-    let fewer = kb.make_arrow_type(int_ty, int_ty, &[e1], 1);
-    let more = kb.make_arrow_type(int_ty, int_ty, &[e1, e2], 1);
+    let fewer = kb.make_arrow_type(int_ty, int_ty, &[e1]);
+    let more = kb.make_arrow_type(int_ty, int_ty, &[e1, e2]);
     assert!(
         types_compatible(&mut kb, fewer, more),
         "fewer effects <: more effects"
@@ -3421,8 +3421,8 @@ fn subtype_arrow_different_effects_incompatible() {
     let e2_sym = kb.intern("E2");
     let e1 = kb.make_sort_ref(e1_sym);
     let e2 = kb.make_sort_ref(e2_sym);
-    let fn1 = kb.make_arrow_type(int_ty, int_ty, &[e1], 1);
-    let fn2 = kb.make_arrow_type(int_ty, int_ty, &[e2], 1);
+    let fn1 = kb.make_arrow_type(int_ty, int_ty, &[e1]);
+    let fn2 = kb.make_arrow_type(int_ty, int_ty, &[e2]);
     assert!(
         !types_compatible(&mut kb, fn1, fn2),
         "different effects not compatible"
@@ -3446,8 +3446,8 @@ fn arrow_effects_canonical_form_hash_cons_stable() {
     let z = kb.make_sort_ref(z_sym);
     let a = kb.make_sort_ref(a_sym);
 
-    let arrow_forward = kb.make_arrow_type(int_ty, int_ty, &[z, a], 1); // source: Z, A
-    let arrow_reverse = kb.make_arrow_type(int_ty, int_ty, &[a, z], 1); // source: A, Z
+    let arrow_forward = kb.make_arrow_type(int_ty, int_ty, &[z, a]); // source: Z, A
+    let arrow_reverse = kb.make_arrow_type(int_ty, int_ty, &[a, z]); // source: A, Z
 
     assert_eq!(
         arrow_forward, arrow_reverse,
@@ -3558,8 +3558,8 @@ fn a_canonical_effect_row_renders_as_a_row() {
 fn arrow_effects_empty_canonical_stable() {
     let mut kb = load_stdlib_kb();
     let int_ty = kb.make_sort_ref_by_name("Int64");
-    let a = kb.make_arrow_type(int_ty, int_ty, &[], 1);
-    let b = kb.make_arrow_type(int_ty, int_ty, &[], 1);
+    let a = kb.make_arrow_type(int_ty, int_ty, &[]);
+    let b = kb.make_arrow_type(int_ty, int_ty, &[]);
     assert_eq!(a, b, "two pure arrows must hash-cons identically");
 }
 
@@ -3574,8 +3574,8 @@ fn row_unify_closed_closed_same() {
     let eb_sym = kb.intern("EffectB");
     let e1 = kb.make_sort_ref(ea_sym);
     let e2 = kb.make_sort_ref(eb_sym);
-    let arrow_a = kb.make_arrow_type(int_ty, int_ty, &[e1, e2], 1);
-    let arrow_b = kb.make_arrow_type(int_ty, int_ty, &[e2, e1], 1); // reversed input order
+    let arrow_a = kb.make_arrow_type(int_ty, int_ty, &[e1, e2]);
+    let arrow_b = kb.make_arrow_type(int_ty, int_ty, &[e2, e1]); // reversed input order
     let mut subst = Substitution::new();
     assert!(
         unify_types(
@@ -3597,8 +3597,8 @@ fn row_unify_closed_closed_different() {
     let eb_sym = kb.intern("EffectB");
     let e1 = kb.make_sort_ref(ea_sym);
     let e2 = kb.make_sort_ref(eb_sym);
-    let arrow_a = kb.make_arrow_type(int_ty, int_ty, &[e1], 1);
-    let arrow_b = kb.make_arrow_type(int_ty, int_ty, &[e2], 1);
+    let arrow_a = kb.make_arrow_type(int_ty, int_ty, &[e1]);
+    let arrow_b = kb.make_arrow_type(int_ty, int_ty, &[e2]);
     let mut subst = Substitution::new();
     assert!(
         !unify_types(
@@ -3626,8 +3626,8 @@ fn row_unify_open_closed_tail_absorbs() {
     let rho_vid = kb.fresh_var(rho_sym);
     let rho = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_vid)));
 
-    let open_row = kb.make_arrow_type(int_ty, int_ty, &[e1, rho], 1); // {EffectA | ?rho}
-    let closed_row = kb.make_arrow_type(int_ty, int_ty, &[e1, e2], 1); // {EffectA, EffectB}
+    let open_row = kb.make_arrow_type(int_ty, int_ty, &[e1, rho]); // {EffectA | ?rho}
+    let closed_row = kb.make_arrow_type(int_ty, int_ty, &[e1, e2]); // {EffectA, EffectB}
 
     let mut subst = Substitution::new();
     assert!(
@@ -3665,8 +3665,8 @@ fn row_unify_open_closed_missing_label_fails() {
     let rho_vid = kb.fresh_var(rho_sym);
     let rho = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_vid)));
 
-    let open_row = kb.make_arrow_type(int_ty, int_ty, &[e1, e3, rho], 1); // {EffectA, EffectC | ?rho}
-    let closed_row = kb.make_arrow_type(int_ty, int_ty, &[e1, e2], 1); // {EffectA, EffectB}
+    let open_row = kb.make_arrow_type(int_ty, int_ty, &[e1, e3, rho]); // {EffectA, EffectC | ?rho}
+    let closed_row = kb.make_arrow_type(int_ty, int_ty, &[e1, e2]); // {EffectA, EffectB}
 
     let mut subst = Substitution::new();
     assert!(
@@ -3693,8 +3693,8 @@ fn row_unify_open_open_same_tail() {
     let rho_vid = kb.fresh_var(rho_sym);
     let rho = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_vid)));
 
-    let arrow_a = kb.make_arrow_type(int_ty, int_ty, &[e1, rho], 1);
-    let arrow_b = kb.make_arrow_type(int_ty, int_ty, &[e1, rho], 1); // identical
+    let arrow_a = kb.make_arrow_type(int_ty, int_ty, &[e1, rho]);
+    let arrow_b = kb.make_arrow_type(int_ty, int_ty, &[e1, rho]); // identical
     assert_eq!(arrow_a, arrow_b, "identical open rows share TermId");
 
     let mut subst = Substitution::new();
@@ -3728,8 +3728,8 @@ fn row_unify_open_open_disjoint_extras() {
     let rho_a = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_a_vid)));
     let rho_b = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_b_vid)));
 
-    let arrow_a = kb.make_arrow_type(int_ty, int_ty, &[e1, rho_a], 1); // {EffectA | ?rho_a}
-    let arrow_b = kb.make_arrow_type(int_ty, int_ty, &[e2, rho_b], 1); // {EffectB | ?rho_b}
+    let arrow_a = kb.make_arrow_type(int_ty, int_ty, &[e1, rho_a]); // {EffectA | ?rho_a}
+    let arrow_b = kb.make_arrow_type(int_ty, int_ty, &[e2, rho_b]); // {EffectB | ?rho_b}
 
     let mut subst = Substitution::new();
     assert!(
@@ -3773,8 +3773,8 @@ fn row_unify_open_open_same_labels() {
     let rho_a = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_a_vid)));
     let rho_b = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_b_vid)));
 
-    let arrow_a = kb.make_arrow_type(int_ty, int_ty, &[e1, rho_a], 1);
-    let arrow_b = kb.make_arrow_type(int_ty, int_ty, &[e1, rho_b], 1);
+    let arrow_a = kb.make_arrow_type(int_ty, int_ty, &[e1, rho_a]);
+    let arrow_b = kb.make_arrow_type(int_ty, int_ty, &[e1, rho_b]);
 
     let mut subst = Substitution::new();
     assert!(
@@ -3811,8 +3811,8 @@ fn row_lacks_unify_non_conflicting_label_ok() {
     let rho = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_vid)));
 
     let absent_err = kb.make_effect_expression_absent(err);
-    let closed_other = kb.make_arrow_type(int_ty, int_ty, &[other], 1); // {Other}
-    let lacks_row = kb.make_arrow_type(int_ty, int_ty, &[absent_err, rho], 1); // {-Error | ρ}
+    let closed_other = kb.make_arrow_type(int_ty, int_ty, &[other]); // {Other}
+    let lacks_row = kb.make_arrow_type(int_ty, int_ty, &[absent_err, rho]); // {-Error | ρ}
 
     let mut subst = Substitution::new();
     assert!(
@@ -3847,8 +3847,8 @@ fn row_lacks_unify_present_lacked_label_fails() {
     let rho = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_vid)));
 
     let absent_err = kb.make_effect_expression_absent(err);
-    let closed_err = kb.make_arrow_type(int_ty, int_ty, &[err], 1); // {Error}
-    let lacks_row = kb.make_arrow_type(int_ty, int_ty, &[absent_err, rho], 1); // {-Error | ρ}
+    let closed_err = kb.make_arrow_type(int_ty, int_ty, &[err]); // {Error}
+    let lacks_row = kb.make_arrow_type(int_ty, int_ty, &[absent_err, rho]); // {-Error | ρ}
 
     let mut subst = Substitution::new();
     assert!(
@@ -3879,8 +3879,8 @@ fn row_lacks_open_open_present_into_lacking_tail_fails() {
     let rho_b = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_b_vid)));
 
     let absent_err = kb.make_effect_expression_absent(err);
-    let lacks_row = kb.make_arrow_type(int_ty, int_ty, &[absent_err, rho_a], 1); // {-Error | ρa}
-    let err_row = kb.make_arrow_type(int_ty, int_ty, &[err, rho_b], 1); // {Error | ρb}
+    let lacks_row = kb.make_arrow_type(int_ty, int_ty, &[absent_err, rho_a]); // {-Error | ρa}
+    let err_row = kb.make_arrow_type(int_ty, int_ty, &[err, rho_b]); // {Error | ρb}
 
     let mut subst = Substitution::new();
     assert!(
@@ -3915,8 +3915,8 @@ fn row_lacks_propagates_to_fresh_shared_tail() {
     let rho_b = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_b_vid)));
 
     let absent_err = kb.make_effect_expression_absent(err);
-    let lacks_row = kb.make_arrow_type(int_ty, int_ty, &[absent_err, rho_a], 1); // {-Error | ρa}
-    let open_b = kb.make_arrow_type(int_ty, int_ty, &[rho_b], 1); // {ρb}
+    let lacks_row = kb.make_arrow_type(int_ty, int_ty, &[absent_err, rho_a]); // {-Error | ρa}
+    let open_b = kb.make_arrow_type(int_ty, int_ty, &[rho_b]); // {ρb}
 
     let mut subst = Substitution::new();
     assert!(
@@ -3930,8 +3930,8 @@ fn row_lacks_propagates_to_fresh_shared_tail() {
     );
 
     // Step 2: present Error against ρb's now-shared tail — must fail.
-    let closed_err = kb.make_arrow_type(int_ty, int_ty, &[err], 1); // {Error}
-    let open_b2 = kb.make_arrow_type(int_ty, int_ty, &[rho_b], 1); // {ρb} (resolves to fresh tail)
+    let closed_err = kb.make_arrow_type(int_ty, int_ty, &[err]); // {Error}
+    let open_b2 = kb.make_arrow_type(int_ty, int_ty, &[rho_b]); // {ρb} (resolves to fresh tail)
     assert!(
         !unify_types(
             &mut kb,
@@ -3953,8 +3953,8 @@ fn row_present_absent_same_label_rejected() {
     let err = kb.make_sort_ref_by_name("Error");
 
     let absent_err = kb.make_effect_expression_absent(err);
-    let clash_row = kb.make_arrow_type(int_ty, int_ty, &[err, absent_err], 1); // {Error, -Error}
-    let closed_err = kb.make_arrow_type(int_ty, int_ty, &[err], 1); // {Error}
+    let clash_row = kb.make_arrow_type(int_ty, int_ty, &[err, absent_err]); // {Error, -Error}
+    let closed_err = kb.make_arrow_type(int_ty, int_ty, &[err]); // {Error}
 
     let mut subst = Substitution::new();
     assert!(
@@ -3986,8 +3986,8 @@ fn subtype_arrow_pure_subtype_of_effectful_via_rows() {
     let int_ty = kb.make_sort_ref_by_name("Int64");
     let e_sym = kb.intern("SomeEffect");
     let effect = kb.make_sort_ref(e_sym);
-    let pure_fn = kb.make_arrow_type(int_ty, int_ty, &[], 1);
-    let effectful_fn = kb.make_arrow_type(int_ty, int_ty, &[effect], 1);
+    let pure_fn = kb.make_arrow_type(int_ty, int_ty, &[]);
+    let effectful_fn = kb.make_arrow_type(int_ty, int_ty, &[effect]);
     assert!(
         types_compatible(&mut kb, pure_fn, effectful_fn),
         "pure (closed empty row) <: effectful (closed {{e}}) — covariant subset"
@@ -4017,9 +4017,9 @@ fn subtype_arrow_open_le_closed_tail_closes() {
     let rho = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_vid)));
 
     // Actual: {| ?rho} — open row, no concrete labels.
-    let open_actual = kb.make_arrow_type(int_ty, int_ty, &[rho], 1);
+    let open_actual = kb.make_arrow_type(int_ty, int_ty, &[rho]);
     // Expected: {E1, E2} — closed.
-    let closed_expected = kb.make_arrow_type(int_ty, int_ty, &[e1, e2], 1);
+    let closed_expected = kb.make_arrow_type(int_ty, int_ty, &[e1, e2]);
 
     assert!(
         types_compatible(&mut kb, open_actual, closed_expected),
@@ -4046,9 +4046,9 @@ fn subtype_arrow_open_le_closed_extras_reject() {
     let rho = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_vid)));
 
     // Actual: {E1, E3 | ?rho} — has E3 not in expected.
-    let open_actual = kb.make_arrow_type(int_ty, int_ty, &[e1, e3, rho], 1);
+    let open_actual = kb.make_arrow_type(int_ty, int_ty, &[e1, e3, rho]);
     // Expected: {E1, E2} — closed, no E3.
-    let closed_expected = kb.make_arrow_type(int_ty, int_ty, &[e1, e2], 1);
+    let closed_expected = kb.make_arrow_type(int_ty, int_ty, &[e1, e2]);
 
     assert!(
         !types_compatible(&mut kb, open_actual, closed_expected),
@@ -4069,8 +4069,8 @@ fn subtype_arrow_closed_le_open() {
     let rho_vid = kb.fresh_var(rho_sym);
     let rho = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_vid)));
 
-    let closed_actual = kb.make_arrow_type(int_ty, int_ty, &[e1], 1);
-    let open_expected = kb.make_arrow_type(int_ty, int_ty, &[rho], 1); // {| ?rho}
+    let closed_actual = kb.make_arrow_type(int_ty, int_ty, &[e1]);
+    let open_expected = kb.make_arrow_type(int_ty, int_ty, &[rho]); // {| ?rho}
 
     assert!(
         types_compatible(&mut kb, closed_actual, open_expected),
@@ -4096,7 +4096,7 @@ fn subtype_arrow_with_effect_not_le_function_no_effect() {
     let reads = kb.make_sort_ref(reads_sym);
 
     // arrow(Int64, Int64, {Reads})
-    let actual = kb.make_arrow_type(int_ty, int_ty, &[reads], 1);
+    let actual = kb.make_arrow_type(int_ty, int_ty, &[reads]);
 
     // Function[A=Int64, B=Int64, E=effects_rows(empty_row)] — closed empty
     // effects (no Reads). Explicit binding distinguishes this from the
@@ -4133,7 +4133,7 @@ fn subtype_arrow_pure_le_function_with_effects() {
     let reads_sym = kb.intern("Reads");
     let reads = kb.make_sort_ref(reads_sym);
 
-    let actual = kb.make_arrow_type(int_ty, int_ty, &[], 1);
+    let actual = kb.make_arrow_type(int_ty, int_ty, &[]);
 
     let fn_sym = kb.resolve_symbol("anthill.prelude.Function");
     let fn_base = kb.make_sort_ref(fn_sym);
@@ -4209,7 +4209,7 @@ fn subtype_function_with_effect_not_le_arrow_no_effect() {
     );
 
     // arrow(Int64, Int64, {}) — closed empty
-    let expected = kb.make_arrow_type(int_ty, int_ty, &[], 1);
+    let expected = kb.make_arrow_type(int_ty, int_ty, &[]);
 
     assert!(
         !types_compatible(&mut kb, actual, expected),
@@ -4461,8 +4461,8 @@ end
     let blue = kb.make_sort_ref(blue_sym);
     let color = kb.make_sort_ref(color_sym);
 
-    let actual = kb.make_arrow_type(int_ty, int_ty, &[red, blue], 1);
-    let expected = kb.make_arrow_type(int_ty, int_ty, &[color], 1);
+    let actual = kb.make_arrow_type(int_ty, int_ty, &[red, blue]);
+    let expected = kb.make_arrow_type(int_ty, int_ty, &[color]);
 
     assert!(
         types_compatible(&mut kb, actual, expected),
@@ -4491,14 +4491,14 @@ fn subtype_nested_arrow_shared_rho_inconsistent_binding_rejects() {
     let rho = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_vid)));
 
     // actual = arrow(arrow(Int64, Int64, {rho}), arrow(Int64, Int64, {rho}), {})
-    let inner_actual_left = kb.make_arrow_type(int_ty, int_ty, &[rho], 1);
-    let inner_actual_right = kb.make_arrow_type(int_ty, int_ty, &[rho], 1);
-    let actual = kb.make_arrow_type(inner_actual_left, inner_actual_right, &[], 1);
+    let inner_actual_left = kb.make_arrow_type(int_ty, int_ty, &[rho]);
+    let inner_actual_right = kb.make_arrow_type(int_ty, int_ty, &[rho]);
+    let actual = kb.make_arrow_type(inner_actual_left, inner_actual_right, &[]);
 
     // expected = arrow(arrow(Int64, Int64, {E1}), arrow(Int64, Int64, {E2}), {})
-    let inner_expected_left = kb.make_arrow_type(int_ty, int_ty, &[e1], 1);
-    let inner_expected_right = kb.make_arrow_type(int_ty, int_ty, &[e2], 1);
-    let expected = kb.make_arrow_type(inner_expected_left, inner_expected_right, &[], 1);
+    let inner_expected_left = kb.make_arrow_type(int_ty, int_ty, &[e1]);
+    let inner_expected_right = kb.make_arrow_type(int_ty, int_ty, &[e2]);
+    let expected = kb.make_arrow_type(inner_expected_left, inner_expected_right, &[]);
 
     // No consistent global binding of rho can satisfy both:
     //   param (contravariant): expected_param <: actual_param needs rho ⊇ E1
@@ -4544,20 +4544,12 @@ fn types_compatible_bootstrap_safe_when_prelude_not_registered() {
     let param_key = kb.intern("param");
     let result_key = kb.intern("result");
     let effects_key = kb.intern("effects");
-    // WI-791: every arrow states its parameter-list arity, and `agreed_arrow_arity`
-    // is the FIRST thing `arrow_compatible_view` / `unify_arrow_view` check. These
-    // arrows are hand-built to control their EFFECTS field, so they must still
-    // carry `arity` — without it both relations return false on the missing child
-    // and not one of the four bootstrap arms below is entered.
-    let arity_key = kb.intern("arity");
-    let arity_one = kb.make_arity_term(1);
 
     // arrow_no_effects: arrow(param: Int64, result: Int64) — no effects field.
     let mut na: SmallVec<[(anthill_core::intern::Symbol, anthill_core::kb::term::TermId); 2]> =
         SmallVec::new();
     na.push((param_key, int_ty));
     na.push((result_key, int_ty));
-    na.push((arity_key, arity_one));
     na.sort_by_key(|(s, _)| s.index());
     let arrow_no_effects = kb.alloc(Term::Fn {
         functor: arrow_sym,
@@ -4576,7 +4568,6 @@ fn types_compatible_bootstrap_safe_when_prelude_not_registered() {
     na2.push((param_key, int_ty));
     na2.push((result_key, int_ty));
     na2.push((effects_key, v_term));
-    na2.push((arity_key, arity_one));
     na2.sort_by_key(|(s, _)| s.index());
     let arrow_with_effects = kb.alloc(Term::Fn {
         functor: arrow_sym,
@@ -4637,7 +4628,6 @@ fn types_compatible_bootstrap_safe_when_prelude_not_registered() {
     na3.push((param_key, int_ty));
     na3.push((result_key, int_ty));
     na3.push((effects_key, v_term2));
-    na3.push((arity_key, arity_one));
     na3.sort_by_key(|(s, _)| s.index());
     let arrow_with_other_var = kb.alloc(Term::Fn {
         functor: arrow_sym,
@@ -4683,9 +4673,9 @@ fn subtype_rejects_rigid_tail_close_to_empty() {
     let rigid_tail = kb.alloc(Term::Var(anthill_core::kb::term::Var::Rigid(rigid_vid)));
 
     // actual = arrow(Int64, Int64, {| ?rho_rigid}) — open with Rigid tail.
-    let actual = kb.make_arrow_type(int_ty, int_ty, &[rigid_tail], 1);
+    let actual = kb.make_arrow_type(int_ty, int_ty, &[rigid_tail]);
     // expected = arrow(Int64, Int64, {E1}) — closed.
-    let expected = kb.make_arrow_type(int_ty, int_ty, &[e1], 1);
+    let expected = kb.make_arrow_type(int_ty, int_ty, &[e1]);
 
     // a_present=[], a_tail=Some(Rigid), e_present=[E1], e_tail=None.
     // only_a=[], only_e=[E1]. Case 3 (Some(a_t), None) with only_a empty.
@@ -4713,8 +4703,8 @@ fn unify_rejects_rigid_tail_against_closed() {
     let rigid_vid = kb.fresh_var(rigid_name);
     let rigid_tail = kb.alloc(Term::Var(anthill_core::kb::term::Var::Rigid(rigid_vid)));
 
-    let arrow_open_rigid = kb.make_arrow_type(int_ty, int_ty, &[e1, rigid_tail], 1);
-    let arrow_closed = kb.make_arrow_type(int_ty, int_ty, &[e1], 1);
+    let arrow_open_rigid = kb.make_arrow_type(int_ty, int_ty, &[e1, rigid_tail]);
+    let arrow_closed = kb.make_arrow_type(int_ty, int_ty, &[e1]);
 
     let mut subst = Substitution::new();
     assert!(
@@ -4753,8 +4743,8 @@ fn subtype_accepts_global_tail_close_to_empty() {
     let global_vid = kb.fresh_var(global_name);
     let global_tail = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(global_vid)));
 
-    let actual = kb.make_arrow_type(int_ty, int_ty, &[global_tail], 1);
-    let expected = kb.make_arrow_type(int_ty, int_ty, &[e1], 1);
+    let actual = kb.make_arrow_type(int_ty, int_ty, &[global_tail]);
+    let expected = kb.make_arrow_type(int_ty, int_ty, &[e1]);
 
     // Same shape as the Rigid case but with Global — must accept.
     assert!(
@@ -4779,15 +4769,15 @@ fn subtype_nested_arrow_shared_rho_consistent_binding_accepts() {
     let rho = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_vid)));
 
     // actual = arrow(arrow(Int64, Int64, {rho}), arrow(Int64, Int64, {rho}), {})
-    let inner_actual_left = kb.make_arrow_type(int_ty, int_ty, &[rho], 1);
-    let inner_actual_right = kb.make_arrow_type(int_ty, int_ty, &[rho], 1);
-    let actual = kb.make_arrow_type(inner_actual_left, inner_actual_right, &[], 1);
+    let inner_actual_left = kb.make_arrow_type(int_ty, int_ty, &[rho]);
+    let inner_actual_right = kb.make_arrow_type(int_ty, int_ty, &[rho]);
+    let actual = kb.make_arrow_type(inner_actual_left, inner_actual_right, &[]);
 
     // expected = arrow(arrow(Int64, Int64, {E1}), arrow(Int64, Int64, {E1}), {})
     // Both positions agree on {E1} → rho := {E1} satisfies both.
-    let inner_expected_left = kb.make_arrow_type(int_ty, int_ty, &[e1], 1);
-    let inner_expected_right = kb.make_arrow_type(int_ty, int_ty, &[e1], 1);
-    let expected = kb.make_arrow_type(inner_expected_left, inner_expected_right, &[], 1);
+    let inner_expected_left = kb.make_arrow_type(int_ty, int_ty, &[e1]);
+    let inner_expected_right = kb.make_arrow_type(int_ty, int_ty, &[e1]);
+    let expected = kb.make_arrow_type(inner_expected_left, inner_expected_right, &[]);
 
     assert!(
         types_compatible(&mut kb, actual, expected),
@@ -4821,8 +4811,8 @@ fn subtype_arrow_shared_rho_only_e_extras() {
     let rho = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_vid)));
 
     // A = {| ?rho}, B = {E2 | ?rho} — both reference the SAME rho.
-    let actual = kb.make_arrow_type(int_ty, int_ty, &[rho], 1);
-    let expected = kb.make_arrow_type(int_ty, int_ty, &[e2, rho], 1);
+    let actual = kb.make_arrow_type(int_ty, int_ty, &[rho]);
+    let expected = kb.make_arrow_type(int_ty, int_ty, &[e2, rho]);
 
     assert!(
         types_compatible(&mut kb, actual, expected),
@@ -4843,8 +4833,8 @@ fn subtype_arrow_shared_rho_only_a_extras() {
     let rho_vid = kb.fresh_var(rho_sym);
     let rho = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_vid)));
 
-    let actual = kb.make_arrow_type(int_ty, int_ty, &[e1, rho], 1);
-    let expected = kb.make_arrow_type(int_ty, int_ty, &[rho], 1);
+    let actual = kb.make_arrow_type(int_ty, int_ty, &[e1, rho]);
+    let expected = kb.make_arrow_type(int_ty, int_ty, &[rho]);
 
     // Under the shared-rho binding K = {E1 | fresh}, both rows become
     // {E1 | fresh}. Equal sets → A <: B.
@@ -4869,8 +4859,8 @@ fn unify_arrow_shared_rho_with_extras() {
     let rho_vid = kb.fresh_var(rho_sym);
     let rho = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_vid)));
 
-    let arrow_a = kb.make_arrow_type(int_ty, int_ty, &[rho], 1);
-    let arrow_b = kb.make_arrow_type(int_ty, int_ty, &[e2, rho], 1);
+    let arrow_a = kb.make_arrow_type(int_ty, int_ty, &[rho]);
+    let arrow_b = kb.make_arrow_type(int_ty, int_ty, &[e2, rho]);
 
     let mut subst = Substitution::new();
     assert!(
@@ -4934,17 +4924,11 @@ fn subtype_rejects_malformed_multi_tail_row() {
     let param_key = kb.intern("param");
     let result_key = kb.intern("result");
     let effects_key = kb.intern("effects");
-    // WI-791: state the arity, or `agreed_arrow_arity` rejects this arrow before
-    // the malformed row is ever decomposed and the assertions below pass without
-    // exercising the multi-tail guard at all.
-    let arity_key = kb.intern("arity");
-    let arity_one = kb.make_arity_term(1);
     let mut na: SmallVec<[(anthill_core::intern::Symbol, anthill_core::kb::term::TermId); 2]> =
         SmallVec::new();
     na.push((param_key, int_ty));
     na.push((result_key, int_ty));
     na.push((effects_key, malformed_rows));
-    na.push((arity_key, arity_one));
     na.sort_by_key(|(s, _)| s.index());
     let arrow_malformed = kb.alloc(Term::Fn {
         functor: arrow_sym,
@@ -4953,7 +4937,7 @@ fn subtype_rejects_malformed_multi_tail_row() {
     });
 
     // A well-formed arrow against the malformed one — must reject.
-    let arrow_clean = kb.make_arrow_type(int_ty, int_ty, &[], 1);
+    let arrow_clean = kb.make_arrow_type(int_ty, int_ty, &[]);
 
     assert!(
         !types_compatible(&mut kb, arrow_malformed, arrow_clean),
@@ -5008,9 +4992,9 @@ fn cover_pairs_sort_ref_with_parameterized_same_base() {
     let list_param = kb.make_parameterized_type(list_base, &[(t, int_ty)]);
 
     // arrow(Int64, Int64, [list_param]) where the label is parameterized.
-    let actual = kb.make_arrow_type(int_ty, int_ty, &[list_param], 1);
+    let actual = kb.make_arrow_type(int_ty, int_ty, &[list_param]);
     // arrow(Int64, Int64, [list_base]) where the label is sort_ref(List).
-    let expected = kb.make_arrow_type(int_ty, int_ty, &[list_base], 1);
+    let expected = kb.make_arrow_type(int_ty, int_ty, &[list_base]);
 
     // The two arrows' effects should compare compatibly via the
     // (parameterized, sort_ref) bridge in types_compatible — pre-WI-338
@@ -5060,8 +5044,8 @@ fn cover_snapshot_restore_on_failed_pairing_no_leak() {
     // important property: rejection happens for the RIGHT reason
     // (only_a non-empty), not because partial bindings made downstream
     // logic misbehave.
-    let actual = kb.make_arrow_type(int_ty, int_ty, &[e1, e2], 1);
-    let expected = kb.make_arrow_type(int_ty, int_ty, &[e1], 1);
+    let actual = kb.make_arrow_type(int_ty, int_ty, &[e1, e2]);
+    let expected = kb.make_arrow_type(int_ty, int_ty, &[e1]);
 
     assert!(
         !types_compatible(&mut kb, actual, expected),
@@ -5096,9 +5080,9 @@ fn subtype_arrow_open_le_open_shared_tail() {
     let rho_e = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(rho_e_vid)));
 
     // Actual: {E1 | ?rho_a}
-    let open_actual = kb.make_arrow_type(int_ty, int_ty, &[e1, rho_a], 1);
+    let open_actual = kb.make_arrow_type(int_ty, int_ty, &[e1, rho_a]);
     // Expected: {E2 | ?rho_e}
-    let open_expected = kb.make_arrow_type(int_ty, int_ty, &[e2, rho_e], 1);
+    let open_expected = kb.make_arrow_type(int_ty, int_ty, &[e2, rho_e]);
 
     assert!(
         types_compatible(&mut kb, open_actual, open_expected),
@@ -5612,8 +5596,8 @@ fn unify_arrow_with_var_binding() {
     let a_var = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(a_vid)));
     let b_var = kb.alloc(Term::Var(anthill_core::kb::term::Var::Global(b_vid)));
 
-    let arrow_var = kb.make_arrow_type(a_var, b_var, &[], 1);
-    let arrow_concrete = kb.make_arrow_type(int_ty, str_ty, &[], 1);
+    let arrow_var = kb.make_arrow_type(a_var, b_var, &[]);
+    let arrow_concrete = kb.make_arrow_type(int_ty, str_ty, &[]);
 
     let mut subst = Substitution::new();
     assert!(
@@ -7552,8 +7536,8 @@ fn wi795_identical_rendering_is_reported_rather_than_printed_as_a_tautology() {
         pos_args: SmallVec::new(),
         named_args: SmallVec::new(),
     });
-    let pure_arrow = kb.make_arrow_type(int_ty, int_ty, &[], 1);
-    let noisy_arrow = kb.make_arrow_type(int_ty, int_ty, &[console_ty], 1);
+    let pure_arrow = kb.make_arrow_type(int_ty, int_ty, &[]);
+    let noisy_arrow = kb.make_arrow_type(int_ty, int_ty, &[console_ty]);
     assert_ne!(
         pure_arrow, noisy_arrow,
         "the two arrows must be distinct terms"

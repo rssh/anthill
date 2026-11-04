@@ -59,8 +59,10 @@
 //! slot states a hard arity and applies its value with exactly that many arguments, while a
 //! `Function` value states none and may be either reading, so `n == |A|` proves nothing
 //! about the callable inside. Measured, load-clean and trapping `ArityMismatch { expected:
-//! 1, got: 2 }` at eval. `wi1085…::a_function_typed_argument_at_an_arrow_slot_is_refused_-
-//! whatever_the_labels` is that pairing, refused in both label shapes.
+//! 1, got: 2 }` at eval. `wi1085…::a_function_typed_argument_at_an_arrow_slot_meets_it_-
+//! only_by_the_one_relation` is that pairing: refused in both label shapes until
+//! WI-20261104-6HVXM retired the arrow's count, and since then refused for unrelated labels
+//! and run by position for a positional `A`.
 //!
 //! Rows that pass BOTH ways, by design, and say so at their sites:
 //! [`a_positional_argument_still_spreads_in_slot_order`], [`data_tuple_identity_is_untouched`],

@@ -49,6 +49,12 @@ pub struct Closure {
     /// (`closure_of_applied_lambda_node`): no operation holds it, and its frame reports the
     /// operation that applied it.
     pub written_in: Option<Symbol>,
+    /// The labels a lambda of ONE binder whose type is a labelled tuple reads the positional
+    /// tuple an application hands it by (kernel-language §4.4: an application hands its callable
+    /// `A`'s components positionally, and a callable of one parameter takes them as the tuple its
+    /// own type is). Recorded where the closure is built, from the type the typer stamped on the
+    /// lambda; `None` for every other lambda.
+    pub relabel: Option<std::rc::Rc<[Symbol]>>,
 }
 
 struct Slot {
@@ -270,6 +276,7 @@ mod tests {
             env: SmallVec::new(),
             requirements: SmallVec::new(),
             written_in: None,
+            relabel: None,
         }
     }
 
@@ -316,6 +323,7 @@ mod tests {
             env: SmallVec::new(),
             requirements: SmallVec::new(),
             written_in: None,
+            relabel: None,
         });
         let pat = h.with(|c| c.param_pattern.clone());
         assert!(Rc::ptr_eq(&pat, &param));
@@ -337,6 +345,7 @@ mod tests {
             env: SmallVec::new(),
             requirements: SmallVec::new(),
             written_in: None,
+            relabel: None,
         };
         let pa = NodeOccurrence::new_pattern(Pattern::Wildcard, span, None);
         let pb = NodeOccurrence::new_pattern(Pattern::Wildcard, span, None);

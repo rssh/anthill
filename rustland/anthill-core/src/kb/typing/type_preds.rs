@@ -356,16 +356,12 @@ fn node_type_is_ground_g(
                 child_ground(base) && bindings.iter().all(|(_, c)| child_ground(c))
             }
             TypeNode::EffectsRows { effects_expr } => child_ground(effects_expr),
-            // WI-791: `arity` is a ground `Const(Int)` by construction and so cannot
-            // change this verdict; it is checked anyway so the walk stays total over
-            // the node's children.
             // The arrow's own `binders` are its places, which its row reads as the
             // alignment-aware validators do — nothing for groundness to say.
             TypeNode::Arrow {
                 param,
                 result,
                 effects,
-                arity,
                 binders: _,
             } => {
                 // WI-41YYE: only the callable introduces a binder-alignment
@@ -380,10 +376,7 @@ fn node_type_is_ground_g(
                     TypeChild::Interned(t) => type_value_is_ground_g(kb, *t, rigid_ok),
                     TypeChild::Node(n) => node_type_is_ground_g(kb, n, rigid_ok, reading),
                 };
-                callable_child(param)
-                    && callable_child(result)
-                    && callable_child(effects)
-                    && callable_child(arity)
+                callable_child(param) && callable_child(result) && callable_child(effects)
             }
             // A projection's RECEIVER is a value path, not a type: `s.T`'s rides the term carrier
             // as a bare reference, which reads as ground, and a FIELD PATH's (`s.provider.K`)

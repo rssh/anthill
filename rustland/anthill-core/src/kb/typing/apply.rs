@@ -2,6 +2,63 @@
 
 use super::*;
 
+/// One argument of an application of a function value against the component it meets
+/// (Path 2 of [`check_apply_iter`]): a callable written there re-expressed at the slot
+/// ([`callable_written_at_slot`], rule 6), the callback's row read as the slot reads it
+/// ([`callback_at_slot`]) — both before the validation, whose relation binds a row variable too —
+/// then the check ([`validate_arg_against_param`]) and, on `Ok`, the unify that binds the function
+/// type's own holes.
+///
+/// WI-20260904-50B2K — THE UNIFY BINDS THE ARROW'S OWN HOLES from the argument, exactly as Path 1's
+/// argument loop does. The boolean is DISCARDED for the reason that site states: unify is EQUALITY
+/// while the check is SUBTYPING plus three conversions, so a unify-false must not reject. What it
+/// is FOR is the slot's variables — an un-annotated `lambda q -> q` has type `?v -> ?v`, and with
+/// nothing binding `?v` the call `g(x)` returned `?v`. ONLY ON `Ok`: on `WrapSome` the argument is
+/// the UN-COERCED value, and unifying it against an `Option[…]` slot can only fail and leave the
+/// slot's `T` free exactly where the coercion has just determined it.
+#[allow(clippy::too_many_arguments)]
+fn check_function_value_argument(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    subst: &mut Substitution,
+    solving: Option<&mut WalkSolutions>,
+    fn_sym: Symbol,
+    slot: Symbol,
+    slot_ty: &Value,
+    arg_result: &TypeResult,
+    span: Option<Span>,
+) -> ArgValidation {
+    // Taken ahead of the rule-6 step, whose unify binds this argument's variables too — and
+    // only where a walk is told of them.
+    let before = solving.is_some().then(|| subst.clone());
+    let own_ty = match callable_written_at_slot(kb, subst, arg_result, slot_ty) {
+        WrittenAtSlot::At(ty) => ty,
+        WrittenAtSlot::Waits | WrittenAtSlot::NotWritten => arg_result.ty.clone(),
+    };
+    let at_slot = callback_at_slot(kb, env, subst, slot, slot_ty, &own_ty);
+    let verdict = validate_arg_against_param(
+        kb,
+        subst,
+        &own_ty,
+        slot_ty,
+        span,
+        TypeErrorContext::OperationArgument {
+            op_name: fn_sym,
+            param: slot,
+        },
+        Some(&arg_result.node),
+    );
+    if let ArgValidation::Ok = verdict {
+        let unified = unify_types(kb, subst, at_slot.as_ref().unwrap_or(&own_ty), slot_ty);
+        // WI-20260904-50B2K part (c) — REPORT FROM PATH 2 TOO: `let g = lambda x -> x  g(2)`
+        // calls an ENV-BOUND ARROW, which is this path, and the walk learns the binder's use here.
+        if let Some(before) = &before {
+            report_walk_solutions(kb, solving, before, subst, unified);
+        }
+    }
+    verdict
+}
+
 pub(super) fn check_apply_iter(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
@@ -883,6 +940,11 @@ pub(super) fn check_apply_iter(
         // `wi_prva2_pre_existing_defects_test`).
         let receiverless_sort =
             callee_parent_sort.filter(|s| dispatches_on_nothing && !spec_has_any_providers(kb, *s));
+        // Rule 6 (kernel-language §4.4): a callable written at a slot, re-expressed at it —
+        // indexed as `some_wraps` is, positional then named — and the ones whose slot `A` was
+        // still a variable when their turn came, met after every other argument.
+        let mut written_at: Vec<Option<Value>> = vec![None; pos_args.len() + named_args.len()];
+        let mut waiting: Vec<(usize, Symbol, Value)> = Vec::new();
         for (i, arg_occ) in pos_args.iter().enumerate() {
             let call_param = pos_call_params[i].and_then(|p| op.params.get(p));
             if let Some((param_sym, _)) = call_param {
@@ -903,22 +965,34 @@ pub(super) fn check_apply_iter(
                     // post-synthesis elimination pass below; the argument type is still
                     // recorded so a LATER param projecting THIS one can read it.
                     let deferred = op_has_projection && value_contains_projection(kb, param_type);
+                    // Rule 6: a callable written at the slot meets it by label or by position
+                    // ([`callable_written_at_slot`]); one whose slot `A` is still a variable
+                    // waits for the other arguments. Its own unify binds this argument's
+                    // variables as the one below does, so the walk is told of both
+                    // (`before` is taken ahead of it, where a walk is told).
+                    let before = (!deferred && solving.is_some()).then(|| subst.clone());
+                    let written = if deferred {
+                        WrittenAtSlot::NotWritten
+                    } else {
+                        callable_written_at_slot(kb, &mut subst, arg_result, param_type)
+                    };
+                    let waits = matches!(written, WrittenAtSlot::Waits);
+                    if waits {
+                        waiting.push((i, *param_sym, param_type.clone()));
+                    }
+                    if let WrittenAtSlot::At(ty) = written {
+                        written_at[i] = Some(ty);
+                    }
+                    let own_ty = written_at[i].as_ref().unwrap_or(&arg_result.ty).clone();
                     // A callback as its slot reads it: its own parameters in the slot's
                     // names, and none of them a label the slot's row variable takes.
-                    let at_slot = if deferred {
+                    let at_slot = if deferred || waits {
                         None
                     } else {
-                        callback_at_slot(
-                            kb,
-                            env,
-                            &mut subst,
-                            *param_sym,
-                            param_type,
-                            &arg_result.ty,
-                        )
+                        callback_at_slot(kb, env, &mut subst, *param_sym, param_type, &own_ty)
+                            .or_else(|| written_at[i].clone())
                     };
-                    if !deferred {
-                        let before = subst.clone();
+                    if !deferred && !waits {
                         let arg_ty = at_slot.as_ref().unwrap_or(&arg_result.ty);
                         // A callback slot whose row tail the discharge inference solves is
                         // unified at the argument's own row: the row is that pass's, which
@@ -939,7 +1013,9 @@ pub(super) fn check_apply_iter(
                         // different one. This is also the exact site the probe saw
                         // `?param` bound at, so it is where the population lives rather
                         // than merely where a `defer` would have run.
-                        report_walk_solutions(kb, solving.as_deref_mut(), &before, &subst, unified);
+                        if let Some(before) = &before {
+                            report_walk_solutions(kb, solving.as_deref_mut(), before, &subst, unified);
+                        }
                     }
                     if needs_param_arg_types {
                         param_to_arg_type.insert(*param_sym, arg_result.ty.clone());
@@ -974,20 +1050,28 @@ pub(super) fn check_apply_iter(
                     // WI-398: defer a projection param's unify (see the positional loop).
                     let deferred = op_has_projection && value_contains_projection(kb, param_type);
                     // See the positional loop.
-                    let at_slot = if deferred {
+                    let before = (!deferred && solving.is_some()).then(|| subst.clone());
+                    let written = if deferred {
+                        WrittenAtSlot::NotWritten
+                    } else {
+                        callable_written_at_slot(kb, &mut subst, arg_result, param_type)
+                    };
+                    let waits = matches!(written, WrittenAtSlot::Waits);
+                    let at = pos_args.len() + i;
+                    if waits {
+                        waiting.push((at, *param_sym, (*param_type).clone()));
+                    }
+                    if let WrittenAtSlot::At(ty) = written {
+                        written_at[at] = Some(ty);
+                    }
+                    let own_ty = written_at[at].as_ref().unwrap_or(&arg_result.ty).clone();
+                    let at_slot = if deferred || waits {
                         None
                     } else {
-                        callback_at_slot(
-                            kb,
-                            env,
-                            &mut subst,
-                            *param_sym,
-                            param_type,
-                            &arg_result.ty,
-                        )
+                        callback_at_slot(kb, env, &mut subst, *param_sym, param_type, &own_ty)
+                            .or_else(|| written_at[at].clone())
                     };
-                    if !deferred {
-                        let before = subst.clone();
+                    if !deferred && !waits {
                         let arg_ty = at_slot.as_ref().unwrap_or(&arg_result.ty);
                         // See the positional loop.
                         let slot =
@@ -1006,7 +1090,9 @@ pub(super) fn check_apply_iter(
                         // different one. This is also the exact site the probe saw
                         // `?param` bound at, so it is where the population lives rather
                         // than merely where a `defer` would have run.
-                        report_walk_solutions(kb, solving.as_deref_mut(), &before, &subst, unified);
+                        if let Some(before) = &before {
+                            report_walk_solutions(kb, solving.as_deref_mut(), before, &subst, unified);
+                        }
                     }
                     if needs_param_arg_types {
                         param_to_arg_type.insert(*param_sym, arg_result.ty.clone());
@@ -1024,6 +1110,71 @@ pub(super) fn check_apply_iter(
             }
         }
 
+        // The callables whose slot `A` waited: the other arguments have pinned what they pin.
+        // A slot still undecided takes the callable's own tuple (`A := (a: Int64, b: Int64)`
+        // for `two`), which is then the tuple it was minted at.
+        for (at, param_sym, param_type) in waiting {
+            let result = if at < pos_args.len() {
+                &pos_results[at]
+            } else {
+                &named_results[at - pos_args.len()]
+            };
+            let Ok(arg_result) = result else { continue };
+            let before = solving.is_some().then(|| subst.clone());
+            let ty = match callable_written_at_slot(kb, &mut subst, arg_result, &param_type) {
+                WrittenAtSlot::At(ty) => {
+                    written_at[at] = Some(ty.clone());
+                    ty
+                }
+                WrittenAtSlot::Waits | WrittenAtSlot::NotWritten => {
+                    let own = function_param_tuple(kb, &arg_result.ty)
+                        .map(|f| f.into_iter().map(|(l, _)| l).collect::<Rc<[Symbol]>>());
+                    arg_result.node.set_eta_slot_labels(own);
+                    arg_result.ty.clone()
+                }
+            };
+            let at_slot = callback_at_slot(kb, env, &mut subst, param_sym, &param_type, &ty);
+            let arg_ty = at_slot.as_ref().unwrap_or(&ty);
+            // The argument loops recorded this callback's pair at its own type, its slot not yet
+            // known (WI-329): the row places the discharge inference aligns are the slot's, so
+            // the pair takes the type the callback has there.
+            if let Some(pair) = callback_pairs.iter_mut().find(|(p, _, _)| *p == param_sym) {
+                pair.2 = arg_ty.clone();
+            }
+            let slot = slot_at_argument_row(kb, &subst, &op, param_sym, &param_type, arg_ty);
+            let unified = unify_arg_with_param(
+                kb,
+                &mut subst,
+                arg_ty,
+                slot.as_ref().unwrap_or(&param_type),
+                receiverless_sort,
+            );
+            if let Some(before) = &before {
+                report_walk_solutions(kb, solving.as_deref_mut(), before, &subst, unified);
+            }
+        }
+        // From here on the call reads a callable written at its slot as the slot reads it.
+        let rebound: Option<Vec<Result<TypeResult, TypeError>>> =
+            written_at.iter().any(Option::is_some).then(|| {
+                pos_results
+                    .iter()
+                    .chain(named_results.iter())
+                    .zip(&written_at)
+                    .map(|(r, w)| match (r, w) {
+                        (Ok(tr), w) => Ok(TypeResult {
+                            ty: w.clone().unwrap_or_else(|| tr.ty.clone()),
+                            env: tr.env.clone(),
+                            effects: tr.effects.clone(),
+                            node: Rc::clone(&tr.node),
+                        }),
+                        (Err(e), _) => Err(e.clone()),
+                    })
+                    .collect()
+            });
+        let (pos_results, named_results) = match &rebound {
+            Some(all) => all.split_at(pos_args.len()),
+            None => (pos_results, named_results),
+        };
         // WI-398: CROSS-PARAMETER projection. With every argument now synthesized
         // (`param_to_arg_type` fully populated above), discharge each projection-bearing
         // PARAMETER type by projecting the receiver param's argument type — the same
@@ -5449,20 +5600,18 @@ pub(super) fn check_apply_iter(
         if let Some((ret_ty, call_effects)) =
             extract_function_type_parts(kb, &callee_ty, env.param_rigids())
         {
-            // WI-798: and the DECLARED PARAMETER LIST likewise once — the
-            // positional check reads it as its slot list (for every arity but
-            // one), and the WI-783 named-label resolution below reads the SAME
-            // list to bind labels to slots. Deriving it twice meant a second
-            // `extract_type` of the arrow's `param` plus a second walk of the
-            // parameter cons-list on every named-argument call.
-            //
-            // What must NOT be shared is the POSITIONAL slot list: it diverges
-            // from this one at arity 1, where an arrow drops its lone binder's
-            // name, so `arrow_positional_param_slots` mints a synthetic `_1` while
-            // this stays `None` so a LABEL there is refused. That divergence lives
-            // in the reader's match, not in whether the list is computed, so
-            // hoisting the computation leaves it intact.
-            let declared_params = arrow_declared_param_list(kb, &callee_ty);
+            // THE APPLICATION MATCH (kernel-language §4.4): the arguments meet the function's
+            // `A`, read ONCE for the whole path (WI-798) and alike for both spellings — every
+            // arrow is a `Function`, so an `arrow` and a `Function[A, B, E]` are checked the same
+            // way, a positional argument against the component at its position and a named one
+            // against the component with its label.
+            let target = match application_target(kb, &Substitution::new(), &callee_ty) {
+                // A lambda's binder names name its arguments in a call of its value (§4.4).
+                ApplicationTarget::Tuple(fields) => {
+                    ApplicationTarget::Tuple(components_named_by_binders(kb, &fn_type, fields))
+                }
+                other => other,
+            };
             // WI-516: `f(arg…)` performs the arrow's OWN call effect UNIONED with
             // the effects of EVALUATING each argument — the same arg-effect
             // accumulation Path 1 (known op) and Path 3 (unknown functor) do.
@@ -5520,374 +5669,203 @@ pub(super) fn check_apply_iter(
             let mut arg_errors: Vec<TypeError> = Vec::new();
             // WI-408: `(child-index, declared Option type)`, materialized below.
             let mut some_wraps: Vec<(usize, Value)> = Vec::new();
-            // WI-788: ONE reader, ONE loop, for BOTH callable spellings — an
-            // `arrow` and a `Function[A, B, E]`. They used to be two inline
-            // branches with a hand-rolled arity error and a per-argument loop
-            // each, differing only in where the expectation came from, which is
-            // precisely how the `Function` half came to check nothing at all.
-            // WI-801: `A` when this call is `A`'s components spread and must be
-            // handed to eval as ONE whole-`A` tuple; `None` otherwise.
-            let mut gather_into: Option<(Value, Vec<Symbol>)> = None;
-            match positional_arg_expectations(
-                kb,
-                &callee_ty,
-                declared_params.as_deref(),
-                pos_args.len(),
-                pos_args.len() + named_args.len(),
-            ) {
-                ArgExpectations::CountMismatch { expected } => {
-                    let arity_sym = kb.intern("arity");
-                    let supplied = pos_args.len() + named_args.len();
-                    return Err(TypeError::Other {
-                        site: TypeError::here(),
-                        span,
-                        context: TypeErrorContext::OperationArgument {
-                            op_name: fn_sym,
-                            param: arity_sym,
-                        },
-                        expected,
-                        actual: format!(
-                            "{supplied} argument{}",
-                            if supplied == 1 { "" } else { "s" },
-                        ),
-                    });
+            let supplied = pos_args.len() + named_args.len();
+            // Where `A` was a variable the call's own arguments decide it, and the tuple handed
+            // over keeps their labels: nothing on the callee's side recorded labels to relabel a
+            // positional one by.
+            let mut gather_keeps_labels = false;
+            let target = match target {
+                // `A` NOT KNOWN YET — an un-annotated lambda's `?param`. The one argument is
+                // `A` as the call presents it, and several are the tuple they make, labelled
+                // where the call labels them: checking them binds `A` (WI-20260904-50B2K:
+                // `let g = lambda q -> q  g(x)` returned `?v` with the binding discarded).
+                ApplicationTarget::Var(a) if pos_args.len() == 1 && named_args.is_empty() => {
+                    ApplicationTarget::Whole(a)
                 }
-                // The callee's argument type states nothing checkable. Named, so
-                // that this is a decision rather than a fallthrough.
-                ArgExpectations::NoVerdict => {}
-                ArgExpectations::Slots { slots, gather } => {
-                    gather_into = gather.map(|a| {
-                        // WI-801: the component LABELS come from the slot list the
-                        // check just used, not from a second `extract_type` of `A`
-                        // — `slots` IS that extraction, and re-running it per
-                        // gathered application is the cost the typer's WI-798 notes
-                        // single out (a head classify plus a fresh binding vector
-                        // with every bound type cloned in).
-                        (a, slots.iter().map(|(l, _)| *l).collect::<Vec<_>>())
-                    });
-                    // WI-20260827-1F0QP: through the same owner as a NAMED operation's
-                    // call. An arrow's `slots` are a parameter list like any other, so a
-                    // mixed application of a function VALUE ranks its positional
-                    // arguments the same way — and must be CHECKED against the slot it
-                    // ranks to, or a mixed `f("hi", acc: 3)` is refused naming a
-                    // parameter it never filled.
-                    let slot_params: SmallVec<[(Symbol, Value); 4]> =
-                        slots.iter().cloned().collect();
-                    let pos_slots =
-                        positional_param_indices(kb, &slot_params, pos_args.len(), named_args);
-                    for (i, _) in pos_args.iter().enumerate() {
-                        if let (Ok(arg_result), Some((param_sym, slot_type))) =
-                            (&pos_results[i], pos_slots[i].and_then(|p| slots.get(p)))
-                        {
-                            // A callback as this slot reads it, as Path 1 reads one at a
-                            // parameter's ([`callback_at_slot`]) — before the validation
-                            // below, whose relation binds a row variable too.
-                            let at_slot = callback_at_slot(
-                                kb,
-                                env,
-                                &mut subst,
-                                *param_sym,
-                                slot_type,
-                                &arg_result.ty,
-                            );
-                            match validate_arg_against_param(
-                                kb,
-                                &mut subst,
-                                &arg_result.ty,
-                                slot_type,
-                                span,
-                                TypeErrorContext::OperationArgument {
-                                    op_name: fn_sym,
-                                    param: *param_sym,
-                                },
-                                Some(&arg_result.node),
-                            ) {
-                                // WI-20260904-50B2K — BIND THE ARROW'S OWN HOLES from the
-                                // argument, exactly as Path 1's argument loop does. The
-                                // boolean is DISCARDED for the reason that site states:
-                                // unify is EQUALITY while the check above is SUBTYPING plus
-                                // three conversions, so a unify-false must not reject. What
-                                // it is FOR is the slot's variables — an un-annotated
-                                // `lambda q -> q` has type `?v -> ?v`, and with nothing
-                                // binding `?v` the call `g(x)` returned `?v` and an
-                                // operation declared `-> String` reported "expected String,
-                                // got ??param".
-                                //
-                                // ONLY ON `Ok`. On the `WrapSome` arm the argument is the
-                                // UN-COERCED value, so unifying it against an `Option[…]`
-                                // slot can only fail — and failing there leaves the slot's
-                                // `T` free exactly where the coercion has just determined
-                                // it, so a `ret_ty` mentioning it would come back
-                                // `??param` instead of `Int64`. Found by `/code-review`.
-                                //
-                                // WHAT A FAILED UNIFY LEAVES BEHIND IS SETTLED AT THE
-                                // RELATION, not here — WI-20260904-60143, see
-                                // [`unify_types`]' "what survives a `false`" note.
-                                // `unify_types` still does not roll back (four refusals are
-                                // reached BY the partial binding, measured), so a pair that
-                                // conforms by SUBTYPING but not by EQUALITY keeps what it
-                                // bound. What that ticket removed is the part of it that was
-                                // ARBITRARY: an author-ordered slot list now contributes
-                                // every slot that agreed rather than the prefix before the
-                                // first that did not, so the `ret_ty` read below no longer
-                                // depends on how the argument's type was spelled.
-                                ArgValidation::Ok => {
-                                    let before = subst.clone();
-                                    let unified = unify_types(
-                                        kb,
-                                        &mut subst,
-                                        at_slot.as_ref().unwrap_or(&arg_result.ty),
-                                        slot_type,
-                                    );
-                                    // WI-20260904-50B2K part (c) — REPORT FROM PATH 2 TOO.
-                                    // The first slice reported at Path 1's two argument
-                                    // loops only, and MEASURED, that is exactly the half
-                                    // that cannot see a binder's USE: `let g = lambda x ->
-                                    // x  g(2)` calls an ENV-BOUND ARROW, which is this
-                                    // path, and the walk learned nothing from it (probe:
-                                    // zero solutions, against one for the same program
-                                    // with the body doing the pinning). Part (c)'s
-                                    // discharge is asked precisely about the use, so
-                                    // without this the licence below could never fire.
-                                    report_walk_solutions(
-                                        kb,
-                                        solving.as_deref_mut(),
-                                        &before,
-                                        &subst,
-                                        unified,
-                                    );
-                                }
-                                ArgValidation::WrapSome { declared } => {
-                                    some_wraps.push((i, declared))
-                                }
-                                ArgValidation::Fail(err) => arg_errors.push(err),
-                            }
-                        }
+                ApplicationTarget::Var(a) => {
+                    let mut fields: Vec<(Symbol, Value)> = Vec::with_capacity(supplied);
+                    // `check_apply_iter` bailed on any ill-typed child up front, so every
+                    // argument has its type.
+                    let arg_ty = |r: &Result<TypeResult, TypeError>| {
+                        r.as_ref().map(|r| r.ty.clone()).expect("an argument typed Ok")
+                    };
+                    for (i, r) in pos_results.iter().enumerate() {
+                        let label = kb.intern(&positional_label(i));
+                        fields.push((label, arg_ty(r)));
                     }
+                    for ((label, _), r) in named_args.iter().zip(named_results) {
+                        let short = short_name_of(kb.local_name_of(*label)).to_owned();
+                        let label = kb.intern(&short);
+                        fields.push((label, arg_ty(r)));
+                    }
+                    let tuple = named_tuple_value(kb, &fields, occ.span, occ.owner);
+                    // `a` is a flexible variable (a rigid one is no `Var` target), so this binds
+                    // it unless the occurs check refuses: an argument whose type holds `A`
+                    // itself, which no tuple of the arguments can be.
+                    if !unify_types(kb, &mut subst, &a, &tuple) {
+                        return Err(TypeError::TypeMismatch {
+                            site: TypeError::here(),
+                            span,
+                            context: TypeErrorContext::OperationArgument {
+                                op_name: fn_sym,
+                                param: kb.intern("arity"),
+                            },
+                            expected: a,
+                            quoted: None,
+                            actual: tuple,
+                        });
+                    }
+                    gather_keeps_labels = true;
+                    ApplicationTarget::Tuple(fields)
                 }
-            }
-            // WI-783: resolve NAMED arguments against the arrow's declared binder
-            // names — the job Path 1 does for a named operation via its
-            // `op.params` (coverage check + `reorder_named_args_in_apply`), and
-            // which this path used to skip entirely. Skipping it was silently
-            // WRONG, not merely unchecked: eval's `start_apply` DISCARDS the
-            // labels and binds what is left positionally, so `f(x: 10, acc: 3)`
-            // and `f(acc: 3, x: 10)` on `(acc: Int64, x: Int64) -> Int64` bound
-            // opposite ways and a `sub`-like callee returned 7 and -7 — a
-            // plausible wrong number, with the binder names inert and even an
-            // unknown label accepted. Binding by the DECLARED names is sound
-            // despite WI-775 letting the actual callee's own binder names differ
-            // (`sub2(a, b)` may be passed for `(acc, x)`): an arrow's parameter
-            // list is applied POSITIONALLY, so declared slot i is the callee's
-            // slot i, and resolving label → slot against the static type before
-            // handing eval a positional call composes exactly.
-            //
-            // WI-792 folded the per-argument TYPE check for these labels in below,
-            // beside the positional loop above: resolving a label to a slot and
-            // then not checking what lands in it is the same silence in the other
-            // channel.
-            let params = if named_args.is_empty() {
-                Vec::new()
-            } else {
-                let params = declared_params.ok_or_else(|| {
-                    // No declared names to bind to (a 1-param arrow, whose binder
-                    // name the arrow type drops; a `Function[A, B]`, whose `A` is
-                    // one tuple argument; an abstract param). The label can be
-                    // neither ordered nor validated, so it must not be silently
-                    // ignored — reject and point at the positional form.
-                    aggregate_errors(
-                        named_args
-                            .iter()
-                            .map(|(arg_name, _)| TypeError::Other {
-                                site: TypeError::here(),
-                                span,
-                                context: TypeErrorContext::OperationArgument {
-                                    op_name: fn_sym,
-                                    param: *arg_name,
-                                },
-                                expected: "positional arguments — the type of this function \
-                                           value records no parameter names to bind a label to"
-                                    .to_string(),
-                                actual: format!(
-                                    "named argument '{}'",
-                                    short_name_of(kb.local_name_of(*arg_name))
-                                ),
-                            })
-                            .collect(),
-                    )
-                })?;
-                // The same WI-426 coverage rule the named-operation path applies,
-                // via the shared checker so the two cannot drift.
-                //
-                // WI-1100: the LABEL half only. This path's ARITY is already owned, one
-                // block up, by `positional_arg_expectations` — which knows the two
-                // readings a `Function[A, B, E]` slot admits (one whole-`A` argument, or
-                // `A`'s components spread) and so states a count where the binder, which
-                // reads a parameter LIST, cannot. A wrong total returned `CountMismatch`
-                // there and never reached here.
-                arg_errors.extend(
-                    bind_call_arguments(
+                other => other,
+            };
+            // `A`'s components, for the gather below; `None` where the application is already
+            // the one value `A` takes. The `Apply` frame spread a one tuple at a tuple `A` into
+            // the arguments it holds ([`spread_one_tuple_argument`]) before this ran.
+            let mut gather: Option<Vec<(Symbol, Value)>> = None;
+            match &target {
+                ApplicationTarget::Tuple(fields) => {
+                    // WI-426 / WI-783 / WI-1100: which component each argument meets, and the
+                    // coverage — the ONE binder a call of an operation by name uses too, so the
+                    // two callee kinds report a label or a count alike.
+                    let binding = bind_call_arguments(
                         kb,
-                        &params,
+                        fields,
                         pos_args.len(),
                         named_args,
                         fn_sym,
                         "this function value's type",
                         span,
-                    )
-                    .label_errors,
-                );
-                // WI-792: and the same per-argument conformance the positional
-                // loop applies, at the slot each label resolved to. An UNKNOWN
-                // label matches no param and is skipped here, so it is reported
-                // once, by the coverage check. A DUPLICATE label does match, so it
-                // is type-checked too and can draw a second, different diagnostic
-                // — measured, and the same thing Path 1 does with the same two
-                // checks in the other order. Left alone deliberately: the two
-                // errors say different true things about the argument, and
-                // suppressing one here would make the two paths diverge.
-                for (i, (arg_name, _)) in named_args.iter().enumerate() {
-                    let Ok(arg_result) = &named_results[i] else {
-                        continue;
-                    };
-                    let Some((param_sym, param_type)) =
-                        match_named_arg_param(kb, &params, *arg_name)
-                    else {
-                        continue;
-                    };
-                    let (param_sym, param_type) = (*param_sym, param_type.clone());
-                    // See the positional loop.
-                    let at_slot = callback_at_slot(
-                        kb,
-                        env,
-                        &mut subst,
-                        param_sym,
-                        &param_type,
-                        &arg_result.ty,
                     );
-                    match validate_arg_against_param(
-                        kb,
-                        &mut subst,
-                        &arg_result.ty,
-                        &param_type,
-                        span,
-                        TypeErrorContext::OperationArgument {
-                            op_name: fn_sym,
-                            param: param_sym,
-                        },
-                        Some(&arg_result.node),
-                    ) {
-                        // WI-20260904-50B2K — the named twin of the positional bind above;
-                        // see its note, including why it is `Ok`-only. Written at BOTH
-                        // loops rather than once, because a rule written twice at one site
-                        // and not the other is the asymmetry the typer has been bitten by
-                        // before.
-                        ArgValidation::Ok => {
-                            let before = subst.clone();
-                            let unified = unify_types(
-                                kb,
-                                &mut subst,
-                                at_slot.as_ref().unwrap_or(&arg_result.ty),
-                                &param_type,
-                            );
-                            // WI-20260904-50B2K part (c) — the named twin; see the
-                            // positional loop's note.
-                            report_walk_solutions(
-                                kb,
-                                solving.as_deref_mut(),
-                                &before,
-                                &subst,
-                                unified,
-                            );
+                    // A label that meets no component is the fault where there is one, and the
+                    // count it leaves short only its consequence.
+                    if binding.label_errors.is_empty() {
+                        if let Some(err) =
+                            function_value_arity_error(kb, fields.len(), &binding, supplied, fn_sym, span)
+                        {
+                            return Err(err);
                         }
-                        ArgValidation::WrapSome { declared } => {
-                            some_wraps.push((pos_args.len() + i, declared));
-                        }
-                        ArgValidation::Fail(err) => arg_errors.push(err),
                     }
+                    arg_errors.extend(binding.label_errors);
+                    // WI-20260827-1F0QP: a mixed application ranks its positional arguments
+                    // among the components the labels left open, as a call by name does.
+                    let pos_slots = positional_param_indices(kb, fields, pos_args.len(), named_args);
+                    for (i, r) in pos_results.iter().enumerate() {
+                        let (Ok(arg_result), Some((slot, slot_ty))) =
+                            (r, pos_slots[i].and_then(|p| fields.get(p)))
+                        else {
+                            continue;
+                        };
+                        match check_function_value_argument(
+                            kb, env, &mut subst, solving.as_deref_mut(), fn_sym, *slot, slot_ty, arg_result, span,
+                        ) {
+                            ArgValidation::Ok => {}
+                            ArgValidation::WrapSome { declared } => some_wraps.push((i, declared)),
+                            ArgValidation::Fail(err) => arg_errors.push(err),
+                        }
+                    }
+                    // An UNKNOWN label matches no component and is reported once, by the
+                    // coverage above; a DUPLICATE one does match and is checked too, as the
+                    // call of an operation by name checks it.
+                    for (i, (arg_name, _)) in named_args.iter().enumerate() {
+                        let Ok(arg_result) = &named_results[i] else { continue };
+                        let Some((slot, slot_ty)) = match_named_arg_param(kb, fields, *arg_name)
+                            .map(|(s, t)| (*s, t.clone()))
+                        else {
+                            continue;
+                        };
+                        match check_function_value_argument(
+                            kb, env, &mut subst, solving.as_deref_mut(), fn_sym, slot, &slot_ty, arg_result, span,
+                        ) {
+                            ArgValidation::Ok => {}
+                            ArgValidation::WrapSome { declared } => {
+                                some_wraps.push((pos_args.len() + i, declared))
+                            }
+                            ArgValidation::Fail(err) => arg_errors.push(err),
+                        }
+                    }
+                    gather = Some(fields.clone());
                 }
-                params
-            };
-            if !arg_errors.is_empty() {
-                return Err(aggregate_errors(arg_errors));
-            }
-            // Materialize the WI-408 some-coercions recorded above, and — when the
-            // call has NAMED args, every label having resolved — hand eval a
-            // positionally-correct call. `check_apply_iter` bailed on any ill-typed
-            // child up front (`collect_arg_errors`), so the rebuilders' Ok-child
-            // expectation holds. Mirrors Path 1's rebuild, minus its reorder
-            // fallback: that fallback is for a callee with no parameter names,
-            // which this path has already rejected above.
-            let named_node;
-            let occ = if !named_args.is_empty() {
-                match reorder_named_args_in_apply(
-                    kb,
-                    occ,
-                    &params,
-                    pos_args.len(),
-                    &some_wraps,
-                    pos_results,
-                    named_results,
-                ) {
-                    Some(r) => {
-                        named_node = r;
-                        &named_node
+                // `A` IS ONE VALUE: the one argument is `A`. A label names nothing here — the
+                // binder name of a function of one parameter is no part of its type (§4.4).
+                ApplicationTarget::Whole(a) => {
+                    for (arg_name, _) in named_args {
+                        arg_errors.push(TypeError::Other {
+                            site: TypeError::here(),
+                            span,
+                            context: TypeErrorContext::OperationArgument {
+                                op_name: fn_sym,
+                                param: *arg_name,
+                            },
+                            expected: "positional arguments — this function value's argument \
+                                       type is no tuple, so it has no component a label could meet"
+                                .to_string(),
+                            actual: format!(
+                                "named argument '{}'",
+                                short_name_of(kb.local_name_of(*arg_name))
+                            ),
+                        });
                     }
-                    // Unreachable: the reorder declines only a non-`Apply`
-                    // occurrence, and both `check_apply_iter` call sites pass an
-                    // `Expr::Apply`. Kept LOUD rather than falling back to `occ`
-                    // — that fallback would hand eval the labels in WRITTEN order
-                    // and silently restore the very mis-binding this path exists
-                    // to prevent, which is precisely the "reads as handled when
-                    // it isn't" failure the repo's loud-error rule targets.
-                    None => {
-                        debug_assert!(false, "named-arg reorder declined a non-Apply occurrence");
+                    if named_args.is_empty() && pos_args.len() != 1 {
                         return Err(TypeError::Other {
                             site: TypeError::here(),
                             span,
                             context: TypeErrorContext::OperationArgument {
                                 op_name: fn_sym,
-                                param: named_args[0].0,
+                                param: kb.intern("arity"),
                             },
-                            expected: "an application occurrence whose named arguments can be \
-                                       bound to the callee's declared parameters"
+                            expected: "1 argument — this function value's argument type is no \
+                                       tuple"
                                 .to_string(),
-                            actual: "an occurrence this typer cannot reorder; pass the arguments \
-                                     positionally"
-                                .to_string(),
+                            actual: format!(
+                                "{supplied} argument{}",
+                                if supplied == 1 { "" } else { "s" }
+                            ),
                         });
                     }
+                    if let (Some(Ok(arg_result)), true) = (pos_results.first(), named_args.is_empty()) {
+                        let slot = kb.intern(&positional_label(0));
+                        match check_function_value_argument(
+                            kb, env, &mut subst, solving.as_deref_mut(), fn_sym, slot, a, arg_result, span,
+                        ) {
+                            ArgValidation::Ok => {}
+                            ArgValidation::WrapSome { declared } => some_wraps.push((0, declared)),
+                            ArgValidation::Fail(err) => arg_errors.push(err),
+                        }
+                    }
                 }
-            } else if let Some((a_type, labels)) = gather_into {
-                // WI-801: normalize the SPREAD form into the whole-`A` form. Both
-                // admitted callee arities then take the identical one-argument
-                // call — a 1-parameter callee receives `A` itself, and an
-                // `|A|`-parameter one has eval's existing spread adapter applied
-                // to it (`spread_eta_args` / `match_tuple_pattern`) — so the
-                // callee's own arity, the quantity eval pivots on, can no longer
-                // disagree with `A`'s component count, the quantity this site
-                // pivots on. That disagreement is WI-801.
-                //
-                // AFTER the some-wraps, which index the ORIGINAL children: a
-                // coerced argument must be wrapped before it becomes a component.
-                named_node = gather_spread_args_into_tuple(
+                // The callee's type binds no `A` (a `Function` without one): nothing to check,
+                // named so it is a decision rather than a fallthrough.
+                ApplicationTarget::NoVerdict | ApplicationTarget::Var(_) => {}
+            }
+            if !arg_errors.is_empty() {
+                return Err(aggregate_errors(arg_errors));
+            }
+            // At load the application takes its TUPLED FORM, `f(7, 1)` over `(x: Int64, y:
+            // Int64) -> R` becoming `f((x: 7, y: 1))` (§4.4): the conversion needs `A`'s labels,
+            // which the run time does not have, and hands every callable the one value its own
+            // tuple takes — an operation of several parameters takes its components, by label
+            // or by position as it met its slot, a lambda hands it to its pattern. AFTER the
+            // some-wraps, which index the ORIGINAL children: a coerced argument is wrapped
+            // before it becomes a component.
+            let named_node;
+            let occ = if let Some(fields) = gather {
+                named_node = gather_args_into_tuple(
                     kb,
                     occ,
-                    a_type,
-                    &labels,
+                    &fields,
+                    gather_keeps_labels,
                     &some_wraps,
                     pos_results,
+                    named_args,
+                    named_results,
                 )
                 .ok_or_else(|| {
-                    // TWO causes, both unreachable, both loud rather than falling
-                    // back to `occ` — which would hand eval the un-normalized
-                    // spread call and silently restore the trap this branch exists
-                    // to remove. (1) A non-`Apply` occurrence, unreachable for the
-                    // same reason the reorder's `None` is: both
-                    // `check_apply_iter` call sites pass an `Expr::Apply`. (2) The
-                    // labels and the arguments disagreeing in count, which cannot
-                    // happen because both descend from the same `positional`.
-                    debug_assert!(false, "spread gather declined a well-formed application");
+                    // A non-`Apply` occurrence, or an argument meeting no component — both
+                    // refused above, so unreachable; loud rather than falling back to `occ`,
+                    // which would hand eval the un-normalized call.
+                    debug_assert!(false, "the application's gather declined a well-formed call");
                     TypeError::Other {
                         site: TypeError::here(),
                         span,
@@ -5895,12 +5873,10 @@ pub(super) fn check_apply_iter(
                             op_name: fn_sym,
                             param: kb.intern("arity"),
                         },
-                        expected: "an application occurrence whose spread arguments can be \
-                                   gathered into the function's declared argument type"
+                        expected: "an application whose arguments each meet one component of \
+                                   the function's argument type"
                             .to_string(),
-                        actual: "an application this typer cannot rebuild — its shape or its \
-                                 argument count does not match the declared components; pass \
-                                 the whole tuple"
+                        actual: "an application this typer cannot gather into that tuple"
                             .to_string(),
                     }
                 })?;
@@ -6495,11 +6471,10 @@ fn rekeyed_return(
                 param,
                 result,
                 effects,
-                arity,
                 binders,
             } => {
                 let e = changed(kb, &effects, rows)?;
-                Some(arrow_value(kb, &param, &result, &e, arity, binders, sp, owner))
+                Some(arrow_value(kb, &param, &result, &e, binders, sp, owner))
             }
             TypeExtractor::Parameterized { base, bindings }
                 if !is_sort_view_functor(kb, base) && effect_expr_form(kb, base).is_none() =>

@@ -97,21 +97,21 @@ pub enum Value {
         /// requires chain as its prefix, and reading the layout off `op` alone
         /// measures a spec dictionary against the provider's chain.
         named: Option<Symbol>,
-        /// WI-1087 — the LABELS of the `Function[A = …]` slot this reference was
-        /// eta-lifted INTO, in `A`'s declared order, when that slot reads `A` as the
-        /// callback's PARAMETER LIST (the spread reading; see
-        /// `function_slot_reads_a_as_param_list`). `None` at every other eta site.
+        /// WI-1087 — the LABELS of the slot's `A` this reference was eta-lifted INTO, in
+        /// `A`'s declared order, where that `A` is a tuple; `None` where it is not, or was
+        /// never known. Which parameter takes which component is rule 6 of proposal 002
+        /// (kernel-language §4.4): by label where the operation's parameter names are these
+        /// labels, by position otherwise — `call_form::slot_components_of_params`, the one
+        /// owner the typer read where it re-expressed the reference at its slot.
         ///
         /// It rides on the VALUE for the same reason `dict` does: the mapping is
-        /// mint-time STATIC information the apply site cannot re-derive. When the
-        /// whole-`A` call form `f(t)` spreads a tuple across this operation's
-        /// parameters, parameter `i` is `A`'s component `i` (that is what the
-        /// conformance relation established), while the VALUE conforms to `A` by NAME
-        /// and may present its components in another order (WI-803 made `<:` on a data
-        /// tuple order-free). Reading the value in source order therefore hands
-        /// parameter `i` the `i`-th WRITTEN component — measured, `f((x: 10, acc: 3))`
-        /// at `A = (acc, x)` with `sub2(a, b) = a - b` answering 7 where the labels say
-        /// 3 - 10. These labels are what `spread_eta_args` reads it by.
+        /// mint-time STATIC information the apply site cannot re-derive. The application
+        /// hands the operation one tuple, which conforms to `A` by NAME and may present its
+        /// components in another order (WI-803 made `<:` on a data tuple order-free), so
+        /// reading it in source order hands parameter `i` the `i`-th WRITTEN component —
+        /// measured, `f((x: 10, acc: 3))` at `A = (acc, x)` with `sub2(a, b) = a - b`
+        /// answering 7 where the labels say 3 - 10. These labels are what
+        /// `spread_eta_args` reads it by.
         ///
         /// The LAMBDA spelling of the same call has never needed them: an unannotated
         /// lambda ADOPTS `A` as its param type, so `Pattern::Tuple.labels` already
@@ -140,8 +140,9 @@ pub enum Value {
         ///    was admitted because `Function`/`Function` conformance took the whole-`A`
         ///    (by-name, order-free since WI-803) reading alone; a `Function` slot's `A`
         ///    must satisfy the SPREAD reading too, where it is a parameter list and
-        ///    order is identity, so the relation owed is the intersection
-        ///    (`function_pairing_permutes_a`, kb/typing.rs). Measured before that,
+        ///    order is identity. Since every arrow is a `Function` (WI-20261104-6HVXM)
+        ///    that is the one relation of a function value at another function type
+        ///    (`function_types_compatible`, kb/typing). Measured before WI-1088,
         ///    load-clean and running: `inner(sub2)` = 7 while `outer(sub2)` = -7 for the
         ///    same `inner`. The LAMBDA spelling answered that way BEFORE this field
         ///    existed — its mint-time mapping is `Pattern::Tuple.labels` — so the two
@@ -493,6 +494,47 @@ impl Value {
         }
     }
 
+    /// The value a callable of ONE parameter takes from an application, `labels` being the
+    /// labels the typer recorded for it where it became a value (kernel-language §4.4). An
+    /// application hands its callable `A`'s components POSITIONALLY, so a positional tuple of as
+    /// many components is relabelled to them, by position — `take2(get_a)`, `A = (Int64, Int64)`
+    /// reaching `t: (a: Int64, b: Int64)`. `Ok(None)`, the value as it is, for a name-keyed tuple:
+    /// the value of a type parameter's instance, handed as it is and typed with its own labels,
+    /// which the callable reads it by. `Err`, naming what came, for a value that is no tuple and
+    /// a positional tuple of another width: the application was typed at `labels`, so either is
+    /// a broken hand-off, not a value to pass on.
+    pub fn at_tuple_labels(
+        &self,
+        kb: &crate::kb::KnowledgeBase,
+        labels: &[Symbol],
+    ) -> Result<Option<Value>, String> {
+        let Some(components) = self.tuple_components(kb) else {
+            return Err(format!("{}, which is no tuple", self.type_name()));
+        };
+        if components.is_name_keyed() || labels.is_empty() {
+            return Ok(None);
+        }
+        if components.len() != labels.len() {
+            return Err(format!(
+                "a tuple of {} components where {} were typed",
+                components.len(),
+                labels.len()
+            ));
+        }
+        let values: Vec<Value> = components.iter().cloned().collect();
+        Ok(Some(if TupleComponents::labels_are_positional(kb, labels) {
+            Value::Tuple {
+                pos: values.into(),
+                named: Rc::from(Vec::new()),
+            }
+        } else {
+            Value::Tuple {
+                pos: Rc::from(Vec::new()),
+                named: labels.iter().copied().zip(values).collect::<Vec<_>>().into(),
+            }
+        }))
+    }
+
     /// WI-787: a tuple's components in SOURCE order, or `None` when this value is not
     /// a tuple ON ANY CARRIER (see "one read for every carrier" below). THE owning
     /// reader for the `pos ++ named` invariant — read a tuple's components through
@@ -826,14 +868,11 @@ impl<'a> TupleComponents<'a> {
     ///
     /// THE INVARIANT THIS RESTS ON, stated because the arm is selected silently: a
     /// positional carrier reaching a LABELLED pattern always holds its components
-    /// in the expected type's DECLARED order. It holds because the only producer of
-    /// such a carrier is `gather_closure_arg`, which preserves argument order, and
-    /// the routes that could permute those arguments are refused at load — a
-    /// function value applied with named arguments (`f(b: 10, a: 3)`) is rejected
-    /// with "records no parameter names to bind a label to", since an arrow drops
-    /// its binder names (WI-783). If arrows ever learn their parameter names, that
-    /// barrier goes and this invariant has to be re-established rather than
-    /// assumed.
+    /// in the expected type's DECLARED order. It holds because the typer hands every
+    /// application of a function value ONE tuple in `A`'s order — a named argument
+    /// (`f(b: 10, a: 3)`) is placed at the component it names
+    /// (`gather_args_into_tuple`, kernel-language §4.4) — and a host call's
+    /// `gather_closure_arg` preserves the order it was given.
     ///
     /// WI-1087: the OPERATION-spelling side no longer rests on it. `spread_eta_args`
     /// used to share this dependency and now spreads through the labels the eta site

@@ -3357,6 +3357,29 @@ impl<'a> Converter<'a> {
         } else {
             Vec::new()
         };
+        // An arrow's parameter list is its tuple `A` (kernel-language §4.4), so its labels are a
+        // tuple's and must be distinct (§4.5): `(a: Int64, a: Int64) -> Int64` is refused where
+        // it is written, at the repeated label.
+        if let Some(pn) = params_node {
+            let mut seen: SmallVec<[Symbol; 4]> = SmallVec::new();
+            let mut cursor = pn.walk();
+            for child in pn.named_children(&mut cursor) {
+                if !matches!(child.kind(), "field_decl" | "denoted_field_decl") {
+                    continue;
+                }
+                if let Some(n) = self.field(child, "name") {
+                    let sym = self.intern(self.text(n));
+                    self.check_label_unique(
+                        "arrow parameter label",
+                        TUPLE_LABELS_DISTINCT,
+                        seen.iter().copied(),
+                        sym,
+                        n,
+                    );
+                    seen.push(sym);
+                }
+            }
+        }
 
         let return_type = self
             .field(node, "return_type")

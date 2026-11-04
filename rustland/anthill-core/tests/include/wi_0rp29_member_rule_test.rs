@@ -147,8 +147,9 @@
 //! 31. A WRITTEN RECEIVER ARGUMENT REACHES A PROVIDER BY ITS VARIANCE — by equality. 1 FAILS:
 //!     [`a_written_receiver_argument_reaches_a_provider_by_its_variance`].
 //! 32. THE RELATION'S DIRECTION IN `bind_member_vars_along` — never turned. 2 FAIL:
-//!     [`a_callback_parameter_wider_by_width_fits_in_either_order`] and
-//!     [`a_contravariant_binding_wider_by_width_fits`].
+//!     [`a_callback_parameter_binds_its_variable_in_either_order_and_is_no_wider`] and
+//!     [`a_contravariant_binding_wider_by_width_fits`] (measured before WI-20261104-6HVXM,
+//!     when the first row's member was wider than the spec's callback by width).
 //! 33. WITHDRAWN by the seventh review (part 58): "an effect-row slot kept by the deep
 //!     expansion". Its row, `a_bare_label_in_a_row_slot_is_not_expanded`, asserted a member
 //!     taking a narrower row loads; a row slot's labels are read as sort applications now
@@ -1890,16 +1891,21 @@ end
     );
 }
 
-/// A CALLBACK'S PARAMETER WIDER BY WIDTH FITS, IN EITHER ORDER: `f: (t: (a: X, b: Int64, c:
-/// Int64)) -> Int64` takes every `(t: (a: Int64, b: Int64)) -> Int64` callback — contravariant,
-/// so the MEMBER's tuple is aligned as the subtype. Walked without the flip, `X` stayed unbound
-/// when `f` came before `x`, and it was refused (MEASURED; `x` first ran). Runs to 40 + 2.
+/// A CALLBACK'S PARAMETER IS NO WIDER BY WIDTH, BUT ITS VARIABLE IS BOUND IN EITHER ORDER: a
+/// function type's tuple is its parameter list, and a function value drops nothing
+/// (WI-20261104-6HVXM, kernel-language §4.4), so `f: (t: (a: X, b: Int64, c: Int64)) -> Int64`
+/// — the list `(a, b, c)` — does not take the spec's `(a, b)` callback, which `f((a: x, b: 2,
+/// c: 0))` would hand a component it lacks [fitted by width, contravariant, before
+/// WI-20261104-6HVXM; runs to 40 + 2]. The member of the spec's width fits with `f` before
+/// `x`: walked without the contravariant flip, `X` stayed unbound when `f` came first and the
+/// member was refused (MEASURED; `x` first ran). Runs to 40 + 2.
 #[test]
-fn a_callback_parameter_wider_by_width_fits_in_either_order() {
-    let src = with_app(
-        r#"
+fn a_callback_parameter_binds_its_variable_in_either_order_and_is_no_wider() {
+    let src = |member: &str, call: &str| {
+        with_app(&format!(
+            r#"
 namespace wi0rp29mr6.contra
-  import anthill.prelude.{Int64, String, List}
+  import anthill.prelude.{{Int64, String, List}}
   sort Sp
     sort T = ?
     operation fold(s: Self, f: (t: (a: Int64, b: Int64)) -> Int64, x: Int64) -> Int64
@@ -1908,13 +1914,22 @@ namespace wi0rp29mr6.contra
     sort V = ?
     entity car(v: V)
     provides Sp[T = V]
-    operation fold[X](s: Self, f: (t: (a: X, b: Int64, c: Int64)) -> Int64, x: X) -> Int64 = f((a: x, b: 2, c: 0))
+    operation fold[X](s: Self, f: (t: {member}) -> Int64, x: X) -> Int64 = f({call})
   end
   operation go() -> Int64 = Sp.fold(car(v: 1), lambda (t: (a: Int64, b: Int64)) -> t.a + t.b, 40)
 end
-"#,
+"#
+        ))
+    };
+    assert_refused_naming(
+        &load_errors(&src("(a: X, b: Int64, c: Int64)", "(a: x, b: 2, c: 0)")),
+        &["parameter 2 (`f: (a: ?X, b: Int64, c: Int64) -> Int64`) takes less than the spec's"],
+        "a member whose callback takes a component the spec's callback lacks",
     );
-    assert_eq!(run_int64(&src, "wi0rp29mr6.contra.go"), Ok(42));
+    assert_eq!(
+        run_int64(&src("(a: X, b: Int64)", "(a: x, b: 2)"), "wi0rp29mr6.contra.go"),
+        Ok(42)
+    );
 }
 
 /// … AND A `Contravariant` BINDING TURNS IT TOO: `Sink[T = (a: X, b: Int64, c: Int64)]` takes

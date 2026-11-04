@@ -312,38 +312,36 @@ fn a_list_of_any_length_is_paired_the_same() {
     }
 }
 
-/// A SOLE PARAMETER IS ITS TYPE: its name is no part of the arrow, and a tuple there is
-/// data, compared by its labels in their order — two tuples of other labels, and a tuple
-/// written without labels beside one with them, are two types. Passes with the change
-/// backed out, by design: the change is to a parameter LIST.
+/// A SOLE PARAMETER IS ITS TYPE: its name is no part of the arrow. A tuple there is the
+/// parameter list — `((a: Int64, b: Int64)) -> Int64` is `(a: Int64, b: Int64) -> Int64`
+/// (WI-20261104-6HVXM, kernel-language §4.4) — so it meets a provider as a list does: labels
+/// in another order are another type, and a tuple written without labels meets one with
+/// them by position [two types before WI-20261104-6HVXM, the tuple read as data]. Passes
+/// with the change backed out, by design, but for the positional row: the change is to a
+/// parameter LIST.
 #[test]
-fn a_sole_parameter_is_its_type_and_a_tuple_there_is_data() {
+fn a_sole_parameter_is_its_type_and_a_tuple_there_is_the_list() {
     let body = format!("{}{}", provider("P", "(Int64) -> Int64", 30), via("(v: Int64) -> Int64"));
     assert_eq!(answers("wi0gyw1.sole_named", &body, "via(lambda (x: Int64) -> x)"), 30);
     let nullary = format!("{}{}", provider("P", "() -> Int64", 30), via("() -> Int64"));
     assert_eq!(answers("wi0gyw1.sole_nullary", &nullary, "via(lambda () -> 1)"), 30);
-    let rows = [
-        (
-            "permuted",
-            "((a: Int64, b: Int64)) -> Int64",
-            "((b: Int64, a: Int64)) -> Int64",
-            "lambda (t: (b: Int64, a: Int64)) -> 1",
-        ),
-        (
-            "positional",
-            "((Int64, Int64)) -> Int64",
-            "((a: Int64, b: Int64)) -> Int64",
-            "lambda (t: (a: Int64, b: Int64)) -> 1",
-        ),
-    ];
-    for (name, provided, called, value) in rows {
-        let body = format!("{}{}", provider("P", provided, 30), via(called));
-        assert_refused_naming(
-            &refusal(&format!("wi0gyw1.sole_{name}"), &body, &format!("via({value})")),
-            NO_PROVISION,
-            &format!("a call at `{called}` beside a provider at `{provided}` alone"),
-        );
-    }
+    let positional = format!(
+        "{}{}",
+        provider("P", "((Int64, Int64)) -> Int64", 30),
+        via("((a: Int64, b: Int64)) -> Int64")
+    );
+    assert_eq!(
+        answers("wi0gyw1.sole_positional", &positional, "via(lambda (t: (a: Int64, b: Int64)) -> 1)"),
+        30,
+        "a provider at `((Int64, Int64)) -> Int64` answers a call at `((a: Int64, b: Int64)) -> Int64`"
+    );
+    let called = "((b: Int64, a: Int64)) -> Int64";
+    let body = format!("{}{}", provider("P", "((a: Int64, b: Int64)) -> Int64", 30), via(called));
+    assert_refused_naming(
+        &refusal("wi0gyw1.sole_permuted", &body, "via(lambda (t: (b: Int64, a: Int64)) -> 1)"),
+        NO_PROVISION,
+        &format!("a call at `{called}` beside a provider at `((a: Int64, b: Int64)) -> Int64` alone"),
+    );
 }
 
 // ── inside another type ───────────────────────────────────────────────────────────────

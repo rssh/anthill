@@ -198,9 +198,9 @@ end
 }
 
 /// A ONE-parameter arrow drops its binder name when the type is built —
-/// `(v: Int64) -> Int64` extracts as param `Int64`, with no `v` anywhere. There
-/// is nothing to match a label against, so a label here is rejected rather than
-/// waved through: at arity 1 a WRONG label (`f(zzz: 7)`) is indistinguishable
+/// `(v: Int64) -> Int64` is `Function[A = Int64]`, with no `v` anywhere (kernel-language §4.4).
+/// Its `A` is no tuple, so it has no component a label could meet, and a label here is
+/// rejected rather than waved through: a WRONG label (`f(zzz: 7)`) is indistinguishable
 /// from a right one, and silently accepting it is the very inertness this ticket
 /// is about. Both spellings below are refused identically.
 #[test]
@@ -222,7 +222,7 @@ end
 "#
         )
     };
-    let reason = "records no parameter names";
+    let reason = "argument type is no tuple, so it has no component a label could meet";
     // The label that MATCHES the source-level binder name is refused too — the
     // name is genuinely absent from the type, so accepting it would be luck.
     assert_named_arg_rejected(&mk("v"), "v", reason);

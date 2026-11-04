@@ -178,13 +178,11 @@ fn drain_type_node(tn: &mut TypeNode, stack: &mut Vec<Rc<NodeOccurrence>>) {
             param,
             result,
             effects,
-            arity,
             binders: _,
         } => {
             drain_type_child(param, stack);
             drain_type_child(result, stack);
             drain_type_child(effects, stack);
-            drain_type_child(arity, stack);
         }
         TypeNode::ExprCarried { value, member } => {
             drain_type_child(value, stack);
@@ -1244,6 +1242,34 @@ impl NodeOccurrence {
         }
     }
 
+    /// Is this occurrence an operation taken as a function value (`CallClass::EtaOpRef`), and
+    /// if so the labels of the slot's `A` it was taken at — `Some(None)` where that `A` is no
+    /// tuple, or was not known where the reference was typed.
+    pub fn eta_slot_labels(&self) -> Option<Option<Rc<[Symbol]>>> {
+        match &self.kind {
+            NodeKind::Expr { classification, .. } => match classification.borrow().as_deref() {
+                Some(super::typing::CallClass::EtaOpRef { spread_labels, .. }) => {
+                    Some(spread_labels.clone())
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Record the slot's `A` labels an operation taken as a function value meets, where a
+    /// call learned that `A` after the reference was typed (rule 6 of proposal 002). A no-op
+    /// on an occurrence that is no such reference.
+    pub fn set_eta_slot_labels(&self, labels: Option<Rc<[Symbol]>>) {
+        if let NodeKind::Expr { classification, .. } = &self.kind {
+            if let Some(super::typing::CallClass::EtaOpRef { spread_labels, .. }) =
+                classification.borrow_mut().as_deref_mut()
+            {
+                *spread_labels = labels;
+            }
+        }
+    }
+
     /// WI-218/WI-1026/WI-1037 — the operation this apply site dispatches to, and
     /// **what the caller owes it**. The READER paired with
     /// [`set_classification`](Self::set_classification), shared by both engines.
@@ -2034,9 +2060,10 @@ impl Pattern {
     /// which unwraps to `x` at conversion rather than becoming a 1-tuple).
     ///
     /// ONE definition, deliberately shared by the two sides that must agree on
-    /// it: the TYPER records it in a lambda's arrow type (`lambda_written_arity`,
-    /// WI-791) and the RUNTIME decides how many arguments a closure accepts
-    /// (`gather_closure_arg`, WI-784). A disagreement between those two is not a
+    /// it: the TYPER reads it as the size of the lambda's own tuple (kernel-language
+    /// §4.4, "A lambda's tuple is its pattern's" — `lambda_own_tuple`,
+    /// `callable_written_at_slot`) and the RUNTIME decides how many arguments a closure
+    /// accepts (`gather_closure_arg`, WI-784). A disagreement between those two is not a
     /// cosmetic drift — it is a program that typechecks and then traps at eval,
     /// which is exactly the defect WI-784 removed. Keep them on this one rule.
     ///
@@ -2177,20 +2204,11 @@ pub enum TypeNode {
     /// `EffectExpression` sort into a `Type` slot; `effects_expr` wraps a
     /// `NodeKind::EffectExpr` child.
     EffectsRows { effects_expr: TypeChild },
-    /// `arrow(param, result, effects, arity)`.
-    ///
-    /// WI-791: `arity` is the PARAMETER-LIST LENGTH as written, carried as a
-    /// ground `Const(Int)` child. It is what says HOW TO READ `param`: at arity
-    /// one `param` is the sole parameter's TYPE (the list collapses — an arity-1
-    /// binder name is dropped), at any other arity it is the parameter LIST, a
-    /// `named_tuple` of exactly `arity` fields. Without it `(t: (a: A, b: B)) -> R`
-    /// and `(a: A, b: B) -> R` are the SAME term.
-    ///
-    /// It lives OUTSIDE `param` deliberately. WI-782 tried the encoding INSIDE the
-    /// slot (wrap an arity-1 list whose parameter is itself a tuple) and reverted
-    /// it: a type variable bound to the slot picked the wrapper up, so σ could both
-    /// introduce and erase the encoding. A ground `Const` sibling is not a type σ
-    /// acts on, so arity is a structural fact substitution cannot touch.
+    /// `arrow(param, result, effects)` — `Function[A = param, B = result, E = effects]`
+    /// (kernel-language §4.4, "Every arrow is a `Function`"). `param` is the tuple `A`: the
+    /// parameter list `(p₁: T₁, …, pₙ: Tₙ)` for n ≠ 1, the parameter's type for one, `()` for
+    /// none. No parameter count stands beside it, so `((a: A, b: B)) -> R` and
+    /// `(a: A, b: B) -> R` are one term.
     ///
     /// `binders` are the arrow's own parameters by position: a `Value`-carried
     /// `List[Term]`, each the place as a type holds it (`denoted`, what a row label
@@ -2199,13 +2217,12 @@ pub enum TypeNode {
     /// whatever expression the value came through. An arrow formed from a lambda or an
     /// operation records them; a written one records none, its row's places being a
     /// callback parameter's, which say their position themselves. It lives outside
-    /// `param` for the reason `arity` does: at arity one `param` is the parameter's type,
-    /// which a type variable may be bound to.
+    /// `param`: for one parameter `param` is the parameter's type, which a type variable may
+    /// be bound to.
     Arrow {
         param: TypeChild,
         result: TypeChild,
         effects: TypeChild,
-        arity: TypeChild,
         binders: Option<Value>,
     },
     /// `named_tuple(fields: List[TypeField])` — a tuple type whose fields are
@@ -3654,19 +3671,14 @@ fn map_type_node<R: TypeChildRewrite>(
             param,
             result,
             effects,
-            arity,
             binders,
         } => {
             let (np, c1) = map_type_child(r, kb, param);
             let (nr, c2) = map_type_child(r, kb, result);
             let (nf, c3) = map_type_child(r, kb, effects);
-            // WI-791: `arity` is a ground `Const(Int)`, so the rewrite is an
-            // identity — it is mapped anyway rather than copied so this stays one
-            // uniform walk over every child (the WI-378 map/collect/close/open
-            // lockstep) instead of a slot the next rewrite kind has to remember.
-            // `binders` too: a list of the arrow's own places, which no rewrite of a type
-            // variable reaches.
-            let (na, c4) = map_type_child(r, kb, arity);
+            // `binders` is mapped rather than copied so this stays one uniform walk over
+            // every child (the WI-378 map/collect/close/open lockstep): a list of the arrow's
+            // own places, which no rewrite of a type variable reaches.
             let (nb, c5) = match binders {
                 Some(b) => {
                     let (nb, ch) = map_value_type(r, kb, b);
@@ -3679,10 +3691,9 @@ fn map_type_node<R: TypeChildRewrite>(
                     param: np,
                     result: nr,
                     effects: nf,
-                    arity: na,
                     binders: nb,
                 },
-                c1 || c2 || c3 || c4 || c5,
+                c1 || c2 || c3 || c5,
             )
         }
         TypeNode::ExprCarried { value, member } => {
@@ -4791,15 +4802,12 @@ fn collect_type_node_vars(
             param,
             result,
             effects,
-            arity,
             binders,
         } => {
             collect_type_child(kb, param, vars, seen);
             collect_type_child(kb, result, vars, seen);
             collect_type_child(kb, effects, vars, seen);
-            // A ground `Const(Int)` and the arrow's own places — contribute no vars, walked
-            // for lockstep.
-            collect_type_child(kb, arity, vars, seen);
+            // The arrow's own places — contribute no vars, walked for lockstep.
             if let Some(b) = binders {
                 collect_value_type(kb, b, vars, seen);
             }
@@ -5588,22 +5596,19 @@ fn type_node_to_term(kb: &mut KnowledgeBase, tn: &TypeNode) -> Option<TermId> {
             param,
             result,
             effects,
-            arity,
             binders,
         } => {
             let p = type_child_to_term(kb, param)?;
             let r = type_child_to_term(kb, result)?;
             let e = type_child_to_term(kb, effects)?;
-            // WI-791: the arity child crosses to the term twin as-is (a ground
-            // `Const(Int)`), so the two carriers stay structurally identical —
-            // `GoalKey` identity and discrim keys both depend on that. So do the
-            // arrow's own binders, the list of its places.
-            let a = type_child_to_term(kb, arity)?;
+            // The arrow's own binders, the list of its places, cross to the term twin as-is,
+            // so the two carriers stay structurally identical — `GoalKey` identity and
+            // discrim keys both depend on that.
             let b = match binders {
                 Some(b) => Some(value_to_term(kb, b).ok()?),
                 None => None,
             };
-            kb.make_arrow_from_effects_rows_arity_term(p, r, e, a, b)
+            kb.make_arrow_from_effects_rows_binders(p, r, e, b)
         }
         TypeNode::ExprCarried { value, member } => {
             // A compound-receiver projection is ELIMINATED to a concrete type before
@@ -5972,7 +5977,6 @@ pub(crate) fn value_holds_alias_node(v: &Value) -> bool {
                     param,
                     result,
                     effects,
-                    arity: _,
                     binders: _,
                 } => child(param) || child(result) || child(effects),
                 TypeNode::EffectsRows { effects_expr } => child(effects_expr),
@@ -7083,13 +7087,11 @@ pub(crate) fn substitute_ref_syms_occ(
                     param,
                     result,
                     effects,
-                    arity,
                     binders,
                 } => TypeNode::Arrow {
                     param: rewrite_ref_child(param, map),
                     result: rewrite_ref_child(result, map),
                     effects: rewrite_ref_child(effects, map),
-                    arity: rewrite_ref_child(arity, map),
                     // The arrow's own places are re-keyed with the labels that name them.
                     binders: binders.as_ref().map(|b| rewrite_ref_value(b, map)),
                 },

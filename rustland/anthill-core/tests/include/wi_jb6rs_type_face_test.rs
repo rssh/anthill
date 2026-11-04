@@ -866,12 +866,12 @@ namespace test.jb6rs.extractor
   import anthill.reflect.{extract, sort_as_term}
   operation kindOf(e: TypeExtractor) -> Int64 = match e
     case TypeVar(n) -> 1
-    case Arrow(p, r, ef, a, b) -> 2
+    case Arrow(p, r, ef, b) -> 2
     case SortRef(n) -> 3
     case _ -> 4
   operation onArrow() -> Int64 =
     let t = sort_as_term(Int64)
-    kindOf(Arrow(param: t, result: t, effects: t, arity: 1, binders: []))
+    kindOf(Arrow(param: t, result: t, effects: t, binders: []))
   operation onSort() -> Int64 = kindOf(extract(sort_as_term(Int64)))
 end
 "#;

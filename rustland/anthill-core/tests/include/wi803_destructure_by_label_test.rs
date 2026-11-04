@@ -196,16 +196,15 @@ end
     assert_eq!(run_int(src, "test.wi803.nested.drive"), -7);
 }
 
-// ── width reaches the destructuring reader now ─────────────────
+// ── a function value takes its argument list ───────────────────
 
-/// WIDTH plus PERMUTATION together. `(c: 9, b: "ess", a: 3)` conforms to
-/// `(a: Int64, b: String)` — `c` dropped from the FRONT, `a` and `b` swapped —
-/// and the binder list still gets `a` and `b`.
-///
-/// Under WI-804's interim this was refused for the permutation. Under WI-788 it
-/// was refused twice over. A by-label fetch does not care about either.
+/// WIDTH plus PERMUTATION through a FUNCTION VALUE: since WI-20261104-6HVXM one tuple is the
+/// argument list (kernel-language §4.4), so `f((c: 9, b: "ess", a: 3))` over `A = (a: Int64, b:
+/// String)` hands `c` to a component `A` does not have, and is refused at load — a function value
+/// drops nothing. [It loaded and ran to 3 under WI-803's by-label destructuring.] The by-label read
+/// itself is driven by the `let` and `match` rows above, where a value is destructured as data.
 #[test]
-fn width_and_permutation_together_bind_by_label() {
+fn width_and_permutation_through_a_function_value_are_refused() {
     let src = fn_slot_case(
         "test.wi803.widthperm",
         "Int64, String, Function",
@@ -213,19 +212,12 @@ fn width_and_permutation_together_bind_by_label() {
         r#"(c: 9, b: "ess", a: 3)"#,
         "lambda (p, q) -> p",
     );
-    assert_loads(&src, "a wider AND permuted literal");
-    assert_eq!(run_int(&src, "test.wi803.widthperm.drive"), 3);
+    assert_refused(&src, "a wider AND permuted argument list");
 }
 
-/// WIDTH ALONE at a destructuring binder list. This is the half WI-804 admitted
-/// in the RELATION while knowing it broke the READER: the extra component changes
-/// the binder COUNT, so the old positional matcher failed its arity test and
-/// raised. It was tolerated because it failed LOUDLY rather than silently.
-///
-/// A by-label fetch ignores components it was not asked for, so the loud half
-/// retires with the silent one and the program simply runs.
+/// WIDTH ALONE through a function value, refused for the same reason [ran to -7].
 #[test]
-fn width_alone_no_longer_traps_the_binder_list() {
+fn width_alone_through_a_function_value_is_refused() {
     let src = fn_slot_case(
         "test.wi803.widthonly",
         "Int64, Function",
@@ -233,21 +225,17 @@ fn width_alone_no_longer_traps_the_binder_list() {
         "(a: 3, b: 10, c: 99)",
         "lambda (p, q) -> p - q",
     );
-    assert_loads(&src, "a wider in-order literal");
-    assert_eq!(
-        run_int(&src, "test.wi803.widthonly.drive"),
-        -7,
-        "the unasked-for `c` is not observed — pre-WI-803 this raised on the binder count",
-    );
+    assert_refused(&src, "a wider in-order argument list");
 }
 
-// ── what did NOT change: order is still IDENTITY ───────────────
+// ── what a callable written at a slot meets ────────────────────
 
-/// A PARAMETER LIST still refuses a permutation (`TupleAlign::PARAM_LIST`). It is
-/// applied POSITIONALLY by eval — there is no label to fetch by — so this is not
-/// an interim like the data-tuple rule was, it is the rule.
+/// An OPERATION written at a slot whose `A` carries its parameter names in another order meets it
+/// by LABEL (proposal 002 rule 6): `take`'s `f(7, true)` hands `x = 7` and `y = true`, and
+/// `impl_yx` returns its `x` [refused under WI-803, a permuted parameter list]. A function VALUE
+/// still keeps its order (WI-1088), which the `wi1088` rows pin.
 #[test]
-fn identity_permuted_parameter_list_is_still_refused() {
+fn an_operation_written_at_a_slot_of_its_labels_in_another_order_meets_it_by_label() {
     let src = r#"
 namespace test.wi803.paramlist
   import anthill.prelude.{Int64, Bool}
@@ -256,13 +244,16 @@ namespace test.wi803.paramlist
   operation drive() -> Int64 = take(impl_yx)
 end
 "#;
-    assert_refused(src, "a permuted PARAMETER LIST");
+    assert_eq!(run_int(src, "test.wi803.paramlist.drive"), 7);
 }
 
-/// A positional tuple still does not conform to a named one — names participate,
-/// so this is not a raw by-name free-for-all (proposal 004 rule 4).
+/// A positional tuple handed to a function whose `A` names its components is the argument
+/// list, met by POSITION (the application match, kernel-language §4.4): `f((3, 10))` over
+/// `A = (a: Int64, b: Int64)` gives `a = 3`, `b = 10` [refused under proposal 004 rule 4,
+/// which still holds of the TUPLE match — a value of type `(Int64, Int64)` is no value of type
+/// `(a: Int64, b: Int64)`].
 #[test]
-fn identity_positional_tuple_does_not_conform_to_a_named_one() {
+fn a_positional_argument_list_meets_a_named_tuple_by_position() {
     let src = fn_slot_case(
         "test.wi803.posnamed",
         "Int64, Function",
@@ -270,7 +261,7 @@ fn identity_positional_tuple_does_not_conform_to_a_named_one() {
         "(3, 10)",
         "lambda (p, q) -> p - q",
     );
-    assert_refused(&src, "a POSITIONAL literal against a NAMED tuple type");
+    assert_eq!(run_int(&src, "test.wi803.posnamed.drive"), -7);
 }
 
 /// A positional tuple destructures positionally, as it always did: its labels are
@@ -331,10 +322,11 @@ namespace test.wi803.arity
 end
 "#;
     let errs = load_errs(src);
+    // WI-20261104-6HVXM: the lambda's tuple is its pattern's, refused at the pattern.
     assert!(
-        errs.iter()
-            .any(|e| e.contains("1 parameter") && e.contains("2 parameters")),
-        "the diagnostic must name the binder count against the component count, \
+        errs.iter().any(|e| e.contains("pattern-position")
+            && e.contains("expected (a: Int64, b: Int64, c: Int64), got (_1: ??param, _2: ??param)")),
+        "the diagnostic must set the binder list against the component count, \
          not accept the shape; got: {errs:?}",
     );
 }

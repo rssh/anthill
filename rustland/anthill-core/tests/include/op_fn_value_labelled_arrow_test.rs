@@ -105,9 +105,12 @@ fn value(src: &str, ns: &str, op: &str) -> i64 {
 
 /// THE REPORT'S PROGRAM: `cmp` takes two boxes. 3 against 7 is 4 under `Descending` and
 /// -4 under `Ascending`. Labelled with names of the arrow's own, with the operation's
-/// names, with the operation's names in the other order — an arrow's parameters are
-/// taken by position — and as `Function[A = (p: …, q: …), B = …]`. The arrow without
-/// labels and the lambda are the controls.
+/// names, and as `Function[A = (p: …, q: …), B = …]`; with the operation's names in the
+/// other order, the operation meets the slot BY LABEL (kernel-language §4.4, a callable
+/// written at a slot whose tuple carries its labels), so `cmp`'s `x` is the slot's `x` —
+/// the second argument — and the answer's sign flips [taken by position, with the same
+/// sign, before WI-20261104-6HVXM]. The arrow without labels and the lambda are the
+/// controls.
 #[test]
 fn a_labelled_arrow_takes_an_operation_of_two_parameters() {
     for (ov, expected) in [("Descending", 4), ("Ascending", -4)] {
@@ -139,6 +142,7 @@ fn a_labelled_arrow_takes_an_operation_of_two_parameters() {
             "runPositional",
             "runLambda",
         ] {
+            let expected = if op == "runOtherOrder" { -expected } else { expected };
             assert_eq!(value(&src, &ns, op), expected, "`{op}` under `O = {ov}`");
         }
     }

@@ -162,7 +162,7 @@ end
     for (call, got) in [("f(1, 2, 3)", "3 arguments"), ("f(1)", "1 argument")] {
         assert_refused_naming(
             &program(call),
-            "2 arguments — the parameter list this function value declares",
+            "2 arguments — the components of the tuple this function value takes",
             got,
         );
     }
@@ -252,10 +252,10 @@ end
 /// there now that it is closed. Measured identical on WI-791's commit AND on its
 /// parent: it LOADED and trapped `ArityMismatch { expected: 1, got: 2 }` at eval.
 ///
-/// `get_a` takes ONE tuple-typed parameter; the slot declares TWO. The SAME
-/// program written non-generically is refused by WI-791
-/// (`positionally_spelled_two_parameter_callback_is_refused`) — genericity was
-/// the whole difference, which is what made this a gap rather than a policy.
+/// `get_a` takes ONE tuple-typed parameter, `(a: Int64, b: Int64)`, and the slot's `A` is
+/// `(x: T, y: T)`: a callable of one parameter takes the whole tuple by the tuple match, which
+/// relates no two tuples naming different components (kernel-language §4.4). Since
+/// WI-20261104-6HVXM no count stands beside either tuple; it is the labels that refuse it.
 ///
 /// WI-1085: the expected side reads `(x: Int64, y: Int64)` where it read
 /// `(x: ?T, y: ?T)` — `validate_arrow_param_result` renders its verdict through σ,
@@ -276,36 +276,19 @@ namespace test.wi792.gena
     = apply2(get_a, 7, 8)
 end
 "#,
-        "a 2-parameter function (x: Int64, y: Int64) -> Int64",
-        "a 1-parameter function ((a: Int64, b: Int64)) -> Int64",
+        "(x: Int64, y: Int64) -> Int64",
+        "(a: Int64, b: Int64) -> Int64",
     );
 }
 
-/// DECISION 1 (user, WI-792): the DUAL is refused too, and this one WORKED
-/// BEFORE — it loaded and evaluated to -1. Recorded as a decision because it is a
-/// deliberate loss, not a side effect.
-///
-/// It worked only because eval's `spread_eta_args` spreads a single POSITIONAL
-/// tuple argument across a multi-parameter operation; the name-keyed spelling of
-/// the identical program already trapped. WI-791 took exactly this trade one rung
-/// over (`two_parameter_operation_is_refused_for_a_tuple_argument_arrow`), on the
-/// grounds that letting a type relation depend on how a caller happens to build
-/// its tuple is incoherent — so taking it here is consistency, and taking the
-/// other side would not have been.
-///
-/// Nothing is lost: since WI-784 the spread convention is reachable through
-/// `Function[A, B]` for operations AND lambdas in both application forms
-/// (`a_function_spelling_states_no_arity_so_neither_form_is_refused` above).
-///
-/// WI-1085: the expected side reads `((_1: Int64, _2: Int64)) -> Int64` where it
-/// read `?T -> Int64` — the verdict is rendered through σ, and `?T` is pinned to
-/// the positional pair by the sibling argument `v: T` (`(7, 8)`). The two sides now
-/// print the SAME components and differ only in whether they are one parameter or
-/// two, which is exactly the disagreement, and the count words carry it (WI-795).
+/// DECISION 1 of WI-792 refused the DUAL — a TWO-parameter operation at a generic `(x: T) ->
+/// Int64` slot — and WI-20261104-6HVXM reverses it with the count it rested on: every arrow is
+/// a `Function`, `T := (Int64, Int64)` from the sibling `v`, and `two` meets that tuple by
+/// position (proposal 002 rule 6), so `apply1(two, (7, 8))` runs to `7 - 8` [refused, count].
+/// The slot waits for the sibling to say what `T` is (kernel-language §4.4).
 #[test]
-fn a_generic_callback_slot_checks_arity_in_the_spread_direction_too() {
-    assert_refused_naming(
-        r#"
+fn a_generic_callback_slot_takes_the_operation_of_its_tuples_width() {
+    let src = r#"
 namespace test.wi792.genb
   import anthill.prelude.{Int64}
   operation apply1[T](f: (x: T) -> Int64, v: T) -> Int64
@@ -315,10 +298,8 @@ namespace test.wi792.genb
   operation drive() -> Int64
     = apply1(two, (7, 8))
 end
-"#,
-        "a 1-parameter function ((_1: Int64, _2: Int64)) -> Int64",
-        "a 2-parameter function (_1: Int64, _2: Int64) -> Int64",
-    );
+"#;
+    assert_eq!(eval_int(src, "test.wi792.genb.drive"), -1);
 }
 
 /// The control that keeps locus 2 from being "refuse every generic callback":

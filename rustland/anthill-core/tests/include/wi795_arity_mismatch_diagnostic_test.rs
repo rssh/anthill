@@ -24,6 +24,17 @@
 //! unequal arity — at a misaligned zip it would blame a specific annotation for a missing
 //! parameter — and hands the case off to this diagnostic. A handoff target that renders
 //! `expected X, got X` makes that a downgrade rather than a delegation.
+//!
+//! WI-20261104-6HVXM RETIRED THE COUNT (proposal 002 §"Correction (2026-11-03)",
+//! kernel-language §4.4): an arrow is `Function[A, B, E]`, its parameter list its tuple `A`,
+//! so there is no arity child to differ in and no `a N-parameter function` qualification.
+//! Each side is its OWN tuple: a lambda's is its binders' (kernel-language §4.7), refused at
+//! its pattern where it does not fit the slot's `A` (`pattern-position`); an operation's is
+//! its parameters', re-expressed at the slot's labels where it meets the slot by position.
+//! What this file pinned — the two sides differ, each shows what it wrote, the
+//! context's list is not shown as the lambda's — is pinned here under that rendering, and
+//! the one-binder row, which the count refused, now runs: a callable of one parameter takes
+//! the slot's whole tuple.
 
 use crate::common::try_load_kb_with;
 
@@ -82,7 +93,9 @@ fn strip_origin_suffix(side: &str) -> &str {
 ///
 /// The `x: String` annotation is deliberate and is NOT what should be reported: WI-794's
 /// per-binder check stands down here precisely because the arity disagrees, so this is
-/// the handoff in action. The fault to name is the 2-binder lambda, not the annotation.
+/// the handoff in action. The fault to name is the 2-binder lambda, not the annotation:
+/// since WI-20261104-6HVXM its two binders against the slot's three components, at the
+/// lambda's pattern.
 const TICKET_REPRO: &str = r#"
 namespace test.wi795.repro
   import anthill.prelude.{Int64, String}
@@ -96,10 +109,10 @@ end
 /// THE ACCEPTANCE CRITERION, and the one assertion the bug does not survive: the two
 /// rendered sides must DIFFER. Nothing weaker catches this — see `mismatch_sides`.
 ///
-/// MEASURED: with the qualification disabled in `render_mismatch_pair` (i.e. the pre-fix
-/// per-side rendering), 6 of the 8 tests here fail including this one, and the 2 that
-/// pass are exactly the two "must NOT change" controls at the bottom of this file — which
-/// is what makes them controls rather than filler.
+/// MEASURED (WI-795): with the qualification disabled in `render_mismatch_pair` (the
+/// per-side rendering), 6 of the 8 tests here failed including this one. Since
+/// WI-20261104-6HVXM the sides differ because each is its own tuple, the lambda's refused
+/// at its pattern.
 #[test]
 fn the_two_rendered_sides_of_an_arity_mismatch_differ() {
     let msg = reject(
@@ -113,36 +126,32 @@ fn the_two_rendered_sides_of_an_arity_mismatch_differ() {
     );
 }
 
-/// Both counts are stated, IN THE RIGHT ORDER. Direction needs its own assertion because
-/// a transposed pair renderer still produces two DIFFERING sides, so the acceptance
-/// criterion above cannot see it.
-///
-/// MEASURED, not assumed — the counts were transposed in `render_mismatch_pair` in place
-/// and the tests re-run: 5 of the 8 here failed, plus all 10 arity assertions in
-/// wi782/wi791/wi792. The 3 that did NOT fail are exactly the ones that should not —
-/// `the_two_rendered_sides_..._differ` (two transposed sides still differ, which is why
-/// direction needs this test) and the two unchanged-rendering controls.
+/// Each side is its own tuple, IN THE RIGHT ORDER: the slot's three components on the
+/// expected side, the lambda's two binders on the actual side, refused at the lambda's
+/// pattern. Direction needs its own assertion because a transposed pair still produces two
+/// DIFFERING sides, so the acceptance criterion above cannot see it.
 #[test]
-fn the_diagnostic_states_the_arity_of_each_side() {
+fn each_side_shows_its_own_tuple() {
     let msg = reject(
         TICKET_REPRO,
         "a 2-binder lambda does not fit a 3-parameter slot",
     );
+    assert!(msg.contains("(pattern-position)"), "refused at the lambda's pattern; got: {msg}");
     let (expected, actual) = mismatch_sides(&msg);
-    assert!(
-        expected.starts_with("a 3-parameter function"),
-        "the SLOT's arity (3) belongs on the expected side; got: {msg}"
+    assert_eq!(
+        expected, "(a: Int64, b: Int64, c: Int64)",
+        "the SLOT's tuple belongs on the expected side; got: {msg}"
     );
     assert!(
-        actual.starts_with("a 2-parameter function"),
-        "the LAMBDA's arity (2) belongs on the actual side; got: {msg}"
+        actual.starts_with("(_1: String, _2: "),
+        "the LAMBDA's two binders belong on the actual side; got: {msg}"
     );
 }
 
-/// The lambda's side does NOT print a parameter list, because it has none of its own: the
-/// `(a: Int64, b: Int64, c: Int64)` it carries is the SLOT's, inherited by WI-517's
-/// context-wins priority. Printing it is what produced the original identical-sides
-/// message, and it contradicts the count standing beside it.
+/// The lambda's side does NOT print the slot's parameter list: the lambda's tuple is its own
+/// binders' (kernel-language §4.7), `(_1: String, _2: …)`. Printing the slot's
+/// `(a: Int64, b: Int64, c: Int64)` there, inherited by WI-517's context-wins priority, is
+/// what produced the original identical-sides message.
 #[test]
 fn a_context_supplied_parameter_list_is_not_attributed_to_the_lambda() {
     let msg = reject(
@@ -163,13 +172,13 @@ fn a_context_supplied_parameter_list_is_not_attributed_to_the_lambda() {
 
 // ── the other direction: both sides wrote their own list ───────
 
-/// The complement, and the guard against "suppress the spelling whenever arity differs":
-/// when BOTH sides genuinely wrote the parameter list their arity describes, both keep
-/// it. Only a slot-inherited list is dropped.
+/// The complement, and the guard against "suppress the spelling whenever the sizes differ":
+/// when BOTH sides genuinely wrote their parameter list, both keep it — the operation's under
+/// its own labels, since it meets the slot by neither label nor position.
 ///
-/// This also pins the direction independently of the repro: here the SMALLER count is on
+/// This also pins the direction independently of the repro: here the SMALLER tuple is on
 /// the expected side, so a transposed pair renderer cannot satisfy both this and
-/// `the_diagnostic_states_the_arity_of_each_side`.
+/// `each_side_shows_its_own_tuple`.
 #[test]
 fn an_arity_mismatch_between_two_written_parameter_lists_keeps_both_spellings() {
     let msg = reject(
@@ -187,21 +196,13 @@ end
         "a 3-parameter operation does not fit a 2-parameter slot",
     );
     let (expected, actual) = mismatch_sides(&msg);
-    assert_eq!(
-        expected,
-        "a 2-parameter function (a: Int64, b: Int64) -> Int64"
-    );
-    assert_eq!(
-        actual,
-        "a 3-parameter function (_1: Int64, _2: Int64, _3: Int64) -> Int64"
-    );
+    assert_eq!(expected, "(a: Int64, b: Int64) -> Int64");
+    assert_eq!(actual, "(x: Int64, y: Int64, z: Int64) -> Int64");
 }
 
-/// THE ZERO BOUNDARY, measured rather than reasoned about: a 0-parameter arrow's slot is
-/// an EMPTY named tuple, which renders `()` and is self-consistent, so it keeps its
-/// spelling like any other written list. Pinned because "is this list the side's own?"
-/// short-circuits at arity 1, and 0 is the only other count that could plausibly have
-/// been special-cased into the suppressed branch by accident.
+/// THE ZERO BOUNDARY, measured rather than reasoned about: a 0-parameter arrow's `A` is
+/// the EMPTY tuple, which renders `()`, so it keeps its spelling like any other written
+/// list; the one-parameter operation's side is its parameter's type, `Int64`.
 #[test]
 fn a_zero_parameter_arrow_is_self_consistent_and_keeps_its_spelling() {
     let msg = reject(
@@ -219,53 +220,38 @@ end
         "a 1-parameter operation does not fit a 0-parameter slot",
     );
     let (expected, actual) = mismatch_sides(&msg);
-    assert_eq!(expected, "a 0-parameter function () -> Int64");
-    assert_eq!(actual, "a 1-parameter function Int64 -> Int64");
+    assert_eq!(expected, "() -> Int64");
+    assert_eq!(actual, "Int64 -> Int64");
 }
 
-/// THE KNOWN INCOMPLETENESS, pinned so it is a decision rather than a surprise. At arity
-/// 1 the param slot is the sole parameter's TYPE, and every type is a well-formed one, so
-/// "is this list the side's own?" cannot be answered and answers `true`. A 1-binder lambda
-/// at a 2-parameter slot therefore DOES show the context's list as its own — the very
-/// attribution suppressed at arity 2+.
-///
-/// It is tolerated here and not there because the message still works: the count is
-/// stated, the fault named is the arity, and the two sides differ — WI-791's arity-1 paren
-/// wrap renders the inherited list as `((a: Int64, b: Int64))`, one tuple parameter,
-/// against the slot's unwrapped two. Closing it would need to know whether the type was
-/// WRITTEN, which the finished arrow does not record.
+/// A ONE-BINDER LAMBDA TAKES THE SLOT'S WHOLE TUPLE (kernel-language §4.4, a callable of one
+/// parameter drops what its tuple lacks), so `lambda (x) -> 0` at `(a: Int64, b: Int64) ->
+/// Int64` loads and runs: `x` is `(a: 1, b: 2)` and the body answers 0. [Refused before
+/// WI-20261104-6HVXM, by the count, rendering the inherited list as `((a: Int64, b: Int64))`.]
 #[test]
-fn a_one_binder_lambda_still_shows_an_inherited_sole_parameter_type() {
-    let msg = reject(
+fn a_one_binder_lambda_takes_the_slots_whole_tuple() {
+    let mut interp = crate::common::interp_for(
         r#"
 namespace test.wi795.onebinder
   import anthill.prelude.{Int64}
   operation apply2(f: (a: Int64, b: Int64) -> Int64) -> Int64
     = f(1, 2)
   operation drive() -> Int64
-    = apply2(lambda (x) -> 0)
+    = apply2(lambda (x) -> x.b)
 end
 "#,
-        "a 1-binder lambda does not fit a 2-parameter slot",
     );
-    let (expected, actual) = mismatch_sides(&msg);
-    assert_eq!(
-        expected,
-        "a 2-parameter function (a: Int64, b: Int64) -> Int64"
-    );
-    assert_eq!(
-        actual,
-        "a 1-parameter function ((a: Int64, b: Int64)) -> Int64"
-    );
-    assert_ne!(expected, actual, "the sides must still differ even here");
+    match interp.call("test.wi795.onebinder.drive", &[]) {
+        Ok(anthill_core::eval::Value::Int(v)) => assert_eq!(v, 2, "`x.b` of `(a: 1, b: 2)`"),
+        other => panic!("drive: expected Int(2), got {other:?}"),
+    }
 }
 
 // ── what must NOT change ───────────────────────────────────────
 
 /// THE REGRESSION GUARD the ticket asks for by name: an arrow mismatch that differs in a
-/// param TYPE at EQUAL arity renders exactly as it did before — no arity clause anywhere.
-/// The qualification is gated on the arities being present and UNEQUAL, and no param-type
-/// difference satisfies that.
+/// param TYPE at an equal size. The operation meets the slot by position, so its side is
+/// rendered at the slot's labels — `b` is where the `String` would land.
 #[test]
 fn an_equal_arity_param_type_mismatch_is_rendered_unchanged() {
     let msg = reject(
@@ -284,15 +270,11 @@ end
     );
     let (expected, actual) = mismatch_sides(&msg);
     assert_eq!(expected, "(a: Int64, b: Int64) -> Int64");
-    assert_eq!(actual, "(_1: Int64, _2: String) -> Int64");
-    assert!(
-        !msg.contains("-parameter function"),
-        "the arities agree — nothing here is an arity defect; got: {msg}"
-    );
+    assert_eq!(actual, "(a: Int64, b: String) -> Int64");
 }
 
-/// An arity mismatch that is ALSO a type mismatch still reports the type difference, so
-/// the arity clause adds information rather than replacing it.
+/// A size mismatch that is ALSO a type mismatch still reports the type difference: the
+/// operation's own tuple shows its `String`.
 #[test]
 fn an_arity_and_type_mismatch_still_reports_the_type_difference() {
     let msg = reject(
@@ -310,18 +292,11 @@ end
         "a 2-parameter (Int64, String) operation does not fit a 3-parameter slot",
     );
     let (expected, actual) = mismatch_sides(&msg);
-    assert_eq!(
-        expected,
-        "a 3-parameter function (a: Int64, b: Int64, c: Int64) -> Int64"
-    );
-    assert_eq!(
-        actual,
-        "a 2-parameter function (_1: Int64, _2: String) -> Int64"
-    );
+    assert_eq!(expected, "(a: Int64, b: Int64, c: Int64) -> Int64");
+    assert_eq!(actual, "(x: Int64, y: String) -> Int64");
 }
 
-/// A non-arrow mismatch is untouched — the pair renderer must not reach for an `arity`
-/// child on types that have none.
+/// A non-arrow mismatch is untouched.
 #[test]
 fn a_scalar_mismatch_is_rendered_unchanged() {
     let msg = reject(

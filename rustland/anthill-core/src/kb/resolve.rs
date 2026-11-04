@@ -15426,17 +15426,13 @@ impl KnowledgeBase {
                 param,
                 result,
                 effects,
-                arity,
                 binders,
             } => {
                 self.collect_type_child_unbound_vars(param, subst, out);
                 self.collect_type_child_unbound_vars(result, subst, out);
                 self.collect_type_child_unbound_vars(effects, subst, out);
-                // WI-791: a ground `Const(Int)`, so it yields nothing — walked
-                // anyway to keep this total over the node's children, matching its
-                // loader twin `collect_type_node_vars`. The binders are places, no
-                // variables, walked for the same reason.
-                self.collect_type_child_unbound_vars(arity, subst, out);
+                // The binders are places, no variables — walked anyway to keep this total
+                // over the node's children, matching its loader twin `collect_type_node_vars`.
                 if let Some(b) = binders {
                     self.collect_type_value_unbound_vars(b, subst, out);
                 }
@@ -21111,12 +21107,8 @@ mod tests {
         );
         // A Denoted Expr leaf carrying ?denoted via a TypeChild::Node.
         let denoted_leaf = NodeOccurrence::new_expr(Expr::Var(Var::Global(v_denoted)), span, None);
-        // arrow(param: «effects_rows…», result: Denoted(?denoted), effects: ?bound,
-        // arity: 1) — three spine children of distinct kinds, plus a bound var.
-        // WI-791's `arity` child is ground and contributes no var, which is
-        // precisely what this test should see: it must not appear in the collected
-        // set, and it must not stop the other three from being walked.
-        let arity_term = kb.make_arity_term(1);
+        // arrow(param: «effects_rows…», result: Denoted(?denoted), effects: ?bound) — three
+        // spine children of distinct kinds, plus a bound var.
         let arrow = Value::Node(NodeOccurrence::new_type(
             TypeNode::Arrow {
                 param: TypeChild::Node(present),
@@ -21128,7 +21120,6 @@ mod tests {
                     None,
                 )),
                 effects: TypeChild::Interned(bound_term),
-                arity: TypeChild::Interned(arity_term),
                 binders: None,
             },
             span,

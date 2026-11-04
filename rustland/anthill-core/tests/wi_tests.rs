@@ -2408,3 +2408,5 @@ mod wi_vqprp_unbound_variable_read_test;
 mod wi_4xxsd_fold_host_arg_value_test;
 #[path = "include/make_fn_rule_body_term_test.rs"]
 mod make_fn_rule_body_term_test;
+#[path = "include/wi_6hvxm_every_arrow_is_a_function_test.rs"]
+mod wi_6hvxm_every_arrow_is_a_function_test;

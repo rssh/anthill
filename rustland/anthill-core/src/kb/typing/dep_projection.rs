@@ -983,10 +983,10 @@ fn concrete_pair_verdict<A: TermView, B: TermView>(
 ///   key rule the arguments are paired by), as many arguments, each pair. Positional
 ///   arguments ride along and are compared strictly: a mixed positional+named application
 ///   is not provably canonicalized away before this path.
-/// * Two ARROWS — one parameter count, then the parameters, the result and the effect
-///   row, paired by [`arrow_part_pairs`]: the parameters of a list as
-///   [`arrow_params_compatible`] pairs them, by position ([`TupleAlign::PARAM_LIST`]); a
-///   sole parameter is its type.
+/// * Two ARROWS — the parameters, the result and the effect row, paired by
+///   [`arrow_part_pairs`]: two tuples `A` as [`arrow_params_compatible`] pairs them
+///   ([`TupleAlign::PARAM_LIST`]: one width, the same labels in the same order or one side
+///   positional); any other `A` is one part.
 /// * Two TUPLES — the same labels in the same order ([`TupleAlign::EQUALITY`]: the
 ///   question is whether the two are one type, and order and width are a tuple's
 ///   identity), each component pair.
@@ -1031,8 +1031,8 @@ fn parts_verdict<A: TermView, B: TermView>(
     }
     match (type_head(kb, a), type_head(kb, b)) {
         (TypeHead::Arrow, TypeHead::Arrow) => {
-            // Two arrows that do not pair — another parameter count, two lists that do
-            // not align — are two types.
+            // Two arrows that do not pair — two tuples `A` of another width, or whose labels
+            // do not align — are two types.
             let Some(pairs) = arrow_part_pairs(kb, a, b) else {
                 return Some(SigmaVerdict::Refutes);
             };

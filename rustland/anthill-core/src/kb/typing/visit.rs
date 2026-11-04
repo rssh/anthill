@@ -258,16 +258,65 @@ pub(super) fn visit_type(
                 }
                 other => other,
             };
-            let param_type: Value = ann_type
-                .or_else(|| {
-                    // Checking direction: the expected arrow's param slot, as-is.
-                    expected
-                        .as_ref()
-                        .and_then(|exp| extract_function_param_type(kb, exp))
-                })
-                // WI-20261012-80259: a literal or an applied constructor written as the
-                // parameter says what the parameter is.
-                .or_else(|| pattern_own_type(kb, &param))
+            // The expected function's `A`, the checking direction (`let f: Function[A, B] =
+            // lambda q -> ...` threads `Function[A, B]` here as `expected`).
+            let context_a = expected
+                .as_ref()
+                .and_then(|exp| extract_function_param_type(kb, exp));
+            // THE APPLICATION MATCH AT THE PATTERN (kernel-language §4.4): a lambda's tuple is
+            // its pattern's, so `lambda (a, b, c)` given where `A = (Int64, Int64)` is refused
+            // here, three binders meeting two components — WI-801's check, which no count
+            // beside the tuple states any more. Only a GROUND `A` is judged: one still holding
+            // a variable (a callee's type parameter, a hint no argument has pinned) may yet be
+            // a tuple of this width.
+            if let (Some(a), None) = (&context_a, &ann_type) {
+                if !context_fits_lambda(kb, a, &param) && resolved_type_is_ground(kb, a) {
+                    if let Some(own) = lambda_own_tuple(kb, &env, &param) {
+                        results.push(Err(TypeError::TypeMismatch {
+                            site: TypeError::here(),
+                            span: Some(param.span.span),
+                            context: TypeErrorContext::PatternPosition {
+                                pattern: WrittenPattern::Tuple,
+                            },
+                            expected: a.clone(),
+                            quoted: None,
+                            actual: own,
+                        }));
+                        return;
+                    }
+                }
+            }
+            // `param_type` is the arrow's `A`; `binder_type` what the binder is typed at in the
+            // body. They differ only where a one binder written with its type takes a wider `A`.
+            let (binder_type, param_type): (Option<Value>, Value) = match ann_type {
+                // ONE BINDER WRITTEN WITH ITS TYPE, at a tuple `A` its annotation admits by the
+                // tuple match: the lambda takes the whole tuple, and a component its own type
+                // does not name is dropped (rule 6 of proposal 002, kernel-language §4.4), so
+                // the lambda's arrow is at `A` itself and stands where `A` is expected — `lambda
+                // (p: (age: Int64)) -> p.age` at `A = (age: Int64, name: String)` — while the
+                // binder keeps the type it wrote: `p.name` is refused there, as it is where the
+                // same lambda is bound by a `let`. An `A` the annotation does not admit leaves
+                // the annotation, which the slot's relation then refuses (WI-794). Only a GROUND
+                // tuple, so a hint still holding a variable never displaces what the binder
+                // wrote.
+                Some(ann) => match context_a {
+                    Some(a)
+                        if matches!(extract_type(kb, &a), TypeExtractor::NamedTuple(_))
+                            && resolved_type_is_ground(kb, &a)
+                            && types_compatible(kb, &mut Substitution::new(), &a, &ann) =>
+                    {
+                        (Some(ann), a)
+                    }
+                    _ => (None, ann),
+                },
+                None => (None, context_a
+                    .filter(|a| context_fits_lambda(kb, a, &param))
+                    // WI-20261012-80259: a literal or an applied constructor written as the
+                    // parameter says what the parameter is.
+                    .or_else(|| pattern_own_type(kb, &param))
+                    // A list of binders with no fitting context: its own tuple, of what each
+                    // binder writes ([`lambda_own_tuple`]).
+                    .or_else(|| lambda_own_tuple(kb, &env, &param))
                 .unwrap_or_else(|| {
                     // WI-20260904-50B2K — SYNTHESIS MINTS THE ENGINE'S OWN VARIABLE, and
                     // the two forms answer different questions. A `type_var` means "no
@@ -299,17 +348,20 @@ pub(super) fn visit_type(
                     let fresh = kb.intern("?param");
                     let vid = kb.fresh_var(fresh);
                     Value::Var(Var::Global(vid))
-                });
+                    })),
+            };
+            let binder_type = binder_type.unwrap_or_else(|| param_type.clone());
             let mut lambda_env = (*env).clone();
             // What the body incurs is the function's row, incurred where it is applied.
             lambda_env.hold_to_guarded_row(None);
             // Proposal 050.1: the lambda's scope begins here — its parameters and its body's
             // names are bound from now on.
             let memory_mark = lambda_env.memory_mark();
-            // WI-794: at arity 1 `param_type` IS the annotation (it won the priority
-            // ladder above), so the two agree and nothing fires here — that case is
-            // rejected one altitude up, by the whole-arrow subsumption at the argument
-            // position, and keeps its existing diagnostic. At arity 2+ `param_type` comes
+            // WI-794: at arity 1 the binder is typed at its annotation (`binder_type`, which
+            // the arrow's `A` widens only where the annotation admits a wider slot), so the two
+            // agree and nothing fires here — that case is rejected one altitude up, by the
+            // whole-arrow subsumption at the argument position, and keeps its existing
+            // diagnostic. At arity 2+ `param_type` comes
             // from the CONTEXT and the per-binder annotations are compared against its
             // components; this is the channel WI-794 measured as unchecked.
             let mut binder_errors = Vec::new();
@@ -318,7 +370,7 @@ pub(super) fn visit_type(
                 kb,
                 &mut lambda_env,
                 &param,
-                Some(param_type.clone()),
+                Some(binder_type),
                 // A parameter is no path of the body's.
                 None,
                 // WI-20260827-EJ5F5: a lambda parameter BINDS. `lambda red -> …` over a

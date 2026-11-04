@@ -333,11 +333,11 @@ pub(super) fn receiver_not_an_instance(
 }
 
 /// WI-275: the type of an operation referenced as a first-class function value
-/// (eta-expansion). `inc(n: Int) -> Int` becomes `Int -> Int`; a
-/// multi-param `lt(a: T, b: T) -> Bool` becomes `(T, T) -> Bool` — a positional
-/// `_1`/`_2` named-tuple param (the WI-355 tuple convention) so it unifies
-/// against a `Function[(T, T), Bool]` slot, matching how a `lambda (a, b) -> ...`
-/// is typed and an `f((a, b))` applied. Returns `None` when `sym` is not an eta
+/// (eta-expansion), over the operation's OWN tuple (kernel-language §4.4): `inc(n: Int) ->
+/// Int` becomes `(Int) -> Int`, and a multi-param `lt(a: T, b: T) -> Bool` becomes `(a: T,
+/// b: T) -> Bool` — an operation's tuple is its parameters, labelled by their names, which is
+/// what the slot it is written at meets by label or by position ([`callable_at_slot`], where
+/// [`check_bare_ref`] re-expresses it). Returns `None` when `sym` is not an eta
 /// candidate (no operation, or body-less) so the caller falls back to the
 /// return-type reading. A `requires`-carrying op's
 /// dispatch dict is resolved + attached separately by `attach_eta_dispatch_dict`
@@ -429,24 +429,29 @@ pub(super) fn operation_as_function_value(
         let fields: Vec<(Symbol, Value)> = op
             .params
             .iter()
-            .enumerate()
-            .map(|(i, (_, t))| (kb.intern(&positional_label(i)), t.clone()))
+            .map(|(p, t)| {
+                let label = short_name_of(kb.local_name_of(*p)).to_owned();
+                (kb.intern(&label), t.clone())
+            })
             .collect();
         named_tuple_value(kb, &fields, span, owner)
     };
-    // WI-791: the op's OWN parameter count — the arrow's arity is the operation's
-    // arity, whatever its sole parameter's type happens to look like. `get_a(t: (a,
-    // b))` mints arity 1 even though `param` is a 2-field `named_tuple`, so it no
-    // longer passes for the genuinely 2-parameter `(p: A, q: B) -> R`.
-    // The operation's own parameters, which its row names (`Modify[c]` of `put(c, n)`).
-    let binders: Vec<Option<Symbol>> =
-        kb.symbols.arg_places(sym).iter().map(|p| Some(*p)).collect();
+    // The operation's own parameters, which its row names (`Modify[c]` of `put(c, n)`): one per
+    // parameter, by position, and none at a parameter that is no argument place (one named
+    // `result`, which `arg_places` leaves out) — the arrow's binders are its parameters by
+    // position, which a callable re-expressed at its slot reorders with the components.
+    // An operation with no argument place recorded at all records no binders, as before.
+    let places = kb.symbols.arg_places(sym);
+    let binders: Vec<Option<Symbol>> = if places.is_empty() {
+        Vec::new()
+    } else {
+        op.params.iter().map(|(p, _)| places.contains(p).then_some(*p)).collect()
+    };
     let arrow = make_arrow_value(
         kb,
         &param,
         &return_type,
         &op.effects,
-        op.params.len(),
         &binders,
         span,
         owner,
@@ -491,12 +496,12 @@ pub(super) fn attach_eta_dispatch_dict(
     occ: &Rc<NodeOccurrence>,
     fn_ty: &Value,
     expected: &Value,
+    // The labels of the slot's `A` the reference met ([`callable_at_slot`]), carried by the
+    // value so it takes the tuple at run time as the slot read it. Attached on EVERY branch
+    // below: a branch that forgot them would give the operation spelling a source-order spread
+    // while its lambda twin read by name.
+    spread_labels: Option<Rc<[Symbol]>>,
 ) -> Result<(), TypeError> {
-    // WI-1087: computed ONCE, ahead of the five classification branches below, so the
-    // mapping cannot be attached on some eta paths and dropped on others. Every branch
-    // marks the occurrence; a branch that forgot these labels would silently give the
-    // operation spelling a source-order spread while its lambda twin read by name.
-    let spread_labels = function_slot_spread_labels(kb, sym, expected);
     // WI-1091 — THE OP HALF, computed before every branch below and for the same reason
     // `spread_labels` is: each branch marks the occurrence and returns, and three of them
     // return before any dictionary is built at all. `List.member` reaches the SECOND of
@@ -702,17 +707,18 @@ fn eta_op_scoped_dicts(
     let fn_arrow = fn_body.as_ref().unwrap_or(fn_ty);
     let fn_parts = arrow_parts(kb, fn_arrow);
     let fn_param = fn_parts.as_ref().and_then(|(p, _, _)| p.clone());
-    // AS PARAMETER LISTS, which is how the conformance check that admitted this reference
-    // relates the two ([`arrow_params_compatible`]). An operation of several parameters
-    // lifts to `(_1: A, _2: B) -> R`, and the expected arrow may label its own — `(p: A,
-    // q: B) -> R`. Unified as two data tuples those share no label, nothing is pinned, and
-    // the operation's requirement is refused as unsatisfiable at an arrow that names its
-    // types in full. The arity is the eta arrow's, which is the operation's.
-    let arity_key = kb.intern("arity");
-    if let (Some(ep), Some(fp), Some(arity)) =
-        (exp_param, fn_param, arrow_arity(kb, fn_arrow, arity_key))
-    {
-        unify_arrow_params(kb, &mut subst, &ep, &fp, arity);
+    // AS THE SLOT READS THE REFERENCE (rule 6 of proposal 002, [`callable_at_slot`]): the
+    // operation's own tuple `(a: A, b: B)` meets the expected `(p: A, q: B)` by position, and
+    // `(y: B, x: A)` meets `(x: A, y: B)` by label. Unified as two data tuples the first pair
+    // shares no label, nothing is pinned, and the operation's requirement is refused as
+    // unsatisfiable at an arrow that names its types in full.
+    let params = CallableParams::of_operation(kb, sym);
+    let fn_param = match callable_at_slot(kb, &mut subst, fn_arrow, params, expected) {
+        CallableAtSlot::AtSlot { ty, .. } => arrow_parts(kb, &ty).and_then(|(p, _, _)| p),
+        CallableAtSlot::Waits | CallableAtSlot::Refused => fn_param,
+    };
+    if let (Some(ep), Some(fp)) = (exp_param, fn_param) {
+        unify_arrow_params(kb, &mut subst, &ep, &fp);
     }
     // AND THE RESULT (WI-20260911-VNQTR). A parameter only the result names is fixed by
     // nothing above, and the call at the same expected type reads it off the type its result

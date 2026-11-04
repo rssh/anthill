@@ -192,35 +192,63 @@ end
 }
 
 /// `Function` against `Function`, which reaches the alignment through the
-/// parameterized-binding walk rather than either arrow path. Pre-fix this loaded
-/// and trapped with the very WI-775 error — `field_access: tuple has no
-/// component '_1'` — when the positional callee projected the name-keyed value.
+/// parameterized-binding walk rather than either arrow path. Before WI-775 this loaded
+/// and trapped — `field_access: tuple has no component '_1'` — when the positional callee
+/// projected the name-keyed value; WI-775 refused it.
 ///
-/// WI-1059: the ACTUAL side now renders its unwritten effect row too — `give`'s `g` leaves
-/// `Function`'s `E` unwritten, so inside the body it is the rigid `g.E`. The rejection is
-/// the same one for the same reason (the tuple KEYING), so the assertion names the two
-/// tuple shapes and the expected type in full, and does not pin the actual side's row.
+/// WI-20261104-6HVXM: two function types meet where their `A`s carry the same labels in the
+/// same order, or one of them is positional and the two are mapped by position
+/// (kernel-language §4.4 "A function value at another function type"). `(_1, _2)` is
+/// positional, so `give`'s `g` stands at `take`'s `f` — and the trap stays closed by the
+/// run time's match: an application hands the value a positional tuple in its `A`'s order,
+/// so `f((acc: 1, x: 2))` reaches `sub` as `(1, 2)`: `1 - 2` [refused, by keying]. Unrelated
+/// labels are still refused: [`function_vs_function_with_unrelated_labels_is_refused`].
 #[test]
-fn function_vs_function_argument_type_does_not_bridge_keyings() {
-    let errs = match try_load_kb_with(
-        r#"
+fn function_vs_function_meets_a_positional_tuple_by_position() {
+    let src = r#"
 namespace test.wi775g
   import anthill.prelude.{Int64, Function}
   operation take(f: Function[A = (acc: Int64, x: Int64), B = Int64]) -> Int64
     = f((acc: 1, x: 2))
   operation give(g: Function[A = (_1: Int64, _2: Int64), B = Int64]) -> Int64
     = take(g)
+  operation sub(a: Int64, b: Int64) -> Int64
+    = a - b
+  operation drive() -> Int64
+    = give(sub)
+end
+"#;
+    assert_eq!(run_int(&mut interp_for(src), "test.wi775g.drive"), -1);
+}
+
+/// The control of the row above: `(p, q)` against `(acc, x)` — neither positional, the
+/// labels unrelated — is refused at `take.f`, naming both tuple keyings.
+///
+/// WI-1059: the ACTUAL side renders its unwritten effect row too — `give`'s `g` leaves
+/// `Function`'s `E` unwritten, so inside the body it is the rigid `g.E` — so the assertion
+/// names the two tuple shapes and the expected type in full, and does not pin the actual
+/// side's row.
+#[test]
+fn function_vs_function_with_unrelated_labels_is_refused() {
+    let errs = match try_load_kb_with(
+        r#"
+namespace test.wi775h
+  import anthill.prelude.{Int64, Function}
+  operation take(f: Function[A = (acc: Int64, x: Int64), B = Int64]) -> Int64
+    = f((acc: 1, x: 2))
+  operation give(g: Function[A = (p: Int64, q: Int64), B = Int64]) -> Int64
+    = take(g)
 end
 "#,
     ) {
-        Ok(_) => panic!("must NOT load: a `(_1, _2)`-keyed Function where `(acc, x)` is declared"),
+        Ok(_) => panic!("must NOT load: a `(p, q)`-keyed Function where `(acc, x)` is declared"),
         Err(errs) => errs,
     };
     assert!(
         errs.iter().any(|e| {
             e.contains("type mismatch in take.f (op-arg)")
                 && e.contains("expected Function[A = (acc: Int64, x: Int64), B = Int64, E = {}]")
-                && e.contains("A = (_1: Int64, _2: Int64)")
+                && e.contains("A = (p: Int64, q: Int64)")
         }),
         "rejection must be the op-arg type mismatch naming BOTH tuple keyings; got: {errs:?}",
     );

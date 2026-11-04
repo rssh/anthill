@@ -1761,10 +1761,10 @@ fn type_node_head(tn: &TypeNode, kb: &KnowledgeBase) -> ViewHead {
         }
         TypeNode::Denoted { .. } => (type_functor_sym(kb, "Denoted"), 1),
         TypeNode::EffectsRows { .. } => (type_functor_sym(kb, "EffectsRows"), 1),
-        // WI-791: four children — `arity` joined `param`/`result`/`effects` — and a fifth
-        // where the arrow records its own `binders`, as its term twin does.
+        // Three children — `param`/`result`/`effects` — and a fourth where the arrow records
+        // its own `binders`, as its term twin does.
         TypeNode::Arrow { binders, .. } => {
-            (type_functor_sym(kb, "Arrow"), 4 + usize::from(binders.is_some()))
+            (type_functor_sym(kb, "Arrow"), 3 + usize::from(binders.is_some()))
         }
         // WI-361: one `fields` child (a `Value`-carried `List[NamedTupleElement]`),
         // matching the term form `NamedTuple(fields: List[NamedTupleElement])`.
@@ -1805,10 +1805,8 @@ fn type_node_keys(tn: &TypeNode, kb: &KnowledgeBase) -> Vec<Symbol> {
         }
         TypeNode::Denoted { .. } => &["value"],
         TypeNode::EffectsRows { .. } => &["effects_expr"],
-        TypeNode::Arrow { binders: None, .. } => &["param", "result", "effects", "arity"],
-        TypeNode::Arrow { binders: Some(_), .. } => {
-            &["param", "result", "effects", "arity", "binders"]
-        }
+        TypeNode::Arrow { binders: None, .. } => &["param", "result", "effects"],
+        TypeNode::Arrow { binders: Some(_), .. } => &["param", "result", "effects", "binders"],
         // WI-361: the single `fields` child (the `List[TypeField]` Value).
         TypeNode::NamedTuple { .. } => &["fields"],
         TypeNode::ExprCarried { .. } => &["value", "member"],
@@ -1853,7 +1851,6 @@ fn type_node_named<'a>(
             param,
             result,
             effects,
-            arity,
             binders,
         } => {
             if Some(sym) == key("param") {
@@ -1862,8 +1859,6 @@ fn type_node_named<'a>(
                 Some(type_child_view_item(result))
             } else if Some(sym) == key("effects") {
                 Some(type_child_view_item(effects))
-            } else if Some(sym) == key("arity") {
-                Some(type_child_view_item(arity))
             } else if Some(sym) == key("binders") {
                 binders.as_ref().map(ViewItem::Value)
             } else {
@@ -2445,7 +2440,7 @@ fn fingerprint_into<V: TermView>(
             // THE HEAD PROMISED `named_arity` KEYS; a view that supplies fewer has
             // dropped a child, and dropping it SILENTLY is what makes the key lossy.
             // `type_node_keys` is the live case: `type_node_head` returns a HARDCODED
-            // arity per form (`Arrow` → 4, `ExprCarried` → 2) while the key list is
+            // arity per form (`Arrow` → 3, `ExprCarried` → 2) while the key list is
             // `short_keys.iter().filter_map(|k| kb.lookup_symbol(k))`, which comes up
             // short on any KB where one of those names was never interned — so two
             // `ExprCarried` types differing only in `member` would key identically,

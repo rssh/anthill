@@ -1841,35 +1841,19 @@ impl<'a, V: PrintView + ?Sized> TermPrinter<'a, V> {
     }
 
     /// WI-173: `arrow(param, result, effects)` → `(<param>) -> <result>` with an optional
-    /// `@ <effects>`. When `param` is itself a named tuple its own parenthesised form is used
-    /// directly (avoids double-wrapping `((a: T)) ->`).
+    /// `@ <effects>`. Every arrow is a `Function` (kernel-language §4.4): `param` is the tuple
+    /// `A`, so a tuple of other than one component IS the parameter list and prints as it
+    /// (`(a: A, b: B) -> R`, which `((a: A, b: B)) -> R` also reads back to), and `()` for none.
     ///
-    /// WI-766: that direct form is AMBIGUOUS at arity one, and only there. The loader reads a
-    /// single arrow parameter by its TYPE and drops the label, so `(a: T) -> R` loads as
-    /// `arrow(param = T)` — meaning a genuine one-component tuple parameter, `arrow(param =
-    /// (a: T))`, would print to that same text and read back as the scalar. Arity one
-    /// therefore keeps the outer parens.
-    ///
-    /// WI-791: which case this IS is read from the arrow's own `arity` child instead of
-    /// guessed from the param's component count. That distinction is what makes the round
-    /// trip FAITHFUL rather than merely stable: the two spellings that used to print alike —
-    /// `(t: (a: A, b: B)) -> R` (arity 1) and `(a: A, b: B) -> R` (arity 2) — print as
-    /// `((a: A, b: B)) -> R` and `(a: A, b: B) -> R`, each reparsing to the arrow it came
-    /// from.
+    /// WI-766: a ONE-component tuple keeps the outer parens. The loader reads a single arrow
+    /// parameter by its TYPE and drops the label, so `(a: T) -> R` is `Function[A = T]` and
+    /// `((a: T)) -> R` is `Function[A = (a: T)]` — two types, which print apart and each reparse
+    /// to the arrow it came from.
     fn write_arrow_type(&self, item: &V::Item, buf: &mut String) {
-        let arity = self.child(item, "arity").and_then(|a| self.const_usize(&a));
         match self.child(item, "param") {
             None => buf.push_str("()"),
             Some(p) => {
-                // Does the `param` slot ALREADY render as the parameter list? Only a named
-                // tuple can, and only when the arrow says it is one; a count this cannot read
-                // falls back to the pre-WI-791 shape heuristic.
-                let slot_is_the_list = self.is_named_tuple(&p)
-                    && match arity {
-                        Some(n) => n != 1,
-                        None => self.named_tuple_arity(&p) != 1,
-                    };
-                if slot_is_the_list {
+                if self.is_named_tuple(&p) && self.named_tuple_arity(&p) != 1 {
                     self.write_tuple_components(&p, buf);
                 } else {
                     buf.push('(');
@@ -1896,15 +1880,6 @@ impl<'a, V: PrintView + ?Sized> TermPrinter<'a, V> {
                     buf.push('}');
                 }
             }
-        }
-    }
-
-    /// WI-791: an arrow's `arity` child, a non-negative integer literal; `None` for any other
-    /// shape, which keeps the pre-WI-791 rendering rather than inventing a parenthesisation.
-    fn const_usize(&self, item: &V::Item) -> Option<usize> {
-        match self.view.head(item) {
-            ViewHead::Const(Literal::Int(n)) => usize::try_from(n).ok(),
-            _ => None,
         }
     }
 

@@ -332,10 +332,12 @@ fn the_binder_is_read_inside_any_type_its_annotation_writes() {
     assert_refused(
         &program(
             "wi_sg16k.inside.tuple.string",
-            "operation k(x: Leaf[E = Int64]) -> Bool =\n    let h = lambda (p: (a: x.E, b: x.E)) -> true\n    h((a: \"x\", b: \"y\"))",
+            "operation k(x: Leaf[E = Int64]) -> Bool =\n    let h = lambda (p: (a: x.E, b: x.E)) -> true\n    h((a: 1, b: \"y\"))",
         ),
-        "expected (a: Int64, b: Int64), got (a: String, b: String)",
-        "`p: (a: x.E, b: x.E)` applied at `String`s",
+        // One tuple is the argument list (kernel-language §4.4), so each component is an
+        // argument of its own and the one at `b` is refused.
+        "type mismatch in h.b (op-arg): expected Int64, got String",
+        "`p: (a: x.E, b: x.E)` applied at `(a: 1, b: \"y\")`",
     );
     let rigid = |key: &str| {
         format!("operation k[P]() -> Bool requires Storage[C = P, Key = {key}] =\n    let h = lambda (s: P.Key) -> s + 1\n    true")

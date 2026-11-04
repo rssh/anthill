@@ -1227,7 +1227,7 @@ mod wi361_reader_tests {
         // A structural variant (arrow) has no sort head.
         let unit = kb.intern("Unit");
         let unit_ref = kb.make_sort_ref(unit);
-        let arrow = kb.make_arrow_type(unit_ref, unit_ref, &[], 1);
+        let arrow = kb.make_arrow_type(unit_ref, unit_ref, &[]);
         assert_eq!(sort_functor_of(&kb, arrow), None, "arrow has no sort head");
     }
 
@@ -1448,7 +1448,6 @@ mod p4_tests {
             &int,
             &int,
             &[Value::term(label_t), Value::term(tail_t)],
-            1,
             &[],
             span(),
             None,
@@ -1735,7 +1734,6 @@ mod p4_tests {
             TypeChild::Interned(unit_ref),
             TypeChild::Interned(unit_ref),
             TypeChild::Node(rows),
-            1,
             None,
             span(),
             None,
@@ -1828,7 +1826,6 @@ mod p4_tests {
             TypeChild::Interned(v_term),
             TypeChild::Interned(unit_ref),
             TypeChild::Node(rows),
-            1,
             None,
             span(),
             None,
@@ -6368,7 +6365,6 @@ mod wi_2nmxa_value_holding_type_reader_tests {
             TypeChild::Interned(base),
             TypeChild::Interned(base),
             TypeChild::Node(row_node),
-            1,
             None,
             sp,
             None,
@@ -8046,7 +8042,6 @@ mod s8cyd_qualified_text_test {
         let mut kb = load_stdlib(None);
         let int = sort(&mut kb, "anthill.prelude.Int64");
         let error = sort(&mut kb, "anthill.prelude.Error");
-        let arity = kb.alloc(Term::Const(crate::kb::term::Literal::Int(1)));
         let arrow = |kb: &mut KnowledgeBase, row: TermId| {
             let effects = application(
                 kb,
@@ -8056,7 +8051,7 @@ mod s8cyd_qualified_text_test {
             application(
                 kb,
                 "anthill.prelude.TypeExtractor.Arrow",
-                &[("param", int), ("result", int), ("effects", effects), ("arity", arity)],
+                &[("param", int), ("result", int), ("effects", effects)],
             )
         };
         let pure_row = application(&mut kb, "anthill.prelude.EffectExpression.empty_row", &[]);
