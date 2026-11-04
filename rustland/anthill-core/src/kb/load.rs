@@ -1204,6 +1204,9 @@ pub enum LoadError {
         spec: String,
         /// The carrier bound where lawful `Eq` is required (`anthill.prelude.Float`).
         carrier: String,
+        /// The component of a tuple `carrier` that does not provide `Eq` (`Float` of
+        /// `(a: F, b: Float)`); `None` where the part is `carrier` itself.
+        part: Option<String>,
         /// WI-835: where the instantiation is written — the span of its base name.
         span: Option<Span>,
     },
@@ -3813,10 +3816,15 @@ impl LoadError {
                 param,
                 spec,
                 carrier,
+                part,
                 span,
             } => {
-                let msg = format!("'{}' requires `{}` at its parameter `{}`, but `{} = {}` binds a type that does not provide `Eq` (its equality is not lawful — IEEE `nan != nan` — or there is none), so it is not a lawful key. Bind `{}` to a type that provides `Eq` (`TotalFloat` for floats) instead of '{}'.",
-                    container, spec, param, param, carrier, param, carrier);
+                let part = part
+                    .as_ref()
+                    .map(|p| format!(": its component `{p}` does not"))
+                    .unwrap_or_default();
+                let msg = format!("'{}' requires `{}` at its parameter `{}`, but `{} = {}` binds a type that does not provide `Eq`{} (its equality is not lawful — IEEE `nan != nan` — or there is none), so it is not a lawful key. Bind `{}` to a type that provides `Eq` (`TotalFloat` for floats) instead of '{}'.",
+                    container, spec, param, param, carrier, part, param, carrier);
                 match span {
                     Some(sp) => format!("{}: {}", loc.format_start(*sp), msg),
                     None => msg,
@@ -5575,6 +5583,7 @@ impl std::fmt::Display for LoadError {
                 param,
                 spec,
                 carrier,
+                part,
                 span,
             } => {
                 // The trailing byte range follows the convention every other
@@ -5589,8 +5598,12 @@ impl std::fmt::Display for LoadError {
                 // `wi835_use_site_requires_scope_test`'s
                 // `one_refusal_per_site_including_across_files_at_equal_offsets` is the
                 // row that measures it, and it fails if EITHER key drops the file.
-                let msg = format!("'{}' requires `{}` at `{}`, but `{} = {}` does not provide `Eq` — not a lawful key; use `TotalFloat` for floats",
-                    container, spec, param, param, carrier);
+                let part = part
+                    .as_ref()
+                    .map(|p| format!(" (its component `{p}` does not)"))
+                    .unwrap_or_default();
+                let msg = format!("'{}' requires `{}` at `{}`, but `{} = {}` does not provide `Eq`{} — not a lawful key; use `TotalFloat` for floats",
+                    container, spec, param, param, carrier, part);
                 match span {
                     Some(sp) => write!(f, "{} at {}..{}", msg, sp.start, sp.end),
                     None => write!(f, "{}", msg),

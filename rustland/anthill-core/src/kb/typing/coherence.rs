@@ -961,33 +961,211 @@ pub fn check_eq_noneq_exclusive(kb: &mut KnowledgeBase) -> Vec<crate::kb::load::
         .collect()
 }
 
-/// Does the written type `ty` provide `Eq`? A tuple does when each of its components'
-/// types does, and the unit always: a tuple has no sort to carry a provision, so it is read
-/// by its components. Any other type is asked the goal `Eq[T = ty]` through the canonical
-/// instance resolver, the one `spec_resolves_at_bindings` runs for a field's declared spec,
-/// so an unconditional provision (`Int64`, a composite whose fields are all lawful) and a
-/// conditional one (`Eq[List] :- Eq[T]`) are answered by one question, the conditional one
-/// at `ty`'s own argument.
+/// The part of the key `ty` that does not provide `Eq` where each ABSTRACT part of it does
+/// ([`is_abstract_key_part`]), or `None` where `ty` provides it. `Eq` at an abstract part is
+/// the best case for it: a key with no `Eq` even then has none whatever the part is bound
+/// to, so it is refused where it is written, and the rest of the key is judged here. A tuple provides `Eq` when each of its components' types does,
+/// and the unit always: a tuple has no sort to carry a provision, so it is read by its
+/// components, and the first that does not is the part. Any other type is the part itself
+/// when [`eq_holds_at`] says no.
+///
+/// `operation` is the operation the key is written in, whose frame the judgment assumes
+/// ([`KeyAtRigidParts::assumed`]).
+fn unlawful_eq_part(
+    kb: &mut KnowledgeBase,
+    eq_sym: Symbol,
+    ty: &Value,
+    operation: Option<Symbol>,
+) -> Option<Value> {
+    if let Some(fields) = schema_fields(kb, ty) {
+        return fields
+            .iter()
+            .find_map(|(_, field)| unlawful_eq_part(kb, eq_sym, field, operation));
+    }
+    if is_abstract_key_part(kb, ty) || eq_holds_at(kb, eq_sym, ty, operation) {
+        return None;
+    }
+    Some(ty.clone())
+}
+
+/// Is `part` of a key abstract — a type parameter, a type variable, a projection that stays
+/// neutral? A key's projections are read before it is judged ([`read_projection_key`]), so
+/// a projection still in it is one nothing fixes.
+fn is_abstract_key_part(kb: &KnowledgeBase, part: &Value) -> bool {
+    match extract_type(kb, part) {
+        TypeExtractor::ExprCarried { .. }
+        | TypeExtractor::RigidTypeProjection { .. }
+        | TypeExtractor::TypeVar(_)
+        | TypeExtractor::FlexVar { .. }
+        | TypeExtractor::Skolem { .. } => true,
+        TypeExtractor::SortRef(s) => is_sort_param_symbol(kb, s),
+        _ => false,
+    }
+}
+
+/// Does `ty`, no tuple, provide `Eq` where each of its abstract parts does? It is asked the
+/// goal `Eq[T = ty]` through the canonical instance resolver, the one
+/// `spec_resolves_at_bindings` runs for a field's declared spec, so an unconditional
+/// provision (`Int64`, a composite whose fields are all lawful) and a conditional one
+/// (`Eq[List] :- Eq[T]`) are answered by one question, the conditional one at `ty`'s own
+/// argument. A type with an abstract part is asked it at [`KeyAtRigidParts`], under what
+/// that assumes: `Pair[A = F, B = Int64]` provides it, through `Pair`'s conditions `Eq[A]`
+/// (assumed) and `Eq[B]` (`Int64`'s), and `Pair[A = F, B = Float]` does not.
 ///
 /// A TIE between two providers is an `Eq` the type has: which one a call dispatches to is
 /// that call's question, and a call that requires `Eq` there reports the tie, naming both.
-fn eq_holds_at(kb: &mut KnowledgeBase, eq_sym: Symbol, ty: &Value) -> bool {
-    if let Some(fields) = schema_fields(kb, ty) {
-        return fields.iter().all(|(_, field)| eq_holds_at(kb, eq_sym, field));
-    }
+fn eq_holds_at(
+    kb: &mut KnowledgeBase,
+    eq_sym: Symbol,
+    ty: &Value,
+    operation: Option<Symbol>,
+) -> bool {
+    let result = match KeyAtRigidParts::of(kb, eq_sym, ty, operation) {
+        None => resolve_spec_at(kb, eq_sym, ty),
+        Some(at) => {
+            // No call site, so nothing to chase: the whole σ context is the rigid bridge.
+            let no_call = Substitution::new();
+            let sigma = SigmaCtx {
+                subst: &no_call,
+                param_rigids: &at.param_rigids,
+            };
+            let scope = ResolutionScope {
+                available_requires: &at.assumed,
+                sigma: Some(&sigma),
+                pin: None,
+                // The assumptions are closed ([`closed_under_requires`]).
+                sub_goal_requires: &[],
+            };
+            spec_goal_at(kb, eq_sym, &at.key).map(|goal| resolve(kb, &goal, &scope))
+        }
+    };
     matches!(
-        resolve_spec_at(kb, eq_sym, ty),
+        result,
         Some(ResolutionResult::Resolved(_) | ResolutionResult::Ambiguous { .. })
     )
 }
 
-/// WI-20261102-7AB56 — the type a use-site key that holds a type projection stands for.
-/// `Ok(Some(ty))` is the key with its projections read; `Ok(None)` is a key that stays
-/// ABSTRACT, as a type parameter is — a projection that stays NEUTRAL, a member the
+/// A key with its abstract parts ([`is_abstract_key_part`]) made RIGID, and what its
+/// judgment assumes about them, as a provision's contract is checked at its carrier's own
+/// parameters ([`CarrierAtOwnParams`]): resolved under σ, a rigid matches only itself and
+/// an assumption covers a goal only at its own rigid. Assumed with no σ, `Eq[T = F]` would
+/// cover `Eq[T = Float]` too ([`requires_entry_covers_goal`]'s coarse mode).
+struct KeyAtRigidParts {
+    /// The key, each distinct abstract part a rigid of its own.
+    key: Value,
+    /// Each type parameter among the parts, its canonical variable bridged to its rigid, so
+    /// a requirement written over the parameter is about the rigid.
+    param_rigids: Vec<(VarId, TermId)>,
+    /// `Eq` at each rigid, the frame of the operation the key is written in — its sort's
+    /// chain under the provision whose block holds it, then its own `requires` — and what
+    /// the declaration of each parameter among the parts requires, closed under `requires`.
+    /// A declaration's requirements are assumed as every other check of it assumes them:
+    /// under `requires Ord[T = F]`, `Box[T = F]` provides `Eq` where `Box provides Eq :-
+    /// Ord[T]`, `F` the operation's parameter or its sort's.
+    assumed: Vec<RequiresEntry>,
+}
+
+impl KeyAtRigidParts {
+    /// `None` where `ty` has no abstract part.
+    fn of(
+        kb: &mut KnowledgeBase,
+        eq_sym: Symbol,
+        ty: &Value,
+        operation: Option<Symbol>,
+    ) -> Option<Self> {
+        let t_param = *kb.type_param_syms_of(eq_sym).first()?;
+        // Each distinct part, the type parameter it is where it is one, and its rigid. One
+        // parameter is one part however it is spelled — its name or its variable.
+        let parts: std::cell::RefCell<Vec<(Value, Option<Symbol>, TermId)>> =
+            std::cell::RefCell::new(Vec::new());
+        let key = rewrite_type_leaves(kb, ty, &|kb, part| {
+            if !is_abstract_key_part(kb, part) {
+                return None;
+            }
+            let param = param_of_key_part(kb, part);
+            let met = parts
+                .borrow()
+                .iter()
+                .find(|(p, pp, _)| match (param, pp) {
+                    (Some(param), Some(pp)) => param == *pp,
+                    (None, None) => views_structurally_equal(kb, p, part),
+                    _ => false,
+                })
+                .map(|(_, _, rigid)| *rigid);
+            let rigid = met.unwrap_or_else(|| {
+                let rigid = fresh_rigid_named(kb, param.unwrap_or(t_param));
+                parts.borrow_mut().push((part.clone(), param, rigid));
+                rigid
+            });
+            Some(Value::term(rigid))
+        })?;
+        let mut roots = Vec::new();
+        let mut param_rigids = Vec::new();
+        // The declarations whose requirements are in `roots` already.
+        let mut owners: Vec<Symbol> = Vec::new();
+        if let Some(op) = operation {
+            roots.extend(op_dict_entries(kb, op).entries().iter().cloned());
+            owners.push(op);
+            owners.extend(impl_parent_of_op(kb, op));
+        }
+        for (_, param, rigid) in parts.into_inner() {
+            let spec = sort_view_value(kb, eq_sym, [(t_param, Value::term(rigid))])
+                .expect("a KB that holds `anthill.prelude.Eq` holds `anthill.reflect.SortView`");
+            roots.push(RequiresEntry {
+                required_sort: eq_sym,
+                spec,
+                supply: SupplySource::Required,
+                binder: None,
+            });
+            let Some(param) = param else { continue };
+            // A parameter with no canonical variable (WI-954's, refused at its declaration)
+            // or no scope assumes less, never more: what it would assume is not read, and
+            // the key is refused rather than passed.
+            if let Some(vid) = type_param_global_var(kb, param) {
+                param_rigids.push((vid, rigid));
+            }
+            let Some(owner) = kb.symbols.declaring_scope(param).map(|s| s.owner()) else {
+                continue;
+            };
+            if owners.contains(&owner) {
+                continue;
+            }
+            owners.push(owner);
+            if crate::kb::op_info::lookup_operation_info(kb, owner).is_some() {
+                roots.extend(op_requires_chain_rc(kb, owner).iter().cloned());
+            } else {
+                roots.extend(direct_requires_chain_rc(kb, owner).iter().cloned());
+            }
+        }
+        let mut assumed = closed_under_requires(kb, roots);
+        // As what holds, not as who holds it ([`ProvisionScope::of`]): two requirements
+        // under two names are one fact here.
+        for entry in &mut assumed {
+            entry.binder = None;
+        }
+        Some(KeyAtRigidParts {
+            key,
+            param_rigids,
+            assumed,
+        })
+    }
+}
+
+/// The type parameter a key's abstract part is — by its name, or by its canonical
+/// variable — or `None` for any other abstract part.
+fn param_of_key_part(kb: &KnowledgeBase, part: &Value) -> Option<Symbol> {
+    match part.head(kb) {
+        ViewHead::Var(Var::Global(vid)) => kb.type_param_of_canonical_var(vid),
+        _ => view_ref_symbol(kb, part).filter(|s| is_sort_param_symbol(kb, *s)),
+    }
+}
+
+/// WI-20261102-7AB56 — the type a use-site key that holds a type projection stands for:
+/// the key with its projections read. A projection that stays NEUTRAL — a member the
 /// receiver's declared type leaves open (`x.E` over `x: Leaf`) or a bound leaves unfixed
-/// (`P.Key` under `requires Storage[C = P]`), or a type variable written beside the
-/// projections, which no reading of them makes ground; `Err` says why a projection does not
-/// read here.
+/// (`P.Key` under `requires Storage[C = P]`) — stays in the key, an abstract part of it as a
+/// type parameter is ([`unlawful_eq_part`]); `Err` says why a projection does not read
+/// here.
 ///
 /// An expression-carried projection's receiver is read as a parameter of the operation the
 /// key is written in (`operation`), at its DECLARED type: the table the body check
@@ -1007,10 +1185,7 @@ fn read_projection_key(
     operation: Option<Symbol>,
     op_params: &mut HashMap<Symbol, Option<HashMap<Symbol, Value>>>,
     (sort, param): (Symbol, Symbol),
-) -> Result<Option<Value>, String> {
-    if abstract_beside_projections(kb, key) {
-        return Ok(None);
-    }
+) -> Result<Value, String> {
     let no_params = HashMap::new();
     let params = match operation {
         Some(op) => op_params
@@ -1047,11 +1222,8 @@ fn read_projection_key(
         let next = discharge
             .eliminate(kb, &read)
             .map_err(|e| delta_failure_text(&e))?;
-        if !value_contains_projection(kb, &next) {
-            return Ok(Some(next));
-        }
-        if views_structurally_equal(kb, &next, &read) {
-            return Ok(None);
+        if !value_contains_projection(kb, &next) || views_structurally_equal(kb, &next, &read) {
+            return Ok(next);
         }
         read = next;
     }
@@ -1065,24 +1237,9 @@ fn read_projection_key(
 /// reads through. Far past any chain a program writes; reaching it is refused, not passed.
 const KEY_READINGS: usize = 32;
 
-/// Is the key abstract BESIDE its projections — a type variable or a type parameter written
-/// outside them? Such a key is abstract whatever its projections read to.
-fn abstract_beside_projections(kb: &KnowledgeBase, key: &Value) -> bool {
-    type_any_part(kb, key, &|te| match te {
-        TypeExtractor::ExprCarried { .. } | TypeExtractor::RigidTypeProjection { .. } => {
-            Some(false)
-        }
-        TypeExtractor::TypeVar(_)
-        | TypeExtractor::FlexVar { .. }
-        | TypeExtractor::Skolem { .. } => Some(true),
-        TypeExtractor::SortRef(s) => is_sort_param_symbol(kb, *s).then_some(true),
-        _ => None,
-    })
-}
-
 /// WI-644 / WI-835 — USE-SITE `requires Eq` enforcement. A parametric sort with a
 /// `requires Eq[param]` clause (`Map requires Eq[T = K]`, `Set requires Eq[T]`),
-/// instantiated with `param` bound to a CONCRETE type that does not provide `Eq`, is a load
+/// instantiated with `param` bound to a type that does not provide `Eq`, is a load
 /// error: `Map[K = Float]` (IEEE `nan != nan`), `Map[K = OpRef]` and `Set[T = Function[…]]`
 /// (no equality at all) are refused; `Map[K = TotalFloat]`, `Map[K = Int64]` and
 /// `Map[K = (Int64, Bool)]` load (kernel-language.md, the `=` paragraph).
@@ -1092,14 +1249,20 @@ fn abstract_beside_projections(kb: &KnowledgeBase, key: &Value) -> bool {
 /// universal `Eq` instance and a lawful composite derived no `Eq`; neither holds now (a
 /// call requiring `Eq[T = OpRef]` is refused, and `eq_derive` derives `Eq` for a lawful
 /// composite and `Eq[S] :- Eq[T]` for a parametric one), and the negative check let a key
-/// with no equality at all load (user, 2026-10-26). An ABSTRACT binding (a type
-/// parameter) is not checked here: it is the requirement of the code that binds it.
+/// with no equality at all load (user, 2026-10-26). An ABSTRACT part of the bound type — a
+/// type parameter, a type variable, a projection nothing fixes — is not checked here; the
+/// key is judged with `Eq` assumed there ([`unlawful_eq_part`]), the best case for the part,
+/// so `Set[T = F]` and `Set[T = (a: F, b: Int64)]` load and `Set[T = (a: F, b: Float)]` and
+/// `Set[T = Pair[A = F, B = Float]]`, lawful for no `F`, are refused (WI-20261103-SWPHB: a
+/// key with an abstract part was skipped whole). What a call binds the part to is not
+/// checked by this pass — non-scope (3): `k[F = Float]({1.5})` over `k[F](s: Set[T = F])`
+/// writes no `Set[T = Float]`.
 ///
 /// A PROJECTION is judged as the type it stands for (WI-20261102-7AB56,
 /// [`read_projection_key`]): `Set[T = x.E]` at the member `x`'s declared type fixes —
 /// refused over `x: Leaf[E = Float]`, loaded over `x: Leaf[E = Int64]` — and `P.Key` at what
-/// the `requires` bounding `P` fixes. Where nothing fixes the member the projection is
-/// abstract, as a type parameter is. Read as written, `x.E` was a ground type of its own
+/// the `requires` bounding `P` fixes. Where nothing fixes the member the projection is an
+/// abstract part, as a type parameter is. Read as written, `x.E` was a ground type of its own
 /// that provides nothing, so every such key was refused, and `P.Key` an abstract one, so
 /// none was. A projection that does not read where the key is written — its receiver a
 /// binder of the body, its member undeclared — is refused as not judged
@@ -1153,14 +1316,14 @@ fn abstract_beside_projections(kb: &KnowledgeBase, key: &Value) -> bool {
 /// known(Map[K = Float, V = Int64])` load (measured for WI-20260929-TJ3G4, which recorded
 /// the brackets written as type arguments in an operation's `requires` alone).
 ///
-/// (5) A key with an abstract part is skipped WHOLE, so an unlawful part beside it is not
-/// judged: `Set[T = (a: F, b: Float)]`, `F` a type parameter, loads, and since
-/// WI-20261102-7AB56 so does `Set[T = (a: x.E, b: y.E)]` with `x.E` read to `Float` and
-/// `y.E` neutral — WI-20261103-SWPHB.
-///
-/// (6) A projection off a binder of an operation's BODY (`let y = x`, a `match` arm's
+/// (5) A projection off a binder of an operation's BODY (`let y = x`, a `match` arm's
 /// binder) is refused as not judged: this pass has the operation's declared parameters and
 /// not the body's scope — WI-20261103-BANCC.
+///
+/// (6) A tuple is read by its components at the top of the key only. Nested in an
+/// application it is a condition of that application's provision, which the resolver
+/// answers, and the resolver reads no tuple: `Set[T = List[T = (a: Int64, b: Int64)]]` is
+/// refused, and so, judged at its other parts, is `Map[K = Set[T = (a: F, b: Int64)]]`.
 pub(crate) fn check_use_site_requires_eq(
     kb: &mut KnowledgeBase,
     sites: &[crate::kb::ParameterizedSite],
@@ -1181,7 +1344,7 @@ pub(crate) fn check_use_site_requires_eq(
     // places are two things to fix, and collapsing them would drop a diagnostic.
     // The key carries the whole `SourceSpan` — byte offsets alone repeat ACROSS
     // FILES, so a span-only key would silently drop the second file's refusal.
-    let mut seen: HashSet<(Symbol, Symbol, Symbol, crate::span::SourceSpan)> = HashSet::new();
+    let mut seen: HashSet<(Symbol, String, Symbol, crate::span::SourceSpan)> = HashSet::new();
     // A base's `Eq` `requires` clauses with their RAW (unsubstituted) bindings — a
     // function of the BASE alone, so computed once per distinct base rather than once
     // per site. An EMPTY vec is a cached answer, not a missing one: it means "this
@@ -1246,9 +1409,9 @@ pub(crate) fn check_use_site_requires_eq(
             .collect();
         for (gi, goal) in goals.iter().enumerate() {
             for (bi, (key, written)) in goal.bindings.iter().enumerate() {
-                // WI-20261102-7AB56 — a projection is read for the type it stands for: a key
-                // `x.E` is no type `type_is_ground` can judge (it counts the path as closed,
-                // and nothing provides `Eq` at a projection).
+                // WI-20261102-7AB56 — a projection is read for the type it stands for: nothing
+                // provides `Eq` at a projection, and one that stays neutral is an abstract part
+                // of the key.
                 let read;
                 let val = if value_contains_projection(kb, written) {
                     let param = container_param(kb, raw_goals, &sigma, (gi, bi), *key);
@@ -1259,17 +1422,16 @@ pub(crate) fn check_use_site_requires_eq(
                         &mut op_params,
                         (base, param),
                     ) {
-                        Ok(Some(ty)) => {
+                        Ok(ty) => {
                             read = ty;
                             &read
                         }
-                        Ok(None) => continue, // abstract, as a type parameter is
                         Err(reason) => {
                             let err = LoadError::KeyEqNotJudged {
                                 container: kb.qualified_name_of(base).to_string(),
                                 param: kb.local_name_of(param).to_string(),
                                 spec: kb.qualified_name_of(goal.spec_sort).to_string(),
-                                key: format_value_for_goal(kb, written),
+                                key: key_as_written(kb, written),
                                 reason,
                                 span: Some(site_span.span),
                             };
@@ -1280,31 +1442,19 @@ pub(crate) fn check_use_site_requires_eq(
                 } else {
                     written
                 };
-                if !type_is_ground(kb, val) {
-                    continue; // abstract binding: defer (not a concrete carrier)
-                }
-                let carrier = match val.head(kb) {
-                    ViewHead::Functor {
-                        functor,
-                        ..
-                    }
-                    | ViewHead::Ident(functor) => functor,
-                    _ => continue,
-                };
                 // At the WHOLE bound type, not the head carrier's own provisions: an edge
                 // `sort_provides(List, Eq)` says nothing about the argument, and the
                 // conditional row's `:- Eq[T]` is what tells `List[T = Int64]` from
                 // `List[T = Float]`.
-                if eq_holds_at(kb, eq_sym, val) {
+                let Some(part) = unlawful_eq_part(kb, eq_sym, val, site.operation) else {
                     continue;
-                }
+                };
                 let param = container_param(kb, raw_goals, &sigma, (gi, bi), *key);
-                if seen.insert((
-                    kb.canonical_sort_sym(base),
-                    kb.canonical_sort_sym(carrier),
-                    param,
-                    site_span,
-                )) {
+                let carrier = key_as_written(kb, val);
+                if seen.insert((kb.canonical_sort_sym(base), carrier.clone(), param, site_span)) {
+                    // A tuple's component, where the key is a tuple.
+                    let part = (!views_structurally_equal(kb, &part, val))
+                        .then(|| key_as_written(kb, &part));
                     let err = LoadError::KeyWithoutEq {
                         container: kb.qualified_name_of(base).to_string(),
                         param: kb.local_name_of(param).to_string(),
@@ -1322,8 +1472,10 @@ pub(crate) fn check_use_site_requires_eq(
                         // `anthill.prelude.Float` to `Float` in every pre-existing
                         // refusal. This one qualifies the base and recurses into the
                         // arguments, which is the same convention `format_goal` uses for
-                        // the sibling requirement diagnostics.
-                        carrier: format_value_for_goal(kb, val),
+                        // the sibling requirement diagnostics. A type parameter prints by its
+                        // name ([`key_as_written`]).
+                        carrier,
+                        part,
                         span: Some(site_span.span),
                     };
                     // WI-745: attribute to the file the site's span indexes into, so
@@ -1334,6 +1486,19 @@ pub(crate) fn check_use_site_requires_eq(
         }
     }
     errors
+}
+
+/// A key as a refusal prints it ([`format_value_for_goal`]), each type parameter by its name
+/// where the key holds the parameter's variable: `(a: F, b: anthill.prelude.Float)`, not
+/// `(a: ?F, b: anthill.prelude.Float)`. The term walk of
+/// [`crate::kb::node_occurrence::value_in_clause_canon`], on any carrier: a key read
+/// through its projections may ride the value carrier, which that function refuses.
+fn key_as_written(kb: &mut KnowledgeBase, key: &Value) -> String {
+    let named = try_rewrite_type_terms(kb, key, &|kb, t| {
+        Some(crate::kb::node_occurrence::type_in_clause_canon(kb, t))
+    })
+    .expect("a rewrite that declines no part answers for the whole");
+    format_value_for_goal(kb, &named)
 }
 
 /// The container's own parameter that carries the binding `key` of `check_use_site_requires_eq`'s

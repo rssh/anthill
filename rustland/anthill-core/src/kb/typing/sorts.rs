@@ -2048,15 +2048,21 @@ pub(super) fn resolve_spec_at(
     spec: Symbol,
     ty: &Value,
 ) -> Option<ResolutionResult> {
+    let goal = spec_goal_at(kb, spec, ty)?;
+    Some(resolve_at_declaration(kb, &goal))
+}
+
+/// The goal [`resolve_spec_at`] resolves: `spec` with `ty` bound to its first declared
+/// parameter, for a caller that resolves it in a scope of its own.
+pub(super) fn spec_goal_at(kb: &mut KnowledgeBase, spec: Symbol, ty: &Value) -> Option<SortGoal> {
     let param = kb.type_params_of_sort(spec).into_iter().next()?;
     let key = kb.intern(&param);
-    let goal = SortGoal {
+    Some(SortGoal {
         spec_sort: spec,
         bindings: smallvec::smallvec![(key, ty.clone())],
         carrier: None,
         left_open: SmallVec::new(),
-    };
-    Some(resolve_at_declaration(kb, &goal))
+    })
 }
 
 /// WI-841: no call site, hence no selection — a DECLARATION is being validated.

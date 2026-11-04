@@ -18,11 +18,10 @@
 //! WI-20261103-SG16K; before it the typer refused the binder's annotation on its own, "expected
 //! Set[T = x.E], got Set[T = Int64]", no key involved.)
 //!
-//! NOT JUDGED, by the check's documented non-scope: an unlawful part beside an abstract one
-//! (`Set[T = (a: x.E, b: y.E)]`, `x.E` read to `Float` and `y.E` open, loads, as the
-//! type-parameter key `(a: F, b: Float)` does — WI-20261103-SWPHB), and a projection off a
-//! binder of the body, refused as not judged here even where its key is lawful
-//! (WI-20261103-BANCC).
+//! NOT JUDGED, by the check's documented non-scope: a projection off a binder of the body,
+//! refused as not judged here even where its key is lawful (WI-20261103-BANCC). A key with
+//! an abstract part beside the projection is judged at its other parts since
+//! WI-20261103-SWPHB (`wi_swphb_partly_abstract_key_test`).
 //!
 //! BACK-OUTS, MEASURED — each ONE part put back, over this file's 9 rows:
 //!
@@ -48,8 +47,6 @@
 //!    control (the reason says "not an argument-bound parameter of this call").
 //!  * The not-judged refusal naming the `Eq` goal's key, not the container's parameter — 1:
 //!    `a_key_not_judged_is_named_by_the_containers_parameter` (`Map`'s `T`).
-//!  * No check for an abstract part beside the projections — 1:
-//!    `a_key_abstract_beside_its_projection_is_not_judged_for_it` (refused as not judged).
 //!  * A reading that does not settle passed as abstract — 1:
 //!    `a_key_whose_projections_do_not_settle_is_refused` (no key refusal).
 //!
@@ -383,19 +380,21 @@ fn a_key_not_judged_is_named_by_the_containers_parameter() {
     );
 }
 
-/// A key abstract BESIDE its projection — a type parameter written next to it — is abstract
-/// whatever the projection reads to, so one that does not read is not refused for it: no
-/// reading of `y.E` makes `(a: F, b: y.E)` ground. CONTROL: the same key without `F` is
-/// refused as not judged — its reason changes under three back-outs (see the header).
+/// A type parameter beside a projection does not make the key abstract: the projection is
+/// read all the same (WI-20261103-SWPHB). Off a binder of the body it does not read, and the
+/// key is refused as not judged, as the same key without `F` is; off a parameter it reads,
+/// and the key is judged at it — refused over `x: Leaf[E = Float]`, loaded over an open `E`.
 #[test]
-fn a_key_abstract_beside_its_projection_is_not_judged_for_it() {
+fn a_projection_beside_a_type_parameter_is_read() {
     let body = |key: &str| {
         format!(
             "operation k[F](x: Leaf) -> Bool =\n    let y = x\n    let z: Option[T = Set[T = {key}]] = none\n    true"
         )
     };
-    assert_loads(
+    assert_not_judged(
         &program("wi_7ab56.beside", &body("(a: F, b: y.E)")),
+        "T = (a: F, b: y.E)",
+        "its receiver `y` is no parameter of `wi_7ab56.beside.k`",
         "a key abstract beside its projection",
     );
     assert_not_judged(
@@ -403,6 +402,18 @@ fn a_key_abstract_beside_its_projection_is_not_judged_for_it() {
         "T = (a: Int64, b: y.E)",
         "its receiver `y` is no parameter of `wi_7ab56.beside.control.k`",
         "the same key without the type parameter",
+    );
+    let param = |recv: &str| format!("operation k[F](x: {recv}, s: Set[T = (a: F, b: x.E)]) -> Int64 = 1");
+    assert_unlawful(
+        &program("wi_7ab56.beside.float", &param("Leaf[E = Float]")),
+        "Set",
+        "T",
+        "(a: F, b: Float)",
+        "beside a projection read to `Float`",
+    );
+    assert_loads(
+        &program("wi_7ab56.beside.open", &param("Leaf")),
+        "beside a projection left open",
     );
 }
 
