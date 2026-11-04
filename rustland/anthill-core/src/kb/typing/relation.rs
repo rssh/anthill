@@ -994,13 +994,43 @@ fn unfixed_at_goal_text(
 
 /// A citation's [`CarriedMisfit`] as the load error it is, at `at` — the citation of
 /// `relation`, or for a misfit a forward slot met, the goal it met it at, except a parameter
-/// a goal leaves free, which an argument at the citation fixes — with that file.
+/// a goal leaves free, which an argument at the citation fixes, and two of the citing
+/// declaration's requirements that answer one read, which only the citation can choose
+/// between — with that file.
 pub(super) fn citation_misfit_error(
     kb: &KnowledgeBase,
     relation: Symbol,
     at: crate::span::SourceSpan,
     misfit: CarriedMisfit,
 ) -> (TypeError, Option<crate::span::SourceId>) {
+    if let CarriedMisfit::TwoNames {
+        requirement,
+        spec,
+        first,
+        second,
+    } = misfit.innermost()
+    {
+        let (first, second) = (kb.local_name_of(*first), kb.local_name_of(*second));
+        let spec_short = short_name_of(kb.qualified_name_of(*spec)).to_string();
+        let error = TypeError::Other {
+            site: TypeError::here(),
+            span: Some(at.span),
+            context: TypeErrorContext::Rule {
+                name: relation,
+                field: RuleField::Whole,
+            },
+            expected: format!("one requirement of the citing declaration for `{requirement}`"),
+            actual: format!(
+                "the citation of `{}` needs `{requirement}`, which two requirements of the citing \
+                 declaration hold, `{first}` and `{second}` — one sort at one type under two names, \
+                 two dictionaries — and nothing at the citation says which: cite it from an \
+                 operation that requires one `{spec_short}` and call that operation with \
+                 `[{spec_short} = {first}]` or `[{spec_short} = {second}]`",
+                kb.qualified_name_of(relation),
+            ),
+        };
+        return (error, Some(at.source));
+    }
     if let CarriedMisfit::UnfixedAtGoal {
         clause_relation,
         callee,
@@ -1031,9 +1061,9 @@ pub(super) fn citation_misfit_error(
     }
     let span = Some(at.span);
     let error = match misfit {
-        CarriedMisfit::Forwarded { .. } | CarriedMisfit::UnfixedAtGoal { .. } => {
-            unreachable!("read above")
-        }
+        CarriedMisfit::Forwarded { .. }
+        | CarriedMisfit::UnfixedAtGoal { .. }
+        | CarriedMisfit::TwoNames { .. } => unreachable!("read above"),
         CarriedMisfit::Unfixed { param, sort } => TypeError::UnconstrainedCitationParam {
             span,
             relation,
@@ -1626,7 +1656,7 @@ fn route_requirement_read(
             .resolve_as_value(*fresh.get(*d as usize)?)?
             .clone();
         let built = anchor_sort_goal(kb, spec_sort, &[carrier], &bracket.written)?;
-        return resolve_route(kb, chain, param_rigids, subst, &built.goal);
+        return resolve_route(kb, chain, param_rigids, subst, &built.goal, misfits);
     }
     let op_functor = occ_head_symbol(&pos_args[1])?;
     // A read for a call with no argument at its spec's carrier, in a clause whose sort requires
@@ -1677,13 +1707,13 @@ fn route_requirement_read(
     }
     // WI-20260925-P7VP4 — a SLOT read is routed from its callee's own chain entry.
     if let Some(k) = slot_read_index(kb, named_args) {
-        return op_slot_route(kb, chain, param_rigids, subst, op_functor, k, &arg_types);
+        return op_slot_route(kb, chain, param_rigids, subst, op_functor, k, &arg_types, misfits);
     }
     // WI-20260925-SHED7 — a `SortDomain` read is routed from the TYPE, never by a search.
     if is_sort_domain_spec(kb, spec_sort) {
         let ty = arg_types.first()?.clone();
         let syms = ProjectionSyms::resolve(kb)?;
-        return sort_domain_route(kb, chain, param_rigids, subst, spec_sort, &ty, &syms);
+        return sort_domain_route(kb, chain, param_rigids, subst, spec_sort, &ty, &syms, misfits);
     }
     let anchor = is_anchor_form(kb, spec_sort, op_functor);
     let read_goal = |kb: &mut KnowledgeBase, types: &[Value]| {
@@ -1728,7 +1758,7 @@ fn route_requirement_read(
                 });
                 return None;
             }
-            resolve_route(kb, chain, param_rigids, subst, &goal)
+            resolve_route(kb, chain, param_rigids, subst, &goal, misfits)
         }
         CarriedReading::Scope(i) => emit_route(
             kb,
@@ -1821,6 +1851,16 @@ pub(crate) enum CarriedMisfit {
         sort: Symbol,
         param: Symbol,
         columns: Vec<Symbol>,
+    },
+    /// The citing declaration holds two requirements under two names, `first` and `second`,
+    /// that both answer a requirement of the cited clause, `requirement` of `spec`: two
+    /// dictionaries, and the citation says which of them the clause takes nowhere. Reported at
+    /// the citation, however many goals down it is met.
+    TwoNames {
+        requirement: String,
+        spec: Symbol,
+        first: Symbol,
+        second: Symbol,
     },
 }
 
@@ -2308,6 +2348,9 @@ fn sort_requirement_route(
         return None;
     }
     let goal = goal_from_requires_entry(kb, &RequiresEntry { spec, ..entry })?;
+    if let Some(tie) = two_names_at_caller(kb, &pending.chain, &pending.param_rigids, &pending.subst, &goal) {
+        return Some(Err(tie));
+    }
     match resolve_at_caller(kb, &pending.chain, &pending.param_rigids, &pending.subst, &goal, None) {
         ResolutionResult::Resolved(tree) => emit_route(kb, &pending.chain, &tree).map(Ok),
         failure @ ResolutionResult::NoMatch { .. } => Some(Err(CarriedMisfit::Unprovided {
@@ -2328,9 +2371,44 @@ fn resolve_route(
     param_rigids: &[(VarId, TermId)],
     subst: &Substitution,
     goal: &SortGoal,
+    misfits: &mut Vec<CarriedMisfit>,
 ) -> Option<TermId> {
+    if let Some(tie) = two_names_at_caller(kb, chain, param_rigids, subst, goal) {
+        misfits.push(tie);
+        return None;
+    }
     let tree = resolve_against_caller(kb, chain, param_rigids, subst, goal, None)?;
     emit_route(kb, chain, &tree)
+}
+
+/// Two requirements of the citing declaration, told apart by their names alone, that both
+/// answer `goal`, as the misfit that refuses the citation: two dictionaries, and nothing at
+/// the citation says which. The search answers neither, and the clause would derive a third
+/// from the values.
+fn two_names_at_caller(
+    kb: &mut KnowledgeBase,
+    chain: &DictChain,
+    param_rigids: &[(VarId, TermId)],
+    subst: &Substitution,
+    goal: &SortGoal,
+) -> Option<CarriedMisfit> {
+    let sigma = SigmaCtx {
+        subst,
+        param_rigids,
+    };
+    let scope = ResolutionScope {
+        available_requires: chain.entries(),
+        sigma: Some(&sigma),
+        pin: None,
+        sub_goal_requires: &[],
+    };
+    let (first, second) = scope_requirement_tie(kb, &scope, goal, true)?;
+    Some(CarriedMisfit::TwoNames {
+        requirement: format_goal(kb, goal),
+        spec: goal.spec_sort,
+        first,
+        second,
+    })
 }
 
 /// [`resolve_route`]'s resolution, with the provider `pin` selects for the goal itself.
@@ -2400,6 +2478,7 @@ fn slot_read_index(
 /// `None` routes nothing, and the slot is then derived from the values as it always was: an
 /// entry written at a PROJECTION (δ needs the receiver's value, which a type does not carry)
 /// or one these types leave open.
+#[allow(clippy::too_many_arguments)]
 fn op_slot_route(
     kb: &mut KnowledgeBase,
     chain: &DictChain,
@@ -2408,6 +2487,7 @@ fn op_slot_route(
     op: Symbol,
     k: usize,
     arg_types: &[Value],
+    misfits: &mut Vec<CarriedMisfit>,
 ) -> Option<TermId> {
     let rec = crate::kb::op_info::lookup_operation_info(kb, op)?;
     let entry = op_dict_entries(kb, op).iter().nth(k)?.clone();
@@ -2509,7 +2589,7 @@ fn op_slot_route(
     })
     .unwrap_or_else(|| entry.spec.clone());
     let goal = goal_from_requires_entry(kb, &RequiresEntry { spec, ..entry })?;
-    resolve_route(kb, chain, param_rigids, subst, &goal)
+    resolve_route(kb, chain, param_rigids, subst, &goal, misfits)
 }
 
 /// WI-20260925-SHED7 (proposal 060 §2.3) — the route of a `SortDomain` read at the type
@@ -2523,6 +2603,7 @@ fn op_slot_route(
 /// A TYPE WITH NO ENTRY — a caller's RIGID `X` — is the caller's own evidence, resolved
 /// against its frame chain: the one way a rigid's domain reaches a clause (§7.3). `None`
 /// where there is none; the read then builds its own from the value at run time.
+#[allow(clippy::too_many_arguments)]
 fn sort_domain_route(
     kb: &mut KnowledgeBase,
     chain: &DictChain,
@@ -2531,6 +2612,7 @@ fn sort_domain_route(
     spec: Symbol,
     ty: &Value,
     syms: &ProjectionSyms,
+    misfits: &mut Vec<CarriedMisfit>,
 ) -> Option<TermId> {
     let ty = walk_type_deep_value(kb, subst, ty);
     let head = match ty.head(kb) {
@@ -2554,6 +2636,7 @@ fn sort_domain_route(
                 spec,
                 &Value::term(target),
                 syms,
+                misfits,
             );
         }
     }
@@ -2572,12 +2655,13 @@ fn sort_domain_route(
                 spec,
                 &arg,
                 syms,
+                misfits,
             )?);
         }
         return Some(build_dictionary_term(kb, syms, head, &subs));
     }
     let built = anchor_sort_goal(kb, spec, &[ty], &[])?;
-    resolve_route(kb, chain, param_rigids, subst, &built.goal)
+    resolve_route(kb, chain, param_rigids, subst, &built.goal, misfits)
 }
 
 /// WI-714 — the free-variable columns of a relation, merged across its clauses:

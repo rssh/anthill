@@ -633,7 +633,7 @@ pub(crate) fn resolve_in_empty_scope(
 /// answers as [`resolve_inner`]'s lookups would take it: it covers the goal, or — for a
 /// goal that is not the call's own — its chain holds one that does
 /// ([`scope_chain_cover`]).
-fn scope_requirement_tie(
+pub(super) fn scope_requirement_tie(
     kb: &mut KnowledgeBase,
     scope: &ResolutionScope,
     goal: &SortGoal,

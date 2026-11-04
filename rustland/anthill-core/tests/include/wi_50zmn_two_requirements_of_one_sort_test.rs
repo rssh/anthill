@@ -1563,3 +1563,117 @@ fn a_provider_selected_against_the_values_type_is_a_type_error() {
         "`Times = Sum` in the bracket, `Times = Product` in the argument's type",
     );
 }
+
+/// Two orders of `Int64` and three rules reading one: `cmp` directly, `outer` through `cmp`,
+/// `viaSign` through an operation that requires one.
+const TWO_ORDERS: &str = r#"
+namespace wi50zmn.cite
+  import anthill.prelude.{Int64, Error, EmptyStream, WeakOrd, Ord}
+
+  sort Ascending
+    import anthill.prelude.Numeric.{sub}
+    provides Ord[T = Int64]
+    operation compare(a: Int64, b: Int64) -> Int64 = sub(a, b)
+  end
+  sort Descending
+    import anthill.prelude.Numeric.{sub}
+    provides Ord[T = Int64]
+    operation compare(a: Int64, b: Int64) -> Int64 = sub(b, a)
+  end
+  sort Util
+    operation sign[A](x: A, y: A) -> Int64 requires WeakOrd[T = A] = WeakOrd.compare(x, y)
+  end
+
+  rule cmp(?a, ?b, ?c) :- WeakOrd.compare(?a, ?b, ?c)
+  rule outer(?a, ?b, ?c) :- cmp(?a, ?b, ?c)
+  rule viaSign(?a, ?b, ?c) :- Util.sign(?a, ?b, ?c)
+  rule either(?a, ?b, ?c) :- WeakOrd.compare(?a, ?b, ?c)
+  rule either(?a, ?b, ?c) :- WeakOrd.compare(?b, ?a, ?c)
+
+  sort Cite
+    import anthill.prelude.Numeric.{add, mul}
+OPS  end
+end
+"#;
+
+fn two_orders(ops: &str) -> String {
+    TWO_ORDERS.replace("OPS", ops)
+}
+
+/// `t[A](x: A, y: A)` requiring `requires`, with `body`.
+fn two_orders_op(requires: &str, body: &str) -> String {
+    format!(
+        "    operation t[A](x: A, y: A) -> Int64 effects {{Error, Error[EmptyStream]}}\n      \
+         requires {requires} =\n      {body}\n"
+    )
+}
+
+/// A CITATION OF A RULE THAT TWO OF THE CITING DECLARATION'S REQUIREMENTS ANSWER, UNDER TWO
+/// NAMES, IS REFUSED, as a call that names neither is (user, 2026-11-04: two names are two
+/// dictionaries). `t` holds `up` and `down`, both `WeakOrd[T = A]`, and cites `cmp`, whose read
+/// is `WeakOrd` at `A`: the citation answered `Int64`'s own `-1`, neither `up`'s nor `down`'s,
+/// the search finding the two and routing nothing. So through `outer` and through `viaSign`,
+/// whose read is `Util.sign`'s requirement, and once for `either`, whose two clauses each read
+/// it. The repair the refusal names runs: an operation
+/// requiring one, called with `[WeakOrd = down]`, answers `-396` with `up = Ascending, down =
+/// Descending` and `396` swapped. FAILS with the refusal backed out: the three load, answering
+/// `-1`. CONTROLS, answering either way: one name (`4`), two names at two types (`4`), a
+/// citation at `Int64` itself, where neither is at the read's type (`-1`).
+#[test]
+fn a_citation_two_named_requirements_answer_is_refused() {
+    let two = "up: WeakOrd[T = A], down: WeakOrd[T = A]";
+    for (body, rule) in [
+        ("cmp(x, y).head.c", "cmp"),
+        ("outer(x, y).head.c", "outer"),
+        ("viaSign(x, y).head.c", "viaSign"),
+        ("either(x, y).head.c", "either"),
+    ] {
+        let errs = load_errors_of(&two_orders(&two_orders_op(two, body)));
+        assert_eq!(errs.len(), 1, "{rule}: one refusal, got {errs:?}");
+        assert_refused_naming(
+            &errs,
+            &[
+                &format!("the citation of `wi50zmn.cite.{rule}` needs"),
+                "two requirements of the citing declaration hold, `up` and `down`",
+                "`[WeakOrd = up]` or `[WeakOrd = down]`",
+            ],
+            rule,
+        );
+    }
+    let ns = "wi50zmn.cite.Cite";
+    let repair = format!(
+        "    operation viaOne[A](x: A, y: A) -> Int64 effects {{Error, Error[EmptyStream]}}\n      \
+         requires WeakOrd[T = A] =\n      cmp(x, y).head.c\n{}\
+         {}\
+         {}",
+        two_orders_op(two, "add(mul(up.compare(x, y), 100), viaOne[WeakOrd = down](x, y))"),
+        "    operation ad() -> Int64 effects {Error, Error[EmptyStream]} =\n      \
+         t[A = Int64, up = Ascending, down = Descending](1, 5)\n",
+        "    operation da() -> Int64 effects {Error, Error[EmptyStream]} =\n      \
+         t[A = Int64, up = Descending, down = Ascending](1, 5)\n",
+    );
+    let src = two_orders(&repair);
+    assert_eq!(
+        (drive(&src, &format!("{ns}.ad")), drive(&src, &format!("{ns}.da"))),
+        (-396, 396),
+        "the repair: `down` handed on by its name",
+    );
+    let control = |requires: &str, body: &str, call: &str| {
+        let ops = format!(
+            "{}    operation run() -> Int64 effects {{Error, Error[EmptyStream]}} = {call}\n",
+            two_orders_op(requires, body)
+        );
+        drive(&two_orders(&ops), &format!("{ns}.run"))
+    };
+    assert_eq!(control("up: WeakOrd[T = A]", "cmp(x, y).head.c", "t[A = Int64, up = Descending](1, 5)"), 4);
+    assert_eq!(
+        control(two, "cmp(1, 5).head.c", "t[A = Int64, up = Ascending, down = Descending](1, 5)"),
+        -1,
+        "at `Int64` itself neither requirement is at the read's type",
+    );
+    let ops = "    operation t[A, B](x: A, y: A, z: B) -> Int64 effects {Error, Error[EmptyStream]}\n      \
+               requires up: WeakOrd[T = A], other: WeakOrd[T = B] =\n      cmp(x, y).head.c\n    \
+               operation run() -> Int64 effects {Error, Error[EmptyStream]} =\n      \
+               t[A = Int64, B = Int64, up = Descending, other = Ascending](1, 5, 0)\n";
+    assert_eq!(drive(&two_orders(ops), &format!("{ns}.run")), 4, "two names at two types");
+}
