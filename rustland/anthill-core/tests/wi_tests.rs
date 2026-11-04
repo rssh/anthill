@@ -1775,6 +1775,8 @@ mod wi_2nmxa_denoted_provision_binding_test;
 mod wi_tj3g4_valued_key_positions_test;
 #[path = "include/wi_7ab56_projection_key_test.rs"]
 mod wi_7ab56_projection_key_test;
+#[path = "include/wi_swphb_partly_abstract_key_test.rs"]
+mod wi_swphb_partly_abstract_key_test;
 #[path = "include/wi_sg16k_lambda_binder_projection_test.rs"]
 mod wi_sg16k_lambda_binder_projection_test;
 
