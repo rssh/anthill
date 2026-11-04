@@ -1050,8 +1050,14 @@ fn eq_holds_at(
 /// parameters ([`CarrierAtOwnParams`]): resolved under σ, a rigid matches only itself and
 /// an assumption covers a goal only at its own rigid. Assumed with no σ, `Eq[T = F]` would
 /// cover `Eq[T = Float]` too ([`requires_entry_covers_goal`]'s coarse mode).
+///
+/// A TUPLE NESTED IN THE KEY whose components provide `Eq` ([`unlawful_eq_part`]) is such a
+/// part too, `Eq` assumed at it: a tuple has no sort to carry a provision, so the resolver,
+/// asked a condition at one (`List`'s `Eq[T = (a: Int64, b: Int64)]`), finds none. A nested
+/// tuple whose components do not is left as it is, and fails a condition that reaches it;
+/// one no condition reaches does not decide the key.
 struct KeyAtRigidParts {
-    /// The key, each distinct abstract part a rigid of its own.
+    /// The key, each distinct part a rigid of its own.
     key: Value,
     /// Each type parameter among the parts, its canonical variable bridged to its rigid, so
     /// a requirement written over the parameter is about the rigid.
@@ -1066,7 +1072,7 @@ struct KeyAtRigidParts {
 }
 
 impl KeyAtRigidParts {
-    /// `None` where `ty` has no abstract part.
+    /// `None` where `ty` has no such part.
     fn of(
         kb: &mut KnowledgeBase,
         eq_sym: Symbol,
@@ -1079,7 +1085,11 @@ impl KeyAtRigidParts {
         let parts: std::cell::RefCell<Vec<(Value, Option<Symbol>, TermId)>> =
             std::cell::RefCell::new(Vec::new());
         let key = rewrite_type_leaves(kb, ty, &|kb, part| {
-            if !is_abstract_key_part(kb, part) {
+            if schema_fields(kb, part).is_some() {
+                if unlawful_eq_part(kb, eq_sym, part, operation).is_some() {
+                    return None;
+                }
+            } else if !is_abstract_key_part(kb, part) {
                 return None;
             }
             let param = param_of_key_part(kb, part);
@@ -1304,7 +1314,8 @@ const KEY_READINGS: usize = 32;
 /// directly.
 ///
 /// (2) — closed. A tuple key whose unlawfulness is in a component (`Map[K = (a: Float)]`)
-/// is refused: [`eq_holds_at`] reads a tuple by its components.
+/// is refused: [`unlawful_eq_part`] reads a tuple by its components, and one nested in an
+/// application is read so too ([`KeyAtRigidParts`]).
 ///
 /// (3) A container type the author never WRITES — one the typer infers at a call
 /// site — has no written instantiation to record; the declared signature it flows
@@ -1319,11 +1330,6 @@ const KEY_READINGS: usize = 32;
 /// (5) A projection off a binder of an operation's BODY (`let y = x`, a `match` arm's
 /// binder) is refused as not judged: this pass has the operation's declared parameters and
 /// not the body's scope — WI-20261103-BANCC.
-///
-/// (6) A tuple is read by its components at the top of the key only. Nested in an
-/// application it is a condition of that application's provision, which the resolver
-/// answers, and the resolver reads no tuple: `Set[T = List[T = (a: Int64, b: Int64)]]` is
-/// refused, and so, judged at its other parts, is `Map[K = Set[T = (a: F, b: Int64)]]`.
 pub(crate) fn check_use_site_requires_eq(
     kb: &mut KnowledgeBase,
     sites: &[crate::kb::ParameterizedSite],

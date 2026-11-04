@@ -10,10 +10,11 @@
 //! under that assumption with σ, so the assumption covers only its own
 //! part (`KeyAtRigidParts`). What the declarations the key is written in require — the
 //! frame of its operation, the declaration of each parameter in it — is assumed too, as
-//! every other check of them assumes it. A tuple is read by its components, and the refusal
-//! names the one that does not provide `Eq`.
+//! every other check of them assumes it. A tuple is read by its components — nested in an
+//! application as at the top of the key — and at the top the refusal names the one that
+//! does not provide `Eq`.
 //!
-//! BACK-OUTS, MEASURED — each ONE part put back, over this file's 6 rows and
+//! BACK-OUTS, MEASURED — each ONE part put back, over this file's 7 rows and
 //! `wi_7ab56_projection_key_test`'s 9:
 //!
 //!  * A key with an abstract part skipped whole again — 6: every row here but the lawful
@@ -30,6 +31,9 @@
 //!    declaration — 1: the same row, at the operation's `requires` over its sort's `F` and
 //!    at the provision block's condition.
 //!  * No component named — 3: the ticket's keys, the positions and the rigid projection.
+//!  * A tuple nested in the key not read by its components — 1:
+//!    `a_tuple_nested_in_a_key_is_read_by_its_components` (`Set[T = List[T = (a: Int64, b:
+//!    Int64)]]` refused); the key suites `wi_9kypa…`, `wi835…` and `wi644…` pass either way.
 //!  * A key printed as stored — 5: every row that prints a type parameter, here and the
 //!    7AB56 one (`(a: ?F, b: Float)`, `Pair[A = ?, …]`, `Box[T = ?]`).
 //!
@@ -45,7 +49,7 @@ fn program(ns: &str, decl: &str) -> String {
     format!(
         r#"
 namespace {ns}
-  import anthill.prelude.{{Int64, Float, Bool, Set, Map, Option, Ord, Eq, PartialEq}}
+  import anthill.prelude.{{Int64, Float, Bool, Set, Map, List, Option, Ord, Eq, PartialEq}}
   import anthill.prelude.Option.{{none}}
   sort Leaf
     sort E = ?
@@ -352,5 +356,59 @@ fn a_parameter_written_twice_is_one_part() {
         &format!("{ns}.Pair[A = {ns}.k.F, B = {ns}.Pair[A = {ns}.k.F, B = anthill.prelude.Float]]"),
         None,
         "an unlawful part nested beside the parameter",
+    );
+}
+
+/// A tuple nested in a key provides `Eq` when its components do, as at the top of the key:
+/// a condition of the application around it (`List`'s `Eq[T]`) is answered at it. Each
+/// lawful one loads, and the list of tuples runs; one with a `Float` component is refused,
+/// naming the whole key. CONTROL — passes either way: a tuple no condition reaches
+/// (`Tg`'s `Eq` asks `T` alone) does not decide the key.
+#[test]
+fn a_tuple_nested_in_a_key_is_read_by_its_components() {
+    let ns = "wi_swphb.nested.run";
+    let src = program(
+        ns,
+        "operation k(s: Set[T = List[T = (a: Int64, b: Int64)]]) -> Int64 = 7\n  operation main() -> Int64 = k({[(a: 1, b: 2)]})",
+    );
+    assert_eq!(run_int64(&src, &format!("{ns}.main")), Ok(7));
+    let lawful = [
+        ("pair", "Pair[A = Int64, B = (a: Int64, b: Int64)]"),
+        ("unit", "List[T = ()]"),
+        ("deep", "List[T = ((a: Int64), Bool)]"),
+        ("generic", "List[T = (a: F, b: Int64)]"),
+    ];
+    for (tag, key) in lawful {
+        assert_loads(
+            &program(
+                &format!("wi_swphb.nested.{tag}"),
+                &format!("operation k[F](s: Set[T = {key}]) -> Int64 = 1"),
+            ),
+            &format!("`Set[T = {key}]`"),
+        );
+    }
+    let unlawful = [
+        ("float", "List[T = (a: Int64, b: Float)]", "anthill.prelude.List[T = (a: Int64, b: Float)]"),
+        ("deepfloat", "List[T = ((a: Float), Bool)]", "anthill.prelude.List[T = (_1: (a: Float), _2: Bool)]"),
+        ("genericfloat", "List[T = (a: F, b: Float)]", "anthill.prelude.List[T = (a: F, b: Float)]"),
+    ];
+    for (tag, key, printed) in unlawful {
+        assert_unlawful(
+            &program(
+                &format!("wi_swphb.nested.{tag}"),
+                &format!("operation k[F](s: Set[T = {key}]) -> Int64 = 1"),
+            ),
+            1,
+            printed,
+            None,
+            &format!("`Set[T = {key}]`"),
+        );
+    }
+    assert_loads(
+        &program(
+            "wi_swphb.nested.unreached",
+            "sort Tg\n    sort T = ?\n    sort Tag = ?\n    entity tg(v: T)\n  end\n  operation k(s: Set[T = Tg[T = Int64, Tag = (a: Float)]]) -> Int64 = 1",
+        ),
+        "a tuple no condition reaches",
     );
 }
