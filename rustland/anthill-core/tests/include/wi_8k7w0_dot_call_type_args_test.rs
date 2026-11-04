@@ -275,7 +275,7 @@ fn a_rule_terms_dot_refuses_its_bracket() {
         let err = the_refusal(&point(decl));
         assert!(
             err.contains(&format!("call-site type arguments {callee} are not supported here"))
-                && err.contains("The bracket is read only on a call in an OPERATION BODY"),
+                && err.contains("The bracket is read on a call in an OPERATION BODY"),
             "{decl}: {err}",
         );
     }

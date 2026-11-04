@@ -273,8 +273,9 @@ fn route_goal(
     if total == 0 {
         return None;
     }
-    // The bracket's instance, built here: nothing a caller passes can change it.
-    let built = if call_recv_type_of(site).is_some() {
+    // The bracket's instance, built here: nothing a caller passes can change it — a sort's
+    // bracket on the relation, or the goal's own on what the relation declares (060.1 §2).
+    let built = if call_recv_type_of(site).is_some() || call_type_args_of(site).is_some() {
         let mut misfits = Vec::new();
         let routes = match bracketed_goal_routes(kb, site, callee, &mut misfits) {
             Ok(routes) => routes,
@@ -348,13 +349,20 @@ fn route_goal(
             }
         })
         .collect();
-    if slots.iter().all(|s| matches!(s, GoalSlot::Unrouted)) {
+    // The goal's own bracket (060.1 §2) rides on the marker, not on the goal it wraps: a
+    // goal is matched as the term it writes, and the bracket is no argument of it. The goal
+    // gets it back where the marker is read as the goal written ([`body_without_goal_markers`]).
+    let bracket: Vec<(Option<Symbol>, Value)> = match site.as_expr() {
+        Some(Expr::Apply { type_args, .. }) => type_args.clone(),
+        _ => Vec::new(),
+    };
+    if bracket.is_empty() && slots.iter().all(|s| matches!(s, GoalSlot::Unrouted)) {
         return None;
     }
     let (span, owner) = (site.span, site.owner);
     let node = |e: Expr| NodeOccurrence::new_expr(e, span, owner);
     let mut pos_args: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(total + 2);
-    pos_args.push(Rc::clone(site));
+    pos_args.push(with_type_args(site, Vec::new()));
     pos_args.push(node(Expr::Ref(callee)));
     for slot in slots {
         pos_args.push(match slot {
@@ -385,7 +393,7 @@ fn route_goal(
             functor: routing.syms.within,
             pos_args,
             named_args: Vec::new(),
-            type_args: Vec::new(),
+            type_args: bracket,
         },
         Rc::clone(site),
         routing.syms.marker_pass,
@@ -576,16 +584,44 @@ fn refuse_unread_brackets(
     while let Some(node) = stack.pop() {
         let Some(expr) = node.as_expr() else { continue };
         if let Expr::Apply {
-            recv_type: Some(_),
+            recv_type,
             functor,
+            type_args,
             ..
         } = expr
         {
             let relation = kb.cites_a_relation(*functor)
                 && !kb.has_kind(*functor, crate::intern::SymbolKind::Operation);
-            let goal = sites.iter().any(|s| Rc::ptr_eq(s, &node));
-            if relation && (!goal || !kb.has_clauses_under(*functor)) {
+            let goal = relation && sites.iter().any(|s| Rc::ptr_eq(s, &node));
+            if relation && recv_type.is_some() && (!goal || !kb.has_clauses_under(*functor)) {
                 unread.push((Rc::clone(&node), *functor, goal));
+            }
+            // The goal's own bracket (060.1 §2) is read where the goal is routed, on a relation
+            // that declares type parameters; anywhere else, nothing reads it.
+            if relation && !type_args.is_empty() && !(goal && relation_declares_type_params(kb, *functor)) {
+                let error = if goal {
+                    TypeError::TypeArgsOnNonOperation {
+                        span: Some(node.span.span),
+                        callee: *functor,
+                    }
+                } else {
+                    let name = kb.qualified_name_of(*functor).to_string();
+                    TypeError::Other {
+                        site: TypeError::here(),
+                        span: Some(node.span.span),
+                        context: TypeErrorContext::Rule {
+                            name: *functor,
+                            field: RuleField::Whole,
+                        },
+                        expected: format!("the relation written without the bracket, `{name}(…)`"),
+                        actual: format!(
+                            "a bracket on `{name}` in a rule body is read where the relation is a \
+                             goal, and is not here — the binding would be dropped. Write it as a \
+                             goal, or cite it from an operation body"
+                        ),
+                    }
+                };
+                refused.push((error, Some(node.span.source)));
             }
         }
         for_each_child(expr, |c| stack.push(Rc::clone(c)));
@@ -726,8 +762,39 @@ pub(crate) fn body_without_goal_markers(
     body: &[Rc<NodeOccurrence>],
 ) -> Vec<Rc<NodeOccurrence>> {
     body.iter()
-        .map(|g| map_proved_goals(kb, g, &|kb, n| goal_marker(kb, n).map(|m| Rc::clone(m.goal))))
+        .map(|g| {
+            map_proved_goals(kb, g, &|kb, n| {
+                let m = goal_marker(kb, n)?;
+                Some(match n.as_expr() {
+                    Some(Expr::Apply { type_args, .. }) if !type_args.is_empty() => {
+                        with_type_args(m.goal, type_args.clone())
+                    }
+                    _ => Rc::clone(m.goal),
+                })
+            })
+        })
         .collect()
+}
+
+/// `goal`, an application, with the bracket `type_args` in place of its own; `goal` itself
+/// where the two are both empty.
+fn with_type_args(goal: &Rc<NodeOccurrence>, type_args: Vec<(Option<Symbol>, Value)>) -> Rc<NodeOccurrence> {
+    match goal.as_expr() {
+        Some(Expr::Apply {
+            recv_type,
+            functor,
+            pos_args,
+            named_args,
+            type_args: own,
+        }) if !(own.is_empty() && type_args.is_empty()) => goal.rebuilt_expr(Expr::Apply {
+            recv_type: recv_type.clone(),
+            functor: *functor,
+            pos_args: pos_args.clone(),
+            named_args: named_args.clone(),
+            type_args,
+        }),
+        _ => Rc::clone(goal),
+    }
 }
 
 /// The strongly connected components of `edges` (a graph over `0..edges.len()`), each emitted

@@ -2912,9 +2912,10 @@ pub enum CallTypeArgsPosition {
     /// A rule HEAD carrying at least one CONCRETE binding (`rule r[A = Int64](…)`).
     /// The head channel exists but admits only the bare WI-582 introducer form.
     RuleHead,
-    /// Anywhere the bracket has no reader at all: a rule-body goal, a `fact` head, a
-    /// `constraint`, an operation's `requires` / `ensures` contract expression. A
-    /// constructor in one of them is a term the clause matches, and is among them.
+    /// Anywhere the bracket has no reader at all: a rule-body call of anything but a
+    /// relation, a `fact` head, a `constraint`, an operation's `requires` / `ensures`
+    /// contract expression. A constructor in one of them is a term the clause matches, and
+    /// is among them.
     NoChannel,
 }
 
@@ -2939,10 +2940,13 @@ fn call_type_args_unsupported_detail(callee: &str, position: CallTypeArgsPositio
         CallTypeArgsPosition::NoChannel => format!(
             "call-site type arguments `{callee}[…](…)` are not supported here — the \
              binding is parsed and would then be silently dropped. The bracket is read \
-             only on a call in an OPERATION BODY (and, as a bare introducer, on a rule \
-             head); a rule-body goal, a `fact` head, a `constraint` and a `requires` / \
+             on a call in an OPERATION BODY, on a rule-body goal of a relation that \
+             declares type parameters, and, as a bare introducer, on a rule head; any \
+             other rule-body call, a `fact` head, a `constraint` and a `requires` / \
              `ensures` contract expression have no channel for it. Where a rule body \
-             needs a chosen provider, call an operation whose body carries the bracket"
+             needs a chosen provider, declare it on the relation the goal calls (`rule \
+             r[A](…) :- Spec[T = A], …`) and write the bracket on that goal, or call an \
+             operation whose body carries the bracket"
         ),
     }
 }
@@ -28686,6 +28690,10 @@ struct Loader<'a> {
     // ([`Self::citation_read_as_dot`]); a clause's own term — a fact, a rule head — keeps the
     // citation.
     in_body_occurrence: bool,
+    // Building the body of a rule's clause, whose goals the typer routes: where a goal's own
+    // bracket is read (060.1 §2). A constraint's body is also converted for its guard, which
+    // reads no bracket, so its goals keep the end-of-file sweep's refusal.
+    in_rule_clause_body: bool,
     // WI-20260824-JM6ZW — true while the rule-body walk lowers a child whose ROLE is not
     // `ValueExpression` (design 055 §3: "a child whose role is head, callee, … member name
     // … or `TypeExpr` does not" admit a type value), so the walk's type-value record is not
@@ -29278,6 +29286,7 @@ impl<'a> Loader<'a> {
             in_body_goal: false,
             in_body_goal_wrapper: false,
             in_body_occurrence: false,
+            in_rule_clause_body: false,
             in_non_value_role: false,
             in_member_name: false,
             in_call_argument: false,
@@ -36349,6 +36358,35 @@ impl<'a> Loader<'a> {
         self.kb.alias_head(sym)
     }
 
+    /// A rule-body goal's bracket (060.1 §2), built as a call's is — except an entry whose
+    /// value is a type parameter the clause's own head introduces (`cmp[A = A](…)` in `rule
+    /// outer[A](…)`), which no reader binds: refused, naming the spelling that passes the
+    /// clause's requirement, an argument of the goal typed at it.
+    fn goal_call_type_args(&mut self, parse_id: ParseTermId) -> Vec<(Option<Symbol>, crate::eval::value::Value)> {
+        let own = self.read_parse_call_type_args(parse_id).and_then(|bindings| {
+            bindings.iter().find_map(|b| match &b.bound {
+                crate::parse::ir::TypeExpr::Simple(n) if n.segments.len() == 1 => {
+                    let name = self.parsed.symbols.local_name(n.segments[0]).to_owned();
+                    self.rule_head_tvar(&name).is_some().then_some(name)
+                }
+                _ => None,
+            })
+        });
+        let Some(name) = own else {
+            return self.build_call_type_args(parse_id);
+        };
+        self.consumed_call_type_args.insert(parse_id);
+        self.errors.push(LoadError::InvalidTypeArgument {
+            detail: format!(
+                "the clause's own type parameter `{name}` written in a goal's bracket is not read: \
+                 a goal passes its callee the clause's requirement at `{name}` through its \
+                 arguments typed at it — drop the entry, and type the argument (`?x: {name}`)"
+            ),
+            span: Some(self.parsed.terms.span(parse_id)),
+        });
+        Vec::new()
+    }
+
     fn build_call_type_args(
         &mut self,
         parse_id: ParseTermId,
@@ -38999,10 +39037,22 @@ impl<'a> Loader<'a> {
                             } else {
                                 self.build_recv_type(parse_id, new_functor)
                             },
+                            // A bracket on a goal of a relation binds what the relation
+                            // declares (060.1 §2), read by the typer's routing of the goal,
+                            // which refuses it where the relation declares nothing. On any
+                            // other callee it stays unread, for the end-of-file sweep.
+                            type_args: if !reread_reflect_form
+                                && self.in_rule_clause_body
+                                && self.kb.has_kind(new_functor, SymbolKind::Goal)
+                                && !self.kb.has_kind(new_functor, SymbolKind::Operation)
+                            {
+                                self.goal_call_type_args(parse_id)
+                            } else {
+                                Vec::new()
+                            },
                             functor: new_functor,
                             pos_args: pos,
                             named_args: named,
-                            type_args: Vec::new(),
                         }
                     }
                 }
@@ -46482,7 +46532,9 @@ impl<'a> Loader<'a> {
                 // WI-20261001-KDMQS — and the const fold's state starts at the same
                 // place: a goal, whose data slots fold.
                 let prev_fold = std::mem::replace(&mut self.const_fold, ConstFold::Goal);
+                let prev_clause = std::mem::replace(&mut self.in_rule_clause_body, true);
                 let atom = self.build_body_atom_occurrence(tid);
+                self.in_rule_clause_body = prev_clause;
                 self.const_fold = prev_fold;
                 self.in_body_goal = prev_goal;
                 body_nodes.push(atom);

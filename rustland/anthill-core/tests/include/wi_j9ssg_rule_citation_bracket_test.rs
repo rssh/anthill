@@ -1,5 +1,6 @@
 //! WI-20261104-J9SSG — proposal 060.1, stage 1: A CITATION'S BRACKET READS WHAT THE RULE
-//! DECLARES (§2), and what a declared requirement supplies (§1).
+//! DECLARES (§2) — an operation body's and a rule-body goal's — and what a declared
+//! requirement supplies (§1).
 //!
 //! A rule declares its type parameters and requirements with the head's introducer, `rule
 //! cmp[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], …`, and a citation's bracket binds them as a
@@ -19,7 +20,12 @@
 //!  * [G] a call at a declared parameter reached through a column's type taking a read of its
 //!    own — the recursion rows answer `0`;
 //!  * [L] no check of one parameter list per relation — its two refusals load;
-//!  * [U] no refusal of an introducer no column names — its row loads.
+//!  * [U] no refusal of an introducer no column names — its row loads;
+//!  * [R] a rule-body goal's bracket not routed — its witness rows read `Int64`'s own, and the
+//!    refusals its routing raises load;
+//!  * [M] the bracket left on the goal its marker wraps — the goal matches no clause;
+//!  * [O] no refusal of the clause's own type parameter in a goal's bracket — an unresolved
+//!    name instead.
 //!
 //! The citation with no bracket, the bracket on a rule with no introducer, and the clauses
 //! that declare one list or none pass under every axis: the controls.
@@ -310,4 +316,81 @@ fn an_introducer_no_column_names_is_refused() {
         "  rule p[A](?x, ?c) :- WeakOrd[T = A], WeakOrd.compare(?x, ?x, ?c)\n",
     ));
     assert_one_refusal(&errs, "rule type-variable `A` is the type of no head column", "unused introducer");
+}
+
+/// A RULE-BODY GOAL'S BRACKET READS WHAT ITS RELATION DECLARES (§2), as an operation body's
+/// citation does: `cmp[A = Int64](1, 5, ?c)` is `Int64`'s own order, `cmp[WeakOrd =
+/// Descending](1, 5, ?c)` the witness's — a provider chosen in a rule body, where before only
+/// an operation could choose one. So in a negation and in a branch. FAILS under [R] (the
+/// goal's bracket not routed): `viaDesc`, `viaWitness`, `neg` and `alt`'s second branch read
+/// `Int64`'s own; under [M] (the bracket left on the goal the marker wraps): the goal matches
+/// no clause, and the first row raises `empty_stream`. `plain`, a goal with no bracket,
+/// answers `-1` under every axis.
+#[test]
+fn a_rule_body_goals_bracket_binds_what_the_rule_declares() {
+    let ns = "j9ssg.goal";
+    let rules = "  rule ints(?c) :- cmp[A = Int64](1, 5, ?c)\n  \
+                 rule desc(?c) :- cmp[A = Int64, WeakOrd = Descending](1, 5, ?c)\n  \
+                 rule witnessOnly(?c) :- cmp[WeakOrd = Descending](1, 5, ?c)\n  \
+                 rule plainGoal(?c) :- cmp(1, 5, ?c)\n  \
+                 rule neg(?c) :- ?c <=> 4, not(cmp[WeakOrd = Descending](1, 5, ?c))\n  \
+                 rule negOwn(?c) :- ?c <=> 4, not(cmp[A = Int64](1, 5, ?c))\n  \
+                 rule alt(?c) :- cmp[A = Int64](1, 5, ?c) | cmp[WeakOrd = Descending](1, 5, ?c)\n";
+    let got = answers(
+        ns,
+        rules,
+        &[
+            ("viaInts", "ints().head.c"),
+            ("viaDesc", "desc().head.c"),
+            ("viaWitness", "witnessOnly().head.c"),
+            ("plain", "plainGoal().head.c"),
+            ("negHolds", "if neg().isEmpty() then 0 else 1"),
+            ("negOwnHolds", "if negOwn().isEmpty() then 0 else 1"),
+            ("altFirst", "alt().head.c"),
+            ("altAtDesc", "if alt(4).isEmpty() then 0 else 1"),
+            ("altAtOwn", "if alt(-1).isEmpty() then 0 else 1"),
+            ("altElsewhere", "if alt(0).isEmpty() then 0 else 1"),
+        ],
+    );
+    expect(
+        &got,
+        &[
+            ("viaInts", -1),
+            ("viaDesc", 4),
+            ("viaWitness", 4),
+            ("plain", -1),
+            ("negHolds", 0),
+            ("negOwnHolds", 1),
+            ("altFirst", -1),
+            ("altAtDesc", 1),
+            ("altAtOwn", 1),
+            ("altElsewhere", 0),
+        ],
+    );
+}
+
+/// The rule-body goal's bracket refused where an operation body's would be — a key the
+/// relation does not declare, an argument it contradicts, a witness that does not provide at
+/// the goal's type, a relation that declares nothing — and where nothing reads it: a citation
+/// in a value slot, and the clause's own type parameter as an entry (the goal's arguments
+/// typed at it pass the clause's requirement). FAILS under [O] for the last, which is then
+/// an unresolved name, and under [R] for the three the goal's routing raises — the key, the
+/// argument, the witness — which then load.
+#[test]
+fn a_rule_body_goals_bracket_is_refused_where_nothing_reads_it() {
+    let ns = "j9ssg.goalrefused";
+    for (rule, text) in [
+        ("rule g(?c) :- plain[A = Int64](1, 5, ?c)", "a callee with no type-parameter list"),
+        ("rule g(?c) :- cmp[B = Int64](1, 5, ?c)", "unknown type-param 'B'"),
+        ("rule g(?c) :- cmp[A = Int64](\"a\", \"b\", ?c)", "incompatible type at the goal's bracket"),
+        ("rule g(?c) :- cmp[WeakOrd = Descending](\"a\", \"b\", ?c)", "but not at the bindings this call"),
+        ("rule g(?r) :- ?r <=> cmp[A = Int64](1, 5)", "is read where the relation is a goal, and is not here"),
+        (
+            "rule g[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], cmp[A = A](?a, ?b, ?c)",
+            "the clause's own type parameter `A` written in a goal's bracket is not read",
+        ),
+    ] {
+        let errs = crate::common::load_errors_of(&program(ns, &format!("  {rule}\n")));
+        assert_one_refusal(&errs, text, rule);
+    }
 }

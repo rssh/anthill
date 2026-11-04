@@ -1537,7 +1537,7 @@ fn goal_edge_citation(
         unreachable!("a goal a marker carries is an application");
     };
     let span = Some(goal.span.span);
-    let mut columns = relation_columns_across_clauses(kb, callee, span, true)?;
+    let (mut columns, declared) = relation_columns_and_params(kb, callee, span, true)?;
     let opened = open_citation_params(kb, callee, &mut columns);
     // A rule body has no rigids and no enclosing instance: its bracket values are types as
     // written.
@@ -1546,6 +1546,15 @@ fn goal_edge_citation(
     if let Some((owner, params)) = &opened {
         seed_citation_params(kb, &mut subst, goal, callee, span, *owner, params, &env)?;
     }
+    // 060.1 §2 — the goal's own bracket on what the relation declares.
+    // On a relation that declares nothing the bracket is refused where it is written
+    // (`refuse_unread_brackets`), once.
+    let bracketed = call_type_args_of(goal).is_some() && relation_declares_type_params(kb, callee);
+    let selections = if bracketed {
+        seed_rule_citation_bracket(kb, &mut subst, &env, goal, callee, &declared, span)?
+    } else {
+        Vec::new()
+    };
     let unopened = unopened_citation_params(kb, goal, callee, opened.as_ref(), &env);
     let mut seen: HashSet<Symbol> = HashSet::new();
     let names: Vec<Symbol> = columns.iter().map(|c| c.name).filter(|n| seen.insert(*n)).collect();
@@ -1581,6 +1590,25 @@ fn goal_edge_citation(
         let ty = match columns.iter().find(|c| c.name == *name && !c.some) {
             Some(col) => {
                 let Some((met_subst, met)) = met_with_column(kb, &subst, &col.ty, &ty) else {
+                    // Where the goal's bracket fixed the column, a solution at another type is
+                    // read through the dictionary the bracket chose for this one: refused.
+                    if bracketed {
+                        return Err(TypeError::Other {
+                            site: TypeError::here(),
+                            span,
+                            context: TypeErrorContext::Rule {
+                                name: callee,
+                                field: RuleField::Whole,
+                            },
+                            expected: "a goal whose arguments bind the relation's columns".to_string(),
+                            actual: format!(
+                                "argument binding column `{}` has an incompatible type at the \
+                                 goal's bracket (relation `{}`)",
+                                kb.local_name_of(*name),
+                                kb.qualified_name_of(callee)
+                            ),
+                        });
+                    }
                     continue;
                 };
                 subst = met_subst;
@@ -1612,7 +1640,7 @@ fn goal_edge_citation(
         param_rigids,
         unopened,
         depth,
-        selections: Vec::new(),
+        selections,
     };
     Ok((edge, unfixed))
 }
@@ -4119,7 +4147,7 @@ fn relation_clause_columns(
     };
     let body_nodes: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
     let typing = collect_rule_var_types(kb, rid, head, &body_nodes);
-    let (var_types, some_typed) = (typing.var_types, typing.some_typed);
+    let (mut var_types, some_typed) = (typing.var_types, typing.some_typed);
     // WI-20260911-5G28A — OPEN THIS CLAUSE'S BOUNDS PER CITATION, and that is what makes
     // a TIE between two columns readable at a call site. `rule my_rule(?x: List[T = ?t],
     // ?res: List[T = ?t])` stores both bounds De Bruijn-closed against one frame, so ONE
@@ -4169,6 +4197,12 @@ fn relation_clause_columns(
             })
             .collect();
         kb.open_rule_provider_requirements(rid, &fresh_frame);
+        // The clause's typing names its frame's slots too — a typed body is read closed, its
+        // bound's variable a slot — and is opened with the bounds, so the two meet at one
+        // variable and a citation's bracket binds both.
+        for ty in var_types.values_mut() {
+            *ty = crate::kb::node_occurrence::open_value_type(kb, ty, &fresh_frame).0;
+        }
         params = kb
             .rule_type_params(rid)
             .iter()
