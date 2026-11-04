@@ -404,7 +404,8 @@ fn refuse_unread_brackets(
             // A spec's rule: what answers it is a provider's clause, and a goal reaches none.
             let fill = kb.try_resolve_symbol("anthill.reflect.Fillable.fill");
             let domain = if fill.map(|f| kb.canonical_sym(f)) == Some(kb.canonical_sym(relation)) {
-                "; a sort's domain is its `domain` relation — `Colour.domain(?x)` for \
+                "; a variable typed at the sort is filled by its `SortDomain` — write \
+                 `rule colours(?x: Colour) :- true` and the goal `colours(?x)` for \
                  `SortDomain[T = Colour].fill(?x)`"
             } else {
                 ""

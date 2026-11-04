@@ -1,9 +1,8 @@
 # 060: Clause-level type declarations compile to generated body goals
 
 **Canonical reference:** [`kernel-language.md` §5.3](../kernel-language.md#53-rule).
-The reference records the delivered `require[X]` subset and the existing
-directional-rewrite typed patterns; WI-742's compatible plain-relational typed
-heads remain explicitly unimplemented.
+The reference records the delivered `require[X]` subset, the directional-rewrite
+typed patterns and the typed relational heads (WI-742).
 
 ## Status: Draft (2026-08-07). The **language** half of the requirement channel (WI-1040) and of typed relational heads (WI-742). Mechanics — goal encoding, crossings, σ-carrier — are owned by [`../design/requirement-channel.md`](../design/requirement-channel.md); this proposal owns the surface and its rules. The staging invariant is assumed throughout: after the typing pass, run time performs no typing operations (channel doc §2.1).
 
@@ -20,7 +19,7 @@ heads remain explicitly unimplemented.
 All selection happens in the typing pass; run time reads the value's carried type
 — a stored term, nothing is computed or collapsed — and selects from the
 load-built tables with it (the head constructor picks the entry, the type
-arguments flow to the sub-dictionary fetches). Even `domain`'s conformance test
+arguments flow to the sub-dictionary fetches). Even a typed head's conformance test
 is such a read: sort relations are facts, so conformance at a ground carried
 type is lookup over stored relations, not derivation.
 
@@ -30,7 +29,7 @@ Three instances, one mechanism:
 |---|---|---|
 | `requires(X)` — delivered (WI-300) | `find_dictionary(…)`, check-only | **guard**: the clause fires only where X resolves |
 | `require[X]` — WI-1040 | `find_dictionary(…, out: ?d)` | guard + **bind**: X's dictionary is in clause scope; covered calls dispatch through it |
-| `?x: T` on a relational head — WI-742 | `domain(?x, T)` | guard + **column type** (052's declared column, true by construction) + **generator** where T defines its domain (§2.2, WI-743) |
+| `?x: T` on a relational head — WI-742 | a type test before the body, `SortDomain[T].fill(?x)` after it (§2.3) | guard + **column type** (052's declared column, true by construction) + **generator** where `T` has values to list (§2.2) |
 
 The generated goal is ordinary: it delays on unbound operands, wakes by rotation,
 participates in the body like any goal. The engine sees one more goal, never a type
@@ -71,25 +70,28 @@ p(?x, ?y) :- ?d = require[Eq[T]], f(?x, ?d)       -- named; passed by hand
 
 The WI-582 restriction (`?x: T` only on `@[simp]`/`@[unfold]` heads) is enforcement
 coverage, not semantics. Lifted by this rule: on a relational head the annotation
-compiles to a prepended `domain(?x, T)` goal — the head itself stays structurally
-bare, so the discrimination tree indexes it identically.
+compiles to a type test prepended to the body and the fill of `T`'s `SortDomain`
+appended after it (§2.3) — the head itself stays structurally bare, so the
+discrimination tree indexes it identically. The fill is called by name for a sort
+with no parameters, through the dictionary a ground type builds for a parameterised
+one, and through a requirement read — which a citation fills — for a type variable.
 
 **Admission dependency (C666A, delivered 2026-08-24).** An unguarded predicate head
 is now refused when it reaches a declared predicate only through a whole-scope
 non-enclosing edge (`requires`, conversion-style `provides`, or wildcard import).
 That is the unsafe half of this proposal's typeclass-method shape. WI-742 must recognize
-the generated `domain(?x, T)` guard tied to the contributing carrier and admit that
-guarded join at C666A's check; the unguarded refusal remains.
+the generated type test tied to the contributing carrier and admit that guarded join
+at C666A's check; the unguarded refusal remains.
 
 Mode-directed, three-valued, never NAF-decided (WI-067):
 
 | `?x` at the read | outcome |
 |---|---|
-| bound, carried type conforms to T — and, where T defines its `domain`, membership holds (§2.2) | hold — keep the binding |
+| bound, carried type conforms to T — and, where T's `SortDomain` has cases, the fill holds (§2.2) | hold — keep the binding |
 | bound, refuted | fail this binding (the schema is true by construction) |
 | bound, under-determined | suspend |
-| unbound, T defines its `domain` (§2.2) | **enumerate** — a choice point over T's domain |
-| unbound otherwise | delay + rotate; re-asked when a later goal binds it |
+| unbound, T's `SortDomain` has cases (§2.2) | **enumerate** — a choice point over T's values |
+| unbound, T a primitive (its fill is the waiting type check, §2.3) | delay + rotate; re-asked when a later goal binds it |
 | still unbound at the end | flounder **loudly** (WI-737 route), never a silent non-check |
 
 052's `relation_clause_columns` already reads the bound first — the typing half is
@@ -131,7 +133,7 @@ How it lands, in four steps:
    RULE: a multi-head rule's heads share one body, so one parameter name is one
    variable across all of them (WI-20260909-C7ANM).
 4. **Compilation — identical to §2.** Head structurally bare (indexed as today),
-   `domain(?p, Person)`-style generated goals, bounds read by
+   the type test and the fill of §2 generated, bounds read by
    `relation_clause_columns`. A parameter is a **column in the position it is
    written**, so the two spellings agree on order as well as meaning and may be
    interleaved (`rule g(x: Red, ?d)` vs `rule g(?d, x: Red)`). `Term::Fn` files a
@@ -155,157 +157,48 @@ Bounds of the form:
   loader-verified re-measurement belongs at implementation, at the
   classification site.
 
-### 2.2 A sort defines its `domain` — the generator arm (WI-743, delivered; the value face, WI-20260911-WT8WG)
+### 2.2 The generator arm — a typed head lists its type's values
 
-Mode (out) does not special-case enums in the resolver: `domain(?x, T)`
-dispatches to a **member relation T defines, named `domain`** — the goal is that
-member read through the type, which is why they share the name. (Delivery note:
-one NOTION, two FUNCTORS. The conformance goal of §2 (`anthill.kernel.domain`)
-and this member relation (`anthill.kernel.domain_member`) cannot share a symbol —
-a functor carrying a builtin tag never reaches the clause path, and the two sit
-at opposite ends of the body. Both are DECLARED and both are writable from a rule
-body; the 2-ary member goal is the spelling to reach for when the type is itself
-a variable. See
-[`../design/060-implementation.md`](../design/060-implementation.md) §7.)
-
-**THE AUTHOR WRITES NO DOMAIN EXPRESSION, at either face.** They write a sort.
-The loader derives the clause; a typed head reads it as a goal; and a citation
-reads it as a value:
+A typed head is a generator where its type has values to list: the fill (§2.3)
+enumerates them when `?x` is unbound and checks membership when it is bound. The
+author writes no domain expression — they write a sort, and the loader derives its
+`SortDomain` provision (§2.3). A domain wanted as a value is a typed rule cited by
+name:
 
 ```anthill
-sort Colour { entity red  entity green  entity blue }   -- the author writes THIS
+sort Colour { entity red  entity green  entity blue }
 
-Colour.domain(?x)  ==  anthill.kernel.domain_member(?x, Colour)
-
-Colour.domain            -- Relation[T = (x: Colour), E = {Error}]  (derived)
-Colour.domain.takeN(5)   -- 3 rows, every one definite
+rule colours(?x: Colour) :- true
+colours.takeN(5)          -- 3 rows, every one definite
 ```
 
-`<Sort>.domain` is the 1-ary PROJECTION of the kernel relation at that sort,
-derived in the sort's own scope beside the clause — the `<Sort>.induction` idiom.
-Being a member relation, 052 cites it by name and the whole `Relation` API
-follows; its column is typed at the sort, so `Colour.domain.head.x` is a
-`Colour`. The three readers — mode (in), mode (out), the citation — read ONE set
-of clauses and cannot disagree.
+This section was first written over a type-keyed goal, `domain_member(?x, T)`, and a
+value face `<Sort>.domain`; §2.3 retired both (2026-09-25, 2026-11-02). The rules
+below are the ones that stayed:
 
-**SUPERSEDED.** The equation above is the 2026-09-11 design: §2.3 (2026-09-25) retired
-`domain_member`, and `Colour.domain` is the relation `SortDomain[T = Colour].fill` runs. The
-paragraph below designed the parameterised value face as a hidden head slot; §2.3 carries the
-element's domain in a dictionary instead, and `List[T = Letter].domain` answers through it
-since WI-20260925-SHED7 step 1, so the load error the paragraph describes is gone. And the
-value face itself is superseded by `SortDomain[T].fill` (user, 2026-11-02; §2.3's decided
-item): a domain wanted as a value is a typed rule cited by name.
-
-**A PARAMETERIZED sort has the goal face and no value face yet.** `List` keeps
-its derived clause and every typed head that reads it; `List[T = Letter].domain`
-is a load error naming **WI-20260911-5G28A**, because a rule citation's query is
-built from the clause head alone and no type argument reaches it. Bare
-`List.domain` names no element type and is refused for the same reason. 5G28A
-delivered the rest of the rule half (the three bullets below) and settled this
-piece's design without building it: a rule has no frame channel — its head is its
-only interface — so an enclosing sort's parameter must travel as a **hidden head
-slot** a bracketed citation fills and an unbracketed one leaves free, which is
-WI-743's "the type travels as an argument" one level up. Conjoining a guard at the
-citation instead was measured and does not work: the citation's goal and the
-clause's bound are different variables, so the clause's own member goal still has
-a free element type and deadlocks against the delay above.
-
-- **Derived for ANY closed ADT**, not only an all-nullary one — the finiteness
-  gate this section first proposed turned out to be unnecessary, and is
-  WITHDRAWN. The loader derives one clause per sort with constructors: a
-  disjunction over the constructors, with each field's own domain conjoined
-  inside its branch, and **the type travelling as the second argument** so one
-  clause serves a parameterized sort at every instantiation:
-
-  ```anthill
-  domain_member(?x, Letter)       :- ?x <=> a() | ?x <=> b() | ?x <=> c()
-  domain_member(?x, List[T = ?T]) :- ?x <=> nil()
-                                   | (?x <=> cons(head: ?h, tail: ?t)
-                                        & domain_member(?t, List[T = ?T])
-                                        & domain_member(?h, ?T))
-  ```
-
-  Declaration order, once each. The 058 §3.10 move (derive a row from structure),
-  applied to values — and derived as CLAUSES rather than as ground facts, so the
-  order is the clause order and not a hash walk (WI-20260911-SXZ3G).
-- **Finiteness decides only whether the STREAM ENDS.** A closed sort with a
-  recursive constructor has a fair, lazy, infinite domain: `takeN` is fine, a
-  full drain does not return. Fairness comes from order alone — base
-  constructors before recursive ones, recursive field positions before the
-  others inside a branch — so a free `List[T = Letter]` comes out by length.
-  Only a sort with NO constructors keeps §2's delay/flounder ladder.
-- **The member goal is APPENDED**, where §2's conformance goal is prepended.
-  "Prepended" in §2 must be read as covering the conformance goal only: a
-  generator ahead of the written body enumerates a recursive type forever before
-  the body can prune it (measured).
-- **User-definable for any sort** — a hand-written `domain` makes any sort a
-  generator. Today's wrapper pattern (`sort Palette` + three `palette(c: …)`
-  facts) *is* a hand-written `domain` the language gave no name; this absorbs it
-  into the sort. It is written **1-ARY**, `domain(?x)` in the sort's body: that
-  relation IS the sort's value face, and the kernel's `domain_member(?x, S)`
-  forwards to it. The 2-ary spelling WI-743 first admitted is a load error naming
-  this one — a sort holding both arities under one name would let load order
-  decide which a citation answers through. The hook keys on the member SHAPE and
-  never on the name alone: `domain` is an ordinary word and a field may already
-  carry it (a field is no obstacle — it is reached through its entity, not
-  through this name). A parameterized sort's hand-written `domain` is refused for
-  now; its head would have to bind the sort's type parameters from the caller's
-  type argument, which only the derivation does. **Superseded (user, 2026-11-02):** a
-  sort that defines its own domain will provide `SortDomain`'s `fill` instead (§2.3's
-  decided item).
-- **A clause of a written `S.domain` is never generated FROM.** It gets §2's
-  conformance goal and not the member goal, so the natural annotated spelling
-  `rule domain(?x: S) :- …` does not re-enter itself through the forwarding
-  clause. A written domain IS the generator.
-- **Domain-defining, not a generator hint.** Where T defines its `domain`,
-  *both* modes read it: mode (in) checks conformance **and** membership, mode
-  (out) enumerates. A mode split — generate from the subset but accept anything
-  conforming — would make the relation's answers depend on call mode, and is
-  refused. For the derived enum case membership ≡ conformance, so the common
-  case costs nothing extra.
-- **Rule-local narrowing stays an ordinary body goal.** A sort-level `domain` is
-  the sort's domain everywhere; "this rule's `x` ranges over a subset" is
-  written as a goal, as today.
-- **A sort with no `domain`** keeps §2's behavior unchanged: delay, re-ask on
-  binding, flounder loudly at the end — `rule f(?x: String) :- eq(?x, "abe")`
-  stays legal and yields its one row. It has no `<Sort>.domain` either, so a
-  citation of one is an ordinary unknown-member error — LOUD AT LOAD, where a
-  derived-but-floundering member would have been loud only at the drain.
-- **An UNWRITTEN parameter is a rule-scoped type variable** (WI-20260911-5G28A).
-  `?x: List` means `?x: List[T = ?t]`, recursively at every depth and once per
-  occurrence — §8.1's unwritten-slot expansion on the rule side. The variable is
-  an ordinary clause variable: it rides the rule's frame and opens fresh per
-  firing, so two citations of one rule are two instantiations. This is what
-  gives such a head a generator at all; before it, the member goal was SKIPPED at
-  load for want of a determinate type and the author was told nothing.
-- **A free type is READ off the value, not guessed** (WI-20260911-5G28A). With
-  `?x` bound the goal is mode **(in, out)** — the value determines its own type
-  (WI-578), so `domain_member(?x, List[T = ?t])` pins `?t` in one step. With `?x`
-  unbound and `?t` still free the goal **delays** and residualizes: there is no
-  ONE domain to range over, and dispatching anyway unifies with the head of every
-  derived clause and enumerates TYPES (measured at 20 rows for a clause with one
-  answer, and at a non-terminating search for `rule anylist(?w: List) :- true`).
-  Making it delay moves that from a silent load-time skip to a residual that is
-  loud at the drain — WI-737's route. Fairness for the case where BOTH are free
-  is WI-20260911-09E6M's, not this.
-- **Abstract T does NOT enumerate** — SUPERSEDED by §2.3 (2026-09-25), where the caller's
-  instantiation reaches the clause as a `SortDomain` dictionary. This bullet's earlier wording —
-  "dispatches through the requirement channel (§3's anchor; WI-1040)" — named no
-  mechanism and had no owner. A rule-bracket bound records the SPEC, nothing is
-  derived for a spec, and the bound keeps §2's delay. Reaching the caller's
-  instantiation needs `domain` to be the member of a kernel finiteness spec AND a
-  dictionary channel that carries a RELATION — WI-20260909-NAR1X. A concrete T is
-  pinned at typing. No tension with 058 §3.10 either way: `domain` enumerates
-  **values** by ordinary SLD choice — an instance is never chosen.
-
-The payoff, with §2.1's parameter form — map-colouring with no `Palette` sort
-and no domain facts:
-
-```anthill
-rule colouring(wa: Colour, nt: Colour, sa: Colour, q: Colour, nsw: Colour, v: Colour)
-  :- wa != nt, wa != sa, nt != sa, nt != q,
-     sa != q,  sa != nsw, sa != v, q != nsw, nsw != v
-```
+- **Derived for any closed ADT**, not only an all-nullary one. A sort with a
+  recursive constructor has a fair, lazy, infinite domain: `takeN` is fine, a full
+  drain does not return — finiteness decides only whether the stream ENDS. The order
+  that makes it fair is §2.3's two rules.
+- **Domain-defining, not a generator hint.** Where `T` has cases, both modes read
+  them: mode (in) checks conformance and membership, mode (out) enumerates. A mode
+  split — generate from a subset but accept anything conforming — would make the
+  relation's answers depend on call mode, and is refused. For a derived domain
+  membership is conformance, so the common case costs nothing extra.
+- **Rule-local narrowing stays an ordinary body goal.** A sort's domain is the sort's
+  everywhere; "this rule's `x` ranges over a subset" is written as a goal.
+- **A sort that defines its own domain** provides `SortDomain`'s `fill` (§2.3's decided
+  item). Not built: today a 1-ary relation `domain(?x)` written in the sort's body is
+  read as it, its clauses are not generated from, and a parameterised sort's written
+  one is refused.
+- **An unwritten parameter is a rule-scoped type variable.** `?x: List` means
+  `?x: List[T = ?t]`, recursively and once per occurrence (§8.1's unwritten-slot
+  expansion on the rule side); the variable rides the rule's frame and opens fresh per
+  firing, so two citations of one rule are two instantiations.
+- **A free type is read off the value, not guessed.** With `?x` bound, the value fixes
+  its own type (WI-578) and the fill runs at it. With `?x` unbound and the type still
+  free, the goal delays and residualizes: there is no one domain to range over, and
+  listing every type's would enumerate types.
 
 ### 2.3 The domain through the requirement channel — `SortDomain` (WI-20260911-5G28A; designed 2026-09-25)
 
@@ -328,9 +221,9 @@ end
   ([proposal 067](067-fillable.md)): one rule, `fill(?x)`, which fills `?x` with a value of `T`.
   `SortDomain` is the implementation the loader derives for every sort with constructors, and its
   `fill` IS the sort's domain — what a typed head generates from, and checks against.
-- **ONE MECHANISM.** The type-keyed goals of §2 and §2.2 — `domain(?x, T)` and the derived
-  `domain_member(?x, T)` — are built for a type the rule can NAME; `SortDomain` covers that case
-  too, so they retire into it rather than stand beside it (060-implementation §7.3, "`SortDomain`
+- **ONE MECHANISM.** The type-keyed goals this proposal first wrote — `domain(?x, T)` and the
+  derived `domain_member(?x, T)` — were built for a type the rule can NAME; `SortDomain` covers
+  that case too, so they retired into it rather than stand beside it (060-implementation §7.3, "`SortDomain`
   is the ONLY domain mechanism").
 
 **What a typed head means** (user, 2026-09-25):
@@ -417,7 +310,7 @@ the derivation's parts, and nothing at run time needs it.
   reaches the domain of a type variable (`rule el(?x: T) :- true` in `sort Wrap[T]`, cited as
   `Wrap[T = X].el` under `requires SortDomain[T = X]`). A sort that defines its own domain
   provides `SortDomain`'s `fill` — `S provides SortDomain[T = S]` with `rule fill(?x) :- …`, the
-  form printed above for the derived case — in place of §2.2's `domain(?x)` written in its body.
+  form printed above for the derived case — in place of a `domain(?x)` written in its body.
   The per-sort relation stays only as the internal target a `SortDomain` dictionary lands on.
   A hand-written `Fillable` is untouched: it is not a `SortDomain`, and is for fills other than a
   type's domain (067). Retiring the surface is WI-20260911-WT8WG
@@ -457,7 +350,7 @@ The two instances meet: a generated goal both **constrains** and **anchors**.
 - Every generated `find_dictionary` needs an anchor that grounds the spec's
   parameters at run time — a projection source for the carried types. The
   delivered guard tier admits one anchor: a covered body call (the witness).
-- `?x: T` on the head is the second anchor: `domain(?x, T)` reads `?x`'s carried
+- `?x: T` on the head is the second anchor: its type test reads `?x`'s carried
   type, so `T` is grounded by projection from the head argument — and any
   `require[Spec[T]]` in the clause compiles against it.
 

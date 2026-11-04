@@ -303,7 +303,8 @@ fn a_bracket_on_a_rule_body_goal_is_read() {
 /// body, and on a goal of a relation with no clause of its own — `SortDomain[T =
 /// Colour].fill(?x)`, a spec's rule. FAILS under [X]: both load. Each advised repair is run:
 /// the value written as a goal (the row above), or cited from an operation body, which
-/// answers `1`; and the domain as the sort's `domain` relation, which answers both colours.
+/// answers `1`; and the fill as a variable typed at the sort — `rule colours(?x: Colour) :-
+/// true`, its goal answering both colours.
 #[test]
 fn a_bracket_nothing_reads_is_refused_and_its_repairs_answer() {
     crate::common::assert_refused_naming(
@@ -316,16 +317,20 @@ fn a_bracket_nothing_reads_is_refused_and_its_repairs_answer() {
     );
     crate::common::assert_refused_naming(
         &crate::common::load_errors_of(&bracket("  rule filled(?x) :- SortDomain[T = Colour].fill(?x)\n")),
-        &["`anthill.reflect.Fillable.fill` has no clause of its own", "`Colour.domain(?x)`"],
+        &[
+            "`anthill.reflect.Fillable.fill` has no clause of its own",
+            "`rule colours(?x: Colour) :- true` and the goal `colours(?x)`",
+        ],
         "a spec's rule",
     );
     let mut interp = crate::common::interp_for(&bracket(
-        "  operation cited() -> Int64 effects {Error} = Wrap[T = Int64].el.takeN(5).length()\n  \
-         rule domain(?x) :- Colour.domain(?x)\n",
+        "  operation cited() -> Int64 effects {Error} = Wrap[T = Int64].el.takeN(5).length()\n",
     ));
     assert_eq!(int(&mut interp, "atvc1.br", "cited"), 1, "cited from an operation body");
-    let mut kb = crate::common::load_kb_with(&bracket("  rule domain(?x) :- Colour.domain(?x)\n"));
-    assert_eq!(crate::common::definite_unary(&mut kb, "atvc1.br.domain").len(), 2);
+    let mut kb = crate::common::load_kb_with(&bracket(
+        "  rule colours(?x: Colour) :- true\n  rule filled(?x) :- colours(?x)\n",
+    ));
+    assert_eq!(crate::common::definite_unary(&mut kb, "atvc1.br.filled").len(), 2);
 }
 
 /// A LATER LOAD THAT GIVES A CALLEE ANOTHER CLAUSE routes its callers' goals again: `cmp`'s
