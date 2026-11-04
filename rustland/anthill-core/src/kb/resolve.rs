@@ -1544,6 +1544,10 @@ pub struct SearchStream {
     /// clause opening a citation marker reaches — a `fill` step opens its relation once per
     /// step. Static per relation, as `cut_cache` is per rule.
     read_layout_cache: HashMap<Symbol, Rc<[(RuleId, usize)]>>,
+    /// Per-query cache: does a rule hold a goal's FORWARD slot (WI-20261102-ATVC1), which
+    /// [`settle_forward_slots`] binds when the clause opens? Static per rule, as `cut_cache`
+    /// is: nearly every rule holds none, and opens with one probe.
+    forward_slot_cache: HashMap<RuleId, bool>,
     /// WI-616/WI-628 — set when any branch was abandoned at the `max_depth`
     /// limit: the search is INCOMPLETE, so "no solutions" does not mean
     /// "refuted". Read (via [`SearchStream::drain_verdict`]) by the two
@@ -5326,6 +5330,16 @@ impl SearchStream {
                     }));
                 bind_citation_reads(kb, rid, &layout, &dicts, &fresh_nodes, &mut merged);
             }
+            let has_forward_slots = *self.forward_slot_cache.entry(rid).or_insert_with(|| {
+                super::typing::find_dictionary_symbol(kb).is_some_and(|fd| {
+                    super::typing::clause_implicit_params(kb, fd, kb.rule_body_nodes(rid))
+                        .iter()
+                        .any(|p| matches!(p, super::typing::ImplicitParam::Forward { .. }))
+                })
+            });
+            if has_forward_slots {
+                settle_forward_slots(kb, &fresh_nodes, &mut merged);
+            }
 
             // Pre-check: delay propagation on caller vars (over the occurrence body)
             if !caller_fresh_vars.is_empty()
@@ -5940,6 +5954,7 @@ impl KnowledgeBase {
             cut_cache: HashMap::new(),
             routing_read_cache: HashMap::new(),
             read_layout_cache: HashMap::new(),
+            forward_slot_cache: HashMap::new(),
             truncated: false,
             errors: Vec::new(),
             faults: Vec::new(),
@@ -15123,6 +15138,9 @@ impl KnowledgeBase {
             return false;
         }
         for node in nodes {
+            // A goal riding in its citation marker (WI-20261102-ATVC1) is judged as the goal
+            // it carries: the marker only passes its callee dictionaries.
+            let node = super::typing::goal_marker(self, node).map_or(node, |m| m.goal);
             // A builtin conjunct's satisfiability is not a candidate count.
             if self.get_builtin_view(node).is_some() {
                 continue;
@@ -15723,6 +15741,38 @@ fn within_requirements_inner(kb: &KnowledgeBase, goal: &Value) -> Option<Value> 
     }
 }
 
+/// WI-20261102-ATVC1 — bind each FORWARD slot of the just-opened clause that its citation did
+/// not route ([`bind_citation_reads`]) to [`UNROUTED_READ`]. A forward slot is bound when its
+/// clause opens or never, and an unbound one passes nothing — what `__unrouted` says — but as a
+/// variable it made the goal it rides with open: a negated goal, alone or in a connective,
+/// delayed in `step_naf` and floundered where it decides.
+fn settle_forward_slots(
+    kb: &mut KnowledgeBase,
+    opened: &[Rc<NodeOccurrence>],
+    merged: &mut Substitution,
+) {
+    let fd = super::typing::find_dictionary_symbol(kb)
+        .expect("a clause with a forward slot was routed in a KB with `find_dictionary`");
+    let slots: Vec<Rc<NodeOccurrence>> = super::typing::clause_implicit_params(kb, fd, opened)
+        .iter()
+        .filter(|p| matches!(p, super::typing::ImplicitParam::Forward { .. }))
+        .map(|p| p.var_node(kb, fd))
+        .collect();
+    for slot in slots {
+        let Some(Expr::Var(Var::Global(vid))) = slot.as_expr() else {
+            unreachable!("an opened forward slot is a fresh variable, got {:?}", slot.as_expr());
+        };
+        let unbound = match kb.chase_var(*vid, merged) {
+            None => true,
+            Some(end) => kb.value_is_unbound_var(end),
+        };
+        if unbound {
+            let unrouted = unrouted_read(kb);
+            merged.bind_waking(kb, *vid, unrouted);
+        }
+    }
+}
+
 /// The cited relation and the captured dictionaries of a [`WITHIN_REQUIREMENTS`] marker.
 fn within_requirements_args(kb: &KnowledgeBase, goal: &Value) -> Option<(Symbol, Vec<Value>)> {
     let ViewHead::Functor {
@@ -15780,26 +15830,29 @@ fn bind_citation_reads(
     let fd = super::typing::find_dictionary_symbol(kb)
         .expect("a citation marker carries dictionaries only for reads, and a read is a `find_dictionary` goal");
     // In the order the routes were computed in: a read in a connective's goal slot as well as
-    // one at the top ([`super::typing::clause_requirement_reads`]).
-    let outs: Vec<Rc<NodeOccurrence>> = super::typing::clause_requirement_reads(kb, fd, opened)
+    // one at the top, then each forward slot of a goal's marker
+    // ([`super::typing::clause_implicit_params`]).
+    let outs: Vec<Rc<NodeOccurrence>> = super::typing::clause_implicit_params(kb, fd, opened)
         .iter()
-        .filter_map(|n| super::typing::requirement_read_out(kb, fd, n).cloned())
+        .map(|p| p.var_node(kb, fd))
         .collect();
     assert_eq!(
         outs.len(),
         counts[at].1,
-        "an opened clause holds the reads its stored body held",
+        "an opened clause holds the implicit parameters its stored body held",
     );
     for (i, out) in outs.iter().enumerate() {
         let Some(dict) = dicts.get(offset + i) else {
-            unreachable!("a citation marker carries one slot per read of its relation");
+            unreachable!("a citation marker carries one slot per position of its relation's layout");
         };
-        // Nothing routed to this read: it derives its own.
-        if is_unrouted_read(kb, dict) {
+        // Nothing routed to this parameter: it derives its own. Nor where a goal's forward
+        // slot arrives as a variable no one bound (WI-20261102-ATVC1) — its clause's caller
+        // passed nothing for it.
+        if is_unrouted_read(kb, dict) || kb.value_is_unbound_var(dict) {
             continue;
         }
         let Some(Expr::Var(Var::Global(vid))) = out.as_expr() else {
-            unreachable!("an opened read's `out` is a fresh variable, got {:?}", out.as_expr());
+            unreachable!("an opened parameter's variable is a fresh variable, got {:?}", out.as_expr());
         };
         merged.bind_waking(kb, *vid, dict.clone());
     }

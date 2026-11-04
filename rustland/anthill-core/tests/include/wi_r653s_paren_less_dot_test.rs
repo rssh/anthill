@@ -389,22 +389,22 @@ fn a_rule_member_is_the_relation_in_every_spelling() {
 }
 
 /// In a rule body the dot is the goal the written `Box.rows(?x)` is, and a bracket on its
-/// receiver — written, or fixed by an alias — is refused as the written one is: a relation
-/// named in a rule body is passed no type argument.
+/// receiver — written, or fixed by an alias — is that goal's bracket, read as the written
+/// one is (WI-20261102-ATVC1): `rows` reads no `V`, so each spelling answers as the bare goal
+/// does, as `Box[V = Int64].rows` cited from an operation body does above. A bracket a goal's
+/// callee reads selects its instance (`wi_atvc1_rule_goal_implicit_arguments_test`). The
+/// three bracketed spellings were refused from 2827691a, when a rule goal passed its callee
+/// nothing.
 #[test]
 fn a_rule_member_in_a_rule_body_is_the_goal() {
-    assert_eq!(ints("r653srbwritten", "  rule r(?x) :- Box.rows(?x)"), [1, 2]);
-    assert_eq!(ints("r653srbparen", "  rule r(?x) :- (Box).rows(?x)"), [1, 2]);
     for (ns, goal) in [
+        ("r653srbwritten", "Box.rows(?x)"),
+        ("r653srbparen", "(Box).rows(?x)"),
         ("r653srbbrwritten", "Box[V = Int64].rows(?x)"),
         ("r653srbbr", "(Box[V = Int64]).rows(?x)"),
         ("r653srbalias", "(CA).rows(?x)"),
     ] {
-        let rendered = refusal(ns, "", &format!("  rule r(?x) :- {goal}"));
-        assert!(
-            rendered.contains(&format!("type bracket on `test.{ns}.Box.rows` in a rule body")),
-            "{ns}: {rendered}"
-        );
+        assert_eq!(ints(ns, &format!("  rule r(?x) :- {goal}")), [1, 2], "{ns}");
     }
 }
 

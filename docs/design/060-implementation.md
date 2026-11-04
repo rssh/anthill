@@ -1031,7 +1031,7 @@ own; S7 is the channel's general case.
 | **S4** — **DELIVERED 2026-09-25 with S3b (SHED7 step 1); the face SUPERSEDED 2026-11-02** | W1 — WT8WG's parameterised value face: `emit_domain_value_face` derives `<Sort>.domain` for a parameterised sort; `domain_value_face_refusal` loses its parameterised arm. | `kb/load.rs`, `typing/relation.rs` | `List[T = Letter].domain.takeN(5)` = 5; bare `List.domain` refused by S1's rule |
 | **S5** | THE TWO DEFECTS ABOVE, filed 2026-09-24 and not 5G28A's: a rule-body operation call whose argument is unbound WAITS (delays) instead of answering nothing — **WI-20260924-35E14**; a clause's `require` whose only provider is a witness sort is found — **WI-20260924-DG57J**, closed by P7VP4. | `kb/resolve.rs` | demo2 needs both |
 | **S6** | demo2 end to end. | — | `demo2_the_count_flounders` → `1`; `demo2_the_projected_spelling_loads_and_flounders` → `wrap(red())` under `ByHeat`, `wrap(blue())` under `ByName` |
-| **S7** | RULE → RULE implicit arguments (op-to-rule §7 step 2): every goal carries its implicit arguments through the seven goal-list constructions, written by the typer at the body edge. The 06:17 plan's row (g) — `rule again(?y) :- dom(?y)` inside `Wrap`, cited as `Wrap[T = Colour].again` — and op-to-rule §1's `a(3, nil())`. | `kb/resolve.rs`, `typing/` | — |
+| **S7** — **DELIVERED 2026-11-04** (WI-20261102-ATVC1) | RULE → RULE implicit arguments (op-to-rule §7 step 2). NOT AS PLANNED: no goal-list construction changed. A body goal whose callee takes dictionaries rides in S2's `__within_requirements` marker IN THE STORED BODY (D3's narrow form, made general), which `step_init` already unwraps and `step_choice_point` already binds, so a goal whose callee takes nothing costs nothing — and in the stdlib, the examples and anthill-todo no goal takes one (MEASURED: 0 markers). The typer writes the marker after the inference and before `settle_citation_routes` (`route_rule_goal_requirements`, callee first by the call graph's strongly connected components); a slot is (i) a FORWARD slot — a new variable of the clause, one more implicit parameter after its reads in the flat layout (`clause_implicit_params`), which a citation of the clause routes as the callee's position would be routed were the citer to cite the callee itself (`forwarded_routes`: a virtual citation of the callee at the goal's argument types, typed as a read's witness is); (ii) for a goal of the clause's own relation at the clause's own column types, the clause's own parameter at its offset; (iii) for a bracketed goal, the dictionary the bracket's instance builds at load; (iv) `__unrouted`. A forward slot nothing routed is bound to `__unrouted` when its clause opens, so a negand over its goal stays decidable. DECISION B with it: a sort's bracket on a rule-body goal is read, and refused only where nothing reads it — a relation as a value, a spec's rule with no clause (`SortDomain[T = …].fill`). LIMITS: a goal of another relation of the same recursion passes nothing; a recursive goal passes only its own clause's positions; op-to-rule §4.1's two refusals are not built (S2's limit). OPEN: row (g), `rule again(?y) :- dom(?y)` cited as `Wrap[T = Colour].again` — `again`'s inferred column type is `Wrap` at a variable of its own, not `Wrap`'s `T`, so the bracket fills nothing (D4) and the citation still flounders; inherited or lexical is the 2026-09-12 note's open choice. | `typing/rule_goal_routes.rs`, `typing/relation.rs`, `typing/rule_requirements.rs`, `kb/resolve.rs`, `kb/load.rs` | the WeakOrd rows through `outer` `(-1, -1)` → `(4, -4)`, through two rules too; P7VP4's C6 row `(4, -4, -1)`; `Wrap[T = Int64].el(?x)` answers `1` alone. Rows and the nine back-out axes: `wi_atvc1_rule_goal_implicit_arguments_test.rs` |
 
 S1 is independent of the rest and goes first. S2 needs S1's σ. S3 needs S2 to carry the
 domain's dictionary. S6 needs S2, S3 and S5.
@@ -1085,9 +1085,10 @@ loads. Rows and the per-half back-out: `wi_gp8jc_defaulted_weave_test.rs`.
   reports 058 §3.2's DEFAULT pick as a definite row (measured: `?d`'s impl is `Int64`,
   definite), which S2's check would read as unique and refuse `Descending` against. Where
   rivals exist, the default is a ranking, not a unique row (WI-20260922-ATFGH's reading).
-- **D3 — DECIDED NARROW BY S2:** the `__within_requirements` marker on the citation's ROOT goal,
-  unwrapped by `step_init`; body goals carry nothing, and the general per-goal carrier with its
-  hot-path measurement stays S7's. The question as it was posed: S2 needs implicit arguments on
+- **D3 — DECIDED NARROW BY S2, AND S7 KEPT IT:** the `__within_requirements` marker on the
+  citation's ROOT goal, unwrapped by `step_init`; S7 writes the same marker on a body goal in
+  the stored body, so no per-goal carrier was needed and its hot-path cost is a marker per goal
+  that passes something (none in the corpus). The question as it was posed: S2 needs implicit arguments on
   the INITIAL goal of a captured query only. They can ride a narrow form for that goal, or the general per-goal
   carrier op-to-rule §1 describes and S7 needs anyway. The general one owes the hot-path
   measurement op-to-rule §8 names first.
@@ -1863,9 +1864,9 @@ row at the end of `wi_p7vp4_rule_body_requirements_test.rs`:
   account names every repair it has and the tail is no longer appended to it
   (`RequirementRefusal::account_names_every_repair`). Each repair it names, and each it
   named, is run in `the_refusal_names_no_repair_that_is_not_one`.
-- **C6 — a rule goal passes its callee nothing.** A clause's condition is filled at a
-  citation from an operation body (§7.3's S2); a body goal of another rule carries no
-  implicit arguments. §7.3's S7.
+- **C6 — a rule goal passes its callee nothing. DELIVERED 2026-11-04 by §7.3's S7:** a body
+  goal of another rule hands its callee what its own citer passed, and the row reads
+  `4` / `-4` / `-1`.
 - **C7 — a requirement no argument names is not checked at goal position.** An operation body
   calling `Mk.mk()` is refused for the unconstrained `B`; the goal-position call is not
   typed, gets no condition (it has no argument whose type is unknown) and runs a body that

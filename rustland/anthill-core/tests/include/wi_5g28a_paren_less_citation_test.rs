@@ -146,14 +146,14 @@ fn both_spellings_answer_the_same_count() {
     }
 }
 
-/// A RULE-BODY GOAL WITH A SORT'S BRACKET IS REFUSED (2026-10-21). A rule goal passes its
-/// callee nothing, so `:- Wrap[T = Colour].holds` was lowered onto the goal and read by no
-/// one: it answered as the bare goal does here only because `holds` reads no `T` — over
-/// `rule el(?x: T)`, `Wrap[T = Int64].el(?x)` answered a `String` too
-/// (`rule_goal_sort_bracket_refused_test`). Both spellings, paren-less and applied, meet the
-/// refusal. Before 5G28A's lowering the paren-less goal loaded clean and answered NOTHING.
+/// A RULE-BODY GOAL WITH A SORT'S BRACKET is one goal in both spellings, paren-less and
+/// applied, and its bracket is read (WI-20261102-ATVC1): `holds` reads no `T`, so each answers
+/// as the bare goal does — over `rule el(?x: T)`, `Wrap[T = Int64].el(?x)` answers the `Int64`
+/// alone (`wi_atvc1_rule_goal_implicit_arguments_test`). From 2827691a both were refused, when
+/// a rule goal passed its callee nothing; before 5G28A's lowering the paren-less goal loaded
+/// clean and answered NOTHING.
 #[test]
-fn a_bracketed_goal_in_a_rule_body_is_refused() {
+fn a_bracketed_goal_in_a_rule_body_is_the_goal() {
     let src = |goal: &str| {
         format!(
             "namespace zz5g28al3g\n\
@@ -168,17 +168,12 @@ fn a_bracketed_goal_in_a_rule_body_is_refused() {
              end\n"
         )
     };
-    let mut kb = crate::common::load_kb_with(&src("Wrap.holds"));
-    assert_eq!(
-        crate::common::definite_unary(&mut kb, "zz5g28al3g.viaGoal").len(),
-        1,
-        "CONTROL: the bare goal answers — passes under every back-out, by design",
-    );
-    for goal in ["Wrap[T = Colour].holds", "Wrap[T = Colour].holds()"] {
-        crate::common::assert_refused_naming(
-            &crate::common::load_errors_of(&src(goal)),
-            &["type bracket on `zz5g28al3g.Wrap.holds` in a rule body"],
-            goal,
+    for goal in ["Wrap.holds", "Wrap[T = Colour].holds", "Wrap[T = Colour].holds()"] {
+        let mut kb = crate::common::load_kb_with(&src(goal));
+        assert_eq!(
+            crate::common::definite_unary(&mut kb, "zz5g28al3g.viaGoal").len(),
+            1,
+            "{goal}",
         );
     }
 }

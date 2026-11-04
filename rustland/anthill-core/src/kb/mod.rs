@@ -6845,6 +6845,11 @@ impl KnowledgeBase {
                     slot(1, false, SlotReading::Proved),
                 ])
             }
+            // A goal riding in its citation marker (WI-20261102-ATVC1): the goal is proved,
+            // the relation and the dictionaries after it are data.
+            (Some(BuiltinTag::WithinRequirements), n) if n >= 2 => {
+                SmallVec::from_elem(slot(0, false, SlotReading::Proved), 1)
+            }
             _ => SmallVec::new(),
         }
     }
@@ -8212,7 +8217,9 @@ impl KnowledgeBase {
         let rule = &self.rules[id.index()];
         ProgramClause {
             head: rule.head.clone(),
-            body_nodes: rule.body_nodes.clone(),
+            // A goal is read as written: the citation marker it rides in to pass its callee
+            // dictionaries (WI-20261102-ATVC1) is the resolver's, as the dictionaries are.
+            body_nodes: typing::body_without_goal_markers(self, &rule.body_nodes),
             clause_kind: rule.clause_kind,
             domain: rule.domain,
             meta: rule.meta,

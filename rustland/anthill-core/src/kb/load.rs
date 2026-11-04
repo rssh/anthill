@@ -3000,27 +3000,6 @@ fn self_type_misuse_detail(problem: &SelfTypeProblem) -> String {
     }
 }
 
-/// Why a sort's bracket on the relation `callee` named in a rule body is refused: the one
-/// wording for the written receiver (`Loader::refuse_rule_goal_receiver`) and for a receiver
-/// that denotes the sort (`typing::written_type_dots_as_calls`).
-pub(crate) fn rule_body_relation_bracket_detail(kb: &KnowledgeBase, callee: Symbol) -> String {
-    let name = kb.qualified_name_of(callee);
-    let fill = kb.try_resolve_symbol("anthill.reflect.Fillable.fill");
-    let domain_hint = if fill.map(|f| kb.canonical_sym(f)) == Some(kb.canonical_sym(callee)) {
-        "; a sort's domain is its `domain` relation — `Colour.domain(?x)` for \
-         `SortDomain[T = Colour].fill(?x)`"
-    } else {
-        ""
-    };
-    format!(
-        "a sort's type bracket on `{name}` in a rule body is not read — a relation named in a \
-         rule body, as a goal or as a value, is passed no type argument, so the binding would \
-         be dropped and the relation read at every instance. Cite the relation from an \
-         operation body, where the bracket selects the instance, or write it without the \
-         bracket{domain_hint}"
-    )
-}
-
 /// WI-840: what an operation's declared type parameter collides with (proposal 058
 /// §4.2's shadowing guard). One rule, three sources — and they need different advice,
 /// because the move that fixes each is different: rename here, rename here but for a
@@ -34674,14 +34653,21 @@ impl<'a> Loader<'a> {
         //
         // A nullary OPERATION root is its call, as the whole chain naming it is
         // ([`Self::try_qualified_op_ref`]): the zero-argument call, at the parameters an
-        // alias in its name fixes.
+        // alias in its name fixes. A RULE root named through such an alias is cited at those
+        // parameters, as the whole chain naming it is ([`Self::try_qualified_rule_ref`]):
+        // `WI.el.takeN(5)` over `sort WI = Wrap[T = Int64]` as `WI.el().takeN(5)`.
+        let root_name = receiver_name
+            .strip_suffix(trailing)
+            .map(|r| r.strip_suffix('.').unwrap_or(r))
+            .unwrap_or(receiver_name);
+        let aliased_rule = (self.is_paren_less_citation_target(root_sym))
+            .then(|| self.alias_recv_type_of(root_name, root_sym))
+            .flatten();
         if self.kb.has_kind(root_sym, SymbolKind::Operation) {
-            let root_name = receiver_name
-                .strip_suffix(trailing)
-                .map(|r| r.strip_suffix('.').unwrap_or(r))
-                .unwrap_or(receiver_name);
             let recv_type = self.alias_recv_type_of(root_name, root_sym);
             self.push_zero_arg_apply(parse_id, root_sym, recv_type, results);
+        } else if let Some(recv_type) = aliased_rule {
+            self.push_zero_arg_apply(parse_id, root_sym, Some(recv_type), results);
         } else {
             let receiver_kb = self.mk_var_ref(root_sym);
             results.push(receiver_kb);
@@ -36885,37 +36871,6 @@ impl<'a> Loader<'a> {
         Some(self.written_type_to_value(&te))
     }
 
-    /// A sort's bracket on a RELATION named in a rule body — the goal `Wrap[T = Int64].el(?x)`,
-    /// the value `?r <=> Wrap[T = Int64].el`, or either through an alias that fixes `T` — is
-    /// refused, and `true` says so. A relation named in a rule body is passed no type
-    /// argument, so the bracket was lowered onto the node and read by no one: the goal
-    /// answered at every instance (`"a"` beside `1` for `el(?x: T)`), and
-    /// `SortDomain[T = Colour].fill(?x)` answered nothing, since `fill` is a spec's rule with
-    /// no clause of its own. A citation from an operation body reads the bracket; a sort's
-    /// domain is its `domain` relation.
-    fn refuse_rule_goal_receiver(
-        &mut self,
-        parse_id: ParseTermId,
-        callee: Symbol,
-        span: Span,
-    ) -> bool {
-        if !self.kb.cites_a_relation(callee) || self.kb.has_kind(callee, SymbolKind::Operation) {
-            return false;
-        }
-        let written = self.read_parse_recv_type(parse_id).is_some();
-        if !written && self.alias_recv_type(parse_id, callee).is_none() {
-            return false;
-        }
-        if written {
-            self.consumed_recv_types.insert(parse_id);
-        }
-        self.errors.push(LoadError::InvalidTypeArgument {
-            detail: rule_body_relation_bracket_detail(self.kb, callee),
-            span: Some(span),
-        });
-        true
-    }
-
     /// The receiver of a call to `callee`, named through a type alias, bare: the sort the
     /// alias stands for at the parameters it fixes. `None` for every other callee, and for
     /// an alias that fixes nothing.
@@ -38964,9 +38919,11 @@ impl<'a> Loader<'a> {
                             // consuming the bracket here would drop it in silence — and
                             // `check_unconsumed_recv_types` refuses it, as it did when this
                             // node took the round trip. Found by `/code-review`.
-                            recv_type: if reread_reflect_form
-                                || self.refuse_rule_goal_receiver(parse_id, new_functor, span.span)
-                            {
+                            //
+                            // A sort's bracket on a RELATION is read by the typer's routing of
+                            // the goal (WI-20261102-ATVC1, `route_rule_goal_requirements`), which
+                            // refuses it where nothing reads it.
+                            recv_type: if reread_reflect_form {
                                 None
                             } else {
                                 self.build_recv_type(parse_id, new_functor)

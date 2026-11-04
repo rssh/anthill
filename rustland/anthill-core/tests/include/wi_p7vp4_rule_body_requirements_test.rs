@@ -1301,15 +1301,15 @@ fn refused_per_clause(ns: &str, decls: &str, clauses: &[&str], callee: &str) -> 
 const HOLDER: &str = "  sort Holder\n    sort A = ?\n    requires WeakOrd[T = A]\n    \
     operation hsign(x: A, y: A) -> Int64 = WeakOrd.compare(x, y)\n  end\n";
 
-/// A RULE GOAL PASSES ITS CALLEE NOTHING. `r` reaches the call through `inner`, a goal of its
-/// body, and a clause's condition is filled only where an OPERATION cites it: the caller's
-/// `Descending` stops at `r`, and `inner` derives `Int64`'s own from the values. Cited
-/// directly, `inner` answers through the caller — the control, in the same program.
-/// Rule-to-rule implicit arguments are 060-implementation §7.3's S7 (WI-20260911-5G28A),
-/// and this row turns when they land: `(4, -4, -1)` through `r` too. The DIRECT half FAILS
-/// with the inference backed out (`-1, -1, -1`); the half through `r` passes either way.
+/// A RULE GOAL PASSES ITS CALLEE ITS CALLER'S DICTIONARY. `r` reaches the call through
+/// `inner`, a goal of its body, and hands `inner` what its own citer handed it for `inner`'s
+/// condition (060-implementation §7.3's S7, WI-20261102-ATVC1): the caller's `Descending`
+/// reaches `inner` through `r` as it does cited directly, and uncited `inner` derives
+/// `Int64`'s own. Before S7 the half through `r` answered `(-1, -1, -1)`. The DIRECT half
+/// FAILS with the inference backed out (`-1, -1, -1`); the half through `r` FAILS with it or
+/// with S7's pass backed out.
 #[test]
-fn a_rule_goal_passes_its_callee_no_dictionary() {
+fn a_rule_goal_passes_its_callee_the_callers_dictionary() {
     let ns = "wip7vp4.viarule";
     let body = format!(
         "  rule inner(?a, ?b, ?c) :- WeakOrd.compare(?a, ?b, ?c)\n  \
@@ -1325,8 +1325,8 @@ fn a_rule_goal_passes_its_callee_no_dictionary() {
     );
     assert_eq!(
         cited(&mut interp, ns, "Through"),
-        (-1, -1, -1),
-        "through `r` nothing is passed on: `inner` derives `Int64`'s own",
+        (4, -4, -1),
+        "through `r`, `inner` is handed the rival its caller chose",
     );
 }
 

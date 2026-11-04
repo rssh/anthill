@@ -359,7 +359,12 @@ pub(super) fn type_rule_bodies(
         // once a second program loaded. The weave runs only after this pass, so a body
         // holding one was typed, stamped and elaborated by an earlier run, and its stamps
         // persist on the shared occurrences.
-        if body_nodes.iter().any(|n| occ_holds_woven_call(n)) {
+        // The same for a goal riding in its citation marker (WI-20261102-ATVC1), put there
+        // after this pass too.
+        if body_nodes
+            .iter()
+            .any(|n| occ_holds_woven_call(n) || occ_holds_goal_marker(kb, n))
+        {
             continue;
         }
         // WI-1058 — the rule whose TEXT a checked-not-typed refusal points at.

@@ -871,6 +871,10 @@ pub(crate) struct PendingCitationRoutes {
     param_rigids: Vec<(VarId, TermId)>,
     /// The cited sort's parameters no column mentions ([`unopened_citation_params`]).
     unopened: Vec<UnopenedParam>,
+    /// How many rule-body goals this citation was reached through (WI-20261102-ATVC1): `0` for
+    /// one written in an operation body, one more for each goal a forward slot hands on
+    /// ([`forwarded_routes`]).
+    depth: usize,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -893,6 +897,7 @@ fn queue_citation_routes(
         chain: env.enclosing_frame_chain().clone(),
         param_rigids: env.param_rigids().to_vec(),
         unopened,
+        depth: 0,
     });
 }
 
@@ -913,119 +918,139 @@ pub(super) fn settle_citation_routes(
         if !routes.is_empty() {
             pending.occ.set_op_dicts(routes);
         }
-        let span = Some(pending.occ.span.span);
         for misfit in misfits {
-            let error = match misfit {
-                CarriedMisfit::Unfixed { param, sort } => TypeError::UnconstrainedCitationParam {
-                    span,
-                    relation: pending.relation,
-                    sort,
-                    type_param: param,
-                },
-                CarriedMisfit::Unprovided {
-                    requirement,
-                    owner,
-                    why,
-                } => TypeError::Other {
-                    site: TypeError::here(),
-                    span,
-                    context: TypeErrorContext::Rule {
-                        name: pending.relation,
-                        field: RuleField::Whole,
-                    },
-                    expected: "a requirement suppliable at this citation".to_string(),
-                    actual: format!(
-                        "requirement `{requirement}` of `{}` cannot be supplied for the citation \
-                         of `{}`; {why}",
-                        kb.qualified_name_of(owner),
-                        kb.qualified_name_of(pending.relation),
-                    ),
-                },
-                CarriedMisfit::NotAnswered { witness, spec } => TypeError::WitnessDoesNotProvide {
-                    span,
-                    op: pending.relation,
-                    witness,
-                    spec,
-                    at_bindings: true,
-                },
-                CarriedMisfit::TwoProviders {
-                    spec,
-                    first,
-                    second,
-                } => TypeError::Other {
-                    site: TypeError::here(),
-                    span,
-                    context: TypeErrorContext::Rule {
-                        name: pending.relation,
-                        field: RuleField::Whole,
-                    },
-                    expected: format!(
-                        "one provider of `{}` for a read of the clause",
-                        kb.qualified_name_of(spec)
-                    ),
-                    actual: format!(
-                        "the citation's arguments fix two requirement slots that state it, to \
-                         {first} and to {second}, and the read names neither"
-                    ),
-                },
-                CarriedMisfit::Unheld {
-                    param,
-                    binder,
-                    holder,
-                } => TypeError::Other {
-                    site: TypeError::here(),
-                    span,
-                    context: TypeErrorContext::Rule {
-                        name: pending.relation,
-                        field: RuleField::Whole,
-                    },
-                    expected: format!(
-                        "the caller's slot `{}.{}`, whose requirement a read of the clause is",
-                        kb.local_name_of(param),
-                        kb.local_name_of(binder),
-                    ),
-                    actual: match holder {
-                        Some((kept, kept_binder)) => format!(
-                            "the frame holds one slot for it and `{}.{}`, {} — name the slot \
-                             (`requires {}: …`) and write that name in the parameter's type",
-                            kb.local_name_of(kept),
-                            kb.local_name_of(kept_binder),
-                            if kept == param {
-                                "two slots of one carrier at one type"
-                            } else {
-                                "two parameters of one carrier"
-                            },
-                            kb.local_name_of(binder),
-                        ),
-                        None => format!(
-                            "a requirement the caller writes answers it, so the frame holds no \
-                             slot of `{}`'s own — name the slot (`requires {}: …`) and write \
-                             that name in the parameter's type",
-                            kb.local_name_of(param),
-                            kb.local_name_of(binder),
-                        ),
-                    },
-                },
-                CarriedMisfit::Contested {
-                    param,
-                    binder,
-                    other,
-                } => TypeError::Other {
-                    site: TypeError::here(),
-                    span,
-                    context: TypeErrorContext::Rule {
-                        name: pending.relation,
-                        field: RuleField::Whole,
-                    },
-                    expected: "one slot of the caller's frame for a read of the clause"
-                        .to_string(),
-                    actual: contested_account(kb, param, binder, other),
-                },
-            };
-            refused.push((error, Some(pending.occ.span.source)));
+            refused.push(citation_misfit_error(kb, pending.relation, pending.occ.span, misfit));
         }
     }
     refused
+}
+
+/// A citation's [`CarriedMisfit`] as the load error it is, at `at` — the citation of
+/// `relation`, or for a misfit a forward slot met, the goal it met it at — with that file.
+pub(super) fn citation_misfit_error(
+    kb: &KnowledgeBase,
+    relation: Symbol,
+    at: crate::span::SourceSpan,
+    misfit: CarriedMisfit,
+) -> (TypeError, Option<crate::span::SourceId>) {
+    if let CarriedMisfit::Forwarded {
+        relation,
+        at,
+        misfit,
+    } = misfit
+    {
+        return citation_misfit_error(kb, relation, at, *misfit);
+    }
+    let span = Some(at.span);
+    let error = match misfit {
+        CarriedMisfit::Forwarded { .. } => unreachable!("read above"),
+        CarriedMisfit::Unfixed { param, sort } => TypeError::UnconstrainedCitationParam {
+            span,
+            relation,
+            sort,
+            type_param: param,
+        },
+        CarriedMisfit::Unprovided {
+            requirement,
+            owner,
+            why,
+        } => TypeError::Other {
+            site: TypeError::here(),
+            span,
+            context: TypeErrorContext::Rule {
+                name: relation,
+                field: RuleField::Whole,
+            },
+            expected: "a requirement suppliable at this citation".to_string(),
+            actual: format!(
+                "requirement `{requirement}` of `{}` cannot be supplied for the citation \
+                 of `{}`; {why}",
+                kb.qualified_name_of(owner),
+                kb.qualified_name_of(relation),
+            ),
+        },
+        CarriedMisfit::NotAnswered { witness, spec } => TypeError::WitnessDoesNotProvide {
+            span,
+            op: relation,
+            witness,
+            spec,
+            at_bindings: true,
+        },
+        CarriedMisfit::TwoProviders {
+            spec,
+            first,
+            second,
+        } => TypeError::Other {
+            site: TypeError::here(),
+            span,
+            context: TypeErrorContext::Rule {
+                name: relation,
+                field: RuleField::Whole,
+            },
+            expected: format!(
+                "one provider of `{}` for a read of the clause",
+                kb.qualified_name_of(spec)
+            ),
+            actual: format!(
+                "the citation's arguments fix two requirement slots that state it, to \
+                 {first} and to {second}, and the read names neither"
+            ),
+        },
+        CarriedMisfit::Unheld {
+            param,
+            binder,
+            holder,
+        } => TypeError::Other {
+            site: TypeError::here(),
+            span,
+            context: TypeErrorContext::Rule {
+                name: relation,
+                field: RuleField::Whole,
+            },
+            expected: format!(
+                "the caller's slot `{}.{}`, whose requirement a read of the clause is",
+                kb.local_name_of(param),
+                kb.local_name_of(binder),
+            ),
+            actual: match holder {
+                Some((kept, kept_binder)) => format!(
+                    "the frame holds one slot for it and `{}.{}`, {} — name the slot \
+                     (`requires {}: …`) and write that name in the parameter's type",
+                    kb.local_name_of(kept),
+                    kb.local_name_of(kept_binder),
+                    if kept == param {
+                        "two slots of one carrier at one type"
+                    } else {
+                        "two parameters of one carrier"
+                    },
+                    kb.local_name_of(binder),
+                ),
+                None => format!(
+                    "a requirement the caller writes answers it, so the frame holds no \
+                     slot of `{}`'s own — name the slot (`requires {}: …`) and write \
+                     that name in the parameter's type",
+                    kb.local_name_of(param),
+                    kb.local_name_of(binder),
+                ),
+            },
+        },
+        CarriedMisfit::Contested {
+            param,
+            binder,
+            other,
+        } => TypeError::Other {
+            site: TypeError::here(),
+            span,
+            context: TypeErrorContext::Rule {
+                name: relation,
+                field: RuleField::Whole,
+            },
+            expected: "one slot of the caller's frame for a read of the clause"
+                .to_string(),
+            actual: contested_account(kb, param, binder, other),
+        },
+    };
+    (error, Some(at.source))
 }
 
 /// WI-20260911-5G28A S2 — the cited relation's IMPLICIT ARGUMENTS at this citation: one
@@ -1111,35 +1136,61 @@ fn citation_requirement_routes(
             }
         }
         let body: Vec<Rc<NodeOccurrence>> = kb.rule_body_nodes(rid).to_vec();
-        // Every read, a connective's goal slot's included, in the order the resolver binds
-        // the routes in ([`clause_requirement_reads`]).
-        let read_nodes = clause_requirement_reads(kb, fd, &body);
-        // Read for a clause with a read: the one source of a witness's type where the
-        // witness is no column, and of the named slots its variables' types carry.
-        let clause_types = (!read_nodes.is_empty())
+        // Every implicit parameter — each read, a connective's goal slot's included, then each
+        // forward slot — in the order the resolver binds the routes in
+        // ([`clause_implicit_params`]).
+        let params = clause_implicit_params(kb, fd, &body);
+        // Read for a clause with a parameter: the one source of a witness's type where the
+        // witness is no column, of the named slots its variables' types carry, and of the
+        // types a forward slot's goal writes its arguments at.
+        let clause_types = (!params.is_empty())
             .then(|| ClauseTypes::at_citation(kb, &body, &slots, column_types, bound_types, subst))
             .flatten();
-        for node in &read_nodes {
-            let Some(Expr::Apply {
-                pos_args,
-                named_args,
-                ..
-            }) = node.as_expr()
-            else {
-                unreachable!("a requirement read is an application");
+        // The routes of each goal a forward slot belongs to, computed once per goal.
+        let mut forwarded: Vec<(Rc<NodeOccurrence>, SmallVec<[Option<TermId>; 2]>)> = Vec::new();
+        for param in &params {
+            let route = match param {
+                ImplicitParam::Read(node) => {
+                    let Some(Expr::Apply {
+                        pos_args,
+                        named_args,
+                        ..
+                    }) = node.as_expr()
+                    else {
+                        unreachable!("a requirement read is an application");
+                    };
+                    route_requirement_read(
+                        kb,
+                        pending,
+                        rid,
+                        pos_args,
+                        named_args,
+                        &slots,
+                        &fresh,
+                        &carrier_subst,
+                        clause_types.as_ref(),
+                        misfits,
+                    )
+                }
+                ImplicitParam::Forward { marker, slot } => {
+                    let at = match forwarded.iter().position(|(m, _)| Rc::ptr_eq(m, marker)) {
+                        Some(at) => at,
+                        None => {
+                            let goal_routes = forwarded_routes(
+                                kb,
+                                pending,
+                                &slots,
+                                clause_types.as_ref(),
+                                marker,
+                                misfits,
+                            );
+                            forwarded.push((Rc::clone(marker), goal_routes));
+                            forwarded.len() - 1
+                        }
+                    };
+                    forwarded[at].1.get(*slot).copied().flatten()
+                }
             };
-            let route = route_requirement_read(
-                kb,
-                pending,
-                rid,
-                pos_args,
-                named_args,
-                &slots,
-                &fresh,
-                &carrier_subst,
-                clause_types.as_ref(),
-                misfits,
-            );
             any |= route.is_some();
             routes.push(route);
         }
@@ -1149,6 +1200,207 @@ fn citation_requirement_routes(
     } else {
         SmallVec::new()
     }
+}
+
+/// WI-20261102-ATVC1 — how many rule-body goals a citation's routes may be handed on through.
+/// A forward slot hands on a parameter of a relation outside its clause's own recursion
+/// (`route_rule_goal_requirements`), so the chain of goals is a path in an acyclic graph and
+/// ends; this bounds it should that ever stop being so.
+const MAX_FORWARD_DEPTH: usize = 64;
+
+/// WI-20261102-ATVC1 — the routes a citation gives the FORWARD slots of one goal of the cited
+/// clause (`marker`): the routes the goal's callee gets were the citing operation to cite it
+/// itself, with the arguments the goal writes, each at the type this citation gives it — as a
+/// read's witness is typed ([`route_requirement_read`]): a head column at the citation's type
+/// for it, another variable at the cited clause's typing as this citation fixes it
+/// (`clause_types`), a literal at its sort. So a dictionary the citing operation holds reaches
+/// a read two goals down by the route it would take to a read one goal down, and a type the
+/// citation fixes reaches it the same way.
+fn forwarded_routes(
+    kb: &mut KnowledgeBase,
+    pending: &PendingCitationRoutes,
+    slots: &[(SlotKey, Symbol, u32)],
+    clause_types: Option<&ClauseTypes>,
+    marker: &Rc<NodeOccurrence>,
+    misfits: &mut Vec<CarriedMisfit>,
+) -> SmallVec<[Option<TermId>; 2]> {
+    if pending.depth >= MAX_FORWARD_DEPTH {
+        debug_assert!(false, "a forward slot's goals form a cycle");
+        return SmallVec::new();
+    }
+    let (goal, callee) = {
+        let m = goal_marker(kb, marker).expect("a forward slot's marker");
+        (Rc::clone(m.goal), m.relation)
+    };
+    let (column_types, bound_types) =
+        (pending.column_types.as_slice(), pending.bound_types.as_slice());
+    let arg_type = |kb: &mut KnowledgeBase, arg: &Rc<NodeOccurrence>| -> Option<Value> {
+        match arg.as_expr() {
+            Some(Expr::Var(Var::DeBruijn(d))) => {
+                match slots.iter().find(|(_, _, di)| di == d) {
+                    Some((_, name, _)) => {
+                        citation_column_type(kb, *name, column_types, bound_types, &pending.subst)
+                    }
+                    None => clause_types?.witness_type(kb, *d),
+                }
+            }
+            Some(Expr::Const(lit)) => Some(literal_sort(kb, lit)),
+            _ => {
+                let ty = arg.inferred_type()?;
+                Some(clause_types?.type_at(kb, &ty))
+            }
+        }
+    };
+    // A goal no citation could be made of — a relation with no column interface, arguments
+    // that align to no column — routes nothing, and its callee derives its own, as before a
+    // goal passed anything.
+    let Ok(edge) = goal_edge_citation(
+        kb,
+        &goal,
+        callee,
+        arg_type,
+        &pending.subst,
+        pending.chain.clone(),
+        pending.param_rigids.clone(),
+        pending.depth + 1,
+    ) else {
+        return SmallVec::new();
+    };
+    let mut met = Vec::new();
+    let routes = citation_requirement_routes(kb, &edge, &mut met);
+    misfits.extend(met.into_iter().map(|misfit| CarriedMisfit::Forwarded {
+        relation: callee,
+        at: goal.span,
+        misfit: Box::new(misfit),
+    }));
+    routes
+}
+
+/// WI-20261102-ATVC1 — the routes a BRACKETED rule-body goal gives its callee at load —
+/// `Wrap[T = Int64].el(?x)`. The bracket fixes the instance and a rule body has no caller
+/// frame, so each route is a construction or none, as the same citation written in an
+/// operation that holds no `requires` would get. What the edge refuses is in `misfits`; a goal
+/// no citation could be made of is refused with why, since its bracket would be read by no one.
+pub(super) fn bracketed_goal_routes(
+    kb: &mut KnowledgeBase,
+    goal: &Rc<NodeOccurrence>,
+    callee: Symbol,
+    misfits: &mut Vec<CarriedMisfit>,
+) -> Result<SmallVec<[Option<TermId>; 2]>, TypeError> {
+    let arg_type = |kb: &mut KnowledgeBase, arg: &Rc<NodeOccurrence>| match arg.as_expr() {
+        Some(Expr::Const(lit)) => Some(literal_sort(kb, lit)),
+        _ => arg.inferred_type(),
+    };
+    let edge = goal_edge_citation(
+        kb,
+        goal,
+        callee,
+        arg_type,
+        &Substitution::new(),
+        DictChain::empty(),
+        Vec::new(),
+        0,
+    )?;
+    Ok(citation_requirement_routes(kb, &edge, misfits))
+}
+
+/// WI-20261102-ATVC1 — a rule-body GOAL of `callee` read as a citation of it: the relation's
+/// columns opened for this goal and seeded from the goal's bracket, as an operation body's
+/// citation is ([`open_citation_params`], [`seed_citation_params`]), each argument's column
+/// bound to the type `arg_type` gives it, and the caller's frame `chain` and σ `base` — the
+/// citing operation's, for a goal reached from one. The refusal where the relation has no
+/// column interface a citation could read, the bracket names another sort, or the goal's
+/// arguments do not align to its columns.
+#[allow(clippy::too_many_arguments)]
+fn goal_edge_citation(
+    kb: &mut KnowledgeBase,
+    goal: &Rc<NodeOccurrence>,
+    callee: Symbol,
+    mut arg_type: impl FnMut(&mut KnowledgeBase, &Rc<NodeOccurrence>) -> Option<Value>,
+    base: &Substitution,
+    chain: DictChain,
+    param_rigids: Vec<(VarId, TermId)>,
+    depth: usize,
+) -> Result<PendingCitationRoutes, TypeError> {
+    let Some(Expr::Apply {
+        pos_args,
+        named_args,
+        ..
+    }) = goal.as_expr()
+    else {
+        unreachable!("a goal a marker carries is an application");
+    };
+    let span = Some(goal.span.span);
+    let mut columns = relation_columns_across_clauses(kb, callee, span, true)?;
+    let opened = open_citation_params(kb, callee, &mut columns);
+    // A rule body has no rigids and no enclosing instance: its bracket values are types as
+    // written.
+    let env = TypingEnv::empty();
+    let mut subst = Substitution::with_parent(base.clone());
+    if let Some((owner, params)) = &opened {
+        seed_citation_params(kb, &mut subst, goal, callee, span, *owner, params, &env)?;
+    }
+    let unopened = unopened_citation_params(kb, goal, callee, opened.as_ref(), &env);
+    let mut seen: HashSet<Symbol> = HashSet::new();
+    let names: Vec<Symbol> = columns.iter().map(|c| c.name).filter(|n| seen.insert(*n)).collect();
+    let keys: Vec<Symbol> = named_args.iter().map(|(k, _)| *k).collect();
+    let bound = resolve_relation_arg_columns(&names, pos_args.len(), &keys).map_err(|e| {
+        TypeError::Other {
+            site: TypeError::here(),
+            span,
+            context: TypeErrorContext::Rule {
+                name: callee,
+                field: RuleField::Whole,
+            },
+            expected: "a goal whose arguments bind the relation's columns".to_string(),
+            actual: format!("{} (relation `{}`)", e.message(kb), kb.qualified_name_of(callee)),
+        }
+    })?;
+    let args: Vec<Rc<NodeOccurrence>> = pos_args
+        .iter()
+        .chain(named_args.iter().map(|(_, a)| a))
+        .cloned()
+        .collect();
+    let mut bound_types: Vec<(Symbol, Value)> = Vec::with_capacity(bound.len());
+    for (name, arg) in bound.iter().zip(&args) {
+        let Some(ty) = arg_type(kb, arg) else {
+            continue;
+        };
+        // The argument's type MET with its column's: a clause's variable is typed by what it is
+        // given and by where it goes, and the column may know more — the bracket's instance, a
+        // tie to another column. Unified both ways, so a variable of either side reads the
+        // other's. An argument that does not unify with its column matches no solution of it
+        // (`Wrap[T = Int64].el("a")`), and the column's own type stands: a column's type is a
+        // data sort's or a variable's, and no other type is a subtype of a data sort.
+        let ty = match columns.iter().find(|c| c.name == *name && !c.some) {
+            Some(col) => {
+                let mut trial = subst.clone();
+                if !unify_types(kb, &mut trial, &col.ty, &ty) {
+                    continue;
+                }
+                subst = trial;
+                walk_type_deep_value(kb, &subst, &ty)
+            }
+            None => ty,
+        };
+        // A bare variable says nothing of the column ([`ClauseTypes::at_citation`]'s rule).
+        if resolved_var(kb, &ty).is_some() {
+            continue;
+        }
+        bound_types.push((*name, ty));
+    }
+    let column_types: Vec<(Symbol, Value)> = columns.iter().map(|c| (c.name, c.ty.clone())).collect();
+    Ok(PendingCitationRoutes {
+        occ: Rc::clone(goal),
+        relation: callee,
+        column_types,
+        bound_types,
+        subst,
+        chain,
+        param_rigids,
+        unopened,
+        depth,
+    })
 }
 
 /// One read's route for [`citation_requirement_routes`] — `pos_args` is the read's
@@ -1395,6 +1647,14 @@ pub(crate) enum CarriedMisfit {
         param: Symbol,
         binder: Symbol,
         holder: Option<(Symbol, Symbol)>,
+    },
+    /// A misfit of the citation a FORWARD slot routes through (WI-20261102-ATVC1): the goal
+    /// of the cited clause, a goal of `relation`, whose callee's read the citer cannot supply
+    /// there. Reported at the goal, naming its relation.
+    Forwarded {
+        relation: Symbol,
+        at: crate::span::SourceSpan,
+        misfit: Box<CarriedMisfit>,
     },
 }
 
@@ -1710,6 +1970,8 @@ fn citation_column_type(
 /// citation's σ), which is dropped with this value.
 struct ClauseTypes {
     types: Vec<(u32, Value)>,
+    /// The enclosing sort's parameters opened for this citation, as `types` were.
+    opened: Substitution,
     subst: Substitution,
 }
 
@@ -1748,8 +2010,8 @@ impl ClauseTypes {
             crate::kb::node_occurrence::collect_value_type(kb, ty, &mut params, &mut seen);
         }
         params.retain(|v| kb.is_canonical_type_param_var(*v));
+        let mut opened = Substitution::new();
         if !params.is_empty() {
-            let mut opened = Substitution::new();
             for v in params {
                 let fresh = kb.fresh_var(v.name());
                 let fresh = kb.alloc(Term::Var(Var::Global(fresh)));
@@ -1778,7 +2040,18 @@ impl ClauseTypes {
                 return None;
             }
         }
-        Some(ClauseTypes { types, subst: pins })
+        Some(ClauseTypes {
+            types,
+            opened,
+            subst: pins,
+        })
+    }
+
+    /// The type of a clause expression stamped `ty`, as this citation fixes it — a goal's
+    /// argument that is no variable (WI-20261102-ATVC1).
+    fn type_at(&self, kb: &mut KnowledgeBase, ty: &Value) -> Value {
+        let ty = walk_type_deep_value(kb, &self.opened, ty);
+        walk_type_deep_value(kb, &self.subst, &ty)
     }
 
     /// The type of the clause variable at De Bruijn index `d`, as this citation fixes it.

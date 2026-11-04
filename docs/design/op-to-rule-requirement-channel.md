@@ -1,7 +1,7 @@
 # The requirement channel for rules — implicit parameters, implicit arguments
 
-**STATUS: DESIGN. §7 STEP 3 IS BUILT (WI-20260909-NAR1X, 2026-09-12); STEPS 1, 2 AND 4
-ARE NOT.** Settles [`requirement-channel.md`](./requirement-channel.md)
+**STATUS: §7 STEPS 2, 3 AND 4 ARE BUILT (WI-20261102-ATVC1, WI-20260909-NAR1X,
+060-implementation §7.3's S2); STEP 1's REFUSALS ARE NOT.** Settles [`requirement-channel.md`](./requirement-channel.md)
 §10 item 3 — "specify the channel … and the caller-name → spec attribution at the boundary" —
 and the carrier question [`060-typedomains-implementation.md`](./060-typedomains-implementation.md)
 answers two ways (§4.3 step 3 vs §5). Companion to `requirement-channel.md`, which owns the
@@ -542,7 +542,14 @@ forms are alternatives and the choice belongs to that document, which still owes
    the decision — `a` takes the entry as its own implicit parameter — is this note's, and is
    S7's to settle. P7VP4 built the inference for a rule→op edge only; the rule→rule edge is
    `060-implementation.md` §7.3's S7, and is measured unbuilt in §8.9 there (row C6).
-2. **The push binds the arguments — driven on the rule→rule edge.** Goals carry their implicit
+2. **The push binds the arguments — driven on the rule→rule edge. BUILT, WI-20261102-ATVC1,
+   2026-11-04** (060-implementation §7.3's S7, which says how): not by a per-goal carrier — the
+   goal rides in §5.1's `__within_requirements` marker in the stored body, its arguments a
+   FORWARD slot of the caller clause (one more implicit parameter, routed by the clause's own
+   citer), the caller's own parameter for a recursive goal at its own column types, a
+   dictionary built from a bracket, or none; and not by a per-predicate sequence — S2's flat
+   layout, reads then forward slots. The rows below are not the ones driven; those are in
+   `wi_atvc1_rule_goal_implicit_arguments_test.rs`. As planned: Goals carry their implicit
    arguments through the seven goal-list constructions (§1); `with_fresh_vars` opens them with
    the body; the push binds `?rⱼ := tⱼ`. Acceptance: §1's `a(3, nil())` answers through `a`'s
    parameter, asserted by value with two suppliers; and §1's `r(?a1: A, ?a2: A, ?b1: B, ?b2: B)`

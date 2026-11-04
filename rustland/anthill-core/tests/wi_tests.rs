@@ -1994,6 +1994,8 @@ mod wi_shed7_fillable_test;
 mod wi_shed7_reads_wait_test;
 #[path = "include/wi_p7vp4_rule_body_requirements_test.rs"]
 mod wi_p7vp4_rule_body_requirements_test;
+#[path = "include/wi_atvc1_rule_goal_implicit_arguments_test.rs"]
+mod wi_atvc1_rule_goal_implicit_arguments_test;
 #[path = "include/wi_0rrqp_clause_typed_through_constructor_test.rs"]
 mod wi_0rrqp_clause_typed_through_constructor_test;
 #[path = "include/wi_wf14z_clause_typed_as_a_whole_test.rs"]
@@ -2344,8 +2346,6 @@ mod error_row_relational_view_test;
 mod relation_citation_reads_every_clause_test;
 #[path = "include/unresolved_annotation_reported_once_test.rs"]
 mod unresolved_annotation_reported_once_test;
-#[path = "include/rule_goal_sort_bracket_refused_test.rs"]
-mod rule_goal_sort_bracket_refused_test;
 #[path = "include/wi_76kzn_constraint_goal_reading_test.rs"]
 mod wi_76kzn_constraint_goal_reading_test;
 #[path = "include/wi_edpf6_arrow_records_its_binders_test.rs"]

@@ -224,9 +224,9 @@ fn written_sort_dot(
 
     // A rule of the sort is the relation the written `Sort.rule(…)` cites, and `Sort.rule`
     // without parentheses is that relation itself, which the call with no arguments is
-    // too. In an operation body the bracket selects the instance; in a rule body a
-    // relation is passed no type argument, and the bracket is refused as the written
-    // spelling's is.
+    // too. In an operation body the bracket selects the instance; in a rule body it is the
+    // written spelling's call, whose bracket a goal passes on and every other place refuses
+    // (`route_rule_goal_requirements`, WI-20261102-ATVC1).
     if let Some(rule) = declared.filter(|d| kb.cites_a_relation(*d)) {
         if let Some(refusal) = hidden(kb, rule) {
             return refusal;
@@ -235,14 +235,6 @@ fn written_sort_dot(
             Ok(recv_type) => recv_type,
             Err(refusal) => return refusal,
         };
-        if recv_type.is_some() && !env.written_as_an_operation_body() {
-            let written = kb.qualified_name_of(rule).to_string();
-            return refused(
-                TypeError::here(),
-                format!("the relation written without the bracket, `{written}(…)`"),
-                crate::kb::load::rule_body_relation_bracket_detail(kb, rule),
-            );
-        }
         let pass = crate::kb::simp_rewrite::simp_pass(kb);
         return DenotedDot::Call(NodeOccurrence::synthesized_expr(
             Expr::Apply {

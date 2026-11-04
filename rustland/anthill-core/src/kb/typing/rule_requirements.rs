@@ -736,7 +736,7 @@ pub(super) fn infer_rule_body_requirements(kb: &mut KnowledgeBase) {
 /// in pre-order: an `|` / `&` branch, a negand, a quantifier's body and a discharge's consequent
 /// (each component of a slot the table wraps in `tuple(…)`), but no hypothesis and no binder
 /// ([`proved_goal_children`]).
-fn nested_goals(kb: &KnowledgeBase, goal: &Rc<NodeOccurrence>, out: &mut Vec<Rc<NodeOccurrence>>) {
+pub(super) fn nested_goals(kb: &KnowledgeBase, goal: &Rc<NodeOccurrence>, out: &mut Vec<Rc<NodeOccurrence>>) {
     let Some(expr) = goal.as_expr() else { return };
     for child in proved_goal_children(kb, expr) {
         out.push(Rc::clone(&child));
@@ -755,6 +755,59 @@ fn place_nested_reads(
     and_sym: Symbol,
     pass: crate::kb::occurrence::PassId,
 ) -> Rc<NodeOccurrence> {
+    map_proved_children(kb, goal, &|kb, n| place_reads_at(kb, n, nested, and_sym, pass))
+}
+
+/// One goal of a connective's slot with its reads before it ([`place_nested_reads`]), its own
+/// slots placed in turn; `None` for a goal given no reads, whose slots the walk descends.
+fn place_reads_at(
+    kb: &KnowledgeBase,
+    goal: &Rc<NodeOccurrence>,
+    nested: &[(Rc<NodeOccurrence>, Vec<Rc<NodeOccurrence>>)],
+    and_sym: Symbol,
+    pass: crate::kb::occurrence::PassId,
+) -> Option<Rc<NodeOccurrence>> {
+    let (_, reads) = nested.iter().find(|(site, _)| Rc::ptr_eq(site, goal))?;
+    let inner = map_proved_children(kb, goal, &|kb, n| place_reads_at(kb, n, nested, and_sym, pass));
+    Some(reads.iter().rev().fold(inner, |rest, read| {
+        NodeOccurrence::synthesized_expr(
+            Expr::Apply {
+                recv_type: None,
+                functor: and_sym,
+                pos_args: vec![Rc::clone(read), rest],
+                named_args: Vec::new(),
+                type_args: Vec::new(),
+            },
+            Rc::clone(goal),
+            pass,
+            goal.owner,
+        )
+    }))
+}
+
+/// `goal` with every goal `f` answers for replaced by its answer, descending through the
+/// proved slots of the connectives above it ([`map_proved_children`]); every other node is
+/// kept, so a goal is found by identity.
+pub(super) fn map_proved_goals(
+    kb: &KnowledgeBase,
+    goal: &Rc<NodeOccurrence>,
+    f: &dyn Fn(&KnowledgeBase, &Rc<NodeOccurrence>) -> Option<Rc<NodeOccurrence>>,
+) -> Rc<NodeOccurrence> {
+    match f(kb, goal) {
+        Some(replaced) => replaced,
+        None => map_proved_children(kb, goal, f),
+    }
+}
+
+/// `goal` with each goal in its proved slots — each component of a slot the table wraps in
+/// `tuple(…)`, or the slot itself — mapped by [`map_proved_goals`]; `goal` itself is not asked.
+/// The connectives above a replaced goal are rebuilt, and a goal nothing under it moved is
+/// handed back as it is.
+pub(super) fn map_proved_children(
+    kb: &KnowledgeBase,
+    goal: &Rc<NodeOccurrence>,
+    f: &dyn Fn(&KnowledgeBase, &Rc<NodeOccurrence>) -> Option<Rc<NodeOccurrence>>,
+) -> Rc<NodeOccurrence> {
     let Some((functor, pos_args, _)) = goal.as_expr().and_then(expr_call_parts) else {
         return Rc::clone(goal);
     };
@@ -762,29 +815,6 @@ fn place_nested_reads(
     if slots.is_empty() {
         return Rc::clone(goal);
     }
-    // One goal of a slot, its reads before it and its own slots placed in turn.
-    let place = |g: &Rc<NodeOccurrence>| {
-        let reads = nested
-            .iter()
-            .find(|(site, _)| Rc::ptr_eq(site, g))
-            .map(|(_, reads)| reads.as_slice())
-            .unwrap_or(&[]);
-        let inner = place_nested_reads(kb, g, nested, and_sym, pass);
-        reads.iter().rev().fold(inner, |rest, read| {
-            NodeOccurrence::synthesized_expr(
-                Expr::Apply {
-                    recv_type: None,
-                    functor: and_sym,
-                    pos_args: vec![Rc::clone(read), rest],
-                    named_args: Vec::new(),
-                    type_args: Vec::new(),
-                },
-                Rc::clone(g),
-                pass,
-                g.owner,
-            )
-        })
-    };
     // A node's children in `for_each_child` order: its positional arguments first.
     let children_of = |n: &Rc<NodeOccurrence>| {
         let mut children: Vec<Rc<NodeOccurrence>> = Vec::new();
@@ -794,23 +824,37 @@ fn place_nested_reads(
         children
     };
     let mut children = children_of(goal);
+    let mut changed = false;
     for slot in slots.iter().filter(|s| s.reading == crate::kb::SlotReading::Proved) {
         let Some(child) = pos_args.get(slot.index) else {
             continue;
         };
         let parts = slot.tuple_wrapped.then(|| goal_tuple_parts(kb, child)).flatten();
-        children[slot.index] = match parts {
+        let mapped = match parts {
             Some(parts) => {
                 let mut parts_now = children_of(child);
+                let mut moved = false;
                 for (i, part) in parts.iter().enumerate() {
-                    parts_now[i] = place(part);
+                    let m = map_proved_goals(kb, part, f);
+                    moved |= !Rc::ptr_eq(&m, part);
+                    parts_now[i] = m;
                 }
-                crate::kb::simp_rewrite::reassemble(child, &parts_now)
+                if moved {
+                    crate::kb::simp_rewrite::reassemble(child, &parts_now)
+                } else {
+                    Rc::clone(child)
+                }
             }
-            None => place(child),
+            None => map_proved_goals(kb, child, f),
         };
+        changed |= !Rc::ptr_eq(&mapped, child);
+        children[slot.index] = mapped;
     }
-    crate::kb::simp_rewrite::reassemble(goal, &children)
+    if changed {
+        crate::kb::simp_rewrite::reassemble(goal, &children)
+    } else {
+        Rc::clone(goal)
+    }
 }
 
 /// A clause's requirement reads, in the one order every reader takes them in: the body's goals
@@ -845,6 +889,135 @@ pub(crate) fn clause_requirement_reads(
         visit(kb, fd, node, &mut out);
     }
     out
+}
+
+/// One IMPLICIT PARAMETER of a clause — a dictionary the clause takes from whoever cites it or
+/// calls it as a goal, one position of its relation's flat layout ([`requirement_read_counts`]).
+pub(crate) enum ImplicitParam {
+    /// A requirement read; its `out` receives the dictionary.
+    Read(Rc<NodeOccurrence>),
+    /// A FORWARD slot (WI-20261102-ATVC1): the variable at `slot` of a body goal's citation
+    /// marker ([`goal_marker`]), which hands the callee's read at that position whatever the
+    /// clause's own caller passed for it.
+    Forward {
+        marker: Rc<NodeOccurrence>,
+        slot: usize,
+    },
+}
+
+impl ImplicitParam {
+    /// The variable the dictionary is bound to: the read's `out`, or the marker's slot.
+    pub(crate) fn var_node(&self, kb: &KnowledgeBase, fd: Symbol) -> Rc<NodeOccurrence> {
+        match self {
+            ImplicitParam::Read(read) => Rc::clone(
+                requirement_read_out(kb, fd, read).expect("an implicit read is a read with an `out`"),
+            ),
+            ImplicitParam::Forward { marker, slot } => Rc::clone(
+                &goal_marker(kb, marker)
+                    .expect("a forward slot is a slot of a goal's citation marker")
+                    .slots[*slot],
+            ),
+        }
+    }
+}
+
+/// A rule-body goal riding in its citation marker, `__within_requirements(goal, relation, d₀
+/// … dₙ₋₁)` (WI-20261102-ATVC1), read off the occurrence: one slot per position of
+/// `relation`'s layout.
+pub(crate) struct GoalMarker<'a> {
+    pub(crate) goal: &'a Rc<NodeOccurrence>,
+    pub(crate) relation: Symbol,
+    pub(crate) slots: &'a [Rc<NodeOccurrence>],
+}
+
+/// The citation marker `node` is, or `None` for any other node.
+pub(crate) fn goal_marker<'a>(kb: &KnowledgeBase, node: &'a NodeOccurrence) -> Option<GoalMarker<'a>> {
+    let Some(Expr::Apply {
+        functor, pos_args, ..
+    }) = node.as_expr()
+    else {
+        return None;
+    };
+    if pos_args.len() < 2
+        || kb.builtin_of(*functor) != Some(crate::kb::resolve::BuiltinTag::WithinRequirements)
+    {
+        return None;
+    }
+    let Some(Expr::Ref(relation)) = pos_args[1].as_expr() else {
+        unreachable!("a goal's citation marker names its relation by a symbol");
+    };
+    Some(GoalMarker {
+        goal: &pos_args[0],
+        relation: *relation,
+        slots: &pos_args[2..],
+    })
+}
+
+/// A clause's IMPLICIT PARAMETERS in the one order every reader takes them in: its
+/// requirement reads ([`clause_requirement_reads`]), then the FORWARD slots of its goals'
+/// citation markers ([`is_forward_slot`]), in body pre-order. A marker's other slots pass
+/// nothing that is the clause's own to receive: a read's `out` or an earlier forward slot's
+/// variable (a goal of the clause's own relation hands on what the clause took), a
+/// dictionary, or `__unrouted`.
+///
+/// The typer counts and routes these ([`requirement_read_counts`], the citation's routes) and
+/// the resolver binds them in the clause it has just opened (`bind_citation_reads`): one
+/// enumeration, so a position means one parameter to all three.
+pub(crate) fn clause_implicit_params(
+    kb: &KnowledgeBase,
+    fd: Symbol,
+    body: &[Rc<NodeOccurrence>],
+) -> Vec<ImplicitParam> {
+    fn markers(kb: &KnowledgeBase, node: &Rc<NodeOccurrence>, out: &mut Vec<Rc<NodeOccurrence>>) {
+        if goal_marker(kb, node).is_some() {
+            out.push(Rc::clone(node));
+            return;
+        }
+        if let Some(expr) = node.as_expr() {
+            for child in proved_goal_children(kb, expr) {
+                markers(kb, &child, out);
+            }
+        }
+    }
+    let mut params: Vec<ImplicitParam> = clause_requirement_reads(kb, fd, body)
+        .into_iter()
+        .map(ImplicitParam::Read)
+        .collect();
+    let mut found = Vec::new();
+    for node in body {
+        markers(kb, node, &mut found);
+    }
+    for marker in found {
+        let forwards: Vec<usize> = goal_marker(kb, &marker)
+            .expect("collected as a marker")
+            .slots
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| is_forward_slot(kb, s))
+            .map(|(i, _)| i)
+            .collect();
+        params.extend(forwards.into_iter().map(|slot| ImplicitParam::Forward {
+            marker: Rc::clone(&marker),
+            slot,
+        }));
+    }
+    params
+}
+
+/// The synthesizing pass of a FORWARD slot's variable (`route_rule_goal_requirements`): a
+/// variable of the clause minted to receive what the clause's caller passes for one position
+/// of a callee's layout.
+pub(crate) const FORWARD_SLOT_PASS: &str = "anthill.kb.passes.forward_slot";
+
+/// Is this marker slot a FORWARD slot ([`FORWARD_SLOT_PASS`])? By provenance, read on a shared
+/// borrow by the pass name's intern entry ([`is_inferred_requirement_read`]'s reason): a slot
+/// that passes on a parameter the clause already has holds the same kind of variable.
+pub(crate) fn is_forward_slot(kb: &KnowledgeBase, slot: &NodeOccurrence) -> bool {
+    slot.synthesized_by().is_some_and(|by| {
+        kb.symbols
+            .lookup(FORWARD_SLOT_PASS)
+            .is_some_and(|s| crate::kb::occurrence::PassId::from_symbol(s) == by)
+    })
 }
 
 /// The labels an inferred read is spelled with, interned once per pass.
@@ -1571,7 +1744,7 @@ pub(super) fn check_rule_body_goal_readings(
 /// as an `Apply` when the loader lowered it from source and as a `Constructor` when it
 /// was materialized from a term (`forall_impl` names no operation) — the point
 /// `assumed_body_functors` makes about its own head test.
-fn proved_goal_children(kb: &KnowledgeBase, expr: &Expr) -> Vec<Rc<NodeOccurrence>> {
+pub(super) fn proved_goal_children(kb: &KnowledgeBase, expr: &Expr) -> Vec<Rc<NodeOccurrence>> {
     let Some((functor, pos_args, _)) = expr_call_parts(expr) else {
         return Vec::new();
     };
@@ -1609,7 +1782,7 @@ fn tuple_goal_children_occ(
 
 /// The components of a tuple-wrapped goal slot's `tuple(g₁, …, gₙ)` wrapper, or `None` for a
 /// body that is one goal ([`tuple_goal_children_occ`]).
-fn goal_tuple_parts<'a>(
+pub(super) fn goal_tuple_parts<'a>(
     kb: &KnowledgeBase,
     body: &'a Rc<NodeOccurrence>,
 ) -> Option<&'a [Rc<NodeOccurrence>]> {
@@ -3453,9 +3626,11 @@ pub(crate) fn requirement_read_out<'a>(
         .map(|(_, out)| out)
 }
 
-/// WI-20260911-5G28A S3 — the SPEC each requirement read of `relation`'s clauses reads, in
-/// the flat layout [`requirement_read_counts`] indexes (clause after clause, read after read):
-/// the head of the read's written instance, or `None` where it has none a reader can name.
+/// WI-20260911-5G28A S3 — the SPEC each implicit parameter of `relation`'s clauses reads, in
+/// the flat layout [`requirement_read_counts`] indexes (clause after clause, parameter after
+/// parameter — [`clause_implicit_params`]): the head of a read's written instance, or `None`
+/// where it has none a reader can name. A forward slot reads the spec of the callee's position
+/// it hands on.
 ///
 /// What `apply_domain` asks to decide which of a provider's reads its dictionary is FOR —
 /// the same enumeration, so the positions it fills are the positions the resolver binds.
@@ -3466,12 +3641,20 @@ pub(crate) fn requirement_read_specs(kb: &KnowledgeBase, relation: Symbol) -> Ve
     let qn = kb.qualified_name_of(relation).to_string();
     let mut out: Vec<Option<Symbol>> = Vec::new();
     for rid in kb.rule_ids_by_qn(&qn) {
-        for n in clause_requirement_reads(kb, fd, kb.rule_body_nodes(rid)) {
-            out.push(match n.as_expr() {
-                Some(Expr::Apply { pos_args, .. }) => {
-                    sort_functor_of_view(kb, &Value::Node(pos_args[0].clone()))
+        for param in clause_implicit_params(kb, fd, kb.rule_body_nodes(rid)) {
+            out.push(match param {
+                ImplicitParam::Read(n) => match n.as_expr() {
+                    Some(Expr::Apply { pos_args, .. }) => {
+                        sort_functor_of_view(kb, &Value::Node(pos_args[0].clone()))
+                    }
+                    _ => None,
+                },
+                // A forward slot passes on a parameter of a relation OUTSIDE its own
+                // recursion (`route_rule_goal_requirements`), so this descent ends.
+                ImplicitParam::Forward { marker, slot } => {
+                    let callee = goal_marker(kb, &marker).expect("a forward slot's marker").relation;
+                    requirement_read_specs(kb, callee).get(slot).copied().flatten()
                 }
-                _ => None,
             });
         }
     }
@@ -3486,10 +3669,11 @@ pub(crate) fn find_dictionary_symbol(kb: &KnowledgeBase) -> Option<Symbol> {
     ))
 }
 
-/// WI-20260911-5G28A S2 — how many requirement reads each clause of `relation` holds, in
-/// the order the relation's clauses are enumerated (`rule_ids_by_qn`). The FLAT layout of
-/// a citation's implicit arguments is clause after clause, read after read; this is what
-/// turns a clause's `RuleId` into its offset in that layout.
+/// WI-20260911-5G28A S2 — how many implicit parameters ([`clause_implicit_params`]) each
+/// clause of `relation` holds, in the order the relation's clauses are enumerated
+/// (`rule_ids_by_qn`). The FLAT layout of a citation's implicit arguments is clause after
+/// clause, parameter after parameter; this is what turns a clause's `RuleId` into its offset
+/// in that layout.
 pub(crate) fn requirement_read_counts(
     kb: &KnowledgeBase,
     relation: Symbol,
@@ -3501,8 +3685,8 @@ pub(crate) fn requirement_read_counts(
     kb.rule_ids_by_qn(&qn)
         .into_iter()
         .map(|rid| {
-            let reads = clause_requirement_reads(kb, fd, kb.rule_body_nodes(rid)).len();
-            (rid, reads)
+            let params = clause_implicit_params(kb, fd, kb.rule_body_nodes(rid)).len();
+            (rid, params)
         })
         .collect()
 }
