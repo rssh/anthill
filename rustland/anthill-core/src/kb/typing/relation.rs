@@ -289,6 +289,28 @@ fn seed_citation_params(
     Ok(())
 }
 
+/// The type a citation gives a column its argument binds: the argument's type MET with the
+/// column's, under `subst`, with the substitution the meet leaves; `None` where the two do not
+/// unify. Read off the column, its variables bound to what the argument fixes, because what
+/// the argument leaves open the column may fix — a slot only the citation's bracket writes:
+/// in `Ranked[T = Int64, O = Descending].ordered(ranked(a: 5, b: 3))` the argument is
+/// `Ranked[T = Int64, O = ?]`, whose `?` is an open slot that binds nothing, and a read the
+/// clause makes `O`'s took `Int64`'s own order while the argument's side was read.
+fn met_with_column(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    column: &Value,
+    arg: &Value,
+) -> Option<(Substitution, Value)> {
+    let column = walk_type_deep_value(kb, subst, column);
+    let mut trial = subst.clone();
+    if !unify_types(kb, &mut trial, &column, arg) {
+        return None;
+    }
+    let met = walk_type_deep_value(kb, &trial, &column);
+    Some((trial, met))
+}
+
 /// WI-20260911-5G28A S1 — the last source, then the verdict. The type the consumer passed
 /// down pins what the bracket, the arguments and the enclosing instance left open —
 /// `operation g() -> Relation[T = (x: List[T = Letter]), …] = List.domain` — adopted only
@@ -639,12 +661,16 @@ pub(super) fn relation_reference_type_applied(
             &named_results[i - pos_results.len()]
         };
         if let Ok(arg) = arg_res {
-            bound_types.push((*cname, arg.ty.clone()));
             // An argument at a column of some type is a filter: a value of any type goes
             // there, and the solutions are the ones that hold it.
             if some {
+                bound_types.push((*cname, arg.ty.clone()));
                 continue;
             }
+            // A pair that does not meet is left to the check below, the argument's type
+            // standing.
+            let met = met_with_column(kb, &subst, &col_ty, &arg.ty).map_or_else(|| arg.ty.clone(), |(_, t)| t);
+            bound_types.push((*cname, met));
             // Resolve the column type through the accumulated σ (a correlated
             // column's var may already be pinned by an earlier argument).
             let declared_col_ty = col_ty.clone();
@@ -1496,12 +1522,11 @@ fn goal_edge_citation(
         // data sort's or a variable's, and no other type is a subtype of a data sort.
         let ty = match columns.iter().find(|c| c.name == *name && !c.some) {
             Some(col) => {
-                let mut trial = subst.clone();
-                if !unify_types(kb, &mut trial, &col.ty, &ty) {
+                let Some((met_subst, met)) = met_with_column(kb, &subst, &col.ty, &ty) else {
                     continue;
-                }
-                subst = trial;
-                walk_type_deep_value(kb, &subst, &ty)
+                };
+                subst = met_subst;
+                met
             }
             None => ty,
         };

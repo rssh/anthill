@@ -229,6 +229,50 @@ fn a_member_operation_and_an_uncited_clause_answer_as_before() {
     );
 }
 
+/// A sort with a named requirement whose rule types its column at the sort itself, and an
+/// operation that reads the slot directly.
+const RANKED: &str = r#"
+  sort Ranked[T]
+    requires O: WeakOrd[T = T]
+    entity ranked(a: T, b: T)
+    operation order(r: Self) -> Int64 = WeakOrd.compare(r.a, r.b)
+    rule ordered(?r: Self, ?c) :- ?r <=> ranked(a: ?x, b: ?y), WeakOrd.compare(?x, ?y, ?c)
+  end
+"#;
+
+/// A BRACKET THAT ALONE NAMES THE SLOT: `Ranked[T = Int64, O = Descending].ordered(ranked(a:
+/// 1, b: 5))`, cited from an operation that holds no requirement. The argument's type leaves `O`
+/// open (`Ranked[T = Int64, O = ?]`, an open slot), the bracket fixes it in the column's, and the
+/// column's type at the citation is the two met: the read `O` states is the bracket's. `4` and
+/// `-4`; both answered `Int64`'s own `-1` before, the argument's type alone standing (the same
+/// before WI-20261102-ATVC1). FAILS with the meet backed out: `(-1, -1)`. The operation cited
+/// through the same bracket reads it either way, by design — the control.
+#[test]
+fn a_bracket_that_alone_names_the_slot_is_read() {
+    let ns = "wi0rrqp.brk";
+    let cite = |name: &str, provider: &str, call: &str| {
+        format!(
+            "    operation {name}() -> Int64 effects {{Error, Error[EmptyStream]}} =\n      \
+             Ranked[T = Int64, O = {provider}].{call}\n"
+        )
+    };
+    let src = program(
+        ns,
+        &format!(
+            "{RANKED}  sort Cite\n    import NS.Ranked.{{ranked}}\n{}{}{}  end\n",
+            cite("ruleDesc", "Descending", "ordered(ranked(a: 1, b: 5)).head.c"),
+            cite("ruleAsc", "Ascending", "ordered(ranked(a: 1, b: 5)).head.c"),
+            cite("opDesc", "Descending", "order(ranked(a: 1, b: 5))"),
+        ),
+    );
+    assert_eq!(
+        (drive(&src, &format!("{ns}.Cite.ruleDesc")), drive(&src, &format!("{ns}.Cite.ruleAsc"))),
+        (4, -4),
+        "the rule's read is the bracket's `O`",
+    );
+    assert_eq!(drive(&src, &format!("{ns}.Cite.opDesc")), 4, "CONTROL: the sort's operation");
+}
+
 /// A CLAUSE THAT TYPES THE COLUMN BESIDE ONE THAT BOUNDS IT AT THE SORT'S OWN PARAMETER.
 /// `bound`'s first clause types `?p` by the constructor, at a variable of its own; its
 /// second writes `?p: Self`. The two meet, the sort's parameter stays the sort's, and the
