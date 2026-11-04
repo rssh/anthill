@@ -176,13 +176,13 @@ fn bound_scope_entry_over_the_same_param_still_forwards() {
 /// predicted that a PARTIALLY-bound entry over a multi-param spec (`requires
 /// Pair[P = MT]`, `Q` omitted) would be refused by Strategy 1's dep-driven walk
 /// yet accepted by Strategy 3's entry-driven scope walk, which would only ever
-/// look at `P`. It cannot: a BRACKETED `requires` is stored as a `SortView` whose
-/// omitted parameters are FILLED with the spec's own parameter ref, so the entry
-/// carries `Q = Pair.Q` — a key, not a hole, and both walks see it. Only a
-/// BRACKET-LESS `requires` (no `SortView` at all, hence genuinely no bindings —
-/// the test above) produces the missing key the orientation fix is about.
+/// look at `P`. It cannot, and since WI-20261020-DNX0E for the reason the bracket-less
+/// form is answered: the omitted `Q` is no key of the entry (it was held as `Q = Pair.Q`,
+/// a key a written binding could make too), it is a slot the requirement leaves OPEN, and
+/// both walks read it so — a demand's open slot is any type, and a goal's open slot is
+/// covered by a scope entry that writes it (`SortGoal::left_open`).
 ///
-/// What the filled key MEANS is WI-20261003-QGVB1's: the slot the clause leaves
+/// What the open slot MEANS is WI-20261003-QGVB1's: the slot the clause leaves
 /// open is any type (kernel-language §8.1), so `Holder`'s `Pair[P = Leaf, Q =
 /// Leaf]` supplies `Partial`'s `Pair[P = Leaf]`, where until then the key was
 /// compared as written and the call was refused "cannot be supplied". Inside

@@ -4132,10 +4132,13 @@ pub(super) fn goal_from_op_requires_entry(
         let key = kb.intern(&name);
         bindings.push((key, val));
     }
+    // WI-20261020-DNX0E — what the clause leaves unwritten is open, as a sort's is.
+    let left_open = unwritten_requires_slots(kb, entry.required_sort, &bindings);
     Some(SortGoal {
         spec_sort: entry.required_sort,
         bindings,
         carrier: None,
+        left_open,
     })
 }
 
@@ -4363,21 +4366,12 @@ fn state_one_goal(kb: &KnowledgeBase, a: &RequiresEntry, b: &RequiresEntry) -> b
     ) else {
         return false;
     };
-    // A parameter bound to the spec's own default is one the `requires` left open.
-    let base = kb.sort_base_subst(a.required_sort).unwrap_or(&[]);
-    let left_open = |key: Symbol, value: &Value| {
-        matches!(value, Value::Term { id, .. }
-            if base.iter().any(|(slot, default)| default == id && same_label(kb, *slot, key)))
-    };
+    // A parameter the `requires` left open is no binding of its goal (WI-20261020-DNX0E).
     ga.bindings.iter().all(|(key, av)| {
-        left_open(*key, av)
-            || gb
-                .bindings
-                .iter()
-                .find(|(other, _)| same_label(kb, *other, *key))
-                .is_none_or(|(other, bv)| {
-                    left_open(*other, bv) || values_structurally_equal(kb, av, bv)
-                })
+        gb.bindings
+            .iter()
+            .find(|(other, _)| same_label(kb, *other, *key))
+            .is_none_or(|(_, bv)| values_structurally_equal(kb, av, bv))
     })
 }
 

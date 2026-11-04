@@ -846,10 +846,10 @@ fn unconstrained_elements(
         return Vec::new();
     };
     let mut out: Vec<String> = Vec::new();
+    // WI-20261003-QGVB1 — a slot the requirement leaves open is no element of the call: it is
+    // any type, said by the provisions that answer the rest, and no binding of the goal.
     for (k, v) in &goal.bindings {
-        // WI-20261003-QGVB1 — a slot the requirement leaves open is no element of the call: it
-        // is any type, said by the provisions that answer the rest.
-        if !is_type_param_view(kb, v) || is_open_requires_slot(kb, goal.spec_sort, *k, v) {
+        if !is_type_param_view(kb, v) {
             continue;
         }
         if matches!(sigma_class_terminal(kb, ctx, v), Some((_, false))) {
@@ -1856,15 +1856,7 @@ pub(super) fn build_concrete_dispatch_dict(
                 supply: entry.supply,
                 binder: entry.binder,
             };
-            // A sort's clause writes every slot but those it holds open.
-            let leaves_one_open = view_named_children(kb, &dep.spec)
-                .iter()
-                .any(|(k, v)| is_open_requires_slot(kb, dep.required_sort, *k, v));
-            if leaves_one_open {
-                dep_completed_at_carrier(kb, &dep).unwrap_or(dep)
-            } else {
-                dep
-            }
+            dep_completed_at_carrier(kb, &dep).unwrap_or(dep)
         })
         .collect();
     let Some(syms) = ProjectionSyms::resolve(kb) else {
@@ -3178,13 +3170,8 @@ fn dep_fixed_whole(kb: &KnowledgeBase, dep: &RequiresEntry) -> bool {
     if !type_is_ground(kb, &dep.spec) {
         return false;
     }
-    let written = spec_view_bindings_value(kb, &dep.spec);
-    kb.type_params_of_sort(dep.required_sort).iter().all(|param| {
-        written.iter().any(|(k, v)| {
-            short_name_of(kb.local_name_of(*k)) == param.as_str()
-                && !is_open_requires_slot(kb, dep.required_sort, *k, v)
-        })
-    })
+    unwritten_requires_slots(kb, dep.required_sort, &spec_view_bindings_value(kb, &dep.spec))
+        .is_empty()
 }
 
 /// WI-20260911-VNQTR — is `dep` a requirement of an operation used as a FUNCTION VALUE, an
@@ -3369,10 +3356,6 @@ fn dep_completed_at_carrier(kb: &mut KnowledgeBase, dep: &RequiresEntry) -> Opti
     let spec = dep.required_sort;
     let spec_params = sort_type_params_as_pairs(kb, spec).to_vec();
     let mut completed: Vec<(Symbol, Value)> = view_named_children(kb, &dep.spec).into_vec();
-    // WI-20261003-QGVB1 — a slot a SORT's clause leaves out is held as the spec's own
-    // parameter, and one written `?` as a variable ([`is_open_requires_slot`]): unwritten
-    // both, as the operation's clause that names no binding for it.
-    completed.retain(|(k, v)| !is_open_requires_slot(kb, spec, *k, v));
     let written = |kb: &KnowledgeBase, vid: VarId| {
         completed
             .iter()
@@ -3389,12 +3372,13 @@ fn dep_completed_at_carrier(kb: &mut KnowledgeBase, dep: &RequiresEntry) -> Opti
     }
     let carrier_pvid = type_param_global_var(kb, clause_carrier_param(kb, spec)?)?;
     let carrier = written(kb, carrier_pvid)?;
+    let open: Vec<Symbol> = unwritten.iter().map(|(p, _)| *p).collect();
     let asked = SortGoal {
         spec_sort: spec,
         bindings: completed.iter().cloned().collect(),
         carrier: None,
+        left_open: open.iter().copied().collect(),
     };
-    let open: Vec<Symbol> = unwritten.iter().map(|(p, _)| *p).collect();
     let said = match open_slots_said(kb, &asked, &open) {
         OpenSlotsSaid::Apart(_) => return None,
         OpenSlotsSaid::One(said) => said,
@@ -5519,6 +5503,7 @@ fn caller_holds_type_value(
         spec_sort: tv,
         bindings: smallvec::smallvec![(key, at)],
         carrier: None,
+        left_open: SmallVec::new(),
     };
     let scope = ResolutionScope {
         available_requires: caller_requires.entries(),

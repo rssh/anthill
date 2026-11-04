@@ -1016,6 +1016,7 @@ fn candidates(kb: &mut KnowledgeBase, spec_qn: &str, bindings: &[(&str, &str)]) 
         spec_sort: spec,
         bindings: bs,
         carrier: None,
+        left_open: Default::default(),
     };
     dispatch_candidate_impl_sorts(kb, &goal)
         .into_iter()
@@ -1034,6 +1035,7 @@ fn goal_at(kb: &mut KnowledgeBase, spec_qn: &str, carrier_qn: &str) -> SortGoal 
         spec_sort: spec,
         bindings: smallvec::smallvec![(t, anthill_core::eval::Value::term(carrier_ref))],
         carrier: None,
+        left_open: Default::default(),
     }
 }
 

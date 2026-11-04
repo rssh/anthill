@@ -257,7 +257,16 @@ pub(super) fn open_slots_said(
 ) -> OpenSlotsSaid {
     note_open_slot_search();
     let (written, open_names) = written_slots(kb, goal, open);
-    let candidates = candidates_at(kb, &written, None, &open_names, GoalReading::CallSite);
+    // Every slot the goal holds open discriminates no provider, the ones not asked here too:
+    // left out of the search, each would refuse every row that writes it (WI-387).
+    let mut unread = open_names.clone();
+    for k in &goal.left_open {
+        let name = short_name_of(kb.local_name_of(*k)).to_owned();
+        if !unread.contains(&name) {
+            unread.push(name);
+        }
+    }
+    let candidates = candidates_at(kb, &written, None, &unread, GoalReading::CallSite);
     let mut said: Option<Vec<Option<Value>>> = None;
     for cand in &candidates {
         let view = provision_fact_spec(kb, cand.row)
@@ -339,6 +348,7 @@ fn left_out_of(kb: &mut KnowledgeBase, goal: &SortGoal) -> Option<(SortGoal, Vec
             .cloned()
             .collect(),
         carrier: goal.carrier.clone(),
+        left_open: goal.left_open.clone(),
     };
     (!unwritten.is_empty() && !written.bindings.is_empty()).then_some((written, unwritten))
 }
@@ -352,6 +362,7 @@ pub(super) fn goal_completed_by_provisions(kb: &mut KnowledgeBase, goal: &SortGo
         let key = spec_param_key(kb, &spec_qn, kb.local_name_of(param), param);
         let name = kb.local_name_of(key).to_owned();
         completed.bindings.retain(|(k, _)| *k != key && kb.local_name_of(*k) != name);
+        completed.left_open.retain(|k| short_name_of(kb.local_name_of(*k)) != name);
         completed.bindings.push((key, said));
     }
     completed
@@ -444,12 +455,7 @@ impl OpenSlotsNamedApart {
     /// `None` where that is not why: the goal leaves nothing open, or the provisions that
     /// answer the rest say it alike.
     pub(super) fn of(kb: &mut KnowledgeBase, goal: &SortGoal) -> Option<Self> {
-        let open: Vec<Symbol> = goal
-            .bindings
-            .iter()
-            .filter(|(k, v)| is_open_requires_slot(kb, goal.spec_sort, *k, v))
-            .map(|(k, _)| *k)
-            .collect();
+        let open = goal.left_open.to_vec();
         if open.is_empty() {
             return None;
         }
@@ -620,6 +626,7 @@ fn written_slots(
             .cloned()
             .collect(),
         carrier: goal.carrier.clone(),
+        left_open: goal.left_open.clone(),
     };
     let names = open
         .iter()
@@ -2581,6 +2588,7 @@ fn ranked_head(kb: &mut KnowledgeBase, row: RuleId) -> Option<RankedHead> {
             spec_sort: decoded.spec_base,
             bindings,
             carrier: None,
+            left_open: SmallVec::new(),
         },
         impl_params,
     })

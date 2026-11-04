@@ -1179,7 +1179,12 @@ pub(crate) enum ReifyCarrier {
 pub enum MintedParam {
     /// The parameter the member sugar mints for `head.Member` in a signature (`llm:
     /// Llm.C`), `head` being the spec or the alias the member was reached through.
-    Member { head: Symbol },
+    ///
+    /// `at` — WI-20261020-DNX0E: where the name is the member a body's `requires` clause
+    /// leaves unwritten, of its instance at a type parameter the scope declares
+    /// ([`KnowledgeBase::mint_instance_member_name`]), that parameter's canonical variable: such
+    /// a member is the projection `P.Member` the signature writes.
+    Member { head: Symbol, at: Option<VarId> },
     /// A variable an operation's signature writes in a parameter type (`via(b: Box[?t])`).
     Inline,
     /// The unknown a body check opens for a slot its signature leaves unwritten inside a
@@ -3744,7 +3749,20 @@ impl KnowledgeBase {
     /// WI-20261006-XQGEW — the name of the type parameter the member sugar mints for
     /// `head.member`, reading as `member`.
     pub(crate) fn mint_member_param_name(&mut self, head: Symbol, member: &str) -> Symbol {
-        self.mint_param_name(member, MintedParam::Member { head })
+        self.mint_param_name(member, MintedParam::Member { head, at: None })
+    }
+
+    /// WI-20261020-DNX0E — the name of the member `member` a body's `requires` clause leaves
+    /// unwritten (GVGSQ), printed off `head`; `at` is the canonical variable of the type
+    /// parameter the scope declares that the instance is at, where it is at one
+    /// ([`MintedParam::Member`]).
+    pub(crate) fn mint_instance_member_name(
+        &mut self,
+        head: Symbol,
+        member: &str,
+        at: Option<VarId>,
+    ) -> Symbol {
+        self.mint_param_name(member, MintedParam::Member { head, at })
     }
 
     /// WI-20260911-VNQTR — the name of a type parameter an operation's signature writes
@@ -3819,7 +3837,7 @@ impl KnowledgeBase {
     /// a member's parameter ([`MintedParam::Member`]).
     pub(crate) fn member_param_head(&self, name: Symbol) -> Option<Symbol> {
         match self.minted_param(name) {
-            Some(MintedParam::Member { head }) => Some(head),
+            Some(MintedParam::Member { head, .. }) => Some(head),
             _ => None,
         }
     }

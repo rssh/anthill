@@ -68,6 +68,16 @@ pub(super) fn expr_carried_zeta<A: TermView, B: TermView>(
     if !a_neutral && !b_neutral {
         return None;
     }
+    if a_neutral != b_neutral {
+        let (neutral, other) = if a_neutral {
+            (extract_type(kb, a), b.head(kb))
+        } else {
+            (extract_type(kb, b), a.head(kb))
+        };
+        if let Some(same) = projection_is_instance_member(kb, &neutral, other) {
+            return Some(same);
+        }
+    }
     if a_neutral && b_neutral {
         match (extract_type(kb, a), extract_type(kb, b)) {
             (
@@ -115,6 +125,69 @@ pub(super) fn expr_carried_zeta<A: TermView, B: TermView>(
         }
     }
     Some(false)
+}
+
+/// WI-20261020-DNX0E — is the rigid `other` the member a body's `requires` clause leaves
+/// unwritten (GVGSQ), of its instance at the type parameter `P` the rigid projection `neutral`
+/// is taken off, under the member's name? Then the two are one type: `P.Val` is what the
+/// signature writes for the `Val` a `requires Storage[C = P]` leaves to the instance
+/// ([`MintedParam::Member`]'s `at`). `None` where `other` is no such rigid, and the neutral
+/// stays the rigid type it is.
+fn projection_is_instance_member(
+    kb: &KnowledgeBase,
+    neutral: &TypeExtractor,
+    other: ViewHead,
+) -> Option<bool> {
+    let TypeExtractor::RigidTypeProjection {
+        sort,
+        subject,
+        member,
+    } = neutral
+    else {
+        return None;
+    };
+    let ViewHead::Var(Var::Rigid(r)) = other else {
+        return None;
+    };
+    let Some(MintedParam::Member { at: Some(at), .. }) = kb.minted_param(r.name()) else {
+        return None;
+    };
+    // An operation's parameter written by name keys by its symbol, with no alias to the
+    // variable: it is the one the projection's declaring operation's bracket declares under
+    // that name, as `op_bracket_declares` reads it — a sort and an operation of one name each
+    // declare their own (WI-20261025-TGAAD).
+    let same_param = match subject_key_of(kb, subject) {
+        Some(SubjectKey::Var(x)) => x == at.raw(),
+        Some(SubjectKey::Sym(s)) => matches!(
+            crate::kb::op_info::declared_type_param_var(kb, *sort, kb.local_name_of(s)),
+            Some(Var::Global(v) | Var::Rigid(v)) if v == at
+        ),
+        None => false,
+    };
+    Some(same_param && same_qname(kb, *member, r.name()))
+}
+
+/// WI-20261103-JGW88 — is the effect atom `incurred` the row a body's `requires` clause leaves
+/// unwritten, of its instance at the type parameter the written atom `declared` projects off —
+/// `Strm[C = P].E` against `effects {P.E}` under `requires Strm[C = P]`? The ζ arm's identity
+/// ([`projection_is_instance_member`]) asked of a row's atoms, which the row checks compare
+/// structurally and do not unify: a body's coverage ([`undeclared_effects`]) and a row against
+/// a row ([`relate_effect_rows`]).
+pub(super) fn atom_is_projected_instance_member(
+    kb: &KnowledgeBase,
+    declared: &Value,
+    incurred: &Value,
+) -> bool {
+    // The incurred side first: almost no atom is such a member, and asking costs a lookup
+    // where reading the declared one's projection builds its extractor.
+    let head = incurred.head(kb);
+    let ViewHead::Var(Var::Rigid(r)) = head else {
+        return false;
+    };
+    if !matches!(kb.minted_param(r.name()), Some(MintedParam::Member { at: Some(_), .. })) {
+        return false;
+    }
+    projection_is_instance_member(kb, &extract_type(kb, declared), head) == Some(true)
 }
 
 /// **WHAT SURVIVES A `false` — the rule ~16 discarding callers depend on** (WI-20260904-60143).
@@ -1986,11 +2059,7 @@ impl UnreadProjection {
             kb.qualified_name_of(self.carrier),
         );
         let lender = render_requires_entry(kb, entry);
-        let written = spec_binding_value(kb, &entry.spec, &member).filter(|v| {
-            let open = kb.type_param_sym_of(entry.required_sort, &member);
-            !open.is_some_and(|p| is_open_requires_slot(kb, entry.required_sort, p, v))
-        });
-        Some(match written {
+        Some(match spec_binding_value(kb, &entry.spec, &member) {
             None => format!(
                 "{shown}: the requirement `{lender}` that lends it leaves `{member}` unwritten, \
                  and no one provision answering the rest names one type for it — write it in \

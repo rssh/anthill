@@ -391,6 +391,7 @@ fn goal_at(kb: &mut KnowledgeBase, spec_qn: &str, carrier_qn: &str) -> SortGoal 
         spec_sort: spec,
         bindings: smallvec::smallvec![(t, anthill_core::eval::Value::term(carrier_ref))],
         carrier: None,
+        left_open: Default::default(),
     }
 }
 
@@ -565,6 +566,7 @@ fn an_unprovided_spec_half_fails_the_resolution() {
         spec_sort: top,
         bindings: smallvec::smallvec![(t, anthill_core::eval::Value::term(wrap_int))],
         carrier: None,
+        left_open: Default::default(),
     };
     let scope = ResolutionScope {
         available_requires: &[],

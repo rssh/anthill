@@ -3528,35 +3528,8 @@ pub(super) fn resolve_rigid_projection(
     // Rigid type-parameter subject: carrier-precise bound lookup, keyed by the
     // canonical SubjectKey (the param's alias-var id — stable across the param's
     // symbol registrations and the deep walk's alias resolution / rigidification).
-    // WI-383: when the subject is an OPERATION type-parameter, the licensing bound is
-    // the operation's OWN `requires Spec[C = T]` clause (on `OperationInfo.requires`),
-    // NOT a sort-level `SortRequiresInfo` chain — so consult the op's requires there.
-    //
-    // WI-974: a sort and an operation of one name (WI-751) are one symbol, so `decl_sort`
-    // names both, and both chains are read. Whose parameter the subject IS, the symbol
-    // cannot say — each declares its own in a scope of its own (WI-20261025-TGAAD) — so the
-    // operation's own declaration list does ([`op_bracket_declares`]): one its bracket
-    // declares is the operation's, read as WI-383 reads it. Asking for the keyword written
-    // first read the pair by source order.
-    let decl_is_op = kb.has_kind(decl_sort, crate::intern::SymbolKind::Operation);
-    let decl_is_sort = kb.has_kind(decl_sort, crate::intern::SymbolKind::Sort);
-    let op_param = decl_is_op && (!decl_is_sort || op_bracket_declares(kb, decl_sort, key));
-    let chain = match (decl_is_op, decl_is_sort) {
-        (true, false) => op_requires_entries(kb, decl_sort),
-        (true, true) => {
-            let mut both = op_requires_entries(kb, decl_sort);
-            both.extend(requires_chain(kb, decl_sort));
-            both
-        }
-        (false, _) => requires_chain(kb, decl_sort),
-    };
-    // WI-428/430: the carrier-precise candidate filter — the SAME `requires_entry_lends_-
-    // member` predicate the `ExprCarried` neutral gate uses (one source of truth for which
-    // bound's carrier is this subject).
-    let candidates: Vec<&RequiresEntry> = chain
-        .iter()
-        .filter(|e| requires_entry_lends_member(kb, e, key, &member_str))
-        .collect();
+    let (chain, op_param) = rigid_projection_chain(kb, decl_sort, key);
+    let candidates = rigid_projection_candidates(kb, &chain, key, &member_str);
     match candidates.as_slice() {
         [] => {
             // WI-383 SELF-CARRIER (implicit licensing): an OPERATION type-param projection
@@ -3589,23 +3562,19 @@ pub(super) fn resolve_rigid_projection(
             }
         }
         [entry] => match spec_binding_value(kb, &entry.spec, &member_str) {
-            // δ-through-the-bound. The stored application is AUTO-COMPLETED: an
-            // unwritten member's binding is a placeholder ref to the SPEC'S OWN param
-            // (`Key = Storage.Key`) — only THAT binding means "bound-open" (the rigid
-            // NEUTRAL); a sort's clause holds a written `?` so too. Any other leaf is a
-            // user-written binding and grounds: a concrete sort (`Key = String`), an opaque
-            // nominal (`Key = Token`), or a sibling param of the declaring sort (`Key = K` —
-            // grounds to `K`'s ref, resolved by the ordinary alias machinery downstream).
+            // δ-through-the-bound. A member the requirement leaves unwritten, or writes `?`,
+            // is no binding of it — the `None` arm, the rigid NEUTRAL (WI-20261020-DNX0E: it
+            // was held as the spec's own param, `Key = Storage.Key`, which a written binding
+            // could make too). A binding is written, and grounds: a concrete sort (`Key =
+            // String`), an opaque nominal (`Key = Token`), or a sibling param of the declaring
+            // sort (`Key = K` — grounds to `K`'s ref, resolved by the ordinary alias machinery
+            // downstream).
             Some(v) => {
                 let binding_key = subject_key_of(kb, &v);
-                let placeholder_key = spec_member_param_key(kb, entry.required_sort, &member_str);
-                let is_placeholder = match (binding_key, placeholder_key) {
-                    (Some(b), Some(p)) => subject_keys_equal(kb, b, p),
-                    // The spec's own param symbol is not identifiable: conservatively
-                    // treat a var-keyed leaf as the placeholder (sound — stays rigid).
-                    (Some(SubjectKey::Var(_)), None) => true,
-                    _ => false,
-                };
+                // The spec's own param symbol is not identifiable: conservatively treat a
+                // var-keyed leaf as open (sound — stays rigid).
+                let is_placeholder = matches!(binding_key, Some(SubjectKey::Var(_)))
+                    && spec_member_param_key(kb, entry.required_sort, &member_str).is_none();
                 // A binding to ANOTHER param of the DECLARING sort (`Key = K`, the
                 // carrier `C = P` included) stays rigid too: cross-param δ needs the
                 // rigid-substitution coherence of the call/body world (increment B) —
@@ -3653,6 +3622,69 @@ pub(super) fn resolve_rigid_projection(
     }
 }
 
+/// The requirements a projection `P.member` off `decl_sort`'s type parameter keyed `key` is read
+/// through ([`resolve_rigid_projection`]), and whether `P` is the operation's own.
+///
+/// WI-383: when the subject is an OPERATION type-parameter, the licensing bound is the
+/// operation's OWN `requires Spec[C = T]` clause (on `OperationInfo.requires`), NOT a sort-level
+/// `SortRequiresInfo` chain — so consult the op's requires there.
+///
+/// WI-974: a sort and an operation of one name (WI-751) are one symbol, so `decl_sort` names
+/// both, and both chains are read. Whose parameter the subject IS, the symbol cannot say — each
+/// declares its own in a scope of its own (WI-20261025-TGAAD) — so the operation's own
+/// declaration list does ([`op_bracket_declares`]): one its bracket declares is the operation's,
+/// read as WI-383 reads it. Asking for the keyword written first read the pair by source order.
+fn rigid_projection_chain(
+    kb: &mut KnowledgeBase,
+    decl_sort: Symbol,
+    key: SubjectKey,
+) -> (Vec<RequiresEntry>, bool) {
+    let decl_is_op = kb.has_kind(decl_sort, crate::intern::SymbolKind::Operation);
+    let decl_is_sort = kb.has_kind(decl_sort, crate::intern::SymbolKind::Sort);
+    let op_param = decl_is_op && (!decl_is_sort || op_bracket_declares(kb, decl_sort, key));
+    let chain = match (decl_is_op, decl_is_sort) {
+        (true, false) => op_requires_entries(kb, decl_sort),
+        (true, true) => {
+            let mut both = op_requires_entries(kb, decl_sort);
+            both.extend(requires_chain(kb, decl_sort));
+            both
+        }
+        (false, _) => requires_chain(kb, decl_sort),
+    };
+    (chain, op_param)
+}
+
+/// WI-428/430: the carrier-precise candidate filter — the SAME `requires_entry_lends_member`
+/// predicate the `ExprCarried` neutral gate uses (one source of truth for which bound's carrier
+/// is this subject).
+fn rigid_projection_candidates<'c>(
+    kb: &KnowledgeBase,
+    chain: &'c [RequiresEntry],
+    key: SubjectKey,
+    member: &str,
+) -> Vec<&'c RequiresEntry> {
+    chain
+        .iter()
+        .filter(|e| requires_entry_lends_member(kb, e, key, member))
+        .collect()
+}
+
+/// WI-20261103-JGW88 — the spec of the one requirement a projection `P.member` off
+/// `decl_sort`'s type parameter keyed `key` is read through, as [`resolve_rigid_projection`]
+/// reads it; `None` where none lends it, or several do (the projection is then refused).
+pub(super) fn rigid_projection_lender(
+    kb: &mut KnowledgeBase,
+    decl_sort: Symbol,
+    key: SubjectKey,
+    member: &str,
+) -> Option<Symbol> {
+    let (chain, _) = rigid_projection_chain(kb, decl_sort, key);
+    match rigid_projection_candidates(kb, &chain, key, member).as_slice() {
+        [entry] => Some(entry.required_sort),
+        _ => None,
+    }
+}
+
 /// WI-20261003-QGVB1 — `P.member`, `P` a parameter of the declaration whose `requires` are
 /// `chain` (a sort's, or an operation's own), read through the requirement that lends the
 /// member — the one entry that declares the member and names `P`, which licenses the
@@ -3675,28 +3707,22 @@ pub(super) fn member_through_lending_requirement(
     let key = subject_key_of(kb, subject)?;
     let name = kb.local_name_of(member).to_owned();
     let entry = lending_requirement(kb, chain, key, &name)?;
-    let mut goal = requires_chain_goals(kb, std::slice::from_ref(entry), &|kb, v| {
-        subst_requires_value(kb, v, sigma)
-    })
-    .pop()?;
-    // An operation's own clause holds no binding for a parameter it leaves unwritten, where a
-    // sort's holds the spec's own parameter: open both.
-    if !goal
-        .bindings
+    // The member alone is said, where the requirement leaves it unwritten: a slot the
+    // provisions name apart beside it does not leave it unread.
+    let mut goal = requirement_goal(kb, entry, &|kb, v| subst_requires_value(kb, v, sigma));
+    if let Some(open) = goal
+        .left_open
         .iter()
-        .any(|(k, _)| short_name_of(kb.local_name_of(*k)) == name)
+        .copied()
+        .find(|k| short_name_of(kb.local_name_of(*k)) == name)
     {
-        let param = kb.type_param_sym_of(goal.spec_sort, &name)?;
-        let open = Value::term(kb.alloc(Term::Ref(param)));
-        goal.bindings.push((param, open));
-        complete_open_slots_at_carrier(kb, &mut goal, &[param]);
+        complete_open_slots_at_carrier(kb, &mut goal, &[open]);
     }
-    let (k, v) = goal
+    let (_, v) = goal
         .bindings
         .iter()
         .find(|(k, _)| short_name_of(kb.local_name_of(*k)) == name)?;
-    (!is_open_requires_slot(kb, goal.spec_sort, *k, v) && !view_contains_type_param(kb, v))
-        .then(|| v.clone())
+    (!view_contains_type_param(kb, v)).then(|| v.clone())
 }
 
 /// WI-20261003-QGVB1 — the one entry of `chain` that lends `member` to the parameter keyed
@@ -3718,10 +3744,10 @@ pub(super) fn lending_requirement<'c>(
         .then_some(first)
 }
 
-/// WI-428: the [`SubjectKey`] of a spec's OWN member param (`Storage.Key`) — the
-/// identity the requires-tree's auto-completed placeholder binding carries for an
-/// unwritten member. `None` when the spec's param symbol is not registered under the
-/// expected qualified name.
+/// WI-428: the [`SubjectKey`] of a spec's OWN member param (`Storage.Key`); `None` when the
+/// param symbol is not registered under the expected qualified name. A requirement holds an
+/// unwritten member as no binding (WI-20261020-DNX0E), where it once held this param as a
+/// placeholder this key recognized.
 fn spec_member_param_key(
     kb: &KnowledgeBase,
     spec_sort: Symbol,
@@ -3801,7 +3827,7 @@ fn sym_subject_key(kb: &KnowledgeBase, s: Symbol) -> SubjectKey {
 /// own, with no `SortAlias` to the record's variable, so it is matched BY NAME, as WI-383's
 /// grounding does ([`crate::kb::op_info::declared_type_param_var`]); one already walked to a
 /// variable is matched by that variable.
-fn op_bracket_declares(kb: &KnowledgeBase, op: Symbol, key: SubjectKey) -> bool {
+pub(super) fn op_bracket_declares(kb: &KnowledgeBase, op: Symbol, key: SubjectKey) -> bool {
     match key {
         SubjectKey::Sym(s) => {
             crate::kb::op_info::declared_type_param_var(kb, op, kb.local_name_of(s)).is_some()

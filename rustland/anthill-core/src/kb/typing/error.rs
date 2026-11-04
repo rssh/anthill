@@ -3640,7 +3640,7 @@ fn unconstrained_type_param_text(
         None | Some(MintedParam::UnwrittenSlot { .. } | MintedParam::PatternSlot) => {
             format!("use `{op_short}[{param} = …](…)`")
         }
-        Some(MintedParam::Member { head }) => format!(
+        Some(MintedParam::Member { head, .. }) => format!(
             "no bracket names a member's parameter: at a call `{param}` is fixed by the \
              provision of `{}` at a carrier the call passes, by an argument typed by it, or \
              by the type the result is expected at, and this call fixes it by none of them. \

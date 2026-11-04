@@ -227,6 +227,7 @@ fn one_level_conditional_resolves_via_subgoal() {
         spec_sort: eq_sym,
         bindings: smallvec::smallvec![(t_sym, anthill_core::eval::Value::term(list_int))],
         carrier: None,
+        left_open: Default::default(),
     };
     let subst = Substitution::new();
     let scope = empty_scope(&subst);
@@ -346,6 +347,7 @@ fn two_level_conditional_chains_recursively() {
         spec_sort: eq_sym,
         bindings: smallvec::smallvec![(t_sym, anthill_core::eval::Value::term(list_list_int))],
         carrier: None,
+        left_open: Default::default(),
     };
     let subst = Substitution::new();
     let scope = empty_scope(&subst);

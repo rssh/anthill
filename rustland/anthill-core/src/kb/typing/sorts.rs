@@ -2033,6 +2033,7 @@ pub(super) fn spec_resolves_at_bindings(
         spec_sort,
         bindings,
         carrier: None,
+        left_open: SmallVec::new(),
     };
     matches!(resolve_at_declaration(kb, &goal), ResolutionResult::Resolved(_))
 }
@@ -2053,6 +2054,7 @@ pub(super) fn resolve_spec_at(
         spec_sort: spec,
         bindings: smallvec::smallvec![(key, ty.clone())],
         carrier: None,
+        left_open: SmallVec::new(),
     };
     Some(resolve_at_declaration(kb, &goal))
 }

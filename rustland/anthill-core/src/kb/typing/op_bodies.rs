@@ -1220,8 +1220,11 @@ fn undeclared_effects(
             // compare on a path already failing, and dropping it would
             // refuse `Stream.head` outright if any decline path exists that
             // this reading missed.
+            // A row a `requires` clause leaves unwritten is the projection `P.E` the
+            // signature writes for it (WI-20261103-JGW88).
             let written = declared_canon.iter().any(|d| {
                 views_structurally_equal(kb, &comp_key, d)
+                    || atom_is_projected_instance_member(kb, d, &comp_key)
                     || guarded_effect_label(kb, d).is_some_and(|lbl| {
                         views_structurally_equal(kb, &comp_key, &lbl)
                     })

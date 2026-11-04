@@ -20362,12 +20362,10 @@ fn resolve_requires_bindings(kb: &mut KnowledgeBase) {
         // uses scope-qualified symbols (e.g., "Monoid.T"). Match by short name.
         //
         // WI-20261003-QGVB1 — a binding written `?` is a slot left unwritten (§8.1), and is held
-        // as one: left out here, the slot takes the spec's own parameter below, which every
-        // reader of the clause reads as open.
-        let written_bindings = explicit_bindings.clone();
-        let explicit_by_short: Vec<(String, Value)> = explicit_bindings
+        // as one: dropped here, it is left out below as an unwritten slot is.
+        let explicit_by_short: Vec<(String, Value)> =
+            super::typing::bindings_written(kb, &explicit_bindings)
             .into_iter()
-            .filter(|(_, v)| !super::typing::is_written_wildcard(kb, v, &written_bindings))
             .map(|(s, v)| {
                 let name = kb.local_name_of(s);
                 let short = name.rsplit('.').next().unwrap_or(name).to_owned();
@@ -20399,9 +20397,14 @@ fn resolve_requires_bindings(kb: &mut KnowledgeBase) {
                         complete.push((*slot_sym, Value::term(*default_tid)));
                     }
                 }
-            } else {
+            } else if kb.type_param_sym_of(spec_sort_sym, &slot_short).is_none() {
                 complete.push((*slot_sym, Value::term(*default_tid)));
             }
+            // WI-20261020-DNX0E — a type parameter the clause leaves unwritten is LEFT OUT, as
+            // an operation's clause and a provision's condition leave it
+            // ([`super::typing::unwritten_requires_slots`]). Filled with the spec's own
+            // parameter it was the term `Mark[T = T]` written inside `Mark` makes, and that
+            // clause read as `Mark` at any `T` (MEASURED).
         }
 
         // Now build a new SortView with complete bindings, and the fact with it in the
@@ -49640,6 +49643,7 @@ impl<'a> Loader<'a> {
         for c in &pc.conditions {
             let v = self.sort_inst_to_value(c);
             let v = self.lower_value_or_gate(v, "provides condition", c);
+            let v = super::typing::without_written_wildcards(self.kb, v);
             // LOUD at the DECLARATION, so the reader's decoder can assert rather than
             // skip: a condition whose spec has no readable base would condition nothing
             // while its author reads the file as if it did.

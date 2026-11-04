@@ -2445,16 +2445,29 @@ pub(super) fn check_apply_iter(
             // leak as `?_`. The compose keeps the deep walk (for nested term vars)
             // and adds the recursive Node surface (chained var→…→Node bindings).
             //
-            // PURE σ here (NOT the grounding `resolve_type_deep_value` used for
-            // `resolved_ret`): the effect row carries no δ-groundable projection. An
-            // effect-position projection is an `ExprCarried` (`effects s.E`, WI-396),
-            // already eliminated when `proj_effects` was built above; and an
-            // op-type-param `RigidProjection` δ-grounds VALUE members only — the
-            // concrete-fill is Sort-kind-gated and a provider fact cannot bind an effect
-            // member (effects aren't expressible as type args, WI-301) — so there is
-            // nothing in the effect row for the grounding variant to reduce. (Revisit if
-            // effect members ever become δ-groundable.)
-            let deep = walk_type_deep_value(kb, &subst, e);
+            // GROUNDED (`resolve_type_deep_value`, the reading `resolved_ret` takes): an
+            // `ExprCarried` (`effects s.E`, WI-396) was eliminated when `proj_effects` was
+            // built above, but a type-parameter `RigidProjection` (`effects {P.E}` under
+            // `requires Strm[C = P]`) is read here, off the carrier the arguments fill `P`
+            // with — `g(mem)` incurs the `E = {Error}` of `Mem`'s provision
+            // (WI-20261103-JGW88). Read through pure σ it stayed `P.E`, the callee's
+            // own name, and every caller was refused "undeclared effect: P.E" (MEASURED).
+            // A `P` only a later step fixes (a self-receiver spec op's carrier binding,
+            // below) is not read here: such a call is charged its override's row
+            // ([`effects_of_pinned_call`]).
+            let deep = resolve_type_deep_value(kb, &subst, e);
+            // One the carrier's provisions do not read is refused as a parameter's is,
+            // naming the requirement to write it in — not left in the caller's row under the
+            // callee's name ("undeclared effect: P.E" in a caller that has no `P`).
+            if let Some(why) =
+                UnreadProjection::find(kb, &subst, &deep).and_then(|unread| unread.why_unread(kb))
+            {
+                return Err(projection_type_error(
+                    &TypeErrorContext::OperationEffects { op_name: fn_sym },
+                    span,
+                    &why,
+                ));
+            }
             let walked = walk_value_to_resolved(kb, &subst, deep);
             // WI-329 (handler discharge): the callee's declared element may itself be a
             // ROW rather than a label. A handler's result row is written `effects {Rho}`
