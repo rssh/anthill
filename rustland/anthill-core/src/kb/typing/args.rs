@@ -310,6 +310,25 @@ fn some_coercion(
     }
 }
 
+/// The slot a value meets where the `some` coercion will wrap it ([`some_coercion`]): the payload
+/// `T` of an `Option[T = …]` slot given a value decidedly no option — the slot its wrapped twin
+/// `some(…)` meets — for the inference a call and a construction make before they check. `None`
+/// for any other slot or value. Met as the whole `Option`, a callback bound nothing:
+/// `runOpt(q, lambda (z) -> put(q, 5))` over `o: Option[T = (k: Cell[V = Int64]) -> Int64 @
+/// {E}]` was refused "unconstrained", where `runOpt(q, some(lambda …))` ran (MEASURED). The
+/// argument is read under `subst`, as the check reads it.
+pub(super) fn some_coerced_slot(
+    kb: &KnowledgeBase,
+    subst: &Substitution,
+    slot: &Value,
+    arg: &Value,
+) -> Option<Value> {
+    if !is_option_type(kb, slot) || !decidedly_not_an_option(kb, &walk_view(kb, subst, arg)) {
+        return None;
+    }
+    extract_type_param(kb, slot, "T")
+}
+
 /// Is `ty` decidedly NOT an option — neither an option (bare, applied, or one of its
 /// constructors' variant types; an alias of one reads as one through [`walk_view`]) nor a type
 /// still open (a variable, a declared type parameter, an unresolved projection) that an option

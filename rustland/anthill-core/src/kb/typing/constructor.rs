@@ -370,6 +370,43 @@ pub(super) fn combine_element_types(
 /// type NO VALUE has, which is what lets a name close it to the bottom type.
 pub(super) const EMPTY_LITERAL_ELEMENT: &str = "?T";
 
+/// Does a literal's element hint DECLARE its element type? Not a callable one that holds a
+/// variable: it reaches the literal so that a bare operation name has an arrow to be lifted
+/// against ([`seq_slot_arg_hint`]), and its variable is one the call or the construction
+/// instantiates — the elements say what it is, so the literal's element type is their join,
+/// each element still checked against the hint (kernel-language §5.4). Taken as the element
+/// type, the hint left the variable to whatever bound it later: `box(g: [lambda (z) -> put(q,
+/// 5)])` over `entity box(g: List[T = (z: Cell[V = Int64]) -> Int64 @ {EB}])` at `Box[EB =
+/// {}]` loaded, and applying the element wrote `q` from an operation declaring nothing; at a
+/// call, `eachL([lambda () -> now()])` over `fs: List[T = () -> String @ {Rho}]` was refused
+/// "unconstrained" and its `cons(…, nil())` spelling too (MEASURED).
+pub(super) fn hint_declares_the_element(kb: &KnowledgeBase, hint: &Value) -> bool {
+    !type_head_is_callable(kb, hint) || type_is_ground(kb, hint)
+}
+
+/// The refusal of a literal's element that has no join with the elements before it (`acc`),
+/// at the element's own span.
+fn no_join_with_siblings(
+    kb: &KnowledgeBase,
+    kind: SeqLiteral,
+    index: usize,
+    acc: Value,
+    r: &TypeResult,
+) -> TypeError {
+    TypeError::TypeMismatch {
+        site: TypeError::here(),
+        span: Some(r.node.span.span),
+        context: TypeErrorContext::CollectionElement {
+            construct: kind.construct(),
+            index,
+            source: ElementTypeSource::Siblings,
+        },
+        expected: acc,
+        quoted: quoted_type_value(kb, Some(&r.node), &r.ty),
+        actual: r.ty.clone(),
+    }
+}
+
 pub(super) fn seq_literal_element_type(
     kb: &mut KnowledgeBase,
     kind: SeqLiteral,
@@ -380,6 +417,9 @@ pub(super) fn seq_literal_element_type(
     // WI-342: keep the element type carrier-agnostic so a `Value::Node` element (e.g. a
     // list of effectful lambdas) is CARRIED, not re-grounded.
     let mut inferred: Option<Value> = None;
+    let joins = element_hint
+        .as_ref()
+        .is_some_and(|hint| !hint_declares_the_element(kb, hint));
     for (index, r) in elements.iter().enumerate() {
         // The caller has already surfaced any `Err` child (`collect_arg_errors`).
         let r = r.as_ref().expect("aggregator");
@@ -417,6 +457,13 @@ pub(super) fn seq_literal_element_type(
                         })
                     }
                 }
+                if joins {
+                    inferred = Some(match inferred.take() {
+                        None => r.ty.clone(),
+                        Some(acc) => combine_element_types(kb, &acc, &r.ty)
+                            .ok_or_else(|| no_join_with_siblings(kb, kind, index, acc, r))?,
+                    });
+                }
             }
             // WI-20260829-WBXGX — NO DECLARATION, SO THE ELEMENTS DECIDE: the element type
             // is the JOIN of them, and the first element with no join is refused at its own
@@ -443,30 +490,22 @@ pub(super) fn seq_literal_element_type(
             // write reaches the widening immediately, and one shape of it is a FAIL-OPEN
             // that [`join_erases_a_parameterization`] now refuses; read the census as "no
             // corpus program's type moved", which is all it says.
-            None => match inferred.take() {
-                None => inferred = Some(r.ty.clone()),
-                Some(acc) => match combine_element_types(kb, &acc, &r.ty) {
-                    Some(joined) => inferred = Some(joined),
-                    None => {
-                        return Err(TypeError::TypeMismatch {
-                            site: TypeError::here(),
-                            span: Some(r.node.span.span),
-                            context: TypeErrorContext::CollectionElement {
-                                construct: kind.construct(),
-                                index,
-                                source: ElementTypeSource::Siblings,
-                            },
-                            expected: acc,
-                            quoted: quoted_type_value(kb, Some(&r.node), &r.ty),
-                            actual: r.ty.clone(),
-                        })
-                    }
-                },
-            },
+            None => {
+                inferred = Some(match inferred.take() {
+                    None => r.ty.clone(),
+                    Some(acc) => combine_element_types(kb, &acc, &r.ty)
+                        .ok_or_else(|| no_join_with_siblings(kb, kind, index, acc, r))?,
+                })
+            }
         }
         merge_effects_into(kb, &mut effects, &r.effects);
     }
-    let element = element_hint.or(inferred).unwrap_or_else(|| {
+    let element = if joins {
+        inferred.or(element_hint)
+    } else {
+        element_hint.or(inferred)
+    };
+    let element = element.unwrap_or_else(|| {
         // WI-20260904-50B2K — DELIBERATELY STILL A `type_var`, FLIPPED AND MEASURED INERT.
         // An EMPTY literal has no element to infer FROM, so the census that put `?T` in the
         // "to be inferred, must commit" column had it in the wrong one: its type is
@@ -1429,11 +1468,12 @@ pub(super) fn check_constructor_iter(
     seed_constructor_type_args(kb, &mut subst, env, occ, parent_sort, ctor_sym, span)?;
     seed_receiver_type_args(kb, &mut subst, env, occ, parent_sort, ctor_sym, span)?;
     // A `cons` / `nil` spine is the list literal (§4.6): where its expectation declares the
-    // element type, the declaration is the element type and each element is checked
-    // against it, so it is read before the fields.
+    // element type ([`hint_declares_the_element`]), the declaration is the element type and
+    // each element is checked against it, so it is read before the fields.
     if let Some(exp) = expected.as_ref().filter(|exp| {
         is_list_spine_constructor(kb, ctor_sym)
-            && declared_element_type(kb, SeqLiteral::List, Some(exp)).is_some()
+            && declared_element_type(kb, SeqLiteral::List, Some(exp))
+                .is_some_and(|element| hint_declares_the_element(kb, &element))
     }) {
         let own = own_application(kb, parent_sort.unwrap_or(ctor_sym));
         unify_types(kb, &mut subst, &TermIdView(own), exp);
@@ -1488,12 +1528,15 @@ pub(super) fn check_constructor_iter(
         {
             if let Ok(ref r) = named_results[idx] {
                 let arg_ty = field_arg_type(kb, declared_type, r);
+                // A value the `some` coercion wraps meets the option's payload, as its
+                // wrapped twin does ([`some_coerced_slot`]).
+                let coerced = some_coerced_slot(kb, &subst, declared_type, &arg_ty);
+                let slot = coerced.as_ref().unwrap_or(declared_type);
                 // A callback as the field's slot reads it, as a call reads one at a
                 // parameter's ([`callback_at_slot`]): the sort's row parameter takes a write
                 // to a cell in scope, and none to the callback's own parameter.
-                let at_slot =
-                    callback_at_slot(kb, env, &mut subst, *field_sym, declared_type, &arg_ty);
-                unify_types(kb, &mut subst, at_slot.as_ref().unwrap_or(&arg_ty), declared_type);
+                let at_slot = callback_at_slot(kb, env, &mut subst, *field_sym, slot, &arg_ty);
+                unify_types(kb, &mut subst, at_slot.as_ref().unwrap_or(&arg_ty), slot);
                 merge_effects_into(kb, &mut effects, &r.effects);
             }
         }
@@ -1504,10 +1547,12 @@ pub(super) fn check_constructor_iter(
             if let Ok(r) = r_opt {
                 let arg_ty = field_arg_type(kb, declared_type, r);
                 // See the named loop.
-                let at_slot = pos_args.get(i).and_then(|_| {
-                    callback_at_slot(kb, env, &mut subst, *field_sym, declared_type, &arg_ty)
-                });
-                unify_types(kb, &mut subst, at_slot.as_ref().unwrap_or(&arg_ty), declared_type);
+                let coerced = some_coerced_slot(kb, &subst, declared_type, &arg_ty);
+                let slot = coerced.as_ref().unwrap_or(declared_type);
+                let at_slot = pos_args
+                    .get(i)
+                    .and_then(|_| callback_at_slot(kb, env, &mut subst, *field_sym, slot, &arg_ty));
+                unify_types(kb, &mut subst, at_slot.as_ref().unwrap_or(&arg_ty), slot);
                 merge_effects_into(kb, &mut effects, &r.effects);
             }
         }

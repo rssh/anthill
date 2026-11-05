@@ -6,16 +6,20 @@ use super::*;
 /// (Path 2 of [`check_apply_iter`]): a callable written there re-expressed at the slot
 /// ([`callable_written_at_slot`], rule 6), the callback's row read as the slot reads it
 /// ([`callback_at_slot`]) — both before the validation, whose relation binds a row variable too —
-/// then the check ([`validate_arg_against_param`]) and, on `Ok`, the unify that binds the function
-/// type's own holes.
+/// then the check ([`validate_arg_against_param`]) and, on `Ok` or a wrap, the unify that binds the
+/// function type's own holes.
 ///
 /// WI-20260904-50B2K — THE UNIFY BINDS THE ARROW'S OWN HOLES from the argument, exactly as Path 1's
 /// argument loop does. The boolean is DISCARDED for the reason that site states: unify is EQUALITY
 /// while the check is SUBTYPING plus three conversions, so a unify-false must not reject. What it
 /// is FOR is the slot's variables — an un-annotated `lambda q -> q` has type `?v -> ?v`, and with
-/// nothing binding `?v` the call `g(x)` returned `?v`. ONLY ON `Ok`: on `WrapSome` the argument is
-/// the UN-COERCED value, and unifying it against an `Option[…]` slot can only fail and leave the
-/// slot's `T` free exactly where the coercion has just determined it.
+/// nothing binding `?v` the call `g(x)` returned `?v`. On `WrapSome` the argument is the
+/// UN-COERCED value, and unifying it against the `Option[…]` slot could only fail and leave the
+/// slot's `T` free exactly where the coercion has just determined it: it meets the option's
+/// payload instead, as its wrapped twin does ([`some_coerced_slot`]), and so does the callback
+/// reading above the check — `app(lambda (z) -> put(q, 5))` over `app`'s `o: Option[T = (k:
+/// Cell[V = Int64]) -> Int64 @ {?}]` was refused for an undeclared `?_`, where `app(some(…))`
+/// named `Modify[q]` (MEASURED).
 #[allow(clippy::too_many_arguments)]
 fn check_function_value_argument(
     kb: &mut KnowledgeBase,
@@ -31,11 +35,13 @@ fn check_function_value_argument(
     // Taken ahead of the rule-6 step, whose unify binds this argument's variables too — and
     // only where a walk is told of them.
     let before = solving.is_some().then(|| subst.clone());
-    let own_ty = match callable_written_at_slot(kb, subst, arg_result, slot_ty) {
+    let coerced = some_coerced_slot(kb, subst, slot_ty, &arg_result.ty);
+    let meets = coerced.as_ref().unwrap_or(slot_ty);
+    let own_ty = match callable_written_at_slot(kb, subst, arg_result, meets) {
         WrittenAtSlot::At(ty) => ty,
         WrittenAtSlot::Waits | WrittenAtSlot::NotWritten => arg_result.ty.clone(),
     };
-    let at_slot = callback_at_slot(kb, env, subst, slot, slot_ty, &own_ty);
+    let at_slot = callback_at_slot(kb, env, subst, slot, meets, &own_ty);
     let verdict = validate_arg_against_param(
         kb,
         subst,
@@ -48,8 +54,13 @@ fn check_function_value_argument(
         },
         Some(&arg_result.node),
     );
-    if let ArgValidation::Ok = verdict {
-        let unified = unify_types(kb, subst, at_slot.as_ref().unwrap_or(&own_ty), slot_ty);
+    let unifies = match verdict {
+        ArgValidation::Ok => true,
+        ArgValidation::WrapSome { .. } => coerced.is_some(),
+        ArgValidation::Fail(_) => false,
+    };
+    if unifies {
+        let unified = unify_types(kb, subst, at_slot.as_ref().unwrap_or(&own_ty), meets);
         // WI-20260904-50B2K part (c) — REPORT FROM PATH 2 TOO: `let g = lambda x -> x  g(2)`
         // calls an ENV-BOUND ARROW, which is this path, and the walk learns the binder's use here.
         if let Some(before) = &before {
@@ -1005,6 +1016,12 @@ fn check_apply_call(
                     // post-synthesis elimination pass below; the argument type is still
                     // recorded so a LATER param projecting THIS one can read it.
                     let deferred = op_has_projection && value_contains_projection(kb, param_type);
+                    // A value the `some` coercion wraps meets the option's payload, as its wrapped
+                    // twin does ([`some_coerced_slot`]); the check below reads the whole slot.
+                    let coerced = (!deferred)
+                        .then(|| some_coerced_slot(kb, &subst, param_type, &arg_result.ty))
+                        .flatten();
+                    let param_type = coerced.as_ref().unwrap_or(param_type);
                     // Rule 6: a callable written at the slot meets it by label or by position
                     // ([`callable_written_at_slot`]); one whose slot `A` is still a variable
                     // waits for the other arguments. Its own unify binds this argument's
@@ -1090,6 +1107,10 @@ fn check_apply_call(
                     // WI-398: defer a projection param's unify (see the positional loop).
                     let deferred = op_has_projection && value_contains_projection(kb, param_type);
                     // See the positional loop.
+                    let coerced = (!deferred)
+                        .then(|| some_coerced_slot(kb, &subst, param_type, &arg_result.ty))
+                        .flatten();
+                    let param_type = coerced.as_ref().unwrap_or(param_type);
                     let before = (!deferred && solving.is_some()).then(|| subst.clone());
                     let written = if deferred {
                         WrittenAtSlot::NotWritten
