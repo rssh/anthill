@@ -1817,3 +1817,74 @@ fn a_named_slot_carries_a_call_at_its_own_carrier_only() {
     ));
     assert_eq!(crate::common::one_definite_int(&mut kb, "rrqp.slotat.viaT"), Some(0), "`Int64`'s own `compare(4, 4)`");
 }
+
+/// 060.1 §8.2 — A SORT'S NAMED REQUIREMENT SLOT IS FILLED ONLY BY WHAT THE CITATION WRITES, for
+/// an operation and a rule alike (the user, 2026-11-04): a witness, `Ranked[T = Int64, O =
+/// Descending]`, or a requirement of the citing declaration by its name, `Ranked[T = A, O = up]`
+/// under `requires up: WeakOrd[T = A]`, each answering `Descending`'s `-2` over `ranked(a: 5, b:
+/// 3)`. A citation that writes neither is refused, naming the slot: at `Ranked[T = Int64]`, and
+/// at `Ranked[T = A]` under `requires WeakOrd[T = A]` or `requires O: WeakOrd[T = A]`. FAILS with
+/// the open slot left to the caller's frame (measured before the refusal was added): the rule
+/// answers `1`, `-2` and `-2` for those three. FAILS with the caller's name read as no witness
+/// (measured before): the operation through `O = up` is refused, "its value must name a WITNESS
+/// SORT", and so in the callee's bracket, `Ranked.order[T = A, O = up](…)`. The witness rows
+/// pass either way. A rule-body goal is held to the same: `Ranked[T = Int64].ordered(…, ?c)` is
+/// refused naming the slot, and the goal with the witness written answers `-2`.
+#[test]
+fn a_named_slot_is_filled_only_by_what_the_citation_writes() {
+    let ns = "wi0rrqp.slotw";
+    let e = "effects {Error, Error[EmptyStream]}";
+    let source = |body: &str| program(ns, &format!("{RANKED}  sort Cite\n    import NS.Ranked.{{ranked}}\n{body}  end\n"));
+    let via = |requires: &str, ranked: &str, call: &str, cite: &str| {
+        format!(
+            "    operation via[A](x: A, y: A) -> Int64 {e} requires {requires} = {ranked}.{call}\n    \
+             operation t() -> Int64 {e} = {cite}\n"
+        )
+    };
+    let calls = [("order", "order(ranked(a: x, b: y))"), ("ordered", "ordered(ranked(a: x, b: y)).head.c")];
+    for (kind, call) in calls {
+        let answered = [
+            ("a witness", format!("    operation t() -> Int64 {e} = Ranked[T = Int64, O = Descending].{}\n", call.replace("x", "5").replace("y", "3"))),
+            ("the caller's name", via("up: WeakOrd[T = A]", "Ranked[T = A, O = up]", call, "via[A = Int64, up = Descending](5, 3)")),
+        ];
+        for (case, body) in answered {
+            assert_eq!(drive(&source(&body), &format!("{ns}.Cite.t")), -2, "{kind}, {case}");
+        }
+        if kind == "order" {
+            let body = via(
+                "up: WeakOrd[T = A]",
+                "Ranked",
+                "order[T = A, O = up](ranked(a: x, b: y))",
+                "via[A = Int64, up = Descending](5, 3)",
+            );
+            assert_eq!(drive(&source(&body), &format!("{ns}.Cite.t")), -2, "the callee's bracket");
+        }
+        let refused = [
+            ("nowhere", format!("    operation t() -> Int64 {e} = Ranked[T = Int64].{}\n", call.replace("x", "5").replace("y", "3"))),
+            ("an unnamed requirement", via("WeakOrd[T = A]", "Ranked[T = A]", call, "via[A = Int64, WeakOrd = Descending](5, 3)")),
+            ("a requirement named `O`", via("O: WeakOrd[T = A]", "Ranked[T = A]", call, "via[A = Int64, O = Descending](5, 3)")),
+        ];
+        for (case, body) in refused {
+            crate::common::assert_refused_naming(
+                &crate::common::load_errors_of(&source(&body)),
+                &["a supplied `O: anthill.prelude.WeakOrd` slot (write it in the type, or declare it)"],
+                &format!("{kind}, {case}"),
+            );
+        }
+    }
+    let goal = |ranked: &str| {
+        program(
+            ns,
+            &format!(
+                "{RANKED}  rule viaGoal(?c) :- {ranked}.ordered(Ranked.ranked(a: 5, b: 3), ?c)\n  \
+                 sort Cite\n    operation t() -> Int64 {e} = viaGoal.head.c\n  end\n"
+            ),
+        )
+    };
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&goal("Ranked[T = Int64]")),
+        &["a supplied `O: anthill.prelude.WeakOrd` slot (write it in the type, or declare it)"],
+        "a rule-body goal, nowhere",
+    );
+    assert_eq!(drive(&goal("Ranked[T = Int64, O = Descending]"), &format!("{ns}.Cite.t")), -2, "a rule-body goal, a witness");
+}

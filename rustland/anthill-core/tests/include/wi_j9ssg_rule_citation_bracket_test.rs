@@ -178,6 +178,83 @@ fn a_bracket_entry_the_rule_does_not_declare_or_admit_is_refused() {
     assert_one_refusal(&errs, "but not at the bindings this call", "a witness at the caller's parameter");
 }
 
+/// A BRACKET ON A PAREN-LESS REFERENCE OF A DECLARING RULE IS REFUSED, as one alone on an
+/// operation is (kernel-language §5.4; the user, 2026-11-05): in a `let`, before a field and
+/// before a dot call, each once, naming the repair `cmpS[…]()`, which answers `4`. FAILS with
+/// the dot receiver's refusal backed out (measured before it was added): the field and the
+/// dot call each give two errors instead, "`cmpS` takes no type arguments: it is a declaration
+/// of kind Goal" and "unknown functor … `cmpS.head`" / "`cmpS.takeN`". The `let` passes either
+/// way.
+#[test]
+fn a_bracket_on_a_paren_less_reference_is_refused() {
+    let ns = "j9ssg.bare";
+    let rules = "  fact srcPair(1, 5)\n  \
+                 rule cmpS[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], srcPair(?a, ?b), WeakOrd.compare(?a, ?b, ?c)\n";
+    let said = "`cmpS[…]` is a bracket on an operation or a relation, which binds its type parameters and \
+                is read only before a call's arguments, `cmpS[…](…)` — `cmpS[…]()` where none is written";
+    for (case, body) in [
+        ("let", "=\n    let r = cmpS[A = Int64, WeakOrd = Descending]\n    r.head.c"),
+        ("field", "= cmpS[A = Int64, WeakOrd = Descending].head.c"),
+        ("dot call", "= cmpS[A = Int64, WeakOrd = Descending].takeN(5).length()"),
+    ] {
+        let errs = crate::common::load_errors_of(&program(
+            ns,
+            &format!("{rules}  operation t() -> Int64 {EFFECTS} {body}\n"),
+        ));
+        assert_one_refusal(&errs, said, case);
+    }
+    expect(
+        &answers(ns, rules, &[("repaired", "cmpS[A = Int64, WeakOrd = Descending]().head.c")]),
+        &[("repaired", 4)],
+    );
+}
+
+/// 060.1 §3 — A SPEC'S OWN RULE READS THE SPEC AT ITS OWN PARAMETER, as the spec's operations
+/// do, and declares nothing: `le` in `sort Cmp2` calls `cmp2` at `T`, and a citation from an
+/// operation holding `Cmp2[T = A]` hands it the caller's dictionary, `Up`'s `1` and `Down`'s
+/// `0`; the spec's law `cmp2_refl` is written the same way. A citation at `T = Int64`, which
+/// both `Up` and `Down` provide, is refused at load, naming both, as an operation's call
+/// `Cmp2[T = Int64].cmp2(1, 5)` is. FAILS with the clause's sort read as no supplier of its own
+/// spec: `le` is refused, "the clause declares none". FAILS with the citation's
+/// unanswered route left to run time (measured before the refusal was added): it loads, and the
+/// call raises.
+#[test]
+fn a_specs_own_rule_reads_the_spec_at_its_own_parameter() {
+    let ns = "j9ssg.law";
+    let spec = "  sort Cmp2\n    sort T = ?\n    operation cmp2(a: T, b: T) -> Int64\n    \
+                rule le(?a: T, ?b: T) :- cmp2(?a, ?b, ?c), Int64.lte(?c, 0)\n    \
+                constraint cmp2_refl: eq(cmp2(?a, ?a), 0) :- le(?a, ?a)\n  end\n  \
+                sort Up\n    import anthill.prelude.Numeric.{sub}\n    provides Cmp2[T = Int64]\n    \
+                operation cmp2(a: Int64, b: Int64) -> Int64 = sub(a, b)\n  end\n  \
+                sort Down\n    import anthill.prelude.Numeric.{sub}\n    provides Cmp2[T = Int64]\n    \
+                operation cmp2(a: Int64, b: Int64) -> Int64 = sub(b, a)\n  end\n  \
+                import anthill.prelude.PartialEq.{eq}\n";
+    let rules = format!(
+        "{spec}  operation viaLaw[A](x: A, y: A) -> Int64 {EFFECTS} requires Cmp2[T = A] =\n    \
+         Cmp2.le(x, y).takeN(1).length()\n"
+    );
+    expect(
+        &answers(
+            ns,
+            &rules,
+            &[
+                ("up", "viaLaw[A = Int64, Cmp2 = Up](1, 5)"),
+                ("down", "viaLaw[A = Int64, Cmp2 = Down](1, 5)"),
+            ],
+        ),
+        &[("up", 1), ("down", 0)],
+    );
+    let errs = crate::common::load_errors_of(&program(
+        ns,
+        &format!("{spec}  operation tie() -> Int64 {EFFECTS} = Cmp2[T = Int64].le(1, 5).takeN(1).length()\n"),
+    ));
+    assert_one_refusal(
+        &errs,
+        "constructing `j9ssg.law.Cmp2[T = anthill.prelude.Int64]` is ambiguous among providers: j9ssg.law.Up, j9ssg.law.Down",
+        "a citation two providers answer",
+    );
+}
+
 /// §8.3's refusal, where two requirements of the citing operation answer the citation, names
 /// the bracket that chooses one. A rule that would need the requirement without declaring it
 /// is refused at its own clause (060.1 §1), so no citation of it reaches the refusal. The

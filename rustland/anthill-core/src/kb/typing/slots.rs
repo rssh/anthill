@@ -3602,11 +3602,11 @@ fn validate_written_selection(
     }
     // WI-20261013-50ZMN — an UNNAMED requirement answered by a requirement the
     // enclosing declaration names: `[Mon = Plus]` under `requires Plus: Mon[T]`. There
-    // is no parameter for the name to ride in, so it is a selection.
-    if !binds_a_parameter {
-        if let Some(binder) = enclosing_requirement_named(kb, env, value, spec_sort) {
-            return Ok(Some(SelectedProvider::Enclosing(binder)));
-        }
+    // is no parameter for the name to ride in, so it is a selection. A sort's NAMED slot
+    // forwarded the same way, `Ranked[T = A, O = up]` under `requires up: WeakOrd[T = A]`,
+    // is the caller's dictionary too (060.1 §8.2).
+    if let Some(binder) = enclosing_requirement_named(kb, env, value, spec_sort) {
+        return Ok(Some(SelectedProvider::Enclosing(binder)));
     }
     let witness = selection_witness_sym(kb, value).ok_or(TypeError::SelectionValueNotASort {
         span,

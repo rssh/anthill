@@ -17277,8 +17277,9 @@ pub(crate) fn bracket_on_callable_message(name: &str, on: BracketedName) -> Stri
         ),
         BracketedName::Callable => format!(
             "`{name}[…]` is a bracket on an operation or a relation, which binds its type \
-             parameters and is read only before a call's arguments; the arguments are written \
-             in parentheses, `{name}(…)` (kernel-language.md §5.4)"
+             parameters and is read only before a call's arguments, `{name}[…](…)` — `{name}[…]()` \
+             where none is written; the arguments are written in parentheses, `{name}(…)` \
+             (kernel-language.md §5.4)"
         ),
         BracketedName::Other => format!(
             "`{name}[…]` writes type arguments of `{name}`, which takes none: only a sort or a \
@@ -31854,6 +31855,27 @@ impl<'a> Loader<'a> {
         });
     }
 
+    /// A dot call whose receiver is a bracket on a relation or an operation — the converter's
+    /// companion receiver, `cmp[A = Int64]` of `cmp[A = Int64].takeN(5)` — refused as that
+    /// bracket written alone is ([`Self::refuse_bracket_on_a_callable`]), and the receiver
+    /// marked read, so the type lowering does not report it again. Answers whether it refused.
+    fn refuse_bracket_on_a_callable_receiver(&mut self, parse_id: ParseTermId) -> bool {
+        let Some(TypeExpr::Parameterized { name, .. }) = self.read_parse_recv_type(parse_id) else {
+            return false;
+        };
+        let head = self.remap_name(&name);
+        if !matches!(bracketed_name(self.kb, head, false), Some(BracketedName::Callable)) {
+            return false;
+        }
+        self.consumed_recv_types.insert(parse_id);
+        self.errors.push(LoadError::BracketOnCallable {
+            name: self.kb.local_name_of(head).to_string(),
+            on: BracketedName::Callable,
+            span: self.parsed.terms.span(parse_id),
+        });
+        true
+    }
+
     /// Proposal 060 §2.1 — refuse a bracket written alone on a name that is no type
     /// ([`LoadError::BracketOnCallable`]): `mine[1, 2]` in a goal, a data slot or a value
     /// slot of a clause, an operation body, and a clause's own head `fact myrel[T = Red]`,
@@ -34028,7 +34050,12 @@ impl<'a> Loader<'a> {
                         // segment names a local binding.
                         let carries_bracket =
                             named_args.iter().any(|&(_, tid)| self.is_call_type_args_aux(tid));
-                        if (named_args.len() == visible_named.len() || carries_bracket)
+                        // A bracket on a relation or an operation named as the receiver,
+                        // `cmp[A = Int64].takeN(5)`, is that bracket written alone (§5.4),
+                        // refused as `cmp[A = Int64]` in a `let` is; the call is read as the
+                        // one written without it, so nothing else is reported of it.
+                        let refused_receiver = self.refuse_bracket_on_a_callable_receiver(parse_id);
+                        if (named_args.len() == visible_named.len() || carries_bracket || refused_receiver)
                             && self.try_identifier_dot_call(
                                 parse_id,
                                 &name,

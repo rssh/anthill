@@ -1099,6 +1099,33 @@ pub(super) fn citation_misfit_error(
                 kb.qualified_name_of(relation),
             ),
         },
+        CarriedMisfit::SlotUnwritten { sort, binder, spec } => {
+            let (sort_name, binder_name) = (
+                short_name_of(kb.qualified_name_of(sort)).to_string(),
+                kb.local_name_of(binder).to_string(),
+            );
+            TypeError::Other {
+                site: TypeError::here(),
+                span,
+                context: TypeErrorContext::Rule {
+                    name: relation,
+                    field: RuleField::Whole,
+                },
+                expected: format!(
+                    "a supplied `{binder_name}: {}` slot (write it in the type, or declare it)",
+                    kb.qualified_name_of(spec),
+                ),
+                actual: format!(
+                    "the citation of `{}` leaves the named requirement slot `{binder_name}` of \
+                     `{sort_name}` unwritten, and a sort's named slot is filled only by what the \
+                     citation writes: a witness, `{sort_name}[…, {binder_name} = <witness>]`, or a \
+                     requirement of the citing declaration by its name, `{sort_name}[…, \
+                     {binder_name} = up]` under `requires up: {}[…]`",
+                    kb.qualified_name_of(relation),
+                    short_name_of(kb.qualified_name_of(spec)),
+                ),
+            }
+        }
         CarriedMisfit::NotAnswered { witness, spec } => TypeError::WitnessDoesNotProvide {
             span,
             op: relation,
@@ -1786,7 +1813,8 @@ fn route_requirement_read(
             .resolve_as_value(*fresh.get(*d as usize)?)?
             .clone();
         let built = anchor_sort_goal(kb, spec_sort, &[carrier], &bracket.written)?;
-        return resolve_route(kb, chain, param_rigids, subst, &built.goal, misfits);
+        let owner = Some(kb.rule_domain(rid));
+        return resolve_route(kb, chain, param_rigids, subst, &built.goal, owner, misfits);
     }
     let op_functor = occ_head_symbol(&pos_args[1])?;
     // A read for a call with no argument at its spec's carrier, in a clause whose sort requires
@@ -1888,7 +1916,8 @@ fn route_requirement_read(
                 });
                 return None;
             }
-            resolve_route(kb, chain, param_rigids, subst, &goal, misfits)
+            let owner = Some(kb.rule_domain(rid));
+            resolve_route(kb, chain, param_rigids, subst, &goal, owner, misfits)
         }
         CarriedReading::Scope(i) => emit_route(
             kb,
@@ -1974,6 +2003,13 @@ pub(crate) enum CarriedMisfit {
         param: Symbol,
         columns: Vec<Symbol>,
     },
+    /// A named requirement slot `binder` of `sort` that states the read of `spec`, which the
+    /// citation writes nothing for (060.1 §8.2).
+    SlotUnwritten {
+        sort: Symbol,
+        binder: Symbol,
+        spec: Symbol,
+    },
     /// The citing declaration holds two requirements under two names, `first` and `second`,
     /// that both answer a requirement of the cited clause, `requirement` of `spec`: two
     /// dictionaries, and the citation says which of them the clause takes nowhere. Reported at
@@ -2038,6 +2074,8 @@ fn carried_slot_reading(
     stated: &SortGoal,
 ) -> CarriedReading {
     let mut fixed: Vec<SlotFixed> = Vec::new();
+    // A slot that states the read and that the citation leaves open: the sort and the slot.
+    let mut open: Option<(Symbol, Symbol)> = None;
     for (_, ty) in &clause_types.types {
         let TypeExtractor::Parameterized { base, bindings } = extract_type(kb, ty) else {
             continue;
@@ -2132,13 +2170,27 @@ fn carried_slot_reading(
                     binder: member,
                     slot,
                 });
-            } else if !matches!(type_head(kb, &at), TypeHead::FlexVar(_)) {
+            } else if matches!(type_head(kb, &at), TypeHead::FlexVar(_) | TypeHead::TypeVar(_)) {
+                // Nothing at the citation fixed it: a variable, or the unknown a slot no
+                // argument names is opened at.
+                open.get_or_insert((base, slot.binder));
+            } else {
                 fixed.push(SlotFixed::Rigid(at));
             }
         }
     }
+    // 060.1 §8.2 — a sort's named slot is filled only by what the citation writes: a witness,
+    // or a requirement of the citing declaration by its name. One it leaves open is refused,
+    // as an operation's call that leaves it so is, not answered by the caller's frame.
     let Some((first, rest)) = fixed.split_first() else {
-        return CarriedReading::None;
+        return match open {
+            Some((sort, binder)) => CarriedReading::Refused(CarriedMisfit::SlotUnwritten {
+                sort,
+                binder,
+                spec: stated.spec_sort,
+            }),
+            None => CarriedReading::None,
+        };
     };
     if let Some(second) = rest.iter().find(|f| !same_fixed(kb, first, f)) {
         return CarriedReading::Refused(CarriedMisfit::TwoProviders {
@@ -2463,9 +2515,13 @@ fn sort_requirement_route(
     if let Some(tie) = two_names_at_caller(kb, &pending.chain, &pending.param_rigids, &pending.subst, &goal) {
         return Some(Err(tie));
     }
+    // At a concrete instance two providers that answer the requirement refuse the citation, as
+    // an operation's call there is, and as no provider does.
+    let concrete = goal_is_concrete(kb, &goal);
     match resolve_at_caller(kb, &pending.chain, &pending.param_rigids, &pending.subst, &goal, None) {
         ResolutionResult::Resolved(tree) => emit_route(kb, &pending.chain, &tree).map(Ok),
-        failure @ ResolutionResult::NoMatch { .. } => Some(Err(CarriedMisfit::Unprovided {
+        ResolutionResult::Ambiguous { .. } if !concrete => None,
+        failure @ (ResolutionResult::NoMatch { .. } | ResolutionResult::Ambiguous { .. }) => Some(Err(CarriedMisfit::Unprovided {
             requirement: format_goal(kb, &goal),
             owner: kb.rule_domain(rid),
             why: describe_resolution_failure(kb, &failure),
@@ -2483,14 +2539,42 @@ fn resolve_route(
     param_rigids: &[(VarId, TermId)],
     subst: &Substitution,
     goal: &SortGoal,
+    // Whose requirement `goal` is, where an unanswered one refuses the citation.
+    refused_for: Option<Symbol>,
     misfits: &mut Vec<CarriedMisfit>,
 ) -> Option<TermId> {
     if let Some(tie) = two_names_at_caller(kb, chain, param_rigids, subst, goal) {
         misfits.push(tie);
         return None;
     }
-    let tree = resolve_against_caller(kb, chain, param_rigids, subst, goal, None)?;
-    emit_route(kb, chain, &tree)
+    match resolve_at_caller(kb, chain, param_rigids, subst, goal, None) {
+        ResolutionResult::Resolved(tree) => emit_route(kb, chain, &tree),
+        // At a concrete instance a requirement is built here or the citation is refused, as an
+        // operation's call there is (060.1 §1): no provider, or two, answer it.
+        failure @ (ResolutionResult::NoMatch { .. } | ResolutionResult::Ambiguous { .. })
+            if refused_for.is_some() && goal_is_concrete(kb, goal) =>
+        {
+            misfits.push(CarriedMisfit::Unprovided {
+                requirement: format_goal(kb, goal),
+                owner: refused_for.expect("checked"),
+                why: describe_resolution_failure(kb, &failure),
+            });
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Is every binding of `goal` — its carrier's arguments too — a concrete type, no variable of
+/// the caller's or of the clause's in it?
+fn goal_is_concrete(kb: &mut KnowledgeBase, goal: &SortGoal) -> bool {
+    let bindings: Vec<Value> = goal
+        .bindings
+        .iter()
+        .chain(goal.carrier.iter().flat_map(|c| c.args.iter()))
+        .map(|(_, v)| v.clone())
+        .collect();
+    bindings.iter().all(|v| instance_is_concrete(kb, v))
 }
 
 /// Two requirements of the citing declaration, told apart by their names alone, that both
@@ -2701,7 +2785,7 @@ fn op_slot_route(
     })
     .unwrap_or_else(|| entry.spec.clone());
     let goal = goal_from_requires_entry(kb, &RequiresEntry { spec, ..entry })?;
-    resolve_route(kb, chain, param_rigids, subst, &goal, misfits)
+    resolve_route(kb, chain, param_rigids, subst, &goal, Some(op), misfits)
 }
 
 /// WI-20260925-SHED7 (proposal 060 §2.3) — the route of a `SortDomain` read at the type
@@ -2773,7 +2857,8 @@ fn sort_domain_route(
         return Some(build_dictionary_term(kb, syms, head, &subs));
     }
     let built = anchor_sort_goal(kb, spec, &[ty], &[])?;
-    resolve_route(kb, chain, param_rigids, subst, &built.goal, misfits)
+    // A domain at a concrete type with none is the type test's to answer, not the citation's.
+    resolve_route(kb, chain, param_rigids, subst, &built.goal, None, misfits)
 }
 
 /// WI-714 — the free-variable columns of a relation, merged across its clauses:
