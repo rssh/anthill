@@ -2596,7 +2596,9 @@ fn signature_self_contradiction_error(
 ///   * covered by a declared PRESENT label (mod alignment) → ok;
 ///   * matching a declared ABSENT label (mod alignment) → REJECT — the
 ///     lacks-constraint violation (`Modify[c]` against `-Modify[x]`);
-///   * otherwise: declared row OPEN — a tail of it still flexible — → absorbed; NOT OPEN →
+///   * otherwise: declared row OPEN — a tail of it still flexible — → absorbed, unless every
+///     flexible tail lacks it (a write to the callback's own parameter, which no row variable
+///     takes) → REJECT whatever the tails are bound to later; NOT OPEN →
 ///     REJECT — an effect the declared row does not admit, which would escape the
 ///     WI-352/353 boundary propagation (that derives from the DECLARED callback row,
 ///     not from the argument actually passed). A RIGID tail opens nothing: it is the
@@ -2609,7 +2611,7 @@ fn signature_self_contradiction_error(
 /// A ROW VARIABLE of the actual row is judged too, under a declared row that is NOT OPEN once σ
 /// is applied: a rigid one (the enclosing operation's own row) is admitted where the declared
 /// row holds that variable itself, and nowhere else. Under a declared row still open it is
-/// unification's.
+/// unification's, and a label is refused there only where every flexible tail lacks it.
 ///
 /// Conservative skips (return `None`, no check): a non-arrow/`Function`
 /// declared or actual type, a missing effects child, a row that fails to decompose.
@@ -2641,8 +2643,8 @@ fn signature_self_contradiction_error(
 /// parts cannot be matched to a declared label by alignment. Where the declared row speaks
 /// of a binder in the same effect, such a label is refused as a binder at no position the
 /// type records ([`unplaced_binder`]); otherwise it is handled by the same absent/closed
-/// checks as any other — absorbed by an open declared tail (a row-polymorphic row) or
-/// rejected on a closed row. A PLACE-INDEPENDENT label (`Outside` / `External`, the WI-698
+/// checks as any other — absorbed by an open declared tail (a row-polymorphic row) that does
+/// not lack it, or rejected on a closed row. A PLACE-INDEPENDENT label (`Outside` / `External`, the WI-698
 /// motivation) needs no alignment and is always checked precisely, so a place-free escape
 /// through a destructure lambda is caught — which the prior whole-lambda skip missed.
 pub(super) fn validate_callback_effect_row(
@@ -2997,6 +2999,11 @@ pub(super) fn callback_row_error(
             }
         }
     }
+    let open_lacks = if e_open {
+        open_tail_lacks(kb, subst, &e_tails)
+    } else {
+        None
+    };
     for la in &a_present {
         // A denial wins over an atom that admits the label: `@ {Error, -Error[Wide]}` refuses a
         // callback raising `Narrow`, which the bare `Error` alone admits.
@@ -3139,8 +3146,74 @@ pub(super) fn callback_row_error(
                 ),
             });
         }
+        // AN OPEN ROW WHOSE EVERY ROW VARIABLE LACKS THE LABEL DOES NOT ADMIT IT, whatever the
+        // variable is bound to later. A row variable of the slot takes no label over the
+        // callback's own parameter ([`callback_at_slot`] records it as lacked): the variable
+        // stands outside the arrow, where the parameter names nothing. Read as open, the row
+        // admitted it, and a construction checks its fields before its expectation binds the
+        // sort's row parameter: `let b: Box[EB = {}] = box(g: lambda (z) -> put(z, 5))` over
+        // `entity box(g: (z: Cell[V = Int64]) -> Int64 @ {EB})` loaded, and applying `b.g` wrote
+        // the cell from an operation declaring nothing (MEASURED, WI-20261014-N2YEK).
+        if open_lacks.as_ref().is_some_and(|lacks| {
+            lacks.iter().all(|ls| {
+                ls.iter()
+                    .any(|l| labels_match_aligned(kb, subst, &place_map, la, l))
+            })
+        }) {
+            // The callback's own parameter: one its type records, or, where it records none, a
+            // callback parameter's place (as the alignment above reads it).
+            let own = extract_effect_resource_sym(kb, la).filter(|place| {
+                place_map.contains_key(place)
+                    || unaligned_own.contains(place)
+                    || (actual_places.is_none() && callback_binder_position(kb, *place).is_some())
+            });
+            let why = match own {
+                Some(place) => format!(
+                    " over its own parameter `{}`, which names nothing outside the callback's \
+                     arrow, where the row variable stands",
+                    kb.local_name_of(place),
+                ),
+                None => ", which the row variable lacks".to_string(),
+            };
+            return Some(TypeError::Other {
+                site: TypeError::here(),
+                span,
+                context: at.context(),
+                expected: format!(
+                    "callback effects admitted by {} (a row variable, which may not take `{}`)",
+                    at.slot(kb),
+                    type_display_name_value(kb, la),
+                ),
+                actual: format!(
+                    "{} declares `{}`{why}",
+                    subject(kb),
+                    type_display_name_value(kb, la),
+                ),
+            });
+        }
     }
     None
+}
+
+/// What each flexible tail of a row lacks, read once for every label the row is asked of —
+/// `None` where the row has no flexible tail or one of them lacks nothing, so takes any label.
+fn open_tail_lacks(
+    kb: &KnowledgeBase,
+    subst: &Substitution,
+    tails: &[TermId],
+) -> Option<Vec<Vec<Value>>> {
+    let mut out = Vec::new();
+    for t in tails {
+        let Term::Var(Var::Global(vid)) = kb.get_term(walk_type(kb, subst, *t)) else {
+            continue;
+        };
+        let lacks = subst.lacks_of(*vid);
+        if lacks.is_empty() {
+            return None;
+        }
+        out.push(lacks);
+    }
+    (!out.is_empty()).then_some(out)
 }
 
 

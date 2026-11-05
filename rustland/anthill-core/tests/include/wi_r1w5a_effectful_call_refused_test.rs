@@ -50,7 +50,7 @@
 //! | the decline a schedule, not a fault (an unhandled effect scheduled again, 9WVT7's back-out) | 15: those 14 but `wi_9wvt7_clock_handler…::a_clock_read_at_run_time_is_not_performed`, and that file's two bridge rows, the const read and the guarded member |
 //! | a goal's call error the goal's (`rewritten_functional_goal`) | `a_goal_and_its_value_spelling_are_refused_alike` |
 //! | a function handed to a relation (`refuse_handed_functions`) | `an_effectful_call_written_in_a_rule_body_is_refused_at_load` at `handsLambda`, `handsColumn`, `handsValue`, `handsInData`, `handsUnderNot`, `handsInOr`; `two_functions_handed_in_one_goal_are_two_refusals` |
-//! | a function handed to an operation whose row stays open (`refuse_performed_effects`' second half) | `an_effectful_call_written_in_a_rule_body_is_refused_at_load` at `writesOwnParam`, `storeWriter` |
+//! | a function handed to an operation whose row stays open (`refuse_performed_effects`' second half) | none since WI-20261014-N2YEK (measured 2026-11-05, the whole `wi_tests` binary): its two rows, `writesOwnParam` and `storeWriter`, are refused at the argument, the slot's row variable taking no write to the callback's own parameter ([`a_callback_writing_its_own_parameter_is_refused_at_the_argument`]). Undriven, not shown unreachable |
 //! | only a parameter the call applies (`applied_function_args`) | `a_function_the_call_does_not_apply_loads` |
 //! | once per place, not per atom (`push_rule_body_effect`'s span test) | `two_functions_handed_in_one_goal_are_two_refusals` |
 //! | a side of `<=>` that holds a lambda typing the other (`LatePosition::LambdaValue`) | `an_effectful_call_written_in_a_rule_body_is_refused_at_load` at `handsBound`, `handsBoundList`, `handsGiven` (`giveF`'s column is no function then); `a_column_that_holds_the_function_is_not_handed_it` |
@@ -146,7 +146,7 @@ end
 /// Each clause, loaded beside [`PROGRAM`], is refused once, naming the call and the effect.
 /// 7D48J's rows (2026-10-16) and this ticket's 2026-10-21 row, then the placements a call
 /// takes in a rule body.
-const REFUSED: [(&str, &str, &str); 36] = [
+const REFUSED: [(&str, &str, &str); 34] = [
     // A field written over the sort's own row parameter is read at the argument the value's
     // type gives it.
     (
@@ -197,11 +197,6 @@ const REFUSED: [(&str, &str, &str); 36] = [
         "Clock",
     ),
     (
-        "rule storeWriter(?s, ?r) :- withStore(?s, lambda (s) -> Store.flush(s, []), ?r)",
-        "a function handed to `test.r1w5a.eff.withStore`",
-        "Modify[T = s]",
-    ),
-    (
         "rule handsLambda(?r) :- applies(lambda () -> now(), ?r)",
         "a function handed to `test.r1w5a.eff.applies`",
         "Clock",
@@ -230,11 +225,6 @@ const REFUSED: [(&str, &str, &str); 36] = [
         "rule handsInOr(?r) :- or(applies(lambda () -> now(), ?r), ?r <=> \"y\")",
         "a function handed to `test.r1w5a.eff.applies`",
         "Clock",
-    ),
-    (
-        "rule writesOwnParam(?c, ?u) :- useVia(?c, lambda (x) -> Cell.set(x, 9), ?u)",
-        "a function handed to `test.r1w5a.eff.useVia`",
-        "Modify[T = x]",
     ),
     (
         "rule hofWR(?v) :- mkVia(lambda () -> Cell.new(3), ?c), \
@@ -335,7 +325,8 @@ fn effect_refusals(errs: &[String]) -> Vec<&String> {
 /// THE ACCEPTANCE: each effectful call written in a rule body, and each effectful function it
 /// hands over, is refused at load, once, naming the call and the effect. `hofWR` and `hofRW`
 /// are refused twice, once for each: `mkVia` hands back a fresh cell, and the callback handed
-/// to `useVia` writes its own parameter. `hofWR` answered 9 and `hofRW` 3, the write performed; `mk` bound
+/// to `useVia` writes its own parameter (refused at the argument,
+/// [`a_callback_writing_its_own_parameter_is_refused_at_the_argument`]). `hofWR` answered 9 and `hofRW` 3, the write performed; `mk` bound
 /// a cell; the clock reads were declined at run time; `now(?r)` answered nothing, silently, and
 /// each negation held.
 #[test]
@@ -356,6 +347,41 @@ fn an_effectful_call_written_in_a_rule_body_is_refused_at_load() {
         }
     }
     assert!(missed.is_empty(), "each refused once:\n{}", missed.join("\n"));
+}
+
+/// A CALLBACK WRITING ITS OWN PARAMETER, handed to an operation whose slot is its row parameter
+/// alone, is refused at the argument, as in an operation body: the row parameter takes no write
+/// to the callback's own parameter (kernel-language §4.4). Until WI-20261014-N2YEK the typer left
+/// `Rho` unbound and these were refused as functions handed to an operation whose row stays
+/// open, performing `Modify[T = x]` and `Modify[T = s]`. Once each, and `hofWR` holds both its
+/// refusals: `mkVia`'s fresh cell, and this one.
+#[test]
+fn a_callback_writing_its_own_parameter_is_refused_at_the_argument() {
+    for (clause, slot, label) in [
+        (
+            "rule writesOwnParam(?c, ?u) :- useVia(?c, lambda (x) -> Cell.set(x, 9), ?u)",
+            "useVia.k (op-arg)",
+            "Modify[T = x]",
+        ),
+        (
+            "rule storeWriter(?s, ?r) :- withStore(?s, lambda (s) -> Store.flush(s, []), ?r)",
+            "withStore.f (op-arg)",
+            "Modify[T = s]",
+        ),
+        (
+            "rule hofWR(?v) :- mkVia(lambda () -> Cell.new(3), ?c), \
+             useVia(?c, lambda (x) -> Cell.set(x, 9), ?u), Cell.get(?c, ?v)",
+            "useVia.k (op-arg)",
+            "Modify[T = x]",
+        ),
+    ] {
+        let errs = load_errors_of(&with(clause));
+        let at_the_argument = errs
+            .iter()
+            .filter(|e| e.contains(slot) && e.contains(&format!("may not take `{label}`")))
+            .count();
+        assert_eq!(at_the_argument, 1, "{clause}: refused once at the argument: {errs:?}");
+    }
 }
 
 /// Two functions handed in one goal are two refusals, each where it is written.

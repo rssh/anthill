@@ -211,8 +211,9 @@ end
 /// binding the caller-side row var `EffP` to `{Modify[c]}` would ESCAPE `c`
 /// out of the arrow scope — a dependent-effect abstraction the row machinery
 /// does not yet perform (proposal 046 / modify-effect-derive territory), not
-/// the named-binder issue. When that lands, this test flips: replace it with
-/// an eval test of the sweep.
+/// the named-binder issue. The refusal is at the argument, `EffP` lacking the
+/// label (WI-20261014-N2YEK; "unconstrained EffP" before it). When that lands,
+/// this test flips: replace it with an eval test of the sweep.
 #[test]
 fn iterable_fold_mutating_callback_not_lacks_rejected_but_row_gated() {
     let src = r#"
@@ -237,10 +238,11 @@ end
          (the folds deliberately carry no -Modify[x]); got: {errs:?}",
     );
     assert!(
-        errs.iter()
-            .any(|e| e.contains("unconstrained") && e.contains("EffP")),
+        errs.iter().any(|e| e.contains("foldLeft.f (op-arg)")
+            && e.contains("may not take `Modify[T = c]`")),
         "the known row-inference gap for a denoted-bearing callback arrow \
-         must stay LOUD (unconstrained EffP) until it binds; got: {errs:?}",
+         must stay LOUD (a row variable taking no write to the callback's own \
+         parameter) until it binds; got: {errs:?}",
     );
 }
 

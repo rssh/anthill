@@ -95,7 +95,6 @@ pub static FAMILY: Family = Family {
 
 const TICKET_7EZS6: &str = "WI-20261014-7EZS6";
 const TICKET_6T5C6: &str = "WI-20261014-6T5C6";
-const TICKET_N2YEK: &str = "WI-20261014-N2YEK";
 
 const EXCEPTIONS: &[Exception] = &[
     // Applying a function value does not rename its own parameter to the argument: the
@@ -139,13 +138,6 @@ const EXCEPTIONS: &[Exception] = &[
         when: &["typed=result", "does=writes-own"],
         ticket: TICKET_6T5C6,
         why: "an operation result's arrow cannot name its own parameter, and the refusal's company differs by spelling",
-    },
-    // A field's row parameter bound to nothing takes a lambda writing its own parameter.
-    Exception {
-        property: Property::Sound,
-        when: &["typed=field", "row=open", "does=writes-own"],
-        ticket: TICKET_N2YEK,
-        why: "`Box[EB = {}]` admits a lambda writing its own parameter, and applying it writes `q`",
     },
 ];
 

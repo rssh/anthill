@@ -330,7 +330,8 @@ fn the_row_parameter_said_whole_binds_as_before() {
 /// A LABEL OVER THE CALLBACK'S OWN PARAMETER IS NOT TAKEN: the callback writes the cell it is
 /// handed and raises `R`, at a slot `@ {Error[String], EffP}` that does not say that write.
 /// `EffP` lacks the label, so the residual `{Modify[k], R}` is not bound and the call is
-/// refused, as it was. Passes either way by design: it holds the pass to the lacks check.
+/// refused, as it was — at the argument since WI-20261014-N2YEK, for the `EffP` nothing bound
+/// before it. Passes either way by design: it holds the pass to the lacks check.
 #[test]
 fn a_label_over_the_callbacks_own_parameter_is_not_taken() {
     let src = r#"
@@ -349,7 +350,7 @@ end
 "#;
     assert_refused_naming(
         &load_errors_of(src),
-        &["wi6mpn2.own_binder.run", "'EffP'"],
+        &["wi6mpn2.own_binder.run", "may not take `Modify[T = k]`"],
         "a callback writing its own parameter at a slot that does not say it",
     );
 }
@@ -388,7 +389,8 @@ end
 /// parameter `c`, not the slot's `k`, which `EffP` is made to lack. A callback writing the cell
 /// it is handed took `EffP := {Modify[c], …}`, and was refused at `use`'s effects for
 /// "undeclared effect: Modify[T = c]", a binder out of scope (MEASURED, its row closed before
-/// this change as well). Refused at the call now, written `c` or `k`, alone or beside `R`.
+/// this change as well). Refused at the call now, written `c` or `k`, alone or beside `R` — at
+/// the argument since WI-20261014-N2YEK, for the `EffP` nothing bound before it.
 /// FAILS when the pass reads the callback as written for such a slot.
 ///
 /// ITS CONTROLS run: the slot saying that write, `@ {Modify[k], s.E, EffP}` (5 + 41 and `c`
@@ -404,7 +406,7 @@ fn a_slot_read_off_a_receiver_takes_no_label_over_the_callbacks_parameter() {
         let src = projected_cell(&ns, "s.E, EffP", "Modify[q], R", binder, does);
         assert_refused_naming(
             &load_errors_of(&src),
-            &[&format!("{ns}.run"), "'EffP'"],
+            &[&format!("{ns}.run"), "may not take `Modify[T = "],
             &format!("a callback writing its own parameter ({case})"),
         );
     }

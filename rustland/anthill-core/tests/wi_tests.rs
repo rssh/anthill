@@ -2328,6 +2328,8 @@ mod wi_1tjqh_callback_row_at_its_slot_test;
 mod wi_9hkjv_default_at_a_structural_carrier_test;
 #[path = "include/wi_6mpn2_label_beside_row_parameter_test.rs"]
 mod wi_6mpn2_label_beside_row_parameter_test;
+#[path = "include/wi_n2yek_field_row_own_parameter_test.rs"]
+mod wi_n2yek_field_row_own_parameter_test;
 #[path = "include/wi_gfs6a_woven_call_waits_on_its_dictionary_test.rs"]
 mod wi_gfs6a_woven_call_waits_on_its_dictionary_test;
 #[path = "include/wi_qgvb1_requires_unwritten_slot_test.rs"]

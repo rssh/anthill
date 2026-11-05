@@ -88,6 +88,10 @@
 //!
 //! PASSES EITHER WAY, BY DESIGN: [`the_bracket_says_the_row_in_every_spelling`] — the repair the
 //! refusal advised, which ran before.
+//!
+//! The ledger was measured before WI-20261014-N2YEK, which refuses a callback writing its own
+//! parameter at the argument (or field) whose row variable lacks the write, where these rows
+//! saw "unconstrained" or the caller's effects; the three rows asserting it say the new site.
 
 use crate::common::{assert_refused_naming, load_errors_of, run_int64};
 
@@ -302,7 +306,8 @@ fn the_bracket_says_the_row_in_every_spelling() {
 
 /// A CALLBACK WRITING ITS OWN PARAMETER, AT A SLOT WHOSE ROW IS THE ROW PARAMETER ALONE: `k`
 /// names nothing where `EffP` is read, so `EffP` does not take the write and the call is
-/// refused — in every spelling, an operation and a lambda out of a tuple among them.
+/// refused at the argument — in every spelling, an operation and a lambda out of a tuple among
+/// them. (Refused "unconstrained", for the `EffP` nothing bound, until WI-20261014-N2YEK.)
 ///
 /// The callback parameter is the one that matters: `use` here declares NO effect, and with the
 /// label bound it loaded, the call charged `Modify[g.k]`, which `use`'s boundary drops — `go`
@@ -311,7 +316,7 @@ fn the_bracket_says_the_row_in_every_spelling() {
 /// tuple's label is renamed by part 4 to a place part 2 refuses.
 #[test]
 fn a_callbacks_own_parameter_is_no_label_a_row_parameter_takes() {
-    let unconstrained = ["type mismatch in", "run.type_arg", "expected a type for 'EffP'"];
+    let refused = ["type mismatch in run.f (op-arg)", "may not take `Modify[T = "];
     let mut shapes = placed("put(k, 5)", "{Modify[k]}", "run(q, {cb})");
     shapes.push((
         "operation",
@@ -332,7 +337,7 @@ fn a_callbacks_own_parameter_is_no_label_a_row_parameter_takes() {
         let src = program(&format!("wi1tjqh.own_{spelling}"), shape);
         assert_refused_naming(
             &load_errors_of(&src),
-            &unconstrained,
+            &refused,
             &format!("a callback writing its own parameter at `@ {{EffP}}` ({spelling})"),
         );
     }
@@ -349,7 +354,7 @@ fn a_callbacks_own_parameter_is_no_label_a_row_parameter_takes() {
     );
     assert_refused_naming(
         &load_errors_of(&src),
-        &unconstrained,
+        &refused,
         "a callback parameter writing its own parameter, in an operation declaring no effect",
     );
 }
@@ -641,11 +646,12 @@ end
 /// over `q`: 515, the field named and by position. Both were refused, `E` unconstrained
 /// (MEASURED). FAILS under part 1.
 ///
-/// A callback writing its OWN parameter leaves `EB` open — the binder names nothing in the
-/// box's type — and the call is refused for the `E` nothing fixed, a lambda and an operation
-/// alike. With the field met as passed, the box was a `Box[EB = {Modify[k]}]` and the caller
-/// was refused for an undeclared `Modify[T = k]` instead (MEASURED). FAILS under part 6, and
-/// under part 3.
+/// A callback writing its OWN parameter is refused at the field — `EB` lacks the write, the
+/// binder naming nothing in the box's type — a lambda and an operation alike; it was refused
+/// for the `E` nothing fixed at `consume` until WI-20261014-N2YEK, and a box that nothing then
+/// bound wrote its cell. With the field met as passed, the box was a `Box[EB = {Modify[k]}]`
+/// and the caller was refused for an undeclared `Modify[T = k]` instead (MEASURED). FAILS under
+/// part 6, and under part 3.
 #[test]
 fn a_constructor_reads_the_callback_at_its_fields_slot() {
     let consume = "  operation consume[E](b: Box[EB = E], p: Cell[V = Int64]) -> Int64 effects {E} = match b case box(g) -> g(p)";
@@ -684,11 +690,11 @@ fn a_constructor_reads_the_callback_at_its_fields_slot() {
         let errs = load_errors_of(&src);
         assert_refused_naming(
             &errs,
-            &["consume.type_arg", "expected a type for 'E'"],
+            &["box.g (entity-field)", "may not take `Modify[T = k]`"],
             &format!("a field callback writing its own parameter ({spelling})"),
         );
         assert!(
-            !errs.iter().any(|e| e.contains("Modify[T = k]")),
+            !errs.iter().any(|e| e.contains("undeclared effect: Modify[T = k]")),
             "the callback's own binder reached the box's row ({spelling}):\n{}",
             errs.join("\n")
         );
@@ -699,9 +705,11 @@ fn a_constructor_reads_the_callback_at_its_fields_slot() {
 /// Int64]) -> Int64 @ {?}) -> f(q)`, applied to a callback writing `r` — 515. It was refused for
 /// an undeclared `?_`, the slot's row left open (MEASURED). FAILS under part 1.
 ///
-/// Applied to a callback writing its own parameter it is refused still, and not for a label
-/// over that binder: with the argument met as passed the slot's row took `Modify[k]`, and
-/// that is what the caller was charged (MEASURED). FAILS under part 7, and under part 3.
+/// Applied to a callback writing its own parameter it is refused at the argument, the slot's
+/// row variable lacking the write (at `use`'s effects until WI-20261014-N2YEK), and the caller
+/// is charged no label over that binder: with the argument met as passed the slot's row took
+/// `Modify[k]`, and that is what the caller was charged (MEASURED). FAILS under part 7, and
+/// under part 3.
 #[test]
 fn a_function_value_reads_the_callback_at_its_slot() {
     let app = "    let app = lambda (f: (k: Cell[V = Int64]) -> Int64 @ {?}) -> f(q)";
@@ -724,11 +732,11 @@ fn a_function_value_reads_the_callback_at_its_slot() {
     let errs = load_errors_of(&src);
     assert_refused_naming(
         &errs,
-        &["type mismatch in use.effects (op-effects)"],
+        &["type mismatch in app._1 (op-arg)", "may not take `Modify[T = k]`"],
         "a function value applied to a callback writing its own parameter",
     );
     assert!(
-        !errs.iter().any(|e| e.contains("Modify[T = k]")),
+        !errs.iter().any(|e| e.contains("undeclared effect: Modify[T = k]")),
         "the callback's own binder reached the caller's row:\n{}",
         errs.join("\n")
     );

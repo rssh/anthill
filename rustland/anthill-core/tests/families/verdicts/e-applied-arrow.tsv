@@ -164,8 +164,8 @@ typed=parameter,row=open,applied=call,does=nothing,declares=all	runs 4112
 typed=parameter,row=open,applied=call,does=nothing,declares=none	runs 4112
 typed=parameter,row=open,applied=call,does=raises,declares=all	runs 4112
 typed=parameter,row=open,applied=call,does=raises,declares=none	runs 4112
-typed=parameter,row=open,applied=call,does=writes-own,declares=all	refused TypeMismatch
-typed=parameter,row=open,applied=call,does=writes-own,declares=none	refused TypeMismatch
+typed=parameter,row=open,applied=call,does=writes-own,declares=all	refused TypeMismatch/op-arg
+typed=parameter,row=open,applied=call,does=writes-own,declares=none	refused TypeMismatch/op-arg
 typed=parameter,row=open,applied=call,does=writes-scope,declares=all	runs 515
 typed=parameter,row=open,applied=call,does=writes-scope,declares=none	runs 515
 typed=parameter,row=open,applied=call,does=raises-callers,declares=all	runs 4112
@@ -174,8 +174,8 @@ typed=parameter,row=open,applied=alias,does=nothing,declares=all	runs 4112
 typed=parameter,row=open,applied=alias,does=nothing,declares=none	runs 4112
 typed=parameter,row=open,applied=alias,does=raises,declares=all	runs 4112
 typed=parameter,row=open,applied=alias,does=raises,declares=none	runs 4112
-typed=parameter,row=open,applied=alias,does=writes-own,declares=all	refused TypeMismatch
-typed=parameter,row=open,applied=alias,does=writes-own,declares=none	refused TypeMismatch
+typed=parameter,row=open,applied=alias,does=writes-own,declares=all	refused TypeMismatch/op-arg
+typed=parameter,row=open,applied=alias,does=writes-own,declares=none	refused TypeMismatch/op-arg
 typed=parameter,row=open,applied=alias,does=writes-scope,declares=all	runs 515
 typed=parameter,row=open,applied=alias,does=writes-scope,declares=none	runs 515
 typed=parameter,row=open,applied=alias,does=raises-callers,declares=all	runs 4112
@@ -184,8 +184,8 @@ typed=parameter,row=open,applied=slot,does=nothing,declares=all	runs 4112
 typed=parameter,row=open,applied=slot,does=nothing,declares=none	runs 4112
 typed=parameter,row=open,applied=slot,does=raises,declares=all	runs 4112
 typed=parameter,row=open,applied=slot,does=raises,declares=none	runs 4112
-typed=parameter,row=open,applied=slot,does=writes-own,declares=all	refused TypeMismatch
-typed=parameter,row=open,applied=slot,does=writes-own,declares=none	refused TypeMismatch
+typed=parameter,row=open,applied=slot,does=writes-own,declares=all	refused TypeMismatch/op-arg
+typed=parameter,row=open,applied=slot,does=writes-own,declares=none	refused TypeMismatch/op-arg
 typed=parameter,row=open,applied=slot,does=writes-scope,declares=all	runs 515
 typed=parameter,row=open,applied=slot,does=writes-scope,declares=none	runs 515
 typed=parameter,row=open,applied=slot,does=raises-callers,declares=all	runs 4112
@@ -194,8 +194,8 @@ typed=parameter,row=open,applied=slot-own,does=nothing,declares=all	runs 4112
 typed=parameter,row=open,applied=slot-own,does=nothing,declares=none	refused TypeMismatch/op-effects
 typed=parameter,row=open,applied=slot-own,does=raises,declares=all	runs 4112
 typed=parameter,row=open,applied=slot-own,does=raises,declares=none	refused TypeMismatch/op-effects
-typed=parameter,row=open,applied=slot-own,does=writes-own,declares=all	refused TypeMismatch
-typed=parameter,row=open,applied=slot-own,does=writes-own,declares=none	refused TypeMismatch+TypeMismatch/op-effects
+typed=parameter,row=open,applied=slot-own,does=writes-own,declares=all	refused TypeMismatch/op-arg
+typed=parameter,row=open,applied=slot-own,does=writes-own,declares=none	refused TypeMismatch/op-arg+TypeMismatch/op-effects
 typed=parameter,row=open,applied=slot-own,does=writes-scope,declares=all	runs 515
 typed=parameter,row=open,applied=slot-own,does=writes-scope,declares=none	refused TypeMismatch/op-effects
 typed=parameter,row=open,applied=slot-own,does=raises-callers,declares=all	runs 4112
@@ -268,8 +268,8 @@ typed=field,row=open,applied=call,does=nothing,declares=all	runs 4112
 typed=field,row=open,applied=call,does=nothing,declares=none	runs 4112
 typed=field,row=open,applied=call,does=raises,declares=all	runs 4112
 typed=field,row=open,applied=call,does=raises,declares=none	refused TypeMismatch/op-effects
-typed=field,row=open,applied=call,does=writes-own,declares=all	runs 552
-typed=field,row=open,applied=call,does=writes-own,declares=none	UNSOUND runs 552
+typed=field,row=open,applied=call,does=writes-own,declares=all	refused TypeMismatch/entity-field
+typed=field,row=open,applied=call,does=writes-own,declares=none	refused TypeMismatch/entity-field
 typed=field,row=open,applied=call,does=writes-scope,declares=all	runs 515
 typed=field,row=open,applied=call,does=writes-scope,declares=none	refused TypeMismatch/op-effects
 typed=field,row=open,applied=call,does=raises-callers,declares=all	runs 512
@@ -278,8 +278,8 @@ typed=field,row=open,applied=alias,does=nothing,declares=all	runs 4112
 typed=field,row=open,applied=alias,does=nothing,declares=none	runs 4112
 typed=field,row=open,applied=alias,does=raises,declares=all	runs 4112
 typed=field,row=open,applied=alias,does=raises,declares=none	refused TypeMismatch/op-effects
-typed=field,row=open,applied=alias,does=writes-own,declares=all	runs 552
-typed=field,row=open,applied=alias,does=writes-own,declares=none	UNSOUND runs 552
+typed=field,row=open,applied=alias,does=writes-own,declares=all	refused TypeMismatch/entity-field
+typed=field,row=open,applied=alias,does=writes-own,declares=none	refused TypeMismatch/entity-field
 typed=field,row=open,applied=alias,does=writes-scope,declares=all	runs 515
 typed=field,row=open,applied=alias,does=writes-scope,declares=none	refused TypeMismatch/op-effects
 typed=field,row=open,applied=alias,does=raises-callers,declares=all	runs 512
@@ -288,8 +288,8 @@ typed=field,row=open,applied=slot,does=nothing,declares=all	runs 4112
 typed=field,row=open,applied=slot,does=nothing,declares=none	runs 4112
 typed=field,row=open,applied=slot,does=raises,declares=all	runs 4112
 typed=field,row=open,applied=slot,does=raises,declares=none	refused TypeMismatch/op-effects
-typed=field,row=open,applied=slot,does=writes-own,declares=all	runs 552
-typed=field,row=open,applied=slot,does=writes-own,declares=none	UNSOUND runs 552
+typed=field,row=open,applied=slot,does=writes-own,declares=all	refused TypeMismatch/entity-field
+typed=field,row=open,applied=slot,does=writes-own,declares=none	refused TypeMismatch/entity-field
 typed=field,row=open,applied=slot,does=writes-scope,declares=all	runs 515
 typed=field,row=open,applied=slot,does=writes-scope,declares=none	refused TypeMismatch/op-effects
 typed=field,row=open,applied=slot,does=raises-callers,declares=all	runs 512
@@ -298,8 +298,8 @@ typed=field,row=open,applied=slot-own,does=nothing,declares=all	runs 4112
 typed=field,row=open,applied=slot-own,does=nothing,declares=none	refused TypeMismatch/op-effects
 typed=field,row=open,applied=slot-own,does=raises,declares=all	runs 4112
 typed=field,row=open,applied=slot-own,does=raises,declares=none	refused TypeMismatch/op-effects
-typed=field,row=open,applied=slot-own,does=writes-own,declares=all	runs 552
-typed=field,row=open,applied=slot-own,does=writes-own,declares=none	refused TypeMismatch/op-effects
+typed=field,row=open,applied=slot-own,does=writes-own,declares=all	refused TypeMismatch/entity-field
+typed=field,row=open,applied=slot-own,does=writes-own,declares=none	refused TypeMismatch/entity-field
 typed=field,row=open,applied=slot-own,does=writes-scope,declares=all	runs 515
 typed=field,row=open,applied=slot-own,does=writes-scope,declares=none	refused TypeMismatch/op-effects
 typed=field,row=open,applied=slot-own,does=raises-callers,declares=all	runs 512
