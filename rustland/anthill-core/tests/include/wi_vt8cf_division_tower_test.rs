@@ -564,41 +564,42 @@ end
     );
 }
 
-/// THE PRICE OF ONE `div` SERVING TWO CARRIERS, pinned rather than left to surprise the
-/// first person who writes `a / b` over floats.
+/// ONE `div` SERVING TWO CARRIERS COSTS FLOAT NOTHING — WI-20260825-SKWTH, which this row
+/// recorded as a gap until it closed.
 ///
 /// The guarded `Error[DivisionByZero]` has to live on `Divisible.div`: an override may
 /// NARROW a spec operation's effect row and never WIDEN it, so with no row on the spec
-/// the four carriers that declare one are load errors. `Float.div` then narrows it to
-/// nothing — which is why `1.0 / 0.0` is `+Infinity` and not a raise.
+/// the four carriers that declare one (`Int64.mod`, `Int64.rem`, `BigInt.mod`, `BigInt.rem`)
+/// are load errors — which every test that loads the stdlib would report, so deleting the
+/// spec's row is not a repair this row needs a line of its own to refuse. `Float.div`
+/// narrows it to nothing, which is why `1.0 / 0.0` is `+Infinity` and not a raise.
 ///
-/// BUT THE NARROWING DOES NOT REACH THE CALL'S ROW. A dispatched call MERGES the impl's
-/// effects into the spec op's rather than replacing them, so with a SYMBOLIC divisor —
-/// where the guard `eq(b, 0)` cannot be refuted — a bare `a / b` over floats carries an
-/// effect IEEE division can never raise, while the same division written `Float.div(a, b)`
-/// is pure. Sound (an over-approximation), imprecise, and NOT specific to division: it is
-/// how every dispatched spec op with a guarded effect behaves. Whether a resolved call
-/// should take the impl's row or the union is a typer question with its own census to
-/// run, so this row states the current answer instead of asserting the one we would
-/// prefer.
+/// AND THE NARROWING REACHES THE CALL. A call pinned to the carrier's operation is charged
+/// what that operation declares, in place of the spec operation's row, its labels included
+/// (`typing::effects_of_pinned_call`, kernel-language §8.7). So a bare `a / b` over floats
+/// with a SYMBOLIC divisor — where the guard `eq(b, 0)` cannot be refuted — declares nothing
+/// and runs, and `Float.div(a, b)` is the same row. Over `Int64`, whose own `div` declares the
+/// guarded label, the same symbolic division is still refused for it, and so is `n / 0`.
 ///
-/// A LITERAL DIVISOR IS UNAFFECTED, which is the second half and the reason this is a
-/// wart and not a wall: `1.0 / 0.0` and `n / 2` both discharge.
+/// BACKED OUT (`effects_of_pinned_call` keeping the spec op's labels beside the override's,
+/// as GJW9Z left it): `bare` is refused "undeclared effect: Error[T = DivisionByZero]", so
+/// `drive` is never reached; and over `Int64` the sentence comes TWICE — the spec's guarded
+/// atom and `Int64.div`'s, whose guards name different `b`s, render alike. MEASURED. The
+/// qualified row, the symbolic `Int64` refusal and `n / 0` pass either way BY DESIGN: they
+/// pin that the fix narrowed only what the carrier narrows.
 #[test]
-fn a_bare_float_division_over_approximates_its_effect_row() {
+fn a_bare_float_division_is_charged_float_divs_row() {
     let symbolic = r#"
 namespace test.vt8cf.feff
-  import anthill.prelude.{Float}
+  import anthill.prelude.{Float, Bool}
   operation bare(a: Float, b: Float) -> Float = a / b
+  operation drive() -> Bool = Float.isInfinite(bare(1.0, 0.0))
 end
 "#;
-    let errs = crate::common::try_load_kb_with(symbolic)
-        .err()
-        .unwrap_or_default();
-    assert!(
-        errs.iter().any(|e| e.contains("DivisionByZero")),
-        "RECORDING THE OVER-APPROXIMATION: a bare `/` over floats takes the SPEC op's \
-         guarded row, which a symbolic divisor cannot refute; got {errs:?}"
+    assert_eq!(
+        drive(symbolic, "test.vt8cf.feff.drive"),
+        "Bool(true)",
+        "a bare `/` over floats declares no effect, loads, and divides by zero to +Infinity"
     );
 
     let qualified = r#"
@@ -609,9 +610,32 @@ end
 "#;
     assert!(
         crate::common::try_load_kb_with(qualified).is_ok(),
-        "…and naming the carrier's operation is pure, which is the separating row: the \
-         difference is the SPELLING, not the arithmetic"
+        "…and naming the carrier's operation is the same row"
     );
+
+    for (tag, body) in [("isym", "a / b"), ("izero", "a / 0")] {
+        let src = format!(
+            "namespace test.vt8cf.{tag}\n  import anthill.prelude.{{Int64}}\n  \
+             operation f(a: Int64, b: Int64) -> Int64 = {body}\nend\n"
+        );
+        let errs = crate::common::try_load_kb_with(&src)
+            .err()
+            .unwrap_or_default();
+        let hits = errs
+            .iter()
+            .filter(|e| e.contains("f.effects") && e.contains("Error[T = DivisionByZero]"))
+            .count();
+        assert!(
+            hits > 0,
+            "`{body}` over Int64 is charged `Int64.div`'s guarded label, which the divisor \
+             does not refute; got {errs:?}"
+        );
+        assert_eq!(
+            hits, 1,
+            "`{body}` incurs ONE label, `Int64.div`'s — the spec operation's is not charged \
+             beside it; got {errs:?}"
+        );
+    }
 }
 
 /// The tier's two entries really are the spec operations — read off `load.rs`'s own

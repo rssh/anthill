@@ -3,9 +3,9 @@
 - id: WI-20260825-SKWTH-a-dispatched-call-merges-the
 - created: 2026-08-25T16:14:19Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-08-25T16:14:19Z
+- status_at: 2026-11-05T05:20:02Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -37,4 +37,10 @@ WHAT A FIX HAS TO DECIDE, none costed:
 CONTROL, when it is fixed: `wi_vt8cf_division_tower_test::a_bare_float_division_over_approximates_its_effect_row` RECORDS the gap — it asserts that the bare `/` form fails to load and the `Float.div(a, b)` form loads clean, i.e. the SEPARATION rather than a value. That row inverts when this closes, and its inversion is the measurement. Do NOT restate it as "the bare form loads": that passes under (a), (b) AND a change that simply deleted the spec op's guarded row, which is the one repair that must not be made — it re-breaks the four carriers named above.
 
 ACCEPTANCE: a bare `a / b` over `Float` operands loads with an EMPTY effect row, `Int64.mod`/`Int64.rem`/`BigInt.mod`/`BigInt.rem` still load (the widening check still passes), `n / 0` still carries the effect, and full workspace green via rustland/scripts/test.sh.
+
+## Changes
+
+### 2026-11-05T01:27:55Z — feedback — user
+
+USER DECISION 2026-11-05 (option a, labels replaced too): a call pinned to an override read WHOLE is charged the override's row in place of the spec op's whole row, its variables and its labels alike (effects_of_pinned_call; kernel-language §8.7 rewritten). CENSUS before the change, over every load of the workspace with the labels dropped: two populations changed and no other — Float.div (the target) and a receiver's row the spec reads (Stream.splitFirst … effects s.E) at a carrier whose override declares none, which had been charged where the receiver's row was ground and not where it was a row variable. FOUND BY /code-review: the spec row's own verdicts still refused the pinned call before the pin (the guarded-row hold, routed through the body's precondition sink, and the placeless-Modify refusal) — now held in SpecRowVerdict and raised by check_apply_iter only where no whole pin replaced the row; the override's atoms are held to both checks as before. Rows: wi_skwth_a_pinned_call_takes_the_overrides_labels_test (10), the VT8CF row inverted (a_bare_float_division_is_charged_float_divs_row), fixtures re-sourced in wi_0rp29 (two) and wi_w9d4z (one, which had leaned on the doubled Int64 sentence). BACK-OUT MEASURED: labels kept fails 8 rows, checks immediate fails exactly the 2 rows for the checks, controls pass both. Gate 11 675 passed / 0 failed; families.sh green, no verdict moved; scaland testFull 802+51+1 green.
 

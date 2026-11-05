@@ -553,6 +553,12 @@ fn another_value_is_refused() {
 /// the cause. `Stream.splitFirst` over a `Cnt` whose `E` is `{Error[EmptyStream]}` incurs that
 /// row, which `first` does not declare; and the tail it answers over a `List` is a `Stream`,
 /// which `List.length` does not take.
+///
+/// The row comes through `Cnt.splitFirst`'s own `effects {E}`, read at the receiver. The
+/// override declared none until WI-20260825-SKWTH, and the spec's `s.E` was charged in its
+/// place where the receiver's row was ground; a call pinned to an override is now charged
+/// what the override declares, so a pure one would make both twins load and this row would
+/// measure nothing.
 #[test]
 fn a_refusal_names_the_same_cause_on_both_twins() {
     for n in ["Bool", "3"] {
@@ -575,7 +581,7 @@ namespace wi0rp29.shared_row_{tag}
     effects E = ?
     entity cnt(items: List[T])
     provides Stream[T = T, E = E]
-    operation splitFirst(c: Self) -> Option[Pair[A = T, B = Cnt[T = T, E = E]]] =
+    operation splitFirst(c: Self) -> Option[Pair[A = T, B = Cnt[T = T, E = E]]] effects {{E}} =
       match List.splitFirst(c.items)
         case none() -> none
         case some(pair(h, t)) -> some(pair(h, cnt(t)))
@@ -1559,7 +1565,7 @@ namespace {ns}
     effects EC = ?
     entity cnt(items: List[T])
     provides Stream[T = T, E = {{EC}}]
-    operation splitFirst(c: Self) -> Option[Pair[A = T, B = Cnt[T = T, EC = EC]]] =
+    operation splitFirst(c: Self) -> Option[Pair[A = T, B = Cnt[T = T, EC = EC]]] effects {{EC}} =
       match List.splitFirst(c.items)
         case none() -> none
         case some(pair(h, t)) -> some(pair(h, cnt(t)))
@@ -1601,10 +1607,17 @@ fn a_rebuilt_row_grounds_a_carriers_row() {
     );
 }
 
-/// … AND THE ROW IS COUNTED: declaring nothing is refused, for both calls. Where the carrier
-/// overrides `splitFirst`, the refusal above armed the WI-606 fallback, which threaded the
-/// override's empty row: `viaSplit` LOADED with its `Error[EmptyStream]` undeclared while the
-/// same value, annotated with its own type, was refused.
+/// … AND THE ROW IS COUNTED: declaring nothing is refused, for both calls — `viaTail` through
+/// `Stream.tail`'s own row, which no override answers, and `viaSplit` through
+/// `Cnt.splitFirst`'s `effects {EC}`, read at the rebuilt receiver.
+///
+/// When this row was written the override declared nothing and the spec's `s.E` was what
+/// `viaSplit` was charged: the refusal above armed the WI-606 fallback, which threaded the
+/// override's empty row, and `viaSplit` LOADED while the same value, annotated with its own
+/// type, was refused. Since WI-20260825-SKWTH a call pinned to an override is charged what the
+/// override declares, labels included, so an empty row is the right charge for a pure override
+/// and the fallback's answer no longer differs from the pin's. The override declares `{EC}` so
+/// that `viaSplit` still reads the rebuilt row.
 #[test]
 fn a_rebuilt_row_grounds_a_carriers_row_control() {
     let errs = load_errors(&carrier_row_program("wi0rp29.carrier_row_pure", ""));
