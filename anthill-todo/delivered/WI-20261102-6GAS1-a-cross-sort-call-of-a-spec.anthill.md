@@ -3,9 +3,9 @@
 - id: WI-20261102-6GAS1-a-cross-sort-call-of-a-spec
 - created: 2026-11-02T07:07:09Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-11-02T07:07:09Z
+- status_at: 2026-11-05T17:16:15Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -25,4 +25,8 @@ ACCEPTANCE (cargo-test via rustland/scripts/test.sh; every row driven, back-out 
 ### 2026-11-02T07:07:30Z — feedback — claude
 
 The sibling ticket on the fold's literal, named in the description, is WI-20261102-989Z0 (tagged proposal-068).
+
+### 2026-11-05T17:16:14Z — feedback — claude
+
+DELIVERED with WI-20261013-DEY66 (ab6d7288; 068-implementation.md §6.23). The typer gives a dispatched call that lands on a member of a third sort reading its own requires the dictionary the direct call of the member builds (typing::build::third_sort_member_dict: the member's parameters unified with the spec operation's under the call's substitution, build_concrete_dispatch_dict at the member's sort, classified as that direct call). probe() through the interpreter answers 7, the list variant 8 and through one() 8 (each died Internal); answer/answerAll/answerOne from a rule 7 / 8 / 8 with no panic, now that the fold is retired and the rule runs probe whole; WI-1037's rows unchanged. Rows: wi_dey66_per_consumer_reductions_test's a_dispatch_to_a_third_sorts_member_* (3), each failing with the typer arm backed out. NOT COVERED, found by /code-review and the same on HEAD: a dispatch through a RUN-TIME dictionary landing on the third sort's member — gen[A](x: A) -> Int64 requires Desc[T = A] = Desc.describe(x) at useGen() = gen(leaf()) dies Internal, and a rule over gen(leaf()) panics the CLI — the generic caller's Desc slot is built for Desc at Leaf and carries nothing for LeafDesc; where that sort's chain comes from (the provision's dictionary layout, or the arguments at entry) is a decision of its own. scaland testFull 851 passed.
 

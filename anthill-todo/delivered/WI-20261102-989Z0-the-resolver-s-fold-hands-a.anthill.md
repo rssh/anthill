@@ -3,9 +3,9 @@
 - id: WI-20261102-989Z0-the-resolver-s-fold-hands-a
 - created: 2026-11-02T07:07:19Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-11-02T07:07:19Z
+- status_at: 2026-11-05T17:16:13Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -35,4 +35,10 @@ MEASURED on 5476eece, the same on f0d38c95:
 CONTROLS: `len(xs: List[T = Int64])` (no slot read, no nested bridge) answers clean; the rule-body call `?x <=> Pc[C = Bx].len([1, 2, 3])` (a rule's literal is lowered to a spine) answers clean; `q` run as a program prints 1. The same nested bridge declines an argument that is still a call (WI-20261016-5CDN5), which is how WI-20261102-6GAS1's panic is reached. WI-20261013-DEY66 retires this fold.
 
 ACCEPTANCE (cargo-test via rustland/scripts/test.sh; every row driven, back-out stated at its site): `r(?x)` answers 1, definite, no warning, the search complete; the same with a set literal, a tuple literal and a literal nested in a constructor (`some([1, 2])`); the controls unchanged.
+
+## Changes
+
+### 2026-11-05T17:16:11Z — feedback — claude
+
+DELIVERED with WI-20261013-DEY66 (ab6d7288): the fold is retired, so no nested bridge is handed an operation body's literal — every call runs whole in the interpreter. r(?x) over q() = Pc[C = Bx].len([1, 2, 3]) answers 1, definite, no fault, the search complete; the literal nested in a constructor, olen(some([1, 2])), the same (both faulted match_failed before); the tuple literal (1, 2) answered 2 before as well (control). A set literal gets no row: no operation of Set has a body that reads a set. Rows: wi_dey66_per_consumer_reductions_test (a_call_reached_through_an_operation_body_runs_whole, a_literal_nested_in_a_constructor_runs_whole, control_a_tuple_literal_ran_before_too), failing on HEAD fd640523. scaland testFull 851 passed (scaland has no fold).
 
