@@ -1490,7 +1490,8 @@ fn a_requirement_no_argument_names_is_refused_in_every_position() {
 ///     type is known at load (`pinned`);
 ///   * the type argument the tail offered is a load error.
 /// (The advice was the clause's `require[FiniteCollection[…]]` until proposal 060.1 §5
-/// removed that form; the row also ran the `require[Iterable[…]]` advised before, refused.)
+/// removed that form; the guard at the head's introducer holds what it held, and is run here.
+/// The row also ran the `require[Iterable[…]]` advised before, refused.)
 /// FAILS with the advice naming the requirement's spec again, and with the tail appended
 /// again; the verdicts pass either way
 /// (`wi_nx4fd_functional_relation_row_param_test::the_woven_spelling_is_the_repair` is the
@@ -1512,10 +1513,12 @@ fn the_refusal_names_no_repair_that_is_not_one() {
         &bare,
         &[
             "RULE-body goal",
-            "Write the instance at the call, `FiniteCollection[…].size(…)`",
+            "Declare `FiniteCollection` at a type parameter the head introduces",
+            "`rule r[C](?x: C, …) :- FiniteCollection[…]`",
+            "write the instance at the call, `FiniteCollection[…].size(…)`",
             "pin the element at this call",
         ],
-        "the bare goal is refused and told the instance that holds `Iterable`",
+        "the bare goal is refused and told the guard and the instance that hold `Iterable`",
     );
     assert!(
         !bare.iter().any(|e| e.contains("`Iterable[…].size(…)`") || e.contains("explicit type argument")),
@@ -1524,6 +1527,13 @@ fn the_refusal_names_no_repair_that_is_not_one() {
     let mut kb = crate::common::load_kb_with(&program("FiniteCollection[C = List[T = String]].size"));
     assert_eq!(crate::common::one_definite_int(&mut kb, "wip7vp4.advice.two"), Some(2));
     assert_eq!(crate::common::one_definite_int(&mut kb, "wip7vp4.advice.pinned"), Some(2));
+    // The guard the advice names, run.
+    let guarded = program("size").replace(
+        "rule sized(?ls, ?n) :- size(?ls, ?n)",
+        "rule sized[C](?ls: C, ?n) :- FiniteCollection[C = C], size(?ls, ?n)",
+    );
+    let mut kb = crate::common::load_kb_with(&guarded);
+    assert_eq!(crate::common::one_definite_int(&mut kb, "wip7vp4.advice.two"), Some(2));
     crate::common::assert_refused_naming(
         &crate::common::load_errors_of(&program("size[C = List[T = String]]")),
         &["call-site type arguments"],

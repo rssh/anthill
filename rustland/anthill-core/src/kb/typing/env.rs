@@ -156,6 +156,13 @@ pub struct TypingEnv {
     /// must not change what defers to what. Read only by
     /// [`Self::referencing_scope`]. `None` outside the rule-body sweep.
     rule_scope: Option<Symbol>,
+    /// The spec instances the rule being typed declares — its head introducer's guards
+    /// ([`KnowledgeBase::rule_provider_requirements`]) — each a contract the clause holds,
+    /// read by [`held_spec_views`]. Empty outside the rule-body sweep.
+    rule_held_specs: Rc<Vec<Value>>,
+    /// The rule's type variables as its body's typing names them, one per introduced
+    /// parameter, beside [`Self::rule_held_specs`].
+    rule_type_vars: Rc<Vec<VarId>>,
     /// The enclosing SORT's dictionary chain, snapshotted once per body. It is
     /// consulted at every spec-op call site under this body; caching it here avoids
     /// re-walking `SortRequiresInfo` per apply.
@@ -323,6 +330,8 @@ impl TypingEnv {
             binding_regions: None,
             enclosing_sort: None,
             rule_scope: None,
+            rule_held_specs: Rc::new(Vec::new()),
+            rule_type_vars: Rc::new(Vec::new()),
             enclosing_chain: DictChain::empty(),
             enclosing_op_chain: None,
             op_requires: Rc::new(Vec::new()),
@@ -722,6 +731,20 @@ impl TypingEnv {
     /// WI-977 — see [`Self::rule_scope`]. Set once per rule by the rule-body sweep.
     pub(super) fn set_rule_scope(&mut self, domain: Symbol) {
         self.rule_scope = Some(domain);
+    }
+
+    /// See [`Self::rule_held_specs`]. Set once per rule by the rule-body sweep.
+    pub(super) fn set_rule_held_specs(&mut self, specs: Vec<Value>, type_vars: Vec<VarId>) {
+        self.rule_held_specs = Rc::new(specs);
+        self.rule_type_vars = Rc::new(type_vars);
+    }
+
+    pub(super) fn rule_type_vars(&self) -> Rc<Vec<VarId>> {
+        Rc::clone(&self.rule_type_vars)
+    }
+
+    pub(super) fn rule_held_specs(&self) -> &[Value] {
+        &self.rule_held_specs
     }
 
     /// The enclosing SORT's slots alone.

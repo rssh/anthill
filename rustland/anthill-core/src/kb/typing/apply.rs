@@ -2756,6 +2756,17 @@ pub(super) fn check_apply_iter(
         // by exactly the check a written one is.
         let selections = selections_from_slot_bindings(kb, &subst, &op, fn_sym, selections, span)?;
 
+        // WI-20260921-3G1YT — the slot source of the held route, for every
+        // classification block below: the spec instances this clause's guards declare
+        // ([`held_spec_views`]).
+        //
+        // HERE, and not at the top of this function, because this statement is the
+        // lowest point that dominates all of them — everything above returns before any
+        // dictionary is built, so a call that builds none pays nothing. Both halves read
+        // it: the SORT half through [`build_concrete_dispatch_dict`] and the OP half
+        // through [`OpSupplyCtx::held`].
+        let held_views = held_spec_views(kb, env);
+
         // WI-841 (058 §4.4 check 1, binding-precise half): judge every selection
         // against the GOAL it will be applied to, now that argument unification has
         // filled `subst`.
@@ -2879,6 +2890,7 @@ pub(super) fn check_apply_iter(
                     &subst,
                     &selections,
                     &projection_receivers,
+                    &held_views,
                     span,
                 )?;
                 return Ok(TypeResult {
@@ -2909,8 +2921,8 @@ pub(super) fn check_apply_iter(
             );
             // Where the arguments are silent, what the call's own bracket or expected type
             // bound the carrier parameter to. An argument-pinned carrier still wins. A
-            // requirement of the spec in scope — the caller's, or the clause's `require[…]` —
-            // answers what the bracket leaves open, and no provision is read in its place
+            // requirement of the spec in scope — the caller's, or that of the sort a rule is
+            // written in — answers what the bracket leaves open, and no provision is read in its place
             // (`Tagger[Out = Int64].code()` under `requires Tagger[C = A, Out = Int64]`).
             let pinned =
                 statically_pinned_carrier(kb, &recv_carrier, carrier_param_sym, Some(spec_sort));
@@ -3173,6 +3185,7 @@ pub(super) fn check_apply_iter(
                             selected: &selections,
                             enclosing_op: env.enclosing_op(),
                             param_arg_types: &projection_receivers,
+                            held: &held_views,
                         }),
                     )?;
                     return Ok(TypeResult {
@@ -3352,6 +3365,7 @@ pub(super) fn check_apply_iter(
                                 selected: &selections,
                                 enclosing_op: env.enclosing_op(),
                                 param_arg_types: &projection_receivers,
+                                held: &held_views,
                             }),
                         )?;
                         return Ok(TypeResult {
@@ -3534,6 +3548,7 @@ pub(super) fn check_apply_iter(
                                     selected: &selections,
                                     enclosing_op: env.enclosing_op(),
                                     param_arg_types: &projection_receivers,
+                                    held: &held_views,
                                 }),
                             )?;
                             return Ok(TypeResult {
@@ -3637,6 +3652,7 @@ pub(super) fn check_apply_iter(
                         &subst,
                         &selections,
                         &projection_receivers,
+                        &held_views,
                         span,
                     )?;
                     return Ok(TypeResult {
@@ -3794,6 +3810,7 @@ pub(super) fn check_apply_iter(
                                 selected: &selections,
                                 enclosing_op: env.enclosing_op(),
                                 param_arg_types: &projection_receivers,
+                                held: &held_views,
                             }),
                         )?;
                     }
@@ -3917,6 +3934,7 @@ pub(super) fn check_apply_iter(
                     &subst,
                     &selections,
                     &projection_receivers,
+                    &held_views,
                     span,
                 )?;
                 return Ok(TypeResult {
@@ -3985,6 +4003,7 @@ pub(super) fn check_apply_iter(
                     &subst,
                     &selections,
                     &projection_receivers,
+                    &held_views,
                     span,
                 )?;
                 return Ok(TypeResult {
@@ -4030,6 +4049,7 @@ pub(super) fn check_apply_iter(
                         &subst,
                         &selections,
                         &projection_receivers,
+                        &held_views,
                         span,
                     )?;
                     return Ok(TypeResult {
@@ -4105,6 +4125,7 @@ pub(super) fn check_apply_iter(
                     &subst,
                     &selections,
                     &projection_receivers,
+                    &held_views,
                     span,
                 )?;
                 return Ok(TypeResult {
@@ -4384,6 +4405,7 @@ pub(super) fn check_apply_iter(
                                 selected: &selections,
                                 enclosing_op: env.enclosing_op(),
                                 param_arg_types: &projection_receivers,
+                                held: &held_views,
                             }),
                         )?;
                         return Ok(TypeResult {
@@ -4922,6 +4944,7 @@ pub(super) fn check_apply_iter(
                                 selected: &selections,
                                 enclosing_op: env.enclosing_op(),
                                 param_arg_types: &projection_receivers,
+                                held: &held_views,
                             }),
                         )?;
                     }
@@ -5143,6 +5166,7 @@ pub(super) fn check_apply_iter(
                     &subst,
                     &selections,
                     &projection_receivers,
+                    &held_views,
                     span,
                 )?;
             } else if occ.classification_is_none()
@@ -5158,6 +5182,7 @@ pub(super) fn check_apply_iter(
                     &selections,
                     OpSlotParkSite::for_call(kb, fn_sym, env.enclosing_op(), span, occ.span.source),
                     &projection_receivers,
+                    &held_views,
                     span,
                     RequirementUse::Call,
                 )?;
@@ -5325,6 +5350,7 @@ pub(super) fn check_apply_iter(
                         // term leaves those to its clause, which supplies them as slots of the
                         // woven call, as its operation's own `requires` is left.
                         rule_body_callee,
+                        &held_views,
                         &subst,
                         parent_sym,
                         callee_provision,
@@ -5470,6 +5496,7 @@ pub(super) fn check_apply_iter(
                             occ.span.source,
                         ),
                         &projection_receivers,
+                        &held_views,
                         span,
                         RequirementUse::Call,
                     )?;

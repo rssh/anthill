@@ -733,3 +733,109 @@ end
         "a program's own `find_dictionary` answers"
     );
 }
+
+/// A GUARD HOLDS ITS SPEC'S `requires` CHAIN (§1, as an operation's `requires` line does):
+/// `rule woven[C](?ls: C, ?n) :- FiniteCollection[C = C], size(?ls, ?n)` supplies the
+/// `Iterable[…]` that `FiniteCollection` itself requires, so each `Box`'s length answers —
+/// under `not`, in a branch of `|`, reached through `<=>`, two guards at two parameters, an
+/// effect row written as an element (`E = {}`), and cited from an operation body.
+/// MEASURED on d39bd428: each `size` call refused ("a requirement suppliable at this call
+/// site"), where `require[FiniteCollection[C]]` answered `woven`. `Iterable`'s own `isEmpty`
+/// under the guard answered there too, and passes either way. The controls: a call at a
+/// parameter the guard is not at, `size(?ms, ?n)` under `?ms: D`, and one at an argument
+/// nothing types, `size(?z, ?n)`, stay refused. FAILS with the guards not held (the six
+/// `size` calls refused), with the clause's type variables read as open in the demand (the
+/// first control loads), and with an open carrier left out of it (the second loads). With an
+/// effect row refused as an element, `wovenE` is refused ("names neither a sort nor one of
+/// `FiniteCollection`'s own type parameters").
+#[test]
+fn a_guard_holds_its_specs_requires_chain() {
+    let program = |decls: &str| {
+        format!(
+            r#"namespace j9ssg.chain
+  import anthill.prelude.{{List, String, Bool, Int64, FiniteCollection, WeakOrd, Error, EmptyStream}}
+  import anthill.prelude.FiniteCollection.{{size}}
+  import anthill.prelude.Iterable.{{isEmpty}}
+  sort Box
+    entity Box(items: List[T = String])
+  end
+  fact Box(items: ["a", "b"])
+  fact Box(items: [])
+{decls}
+end
+"#
+        )
+    };
+    let mut kb = crate::common::load_kb_with(&program(
+        "  rule woven[C](?ls: C, ?n) :- FiniteCollection[C = C], size(?ls, ?n)
+  rule wovenE[C](?ls: C, ?n) :- FiniteCollection[C = C, E = {}], size(?ls, ?n)
+  rule neg[C](?ls: C) :- FiniteCollection[C = C], not(size(?ls, 0))
+  rule br[C](?ls: C, ?n) :- FiniteCollection[C = C], (size(?ls, ?n) | ?n <=> 9)
+  rule via[C](?ls: C, ?n) :- FiniteCollection[C = C], ?l <=> ?ls, size(?l, ?n)
+  rule two[C, D](?a: C, ?b: D, ?n, ?m) :- FiniteCollection[C = C], FiniteCollection[C = D], \
+         size(?a, ?n), size(?b, ?m)
+  rule emp[C](?ls: C, ?b) :- FiniteCollection[C = C], isEmpty(?ls, ?b)
+  rule a_woven(?n) :- Box(items: ?ls), woven(?ls, ?n)
+  rule a_wovenE(?n) :- Box(items: ?ls), wovenE(?ls, ?n)
+  rule a_neg(?k) :- Box(items: ?ls), neg(?ls), size(?ls, ?k)
+  rule a_br(?n) :- br([\"a\", \"b\"], ?n)
+  rule a_via(?n) :- Box(items: ?ls), via(?ls, ?n)
+  rule a_two_n(?n) :- two([\"a\"], [\"b\", \"c\", \"d\"], ?n, ?m)
+  rule a_two_m(?m) :- two([\"a\"], [\"b\", \"c\", \"d\"], ?n, ?m)
+  rule a_emp(?k) :- Box(items: ?ls), emp(?ls, true), size(?ls, ?k)
+  sort U
+    operation cited() -> Int64 effects {Error, Error[EmptyStream]} = \
+      woven([\"a\", \"b\", \"c\"]).head.n
+  end",
+    ));
+    for (rule, want) in [
+        ("a_woven", vec![0, 2]),
+        ("a_wovenE", vec![0, 2]),
+        ("a_neg", vec![2]),
+        ("a_br", vec![2, 9]),
+        ("a_via", vec![0, 2]),
+        ("a_two_n", vec![1]),
+        ("a_two_m", vec![3]),
+        ("a_emp", vec![0]),
+    ] {
+        let mut got: Vec<i64> = crate::common::definite_unary(&mut kb, &format!("j9ssg.chain.{rule}"))
+            .iter()
+            .map(|v| match v {
+                Value::Int(i) => *i,
+                other => panic!("{rule}: expected an Int column, got {other:?}"),
+            })
+            .collect();
+        got.sort_unstable();
+        assert_eq!(got, want, "`{rule}`");
+    }
+    // Cited from an operation body, the clause answers as from a goal.
+    let mut interp = crate::common::interp_for(&program(
+        "  rule woven[C](?ls: C, ?n) :- FiniteCollection[C = C], size(?ls, ?n)
+  sort U
+    operation cited() -> Int64 effects {Error, Error[EmptyStream]} = \
+      woven([\"a\", \"b\", \"c\"]).head.n
+  end",
+    ));
+    match interp.call("j9ssg.chain.U.cited", &[]) {
+        Ok(Value::Int(3)) => {}
+        other => panic!("`cited`: expected 3, got {other:?}"),
+    }
+    for (decl, why) in [
+        (
+            "  rule other[C, D](?ls: C, ?ms: D, ?n) :- FiniteCollection[C = C], WeakOrd[T = D], \
+             size(?ms, ?n)",
+            "a call at `D` is not held by a guard at `C`",
+        ),
+        (
+            "  rule untyped[C](?ls: C, ?z, ?n) :- FiniteCollection[C = C], size(?z, ?n)",
+            "a call at an argument nothing types is not held by a guard at `C`",
+        ),
+    ] {
+        crate::common::assert_refused_naming(
+            &crate::common::load_errors_of(&program(decl)),
+            &["FiniteCollection.size", "Iterable"],
+            why,
+        );
+    }
+}
+

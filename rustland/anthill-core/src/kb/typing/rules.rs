@@ -5,6 +5,48 @@ use super::*;
 
 // ── HO pattern fragment checking ───────────────────────────────
 
+/// The instances a rule's head introducer's guards declare, as its body's typing names
+/// them, with the variables its columns at a type parameter are typed by
+/// ([`held_spec_views`]). A guard's instance is
+/// stored over the clause's de Bruijn indices; the body is typed over the variables its
+/// head's bounds open to — `var_types` of a column bounded by `A` is the variable `A` opens
+/// to — so the instance is opened at the same ones. A parameter no column's type is still
+/// a variable of is opened at the clause's own, which nothing in the body names.
+fn rule_held_specs(
+    kb: &mut KnowledgeBase,
+    rid: RuleId,
+    var_types: &HashMap<u32, Value>,
+) -> (Vec<Value>, Vec<VarId>) {
+    let requirements = kb.rule_provider_requirements(rid).to_vec();
+    if requirements.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let mut opened: HashMap<u32, VarId> = HashMap::new();
+    let mut type_vars: Vec<VarId> = Vec::new();
+    for (column, bound) in kb.rule_type_bounds(rid).to_vec() {
+        let (ViewHead::Var(Var::DeBruijn(t)), Some(ty)) = (bound.head(kb), var_types.get(&column))
+        else {
+            continue;
+        };
+        if let ViewHead::Var(Var::Global(g)) = ty.head(kb) {
+            opened.entry(t).or_insert(g);
+            type_vars.push(g);
+        }
+    }
+    let frame: Vec<VarId> = kb
+        .rule_globals(rid)
+        .iter()
+        .rev()
+        .enumerate()
+        .map(|(i, &own)| opened.get(&(i as u32)).copied().unwrap_or(own))
+        .collect();
+    let held = requirements
+        .iter()
+        .map(|r| Value::term(kb.term_from_debruijn(r.instance, &frame)))
+        .collect();
+    (held, type_vars)
+}
+
 /// Validate that rules conform to the hereditary Harrop pattern fragment.
 /// This ensures higher-order unification remains decidable.
 pub(super) fn check_pattern_fragment(
@@ -448,6 +490,8 @@ pub(super) fn type_rule_bodies(
             // requirement frame this body must not acquire (see above); this field
             // is read by `referencing_scope` alone.
             env.set_rule_scope(kb.rule_domain(rid));
+            let (held, type_vars) = rule_held_specs(kb, rid, &var_types);
+            env.set_rule_held_specs(held, type_vars);
             // WI-557 / WI-602: mark this as rule-body context so `check_apply_iter`
             // treats the WI-539 value-precondition `requires`-check as refutation-
             // aware — a rule body is SLD/relational with no call-site Γ, so a

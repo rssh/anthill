@@ -45394,8 +45394,8 @@ impl<'a> Loader<'a> {
     }
 
     /// Does a guard's binding other than its carrier LOWER? It is a TYPE: a logical variable
-    /// (the open case), a type variable the head introduces or a type parameter in scope, or a
-    /// sort, spelled as a head bound spells one ([`Self::parse_arg_names_a_sort`]). The spec's
+    /// (the open case), an effect row, a type variable the head introduces or a type parameter
+    /// in scope, or a sort, spelled as a head bound spells one ([`Self::parse_arg_names_a_sort`]). The spec's
     /// own parameter name (`Sp[C = A, P = P]`) is the open binding it was in `require[…]` and
     /// is not lowered — the element is left unwritten. Anything else — a literal, a rule name,
     /// a tuple or arrow, a name that denotes nothing — is refused as a `require[…]` binding was
@@ -45410,6 +45410,12 @@ impl<'a> Loader<'a> {
         introducers: &std::collections::HashSet<String>,
     ) -> bool {
         if matches!(self.parsed.terms.get(value), Term::Var(_)) {
+            return true;
+        }
+        // An effect row is an element (`Walk[C = A, E = {}]`); a tuple or an arrow is not.
+        if matches!(self.parsed.terms.get(value), Term::ParseAux(aux)
+            if matches!(aux.as_ref(), ParseAux::EntryType(TypeExpr::EffectRow(_))))
+        {
             return true;
         }
         if let Some(name) = self.parse_arg_type_name(value) {
