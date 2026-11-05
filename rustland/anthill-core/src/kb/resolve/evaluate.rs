@@ -31,7 +31,7 @@ pub(super) enum Stuck {
     /// It has an implementation and did not run, and no binding in this derivation can
     /// change that: an argument is a RIGID variable (design D7 — an eigenvariable, so the
     /// call is the most precise name its value has), or the evaluator declined a ground
-    /// call it can run in general (an effect row, the fold's depth cap, a fault). Kept as a
+    /// call it can run in general (an effect row, a fault). Kept as a
     /// symbolic term where a value is built, and compared as today where one is tested:
     /// the test delays.
     Symbolic,
@@ -583,7 +583,7 @@ impl KnowledgeBase {
         // (WI-1026): `PartialOrd.gt(pt(…), pt(…))` is spelled with a builtin and pinned
         // to the carrier's own bodied `gt`. `reduce_op_value` reads that pin, and hands a
         // call back at once when its callee is a builtin — which then runs here.
-        let r = self.reduce_op_value(call.clone(), subst, 0, true, None, faults);
+        let r = self.reduce_op_value(call.clone(), subst, None, faults);
         let mut projected_call = false;
         let reduced = if !self.declined(&r, &call) {
             Some(r)
@@ -1145,7 +1145,7 @@ impl KnowledgeBase {
             return Stuck::Symbolic;
         }
         // Ground, and it did not run. A call whose only implementation is a provider's
-        // was dispatched by its carrier (`dispatch_body_less`), so one that stayed is one
+        // was dispatched by its carrier (`reduce_op_value`), so one that stayed is one
         // no provider supplies — or two tie (068 §2: both UNREDUCED).
         match implementation {
             Some(Implementation::ProviderOnly) => Stuck::Unreduced,

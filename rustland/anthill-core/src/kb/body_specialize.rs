@@ -114,9 +114,24 @@ pub(crate) fn folded_call_match(
     else {
         return None;
     };
-    if !matches!(scrutinee.as_expr(), Some(Expr::Var(Var::Global(_)))) {
+    // A guarded arm is not an unconditional alternative: decline (the loop below says why).
+    if branches.iter().any(|b| b.guard.is_some()) {
         return None;
     }
+    // A `match` on a tuple of the call's arguments narrows the one component it tests
+    // ([`split_tuple_scrutinee`]); any other scrutinee is narrowed only as the variable it is.
+    let (scrutinee, arms) = if matches!(scrutinee.as_expr(), Some(Expr::Var(Var::Global(_)))) {
+        let arms = branches
+            .iter()
+            .map(|b| UnfoldArm {
+                pattern: Rc::clone(&b.pattern),
+                body: Rc::clone(&b.body),
+            })
+            .collect();
+        (Rc::clone(scrutinee), arms)
+    } else {
+        split_tuple_scrutinee(kb, scrutinee, branches, pass)?
+    };
     // Sound case-split requires DISJOINT arms: every arm a DISTINCT constructor
     // pattern. A catch-all (`_`/var/literal) or a repeated constructor arm
     // overlaps its predecessors, so enumerating it as an independent alternative
@@ -125,32 +140,126 @@ pub(crate) fn folded_call_match(
     // scrutinee (design §3.3 → WI-519 residual). Rather than emit those guards,
     // decline the whole unfold here; the caller then delays (residualizes),
     // never producing a wrong definite answer.
-    let mut seen: Vec<Symbol> = Vec::with_capacity(branches.len());
-    for b in branches {
-        // WI-20260907-0QV5A: a GUARDED arm is not an unconditional alternative.
-        // `UnfoldArm` carries a pattern and a body and nothing else, so enumerating
-        // one would assert the arm holds whenever its constructor does — which
-        // stopped being true the moment eval began consulting guards
-        // (`eval/eval.rs::scan_match_arms`), and would make the relational reading of
-        // a call contradict its evaluated one. Decline the whole unfold, exactly as
-        // [`select_arm`] declines rather than picking past a guard, and for the same
-        // stated reason: never a wrong definite answer.
-        if b.guard.is_some() {
-            return None;
-        }
-        match b.pattern.as_pattern() {
+    //
+    // WI-20260907-0QV5A, the guard declined above: `UnfoldArm` carries a pattern and a body
+    // and nothing else, so enumerating a guarded arm would assert it holds whenever its
+    // constructor does — which stopped being true the moment eval began consulting guards
+    // (`eval/eval.rs::scan_match_arms`), and would make the relational reading of a call
+    // contradict its evaluated one. Declined, as [`select_arm`] declines rather than picking
+    // past a guard: never a wrong definite answer.
+    let mut seen: Vec<Symbol> = Vec::with_capacity(arms.len());
+    for arm in &arms {
+        match arm.pattern.as_pattern() {
             Some(Pattern::Constructor { name, .. }) if !seen.contains(name) => seen.push(*name),
             _ => return None,
         }
     }
-    let arms = branches
+    Some((scrutinee, arms))
+}
+
+/// A `match` on a tuple of the call's arguments, narrowed component by component (068 §4):
+/// over `firstof(xs, d) = match (xs, d) case (cons(h, t), _) -> h case (nil, dd) -> dd`,
+/// the call `firstof(?xs, 9)` narrows `?xs` to `cons(?h, ?t)` with residual `h`, and to
+/// `nil` with `dd` bound to `9`, as the `match xs` spelling does.
+///
+/// The component narrowed is the one flexible variable some arm's pattern TESTS (anything
+/// but a binder or `_`); two such components decline. Every other component is matched
+/// against each arm's pattern there: an arm it cannot match is dropped — first-match order
+/// is kept, since the arms left are told apart by the narrowed component alone, which
+/// [`folded_call_match`] then holds to distinct constructors — and one it matches has its
+/// bindings substituted into the arm's residual. A component the match cannot decide, an
+/// arm whose pattern is not a tuple of the scrutinee's arity, a labelled tuple and an
+/// unfold no arm survives all decline.
+fn split_tuple_scrutinee(
+    kb: &KnowledgeBase,
+    scrutinee: &Rc<NodeOccurrence>,
+    branches: &[MatchBranch],
+    pass: PassId,
+) -> Option<(Rc<NodeOccurrence>, Vec<UnfoldArm>)> {
+    let components = tuple_components(kb, scrutinee)?;
+    let tests = |p: &Rc<NodeOccurrence>| {
+        !matches!(p.as_pattern(), Some(Pattern::Var { .. } | Pattern::Wildcard))
+    };
+    let arm_patterns: Vec<&[Rc<NodeOccurrence>]> = branches
         .iter()
-        .map(|b| UnfoldArm {
-            pattern: Rc::clone(&b.pattern),
-            body: Rc::clone(&b.body),
+        .map(|b| match b.pattern.as_pattern() {
+            Some(Pattern::Tuple { positional, labels })
+                if positional.len() == components.len()
+                    && labels.iter().enumerate().all(|(i, l)| {
+                        crate::intern::is_positional_label_at(kb.local_name_of(*l), i)
+                    }) =>
+            {
+                Some(positional.as_slice())
+            }
+            _ => None,
         })
-        .collect();
-    Some((Rc::clone(scrutinee), arms))
+        .collect::<Option<_>>()?;
+    let mut narrowed: Option<usize> = None;
+    for (i, c) in components.iter().enumerate() {
+        let flexible = matches!(c.as_expr(), Some(Expr::Var(Var::Global(_))));
+        if !flexible || !arm_patterns.iter().any(|ps| tests(&ps[i])) {
+            continue;
+        }
+        if narrowed.is_some() {
+            return None;
+        }
+        narrowed = Some(i);
+    }
+    let narrowed = narrowed?;
+    let mut arms = Vec::with_capacity(branches.len());
+    'arm: for (b, patterns) in branches.iter().zip(arm_patterns) {
+        let mut env: Env = Vec::new();
+        for (i, (p, c)) in patterns.iter().zip(&components).enumerate() {
+            if i == narrowed {
+                continue;
+            }
+            match match_pattern_occ(kb, p, c) {
+                PatOutcome::Yes(bindings) => env.extend(bindings),
+                PatOutcome::No => continue 'arm,
+                PatOutcome::Undecidable => return None,
+            }
+        }
+        arms.push(UnfoldArm {
+            pattern: Rc::clone(&patterns[narrowed]),
+            body: reduce(kb, &b.body, &env, pass)?,
+        });
+    }
+    (!arms.is_empty()).then(|| (Rc::clone(&components[narrowed]), arms))
+}
+
+/// Is `occ` the `TupleLiteral` constructor an operation body stores a tuple as?
+fn is_tuple_literal_ctor(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> bool {
+    matches!(occ.as_expr(), Some(Expr::Constructor { name, .. })
+        if kb.is_ordered_product_functor(*name))
+}
+
+/// The components of a positional tuple, on either node a tuple is written as: the surface
+/// `Expr::TupleLit`, and the `TupleLiteral` constructor an operation body stores, whose
+/// positionals carry their `_N` labels (`typing::literal_as_constructor`). `None` for any
+/// other occurrence and for a tuple with a label of its own.
+fn tuple_components(
+    kb: &KnowledgeBase,
+    occ: &Rc<NodeOccurrence>,
+) -> Option<Vec<Rc<NodeOccurrence>>> {
+    match occ.as_expr()? {
+        Expr::TupleLit { positional, named } if named.is_empty() => Some(positional.clone()),
+        Expr::Constructor {
+            pos_args,
+            named_args,
+            ..
+        } if is_tuple_literal_ctor(kb, occ) => {
+            let mut components = pos_args.clone();
+            for (k, (label, c)) in named_args.iter().enumerate() {
+                let at = pos_args.len() + k;
+                if !crate::intern::is_positional_label_at(kb.local_name_of(*label), at) {
+                    return None;
+                }
+                components.push(Rc::clone(c));
+            }
+            Some(components)
+        }
+        _ => None,
+    }
 }
 
 /// A body-derived defining equation (design §3.4.1, WI-669): one arm of an
@@ -688,14 +797,24 @@ fn match_pattern_occ(
         // WI-803: `labels` is deliberately not consulted — see `match_tuple_fields`
         // on why a name-keyed scrutinee (the only shape the runtime reads by label)
         // is already undecidable there.
+        // A tuple scrutinee is read on either node it is written as ([`tuple_components`]):
+        // the `TupleLiteral` constructor an operation body stores has a constructor head,
+        // and was read below as "a known non-tuple" — a definite non-match, which handed
+        // `match (x, y) case (0, _) -> 10 case _ -> 20` the defining equation `20`.
         Pattern::Tuple { positional, .. } => match scr.as_expr() {
             Some(Expr::TupleLit {
                 positional: sp,
                 named: sn,
             }) => match_tuple_fields(kb, positional, sp, sn),
-            // A known non-tuple scrutinee can't match a tuple pattern.
-            _ if occ_head_ctor(kb, scr).is_some() || scr_literal(scr).is_some() => PatOutcome::No,
-            _ => PatOutcome::Undecidable,
+            _ => match tuple_components(kb, scr) {
+                Some(sp) => match_tuple_fields(kb, positional, &sp, &[]),
+                None if is_tuple_literal_ctor(kb, scr) => PatOutcome::Undecidable,
+                // A known non-tuple scrutinee can't match a tuple pattern.
+                None if occ_head_ctor(kb, scr).is_some() || scr_literal(scr).is_some() => {
+                    PatOutcome::No
+                }
+                None => PatOutcome::Undecidable,
+            },
         },
     }
 }

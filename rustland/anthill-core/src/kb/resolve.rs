@@ -2860,7 +2860,7 @@ impl SearchStream {
             // WI-20260911-0V0F7 — the sink the operand reduction writes into. It reaches
             // the SLD→eval bridge through every operand evaluation below this dispatch, and
             // what the bridge learned cannot ride the reduced `Value` back: a callee that
-            // RAN AND RAISED returns the same un-reduced operand a callee the fold merely
+            // RAN AND RAISED returns the same un-reduced operand a callee the bridge merely
             // declined does. Drained onto the stream before the verdict is acted on, so a
             // fault is recorded even on the arms that `return` out of this match.
             let mut faults = ReduceFaults::default();
@@ -5623,58 +5623,6 @@ impl SearchStream {
             }
         }
     }
-}
-
-/// WI-483: walk an op-body occurrence and bind every param-named var to its
-/// call arg in `fold`. WI-487 mints a fresh `VarId` per param occurrence (all
-/// sharing the param Symbol), so this collects them ALL — matching by the
-/// interned param Symbol (`vid.name()`), the by-symbol fold. Vars not naming a
-/// param are left unbound (`substitute_occurrence` keeps them as var leaves).
-///
-/// `false` when the body names a parameter in a way `fold` cannot bind — a reference
-/// (the bare spelling `n` is an `Expr::VarRef`; only `?n` is a variable) or the callee
-/// of an application (`f(3)` through a function-typed `f`), the kinds
-/// [`node_occurrence::for_each_named_reference`] lists. The folded body would hold the
-/// parameter's name where its argument belongs, and a host function inside it reads
-/// whatever the fold hands it: `viaTerm(n: Int64) -> String = term_to_string(as_term(n))`
-/// answered "n" for `viaTerm(1)`, and `app(f: (n: Int64) -> Int64) -> String =
-/// term_to_string(as_term(f(3)))` answered "f(3)". The caller does not fold such a body.
-///
-/// A `let` / lambda / match binder is named by a symbol of its own (WI-550), so a
-/// reference naming a parameter's symbol is the parameter, and a binder never shadows
-/// one here.
-fn collect_param_var_bindings(
-    kb: &KnowledgeBase,
-    occ: &Rc<NodeOccurrence>,
-    param_args: &HashMap<Symbol, Value>,
-    fold: &mut Substitution,
-) -> bool {
-    let Some(expr) = occ.as_expr() else {
-        return true;
-    };
-    match expr {
-        Expr::Var(Var::Global(vid)) => {
-            if let Some(arg) = param_args.get(&vid.name()) {
-                fold.bind_value(kb, *vid, arg.clone());
-            }
-        }
-        Expr::VarRef { name } | Expr::Ref(name) | Expr::Ident(name)
-            if param_args.contains_key(name) =>
-        {
-            return false;
-        }
-        Expr::Apply { functor, .. } | Expr::ApplyWithin { functor, .. }
-            if param_args.contains_key(functor) =>
-        {
-            return false;
-        }
-        _ => {}
-    }
-    let mut bound = true;
-    node_occurrence::for_each_child(expr, |c| {
-        bound &= collect_param_var_bindings(kb, c, param_args, fold)
-    });
-    bound
 }
 
 // ── SLD Resolution ──────────────────────────────────────────────
@@ -11590,7 +11538,7 @@ impl KnowledgeBase {
         // what `?y <=> seven` and `?y <=> Box.zero()` bind, the value, and not the
         // operation's name. The one-segment spelling gets there at LOAD: the rule-body walk
         // builds `seven` as `Expr::Apply` (`nullary_op_call_or_ref`, WI-20260902-CZJ2N),
-        // which the fold that follows this reduction runs. The dotted spelling cannot be
+        // which the evaluation that follows this reduction runs. The dotted spelling cannot be
         // built that way — in a data slot it must stay the `field_access` chain, the term
         // `fact f(Box.zero)` stores, or a rule-body goal stops matching its fact
         // (WI-20260902-4NEKZ, 719FJ) — so the call is made HERE, where the chain is reduced
@@ -11739,7 +11687,7 @@ impl KnowledgeBase {
         // The spec op's arg places, in DECLARATION order — which is the order the
         // carrier classification indexes (`self_receiver_param_index` /
         // `carrier_param_receiver_for_values` read positionally) — each with the argument
-        // the call binds to it, as the fold below reads them
+        // the call binds to it, as `reduce_op_value` reads them
         // ([`Self::call_args_in_param_order`]).
         let params: Vec<Symbol> = self.symbols.arg_places(functor).to_vec();
         let Some(walked) = self.call_args_in_param_order(occ, &params, subst) else {
@@ -11827,7 +11775,7 @@ impl KnowledgeBase {
             .collect()
     }
 
-    /// WI-20260910-FDPJ8 — the occurrence [`Self::reduce_op_value`] folds when the call
+    /// WI-20260910-FDPJ8 — the occurrence [`Self::reduce_op_value`] runs when the call
     /// arrives on a carrier that is not `Value::Node`, or `None` when this value is
     /// nothing that function could have reduced anyway.
     ///
@@ -11940,29 +11888,15 @@ impl KnowledgeBase {
         Some(node_occurrence::value_as_occurrence(self, &v))
     }
 
-    /// WI-483: reduce a dispatched rule-body method-op call operand
-    /// (`Expr::Apply{op, args}` where `op` is a CONCRETE operation) by inlining
-    /// the operation body with the call args substituted into its param vars BY
-    /// SYMBOL — the param Symbol WI-487 stamps on op-body param vars — then
-    /// reducing the folded body through the existing field-access reduction. The
-    /// substitution-transparent peer of [`Self::reduce_dot_value`] for op-calls:
-    /// `peek(?b)` ≡ its body `?b.value`, so inlining the definition is sound.
+    /// Run one written call whose arguments the evaluation strategy has already evaluated
+    /// (`evaluate.rs`): through the interpreter, the one evaluator of an operation's body
+    /// (proposal 068 §8 step 3). Returns the value it ran to, or `v` itself when it did not
+    /// run — no implementation reachable, an argument it reads still unbound, a fault — which
+    /// the caller reads as the call's state (`stuck_state`).
     ///
-    /// FOLDABLE (the folded body collapses to a value — a `field_access` chain):
-    /// returns that value. COMPLEX (arithmetic / `match` / `if` / `let` /
-    /// recursion — the folded body does not collapse): returns the call
-    /// UNCHANGED. The operand evaluation then reports the call STUCK (`evaluate.rs`:
-    /// SUSPENDED, UNREDUCED or SYMBOLIC — never data), per the WI-483 decision —
-    /// leave a complex callee uninterpreted, NEVER loud, so a rule's validity
-    /// never depends on its callee's body complexity (substitution transparency).
-    /// The interpreter bridge for complex bodies is a deferred follow-up.
-    ///
-    /// WI-1057 — `dispatch_body_less` lets a BODY-LESS spec op be run by its carrier's
-    /// supplier. WI-1057 asked for it only where the WI-938 hook decided a call it BUILT,
-    /// keeping it off the operand path so `Set`'s symbolic `insert` / `empty` stayed data;
-    /// proposal 068 §2.3 retired that reading (WI-20260926-K4JGC), and the one evaluation
-    /// strategy (`evaluate.rs`) asks for it at every call it evaluates. A nested fold
-    /// (`depth > 0`) still does not: it rides its enclosing op's bridge.
+    /// The callee is the operation the typer pinned the site to (WI-1026), and a woven call
+    /// reads its dictionary or its slots first (WI-1040, WI-20260925-P7VP4). A BODY-LESS spec
+    /// operation is run by its carrier's supplier (WI-1057, 068 §2.3).
     ///
     /// WI-1044 — a call the TYPER NEVER SAW is classified here, by value
     /// ([`Self::classify_unstamped_spec_op_call`]), so an unstamped occurrence stops
@@ -11971,17 +11905,14 @@ impl KnowledgeBase {
         &mut self,
         v: Value,
         subst: &Substitution,
-        depth: usize,
-        dispatch_body_less: bool,
         // WI-20260909-NAR1X — the WOVEN call's evidence, threaded from the
         // `Expr::ApplyWithin` arm below to the eval bridge at the bottom. `Some` only
         // for the one hop the arm makes onto the impl it just selected, and only when
-        // that impl needs a requirements channel; every other caller and every nested
-        // recursion passes `None`. See [`WovenDispatch`].
+        // that impl needs a requirements channel; every other caller passes `None`. See
+        // [`WovenDispatch`].
         woven: Option<&WovenDispatch>,
         faults: &mut ReduceFaults,
     ) -> Value {
-        const FOLD_DEPTH_CAP: usize = 64;
         let occ = match &v {
             Value::Node(o) => Rc::clone(o),
             // WI-20260910-FDPJ8 — EVERY OTHER CARRIER MATERIALIZES. `_ => return v`
@@ -12019,8 +11950,8 @@ impl KnowledgeBase {
         // clause `require[X]` into `apply_within(fn = op, args = …, requirements =
         // [?d])`, and `?d` is bound in σ by the `find_dictionary` goal that precedes
         // it. Read the dictionary, resolve the impl member it names, and continue as
-        // an ordinary `Apply` ON THAT MEMBER — so the fold, the eval bridge and every
-        // downstream reader see one shape and this arm is the whole of the SLD-side
+        // an ordinary `Apply` ON THAT MEMBER — so the eval bridge and every downstream
+        // reader see one shape and this arm is the whole of the SLD-side
         // dictionary dispatch.
         //
         // `?d` still unbound (a woven call reached before its goal, or a delayed
@@ -12073,9 +12004,9 @@ impl KnowledgeBase {
                 // The re-stamp below says the callee is decided, and for a leaf impl
                 // (`Sum.zero() = 3`) that is the whole story. It is NOT the whole story for
                 // a CONDITIONAL provider (`Wrap provides Zeroable[T = Wrap] :- Zeroable[E]`),
-                // whose body reads its element's dictionary out of its own frame: the fold
-                // has no frame, and the bridge's argument-type pin has no argument to read
-                // when the spec op is carrier-less. The evidence for that slot is `sub(0)`
+                // whose body reads its element's dictionary out of its own frame: the
+                // bridge's argument-type pin has no argument to read when the spec op is
+                // carrier-less. The evidence for that slot is `sub(0)`
                 // of the dictionary in hand, so it is carried one hop further rather than
                 // dropped here — [`WovenDispatch`], read by `call_op_bridged`.
                 //
@@ -12127,14 +12058,8 @@ impl KnowledgeBase {
                 call.set_op_dicts(SmallVec::new());
                 (call, woven_next)
             };
-            let reduced = self.reduce_op_value(
-                Value::Node(Rc::clone(&call)),
-                subst,
-                depth,
-                dispatch_body_less,
-                woven.as_ref(),
-                faults,
-            );
+            let reduced =
+                self.reduce_op_value(Value::Node(Rc::clone(&call)), subst, woven.as_ref(), faults);
             // UNDECIDED (the bridge waits for an argument), either way the call was woven: hand
             // back the WOVEN call, not the rebuilt plain one. A retry must read the requirements
             // again — the slots a citation filled, or the dictionary a dispatch selected and the
@@ -12150,43 +12075,24 @@ impl KnowledgeBase {
             Some(Expr::Apply { functor, .. }) => *functor,
             _ => return v,
         };
-        // WI-1026 — fold the operation the TYPER pinned this site to, not the
-        // functor it is spelled with. `classified_apply_target` is the same read
-        // eval performs at its own apply (`eval.rs`'s `classified_apply_target`);
-        // without it the two paths disagreed about a DEFAULTED spec op, since
-        // `op_body_node(spec_op)` is the SPEC'S DEFAULT and the pin names the
-        // carrier's supplied implementation. MEASURED: `rule answer(?r) :-
-        // leaf().describe(?r)` answered `1` (the default) where the identical call
-        // in an operation body answered the supplied `7` — WI-444/WI-1010's whole
-        // rule ("defaults fill GAPS, they do not SHADOW") silently absent from the
-        // SLD path, on a call the typer HAD already classified.
+        // WI-1026 — run the operation the TYPER pinned this site to, not the functor it is
+        // spelled with. `classified_apply_target` is the same read eval performs at its own
+        // apply; without it the two paths disagreed about a DEFAULTED spec op, whose spelled
+        // functor's body is the SPEC'S DEFAULT while the pin names the carrier's supplied
+        // implementation. MEASURED: `rule answer(?r) :- leaf().describe(?r)` answered `1` (the
+        // default) where the identical call in an operation body answered the supplied `7`.
         //
-        // Redirecting only the CALLEE is sound because the args are read
-        // positionally first (`occ.pos_arg(self, i)` below) against the pinned op's
-        // own arg places, exactly as eval binds them; a named-arg call whose spec
-        // and impl spell a parameter differently finds no arg and residualizes,
-        // which is the WI-483 leave-uninterpreted outcome, not a wrong answer.
-        // WI-1037 — the pin is read as a TYPED VERDICT, because "which operation" and
-        // "may I enter it bare" are two questions and the old `Option<Symbol>` answered
-        // only the first. `NeedsDict` names the same supplied implementation `PinNow`
-        // would, but its parent sort reads requirement slots, so the fold below — which
-        // has no frame — must not run it. Folding the spelled functor instead is not a
-        // safe degradation: the spelled functor is the SPEC op, and its body is the
-        // DEFAULT. That is what this site did before, and it is the defect.
-        // WI-1044 — an UNSTAMPED site gets classified HERE, by value, because the
-        // typer never saw it. A top-level query goal and a runtime-asserted rule do
-        // not pass `type_rule_bodies`, so the WI-938 hook materializes an occurrence
-        // with no `CallClass` at all — and `Unclassified` fell to the SPELLED functor
-        // one line down, which for a defaulted spec op means folding its DEFAULT.
-        // MEASURED on the WI-1026 one-supplier fixture: `Desc.describe(leaf(), ?r)`
-        // answered `7` as a rule body and `1` as a top-level query. One goal text, two
-        // definite answers, decided by whether a typer pass had happened to run over it.
+        // WI-1037 — the pin is read as a TYPED VERDICT: `NeedsDict` names the same supplied
+        // implementation `PinNow` would, and says its parent sort reads requirement slots,
+        // which the bridge resolves at the argument types (`resolve_bridge_requirements`).
+        // WI-1044 — an UNSTAMPED site gets classified HERE, by value, because the typer never
+        // saw it: a top-level query goal and a runtime-asserted rule do not pass
+        // `type_rule_bodies`. MEASURED on the WI-1026 one-supplier fixture:
+        // `Desc.describe(leaf(), ?r)` answered `7` as a rule body and `1` as a top-level query.
         //
-        // `Refused` returns `v` UN-REDUCED rather than folding anything: a two-supplier
-        // carrier has no single reading, and the fold's alternative here is the spec's
-        // default, i.e. a confident wrong answer. See that method for where the LOUD
-        // half of the refusal lives — this site has no diagnostic channel, and a query
-        // that reaches it has already passed its own load moment.
+        // `Refused` returns `v` UN-RUN: a two-supplier carrier has no single reading. See that
+        // method for where the LOUD half of the refusal lives — this site has no diagnostic
+        // channel, and a query that reaches it has already passed its own load moment.
         let dispatch = match occ.apply_dispatch() {
             node_occurrence::ApplyDispatch::Unclassified => {
                 match self.classify_unstamped_spec_op_call(&occ, functor, subst) {
@@ -12207,187 +12113,55 @@ impl KnowledgeBase {
             | node_occurrence::ApplyDispatch::NeedsDict(s) => s,
             node_occurrence::ApplyDispatch::Unclassified => functor,
         };
-        // WI-20260909-NAR1X — a woven hop with a dictionary to install is `needs_dict`
-        // for exactly the reason the typer's own class is: the callee reads requirement
-        // slots, so the frame-less structural fold must not run it and the spelled spec
-        // op's DEFAULT is the wrong answer rather than a missing one. The stamp on the
-        // rebuilt node says `PinNow` (the CALLEE is decided — that is what the
-        // dictionary just settled), so the verdict cannot be read back off it.
+        // WI-20260909-NAR1X — a woven hop with a dictionary to install is `needs_dict` for the
+        // reason the typer's own class is: the callee reads requirement slots. The stamp on the
+        // rebuilt node says `PinNow` (the CALLEE is decided — that is what the dictionary just
+        // settled), so the verdict cannot be read back off it.
         let needs_dict =
             matches!(dispatch, node_occurrence::ApplyDispatch::NeedsDict(_)) || woven.is_some();
-        // TWO CONSEQUENCES OF THAT `||`, both deliberate:
-        //
-        //  * A WOVEN HOP BRIDGES AT ANY DEPTH, like the `NeedsDict` class beside it and
-        //    for the identical reason its own note gives: the `depth == 0` gate below
-        //    rests on "a nested call rides its ENCLOSING op's single bridge", and the
-        //    enclosing bridge knows nothing of this dictionary — it would run the callee
-        //    with a channel resolved from argument types, which for a carrier-less call
-        //    is no channel at all.
-        //  * THE `needs_dict` ARM IS THE ONLY ONE A WOVEN HOP REACHES, since it is
-        //    tested before both arms below. `woven` is still threaded to those two
-        //    rather than hardcoded `None`, so that reordering them cannot silently drop
-        //    the dictionary — they receive what is true, not what is currently
-        //    reachable.
-        // A builtin (field_access, arith, eq, …) is reduced by its own path, not
-        // folded. Only a CONCRETE operation (one with a stored body) folds; an
-        // abstract / spec op has no body (its requires are abstract) — leave it.
+        // A builtin (field_access, arith, eq, …) is run by the caller through its own result
+        // column (`run_builtin_for_value`), not by the interpreter.
         if self.builtins.get(&op).is_some() {
             return v;
         }
-        // WI-1057 — a BODY-LESS op is no longer an unconditional bail. There is
-        // nothing to FOLD (that is what the `Option` below carries), but there may
-        // still be something to RUN: a body-less spec op supplied only by a WI-431
-        // instance fact has no typer pin, so `classified_apply_target` above found
-        // none and the implementation is discoverable BY VALUE — which is exactly
-        // what the eval bridge at the bottom of this function does. Restricted to a
-        // body-less SPEC op ([`Self::body_less_dispatchable`], which also owns the
-        // order its two legs must be asked in) so an entity constructor or an
-        // ordinary declared-but-unbacked operation keeps bailing here rather than
-        // paying for a scratch interpreter that can only report
-        // `OperationBodyMissing`.
-        let body = match self.op_body_node(op) {
-            Some(b) => Some(Rc::clone(b)),
-            // WI-20260826-VPEWK — a HOST-IMPLEMENTED op reduces HERE, at any depth and
-            // for every caller, because the bridge below can run it and the position
-            // it sits in changes nothing about that.
-            //
-            // The gate is [`KnowledgeBase::is_interpreter_mapped_op`], which is the
-            // SAME predicate the goal side already asks through
-            // [`Self::op_reducible_in_rule_body`] — not a second notion of
-            // "reducible". Before this, one call had two answers decided by POSITION:
-            // `:- Bool.and(true, true)` answered 1 (WI-20260822-J38JE widened the goal
-            // gate) while `:- Bool.and(true, true) = true` answered NOTHING, because
-            // this site asked `dispatch_body_less`, i.e. "a body and nothing else".
-            // J38JE fixed the goal position and the operand kept the old question.
-            //
-            // WHY THIS DID NOT DELETE WHAT `dispatch_body_less` PROTECTED — history since
-            // WI-20260926-K4JGC turned the flag on for every evaluated call (068 §2.3), so
-            // the symbolic-algebra reading below is gone. That flag
-            // guarded a body-less SPEC op at an operand — a term a RULE WROTE, which may
-            // be SYMBOLIC ALGEBRA rather than a computation; `anthill.prelude.Set`'s
-            // `insert` / `empty` are the case, and dispatching them would reduce DATA
-            // (the five wi616 regressions `is_unreduced_op_call` records, through the
-            // other door). This arm cannot reach them: `Set.insert` is registered in NO
-            // interpreter registry, so the predicate answers false for it and the flag's
-            // arm above still owns every op it owned before. MEASURED, same file:
-            // `:- Set.insert(Set.empty(), 1) = Set.insert(Set.empty(), 1)` answers 1
-            // with this arm present, as it did without.
-            //
-            // NOT `op_is_interpretable`: its other leg is `op_has_runnable_body`, which
-            // asks the question this `match` has already answered `None` to. Naming the
-            // host registry directly says what admits the op, and is a `HashSet` hit —
-            // so it is asked FIRST, ahead of `body_less_dispatchable`'s
-            // `rules_by_functor_iter` + `lookup_spec_op_dispatch` walk.
-            //
-            // NO `depth == 0` GATE, unlike the flag's arm. That gate rests on "a depth-0
-            // bridge evaluates the WHOLE body including nested op-calls, so a nested
-            // call rides its enclosing op's single bridge" — a premise about a BODY, and
-            // a host op has none to ride. A host call nested inside a bodied op's body
-            // is reached by this function's own `depth + 1` recursion over the folded
-            // body, and gating it would put back exactly the asymmetry this ticket is
-            // about, one level in.
-            None if self.host_op_reducible_at_a_value(op) => None,
-            // An operation this interpreter has a host function for is the arm above's to
-            // decide, and it declined: the operation declares an effect. Taken here as a
-            // body-less operation to dispatch, the bridge ran the host function all the
-            // same and the effect row was inert — for an operation of a sort with a type
-            // parameter until WI-20261003-4DYR6, and for every sort's once no sort is read
-            // by its declaration.
-            None if dispatch_body_less
-                && depth == 0
-                && !self.is_interpreter_mapped_op(op)
-                && self.body_less_dispatchable(op) =>
-            {
-                None
-            }
-            // WI-1037 — a `NeedsDict` callee is DISPATCHED, never folded, so a missing
-            // body is not a bail for it either: the bridge below is the whole
-            // reduction and it needs only the symbol and the args. Reachable for a
-            // HOST-MAPPED implementation, which is a real supplier with no body node.
-            //
-            // Gated on [`typing::op_is_interpretable`] and not admitted unconditionally:
-            // without the gate this arm deletes the O(1) `return v` for a callee the
-            // bridge could never run, and every such goal attempt — at every fold level,
-            // since this class is not depth-0 gated — would build a scratch
-            // `Interpreter` and re-register the standard builtins only to come back
-            // `None`. The gate asks the interpreter's OWN registry (WI-876/WI-886: a
-            // resolver builtin or a cpp `operation_map` entry is not something THIS
-            // runtime can call), which is exactly the question "will the bridge be able
-            // to run this".
-            //
-            // A HOST function reached here is held to the same row as at a value position;
-            // a callee the bridge runs as anthill code keeps the arm as before.
-            None if needs_dict
+        // What the interpreter can run: a body; a HOST-IMPLEMENTED operation
+        // (WI-20260826-VPEWK — the predicate the goal side asks through
+        // [`Self::op_reducible_in_rule_body`], so `:- Bool.and(true, true)` and `:-
+        // Bool.and(true, true) = true` answer alike); a BODY-LESS spec op its carrier's
+        // supplier answers (WI-1057, [`Self::body_less_dispatchable`]) — not one this
+        // interpreter has a host function for, which the host arm has declined because the
+        // operation declares an effect; and a `NeedsDict` callee the bridge can enter
+        // (WI-1037: a HOST-MAPPED implementation is a real supplier with no body node). Asked
+        // of the interpreter's OWN registry (WI-876/WI-886: a resolver builtin or a cpp
+        // `operation_map` entry is not something THIS runtime can call), so an entity
+        // constructor or a declared-but-unbacked operation pays no scratch interpreter only to
+        // report `OperationBodyMissing`.
+        let runnable = self.op_body_node(op).is_some()
+            || self.host_op_reducible_at_a_value(op)
+            || (!self.is_interpreter_mapped_op(op) && self.body_less_dispatchable(op))
+            || (needs_dict
                 && super::typing::op_is_interpretable(self, op)
-                && (!self.is_interpreter_mapped_op(op) || self.host_op_runs_in_rule_body(op)) =>
-            {
-                None
-            }
-            None => return v, // abstract op, nothing to fold and nothing to dispatch
-        };
-        // Recursion guard: a self-recursive op never folds to a value — treat it
-        // as complex and leave it un-ground rather than looping.
-        if depth >= FOLD_DEPTH_CAP {
+                && (!self.is_interpreter_mapped_op(op) || self.host_op_runs_in_rule_body(op)));
+        if !runnable {
             return v;
         }
-        // Param symbols in declaration order — the WI-352 arg-place list (the same
-        // symbols WI-487 stamps on the body's param vars), read O(1) off the op
-        // symbol rather than rescanning every `OperationInfo` fact per fold.
+        // Param symbols in declaration order — the WI-352 arg-place list, read O(1) off the
+        // op symbol rather than rescanning every `OperationInfo` fact per call.
         let params: Vec<Symbol> = self.symbols.arg_places(op).to_vec();
         if params.is_empty() {
-            // WI-941 — an empty arg-place list is TWO different situations, and the
-            // early return was right for only one of them:
-            //  * UNSCANNED (the signature declares parameters but no arg places were
-            //    stamped): folding with an empty substitution would leave the body's
-            //    param vars unbound and reduce to garbage. Bail, as before.
-            //  * GENUINELY NULLARY (`vec_zero() -> Vec3 = Vec3(0,0,0)`): there is
-            //    nothing to bind, but there is still a BODY to reduce. Bailing made
-            //    the call answer an unbound residual that reads as a definite
-            //    success to a caller counting solutions — measured, silent in debug
-            //    AND release. Fall through with an empty fold.
+            // WI-941 — an empty arg-place list is UNSCANNED (the signature declares
+            // parameters but no arg places were stamped), or GENUINELY NULLARY
+            // (`vec_zero() -> Vec3 = Vec3(0,0,0)`), which still has a body to run.
             let declared = self
                 .op_record(op)
                 .and_then(|r| r.signature.as_ref())
                 .map(|s| s.params.len());
             if declared != Some(0) {
-                return v; // unscanned (or no signature) — nothing safe to fold
+                return v;
             }
         }
-        // σ-walk each call arg to a Value, keyed by param place. WI-279/WI-282
-        // method dispatch puts the receiver + positional args positionally, but
-        // the loader canonicalizes a plain op-call's args to NAMED form by field
-        // name (`code(?c)` → `code(c: ?c)`) — so each place is read as the call binds
-        // it ([`Self::call_args_in_param_order`]), by position or by label. A param with
-        // neither leaves the call un-ground (residualizes), safe per the WI-483
-        // leave-uninterpreted rule.
-        let mut param_args: HashMap<Symbol, Value> = HashMap::new();
-        // WI-880 — REDUCE each argument for a HOST callee, do not merely σ-walk it.
-        //
-        // A σ-walk lowers a nested op-call to a `Value` that still IS the call, which the
-        // bridge refuses (its value gate), so the call would come back un-reduced where
-        // reducing the argument here answers. Before that gate the ground check PASSED
-        // such an argument — a call over ground arguments is ground — and a host function
-        // declaring a `Term` parameter RAN on the call itself and committed to a wrong
-        // value.
-        //
-        // MEASURED, and it is why this is scoped to the host arm rather than filed:
-        // migrating the reflection surface to `operation_map` (this ticket) turned
-        // `:- term_as_int(as_term(7)) = none()` from 0 solutions into **1 DEFINITE**,
-        // where the true value is `some(7)` — `term_as_int` ran on `Fn(as_term,[7])`,
-        // found no `Const::Int`, and answered `none()`. The `= some(7)` row is 0 both
-        // ways and cannot see this: it is the un-fired path and the wrong-value path
-        // agreeing by accident. Found by /code-review, which probed the complementary
-        // polarity.
-        //
-        // ONLY FOR A HOST CALLEE (`host_op_reducible_at_a_value`), and only its
-        // ARGUMENTS. The general case is deliberately untouched: a body-less SPEC op's
-        // operand may be symbolic ALGEBRA that must stay data (`Set.insert(Set.empty(),
-        // 1)` — the wi616 five), and `unfold_eq_operand`'s neighbouring gate has already
-        // MEASURED that widening reducibility on the case-split path costs completeness
-        // (WI-20260827-XBHX3). Neither is reached here: those callees are mapped in no
-        // interpreter registry, so the recursion below bails on them and returns the
-        // argument untouched.
-        let reduce_args = self.host_op_reducible_at_a_value(op);
+        // Each place read as the call binds it ([`Self::call_args_in_param_order`]), by
+        // position or by label. A param with neither leaves the call un-run.
         // A LABEL NAMES A PARAMETER OF THE OPERATION THE CALL IS WRITTEN ON. Where `op` is
         // the member a carrier supplies for it — the typer's pin, or the classification
         // above — that member may spell its parameters otherwise (`describe(item: Leaf,
@@ -12407,42 +12181,7 @@ impl KnowledgeBase {
         let Some(walked) = walked else {
             return v;
         };
-        for (&p, a) in params.iter().zip(walked) {
-            let a = if reduce_args && depth < FOLD_DEPTH_CAP {
-                self.reduce_op_value(a, subst, depth + 1, dispatch_body_less, None, faults)
-            } else {
-                a
-            };
-            param_args.insert(p, a);
-        }
-        // WI-1037 — the typer says this callee reads requirement slots. DECLINE the
-        // structural fold and take the bridge, which is the one reduction path that
-        // can supply what the callee needs: `call_op_bridged` resolves the impl's OWN
-        // `requires` chain at the CONCRETE ARGUMENT TYPES (`resolve_bridge_requirements`,
-        // WI-300 Tier B) and installs real dictionaries in the frame it pushes.
-        //
-        // Both halves are load-bearing and each was a wrong answer on its own. Reaching
-        // the bridge WITHOUT the `op` redirect above runs `cached_operation_body(spec_op)`
-        // — the spec's DEFAULT — inside a frame with real dictionaries installed, i.e.
-        // today's wrong answer upgraded to a confident one (the WI-444 value-directed
-        // override lives in `dispatch_resolved_operation`, the IN-BODY path, not at the
-        // entry). Redirecting WITHOUT declining the fold inlines a body whose `requires`
-        // slot nothing filled.
-        //
-        // AT ANY DEPTH, unlike the two arms below, and the difference is the whole
-        // point rather than an oversight. Their `depth == 0` gate rests on "a depth-0
-        // bridge evaluates the WHOLE body including nested op-calls, so a nested call
-        // rides its enclosing op's single bridge" — and for THIS class that premise is
-        // false. Eval reaches a nested `ConcreteApplyWithin` through
-        // `start_apply_same_sort`, which installs the classification's `dispatch_dict`
-        // and nothing else; that dict is `None` for a cross-sort call from a caller
-        // with no enclosing sort, so the enclosing bridge runs the callee with an EMPTY
-        // requirements channel and its `requires` read fails. MEASURED on
-        // `operation probe() -> Int64 = Desc.describe(leaf())` at namespace level:
-        // riding the enclosing bridge raised `DeferToRequirement: requirement param
-        // `__req_tag` not bound in caller frame`, tripping `bridge_op_to_eval`'s own
-        // internal-error assert. Bridging the callee HERE resolves its `requires` at
-        // the concrete argument types instead, which is the one entry that can.
+        let param_args: HashMap<Symbol, Value> = params.iter().copied().zip(walked).collect();
         // THE CALL SITE'S OWN EVIDENCE FOR ITS CALLEE'S `requires` rides with it to the
         // bridge, as eval's apply hands it to the frame it pushes. Re-derived from the
         // argument values instead, a selection the call wrote was lost:
@@ -12492,75 +12231,8 @@ impl KnowledgeBase {
             .flatten()
             .map(WovenDispatch::Stamped);
         let woven = woven.or(classified.as_ref()).or(stamped.as_ref());
-        if needs_dict {
-            // Not with an argument that still holds a call: the bridge refuses one
-            // (`bridge_op_to_eval`), and the call stays a call — inside a folded body it
-            // rides the enclosing operation's single depth-0 bridge, which evaluates its
-            // arguments, as every nested call does; as a goal's own operand it delays.
-            // MEASURED (WI-20261016-5CDN5), when nothing refused it: `keep(Error.reify(lambda
-            // () -> loadBad()))` in a body a rule folds, `keep[P]` declaring `requires
-            // TypeValue[T = P]`, ran `keep` on the term `reify(lambda …)` and faulted
-            // `match_failed`; `Result.reflect`, which declares that clause since proposal 071
-            // stage (d), did the same.
-            return self
-                .bridge_op_to_eval(op, &params, &param_args, subst, depth, woven, faults)
-                .unwrap_or(v);
-        }
-        // WI-1057 — a BODY-LESS spec op: there is no body to fold, so the eval
-        // bridge below IS the whole reduction. It runs under the same gates the
-        // complex-body arm states — depth 0 only, and the bridge's own deep-ground
-        // check on every arg — and, exactly as there, a `None` leaves the ORIGINAL
-        // call `v`. That fall-back is what makes this safe rather than the naive
-        // widening the ticket measured: an un-answered call stays a call, and
-        // the evaluation reports it STUCK (`evaluate.rs`), so the WI-938
-        // hook declines to `unify` on it instead of binding the result variable to
-        // the call term and calling that a definite answer.
-        let Some(body) = body else {
-            return self
-                .bridge_op_to_eval(op, &params, &param_args, subst, depth, woven, faults)
-                .unwrap_or(v);
-        };
-        // Build the fold substitution: every op-body var named after a param maps
-        // to its call arg. WI-487 mints a FRESH VarId per param occurrence (all
-        // sharing the param Symbol), so bind every such VarId by Symbol — the
-        // by-symbol fold (no string name-matching, no occurrence→term lowering).
-        let mut fold = Substitution::new();
-        if !collect_param_var_bindings(self, &body, &param_args, &mut fold) {
-            // A body that reads a parameter by its name is run, not folded: at the top by
-            // the bridge, as a COMPLEX body is below; nested, by its enclosing operation's.
-            return if depth == 0 {
-                self.bridge_op_to_eval(op, &params, &param_args, subst, depth, woven, faults)
-                    .unwrap_or(v)
-            } else {
-                v
-            };
-        }
-        let folded = node_occurrence::substitute_occurrence(self, &body, &fold);
-        // Reduce the folded body via field-access reduction; recurse for a nested
-        // op-call. A value (Term/scalar) ⇒ FOLDABLE; a residual `Node` (arith /
-        // match / unfoldable op-call) ⇒ COMPLEX → return the ORIGINAL call.
-        let reduced = self.reduce_dot_value(Value::Node(folded), subst);
-        let reduced = self.reduce_op_value(reduced, subst, depth + 1, false, None, faults);
-        match reduced {
-            // A COMPLEX body (`match`/`if`/`let`/recursion) the structural fold
-            // can't collapse. WI-625 gap 1 — the SLD→eval dual of the eval→SLD eq
-            // bridge: run the op through a live, bounded interpreter instead of
-            // residualizing. Ground-gated (`=`/`cmp` are tests — never bind); a
-            // suspended or errored eval falls back to the ORIGINAL call `v`, so a
-            // callee's body complexity never forces an unsound verdict — the
-            // operand stays un-reduced and the `eq`/`cmp` goal delays.
-            // Bridge only at the TOP operand reduction (`depth == 0`):
-            // `call_op_bridged` evaluates the WHOLE body including nested op-calls,
-            // so a depth-0 bridge already covers every nesting level. Attempting
-            // it inside the fold-recursion would rebuild the interpreter at each
-            // depth and, on a failing inner bridge, re-bridge the same operand
-            // once per level. A complex body nested inside another op therefore
-            // rides its enclosing op's single top-level bridge.
-            Value::Node(_) if depth == 0 => self
-                .bridge_op_to_eval(op, &params, &param_args, subst, depth, woven, faults)
-                .unwrap_or(v),
-            other => other,
-        }
+        self.bridge_op_to_eval(op, &params, &param_args, subst, woven, faults)
+            .unwrap_or(v)
     }
 
     /// WI-20260925-P7VP4 — the dictionary a woven call's requirement variable is BOUND to in
@@ -12834,15 +12506,9 @@ impl KnowledgeBase {
     /// (delay) instead of a native stack overflow.
     ///
     /// Soundness gates:
-    /// - **a value** — an arg of the operation-body fold's (`depth` above 0) that still
-    ///   holds a written call anywhere in it ([`Self::value_holds_call`], the evaluator's
-    ///   own reading) returns `None`. This is a different question from the next gate: a
-    ///   call over ground arguments IS ground, and a host function declaring a `Term`
-    ///   parameter would run on the call and read it as data — `viaAdd1() -> String =
-    ///   term_to_string(as_term(Int64.add(1, 2)))` printed "add(1, 2)". Declined, the
-    ///   operation is run whole by the depth-0 bridge. At `depth` 0 the arguments are the
-    ///   evaluator's, evaluated, and not asked: what is shaped like a call there is a value
-    ///   a call returned — the term `make_fn("anthill.prelude.Int64.add", …)` builds.
+    /// - **a value** — the arguments are the evaluator's, evaluated before the call
+    ///   (`evaluate.rs`), so what is shaped like a call there is a value a call returned —
+    ///   the term `make_fn("anthill.prelude.Int64.add", …)` builds — and is not asked.
     /// - **ground** — each arg is reified under σ (the interpreter has no σ) and
     ///   must be deeply ground; `=`/`cmp` are tests that must not bind, so a
     ///   non-ground operand returns `None` (the resolver delays), never runs.
@@ -12899,8 +12565,6 @@ impl KnowledgeBase {
         params: &[Symbol],
         param_args: &HashMap<Symbol, Value>,
         subst: &Substitution,
-        // `reduce_op_value`'s fold depth: above 0 the arguments are the fold's.
-        depth: usize,
         // WI-20260909-NAR1X — the woven call's dictionary, handed to the bridged
         // interpreter EXPLICITLY. The design (`op-to-rule-requirement-channel.md` §5.2)
         // rules out the ambient alternative in as many words: a thread-local would make
@@ -12925,10 +12589,6 @@ impl KnowledgeBase {
         let mut unknowns: Vec<VarId> = Vec::new();
         for p in params {
             let a = self.reify_value(param_args.get(p)?, subst);
-            // The first gate above: a value, not a call that did not run.
-            if depth > 0 && self.value_holds_call(&a) {
-                return None;
-            }
             if !self.value_deep_ground(&a, subst) {
                 // Only the rule's flexible variables are unknowns a later binding answers. A
                 // RIGID one — a proof's eigenvariable — is bound by nothing, and a call over it
@@ -14054,7 +13714,7 @@ impl KnowledgeBase {
     /// routes the goal to `unify(?r, f(a₁…aₙ))`, and WI-670's open-time refutation, which
     /// evaluates a GROUND one ([`Self::functional_relation_refuted`]).
     ///
-    /// Rebuilt on the OCCURRENCE carrier: `reduce_op_value` folds a `Value::Node` and returns
+    /// Rebuilt on the OCCURRENCE carrier: `reduce_op_value` runs a `Value::Node` and returns
     /// anything else untouched, so an `Entity`-carried call would silently never reduce. The
     /// args are reused from the goal's own occurrence rather than round-tripped through
     /// `Value`, which keeps their occurrence identity (WI-621). WI-20260906-7YPGM: every
@@ -14066,7 +13726,7 @@ impl KnowledgeBase {
     /// dictionary.
     ///
     /// WI-1026: `rebuilt_expr`, not a bare `new_expr` — the GOAL is the site the typer
-    /// classified, and the pin has to reach `reduce_op_value` or it folds `op_body_node(f)`, a
+    /// classified, and the pin has to reach `reduce_op_value` or it runs `op_body_node(f)`, a
     /// DEFAULTED spec op's own default, over the implementation the carrier supplies (a rule
     /// body answered `1` where an operation body answered `7`). It also carries the goal's
     /// `owner`. This is NOT a rebuild of the same expression — it drops the goal's RESULT

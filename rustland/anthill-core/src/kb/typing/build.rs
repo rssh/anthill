@@ -2250,7 +2250,26 @@ pub(crate) fn classify_pin_or_apply_within(
         }
         None => false,
     };
-    let class = if needs_reqs || has_op_slots || threads_instance {
+    let third_sort_dict = third_sort_member_dict(
+        kb,
+        occ,
+        fn_sym,
+        impl_op,
+        enclosing_sort,
+        resolved_tree.as_ref(),
+        op_supply,
+    )?;
+    let class = if let Some(dict) = third_sort_dict {
+        CallClass::ConcreteApplyWithin {
+            fn_target_sym: impl_op,
+            callee_spec_sort: impl_sort.expect("a member with a frame of its own has a sort"),
+            spec_op_sym: impl_op,
+            enclosing_sort,
+            resolved_tree: None,
+            frame: CalleeFrame::Dict(dict),
+            enclosing_op: op_supply.and_then(|c| c.enclosing_op),
+        }
+    } else if needs_reqs || has_op_slots || threads_instance {
         // WI-829: a CROSS-SORT spec-op dispatch that CONSTRUCTS its callee's
         // requirement dictionary (a `resolved_tree` with a `FromScope` — the
         // deeper dict built around the enclosing frame's own requirement) cannot
@@ -2337,6 +2356,73 @@ pub(crate) fn classify_pin_or_apply_within(
     };
     classify(kb, occ, class);
     Ok(())
+}
+
+/// The dictionary a dispatched call carries into a member of a THIRD sort — neither the spec
+/// the call is dispatched through nor the provider the resolution found — whose sort reads
+/// requirement slots of its own: `namespace Leaf provides Desc[T = Leaf, describe =
+/// LeafDesc.describeLeaf]` with `LeafDesc requires Tag[G = L]`. The provider's dictionary
+/// carries nothing for that sort, so the call is the direct call of the member and takes the
+/// dictionary the direct call builds: the member's sort at the types the call gives the
+/// member's parameters, each read off the spec operation's parameter at the same place. `None`
+/// where the dispatched dictionary serves the member, or nothing pins it.
+fn third_sort_member_dict(
+    kb: &mut KnowledgeBase,
+    occ: &Rc<NodeOccurrence>,
+    fn_sym: Symbol,
+    impl_op: Symbol,
+    enclosing_sort: Option<Symbol>,
+    resolved_tree: Option<&ResolvedRequiresNode>,
+    op_supply: Option<&OpSupplyCtx<'_>>,
+) -> Result<Option<TermId>, TypeError> {
+    let (Some(tree), Some(ctx)) = (resolved_tree, op_supply) else {
+        return Ok(None);
+    };
+    let Some(parent) = impl_parent_of_op(kb, impl_op) else {
+        return Ok(None);
+    };
+    if impl_op == fn_sym
+        || !op_reads_requirement_slots(kb, impl_op)
+        || enclosing_sort.is_some_and(|encl| same_sort_canonical(kb, parent, encl))
+    {
+        return Ok(None);
+    }
+    let Some(provider) = tree.impl_sort().filter(|&p| !same_sort_canonical(kb, p, parent)) else {
+        return Ok(None);
+    };
+    let spec = dispatch_spec_of_op(kb, fn_sym).or_provider(provider);
+    if dictionary_covers_target(kb, spec, provider, impl_op) {
+        return Ok(None);
+    }
+    let (Some(spec_info), Some(member_info)) = (
+        crate::kb::op_info::lookup_operation_info(kb, fn_sym),
+        crate::kb::op_info::lookup_operation_info(kb, impl_op),
+    ) else {
+        return Ok(None);
+    };
+    let mut at_member = ctx.subst.clone();
+    for ((_, spec_ty), (_, member_ty)) in spec_info.params.iter().zip(&member_info.params) {
+        if !unify_types(kb, &mut at_member, spec_ty, member_ty) {
+            return Ok(None);
+        }
+    }
+    build_concrete_dispatch_dict(
+        kb,
+        None,
+        ctx.held,
+        &at_member,
+        parent,
+        op_owner_provision(kb, impl_op),
+        enclosing_sort,
+        ctx.caller_requires,
+        ctx.param_rigids,
+        &[],
+        RequirementUse::Call,
+        None,
+    )
+    .map_err(|refusal| {
+        refusal.into_type_error(Some(occ.span.span), fn_sym, parent, RequirementUse::Call)
+    })
 }
 
 /// A call of a spec operation whose member is chosen when the call RUNS — deferred to a

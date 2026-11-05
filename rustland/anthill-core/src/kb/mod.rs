@@ -6601,13 +6601,13 @@ impl KnowledgeBase {
                 // classification INDEXES POSITIONALLY.
                 //
                 // NAMED BINDING FIRST, then the positional at that place — the reverse
-                // of `reduce_op_value`'s fold, and it is not a second rule: the two
+                // of `reduce_op_value`'s read, and it is not a second rule: the two
                 // orders can disagree only on a term carrying BOTH a positional at place
                 // `i` and a named binding for place `i`, which is a duplicate binding
-                // and refused at load. The order matters here and not at the fold
-                // because this walk sees the GOAL `f(a₁…aₙ, ?r)`, one positional longer
-                // than the call the fold reduces, so a positional-first read of a
-                // partly-named goal would take the RESULT COLUMN for an argument.
+                // and refused at load. The order matters here and not there because this
+                // walk sees the GOAL `f(a₁…aₙ, ?r)`, one positional longer than the call
+                // `reduce_op_value` runs, so a positional-first read of a partly-named
+                // goal would take the RESULT COLUMN for an argument.
                 //
                 // A STATED LIMIT, MEASURED rather than assumed: a label written in a
                 // QUERY PATTERN does not intern to the operation's arg-place symbol

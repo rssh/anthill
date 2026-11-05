@@ -1592,7 +1592,7 @@ fn operation_application(kb: &KnowledgeBase, functor: Symbol) -> bool {
 ///   * **§3.1 dispatch by value in OPERAND position.** A rule-body operand
 ///     `unify(?r, PartialOrd.gt(p, q))` on a carrier with a supplied override answered an
 ///     indefinite residual; classified, the pin names the override and
-///     [`reduce_op_value`] folds it. The pin IS readable there — the carrier's own `gt`
+///     [`reduce_op_value`] runs it. The pin IS readable there — the carrier's own `gt`
 ///     is an ordinary bodied operation, not a builtin — so "both sides are builtin" was
 ///     only ever true of the STDLIB family, never of the population.
 ///

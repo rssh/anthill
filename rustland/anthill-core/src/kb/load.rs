@@ -2776,6 +2776,17 @@ pub enum LoadError {
         position: CallTypeArgsPosition,
         span: Span,
     },
+    /// A dot in a query pattern whose receiver is a variable. A query is typed where it is
+    /// converted and nowhere else, so the variable has no type, and a dot is decided by
+    /// its receiver's type, never by the value the variable comes to hold. The repair is
+    /// the operation's qualified call.
+    QueryDotOnVariable {
+        /// The receiver as written (`?b`).
+        receiver: String,
+        /// The member the dot names (`peek`).
+        member: String,
+        span: Span,
+    },
     /// Proposal 070 §1.2 — `Self` written where it means nothing. `Self` is the sort it
     /// is written in, applied to that sort's own parameters, and nothing else: outside a
     /// sort there is no such sort, it takes no bindings, no declaration may take the
@@ -2922,6 +2933,15 @@ pub enum CallTypeArgsPosition {
     /// contract expression. A constructor in one of them is a term the clause matches, and
     /// is among them.
     NoChannel,
+}
+
+/// The one wording of [`LoadError::QueryDotOnVariable`], shared by its two renderings.
+fn query_dot_on_variable_detail(receiver: &str, member: &str) -> String {
+    format!(
+        "the dot `{receiver}.{member}` cannot be dispatched in a query: a dot is decided by \
+         its receiver's type, and a query's variable has none; write the operation's \
+         qualified call, `S.{member}({receiver}, …)`"
+    )
 }
 
 /// WI-839: the one wording of [`LoadError::CallTypeArgsNotSupportedHere`], shared by
@@ -3244,6 +3264,7 @@ impl LoadError {
             | LoadError::AnnotationNamesNoType { span, .. }
             | LoadError::BindingInContract { span, .. }
             | LoadError::CallTypeArgsNotSupportedHere { span, .. }
+            | LoadError::QueryDotOnVariable { span, .. }
             | LoadError::SelfTypeMisuse { span, .. }
             | LoadError::TypeParamShadowsSlot { span, .. }
             | LoadError::FunctorOwnedByExtent { span, .. }
@@ -4415,6 +4436,15 @@ impl LoadError {
                 }
                 None => format!("invalid type argument: {}", detail),
             },
+            LoadError::QueryDotOnVariable {
+                receiver,
+                member,
+                span,
+            } => format!(
+                "{}: {}",
+                loc.format_start(*span),
+                query_dot_on_variable_detail(receiver, member)
+            ),
             LoadError::CallTypeArgsNotSupportedHere {
                 callee,
                 position,
@@ -6129,6 +6159,17 @@ impl std::fmt::Display for LoadError {
                 }
                 None => write!(f, "invalid type argument: {}", detail),
             },
+            LoadError::QueryDotOnVariable {
+                receiver,
+                member,
+                span,
+            } => write!(
+                f,
+                "{} at {}..{}",
+                query_dot_on_variable_detail(receiver, member),
+                span.start,
+                span.end
+            ),
             LoadError::CallTypeArgsNotSupportedHere {
                 callee,
                 position,
@@ -26084,6 +26125,22 @@ fn query_compound_expression(
     {
         return None;
     }
+    lend_to_loader(kb, parsed, scope, var_map, errors, |loader| {
+        loader.compound_expression_occurrence(parse_id)
+    })
+}
+
+/// A node of a query pattern lowered by a loader lent to the query, as a clause's is: the
+/// query's variables are the clause's (`var_map`), and what the lowering refuses is reported
+/// into `errors`, located in the pattern's source.
+fn lend_to_loader<R>(
+    kb: &mut KnowledgeBase,
+    parsed: &ParsedFile,
+    scope: ScopeId,
+    var_map: &mut HashMap<u32, VarId>,
+    errors: &mut Vec<LoadError>,
+    lower: impl FnOnce(&mut Loader<'_>) -> R,
+) -> R {
     let source_id = kb
         .symbols
         .asking_file()
@@ -26092,16 +26149,86 @@ fn query_compound_expression(
                 .provenance(id)
                 .is_some_and(|(_, text)| std::sync::Arc::ptr_eq(&text, &parsed.source))
         })
-        .expect("a query pattern is converted after the scan of its source, which leaves it the asking file");
+        .expect(
+            "a query pattern is converted after the scan of its source, which leaves it the \
+             asking file",
+        );
     let mut loaded_paths = HashSet::new();
     let mut loader =
         Loader::new(kb, parsed, &NullResolver, &mut loaded_paths, scope, Some(source_id));
     loader.lent_to_query = true;
     loader.var_map = std::mem::take(var_map);
-    let occ = loader.compound_expression_occurrence(parse_id);
+    let out = lower(&mut loader);
     *var_map = std::mem::take(&mut loader.var_map);
     errors.extend(stamped_file_errors(loader.errors, parsed));
-    occ
+    out
+}
+
+/// A dot a query pattern writes, dispatched as the same text is in a clause: lowered by the
+/// loader ([`Loader::query_dot_occurrence`]) and typed by the typer, whose dot dispatch decides
+/// the member from the receiver's type and rewrites the dot to the call it names —
+/// `?x <=> (qd.Box).tag()` binds 7, `?x <=> qd.box(v: 4).peek()` 4. A query is typed here and
+/// nowhere else, so a receiver that is one of its variables has no type, and the dot is refused
+/// ([`LoadError::QueryDotOnVariable`]): a dot is decided by its receiver's type, never by the
+/// value the variable comes to hold. Before, every such dot was the data `dot_apply(…)`, bound
+/// as a definite answer.
+fn query_dot_expression(
+    kb: &mut KnowledgeBase,
+    parsed: &ParsedFile,
+    parse_id: ParseTermId,
+    scope: ScopeId,
+    var_map: &mut HashMap<u32, VarId>,
+    errors: &mut Vec<LoadError>,
+) -> Option<Rc<NodeOccurrence>> {
+    let Term::Fn { functor, .. } = parsed.terms.get(parse_id) else {
+        return None;
+    };
+    if !parsed.terms.is_minted(parse_id)
+        || !dt::is(parsed.symbols.local_name(*functor), dt::DOT_APPLY)
+    {
+        return None;
+    }
+    let refused_before = errors.len();
+    let occ = lend_to_loader(kb, parsed, scope, var_map, errors, |loader| {
+        loader.query_dot_occurrence(parse_id)
+    })?;
+    if errors.len() > refused_before {
+        return Some(occ);
+    }
+    if let Some(refusal) = dot_on_a_query_variable(kb, &occ) {
+        errors.push(refusal);
+        return Some(occ);
+    }
+    let env = crate::kb::typing::TypingEnv::empty();
+    match crate::kb::typing::type_check_node(kb, &env, &occ, None) {
+        Ok(typed) => Some(typed.node),
+        Err(e) => {
+            errors.push(e.to_load_error(kb));
+            Some(occ)
+        }
+    }
+}
+
+/// The refusal of the first dot in `occ` — the lowered dot itself, or one in its receiver or its
+/// arguments — whose receiver is a query variable ([`LoadError::QueryDotOnVariable`]).
+fn dot_on_a_query_variable(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Option<LoadError> {
+    let mut stack = vec![Rc::clone(occ)];
+    while let Some(o) = stack.pop() {
+        let Some(expr) = o.as_expr() else {
+            continue;
+        };
+        if let Expr::DotApply { receiver, name, .. } = expr {
+            if let Some(Expr::Var(Var::Global(vid))) = receiver.as_expr() {
+                return Some(LoadError::QueryDotOnVariable {
+                    receiver: format!("?{}", kb.local_name_of(vid.name())),
+                    member: kb.local_name_of(*name).to_string(),
+                    span: o.span.span,
+                });
+            }
+        }
+        node_occurrence::for_each_child(expr, |c| stack.push(Rc::clone(c)));
+    }
+    None
 }
 
 /// [`convert_query_term`] carrying the enclosing argument position's declared type —
@@ -26134,6 +26261,9 @@ fn convert_query_term_expecting(
         }
     }
     if let Some(occ) = query_compound_expression(kb, parsed, parse_id, scope, var_map, errors) {
+        return occ;
+    }
+    if let Some(occ) = query_dot_expression(kb, parsed, parse_id, scope, var_map, errors) {
         return occ;
     }
     let parse_term = parse_terms.get(parse_id).clone();
@@ -36853,6 +36983,32 @@ impl<'a> Loader<'a> {
         let occ = self.convert_expr_term(parse_id);
         self.lowering_rule_compound_expr = saved;
         self.compound_expr_occ.insert(parse_id, Rc::clone(&occ));
+        Some(occ)
+    }
+
+    /// A dot a query pattern writes (`(qd.Box).tag()`, `qd.box(v: 4).peek()`), lowered as an
+    /// operation body lowers it — an `Expr::DotApply` for the typer's dot dispatch — or
+    /// `None` for any other node. The query's variables are read as a clause's are, as
+    /// inside a compound expression ([`Self::compound_expression_occurrence`]).
+    fn query_dot_occurrence(&mut self, parse_id: ParseTermId) -> Option<Rc<NodeOccurrence>> {
+        if !self.parsed.terms.is_minted(parse_id) {
+            return None;
+        }
+        let Term::Fn {
+            functor, pos_args, ..
+        } = self.parsed.terms.get(parse_id)
+        else {
+            return None;
+        };
+        if !dt::is(self.parsed.symbols.local_name(*functor), dt::DOT_APPLY)
+            || pos_args.len() < 2
+            || !matches!(self.parsed.terms.get(pos_args[1]), Term::Ident(_))
+        {
+            return None;
+        }
+        let saved = std::mem::replace(&mut self.lowering_rule_compound_expr, true);
+        let occ = self.convert_expr_term(parse_id);
+        self.lowering_rule_compound_expr = saved;
         Some(occ)
     }
 

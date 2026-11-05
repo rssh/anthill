@@ -1549,6 +1549,72 @@ binder are unchanged. A `@[simp]` equation whose right-hand side holds a form, r
 is rewritten into the clause and answers the citation's, as its plain twin did. Rows moved by design: P7VP4's untaken-branch row (now a condition, answering
 as before), and two of `wi_9wvt7`'s, refused at the catcher's pattern instead of at the raise.
 
+### 6.23 D1b, the per-consumer reductions retired (WI-20261013-DEY66, 2026-11-05)
+
+068 §8 step 3. `unify_values` had stopped evaluating with K4JGC (§5.1: `<=>` evaluates both
+sides first, then unifies structurally); what was left is below.
+
+- **`reduce_op_value`'s fold is gone.** It inlined a bodied operation's body over the call's
+  arguments (`collect_param_var_bindings`), reduced the result structurally one level per nested
+  call (`depth`, `FOLD_DEPTH_CAP`), and bridged a nested call that reads requirement slots on its
+  own, with the folded arguments as values. Every call the walker evaluates is now run whole by
+  the interpreter (`bridge_op_to_eval`), its arguments evaluated first by the walker, so the
+  host-argument re-reduction (WI-880), the `dispatch_body_less` flag and the bridge's
+  "an argument still holding a call" gate went with it. MEASURED with the fold switched off on
+  `fd640523`: 2 rows failed, WI-1037's operation-body rows, both the interpreter defect below;
+  with it fixed, the workspace is green. WI-20261102-989Z0's rows are this change: `q`'s
+  `Pc[C = Bx].len([1, 2, 3])` and `olen(some([1, 2]))` answered with a `match_failed` fault and
+  an incomplete search, the fold's nested bridge handed `q`'s literal as the node eval presents
+  as `ListLiteral(…)`.
+- **What the fold had covered for (WI-20261102-6GAS1).** A dispatched call landing on a member of
+  a THIRD sort — neither the spec nor the provider — whose sort `requires` something
+  (`namespace Leaf provides Desc[T = Leaf, describe = LeafDesc.describeLeaf]`, `LeafDesc requires
+  Tag[G = L]`) was classified with the provider's dictionary, which carries nothing for that sort:
+  the interpreter died `Internal` ("… is neither the spec nor the provider of the dictionary"),
+  and a rule reached 7 only because the fold bridged the inner call itself. The typer now gives
+  such a call the dictionary the direct call of the member builds
+  (`typing::build::third_sort_member_dict`: the member's parameters unified with the spec
+  operation's under the call's substitution, then `build_concrete_dispatch_dict` at the member's
+  sort), classified as that direct call.
+- **The narrowing keeps `body_specialize::reduce`** (decided with the user): its alternatives
+  need each arm's residual as code — `append(?a, [3]) = [1, 3]` unifies `cons(?h, append(?t,
+  [3]))` with `[1, 3]` before it asks the inner call, which is what makes it terminate — and a
+  strict run returns no part of a value it waits inside. It reads a `match` on a tuple of the
+  arguments component by component (`split_tuple_scrutinee`): the one flexible component an arm
+  tests is narrowed, the others are matched against each arm there, an arm they refute is dropped
+  and one they match has its bindings substituted; two tested flexible components, an undecided
+  component, a labelled tuple, or no arm left decline. `firstof(?xs, 9) = 9` over `match (xs, d)`
+  answers the two rows its `match xs` twin does. Found beside it: a tuple pattern against the
+  `TupleLiteral` constructor an operation body stores was read as "a known non-tuple", a definite
+  non-match, so the prover's defining equations for `match (x, y) case (0, _) -> 10 case _ -> 20`
+  were the one equation `= 20`; the stored tuple is read as a tuple (`tuple_components`).
+- **A dot in a query pattern is typed where the pattern is converted** (decided with the user): a
+  written dot is lowered as an operation body lowers it (`Loader::query_dot_occurrence`) and typed
+  by the typer's own dot dispatch (`query_dot_expression`), which rewrites it to the call it
+  names — `(S).seven()`, `box(v: 4).peek()`, `mk().peek()`, `box(v: 4).v`. A dot on a query
+  variable is refused (`LoadError::QueryDotOnVariable`), written alone, in another dot's argument
+  or as its receiver (`dot_on_a_query_variable` walks the lowered dot): a dot is decided by its
+  receiver's type, never by a value. Before, every such dot was the data `dot_apply(…)`, bound as a definite
+  answer, and `box(v: 4).peek() = 4` had none.
+
+NOT CHANGED, decided with the user: a rule-body dot on an UNTYPED head variable — the WI-282
+exemption (`undecidable_by_this_typer`) — still loads and answers its text as data (`rule u(?b,
+?x) :- ?x <=> ?b.peek()` binds `?x = box(v: 4).peek`; `?p.v` the same). Refusing it reaches
+`examples/webots-modelling/lf1/safety_common.anthill`'s `position_distance_sq`, which smt-gen
+lowers; typing its heads (`?p1: Pose`) failed 4 of lf1's 14 proofs (no SMT sort for an entity
+bound). It is a ticket of its own, with smt-gen's mapping of the dot. Found by review, unchanged:
+a dispatch through a RUN-TIME dictionary that lands on a third sort's member still dies `Internal`
+— over the same program, `gen[A](x: A) requires Desc[T = A] = Desc.describe(x)` at `gen(leaf())`,
+the same on HEAD — since the generic caller's `Desc` slot is built for `Desc` at `Leaf` and carries
+nothing for `LeafDesc`; where that sort's chain comes from (the provision's dictionary layout, or
+the arguments at entry) is a decision of its own. Also found, unchanged: the
+reducer does not read a rule's list argument against a constructor pattern (`sel([5], ?xs) = 5`
+stays conditional, in the `match ys` spelling as in a tuple's), an incompleteness, not a wrong
+answer.
+
+Rows: `wi_dey66_per_consumer_reductions_test` (17; each part backed out on its own fails its own
+rows, HEAD fails all but the four controls).
+
 ## 7. Testing
 
 Per CLAUDE.md: each ticket's rows live in one test module, driven by value with its back-outs run
