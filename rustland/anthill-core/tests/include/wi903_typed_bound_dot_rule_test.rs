@@ -203,7 +203,7 @@ end
 /// WI-906 recorded at `simp_rewrite::is_typer_fired_dot_rule`. The refusal is keyed on
 /// the rule's shape and does not ask the typer's per-receiver enclosing-sort guard, so
 /// this rule is refused a bound although no receiver passes that guard. The one place
-/// its bound would be read is a defect's path (WI-20260926-7D48J: a dot left as a term
+/// its bound would be read is a defect's path (WI-20261105-8412E: a dot left as a term
 /// in the right-hand side of a typed-bound equation, which the resolver alone fires),
 /// and the user decided (2026-11-05) the bound stays refused there too.
 ///

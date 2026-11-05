@@ -3302,7 +3302,7 @@ program is not: that reaches the typer's dot path. So every dot rule is refused 
 bound (WI-906), one written outside a sort included. That one fires at no dot call,
 no receiver's sort being its enclosing one; the only `dot_apply` term it meets is a
 dot left undispatched in the right-hand side of a typed-bound equation, which the
-typer never fires — a defect (WI-20260926-7D48J), not a reader the bound is kept for.
+typer never fires — a defect (WI-20261105-8412E), not a reader the bound is kept for.
 
 **An introduced type variable may be written ANYWHERE inside a bound, not only
 as the whole bound** (WI-20260908-PW9A0). `?x: List[T = A]` is "a list whose

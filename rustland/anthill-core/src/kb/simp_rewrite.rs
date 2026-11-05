@@ -1977,14 +1977,14 @@ pub(super) fn fires_as_dot_rule(kb: &KnowledgeBase, rid: RuleId, dot_apply: Symb
 /// rule. It used to exempt an `@[unfold]` dot rule, on the premise that the resolver
 /// fires it; that rule fired at no dot call, and WI-906 removed the tag.
 ///
-/// The one `dot_apply` term the resolver does meet is a DEFECT's (WI-20260926-7D48J):
+/// The one `dot_apply` term the resolver does meet is a DEFECT's (WI-20261105-8412E):
 /// the typer never fires a typed-bound equation (WI-582), so a dot in such an
 /// equation's right-hand side is never dispatched, and the resolver's rewrite by it
 /// leaves the dot as a term. A dot rule written OUTSIDE a sort fires on that term
 /// (MEASURED, WI-906; one written inside its sort did not) — and only there, the
 /// typer's per-receiver enclosing-SORT guard, which a rule alone cannot decide, keeping
 /// it from every dot call. Its bound would be read on that path alone. It is refused
-/// like any other's (the user's decision, 2026-11-05): the path is 7D48J's to close,
+/// like any other's (the user's decision, 2026-11-05): the path is 8412E's to close,
 /// not one to build on.
 pub(super) fn is_typer_fired_dot_rule(kb: &KnowledgeBase, rid: RuleId) -> bool {
     dot_apply_head_sym(kb).is_some_and(|dot| fires_as_dot_rule(kb, rid, dot))
