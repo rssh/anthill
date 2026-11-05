@@ -3,9 +3,9 @@
 - id: WI-20261104-J9SSG-proposal-060-1-a-rule-s
 - created: 2026-11-04T15:09:13Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-11-04T15:09:13Z
+- status_at: 2026-11-05T11:48:26Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -56,4 +56,8 @@ Stage 2's kernel-language text agreed by the user (2026-11-05) and written: §5.
 ### 2026-11-05T11:19:31Z — feedback — claude
 
 Delivered (the commit follows this note): §8.11 — a bracket on a paren-less reference of a declaring rule stays refused (the user, 2026-11-05: as §5.4 says, and as an operation's f[T = Int64] is); the dot forms cmpS[…].head.c and cmpS[…].takeN(5) get the one refusal the let gets, where they gave 'takes no type arguments: kind Goal' and 'unknown functor', and the refusal names the repair cmpS[…](). §3 — a spec's own rule reads the spec at its own parameter and declares nothing (Up 1, Down 0 through an operation holding Cmp2[T = A]); found with it and fixed: a citation at a concrete instance two providers answer (Cmp2[T = Int64].le(1, 5)) loaded and raised at run time, and is refused at load naming both, as is one no provider answers. §8.2 — a sort's named slot is filled only by what the citation writes: the operation's receiver and callee brackets read a requirement of the citing declaration by its name (Ranked[T = A, O = up], -2, where it was 'must name a WITNESS SORT'), and a rule citation that leaves the slot open is refused naming it (was 1, -2, -2), a rule-body goal too. The kernel-language sentence for §8.2's rule side to be agreed.
+
+### 2026-11-05T11:48:24Z — feedback — claude
+
+Kernel-language's sentence for §8.2's rule side agreed by the user (2026-11-05) and written in §5.3: a named requirement of the sort a rule is written in is supplied only by what the citation writes, a witness or a requirement of the citing declaration by its name, and a citation writing neither is refused naming the slot. Found while asking about a defect and fixed inline: two guards of one spec at two parameters (Conv[A = X, B = U], Conv[A = U, B = U]) refused a call only the first covers, 'covered by distinct carrier requirements', where the operation with the same requires loads; a guard now covers the calls whose argument at the spec's carrier parameter is at its carrier (row wi_prva2…::two_guards_of_one_spec_at_two_parameters_are_each_their_carriers). Proposal 060.1 is implemented; nothing of it is left open. Full workspace 11,660 passed, 0 failed; families green on both carriers.
 

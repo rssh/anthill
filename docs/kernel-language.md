@@ -2715,7 +2715,7 @@ operation body. The spec nothing provides is the clause's condition where the so
 is written in is that spec or requires it, whose citation supplies it: with nothing providing
 `Relatable`, `rule linked(?x, ?y) :- related(?x, ?y)` is refused at namespace level and loads
 in `sort Linking { sort T = ?; requires Relatable[T = T] }`. A member of the sort the clause
-is written in reads its sort's `requires` as the clause's own, which the citation supplies.
+is written in reads its sort's `requires` as the clause's own, which the citation supplies. A named requirement of that sort is supplied only by what the citation writes, as for a call of the sort's operation (§5.4): a witness, `Ranked[T = Int64, O = Descending].ordered(…)`, or a requirement of the citing declaration by its name, `Ranked[T = A, O = up].ordered(…)` under `requires up: WeakOrd[T = A]`; a citation that writes neither — `Ranked[T = Int64].ordered(…)`, or `Ranked[T = A].ordered(…)` under `requires WeakOrd[T = A]` — is refused, naming the slot.
 
 What a rule variable's type is at load is read off the whole clause, as an operation
 body's variables are: one typing over the clause's variables, in any order of its goals,

@@ -3029,6 +3029,49 @@ pub(super) fn call_carrier_args(
     aligned_carrier_args(kb, &rec.params, &args, spec_canon)
 }
 
+/// The arguments of a call of `functor`, a spec operation of `spec_canon`, that a guard at the
+/// spec's carrier covers it by: those at the spec's CARRIER parameter where the spec has several
+/// (`a` of `conv(a: A, b: B)` under `Conv`, whose carrier is `A`), so a guard `Conv[A = U, B =
+/// U]` does not cover `conv(?x, ?u)` for its `?u` at `B`; every carrier argument
+/// ([`call_carrier_args`]) where it has one parameter, no carrier parameter, or is received on
+/// itself.
+fn call_args_at_spec_carrier(
+    kb: &KnowledgeBase,
+    functor: Symbol,
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    spec_canon: Symbol,
+) -> Vec<Rc<NodeOccurrence>> {
+    let type_params = kb.type_params_of_sort(spec_canon);
+    let key = (type_params.len() > 1)
+        .then(|| spec_carrier_param_or_sole(kb, spec_canon))
+        .flatten()
+        .map(|k| kb.local_name_of(k).to_owned());
+    let Some(key) = key else {
+        return call_carrier_args(kb, functor, pos_args, named_args, spec_canon);
+    };
+    let Some(rec) = crate::kb::op_info::lookup_operation_info(kb, functor) else {
+        return Vec::new();
+    };
+    // A spec its operations receive on (`head(s: Stream)`) is carried by the receiver itself.
+    let self_representing = spec_self_represented_by(kb, &rec.params, spec_canon);
+    if self_representing {
+        return call_carrier_args(kb, functor, pos_args, named_args, spec_canon);
+    }
+    let Some(args) = align_call_args_to_params(kb, &rec.params, pos_args, named_args) else {
+        return Vec::new();
+    };
+    rec.params
+        .iter()
+        .zip(&args)
+        .filter(|((_, pty), _)| {
+            spec_carrier_param_of(kb, spec_canon, &type_params, self_representing, pty)
+                .is_some_and(|p| kb.local_name_of(p) == key)
+        })
+        .map(|(_, arg)| Rc::clone(arg))
+        .collect()
+}
+
 /// [`call_carrier_args`] over arguments already in the order of `params`.
 fn aligned_carrier_args(
     kb: &KnowledgeBase,
@@ -3172,7 +3215,7 @@ pub(super) fn collect_covered_calls(
         // (`7, 7` without it), `wi_hrfr5…::a_typed_head_carrier_is_readable_too` (refused
         // without it) and, for a defaulted callee, `wi_gp8jc_defaulted_weave_test`.
         if op_has_spec_carrier_param(kb, *functor, spec_canon)
-            && !call_carrier_args(kb, *functor, pos_args, named_args, spec_canon)
+            && !call_args_at_spec_carrier(kb, *functor, pos_args, named_args, spec_canon)
                 .iter()
                 .any(|arg| at.iter().any(|a| views_structurally_equal(kb, arg, a)))
         {

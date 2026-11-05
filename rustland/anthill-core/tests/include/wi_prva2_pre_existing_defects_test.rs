@@ -261,6 +261,26 @@ fn a_goal_at_the_callers_two_parameter_guard_passes_its_dictionary() {
     );
 }
 
+/// 060.1 §8.5 and §8.7 — TWO GUARDS OF ONE SPEC AT TWO PARAMETERS, `Conv[A = X, B = U]` and
+/// `Conv[A = U, B = U]`, as an operation's two `requires` lines: a call is read through the
+/// guard at the type its argument at the spec's carrier `A` is, so `conv(?x, ?u)` through the
+/// first and `conv(?u, ?u)` through the second, each answering `Twin`'s `9`. FAILS with a call
+/// covered by a guard at ANY of its carrier arguments (measured before the fix): the rule is
+/// refused, "the call is covered by distinct carrier requirements", where the operation with the
+/// same `requires` loads.
+#[test]
+fn two_guards_of_one_spec_at_two_parameters_are_each_their_carriers() {
+    let rules = "  sort Twin\n    entity tw(v: Int64)\n    provides Conv[A = Twin, B = Twin]\n    \
+                 operation conv(a: Twin, b: Twin) -> Int64 = 9\n  end\n  \
+                 rule tagged[X, U](?x: X, ?u: U, ?r) :- Conv[A = X, B = U], Conv[A = U, B = U], Conv.conv(?x, ?u, ?r)\n  \
+                 rule tagged2[X, U](?x: X, ?u: U, ?r) :- Conv[A = X, B = U], Conv[A = U, B = U], Conv.conv(?u, ?u, ?r)\n  \
+                 rule first(?r) :- tagged(tw(v: 1), tw(v: 2), ?r)\n  \
+                 rule second(?r) :- tagged2(tw(v: 1), tw(v: 2), ?r)\n";
+    let mut kb = crate::common::load_kb_with(&extended(MULTI, rules));
+    assert_eq!(crate::common::one_definite_int(&mut kb, "wiprva2.multi.first"), Some(9), "through `Conv[A = X, B = U]`");
+    assert_eq!(crate::common::one_definite_int(&mut kb, "wiprva2.multi.second"), Some(9), "through `Conv[A = U, B = U]`");
+}
+
 /// 060.1 §8.7 — AN ELEMENT NAMED ONLY INSIDE A COLUMN'S TYPE SELECTS THE INSTANCE TOO: `toL[X,
 /// U]` types `?us` as `List[T = U]` and no column at `U` itself, and its guard's read waits for
 /// `U` as for its carrier. With `Feet provides Conv[A = Meters, B = Int64]` beside `Meters`' `B =
