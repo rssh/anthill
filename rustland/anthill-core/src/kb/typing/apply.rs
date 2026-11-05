@@ -53,7 +53,10 @@ fn check_function_value_argument(
         // WI-20260904-50B2K part (c) — REPORT FROM PATH 2 TOO: `let g = lambda x -> x  g(2)`
         // calls an ENV-BOUND ARROW, which is this path, and the walk learns the binder's use here.
         if let Some(before) = &before {
-            report_walk_solutions(kb, solving, before, subst, unified);
+            let site = ShapeSite { fn_sym, param: None, span };
+            if let Err(err) = report_walk_solutions(kb, solving, before, subst, unified, site) {
+                return ArgValidation::Fail(err);
+            }
         }
     }
     verdict
@@ -1056,7 +1059,7 @@ fn check_apply_call(
                         // `?param` bound at, so it is where the population lives rather
                         // than merely where a `defer` would have run.
                         if let Some(before) = &before {
-                            report_walk_solutions(kb, solving.as_deref_mut(), before, &subst, unified);
+                            report_walk_solutions(kb, solving.as_deref_mut(), before, &mut subst, unified, ShapeSite { fn_sym, param: Some(*param_sym), span })?;
                         }
                     }
                     if needs_param_arg_types {
@@ -1133,7 +1136,7 @@ fn check_apply_call(
                         // `?param` bound at, so it is where the population lives rather
                         // than merely where a `defer` would have run.
                         if let Some(before) = &before {
-                            report_walk_solutions(kb, solving.as_deref_mut(), before, &subst, unified);
+                            report_walk_solutions(kb, solving.as_deref_mut(), before, &mut subst, unified, ShapeSite { fn_sym, param: Some(*param_sym), span })?;
                         }
                     }
                     if needs_param_arg_types {
@@ -1192,7 +1195,7 @@ fn check_apply_call(
                 receiverless_sort,
             );
             if let Some(before) = &before {
-                report_walk_solutions(kb, solving.as_deref_mut(), before, &subst, unified);
+                report_walk_solutions(kb, solving.as_deref_mut(), before, &mut subst, unified, ShapeSite { fn_sym, param: Some(param_sym), span })?;
             }
         }
         // From here on the call reads a callable written at its slot as the slot reads it.
@@ -1344,6 +1347,8 @@ fn check_apply_call(
                 }
                 // `unify_types` borrows the arg type (it is `A: TermView`), so no clone.
                 if let Some(arg_ty) = param_to_arg_type.get(param_sym) {
+                    // WI-20260904-34J8Z: taken ahead of the rule-6 step, as in the argument loops.
+                    let before = solving.is_some().then(|| subst.clone());
                     // The slot's row as this call reads it, before the argument meets it —
                     // see the argument loops.
                     let at_slot = bound_arg(kb, &op.params, &pos_call_params, i, named_args)
@@ -1353,7 +1358,13 @@ fn check_apply_call(
                     let arg_ty = at_slot.as_ref().unwrap_or(arg_ty);
                     // The row is the discharge inference's, as in the argument loops.
                     let slot = slot_at_argument_row(kb, &subst, &op, *param_sym, &eff, arg_ty);
-                    unify_types(kb, &mut subst, arg_ty, slot.as_ref().unwrap_or(&eff));
+                    let unified = unify_types(kb, &mut subst, arg_ty, slot.as_ref().unwrap_or(&eff));
+                    // WI-20260904-34J8Z: this unify reports no solution to the walk (the known
+                    // gap at [`report_call_solutions`]), and holds its tuple shapes all the same.
+                    if let Some(before) = &before {
+                        let site = ShapeSite { fn_sym, param: Some(*param_sym), span };
+                        hold_walk_shapes(kb, solving.as_deref_mut(), before, &mut subst, unified, site)?;
+                    }
                     // The discharge inference reads the callback as this slot reads it: the
                     // argument loops deferred this parameter, and recorded it as written.
                     let pair = callback_pairs.iter_mut().find(|(p, _, _)| p == param_sym);
@@ -5611,7 +5622,7 @@ fn check_apply_call(
                 // all, which is the same absence and is reported the same way.
                 let claimed = solving
                     .as_deref_mut()
-                    .map(|w| w.note_instantiation(&inst.binder_map, occ))
+                    .map(|w| w.note_instantiation(kb, &inst.binder_map, occ))
                     .unwrap_or(0);
                 if !inst.obligations.is_empty() && claimed == 0 {
                     return Err(TypeError::Other {

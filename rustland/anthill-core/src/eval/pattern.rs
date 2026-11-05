@@ -183,8 +183,12 @@ fn field_index(field_order: Option<&[Symbol]>, field: Symbol) -> Option<usize> {
 /// It also drops the COUNT test, and must: width subtyping lets an
 /// `(a: A, b: B, c: C)` value reach a binder list typed `(a: A, b: B)`, and a
 /// by-label fetch does not care how many components it did not ask for. The count
-/// test survives on the positional path, where it is still the only arity guard
-/// (`arity_mismatch_still_refuses_to_match`).
+/// test survives on the positional path, where it is the only RUN-TIME arity guard.
+/// No typed program reaches it with another width now: a lambda's binder list is
+/// refused at load (WI-801, `wi785…::arity_mismatch_is_refused`), and so is a tuple
+/// nested in one or taken apart from an un-annotated binder (WI-20260904-34J8Z,
+/// `wi_34j8z…::a_nested_binder_list_is_held_to_its_use`); wi784's note at
+/// `nullary_thunk_called_with_an_argument_is_refused_at_load` says what would.
 ///
 /// A label with no matching component is NO MATCH, which raises through
 /// `raise_match_failed` — loud, not a skipped binder.

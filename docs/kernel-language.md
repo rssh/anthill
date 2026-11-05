@@ -5421,6 +5421,29 @@ Two consequences:
   value's own component order, which is then the only reading available. The same
   applies to a **positional** tuple, whose labels are the synthetic `_1.._n` — for
   it the two readings coincide by construction.
+- A pattern whose value's type is **not yet known where it is bound** — a tuple nested
+  in a lambda's binder list with no type around it (`lambda ((a, b), c) -> …`), or one
+  a `let` or a `match` takes apart from an un-annotated binder (`lambda p -> let (a, b)
+  = p …`) — takes its type from the value's **uses** (WI-20260904-34J8Z). Each
+  application that decides the value's type is held to the pattern there: a value that
+  is no tuple, or a tuple of another width where the pattern is irrefutable, is refused
+  at that application (a `match` arm of another width does not match it), and each
+  component meets its binder as an argument meets a parameter — a binder's annotation
+  refuses a component it does not admit, and an un-annotated binder takes the
+  component's type for that application, as a binder of the list itself does (§4.7). The
+  pattern then reads by the labels the uses' tuples carry: over `f() -> (x: Int64, y:
+  String)` returning `(y: "s", x: 1)`, `g(f(), 3)` with `g = lambda ((a, b), c) -> a`
+  binds `a` to `x`'s `1`. A positional use says no labels and is read by slot. One
+  pattern reads **one** set of labels: the first use that labels its tuple says them,
+  a later one carrying the same labels in another order is met by name (`g((y: 20, x:
+  10), 3)` hands `a` the `10`), and two uses handing it tuples labelled differently —
+  `g((x: 1, y: 2), 3)` beside `g((p: 10, q: 20), 3)` — are refused at the second,
+  naming both. A component is not coerced: a `some(…)` wraps an argument, and a
+  component of a value taken apart has none of its own, so a nested binder annotated
+  `Option[T = Int64]` refuses an `Int64` component where a binder of the list itself
+  is wrapped. A pattern written after a call that decided its value's type reads that
+  call's type, as if the type had been known. Nothing here makes the pattern a
+  positional tuple type: a named value is admitted, read by its own labels.
   A lambda written in a rule body is not in that fallback either: as a call's argument it
   is typed with the call, as in an operation body (§5.3), and in a data slot that is no
   call's the declared type of the slot is carried to it as its expected type, so the
@@ -5429,7 +5452,12 @@ Two consequences:
 
 A binder list whose length differs from its expected tuple's component count is a
 **mismatch**, reported where it occurs; it is not silently narrowed to the
-components that do line up.
+components that do line up. An irrefutable pattern — a `let`'s, or one nested in a
+lambda's binder list — over a known tuple of another width is refused at the pattern
+(`let (a, b) = (1, 2, 3)` loaded and raised `match_failed` until WI-20260904-34J8Z),
+and one over a type the uses decide at the use. A `match` arm of another width does not
+match, and the next arm is tried (WI-20261012-80259), whether the width is known where
+the arm is written or given by a use.
 
 This reader is what lets `<:` be name-keyed at all (§4.5). While it read by
 **slot**, a permuted value conforming by name bound a binder to one component
@@ -5835,7 +5863,7 @@ operation feed(s: Stream[T = Int64, E = {}]) -> Int64 = takes_pure(s)   -- accep
 
 Inside a body, then, an unwritten parameter is **rigid** — a skolem that unifies with nothing but itself — exactly as an operation's own `[T]` and its enclosing sort's parameters already are. At a *call* it is flexible again, and binds from the argument. Same variable, two positions, and confusing them is what the rule exists to prevent.
 
-**A type WRITTEN inside a body names those same rigids (WI-20261001-89WZR).** A signature's types reach the body with each type parameter in scope made rigid; a type the body itself writes — a `let` annotation, a lambda parameter's, a call's bracket — names the same parameter, and is read as that rigid: for the value's expected type, for the conformance check, and for what the binder is bound at. So `operation same[T](y: T) -> T = let x: T = y  x` loads, and so do `let xs: List[T = T] = cons(head: y, tail: nil)`, an operation's own parameter inside a sort, the enclosing sort's parameter written by its name (`get(b: Box[T = T]) -> T = let x: T = b.v  x`), and `let same: Self = b`. Each was refused while the annotation was compared as written — the parameter's variable against the rigid standing for it, `expected ?T, got ?T` — and a wrong one still is: `let x: T = u` with `u: U` names both parameters. The same reading is what makes a `-R` in an annotation's row the OPERATION's `R`: `let h: (x: Int64) -> Bool @ {Error[Foo], -R} = g`, where `g` may raise `Error[Foo]`, claims `g` lacks a row nothing shows it lacks, and is refused as the same callback handed to a parameter requiring `-R` is — it loaded while that `R` was a row variable of the annotation's own. And a lambda's annotated parameter holds its body to the parameter: `lambda (x: T) -> x + 1` pins `T` and is refused, as an operation body that pins its parameter is. One binder of a destructuring `let` is held to its annotation the same way — `let (a: U, b) = (y, 1)` with `y: T` is refused naming both parameters, where the per-binder check used to compare concrete types only and let the false annotation load. The rigid is minted per body check, so the stored annotation keeps what the author wrote. One annotation is still not held to, and not because of type parameters: a MULTI-parameter lambda's per-binder annotations are compared with the context but are not the binders' types when no arrow is expected, so `let f = lambda (a: Int64, b: String) -> a` followed by `f(1, 2)` loads.
+**A type WRITTEN inside a body names those same rigids (WI-20261001-89WZR).** A signature's types reach the body with each type parameter in scope made rigid; a type the body itself writes — a `let` annotation, a lambda parameter's, a call's bracket — names the same parameter, and is read as that rigid: for the value's expected type, for the conformance check, and for what the binder is bound at. So `operation same[T](y: T) -> T = let x: T = y  x` loads, and so do `let xs: List[T = T] = cons(head: y, tail: nil)`, an operation's own parameter inside a sort, the enclosing sort's parameter written by its name (`get(b: Box[T = T]) -> T = let x: T = b.v  x`), and `let same: Self = b`. Each was refused while the annotation was compared as written — the parameter's variable against the rigid standing for it, `expected ?T, got ?T` — and a wrong one still is: `let x: T = u` with `u: U` names both parameters. The same reading is what makes a `-R` in an annotation's row the OPERATION's `R`: `let h: (x: Int64) -> Bool @ {Error[Foo], -R} = g`, where `g` may raise `Error[Foo]`, claims `g` lacks a row nothing shows it lacks, and is refused as the same callback handed to a parameter requiring `-R` is — it loaded while that `R` was a row variable of the annotation's own. And a lambda's annotated parameter holds its body to the parameter: `lambda (x: T) -> x + 1` pins `T` and is refused, as an operation body that pins its parameter is. One binder of a destructuring `let` is held to its annotation the same way — `let (a: U, b) = (y, 1)` with `y: T` is refused naming both parameters, where the per-binder check used to compare concrete types only and let the false annotation load. The rigid is minted per body check, so the stored annotation keeps what the author wrote. A MULTI-parameter lambda's per-binder annotations are its own tuple where no arrow is expected (§4.7), so `let f = lambda (a: Int64, b: String) -> a` followed by `f(1, 2)` is refused at `b` (WI-20261104-6HVXM; it loaded before), and a nested one's are held to each use (§6.7, WI-20260904-34J8Z).
 
 **A call's bracket is such a written type, in both spellings (WI-20261001-89WZR).** The value a bracket binds — the callee's (`id[A = U](y)`) or a companion receiver's (`Box[T = …].empty()`, §5.4) — names the caller's type parameters as the argument types beside it do. So `id[A = U](y)` with `y: T` is refused naming both parameters; bound as written, the bracket's `U` was a variable the argument then pinned to `T`, and the bracket said nothing. A row is held the same way: over `s: Strm[E = {R}]`, with `each[EffP](s, f: (x: Int64) -> Bool @ {EffP, -s.E})`, the call `Strm.each[EffP = {R}](s, pure1)` writes the callback's row as `{R, -R}` and is refused as that uninhabitable row is wherever it is written — it loaded, charging nothing, while the bracket's `R` was a row variable of its own. And a call at ANOTHER instance can be written in terms of this one: inside `sort Box[T]`, `Box.empty[T = Option[T = T]]()` — or `Box[T = Option[T = T]].empty()` — is `empty` at the instance whose element is an `Option` of this body's `T`. It was refused as cyclic while the callee's `T` and this instance's were one variable, and still is where the sort's parameter is in scope by name without being the body's own — in an operation of a namespace or a sort nested in `sort Box[T]`, which has no instance for that `T` to name.
 

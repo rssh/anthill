@@ -162,8 +162,9 @@ end
 ///
 /// What this test pins is unchanged: a 3-component tuple must NOT bind the first
 /// two binders and drop the third. Only the stage moved. The runtime guard itself
-/// still runs — `wi784::a_callback_arity_the_typer_cannot_decide_still_fails_in_-
-/// the_matcher` reaches it through a rigid `A`, where no static count exists.
+/// still runs, and no row reaches it any more: the row that did through a rigid `A`
+/// was moved to load by WI-1087 (wi784's note at
+/// `nullary_thunk_called_with_an_argument_is_refused_at_load`).
 #[test]
 fn arity_mismatch_is_refused() {
     let src = r#"
