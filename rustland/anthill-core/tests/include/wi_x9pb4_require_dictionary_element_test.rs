@@ -118,7 +118,7 @@
 
 use anthill_core::eval::Value;
 
-use crate::common::{definite_unary, load_kb_with, query_unary};
+use crate::common::{definite_unary, load_kb_with};
 
 // ── the acceptance row ─────────────────────────────────────────────────────
 
@@ -472,11 +472,26 @@ namespace x9pb4_tie
   end
 
   rule via[A](?x: A, ?r) :- Spec[C = A], Spec.probe(?x, ?r)
-  rule answer(?r) :- via(carrier(), ?r)
 end
 "#;
+    // Asked as a query, whose read runs. A rule's goal at `carrier()` builds the dictionary
+    // at load (060.1 §1), and the tie is refused there, naming both providers, as an
+    // operation's call at `Carrier` is.
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&src.replace(
+            "  rule via[A]",
+            "  rule answer(?r) :- via(carrier(), ?r)\n  rule via[A]",
+        )),
+        &["answer.body", "two providers answer", "x9pb4_tie.MidA", "x9pb4_tie.MidB"],
+        "the goal at `carrier()`",
+    );
     let mut kb = load_kb_with(src);
-    let sols = query_unary(&mut kb, "x9pb4_tie.answer");
+    let goal = crate::common::query_pattern_term(&mut kb, "x9pb4_tie.via(x9pb4_tie.Carrier.carrier(), ?r)");
+    let sols: Vec<(anthill_core::eval::Value, bool)> = kb
+        .resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default())
+        .iter()
+        .map(|s| (anthill_core::eval::Value::Int(0), s.is_definite()))
+        .collect();
     assert!(
         sols.iter().all(|(_, definite)| !definite),
         "two providers tying on the element NOBODY NAMED must leave the dictionary \
@@ -744,7 +759,7 @@ fn a_tie_no_default_settles_is_refused_at_load_naming_both() {
     );
 }
 
-/// [`query_unary`]'s goal, resolved so [`anthill_core::kb::resolve::ResolveStats`] comes
+/// [`crate::common::query_unary`]'s goal, resolved so [`anthill_core::kb::resolve::ResolveStats`] comes
 /// back with it. Returns each solution's definiteness and the recorded fault messages.
 fn unary_with_errors(
     kb: &mut anthill_core::kb::KnowledgeBase,

@@ -570,11 +570,10 @@ pub fn resolve_with_rung(
 /// MEMOIZED FOR A GROUND GOAL ([`KnowledgeBase::empty_scope_resolve_cache`]): with nothing
 /// in scope, the answer is read off the goal, the declarations and the provisions alone,
 /// and every query of `cmp(1, 5, ?c)` asks `WeakOrd[T = Int64]` again. A goal is held only
-/// where each binding — the carrier's arguments too — is a hash-consed term with no
-/// variable in it, the identity `dispatch_spec_op_cached` keys on: an occurrence is
-/// identified by its allocation, so its entry would be written and never read, and a
-/// variable is one a later step may still bind. Only a held goal can be found, so the
-/// walk for a variable is made where a goal is held, not where one is looked up.
+/// where no binding — the carrier's arguments too — has a variable in it, which a later step
+/// may still bind, and it is keyed by the structure its bindings spell, on whichever carrier
+/// each rides ([`EmptyScopeKey`]): a guard's read builds its goal from the type its carrier
+/// stands at, an occurrence as often as a term.
 pub(crate) fn resolve_in_empty_scope(
     kb: &mut KnowledgeBase,
     goal: &SortGoal,
@@ -592,20 +591,49 @@ pub(crate) fn resolve_in_empty_scope(
             .chain(goal.carrier.iter().flat_map(|c| c.args.iter()))
             .map(|(_, v)| v)
     };
-    if !bindings().all(|v| matches!(v, Value::Term { .. })) {
+    if !bindings().all(|v| type_is_ground(kb, v)) {
         return resolve_with_rung(kb, goal, &scope, rung);
     }
-    let key = (goal.clone(), rung);
+    let key = EmptyScopeKey::of(kb, goal, rung);
     if let Some(hit) = kb.empty_scope_resolve_cache.borrow().get(&key) {
         return hit.clone();
     }
     let result = resolve_with_rung(kb, goal, &scope, rung);
-    if bindings().all(|v| type_is_ground(kb, v)) {
-        kb.empty_scope_resolve_cache
-            .borrow_mut()
-            .insert(key, result.clone());
-    }
+    kb.empty_scope_resolve_cache
+        .borrow_mut()
+        .insert(key, result.clone());
     result
+}
+
+/// What [`resolve_in_empty_scope`] holds a ground goal by: the goal's structure, each binding
+/// read through the view ([`crate::kb::term_view::goal_fingerprint`]), so one type is one key
+/// on every carrier.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub(crate) struct EmptyScopeKey {
+    spec_sort: Symbol,
+    bindings: Vec<(Symbol, crate::kb::term_view::GoalKey)>,
+    carrier: Option<(Symbol, Vec<(Symbol, crate::kb::term_view::GoalKey)>)>,
+    left_open: SmallVec<[Symbol; 2]>,
+    rung: DefaultRung,
+}
+
+impl EmptyScopeKey {
+    fn of(kb: &KnowledgeBase, goal: &SortGoal, rung: DefaultRung) -> Self {
+        let empty = Substitution::new();
+        let keyed = |pairs: &[(Symbol, Value)]| -> Vec<(Symbol, crate::kb::term_view::GoalKey)> {
+            pairs
+                .iter()
+                .map(|(k, v)| (*k, crate::kb::term_view::goal_fingerprint(kb, v, &empty)))
+                .collect()
+        };
+        EmptyScopeKey {
+            spec_sort: goal.spec_sort,
+            bindings: keyed(&goal.bindings),
+            carrier: goal.carrier.as_ref().map(|c| (c.sort, keyed(&c.args))),
+            left_open: goal.left_open.clone(),
+            rung,
+        }
+    }
 }
 
 /// WI-20260918-CKD4J / WI-20260925-4ZZKZ — the first scope entry whose `requires` chain,

@@ -344,7 +344,7 @@ fn drive_int(src: &str, entry: &str) -> i64 {
 fn a_mixed_bool_view_call_answers_through_the_callers_dictionary() {
     let src = program(
         "wimhrn1.boolview",
-        "  rule less(?a, ?b) :- Util.isLess(?b, x: ?a)\n  \
+        "  rule less[A](?a: A, ?b: A) :- WeakOrd[T = A], Util.isLess(?b, x: ?a)\n  \
          sort Driver\n    \
          operation citeLess[A](x: A, y: A) -> Bool effects {Error, Error[EmptyStream]}\n      \
          requires WeakOrd[T = A] =\n      \
@@ -373,7 +373,7 @@ fn a_mixed_bool_view_call_answers_through_the_callers_dictionary() {
 fn a_mixed_value_slot_call_takes_the_callers_dictionary() {
     let src = program(
         "wimhrn1.slots",
-        "  rule viaOp(?a, ?b, ?c) :- ?c <=> Util.sign(?b, x: ?a)\n  \
+        "  rule viaOp[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], ?c <=> Util.sign(?b, x: ?a)\n  \
          sort Driver\n    \
          operation cite[A](x: A, y: A) -> Int64 effects {Error, Error[EmptyStream]}\n      \
          requires WeakOrd[T = A] = viaOp(x, y).head.c\n    \

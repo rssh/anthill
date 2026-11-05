@@ -28407,6 +28407,10 @@ struct RuleProviderRequirement {
     carrier_param: Option<Symbol>,
     /// The name the guard is written under, `require up: WeakOrd[A]` (060.1 §8.6).
     name: Option<Symbol>,
+    /// A type variable a guard names at an element, not at its carrier (`U` of `Conv[A =
+    /// X, B = U]`): `carrier` is the variable its columns share, and the guard's requirement
+    /// is its carrier's, not its own.
+    element: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -28414,6 +28418,9 @@ struct RuleBoundAnchor {
     spec: Symbol,
     carrier: Option<VarId>,
     carrier_param: Option<Symbol>,
+    /// The anchor of an element's type variable ([`RuleProviderRequirement::element`]): its
+    /// column's type is the variable, with no requirement of its own.
+    element: bool,
 }
 
 /// WI-20260904-B8ESG — the clause head being converted, and which of its parse nodes
@@ -30023,6 +30030,7 @@ impl<'a> Loader<'a> {
             spec,
             carrier: None,
             carrier_param: Some(member),
+            element: false,
         });
         self.kb.record_rule_sort_use(crate::kb::RuleSortUse {
             sort: spec,
@@ -30313,6 +30321,11 @@ impl<'a> Loader<'a> {
             {
                 bindings.push((param, ty));
             }
+            // An element's variable carries no requirement of its own: the guard that names it
+            // is its carrier's.
+            if anchor.element {
+                return ty;
+            }
             let instance = self.kb.alloc(Term::Fn {
                 functor: anchor.spec,
                 pos_args: SmallVec::new(),
@@ -30404,6 +30417,7 @@ impl<'a> Loader<'a> {
                     spec: requirement.spec,
                     carrier: requirement.carrier,
                     carrier_param: requirement.carrier_param,
+                    element: requirement.element,
                 });
                 Some(requirement.spec)
             }
@@ -41628,6 +41642,7 @@ impl<'a> Loader<'a> {
                             spec: requirement.spec,
                             carrier: requirement.carrier,
                             carrier_param: requirement.carrier_param,
+                            element: requirement.element,
                         });
                         return node_occurrence::TypeChild::Interned(requirement.instance);
                     }
@@ -45198,11 +45213,16 @@ impl<'a> Loader<'a> {
     /// type-var. Named and positional instance bindings normalize against the
     /// declaration, including bindings fixed by an alias. The annotated value
     /// supplies the carrier; the remaining bindings stay in the requirement.
+    ///
+    /// A guard may name several of the head's type variables, as an operation's `requires`
+    /// line may (`Conv[A = X, B = U]`): the one at the spec's carrier parameter is the
+    /// carrier, and each other one is an ELEMENT, written in the instance as the variable its
+    /// columns share and answered beside the requirement ([`RuleProviderRequirement::element`]).
     fn try_body_tvar_guard(
         &mut self,
         gtid: ParseTermId,
         introducers: &std::collections::HashSet<String>,
-    ) -> Option<(String, RuleProviderRequirement)> {
+    ) -> Option<(String, RuleProviderRequirement, Vec<(String, RuleProviderRequirement)>)> {
         let Term::Fn {
             functor,
             pos_args,
@@ -45227,12 +45247,14 @@ impl<'a> Loader<'a> {
         if introduced.is_empty() {
             return None;
         }
-        if introduced.len() != 1 {
-            self.errors.push(LoadError::Other { message:
-                "a bounding guard must identify one carrier type variable; several carrier bindings are not supported".into() });
-            return None;
-        }
-        let tvar = introduced[0].clone();
+        // Each binding's value, where it is a type variable the head introduces.
+        let introduced_at: Vec<Option<String>> = pos_args
+            .iter()
+            .copied()
+            .chain(named_args.iter().map(|(_, value)| *value))
+            .map(introduced_name)
+            .collect();
+        let mut tvar = introduced[0].clone();
         let written = self.remap_symbol(functor, self.parsed.terms.span(gtid));
         // The established F[A] form may name an enclosing type parameter,
         // not a spec declaration with a parameter list (PW9A0). Preserve its
@@ -45254,11 +45276,34 @@ impl<'a> Loader<'a> {
                     carrier: None,
                     carrier_param: None,
                     name: None,
+                    element: false,
                 },
+                Vec::new(),
             ));
         }
         let (spec, mut fixed) = self.type_alias_application(written);
         let params = self.kb.type_params_of_sort(spec);
+        // The carrier is the variable at the spec's carrier parameter, by name or by position;
+        // the first one written where none stands there.
+        if introduced.len() > 1 {
+            if let Some(key) = super::typing::spec_carrier_param_or_sole(self.kb, spec)
+                .map(|k| self.kb.local_name_of(k).to_owned())
+            {
+                let named = named_args.iter().enumerate().find_map(|(i, (k, _))| {
+                    (self.parsed.symbols.local_name(*k) == key)
+                        .then(|| introduced_at[pos_args.len() + i].clone())
+                        .flatten()
+                });
+                let positional = params
+                    .iter()
+                    .position(|p| *p == key)
+                    .filter(|i| *i < pos_args.len())
+                    .and_then(|i| introduced_at[i].clone());
+                if let Some(at_carrier) = named.or(positional) {
+                    tvar = at_carrier;
+                }
+            }
+        }
         // An argument giving one of the alias's own parameters is written where the parameter
         // is; the carrier, given one, is the slot the parameter stands at, which it must
         // stand at alone.
@@ -45334,20 +45379,85 @@ impl<'a> Loader<'a> {
             return None;
         }
         let mut carrier_param = None;
-        let values = pos_args
+        let mut elements: Vec<(String, RuleProviderRequirement)> = Vec::new();
+        // The carrier's variable: the one an earlier guard gave this type parameter, so every
+        // guard naming it is at one variable, else a fresh one.
+        let carrier = match self.rule_head_tvar(&tvar) {
+            Some(RuleTvar::Bounded(bound)) if bound.carrier.is_some() => bound.carrier.unwrap(),
+            _ => {
+                let label = self.kb.intern(&tvar);
+                self.kb.fresh_var(label)
+            }
+        };
+        let values: Vec<(ParseTermId, usize)> = pos_args
             .iter()
             .copied()
-            .chain(named_args.iter().map(|(_, value)| *value));
-        for (value, slot) in values.zip(fit.slots) {
-            let index = slot.expect("a successful type-argument fit assigns every guard binding");
+            .chain(named_args.iter().map(|(_, value)| *value))
+            .zip(fit.slots)
+            .map(|(value, slot)| {
+                (value, slot.expect("a successful type-argument fit assigns every guard binding"))
+            })
+            .collect();
+        let names_carrier = |this: &Self, value: ParseTermId| {
+            matches!(this.parsed.terms.get(value), Term::Ref(sym) | Term::Ident(sym)
+                if this.parsed.symbols.local_name(*sym) == tvar)
+        };
+        // Written at several parameters (`Conv[A = X, B = X]`), the carrier stands at the spec's
+        // carrier parameter, else at the first, and each other one is bound to its variable.
+        let spec_carrier_key = super::typing::spec_carrier_param_or_sole(self.kb, spec)
+            .map(|k| self.kb.local_name_of(k).to_owned());
+        let carrier_index = values
+            .iter()
+            .filter(|(value, _)| names_carrier(self, *value))
+            .map(|(_, index)| *index)
+            .find(|index| spec_carrier_key.as_deref() == Some(params[*index].as_str()))
+            .or_else(|| values.iter().find(|(value, _)| names_carrier(self, *value)).map(|(_, i)| *i));
+        for (value, index) in values {
             let key = &params[index];
             let param = self.kb.intern(key);
-            let is_carrier = matches!(self.parsed.terms.get(value), Term::Ref(sym) | Term::Ident(sym)
-                if self.parsed.symbols.local_name(*sym) == tvar);
+            let is_carrier = Some(index) == carrier_index;
             if is_carrier {
                 carrier_param = Some(param);
+            } else if names_carrier(self, value) {
+                fixed.push((param, self.kb.alloc(Term::Var(Var::Global(carrier)))));
+                continue;
             }
-            if is_carrier && (!named_args.is_empty() || pos_args.len() > 1) {
+            // Another of the head's type variables at an element: the variable its columns
+            // share, a bound one's own.
+            let element = match self.parsed.terms.get(value) {
+                Term::Ref(sym) | Term::Ident(sym) if !is_carrier => {
+                    let name = self.parsed.symbols.local_name(*sym);
+                    introducers.contains(name).then(|| name.to_owned())
+                }
+                _ => None,
+            };
+            if let Some(name) = element {
+                let var = match self.rule_head_tvar(&name) {
+                    Some(RuleTvar::Bounded(bound)) if bound.carrier.is_some() => bound.carrier.unwrap(),
+                    _ => {
+                        let label = self.kb.intern(&name);
+                        self.kb.fresh_var(label)
+                    }
+                };
+                fixed.push((param, self.kb.alloc(Term::Var(Var::Global(var)))));
+                elements.push((
+                    name,
+                    RuleProviderRequirement {
+                        spec,
+                        instance: self.kb.make_sort_ref(spec),
+                        carrier: Some(var),
+                        carrier_param: Some(param),
+                        name: None,
+                        element: true,
+                    },
+                ));
+                continue;
+            }
+            // A spec with no parameter a provider receives on (`TypePattern[T = P]`) states its
+            // requirement at the type the variable is, as an operation's `requires` line does;
+            // there is no carrier to check the variable against.
+            let over_a_parameter = super::typing::spec_over_parameter(self.kb, spec).is_some();
+            if is_carrier && over_a_parameter && (!named_args.is_empty() || pos_args.len() > 1) {
                 let member = self.kb.intern(&key);
                 self.kb.record_rule_sort_use(crate::kb::RuleSortUse {
                     sort: spec,
@@ -45379,8 +45489,9 @@ impl<'a> Loader<'a> {
                 named_args: fixed,
             })
         };
-        let name = self.kb.intern(&tvar);
-        let carrier = self.kb.fresh_var(name);
+        for (_, element) in &mut elements {
+            element.instance = instance;
+        }
         Some((
             tvar,
             RuleProviderRequirement {
@@ -45389,7 +45500,9 @@ impl<'a> Loader<'a> {
                 carrier: Some(carrier),
                 carrier_param,
                 name: None,
+                element: false,
             },
+            elements,
         ))
     }
 
@@ -45924,9 +46037,16 @@ impl<'a> Loader<'a> {
                 self.rule_tvar_bounds = introducers.iter().map(|tv| (tv.clone(), None)).collect();
                 if let Some(body) = r.body.as_ref() {
                     for &gtid in body {
-                        if let Some((tvar, mut requirement)) =
+                        if let Some((tvar, mut requirement, elements)) =
                             self.try_body_tvar_guard(gtid, &introducers)
                         {
+                            // A type variable the guard names at an element is bounded by it,
+                            // where no earlier guard bounds it.
+                            for (name, element) in elements {
+                                if self.rule_head_tvar(&name) == Some(RuleTvar::Unbounded) {
+                                    self.rule_tvar_bounds.insert(name, Some(element));
+                                }
+                            }
                             requirement.name = self
                                 .parsed
                                 .terms
@@ -45951,6 +46071,13 @@ impl<'a> Loader<'a> {
                                         ),
                                     });
                                 }
+                            }
+                            // A variable an earlier guard named only at an element has this guard
+                            // as its bound, at the element's variable (`try_body_tvar_guard`).
+                            if matches!(self.rule_head_tvar(&tvar), Some(RuleTvar::Bounded(first)) if first.element) {
+                                self.rule_tvar_bounds.insert(tvar, Some(requirement));
+                                folded_guard_ids.insert(gtid);
+                                continue;
                             }
                             if let Some(RuleTvar::Bounded(first)) = self.rule_head_tvar(&tvar) {
                                 // 060.1 §8.5 — SEVERAL REQUIREMENTS AT ONE PARAMETER, as an
@@ -46014,6 +46141,9 @@ impl<'a> Loader<'a> {
             }
         }
 
+        // A guard refused here is the clause's fault, reported once: the rules it heads are
+        // marked so the typer does not also refuse the calls the guard would have covered.
+        let mut guard_refused = false;
         // 060.1 §8.6 — a goal written `require …` is a requirement of a type parameter the head
         // introduces, which the scan above has folded into the head's bound; one it did not
         // fold states nothing of the clause's parameters, and would load as a goal that
@@ -46025,6 +46155,7 @@ impl<'a> Loader<'a> {
             self.read_require_goals.insert(gtid);
             let at = render_decl_site(self.kb, self.source_span_of(gtid));
             if !folded_guard_ids.contains(&gtid) {
+                guard_refused = true;
                 self.errors.push(LoadError::Other {
                     message: format!(
                         "`require` at {at} states a requirement of a type parameter the rule's \
@@ -46368,6 +46499,7 @@ impl<'a> Loader<'a> {
             .collect();
         let mut params_held = vec![false; declared_params.len()];
         let kb_heads_equational = kb_heads.iter().any(|&h| is_equational_head(self.kb, h));
+        let mut rule_rids: Vec<crate::kb::RuleId> = Vec::new();
         for (head_idx, kb_head) in kb_heads.into_iter().enumerate() {
             // WI-20260911-5G28A — THIS HEAD'S BOUNDS CONTRIBUTE THEIR OWN VARIABLES TO
             // THE FRAME. `?t` in `?x: List[T = ?t]` is in neither the head term (the
@@ -46409,6 +46541,7 @@ impl<'a> Loader<'a> {
             if let Some(label) = label_sym {
                 self.kb.set_rule_label(rid, label);
             }
+            rule_rids.push(rid);
             // WI-458: key the head span on this rule's RuleId (per-occurrence),
             // not the hash-consed head TermId. A `⊥` denial head has no source
             // term (`positive_head_spans` is empty; the guard above rejects
@@ -46579,6 +46712,7 @@ impl<'a> Loader<'a> {
         let relational = !kb_heads_equational;
         for ((name, carrier), held) in declared_params.iter().zip(&params_held) {
             if relational && carrier.is_some() && !held {
+                guard_refused = true;
                 let at = positive_head_spans
                     .first()
                     .map_or_else(String::new, |s| format!(" (the rule at {})", render_decl_site(self.kb, *s)));
@@ -46589,6 +46723,11 @@ impl<'a> Loader<'a> {
                          it in a column's type (`?x: {name}`, `?l: List[T = {name}]`)"
                     ),
                 });
+            }
+        }
+        if guard_refused {
+            for rid in rule_rids {
+                self.kb.note_refused_guard(rid);
             }
         }
 

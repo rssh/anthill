@@ -228,8 +228,8 @@ namespace wi5g28a.rank
   end
 
   rule rankOf[A](?a: A, ?r) :- Rank[T = A], Rank.rank(?a, ?r)
-  -- ONE requirement, at `?a`'s type, and a second call at `?b`
-  rule rankBoth[A](?a: A, ?b, ?r1, ?r2) :- Rank[T = A], Rank.rank(?a, ?r1), Rank.rank(?b, ?r2)
+  -- one requirement at `?a`'s type, and another at `?b`'s
+  rule rankBoth[A, B](?a: A, ?b: B, ?r1, ?r2) :- Rank[T = A], Rank[T = B], Rank.rank(?a, ?r1), Rank.rank(?b, ?r2)
 
   sort Driver
     operation viaRule[A](x: A) -> Int64 effects {Error, Error[EmptyStream]}

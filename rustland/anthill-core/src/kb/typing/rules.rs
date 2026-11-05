@@ -704,6 +704,7 @@ fn install_inferred_column_bounds(
             continue;
         }
         bounds.push((d, ty.clone()));
+        kb.note_inferred_column_bound(rid, d);
         added = true;
     }
     if !added {
@@ -1062,8 +1063,16 @@ pub(super) fn install_typed_head_domain_goals(kb: &mut KnowledgeBase) {
             // What fills the bound, or `None` where only the conformance check can stand: a
             // WRITTEN domain's own clause (it IS the generator), a type with no domain, or a
             // KB that never declared `SortDomain` — the check then still guards the bound.
+            // A bound the author wrote at a type parameter the clause states a requirement at,
+            // or around one (`?x: A`, `?l: List[T = E]` under `WeakOrd[T = E]`), keeps the
+            // check, which asks the requirement of the value's type. One the clause's typing
+            // inferred (`?r` a `Result[E = P, T = Int64]`, `catchP`'s result) is the column's
+            // own type test, which states no requirement (060.1 §8.1): the parameter's is asked
+            // at its own column and by the guard's read.
+            let states_a_requirement = !kb.has_inferred_column_bound(rid, db_index)
+                && kb.rule_bound_has_provider_requirement(rid, &TermIdView(bound_tid));
             let fill: Option<Vec<Rc<NodeOccurrence>>> = if written_domain
-                || kb.rule_bound_has_provider_requirement(rid, &TermIdView(bound_tid))
+                || states_a_requirement
                 || !bound_is_fillable(kb, bound_tid)
             {
                 None

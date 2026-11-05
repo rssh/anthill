@@ -184,7 +184,7 @@ pub(super) fn spec_carrier_param(kb: &KnowledgeBase, spec_sort: Symbol) -> Optio
 /// A multi-parameter spec with no receiving operation falls through to `None` and is NOT
 /// refused: the diagnostic's whole content is "this sort lacks this provision" and there
 /// is no non-arbitrary way to say which sort that is.
-pub(super) fn spec_carrier_param_or_sole(kb: &KnowledgeBase, spec_sort: Symbol) -> Option<Symbol> {
+pub(crate) fn spec_carrier_param_or_sole(kb: &KnowledgeBase, spec_sort: Symbol) -> Option<Symbol> {
     if let Some(p) = spec_carrier_param(kb, spec_sort) {
         return Some(p);
     }
@@ -235,7 +235,7 @@ pub(super) fn spec_has_carrier_param(kb: &KnowledgeBase, spec: Symbol) -> bool {
 /// ONE LADDER, read by the verdict and by the message alike: they were two
 /// (`carrier_param_of` added a sole-parameter rung of its own), and where they disagreed
 /// a refusal printed an empty parameter name.
-pub(super) fn spec_over_parameter(kb: &KnowledgeBase, spec: Symbol) -> Option<Symbol> {
+pub(crate) fn spec_over_parameter(kb: &KnowledgeBase, spec: Symbol) -> Option<Symbol> {
     let canon = kb.canonical_sort_sym(spec);
     if sort_is_data(kb, canon) || spec_is_self_representing(kb, canon) {
         return None;

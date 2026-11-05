@@ -1158,7 +1158,7 @@ fn a_relation_that_passes_a_column_of_some_type_on_is_of_some_type() {
 fn a_later_load_reads_a_woven_call_as_its_call() {
     let early = "namespace wiwf14z.early\n  \
                  import anthill.prelude.{Int64, WeakOrd}\n  \
-                 rule sgn(?a, ?b, ?r) :- WeakOrd.compare(?a, ?b, ?r)\nend\n";
+                 rule sgn[A](?a: A, ?b: A, ?r) :- WeakOrd[T = A], WeakOrd.compare(?a, ?b, ?r)\nend\n";
     let later = |body: &str| {
         let mut kb = crate::common::load_kb_with(early);
         let src = format!(

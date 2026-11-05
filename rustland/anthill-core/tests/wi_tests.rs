@@ -1998,6 +1998,8 @@ mod wi_p7vp4_rule_body_requirements_test;
 mod wi_atvc1_rule_goal_implicit_arguments_test;
 #[path = "include/wi_j9ssg_rule_citation_bracket_test.rs"]
 mod wi_j9ssg_rule_citation_bracket_test;
+#[path = "include/wi_j9ssg_refined_value_in_domain_test.rs"]
+mod wi_j9ssg_refined_value_in_domain_test;
 #[path = "include/wi_0rrqp_clause_typed_through_constructor_test.rs"]
 mod wi_0rrqp_clause_typed_through_constructor_test;
 #[path = "include/wi_wf14z_clause_typed_as_a_whole_test.rs"]

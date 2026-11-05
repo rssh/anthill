@@ -122,23 +122,28 @@ pub(super) fn install_rule_provider_dictionaries(kb: &mut KnowledgeBase) -> Vec<
                 anchor.span,
                 anchor.owner,
             );
+            let mut read_args = vec![
+                NodeOccurrence::new_expr(Expr::Spliced(Value::term(instance)), anchor.span, anchor.owner),
+                spec_node,
+                NodeOccurrence::new_expr(
+                    Expr::Var(Var::DeBruijn(requirement.carrier)),
+                    anchor.span,
+                    anchor.owner,
+                ),
+            ];
+            // The clause's other type parameters the instance names at elements (`B = U` of
+            // `Conv[A = X, B = U]`): the read waits until each is known, as it does for its
+            // carrier, so the element selects the instance.
+            read_args.extend(
+                guard_element_vars(kb, rid, instance, requirement.carrier)
+                    .into_iter()
+                    .map(|v| NodeOccurrence::new_expr(Expr::Var(Var::DeBruijn(v)), anchor.span, anchor.owner)),
+            );
             goals.push(NodeOccurrence::synthesized_expr(
                 Expr::Apply {
                     recv_type: None,
                     functor: fd,
-                    pos_args: vec![
-                        NodeOccurrence::new_expr(
-                            Expr::Spliced(Value::term(instance)),
-                            anchor.span,
-                            anchor.owner,
-                        ),
-                        spec_node,
-                        NodeOccurrence::new_expr(
-                            Expr::Var(Var::DeBruijn(requirement.carrier)),
-                            anchor.span,
-                            anchor.owner,
-                        ),
-                    ],
+                    pos_args: read_args,
                     named_args: vec![
                         (out_label, out),
                         (
@@ -175,6 +180,29 @@ pub(super) fn install_rule_provider_dictionaries(kb: &mut KnowledgeBase) -> Vec<
         }
     }
     errors
+}
+
+/// The frame slots of clause `rid`'s declared type parameters that `instance` names at an
+/// element, other than its `carrier` — whether a column is typed at the parameter itself or
+/// only around it (`?us: List[T = U]`).
+pub(super) fn guard_element_vars(kb: &KnowledgeBase, rid: RuleId, instance: TermId, carrier: u32) -> Vec<u32> {
+    let params: Vec<u32> = kb
+        .rule_type_params(rid)
+        .iter()
+        .map(|(_, slot)| *slot)
+        .filter(|slot| *slot != carrier)
+        .collect();
+    let mut found: Vec<u32> = Vec::new();
+    if let Term::Fn { named_args, .. } = kb.get_term(instance) {
+        for (_, value) in named_args.iter() {
+            if let Term::Var(Var::DeBruijn(t)) = kb.get_term(*value) {
+                if params.contains(t) && !found.contains(t) {
+                    found.push(*t);
+                }
+            }
+        }
+    }
+    found
 }
 
 /// The synthesizing pass that owns every INFERRED requirement read — the provenance stamp,
@@ -274,9 +302,14 @@ pub fn is_inferred_requirement_read(kb: &KnowledgeBase, node: &NodeOccurrence) -
 /// ONE READ PER CARRIER: calls sharing their carrier arguments share one dictionary, as
 /// one written `require` covers every call at its carrier; calls at different carriers
 /// get one each, since nothing says they are one instance.
-pub(super) fn infer_rule_body_requirements(kb: &mut KnowledgeBase) {
+pub(super) fn infer_rule_body_requirements(
+    kb: &mut KnowledgeBase,
+    // Calls refused already, by their clause and span: one call gets one diagnosis.
+    refused_calls: &[(RuleId, Span)],
+) -> Vec<(TypeError, Option<crate::span::SourceId>)> {
+    let mut refused = Vec::new();
     let Some(fd_sym) = find_dictionary_symbol(kb) else {
-        return; // no `find_dictionary` — no clause can hold a read
+        return refused; // no `find_dictionary` — no clause can hold a read
     };
     let pass = inferred_requirement_pass(kb);
     let slots_pass = woven_slots_pass(kb);
@@ -408,11 +441,45 @@ pub(super) fn infer_rule_body_requirements(kb: &mut KnowledgeBase) {
                 })
                 .collect()
         };
+        // A clause whose guard the loader refused is refused for it, and what it lacks follows.
+        let refused_load = kb.has_a_refused_guard(rid);
         let mut guarded: Vec<WeaveTarget> = Vec::new();
         let mut groups: Vec<(usize, SpecDemand, Vec<Rc<NodeOccurrence>>)> = Vec::new();
         for (gi, demand) in demands {
             if let Some(out) = declared_guard_of(kb, rid, &guards, &demand) {
                 guarded.push((demand.call.call, vec![out], None));
+                continue;
+            }
+            // A receiver bracket that writes the spec's carrier at a concrete type fixes the
+            // instance at the call (`FiniteCollection[C = List[T = String]].size(?ls, ?n)`), as
+            // an argument at a concrete type does.
+            let fixed_at_the_call = call_recv_type_of(&demand.call.call).cloned().is_some_and(|instance| {
+                spec_carrier_param_or_sole(kb, kb.canonical_sort_sym(demand.spec))
+                    .and_then(|key| spec_binding_value(kb, &instance, kb.local_name_of(key)))
+                    .is_some_and(|carrier| instance_is_concrete(kb, &carrier))
+            });
+            // A carrier typed at the spec itself — a spec that receives on itself, `size(s:
+            // Sp)` — is dispatched by its value's sort, as an operation's parameter of that type
+            // is (`operation viaSp(s: Sp) -> Int64 = Sp.dflt(s)` declares nothing): there is no
+            // type parameter to declare it at.
+            let typed_at_the_spec = demand.carriers.first().and_then(|c| c.inferred_type()).is_some_and(|ty| {
+                sort_functor_of_view(kb, &ty).is_some_and(|s| same_sort_canonical(kb, s, demand.spec))
+            });
+            if !demand.of_the_sort
+                && !fixed_at_the_call
+                && !typed_at_the_spec
+                && !clause_sort_supplies(kb, rid, demand.spec)
+                && !declared_guard_requires(kb, rid, &guards, &demand)
+                && !carried_by_a_named_slot(kb, rid, &demand)
+                && demand
+                    .carriers
+                    .first()
+                    .and_then(|c| c.inferred_type())
+                    .is_some_and(|at| type_reaches_the_head(kb, rid, &at))
+            {
+                if !refused_load && !refused_calls.contains(&(rid, demand.call.call.span.span)) {
+                    refused.push(undeclared_requirement(kb, rid, &demand.call, demand.spec));
+                }
                 continue;
             }
             let same = groups.iter_mut().find(|(g, w, _)| {
@@ -457,8 +524,32 @@ pub(super) fn infer_rule_body_requirements(kb: &mut KnowledgeBase) {
         // A SLOT demand gets one read per slot of the callee's chain, and the call carries
         // all of them, in chain order — the layout `call_op_bridged` reads them back in.
         for (gi, demand) in slot_calls {
+            // 060.1 §1 — a slot at a type parameter the clause declares a guard of its spec at
+            // is filled by that guard's dictionary; one the callee states at a concrete
+            // instance, or one the clause's sort supplies, takes a read of its own; any other,
+            // at a type the call's arguments give, is the clause's refusal.
+            let entries = op_dict_entries(kb, demand.call.functor).entries().to_vec();
+            let routes: Vec<SlotRoute> = entries
+                .iter()
+                .map(|entry| slot_route(kb, rid, &guards, &demand.call, entry))
+                .collect();
+            if let Some(entry) = entries
+                .iter()
+                .zip(&routes)
+                .find(|(_, r)| matches!(r, SlotRoute::Undeclared))
+                .map(|(e, _)| e)
+            {
+                if !refused_load && !refused_calls.contains(&(rid, demand.call.call.span.span)) {
+                    refused.push(undeclared_requirement(kb, rid, &demand.call, entry.required_sort));
+                }
+                continue;
+            }
             let mut outs: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(demand.chain.len());
             for (k, spec) in demand.chain.iter().enumerate() {
+                if let Some(SlotRoute::Guard(out)) = routes.get(k) {
+                    outs.push(Rc::clone(out));
+                    continue;
+                }
                 let (read, out) = inferred_read(
                     kb,
                     rid,
@@ -513,6 +604,53 @@ pub(super) fn infer_rule_body_requirements(kb: &mut KnowledgeBase) {
         }
         kb.set_rule_body_nodes(rid, body_out);
     }
+    refused
+}
+
+/// 060.1 §8.2 and §3 — does the sort clause `rid` is written in supply `spec` with nothing
+/// declared: the spec itself, whose laws read it at its own parameter, or a sort that
+/// requires it, whose rules read its requirement as its operations do?
+pub(super) fn clause_sort_supplies(kb: &KnowledgeBase, rid: RuleId, spec: Symbol) -> bool {
+    let domain = kb.rule_domain(rid);
+    same_sort_canonical(kb, domain, spec)
+        || transitive_required_sorts(kb, domain)
+            .iter()
+            .any(|s| same_sort_canonical(kb, *s, spec))
+}
+
+/// 060.1 §1 — the refusal of a rule-body call that needs a dictionary of `spec` at a type the
+/// clause declares no requirement at: a rule takes a dictionary only where it declares one.
+fn undeclared_requirement(
+    kb: &KnowledgeBase,
+    rid: RuleId,
+    call: &DemandCall,
+    spec: Symbol,
+) -> (TypeError, Option<crate::span::SourceId>) {
+    let spec_name = short_name_of(kb.qualified_name_of(spec));
+    let relation = match kb.rule_head_value(rid) {
+        Value::Term { id, .. } => kb.head_functor(*id).unwrap_or(spec),
+        _ => spec,
+    };
+    (
+        TypeError::Other {
+            site: TypeError::here(),
+            span: Some(call.call.span.span),
+            context: TypeErrorContext::Rule {
+                name: relation,
+                field: RuleField::Body,
+            },
+            expected: format!(
+                "a requirement of `{spec_name}` the clause declares, at the type the call of \
+                 `{op}` is at",
+                op = kb.qualified_name_of(call.functor),
+            ),
+            actual: format!(
+                "the clause declares none, and a rule takes no dictionary it does not declare: {}",
+                crate::parse::desugar_target::DECLARE_A_REQUIREMENT,
+            ),
+        },
+        Some(call.call.span.source),
+    )
 }
 
 /// The goals in a connective's PROVED slots beneath `goal`, at every depth, pushed onto `out`
@@ -674,36 +812,6 @@ pub(crate) fn clause_requirement_reads(
     out
 }
 
-/// One IMPLICIT PARAMETER of a clause — a dictionary the clause takes from whoever cites it or
-/// calls it as a goal, one position of its relation's flat layout ([`requirement_read_counts`]).
-pub(crate) enum ImplicitParam {
-    /// A requirement read; its `out` receives the dictionary.
-    Read(Rc<NodeOccurrence>),
-    /// A FORWARD slot (WI-20261102-ATVC1): the variable at `slot` of a body goal's citation
-    /// marker ([`goal_marker`]), which hands the callee's read at that position whatever the
-    /// clause's own caller passed for it.
-    Forward {
-        marker: Rc<NodeOccurrence>,
-        slot: usize,
-    },
-}
-
-impl ImplicitParam {
-    /// The variable the dictionary is bound to: the read's `out`, or the marker's slot.
-    pub(crate) fn var_node(&self, kb: &KnowledgeBase, fd: Symbol) -> Rc<NodeOccurrence> {
-        match self {
-            ImplicitParam::Read(read) => Rc::clone(
-                requirement_read_out(kb, fd, read).expect("an implicit read is a read with an `out`"),
-            ),
-            ImplicitParam::Forward { marker, slot } => Rc::clone(
-                &goal_marker(kb, marker)
-                    .expect("a forward slot is a slot of a goal's citation marker")
-                    .slots[*slot],
-            ),
-        }
-    }
-}
-
 /// A rule-body goal riding in its citation marker, `__within_requirements(goal, relation, d₀
 /// … dₙ₋₁)` (WI-20261102-ATVC1), read off the occurrence: one slot per position of
 /// `relation`'s layout.
@@ -736,73 +844,6 @@ pub(crate) fn goal_marker<'a>(kb: &KnowledgeBase, node: &'a NodeOccurrence) -> O
     })
 }
 
-/// A clause's IMPLICIT PARAMETERS in the one order every reader takes them in: its
-/// requirement reads ([`clause_requirement_reads`]), then the FORWARD slots of its goals'
-/// citation markers ([`is_forward_slot`]), in body pre-order. A marker's other slots pass
-/// nothing that is the clause's own to receive: a read's `out` or an earlier forward slot's
-/// variable (a goal of the clause's own relation hands on what the clause took), a
-/// dictionary, or `__unrouted`.
-///
-/// The typer counts and routes these ([`requirement_read_counts`], the citation's routes) and
-/// the resolver binds them in the clause it has just opened (`bind_citation_reads`): one
-/// enumeration, so a position means one parameter to all three.
-pub(crate) fn clause_implicit_params(
-    kb: &KnowledgeBase,
-    fd: Symbol,
-    body: &[Rc<NodeOccurrence>],
-) -> Vec<ImplicitParam> {
-    fn markers(kb: &KnowledgeBase, node: &Rc<NodeOccurrence>, out: &mut Vec<Rc<NodeOccurrence>>) {
-        if goal_marker(kb, node).is_some() {
-            out.push(Rc::clone(node));
-            return;
-        }
-        if let Some(expr) = node.as_expr() {
-            for child in proved_goal_children(kb, expr) {
-                markers(kb, &child, out);
-            }
-        }
-    }
-    let mut params: Vec<ImplicitParam> = clause_requirement_reads(kb, fd, body)
-        .into_iter()
-        .map(ImplicitParam::Read)
-        .collect();
-    let mut found = Vec::new();
-    for node in body {
-        markers(kb, node, &mut found);
-    }
-    for marker in found {
-        let forwards: Vec<usize> = goal_marker(kb, &marker)
-            .expect("collected as a marker")
-            .slots
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| is_forward_slot(kb, s))
-            .map(|(i, _)| i)
-            .collect();
-        params.extend(forwards.into_iter().map(|slot| ImplicitParam::Forward {
-            marker: Rc::clone(&marker),
-            slot,
-        }));
-    }
-    params
-}
-
-/// The synthesizing pass of a FORWARD slot's variable (`route_rule_goal_requirements`): a
-/// variable of the clause minted to receive what the clause's caller passes for one position
-/// of a callee's layout.
-pub(crate) const FORWARD_SLOT_PASS: &str = "anthill.kb.passes.forward_slot";
-
-/// Is this marker slot a FORWARD slot ([`FORWARD_SLOT_PASS`])? By provenance, read on a shared
-/// borrow by the pass name's intern entry ([`is_inferred_requirement_read`]'s reason): a slot
-/// that passes on a parameter the clause already has holds the same kind of variable.
-pub(crate) fn is_forward_slot(kb: &KnowledgeBase, slot: &NodeOccurrence) -> bool {
-    slot.synthesized_by().is_some_and(|by| {
-        kb.symbols
-            .lookup(FORWARD_SLOT_PASS)
-            .is_some_and(|s| crate::kb::occurrence::PassId::from_symbol(s) == by)
-    })
-}
-
 /// The labels an inferred read is spelled with, interned once per pass.
 struct ReadLabels {
     /// The read of a call under a form ([`REQUIREMENT_IN_FORM_LABEL`]).
@@ -832,6 +873,9 @@ struct SpecDemand {
     /// missing provider leaves instead of failing ([`REQUIREMENT_IN_FORM_LABEL`]). A group's
     /// read is so only when every call it serves is.
     in_form: bool,
+    /// A read of the requirement of the sort the rule is written in, at no carrier
+    /// ([`ClauseCondition::SortRequires`]).
+    of_the_sort: bool,
 }
 
 /// The dictionary of the guard of clause `rid` (`guards`: its spec, its carrier's frame slot
@@ -853,6 +897,143 @@ fn declared_guard_of(
         .iter()
         .find(|(spec, carrier, _)| *carrier == param && same_sort_canonical(kb, *spec, demand.spec))
         .map(|(_, _, out)| Rc::clone(out))
+}
+
+/// How slot `entry` of a rule-body call's dictionary chain is filled ([`slot_route`]).
+enum SlotRoute {
+    /// By the dictionary of a guard the clause declares at the slot's instance.
+    Guard(Rc<NodeOccurrence>),
+    /// By a read of its own: the callee states the slot at a concrete instance, the call's
+    /// arguments fix it, or the clause's sort supplies its spec.
+    Read,
+    /// At a type of the clause that the clause declares no requirement at: refused.
+    Undeclared,
+}
+
+/// [`SlotRoute`] of slot `entry` of `call`'s chain in clause `rid`. The slot's carrier binding
+/// is the declared type of some of the callee's parameters, and the types the clause's typing
+/// stamped on the arguments there say where the slot is: at a parameter the clause states a
+/// guard of the slot's spec at (`guards`: spec, carrier frame slot, the read's `out`), at a
+/// concrete type, or at another type of the clause.
+fn slot_route(
+    kb: &mut KnowledgeBase,
+    rid: RuleId,
+    guards: &[(Symbol, u32, Rc<NodeOccurrence>)],
+    call: &DemandCall,
+    entry: &RequiresEntry,
+) -> SlotRoute {
+    if type_is_ground(kb, &entry.spec) || clause_sort_supplies(kb, rid, entry.required_sort) {
+        return SlotRoute::Read;
+    }
+    let Some(key) = spec_carrier_param_or_sole(kb, kb.canonical_sort_sym(entry.required_sort)) else {
+        return SlotRoute::Read;
+    };
+    let Some(binding) = spec_binding_value(kb, &entry.spec, kb.local_name_of(key)) else {
+        return SlotRoute::Read;
+    };
+    // The binding names a type parameter of the callee or of its sort, by its name or by its
+    // variable, and so may a parameter's type: each is read as the parameter's variable.
+    let as_param_var = |kb: &KnowledgeBase, v: &Value| match view_ref_symbol(kb, v).and_then(|s| kb.canonical_type_param_var(s)) {
+        Some(var) => Value::term(var),
+        None => v.clone(),
+    };
+    let binding = as_param_var(kb, &binding);
+    let Some(rec) = crate::kb::op_info::lookup_operation_info(kb, call.functor) else {
+        return SlotRoute::Read;
+    };
+    let at: Vec<Value> = rec
+        .params
+        .iter()
+        .zip(&call.args)
+        .filter(|((_, ty), _)| {
+            let ty = as_param_var(kb, ty);
+            crate::kb::term_view::views_structurally_equal(kb, &ty, &binding)
+        })
+        .filter_map(|(_, arg)| arg.inferred_type())
+        .collect();
+    // No parameter is typed by the binding alone (`List[T = A]`): no argument says the slot's
+    // instance, which the read derives from the values where the call runs.
+    if at.is_empty() {
+        return SlotRoute::Read;
+    }
+    for ty in &at {
+        if let Some(param) = caller_param_at(kb, rid, ty) {
+            if let Some((_, _, out)) = guards
+                .iter()
+                .find(|(spec, carrier, _)| *carrier == param && same_sort_canonical(kb, *spec, entry.required_sort))
+            {
+                return SlotRoute::Guard(Rc::clone(out));
+            }
+        }
+    }
+    if at.iter().any(|ty| instance_is_concrete(kb, ty))
+        || !at.iter().any(|ty| type_reaches_the_head(kb, rid, ty))
+    {
+        return SlotRoute::Read;
+    }
+    SlotRoute::Undeclared
+}
+
+/// Is `demand`'s call at the element of a NAMED requirement slot a variable of clause `rid` is
+/// typed with (kernel-language §8.1): `?p <=> box(a: ?x, b: ?y), WeakOrd.compare(?x, ?y, ?c)`
+/// over `sort Box requires O: WeakOrd[T = T]`, `?p` a `Box[T = t, O = o]` and `?x` a `t` — the
+/// read is filled from that slot as the citation fixes it, as a call reads the slot off its
+/// argument, and nothing is declared for it.
+fn carried_by_a_named_slot(kb: &mut KnowledgeBase, rid: RuleId, demand: &SpecDemand) -> bool {
+    let Some(at) = demand.carriers.first().and_then(|c| c.inferred_type()) else {
+        return false;
+    };
+    let Some(carrier_key) = spec_carrier_param_or_sole(kb, kb.canonical_sort_sym(demand.spec))
+        .map(|k| kb.local_name_of(k).to_owned())
+    else {
+        return false;
+    };
+    clause_var_stamps(kb, rid).into_iter().any(|(_, ty)| {
+        let TypeExtractor::Parameterized { base, bindings } = extract_type(kb, &ty) else {
+            return false;
+        };
+        let entries = provider_dict_entries(kb, base, None);
+        kb.named_requirement_slots(base).to_vec().into_iter().any(|slot| {
+            if !slot.spec_base.is_some_and(|s| same_sort_canonical(kb, s, demand.spec)) {
+                return false;
+            }
+            // The slot's requirement at the type's bindings, as a citation reads it
+            // (`carried_slot_reading`): it carries the call where its carrier is the call's.
+            let Some(entry) = dict_chain_index(kb, base, &slot).and_then(|i| entries.entries().get(i).cloned())
+            else {
+                return false;
+            };
+            slot_spec_at_bindings(kb, base, &entry.spec, &bindings)
+                .and_then(|spec| spec_binding_value(kb, &spec, &carrier_key))
+                .is_some_and(|carrier| crate::kb::term_view::views_structurally_equal(kb, &carrier, &at))
+        })
+    })
+}
+
+/// Does a guard of clause `rid` at the type `demand`'s call is at state a spec that requires the
+/// call's: `Base.op(?x, ?r)` under `Derived[T = A]`, `?x: A`, where `Derived` requires `Base`. The
+/// declared requirement holds its spec's chain (§8.7), and the call's read is routed through it.
+fn declared_guard_requires(
+    kb: &mut KnowledgeBase,
+    rid: RuleId,
+    guards: &[(Symbol, u32, Rc<NodeOccurrence>)],
+    demand: &SpecDemand,
+) -> bool {
+    if guards.is_empty() {
+        return false;
+    }
+    let Some(at) = demand.carriers.first().and_then(|c| c.inferred_type()) else {
+        return false;
+    };
+    let Some(param) = caller_param_at(kb, rid, &at) else {
+        return false;
+    };
+    guards.iter().any(|(spec, carrier, _)| {
+        *carrier == param
+            && transitive_required_sorts(kb, *spec)
+                .iter()
+                .any(|s| same_sort_canonical(kb, *s, demand.spec))
+    })
 }
 
 /// A SLOT demand ([`inferred_slot_demand`]): the spec of each slot of the callee's dictionary
@@ -1155,6 +1336,7 @@ fn inferred_demand(
         spec,
         carriers,
         in_form: false,
+        of_the_sort,
     })
 }
 
@@ -1206,8 +1388,11 @@ fn inferred_demand(
 /// (rarely) flagged, and the escape is to declare the requirement or add a
 /// direct/instance provision. Only ever a false POSITIVE risk on that shape — never a
 /// spurious accept.
-pub(super) fn check_rule_body_requirements(kb: &KnowledgeBase) -> Vec<TypeError> {
+/// Answers the refusals, and each call it refused by its clause and span — one call, a clause's
+/// body being written in one file — so a later pass does not refuse it again.
+pub(super) fn check_rule_body_requirements(kb: &KnowledgeBase) -> (Vec<TypeError>, Vec<(RuleId, Span)>) {
     let mut errors: Vec<TypeError> = Vec::new();
+    let mut refused_calls: Vec<(RuleId, Span)> = Vec::new();
     // Absent when the builtin is unregistered (a minimal KB); then no rule can
     // carry a declared `requires`, so `declared` simply stays empty.
     let fd_sym = kb.try_resolve_symbol(crate::parse::desugar_target::qualified(
@@ -1238,11 +1423,13 @@ pub(super) fn check_rule_body_requirements(kb: &KnowledgeBase) -> Vec<TypeError>
                 collect_find_dictionary_bases(kb, node, fd, &mut declared);
             }
         }
+        let before = errors.len();
         for node in body_nodes {
             check_occ_spec_op_requirements(kb, node, fd_sym, &declared, &mut errors);
         }
+        refused_calls.extend(errors[before..].iter().filter_map(|e| e.span(kb)).map(|span| (rid, span)));
     }
-    errors
+    (errors, refused_calls)
 }
 
 /// WI-20260917-NR6FJ — the OPERATION-CALL twin of [`check_rule_body_requirements`].
@@ -3055,11 +3242,10 @@ pub(crate) fn requirement_read_out<'a>(
         .map(|(_, out)| out)
 }
 
-/// WI-20260911-5G28A S3 — the SPEC each implicit parameter of `relation`'s clauses reads, in
-/// the flat layout [`requirement_read_counts`] indexes (clause after clause, parameter after
-/// parameter — [`clause_implicit_params`]): the head of a read's written instance, or `None`
-/// where it has none a reader can name. A forward slot reads the spec of the callee's position
-/// it hands on.
+/// WI-20260911-5G28A S3 — the SPEC each requirement read of `relation`'s clauses reads, in
+/// the flat layout [`requirement_read_counts`] indexes (clause after clause, read after
+/// read — [`clause_requirement_reads`]): the head of a read's written instance, or `None`
+/// where it has none a reader can name.
 ///
 /// What `apply_domain` asks to decide which of a provider's reads its dictionary is FOR —
 /// the same enumeration, so the positions it fills are the positions the resolver binds.
@@ -3070,20 +3256,12 @@ pub(crate) fn requirement_read_specs(kb: &KnowledgeBase, relation: Symbol) -> Ve
     let qn = kb.qualified_name_of(relation).to_string();
     let mut out: Vec<Option<Symbol>> = Vec::new();
     for rid in kb.rule_ids_by_qn(&qn) {
-        for param in clause_implicit_params(kb, fd, kb.rule_body_nodes(rid)) {
-            out.push(match param {
-                ImplicitParam::Read(n) => match n.as_expr() {
-                    Some(Expr::Apply { pos_args, .. }) => {
-                        sort_functor_of_view(kb, &Value::Node(pos_args[0].clone()))
-                    }
-                    _ => None,
-                },
-                // A forward slot passes on a parameter of a relation OUTSIDE its own
-                // recursion (`route_rule_goal_requirements`), so this descent ends.
-                ImplicitParam::Forward { marker, slot } => {
-                    let callee = goal_marker(kb, &marker).expect("a forward slot's marker").relation;
-                    requirement_read_specs(kb, callee).get(slot).copied().flatten()
+        for read in clause_requirement_reads(kb, fd, kb.rule_body_nodes(rid)) {
+            out.push(match read.as_expr() {
+                Some(Expr::Apply { pos_args, .. }) => {
+                    sort_functor_of_view(kb, &Value::Node(pos_args[0].clone()))
                 }
+                _ => None,
             });
         }
     }
@@ -3098,7 +3276,7 @@ pub(crate) fn find_dictionary_symbol(kb: &KnowledgeBase) -> Option<Symbol> {
     ))
 }
 
-/// WI-20260911-5G28A S2 — how many implicit parameters ([`clause_implicit_params`]) each
+/// WI-20260911-5G28A S2 — how many requirement reads ([`clause_requirement_reads`]) each
 /// clause of `relation` holds, in the order the relation's clauses are enumerated
 /// (`rule_ids_by_qn`). The FLAT layout of a citation's implicit arguments is clause after
 /// clause, parameter after parameter; this is what turns a clause's `RuleId` into its offset
@@ -3114,7 +3292,7 @@ pub(crate) fn requirement_read_counts(
     kb.rule_ids_by_qn(&qn)
         .into_iter()
         .map(|rid| {
-            let params = clause_implicit_params(kb, fd, kb.rule_body_nodes(rid)).len();
+            let params = clause_requirement_reads(kb, fd, kb.rule_body_nodes(rid)).len();
             (rid, params)
         })
         .collect()

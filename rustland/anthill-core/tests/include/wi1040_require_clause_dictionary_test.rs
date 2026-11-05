@@ -757,8 +757,11 @@ fn the_check_only_spelling_is_unchanged() {
 end
 "#
     );
-    assert!(
-        answers(ns2, &src2).is_empty(),
+    // A goal at concrete types builds its callee's dictionary at load (060.1 §1): refused
+    // there, as an operation's call at `Bare` is.
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&src2),
+        &["answer.body", "no provider answers `test.wi1040.checkonly2.Desc[T = test.wi1040.checkonly2.Bare]`"],
         "a carrier with no provider must not satisfy the guard",
     );
 }

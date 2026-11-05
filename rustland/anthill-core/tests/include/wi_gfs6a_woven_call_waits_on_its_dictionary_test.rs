@@ -352,7 +352,7 @@ fn a_selection_an_operation_makes_reaches_the_rule_from_a_rule_goal() {
     let src = r#"
 namespace test.gfs6a.sel
   import anthill.prelude.{Int64, Error, EmptyStream, WeakOrd}
-  rule cmp(?a, ?b, ?c) :- WeakOrd.compare(?a, ?b, ?c)
+  rule cmp[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], WeakOrd.compare(?a, ?b, ?c)
   operation viaRule[A](x: A, y: A) -> Int64 effects {Error, Error[EmptyStream]}
       requires WeakOrd[T = A] = cmp(x, y).head.c
   sort Descending

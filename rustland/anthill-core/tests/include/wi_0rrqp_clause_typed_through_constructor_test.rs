@@ -317,10 +317,10 @@ const PR_DECLS: &str = r#"
   import NS.Pr.{pr}
   import NS.Outer.{outer}
 
-  rule ordPr(?p, ?c) :- ?p <=> pr(a: ?x, b: ?y), WeakOrd.compare(?x, ?y, ?c)
-  rule ordLeft(?p, ?c) :- pr(a: ?x, b: ?y) <=> ?p, WeakOrd.compare(?x, ?y, ?c)
-  rule ordNested(?o, ?c) :- ?o <=> outer(inner: pr(a: ?x, b: ?y)), WeakOrd.compare(?x, ?y, ?c)
-  rule ordTwoStep(?o, ?c) :- ?o <=> outer(inner: ?p), ?p <=> pr(a: ?x, b: ?y), WeakOrd.compare(?x, ?y, ?c)
+  rule ordPr[A](?p: Pr[T = A], ?c) :- WeakOrd[T = A], ?p <=> pr(a: ?x, b: ?y), WeakOrd.compare(?x, ?y, ?c)
+  rule ordLeft[A](?p: Pr[T = A], ?c) :- WeakOrd[T = A], pr(a: ?x, b: ?y) <=> ?p, WeakOrd.compare(?x, ?y, ?c)
+  rule ordNested[A](?o: Outer[U = A], ?c) :- WeakOrd[T = A], ?o <=> outer(inner: pr(a: ?x, b: ?y)), WeakOrd.compare(?x, ?y, ?c)
+  rule ordTwoStep[A](?o: Outer[U = A], ?c) :- WeakOrd[T = A], ?o <=> outer(inner: ?p), ?p <=> pr(a: ?x, b: ?y), WeakOrd.compare(?x, ?y, ?c)
 "#;
 
 const PR_DRIVER: &str = r#"
@@ -393,8 +393,8 @@ fn each_clause_of_a_relation_is_met_on_its_own() {
     entity pr(a: T, b: T)
   end
   import NS.Pr.{pr}
-  rule ordBoth(?p, ?c) :- ?p <=> pr(a: ?x, b: ?y), WeakOrd.compare(?x, ?y, ?c)
-  rule ordBoth(?p, ?c) :- ?p <=> pr(a: ?x, b: ?y), WeakOrd.compare(?y, ?x, ?c)
+  rule ordBoth[A](?p: Pr[T = A], ?c) :- WeakOrd[T = A], ?p <=> pr(a: ?x, b: ?y), WeakOrd.compare(?x, ?y, ?c)
+  rule ordBoth[A](?p: Pr[T = A], ?c) :- WeakOrd[T = A], ?p <=> pr(a: ?x, b: ?y), WeakOrd.compare(?y, ?x, ?c)
   sort Driver
     operation viaBoth[A](p: Pr[T = A], c: Int64) -> Int64 effects {Error}
       requires WeakOrd[T = A] = ordBoth(p, c).takeN(5).length()
@@ -469,7 +469,7 @@ fn a_column_the_citation_gives_no_type_pins_nothing() {
     operation mix[A](x: A, n: Int64) -> Int64 requires WeakOrd[T = A] = n
   end
   rule seven(?n) :- ?n <=> 7
-  rule mixed(?p, ?n, ?c) :-
+  rule mixed[A](?p: Pr[T = A], ?n, ?c) :- WeakOrd[T = A],
     ?p <=> pr(a: ?x, b: ?y), seven(?n), Util.mix(?x, ?n, ?m), WeakOrd.compare(?x, ?y, ?c)
 "#,
     ));
@@ -1039,7 +1039,7 @@ fn an_operations_own_requires_reached_through_a_constructor_is_filled() {
             "{PR_DECLS}  sort Util\n    \
              operation sign[A](x: A, y: A) -> Int64 requires WeakOrd[T = A] = WeakOrd.compare(x, y)\n  \
              end\n  \
-             rule signPr(?p, ?c) :- ?p <=> pr(a: ?x, b: ?y), Util.sign(?x, ?y, ?c)\n  \
+             rule signPr[A](?p: Pr[T = A], ?c) :- WeakOrd[T = A], ?p <=> pr(a: ?x, b: ?y), Util.sign(?x, ?y, ?c)\n  \
              sort Driver\n    \
              operation viaSign[A](p: Pr[T = A]) -> Int64 effects {{Error, Error[EmptyStream]}}\n      \
              requires WeakOrd[T = A] = signPr(p).head.c\n    \
@@ -1157,7 +1157,7 @@ fn a_call_at_a_variable_the_clause_types_is_decided_at_load() {
         ns,
         &format!(
             "{DESC}  rule viaCtor(?p, ?s) :- ?p <=> pt(x: 1, y: 2), Desc.describe(?p, ?s)\n  \
-             rule viaVar(?p, ?s) :- Desc.describe(?p, ?s)\n  \
+             rule viaVar[A](?p: A, ?s) :- Desc[T = A], Desc.describe(?p, ?s)\n  \
              sort Driver\n    \
              operation cite(p: Pt) -> Int64 effects {{Error, Error[EmptyStream]}}\n      \
              requires Desc[T = Pt] = viaCtor(p).head.s\n    \
@@ -1787,4 +1787,33 @@ fn a_slot_fixed_to_a_witness_that_does_not_answer_is_refused() {
         );
         assert!(errors.len() == 1 && errors[0].contains(&says), "{callee}: {errors:#?}");
     }
+}
+
+/// 060.1 §1 — A NAMED SLOT CARRIES THE CALL AT ITS OWN CARRIER ONLY. Over `sort Pair2 { sort T
+/// = ?; sort U = ?; requires O: WeakOrd[T = T] }`, a clause outside the sort with `?p:
+/// Pair2[T = ?v, …]` calls `compare` at `?v` and reads `O` as the citation fixes it, declaring
+/// nothing (`cmpT` loads). A call at the type of `U`, which no slot is at, is the clause's to
+/// declare, and is refused (`cmpU`). FAILS with the slot matched by any binding of the
+/// variable's type (measured before the fix): `cmpU` loads, its call reading no slot.
+#[test]
+fn a_named_slot_carries_a_call_at_its_own_carrier_only() {
+    let src = |rule: &str| {
+        format!(
+            "namespace rrqp.slotat\n  import anthill.prelude.{{Int64, String, WeakOrd}}\n  \
+             sort Pair2\n    sort T = ?\n    sort U = ?\n    requires O: WeakOrd[T = T]\n    \
+             entity pr(a: T, b: U)\n  end\n{rule}end\n"
+        )
+    };
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&src(
+            "  rule cmpU(?p: Pair2[T = Int64, U = ?v], ?c) :- ?p <=> pr(a: ?x, b: ?y), WeakOrd.compare(?y, ?y, ?c)\n",
+        )),
+        &["cmpU.body", "a requirement of `WeakOrd` the clause declares"],
+        "a call at `U`'s type",
+    );
+    let mut kb = crate::common::load_kb_with(&src(
+        "  rule cmpT(?p: Pair2[T = ?v, U = String], ?c) :- ?p <=> pr(a: ?x, b: ?y), WeakOrd.compare(?x, ?x, ?c)\n  \
+         rule viaT(?c) :- cmpT(pr(a: 4, b: \"s\"), ?c)\n",
+    ));
+    assert_eq!(crate::common::one_definite_int(&mut kb, "rrqp.slotat.viaT"), Some(0), "`Int64`'s own `compare(4, 4)`");
 }

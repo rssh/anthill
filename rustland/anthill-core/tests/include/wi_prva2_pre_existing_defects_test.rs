@@ -167,13 +167,15 @@ namespace wiprva2.multi
     operation conv(a: Meters, b: String) -> Int64 = 7
   end
 
-  -- every carrier unknown at load: the call is woven, and its read guards at run time
-  rule toN(?x, ?u, ?r) :- Conv.conv(?x, ?u, ?r)
+  -- every carrier at a type parameter the clause declares: the call is woven through the
+  -- guard's dictionary, which a goal at concrete types builds at load
+  rule toN[X, U](?x: X, ?u: U, ?r) :- Conv[A = X, B = U], Conv.conv(?x, ?u, ?r)
   rule go(?r) :- toN(m(v: 3), "km", ?r)
-  -- no provision binds `B = Int64`
-  rule noRow(?r) :- toN(m(v: 3), 5, ?r)
 end
 "#;
+
+/// A goal of `toN` at `(Meters, Int64)`, which no provision binds.
+const NO_ROW: &str = "  rule noRow(?r) :- toN(m(v: 3), 5, ?r)\n";
 
 /// (c) THE CASE. `toN`'s call is woven, so its inferred read guards the call at run time — and
 /// the guard asked EACH carrier to provide `Conv`: `Meters` does, `String` never will (it is the
@@ -184,27 +186,27 @@ end
 #[test]
 fn a_provision_at_several_parameters_answers_a_woven_call() {
     let mut kb = crate::common::load_kb_with(MULTI);
-    assert_eq!(
-        crate::common::body_calls(&kb, "wiprva2.multi.toN"),
-        vec![
-            ("conv".to_string(), true, Vec::new()),
-            ("find_dictionary".to_string(), false, Vec::new()),
-        ],
-        "`toN`'s call is woven behind an inferred read — the read is what guards it",
+    let calls = crate::common::body_calls(&kb, "wiprva2.multi.toN");
+    assert!(
+        calls.iter().any(|(c, woven, _)| c == "conv" && *woven)
+            && calls.iter().any(|(c, _, _)| c == "find_dictionary"),
+        "`toN`'s call is woven behind its guard's read — the read is what guards it: {calls:?}",
     );
     assert_eq!(crate::common::one_definite_int(&mut kb, "wiprva2.multi.go"), Some(7), "`Meters.conv`");
 }
 
-/// (c) CONTROL — passes either way, BY DESIGN, and guards the other direction: the question is
-/// the PROVISION at the carriers, not "some carrier provides". No provision binds `B = Int64`,
-/// so the read is refused and `noRow` is empty, definitely. A guard that asked only the first
-/// carrier (`Meters` provides `Conv`) would fire, and the fetch at `(Meters, Int64)` would come
-/// back undecided — one CONDITIONAL row where there is no answer (measured).
+/// (c) — the question is the PROVISION at the carriers, not "some carrier provides". No
+/// provision binds `B = Int64`, so the goal `toN(m(v: 3), 5, ?r)`, whose dictionary is built at
+/// load at concrete types (060.1 §1), is refused there, as an operation's call at `(Meters,
+/// Int64)` is. It loaded, and `noRow` was empty. FAILS with the goal's dictionary left to the
+/// read at run time (`GuardRoute::Concrete` unrouted): it loads.
 #[test]
 fn a_call_no_provision_binds_is_refused() {
-    let mut kb = crate::common::load_kb_with(MULTI);
-    let rows = crate::common::query_unary(&mut kb, "wiprva2.multi.noRow");
-    assert!(rows.is_empty(), "no provision of `Conv` at `(Meters, Int64)`; got {rows:?}");
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&extended(MULTI, NO_ROW)),
+        &["noRow.body", "no provider answers `wiprva2.multi.Conv[A = wiprva2.multi.Meters, B = anthill.prelude.Int64]`"],
+        "the goal at `(Meters, Int64)`",
+    );
 }
 
 /// (c) THE LOAD-TIME FACE. With both carriers concrete at load, WI-642's check asked each to
@@ -217,6 +219,67 @@ fn a_call_whose_carriers_are_known_at_load_is_not_refused() {
     let src = extended(MULTI, "  rule both(?r) :- Conv.conv(m(v: 3), \"km\", ?r)\n");
     let mut kb = crate::common::load_kb_with(&src);
     assert_eq!(crate::common::one_definite_int(&mut kb, "wiprva2.multi.both"), Some(7), "`Meters.conv`");
+}
+
+/// 060.1 §8.7 — A GOAL AT THE CALLER'S TWO-PARAMETER GUARD passes the caller's dictionary:
+/// `outer` declares `Conv[A = X, B = U]`, and its goal `toN(?x, ?u, ?r)` puts its `X` and `U`
+/// where `toN`'s guard has them, so `go` answers `7`. A goal putting `outer`'s `X` at `toN`'s `U`
+/// needs `Conv[A = X, B = X]`, which `outer` does not declare, and is refused. One variable at
+/// both parameters is one type: `same[X]` under `Conv[A = X, B = X]` answers `9` over `Twin`'s
+/// `Conv[A = Twin, B = Twin]`, and the goal at `(Meters, Meters)`, which no provision binds, is
+/// refused at load.
+/// FAILS with the declared route matching a carrier alone (measured before the fix): `outer` is
+/// refused, "the clause declares none". FAILS with a carrier written twice read as two carriers
+/// (measured before the fix): `same` is refused, "`Conv.B` in a rule head requires `Conv` of the
+/// matched value's sort".
+#[test]
+fn a_goal_at_the_callers_two_parameter_guard_passes_its_dictionary() {
+    let rules = "  sort Twin\n    entity tw(v: Int64)\n    provides Conv[A = Twin, B = Twin]\n    \
+                 operation conv(a: Twin, b: Twin) -> Int64 = 9\n  end\n  \
+                 rule outer[X, U](?x: X, ?u: U, ?r) :- Conv[A = X, B = U], toN(?x, ?u, ?r)\n  \
+                 rule viaOuter(?r) :- outer(m(v: 3), \"km\", ?r)\n  \
+                 rule same[X](?x: X, ?y: X, ?r) :- Conv[A = X, B = X], Conv.conv(?x, ?y, ?r)\n  \
+                 rule twins(?r) :- same(tw(v: 1), tw(v: 2), ?r)\n";
+    let mut kb = crate::common::load_kb_with(&extended(MULTI, rules));
+    assert_eq!(crate::common::one_definite_int(&mut kb, "wiprva2.multi.viaOuter"), Some(7), "through `outer`");
+    assert_eq!(crate::common::one_definite_int(&mut kb, "wiprva2.multi.twins"), Some(9), "`Twin.conv`");
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&extended(
+            MULTI,
+            &format!("{rules}  rule meters(?r) :- same(m(v: 3), m(v: 4), ?r)\n"),
+        )),
+        &["meters.body", "no provider answers `wiprva2.multi.Conv[A = wiprva2.multi.Meters, B = wiprva2.multi.Meters]`"],
+        "the goal at `(Meters, Meters)`",
+    );
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&extended(
+            MULTI,
+            "  rule swapped[X, U](?x: X, ?u: U, ?r) :- Conv[A = X, B = U], toN(?x, ?x, ?r)\n",
+        )),
+        &["swapped.body", "a requirement of `Conv` the clause declares"],
+        "the caller's `X` at `toN`'s `U`",
+    );
+}
+
+/// 060.1 §8.7 — AN ELEMENT NAMED ONLY INSIDE A COLUMN'S TYPE SELECTS THE INSTANCE TOO: `toL[X,
+/// U]` types `?us` as `List[T = U]` and no column at `U` itself, and its guard's read waits for
+/// `U` as for its carrier. With `Feet provides Conv[A = Meters, B = Int64]` beside `Meters`' `B =
+/// String`, `toL(m(v: 3), [5])` answers `Feet`'s `8` and `toL(m(v: 3), ["km"])` `Meters`' `7`.
+/// FAILS with the read waiting only for elements a column is typed at directly (measured before
+/// the fix): `[5]` answers `7`, the read run before `U` was known.
+#[test]
+fn an_element_inside_a_column_type_selects_the_instance() {
+    let rules = "  sort Feet\n    provides Conv[A = Meters, B = Int64]\n    \
+                 operation conv(a: Meters, b: Int64) -> Int64 = 8\n  end\n  \
+                 rule toL[X, U](?m: X, ?us: List[T = U], ?r) :- Conv[A = X, B = U], ?us <=> cons(?u, ?t), \
+                 Conv.conv(?m, ?u, ?r)\n  \
+                 rule ints(?r) :- toL(m(v: 3), [5], ?r)\n  \
+                 rule strs(?r) :- toL(m(v: 3), [\"km\"], ?r)\n";
+    let src = extended(MULTI, rules)
+        .replace("import anthill.prelude.{Int64, String}", "import anthill.prelude.{Int64, String, List}\n  import anthill.prelude.List.{cons}");
+    let mut kb = crate::common::load_kb_with(&src);
+    assert_eq!(crate::common::one_definite_int(&mut kb, "wiprva2.multi.ints"), Some(8), "`Feet`'s, at `B = Int64`");
+    assert_eq!(crate::common::one_definite_int(&mut kb, "wiprva2.multi.strs"), Some(7), "`Meters`', at `B = String`");
 }
 
 /// (c) — a refusal the per-carrier question made is KEPT, on the KNOWN carriers: `early` puts
@@ -265,9 +328,11 @@ const CONV2: &str = "  sort Conv2\n    sort A = ?\n    sort B = ?\n    provides 
 /// conditional row, and `bad` loads clean.
 #[test]
 fn a_conversion_row_is_no_instance() {
-    let mut kb = crate::common::load_kb_with(&extended(MULTI, CONV2));
-    let rows = crate::common::query_unary(&mut kb, "wiprva2.multi.noRow");
-    assert!(rows.is_empty(), "no provision of `Conv` at `(Meters, Int64)`; got {rows:?}");
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&extended(MULTI, &format!("{CONV2}{NO_ROW}"))),
+        &["noRow.body", "no provider answers `wiprva2.multi.Conv[A = wiprva2.multi.Meters, B = anthill.prelude.Int64]`"],
+        "no provision of `Conv` at `(Meters, Int64)`, the conversion row beside",
+    );
     crate::common::expect_load_errors(
         crate::common::try_load_kb_with(&extended(
             MULTI,
@@ -284,7 +349,7 @@ fn conv_program(ns: &str, rows: &str, rules: &str) -> String {
     format!(
         "namespace {ns}\n  import anthill.prelude.{{Int64, String}}\n  \
          sort Conv\n    sort A = ?\n    sort B = ?\n    operation conv(a: A, b: B) -> Int64\n  end\n\
-         {rows}  rule toN(?x, ?u, ?r) :- Conv.conv(?x, ?u, ?r)\n{rules}end\n"
+         {rows}  rule toN[X, U](?x: X, ?u: U, ?r) :- Conv[A = X, B = U], Conv.conv(?x, ?u, ?r)\n{rules}end\n"
     )
 }
 
@@ -300,9 +365,11 @@ fn a_structural_binding_admits_no_carrier() {
          operation conv(a: Meters, b: (Int64) -> Int64) -> Int64 = 7\n  end\n",
         "  rule go(?r) :- toN(m(v: 3), \"km\", ?r)\n",
     );
-    let mut kb = crate::common::load_kb_with(&src);
-    let rows = crate::common::query_unary(&mut kb, "wiprva2.arrow.go");
-    assert!(rows.is_empty(), "`String` is no `(Int64) -> Int64`; got {rows:?}");
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&src),
+        &["go.body", "`wiprva2.arrow.Conv[A = wiprva2.arrow.Meters, B = anthill.prelude.String]`"],
+        "`String` is no `(Int64) -> Int64`: the goal's dictionary is built at load, and none is",
+    );
 }
 
 /// (c) — one provider variable binds its parameters ALIKE. `Same provides Conv[A = X, B = X]`
@@ -314,12 +381,18 @@ fn a_variable_binds_its_parameters_alike() {
         "wiprva2.same",
         "  sort Same\n    sort X = ?\n    provides Conv[A = X, B = X]\n    \
          operation conv(a: X, b: X) -> Int64 = 1\n  end\n",
-        "  rule goMixed(?r) :- toN(3, \"km\", ?r)\n  rule goSame(?r) :- toN(3, 4, ?r)\n",
+        "  rule goSame(?r) :- toN(3, 4, ?r)\n",
     );
     let mut kb = crate::common::load_kb_with(&src);
     assert_eq!(crate::common::one_definite_int(&mut kb, "wiprva2.same.goSame"), Some(1));
-    let rows = crate::common::query_unary(&mut kb, "wiprva2.same.goMixed");
-    assert!(rows.is_empty(), "`X` is not both `Int64` and `String`; got {rows:?}");
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&format!(
+            "{}  rule goMixed(?r) :- toN(3, \"km\", ?r)\nend\n",
+            src.trim_end().trim_end_matches("end")
+        )),
+        &["goMixed.body", "`wiprva2.same.Conv[A = anthill.prelude.Int64, B = anthill.prelude.String]`"],
+        "`X` is not both `Int64` and `String`",
+    );
 }
 
 /// (c) — a carrier at a parameter that is not the spec's CARRIER parameter asks the provision
@@ -468,7 +541,7 @@ namespace wiprva2.route
     operation cmp2[A](x: A, y: A) -> Int64 requires Cmp[T = A] = Cmp.cmp(x, y)
   end
 
-  rule via(?a, ?b, ?c) :- Util.cmp2(?a, ?b, ?c)
+  rule via[A](?a: A, ?b: A, ?c) :- Cmp[T = A], Util.cmp2(?a, ?b, ?c)
 
   sort Driver
     -- a citation at `(Shape, Circle)`, from a caller holding `Cmp[T = Shape]`

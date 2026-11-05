@@ -62,20 +62,26 @@ fn two_carrier(ns: &str, bracket: &str) -> String {
   fact item(blue())
 
   rule g[A](?x: A, ?r) :- require s: {bracket}, s.tag(?r)
-  rule answer(?r) :- item(?x), g(?x, ?r)
 end
 "#
     )
 }
 
+/// The answers of the QUERY `item(?x), g(?x, ?r)`: a query has no caller, so `g`'s guard
+/// reads its dictionary from each `?x`'s type when its goal runs (060.1 §4). A rule body
+/// writing the conjunction is refused, `?x` at a type its clause declares nothing at.
 fn two_carrier_answers(ns: &str, bracket: &str) -> Vec<Option<i64>> {
+    use anthill_core::kb::term_view::TermView;
     let src = two_carrier(ns, bracket);
     let mut kb = crate::common::load_kb_with(&src);
-    let mut out: Vec<Option<i64>> = crate::common::query_unary(&mut kb, &format!("{ns}.answer"))
+    let goals = crate::common::query_goals(&mut kb, &[&format!("{ns}.item(?x)"), &format!("{ns}.g(?x, ?r)")]);
+    let r = TermView::pos_arg(&goals[1], &kb, 1).expect("`?r` is `g`'s second argument").to_value();
+    let solutions = kb.resolve(&goals, &anthill_core::kb::resolve::ResolveConfig::default());
+    let mut out: Vec<Option<i64>> = solutions
         .iter()
-        .map(|sol| match sol {
-            (anthill_core::eval::Value::Int(i), true) => Some(*i),
-            _ => None,
+        .map(|sol| {
+            let v = kb.reify_value(&r, &sol.subst);
+            crate::common::scalar_int(&kb, &v).filter(|_| sol.is_definite())
         })
         .collect();
     out.sort_unstable();
@@ -200,20 +206,32 @@ fn a_variable_at_a_provider_tie_delays_rather_than_aborting() {
   end
 
   rule dict[A](?x: A, ?r) :- {bracket}, Spec.probe(?x, ?r)
-  rule answer(?r) :- dict(carrier(), ?r)
 end
 "#
         );
+        // Asked as a query, whose read runs: it delays.
         let mut kb = crate::common::load_kb_with(&src);
-        let got = crate::common::query_unary(&mut kb, "test.qhdgc.tie.answer");
+        let goal = crate::common::query_pattern_term(&mut kb, "test.qhdgc.tie.dict(test.qhdgc.tie.Carrier.carrier(), ?r)");
+        let got = kb.resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default());
         assert!(
             !got.is_empty(),
             "`{bracket}` must answer an indefinite residual; it answered nothing at all, \
              which is a different outcome from a delay",
         );
         assert!(
-            got.iter().all(|(_, definite)| !definite),
-            "`{bracket}` at a provider tie must DELAY, not decide; got {got:?}",
+            got.iter().all(|s| !s.is_definite()),
+            "`{bracket}` at a provider tie must DELAY, not decide; got {} rows",
+            got.len(),
+        );
+        // A rule's goal at `carrier()` builds the dictionary at load (060.1 §1), and the tie is
+        // refused there, naming both providers, as an operation's call at `Carrier` is.
+        crate::common::assert_refused_naming(
+            &crate::common::load_errors_of(&src.replace(
+                "  rule dict[A]",
+                "  rule answer(?r) :- dict(carrier(), ?r)\n  rule dict[A]",
+            )),
+            &["answer.body", "two providers answer", "test.qhdgc.tie.MidA", "test.qhdgc.tie.MidB"],
+            bracket,
         );
     }
 }
@@ -269,8 +287,8 @@ fn the_head_parameter_spelling_already_passed() {
     // CONTROL: `?x: ?t` is a head parameter whose TYPE is a logical variable — the evidence
     // that a variable is no category error in type position. Loads on either tree.
     let src = two_carrier("test.qhdgc.param", "Sp[C = A]").replace(
-        "  rule answer(?r) :- item(?x), g(?x, ?r)",
-        "  rule answer(?r) :- item(?x), inner(?x, ?r)\n  rule inner(?x: ?t, ?r) :- Sp.crecv(?x, ?r)",
+        "  rule g[A]",
+        "  rule answer(?r) :- item(?x), inner(?x, ?r)\n  rule inner(?x: ?t, ?r) :- ?r <=> 1\n  rule g[A]",
     );
     assert!(
         crate::common::try_load_kb_with(&src).is_ok(),

@@ -525,20 +525,20 @@ fn cited_counts(ns: &str, rules: &str, rel: &str) -> [(i64, Option<i64>); 3] {
 #[test]
 fn a_call_in_a_branch_is_its_clauses_condition() {
     for (ns, rule) in [
-        ("rydnv.branchl", "  rule r(?a, ?b, ?c) :- (Util.sign(?a, ?b, ?c) | 1 = 2)"),
-        ("rydnv.branchr", "  rule r(?a, ?b, ?c) :- (1 = 2 | Util.sign(?a, ?b, ?c))"),
+        ("rydnv.branchl", "  rule r[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], (Util.sign(?a, ?b, ?c) | 1 = 2)"),
+        ("rydnv.branchr", "  rule r[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], (1 = 2 | Util.sign(?a, ?b, ?c))"),
         (
             "rydnv.branchlocal",
-            "  rule r(?a, ?b, ?c) :- (?x <=> ?a & Util.sign(?x, ?b, ?c)) | 1 = 2",
+            "  rule r[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], (?x <=> ?a & Util.sign(?x, ?b, ?c)) | 1 = 2",
         ),
-        ("rydnv.branchgoal", "  rule r(?a, ?b, ?c) :- Util.sign(?a, ?b, ?c)"),
-        ("rydnv.dbranchl", "  rule r(?a, ?b, ?c) :- (WeakOrd.compare(?a, ?b, ?c) | 1 = 2)"),
-        ("rydnv.dbranchr", "  rule r(?a, ?b, ?c) :- (1 = 2 | WeakOrd.compare(?a, ?b, ?c))"),
+        ("rydnv.branchgoal", "  rule r[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], Util.sign(?a, ?b, ?c)"),
+        ("rydnv.dbranchl", "  rule r[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], (WeakOrd.compare(?a, ?b, ?c) | 1 = 2)"),
+        ("rydnv.dbranchr", "  rule r[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], (1 = 2 | WeakOrd.compare(?a, ?b, ?c))"),
         (
             "rydnv.dbranchlocal",
-            "  rule r(?a, ?b, ?c) :- (?x <=> ?a & WeakOrd.compare(?x, ?b, ?c)) | 1 = 2",
+            "  rule r[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], (?x <=> ?a & WeakOrd.compare(?x, ?b, ?c)) | 1 = 2",
         ),
-        ("rydnv.dbranchgoal", "  rule r(?a, ?b, ?c) :- WeakOrd.compare(?a, ?b, ?c)"),
+        ("rydnv.dbranchgoal", "  rule r[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], WeakOrd.compare(?a, ?b, ?c)"),
     ] {
         assert_eq!(
             cited_counts(ns, rule, "r"),
@@ -643,7 +643,7 @@ fn a_call_in_a_goal_list_is_its_clauses_condition() {
     assert_eq!(
         cited_counts(
             "rydnv.goallist",
-            "  rule r(?a, ?b, ?c) :- (Util.sign(?a, ?b, ?c), 1 = 1)",
+            "  rule r[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], (Util.sign(?a, ?b, ?c), 1 = 1)",
             "r"
         ),
         [(1, Some(4)), (1, Some(-4)), (1, Some(-1))]
@@ -662,13 +662,13 @@ fn a_call_in_a_negand_a_quantifier_or_a_consequent_reads_its_condition_there() {
     for (tag, call) in [("s", "Util.sign"), ("d", "WeakOrd.compare")] {
         let negated = cited_counts(
             &format!("rydnv.{tag}negand"),
-            &format!("  rule r(?a, ?b, ?c) :- not({call}(?a, ?b, 4)), ?c <=> 1"),
+            &format!("  rule r[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], not({call}(?a, ?b, 4)), ?c <=> 1"),
             "r",
         );
         assert_eq!(negated.map(|(n, _)| n), [0, 1, 1], "the negation of {call}");
         let quantified = cited_counts(
             &format!("rydnv.{tag}quantified"),
-            &format!("  rule r(?a, ?b, ?c) :- ?c <=> 4, (forall ?z in [1]: {call}(?a, ?b, ?c))"),
+            &format!("  rule r[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], ?c <=> 4, (forall ?z in [1]: {call}(?a, ?b, ?c))"),
             "r",
         );
         assert_eq!(quantified.map(|(n, _)| n), [1, 0, 0], "the quantifier over {call}");
@@ -676,7 +676,7 @@ fn a_call_in_a_negand_a_quantifier_or_a_consequent_reads_its_condition_there() {
             &format!("rydnv.{tag}consequent"),
             &format!(
                 "  rule hyp(?z) :- false
-           rule r(?a, ?b, ?c) :- ?c <=> 4, (forall(?z), hyp(?z) -: {call}(?a, ?b, ?c))"
+           rule r[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], ?c <=> 4, (forall(?z), hyp(?z) -: {call}(?a, ?b, ?c))"
             ),
             "r",
         );
@@ -716,35 +716,35 @@ const FORM_DECLS: &str = "  import anthill.prelude.Option.{some, none}\n  \
 #[test]
 fn a_call_under_a_form_is_its_clauses_condition() {
     for (ns, rule) in [
-        ("rydnv.sgoal", "  rule r(?a, ?b, ?c) :- Util.sign(?a, ?b, ?c)"),
-        ("rydnv.slet", "  rule r(?a, ?b, ?c) :- ?c <=> (let s = Util.sign(?a, ?b)\n    s)"),
-        ("rydnv.sif", "  rule r(?a, ?b, ?c) :- ?c <=> (if true then Util.sign(?a, ?b) else 0)"),
+        ("rydnv.sgoal", "  rule r[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], Util.sign(?a, ?b, ?c)"),
+        ("rydnv.slet", "  rule r[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], ?c <=> (let s = Util.sign(?a, ?b)\n    s)"),
+        ("rydnv.sif", "  rule r[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], ?c <=> (if true then Util.sign(?a, ?b) else 0)"),
         (
             "rydnv.scond",
-            "  rule r(?a, ?b, ?c) :- ?c <=> (if Int64.lt(Util.sign(?a, ?b), 0) then -4 else 4)",
+            "  rule r[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], ?c <=> (if Int64.lt(Util.sign(?a, ?b), 0) then -4 else 4)",
         ),
         (
             "rydnv.smatch",
-            "  rule r(?a, ?b, ?c) :- ?c <=> (match true\n    case true -> Util.sign(?a, ?b)\n    case false -> 0)",
+            "  rule r[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], ?c <=> (match true\n    case true -> Util.sign(?a, ?b)\n    case false -> 0)",
         ),
         (
             "rydnv.slambda",
-            "  rule r(?a, ?b, ?c) :- ?c <=> Apply.app(lambda (u: Int64) -> Util.sign(?a, ?b), 0)",
+            "  rule r[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], ?c <=> Apply.app(lambda (u: Int64) -> Util.sign(?a, ?b), 0)",
         ),
-        ("rydnv.ssimp", "  rule r(?a, ?b, ?c) :- ?c <=> Tw.tw(?a, ?b)"),
-        ("rydnv.dgoal", "  rule r(?a, ?b, ?c) :- WeakOrd.compare(?a, ?b, ?c)"),
-        ("rydnv.dlet", "  rule r(?a, ?b, ?c) :- ?c <=> (let s = WeakOrd.compare(?a, ?b)\n    s)"),
+        ("rydnv.ssimp", "  rule r[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], ?c <=> Tw.tw(?a, ?b)"),
+        ("rydnv.dgoal", "  rule r[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], WeakOrd.compare(?a, ?b, ?c)"),
+        ("rydnv.dlet", "  rule r[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], ?c <=> (let s = WeakOrd.compare(?a, ?b)\n    s)"),
         (
             "rydnv.dif",
-            "  rule r(?a, ?b, ?c) :- ?c <=> (if true then WeakOrd.compare(?a, ?b) else 0)",
+            "  rule r[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], ?c <=> (if true then WeakOrd.compare(?a, ?b) else 0)",
         ),
         (
             "rydnv.dmatch",
-            "  rule r(?a, ?b, ?c) :- ?c <=> (match true\n    case true -> WeakOrd.compare(?a, ?b)\n    case false -> 0)",
+            "  rule r[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], ?c <=> (match true\n    case true -> WeakOrd.compare(?a, ?b)\n    case false -> 0)",
         ),
         (
             "rydnv.dlambda",
-            "  rule r(?a, ?b, ?c) :- ?c <=> Apply.app(lambda (u: Int64) -> WeakOrd.compare(?a, ?b), 0)",
+            "  rule r[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], ?c <=> Apply.app(lambda (u: Int64) -> WeakOrd.compare(?a, ?b), 0)",
         ),
     ] {
         let want = if ns == "rydnv.scond" {
@@ -757,41 +757,39 @@ fn a_call_under_a_form_is_its_clauses_condition() {
     }
 }
 
-/// A CALL IN A BRANCH THAT IS NOT TAKEN COSTS ITS CLAUSE NOTHING: at `box(v: 1)`, whose sort
-/// provides no `WeakOrd`, the read before the goal binds the absence of a provider in place of
-/// failing the clause, and only the branch that calls would read it. Untaken, the clause
-/// answers the other branch's 1, definitely; taken, the call refuses the absence and the clause
-/// has no answer, as a goal calling it at `box(v: 1)` has none; at `Int64` it answers `Int64`'s
-/// own. For both classes, under an `if` and under a `match`, each queried uncited. FAILS with a
-/// read under a form failing on a missing provider, as a goal's read does: every untaken row is
-/// empty. The `Util.sign` rows also FAIL with the read of a slot under a form dropped from the
-/// body the resolver runs (`is_routing_only_read` ignoring `in_form:`): uncited, the form waits
-/// on a dictionary nothing binds; with the evaluator running a slots-woven call as a deferred
-/// dispatch; and with the typer leaving a call to the clause only outside a form. The taken
-/// rows pass either way, by design.
+/// A CALL IN A BRANCH OF A FORM, under a declared requirement: the requirement is the clause's,
+/// whichever branch runs, as an operation's `requires` is (060.1 §1). At `Int64` the clause
+/// answers `Int64`'s own; a goal at `box(v: 1)`, whose sort provides no `WeakOrd`, is refused at
+/// load, its dictionary built there and none answering — the untaken branch included. Before
+/// 060.1 stage 2 the inferred read stood under the form and bound the absence, so the untaken
+/// goal answered the other branch's 1. For both classes, under an `if` and under a `match`.
 #[test]
 fn a_call_in_a_branch_not_taken_costs_its_clause_nothing() {
+    let decls = "  rule sIf[A](?f, ?a: A, ?b: A, ?e) :- WeakOrd[T = A], ?e <=> (if ?f then Util.sign(?a, ?b) else 1)\n  \
+         rule dMatch[A](?f, ?a: A, ?b: A, ?e) :- WeakOrd[T = A], ?e <=> (match ?f\n    \
+         case true -> WeakOrd.compare(?a, ?b)\n    \
+         case false -> 1)\n";
     let src = program(
         "rydnv.untaken",
         &[ORDERS, FORM_DECLS],
-        "  rule sIf(?f, ?a, ?b, ?e) :- ?e <=> (if ?f then Util.sign(?a, ?b) else 1)\n  \
-         rule dMatch(?f, ?a, ?b, ?e) :- ?e <=> (match ?f\n    \
-         case true -> WeakOrd.compare(?a, ?b)\n    \
-         case false -> 1)\n  \
-         rule sIfUntaken(?e) :- sIf(false, box(v: 1), box(v: 5), ?e)\n  \
-         rule sIfTaken(?e) :- sIf(true, box(v: 1), box(v: 5), ?e)\n  \
-         rule sIfInt(?e) :- sIf(true, 1, 5, ?e)\n  \
-         rule dMatchUntaken(?e) :- dMatch(false, box(v: 1), box(v: 5), ?e)\n  \
-         rule dMatchTaken(?e) :- dMatch(true, box(v: 1), box(v: 5), ?e)\n  \
-         rule dMatchInt(?e) :- dMatch(true, 1, 5, ?e)\n",
+        &format!("{decls}  rule sIfInt(?e) :- sIf(true, 1, 5, ?e)\n  rule dMatchInt(?e) :- dMatch(true, 1, 5, ?e)\n"),
     );
     let mut kb = crate::common::load_kb_with(&src);
     for class in ["sIf", "dMatch"] {
-        let rel = |case: &str| format!("rydnv.untaken.{class}{case}");
-        assert_eq!(crate::common::one_definite_int(&mut kb, &rel("Untaken")), Some(1), "{class}: the other branch");
-        let taken = crate::common::query_unary(&mut kb, &rel("Taken"));
-        assert!(taken.is_empty(), "{class}: the call has no value at `box(v: 1)`: {taken:?}");
-        assert_eq!(crate::common::one_definite_int(&mut kb, &rel("Int")), Some(-1), "{class}: `Int64`'s own");
+        let rel = format!("rydnv.untaken.{class}Int");
+        assert_eq!(crate::common::one_definite_int(&mut kb, &rel), Some(-1), "{class}: `Int64`'s own");
+        for taken in ["false", "true"] {
+            let errs = crate::common::load_errors_of(&program(
+                "rydnv.untakenbox",
+                &[ORDERS, FORM_DECLS],
+                &format!("{decls}  rule atBox(?e) :- {class}({taken}, box(v: 1), box(v: 5), ?e)\n"),
+            ));
+            crate::common::assert_refused_naming(
+                &errs,
+                &["atBox.body", "WeakOrd"],
+                &format!("{class}({taken}, …) at `Box`"),
+            );
+        }
     }
 }
 

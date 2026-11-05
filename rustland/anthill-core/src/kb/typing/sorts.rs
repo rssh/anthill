@@ -401,18 +401,20 @@ pub(super) fn type_check_sorts_collect(
     // per-arg `inferred_type` the carrier decision reads is stamped; and BEFORE the
     // inference below, which weaves a call it reads unwoven: a call left to its clause with
     // a carrier no provision binds among its known ones is refused, not woven past.
-    errors.extend(check_rule_body_requirements(kb));
+    let (requirement_errors, refused_calls) = check_rule_body_requirements(kb);
+    errors.extend(requirement_errors);
     // WI-20260925-P7VP4: every rule-body call whose requirement is not known at load gets
     // the condition its author could have written — a read before the goal holding it, the
     // call woven through it. AFTER the requirement sweep, which grounds each WRITTEN
     // `require` on a body call and only finds that call unwoven (a transitive or inherited
     // witness woven first made a loading clause fail "no such call"); BEFORE
     // `settle_citation_routes`, so a citation routes the inferred reads as the written ones.
-    infer_rule_body_requirements(kb);
+    // A call the requirement sweep above refused is not refused again for what it lacks.
+    let undeclared = infer_rule_body_requirements(kb, &refused_calls);
     // WI-20261102-ATVC1: every rule-body goal whose callee takes dictionaries is given the ones
-    // its clause routes to it — forward slots the clause takes from its own caller, a
-    // bracket's instance built here. AFTER the inference, whose reads are what a callee takes;
-    // BEFORE `settle_citation_routes`, which routes the forward slots as it routes reads.
+    // its clause routes to it — a requirement the clause declares, a dictionary built here.
+    // AFTER the inference, whose reads are what a callee takes; BEFORE
+    // `settle_citation_routes`, which reads a cited clause's goals that pass nothing.
     let goals_refused = route_rule_goal_requirements(kb);
     // WI-20260911-5G28A S2: every rule read is now routable, so the citations queued while
     // the operation bodies were typed can be routed (`settle_citation_routes`). What it
@@ -444,6 +446,7 @@ pub(super) fn type_check_sorts_collect(
     sources.resize(errors.len(), None);
     for (err, src) in check_rule_body_goal_readings(kb)
         .into_iter()
+        .chain(undeclared)
         .chain(goals_refused)
         .chain(citations_refused)
     {

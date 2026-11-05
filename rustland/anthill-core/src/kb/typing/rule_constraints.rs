@@ -160,6 +160,12 @@ enum LatePosition {
         lambda: Rc<NodeOccurrence>,
         other: Rc<NodeOccurrence>,
     },
+    /// A bounded quantifier's binder (`(forall ?e in ?xs: …)`): an element of the collection,
+    /// once the clause types it.
+    Element {
+        binder: Rc<NodeOccurrence>,
+        collection: Rc<NodeOccurrence>,
+    },
 }
 
 /// An operation application's result type at the application's instantiation, and the
@@ -862,6 +868,17 @@ pub(super) fn collect_occurrence_type_constraints(
         Some((functor, pos_args, named_args)) => {
             if goal {
                 constrain_domain_test(kb, functor, pos_args, committed, st);
+            }
+            if let [binder, collection, ..] = pos_args {
+                if matches!(
+                    kb.builtin_of(functor),
+                    Some(crate::kb::resolve::BuiltinTag::ForallIn | crate::kb::resolve::BuiltinTag::SomeIn)
+                ) {
+                    st.late.push(LatePosition::Element {
+                        binder: Rc::clone(binder),
+                        collection: Rc::clone(collection),
+                    });
+                }
             }
             let bracket = call_bracket_instances(kb, occ, expr, functor);
             let (mut nested, result) =
@@ -1816,7 +1833,9 @@ pub(super) fn settle_late_positions(
                     value_contains_projection(kb, &result.ty)
                         || return_reducible_ctors(kb, &result.ty).iter().any(|f| *f)
                 }
-                LatePosition::DotResult { .. } | LatePosition::LambdaValue { .. } => true,
+                LatePosition::DotResult { .. }
+                | LatePosition::LambdaValue { .. }
+                | LatePosition::Element { .. } => true,
                 LatePosition::RuleGoal { .. } => false,
             };
             if computed || !settle_typed_position(kb, rid, st, &late, &rigids, disagreements) {
@@ -1895,6 +1914,19 @@ fn settle_typed_position(
             };
             let context = TypeErrorContext::DotProjection { member: *name };
             (SlotOf::Type(position), ty, context, dot.span)
+        }
+        LatePosition::Element { binder, collection } => {
+            let of = argument_type(kb, st, collection);
+            let Some(ty) = declared_element_type(kb, SeqLiteral::List, Some(&of))
+                .or_else(|| declared_element_type(kb, SeqLiteral::Set, Some(&of)))
+            else {
+                return false;
+            };
+            let context = TypeErrorContext::Rule {
+                name: kb.head_functor(kb.rule_head(rid)).unwrap_or_else(|| kb.intern("clause")),
+                field: RuleField::Body,
+            };
+            (SlotOf::Arg(binder), ty, context, binder.span)
         }
         LatePosition::RuleGoal { .. } => unreachable!("a rule goal is read by its columns"),
     };

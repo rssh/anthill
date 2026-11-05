@@ -471,7 +471,10 @@ fn transitive_requires_rejects_wrong_type_param_witness() {
     // name-coincident `t: T`, discharging the requirement against the WRONG argument, so
     // `pick` was declined as a witness and the rule refused ("ground the requirement").
     // Proposal 060.1 §5 removed `requires(X)`; the introducer names the guard's carrier,
-    // and no call witnesses it.
+    // and no call witnesses it. Since 060.1 stage 2 `pick`'s `Widget[U]` at `?u` is the
+    // clause's to declare too, at its own parameter `B`, and a goal at concrete types builds
+    // both dictionaries at load: `uses(yes, no)` and `uses(no, yes)` are refused there, as an
+    // operation's call at `No` is.
     let src = r#"
         namespace gap3.unsound
           import anthill.prelude.{Int64, Bool}
@@ -496,17 +499,21 @@ fn transitive_requires_rejects_wrong_type_param_witness() {
           end
           import gap3.unsound.Widget.{widen}
           import gap3.unsound.Two.{pick}
-          rule uses[A](?t: A, ?u) :- Widget[T = A], eq(pick(?t, ?u), true)
+          rule uses[A, B](?t: A, ?u: B) :- Widget[T = A], Widget[T = B], eq(pick(?t, ?u), true)
           rule both(?r) :- uses(Yes.yes(), Yes.yes()), ?r <=> 1
-          rule guardOnly(?r) :- uses(Yes.yes(), No.no()), ?r <=> 1
-          rule pickOnly(?r) :- uses(No.no(), Yes.yes()), ?r <=> 1
         end
     "#;
     let mut kb = common::load_kb_with(src);
     assert_eq!(common::one_definite_int(&mut kb, "gap3.unsound.both"), Some(1), "both provide");
-    for rule in ["guardOnly", "pickOnly"] {
-        let rows = common::query_unary(&mut kb, &format!("gap3.unsound.{rule}"));
-        assert!(rows.is_empty(), "{rule}: `No` provides no `Widget`, got {rows:?}");
+    for (rule, args) in [("guardOnly", "Yes.yes(), No.no()"), ("pickOnly", "No.no(), Yes.yes()")] {
+        common::assert_refused_naming(
+            &common::load_errors_of(&src.replace(
+                "          rule both(?r)",
+                &format!("          rule {rule}(?r) :- uses({args}), ?r <=> 1\n          rule both(?r)"),
+            )),
+            &[&format!("{rule}.body"), "no provider answers `gap3.unsound.Widget[T = gap3.unsound.No]`"],
+            "`No` provides no `Widget`",
+        );
     }
 }
 

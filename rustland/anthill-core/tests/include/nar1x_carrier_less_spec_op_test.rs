@@ -279,17 +279,20 @@ fn a_carrier_bearing_call_answers_the_same_number_either_way() {
             "  rule via[A](?x: A, ?r) :- Zeroable[T = A], Zeroable.tag(?x, ?r)\n  \
              rule answer(?r) :- via({ctor}, ?r)\n"
         ));
-        let without = two_carriers(&format!(
-            "  rule via(?x, ?r) :- Zeroable.tag(?x, ?r)\n  \
-             rule answer(?r) :- via({ctor}, ?r)\n"
-        ));
         assert_eq!(answer(&with), expected);
-        assert_eq!(
-            answer(&without),
-            expected,
-            "a carrier-BEARING call is decided by the value either way — the \
-             carrier-less admission must not be what makes this row work",
+        // Undeclared, the call at the head column `?x` is refused (060.1 §1): the guard is the
+        // spelling. At a local variable no head column reaches, the same call is decided by the
+        // value — the carrier-less admission is not what makes the row work.
+        crate::common::assert_refused_naming(
+            &crate::common::load_errors_of(&two_carriers(&format!(
+                "  rule via(?x, ?r) :- Zeroable.tag(?x, ?r)\n  \
+                 rule answer(?r) :- via({ctor}, ?r)\n"
+            ))),
+            &["a requirement of `Zeroable` the clause declares"],
+            "the call at the head column, undeclared",
         );
+        let local = two_carriers(&format!("  rule answer(?r) :- ?x <=> {ctor}, Zeroable.tag(?x, ?r)\n"));
+        assert_eq!(answer(&local), expected, "a carrier-BEARING call is decided by the value");
     }
 }
 

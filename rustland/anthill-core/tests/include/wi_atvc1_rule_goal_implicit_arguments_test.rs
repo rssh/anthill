@@ -2,35 +2,31 @@
 //! another rule receives its caller's requirement dictionaries, and a sort's bracket on a
 //! rule-body goal is read.
 //!
-//! A clause whose goal calls a relation that takes dictionaries — a requirement read, or the
-//! callee's own forward slots — hands the goal what the clause itself was handed for them: the
-//! goal rides in a citation marker whose FORWARD slot is a parameter of the clause, routed by
-//! whoever cites the clause as the callee's position would be routed were the citer to cite the
-//! callee itself. A goal of the clause's own relation at the clause's own column types hands
-//! on what the clause took; a bracketed goal hands its callee the bracket's instance, built at
-//! load.
+//! A clause whose goal calls a relation that takes dictionaries hands the goal what proposal
+//! 060.1 §1 supplies there: the requirement the clause declares, at the instance the goal is
+//! at, or the dictionary built at load where the goal's arguments or its bracket fix the
+//! instance. The goal rides in a citation marker that carries them. Each rule a row reaches
+//! its callee through declares `[A]` and the callee's guard; until 060.1 stage 2 none did,
+//! and the marker held forward slots — parameters the clause took from whoever cited it,
+//! declared nowhere. The rows check the answers those gave.
 //!
 //! BACK-OUT, measured one axis at a time (each a temporary switch in one build, removed):
 //!  * [P] the pass off — no goal carries anything: every row through a rule answers the
-//!    callee's own (`-1`), the recursion row `(0, 0)`, every bracket row reads all instances;
-//!  * [F] forward slots routed as nothing — the rows through a non-recursive rule, and the
-//!    row (g) refusals, which the forward routing raises;
-//!  * [R] a citation routing no forward slot — the same rows as [F];
-//!  * [O] a recursive goal passing nothing — `a_recursive_goal_hands_on_what_its_clause_took`;
+//!    callee's own (`-1`), the recursion rows `(0, 0)`, every bracket row reads all
+//!    instances, and the bracket refusals load;
+//!  * [D] a goal passing nothing where its clause declares the requirement — every row
+//!    through a rule but the bracket rows;
 //!  * [B] a bracket's instance not built — the decision-B rows;
 //!  * [M] the edge reading a goal's argument type alone, not met with its column's — the
-//!    decision-B rows;
-//!  * [C] a forwarded argument typed by the clause's stamps alone, not by the citation's column
-//!    type — the connective rows (`|`, `not`), whose variables have no stamp;
-//!  * [N] a forward slot nothing routed left unbound when its clause opens — the uncited `not`
-//!    rows, which flounder;
+//!    decision-B rows, and the row (g) refusals, which then name no column;
 //!  * [X] no refusal of an unread bracket — the two refusal rows;
 //!  * [U] no refusal of a citation whose goal leaves a parameter of its callee's sort free —
 //!    the row (g) refusals.
 //!
-//! The direct citations, a goal at literals, a goal whose callee takes nothing and the
-//! mutually recursive pair pass under every axis, by design: they are the controls and the
-//! stated limit.
+//! The direct citations, a goal at literals and a goal whose callee takes nothing pass under
+//! every axis, by design: they are the controls. So does every row with a recursive goal's
+//! own hand-on backed out: the recursion rows declare the requirement, and the declared route
+//! passes it first.
 
 use anthill_core::eval::Value;
 
@@ -87,16 +83,16 @@ fn pair(interp: &mut anthill_core::eval::Interpreter, ns: &str, op: &str) -> (i6
 
 /// THE TICKET'S PROGRAM. `outer` has no condition of its own and calls `cmp`, whose condition
 /// is `compare`'s: cited through `outer`, `cmp` is handed the rival its caller chose, and so
-/// through a second rule (`outer2`). Uncited, `outer` hands nothing and `cmp` derives
-/// `Int64`'s own. FAILS under [P], [F] and [R]: `(-1, -1)` through `outer` and `outer2`. The
-/// direct citation `(4, -4)` and the uncited `-1` pass under every axis — the controls.
+/// through a second rule (`outer2`). Uncited, `outer` derives `Int64`'s own and hands it to
+/// `cmp`. FAILS under [P] and [D]: `(-1, -1)` through `outer` and `outer2`. The direct citation
+/// `(4, -4)` and the uncited `-1` pass under every axis — the controls.
 #[test]
 fn a_rule_goal_hands_its_callee_the_callers_dictionary() {
     let ns = "atvc1.ord";
     let body = format!(
-        "  rule cmp(?a, ?b, ?c) :- WeakOrd.compare(?a, ?b, ?c)\n  \
-         rule outer(?a, ?b, ?c) :- cmp(?a, ?b, ?c)\n  \
-         rule outer2(?a, ?b, ?c) :- outer(?a, ?b, ?c)\n{}{}{}  \
+        "  rule cmp[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], WeakOrd.compare(?a, ?b, ?c)\n  \
+         rule outer[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], cmp(?a, ?b, ?c)\n  \
+         rule outer2[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], outer(?a, ?b, ?c)\n{}{}{}  \
          operation plain() -> Int64 effects {{Error, Error[EmptyStream]}} = outer(1, 5).head.c\n",
         cite_pair("viaCmp", "cmp"),
         cite_pair("viaOuter", "outer"),
@@ -113,17 +109,17 @@ fn a_rule_goal_hands_its_callee_the_callers_dictionary() {
 /// introducer's guard; it was `?d = require[WeakOrd[T]]`, removed by proposal 060.1 §5), the
 /// SLOTS of an operation's own `requires` (`Util.sign`), and a read witnessed by a variable
 /// that is no column (`?x` of `?p <=> pr(a: ?x, b: ?y)`), whose instance the callee's clause
-/// typing gives from the column the goal binds. FAILS under [P], [F] and [R]: `(-1, -1)` each.
+/// typing gives from the column the goal binds. FAILS under [P] and [D]: `(-1, -1)` each.
 #[test]
 fn every_kind_of_read_is_handed_on() {
     let ns = "atvc1.kinds";
     let body = format!(
         "  rule cmpW[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], WeakOrd.compare(?a, ?b, ?c)\n  \
-         rule outW(?a, ?b, ?c) :- cmpW(?a, ?b, ?c)\n  \
-         rule cmpS(?a, ?b, ?c) :- Util.sign(?a, ?b, ?c)\n  \
-         rule outS(?a, ?b, ?c) :- cmpS(?a, ?b, ?c)\n  \
-         rule order(?p, ?c) :- ?p <=> pr(a: ?x, b: ?y), WeakOrd.compare(?x, ?y, ?c)\n  \
-         rule outO(?p, ?c) :- order(?p, ?c)\n{}{}  \
+         rule outW[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], cmpW(?a, ?b, ?c)\n  \
+         rule cmpS[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], Util.sign(?a, ?b, ?c)\n  \
+         rule outS[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], cmpS(?a, ?b, ?c)\n  \
+         rule order[A](?p: Pr[T = A], ?c) :- WeakOrd[T = A], ?p <=> pr(a: ?x, b: ?y), WeakOrd.compare(?x, ?y, ?c)\n  \
+         rule outO[A](?p: Pr[T = A], ?c) :- WeakOrd[T = A], order(?p, ?c)\n{}{}  \
          operation viaO[A](p: Pr[T = A]) -> Int64 effects {{Error, Error[EmptyStream]}}\n    \
          requires WeakOrd[T = A] = outO(p).head.c\n  \
          operation viaOD() -> Int64 effects {{Error, Error[EmptyStream]}} =\n    \
@@ -140,21 +136,18 @@ fn every_kind_of_read_is_handed_on() {
 }
 
 /// A GOAL IN A CONNECTIVE'S SLOT is handed on as a body goal is: a branch of `|`, a negand.
-/// Its arguments are the clause's head variables, which the clause's typing stamps nowhere
-/// else, so they are typed at the citation's column types, as a read's witness is. FAILS under
-/// [P], [F], [R] and [C]: `ord` `(-1, -1)`, `notGreater` `(1, 1)`.
+/// FAILS under [P] and [D]: `ord` `(-1, -1)`, `notGreater` `(1, 1)`.
 ///
 /// AND UNCITED, a negand whose clause's caller passed nothing is decided, alone or in a
-/// connective: its forward slot is bound to `__unrouted` when the clause opens. FAILS under [N]:
-/// `notGreater(1, 5)` and `notBoth(1, 5)` flounder.
+/// connective: the clause's guard derives `Int64`'s own, and the negand is handed it.
 #[test]
 fn a_goal_in_a_connective_is_handed_on() {
     let ns = "atvc1.conn";
     let body = format!(
-        "  rule cmp(?a, ?b, ?c) :- WeakOrd.compare(?a, ?b, ?c)\n  \
-         rule ord(?a, ?b, ?c) :- cmp(?a, ?b, ?c) | cmp(?b, ?a, ?c)\n  \
-         rule notGreater(?a, ?b) :- not(cmp(?a, ?b, 4))\n  \
-         rule notBoth(?a, ?b) :- not(cmp(?a, ?b, 4) & Int64.lt(?a, ?b))\n  \
+        "  rule cmp[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], WeakOrd.compare(?a, ?b, ?c)\n  \
+         rule ord[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], cmp(?a, ?b, ?c) | cmp(?b, ?a, ?c)\n  \
+         rule notGreater[A](?a: A, ?b: A) :- WeakOrd[T = A], not(cmp(?a, ?b, 4))\n  \
+         rule notBoth[A](?a: A, ?b: A) :- WeakOrd[T = A], not(cmp(?a, ?b, 4) & Int64.lt(?a, ?b))\n  \
          rule uncited(1) :- notGreater(1, 5), notBoth(1, 5)\n{}  \
          operation viaNot[A](x: A, y: A) -> Int64 effects {{Error}}\n    \
          requires WeakOrd[T = A] = notGreater(x, y).takeN(5).length()\n  \
@@ -178,27 +171,25 @@ fn a_goal_in_a_connective_is_handed_on() {
     );
 }
 
-/// A RECURSIVE GOAL HANDS ON WHAT ITS CLAUSE TOOK, where it calls at the clause's own column
-/// types: `sorted(?t)` with `?t` at the type of `?l`. FAILS under [P] and [O]: `(0, 0)` — the
-/// top call compares through the caller's rival and every level below through `Int64`'s own.
-///
-/// STATED LIMIT, passes either way: a goal of ANOTHER relation in the same recursion hands on
-/// nothing. `evenS` and `oddS` call each other, so neither's layout is final before the
-/// other's; each derives `Int64`'s own below the top, and `[5, 3, 1, 0]` reads unsorted under
-/// `Descending` — `(0, 0)` where handing the rival on answers `(1, 0)`.
+/// A RECURSIVE GOAL HANDS ON WHAT ITS CLAUSE TOOK: each comparing clause declares `[E]` and
+/// `WeakOrd[T = E]`, and `sorted(?t)` with `?t` at `List[T = E]` hands on the clause's own
+/// requirement. So across a mutual recursion: `evenS` and `oddS` call each other, and each
+/// passes the other what it holds, at every turn — `(1, 0)`. FAILS under [P] and [D]: `(0, 0)`
+/// each, every level below the top deriving `Int64`'s own. Before 060.1 stage 2 the mutual pair
+/// was the stated limit, `(0, 0)`: a forward slot could not cross the recursion.
 #[test]
 fn a_recursive_goal_hands_on_what_its_clause_took() {
     let ns = "atvc1.rec";
     let body = "  \
         rule sorted(?l) :- ?l <=> nil()\n  \
         rule sorted(?l) :- ?l <=> cons(?h, nil())\n  \
-        rule sorted(?l) :- ?l <=> cons(?h, ?t), ?t <=> cons(?h2, ?r), WeakOrd.compare(?h, ?h2, ?c), \
+        rule sorted[E](?l: List[T = E]) :- WeakOrd[T = E], ?l <=> cons(?h, ?t), ?t <=> cons(?h2, ?r), WeakOrd.compare(?h, ?h2, ?c), \
              Int64.lte(?c, 0), sorted(?t)\n  \
         rule evenS(?l) :- ?l <=> nil()\n  \
-        rule evenS(?l) :- ?l <=> cons(?h, ?t), ?t <=> cons(?h2, ?r), WeakOrd.compare(?h, ?h2, ?c), \
+        rule evenS[E](?l: List[T = E]) :- WeakOrd[T = E], ?l <=> cons(?h, ?t), ?t <=> cons(?h2, ?r), WeakOrd.compare(?h, ?h2, ?c), \
              Int64.lte(?c, 0), oddS(?t)\n  \
         rule oddS(?l) :- ?l <=> cons(?h, nil())\n  \
-        rule oddS(?l) :- ?l <=> cons(?h, ?t), ?t <=> cons(?h2, ?r), WeakOrd.compare(?h, ?h2, ?c), \
+        rule oddS[E](?l: List[T = E]) :- WeakOrd[T = E], ?l <=> cons(?h, ?t), ?t <=> cons(?h2, ?r), WeakOrd.compare(?h, ?h2, ?c), \
              Int64.lte(?c, 0), evenS(?t)\n  \
         operation isSorted[A](l: List[T = A]) -> Int64 effects {Error} requires WeakOrd[T = A] =\n    \
           sorted(l).takeN(1).length()\n  \
@@ -210,11 +201,7 @@ fn a_recursive_goal_hands_on_what_its_clause_took() {
         operation evenA() -> Int64 effects {Error} = isEven[A = Int64, WeakOrd = Ascending]([5, 3, 1, 0])\n";
     let mut interp = crate::common::interp_for(&program(ns, body));
     assert_eq!(pair(&mut interp, ns, "sorted"), (1, 0), "the rival reaches every level");
-    assert_eq!(
-        pair(&mut interp, ns, "even"),
-        (0, 0),
-        "STATED LIMIT: across a mutual recursion the rival stops at the top",
-    );
+    assert_eq!(pair(&mut interp, ns, "even"), (1, 0), "across a mutual recursion, at every turn");
 }
 
 /// A GOAL AT LITERALS is at an instance fixed where it is written: `cmp(1, 5, ?c)` compares
@@ -224,7 +211,7 @@ fn a_recursive_goal_hands_on_what_its_clause_took() {
 fn a_goal_at_literals_reads_its_own_instance() {
     let ns = "atvc1.lit";
     let body = "  \
-        rule cmp(?a, ?b, ?c) :- WeakOrd.compare(?a, ?b, ?c)\n  \
+        rule cmp[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], WeakOrd.compare(?a, ?b, ?c)\n  \
         rule atLit(?c) :- cmp(1, 5, ?c)\n  \
         operation viaLit[A](x: A) -> Int64 effects {Error, Error[EmptyStream]} requires WeakOrd[T = A] =\n    \
           atLit.head.c\n  \
@@ -305,7 +292,7 @@ fn a_bracket_on_a_rule_body_goal_is_read() {
 
 /// WHERE NOTHING READS A BRACKET IT IS REFUSED: on a relation named as a VALUE in a rule
 /// body, and on a goal of a relation with no clause of its own — `SortDomain[T =
-/// Colour].fill(?x)`, a spec's rule. FAILS under [X]: both load. Each advised repair is run:
+/// Colour].fill(?x)`, a spec's rule. FAILS under [P] and [X]: both load. Each advised repair is run:
 /// the value written as a goal (the row above), or cited from an operation body, which
 /// answers `1`; and the fill as a variable typed at the sort — `rule colours(?x: Colour) :-
 /// true`, its goal answering both colours.
@@ -387,7 +374,8 @@ fn free_op(name: &str, expr: &str) -> String {
 /// two clauses (refused once). The clause is not refused: a citation
 /// that types the goal's argument answers — the column's type written (`againT`, 3), a value
 /// for it (1, two rules deep too, and outside the sort), the caller's own parameter carried by
-/// the value (1). FAILS under [U]: every refused program loads, and each floundered at run
+/// the value (1). FAILS under [M]: the refusals say "a variable of its body that nothing
+/// types", naming no column. FAILS under [U]: every refused program loads, and each floundered at run
 /// time (measured) but `bare`'s. The answering rows pass under every axis.
 #[test]
 fn a_citation_through_a_goal_that_leaves_a_parameter_free_is_refused() {
@@ -449,17 +437,16 @@ fn a_citation_through_a_goal_that_leaves_a_parameter_free_is_refused() {
 }
 
 /// A LATER LOAD THAT GIVES A CALLEE ANOTHER CLAUSE routes its callers' goals again: `cmp`'s
-/// layout gains the new clause's read, `outer`'s marker is routed for it, and the citation is
-/// handed on through `outer` to both clauses. The re-routed goal takes the forward slot it had
-/// and mints one for the new clause's read, so `outer`'s frame grows by that one; FAILS with the
-/// reuse backed out (by two: the old slot is left behind in the frame). And before the stale marker was routed again, a marker
-/// one slot short of its callee's layout reached the resolver.
+/// layout gains the new clause's guard, `outer`'s marker is routed for it, and the citation is
+/// handed on through `outer` to both clauses, each position `outer`'s own guard. FAILS under [P]
+/// and [D]. Before the stale marker was routed again, a marker one slot short of its callee's
+/// layout reached the resolver.
 #[test]
 fn a_later_load_routes_a_goal_again_for_its_callees_new_clause() {
     let ns = "atvc1.later";
     let body = format!(
-        "  rule cmp(?a, ?b, ?c) :- WeakOrd.compare(?a, ?b, ?c)\n  \
-         rule outer(?a, ?b, ?c) :- cmp(?a, ?b, ?c)\n{}  \
+        "  rule cmp[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], WeakOrd.compare(?a, ?b, ?c)\n  \
+         rule outer[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], cmp(?a, ?b, ?c)\n{}  \
          operation count[A](x: A, y: A) -> Int64 effects {{Error}}\n    \
          requires WeakOrd[T = A] = outer(x, y).takeN(5).length()\n  \
          operation countD() -> Int64 effects {{Error}} = count[A = Int64, WeakOrd = Descending](1, 5)\n",
@@ -470,7 +457,7 @@ fn a_later_load_routes_a_goal_again_for_its_callees_new_clause() {
     let frame = kb.rule_globals(outer).len();
     let later = format!(
         "namespace {ns}\n  import anthill.prelude.{{Int64, WeakOrd}}\n  \
-         rule cmp(?a, ?b, ?c) :- WeakOrd.compare(?b, ?a, ?c)\nend\n"
+         rule cmp[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], WeakOrd.compare(?b, ?a, ?c)\nend\n"
     );
     crate::common::expect_loaded(crate::common::load_in_a_later_call(
         &mut kb,
@@ -479,8 +466,8 @@ fn a_later_load_routes_a_goal_again_for_its_callees_new_clause() {
     ));
     assert_eq!(
         kb.rule_globals(outer).len(),
-        frame + 1,
-        "the re-routed goal reuses its forward slot and mints one for the new read",
+        frame,
+        "the re-routed goal passes `outer`'s own guard to the new clause too",
     );
     let mut interp = anthill_core::eval::Interpreter::new(kb);
     anthill_core::eval::builtins::register_standard_builtins(&mut interp);
@@ -512,9 +499,9 @@ fn an_operation_body_cites_through_an_alias_as_a_goal_does() {
 }
 
 /// A RESIDUAL IS PRINTED AS WRITTEN: a goal riding in its citation marker, delayed and left
-/// undischarged, prints as the goal it carries — `not(cmp(red, green, ?_))`, the residual of a
+/// undischarged, prints as the goal it carries — `not(cmp(1, 5, ?_))`, the residual of a
 /// negand held open by its anonymous variable. FAILS with the printer's marker reading backed
-/// out: it printed `not(__within_requirements(cmp(red, green, ?_), cmp, __unrouted))`.
+/// out: it prints the marker, `not(__within_requirements(cmp(1, 5, ?_), cmp, …))`.
 #[test]
 fn a_residual_goal_prints_as_written() {
     use anthill_core::kb::resolve::ResolveConfig;
@@ -522,9 +509,8 @@ fn a_residual_goal_prints_as_written() {
     use anthill_core::persistence::print::TermPrinter;
     let mut kb = crate::common::load_kb_with(
         "namespace atvc1.res\n  import anthill.prelude.{Int64, WeakOrd}\n  \
-         sort Colour\n    entity red\n    entity green\n  end\n  \
-         rule cmp(?a, ?b, ?c) :- WeakOrd.compare(?a, ?b, ?c)\n  \
-         rule notCmp(1) :- not(cmp(red, green, ?))\nend\n",
+         rule cmp[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], WeakOrd.compare(?a, ?b, ?c)\n  \
+         rule notCmp(1) :- not(cmp(1, 5, ?))\nend\n",
     );
     let sym = kb.try_resolve_symbol("atvc1.res.notCmp").expect("`notCmp` is loaded");
     let x = kb.intern("x");
@@ -541,7 +527,7 @@ fn a_residual_goal_prints_as_written() {
         .iter()
         .flat_map(|sol| sol.residual.iter().map(|g| printer.print_value(g)))
         .collect();
-    assert_eq!(printed, ["not(cmp(red, green, ?_))"], "the residual as written");
+    assert_eq!(printed, ["not(cmp(1, 5, ?_))"], "the residual as written");
 }
 
 const PATTERN: &str = r#"
@@ -569,8 +555,8 @@ namespace atvc1.pat
       requires TypeValue[T = P], TypePattern[T = P] =
     Error.reify[T1 = P](lambda () -> raiseEither(p, n))
 
-  rule either(?p, ?n, ?r) :- catchP(?p, ?n, ?r)
-  rule outer(?p, ?n, ?r) :- either(?p, ?n, ?r)
+  rule either[P](?p: P, ?n, ?r) :- TypeValue[T = P], TypePattern[T = P], catchP(?p, ?n, ?r)
+  rule outer[P](?p: P, ?n, ?r) :- TypeValue[T = P], TypePattern[T = P], either(?p, ?n, ?r)
 
   operation viaEither[P](p: P, n: Int64) -> Int64 effects {Error}
       requires TypeValue[T = P], TypePattern[T = P] = either(p, n).takeN(5).length()
@@ -592,10 +578,9 @@ end
 /// `[]` carries no element type, so the clause cannot build `TypePattern[T = List[T = Int64]]`
 /// from the value, and only the operation's `requires` has it. Raised at `n < 0`, the `[]` is
 /// caught: one answer, cited directly and through `outer`. Raised at `n = 7`, `other(n: 7)` is
-/// outside `reify[T1 = P]` and is not caught, through `outer` too. FAILS under [F]:
-/// `outerCaught` answers 0, as the binary before this ticket answers it (`1` / `0` for the two).
-/// `directCaught` (S2's citation) and `outerDeclined` pass under [F] and on that binary — the
-/// controls.
+/// outside `reify[T1 = P]` and is not caught, through `outer` too. FAILS under [P] and [D]:
+/// `outerCaught` answers 0, as the binary before this ticket answers it, and so does
+/// `outerDeclined`. `directCaught` (S2's citation) passes under every axis — the control.
 #[test]
 fn a_callers_pattern_reaches_a_reify_through_a_rule() {
     let mut interp = crate::common::interp_for(PATTERN);
@@ -619,9 +604,13 @@ fn other_escapes(interp: &mut anthill_core::eval::Interpreter, ns: &str, op: &st
 /// A PATTERN WIDER THAN THE PAYLOAD'S TYPE: `Boom` and `Other` both refine `Base`, and the
 /// caller chooses `P = Base` with the payload `boom("b")`. At `n = 7` the thunk raises
 /// `other(n: 7)`, which `Base` admits and `Boom` does not: caught cited directly and through
-/// `outer`. FAILS under [F]: through `outer` the clause reads the pattern off the value,
-/// `Boom`, and `other(n: 7)` escapes, as on the binary before this ticket. `wideDirect` and
-/// `narrowOuter` (`P = Boom`, the `Other` not caught) pass under [F] and on that binary.
+/// `outer`, and the caught `err(error: other(n: 7))` is a `Result[E = Base]`, the clause's `P`
+/// being the citation's (060.1 §8.10). FAILS under [P] and [D]: through `outer` the clause reads
+/// the pattern off the value, `Boom`, and `other(n: 7)` escapes, as on the binary before this
+/// ticket. FAILS with the refining case of a derived `fill` backed out
+/// (`wi_j9ssg_refined_value_in_domain_test`'s [R]): `wideDirect` and `wideOuter` answer 0, the
+/// result column's test refusing the caught `Other` at `Base`. `narrowOuter` (`P = Boom`, the
+/// `Other` not caught) passes under every axis.
 #[test]
 fn a_callers_wider_pattern_reaches_a_reify_through_a_rule() {
     let mut interp = crate::common::interp_for(PATTERN);

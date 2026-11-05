@@ -2469,6 +2469,14 @@ pub struct KnowledgeBase {
     /// later one — its corrected retry — is not refused over them again
     /// ([`Self::is_clause_of_a_refused_load`]).
     refused_load_clauses: Vec<std::ops::Range<usize>>,
+    /// The rule slots whose guard the loader refused — an introducer no head column names, a
+    /// `require` naming no type parameter — and dropped: what the guard would have declared is
+    /// reported there, and the clause's calls that needed it are not refused again.
+    clauses_with_a_refused_guard: std::collections::HashSet<usize>,
+    /// The head columns whose bound the clause's typing inferred rather than the author wrote
+    /// (`typing::install_inferred_column_bounds`), by rule slot and column index: their
+    /// generated test is the column's own type test, which states no requirement (060.1 §8.1).
+    inferred_column_bounds: std::collections::HashSet<(usize, u32)>,
 
     // Source registry (file names/paths)
     pub(crate) sources: SourceRegistry,
@@ -2742,7 +2750,7 @@ pub struct KnowledgeBase {
     // kept key could come to name another goal.
     pub(crate) empty_scope_resolve_cache: RefCell<
         HashMap<
-            (crate::kb::typing::SortGoal, crate::kb::typing::DefaultRung),
+            crate::kb::typing::EmptyScopeKey,
             crate::kb::typing::ResolutionResult,
         >,
     >,
@@ -3168,6 +3176,8 @@ impl KnowledgeBase {
             derived_provision_origin: std::collections::HashMap::new(),
             equality_signatures: std::collections::HashMap::new(),
             refused_load_clauses: Vec::new(),
+            clauses_with_a_refused_guard: std::collections::HashSet::new(),
+            inferred_column_bounds: std::collections::HashSet::new(),
             sources: SourceRegistry::new(),
             extents: extent::ExtentRegistry::new(),
             host_fns: host_fns::HostFnRegistry::new(),
@@ -3522,6 +3532,28 @@ impl KnowledgeBase {
         if !clauses.is_empty() {
             self.refused_load_clauses.push(clauses);
         }
+    }
+
+    /// Record that the loader refused and dropped a guard of `rid`
+    /// ([`Self::clauses_with_a_refused_guard`]).
+    pub(crate) fn note_refused_guard(&mut self, rid: RuleId) {
+        self.clauses_with_a_refused_guard.insert(rid.index());
+    }
+
+    /// Record that column `column` of `rid` has a bound its typing inferred
+    /// ([`Self::inferred_column_bounds`]).
+    pub(crate) fn note_inferred_column_bound(&mut self, rid: RuleId, column: u32) {
+        self.inferred_column_bounds.insert((rid.index(), column));
+    }
+
+    /// Whether column `column` of `rid`'s bound was inferred ([`Self::inferred_column_bounds`]).
+    pub(crate) fn has_inferred_column_bound(&self, rid: RuleId, column: u32) -> bool {
+        self.inferred_column_bounds.contains(&(rid.index(), column))
+    }
+
+    /// Whether the loader refused a guard of `rid` ([`Self::clauses_with_a_refused_guard`]).
+    pub(crate) fn has_a_refused_guard(&self, rid: RuleId) -> bool {
+        self.clauses_with_a_refused_guard.contains(&rid.index())
     }
 
     /// Whether `rid` is a clause a refused load asserted ([`Self::refused_load_clauses`]).
@@ -13479,6 +13511,9 @@ impl KnowledgeBase {
         // WI-20260925-SHED7 — the sub-dictionary selector a derived `fill` clause writes in
         // `apply_domain`'s operand. Never a goal; see [`BuiltinTag::DomainSub`].
         self.register_builtin_tag(crate::kb::fill_derive::DOMAIN_SUB, BuiltinTag::DomainSub);
+        // The last case of a derived `fill`: a value of a refining sort. See
+        // [`BuiltinTag::RefinedDomain`].
+        self.register_builtin_tag(crate::kb::fill_derive::REFINED_DOMAIN, BuiltinTag::RefinedDomain);
         // Arithmetic and comparison. WI-616 (proposal 051 Phase 2): `=`/`eq`
         // and `neq` are the SEMANTIC `Eq` ops — structural until a carrier
         // declares its own `eq` override (`Set.eq`/`Map.eq`), which then

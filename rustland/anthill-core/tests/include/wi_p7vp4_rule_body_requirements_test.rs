@@ -1,64 +1,38 @@
-//! WI-20260925-P7VP4 — a rule-body call's requirement is a CONDITION OF THE CLAUSE
-//! (`docs/design/requirement-channel.md` §5, "The call site drives it; `require[X]` is only
-//! the explicit form"). Decided by the user, 2026-09-25: the typer INFERS the condition the
-//! author could have written, rather than refusing the clause until they write it.
+//! WI-20260925-P7VP4 inferred a rule-body call's requirement as a condition of its clause;
+//! proposal 060.1 stage 2 (WI-20261104-J9SSG) WITHDREW the inference: a rule takes a dictionary
+//! only where it declares one, with the head's introducer and a guard (kernel-language §5.3).
+//! Every program of this file is the one P7VP4 measured, rewritten to declare what its call
+//! needs, and each row is driven to the answer it gave:
 //!
-//! ## Increment 1 — a call to a spec operation whose carrier is not known at load
+//! ```text
+//!   rule cmp(?a, ?b, ?c) :- WeakOrd.compare(?a, ?b, ?c)                       -- refused
+//!   rule cmp[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], WeakOrd.compare(?a, ?b, ?c) -- answers
+//! ```
 //!
-//! `rule cmp(?a, ?b, ?c) :- WeakOrd.compare(?a, ?b, ?c)` writes no `require`. Its call gets
-//! the read `find_dictionary(WeakOrd, WeakOrd.compare, ?a, ?b, out: ?d)` before it and
-//! dispatches through `?d`, so a citation routes the CALLER's dictionary to it exactly as it
-//! routes a written `require[WeakOrd[T]]` (060-implementation §7.3, S2) — and a clause no
-//! caller hands one to derives its own from the value, as value-directed dispatch did.
-//!
-//! ## Increment 4 — an ordinary operation's own `requires`
-//!
-//! `rule viaOp(?a, ?b, ?c) :- Util.sign(?a, ?b, ?c)` calls an operation that `requires
-//! WeakOrd[T = A]` and writes nothing. The call gets one condition per slot of `sign`'s
-//! dictionary chain — `find_dictionary(WeakOrd, Util.sign, ?a, ?b, slot: 0, out: ?d)` — and
-//! carries them. A citation fills the slot from its caller; a slot nobody fills stays
-//! unbound and the bridge derives it from the values, as it did before.
+//! What the inference wove — a spec operation's call through its dictionary, an ordinary
+//! operation's call through the slots of its chain — is woven now through the guard's
+//! dictionary (`declared_guard_of`, `slot_route`), and a citation routes the caller's choice
+//! to it as before. A call or goal at a type a head column reaches, which the clause declares
+//! nothing at, is refused at load, naming the introducer and guard to write (the refusal rows:
+//! the operand row's `r1` / `r2`, and `the_refusal_names_no_repair_that_is_not_one`). One at a
+//! variable no head column reaches, which no caller can fix, reads its dictionary from the value
+//! when it runs, as for a query (`an_unground_woven_call_delays`, `an_unground_slot_call_delays`,
+//! the branch row's `pickFree`).
 //!
 //! ## Back-out
 //!
-//! Remove the `infer_rule_body_requirements(kb)` call in `type_check_sorts_collect`: both
-//! CASE rows fail — both selections answer `-1`, `Int64`'s own `compare`, because the
-//! caller's dictionary stays in the caller's frame and the call dispatches on its value.
-//! Remove the router's slot branch (`slot_read_index` in `route_requirement_read`): the SLOT
-//! case row fails, and only it. Remove the bridge's use of a supplied slot
-//! (`BridgeSlot::Supplied` — `resolve_bridge_requirements_supplied` handed none): EIGHT rows
-//! fail, every one whose caller fills a slot — the SLOT case row, the two Bool-view rows,
-//! `a_slot_routes_whichever_parameter_pins_it`, `a_subtype_argument_does_not_block_a_slot_-
-//! route`, `a_supplied_slot_is_not_re_derived`, `a_negated_partly_routed_citation_decides` and
-//! `a_woven_slot_call_that_waits_keeps_its_slots` (measured, WI-20260925-YNCY3). The router's
-//! two measured choices — pin the CALLEE's parameters first, and keep a variable when substituting —
-//! each failed the same row the same way (`-1, -1`) before they were made. Remove
-//! `check_rule_body_operation_requires`' reading of a WOVEN call, or look the inference
-//! pass up through `try_resolve_symbol` in `is_inferred_requirement_read` (where it is never
-//! found, so every inferred read counts as the author's declaration), and the UNFILLABLE
-//! row fails — the call loads clean. Make `arg_type_unknown_at_load` read only the stamp
-//! and the KNOWN-ARGUMENTS row fails (`rich()` carries none, so its call is woven).
-//! Remove `type_rule_bodies`' skip of a woven body and the SECOND-PHASE row fails — the
-//! next load re-types the woven call and refuses it as a post-elaboration form. Remove the
-//! pass's `has_equational_head` exclusion and the EQUATION row fails — stdlib's inert
-//! `rule isEmpty(?s) <=> eq(length(?s), 0)` gets a read and a woven call. The CONTROL rows
-//! pass either way by design, and each says why at its site.
+//! The refusal rows FAIL with `infer_rule_body_requirements`' refusals backed out (the clause
+//! loads, as it did with the inference). The declared rows FAIL with the guard's weave backed
+//! out (`declared_guard_of` and `slot_route`'s `Guard` answering `None`): a call at the
+//! clause's parameter is then refused as undeclared. A row's own note names what else it
+//! measures; where a note says what an inferred read did, that is what the row first
+//! measured, before the stage that withdrew it.
 //!
-//! ## Stated limits (measured 2026-10-08)
+//! ## Stated limits
 //!
-//! Where a callee's requirement at a rule variable is NOT a condition today, one row each at
-//! the end of the file, with its owner: a call reached through another rule's goal (the
-//! caller's dictionary stops at the first rule); an operation's own `requires` as an operand
-//! of `=` and a member of a sort that `requires`, both refused at load by the rule-body
-//! typer before the inference runs, under each `require`, head type and introducer the rows
-//! write; a
-//! requirement no argument names, which loads at goal position. Each row says at its site
-//! which half fails with the inference backed out and which passes either way, and runs the
-//! spelling that does answer. The refusal those rows read advised a `require[…]` that is
-//! refused when written, and a type argument a rule-body call refuses; it names a bracket
-//! that holds the requirement now, or none, and nothing after its own repairs
-//! (`the_refusal_names_no_repair_that_is_not_one` — with the bracket advice restored, that
-//! row and the operand row fail; with the tail restored, that row; and no other).
+//! A requirement no argument names is refused in every position (the typer's refusal, before
+//! the weave), and a bracket on a rule-body call names no repair (`the_refusal_names_no_-
+//! repair_that_is_not_one`).
 
 use std::rc::Rc;
 
@@ -87,8 +61,8 @@ namespace wip7vp4.ord
     operation compare(a: Int64, b: Int64) -> Int64 = sub(b, a)
   end
 
-  -- the rule WRITES NOTHING: its call's requirement is the clause's condition
-  rule cmp(?a, ?b, ?c) :- WeakOrd.compare(?a, ?b, ?c)
+  -- the rule DECLARES the requirement its call needs
+  rule cmp[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], WeakOrd.compare(?a, ?b, ?c)
   -- a query-shaped caller of it: a rule goal hands `cmp` no dictionary
   rule cmpOne(?c) :- cmp(1, 5, ?c)
 
@@ -177,7 +151,7 @@ fn a_call_at_a_concrete_carrier_keeps_its_own_route() {
 fn a_woven_clause_survives_a_second_load_phase() {
     let mut kb = crate::common::load_kb_with(&fix_program(
         "wip7vp4.phases",
-        "  rule dbl(?x) :- PartialEq.eq(Scale.twice(?x), 6)\n  \
+        "  rule dbl[A](?x: A) :- Scale[T = A], PartialEq.eq(Scale.twice(?x), 6)\n  \
          rule dblOne(?y) :- dbl(rod()), ?y <=> 1\n",
     ));
     let second = parse::parse(
@@ -238,23 +212,15 @@ fn an_equation_gets_no_inferred_condition() {
     assert!(woven.is_empty(), "equations with a woven call: {woven:?}");
 }
 
-/// A CARRIER NO GOAL EVER BINDS: `?x` is free for the whole clause, so the inferred read
-/// cannot derive and the woven call cannot dispatch — both DELAY, and the clause flounders
-/// into one CONDITIONAL row with `?r` still free. Before this ticket the unwoven call fell
-/// through the WI-938 hook and answered NOTHING, which that hook's own site records as its
-/// open half ("making that case DELAY instead of answering nothing"); a condition closes it
-/// for every call that gets one. What must never happen either way is `?r` bound to the
-/// un-reduced call (WI-1057), so the row asserts the value too. Its supplier-less twin, which
-/// gets no condition and keeps the old outcome, is
-/// `wi1043_bodyless_rule_body_test::an_unground_body_less_goal_binds_no_residual`.
-///
-/// NO SINGLE BACK-OUT REDDENS IT NOW. Since WI-20260926-CYNPE an unwoven call that did not
-/// run waits too, so with the inference backed out the row is the same one (MEASURED
-/// 2026-10-08), and with it in place the woven call waits on its own read, whatever that
-/// hook does (the row is not in CYNPE's back-out list, `wi_cynpe_waiting_goals_test`). What
-/// it pins is the answer's shape — one undecided row, `?r` free, never the un-reduced call —
-/// and the two back-outs together were not run. Before CYNPE it failed without the
-/// inference, answering nothing.
+/// A CARRIER NOTHING BINDS. `rule answer(?r) :- Desc.describe(?x, ?r)` leaves `?x` free, at a
+/// type no head column reaches: no caller can fix it, so the call's dictionary is found from
+/// the value when it runs, as for a query, and nothing is declared (060.1 §4). The value never
+/// comes, and the call waits: one UNDECIDED row with `?r` free, never `?r` bound to the
+/// un-reduced call (WI-1057). So does the clause that declares it, `?x` a column at `A`,
+/// queried with `?x` free: it waits on the guard's read. Its supplier-less twin is
+/// `wi1043_bodyless_rule_body_test::an_unground_body_less_goal_binds_no_residual`. The first
+/// half FAILS with the call at a local variable refused as a head column's is
+/// (`type_reaches_the_head` answering yes); the declared half passes either way, by design.
 #[test]
 fn an_unground_woven_call_delays() {
     const PROGRAM: &str = r#"
@@ -276,7 +242,19 @@ end
     let rows = crate::common::query_unary(&mut kb, "wip7vp4.unground.answer");
     assert!(
         rows.len() == 1 && !rows[0].1 && matches!(rows[0].0, Value::Var(_)),
-        "one UNDECIDED row with `?r` free — the woven call delayed on its carrier; got {rows:?}",
+        "one UNDECIDED row with `?r` free — the call waits on its carrier; got {rows:?}",
+    );
+    let declared = PROGRAM.replace(
+        "rule answer(?r) :- Desc.describe(?x, ?r)",
+        "rule answer[A](?x: A, ?r) :- Desc[T = A], Desc.describe(?x, ?r)",
+    );
+    let mut kb = crate::common::load_kb_with(&declared);
+    let goal = crate::common::query_pattern_term(&mut kb, "wip7vp4.unground.answer(?x, ?r)");
+    let solutions = kb.resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default());
+    assert!(
+        solutions.len() == 1 && !solutions[0].is_definite(),
+        "one UNDECIDED row — the guard's read waits on `?x`; got {} rows",
+        solutions.len(),
     );
 }
 
@@ -304,8 +282,8 @@ namespace wip7vp4.slots
     operation sign[A](x: A, y: A) -> Int64 requires WeakOrd[T = A] = WeakOrd.compare(x, y)
   end
 
-  -- the rule WRITES NOTHING: `sign`'s `requires` is the clause's condition
-  rule viaOp(?a, ?b, ?c) :- Util.sign(?a, ?b, ?c)
+  -- the rule DECLARES `sign`'s `requires`
+  rule viaOp[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], Util.sign(?a, ?b, ?c)
   rule viaOpOne(?c) :- viaOp(1, 5, ?c)
 
   sort Driver
@@ -423,7 +401,7 @@ fn a_call_whose_arguments_are_known_at_load_gets_no_condition() {
 
 /// The rivals, `Util.sign` and `Desc`/`Leaf` the rows below share.
 const FIX_PRELUDE: &str = r#"
-  import anthill.prelude.{Int64, Bool, Error, EmptyStream, Relation, Ord, WeakOrd, PartialOrd, PartialEq, Eq}
+  import anthill.prelude.{Int64, Bool, List, Error, EmptyStream, Relation, Ord, WeakOrd, PartialOrd, PartialEq, Eq}
 
   sort Ascending
     import anthill.prelude.Numeric.{sub}
@@ -491,7 +469,8 @@ fn fix_program(ns: &str, body: &str) -> String {
 fn a_call_nested_in_a_woven_call_is_woven_too() {
     let kb = crate::common::load_kb_with(&fix_program(
         "wip7vp4.nest",
-        "  rule nested(?x, ?y, ?c) :- Scale.scaled(?y, Scale.twice(?x), ?c)\n",
+        "  rule nested[A, B](?x: A, ?y: B, ?c) :- Scale[T = A], Scale[T = B], \
+         Scale.scaled(?y, Scale.twice(?x), ?c)\n",
     ));
     let woven: Vec<(String, bool, Vec<String>)> = crate::common::body_calls(&kb, "wip7vp4.nest.nested")
         .into_iter()
@@ -555,7 +534,7 @@ fn a_written_requires_keeps_its_inherited_witness() {
 fn a_goal_at_its_declared_arity_is_woven_only_for_the_bool_view() {
     let mut kb = crate::common::load_kb_with(&fix_program(
         "wip7vp4.declared",
-        "  rule less(?a, ?b) :- Util.isLess(?a, ?b)\n  \
+        "  rule less[A](?a: A, ?b: A) :- WeakOrd[T = A], Util.isLess(?a, ?b)\n  \
          rule lessOne(?x) :- less(1, 5), ?x <=> 1\n",
     ));
     assert_eq!(crate::common::one_definite_int(&mut kb, "wip7vp4.declared.lessOne"), Some(1), "`1 < 5` through the Bool view");
@@ -578,7 +557,7 @@ fn a_goal_at_its_declared_arity_is_woven_only_for_the_bool_view() {
 fn a_call_inside_a_quantifier_reads_its_condition_in_the_body() {
     let mut kb = crate::common::load_kb_with(&fix_program(
         "wip7vp4.scope",
-        "  rule allSix(?xs) :- (forall ?e in ?xs: Scale.twice(?e, 6))\n  \
+        "  rule allSix[A](?xs: List[T = A]) :- Scale[T = A], (forall ?e in ?xs: Scale.twice(?e, 6))\n  \
          rule sixOne(?x) :- allSix([rod(), rod()]), ?x <=> 1\n",
     ));
     assert_eq!(crate::common::one_definite_int(&mut kb, "wip7vp4.scope.sixOne"), Some(1), "each element doubled by value");
@@ -596,7 +575,7 @@ fn a_call_inside_a_quantifier_reads_its_condition_in_the_body() {
 #[test]
 fn a_woven_slot_call_that_waits_keeps_its_slots() {
     let driver = "  rule same2(?x, ?y) :- ?x <=> ?y\n  \
-                  rule late(?b, ?e, ?c) :- Util.sign(?b, ?a, ?c), same2(?e, ?a)\n  \
+                  rule late[A](?b: A, ?e: A, ?c) :- WeakOrd[T = A], Util.sign(?b, ?a, ?c), same2(?e, ?a)\n  \
                   sort Driver\n    \
                   operation citeLate[A](x: A, y: A) -> Int64 effects {Error, Error[EmptyStream]}\n      \
                   requires WeakOrd[T = A] = late(x, y).head.c\n    \
@@ -617,7 +596,7 @@ fn a_woven_slot_call_that_waits_keeps_its_slots() {
 #[test]
 fn a_slot_routes_whichever_parameter_pins_it() {
     let driver = "  rule same2(?x, ?y) :- ?x <=> ?y\n  \
-                  rule rOrder(?b, ?y, ?c) :- same2(?y, ?a), Util.sign(?a, ?b, ?c)\n  \
+                  rule rOrder[A](?b: A, ?y: A, ?c) :- WeakOrd[T = A], same2(?y, ?a), Util.sign(?a, ?b, ?c)\n  \
                   sort Driver\n    \
                   operation citeOrder[A](x: A, y: A) -> Int64 effects {Error, Error[EmptyStream]}\n      \
                   requires WeakOrd[T = A] = rOrder(x, y).head.c\n    \
@@ -674,7 +653,7 @@ namespace wip7vp4.partial
   end
 
   -- `?b` is no head column, so its slot is never routed: only the first slot is supplied
-  rule viaBoth(?a, ?c) :- ?b <=> 7, Util.both(?a, ?b, ?c)
+  rule viaBoth[A](?a: A, ?c) :- Score[T = A], ?b <=> 7, Util.both(?a, ?b, ?c)
 
   sort Driver
     operation cite[A](x: A) -> Int64 effects {Error, Error[EmptyStream]}
@@ -691,11 +670,12 @@ end
     }
 }
 
-/// An UNCITED slot call whose arguments nothing binds DELAYS — the woven call waits on an
-/// unevaluated call, as increment 1's does. No single back-out reddens it now, for
-/// [`an_unground_woven_call_delays`]' reason: since WI-20260926-CYNPE the unwoven call waits
-/// too (MEASURED 2026-10-08, the inference backed out). Before it the unwoven call answered
-/// nothing and this row failed without the inference.
+/// An operation's own `requires` at arguments nothing binds, local to the clause: `free`'s call
+/// is at a type no head column reaches, its slot found from the values when it runs (060.1 §4),
+/// and it waits: one UNDECIDED row with `?c` free. Declared, `?s` and `?t` columns at `A`, and
+/// queried with both free, the clause waits on its guard's read. The first half FAILS with a
+/// slot at a local variable refused as a head column's is; the declared half passes either
+/// way, by design.
 #[test]
 fn an_unground_slot_call_delays() {
     let mut kb = crate::common::load_kb_with(&fix_program(
@@ -706,6 +686,17 @@ fn an_unground_slot_call_delays() {
     assert!(
         rows.len() == 1 && !rows[0].1 && matches!(rows[0].0, Value::Var(_)),
         "one UNDECIDED row with `?c` free: {rows:?}",
+    );
+    let mut kb = crate::common::load_kb_with(&fix_program(
+        "wip7vp4.unground2",
+        "  rule free[A](?s: A, ?t: A, ?c) :- WeakOrd[T = A], Util.sign(?s, ?t, ?c)\n",
+    ));
+    let goal = crate::common::query_pattern_term(&mut kb, "wip7vp4.unground2.free(?s, ?t, ?c)");
+    let solutions = kb.resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default());
+    assert!(
+        solutions.len() == 1 && !solutions[0].is_definite(),
+        "one UNDECIDED row; got {} rows",
+        solutions.len(),
     );
 }
 
@@ -742,7 +733,7 @@ namespace wip7vp4.symbolic
     operation circle(r: Num) -> Num = num(v: 9)
   end
 
-  rule mk(?r, ?s) :- ?s <=> Shape.circle(?r)
+  rule mk[A](?r: A, ?s) :- Shape[T = A], ?s <=> Shape.circle(?r)
   rule mkOne(?s) :- mk(num(v: 1), ?s)
 end
 "#;
@@ -751,10 +742,12 @@ end
         crate::common::body_calls(&kb, "wip7vp4.symbolic.mk"),
         vec![
             ("circle".to_string(), true, Vec::new()),
+            ("domain".to_string(), false, Vec::new()),
             ("find_dictionary".to_string(), false, Vec::new()),
             ("unify".to_string(), false, Vec::new()),
         ],
-        "the body-less operand is woven behind its inferred `find_dictionary`",
+        "the body-less operand is woven behind its guard's `find_dictionary`, beside the \
+         typed column's `domain` test",
     );
     let rows = crate::common::query_unary(&mut kb, "wip7vp4.symbolic.mkOne");
     let [(s, true)] = rows.as_slice() else {
@@ -780,8 +773,8 @@ end
 fn a_call_in_an_untaken_branch_costs_its_clause_nothing() {
     let mut kb = crate::common::load_kb_with(&fix_program(
         "wip7vp4.deferred",
-        "  rule pick(?f, ?v, ?e) :- ?e <=> (if ?f then Scale.twice(?v) else 1)\n  \
-         rule pickOne(?x) :- pick(false, 5, ?e), ?x <=> 1\n",
+        "  rule pick[A](?f, ?v: A, ?e) :- Scale[T = A], ?e <=> (if ?f then Scale.twice(?v) else 1)\n  \
+         rule pickOne(?x) :- pick(false, rod(), ?e), ?x <=> 1\n",
     ));
     assert_eq!(crate::common::one_definite_int(&mut kb, "wip7vp4.deferred.pickOne"), Some(1), "the `else` calls nothing");
 }
@@ -798,9 +791,8 @@ fn a_call_in_an_untaken_branch_costs_its_clause_nothing() {
 fn a_call_in_a_branch_reads_its_condition_in_the_branch() {
     let mut kb = crate::common::load_kb_with(&fix_program(
         "wip7vp4.branch",
-        "  rule pickB(?x, ?c) :- (Scale.twice(?x, ?c) | ?c <=> 99)\n  \
-         rule pickRod(?c) :- pickB(rod(), ?c)\n  \
-         rule pickFree(?c) :- pickB(?x, ?c)\n",
+        "  rule pickB[A](?x: A, ?c) :- Scale[T = A], (Scale.twice(?x, ?c) | ?c <=> 99)\n  \
+         rule pickRod(?c) :- pickB(rod(), ?c)\n",
     ));
     let mut definite = |rel: &str| {
         let mut ns: Vec<i64> = crate::common::query_unary(&mut kb, rel)
@@ -812,7 +804,20 @@ fn a_call_in_a_branch_reads_its_condition_in_the_branch() {
         ns
     };
     assert_eq!(definite("wip7vp4.branch.pickRod"), vec![6, 99], "both branches, the first by value");
-    assert_eq!(definite("wip7vp4.branch.pickFree"), vec![99], "the second branch, undisturbed");
+    // A goal at a variable no head column reaches loads, its dictionary read from the value
+    // when it runs (060.1 §4). The declared requirement is the whole clause's, not one
+    // branch's: with `?x` never bound the guard's read waits, and the `99` branch with it —
+    // no definite answer, where the inferred read stood in the first branch alone.
+    let mut kb = crate::common::load_kb_with(&fix_program(
+        "wip7vp4.branchfree",
+        "  rule pickB[A](?x: A, ?c) :- Scale[T = A], (Scale.twice(?x, ?c) | ?c <=> 99)\n  \
+         rule pickFree(?c) :- pickB(?x, ?c)\n",
+    ));
+    let rows = crate::common::query_unary(&mut kb, "wip7vp4.branchfree.pickFree");
+    assert!(
+        !rows.is_empty() && rows.iter().all(|(_, d)| !*d),
+        "the clause waits on its requirement, both branches with it: {rows:?}",
+    );
 }
 
 /// A BOOL-VIEW goal answers through the CALLER's dictionary. `less` calls `isLess` at its
@@ -824,7 +829,7 @@ fn a_call_in_a_branch_reads_its_condition_in_the_branch() {
 /// nothing, so `less` is empty under both.
 #[test]
 fn a_bool_view_call_answers_through_the_callers_dictionary() {
-    let driver = "  rule less(?a, ?b) :- Util.isLess(?a, ?b)\n  \
+    let driver = "  rule less[A](?a: A, ?b: A) :- WeakOrd[T = A], Util.isLess(?a, ?b)\n  \
                   sort Driver\n    \
                   operation citeLess[A](x: A, y: A) -> Bool effects {Error, Error[EmptyStream]}\n      \
                   requires WeakOrd[T = A] =\n      \
@@ -889,7 +894,7 @@ namespace wip7vp4.negated
   end
 
   -- `?b` is no head column, so its slot is never routed: only the first slot is supplied
-  rule viaBoth(?a, ?c) :- ?b <=> 7, Util.both(?a, ?b, ?c)
+  rule viaBoth[A](?a: A, ?c) :- Score[T = A], ?b <=> 7, Util.both(?a, ?b, ?c)
 
   sort Driver
     operation negCite[A](x: A) -> Bool effects {Error, Error[EmptyStream]}
@@ -923,7 +928,7 @@ fn a_witness_supplied_carrier_answers_through_the_inferred_read() {
         ns,
         "",
         crate::wi1027_bodyless_supplier_tie_test::RIVAL_WITNESS,
-        "  rule viaVar(?x, ?r) :- Desc.describe(?x, ?r)\n  rule answer(?r) :- viaVar(leaf(), ?r)\n",
+        "  rule viaVar[A](?x: A, ?r) :- Desc[T = A], Desc.describe(?x, ?r)\n  rule answer(?r) :- viaVar(leaf(), ?r)\n",
     );
     assert_eq!(
         crate::wi1026_rule_body_spec_op_dispatch_test::answer(ns, &src),
@@ -945,7 +950,7 @@ fn a_subtype_argument_does_not_block_a_slot_route() {
                   operation sign2[A](x: A, y: A, s: Shape) -> Int64 requires WeakOrd[T = A] =\n      \
                   WeakOrd.compare(x, y)\n  \
                   end\n  \
-                  rule viaS(?a, ?b, ?s, ?c) :- Util2.sign2(?a, ?b, ?s, ?c)\n  \
+                  rule viaS[A](?a: A, ?b: A, ?s, ?c) :- WeakOrd[T = A], Util2.sign2(?a, ?b, ?s, ?c)\n  \
                   sort Driver\n    \
                   operation citeS[A](x: A, y: A) -> Int64 effects {Error, Error[EmptyStream]}\n      \
                   requires WeakOrd[T = A] = viaS(x, y, circle()).head.c\n    \
@@ -1054,7 +1059,7 @@ namespace wip7vp4.mixed
     operation conv(a: Meters, b: String) -> Int64 = 7
   end
 
-  rule toN(?x, ?r) :- ?u <=> "km", Conv.conv(?x, ?u, ?r)
+  rule toN[X](?x: X, ?r) :- Conv[A = X, B = String], ?u <=> "km", Conv.conv(?x, ?u, ?r)
   rule go(?r) :- toN(m(v: 3), ?r)
 end
 "#;
@@ -1122,7 +1127,7 @@ fn a_clause_with_a_woven_goal_is_not_refuted_at_opening() {
         "  entity known(p: ?)\n  \
          rule isPos(?n) :- Int64.gt(?n, 0)\n  \
          fact known(p: isPos)\n  \
-         rule lessH(?p, ?a, ?b) :- ?p(?a), Util.isLess(?a, ?b)\n  \
+         rule lessH[A](?p, ?a: A, ?b: A) :- WeakOrd[T = A], ?p(?a), Util.isLess(?a, ?b)\n  \
          rule q(?r) :- lessH(?p, 1, 5), known(p: ?p), ?r <=> 1\n",
     ));
     assert_eq!(crate::common::one_definite_int(&mut kb, "wip7vp4.opening.q"), Some(1), "`isPos(1)` and `isLess(1, 5)`, once `?p` is bound");
@@ -1172,7 +1177,7 @@ namespace wip7vp4.split
         case blue() -> true
   end
 
-  rule w(?c, ?x) :- Palette.warm(?c, ?x)
+  rule w[X](?c, ?x: X) :- Palette[T = X], Palette.warm(?c, ?x)
   rule wRod(?c) :- w(?c, rod())
 
   sort Driver
@@ -1202,7 +1207,7 @@ end
 /// and the call never reduces — one conditional row under both.
 #[test]
 fn a_named_argument_bool_view_call_answers_through_the_callers_dictionary() {
-    let driver = "  rule lessN(?a, ?b) :- Util.isLess(x: ?a, y: ?b)\n  \
+    let driver = "  rule lessN[A](?a: A, ?b: A) :- WeakOrd[T = A], Util.isLess(x: ?a, y: ?b)\n  \
                   sort Driver\n    \
                   operation citeLessN[A](x: A, y: A) -> Bool effects {Error, Error[EmptyStream]}\n      \
                   requires WeakOrd[T = A] =\n      \
@@ -1314,8 +1319,8 @@ const HOLDER: &str = "  sort Holder\n    sort A = ?\n    requires WeakOrd[T = A]
 fn a_rule_goal_passes_its_callee_the_callers_dictionary() {
     let ns = "wip7vp4.viarule";
     let body = format!(
-        "  rule inner(?a, ?b, ?c) :- WeakOrd.compare(?a, ?b, ?c)\n  \
-         rule r(?a, ?b, ?c) :- inner(?a, ?b, ?c)\n{}{}",
+        "  rule inner[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], WeakOrd.compare(?a, ?b, ?c)\n  \
+         rule r[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], inner(?a, ?b, ?c)\n{}{}",
         cite_driver("Direct", "inner"),
         cite_driver("Through", "r"),
     );
@@ -1352,7 +1357,7 @@ fn a_rule_goal_passes_its_callee_the_callers_dictionary() {
 fn an_operations_own_requires_is_its_clauses_condition_in_every_position() {
     let ns = "wip7vp4.operand";
     let woven = format!(
-        "  rule r(?a, ?b, ?c) :- ?c <=> Util.sign(?a, ?b)\n  \
+        "  rule r[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], ?c <=> Util.sign(?a, ?b)\n  \
          rule lit(?c) :- ?c = Util.sign(1, 5)\n{}",
         cite_driver("Driver", "r"),
     );
@@ -1369,13 +1374,23 @@ fn an_operations_own_requires_is_its_clauses_condition_in_every_position() {
         "at literals the clause loads and its `=` is undecided, `?c` free: {rows:?}",
     );
     let ns = "wip7vp4.operandeq";
-    let kb = crate::common::load_kb_with(&fix_program(
+    let errs = crate::common::load_errors_of(&fix_program(
         ns,
         "  rule r1(?a, ?b, ?c) :- ?c = Util.sign(?a, ?b)\n  \
-           rule r2(?a, ?b, ?c) :- PartialEq.eq(Util.sign(?a, ?b), ?c)\n  \
-           rule r5[A](?a: A, ?b: A, ?c) :- WeakOrd[A], ?c = Util.sign(?a, ?b)\n",
+           rule r2(?a, ?b, ?c) :- PartialEq.eq(Util.sign(?a, ?b), ?c)\n",
     ));
-    for rule in ["r1", "r2", "r5"] {
+    for rule in ["r1.body", "r2.body"] {
+        assert!(
+            errs.iter().any(|e| e.contains(rule) && e.contains("a requirement of `WeakOrd` the clause declares")),
+            "`{rule}`: the operand's call at an undeclared type is refused: {errs:?}",
+        );
+    }
+    let kb = crate::common::load_kb_with(&fix_program(
+        ns,
+        "  rule r5[A](?a: A, ?b: A, ?c) :- WeakOrd[A], ?c = Util.sign(?a, ?b)\n  \
+           rule r6[A](?a: A, ?b: A, ?c) :- WeakOrd[A], PartialEq.eq(Util.sign(?a, ?b), ?c)\n",
+    ));
+    for rule in ["r5", "r6"] {
         let woven = kb
             .rule_ids_by_qn(&format!("{ns}.{rule}"))
             .into_iter()
@@ -1405,9 +1420,8 @@ fn an_operations_own_requires_is_its_clauses_condition_in_every_position() {
 #[test]
 fn a_member_of_a_sort_that_requires_is_its_clauses_condition() {
     for (ns, clause) in [
-        ("wip7vp4.membergoal", "  rule r(?a, ?b, ?c) :- Holder.hsign(?a, ?b, ?c)\n"),
-        ("wip7vp4.memberval", "  rule r(?a, ?b, ?c) :- ?c <=> Holder.hsign(?a, ?b)\n"),
-        ("wip7vp4.memberintro", "  rule r[A](?a: A, ?b: A, ?c) :- WeakOrd[A], Holder.hsign(?a, ?b, ?c)\n"),
+        ("wip7vp4.membergoal", "  rule r[A](?a: A, ?b: A, ?c) :- WeakOrd[A], Holder.hsign(?a, ?b, ?c)\n"),
+        ("wip7vp4.memberval", "  rule r[A](?a: A, ?b: A, ?c) :- WeakOrd[A], ?c <=> Holder.hsign(?a, ?b)\n"),
     ] {
         let src = fix_program(ns, &format!("{HOLDER}{clause}{}", cite_driver("Driver", "r")));
         let mut interp = crate::common::interp_for(&src);
@@ -1434,7 +1448,7 @@ fn a_member_of_a_sort_that_requires_is_its_clauses_condition() {
         "{HOLDER}  sort Via\n    \
          operation hs[A](x: A, y: A) -> Int64 requires WeakOrd[T = A] = Holder.hsign(x, y)\n  \
          end\n  \
-         rule r(?a, ?b, ?c) :- Via.hs(?a, ?b, ?c)\n  \
+         rule r[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], Via.hs(?a, ?b, ?c)\n  \
          rule lit(?c) :- Holder.hsign(1, 5, ?c)\n{}",
         cite_driver("Driver", "r"),
     );

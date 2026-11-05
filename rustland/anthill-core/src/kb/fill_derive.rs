@@ -52,6 +52,14 @@ use crate::kb::{ClauseKind, KnowledgeBase, SymbolKind};
 /// operand, never run as a goal (`resolve::BuiltinTag::DomainSub`).
 pub(crate) const DOMAIN_SUB: &str = "anthill.kernel.__domain_sub";
 
+/// The last case of a derived `fill` — `__refined_domain(?x, evidence)`, the evidence the
+/// sort's own dictionary or, for a sort with no conditions, its type: a value of a sort that
+/// refines this one is a value of it (kernel-language §8.2), and the cases before it are this
+/// sort's own constructors. Lowered in place to the `fill` at the value's own sort
+/// (`KnowledgeBase::lower_refined_domain`); an unbound `?x` is no case of it, so what a `fill`
+/// enumerates is its own constructors' values (`resolve::BuiltinTag::RefinedDomain`).
+pub(crate) const REFINED_DOMAIN: &str = "anthill.kernel.__refined_domain";
+
 /// Where a sort's `SortDomain` comes from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SortDomainKind {
@@ -524,6 +532,7 @@ struct ClauseSyms {
     choice: Symbol,
     and: Symbol,
     apply: Symbol,
+    refined: Symbol,
     /// What a PARAMETRIC `fill` needs to read its dictionary — `None` in a KB that never
     /// loaded `anthill.reflect`, where no parametric sort has a domain.
     reads: Option<ReadSyms>,
@@ -556,6 +565,7 @@ impl ClauseSyms {
             choice: kb.try_resolve_symbol("anthill.kernel.push_choice")?,
             and: kb.try_resolve_symbol("anthill.kernel.push_and")?,
             apply: kb.try_resolve_symbol(crate::kb::typing::APPLY_DOMAIN_GOAL)?,
+            refined: kb.try_resolve_symbol(REFINED_DOMAIN)?,
             reads,
         })
     }
@@ -633,6 +643,9 @@ fn emit_fill_clause(kb: &mut KnowledgeBase, syms: &ClauseSyms, c: &Candidate) {
         }
         branches.push(right_fold(kb, syms.and, &goals));
     }
+    // A value of a sort that refines this one, LAST: filled at its own sort.
+    let evidence = if needs_self { self_var } else { c.self_type };
+    branches.push(pos_fn(kb, syms.refined, &[x, evidence]));
     let head = pos_fn(kb, entry.fill, &[x]);
     let mut body: Vec<TermId> = Vec::with_capacity(2);
     if needs_self {

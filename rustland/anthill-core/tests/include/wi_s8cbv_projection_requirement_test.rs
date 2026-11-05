@@ -519,7 +519,7 @@ fn rows_src(src: &str) -> Vec<(Value, bool)> {
 fn a_projected_bracket_beside_a_witness_call_still_anchors() {
     let got = rows_src(&fixture_with_witness(
         "test.s8cbv.witness.proj",
-        "  rule r[E](p: Box[E = E], ?q, ?res) :- Desc[T = E], Desc.describe(?q, ?res)\n  \
+        "  rule r[E, Q](p: Box[E = E], ?q: Q, ?res) :- Desc[T = E], Desc[T = Q], Desc.describe(?q, ?res)\n  \
          rule answer(?r) :- r(box(v: red()), blue(), ?r)\n",
     ));
     assert!(matches!(got.as_slice(), [(Value::Int(90), true)]), "expected a DEFINITE 90, got {got:?}");
@@ -532,7 +532,7 @@ fn a_projected_bracket_beside_a_witness_call_still_anchors() {
 fn the_control_a_concrete_bracket_beside_a_witness_call_is_unchanged() {
     let got = rows_src(&fixture_with_witness(
         "test.s8cbv.witness.concrete",
-        "  rule r(p: Box, ?q, ?res) :- Desc.describe(?q, ?res)\n  \
+        "  rule r[Q](p: Box, ?q: Q, ?res) :- Desc[T = Q], Desc.describe(?q, ?res)\n  \
          rule answer(?r) :- r(box(v: red()), blue(), ?r)\n",
     ));
     assert!(matches!(got.as_slice(), [(Value::Int(90), true)]), "expected a DEFINITE 90, got {got:?}");

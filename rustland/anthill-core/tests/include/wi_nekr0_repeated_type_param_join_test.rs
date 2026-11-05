@@ -61,7 +61,7 @@ namespace winekr0
     operation cmp2[A](x: A, y: A) -> Int64 requires Cmp[T = A] = Cmp.cmp(x, y)
   end
 
-  rule via(?a, ?b, ?c) :- Util.cmp2(?a, ?b, ?c)
+  rule via[A](?a: A, ?b: A, ?c) :- Cmp[T = A], Util.cmp2(?a, ?b, ?c)
 end
 "#;
 

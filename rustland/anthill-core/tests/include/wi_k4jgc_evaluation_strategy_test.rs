@@ -97,7 +97,7 @@ namespace k4jgc
 
   -- a body-less spec operation in a value slot
   rule compared(1) :- WeakOrd.compare(1, 5) = -1
-  rule below(?a, ?b) :- PartialEq.eq(WeakOrd.compare(?a, ?b), -1)
+  rule below[A](?a: A, ?b: A) :- WeakOrd[T = A], PartialEq.eq(WeakOrd.compare(?a, ?b), -1)
   rule isBelow(1) :- below(1, 5)
   rule notBelow(1) :- not(below(1, 5))
   rule compareRelation(?r) :- WeakOrd.compare(1, 5, ?r)

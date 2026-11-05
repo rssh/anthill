@@ -109,6 +109,17 @@ fn one_definite(got: &[(Value, bool)]) -> Option<i64> {
     }
 }
 
+/// The goal `answer`'s refusal at load: its dictionary, at the concrete types the goal gives,
+/// is built from the provisions there (060.1 §1), and none answers.
+#[track_caller]
+fn refused_at_load(src: &str, instance: &str) {
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(src),
+        &["answer.body", &format!("no provider answers `{instance}`")],
+        "the goal at an instance nothing provides",
+    );
+}
+
 fn answer(ns: &str, tail: &str) -> Option<i64> {
     let mut kb = crate::common::load_kb_with(&two_param(ns, tail));
     one_definite(&crate::common::query_unary(
@@ -144,7 +155,9 @@ fn a_written_element_the_witness_cannot_name_selects_the_row() {
     }
 
     // THE CONTROLS, beside `Red`'s provision alone: a written `P` that no provision states
-    // selects nothing, and an unwritten one is read off the provision at the carrier.
+    // selects nothing — the goal at `red()` is refused at load, its dictionary built there and
+    // none answering, as an operation's call at `Red` is — and an unwritten one is read off
+    // the provision at the carrier.
     let alone = |ns: &str, bracket: &str| {
         answer(
             ns,
@@ -154,7 +167,14 @@ fn a_written_element_the_witness_cannot_name_selects_the_row() {
             ),
         )
     };
-    assert_eq!(alone("test.j38ve.wn", "Sp[C = A, P = Bool]"), None, "no provision at `P = Bool`");
+    refused_at_load(
+        &two_param(
+            "test.j38ve.wn",
+            "  rule g[A](?x: A, ?r) :- require s: Sp[C = A, P = Bool], s.tag(?r)\n  \
+             rule answer(?r) :- g(red(), ?r)\n",
+        ),
+        "test.j38ve.wn.Sp[C = test.j38ve.wn.Red, P = anthill.prelude.Bool]",
+    );
     assert_eq!(alone("test.j38ve.wc", "Sp[C = A]"), Some(7), "`P` read off `Red`'s provision");
 }
 
@@ -176,16 +196,16 @@ fn a_projected_carrier_and_a_written_element_compose() {
         "the element is `Red` here and the written `P = Int64` is `Red`'s provision",
     );
 
-    // THE CONTROL: the same element with a `P` no provision states selects nothing, so the
-    // `7` above is the written element's doing and not the carrier's alone.
-    assert_eq!(
-        answer(
+    // THE CONTROL: the same element with a `P` no provision states selects nothing — the goal
+    // is refused at load — so the `7` above is the written element's doing and not the
+    // carrier's alone.
+    refused_at_load(
+        &two_param(
             "test.j38ve.pc",
             "  rule anchored[E](p: Box[E = E], ?r) :- require s: Sp[C = E, P = Box[E = Red]], s.tag(?r)\n  \
-             rule answer(?r) :- anchored(box(v: red()), ?r)\n"
+             rule answer(?r) :- anchored(box(v: red()), ?r)\n",
         ),
-        None,
-        "no provision of `Sp` at `C = Red` states `P = Box[E = Red]`",
+        "test.j38ve.pc.Sp[C = test.j38ve.pc.Red, P = test.j38ve.pc.Box[E = test.j38ve.pc.Red]]",
     );
 }
 
@@ -223,7 +243,6 @@ fn tie(ns: &str, bracket: &str) -> String {
   end
 
   rule dict[A](?x: A, ?r) :- {bracket}, Spec.probe(?x, ?r)
-  rule answer(?r) :- dict(carrier(), ?r)
 end
 "#
     )
@@ -253,17 +272,31 @@ fn a_tie_a_written_element_does_not_cause_stays_a_delay() {
     // BACKING OUT the `from_carried_types = false` beside the written pin made THIS ROW
     // ABORT, and nothing else in the workspace moved — measured while the requirement was
     // `?d = require[Spec[C = Carrier, Note = Int64]]` (removed by proposal 060.1 §5). It is
-    // the introducer's guard at the call's carrier now, written and bare, and it delays.
+    // the introducer's guard at the call's carrier now, written and bare, and it delays —
+    // asked as a query, whose read runs. A rule's goal at `carrier()` builds the dictionary at
+    // load (060.1 §1), and the tie is refused there, naming both providers, as an operation's
+    // call at `Carrier` is.
     for (ns, bracket) in [
         ("j38ve_tie_w", "Spec[C = A, Note = Int64]"),
         ("j38ve_tie_b", "Spec[A]"),
     ] {
         let mut kb = crate::common::load_kb_with(&tie(ns, bracket));
-        let sols = crate::common::query_unary(&mut kb, &format!("{ns}.answer"));
+        let goal = crate::common::query_pattern_term(&mut kb, &format!("{ns}.dict({ns}.Carrier.carrier(), ?r)"));
+        let sols = kb.resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default());
         assert!(
-            !sols.is_empty() && sols.iter().all(|(_, definite)| !definite),
+            !sols.is_empty() && sols.iter().all(|s| !s.is_definite()),
             "`{bracket}`: two providers tying must leave the dictionary undecided and \
-             DELAY — never abort, and never pick one of the two. Got {sols:?}",
+             DELAY — never abort, and never pick one of the two. Got {} rows",
+            sols.len(),
+        );
+        crate::common::assert_refused_naming(
+            &crate::common::load_errors_of(&tie(ns, bracket).replacen(
+                "  rule dict[A]",
+                "  rule answer(?r) :- dict(carrier(), ?r)\n  rule dict[A]",
+                1,
+            )),
+            &["answer.body", "two providers answer", &format!("{ns}.MidA"), &format!("{ns}.MidB")],
+            "the goal at `carrier()`",
         );
     }
 }
@@ -349,10 +382,11 @@ fn an_applied_written_element_pins_what_the_author_actually_wrote() {
         Some(7),
         "the author's applied element AGREES with the provision, so the row must be found",
     );
-    assert_eq!(
-        applied_answer("test.j38ve.ad", "Box[E = Leaf]", "Box[E = Other]"),
-        None,
-        "and a DIFFERENT argument must not select it — reducing both to `Box` made the \
-         author's `E = Other` mean nothing",
+    // And a DIFFERENT argument must not select it — reducing both to `Box` made the author's
+    // `E = Other` mean nothing: the goal at `red()` is refused at load, nothing providing
+    // `Sp` at `P = Box[E = Other]`.
+    refused_at_load(
+        &applied("test.j38ve.ad", "Box[E = Leaf]", "Box[E = Other]"),
+        "test.j38ve.ad.Sp[C = test.j38ve.ad.Red, P = test.j38ve.ad.Box[E = test.j38ve.ad.Other]]",
     );
 }

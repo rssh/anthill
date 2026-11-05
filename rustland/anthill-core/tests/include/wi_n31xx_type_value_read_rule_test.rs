@@ -175,8 +175,8 @@ namespace test.n31xx.rulebody
 
   operation tyOf[B](x: B) -> Type requires TypeValue[T = B] = Cell[V = B]
 
-  rule names(?x, ?t) :- ?t = tyOf(?x)
-  rule asGoal(?x, ?t) :- tyOf(?x, ?t)
+  rule names[B](?x: B, ?t) :- TypeValue[T = B], ?t = tyOf(?x)
+  rule asGoal[B](?x: B, ?t) :- TypeValue[T = B], tyOf(?x, ?t)
   rule viaEq(?t) :- names(1, ?t)
   rule viaGoal(?t) :- asGoal(1, ?t)
 end
@@ -260,8 +260,8 @@ namespace test.n31xx.sortlevel
     operation get(x: U) -> Type = Cell[V = U]
   end
 
-  rule names(?x, ?t) :- ?t = Holder.get(?x)
-  rule asGoal(?x, ?t) :- Holder.get(?x, ?t)
+  rule names[U](?x: U, ?t) :- TypeValue[T = U], ?t = Holder.get(?x)
+  rule asGoal[U](?x: U, ?t) :- TypeValue[T = U], Holder.get(?x, ?t)
   rule viaEq(?t) :- names(1, ?t)
   rule viaGoal(?t) :- asGoal(1, ?t)
 end

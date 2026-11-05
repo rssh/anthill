@@ -1380,7 +1380,7 @@ pub(super) fn unify_parameterized_with_sort_ref<P: TermView, S: TermView>(
 /// says which, and the caller reads the pair as it would without this. Its `true` is a binding,
 /// as unification's is, whichever side the caller put first: whether a value of the one type is
 /// admitted at the other is the subtype relation's question.
-fn unify_through_refinement<A: TermView, B: TermView>(
+pub(super) fn unify_through_refinement<A: TermView, B: TermView>(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
     refining: &A,

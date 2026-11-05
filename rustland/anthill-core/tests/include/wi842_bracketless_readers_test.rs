@@ -280,38 +280,52 @@ fn a_self_providing_carrier_now_answers_where_it_used_to_tie() {
 /// over `WrapDesc`'s open row), and at `twig()`, where `TwigA` and `TwigB` tie, it is
 /// undecided. The `=` spelling is undecided at both: `=` does not reduce an operand that
 /// calls an operation with `requires` (WI-20260926-DSEXA's item 3). Before RYDNV both arms
-/// were refused at load in the `=` spelling, where the goal spelling loaded.
+/// were refused at load in the `=` spelling, where the goal spelling loaded. Since 060.1 stage 2
+/// each clause declares `Desc` at `?x`'s type, and the goal at `twig()` builds the tied
+/// dictionary at load, where it is refused, as an operation's call at `Twig` is: the tied arm
+/// is asked as a query.
 #[test]
 fn a_rule_body_tie_is_decided_when_the_goal_runs_on_both_arms() {
-    for (ns, extra, ctor, goal_answer) in [
-        ("wi842.vd.rule.untied", "", "Leaf.leaf()", Some(1)),
-        ("wi842.vd.rule.tie", TWIG, "Twig.twig()", None),
-    ] {
-        let rules = format!(
-            "  rule described(?x, ?y) :- eq(?y, Holder.probe(?x))\n  \
-             rule asGoal(?x, ?y) :- Holder.probe(?x, ?y)\n  \
-             rule viaEq(?y) :- described({ctor}, ?y)\n  \
-             rule viaGoal(?y) :- asGoal({ctor}, ?y)\n"
-        );
-        let mut kb = crate::common::load_kb_with(&program(ns, extra, &rules));
-        let goal = crate::common::query_unary(&mut kb, &format!("{ns}.viaGoal"));
-        match goal_answer {
-            Some(n) => assert_eq!(
-                crate::common::one_definite_int(&mut kb, &format!("{ns}.viaGoal")),
-                Some(n),
-                "{ns}: the goal spelling answers `Leaf`'s own"
-            ),
-            None => assert!(
-                goal.len() == 1 && !goal[0].1,
-                "{ns}: the tie leaves the goal spelling one undecided answer; got {goal:?}"
-            ),
-        }
-        let eq = crate::common::query_unary(&mut kb, &format!("{ns}.viaEq"));
+    let clauses = "  rule described[A](?x: A, ?y) :- Desc[A], eq(?y, Holder.probe(?x))\n  \
+                   rule asGoal[A](?x: A, ?y) :- Desc[A], Holder.probe(?x, ?y)\n";
+    // The untied arm, through rule goals at `leaf()`.
+    let ns = "wi842.vd.rule.untied";
+    let mut kb = crate::common::load_kb_with(&program(
+        ns,
+        "",
+        &format!(
+            "{clauses}  rule viaEq(?y) :- described(Leaf.leaf(), ?y)\n  \
+             rule viaGoal(?y) :- asGoal(Leaf.leaf(), ?y)\n"
+        ),
+    ));
+    assert_eq!(
+        crate::common::one_definite_int(&mut kb, &format!("{ns}.viaGoal")),
+        Some(1),
+        "{ns}: the goal spelling answers `Leaf`'s own"
+    );
+    let eq = crate::common::query_unary(&mut kb, &format!("{ns}.viaEq"));
+    assert!(eq.len() == 1 && !eq[0].1, "{ns}: the `=` spelling is undecided (DSEXA item 3); got {eq:?}");
+    // The tied arm, asked as queries — whose reads run — and refused as rule goals at load.
+    let ns = "wi842.vd.rule.tie";
+    let mut kb = crate::common::load_kb_with(&program(ns, TWIG, clauses));
+    for relation in ["asGoal", "described"] {
+        let goal = crate::common::query_pattern_term(&mut kb, &format!("{ns}.{relation}({ns}.Twig.twig(), ?y)"));
+        let got = kb.resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default());
         assert!(
-            eq.len() == 1 && !eq[0].1,
-            "{ns}: the `=` spelling is undecided (DSEXA item 3); got {eq:?}"
+            got.len() == 1 && !got[0].is_definite(),
+            "{ns}: the tie leaves `{relation}` one undecided answer; got {} rows",
+            got.len(),
         );
     }
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&program(
+            ns,
+            TWIG,
+            &format!("{clauses}  rule viaGoal(?y) :- asGoal(Twig.twig(), ?y)\n"),
+        )),
+        &["viaGoal.body", "two providers answer"],
+        "the rule goal at `twig()`",
+    );
 }
 
 /// `described(<ctor>(), n)` for the two candidate answers — the count of DEFINITE

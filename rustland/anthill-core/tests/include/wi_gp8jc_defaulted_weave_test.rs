@@ -56,10 +56,10 @@ fn desc_program(ns: &str, defaulted: bool) -> String {
     operation describe(x: Gadget) -> Int64 = 9
   end
 
-  rule two[A](?x: A, ?y, ?r1, ?r2) :- Desc[T = A], Desc.describe(?x, ?r1), Desc.describe(?y, ?r2)
+  rule two[A, B](?x: A, ?y: B, ?r1, ?r2) :- Desc[T = A], Desc[T = B], Desc.describe(?x, ?r1), Desc.describe(?y, ?r2)
   rule twoTyped(a: Thing, b: Gadget, ?r1, ?r2) :- Desc.describe(a, ?r1), Desc.describe(b, ?r2)
-  rule nested[A](?x: A, ?y, ?r1, ?r2) :-
-    Desc[T = A], ?r1 <=> Int64.add(Desc.describe(?x), 0), Desc.describe(?y, ?r2)
+  rule nested[A, B](?x: A, ?y: B, ?r1, ?r2) :-
+    Desc[T = A], Desc[T = B], ?r1 <=> Int64.add(Desc.describe(?x), 0), Desc.describe(?y, ?r2)
 
   rule tgFirst(?r) :- two(thing(), gadget(), ?r, ?)
   rule tgSecond(?r) :- two(thing(), gadget(), ?, ?r)

@@ -381,18 +381,23 @@ fn a_typed_head_beside_a_witness_call_is_unchanged() {
 // ── a bound that provides nothing ────────────────────────────────────────────
 
 /// A VALUE WHOSE SORT PROVIDES NOTHING FAILS THE GUARD: at `plain()` the requirement has no
-/// provider, and the clause has no answer — a missing provider is no undecided answer. It was
+/// provider, and the query has no answer — a missing provider is no undecided answer. It was
 /// a load refusal, "head bound(s) — Plain — provide no `Desc`", at the typed head `?x: Plain`
-/// the anchor read; the introducer is no sort to check at load, and the citation's value is
-/// what the guard reads.
+/// the anchor read; the introducer is no sort to check at load, and the value is what the
+/// guard reads. A rule's goal of the clause is typed by the clause, `?x` a `Plain`, and builds
+/// the dictionary at load (060.1 §1): refused there, naming `Desc[T = Plain]`.
 #[test]
 fn a_bound_that_does_not_provide_is_refused_by_its_own_message() {
-    let mut kb = crate::common::load_kb_with(&program(
-        "  rule answer(?r) :- anchored(?x, ?r)\n  \
-         rule anchored[A](?x: A, ?r) :- require d: Desc[T = A], seedp(?x), d.tag(?r)\n",
-    ));
-    let got = crate::common::query_unary(&mut kb, "test.qmfc5.answer");
-    assert!(got.is_empty(), "`Plain` provides no `Desc`: no answer, got {got:?}");
+    let anchored = "  rule anchored[A](?x: A, ?r) :- require d: Desc[T = A], seedp(?x), d.tag(?r)\n";
+    let mut kb = crate::common::load_kb_with(&program(anchored));
+    let goal = crate::common::query_pattern_term(&mut kb, "test.qmfc5.anchored(?x, ?r)");
+    let got = kb.resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default());
+    assert!(got.is_empty(), "`Plain` provides no `Desc`: no answer, got {} rows", got.len());
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&program(&format!("  rule answer(?r) :- anchored(?x, ?r)\n{anchored}"))),
+        &["answer.body", "no provider answers `test.qmfc5.Desc[T = test.qmfc5.Plain]`"],
+        "the goal at the clause's `Plain`",
+    );
 }
 
 // ── two requirements ─────────────────────────────────────────────────────────
@@ -468,8 +473,7 @@ fn a_refining_carrier_answers_the_same_in_both_tiers() {
 #[test]
 fn a_conditional_provision_is_decided_at_run_time_not_at_load() {
     let src = conditional(
-        "  rule answer(?r) :- checked(?x, ?r)\n  \
-         rule checked[A](?x: A, ?r) :- require s: Sh[T = A], seedb(?x), s.tag(?r)\n",
+        "  rule checked[A](?x: A, ?r) :- require s: Sh[T = A], seedb(?x), s.tag(?r)\n",
     );
     let kb = crate::common::load_kb_with(&src);
     assert!(

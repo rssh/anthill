@@ -548,7 +548,10 @@ forms are alternatives and the choice belongs to that document, which still owes
    FORWARD slot of the caller clause (one more implicit parameter, routed by the clause's own
    citer), the caller's own parameter for a recursive goal at its own column types, a
    dictionary built from a bracket, or none; and not by a per-predicate sequence — S2's flat
-   layout, reads then forward slots. The rows below are not the ones driven; those are in
+   layout, reads then forward slots. (The forward slots are withdrawn by proposal 060.1
+   stage 2, WI-20261104-J9SSG: a rule takes a dictionary only where it declares one, and a goal
+   passes its callee the requirement its clause declares, or a dictionary built at load.) The
+   rows below are not the ones driven; those are in
    `wi_atvc1_rule_goal_implicit_arguments_test.rs`. As planned: Goals carry their implicit
    arguments through the seven goal-list constructions (§1); `with_fresh_vars` opens them with
    the body; the push binds `?rⱼ := tⱼ`. Acceptance: §1's `a(3, nil())` answers through `a`'s

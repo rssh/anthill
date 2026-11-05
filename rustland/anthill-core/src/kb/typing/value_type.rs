@@ -558,7 +558,7 @@ fn self_return_spec_op_result_type(
 /// type-params), then [`reconstruct_sort_params`] + build `Sort[params]` (or the bare
 /// `Ref(Sort)`). An unregistered constructor / free-standing entity yields its own
 /// bare sort ref. Never `None`.
-fn constructor_value_type(
+pub(super) fn constructor_value_type(
     kb: &mut KnowledgeBase,
     ctor_sym: Symbol,
     pos_child_types: &[Value],
@@ -2708,7 +2708,18 @@ fn pin_bound_as_a_bound(
     let Some(ty) = ty else {
         return TypeBoundPin::Suspend;
     };
-    let mut pin = Substitution::new();
+    // A carrier of the bound with provider requirements has them checked against the value's
+    // type ([`carrier_requirements_hold`]), except one whose dictionary the clause was handed:
+    // σ says which, so the pin reads through it there. Nowhere else, which keeps the common
+    // bound's pin from copying σ.
+    let mut pin = if kb.mentions_var(&bound, &|v| match v {
+        Var::Global(g) => !kb.type_var_provider_requirements(g).is_empty(),
+        _ => false,
+    }) {
+        Substitution::with_parent(subst.clone())
+    } else {
+        Substitution::new()
+    };
     if pin_type_vars(kb, &mut pin, &ty, &bound) {
         let bound = walk_type_deep_value(kb, &pin, &bound);
         TypeBoundPin::Pinned { pin, bound }
@@ -2930,6 +2941,14 @@ pub(super) fn pin_type_vars(
     // early-return-on-false discipline `types_compatible`'s own doc states for its
     // threading callers, and the caller discards σ on `false`.
     if bf != tf || bp != tp || bn != tn {
+        // A SORT THAT REFINES THE BOUND'S pins it through the instance its `requires` clauses
+        // give it, as a call's type argument is read (`unify_through_refinement`): `narrow(k:
+        // 3)` under `sort Narrow requires Wide[W = Int64]` pins `Wide[W = ?w]`'s `?w` to
+        // `Int64`. The subtype relation reads `?w` as a type of its own there, at an invariant
+        // parameter, and refused the value.
+        if unify_through_refinement(kb, pin, ty, tf, bound, bf) {
+            return true;
+        }
         return types_compatible(kb, pin, ty, bound);
     }
     for i in 0..bp {
@@ -2984,7 +3003,7 @@ pub(super) fn pin_type_vars(
 /// EVERY OTHER SHAPE IS DETERMINED and gets a real answer: `arrow` and `named_tuple` have
 /// their own subtyping arms, and a shape with no arm falls to `false`, which for a bound
 /// the value does not satisfy is the RIGHT answer — the guard restricts.
-pub(super) fn type_is_undetermined(kb: &KnowledgeBase, ty: &Value) -> bool {
+pub(crate) fn type_is_undetermined(kb: &KnowledgeBase, ty: &Value) -> bool {
     if !type_head_is_decidable(kb, ty) {
         return true;
     }

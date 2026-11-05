@@ -16,8 +16,8 @@
 //!    row fails to load, and the refusal rows give that refusal instead of their own;
 //!  * [P] the selection not pinned where the guard's read is routed — a citation under two
 //!    names is refused as naming neither, and a witness at the caller's parameter loads;
-//!  * [D] a goal handing its callee a forward slot where the caller declares the requirement —
-//!    the rows through `outer` answer `-1`, the recursion rows `0`;
+//!  * [D] a goal passing its callee nothing where the caller declares the requirement — the
+//!    rows through `outer` answer `-1`, the recursion rows `0`;
 //!  * [G] a call at a declared parameter reached through a column's type taking a read of its
 //!    own — the recursion rows answer `0`;
 //!  * [L] no check of one parameter list per relation — its two refusals load;
@@ -55,7 +55,7 @@ const ORD_PRELUDE: &str = r#"
   end
 
   rule cmp[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], WeakOrd.compare(?a, ?b, ?c)
-  rule plain(?a, ?b, ?c) :- WeakOrd.compare(?a, ?b, ?c)
+  rule plain(?a, ?b, ?c) :- ?c <=> Int64.sub(?a, ?b)
 "#;
 
 const EFFECTS: &str = "effects {Error, Error[EmptyStream]}";
@@ -179,8 +179,9 @@ fn a_bracket_entry_the_rule_does_not_declare_or_admit_is_refused() {
 }
 
 /// §8.3's refusal, where two requirements of the citing operation answer the citation, names
-/// the bracket that chooses one where the rule declares the requirement, and the declaration
-/// where it does not. The refusal's text, so it passes under every axis.
+/// the bracket that chooses one. A rule that would need the requirement without declaring it
+/// is refused at its own clause (060.1 §1), so no citation of it reaches the refusal. The
+/// refusal's text, so it passes under every axis.
 #[test]
 fn two_names_at_a_citation_name_the_bracket_that_chooses() {
     let ns = "j9ssg.two";
@@ -192,20 +193,22 @@ fn two_names_at_a_citation_name_the_bracket_that_chooses() {
     };
     let errs = crate::common::load_errors_of(&program(ns, &two("cmp")));
     assert_one_refusal(&errs, "write `cmp[WeakOrd = up](…)` or `cmp[WeakOrd = down](…)`", "a declaring rule");
-    let errs = crate::common::load_errors_of(&program(ns, &two("plain")));
+    let errs = crate::common::load_errors_of(&program(
+        ns,
+        &format!("  rule needy(?a, ?b, ?c) :- WeakOrd.compare(?a, ?b, ?c)\n{}", two("needy")),
+    ));
     assert_one_refusal(
         &errs,
-        "declare it on `plain` with the head's introducer and its guard",
-        "a rule that declares nothing",
+        "a requirement of `WeakOrd` the clause declares",
+        "a rule that declares nothing is refused at its clause",
     );
 }
 
 /// A GOAL AT THE CALLER'S INSTANCE PASSES THE CALLER'S REQUIREMENT (§1): `outer` declares what
 /// `cmp` does, so its goal hands `cmp` the dictionary `outer` holds — the one its citation's
-/// bracket selected. FAILS under [D] (`-1` for both bracket rows), [B] and [P] (refused, as in
-/// the rows above). `held`, an operation
-/// holding one requirement and citing `outer` with no bracket, answers `4` under every axis:
-/// before, the goal's forward slot passed the same dictionary there.
+/// bracket selected, and `held`, an operation holding one requirement and citing `outer` with
+/// no bracket, the one it holds. FAILS under [D] (`-1` for all three), [B] and [P] (refused, as
+/// in the rows above).
 #[test]
 fn a_bracket_reaches_the_declared_rule_a_goal_calls() {
     let ns = "j9ssg.outer";

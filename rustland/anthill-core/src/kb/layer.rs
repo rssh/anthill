@@ -144,6 +144,8 @@ kb_scoped_fields!(
     derived_provision_origin,
     equality_signatures,
     refused_load_clauses,
+    clauses_with_a_refused_guard,
+    inferred_column_bounds,
     // ── declarations: what makes a name MEAN something ─────────
     builtins,
     entity_fields,
@@ -436,6 +438,8 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         derived_provision_origin: _,
         equality_signatures: _,
         refused_load_clauses: _,
+        clauses_with_a_refused_guard: _,
+        inferred_column_bounds: _,
         builtins: _,
         entity_fields: _,
         entity_field_types: _,
