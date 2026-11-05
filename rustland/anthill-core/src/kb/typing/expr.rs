@@ -376,6 +376,9 @@ pub(super) enum TypeBuildFrame {
         /// Proposal 050.1: where the lambda's scope began in the memory record's binding
         /// order — its parameters and its body's names are the ones bound since.
         memory_mark: usize,
+        /// WI-20260904-34J8Z: where the lambda's tuple shapes begin in the walk's list
+        /// ([`WalkSolutions::freeze_shapes`]).
+        shape_mark: usize,
     },
     /// WI-285: all three If sub-expressions finished (drained in
     /// `[condition, then, else]` order); merge their effects and return
@@ -716,6 +719,9 @@ pub(super) fn type_check_node_gated_at(
     // WI-20260904-50B2K part (c) — THE DISCHARGE. A spec-op dispatch this walk held
     // because its carrier was a lambda binder is answered now, against what the binder's
     // own uses solved. See [`WalkSolutions::discharge`].
+    // WI-20260904-34J8Z: the labels the uses gave each tuple pattern bound over an undecided
+    // type, written onto it below ([`WalkSolutions::agreed_labels`]).
+    let labelled = solving.agreed_labels().to_vec();
     let discharged = solving.discharge(kb);
     debug_assert_eq!(
         results.len(),
@@ -728,6 +734,10 @@ pub(super) fn type_check_node_gated_at(
     // A refusal the discharge raises is the walk's, where the walk itself typed.
     match (result, discharged) {
         (Ok(_), Err(refusal)) => Err(refusal),
+        (Ok(mut r), Ok(())) if !labelled.is_empty() => {
+            r.node = write_shape_labels(&r.node, &labelled)?;
+            Ok(r)
+        }
         (result, _) => result,
     }
 }
@@ -828,7 +838,7 @@ pub(super) fn eliminate_env_schema(
             });
         }
     };
-    if !inst.obligations.is_empty() && solving.note_instantiation(&inst.binder_map, &site) == 0 {
+    if !inst.obligations.is_empty() && solving.note_instantiation(kb, &inst.binder_map, &site) == 0 {
         let named = match name {
             Some(n) => format!("`{}`", kb.local_name_of(n)),
             None => "this reference".to_string(),

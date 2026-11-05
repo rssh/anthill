@@ -53,13 +53,56 @@ fn check_function_value_argument(
         // WI-20260904-50B2K part (c) — REPORT FROM PATH 2 TOO: `let g = lambda x -> x  g(2)`
         // calls an ENV-BOUND ARROW, which is this path, and the walk learns the binder's use here.
         if let Some(before) = &before {
-            report_walk_solutions(kb, solving, before, subst, unified);
+            let site = ShapeSite { fn_sym, param: None, span };
+            if let Err(err) = report_walk_solutions(kb, solving, before, subst, unified, site) {
+                return ArgValidation::Fail(err);
+            }
         }
     }
     verdict
 }
 
+/// Type one call ([`check_apply_call`], whose parameters say what each is), and settle what the
+/// spec operation's own row refused against whether a pin replaced it ([`SpecRowVerdict`],
+/// WI-20260825-SKWTH).
 pub(super) fn check_apply_iter(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    flow: &FlowEnv,
+    occ: &Rc<NodeOccurrence>,
+    fn_sym: Symbol,
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    pos_results: &[Result<TypeResult, TypeError>],
+    named_results: &[Result<TypeResult, TypeError>],
+    span: Option<Span>,
+    expected: Option<Value>,
+    pos: NodePos,
+    solving: Option<&mut WalkSolutions>,
+    call_openings: &PathOpenings,
+) -> Result<TypeResult, TypeError> {
+    let mut spec_row = SpecRowVerdict::new(spec_op_parent_sort(kb, fn_sym).is_some());
+    let result = check_apply_call(
+        kb,
+        env,
+        flow,
+        occ,
+        fn_sym,
+        pos_args,
+        named_args,
+        pos_results,
+        named_results,
+        span,
+        expected,
+        pos,
+        solving,
+        call_openings,
+        &mut spec_row,
+    );
+    spec_row.settle(env, result)
+}
+
+fn check_apply_call(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
     // WI-067 (proposal 048 §"Typer delta"): the local-interpretation Γ at the
@@ -90,6 +133,8 @@ pub(super) fn check_apply_iter(
     // path off an argument that is no path is one unknown for the hint, the parameter, the
     // return and the effects — the hint read it where the call was visited.
     call_openings: &PathOpenings,
+    // WI-20260825-SKWTH: what the spec operation's own row refuses, held for the wrapper.
+    spec_row: &mut SpecRowVerdict,
 ) -> Result<TypeResult, TypeError> {
     // Surface any sub-expression failure before continuing. Aggregate
     // sibling errors so a multi-arg call reports every ill-typed arg
@@ -1009,7 +1054,7 @@ pub(super) fn check_apply_iter(
                         // `?param` bound at, so it is where the population lives rather
                         // than merely where a `defer` would have run.
                         if let Some(before) = &before {
-                            report_walk_solutions(kb, solving.as_deref_mut(), before, &subst, unified);
+                            report_walk_solutions(kb, solving.as_deref_mut(), before, &mut subst, unified, ShapeSite { fn_sym, param: Some(*param_sym), span })?;
                         }
                     }
                     if needs_param_arg_types {
@@ -1086,7 +1131,7 @@ pub(super) fn check_apply_iter(
                         // `?param` bound at, so it is where the population lives rather
                         // than merely where a `defer` would have run.
                         if let Some(before) = &before {
-                            report_walk_solutions(kb, solving.as_deref_mut(), before, &subst, unified);
+                            report_walk_solutions(kb, solving.as_deref_mut(), before, &mut subst, unified, ShapeSite { fn_sym, param: Some(*param_sym), span })?;
                         }
                     }
                     if needs_param_arg_types {
@@ -1145,7 +1190,7 @@ pub(super) fn check_apply_iter(
                 receiverless_sort,
             );
             if let Some(before) = &before {
-                report_walk_solutions(kb, solving.as_deref_mut(), before, &subst, unified);
+                report_walk_solutions(kb, solving.as_deref_mut(), before, &mut subst, unified, ShapeSite { fn_sym, param: Some(param_sym), span })?;
             }
         }
         // From here on the call reads a callable written at its slot as the slot reads it.
@@ -1297,6 +1342,8 @@ pub(super) fn check_apply_iter(
                 }
                 // `unify_types` borrows the arg type (it is `A: TermView`), so no clone.
                 if let Some(arg_ty) = param_to_arg_type.get(param_sym) {
+                    // WI-20260904-34J8Z: taken ahead of the rule-6 step, as in the argument loops.
+                    let before = solving.is_some().then(|| subst.clone());
                     // The slot's row as this call reads it, before the argument meets it —
                     // see the argument loops.
                     let at_slot = bound_arg(kb, &op.params, &pos_call_params, i, named_args)
@@ -1306,7 +1353,13 @@ pub(super) fn check_apply_iter(
                     let arg_ty = at_slot.as_ref().unwrap_or(arg_ty);
                     // The row is the discharge inference's, as in the argument loops.
                     let slot = slot_at_argument_row(kb, &subst, &op, *param_sym, &eff, arg_ty);
-                    unify_types(kb, &mut subst, arg_ty, slot.as_ref().unwrap_or(&eff));
+                    let unified = unify_types(kb, &mut subst, arg_ty, slot.as_ref().unwrap_or(&eff));
+                    // WI-20260904-34J8Z: this unify reports no solution to the walk (the known
+                    // gap at [`report_call_solutions`]), and holds its tuple shapes all the same.
+                    if let Some(before) = &before {
+                        let site = ShapeSite { fn_sym, param: Some(*param_sym), span };
+                        hold_walk_shapes(kb, solving.as_deref_mut(), before, &mut subst, unified, site)?;
+                    }
                     // The discharge inference reads the callback as this slot reads it: the
                     // argument loops deferred this parameter, and recorded it as written.
                     let pair = callback_pairs.iter_mut().find(|(p, _, _)| p == param_sym);
@@ -2653,6 +2706,7 @@ pub(super) fn check_apply_iter(
                 &substituted_op_effects[before..],
                 fn_sym,
                 span,
+                spec_row.guarded_refusals(),
             )?;
             if let (true, None, Some(keys)) = (incurred, &leak, &keys) {
                 leak = placeless_modify(kb, keys, &op.params, own, &places.placeless);
@@ -2663,9 +2717,10 @@ pub(super) fn check_apply_iter(
         // rather than letting the callee's parameter name travel into the caller's row.
         // AFTER the guard discharge deliberately: an atom the guard drops was never incurred,
         // so refusing it earlier would refuse a correct program (measured — `touch(mk(),
-        // false)` under a refuted `{Modify[c] :- eq(flag, true)}` loads clean).
+        // false)` under a refuted `{Modify[c] :- eq(flag, true)}` loads clean). Held, as the
+        // guarded-row verdict above is, where a pin may replace the row ([`SpecRowVerdict`]).
         if let Some(leak) = leak {
-            return Err(placeless_modify_refusal(kb, fn_sym, &leak, span));
+            spec_row.hold_placeless(placeless_modify_refusal(kb, fn_sym, &leak, span))?;
         }
         // `mut`: a concretely-dispatched self-receiver spec op closes its
         // polymorphic effect row at the carrier below (WI-357).
@@ -3067,8 +3122,8 @@ pub(super) fn check_apply_iter(
                         &subst,
                         span,
                         RowAtPin {
-                            op_effects: &substituted_op_effects,
                             arg_effects: &arg_effects,
+                            spec_row: &mut *spec_row,
                             before: effects,
                         },
                     )?;
@@ -3345,8 +3400,8 @@ pub(super) fn check_apply_iter(
                                 &subst,
                                 span,
                                 RowAtPin {
-                                    op_effects: &substituted_op_effects,
                                     arg_effects: &arg_effects,
+                                    spec_row: &mut *spec_row,
                                     before: effects,
                                 },
                             )?;
@@ -3528,8 +3583,8 @@ pub(super) fn check_apply_iter(
                                     &subst,
                                     span,
                                     RowAtPin {
-                                        op_effects: &substituted_op_effects,
                                         arg_effects: &arg_effects,
+                                        spec_row: &mut *spec_row,
                                         before: effects,
                                     },
                                 )?;
@@ -3787,8 +3842,8 @@ pub(super) fn check_apply_iter(
                         &subst,
                         span,
                         RowAtPin {
-                            op_effects: &substituted_op_effects,
                             arg_effects: &arg_effects,
+                            spec_row: &mut *spec_row,
                             before: effects,
                         },
                     )?;
@@ -4386,8 +4441,8 @@ pub(super) fn check_apply_iter(
                             &subst,
                             span,
                             RowAtPin {
-                                op_effects: &substituted_op_effects,
                                 arg_effects: &arg_effects,
+                                spec_row: &mut *spec_row,
                                 before: effects,
                             },
                         )?;
@@ -4854,8 +4909,8 @@ pub(super) fn check_apply_iter(
                             &subst,
                             span,
                             RowAtPin {
-                                op_effects: &substituted_op_effects,
                                 arg_effects: &arg_effects,
+                                spec_row: &mut *spec_row,
                                 before: closed_op_row(
                                     kb,
                                     env.param_rigids(),
@@ -5558,7 +5613,7 @@ pub(super) fn check_apply_iter(
                 // all, which is the same absence and is reported the same way.
                 let claimed = solving
                     .as_deref_mut()
-                    .map(|w| w.note_instantiation(&inst.binder_map, occ))
+                    .map(|w| w.note_instantiation(kb, &inst.binder_map, occ))
                     .unwrap_or(0);
                 if !inst.obligations.is_empty() && claimed == 0 {
                     return Err(TypeError::Other {

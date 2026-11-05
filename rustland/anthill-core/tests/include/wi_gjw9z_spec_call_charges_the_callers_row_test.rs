@@ -32,6 +32,11 @@
 //!    read WHOLE replaces anything: one left open at the call keeps the row the call held beside
 //!    it. Where no override runs — the default body — the placement's row is charged.
 //!
+//! The spec op's LABELS were kept beside the override's row, which is what this ticket decided.
+//! WI-20260825-SKWTH (user decision 2026-11-05) replaced them too: a pin drops the spec op's whole
+//! row, and the spec's row's own verdicts with it (`wi_skwth_a_pinned_call_takes_the_overrides_labels_test`).
+//! No row here moved: each charges a row variable, or a label its override declares.
+//!
 //! THE TICKET AS FILED was about the TYPE such a sibling call threads — the carrier's canonical
 //! `?V` through the WI-606 fallback where the qualified call threaded the enclosing rigid, the
 //! WI-424 fill reaching the one and not the other. WI-20261001-80ZV8 removed that fill, and the
@@ -85,7 +90,9 @@
 //!  7. THE PIN DROPS A RIGID TOO (`effects_of_pinned_call`) — flexible only. 2 FAIL:
 //!     [`a_call_pinned_to_an_override_is_charged_the_overrides_row`] (the placement's
 //!     `Effect`) and [`a_call_pinned_by_an_instance_binding_is_charged_the_bound_impls_row`] (the
-//!     bracket's `R`).
+//!     bracket's `R`). Measured on the filter SKWTH removed: a pin read whole now drops the
+//!     spec op's whole row, so the part is no longer a filter to narrow — backed out, it is
+//!     SKWTH's "labels kept" with the rigids kept too.
 //!     7b. … ONLY WITH A ROW READ WHOLE — always. 1 FAILS:
 //!     [`an_override_row_left_open_keeps_the_spec_row`].
 //!  8. THE PIN AT EACH OF ITS SIX SITES — the override's row merged into what the call held, as

@@ -278,6 +278,17 @@ fn one_written_type_argument_read_by_two_passes_is_one_diagnosis() {
 /// sort, and all four lines are kept: the channel cannot tell a true duplicate of a
 /// subject-less sentence from two findings, and only ONE of those mistakes is silent.
 ///
+/// TWICE BECAUSE EACH BODY APPLIES TWO PARTIAL OPERATIONS OVER TWO DIVISORS — `/` by
+/// `b.cents` and `%` by `a.cents` in `div`, `Int64.rem` by `b.cents` and `%` by `a.cents` in
+/// `mod` — each incurring its own guarded `Error[DivisionByZero]`: two findings, which render as
+/// one sentence, and stay two however guards come to be compared. The bodies were a single `/` and a single `%`
+/// until WI-20260825-SKWTH: a pinned call was charged the spec operation's guarded label
+/// beside `Int64.div`'s own, and that spurious second atom is what the fixture leaned on.
+/// Charged the override's row alone, one operator is one sentence. So the count is the
+/// typer's as well as the channel's: with SKWTH backed out `div` raises four and `mod` three
+/// — the spec's atom beside each spelled operator's, the qualified `Int64.rem` one alone —
+/// and this row fails on the count (MEASURED).
+///
 /// GREEN UNDER AXES 1 AND 3 (no dedup at all, and a span-only key, both keep everything
 /// here). RED under the state this file originally shipped.
 #[test]
@@ -291,8 +302,10 @@ namespace zzw9d
     operation sub(a: Money, b: Money) -> Money = Money(cents: a.cents - b.cents)
     operation mul(a: Money, b: Money) -> Money = Money(cents: a.cents * b.cents)
     operation zero() -> Money = Money(cents: 0)
-    operation div(a: Money, b: Money) -> Money = Money(cents: a.cents / b.cents)
-    operation mod(a: Money, b: Money) -> Money = Money(cents: a.cents % b.cents)
+    operation div(a: Money, b: Money) -> Money =
+      Money(cents: a.cents / b.cents - b.cents % a.cents)
+    operation mod(a: Money, b: Money) -> Money =
+      Money(cents: Int64.rem(a.cents, b.cents) - b.cents % a.cents)
   end
   namespace Money
     provides PartialOrd[T = Money]

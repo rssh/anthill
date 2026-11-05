@@ -336,10 +336,18 @@ pub(super) enum UnpinnedBinder {
 /// the same variable spelled at the value level. Reading only one of them would answer
 /// `false` for a hole depending on which side built it.
 fn parent_type_is_inference_hole(kb: &KnowledgeBase, parent: &Value) -> bool {
+    inference_hole_var(kb, parent).is_some()
+}
+
+/// The variable a type that is an inference hole ([`parent_type_is_inference_hole`]) is.
+pub(super) fn inference_hole_var(kb: &KnowledgeBase, parent: &Value) -> Option<VarId> {
     match parent {
-        Value::Var(Var::Global(_)) => true,
-        Value::Term { id, .. } => matches!(kb.get_term(*id), Term::Var(Var::Global(_))),
-        _ => false,
+        Value::Var(Var::Global(v)) => Some(*v),
+        Value::Term { id, .. } => match kb.get_term(*id) {
+            Term::Var(Var::Global(v)) => Some(*v),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -530,6 +538,9 @@ pub(super) fn bind_and_label_pattern(
     // pattern still has to land in the env, or the body reports a cascade of
     // `UnresolvedName`s that hide the real diagnostic.
     errors: &mut Vec<TypeError>,
+    // WI-20260904-34J8Z: each tuple pattern bound here over a type that is an inference hole,
+    // at any depth — the caller hands them to its walk ([`WalkSolutions::shapes`]).
+    shapes: &mut Vec<TupleShape>,
 ) -> Rc<NodeOccurrence> {
     let Some(pat) = pattern.as_pattern() else {
         return Rc::clone(pattern);
@@ -945,6 +956,7 @@ pub(super) fn bind_and_label_pattern(
                     // under a concrete `Set[T = Int64]`.
                     UnpinnedBinder::Unnameable,
                     errors,
+                    shapes,
                 ));
             }
             // NAMED sub-patterns: the field each one names.
@@ -962,6 +974,7 @@ pub(super) fn bind_and_label_pattern(
                     // The positional loop's reason, unchanged by binding position.
                     UnpinnedBinder::Unnameable,
                     errors,
+                    shapes,
                 ));
             }
             // WI-819: `rebuilt` holds SUB-PATTERNS only — the pattern's own `: T`
@@ -1029,13 +1042,48 @@ pub(super) fn bind_and_label_pattern(
             // reported "binder y: expected String, got Int64".
             //
             // Only the CHECK stands down; the BINDING is deliberately left exactly as it
-            // was. Withholding the components instead was tried and REVERTED — it broke
-            // `arity_mismatch_still_refuses_to_match`, where `lambda (p, q)` against a
-            // 3-component tuple must LOAD clean (the arity is a runtime pattern-match
-            // property there, not a load error) and fresh binder vars made `p - q`
-            // dispatch-ambiguous. So a misaligned component still types its binder, and
-            // the arity defect is left to whichever check genuinely owns it.
+            // was. Withholding the components instead was tried and REVERTED — fresh binder
+            // vars made `p - q` dispatch-ambiguous in `wi785…::arity_mismatch_is_refused`
+            // (then `…_still_refuses_to_match`, while that shape loaded and failed at the
+            // match; WI-801 refuses it at load). So a misaligned component still types its
+            // binder, and the arity defect is left to whichever check genuinely owns it.
             let aligned = fields.as_ref().is_none_or(|f| f.len() == positional.len());
+            // WI-20260904-34J8Z: A KNOWN TUPLE OF ANOTHER WIDTH where an IRREFUTABLE pattern takes
+            // one apart — a `let`'s, or one nested in a lambda's binder list — is refused, as one
+            // the uses decide is ([`TupleShape`]) — kernel-language §6.7, "a binder list whose
+            // length differs from its expected tuple's component count is a mismatch". `let (a, b)
+            // = (1, 2, 3)` loaded and raised `match_failed`, where nothing else could happen. A
+            // `match` arm's count is the match's: it does not match, and the next arm is tried
+            // (WI-20261012-80259). A lambda's own list is the application match's (`visit.rs`,
+            // WI-801).
+            if !aligned && whole == PatternRole::Binder {
+                if let Some(position) = scrutinee_type.as_ref() {
+                    errors.push(TypeError::TypeMismatch {
+                        site: TypeError::here(),
+                        span: Some(pattern.span.span),
+                        context: TypeErrorContext::PatternPosition {
+                            pattern: WrittenPattern::Tuple,
+                        },
+                        expected: unsaid_tuple_of(kb, positional.len()),
+                        quoted: None,
+                        actual: position.clone(),
+                    });
+                }
+            }
+            // WI-20260904-34J8Z: THE VALUE'S TYPE IS A VARIABLE THE WALK HAS NOT DECIDED — a
+            // tuple nested in a lambda's binder list, or one a `let` or a `match` takes apart
+            // from an un-annotated binder. The pattern does not decide it: it spells no labels
+            // (§6.7), and a positional tuple bound here would refuse every named value handed
+            // to it (§4.5). Each element is typed at what it writes ([`written_component_types`],
+            // as a lambda's own tuple is) and the pattern is held to the walk as a
+            // [`TupleShape`], which each use's σ then meets: a value of another width or no
+            // tuple is refused there, and a component types its binder there. Before, each
+            // binder got a variable nothing tied to the parent's, and a use reached none of
+            // them. A literal, a constructor or a wildcard element is bound as it was, its own
+            // type standing in the shape.
+            let hole = scrutinee_type.as_ref().and_then(|t| inference_hole_var(kb, t));
+            let at_hole: Option<Vec<Value>> =
+                hole.map(|_| written_component_types(kb, env, positional, "?pat"));
             // WI-20260904-50B2K: a component with no type of its own asks the question its
             // PARENT's type answers — an unsolved variable one level up makes every
             // component an inference hole (`lambda (a, b) -> a + b` at rung 3), while no
@@ -1045,16 +1093,6 @@ pub(super) fn bind_and_label_pattern(
             // Computed ONCE, above the loop: it is a property of this node, not of slot
             // `i`. And read only when `fields` gave the child nothing — a component that
             // IS typed never reaches the fallback.
-            //
-            // EACH COMPONENT GETS ITS OWN INDEPENDENT VARIABLE, AND NOTHING TIES IT TO
-            // THE PARENT'S — /code-review, and it is the LIMIT of what this change buys.
-            // Solving the parent at a use site (`?p := (a: Int64, b: Int64)`) therefore
-            // does not solve `?a` / `?b`, so a tuple binder is still reached by inference
-            // only through its own BODY. Tying them means minting the parent as a
-            // `named_tuple` OVER these variables — which is the same repair the arity
-            // disagreement at [`arrow_positional_param_slots`] wants, and it is
-            // WI-20260904-34J8Z because it must first answer where the tuple's LABELS
-            // come from (WI-803: from the EXPECTED type, never from the binder names).
             let child_unpinned = match scrutinee_type.as_ref() {
                 Some(t) if parent_type_is_inference_hole(kb, t) => UnpinnedBinder::ToBeInferred,
                 Some(_) => UnpinnedBinder::Unnameable,
@@ -1062,10 +1100,23 @@ pub(super) fn bind_and_label_pattern(
             };
             let mut rebuilt: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(positional.len());
             for (i, sub_pat) in positional.iter().enumerate() {
+                // At a hole, a binder and a nested tuple are typed at what the element writes
+                // — the component the shape holds them to. The other elements are bound as
+                // they were.
+                let at_hole_comp = at_hole
+                    .as_ref()
+                    .filter(|_| {
+                        matches!(
+                            sub_pat.as_pattern(),
+                            Some(Pattern::Var { .. } | Pattern::Tuple { .. })
+                        )
+                    })
+                    .map(|c| c[i].clone());
                 let comp = fields
                     .as_ref()
                     .and_then(|f| f.get(i))
-                    .map(|(_, v)| v.clone());
+                    .map(|(_, v)| v.clone())
+                    .or(at_hole_comp);
                 rebuilt.push(if aligned {
                     bind_and_label_pattern(
                         kb,
@@ -1078,6 +1129,7 @@ pub(super) fn bind_and_label_pattern(
                         repointed,
                         child_unpinned,
                         errors,
+                        shapes,
                     )
                 } else {
                     let mut misaligned = Vec::new();
@@ -1092,6 +1144,7 @@ pub(super) fn bind_and_label_pattern(
                         repointed,
                         child_unpinned,
                         &mut misaligned,
+                        shapes,
                     );
                     // WI-20261012-80259: what is dropped is what was judged against a
                     // component the binder does not sit at. A name that denotes no
@@ -1112,12 +1165,12 @@ pub(super) fn bind_and_label_pattern(
             //    already sits against an unrelated component, which is what the
             //    WI-794 note above is about;
             //  * leaving the labels empty there keeps the POSITIONAL path, whose
-            //    count test is the only thing that refuses the shape at run time.
-            //    `arity_mismatch_still_refuses_to_match` pins that: `lambda (p, q)`
-            //    against a 3-component tuple must LOAD clean and fail at the MATCH.
-            //    A by-label read would not care about the extra component and would
-            //    quietly succeed — turning a loud arity failure into an accepted
-            //    program, which is the wrong direction.
+            //    count test refuses the shape at run time wherever no load check has
+            //    (`lambda (p, q)` against a 3-component tuple is refused at load since
+            //    WI-801, `wi785…::arity_mismatch_is_refused`). A by-label read would
+            //    not care about the extra component and would quietly succeed —
+            //    turning a loud arity failure into an accepted program, which is the
+            //    wrong direction.
             //
             // Width subtyping is unaffected: it makes the VALUE wider than the
             // type, never the type wider than the binder list, so a value with
@@ -1127,7 +1180,7 @@ pub(super) fn bind_and_label_pattern(
                 Some(f) if aligned => f.iter().map(|(name, _)| *name).collect(),
                 _ => Vec::new(),
             };
-            if labels == *old_labels {
+            let result = if labels == *old_labels {
                 // Nothing new to record, so the "reuse `occ` when no child moved"
                 // rule stays under its owner — the same call the Constructor arm
                 // above makes. Hand-rolling the `Rc::ptr_eq` scan here as well left
@@ -1147,7 +1200,13 @@ pub(super) fn bind_and_label_pattern(
                     pattern.span,
                     pattern.owner,
                 )
+            };
+            if let (Some(parent), Some(components)) = (hole, at_hole) {
+                let binders = positional.iter().map(|p| extract_pattern_var_name(p)).collect();
+                let refutable = whole == PatternRole::MatchArm;
+                shapes.push(TupleShape::new(Rc::clone(&result), parent, components, binders, refutable));
             }
+            result
         }
         // A literal binds nothing, and is held to its position (WI-20261012-80259).
         Pattern::Literal { value } => {
@@ -1548,30 +1607,128 @@ pub(super) fn lambda_own_tuple(
     let Some(Pattern::Tuple { positional, .. }) = param.as_pattern() else {
         return None;
     };
-    let mut fields: Vec<(Symbol, Value)> = Vec::with_capacity(positional.len());
-    for (i, sub) in positional.iter().enumerate() {
-        // As [`bind_and_label_pattern`] reads it: at the body's parameters, each projection
-        // read where it is written. One that does not read is refused there, and the raw
-        // annotation stands here as it does there.
-        let written = extract_pattern_type_ann(sub)
-            .and_then(|ann| {
-                let w = pattern_annotation_value(kb, ann)?;
-                let w = written_type_at_body_rigids(kb, env, &w);
-                if !value_contains_projection(kb, &w) {
-                    return Some(w);
-                }
-                let binder = extract_pattern_var_name(sub).unwrap_or_else(|| kb.intern("_"));
-                let ctx = TypeErrorContext::BinderAnnotation { binder };
-                Some(read_written_annotation(kb, env, &w, &ctx, ann).unwrap_or(w))
-            })
-            .or_else(|| pattern_own_type(kb, sub));
-        let ty = written.unwrap_or_else(|| {
-            let fresh = kb.intern("?param");
-            Value::Var(Var::Global(kb.fresh_var(fresh)))
-        });
-        fields.push((kb.intern(&positional_label(i)), ty));
-    }
+    let fields: Vec<(Symbol, Value)> = written_component_types(kb, env, positional, "?param")
+        .into_iter()
+        .enumerate()
+        .map(|(i, ty)| (kb.intern(&positional_label(i)), ty))
+        .collect();
     Some(named_tuple_value(kb, &fields, param.span, param.owner))
+}
+
+/// WI-20260904-34J8Z — `root` with each tuple pattern of `labelled` reading by its labels
+/// ([`WalkSolutions::agreed_labels`]): the pattern rebuilt with them, and every node above it
+/// rebuilt through the reassemblers, which carry the typer's stamps. A node with none of
+/// `labelled` below it is the same `Rc`. ITERATIVE, as the walk that typed the body is: a body is
+/// a chain of nested `let`s as deep as it is long, and this runs over all of it.
+///
+/// `Err` where a pattern its uses labelled is not in the body the walk returned: it would be read
+/// by slot, and a value permuted against its type handed a binder the component it was not typed
+/// from — the wrong value the labels are for.
+pub(super) fn write_shape_labels(
+    root: &Rc<NodeOccurrence>,
+    labelled: &[(Rc<NodeOccurrence>, Rc<[Symbol]>)],
+) -> Result<Rc<NodeOccurrence>, TypeError> {
+    enum Step {
+        Enter(Rc<NodeOccurrence>),
+        Exit(Rc<NodeOccurrence>, usize),
+    }
+    let children = |node: &Rc<NodeOccurrence>| {
+        let mut kids: Vec<Rc<NodeOccurrence>> = Vec::new();
+        if let Some(expr) = node.as_expr() {
+            crate::kb::node_occurrence::for_each_child(expr, |c| kids.push(Rc::clone(c)));
+        } else if let Some(pat) = node.as_pattern() {
+            crate::kb::node_occurrence::for_each_subpattern(pat, |c| kids.push(Rc::clone(c)));
+        }
+        kids
+    };
+    let mut found = vec![false; labelled.len()];
+    let mut work = vec![Step::Enter(Rc::clone(root))];
+    let mut done: Vec<Rc<NodeOccurrence>> = Vec::new();
+    while let Some(step) = work.pop() {
+        match step {
+            Step::Enter(node) => {
+                let kids = children(&node);
+                work.push(Step::Exit(node, kids.len()));
+                work.extend(kids.into_iter().rev().map(Step::Enter));
+            }
+            Step::Exit(node, n) => {
+                let kids = done.split_off(done.len() - n);
+                let moved = kids.iter().zip(children(&node)).any(|(k, c)| !Rc::ptr_eq(k, &c));
+                let target = labelled.iter().position(|(p, _)| Rc::ptr_eq(p, &node));
+                let rebuilt = match (target, node.as_pattern()) {
+                    (Some(t), Some(Pattern::Tuple { .. })) => {
+                        found[t] = true;
+                        NodeOccurrence::new_pattern_annotated(
+                            Pattern::Tuple {
+                                positional: kids,
+                                labels: labelled[t].1.to_vec(),
+                            },
+                            node.pattern_type_ann().map(Rc::clone),
+                            node.span,
+                            node.owner,
+                        )
+                    }
+                    _ if !moved => node,
+                    (_, Some(_)) => {
+                        crate::kb::node_occurrence::reassemble_pattern_subpatterns(&node, &kids)
+                    }
+                    _ => crate::kb::simp_rewrite::reassemble(&node, &kids),
+                };
+                done.push(rebuilt);
+            }
+        }
+    }
+    if let Some(t) = found.iter().position(|f| !f) {
+        return Err(TypeError::Other {
+            site: TypeError::here(),
+            span: Some(labelled[t].0.span.span),
+            context: TypeErrorContext::PatternPosition {
+                pattern: WrittenPattern::Tuple,
+            },
+            expected: "the pattern the uses of this value labelled, in the body the typer \
+                       returned"
+                .to_string(),
+            actual: "a body that does not hold it, so it would be read by slot (a typer defect)"
+                .to_string(),
+        });
+    }
+    Ok(done.pop().expect("write_shape_labels: the root is rebuilt last"))
+}
+
+/// What each element of a tuple pattern writes of its own type: its annotation, the type a literal
+/// or a constructor written there states, else a fresh variable named `fresh`, left for the body
+/// and the uses to pin. The components of a lambda's own tuple ([`lambda_own_tuple`]) and of a
+/// [`TupleShape`] alike.
+fn written_component_types(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    positional: &[Rc<NodeOccurrence>],
+    fresh: &str,
+) -> Vec<Value> {
+    positional
+        .iter()
+        .map(|sub| {
+            // As [`bind_and_label_pattern`] reads it: at the body's parameters, each projection
+            // read where it is written. One that does not read is refused there, and the raw
+            // annotation stands here as it does there.
+            let written = extract_pattern_type_ann(sub)
+                .and_then(|ann| {
+                    let w = pattern_annotation_value(kb, ann)?;
+                    let w = written_type_at_body_rigids(kb, env, &w);
+                    if !value_contains_projection(kb, &w) {
+                        return Some(w);
+                    }
+                    let binder = extract_pattern_var_name(sub).unwrap_or_else(|| kb.intern("_"));
+                    let ctx = TypeErrorContext::BinderAnnotation { binder };
+                    Some(read_written_annotation(kb, env, &w, &ctx, ann).unwrap_or(w))
+                })
+                .or_else(|| pattern_own_type(kb, sub));
+            written.unwrap_or_else(|| {
+                let fresh = kb.intern(fresh);
+                Value::Var(Var::Global(kb.fresh_var(fresh)))
+            })
+        })
+        .collect()
 }
 
 /// Does the `A` of the function type a lambda is checked against FIT the lambda's pattern, so

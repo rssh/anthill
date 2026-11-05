@@ -366,6 +366,10 @@ pub(super) fn visit_type(
             // components; this is the channel WI-794 measured as unchecked.
             let mut binder_errors = Vec::new();
             let mut param_repoints: Vec<(Symbol, Symbol)> = Vec::new();
+            // WI-20260904-34J8Z: the shapes this lambda's patterns record from here on — its
+            // parameters' and its body's — are frozen where its body ends.
+            let shape_mark = solving.shapes.len();
+            let mut shapes = Vec::new();
             let param = bind_and_label_pattern(
                 kb,
                 &mut lambda_env,
@@ -391,7 +395,9 @@ pub(super) fn visit_type(
                 // fresh variable exactly when rung 3 minted it.
                 UnpinnedBinder::Unnameable,
                 &mut binder_errors,
+                &mut shapes,
             );
+            solving.shapes.extend(shapes);
             debug_assert!(
                 param_repoints.is_empty(),
                 "WI-20260827-EJ5F5: a parameter binds, and must never rewrite",
@@ -414,6 +420,7 @@ pub(super) fn visit_type(
                 binder_error: binder_errors.into_iter().next(),
                 param,
                 memory_mark,
+                shape_mark,
             }));
             push_visit(work, body_occ, body_env, body_expected, fuel);
         }

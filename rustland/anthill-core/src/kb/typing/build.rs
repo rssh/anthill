@@ -1159,6 +1159,13 @@ pub(super) fn build_type(
             let value_memory: Rc<[Region]> =
                 value_regions(kb, &ext_env, &value_node, bound_ty.as_ref()).into();
             let outer_binding = ext_env.set_binding_regions(Some(value_memory));
+            let mut let_shapes = Vec::new();
+            // WI-20260904-34J8Z: a tuple taken apart from a binder an earlier call decided is
+            // bound against that call's type ([`WalkSolutions::decided_for_pattern`]).
+            let bound_ty = match pattern.as_pattern() {
+                Some(Pattern::Tuple { .. }) => bound_ty.map(|t| solving.decided_for_pattern(kb, t)),
+                _ => bound_ty,
+            };
             let pattern = bind_and_label_pattern(
                 kb,
                 &mut ext_env,
@@ -1175,7 +1182,9 @@ pub(super) fn build_type(
                 // measured here.
                 UnpinnedBinder::Unnameable,
                 &mut binder_errors,
+                &mut let_shapes,
             );
+            solving.shapes.extend(let_shapes);
             ext_env.set_binding_regions(outer_binding);
             debug_assert!(
                 let_repoints.is_empty(),
@@ -1416,11 +1425,17 @@ pub(super) fn build_type(
                 // is what makes the arm actually match it at run time and what lets
                 // `folded_call_match` see disjoint arms.
                 let mut repointed: Vec<(Symbol, Symbol)> = Vec::new();
+                let mut arm_shapes = Vec::new();
+                // WI-20260904-34J8Z: as at the `let`.
+                let arm_scr_ty = match branch.pattern.as_pattern() {
+                    Some(Pattern::Tuple { .. }) => solving.decided_for_pattern(kb, scr_ty.clone()),
+                    _ => scr_ty.clone(),
+                };
                 let pattern = bind_and_label_pattern(
                     kb,
                     &mut branch_env,
                     &branch.pattern,
-                    Some(scr_ty.clone()),
+                    Some(arm_scr_ty),
                     scr_path.as_deref(),
                     PatternRole::MatchArm,
                     // WI-20261001-80ZV8: a scrutinee is a value.
@@ -1430,7 +1445,9 @@ pub(super) fn build_type(
                     // here, so the tuple arm answers from it and this is never read.
                     UnpinnedBinder::Unnameable,
                     &mut branch_binder_errors,
+                    &mut arm_shapes,
                 );
+                solving.shapes.extend(arm_shapes);
                 branch_env.set_binding_regions(None);
                 // WI-511: coverage reads the Pattern occurrence directly — no
                 // `pattern_to_term` bridge. WI-20260827-EJ5F5: and it reads the REWRITTEN
@@ -1716,6 +1733,7 @@ pub(super) fn build_type(
             binder_error,
             param,
             memory_mark,
+            shape_mark,
         } => {
             let body_r = results.pop().expect("LambdaBody: missing body result");
             // WI-794: a contradicting binder annotation is reported ahead of any body
@@ -1792,6 +1810,9 @@ pub(super) fn build_type(
             // return type AND the effect row, "or one call reports two states of one σ".
             let param_type = resolve_type_deep_value(kb, &solving.solved, &param_type);
             let body_ty = resolve_type_deep_value(kb, &solving.solved, &body_ty);
+            // WI-20260904-34J8Z: and the tuple shapes this lambda's patterns recorded, read the
+            // same way and kept so ([`WalkSolutions::freeze_shapes`]).
+            solving.freeze_shapes(kb, shape_mark);
             let body_effects: Vec<Value> = body_effects
                 .into_iter()
                 .map(|e| resolve_type_deep_value(kb, &solving.solved, &e))

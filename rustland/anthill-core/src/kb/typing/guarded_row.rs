@@ -102,7 +102,8 @@ fn admits(
 /// Hold the effects one call of an operation incurs (`kept`, each a label or a guarded atom of
 /// the callee's row, after the call's own discharge) to the guarded elements of the enclosing
 /// operation's row ([`hold_incurred`]), the callee's parameters substituted in its guards by
-/// `sigma`.
+/// `sigma`. A refusal goes to `refusals` where it is given — a spec operation's own row at a
+/// call a pin may yet charge another row ([`SpecRowVerdict`]) — and is made here otherwise.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn hold_call_to_guarded_row(
     kb: &mut KnowledgeBase,
@@ -112,6 +113,7 @@ pub(super) fn hold_call_to_guarded_row(
     kept: &[Value],
     callee: Symbol,
     span: Option<Span>,
+    refusals: Option<&mut Vec<TypeError>>,
 ) -> Result<(), TypeError> {
     if env.guarded_row().is_none() {
         return Ok(());
@@ -128,7 +130,7 @@ pub(super) fn hold_call_to_guarded_row(
             None => (effect.clone(), None),
         })
         .collect();
-    hold_incurred(kb, env, flow, sigma, &incurred, callee, span)
+    hold_incurred(kb, env, flow, sigma, &incurred, callee, span, refusals)
 }
 
 /// Hold the application of a function value `f` (`callee`, of type `fn_type`) to the guarded
@@ -195,14 +197,16 @@ pub(super) fn hold_application_to_guarded_row(
             }
         }
     }
-    hold_incurred(kb, env, flow, &sigma, &incurred, callee, span)
+    hold_incurred(kb, env, flow, &sigma, &incurred, callee, span, None)
 }
 
 /// Where the enclosing operation's row admits a label `L` a call incurs only under guards, one
 /// of them must be proved at the call: from Γ (`flow` — branch conditions, match arms, the
 /// knowledge base's laws), with the callee's own guard for `L` as a hypothesis, its parameters
 /// substituted by `sigma`. A write through a local name is read as the memory it reaches at the
-/// call (§5.6). Otherwise the call is refused, naming `L` and the guard.
+/// call (§5.6). Otherwise the call is refused, naming `L` and the guard — into `refusals` where
+/// it is given ([`hold_call_to_guarded_row`]).
+#[allow(clippy::too_many_arguments)]
 fn hold_incurred(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
@@ -211,6 +215,7 @@ fn hold_incurred(
     incurred: &[(Value, Option<Vec<Value>>)],
     callee: Symbol,
     span: Option<Span>,
+    mut refusals: Option<&mut Vec<TypeError>>,
 ) -> Result<(), TypeError> {
     let Some(row) = env.guarded_row() else {
         return Ok(());
@@ -261,7 +266,9 @@ fn hold_incurred(
                 continue;
             }
             let refusal = guarded_row_refusal(kb, row.op, first, callee, &charged, span);
-            if let Some(err) = env.defer_precondition(refusal) {
+            if let Some(refusals) = refusals.as_deref_mut() {
+                refusals.push(refusal);
+            } else if let Some(err) = env.defer_precondition(refusal) {
                 return Err(err);
             }
         }

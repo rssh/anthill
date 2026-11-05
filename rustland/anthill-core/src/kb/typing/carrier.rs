@@ -3536,13 +3536,6 @@ pub(super) fn effect_is_unresolved_var(
     }
 }
 
-/// WI-20260930-GJW9Z — true iff an effect is a row VARIABLE of any kind, a rigid included, on any
-/// carrier: what a call pinned to an override no longer charges of the spec op's own row
-/// ([`effects_of_pinned_call`]).
-fn effect_is_row_var(kb: &KnowledgeBase, e: &Value) -> bool {
-    e.index_var(kb).is_some()
-}
-
 /// WI-357 / WI-365 — the row a spec-op call at a concrete carrier is charged before any pin: the
 /// spec op's own effects with its unresolved row variables closed (a provision that leaves the
 /// row unwritten is pure there), beside the arguments' effects. The spec op's own effects, not
@@ -3562,18 +3555,90 @@ pub(super) fn closed_op_row(
     merge_effects(kb, &closed, arg_effects)
 }
 
-/// What a call was charged when one of its pins is reached: the spec op's own effects at the
-/// call, the arguments' effects, and the row the call held so far.
+/// What a call was charged when one of its pins is reached: the arguments' effects, the row the
+/// call held so far, and what that row would refuse.
 pub(super) struct RowAtPin<'a> {
-    pub(super) op_effects: &'a [Value],
     pub(super) arg_effects: &'a [Value],
     pub(super) before: Vec<Value>,
+    pub(super) spec_row: &'a mut SpecRowVerdict,
 }
 
-/// WI-20260930-GJW9Z (user decision 2026-10-20) — THE EFFECTS OF A CALL PINNED TO AN OVERRIDE:
-/// what the override declares, read at the call ([`dispatched_impl_effects_of`]), in place of
-/// the spec operation's own row VARIABLES — flexible or rigid — beside the spec op's own labels
-/// and the arguments' effects.
+/// WI-20260825-SKWTH — WHAT THE SPEC OPERATION'S OWN ROW REFUSES AT A CALL, held until the call
+/// is known to be charged that row: a guarded atom the caller's guarded row does not admit
+/// ([`hold_call_to_guarded_row`]), a `Modify` over an argument that names no place
+/// ([`placeless_modify_refusal`]). A call pinned to an override read whole is charged the
+/// override's row instead ([`effects_of_pinned_call`]), whose atoms [`dispatched_impl_effects_of`]
+/// holds to the same two checks, and the spec's verdict goes with the spec's row. Raised
+/// immediate, the spec spelling was refused where the qualified one loads: `a / b` over `Float`
+/// held to a caller's `Error[DivisionByZero] :- eq(d, 0)` by `Divisible.div`'s `eq(b, 0)`, and
+/// `Sp.touch(car(…))` refused as a placeless `Modify[x]` its pure override does not incur
+/// (MEASURED).
+///
+/// Only a call some site may pin holds anything — a member of a sort that may be provided
+/// ([`spec_op_parent_sort`]); every other call is refused where the check is made. What is held
+/// is raised by [`check_apply_iter`] wherever no pin replaced the row, the way it was raised when
+/// it was immediate: a guarded-row refusal through the body's precondition sink where one is
+/// installed ([`TypingEnv::defer_precondition`]), as an error ahead of any made after it where
+/// none is; a placeless one as an error.
+pub(super) struct SpecRowVerdict {
+    pinnable: bool,
+    guarded: Vec<TypeError>,
+    placeless: Option<TypeError>,
+    replaced: bool,
+}
+
+impl SpecRowVerdict {
+    pub(super) fn new(pinnable: bool) -> Self {
+        SpecRowVerdict {
+            pinnable,
+            guarded: Vec::new(),
+            placeless: None,
+            replaced: false,
+        }
+    }
+
+    /// Where a pin may yet replace the row, where its guarded-row refusals are held; `None`
+    /// where none can, and [`hold_call_to_guarded_row`] makes them itself.
+    pub(super) fn guarded_refusals(&mut self) -> Option<&mut Vec<TypeError>> {
+        self.pinnable.then_some(&mut self.guarded)
+    }
+
+    /// Hold a placeless-`Modify` refusal where a pin may replace the row; raise it where none can.
+    pub(super) fn hold_placeless(&mut self, refusal: TypeError) -> Result<(), TypeError> {
+        if self.pinnable {
+            self.placeless.get_or_insert(refusal);
+            Ok(())
+        } else {
+            Err(refusal)
+        }
+    }
+
+    /// The call's verdict: what was held, unless a pin replaced the row it was made of.
+    pub(super) fn settle<T>(
+        self,
+        env: &TypingEnv,
+        result: Result<T, TypeError>,
+    ) -> Result<T, TypeError> {
+        if self.replaced {
+            return result;
+        }
+        for refusal in self.guarded {
+            if let Some(err) = env.defer_precondition(refusal) {
+                return Err(err);
+            }
+        }
+        match self.placeless {
+            Some(refusal) => Err(refusal),
+            None => result,
+        }
+    }
+}
+
+/// WI-20260930-GJW9Z (user decision 2026-10-20), WI-20260825-SKWTH (user decision 2026-11-05) —
+/// THE EFFECTS OF A CALL PINNED TO AN OVERRIDE: what the override declares, read at the call
+/// ([`dispatched_impl_effects_of`]), in place of the spec operation's own row — its variables,
+/// flexible or rigid, and its labels — beside the arguments' effects. So `Sp.op(x)` is charged
+/// what the qualified `Car.op(x)` is.
 ///
 /// The override is what runs, and its body is checked against its own declaration, so its
 /// effects at the call are what the call incurs whether or not they refine the spec's (the
@@ -3583,13 +3648,25 @@ pub(super) struct RowAtPin<'a> {
 /// `Box` declaring `effects Effect` was charged the caller's `Effect` beside `MutBox.peek`'s
 /// `Modify[m]`, where `MutBox.peek(m)` is charged `Modify[m]` alone. A row the caller holds and
 /// the override incurs comes back through the override: its `EC`, read at the receiver, is `R`.
-/// The spec op's LABELS are kept, which is the decision as taken: a label the override does not
-/// incur is still charged through the spec spelling.
+/// A LABEL goes with the rest (SKWTH): the spec's row is the widest an override may declare, and
+/// the override's narrowing is what the call incurs. Kept, `Divisible.div`'s guarded
+/// `Error[DivisionByZero]` charged every bare `a / b` over `Float` — whose `div` declares no
+/// effect, IEEE division raising none — where `Float.div(a, b)` was pure; and a receiver's row the
+/// spec reads (`s.E`) was charged where it was ground and not where it was a row variable.
 ///
-/// ONLY AN OVERRIDE READ WHOLE REPLACES ANYTHING. Where the override's own row does not resolve
-/// at the call (a parameter nothing there fixes), or its declaration is not found, the row the
-/// call held is kept and the override's added to it, as before the pin: the call may be charged
-/// more than it incurs, never less.
+/// ONLY AN OVERRIDE READ WHOLE REPLACES ANYTHING — the row and what it refuses
+/// ([`SpecRowVerdict`]). Where the override's own row does not resolve at the call (a parameter
+/// nothing there fixes), or its declaration is not found, the row the call held is kept and the
+/// override's added to it, as before the pin: the call may be charged more than it incurs, never
+/// less.
+///
+/// The spec's row is no longer the bound when it is replaced, so the pin must be what runs. A
+/// runnable override is: the call is rewritten to it. A body-less one is a host operation, which
+/// only the standard library declares, and the call stays the spec operation, dispatched by the
+/// value — whose carrier is the one pinned: a value of a concrete sort is one of its
+/// constructors, and a constructor carries no provision of its own (a `namespace` at one is
+/// refused, MEASURED), while a later load may not provide a spec at a standard-library type
+/// (§8.3).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn effects_of_pinned_call(
     kb: &mut KnowledgeBase,
@@ -3616,17 +3693,19 @@ pub(super) fn effects_of_pinned_call(
         }
         None => DerivedRow::unread(),
     };
+    let RowAtPin {
+        arg_effects,
+        before,
+        spec_row,
+    } = row;
     let mut out: Vec<Value> = if derived.whole {
-        row.op_effects
-            .iter()
-            .filter(|e| !effect_is_row_var(kb, e))
-            .cloned()
-            .collect()
+        spec_row.replaced = true;
+        Vec::new()
     } else {
-        row.before
+        before
     };
     merge_effects_into(kb, &mut out, &derived.effects);
-    merge_effects_into(kb, &mut out, row.arg_effects);
+    merge_effects_into(kb, &mut out, arg_effects);
     Ok(out)
 }
 
@@ -3920,6 +3999,7 @@ pub(super) fn dispatched_impl_effects_of(
                 &out[before..],
                 impl_op_sym,
                 span,
+                None,
             )?;
             if let (true, None, Some(keys)) = (incurred, &leak, &keys) {
                 leak = placeless_modify(kb, keys, &impl_op.params, e, &places.placeless);

@@ -543,6 +543,74 @@ pub(crate) struct WalkSolutions {
     /// Abstract spec-op dispatches this walk DEFERRED rather than refused — see
     /// [`WalkSolutions::defer_binder_dispatch`].
     pub(super) deferred: Vec<DeferredSpecRequirement>,
+    /// The tuple patterns this walk bound over a type it had not decided — see [`TupleShape`].
+    pub(super) shapes: Vec<TupleShape>,
+    /// The labels each such pattern reads by, as the first use that labelled its tuple gave
+    /// them ([`WalkSolutions::close_under_shapes`]) — one list per pattern, for every shape of
+    /// it: an instance a use's ∀-elimination copied shares its pattern.
+    agreed_labels: Vec<(Rc<NodeOccurrence>, Rc<[Symbol]>)>,
+}
+
+/// WI-20260904-34J8Z — A TUPLE PATTERN BOUND OVER A TYPE THE WALK HAD NOT DECIDED: a tuple nested
+/// in a lambda's binder list (`lambda ((a, b), c)`), or a `let` or `match` that takes apart an
+/// un-annotated binder (`lambda p -> let (a, b) = p …`). Its value's type is a variable, and the
+/// pattern says what it must be — a tuple of as many components as it has binders, component `i`
+/// meeting binder `i` — but not its labels: a pattern spells none (kernel-language §6.7), so the
+/// pattern cannot be the type, and binding the variable to a positional tuple would refuse every
+/// named value handed to it (§4.5). So it is held here, and each call whose σ decides the
+/// variable is held to it there ([`WalkSolutions::close_under_shapes`]): a value of another
+/// width, or no tuple, is refused at that call, and a component meets its binder there, which
+/// binds an un-annotated binder's variable in that call's σ as the top-level binder list's own
+/// tuple binds its components (kernel-language §4.7). Each call its own σ, so each use its own
+/// types, as for a binder of the list itself.
+///
+/// Before it, each component was a variable nothing tied to the parent's, so a use's tuple
+/// reached no binder: `lambda ((a: Int64, b: Int64), c)` applied to `(("x", true), 3)` loaded
+/// and stopped at run time, and `lambda ((a, b), c) -> a + b` was refused for want of an
+/// `Additive` its use supplies.
+///
+/// A shape names the walk's own variables, so where a `let` generalizes the lambda and a use
+/// eliminates the ∀, the use's instance of a quantified variable is not the one the shape names:
+/// each elimination copies the shapes that mention one, at the instance
+/// ([`WalkSolutions::note_instantiation`]).
+pub(super) struct TupleShape {
+    /// The pattern as the walk returned it — the occurrence the labels the uses give are written
+    /// onto ([`WalkSolutions::agreed_labels`]).
+    pub(super) pattern: Rc<NodeOccurrence>,
+    /// The variable the value taken apart is typed at.
+    pub(super) parent: VarId,
+    /// What each component's binder is typed at: its annotation, the type a literal or a
+    /// constructor written there states, else the variable the pattern minted for it.
+    pub(super) components: Vec<Value>,
+    /// The name each component binds, where it is a binder, for the refusal.
+    pub(super) binders: Vec<Option<Symbol>>,
+    /// The components as the body of the lambda the pattern is in solved them, read once where
+    /// that body ends ([`WalkSolutions::freeze_shapes`]). A use read after that point reads
+    /// these and not the walk's solutions, which by then hold what OTHER uses gave, first wins.
+    frozen: bool,
+    /// A `match` arm's pattern: a tuple of another width does not match it and the next arm is
+    /// tried (WI-20261012-80259), so such a use holds it to nothing. Any other is irrefutable,
+    /// and the use is refused.
+    refutable: bool,
+}
+
+impl TupleShape {
+    pub(super) fn new(
+        pattern: Rc<NodeOccurrence>,
+        parent: VarId,
+        components: Vec<Value>,
+        binders: Vec<Option<Symbol>>,
+        refutable: bool,
+    ) -> Self {
+        TupleShape {
+            pattern,
+            parent,
+            components,
+            binders,
+            frozen: false,
+            refutable,
+        }
+    }
 }
 
 /// WI-20260904-50B2K part (c) — an abstract spec-op dispatch whose carrier is a LAMBDA
@@ -677,6 +745,209 @@ impl WalkSolutions {
             solved: Substitution::new(),
             watermark: kb.var_watermark(),
             deferred: Vec::new(),
+            shapes: Vec::new(),
+            agreed_labels: Vec::new(),
+        }
+    }
+
+    /// WI-20260904-34J8Z — where the body of a lambda ends, the components of the shapes its
+    /// patterns recorded since `mark` are read through what the body solved, and kept so: a use
+    /// after the body reads them and not [`Self::solved`], where a use reports what it gave,
+    /// first wins — read live, the second of `g((1, 2), 3)` and `g(("s", true), 3)` was refused
+    /// for the first's types. The same reading the frame gives the lambda's arrow.
+    pub(super) fn freeze_shapes(&mut self, kb: &mut KnowledgeBase, mark: usize) {
+        for shape in self.shapes.iter_mut().skip(mark).filter(|s| !s.frozen) {
+            for c in shape.components.iter_mut() {
+                *c = resolve_type_deep_value(kb, &self.solved, c);
+            }
+            shape.frozen = true;
+        }
+    }
+
+    /// WI-20260904-34J8Z — the type a tuple pattern takes apart, as far as this walk has decided
+    /// it: a variable an EARLIER call of the body solved is that call's type, so a `let` or a
+    /// `match` written after it is bound against it rather than recorded as a shape no later call
+    /// decides — `let w = h(p)  let (a, b) = p  a` left `a` unsolved, and an operation declared
+    /// `-> String` returned `1`, where the two `let`s the other way round were refused. Anything
+    /// else is as it was.
+    pub(super) fn decided_for_pattern(&self, kb: &mut KnowledgeBase, ty: Value) -> Value {
+        if inference_hole_var(kb, &ty).is_some() {
+            resolve_type_deep_value(kb, &self.solved, &ty)
+        } else {
+            ty
+        }
+    }
+
+    /// WI-20260904-34J8Z — THE LABELS EACH SHAPE'S PATTERN READS BY, once the walk has seen every
+    /// use: the real labels the first use that labelled its tuple gave ([`Self::close_under_shapes`]
+    /// holds every later one to them). The run time then fetches by them, as it does for a pattern
+    /// whose type was known (kernel-language §6.7, "Destructuring binds by LABEL"). Read by slot, a
+    /// value permuted against its type handed binder `i` another component than the one it was
+    /// typed from: `g(f(), 3)` over `lambda ((a, b), c) -> a`, `f() -> (x: Int64, y: String) = (y:
+    /// "s", x: 1)`, answered `"s"` from an operation declared `-> Int64` (WI-788's wrong value, one
+    /// level down). A positional use says no labels, and a positional value is read by slot
+    /// whatever the pattern holds.
+    pub(super) fn agreed_labels(&self) -> &[(Rc<NodeOccurrence>, Rc<[Symbol]>)] {
+        &self.agreed_labels
+    }
+
+    /// WI-20260904-34J8Z — HOLD A CALL'S σ TO THE SHAPES IT DECIDES, after one of its arguments
+    /// met its parameter ([`hold_walk_shapes`]). For each [`TupleShape`] whose variable this
+    /// argument's unify decided — not `before`, whose bindings an earlier argument's unify made
+    /// and may have made failing, as [`report_call_solutions`] reads them: the type must be a tuple
+    /// of the pattern's width, and each component meets its binder — checked as an argument meets
+    /// its parameter, and unified so that a binder's variable takes the component's type in this
+    /// σ, which is what the call's result and the dispatches on that binder then read. To a fixed
+    /// point, because a component that is itself a shape's variable is decided by the step before.
+    ///
+    /// A component meets the binder the pattern's LABELS place it at: the first use that labels the
+    /// tuple fixes them ([`Self::agreed_labels`]), and a later one carrying the same labels in
+    /// another order is met by name, as the run time reads it. One carrying other labels is
+    /// refused (user, 2026-11-05): the pattern is the lambda's, and reads one set for every use.
+    /// A positional tuple is met by position.
+    ///
+    /// `Err` is the call's refusal, at the call: a value of another width or no tuple where the
+    /// pattern stands, a component its binder does not admit, or a tuple labelled otherwise than
+    /// an earlier use labelled it.
+    fn close_under_shapes(
+        &mut self,
+        kb: &mut KnowledgeBase,
+        before: &Substitution,
+        subst: &mut Substitution,
+        site: ShapeSite,
+    ) -> Result<(), TypeError> {
+        if self.shapes.is_empty() {
+            return Ok(());
+        }
+        let mut applied: Vec<bool> = self
+            .shapes
+            .iter()
+            .map(|s| decided_type(kb, before, s.parent).is_some())
+            .collect();
+        loop {
+            let mut progressed = false;
+            for (k, shape) in self.shapes.iter().enumerate() {
+                if applied[k] {
+                    continue;
+                }
+                let Some(given) = decided_type(kb, subst, shape.parent) else {
+                    continue;
+                };
+                applied[k] = true;
+                progressed = true;
+                let width = shape.components.len();
+                let fields = named_tuple_field_pairs(kb, &given);
+                if shape.refutable && fields.as_ref().is_some_and(|f| f.len() != width) {
+                    continue;
+                }
+                let Some(fields) = fields.filter(|f| f.len() == width) else {
+                    return Err(TypeError::TypeMismatch {
+                        site: TypeError::here(),
+                        span: site.span,
+                        context: TypeErrorContext::PatternPosition {
+                            pattern: WrittenPattern::Tuple,
+                        },
+                        expected: unsaid_tuple_of(kb, width),
+                        quoted: None,
+                        actual: given,
+                    });
+                };
+                let labels: Vec<Symbol> = fields.iter().map(|(l, _)| *l).collect();
+                // `at[i]`: the component binder `i` meets.
+                let at: Vec<usize> =
+                    if crate::eval::value::TupleComponents::labels_are_positional(kb, &labels) {
+                        (0..width).collect()
+                    } else {
+                        let agreed = self
+                            .agreed_labels
+                            .iter()
+                            .find(|(p, _)| Rc::ptr_eq(p, &shape.pattern))
+                            .map(|(_, l)| Rc::clone(l));
+                        match agreed {
+                            None => {
+                                self.agreed_labels
+                                    .push((Rc::clone(&shape.pattern), labels.clone().into()));
+                                (0..width).collect()
+                            }
+                            Some(agreed) => match agreed
+                                .iter()
+                                .map(|l| labels.iter().position(|m| m == l))
+                                .collect::<Option<Vec<usize>>>()
+                            {
+                                Some(at) => at,
+                                None => {
+                                    let shown = |ls: &[Symbol]| {
+                                        ls.iter()
+                                            .map(|l| short_name_of(kb.local_name_of(*l)))
+                                            .collect::<Vec<_>>()
+                                            .join(", ")
+                                    };
+                                    return Err(TypeError::Other {
+                                        site: TypeError::here(),
+                                        span: site.span,
+                                        context: TypeErrorContext::PatternPosition {
+                                            pattern: WrittenPattern::Tuple,
+                                        },
+                                        expected: format!(
+                                            "a tuple labelled `({})`, as another use hands this \
+                                             pattern — a pattern reads one set of labels",
+                                            shown(&agreed)
+                                        ),
+                                        actual: format!("a tuple labelled `({})`", shown(&labels)),
+                                    });
+                                }
+                            },
+                        }
+                    };
+                for (i, &c) in at.iter().enumerate() {
+                    let (label, given_ty) = &fields[c];
+                    let binder_ty = if shape.frozen {
+                        shape.components[i].clone()
+                    } else {
+                        resolve_type_deep_value(kb, &self.solved, &shape.components[i])
+                    };
+                    let param = site.param.or(shape.binders[i]).unwrap_or(*label);
+                    let context = TypeErrorContext::OperationArgument {
+                        op_name: site.fn_sym,
+                        param,
+                    };
+                    match validate_arg_against_param(
+                        kb,
+                        subst,
+                        given_ty,
+                        &binder_ty,
+                        site.span,
+                        context.clone(),
+                        None,
+                    ) {
+                        ArgValidation::Ok => {}
+                        ArgValidation::Fail(err) => return Err(err),
+                        // A coercion inserts a `some(…)` around an ARGUMENT; a component of a
+                        // value taken apart has no expression to wrap, so it is refused
+                        // (kernel-language §6.7).
+                        ArgValidation::WrapSome { .. } => {
+                            return Err(TypeError::TypeMismatch {
+                                site: TypeError::here(),
+                                span: site.span,
+                                context,
+                                expected: binder_ty,
+                                quoted: None,
+                                actual: given_ty.clone(),
+                            });
+                        }
+                    }
+                    // The check above decided whether the component is admitted — by subtyping
+                    // and the conversions, which equality would over-refuse (see
+                    // [`validate_arg_against_param`]); this only BINDS, so its boolean says
+                    // nothing more: a ground binder has nothing to bind, and a variable one is
+                    // bound unless the occurs check refuses a component that holds the binder
+                    // itself, which no value can be.
+                    unify_types(kb, subst, given_ty, &binder_ty);
+                }
+            }
+            if !progressed {
+                return Ok(());
+            }
         }
     }
 
@@ -894,13 +1165,21 @@ impl WalkSolutions {
     /// leaves its entry in this list), and read anyway: the next producer this design plans
     /// — let-generalization at the `Let` frame — would otherwise lose its constraints here
     /// in silence.
+    ///
+    /// WI-20260904-34J8Z: AND COPIES THE TUPLE SHAPES the ∀ reaches — each that names one of its
+    /// variables, as its parent or in a component — at the instance, so the use's σ, which
+    /// decides the instance and not the quantified variable, is held to the pattern as an
+    /// unquantified use is ([`TupleShape`]). Without it, `lambda p -> (let (a, b) = p  …
+    /// Weigh.weigh(p) …)`, whose `p` the dispatch generalizes, was held to nothing at its use.
     pub(super) fn note_instantiation(
         &mut self,
+        kb: &mut KnowledgeBase,
         binder_map: &[(VarId, VarId)],
         // WI-20260929-6NMGQ: the application that hands the lambda its dictionary at this
         // instance — the application itself, or the wrapper's for a reference handed on.
         site: &Rc<NodeOccurrence>,
     ) -> usize {
+        self.instantiate_shapes(kb, binder_map);
         let mut matched = 0usize;
         for d in &mut self.deferred {
             if !d.generalized {
@@ -942,6 +1221,46 @@ impl WalkSolutions {
             }
         }
         matched
+    }
+
+    /// The shapes [`Self::note_instantiation`] copies at one ∀-elimination.
+    fn instantiate_shapes(&mut self, kb: &mut KnowledgeBase, binder_map: &[(VarId, VarId)]) {
+        if self.shapes.is_empty() || binder_map.is_empty() {
+            return;
+        }
+        let mut at_instance = Substitution::new();
+        for (old, new) in binder_map {
+            at_instance.bind_value(kb, *old, Value::Var(Var::Global(*new)));
+        }
+        let quantified = |v: VarId| binder_map.iter().any(|(old, _)| *old == v);
+        let mut copies: Vec<TupleShape> = Vec::new();
+        for shape in &self.shapes {
+            let mut named: Vec<VarId> = vec![shape.parent];
+            let mut seen = HashSet::new();
+            for c in &shape.components {
+                collect_value_type_and_bare_vars(kb, c, &mut named, &mut seen);
+            }
+            if !named.into_iter().any(quantified) {
+                continue;
+            }
+            let parent = binder_map
+                .iter()
+                .find(|(old, _)| *old == shape.parent)
+                .map_or(shape.parent, |(_, new)| *new);
+            copies.push(TupleShape {
+                pattern: Rc::clone(&shape.pattern),
+                parent,
+                components: shape
+                    .components
+                    .iter()
+                    .map(|c| walk_type_deep_value(kb, &at_instance, c))
+                    .collect(),
+                binders: shape.binders.clone(),
+                frozen: shape.frozen,
+                refutable: shape.refutable,
+            });
+        }
+        self.shapes.extend(copies);
     }
 
     /// Record the type this call's σ gives each variable a deferred requirement watches
@@ -1390,19 +1709,69 @@ pub(super) fn sigma_root(kb: &KnowledgeBase, subst: &Substitution, var: VarId) -
 /// BEFORE THIS ARGUMENT'S UNIFY — is what makes the question per-binding, and BOTH halves
 /// take it. The first cut gave it to neither, the second to the observation half only (and
 /// said in this very doc that both were covered), and /code-review found each in turn.
+///
+/// WI-20260904-34J8Z: AND FIRST THE σ IS HELD TO THE WALK'S TUPLE SHAPES
+/// ([`WalkSolutions::close_under_shapes`]), so what a shape's binders take from this argument is
+/// in σ before either half reads it — `Err` is the call's refusal, raised by the caller at the
+/// call.
 pub(super) fn report_walk_solutions(
     kb: &mut KnowledgeBase,
     solving: Option<&mut WalkSolutions>,
     before: &Substitution,
-    subst: &Substitution,
+    subst: &mut Substitution,
     unified: bool,
-) {
-    let Some(w) = solving else { return };
+    site: ShapeSite,
+) -> Result<(), TypeError> {
+    let Some(w) = solving else { return Ok(()) };
     if !unified {
-        return;
+        return Ok(());
     }
+    w.close_under_shapes(kb, before, subst, site)?;
     w.observe_deferred_carriers(kb, before, subst);
     report_call_solutions(kb, Some(&mut w.solved), before, subst, w.watermark);
+    Ok(())
+}
+
+/// WI-20260904-34J8Z — the shape half of [`report_walk_solutions`] alone, for the one
+/// argument-unification site that reports nothing else: WI-398's deferred unify at a
+/// projection-typed parameter, whose solutions this walk does not read (the known gap
+/// [`report_call_solutions`] records). A pattern decided only through such a parameter is held
+/// to it all the same.
+pub(super) fn hold_walk_shapes(
+    kb: &mut KnowledgeBase,
+    solving: Option<&mut WalkSolutions>,
+    before: &Substitution,
+    subst: &mut Substitution,
+    unified: bool,
+    site: ShapeSite,
+) -> Result<(), TypeError> {
+    match solving {
+        Some(w) if unified => w.close_under_shapes(kb, before, subst, site),
+        _ => Ok(()),
+    }
+}
+
+/// A positional tuple of `width` components nothing says, as a refusal shows the tuple a
+/// pattern takes apart.
+pub(super) fn unsaid_tuple_of(kb: &mut KnowledgeBase, width: usize) -> Value {
+    let unsaid = kb.intern("?_");
+    let shown: Vec<(Symbol, TermId)> = (0..width)
+        .map(|i| (kb.intern(&positional_label(i)), kb.make_type_var(unsaid)))
+        .collect();
+    Value::term(kb.make_named_tuple_type(&shown))
+}
+
+/// WI-20260904-34J8Z — the call a [`report_walk_solutions`] reports for, which a refusal of a
+/// tuple shape is raised at.
+#[derive(Clone, Copy)]
+pub(super) struct ShapeSite {
+    pub(super) fn_sym: Symbol,
+    /// The parameter the argument met, at a call of an operation by its name: a refusal there
+    /// names it, as one of a lambda written at that slot does. `None` where a function value is
+    /// applied, whose refusal names the binder of its pattern (`g.a`), as one of a binder of
+    /// its list does.
+    pub(super) param: Option<Symbol>,
+    pub(super) span: Option<Span>,
 }
 
 /// WI-20260904-50B2K part (c) — copy a finished call's bindings into the walk's

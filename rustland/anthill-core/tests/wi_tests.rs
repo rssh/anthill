@@ -2414,3 +2414,7 @@ mod wi_4xxsd_fold_host_arg_value_test;
 mod make_fn_rule_body_term_test;
 #[path = "include/wi_6hvxm_every_arrow_is_a_function_test.rs"]
 mod wi_6hvxm_every_arrow_is_a_function_test;
+#[path = "include/wi_34j8z_tuple_pattern_shape_test.rs"]
+mod wi_34j8z_tuple_pattern_shape_test;
+#[path = "include/wi_skwth_a_pinned_call_takes_the_overrides_labels_test.rs"]
+mod wi_skwth_a_pinned_call_takes_the_overrides_labels_test;
