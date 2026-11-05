@@ -1,68 +1,34 @@
-//! WI-20260909-96ZTM — TWO `require`s IN ONE CLAUSE BIND TWO DICTIONARIES, each to its
-//! own variable. Design: `docs/design/060-implementation.md` §8.5; the rebuilt plan and
-//! why the first attempt was backed out are in the ticket.
+//! WI-20260909-96ZTM — TWO REQUIREMENTS OF ONE SPEC IN ONE CLAUSE ARE TWO DICTIONARIES.
+//! Design: `docs/design/060-implementation.md` §8.5; the rebuilt plan and why the first
+//! attempt was backed out are in the ticket.
 //!
-//! ## The acceptance asserts the BOUND DICTIONARIES, not a woven call
+//! ## Since proposal 060.1 §5
 //!
-//! That is not a stylistic choice — it is the only thing measurable. A first attempt
-//! asserted through the calls and its headline row answered `7` and `9` **with both
-//! `require`s deleted**: the values came from ordinary value dispatch on the concrete
-//! carriers. Measured, two-dictionaries-per-CALL is ill-posed both ways:
+//! The ticket's two dictionaries were two `?d = require[X]` bound to two columns, attributed
+//! by the written bracket to two typed head bindings, and the acceptance asserted the BOUND
+//! dictionaries — handed across a rule boundary, where WI-860's check agreed or refused —
+//! because, measured then, two dictionaries per CALL were ill-posed: calls that name carriers
+//! need none (value dispatch decides), and two NULLARY calls need them and are
+//! indistinguishable. Proposal 060.1 §5 removed the form, and with it every column a
+//! dictionary rides. What tells two nullary calls apart now is the requirement's NAME:
+//! `require d1: Desc[T = A], require d2: Desc[T = B]`, and `d1.tag(?r1)`, `d2.tag(?r2)` —
+//! each call reads the dictionary it names (060.1 §8.6), and a nullary call that names
+//! neither is refused, as in an operation body. Two requirements of one spec at one
+//! parameter are two dictionaries under two names, and two slots unnamed (§8.5). So the rows
+//! below assert through nullary calls, which only a dictionary can answer (the spec's own
+//! `tag()` is `1`).
 //!
-//!   * two calls that NAME carriers (`describe(?x)`, `describe(?y)`) do not need
-//!     dictionaries at all — value dispatch decides, and deleting both `require`s
-//!     changes nothing;
-//!   * two NULLARY calls do need them and are indistinguishable — neither names a
-//!     carrier, so nothing can say which dictionary it wants.
-//!
-//! A bound dictionary, though, is directly observable: hand it across a rule boundary
-//! and WI-860's supplied-vs-derived check either agrees or refuses. That is what
-//! [`the_two_dictionaries_are_attributed_to_their_own_carriers`] uses, and it cannot pass
-//! on value dispatch because the discriminating answer is `[]`.
-
-//! ## What fails when each half is backed out — MEASURED, tree restored between
-//!
-//!  * **The duplicate-`require` lift** (the refusal keyed on the spec BASE again, as
-//!    before this ticket). **5 rows** — every row that needs two dictionaries to exist.
-//!  * **The bracket choosing among anchors**. **4 rows**, including
-//!    `wi_qmfc5…::the_written_bracket_chooses_between_two_anchors`.
-//!  * **The gate on two `require`s** — admitting them whatever grounded them. **1 row**:
-//!    [`a_witness_grounded_pair_is_refused_whatever_the_bracket_says`], standing in front
-//!    of five shapes that otherwise load clean with the WRONG dictionary. Since
-//!    WI-20260917-HRFR5 the gate asks whether the WRITTEN BRACKET chose each `require`
-//!    rather than whether an ANCHOR grounded it — a widening that leaves this row's two
-//!    shapes refused, because neither gives the bracket a witness to choose.
-//!  * **The one-dictionary-per-call refusal**. **1 row**:
-//!    [`a_call_two_dictionaries_both_claim_is_refused`], which PANICS rather than fails.
-//!  * **Carrier direction** — implemented, then REMOVED, because backing it out failed
-//!    **0 rows**. For it to matter there would have to be a covered call that names a
-//!    carrier and is NOT itself a witness; a nullary op names nothing, and anything with
-//!    a carrier parameter is a witness. A branch that cannot be driven is not in the diff.
-//!
-//! Every count above was produced by a patch that ASSERTS it applied. An earlier
-//! back-out in this ticket silently no-oped — rustfmt had reflowed the line it matched
-//! on — and reported "no failures", which is indistinguishable from a control that
-//! measures nothing.
-//!
-//! [`the_single_require_clause_is_unchanged`] passes under all of them BY DESIGN — it is
-//! WI-1040's own cross-boundary pair, restated as the yardstick.
-//!
-//! ## What this ticket does NOT touch
-//!
-//! The WEAVE is unchanged. A first attempt rewrote `weave_covered_call` into a single
-//! accumulating pass so one call could carry two dictionaries; that broke NESTED covered
-//! calls on a SINGLE `require` (a panic in debug, the spec default in release), and the
-//! shape it enabled has no reader — `dictionary_dispatch_target` destructures a
-//! one-element slice and eval hard-errors on more, because that channel answers "which
-//! instance does THIS CALL dispatch on" and one call dispatches on one instance. N
-//! dictionaries at a call site already work through the SLOT-indexed `op_dicts` channel
-//! (WI-822), which is a different question and needs nothing from here.
+//! The ticket's back-outs — the duplicate-`require` lift, the bracket choosing among anchors,
+//! the gate on two `require`s, the one-dictionary-per-call refusal — were measured on the
+//! removed form, whose machinery they named; none of them reads a named requirement. The
+//! rows for the bracket's dedupe (`two_requires_differing_only_inside_a_type_ARGUMENT_…`) and
+//! for an anchor the bracket could not choose (`two_anchors_…`) went with it: a name says
+//! which requirement a call reads, and an introducer says which parameter a requirement is at.
 
 use anthill_core::eval::Value;
 
-/// `Leaf` answers 7 and `Other` answers 9. `use` is the WI-1040 consumer shape: it takes
-/// a dictionary through its HEAD and re-derives one locally, so `read_dictionary_into`
-/// runs in CHECK mode (WI-860) and disagreement is observable as `[]`.
+/// `Leaf` answers 7 and `Other` answers 9, through `describe` and through the NULLARY `tag`,
+/// whose spec default is `1` — so a `7` or a `9` from `tag()` came through a dictionary.
 fn two_carriers(ns: &str, tail: &str) -> String {
     format!(
         r#"namespace {ns}
@@ -90,143 +56,33 @@ fn two_carriers(ns: &str, tail: &str) -> String {
     operation tag() -> Int64 = 9
   end
 
-  fact seed(leaf())
-  fact seedo(other())
-
 {tail}end
 "#
     )
 }
 
-fn answers(ns: &str, src: &str) -> Vec<(Value, bool)> {
+/// The single definite Int each of `{ns}.first` and `{ns}.second` answers, `None` for
+/// anything else or for a relation the program does not write.
+fn two(ns: &str, src: &str) -> (Option<i64>, Option<i64>) {
     let mut kb = crate::common::load_kb_with(src);
-    crate::common::query_unary(&mut kb, &format!("{ns}.answer"))
-}
-
-/// The single DEFINITE Int of a solution list, or `None` for anything else — an empty
-/// list, an indefinite residual, more than one. `None` is what a WI-860 disagreement
-/// looks like, and it is the discriminating observation in this file.
-fn one_definite(got: &[(Value, bool)]) -> Option<i64> {
-    match got {
-        [(Value::Int(i), true)] => Some(*i),
-        _ => None,
-    }
-}
-
-/// The clause under test: ONE rule with TWO TYPED HEAD BINDINGS — proposal 060 §3's
-/// second anchor, twice — binding TWO dictionaries of one spec and handing both out
-/// through its head. `?d1` is written for `Leaf` and `?d2` for `Other`, and the written
-/// bracket is what says which anchor each names.
-///
-/// NO WITNESS CALL, deliberately. The anchors ground both requires, so nothing here
-/// depends on which body call a scan happens to reach first — the defect that made the
-/// first attempt's pairing come out inverted.
-const GET2: &str = "  rule get2(?x: Leaf, ?y: Other, ?d1, ?d2) :- \
-     ?d1 = require[Desc[T = Leaf]], ?d2 = require[Desc[T = Other]], \
-     seed(?x), seedo(?y)\n  \
-     rule use(?x, ?d, ?r) :- ?d = require[Desc[T]], Desc.describe(?x, ?r)\n";
-
-#[test]
-fn the_two_dictionaries_are_attributed_to_their_own_carriers() {
-    // THE ACCEPTANCE. `?d1` must be `Leaf`'s and `?d2` must be `Other`'s, and the proof is
-    // that handing each to a consumer with the MATCHING carrier agrees, while handing it
-    // to the other one is refused by WI-860's check.
-    //
-    // WHY THIS CANNOT PASS ON VALUE DISPATCH: the discriminating observation is `[]`, and
-    // no amount of value-directed dispatch produces a REFUSAL. The two agreeing rows pin
-    // that the `[]`s are "checked and disagreed" rather than "never arrived" — without
-    // them a dictionary dropped on the way would look identical.
-    let ns = "test.w96ztm.attr";
-    let run = |q: &str| {
-        answers(
-            ns,
-            &two_carriers(ns, &format!("{GET2}  rule answer(?r) :- {q}\n")),
-        )
+    let mut one = |rel: &str| {
+        let qn = format!("{ns}.{rel}");
+        kb.try_resolve_symbol(&qn)?;
+        match crate::common::query_unary(&mut kb, &qn).as_slice() {
+            [(Value::Int(i), true)] => Some(*i),
+            _ => None,
+        }
     };
-
-    // ?d1 is Leaf's — agrees with a Leaf consumer, disagrees with an Other one.
-    assert_eq!(
-        one_definite(&run("get2(leaf(), other(), ?d1, ?), use(leaf(), ?d1, ?r)")),
-        Some(7),
-        "`?d1` is written for `Leaf` and must agree with a `Leaf` consumer",
-    );
-    assert!(
-        run("get2(leaf(), other(), ?d1, ?), use(other(), ?d1, ?r)").is_empty(),
-        "`?d1` is `Leaf`'s, so an `Other` consumer must REFUSE it (WI-860)",
-    );
-
-    // ?d2 is Other's — the mirror. This is the pair that says the two are ATTRIBUTED and
-    // not merely both present: swap the variable and the verdicts swap with it.
-    assert_eq!(
-        one_definite(&run("get2(leaf(), other(), ?, ?d2), use(other(), ?d2, ?r)")),
-        Some(9),
-        "`?d2` is written for `Other` and must agree with an `Other` consumer",
-    );
-    assert!(
-        run("get2(leaf(), other(), ?, ?d2), use(leaf(), ?d2, ?r)").is_empty(),
-        "`?d2` is `Other`'s, so a `Leaf` consumer must REFUSE it (WI-860)",
-    );
+    (one("first"), one("second"))
 }
 
-#[test]
-fn the_single_require_clause_is_unchanged() {
-    // THE YARDSTICK. WI-1040's own cross-boundary rows, restated here so a back-out of
-    // anything in this ticket is read against a clause that must not move: one `require`,
-    // handed to a matching consumer (7) and to a mismatched one (`[]`).
-    let ns = "test.w96ztm.one";
-    let one = "  rule get(?x, ?d) :- ?d = require[Desc[T]], Desc.describe(?x, ?i)\n  \
-               rule use(?x, ?d, ?r) :- ?d = require[Desc[T]], Desc.describe(?x, ?r)\n";
-    assert_eq!(
-        one_definite(&answers(
-            ns,
-            &two_carriers(
-                ns,
-                &format!("{one}  rule answer(?r) :- get(leaf(), ?d), use(leaf(), ?d, ?r)\n")
-            )
-        )),
-        Some(7),
-    );
-    assert!(answers(
-        ns,
-        &two_carriers(
-            ns,
-            &format!("{one}  rule answer(?r) :- get(other(), ?d), use(leaf(), ?d, ?r)\n")
-        )
+/// `first` and `second` over `get(args…, ?r1, ?r2)`.
+fn firsts(call: &str) -> String {
+    format!(
+        "  rule first(?r) :- {}\n  rule second(?r) :- {}\n",
+        call.replace("?r1", "?r").replace("?r2", "?"),
+        call.replace("?r1", "?").replace("?r2", "?r"),
     )
-    .is_empty(),);
-}
-
-#[test]
-fn the_control_without_the_requires_the_row_above_would_lie() {
-    // THE CHECK THE FIRST ATTEMPT SKIPPED, and it is why that attempt's headline measured
-    // nothing: run the acceptance clause with BOTH `require`s deleted and see which
-    // assertions survive.
-    //
-    // The two AGREEING rows survive — an unbound `?d` lets `use` derive its own
-    // dictionary at its own carrier and answer. So they are NOT the evidence.
-    // The two DISAGREEING rows do not: they answer a value instead of `[]`, because
-    // there is no supplied dictionary for WI-860 to check. THOSE are the load-bearing
-    // assertions, and this row is what says so.
-    let ns = "test.w96ztm.ctl";
-    let bare = "  rule get2(?x: Leaf, ?y: Other, ?d1, ?d2) :- seed(?x), seedo(?y)\n  \
-                rule use(?x, ?d, ?r) :- ?d = require[Desc[T]], Desc.describe(?x, ?r)\n";
-    let run = |q: &str| {
-        answers(
-            ns,
-            &two_carriers(ns, &format!("{bare}  rule answer(?r) :- {q}\n")),
-        )
-    };
-    assert_eq!(
-        one_definite(&run("get2(leaf(), other(), ?d1, ?), use(leaf(), ?d1, ?r)")),
-        Some(7),
-        "the AGREEING row passes with no `require` at all — it measures value dispatch",
-    );
-    assert_eq!(
-        one_definite(&run("get2(leaf(), other(), ?d1, ?), use(other(), ?d1, ?r)")),
-        Some(9),
-        "the DISAGREEING row answers 9 here and `[]` in the acceptance — that difference \
-         IS the attribution, and it is the only part of the acceptance that measures it",
-    );
 }
 
 fn refusal(src: &str) -> String {
@@ -236,258 +92,147 @@ fn refusal(src: &str) -> String {
         .join("\n")
 }
 
+/// The clause under test: two requirements of one spec at two type parameters, each under a
+/// name, and a nullary call through each.
+const GET2: &str = "  rule get2[A, B](?x: A, ?y: B, ?r1, ?r2) :- \
+     require d1: Desc[T = A], require d2: Desc[T = B], d1.tag(?r1), d2.tag(?r2)\n";
+
+/// THE ACCEPTANCE. `d1` is the dictionary at `?x`'s type and `d2` at `?y`'s, and each nullary
+/// call reads its own: `(7, 9)` at `(leaf, other)`, and swapped with the arguments, `(9, 7)`.
+/// No value names either call's carrier, and the spec's own `tag()` is `1`, so the numbers
+/// came through the two dictionaries and not through anything else.
+#[test]
+fn the_two_dictionaries_are_attributed_to_their_own_carriers() {
+    let ns = "test.w96ztm.attr";
+    let src = |args: &str| {
+        two_carriers(ns, &format!("{GET2}{}", firsts(&format!("get2({args}, ?r1, ?r2)"))))
+    };
+    assert_eq!(two(ns, &src("leaf(), other()")), (Some(7), Some(9)), "`d1` is `Leaf`'s, `d2` `Other`'s");
+    assert_eq!(two(ns, &src("other(), leaf()")), (Some(9), Some(7)), "and they follow the arguments");
+}
+
+/// THE YARDSTICK: one requirement under a name, one nullary call through it — `Leaf`'s 7,
+/// `Other`'s 9.
+#[test]
+fn the_single_require_clause_is_unchanged() {
+    let ns = "test.w96ztm.one";
+    for (arg, want) in [("leaf()", 7), ("other()", 9)] {
+        let src = two_carriers(
+            ns,
+            &format!(
+                "  rule get[A](?x: A, ?r) :- require d: Desc[T = A], d.tag(?r)\n  \
+                 rule first(?r) :- get({arg}, ?r)\n"
+            ),
+        );
+        assert_eq!(two(ns, &src).0, Some(want), "{arg}");
+    }
+}
+
+/// THE CONTROL the numbers above are read against: the same clause with the requirements
+/// deleted answers the spec's DEFAULT for both calls, `(1, 1)` — `tag()` is defaulted, and a
+/// call with nothing to say which instance it means folds it. Written without names it is
+/// REFUSED at load: an unnamed requirement supplies the evidence for an instance a call names
+/// and does not say which instance that is (as in an operation body). So every `7` and `9`
+/// above arrived through a named dictionary.
+#[test]
+fn the_control_without_the_requires_the_row_above_would_lie() {
+    let ns = "test.w96ztm.ctl";
+    let bare = two_carriers(
+        ns,
+        &format!(
+            "  rule get2(?x, ?y, ?r1, ?r2) :- Desc.tag(?r1), Desc.tag(?r2)\n{}",
+            firsts("get2(leaf(), other(), ?r1, ?r2)")
+        ),
+    );
+    assert_eq!(two(ns, &bare), (Some(1), Some(1)), "no requirement: the spec's default, twice");
+    let errs = refusal(&two_carriers(
+        "test.w96ztm.ctlu",
+        "  rule get2[A, B](?x: A, ?y: B, ?r1, ?r2) :- Desc[T = A], Desc[T = B], \
+         Desc.tag(?r1), Desc.tag(?r2)\n",
+    ));
+    assert!(errs.contains("`require s: Desc[…]`") && errs.contains("`s.tag(…)`"), "unnamed: {errs}");
+}
+
+/// TWO NAMES AT ONE PARAMETER ARE TWO DICTIONARIES (060.1 §8.6), each read where its name is
+/// written: at `leaf()`, both `Leaf`'s, `(7, 7)`. The row refused two equal `require`s —
+/// "nothing distinguishes them" — which a name now does; unnamed, the two are two slots, as an
+/// operation's two equal `requires` lines are (§8.5).
 #[test]
 fn two_equal_requires_are_refused() {
-    // ONE `require` IS ONE DICTIONARY. Written twice, nothing distinguishes them, so
-    // there is no answer to which is which — refused rather than guessed.
-    //
-    // THE CONTROL IS THE ACCEPTANCE ITSELF: the same clause with `T = Other` in the
-    // second require loads and attributes. One word apart, opposite verdicts.
     let ns = "test.w96ztm.eq";
-    let errs = refusal(&two_carriers(
+    let src = two_carriers(
         ns,
-        "  rule get2(?x: Leaf, ?y: Other, ?d1, ?d2) :- \
-           ?d1 = require[Desc[T = Leaf]], ?d2 = require[Desc[T = Leaf]], \
-           seed(?x), seedo(?y)\n",
-    ));
-    assert!(
-        errs.contains("name a different instance") && errs.contains("the same one twice"),
-        "got:\n{errs}"
+        &format!("  rule get2[A](?x: A, ?r1, ?r2) :- require d1: Desc[T = A], require d2: Desc[T = A], \
+         d1.tag(?r1), d2.tag(?r2)\n{}",
+        firsts("get2(leaf(), ?r1, ?r2)")),
     );
+    assert_eq!(two(ns, &src), (Some(7), Some(7)));
 }
 
-#[test]
-fn two_requires_differing_only_inside_a_type_ARGUMENT_are_not_equal() {
-    // THE ROW THAT KEEPS THE EQUALITY TEST HONEST, and the one a hand-rolled key got
-    // wrong: an earlier attempt compared each binding VALUE by its head's SHORT name, so
-    // `Desc[T = Box[E = Leaf]]` and `Desc[T = Box[E = Other]]` both keyed `("T","Box")`,
-    // compared EQUAL, and this valid program was refused. `views_structurally_equal`
-    // compares deeply, so the difference inside the type ARGUMENT is seen.
-    //
-    // It is still refused — by the ANCHOR gate, because both bounds answer `Box` and the
-    // bracket cannot separate them — but for the RIGHT reason, with the right message.
-    let ns = "test.w96ztm.deep";
-    let errs = refusal(&format!(
-        r#"namespace {ns}
-  import anthill.prelude.Int64
-  sort Desc
-    sort T = ?
-    operation describe(x: T) -> Int64 = 1
-    operation tag() -> Int64 = 1
-  end
-  sort Leaf
-    import anthill.prelude.Int64
-    entity leaf
-    provides Desc[T = Leaf]
-    operation describe(x: Leaf) -> Int64 = 7
-    operation tag() -> Int64 = 7
-  end
-  sort Other
-    import anthill.prelude.Int64
-    entity other
-    provides Desc[T = Other]
-    operation describe(x: Other) -> Int64 = 9
-    operation tag() -> Int64 = 9
-  end
-  sort Box
-    sort E = ?
-    entity box(v: E)
-    provides Desc[T = Self] :- Desc[E]
-  end
-  fact seedbl(box(v: leaf()))
-  fact seedbo(box(v: other()))
-  rule get2(?x: Box, ?y: Box, ?d1, ?d2) :- ?d1 = require[Desc[T = Box[E = Leaf]]], ?d2 = require[Desc[T = Box[E = Other]]], seedbl(?x), seedbo(?y)
-end
-"#
-    ));
-    assert!(
-        !errs.contains("the same one twice"),
-        "two requires differing INSIDE a type argument are not equal; got:\n{errs}"
-    );
-    assert!(
-        errs.contains("2 of them do") && errs.contains("the written bracket names no one of them"),
-        "they are refused by the ANCHOR gate instead — both bounds answer `Box`; got:\n{errs}"
-    );
-}
-
-#[test]
-fn two_anchors_the_bracket_cannot_choose_between_are_refused() {
-    // THE CHOICE MUST BE THE AUTHOR'S. A bare `require[Desc]` names no carrier, so with
-    // two anchors there is nothing to select on. This is the control that says the
-    // acceptance is driven by the BRACKET and not by anchor order.
-    let ns = "test.w96ztm.bare";
-    let errs = refusal(&two_carriers(
-        ns,
-        "  rule get2(?x: Leaf, ?y: Other, ?d) :- ?d = require[Desc], seed(?x), seedo(?y)\n",
-    ));
-    assert!(
-        errs.contains("2 of them do — Leaf, Other")
-            && errs.contains("the written bracket names no one of them"),
-        "got:\n{errs}"
-    );
-}
-
+/// A NULLARY CALL THAT NAMES NEITHER of two requirements is refused at the call — it writes
+/// no instance, and both requirements cover it — naming the two calls to write. The row was
+/// the one-dictionary-per-call refusal of a call two bound dictionaries both claimed, which
+/// PANICKED with that refusal backed out.
 #[test]
 fn a_call_two_dictionaries_both_claim_is_refused() {
-    // A CALL CARRIES AT MOST ONE DICTIONARY — that is `requirements`' MEANING ("which
-    // instance does THIS CALL dispatch on"), not a limit to widen. So a clause that binds
-    // two dictionaries for a spec AND contains a call neither can be shown to own is
-    // refused, loudly, at the call.
-    //
-    // WITHOUT THIS the second weave could not find its target by `Rc::ptr_eq` — the first
-    // had already rebuilt the node — and the load PANICKED on
-    // `debug_assert!(wove, …)`. Driven: lifting the duplicate-`require` refusal without
-    // this one reproduces that panic.
-    //
-    // The nullary `tag()` names no carrier at all, so nothing can tell the two apart —
-    // and the row below shows a call that DOES name one is refused too, for a different
-    // reason.
     let ns = "test.w96ztm.amb";
     let errs = refusal(&two_carriers(
         ns,
-        "  rule anchored(?x: Leaf, ?y: Other, ?r) :- ?d1 = require[Desc[T = Leaf]], ?d2 = require[Desc[T = Other]], seed(?x), seedo(?y), Desc.tag(?r)\n",
+        "  rule anchored[A, B](?x: A, ?y: B, ?r) :- require d1: Desc[T = A], \
+         require d2: Desc[T = B], Desc.tag(?r)\n",
     ));
-    assert!(
-        errs.contains("dispatch through ONE dictionary"),
-        "got:\n{errs}"
-    );
+    assert!(errs.contains("write `d1.tag(…)` or `d2.tag(…)`"), "got:\n{errs}");
 }
 
+/// A CARRIER-BEARING CALL READS THE REQUIREMENT AT ITS OWN ARGUMENT'S PARAMETER, unnamed:
+/// `Desc.describe(?x, ?r)` at `?x: A` is covered by `d1` alone, and answers `Leaf`'s 7. The
+/// row was the gate that refused two `require`s the written bracket had not each chosen — one
+/// call at `?x: Leaf` and a second `require` no call had — which bound the second by scan
+/// order with the gate backed out. The introducer says which parameter each requirement is at,
+/// and the weave covers a call at its own carrier only.
 #[test]
 fn a_witness_grounded_pair_is_refused_whatever_the_bracket_says() {
-    // TWO `require`s ARE ADMITTED ONLY WHERE THE WRITTEN BRACKET CHOSE EACH ONE.
-    //
-    // WI-20260917-HRFR5 WIDENED THAT AND THESE TWO SHAPES STAY REFUSED, which is why the
-    // row survives it: what changed is that a bracket can now choose a WITNESS as well as
-    // a head binding, and neither shape here gives it one to choose.
-    //
-    //   * the first clause has ONE covered call, `Desc.describe(?x, ?r)` at `?x: Leaf`.
-    //     `require[Desc[T = Leaf]]` names it, but `require[Desc[T = Other]]` names a
-    //     carrier no call in this clause has — so the second `require` is chosen by
-    //     nothing, and admitting the pair would bind it by scan order;
-    //   * the second has UNTYPED carriers (`eq(?a, ?b)`), whose sorts are a run-time
-    //     fact. Nothing at LOAD can say which bracket that call belongs to.
-    //
-    // The shapes HRFR5 does admit are in `wi_hrfr5_witness_attribution_test`, and the
-    // pair here is what says the widening did not become "admit two requires whenever
-    // a witness grounds them".
-    //
-    // THIS IS THE GATE THAT KEEPS THE LIFT HONEST. `/code-review` drove what its absence
-    // cost: with the duplicate refusal lifted for EVERY grounding path,
-    // `?d1 = require[PartialEq[T = Thing]], ?d2 = require[PartialEq[T = Gadget]],
-    // eq(?a, ?b)` loaded clean with BOTH bound to `Thing`'s dictionary — a body-less op
-    // is never a covered call, so the one-dictionary-per-call refusal never sees it.
-    // Five shapes went from a loud refusal to a silent wrong answer.
     let ns = "test.w96ztm.wit";
-    let errs = refusal(&two_carriers(
+    let src = two_carriers(
         ns,
-        "  rule anchored(?x: Leaf, ?y: Other, ?r) :- ?d1 = require[Desc[T = Leaf]], ?d2 = require[Desc[T = Other]], seed(?x), seedo(?y), Desc.describe(?x, ?r)\n",
-    ));
-    assert!(
-        errs.contains("unless the WRITTEN BRACKET says which carrier each one means"),
-        "got:\n{errs}"
+        "  rule anchored[A, B](?x: A, ?y: B, ?r) :- require d1: Desc[T = A], \
+         require d2: Desc[T = B], Desc.describe(?x, ?r)\n  \
+         rule first(?r) :- anchored(leaf(), other(), ?r)\n",
     );
-
-    // AND THE SAME GATE ON THE PLAINEST SHAPE: no typed head at all, so nothing can be
-    // anchored. A body-less spec op is used deliberately — it is never a covered call, so
-    // this is the shape the one-dictionary-per-call refusal structurally cannot catch.
-    let errs = refusal(
-        r#"namespace test.w96ztm.bl
-  import anthill.prelude.{Int64, PartialEq}
-  import anthill.prelude.PartialEq.eq
-  sort Thing
-    entity thing(v: Int64)
-  end
-  sort Gadget
-    entity gadget(v: Int64)
-  end
-  namespace Thing
-    provides PartialEq[T = Thing]
-  end
-  namespace Gadget
-    provides PartialEq[T = Gadget]
-  end
-  rule twin(?a, ?b, ?d1, ?d2) :- ?d1 = require[PartialEq[T = Thing]], ?d2 = require[PartialEq[T = Gadget]], eq(?a, ?b)
-end
-"#,
-    );
-    assert!(
-        errs.contains("unless the WRITTEN BRACKET says which carrier each one means"),
-        "got:\n{errs}"
-    );
+    assert_eq!(two(ns, &src).0, Some(7));
 }
 
+/// THE CONTROL FOR THE REFUSALS ABOVE, through the NULLARY `tag()`: one requirement under a
+/// name threads through it (`7`), where the spec default is `1` — and with the requirement
+/// deleted the same call folds that default.
 #[test]
 fn the_control_a_single_require_threads_through_a_nullary_call() {
-    // THE CONTROL FOR THE REFUSALS ABOVE, and it uses the NULLARY `tag()` on purpose.
-    //
-    // An earlier version of this control used `Desc.describe(?x, ?r)` and asserted `7` —
-    // which that clause answers with the `require` deleted AND with the type annotation
-    // deleted, because `describe` names its carrier and value dispatch decides. It
-    // measured nothing. That is the exact defect the first attempt at this ticket was
-    // reverted for, re-landed in the file whose own header states the rule; `/code-review`
-    // caught it.
-    //
-    // `tag()` is nullary, so `1` is the spec default and `7` is reachable only through a
-    // dictionary — the three-way check is in
-    // [`the_control_without_the_requires_the_row_above_would_lie`].
     let ns = "test.w96ztm.one2";
-    assert_eq!(
-        one_definite(&answers(
-            ns,
-            &two_carriers(
-                ns,
-                "  rule anchored(?x: Leaf, ?r) :- ?d1 = require[Desc[T = Leaf]], seed(?x), Desc.tag(?r)\n  \
-                 rule answer(?r) :- anchored(?x, ?r)\n"
-            )
-        )),
-        Some(7),
-        "one `require` under one anchor threads through the nullary call",
+    let src = two_carriers(
+        ns,
+        "  rule anchored[A](?x: A, ?r) :- require d: Desc[T = A], d.tag(?r)\n  \
+         rule first(?r) :- anchored(leaf(), ?r)\n",
     );
-    // AND THE BACK-OUT OF ITS OWN EVIDENCE: with the `require` gone the same clause folds
-    // the spec default. THIS is what says the row measures the dictionary.
-    assert_eq!(
-        one_definite(&answers(
-            ns,
-            &two_carriers(
-                ns,
-                "  rule anchored(?x: Leaf, ?r) :- seed(?x), Desc.tag(?r)\n  \
-                 rule answer(?r) :- anchored(?x, ?r)\n"
-            )
-        )),
-        Some(1),
-        "no `require` ⇒ the spec DEFAULT — the difference is the whole measurement",
+    assert_eq!(two(ns, &src).0, Some(7), "one named requirement threads through `tag()`");
+    let bare = two_carriers(
+        ns,
+        "  rule anchored(?x, ?r) :- Desc.tag(?r)\n  rule first(?r) :- anchored(leaf(), ?r)\n",
     );
+    assert_eq!(two(ns, &bare).0, Some(1), "no requirement: the spec DEFAULT");
 }
 
+/// THE NAME DECIDES, NOT THE WRITTEN ORDER: `d2` written first, `d1.tag` still reads the
+/// dictionary at `?x`'s type.
 #[test]
 fn the_bracket_decides_and_not_the_written_order() {
-    // WITHOUT THIS ROW an implementation that simply paired the Nth `require` with the
-    // Nth anchor would satisfy every assertion above: `GET2` writes `T = Leaf` first
-    // under `?x: Leaf`, so bracket order and anchor order agree there. `/code-review`
-    // named that as the gap. Here they DISAGREE — `T = Other` is written first — and the
-    // attribution must follow the BRACKET.
     let ns = "test.w96ztm.ord";
-    let swapped = "  rule get2(?x: Leaf, ?y: Other, ?d1, ?d2) :- \
-         ?d1 = require[Desc[T = Other]], ?d2 = require[Desc[T = Leaf]], \
-         seed(?x), seedo(?y)\n  \
-         rule use(?x, ?d, ?r) :- ?d = require[Desc[T]], Desc.describe(?x, ?r)\n";
-    let run = |q: &str| {
-        answers(
-            ns,
-            &two_carriers(ns, &format!("{swapped}  rule answer(?r) :- {q}\n")),
-        )
-    };
-    // `?d1` now holds OTHER's, because that is what its bracket says.
-    assert_eq!(
-        one_definite(&run("get2(leaf(), other(), ?d1, ?), use(other(), ?d1, ?r)")),
-        Some(9),
-        "`?d1` is written `T = Other` here, so it must be `Other`'s despite being first",
+    let src = two_carriers(
+        ns,
+        &format!("  rule get2[A, B](?x: A, ?y: B, ?r1, ?r2) :- require d2: Desc[T = B], \
+         require d1: Desc[T = A], d1.tag(?r1), d2.tag(?r2)\n{}",
+        firsts("get2(leaf(), other(), ?r1, ?r2)")),
     );
-    assert!(
-        run("get2(leaf(), other(), ?d1, ?), use(leaf(), ?d1, ?r)").is_empty(),
-        "and a `Leaf` consumer must REFUSE it — the mirror of the acceptance, inverted",
-    );
+    assert_eq!(two(ns, &src), (Some(7), Some(9)));
 }
 
 // ════════════════════════════════════════════════════════════════════════════════════
@@ -499,6 +244,9 @@ fn the_bracket_decides_and_not_the_written_order() {
 // decide — `views_structurally_equal` separates the instances and the anchored gate's
 // `find(|(s, _)| *s == canon)` finds no prior entry — so the clause passes both without a
 // refusal and each `require` grounds on its own anchor.
+//
+// (Measured while the clauses wrote `require[…]`; since proposal 060.1 §5 each instance is
+// written on its call's receiver, `Ord[A = Red].otag(?a)`, or named at an introducer.)
 //
 // CENSUSED 2026-09-13 and that is why these rows exist: EVERY fixture in this file, in
 // `wi_qmfc5_typed_head_anchor_test.rs` and in `wi_s8cbv_projection_requirement_test.rs`
@@ -595,8 +343,8 @@ fn two_typed_head_parameters_bounded_by_DIFFERENT_specs_thread_both_dictionaries
     assert_eq!(
         two_spec_answer(
             "test.twospec.concrete",
-            "  rule p(x: Red, y: Blue, ?r) :- ?d1 = require[Ord[A = Red]], \
-             ?d2 = require[Eqq[B = Blue]], Ord.otag(?a), Eqq.etag(?b), combo(?a, ?b, ?r)\n  \
+            "  rule p(x: Red, y: Blue, ?r) :- Ord[A = Red].otag(?a), Eqq[B = Blue].etag(?b), \
+             combo(?a, ?b, ?r)\n  \
              rule answer(?r) :- p(red(), blue(), ?r)\n",
         ),
         Some(16),
@@ -612,8 +360,7 @@ fn the_control_one_require_of_the_pair_answers_its_own_number() {
     assert_eq!(
         two_spec_answer(
             "test.twospec.one",
-            "  rule p(x: Red, y: Blue, ?r) :- ?d1 = require[Ord[A = Red]], \
-             Ord.otag(?a), combo(?a, ?a, ?r)\n  \
+            "  rule p(x: Red, y: Blue, ?r) :- Ord[A = Red].otag(?a), combo(?a, ?a, ?r)\n  \
              rule answer(?r) :- p(red(), blue(), ?r)\n",
         ),
         Some(101),
@@ -637,12 +384,12 @@ fn the_control_without_either_require_neither_call_answers() {
     ));
     crate::common::assert_refused_naming(
         &errs,
-        &["test.twospec.none.Ord.otag", "require[Ord[A = …]]"],
+        &["test.twospec.none.Ord.otag", "`Ord[A = …].otag(…)`"],
         "`otag` names no instance",
     );
     crate::common::assert_refused_naming(
         &errs,
-        &["test.twospec.none.Eqq.etag", "require[Eqq[B = …]]"],
+        &["test.twospec.none.Eqq.etag", "`Eqq[B = …].etag(…)`"],
         "`etag` names no instance",
     );
 }
@@ -652,30 +399,22 @@ fn the_other_two_bound_spellings_thread_both_as_well() {
     // THE SAME CAPABILITY AT THE OTHER TWO SPELLINGS a bound can take (§8.3), because
     // which one an author writes must not decide whether two specs are served.
     //
-    // INTRODUCER — `p[A, B](x: A, y: B) :- Ord[A], Eqq[B]`, where `rule_type_bounds`
-    // records THE SPEC for each parameter rather than a carrier sort.
+    // INTRODUCER — `p[A, B](x: A, y: B) :- require o: Ord[A = A], require e: Eqq[B = B]`,
+    // each nullary call through its requirement's name (`o.otag(?a)`).
     assert_eq!(
         two_spec_answer(
             "test.twospec.introducer",
-            "  rule p[A, B](x: A, y: B, ?r) :- Ord[A], Eqq[B], ?d1 = require[Ord[A = A]], \
-             ?d2 = require[Eqq[B = B]], Ord.otag(?a), Eqq.etag(?b), combo(?a, ?b, ?r)\n  \
+            "  rule p[A, B](x: A, y: B, ?r) :- require o: Ord[A = A], require e: Eqq[B = B], \
+             o.otag(?a), e.etag(?b), combo(?a, ?b, ?r)\n  \
              rule answer(?r) :- p(red(), blue(), ?r)\n",
         ),
         Some(16),
         "the introducer spelling must thread both",
     );
-    // SPEC MEMBER — the parameter is typed at the parameter each spec receives on, which
-    // requires the spec of the parameter's sort (§5.4's sugar in a rule head).
-    assert_eq!(
-        two_spec_answer(
-            "test.twospec.specbound",
-            "  rule p(x: Ord.A, y: Eqq.B, ?r) :- ?d1 = require[Ord[A = Red]], \
-             ?d2 = require[Eqq[B = Blue]], Ord.otag(?a), Eqq.etag(?b), combo(?a, ?b, ?r)\n  \
-             rule answer(?r) :- p(red(), blue(), ?r)\n",
-        ),
-        Some(16),
-        "a spec-member bound must thread both",
-    );
+    // (The SPEC-MEMBER spelling, `p(x: Ord.A, y: Eqq.B, ?r)`, wrote its two `require[…]`s at
+    // the concrete `Red` and `Blue`, removed by proposal 060.1 §5. Its bound is the
+    // introducer's unnamed guard, which a nullary call cannot read; the concrete instances
+    // are the first row's.)
 }
 
 /// The parameter typed at the spec itself: `Ord` is a spec over `A`, a `Red` provides
@@ -684,8 +423,8 @@ fn the_other_two_bound_spellings_thread_both_as_well() {
 fn a_parameter_typed_at_the_spec_itself_is_refused() {
     let errs = crate::common::load_errors_of(&two_specs(
         "test.twospec.direct",
-        "  rule p(x: Ord, y: Eqq, ?r) :- ?d1 = require[Ord[A = Red]], \
-         ?d2 = require[Eqq[B = Blue]], Ord.otag(?a), Eqq.etag(?b), combo(?a, ?b, ?r)\n  \
+        "  rule p(x: Ord, y: Eqq, ?r) :- Ord[A = Red].otag(?a), Eqq[B = Blue].etag(?b), \
+         combo(?a, ?b, ?r)\n  \
          rule answer(?r) :- p(red(), blue(), ?r)\n",
     ));
     assert_eq!(errs.len(), 2, "one refusal per parameter; got {errs:#?}");

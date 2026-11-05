@@ -279,19 +279,21 @@ end
 /// body goals and the rule is refused by the row above, which would hide this one.
 #[test]
 fn a_bodied_struct_eq_head_keeps_its_type_var_introducer() {
-    let src = |connective: &str| {
+    // The `===` head is a predicate's, whose introducer types a column (proposal 060.1: one no
+    // column names is refused); the untagged `<=>` equation admits no typed column (WI-582).
+    let src = |connective: &str, column: &str| {
         format!(
             r#"
 namespace wi1090.tvar
   import anthill.prelude.{{Int64, Eq}}
   rule p1090(?x) :- ?x === 1
-  rule g1090[t](?x) {connective} ?x :- Eq[t], p1090(?x)
+  rule g1090[t]({column}) {connective} ?x :- Eq[t], p1090(?x)
 end
 "#
         )
     };
-    for connective in ["===", "<=>"] {
-        let errs = load_errors(&src(connective));
+    for (connective, column) in [("===", "?x: t"), ("<=>", "?x")] {
+        let errs = load_errors(&src(connective, column));
         assert!(
             errs.is_empty(),
             "`{connective}`: a connective head's `[t]` rides on its LHS operand, so the \

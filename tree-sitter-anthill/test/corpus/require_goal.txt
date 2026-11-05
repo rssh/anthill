@@ -1,0 +1,144 @@
+==================
+require goal, bare
+==================
+
+namespace n
+  rule cmp[A](?a: A, ?c) :- require WeakOrd[A], cmp2(?a, ?c)
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    (name
+      (identifier))
+    (rule_declaration
+      (rule_heads
+        (fn_term
+          (application
+            (name
+              (identifier))
+            (sort_binding
+              (simple_type
+                (name
+                  (identifier)))))
+          (typed_var_arg
+            (variable_term
+              (variable))
+            (simple_type
+              (name
+                (identifier))))
+          (variable_term
+            (variable))))
+      (rule_body
+        (require_goal
+          (application
+            (name
+              (identifier))
+            (sort_binding
+              (simple_type
+                (name
+                  (identifier))))))
+        (fn_term
+          (name
+            (identifier))
+          (variable_term
+            (variable))
+          (variable_term
+            (variable)))))))
+
+==================
+require goal, named
+==================
+
+namespace n
+  rule cmp[A](?a: A, ?c) :- require up: WeakOrd[T = A], up.compare(?a, ?a, ?c)
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    (name
+      (identifier))
+    (rule_declaration
+      (rule_heads
+        (fn_term
+          (application
+            (name
+              (identifier))
+            (sort_binding
+              (simple_type
+                (name
+                  (identifier)))))
+          (typed_var_arg
+            (variable_term
+              (variable))
+            (simple_type
+              (name
+                (identifier))))
+          (variable_term
+            (variable))))
+      (rule_body
+        (require_goal
+          (identifier)
+          (application
+            (name
+              (identifier))
+            (sort_binding
+              (name
+                (identifier))
+              (simple_type
+                (name
+                  (identifier))))))
+        (fn_term
+          (name
+            (identifier)
+            (identifier))
+          (variable_term
+            (variable))
+          (variable_term
+            (variable))
+          (variable_term
+            (variable)))))))
+
+==================
+require goal, bracket form
+==================
+
+namespace n
+  rule p(?x, ?y) :- require[Eq[T]], eq(?x, ?y)
+end
+
+---
+
+(source_file
+  (namespace_declaration
+    (name
+      (identifier))
+    (rule_declaration
+      (rule_heads
+        (fn_term
+          (name
+            (identifier))
+          (variable_term
+            (variable))
+          (variable_term
+            (variable))))
+      (rule_body
+        (require_goal
+          (collection_literal
+            (application
+              (name
+                (identifier))
+              (sort_binding
+                (simple_type
+                  (name
+                    (identifier)))))))
+        (fn_term
+          (name
+            (identifier))
+          (variable_term
+            (variable))
+          (variable_term
+            (variable)))))))

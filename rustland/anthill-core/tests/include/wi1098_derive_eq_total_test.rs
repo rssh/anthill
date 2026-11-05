@@ -101,12 +101,12 @@ namespace wi1098.noprov
     operation hasBlue(n: Int64) -> Int64 =
       if contains(cons(head: red, tail: cons(head: green, tail: nil)), blue) then 1 else 0
   end
-  -- The RESOLVER entry (wi625's shape): a rule whose `requires(Eq[T])` guard is
-  -- witnessed TRANSITIVELY by the `contains` call. The guard fires only if the
+  -- The RESOLVER entry (wi625's shape): a rule whose `Eq[T = E]` guard is at the
+  -- element type of the list `contains` reads. The guard fires only if the
   -- element carrier provides `Eq`, so this drives the derived provision from the
   -- SLD side rather than through the interpreter. A bare `contains(?xs, ?x)` goal is
   -- NOT this route and answers nothing even at `Int64` — measured.
-  rule hasElem(?xs, ?x) :- requires(Eq[T]), eq(contains(?xs, ?x), true)
+  rule hasElem[E](?xs: List[T = E], ?x: E) :- Eq[T = E], eq(contains(?xs, ?x), true)
 end
 "#;
 
@@ -257,7 +257,7 @@ fn contains_answers_for_a_provisionless_entity() {
         sols.len(),
         1,
         "the resolver's `hasElem([red, green], red)` must decide TRUE — the \
-         `requires(Eq[T])` guard fires only at a carrier that provides `Eq`, and this \
+         `Eq[T = E]` guard fires only at a carrier that provides `Eq`, and this \
          is the entry the ticket measured the panic from"
     );
     assert!(

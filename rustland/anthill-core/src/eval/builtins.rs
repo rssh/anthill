@@ -6232,72 +6232,11 @@ pub(crate) fn type_of_dictionary(
     interp: &mut Interpreter,
     dict: &Dictionary,
 ) -> Result<crate::kb::term::TermId, EvalError> {
-    let head = dict.impl_sort();
-    let arity = dict.arity();
     // A type pattern's open slot (proposal 071 §1.6): the evidence the typer builds for it,
     // beneath a `TypePattern`, names the slot itself.
-    if interp.kb().minted_param(head) == Some(crate::kb::MintedParam::PatternSlot) {
-        return interp.error_layer.as_ref().map(|layer| layer.open_slot).ok_or_else(|| {
-            EvalError::Internal(
-                "type_of_dictionary: a pattern's open slot read with no error layer".into(),
-            )
-        });
-    }
-    if arity == 0 {
-        // `Ref(S)`, NOT `Fn { functor: S, no args }`, and the two are not
-        // interchangeable. WI-361's producer flip makes a bare sort the term `Ref(S)`
-        // itself ([`KnowledgeBase::make_sort_ref`]), which is what eval's own bare-head
-        // arm delivers and what a `fact Modifiable[T = Cell]` carries — an `Fn` head does
-        // NOT unify with it, the WI-206 lesson the `Expr::TypeValue` arm states at
-        // length. MEASURED by WI-20260919-N31XX's lowering: with `make_name_term_from_sym`
-        // here, a read lowered to this builtin answered `Fn(Int64)` where every
-        // pre-lowering row expected `Ref(Int64)`, and four rows across
-        // `wi708_body_type_arg_read_test` and `wi_bad3v_dot_type_arg_bracket_test` went
-        // red asking for "a sort ref binding". Invisible until the lowering landed,
-        // because `TermPrinter` renders both as `Int64`.
-        return Ok(interp.kb_mut().make_sort_ref(head));
-    }
-    // The head's own type parameters, by their declared names in DECLARATION order — the
-    // order `type_value_derive` emits the conditions in, so condition `i` is the evidence
-    // for parameter `i`.
-    let params: Vec<String> = interp.kb().type_params_of_sort(head);
-    // THE CONDITIONS DO NOT START AT SUB 0. A provision's dictionary chain is the
-    // carrier's OWN sort-level `requires` first and the provision's conditions after
-    // (`provider_dict_chain`), so a carrier that writes `requires` — `Map requires Eq[T =
-    // K]` — shifts every condition by that many slots. Reading from 0 would hand back the
-    // `Eq` dictionary's impl sort as a type argument, silently. Re-derived here rather
-    // than assumed, from the same function that built the layout.
-    let base = crate::kb::typing::provider_dict_entries(interp.kb_mut(), head, None).len();
-    if base + params.len() != arity {
-        return Err(EvalError::Internal(format!(
-            "TypeValue.type_value: `{}` has {} type parameter(s) after {base} sort-level \
-             requirement(s), but its dictionary carries {arity} sub-instance(s); \
-             `type_value_derive` and this reader disagree about the layout",
-            interp.kb().qualified_name_of(head),
-            params.len(),
-        )));
-    }
-    let mut bindings: Vec<(crate::intern::Symbol, crate::kb::term::TermId)> =
-        Vec::with_capacity(params.len());
-    for (i, name) in params.iter().enumerate() {
-        // Total by construction: `Dictionary::from_value` validated the whole tree, and
-        // `i < arity`. A `None` here would be that invariant broken, so it is loud.
-        let sub = dict.sub(base + i).ok_or_else(|| {
-            EvalError::Internal(format!(
-                "type_value_of_self: dictionary sub {i} missing below arity {arity}"
-            ))
-        })?;
-        let ty = type_of_dictionary(interp, &sub)?;
-        bindings.push((interp.kb_mut().intern(name), ty));
-    }
-    // BUILT AS A TYPE WRITTEN IN VALUE POSITION IS (`Interpreter::finish_sort_type`): each
-    // argument keyed by its parameter's declared name, through the one canonical builder,
-    // which also orders the arguments. Assembled by hand and keyed by the parameter's
-    // qualified symbol, `type_value[T = Option[T = E]]()` at `E = Int64` was a term that
-    // printed `Option(T: Int64)` and was not equal to the written `Option[T = Int64]`.
-    let kb = interp.kb_mut();
-    let base_ref = kb.make_sort_ref(head);
-    Ok(kb.make_parameterized_type(base_ref, &bindings))
+    let open_slot = interp.error_layer.as_ref().map(|layer| layer.open_slot);
+    crate::kb::typing::type_of_type_value_dictionary(interp.kb_mut(), dict, open_slot)
+        .map_err(|why| EvalError::Internal(format!("TypeValue.type_value: {why}")))
 }
 
 /// `Dictionary.arity(d) -> Int64` — number of sub-requirement dicts.

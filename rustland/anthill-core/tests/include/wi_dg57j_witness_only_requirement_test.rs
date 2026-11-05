@@ -8,6 +8,11 @@
 //! (`18cca07a`) made it ask both (`carrier_provides_spec`); on that commit's parent the
 //! guarded and bound clauses answer nothing, MEASURED.
 //!
+//! Proposal 060.1 §5 removed both written forms. A clause declares its requirement with the
+//! head's introducer, `guarded[A](?x: A, ?r) :- Score[T = A]`, or under a name, `require s:
+//! Score[T = A]`, and the rows cite it at `red()`: the guard's read finds `ByHeat`'s
+//! provision there as the removed forms did, and a call at `red()` itself needs none.
+//!
 //! The ticket's second half — two rival witnesses and nothing selecting one — is refused at
 //! load, not delayed (kernel-language §5.4: a rule-body goal no route discharges is refused
 //! at load). Its refusal names a bracket the call can take where it is written
@@ -16,12 +21,14 @@
 //! dot (WI-20261026-8K7W0). Each advised program is run here.
 //!
 //! BACK-OUTS, measured. With the guard core asking `sort_provides` alone, the three
-//! written-requirement rows answer nothing, and every row with an applicative `Score.score`
-//! call in a rule — the call-alone row, the advised repairs, the two goal refusals and the
-//! compound-expression control — fails at load on a second refusal, "`Colour` provides no
-//! `Score`", the typer's requirement check asking the same core; the own-spec carrier row and
-//! the two dot rows pass. With `render_call_tie` reading no rule's own term, the four
-//! rule-term refusal rows fail on the advice; every other row passes by design.
+//! written-requirement rows answered nothing (measured on the removed forms; the introducer's
+//! guard reads its provision through `fetch_dictionary_from_type`, and was not measured so),
+//! and every row with an applicative `Score.score` call in a rule — the call-alone row, the
+//! advised repairs, the two goal refusals and the compound-expression control — fails at load
+//! on a second refusal, "`Colour` provides no `Score`", the typer's requirement check asking
+//! the same core; the own-spec carrier row and the two dot rows pass. With `render_call_tie`
+//! reading no rule's own term, the four rule-term refusal rows fail on the advice; every
+//! other row passes by design.
 
 const ONE_WITNESS: &str = r#"
 namespace dg57j.one
@@ -93,16 +100,6 @@ fn answer(src: &str, qn: &str) -> Option<i64> {
     crate::common::one_definite_int(&mut kb, qn)
 }
 
-/// The sort `impl` of the one dictionary `qn(?d)` answers.
-fn dictionary_impl(src: &str, qn: &str) -> String {
-    let mut kb = crate::common::load_kb_with(src);
-    let rows = crate::common::query_unary(&mut kb, qn);
-    let [(v, true)] = rows.as_slice() else {
-        panic!("{qn}: expected one definite dictionary, got {rows:?}");
-    };
-    crate::wi1040_require_clause_dictionary_test::dictionary_parts(&kb, v).1
-}
-
 /// The one load error of `src`, which must be the unselected-instance refusal naming both
 /// witnesses.
 fn the_tie_refusal(src: &str) -> String {
@@ -129,22 +126,24 @@ fn assert_advises(err: &str, opening: &str, write: &str, place: &str) {
 
 const RULE_TERM: &str = "inside a `let` or in an operation's body that the rule calls";
 
+/// The guard the introducer declares, cited at `red()`, reads `ByHeat`'s provision.
 #[test]
-fn a_written_guard_finds_a_witness_provision() {
-    let src = one("  rule guarded(?r) :- requires(Score[T]), Score.score(red(), ?r)");
-    assert_eq!(answer(&src, "dg57j.one.guarded"), Some(3), "`ByHeat`'s `score`");
+fn a_declared_guard_finds_a_witness_provision() {
+    let src = one(
+        "  rule guarded[A](?x: A, ?r) :- Score[T = A], Score.score(?x, ?r)\n  \
+         rule viaGuarded(?r) :- guarded(red(), ?r)",
+    );
+    assert_eq!(answer(&src, "dg57j.one.viaGuarded"), Some(3), "`ByHeat`'s `score`");
 }
 
+/// So does the requirement under a name, called through it.
 #[test]
-fn a_written_read_finds_a_witness_provision() {
-    let src = one("  rule bound(?r) :- ?d = require[Score[T]], Score.score(red(), ?r)");
-    assert_eq!(answer(&src, "dg57j.one.bound"), Some(3), "`ByHeat`'s `score`");
-}
-
-#[test]
-fn the_read_names_the_witness() {
-    let src = one("  rule dict(?d) :- ?d = require[Score[T]], Score.score(red(), ?)");
-    assert_eq!(dictionary_impl(&src, "dg57j.one.dict"), "dg57j.one.ByHeat");
+fn a_named_requirement_finds_a_witness_provision() {
+    let src = one(
+        "  rule named[A](?x: A, ?r) :- require s: Score[T = A], s.score(?x, ?r)\n  \
+         rule viaNamed(?r) :- named(red(), ?r)",
+    );
+    assert_eq!(answer(&src, "dg57j.one.viaNamed"), Some(3), "`ByHeat`'s `score`");
 }
 
 /// The ticket's twin with no requirement written. Not a control of the guard core: backed
@@ -159,25 +158,20 @@ fn the_call_alone_answers() {
 #[test]
 fn a_carrier_providing_its_own_spec_answers() {
     let src = one(
-        "  rule hue(?r) :- ?d = require[Score[T]], Score.score(teal(), ?r)\n  \
-         rule hueDict(?d) :- ?d = require[Score[T]], Score.score(teal(), ?)",
+        "  rule guarded[A](?x: A, ?r) :- Score[T = A], Score.score(?x, ?r)\n  \
+         rule hue(?r) :- guarded(teal(), ?r)",
     );
     assert_eq!(answer(&src, "dg57j.one.hue"), Some(7), "`Hue`'s own `score`");
-    assert_eq!(dictionary_impl(&src, "dg57j.one.hueDict"), "dg57j.one.Hue");
 }
 
-/// Two witnesses and nothing selecting one: each spelling of the ticket's clause is refused
-/// at load, and a goal takes no bracket.
+/// Two witnesses and nothing selecting one: the ticket's clause is refused at load, and a
+/// goal takes no bracket. (Its guarded and bound spellings, `requires(Score[T])` and
+/// `?d = require[Score[T]]` before the call, were refused the same; proposal 060.1 §5
+/// removed both, and a call at `red()` needs no requirement.)
 #[test]
 fn two_witnesses_refuse_a_goal_and_send_the_bracket_elsewhere() {
-    for rule in [
-        "  rule plain(?r) :- Score.score(red(), ?r)",
-        "  rule guarded(?r) :- requires(Score[T]), Score.score(red(), ?r)",
-        "  rule bound(?r) :- ?d = require[Score[T]], Score.score(red(), ?r)",
-    ] {
-        let err = the_tie_refusal(&two(rule));
-        assert_advises(&err, "a call written as a rule's own term", "write `[Score = ", RULE_TERM);
-    }
+    let err = the_tie_refusal(&two("  rule plain(?r) :- Score.score(red(), ?r)"));
+    assert_advises(&err, "a call written as a rule's own term", "write `[Score = ", RULE_TERM);
 }
 
 /// A call standing in a rule body's value slot is the rule's own term too.

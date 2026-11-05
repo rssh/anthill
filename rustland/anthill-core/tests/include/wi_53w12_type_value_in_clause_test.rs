@@ -536,8 +536,9 @@ fn a_bracket_alone_on_a_callable_is_refused() {
         let errs = refusals(ns, &format!("{CALLABLES}{body}"));
         let said = format!(
             "`{name}[…]` is a bracket on an operation or a relation, which binds its type \
-             parameters and is read only before a call's arguments; the arguments are \
-             written in parentheses, `{name}(…)`"
+             parameters and is read only before a call's arguments, `{name}[…](…)` — \
+             `{name}[…]()` where none is written; the arguments are written in parentheses, \
+             `{name}(…)`"
         );
         // One refusal: the operation body is not typed after it (the misread call's return
         // mismatch is not added), and a constraint's goal is no clause head.

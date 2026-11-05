@@ -317,10 +317,10 @@ const PR_DECLS: &str = r#"
   import NS.Pr.{pr}
   import NS.Outer.{outer}
 
-  rule ordPr(?p, ?c) :- ?p <=> pr(a: ?x, b: ?y), WeakOrd.compare(?x, ?y, ?c)
-  rule ordLeft(?p, ?c) :- pr(a: ?x, b: ?y) <=> ?p, WeakOrd.compare(?x, ?y, ?c)
-  rule ordNested(?o, ?c) :- ?o <=> outer(inner: pr(a: ?x, b: ?y)), WeakOrd.compare(?x, ?y, ?c)
-  rule ordTwoStep(?o, ?c) :- ?o <=> outer(inner: ?p), ?p <=> pr(a: ?x, b: ?y), WeakOrd.compare(?x, ?y, ?c)
+  rule ordPr[A](?p: Pr[T = A], ?c) :- WeakOrd[T = A], ?p <=> pr(a: ?x, b: ?y), WeakOrd.compare(?x, ?y, ?c)
+  rule ordLeft[A](?p: Pr[T = A], ?c) :- WeakOrd[T = A], pr(a: ?x, b: ?y) <=> ?p, WeakOrd.compare(?x, ?y, ?c)
+  rule ordNested[A](?o: Outer[U = A], ?c) :- WeakOrd[T = A], ?o <=> outer(inner: pr(a: ?x, b: ?y)), WeakOrd.compare(?x, ?y, ?c)
+  rule ordTwoStep[A](?o: Outer[U = A], ?c) :- WeakOrd[T = A], ?o <=> outer(inner: ?p), ?p <=> pr(a: ?x, b: ?y), WeakOrd.compare(?x, ?y, ?c)
 "#;
 
 const PR_DRIVER: &str = r#"
@@ -393,8 +393,8 @@ fn each_clause_of_a_relation_is_met_on_its_own() {
     entity pr(a: T, b: T)
   end
   import NS.Pr.{pr}
-  rule ordBoth(?p, ?c) :- ?p <=> pr(a: ?x, b: ?y), WeakOrd.compare(?x, ?y, ?c)
-  rule ordBoth(?p, ?c) :- ?p <=> pr(a: ?x, b: ?y), WeakOrd.compare(?y, ?x, ?c)
+  rule ordBoth[A](?p: Pr[T = A], ?c) :- WeakOrd[T = A], ?p <=> pr(a: ?x, b: ?y), WeakOrd.compare(?x, ?y, ?c)
+  rule ordBoth[A](?p: Pr[T = A], ?c) :- WeakOrd[T = A], ?p <=> pr(a: ?x, b: ?y), WeakOrd.compare(?y, ?x, ?c)
   sort Driver
     operation viaBoth[A](p: Pr[T = A], c: Int64) -> Int64 effects {Error}
       requires WeakOrd[T = A] = ordBoth(p, c).takeN(5).length()
@@ -469,7 +469,7 @@ fn a_column_the_citation_gives_no_type_pins_nothing() {
     operation mix[A](x: A, n: Int64) -> Int64 requires WeakOrd[T = A] = n
   end
   rule seven(?n) :- ?n <=> 7
-  rule mixed(?p, ?n, ?c) :-
+  rule mixed[A](?p: Pr[T = A], ?n, ?c) :- WeakOrd[T = A],
     ?p <=> pr(a: ?x, b: ?y), seven(?n), Util.mix(?x, ?n, ?m), WeakOrd.compare(?x, ?y, ?c)
 "#,
     ));
@@ -882,52 +882,46 @@ fn a_free_part_at_a_fixed_instance_is_filled_from_its_domain() {
 /// A VALUE WHOSE ELEMENT NOTHING FIXES ANSWERS CONDITIONALLY (user, 2026-10-21: it loads).
 /// `gen` builds `?w <=> wrap(inner: ?i)`, a `Wrap[E = e]`, and `elemOfSum` reaches `gen` as a
 /// rule goal and never reads `?w`: nothing fixes `e`, so the column's check cannot fill `?i`
-/// and the answer `Sum` stands on it. It was definite while the column had no check.
+/// and the answer `sum` stands on it. It was definite while the column had no check. The
+/// control, `elemT`, fixes the element at `genT`'s column and answers definitely. (The row
+/// handed a dictionary between the two rules as a value, `?d = require[Zeroable[?]]`, which
+/// proposal 060.1 §5 removed; measured on the earlier program, the same residual.)
 #[test]
 fn a_value_whose_element_nothing_fixes_answers_conditionally() {
     let src = r#"
 namespace wi0rrqp.g1
   import anthill.prelude.Int64
-  import anthill.realization.runtime.Dictionary
-  sort Zeroable
-    sort T = ?
-    operation zero() -> Int64
-    operation tag(x: T) -> Int64 = 0
-  end
   sort Sum
-    import anthill.prelude.Int64
     entity sum
-    provides Zeroable[T = Sum]
-    operation zero() -> Int64 = 3
-    operation tag(x: Sum) -> Int64 = 1
   end
   sort Wrap
-    import anthill.prelude.Int64
     sort E = ?
     entity wrap(inner: E)
-    provides Zeroable[T = Self] :- Zeroable[E] where
-      operation zero() -> Int64 = Int64.add(Zeroable.zero[T = E](), 100)
-      operation tag(x: Self) -> Int64 = 9
-    end
   end
   import wi0rrqp.g1.Sum.{sum}
   import wi0rrqp.g1.Wrap.{wrap}
-  rule get(?x, ?d) :- ?d = require[Zeroable[?]], Zeroable.tag(?x, ?t)
-  rule gen(?w, ?d, ?ed) :- ?ed <=> Dictionary.sub(?d, 0), ?w <=> wrap(inner: ?i)
-  rule elemOfSum(?s) :- get(wrap(inner: sum()), ?d), gen(?w, ?d, ?ed), ?s <=> Dictionary.impl(?ed)
+  rule gen(?w) :- ?w <=> wrap(inner: ?i)
+  rule elemOfSum(?s) :- gen(?w), ?s <=> sum()
+  rule genT(?w: Wrap[E = Sum]) :- ?w <=> wrap(inner: ?i)
+  rule elemT(?s) :- genT(?w), ?s <=> sum()
 end
 "#;
     let mut kb = crate::common::load_kb_with(src);
     let all = crate::common::query_unary(&mut kb, "wi0rrqp.g1.elemOfSum");
     assert_eq!(all.len(), 1, "one answer, got {all:?}");
     assert!(!all[0].1, "conditional on `?w`'s check, got {all:?}");
+    let fixed = crate::common::query_unary(&mut kb, "wi0rrqp.g1.elemT");
+    assert!(fixed.len() == 1 && fixed[0].1, "the element fixed at the column: definite, got {fixed:?}");
 }
 
 /// A VARIABLE PASSED TO A SPEC'S OPERATION GETS NO BOUND. `Bag.first(?x, ?r)` reads `?x` as
 /// `Bag[E = e]`, which says `?x`'s sort provides `Bag`; as a bound it is a type the value
 /// has, and `domain(?x, Bag[E = ?e])` refuses an `intBag(n: 1)` — no nominal spec is read as
 /// its providers there, as the written head `?x: Bag[E = ?e]` shows. Installed, `viaDict` and
-/// `answer` answered nothing.
+/// `answer` answered nothing. (`answer` read the dictionary of `dict(?x, ?d) :- ?d =
+/// require[Bag[?]], Bag.first(?x, ?r)`; proposal 060.1 §5 removed that form, and `Bag`
+/// receives on itself, so no guard of a head introducer states it — the pair is gone, and
+/// `viaDict` is the call it covered.)
 #[test]
 fn a_variable_passed_to_a_spec_operation_gets_no_bound() {
     let src = r#"
@@ -943,8 +937,6 @@ namespace wi0rrqp.b1
     provides Bag[E = N]
     operation first(b: Self) -> Int64 = 7
   end
-  rule dict(?x, ?d) :- ?d = require[Bag[?]], Bag.first(?x, ?r)
-  rule answer(?d) :- dict(intBag(n: 1), ?d)
   rule dict2(?x, ?r) :- Bag.first(?x, ?r)
   rule viaDict(?r) :- dict2(intBag(n: 1), ?r)
   rule written(?x: Bag[E = ?e], ?r) :- Bag.first(?x, ?r)
@@ -957,7 +949,6 @@ end
         via.len() == 1 && via[0].1 && crate::common::scalar_int(&kb, &via[0].0) == Some(7),
         "`IntBag`'s `first`, got {via:?}"
     );
-    assert_eq!(crate::common::query_unary(&mut kb, "wi0rrqp.b1.answer").len(), 1, "the dictionary");
     assert!(
         crate::common::query_unary(&mut kb, "wi0rrqp.b1.viaWritten").is_empty(),
         "the written twin, refused by its check"
@@ -1048,7 +1039,7 @@ fn an_operations_own_requires_reached_through_a_constructor_is_filled() {
             "{PR_DECLS}  sort Util\n    \
              operation sign[A](x: A, y: A) -> Int64 requires WeakOrd[T = A] = WeakOrd.compare(x, y)\n  \
              end\n  \
-             rule signPr(?p, ?c) :- ?p <=> pr(a: ?x, b: ?y), Util.sign(?x, ?y, ?c)\n  \
+             rule signPr[A](?p: Pr[T = A], ?c) :- WeakOrd[T = A], ?p <=> pr(a: ?x, b: ?y), Util.sign(?x, ?y, ?c)\n  \
              sort Driver\n    \
              operation viaSign[A](p: Pr[T = A]) -> Int64 effects {{Error, Error[EmptyStream]}}\n      \
              requires WeakOrd[T = A] = signPr(p).head.c\n    \
@@ -1166,7 +1157,7 @@ fn a_call_at_a_variable_the_clause_types_is_decided_at_load() {
         ns,
         &format!(
             "{DESC}  rule viaCtor(?p, ?s) :- ?p <=> pt(x: 1, y: 2), Desc.describe(?p, ?s)\n  \
-             rule viaVar(?p, ?s) :- Desc.describe(?p, ?s)\n  \
+             rule viaVar[A](?p: A, ?s) :- Desc[T = A], Desc.describe(?p, ?s)\n  \
              sort Driver\n    \
              operation cite(p: Pt) -> Int64 effects {{Error, Error[EmptyStream]}}\n      \
              requires Desc[T = Pt] = viaCtor(p).head.s\n    \
@@ -1796,4 +1787,104 @@ fn a_slot_fixed_to_a_witness_that_does_not_answer_is_refused() {
         );
         assert!(errors.len() == 1 && errors[0].contains(&says), "{callee}: {errors:#?}");
     }
+}
+
+/// 060.1 §1 — A NAMED SLOT CARRIES THE CALL AT ITS OWN CARRIER ONLY. Over `sort Pair2 { sort T
+/// = ?; sort U = ?; requires O: WeakOrd[T = T] }`, a clause outside the sort with `?p:
+/// Pair2[T = ?v, …]` calls `compare` at `?v` and reads `O` as the citation fixes it, declaring
+/// nothing (`cmpT` loads). A call at the type of `U`, which no slot is at, is the clause's to
+/// declare, and is refused (`cmpU`). FAILS with the slot matched by any binding of the
+/// variable's type (measured before the fix): `cmpU` loads, its call reading no slot.
+#[test]
+fn a_named_slot_carries_a_call_at_its_own_carrier_only() {
+    let src = |rule: &str| {
+        format!(
+            "namespace rrqp.slotat\n  import anthill.prelude.{{Int64, String, WeakOrd}}\n  \
+             sort Pair2\n    sort T = ?\n    sort U = ?\n    requires O: WeakOrd[T = T]\n    \
+             entity pr(a: T, b: U)\n  end\n{rule}end\n"
+        )
+    };
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&src(
+            "  rule cmpU(?p: Pair2[T = Int64, U = ?v], ?c) :- ?p <=> pr(a: ?x, b: ?y), WeakOrd.compare(?y, ?y, ?c)\n",
+        )),
+        &["cmpU.body", "a requirement of `WeakOrd` the clause declares"],
+        "a call at `U`'s type",
+    );
+    let mut kb = crate::common::load_kb_with(&src(
+        "  rule cmpT(?p: Pair2[T = ?v, U = String], ?c) :- ?p <=> pr(a: ?x, b: ?y), WeakOrd.compare(?x, ?x, ?c)\n  \
+         rule viaT(?c) :- cmpT(pr(a: 4, b: \"s\"), ?c)\n",
+    ));
+    assert_eq!(crate::common::one_definite_int(&mut kb, "rrqp.slotat.viaT"), Some(0), "`Int64`'s own `compare(4, 4)`");
+}
+
+/// 060.1 §8.2 — A SORT'S NAMED REQUIREMENT SLOT IS FILLED ONLY BY WHAT THE CITATION WRITES, for
+/// an operation and a rule alike (the user, 2026-11-04): a witness, `Ranked[T = Int64, O =
+/// Descending]`, or a requirement of the citing declaration by its name, `Ranked[T = A, O = up]`
+/// under `requires up: WeakOrd[T = A]`, each answering `Descending`'s `-2` over `ranked(a: 5, b:
+/// 3)`. A citation that writes neither is refused, naming the slot: at `Ranked[T = Int64]`, and
+/// at `Ranked[T = A]` under `requires WeakOrd[T = A]` or `requires O: WeakOrd[T = A]`. FAILS with
+/// the open slot left to the caller's frame (measured before the refusal was added): the rule
+/// answers `1`, `-2` and `-2` for those three. FAILS with the caller's name read as no witness
+/// (measured before): the operation through `O = up` is refused, "its value must name a WITNESS
+/// SORT", and so in the callee's bracket, `Ranked.order[T = A, O = up](…)`. The witness rows
+/// pass either way. A rule-body goal is held to the same: `Ranked[T = Int64].ordered(…, ?c)` is
+/// refused naming the slot, and the goal with the witness written answers `-2`.
+#[test]
+fn a_named_slot_is_filled_only_by_what_the_citation_writes() {
+    let ns = "wi0rrqp.slotw";
+    let e = "effects {Error, Error[EmptyStream]}";
+    let source = |body: &str| program(ns, &format!("{RANKED}  sort Cite\n    import NS.Ranked.{{ranked}}\n{body}  end\n"));
+    let via = |requires: &str, ranked: &str, call: &str, cite: &str| {
+        format!(
+            "    operation via[A](x: A, y: A) -> Int64 {e} requires {requires} = {ranked}.{call}\n    \
+             operation t() -> Int64 {e} = {cite}\n"
+        )
+    };
+    let calls = [("order", "order(ranked(a: x, b: y))"), ("ordered", "ordered(ranked(a: x, b: y)).head.c")];
+    for (kind, call) in calls {
+        let answered = [
+            ("a witness", format!("    operation t() -> Int64 {e} = Ranked[T = Int64, O = Descending].{}\n", call.replace("x", "5").replace("y", "3"))),
+            ("the caller's name", via("up: WeakOrd[T = A]", "Ranked[T = A, O = up]", call, "via[A = Int64, up = Descending](5, 3)")),
+        ];
+        for (case, body) in answered {
+            assert_eq!(drive(&source(&body), &format!("{ns}.Cite.t")), -2, "{kind}, {case}");
+        }
+        if kind == "order" {
+            let body = via(
+                "up: WeakOrd[T = A]",
+                "Ranked",
+                "order[T = A, O = up](ranked(a: x, b: y))",
+                "via[A = Int64, up = Descending](5, 3)",
+            );
+            assert_eq!(drive(&source(&body), &format!("{ns}.Cite.t")), -2, "the callee's bracket");
+        }
+        let refused = [
+            ("nowhere", format!("    operation t() -> Int64 {e} = Ranked[T = Int64].{}\n", call.replace("x", "5").replace("y", "3"))),
+            ("an unnamed requirement", via("WeakOrd[T = A]", "Ranked[T = A]", call, "via[A = Int64, WeakOrd = Descending](5, 3)")),
+            ("a requirement named `O`", via("O: WeakOrd[T = A]", "Ranked[T = A]", call, "via[A = Int64, O = Descending](5, 3)")),
+        ];
+        for (case, body) in refused {
+            crate::common::assert_refused_naming(
+                &crate::common::load_errors_of(&source(&body)),
+                &["a supplied `O: anthill.prelude.WeakOrd` slot (write it in the type, or declare it)"],
+                &format!("{kind}, {case}"),
+            );
+        }
+    }
+    let goal = |ranked: &str| {
+        program(
+            ns,
+            &format!(
+                "{RANKED}  rule viaGoal(?c) :- {ranked}.ordered(Ranked.ranked(a: 5, b: 3), ?c)\n  \
+                 sort Cite\n    operation t() -> Int64 {e} = viaGoal.head.c\n  end\n"
+            ),
+        )
+    };
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&goal("Ranked[T = Int64]")),
+        &["a supplied `O: anthill.prelude.WeakOrd` slot (write it in the type, or declare it)"],
+        "a rule-body goal, nowhere",
+    );
+    assert_eq!(drive(&goal("Ranked[T = Int64, O = Descending]"), &format!("{ns}.Cite.t")), -2, "a rule-body goal, a witness");
 }

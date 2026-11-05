@@ -375,6 +375,12 @@ pub enum BuiltinTag {
     /// dictionary operand. Registered so the loader's name check knows the symbol; reaching
     /// it as a goal is an error.
     DomainSub,
+
+    /// `__refined_domain(?x, evidence)`, the last case of a derived `fill`
+    /// (`kb::fill_derive::REFINED_DOMAIN`): `step_init` REPLACES it with the `fill` at the sort
+    /// of a bound `?x` that refines the filled one ([`KnowledgeBase::lower_refined_domain`]),
+    /// and fails it otherwise. Never reaches `execute_builtin`.
+    RefinedDomain,
 }
 
 impl BuiltinTag {
@@ -1544,10 +1550,6 @@ pub struct SearchStream {
     /// clause opening a citation marker reaches — a `fill` step opens its relation once per
     /// step. Static per relation, as `cut_cache` is per rule.
     read_layout_cache: HashMap<Symbol, Rc<[(RuleId, usize)]>>,
-    /// Per-query cache: does a rule hold a goal's FORWARD slot (WI-20261102-ATVC1), which
-    /// [`settle_forward_slots`] binds when the clause opens? Static per rule, as `cut_cache`
-    /// is: nearly every rule holds none, and opens with one probe.
-    forward_slot_cache: HashMap<RuleId, bool>,
     /// WI-616/WI-628 — set when any branch was abandoned at the `max_depth`
     /// limit: the search is INCOMPLETE, so "no solutions" does not mean
     /// "refuted". Read (via [`SearchStream::drain_verdict`]) by the two
@@ -2621,6 +2623,22 @@ impl SearchStream {
                     }
                     return Some(StepResult::Continue);
                 }
+            }
+            // The last case of a derived `fill`: the `fill` at the sort of a bound value that
+            // refines the filled one, in place, or no solution.
+            if tag == BuiltinTag::RefinedDomain {
+                let subst = frame.subst.clone();
+                match kb.lower_refined_domain(&goal_val, &subst) {
+                    Some(goal) => {
+                        let f = self.stack.last_mut().unwrap();
+                        f.goals[0].goal = goal;
+                        f.state = FrameState::Init { delay_mode };
+                    }
+                    None => {
+                        self.stack.pop();
+                    }
+                }
+                return Some(StepResult::Continue);
             }
             if tag == BuiltinTag::HoApply {
                 let subst = frame.subst.clone();
@@ -5330,16 +5348,6 @@ impl SearchStream {
                     }));
                 bind_citation_reads(kb, rid, &layout, &dicts, &fresh_nodes, &mut merged);
             }
-            let has_forward_slots = *self.forward_slot_cache.entry(rid).or_insert_with(|| {
-                super::typing::find_dictionary_symbol(kb).is_some_and(|fd| {
-                    super::typing::clause_implicit_params(kb, fd, kb.rule_body_nodes(rid))
-                        .iter()
-                        .any(|p| matches!(p, super::typing::ImplicitParam::Forward { .. }))
-                })
-            });
-            if has_forward_slots {
-                settle_forward_slots(kb, &fresh_nodes, &mut merged);
-            }
 
             // Pre-check: delay propagation on caller vars (over the occurrence body)
             if !caller_fresh_vars.is_empty()
@@ -5954,7 +5962,6 @@ impl KnowledgeBase {
             cut_cache: HashMap::new(),
             routing_read_cache: HashMap::new(),
             read_layout_cache: HashMap::new(),
-            forward_slot_cache: HashMap::new(),
             truncated: false,
             errors: Vec::new(),
             faults: Vec::new(),
@@ -6702,6 +6709,7 @@ impl KnowledgeBase {
             BuiltinTag::DomainSub => BuiltinResult::Error(ResolveError::new(
                 "`__domain_sub` is `apply_domain`'s dictionary operand, not a goal".to_string(),
             )),
+            BuiltinTag::RefinedDomain => unreachable!("`__refined_domain` is lowered in `step_init`"),
         }
     }
 
@@ -7674,6 +7682,70 @@ impl KnowledgeBase {
                 ApplyDomainLowering::Error(format!("apply_domain: {why}"))
             }
         }
+    }
+
+    /// [`BuiltinTag::RefinedDomain`]'s lowering: `apply_domain(T, ?x)`, `T` the type of the value
+    /// `?x` is bound to, where its sort is not the one the evidence names and refines it at the
+    /// instance the evidence describes — `other(n: 7)` under `sort Other requires Base`, filled
+    /// at `Base`, is filled at `Other`. `None` — no solution — for an unbound `?x`, a value of
+    /// the filled sort itself, and one whose type is no subtype of that instance. The instance
+    /// is read off the dictionary's conditions where they are types; a condition held as a
+    /// dictionary, or not yet pinned, is an argument left unwritten.
+    pub(crate) fn lower_refined_domain(&mut self, goal: &Value, subst: &Substitution) -> Option<Value> {
+        let x = self.walk_arg(goal.pos_arg(self, 0), subst)?;
+        if self.value_is_unbound_var(&x) {
+            return None;
+        }
+        let functor = match x.head(self) {
+            ViewHead::Functor { functor, .. } | ViewHead::Ident(functor) => functor,
+            _ => return None,
+        };
+        let owner = self.type_arg_owner(functor)?;
+        let owner = self.canonical_sort_sym(owner);
+        let evidence = goal.pos_arg(self, 1)?.to_value();
+        let DomainEvidence::Dict { impl_sort, value: dict } = self.domain_evidence(evidence, subst) else {
+            return None;
+        };
+        if owner == impl_sort {
+            return None;
+        }
+        let entry = self.sort_domain(impl_sort)?.clone();
+        let ctor = crate::kb::term_view::dictionary_view_syms(self).map(|(c, _)| c);
+        let mut named: Vec<(Symbol, Value)> = Vec::new();
+        for (k, &j) in entry.conditions.iter().enumerate() {
+            let Some(sub) = dict.pos_arg(self, entry.sub_offset + k).map(|s| s.to_value()) else {
+                continue;
+            };
+            let sub = match self.value_global_var(&sub) {
+                Some(vid) => self.chase_var(vid, subst).cloned().unwrap_or(sub),
+                None => sub,
+            };
+            let is_dict =
+                matches!(sub.head(self), ViewHead::Functor { functor, .. } if Some(functor) == ctor);
+            if is_dict || self.value_is_unbound_var(&sub) {
+                continue;
+            }
+            named.push((entry.params[j].key, sub.carried().clone()));
+        }
+        let instance = if named.is_empty() {
+            Value::SymbolRef(impl_sort)
+        } else {
+            Value::Entity {
+                functor: impl_sort,
+                pos: Vec::new().into(),
+                named: named.into(),
+            }
+        };
+        let carried = super::typing::value_type_term(self, subst, &x);
+        if !super::typing::types_compatible(self, &mut Substitution::new(), &carried, &instance) {
+            return None;
+        }
+        let own = super::typing::value_type_open(self, subst, &x)
+            .expect("a value headed by a constructor has a type with a head");
+        let apply = self
+            .try_resolve_symbol(super::typing::APPLY_DOMAIN_GOAL)
+            .expect("a derived `fill` is emitted only where `apply_domain` is registered");
+        Some(self.make_goal_value(apply, vec![own, x]))
     }
 
     /// `fill(?x)`, wrapped so each of the relation's `SortDomain` reads is handed `dict`
@@ -9522,21 +9594,13 @@ impl KnowledgeBase {
         }
     }
 
-    /// WI-300 — the rule-body requirement guard. The converter desugars a
-    /// rule-body `requires(X)` to `find_dictionary(X)`; the typer sweep
-    /// ([`super::typing::record_find_dictionary_grounding`]) then rewrites it into
-    /// `find_dictionary(spec_base, op_functor, op_arg…)` — `spec_base` is spec X's
-    /// nominal sort, `op_functor` a body call to one of X's operations, and
-    /// `op_arg…` that call's carrier arguments (the witness redex whose types
-    /// decide the instance). At the current binding this reads each argument's
-    /// carried type and shares the WI-596 `provides` decision with the `@[simp]`
-    /// guard: `Success` iff every carrier provides X, `Failure` if a ground carrier
-    /// has no provider, `Delay` (suspend-as-residual, never NAF-decide; WI-519 /
-    /// WI-067) when a carrier type is under-determined. A goal with fewer than two
-    /// positional args — an un-rewritten `find_dictionary(X)`, which the typer sweep
-    /// turns into either the ≥2-arg form or a hard load error, so it is unreachable
-    /// from a clean load; only a direct hand-written call reaches it — declines to
-    /// fire (returns `Failure`) rather than wrongly succeeding.
+    /// A dictionary read, `find_dictionary(instance, op, carrier…, out: ?d)`: minted by the
+    /// typer for a rule's declared requirement (`install_rule_provider_dictionaries`)
+    /// and for an inferred one, never written by a program (the loader refuses it by any
+    /// name). Slot 0 is the spec instance, slot 1 the spec or the operation the read is for,
+    /// and the rest the carrier arguments whose types decide the instance; `out` is bound to
+    /// the dictionary. A read with fewer than two positional arguments, or with no `out`, is
+    /// a defect and said loudly.
     fn builtin_find_dictionary<V: TermView>(
         &mut self,
         goal: &V,
@@ -9547,7 +9611,9 @@ impl KnowledgeBase {
             _ => return BuiltinResult::Failure,
         };
         if pos_arity < 2 {
-            return BuiltinResult::Failure;
+            return BuiltinResult::Error(ResolveError::new(
+                "a dictionary read names no operation".into(),
+            ));
         }
         // A nominal-symbol argument (spec base / op functor) rides as a nullary
         // application (`Ref` / `make_name_term`, one head) or an as-yet-unresolved
@@ -9561,9 +9627,9 @@ impl KnowledgeBase {
                 _ => None,
             }
         }
-        // WALKED ONCE. Slot 0 is read for two things — the spec BASE and, since
-        // WI-20260909-S8CBV gate (1), the projected MEMBER — and `walk_arg` is on the
-        // per-goal path, so the value is taken once and both readers share it.
+        // WALKED ONCE. Slot 0 is read for two things — the spec BASE and the written
+        // bindings — and `walk_arg` is on the per-goal path, so the value is taken once
+        // and both readers share it.
         let Some(spec_arg_val) = self.walk_arg(goal.pos_arg(self, 0), subst) else {
             return BuiltinResult::Failure;
         };
@@ -9601,11 +9667,9 @@ impl KnowledgeBase {
             }
             return BuiltinResult::Success;
         }
-        // WI-20260913-J38VE — THE WRITTEN BRACKET, read off slot 0 ONCE for both of its
-        // consumers. Slot 2 holds the projection's ROOT (the head variable), because that
-        // is the value whose type is about to be read; the projected MEMBER and the
-        // written BINDINGS are the two things that cannot ride slot 2, and one walk of
-        // the instance yields both ([`super::typing::requirement_bracket`]).
+        // WI-20260913-J38VE — THE WRITTEN BINDINGS, read off slot 0 once
+        // ([`super::typing::requirement_bracket`]): slot 2 holds the carrier, the value
+        // whose type is about to be read, and the bindings cannot ride there.
         let bracket = super::typing::requirement_bracket(self, &spec_arg_val);
         let mut arg_vals: Vec<Value> = Vec::with_capacity(pos_arity - 2);
         for i in 2..pos_arity {
@@ -9614,17 +9678,12 @@ impl KnowledgeBase {
                 None => return BuiltinResult::Failure,
             }
         }
-        // WI-1040 — `out`, when present, is what makes this goal a READ rather than
-        // a check: `require[X]` lowered to `find_dictionary(…, out: ?d)` and the
-        // clause wants the dictionary bound. ABSENT is the whole of WI-300's
-        // behaviour, unchanged — the reads above are positional, so a no-`out` goal
-        // never reaches a line of the code below.
-        // Matched by LOCAL NAME, as the typer sweep matches it. A `Symbol` compare
-        // against a freshly-interned `"out"` would be a silent-skip seam: if the
-        // loader's remapping ever gave the stored label a different `Symbol`, the
-        // sweep would still weave the call while this read found no `out` and quietly
-        // fell back to check-only — a dispatch that stops happening with nothing
-        // saying so. One spelling of the question, on both sides.
+        // `out` is the dictionary the read binds. Every read minted has one — a guard's
+        // (`install_rule_provider_dictionaries`), an inferred one, a slot read handled above
+        // — and a program cannot write one (the loader refuses `find_dictionary` by any
+        // name), so a read without it is a defect, said loudly.
+        // Matched by LOCAL NAME, as the typer matches it: one spelling of the question, on
+        // both sides.
         let typed_instance = keys
             .iter()
             .any(|k| self.local_name_of(*k) == super::typing::PROVIDER_CARRIER_TYPE_LABEL)
@@ -9633,37 +9692,10 @@ impl KnowledgeBase {
             .into_iter()
             .find(|k| self.local_name_of(*k) == super::typing::REQUIREMENT_OUT_LABEL);
         let Some(out_sym) = out_sym else {
-            if let Some(instance) = typed_instance {
-                let Some(carrier_type) = arg_vals.first() else {
-                    return BuiltinResult::Error(ResolveError::new(
-                        "a provider read has no carrier type".into(),
-                    ));
-                };
-                return match super::typing::fetch_dictionary_from_type(
-                    self,
-                    subst,
-                    instance,
-                    carrier_type,
-                    super::typing::DefaultRung::Consult,
-                    None,
-                ) {
-                    super::typing::FindDictFetch::Fetched(_) => BuiltinResult::Success,
-                    super::typing::FindDictFetch::Guard(
-                        super::typing::FindDictOutcome::DontFire,
-                    ) => BuiltinResult::Failure,
-                    super::typing::FindDictFetch::Defect { detail } => {
-                        BuiltinResult::Error(ResolveError::new(detail))
-                    }
-                    _ => BuiltinResult::delay(),
-                };
-            }
-            return match super::typing::find_dictionary_guard(
-                self, subst, spec_sort, op_functor, &arg_vals, &bracket,
-            ) {
-                super::typing::FindDictOutcome::Fire => BuiltinResult::Success,
-                super::typing::FindDictOutcome::DontFire => BuiltinResult::Failure,
-                super::typing::FindDictOutcome::Suspend => BuiltinResult::delay(),
-            };
+            return BuiltinResult::Error(ResolveError::new(format!(
+                "a dictionary read of `{}` has no `out` to bind",
+                self.local_name_of(spec_sort)
+            )));
         };
         // σ-WALKED, not read raw. A caller-supplied dictionary reaches this goal as a
         // clause variable BOUND in σ, and unifying the unwalked variable leaf against
@@ -9914,6 +9946,32 @@ impl KnowledgeBase {
                     "a provider read has no carrier type".into(),
                 ));
             };
+            // A `TypeValue` dictionary handed in is the evidence of a type, and the clause's
+            // carrier is that type: the citing call's instantiation, as an operation call's
+            // type parameter is, where the value's own sort would be narrower (060.1 §8.10).
+            if supplied
+                && super::typing::type_value_spec_sym(self)
+                    .is_some_and(|tv| self.canonical_sort_sym(tv) == self.canonical_sort_sym(spec_sort))
+            {
+                if let ViewHead::Var(Var::Global(carrier)) = carrier_type.head(self) {
+                    if let Some(ty) = crate::eval::dictionary::Dictionary::from_view(self, &out)
+                        .and_then(|dict| super::typing::type_of_type_value_dictionary(self, &dict, None).ok())
+                    {
+                        let mut bound = Substitution::new();
+                        bound.bind_value(self, carrier, Value::term(ty));
+                        return BuiltinResult::SuccessWithBindings(bound);
+                    }
+                }
+            }
+            // The clause's other type parameters at the instance's elements: read once each
+            // is known, as the carrier is, so each selects the instance. A dictionary passed
+            // in stands meanwhile: nothing local can object to it yet.
+            if arg_vals[1..]
+                .iter()
+                .any(|element| super::typing::type_is_undetermined(self, element))
+            {
+                return if supplied { BuiltinResult::Success } else { BuiltinResult::delay() };
+            }
             super::typing::fetch_dictionary_from_type(
                 self,
                 subst,
@@ -9949,6 +10007,9 @@ impl KnowledgeBase {
             // MENTIONS the witness value variables, so binding one re-fires it
             // through ordinary rotation. This is what replaced WI-300's bespoke
             // `FindDictOutcome::Suspend` reading with the general mechanism.
+            // A dictionary passed in stands while the carried type is not readable: nothing local
+            // can object to it, as where the local search is undecided (below).
+            FindDictFetch::Guard(FindDictOutcome::Suspend) if supplied => return BuiltinResult::Success,
             FindDictFetch::Guard(FindDictOutcome::Suspend) => return BuiltinResult::delay(),
             // THE ROW A SUPPLIED DICTIONARY DECIDES (060 §4): nothing local can object,
             // so the check holds and the clause runs on what it was handed. `out` is
@@ -15741,38 +15802,6 @@ fn within_requirements_inner(kb: &KnowledgeBase, goal: &Value) -> Option<Value> 
     }
 }
 
-/// WI-20261102-ATVC1 — bind each FORWARD slot of the just-opened clause that its citation did
-/// not route ([`bind_citation_reads`]) to [`UNROUTED_READ`]. A forward slot is bound when its
-/// clause opens or never, and an unbound one passes nothing — what `__unrouted` says — but as a
-/// variable it made the goal it rides with open: a negated goal, alone or in a connective,
-/// delayed in `step_naf` and floundered where it decides.
-fn settle_forward_slots(
-    kb: &mut KnowledgeBase,
-    opened: &[Rc<NodeOccurrence>],
-    merged: &mut Substitution,
-) {
-    let fd = super::typing::find_dictionary_symbol(kb)
-        .expect("a clause with a forward slot was routed in a KB with `find_dictionary`");
-    let slots: Vec<Rc<NodeOccurrence>> = super::typing::clause_implicit_params(kb, fd, opened)
-        .iter()
-        .filter(|p| matches!(p, super::typing::ImplicitParam::Forward { .. }))
-        .map(|p| p.var_node(kb, fd))
-        .collect();
-    for slot in slots {
-        let Some(Expr::Var(Var::Global(vid))) = slot.as_expr() else {
-            unreachable!("an opened forward slot is a fresh variable, got {:?}", slot.as_expr());
-        };
-        let unbound = match kb.chase_var(*vid, merged) {
-            None => true,
-            Some(end) => kb.value_is_unbound_var(end),
-        };
-        if unbound {
-            let unrouted = unrouted_read(kb);
-            merged.bind_waking(kb, *vid, unrouted);
-        }
-    }
-}
-
 /// The cited relation and the captured dictionaries of a [`WITHIN_REQUIREMENTS`] marker.
 fn within_requirements_args(kb: &KnowledgeBase, goal: &Value) -> Option<(Symbol, Vec<Value>)> {
     let ViewHead::Functor {
@@ -15830,24 +15859,28 @@ fn bind_citation_reads(
     let fd = super::typing::find_dictionary_symbol(kb)
         .expect("a citation marker carries dictionaries only for reads, and a read is a `find_dictionary` goal");
     // In the order the routes were computed in: a read in a connective's goal slot as well as
-    // one at the top, then each forward slot of a goal's marker
-    // ([`super::typing::clause_implicit_params`]).
-    let outs: Vec<Rc<NodeOccurrence>> = super::typing::clause_implicit_params(kb, fd, opened)
+    // one at the top ([`super::typing::clause_requirement_reads`]).
+    let outs: Vec<Rc<NodeOccurrence>> = super::typing::clause_requirement_reads(kb, fd, opened)
         .iter()
-        .map(|p| p.var_node(kb, fd))
+        .map(|read| {
+            Rc::clone(
+                super::typing::requirement_read_out(kb, fd, read)
+                    .expect("a requirement read is a read with an `out`"),
+            )
+        })
         .collect();
     assert_eq!(
         outs.len(),
         counts[at].1,
-        "an opened clause holds the implicit parameters its stored body held",
+        "an opened clause holds the requirement reads its stored body held",
     );
     for (i, out) in outs.iter().enumerate() {
         let Some(dict) = dicts.get(offset + i) else {
             unreachable!("a citation marker carries one slot per position of its relation's layout");
         };
-        // Nothing routed to this parameter: it derives its own. Nor where a goal's forward
-        // slot arrives as a variable no one bound (WI-20261102-ATVC1) — its clause's caller
-        // passed nothing for it.
+        // Nothing routed to this read: it derives its own. Nor where a goal hands on its own
+        // clause's read (WI-20261102-ATVC1) as a variable no one bound yet — its clause's
+        // caller passed nothing for it, and the read below derives its own.
         if is_unrouted_read(kb, dict) || kb.value_is_unbound_var(dict) {
             continue;
         }

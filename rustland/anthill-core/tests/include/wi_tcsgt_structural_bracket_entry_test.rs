@@ -96,18 +96,12 @@
 //!     a_type_parameter_inside_the_entry_is_refused
 //!   its reading of a projection off a value (`open_name_in_type` without that arm) — FAIL:
 //!     a_type_parameter_inside_the_entry_is_refused (its projection row)
-//!   `require[…]`'s refusal of an entry as its whole argument — FAIL, by the sentence
-//!   missing; with the rule-body walk's own arm for an entry taken out as well, by a panic:
-//!     an_entry_is_no_spec_instance
-//!   `require[…]` admitting a row only as a binding (every entry lowered there) — FAIL:
-//!     an_entry_is_no_spec_instance
-//!   and `wi_51w18…::a_binding_that_is_not_a_name_at_all_is_reported`,
-//!   `wi_qhdgc…::a_tuple_type_stays_refused`.
-//!   the drop rule naming an entry by its text — FAIL:
-//!     an_entry_is_no_spec_instance
-//!   and `wi_qhdgc…::a_tuple_type_stays_refused`.
-//!   the row's arm on `require[…]`'s positional loop — FAIL:
-//!     `wi_51w18…::a_positional_effect_row_keeps_its_slot_too`
+//!   `require[…]`'s refusal of an entry as its whole argument, its admitting a row only as a
+//!   binding, the drop rule naming an entry by its text, and the row's arm on its positional
+//!   loop — each FAILED `an_entry_is_no_spec_instance` or a `wi_51w18` / `wi_qhdgc` row while
+//!   a rule body could write `require[…]`. Proposal 060.1 §5 removed it; the row now measures
+//!   the `require` keyword before an entry, refused once (a second refusal with the goal
+//!   loaded as well: "rule-body goal `arrow` names nothing").
 //!   the receiver sweep, and the query scan's two channels, keyed by the payload's kind
 //!   (either put back to "any parse-only payload under that key") — FAIL:
 //!     a_parameter_named_like_a_bracket_channel_takes_an_entry
@@ -838,13 +832,17 @@ fn a_lone_parenthesized_type_is_no_type() {
     assert!(signature.contains("a single parenthesized type is not a type"), "{signature}");
 }
 
-/// `require[…]` takes a spec instance. An entry standing as its whole argument is refused
-/// by that sentence, as a bare goal and as an equation's operand, and as a binding of
-/// the spec a tuple type and an arrow type stay on the list of what names no sort
-/// (`wi_qhdgc_require_spec_logical_variable_test`), named by their text.
+/// A REQUIREMENT IS A SPEC AT A TYPE PARAMETER THE HEAD INTRODUCES, and an entry is neither:
+/// `require` before a tuple, an arrow, an effect row or a named tuple — as the whole
+/// requirement or as a binding of the spec — is refused once, naming the introducer to
+/// write. The control, a spec at the introducer's parameter, answers `Leaf`'s 7. (The row
+/// was `require[…]` and `?d = require[…]` before an entry, refused by "`require[…]` takes a
+/// spec instance"; proposal 060.1 §5 removed both.) With the loader reading a refused
+/// `require` goal as a body goal again, the arrow's row fails: a second refusal follows the
+/// first, "rule-body goal `arrow` names nothing".
 #[test]
 fn an_entry_is_no_spec_instance() {
-    let program = |ns: &str, goal: &str| {
+    let program = |ns: &str, rules: &str| {
         format!(
             r#"
 namespace test.{ns}
@@ -860,34 +858,35 @@ namespace test.{ns}
     operation describe(x: Leaf) -> Int64 = 7
   end
   fact seed(leaf())
-  rule r(?r) :- seed(?x), {goal}, Desc.describe(?x, ?r)
+{rules}
 end
 "#
         )
     };
-    for (ns, goal, written) in [
-        ("tcsgtreqtuple", "?d = require[(Leaf, Leaf)]", "`(Leaf, Leaf)`"),
-        ("tcsgtreqarrow", "?d = require[(Leaf) -> Leaf]", "`(Leaf) -> Leaf`"),
-        ("tcsgtreqrow", "?d = require[{}]", "`{}`"),
-        ("tcsgtreqgoal", "require[(a: Leaf, b: Leaf)]", "`(a: Leaf, b: Leaf)`"),
+    for (ns, goal) in [
+        ("tcsgtreqtuple", "require (Leaf, Leaf)"),
+        ("tcsgtreqarrow", "require (Leaf) -> Leaf"),
+        ("tcsgtreqrow", "require {}"),
+        ("tcsgtreqgoal", "require (a: Leaf, b: Leaf)"),
+        ("tcsgtreqbindtuple", "require Desc[T = (Leaf, Leaf)]"),
+        ("tcsgtreqbindarrow", "require Desc[(Leaf) -> Leaf]"),
     ] {
-        let errs = load_errors_of(&program(ns, goal));
-        let said = format!("{errs:?}");
-        assert!(said.contains("`require[…]` takes a spec instance"), "{ns}: {said}");
-        assert!(said.contains(written), "{ns}: {said}");
-    }
-    for (ns, goal, written) in [
-        ("tcsgtreqbindtuple", "?d = require[Desc[T = (Leaf, Leaf)]]", "`(Leaf, Leaf)`"),
-        ("tcsgtreqbindarrow", "?d = require[Desc[(Leaf) -> Leaf]]", "`(Leaf) -> Leaf`"),
-    ] {
-        let said = format!("{:?}", load_errors_of(&program(ns, goal)));
+        let errs = load_errors_of(&program(
+            ns,
+            &format!("  rule r(?r) :- seed(?x), {goal}, Desc.describe(?x, ?r)"),
+        ));
         assert!(
-            said.contains(&format!("{written} in it names neither a sort nor one of `Desc`'s own type parameters")),
-            "{ns}: {said}"
+            errs.len() == 1
+                && errs[0].contains("states a requirement of a type parameter the rule's head introduces"),
+            "{ns}: {errs:?}"
         );
     }
-    // The control: a spec instance in the same place answers.
-    let mut kb = load_kb_with(&program("tcsgtreqok", "?d = require[Desc[T = Leaf]]"));
+    // The control: a spec at the introducer's parameter answers.
+    let mut kb = load_kb_with(&program(
+        "tcsgtreqok",
+        "  rule d[A](?x: A, ?r) :- require Desc[T = A], Desc.describe(?x, ?r)\n  \
+         rule r(?r) :- seed(?x), d(?x, ?r)",
+    ));
     assert!(matches!(answers(&mut kb, "tcsgtreqok")[..], [Value::Int(7)]));
 }
 

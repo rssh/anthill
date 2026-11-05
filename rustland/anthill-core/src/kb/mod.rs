@@ -409,12 +409,16 @@ pub(crate) struct RuleProviderRequirement {
     pub carrier: u32,
     pub instance: TermId,
     pub dictionary: u32,
+    /// The name the clause writes it under, `require up: WeakOrd[A]` (060.1 §8.6): what the
+    /// body calls through and a citation's bracket binds. `None` for a guard with no name.
+    pub name: Option<Symbol>,
 }
 
 #[derive(Clone, Copy, Debug)]
 struct TypeVarProviderRequirement {
     instance: TermId,
     dictionary: VarId,
+    name: Option<Symbol>,
 }
 
 #[derive(Clone)]
@@ -478,6 +482,11 @@ struct RuleEntry {
     /// Provider obligations on carrier-type frame slots, closed against the same
     /// frame as type_bounds. These are spec instances, never value types.
     provider_requirements: Vec<RuleProviderRequirement>,
+    /// The type parameters the head's introducer declares (`rule cmp[A](…)`), in the
+    /// order written, each with the De Bruijn index of the frame slot its occurrences
+    /// share — what a citation's bracket binds by name or by position (060.1 §2).
+    /// Empty for a clause that declares none.
+    type_params: Vec<(Symbol, u32)>,
     /// WI-635: the stored head's `Var::Global`s, in first-occurrence order —
     /// empty when the head is ground. Collected carrier-agnostically at assert
     /// (`push_value_head_entry` → `collect_head_global_vars`) and read two ways,
@@ -2461,6 +2470,14 @@ pub struct KnowledgeBase {
     /// later one — its corrected retry — is not refused over them again
     /// ([`Self::is_clause_of_a_refused_load`]).
     refused_load_clauses: Vec<std::ops::Range<usize>>,
+    /// The rule slots whose guard the loader refused — an introducer no head column names, a
+    /// `require` naming no type parameter — and dropped: what the guard would have declared is
+    /// reported there, and the clause's calls that needed it are not refused again.
+    clauses_with_a_refused_guard: std::collections::HashSet<usize>,
+    /// The head columns whose bound the clause's typing inferred rather than the author wrote
+    /// (`typing::install_inferred_column_bounds`), by rule slot and column index: their
+    /// generated test is the column's own type test, which states no requirement (060.1 §8.1).
+    inferred_column_bounds: std::collections::HashSet<(usize, u32)>,
 
     // Source registry (file names/paths)
     pub(crate) sources: SourceRegistry,
@@ -2734,7 +2751,7 @@ pub struct KnowledgeBase {
     // kept key could come to name another goal.
     pub(crate) empty_scope_resolve_cache: RefCell<
         HashMap<
-            (crate::kb::typing::SortGoal, crate::kb::typing::DefaultRung),
+            crate::kb::typing::EmptyScopeKey,
             crate::kb::typing::ResolutionResult,
         >,
     >,
@@ -3160,6 +3177,8 @@ impl KnowledgeBase {
             derived_provision_origin: std::collections::HashMap::new(),
             equality_signatures: std::collections::HashMap::new(),
             refused_load_clauses: Vec::new(),
+            clauses_with_a_refused_guard: std::collections::HashSet::new(),
+            inferred_column_bounds: std::collections::HashSet::new(),
             sources: SourceRegistry::new(),
             extents: extent::ExtentRegistry::new(),
             host_fns: host_fns::HostFnRegistry::new(),
@@ -3514,6 +3533,28 @@ impl KnowledgeBase {
         if !clauses.is_empty() {
             self.refused_load_clauses.push(clauses);
         }
+    }
+
+    /// Record that the loader refused and dropped a guard of `rid`
+    /// ([`Self::clauses_with_a_refused_guard`]).
+    pub(crate) fn note_refused_guard(&mut self, rid: RuleId) {
+        self.clauses_with_a_refused_guard.insert(rid.index());
+    }
+
+    /// Record that column `column` of `rid` has a bound its typing inferred
+    /// ([`Self::inferred_column_bounds`]).
+    pub(crate) fn note_inferred_column_bound(&mut self, rid: RuleId, column: u32) {
+        self.inferred_column_bounds.insert((rid.index(), column));
+    }
+
+    /// Whether column `column` of `rid`'s bound was inferred ([`Self::inferred_column_bounds`]).
+    pub(crate) fn has_inferred_column_bound(&self, rid: RuleId, column: u32) -> bool {
+        self.inferred_column_bounds.contains(&(rid.index(), column))
+    }
+
+    /// Whether the loader refused a guard of `rid` ([`Self::clauses_with_a_refused_guard`]).
+    pub(crate) fn has_a_refused_guard(&self, rid: RuleId) -> bool {
+        self.clauses_with_a_refused_guard.contains(&rid.index())
     }
 
     /// Whether `rid` is a clause a refused load asserted ([`Self::refused_load_clauses`]).
@@ -5213,6 +5254,7 @@ impl KnowledgeBase {
             label: None,
             type_bounds: Vec::new(),
             provider_requirements: Vec::new(),
+            type_params: Vec::new(),
             head_vars,
             // WI-458: filled by the loader via `set_rule_head_span` once it has
             // this rule's RuleId; a synthesized head keeps `None`.
@@ -10239,6 +10281,7 @@ impl KnowledgeBase {
                     carrier: (globals.len() - 1 - position) as u32,
                     instance: self.term_to_debruijn(requirement.instance, &globals),
                     dictionary: (globals.len() - 1 - dictionary_position) as u32,
+                    name: requirement.name,
                 });
             }
         }
@@ -10269,7 +10312,113 @@ impl KnowledgeBase {
             .push(TypeVarProviderRequirement {
                 instance,
                 dictionary,
+                name: None,
             });
+    }
+
+    /// One more provider obligation on `carrier`, kept beside an equal one: a clause's two
+    /// guards of one spec at one parameter are two requirements (060.1 §8.5), under `name`
+    /// where the clause writes one (§8.6).
+    pub(crate) fn add_further_type_var_provider_requirement(
+        &mut self,
+        carrier: VarId,
+        instance: TermId,
+        name: Option<Symbol>,
+    ) {
+        let label = self.intern("provider_dictionary");
+        let dictionary = self.fresh_var(label);
+        self.type_var_provider_requirements
+            .entry(carrier)
+            .or_default()
+            .push(TypeVarProviderRequirement {
+                instance,
+                dictionary,
+                name,
+            });
+    }
+
+    /// Name the first obligation on `carrier` — the one its first guard registered as the head's
+    /// bound was lowered — `name` (060.1 §8.6, `require up: WeakOrd[A]` as that guard).
+    pub(crate) fn name_first_type_var_provider_requirement(&mut self, carrier: VarId, name: Symbol) {
+        if let Some(first) = self
+            .type_var_provider_requirements
+            .get_mut(&carrier)
+            .and_then(|r| r.first_mut())
+        {
+            first.name = Some(name);
+        }
+    }
+
+    /// 060.1 §8.6 — `carrier`'s obligations read as an operation's `requires` lines are: of one
+    /// instance, unnamed ones beside exactly one named are that one requirement; with no name
+    /// each is a requirement of its own; under two names, two. Refused, with the account, where
+    /// one name is written twice or an unnamed one stands beside two names, which it cannot
+    /// state both of.
+    pub(crate) fn normalize_type_var_provider_requirement_names(
+        &mut self,
+        carrier: VarId,
+    ) -> Result<(), String> {
+        let Some(entries) = self.type_var_provider_requirements.get(&carrier).cloned() else {
+            return Ok(());
+        };
+        let mut kept: Vec<TypeVarProviderRequirement> = Vec::new();
+        for (i, entry) in entries.iter().enumerate() {
+            let same: Vec<&TypeVarProviderRequirement> =
+                entries.iter().filter(|e| e.instance == entry.instance).collect();
+            let mut names: Vec<Symbol> = Vec::new();
+            for e in &same {
+                if let Some(n) = e.name {
+                    if names.contains(&n) {
+                        return Err(format!(
+                            "two requirements are written under the name `{}`",
+                            self.local_name_of(n)
+                        ));
+                    }
+                    names.push(n);
+                }
+            }
+            match (names.as_slice(), entry.name) {
+                // The one named requirement of the instance, which its unnamed lines state: kept
+                // once, at the first of them, under the name.
+                ([only], _) => {
+                    if entries[..i].iter().all(|e| e.instance != entry.instance) {
+                        kept.push(TypeVarProviderRequirement {
+                            name: Some(*only),
+                            ..*entry
+                        });
+                    }
+                }
+                ([_, _, ..], None) => {
+                    return Err(format!(
+                        "an unnamed requirement stands beside {} named ones of the one instance, \
+                         `{}`, and states neither; name it, or drop it",
+                        names.len(),
+                        names
+                            .iter()
+                            .map(|n| self.local_name_of(*n))
+                            .collect::<Vec<_>>()
+                            .join("`, `"),
+                    ));
+                }
+                _ => kept.push(*entry),
+            }
+        }
+        self.type_var_provider_requirements.insert(carrier, kept);
+        Ok(())
+    }
+
+    /// `carrier`'s obligations, each its instance, the variable its dictionary is read into
+    /// and its name (060.1 §8.6).
+    pub(crate) fn type_var_provider_requirement_entries(
+        &self,
+        carrier: VarId,
+    ) -> Vec<(TermId, VarId, Option<Symbol>)> {
+        self.type_var_provider_requirements
+            .get(&carrier)
+            .into_iter()
+            .flatten()
+            .map(|r| (r.instance, r.dictionary, r.name))
+            .collect()
     }
 
     pub(crate) fn type_var_provider_requirements(&self, carrier: VarId) -> Vec<TermId> {
@@ -10299,6 +10448,32 @@ impl KnowledgeBase {
         &self.rules[id.index()].provider_requirements
     }
 
+    /// Record the type parameters `id`'s head introduces, in the order written, each by its
+    /// name and the frame variable its occurrences share. A variable the frame does not hold
+    /// is one no head bound names, which the loader refuses before it asks.
+    pub(crate) fn install_rule_type_params(&mut self, id: RuleId, params: &[(Symbol, VarId)]) {
+        let globals = &self.rules[id.index()].globals;
+        let len = globals.len();
+        let closed: Vec<(Symbol, u32)> = params
+            .iter()
+            .map(|(name, vid)| {
+                let position = globals
+                    .iter()
+                    .position(|g| g == vid)
+                    .expect("a declared type parameter is a slot of its clause's frame");
+                (*name, (len - 1 - position) as u32)
+            })
+            .collect();
+        self.rules[id.index()].type_params = closed;
+    }
+
+    /// The type parameters `id`'s head introduces (`rule cmp[A](…)`), in the order written,
+    /// each with the De Bruijn index of its frame slot. Empty for a clause that declares
+    /// none.
+    pub(crate) fn rule_type_params(&self, id: RuleId) -> &[(Symbol, u32)] {
+        &self.rules[id.index()].type_params
+    }
+
     /// Open both type and dictionary slots against the clause's own fresh frame.
     pub(crate) fn open_rule_provider_requirements(&mut self, id: RuleId, fresh: &[VarId]) {
         for r in self.rule_provider_requirements(id).to_vec() {
@@ -10309,10 +10484,14 @@ impl KnowledgeBase {
                 .type_var_provider_requirements
                 .entry(carrier)
                 .or_default();
-            if !requirements.iter().any(|r| r.instance == instance) {
+            if !requirements
+                .iter()
+                .any(|e| e.instance == instance && e.name == r.name)
+            {
                 requirements.push(TypeVarProviderRequirement {
                     instance,
                     dictionary,
+                    name: r.name,
                 });
             }
         }
@@ -10335,75 +10514,6 @@ impl KnowledgeBase {
             }
             _ => false,
         }
-    }
-
-    /// The requirements visible from each typed value column, for dictionary
-    /// attribution. This view contains obligations, not value types: ordinary
-    /// type checking continues to read rule_type_bounds.
-    pub(crate) fn rule_requirement_anchor_bounds(&mut self, id: RuleId) -> Vec<(u32, TermId)> {
-        fn project(kb: &mut KnowledgeBase, term: TermId, requirements: &[(u32, TermId)]) -> TermId {
-            match kb.get_term(term).clone() {
-                Term::Var(Var::DeBruijn(index)) => {
-                    if let Some((_, instance)) = requirements.iter().find(|(i, _)| *i == index) {
-                        // The type variable is the carrier, not an instance element
-                        // to recursively project back into its own requirement.
-                        match kb.get_term(*instance).clone() {
-                            Term::Fn {
-                                functor,
-                                pos_args,
-                                mut named_args,
-                            } => {
-                                named_args.retain(|(_, v)| !matches!(kb.get_term(*v), Term::Var(Var::DeBruijn(i)) if *i == index));
-                                kb.alloc(Term::Fn {
-                                    functor,
-                                    pos_args,
-                                    named_args,
-                                })
-                            }
-                            _ => *instance,
-                        }
-                    } else {
-                        term
-                    }
-                }
-                Term::Fn {
-                    functor,
-                    pos_args,
-                    named_args,
-                } => {
-                    let pos_args = pos_args
-                        .into_iter()
-                        .map(|t| project(kb, t, requirements))
-                        .collect();
-                    let named_args = named_args
-                        .into_iter()
-                        .map(|(k, t)| (k, project(kb, t, requirements)))
-                        .collect();
-                    kb.alloc(Term::Fn {
-                        functor,
-                        pos_args,
-                        named_args,
-                    })
-                }
-                _ => term,
-            }
-        }
-        let requirements: Vec<_> = self
-            .rule_provider_requirements(id)
-            .iter()
-            .map(|r| (r.carrier, r.instance))
-            .collect();
-        // An obligation is a spec instance, which is a term: each bound is projected as
-        // the term of the type it is.
-        self.rule_type_bounds(id)
-            .to_vec()
-            .into_iter()
-            .map(|(i, bound)| {
-                let t = node_occurrence::value_to_term(self, &bound)
-                    .expect("a rule head's bound is a type, which has a term");
-                (i, project(self, t, &requirements))
-            })
-            .collect()
     }
 
     /// WI-20260911-5G28A — grow an asserted rule's frame by `extra` variables and REPLACE
@@ -13402,6 +13512,9 @@ impl KnowledgeBase {
         // WI-20260925-SHED7 — the sub-dictionary selector a derived `fill` clause writes in
         // `apply_domain`'s operand. Never a goal; see [`BuiltinTag::DomainSub`].
         self.register_builtin_tag(crate::kb::fill_derive::DOMAIN_SUB, BuiltinTag::DomainSub);
+        // The last case of a derived `fill`: a value of a refining sort. See
+        // [`BuiltinTag::RefinedDomain`].
+        self.register_builtin_tag(crate::kb::fill_derive::REFINED_DOMAIN, BuiltinTag::RefinedDomain);
         // Arithmetic and comparison. WI-616 (proposal 051 Phase 2): `=`/`eq`
         // and `neq` are the SEMANTIC `Eq` ops — structural until a carrier
         // declares its own `eq` override (`Set.eq`/`Map.eq`), which then

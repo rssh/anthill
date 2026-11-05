@@ -558,7 +558,7 @@ fn self_return_spec_op_result_type(
 /// type-params), then [`reconstruct_sort_params`] + build `Sort[params]` (or the bare
 /// `Ref(Sort)`). An unregistered constructor / free-standing entity yields its own
 /// bare sort ref. Never `None`.
-fn constructor_value_type(
+pub(super) fn constructor_value_type(
     kb: &mut KnowledgeBase,
     ctor_sym: Symbol,
     pos_child_types: &[Value],
@@ -1486,8 +1486,7 @@ pub(crate) const REQUIREMENT_SLOT_LABEL: &str = "slot";
 /// the call refuses the absence and has no value.
 pub(crate) const REQUIREMENT_IN_FORM_LABEL: &str = "in_form";
 
-/// WI-300 — the three-way outcome of a rule-body `requires(X)` guard (the
-/// desugared `find_dictionary` goal). Three-way *by construction* (never
+/// The three-way outcome of a dictionary read's carrier decision. Three-way *by construction* (never
 /// NAF-decide, WI-519 / WI-067): the guard RESOLVES the requirement — it does not
 /// decide it false when the binding is under-determined.
 pub(crate) enum FindDictOutcome {
@@ -1499,95 +1498,6 @@ pub(crate) enum FindDictOutcome {
     /// A carrier type is under-determined → suspend as residual; retry once the
     /// binding is determined.
     Suspend,
-}
-
-/// WI-300 — evaluate a rule-body requirement guard at the current binding. The
-/// typer sweep ([`record_find_dictionary_grounding`]) rewrote the surface
-/// `requires(X)` into `find_dictionary(X_base, op_functor, op_arg…)`, choosing a
-/// body call to one of X's operations as the WITNESS whose carrier arguments
-/// decide the instance — exactly the redex a `@[simp]` rule fires on
-/// ([`simp_requires_guard_holds`]). Here we read each witness argument's carried
-/// type ([`value_type_term`], WI-578) → nominal sort head, then share the WI-596
-/// carrier decision with the `@[simp]` resolver guard ([`simp_guard_holds_core`]):
-/// a carrier-parameter typeclass (`Eq`) checks the type-param arguments, a
-/// self-representing container (`Set`) checks the sort-typed arguments. An
-/// under-determined CARRIER (no nominal sort head — unbound / headless) SUSPENDS,
-/// never decides the guard false. An under-determined NON-carrier (content)
-/// argument does not suspend: like `simp_requires_guard_holds`, each argument's
-/// sort head rides as an `Option` and only the carrier indices are consulted, so
-/// an unbound element beside a ground carrier still decides `Fire`.
-pub(crate) fn find_dictionary_guard(
-    kb: &mut KnowledgeBase,
-    subst: &Substitution,
-    spec_sort: Symbol,
-    op_functor: Symbol,
-    arg_vals: &[Value],
-    // WI-20260913-J38VE: the written bracket, read off slot 0 once by
-    // [`requirement_bracket`]. The GUARD uses only its projected member — it builds no
-    // [`SortGoal`], so there is no slot for a written binding to fill.
-    bracket: &RequirementBracket,
-) -> FindDictOutcome {
-    let arg_types = match projected_arg_types(kb, subst, arg_vals, bracket.project) {
-        Ok(t) => t,
-        Err(outcome) => return outcome,
-    };
-    // THE ANCHOR FORM'S NO-`out` PATH — and it is the CHECK TIER's only consumer.
-    //
-    // `/code-review` found this branch unreachable and it was: the anchor emitted
-    // `goal: None` for the no-`out` case, so no anchor-form goal without `out` was ever
-    // stored, and every one with `out` routed through `read_dictionary_into`. It is
-    // reachable now because the check tier emits its goal like the bind tier does —
-    // which is what makes `requires(X)` and `require[X]` one relation instead of two.
-    // Driven by `wi_qmfc5…::the_check_tier_emits_the_same_goal_the_bind_tier_does` and
-    // the three soundness rows beside it.
-    if is_anchor_form(kb, spec_sort, op_functor) {
-        return anchor_guard(kb, spec_sort, &arg_types);
-    }
-    guard_over_arg_types(kb, spec_sort, op_functor, arg_vals, &arg_types)
-}
-
-/// WI-20260909-S8CBV gate (1) — [`witness_arg_types`], with δ applied to the CARRIER
-/// when the bracket projected one. `Err` carries the three-valued verdict the caller must
-/// return unchanged.
-///
-/// ONE PLACE, because the guard and the fetch must see the SAME carrier type or a goal
-/// could be guarded on the receiver and fetched on its member. That pairing is the same
-/// one [`fetch_dictionary`] already states for `is_anchor_form`, one question over.
-///
-/// A CARRIER THAT DOES NOT YET BIND THE MEMBER SUSPENDS, never `DontFire`. The rule body
-/// may be entered before the head variable is bound, and deciding the guard false there
-/// would silently drop a clause that is merely not ready — WI-067's discipline, which
-/// [`anchor_guard`] applies to a headless carrier for the identical reason.
-fn projected_arg_types(
-    kb: &mut KnowledgeBase,
-    subst: &Substitution,
-    arg_vals: &[Value],
-    project: Option<Symbol>,
-) -> Result<Vec<Value>, FindDictOutcome> {
-    let mut arg_types = witness_arg_types(kb, subst, arg_vals);
-    let Some(member) = project else {
-        return Ok(arg_types);
-    };
-    // NO CARRIER AT ALL, with a projection to apply — a shape nothing emits: the anchor
-    // is what produces a projected goal and it always writes exactly one carrier slot.
-    // Loud in debug and a DELAY in release, the repo's rule for an unreachable defect,
-    // and NOT the `DontFire` a first cut wrote here: deciding the guard false would drop
-    // the clause silently, which is the very thing this function's own rule forbids
-    // three lines down. `/code-review` found the contradiction.
-    let Some(first) = arg_types.first() else {
-        debug_assert!(
-            false,
-            "projected find_dictionary goal with no carrier argument"
-        );
-        return Err(FindDictOutcome::Suspend);
-    };
-    match project_carried_member(kb, first, member) {
-        Some(projected) => {
-            arg_types[0] = projected;
-            Ok(arg_types)
-        }
-        None => Err(FindDictOutcome::Suspend),
-    }
 }
 
 /// Each witness argument's CARRIED TYPE (`value_type_term`, WI-578) — the same
@@ -1640,146 +1550,25 @@ fn guard_over_arg_types(
     })
 }
 
-/// WI-20260909-S8CBV gate (1) — the MEMBER a `require` bracket's carrier projects, read
-/// off the stored spec instance (`Desc[T = p.E]` ⟹ `E`), or `None` for every bracket
-/// that names a type directly.
-///
-/// The bracket's already-extracted `base` and `bindings` are passed in rather than the
-/// instance: [`requirement_bracket`] is the one owner of that walk, and this is one of
-/// its two readers.
-///
-/// THE CARRIER PARAMETER'S BINDING, WHICH IS THE QUESTION THE ANCHOR ASKS. A first cut
-/// took the first projected binding it found anywhere in the instance, and
-/// `/code-review` named the defect: [`written_projection_anchor`] reads the binding AT
-/// [`spec_carrier_param_or_sole`], so two readers were deriving one fact by two rules and
-/// could disagree — `require[Two[A = Leaf, B = p.E]]` has the anchor select `A = Leaf` as
-/// an ordinary sort while this function projected `B`'s `E` off `Leaf`, which binds no
-/// `E`, suspending forever on a clause that should never have projected at all.
-///
-/// NO ROW MOVES, and that is stated rather than left to be assumed. The two rules can
-/// differ only on a bracket carrying TWO bindings, which needs a spec with two type
-/// parameters.
-///
-/// THE ORIGINAL MEASUREMENT'S PREMISE HAS EXPIRED, and re-measuring beat inheriting it.
-/// It read: on a two-parameter spec every admissible spelling RESIDUALIZES, so the rules
-/// cannot be told apart. WI-20260913-J38VE closed exactly that — a multi-parameter spec
-/// now grounds through the typed-head anchor and ANSWERS — so the old sentence would have
-/// been a reason that had stopped being true while still reading as evidence.
-///
-/// RE-MEASURED 2026-09-13 AFTER J38VE, on the disagreeing shape built for it: a
-/// two-parameter spec with a CONCRETE carrier binding and a PROJECTED sibling
-/// (`require[Two[A = Red, B = p.E]]` under `?x: Red, p: Box`), at a provider binding the
-/// sibling abstractly AND at one binding it concretely. Both rules answer NOTHING on
-/// both, and the whole `wi_s8cbv` / `wi_qmfc5` / `wi_j38ve` set is green under the naive
-/// rule. The reason is now one step earlier and is structural rather than incidental: a
-/// projection at a NON-carrier element does not survive to a fetch at all — it needs a
-/// typed head root, a typed head takes the ANCHOR route, and the anchor pins the carrier
-/// from the head binding — so the binding this function would disagree about is one
-/// [`written_element`] declines anyway. So this is still one derivation replacing two.
-///
-/// THE PROJECTION TEST RUNS FIRST, AND IT IS THE CHEAP ONE. This is called for EVERY
-/// `find_dictionary` goal, and the overwhelming majority of brackets project nothing —
-/// so the binding scan (which the caller's `extract_type` already paid for) decides
-/// those, and [`spec_carrier_param_or_sole`] is asked only where a projection is
-/// actually present.
-///
-/// THAT ORDERING IS A CORRECTION, not a micro-optimization. An earlier draft called
-/// the predicate unconditionally and its own doc claimed the cost was one memoized
-/// lookup; `/code-review` measured otherwise — only `spec_carrier_param` is cached, and
-/// its MISS path calls `spec_is_self_representing`, which builds an `OperationInfoFull`
-/// per declared operation. For a self-representing spec, or a multi-parameter one with
-/// no receiving op, that was an uncached operation scan on the per-goal resolver path,
-/// where `builtin_find_dictionary` previously did no symbol lookup at all.
-fn requirement_projection_member(
-    kb: &KnowledgeBase,
-    base: Symbol,
-    bindings: &[(Symbol, Value)],
-) -> Option<Symbol> {
-    if !bindings
-        .iter()
-        .any(|(_, v)| matches!(extract_type(kb, v), TypeExtractor::ExprCarried { .. }))
-    {
-        return None;
-    }
-    let carrier = spec_carrier_param_or_sole(kb, kb.canonical_sort_sym(base))?;
-    let (_, written) = bindings.iter().find(|(k, _)| same_label(kb, *k, carrier))?;
-    match extract_type(kb, written) {
-        TypeExtractor::ExprCarried { member, .. } => Some(member),
-        _ => None,
-    }
-}
-
-/// WI-20260913-J38VE — WHAT THE AUTHOR WROTE, read off the emitted goal's slot 0 (the
-/// spec instance WI-20260909-51W18 retains there) ONCE, for the two readers that need it.
-///
-/// ONE READER OF SLOT 0, TWO FACTS. `extract_type` on that value is what yields both the
-/// projected member and the written bindings, and asking for them separately would walk
-/// the instance twice and — worse — put one bracket under two derivations, the defect
-/// `/code-review` already named inside [`requirement_projection_member`] itself. So the
-/// resolver reads the bracket once and hands this struct down both the guard path (which
-/// uses only [`Self::project`]) and the fetch path (which uses both).
-///
-/// EMPTY IS A REAL ANSWER, not an absence to be papered over: `require[Desc]` binds
-/// nothing, and every reader of [`Self::written`] must behave exactly as it did before
-/// this struct existed when the bracket names no element. That is what makes
-/// `require[Desc]` and `require[Desc[T = Leaf]]` distinguishable at the fetch — the
-/// distinction S1's retention created and nothing on this path could yet see.
+/// WI-20260913-J38VE — the bindings a dictionary read's instance writes, read off its slot 0:
+/// a guard's instance (`Sp[C = A, P = Int64]`), or the bare spec an inferred read names,
+/// which binds nothing. Empty is a real answer: every reader of [`Self::written`] behaves
+/// for it as for an instance that names no element.
 pub(crate) struct RequirementBracket {
-    /// The member a PROJECTED carrier names (`Desc[T = p.E]` ⟹ `E`), `None` for every
-    /// bracket that names a type directly — WI-20260909-S8CBV gate (1).
-    pub(crate) project: Option<Symbol>,
-    /// The bracket's bindings as written, `(param, value-type)`. Keys are matched by
-    /// LOCAL NAME downstream, as every other reader of a spec-parameter key is.
+    /// The bindings as written, `(param, value-type)`. Keys are matched by LOCAL NAME
+    /// downstream, as every other reader of a spec-parameter key is.
     pub(crate) written: Vec<(Symbol, Value)>,
 }
 
-/// WI-20260913-J38VE — read the `require` bracket off the goal's slot 0.
-///
-/// READ AT THE RESOLVER, because that is where the instance is. The emitted goal carries
-/// the instance whole in slot 0 (WI-20260909-51W18's retention) and the carrier VARIABLE
-/// in slot 2; the projected member is the one piece that cannot ride slot 2, since that
-/// slot holds the value whose type is about to be read.
-///
-/// CARRIER-BLIND, through `extract_type`: the instance reaches here as a σ-walked
-/// `Value`, which may be a term or an occurrence depending on the path that stored it.
-///
-/// A NON-`Parameterized` INSTANCE IS THE BARE SPELLING, not a defect — `require[Desc]`
-/// stores `Ref(Desc)` — so it answers the empty bracket rather than declining.
+/// WI-20260913-J38VE — read the [`RequirementBracket`] off a read's slot 0. CARRIER-BLIND,
+/// through `extract_type`: the instance reaches here as a σ-walked `Value`, which may be a
+/// term or an occurrence depending on the path that stored it. A non-`Parameterized`
+/// instance is the bare spec and answers the empty bracket.
 pub(crate) fn requirement_bracket(kb: &KnowledgeBase, instance: &Value) -> RequirementBracket {
-    let TypeExtractor::Parameterized { base, bindings } = extract_type(kb, instance) else {
-        return RequirementBracket {
-            project: None,
-            written: Vec::new(),
-        };
+    let TypeExtractor::Parameterized { bindings, .. } = extract_type(kb, instance) else {
+        return RequirementBracket { written: Vec::new() };
     };
-    RequirementBracket {
-        project: requirement_projection_member(kb, base, &bindings),
-        written: bindings,
-    }
-}
-
-/// WI-20260909-S8CBV gate (1) — δ AT FIRE TIME: project `member` off the carrier's
-/// CARRIED TYPE (`Box[E = Red]` at `E` ⟹ `Red`).
-///
-/// THIS IS THE `fetch` ROW OF `requirement-channel.md` §2.1's table, not a typing
-/// operation — the invariant that "run time performs no typing operations" is about
-/// inference, unification and selection, and this is a member read off a type that has
-/// already been read. `x.E` names WHICH carried type the fetch should look at; the fetch
-/// itself is unchanged.
-///
-/// `None` when the type does not bind that member — an unbound or headless carrier, or a
-/// member the receiver's sort does not declare. The caller must SUSPEND on it rather than
-/// decide the guard false: at the moment a rule body is entered the head variable may
-/// simply not be bound yet, which is the same three-valued discipline
-/// [`anchor_guard`] already applies to a headless carrier (WI-067).
-fn project_carried_member(kb: &KnowledgeBase, ty: &Value, member: Symbol) -> Option<Value> {
-    let TypeExtractor::Parameterized { bindings, .. } = extract_type(kb, ty) else {
-        return None;
-    };
-    bindings
-        .iter()
-        .find(|(k, _)| same_label(kb, *k, member))
-        .map(|(_, v)| v.clone())
+    RequirementBracket { written: bindings }
 }
 
 /// WI-20260909-QMFC5 — is this rewritten goal the TYPED-HEAD ANCHOR form rather than the
@@ -1821,16 +1610,11 @@ fn anchor_guard(kb: &KnowledgeBase, spec_sort: Symbol, arg_types: &[Value]) -> F
         return FindDictOutcome::DontFire;
     };
     match sort_functor_of_view(kb, ty) {
-        // BOTH CHANNELS, and the pairing with the load site is the point.
-        // [`carrier_provides_spec`] is the documented owner of "does this carrier supply
-        // this spec" — a sort's own out-edges PLUS a provision another sort declares FOR
-        // it (`sort Rival provides Desc[T = Leaf]`, WI-1043). A bare [`sort_provides`]
-        // here is blind to the second, and `/code-review` drove both faces of that:
-        // asking only `sort_provides` at the LOAD site refuses a witness-supplied carrier
-        // outright, while asking only it HERE lets the clause load and then answer
-        // nothing. Widening one end alone just moves which face you get, so the two move
-        // together — that is why this line and `anchor_grounding`'s selection cite each
-        // other rather than each carrying its own copy of the predicate.
+        // BOTH CHANNELS. [`carrier_provides_spec`] is the documented owner of "does this
+        // carrier supply this spec" — a sort's own out-edges PLUS a provision another sort
+        // declares FOR it (`sort Rival provides Desc[T = Leaf]`, WI-1043). A bare
+        // [`sort_provides`] here is blind to the second: the clause would load and then
+        // answer nothing.
         Some(carrier) if carrier_provides_spec(kb, carrier, spec_sort) => FindDictOutcome::Fire,
         Some(_) => FindDictOutcome::DontFire,
         None => FindDictOutcome::Suspend,
@@ -1873,10 +1657,10 @@ pub(super) fn spec_param_key(
 /// the SORT, and the goal's [`SortGoal::carrier`] discriminant takes it, exactly as
 /// [`witness_sort_goal`]'s self-representing branch does from the same value.
 ///
-/// THE SECOND GATE THAT PREDICATE'S DOC DEMANDS is at the LOAD site
-/// ([`anchor_grounding`]), not here: it answers "which parameter an operation takes",
-/// which "is not by itself which parameter names the carrier", and the load-time check
-/// can name the sort and the spec in a located refusal where this one could only delay.
+/// THE SECOND GATE THAT PREDICATE'S DOC DEMANDS — "which parameter an operation takes" is
+/// "not by itself which parameter names the carrier" — was the load-time check of
+/// `require[X]`'s anchor, removed with that form (proposal 060.1 §5). A guard's carrier is
+/// the binding the loader reads at the introducer's parameter.
 pub(super) fn anchor_sort_goal(
     kb: &mut KnowledgeBase,
     spec_sort: Symbol,
@@ -1954,14 +1738,9 @@ pub(crate) enum FindDictFetch {
     Defect { detail: String },
 }
 
-/// WI-1040 — read a rule-body requirement for its VALUE: run WI-300's guard, and
-/// where it fires, FETCH the provider tree for `spec_sort` at the witness
-/// arguments' carried types.
-///
-/// The guard half is shared with [`find_dictionary_guard`] verbatim (one carrier
-/// decision, one set of carried types), so the `out` and no-`out` readings of one
-/// goal can never disagree about whether the requirement holds — they differ only
-/// in whether the dictionary is also produced.
+/// WI-1040 — read a rule-body requirement for its VALUE: decide whether the carrier
+/// provides it, and where it does, FETCH the provider tree for `spec_sort` at the
+/// witness arguments' carried types.
 ///
 /// `resolve` runs with an EMPTY scope and no σ, exactly as
 /// [`resolve_bridge_requirements`] does and for the same reason: a rule clause has
@@ -1974,9 +1753,8 @@ pub(crate) fn fetch_dictionary(
     spec_sort: Symbol,
     op_functor: Symbol,
     arg_vals: &[Value],
-    // WI-20260913-J38VE — the written bracket; see [`find_dictionary_guard`]. Here BOTH
-    // halves are read: the projected member picks which carried type to look at, and the
-    // written bindings fill the spec elements the witness call does not name.
+    // WI-20260913-J38VE — the bracket the read's instance writes: its bindings fill the spec
+    // elements the witness call does not name.
     bracket: &RequirementBracket,
     // WI-20260911-5G28A S2 — may a RANKING answer a tie? [`DefaultRung::Consult`] when the
     // read BINDS its dictionary (nobody chose, so 058 §3.2's default fills the silence);
@@ -1985,10 +1763,7 @@ pub(crate) fn fetch_dictionary(
     // wins", not "which one the caller chose" (WI-20260922-ATFGH's reading).
     rung: DefaultRung,
 ) -> FindDictFetch {
-    let arg_types = match projected_arg_types(kb, subst, arg_vals, bracket.project) {
-        Ok(t) => t,
-        Err(outcome) => return FindDictFetch::Guard(outcome),
-    };
+    let arg_types = witness_arg_types(kb, subst, arg_vals);
     // WI-20260909-QMFC5 — one relation, two grounding paths. The guard and the goal are
     // chosen together from the same discriminant, so an anchored goal can never be
     // guarded one way and fetched the other.
@@ -2153,10 +1928,7 @@ fn fetch_built_dictionary(
 ///
 /// WHAT READS THIS, censused because WI-20260830-X9PB4 widened what it emits: ONE
 /// caller, [`fetch_dictionary`], which itself has ONE — `read_dictionary_into`, the
-/// `out` arm of `builtin_find_dictionary`. So this producer is reached only from
-/// `require[X]` / `?d = require[X]`; WI-300's check-only `requires(X)` takes
-/// [`find_dictionary_guard`], which builds no [`SortGoal`] at all and is untouched by
-/// anything decided here.
+/// `out` arm of `builtin_find_dictionary`, which every dictionary read takes.
 ///
 /// AND THE OTHER PRODUCER OF A [`SortGoal`] STILL OMITS, which is the right question to
 /// ask (raised by /code-review) and is answered by measurement rather than by symmetry.
@@ -2186,8 +1958,8 @@ pub(super) fn witness_sort_goal(
     // WI-20260913-J38VE — the written bracket's bindings, for the shared tail. The loop
     // below is UNTOUCHED by them: an element a witness parameter names is pinned from the
     // call's CARRIED TYPE, and a written binding that disagrees with a carried type is a
-    // question the load site owns ([`anchor_grounding`]'s refusal), not one to re-answer
-    // here with the opposite precedence.
+    // question for where the requirement is declared, not one to re-answer here with the
+    // opposite precedence.
     written: &[(Symbol, Value)],
 ) -> Option<WitnessGoal> {
     let rec = crate::kb::op_info::lookup_operation_info(kb, op_functor)?;
@@ -2464,9 +2236,8 @@ fn sort_goal_with_wildcards(
 /// deliberate rather than incidental:
 ///
 ///  * A PROJECTION (`Desc[T = p.E]`) is not a type — it names WHICH carried type to look
-///    at, and WI-20260909-S8CBV gate (1) has already applied it to the carrier argument
-///    ([`projected_arg_types`]). Pinning `p.E` itself would put a projection in the goal
-///    where a sort belongs, and no provider head matches that.
+///    at. Pinning `p.E` itself would put a projection in the goal where a sort belongs, and
+///    no provider head matches that.
 ///  * A value naming a TYPE PARAMETER is the wildcard SPELLED OUT (`requires
 ///    Spec[Element = Element]`, WI-507's leniency) — a `SortRef`, so the positive test
 ///    admits it and [`is_type_param_value`] is what turns it away. Taking the mint path
@@ -2937,7 +2708,18 @@ fn pin_bound_as_a_bound(
     let Some(ty) = ty else {
         return TypeBoundPin::Suspend;
     };
-    let mut pin = Substitution::new();
+    // A carrier of the bound with provider requirements has them checked against the value's
+    // type ([`carrier_requirements_hold`]), except one whose dictionary the clause was handed:
+    // σ says which, so the pin reads through it there. Nowhere else, which keeps the common
+    // bound's pin from copying σ.
+    let mut pin = if kb.mentions_var(&bound, &|v| match v {
+        Var::Global(g) => !kb.type_var_provider_requirements(g).is_empty(),
+        _ => false,
+    }) {
+        Substitution::with_parent(subst.clone())
+    } else {
+        Substitution::new()
+    };
     if pin_type_vars(kb, &mut pin, &ty, &bound) {
         let bound = walk_type_deep_value(kb, &pin, &bound);
         TypeBoundPin::Pinned { pin, bound }
@@ -3159,6 +2941,14 @@ pub(super) fn pin_type_vars(
     // early-return-on-false discipline `types_compatible`'s own doc states for its
     // threading callers, and the caller discards σ on `false`.
     if bf != tf || bp != tp || bn != tn {
+        // A SORT THAT REFINES THE BOUND'S pins it through the instance its `requires` clauses
+        // give it, as a call's type argument is read (`unify_through_refinement`): `narrow(k:
+        // 3)` under `sort Narrow requires Wide[W = Int64]` pins `Wide[W = ?w]`'s `?w` to
+        // `Int64`. The subtype relation reads `?w` as a type of its own there, at an invariant
+        // parameter, and refused the value.
+        if unify_through_refinement(kb, pin, ty, tf, bound, bf) {
+            return true;
+        }
         return types_compatible(kb, pin, ty, bound);
     }
     for i in 0..bp {
@@ -3213,7 +3003,7 @@ pub(super) fn pin_type_vars(
 /// EVERY OTHER SHAPE IS DETERMINED and gets a real answer: `arrow` and `named_tuple` have
 /// their own subtyping arms, and a shape with no arm falls to `false`, which for a bound
 /// the value does not satisfy is the RIGHT answer — the guard restricts.
-pub(super) fn type_is_undetermined(kb: &KnowledgeBase, ty: &Value) -> bool {
+pub(crate) fn type_is_undetermined(kb: &KnowledgeBase, ty: &Value) -> bool {
     if !type_head_is_decidable(kb, ty) {
         return true;
     }

@@ -152,7 +152,13 @@ fn check_apply_call(
     // are disjoint (`kind_of` gives a symbol ONE kind), so "not an operation" is
     // exactly "will not reach Path 1". The occurrence read comes first so a call
     // without a bracket — every call in practice — pays only a match, not a lookup.
-    if call_type_args_of(occ).is_some() && lookup_operation_info_full(kb, fn_sym).is_none() {
+    // 060.1 §2: a citation of a relation that declares type parameters has a list its
+    // bracket binds ([`seed_rule_citation_bracket`]), in functional code, where the
+    // citation arm below takes it.
+    if call_type_args_of(occ).is_some()
+        && lookup_operation_info_full(kb, fn_sym).is_none()
+        && !(!env.in_rule_body() && kb.cites_a_relation(fn_sym) && relation_declares_type_params(kb, fn_sym))
+    {
         return Err(TypeError::TypeArgsOnNonOperation {
             span,
             callee: fn_sym,
@@ -538,17 +544,6 @@ fn check_apply_call(
                 },
             )
         };
-        // A clause's `require[…]` of the spec at the receiver's carrier names the instance the
-        // call is at: its bindings are the view every reading of the carrier's provision takes
-        // below. Read from the provision, `require[Conv[A = Feet, B = String]], Conv.tag("km",
-        // ?r)` took `Meters`' `A` — the first provision at `String` — and ran its member.
-        let carrier_param_info = carrier_param_info.map(|mut info| {
-            let (spec_sort, carrier_sym, carrier_pvid) = (info.0, info.1, info.4);
-            if let Some(declared) = clause_required_view_at_carrier(kb, env, spec_sort, carrier_pvid, carrier_sym) {
-                info.3 = declared;
-            }
-            info
-        });
         // Two providers at the receiver's carrier that fix a parameter the call leaves open
         // apart ([`providers_apart_at_carrier`]): the call names neither, and is refused here,
         // before the carrier's provision is read for that parameter below — which reads the
@@ -590,7 +585,6 @@ fn check_apply_call(
             }
             let covered = || {
                 pinned_witness_for(kb, &selections, spec_sort).is_some()
-                    || clause_requires_spec(kb, env, spec_sort)
                     || env.enclosing_requires().iter().any(|r| {
                         same_sort_canonical(kb, r.required_sort, spec_sort)
                             && view_binds_param_to_sort(
@@ -620,12 +614,14 @@ fn check_apply_call(
                             format!("{name} = …")
                         });
                     }
-                    let in_rule = env.in_rule_own_term();
-                    let suggestion = if in_rule {
+                    // A rule's own term takes no call-site bracket, and the instance is written
+                    // on the call's receiver instead, `Conv[A = Meters, B = …].tag(…)`.
+                    let suggestion = if env.in_rule_own_term() {
                         format!(
-                            "require[{}[{}]]",
+                            "{}[{}].{}(…)",
                             short_name_of(kb.qualified_name_of(spec_sort)),
-                            bindings.join(", ")
+                            bindings.join(", "),
+                            kb.local_name_of(fn_sym)
                         )
                     } else {
                         let open_only: Vec<String> = open
@@ -644,7 +640,6 @@ fn check_apply_call(
                             .collect(),
                         providers: apart,
                         suggestion,
-                        in_rule_own_term: in_rule,
                     });
                 }
             }
@@ -2816,9 +2811,9 @@ fn check_apply_call(
         // by exactly the check a written one is.
         let selections = selections_from_slot_bindings(kb, &subst, &op, fn_sym, selections, span)?;
 
-        // WI-20260921-3G1YT — the slot source of the bracket route, for every
-        // classification block below: the spec instances this clause's `require[…]`
-        // brackets declare ([`held_spec_views`]).
+        // WI-20260921-3G1YT — the slot source of the held route, for every
+        // classification block below: the spec instances this clause's guards declare
+        // ([`held_spec_views`]).
         //
         // HERE, and not at the top of this function, because this statement is the
         // lowest point that dominates all of them — everything above returns before any
@@ -2909,9 +2904,8 @@ fn check_apply_call(
         // call this cannot pin.
         //
         // WI-1042 — "defaulted spec op" is [`defaulted_spec_op_parent`], the gate this
-        // block OWNS and three other sites ask ([`dot_member_dispatch_decision`]'s
-        // defaulted leg, [`call_dispatch_shape`]'s rule-body walk trigger,
-        // [`rewrite_find_dictionary_goal`]'s direct witness scan). It stood here as
+        // block OWNS and two other sites ask ([`dot_member_dispatch_decision`]'s
+        // defaulted leg, [`call_dispatch_shape`]'s rule-body walk trigger). It stood here as
         // `lookup_spec_op_dispatch(..).is_none() && spec_op_parent_sort(..)`, which asks
         // one question twice: `lookup_spec_op_dispatch` IS `spec_op_parent_sort` plus the
         // body-less test (and, since WI-20261011-RM247, the data-sort one).
@@ -2982,8 +2976,8 @@ fn check_apply_call(
             );
             // Where the arguments are silent, what the call's own bracket or expected type
             // bound the carrier parameter to. An argument-pinned carrier still wins. A
-            // requirement of the spec in scope — the caller's, or the clause's `require[…]` —
-            // answers what the bracket leaves open, and no provision is read in its place
+            // requirement of the spec in scope — the caller's, or that of the sort a rule is
+            // written in — answers what the bracket leaves open, and no provision is read in its place
             // (`Tagger[Out = Int64].code()` under `requires Tagger[C = A, Out = Int64]`).
             let pinned =
                 statically_pinned_carrier(kb, &recv_carrier, carrier_param_sym, Some(spec_sort));
@@ -4513,27 +4507,18 @@ fn check_apply_call(
                     // `AmbiguousSpecOpDispatch` between two (MEASURED). A selected witness is
                     // the author's choice of dictionary, and answers the slot as it stands
                     // (WI-20260929-0RP29's `…dispatches_to_it_over_an_undecided_slot`); so is a
-                    // covering `requires` of the enclosing operation.
-                    //
-                    // IN A RULE BODY ONLY BETWEEN TWO PROVISIONS, which were refused there as a
-                    // tie before they stopped being candidates, a declared `requires(…)` or not.
-                    // One is left to the rule body's own owner ([`check_rule_body_requirements`]),
-                    // which reads a declared `requires(…)` as the rule's dictionary and which
-                    // this site cannot see: refused here, `r(?x) :- requires(Store[…]), ?x <=>
-                    // Store.peek(buf(v: 1))` was a refusal of a clause that names its dictionary
-                    // (MEASURED; it loads on the parent commit).
+                    // covering `requires` of the enclosing operation. In a rule body as in an
+                    // operation body (060.1 §1): no guard can be written at the instance.
                     if !pinned_spec && !op_requires_covers_call(kb, env, &subst, spec_sort) {
                         let sigma = SigmaCtx {
                             subst: &subst,
                             param_rigids: env.param_rigids(),
                         };
                         let goal = sort_goal_from_subst(kb, &subst, spec_sort, None);
-                        let between_rivals_only = !env.in_evaluated_body();
                         if let Some(refusal) = unfixed_slot_at_call(
                             kb,
                             &goal,
                             &sigma,
-                            between_rivals_only,
                             fn_sym,
                             span,
                         ) {
@@ -4800,13 +4785,10 @@ fn check_apply_call(
                         }
                         // A rule body — its own term and what stands under its compound
                         // expressions alike — has no `requires` to add and no later pass that
-                        // reports the classification below: the unfixed carrier is refused here,
-                        // unless the clause's own `require[…]` names the instance.
-                        if let Some(carrier) = carrier_param.filter(|_| {
-                            carrier_unfixed
-                                && env.in_rule_body()
-                                && !clause_requires_spec(kb, env, spec_sort)
-                        }) {
+                        // reports the classification below: the unfixed carrier is refused here.
+                        if let Some(carrier) =
+                            carrier_param.filter(|_| carrier_unfixed && env.in_rule_body())
+                        {
                             return Err(TypeError::MissingRequiresForSpecOp {
                                 span,
                                 spec_op_sym: fn_sym,
@@ -6274,14 +6256,13 @@ fn the_one_requirement_of(
 }
 
 /// Is a requirement of `spec` in scope at a call — a `requires` of the enclosing declaration
-/// at `spec` or at a spec that provides it, the clause's `require[…]`, or the `requires` of
-/// the sort a rule is written in? It answers what a call's bracket leaves open.
+/// at `spec` or at a spec that provides it, or the `requires` of the sort a rule is written
+/// in? It answers what a call's bracket leaves open.
 fn requirement_of_spec_in_scope(kb: &KnowledgeBase, env: &TypingEnv, spec: Symbol) -> bool {
     env.enclosing_requires()
         .iter()
         .chain(env.sub_goal_requires())
         .any(|entry| sort_provides(kb, entry.required_sort, spec))
-        || clause_requires_spec(kb, env, spec)
         || env.rule_domain().is_some_and(|d| {
             transitive_required_sorts(kb, d)
                 .iter()

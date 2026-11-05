@@ -344,7 +344,7 @@ fn drive_int(src: &str, entry: &str) -> i64 {
 fn a_mixed_bool_view_call_answers_through_the_callers_dictionary() {
     let src = program(
         "wimhrn1.boolview",
-        "  rule less(?a, ?b) :- Util.isLess(?b, x: ?a)\n  \
+        "  rule less[A](?a: A, ?b: A) :- WeakOrd[T = A], Util.isLess(?b, x: ?a)\n  \
          sort Driver\n    \
          operation citeLess[A](x: A, y: A) -> Bool effects {Error, Error[EmptyStream]}\n      \
          requires WeakOrd[T = A] =\n      \
@@ -373,7 +373,7 @@ fn a_mixed_bool_view_call_answers_through_the_callers_dictionary() {
 fn a_mixed_value_slot_call_takes_the_callers_dictionary() {
     let src = program(
         "wimhrn1.slots",
-        "  rule viaOp(?a, ?b, ?c) :- ?c <=> Util.sign(?b, x: ?a)\n  \
+        "  rule viaOp[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], ?c <=> Util.sign(?b, x: ?a)\n  \
          sort Driver\n    \
          operation cite[A](x: A, y: A) -> Int64 effects {Error, Error[EmptyStream]}\n      \
          requires WeakOrd[T = A] = viaOp(x, y).head.c\n    \
@@ -394,16 +394,22 @@ fn a_mixed_value_slot_call_takes_the_callers_dictionary() {
 }
 
 /// CONTROL — passes with every part backed out, BY DESIGN. A mixed call on a SPEC operation
-/// is the witness of a written `require`, its labelled carrier argument grounding the
-/// instance: the typer has put the call's arguments in parameter order by the time the
-/// witness is read, so no reader here sees it mixed. It pins the answer, `Leaf`'s own member.
+/// reads the requirement the clause declares, its labelled carrier argument at the
+/// introducer's type — unnamed and under a name: the typer has put the call's arguments in
+/// parameter order by the time the weave reads them, so no reader here sees it mixed. It pins
+/// the answer, `Leaf`'s own member. (The clause wrote `?d = require[Desc]`, the call its
+/// witness; proposal 060.1 §5 removed that form, and it answered the same 8 on d39bd428.)
 #[test]
-fn a_mixed_spec_operation_call_is_a_written_requirements_witness() {
+fn a_mixed_spec_operation_call_reads_the_declared_requirement() {
     let mut kb = crate::common::load_kb_with(&program(
         "wimhrn1.witness",
-        "  rule answer(?r) :- ?d = require[Desc], holds(?x), ?r <=> Desc.describe(1, x: ?x)\n",
+        "  rule answer[A](?x: A, ?r) :- Desc[A], holds(?x), ?r <=> Desc.describe(1, x: ?x)\n  \
+         rule named[A](?x: A, ?r) :- require d: Desc[A], holds(?x), ?r <=> d.describe(1, x: ?x)\n  \
+         rule viaAnswer(?r) :- answer(?x, ?r)\n  \
+         rule viaNamed(?r) :- named(?x, ?r)\n",
     ));
-    assert_eq!(one(&mut kb, "wimhrn1.witness.answer"), Some(8), "`Leaf`'s own `describe`");
+    assert_eq!(one(&mut kb, "wimhrn1.witness.viaAnswer"), Some(8), "`Leaf`'s own `describe`");
+    assert_eq!(one(&mut kb, "wimhrn1.witness.viaNamed"), Some(8), "under a name");
 }
 
 // ── 4. A rule variable's type ───────────────────────────────────────────────

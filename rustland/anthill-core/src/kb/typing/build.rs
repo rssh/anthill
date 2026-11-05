@@ -2408,8 +2408,8 @@ pub(crate) struct OpSupplyCtx<'a> {
     /// grounds here needs nothing further, one that does not can only be forwarded, and
     /// forwarding is what this ticket does not build.
     pub(crate) param_arg_types: &'a HashMap<Symbol, Value>,
-    /// WI-20260921-3G1YT — the bracket route's slot source: the spec instances the
-    /// clause's `require[…]` brackets declare ([`held_spec_views`]). Rides here for the
+    /// WI-20260921-3G1YT — the held route's slot source: the spec instances the clause's
+    /// guards declare ([`held_spec_views`]). Rides here for the
     /// same reason every field above does —
     /// it is call-site information the op half's verdict needs and the dep cannot see.
     pub(crate) held: &'a [HeldSpecView],

@@ -156,24 +156,13 @@ pub struct TypingEnv {
     /// must not change what defers to what. Read only by
     /// [`Self::referencing_scope`]. `None` outside the rule-body sweep.
     rule_scope: Option<Symbol>,
-    /// WI-20260922-0DK3H — the spec VIEWS this RULE BODY DECLARES, as `require[X]` /
-    /// `requires(X)` brackets (the `find_dictionary` goals the converter lowered them to,
-    /// whose slot 0 carries the instance WHOLE — `lower_require`'s "WHOLE, not stripped").
-    ///
-    /// THE BRACKET ROUTE'S SLOT SOURCE ([`held_spec_views`]): a clause that WRITES
-    /// `require[FiniteCollection[C = …]]` holds that contract — evidence read off the
-    /// clause's own text, not a walk of somebody else's body. Feeding it through the
-    /// cover walk is also what makes the TRANSITIVE leg work for free:
-    /// [`scope_contract_covers_dep`] walks `direct_requires_chain`, so a declared
-    /// `FiniteCollection` discharges the `Iterable` that `FiniteCollection` itself
-    /// requires. Exactly the carrier-aware transitive suppression
-    /// [`check_one_spec_op_requirement`]'s doc defers as "a clean follow-up gated on an
-    /// actual driver" — WI-20260922-0DK3H is that driver, and the cover walk supplies the
-    /// carriers its exact-symbol match could not.
-    ///
-    /// Empty outside the rule-body sweep, where it is `None` for the same reason
-    /// [`Self::rule_scope`] is.
-    pub(super) rule_declared_specs: Rc<Vec<Value>>,
+    /// The spec instances the rule being typed declares — its head introducer's guards
+    /// ([`KnowledgeBase::rule_provider_requirements`]) — each a contract the clause holds,
+    /// read by [`held_spec_views`]. Empty outside the rule-body sweep.
+    rule_held_specs: Rc<Vec<Value>>,
+    /// The rule's type variables as its body's typing names them, one per introduced
+    /// parameter, beside [`Self::rule_held_specs`].
+    rule_type_vars: Rc<Vec<VarId>>,
     /// The enclosing SORT's dictionary chain, snapshotted once per body. It is
     /// consulted at every spec-op call site under this body; caching it here avoids
     /// re-walking `SortRequiresInfo` per apply.
@@ -341,7 +330,8 @@ impl TypingEnv {
             binding_regions: None,
             enclosing_sort: None,
             rule_scope: None,
-            rule_declared_specs: Rc::new(Vec::new()),
+            rule_held_specs: Rc::new(Vec::new()),
+            rule_type_vars: Rc::new(Vec::new()),
             enclosing_chain: DictChain::empty(),
             enclosing_op_chain: None,
             op_requires: Rc::new(Vec::new()),
@@ -743,15 +733,18 @@ impl TypingEnv {
         self.rule_scope = Some(domain);
     }
 
-    /// WI-20260922-0DK3H — see [`Self::rule_declared_specs`]. Set once per rule by the
-    /// rule-body sweep, which is the one place holding the `RuleId` the brackets are
-    /// collected from.
-    pub(super) fn set_rule_declared_specs(&mut self, specs: Vec<Value>) {
-        self.rule_declared_specs = Rc::new(specs);
+    /// See [`Self::rule_held_specs`]. Set once per rule by the rule-body sweep.
+    pub(super) fn set_rule_held_specs(&mut self, specs: Vec<Value>, type_vars: Vec<VarId>) {
+        self.rule_held_specs = Rc::new(specs);
+        self.rule_type_vars = Rc::new(type_vars);
     }
 
-    pub(super) fn rule_declared_specs(&self) -> &[Value] {
-        &self.rule_declared_specs
+    pub(super) fn rule_type_vars(&self) -> Rc<Vec<VarId>> {
+        Rc::clone(&self.rule_type_vars)
+    }
+
+    pub(super) fn rule_held_specs(&self) -> &[Value] {
+        &self.rule_held_specs
     }
 
     /// The enclosing SORT's slots alone.

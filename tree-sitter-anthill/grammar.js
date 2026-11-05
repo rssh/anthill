@@ -497,7 +497,20 @@ module.exports = grammar({
     // heads and body). Both `let_binding` and `cut` are meaningful only in a
     // body; the converter lowers a body `let` to `?v <=> expr` (unify) and a
     // body `!` to a `cut` goal, and rejects either in head position (loud).
-    _goal: $ => choice($.cut, $.let_binding, $._term),
+    _goal: $ => choice($.cut, $.let_binding, $.require_goal, $._term),
+
+    // Proposal 060.1 §8.6: a rule's requirement written with the `require` keyword —
+    // `require WeakOrd[A]`, the guard `WeakOrd[A]` itself, and `require up: WeakOrd[A]`,
+    // the same requirement under a name the body calls through (`up.compare(…)`) and a
+    // citation's bracket binds (`cmpN[up = down](…)`). The keyword is contextual: only
+    // at a goal's start, so a term `require[…]` elsewhere (`?d = require[X]`) stays an
+    // application, and `require[X]` written as a goal reads as the keyword before a
+    // one-element list, which the converter takes as that form.
+    require_goal: $ => prec.right(seq(
+      'require',
+      optional(seq(field('binder', $.identifier), ':')),
+      field('requirement', $._term),
+    )),
 
     // Cut (`!`) — kernel control primitive (proposal 033.1 / WI-568). A standalone
     // `!` goal that commits to the current rule invocation. Distinct from the

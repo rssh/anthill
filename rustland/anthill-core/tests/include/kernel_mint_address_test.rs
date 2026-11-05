@@ -4,11 +4,14 @@
 //! subject is the tier's absence from TYPE position (`remap_symbol_strict`), which
 //! nothing here touches. This is the tier-shrinking half.
 //!
-//! `!` and `requires(X)` / `require[X]` name no functor in the source: the CONVERTER
-//! supplies one (`anthill.kernel.cut`, `anthill.kernel.find_dictionary`). Until this
-//! change it supplied the SHORT name and `PRELUDE_QUALIFIED` — the implicit tier's
-//! lowest rung — turned it back into the address. That is WI-20260825-5W3RJ's shape one
-//! namespace over.
+//! `!` names no functor in the source: the CONVERTER supplies one (`anthill.kernel.cut`).
+//! Until this change it supplied the SHORT name and `PRELUDE_QUALIFIED` — the implicit
+//! tier's lowest rung — turned it back into the address. That is WI-20260825-5W3RJ's
+//! shape one namespace over. `requires(X)` and `require[X]` were the second such mint,
+//! of `anthill.kernel.find_dictionary`; proposal 060.1 §5 removed both, and the read a
+//! rule's requirement guard makes (`rule r[A](?x: A) :- PartialEq[T = A]`) is minted by
+//! the TYPER, which names the relation by its address (`find_dictionary_symbol`). The
+//! guard rows below drive that read.
 //!
 //! `pratt::UNIFY_FUNCTOR` / `STRUCT_EQ_FUNCTOR` FOLLOWED, in WI-909's group-4 pass, and
 //! this file covers both passes because they are one mechanism. `<=>` and `===` name no
@@ -30,9 +33,10 @@
 //! back-outs; an earlier version of this file measured only the first.
 //!   * THE MINT (restore the short strings in `convert.rs`):
 //!       `a_minted_cut_carries_its_address`             `["cut"]` for the address
-//!       `a_minted_requires_guard_carries_its_address`  `["find_dictionary"]` likewise
 //!       `a_local_cut_declaration_does_not_capture_the_operator`     2 solutions, not 1
-//!       `a_local_find_dictionary_declaration_does_not_capture_the_guard` 1, not 0
+//!       `a_local_find_dictionary_declaration_does_not_capture_the_guard` 1, not 0 —
+//!       measured on the converter's mint of `requires(X)`; the guard's read is the
+//!       typer's since 060.1 §5, and that back-out was not measured again
 //!   * THE TIER ROWS (re-add them to `PRELUDE_QUALIFIED`, mints untouched):
 //!       `a_rule_head_named_cut_introduces_a_local_name` — the head resolves THROUGH the
 //!       tier to `anthill.kernel.cut` instead, so no `test.…cut` is minted and the row
@@ -126,13 +130,26 @@ fn a_minted_cut_carries_its_address() {
     );
 }
 
-/// Both requirement spellings mint `..anthill.kernel.find_dictionary`. They lower
-/// through two different functions (`rewrite_requires_goal` / `lower_require`) and the
-/// row holds them together so a fix to one cannot leave the other short.
+/// A requirement written in a rule body mints no functor at parse: the guard is the spec
+/// instance itself, with the keyword or without it, and the removed spellings are refused
+/// (proposal 060.1 §5). The read the guard makes is the typer's, by the relation's address
+/// — the guard rows below drive it, a local `find_dictionary` beside it.
 ///
-/// FAILS ON BACK-OUT of either `dt::FIND_DICTIONARY` -> `"find_dictionary"`.
+/// FAILS ON BACK-OUT of the refusal: `requires(PartialEq[T])` and `?d = require[…]` parse,
+/// each minting `[..anthill.kernel.find_dictionary]`.
 #[test]
-fn a_minted_requires_guard_carries_its_address() {
+fn a_requirement_mints_no_find_dictionary_at_parse() {
+    for body in ["PartialEq[T = A]", "require PartialEq[T = A]"] {
+        let src = format!(
+            "namespace test.w909.req\n  \
+             import anthill.prelude.{{PartialEq}}\n  \
+             fact p909(1)\n  \
+             rule a909[A](?x: A) :- {body}, p909(?x)\n\
+             end\n"
+        );
+        let spellings = minted_spellings(&src, "find_dictionary", dt::FIND_DICTIONARY);
+        assert!(spellings.is_empty(), "`{body}` must mint no read at parse; got {spellings:?}");
+    }
     for body in ["requires(PartialEq[T])", "?d = require[PartialEq[T]]"] {
         let src = format!(
             "namespace test.w909.req\n  \
@@ -141,11 +158,10 @@ fn a_minted_requires_guard_carries_its_address() {
              rule a909(?x) :- {body}, p909(?x)\n\
              end\n"
         );
-        let spellings = minted_spellings(&src, "find_dictionary", dt::FIND_DICTIONARY);
-        assert_eq!(
-            spellings,
-            vec![dt::FIND_DICTIONARY.to_owned()],
-            "`{body}` must name the kernel relation outright; got {spellings:?}"
+        let errs = crate::common::parse_errs(&src);
+        assert!(
+            errs.iter().any(|e| e.contains("is no longer written")),
+            "`{body}` is a removed spelling and must be refused; got {errs:?}"
         );
     }
 }
@@ -556,7 +572,7 @@ fn guard_src(rival: &str) -> String {
         provides Eq[T = Witheq]
       end
 {rival}
-      rule related909(?x, ?y) :- requires(PartialEq[T]), eq(?x, ?y)
+      rule related909[A](?x: A, ?y: A) :- PartialEq[T = A], eq(?x, ?y)
     end
 "#
     )
@@ -574,8 +590,8 @@ fn guard_src(rival: &str) -> String {
 /// `Witheq` answering 1 in both. That was filed as the guard not discriminating
 /// (WI-20260831-QF5JT); the row that pins the derivation instead is
 /// `wi300_rule_body_requires_test::a_carrier_whose_fields_provide_eq_derives_it_and_passes_the_guard`.
-/// These rows ask whether a same-spelled declaration captures the `requires(X)` MINT,
-/// and need a carrier the guard refuses.
+/// These rows ask whether a same-spelled declaration captures the guard's read, and need
+/// a carrier the guard refuses.
 fn load_guard_kb(rival: &str) -> KnowledgeBase {
     load_kb_with(&guard_src(rival))
 }
@@ -629,7 +645,7 @@ fn the_guard_fires_for_a_provider() {
     );
 }
 
-/// THE CONTROL for the blocking arm. `Noeq` has no `provides Eq`, so `requires` blocks
+/// THE CONTROL for the blocking arm. `Noeq` has no `provides Eq`, so the guard blocks
 /// and the structurally-equal pair yields nothing. Passes either way, by design.
 #[test]
 fn the_guard_still_blocks_with_no_rival() {
@@ -644,10 +660,11 @@ fn the_guard_still_blocks_with_no_rival() {
 
 /// A NAMESPACE DECLARING ITS OWN `find_dictionary` DOES NOT CAPTURE THE GUARD.
 ///
-/// INVERTS ON BACK-OUT of the mint, MEASURED: **1 solution, not 0**. The short mint
-/// resolves to the rival, which succeeds for any argument, so the typer sweep never
-/// recognises the goal as the kernel relation, an unsatisfiable requirement stops
-/// blocking, and the rule fires on a carrier that provides nothing. A guard that
+/// INVERTED ON BACK-OUT of the converter's mint of `requires(X)`, MEASURED: **1 solution,
+/// not 0**. The short mint resolved to the rival, which succeeds for any argument, so the
+/// typer sweep never recognised the goal as the kernel relation, an unsatisfiable
+/// requirement stopped blocking, and the rule fired on a carrier that provides nothing.
+/// The guard's read is the typer's since proposal 060.1 §5, minted by the address. A guard that
 /// silently stops guarding is the worst reading in this family, which is why the row is
 /// driven rather than asserted at the parse level alone.
 #[test]

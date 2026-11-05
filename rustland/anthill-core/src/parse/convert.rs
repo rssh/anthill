@@ -1211,6 +1211,10 @@ impl<'a> Converter<'a> {
                 results.push(tid);
             }
             "fn_term" => self.push_fn_term(node, work),
+            "require_goal" => {
+                let tid = self.convert_require_goal(node);
+                results.push(tid);
+            }
             "let_binding" => {
                 // proposal 049: `let ?v = e` is sugar for `?v <=> e`; lower to the same
                 // `unify(?v, e)` IR pratt builds for `<=>` (WI-522). Per-goal depth is
@@ -3737,101 +3741,73 @@ impl<'a> Converter<'a> {
     /// (`requires_body` is otherwise `rule_body` verbatim) made structural: a goal
     /// rewrite added for one is added for both.
     fn convert_rule_body(&mut self, node: Node) -> Vec<ParseTermId> {
-        let goals = self.convert_requires_body(node, &mut Vec::new(), 0);
-        // WI-1040: `require[X]` is a RULE-BODY interpretation, so it is applied
-        // HERE and not inside `convert_requires_body` — that walk is shared with an
-        // operation's `requires` clause list, where the spelling would mean nothing
-        // (a clause DECLARES a slot; there is no body to bring a dictionary into).
-        goals
-            .into_iter()
-            .map(|g| self.rewrite_require_goal(g))
-            .collect()
+        self.convert_requires_body(node, &mut Vec::new(), 0)
     }
 
-    /// WI-1040 (proposal 060 §1) — interpret a rule-body `require[X]`.
+    /// The requirement spellings proposal 060.1 §5 removed, refused wherever a goal of a
+    /// rule body or of a `requires` list holds one, at any depth: `require[X]`, its named
+    /// form `?d = require[X]`, and the check-only guard `requires(X)`. A rule declares a
+    /// requirement as an operation does, with a type parameter on the head's introducer
+    /// and a guard naming the spec at it, and calls through it by a name the `require`
+    /// keyword gives (`require s: Spec[T = A]`, `s.op(…)`); a dictionary is not a value a
+    /// rule body reads. Each is refused where it is written, the named form whole, naming
+    /// what to write instead.
     ///
-    /// Three spellings, three distinct things (`docs/design/requirement-channel.md`
-    /// §3): `requires <T>` DECLARES a slot (untouched); `requires(X)` is the WI-300
-    /// check-only guard; `require[X]` DENOTES the dictionary, bringing it into the
-    /// clause's scope. All three lower to the one kernel relation
-    /// `anthill.kernel.find_dictionary`, which `require[X]` reads with an OUTPUT:
-    ///
-    /// ```text
-    ///     require[Eq[T = Int64]]      ⇒  find_dictionary(Eq[T = Int64], out: ?<fresh>)
-    ///     ?d = require[Eq[T = Int64]] ⇒  find_dictionary(Eq[T = Int64], out: ?d)
-    ///     requires(Eq[T = Int64])     ⇒  find_dictionary(Eq[T = Int64])
-    ///     requires(Eq[T])             ⇒  find_dictionary(Eq)   -- `T` denotes no sort
-    /// ```
-    ///
-    /// `out` is a NAMED arg on purpose (the settled encoding, channel doc §5): the
-    /// delivered resolver arm and the typer sweep both key on POSITIONAL arity, so a
-    /// no-`out` goal takes the existing path with nothing about it changed —
-    /// WI-1040's acceptance (f) holds structurally rather than by re-testing.
-    ///
-    /// The output variable is minted HERE, at parse time, for the bare spelling —
-    /// not by the typer sweep. A rule's variables are numbered when the clause is
-    /// closed to De Bruijn, so a variable introduced after that would have no slot;
-    /// minting it as an ordinary body existential (exactly what `?` mints) means the
-    /// sweep only ever COPIES an occurrence that already exists.
-    ///
-    /// The spec's type-args RIDE WHOLE (WI-20260909-51W18, closing
-    /// `requirement-channel.md` §10 item 1). They used to be stripped here because a
-    /// bare `T` in term position reaches scope resolution with no binding in a free
-    /// rule; the loader now lowers this argument as a TYPE
-    /// ([`crate::kb::load::Loader::build_require_spec_occurrence`]), where a name that denotes
-    /// no sort is DROPPED rather than reported — which reproduces the stripped reading
-    /// exactly for the free-parameter spelling and retains a written concrete binding.
-    ///
-    /// `require` is matched BY NAME with a bracketed (type-application) shape, the
-    /// same way `requires` / `unify` / `eq` are matched by name here. A parenthesised
-    /// `require(X)` is deliberately NOT this form: it stays an ordinary goal, so a
-    /// user predicate spelled `require` keeps working.
-    fn rewrite_require_goal(&mut self, tid: ParseTermId) -> ParseTermId {
-        // Spelling 2: `?d = require[X]` — the author names the output. `=` desugars
-        // to `eq(lhs, rhs)` (pratt `EQ_FUNCTOR`), and only this exact shape is a
-        // requirement denotation: variable on the left, `require[…]` on the right.
-        if let Term::Fn {
-            functor,
-            pos_args,
-            named_args,
-        } = self.terms.get(tid)
-        {
-            if self.symbols.local_name(*functor) == super::pratt::EQ_FUNCTOR
-                && pos_args.len() == 2
-                && named_args.is_empty()
+    /// Matched BY NAME, by shape: `require` with a bracketed (type-application) shape, as
+    /// [`Self::require_spec_arg`] says, and `requires` — a soft keyword (grammar), so the
+    /// goal reaches here as an ordinary `Term::Fn` on the bare name — with one argument.
+    /// Iterative, so a deeply nested goal cannot overflow the host stack.
+    fn refuse_removed_requirement_forms(&mut self, tid: ParseTermId) {
+        let mut stack = vec![tid];
+        let mut offenders: Vec<Span> = Vec::new();
+        while let Some(t) = stack.pop() {
+            if let Term::Fn {
+                functor,
+                pos_args,
+                named_args,
+            } = self.terms.get(t)
             {
-                let (lhs, rhs) = (pos_args[0], pos_args[1]);
-                if self.require_spec_arg(rhs).is_some() {
-                    let span = self.terms.span(tid);
-                    if !matches!(self.terms.get(lhs), Term::Var(_)) {
-                        self.err_at_span(
-                            "`require[…]` may name only a VARIABLE — write `?d = require[Spec[…]]`. \
-                             The output is an ordinary logic variable, not a pattern",
-                            span,
-                        );
-                        return tid;
-                    }
-                    return self.lower_require(rhs, lhs, span);
+                let name = self.symbols.local_name(*functor);
+                let named_form = name == super::pratt::EQ_FUNCTOR
+                    && pos_args.len() == 2
+                    && named_args.is_empty()
+                    && self.require_spec_arg(pos_args[1]).is_some();
+                let check_form = name == "requires" && pos_args.len() == 1 && named_args.is_empty();
+                if named_form || check_form {
+                    offenders.push(self.terms.span(t));
+                    continue;
                 }
             }
+            if self.require_spec_arg(t).is_some() {
+                offenders.push(self.terms.span(t));
+                continue;
+            }
+            if let Term::Fn {
+                pos_args,
+                named_args,
+                ..
+            } = self.terms.get(t)
+            {
+                stack.extend(pos_args.iter().copied());
+                stack.extend(named_args.iter().map(|(_, a)| *a));
+            }
         }
-        // Spelling 1: the bare goal `require[X]` — the translation owns the output
-        // variable, minted fresh here.
-        if self.require_spec_arg(tid).is_some() {
-            let span = self.terms.span(tid);
-            let sym = self.intern("__req_out");
-            let vid = VarId::new(self.next_var, sym);
-            self.next_var += 1;
-            let out = self.terms.alloc(Term::Var(Var::Global(vid)), span);
-            return self.lower_require(tid, out, span);
+        for span in offenders {
+            self.refuse_removed_requirement_form(span);
         }
-        // Every other goal: `require[…]` is legal ONLY as a bare goal or as the RHS
-        // of a top-level `=` (channel doc §3 — no general lifting). Anything left
-        // nested inside a term is refused LOUDLY here rather than escaping to scope
-        // resolution, which would report it as an unresolved name `require` and hide
-        // which rule it belongs to.
-        self.refuse_nested_require(tid);
-        tid
+    }
+
+    /// The refusal of a removed requirement form — `require[X]`, `?d = require[X]`,
+    /// `requires(X)` — at `span`, quoting what was written.
+    fn refuse_removed_requirement_form(&mut self, span: Span) {
+        let written = &self.source[span.start as usize..span.end as usize];
+        self.err_at_span(
+            format!(
+                "`{written}` is no longer written: {}",
+                super::desugar_target::DECLARE_A_REQUIREMENT
+            ),
+            span,
+        );
     }
 
     /// The spec-instance argument of a `require[X]` denotation, or `None` when `tid`
@@ -3851,64 +3827,6 @@ impl<'a> Converter<'a> {
                 Some(pos_args[0])
             }
             _ => None,
-        }
-    }
-
-    /// Build `find_dictionary(<spec base>, out: <out>)` for a `require[X]` goal.
-    fn lower_require(
-        &mut self,
-        require_tid: ParseTermId,
-        out: ParseTermId,
-        span: Span,
-    ) -> ParseTermId {
-        let spec_arg = self
-            .require_spec_arg(require_tid)
-            .expect("lower_require called on a non-`require[…]` term");
-        // WHOLE, not stripped — see the doc above and `rewrite_requires_goal`'s twin.
-        let base = spec_arg;
-        // The address, not the short name — see `desugar_target`. The other producer
-        // of this functor is `rewrite_requires_goal` below.
-        let functor = self.intern(dt::FIND_DICTIONARY);
-        let out_label = self.intern(crate::kb::typing::REQUIREMENT_OUT_LABEL);
-        self.terms.alloc(
-            Term::Fn {
-                functor,
-                pos_args: SmallVec::from_elem(base, 1),
-                named_args: SmallVec::from_slice(&[(out_label, out)]),
-            },
-            span,
-        )
-    }
-
-    /// Refuse any `require[…]` still nested inside `tid` after the two legal
-    /// spellings have been lowered. Iterative (explicit worklist) so a deeply
-    /// nested goal cannot overflow the host stack.
-    fn refuse_nested_require(&mut self, tid: ParseTermId) {
-        let mut stack = vec![tid];
-        let mut offenders: Vec<Span> = Vec::new();
-        while let Some(t) = stack.pop() {
-            if self.require_spec_arg(t).is_some() {
-                offenders.push(self.terms.span(t));
-                continue;
-            }
-            if let Term::Fn {
-                pos_args,
-                named_args,
-                ..
-            } = self.terms.get(t)
-            {
-                stack.extend(pos_args.iter().copied());
-                stack.extend(named_args.iter().map(|(_, a)| *a));
-            }
-        }
-        for span in offenders {
-            self.err_at_span(
-                "`require[…]` is legal only as a bare rule-body goal or as the right-hand \
-                 side of a top-level `=` (`?d = require[Spec[…]]`). It denotes a dictionary \
-                 in the CLAUSE's scope, so there is no lifting rule that would give a \
-                 nested occurrence a meaning",
-                span,
-            );
         }
     }
 
@@ -3988,8 +3906,8 @@ impl<'a> Converter<'a> {
                 let Some(goal_node) = self.requires_binder_goal_node(type_node) else {
                     continue;
                 };
-                let tid = self.convert_term(goal_node);
-                let goal = self.rewrite_requires_goal(tid);
+                let goal = self.convert_term(goal_node);
+                self.refuse_removed_requirement_forms(goal);
                 let slot = slot_base + terms.len();
                 terms.push(goal);
                 // `binder` is mandatory in the grammar exactly as `type` is, so a
@@ -4011,48 +3929,11 @@ impl<'a> Converter<'a> {
             }
             if is_term_kind(child.kind()) {
                 let tid = self.convert_term(child);
-                terms.push(self.rewrite_requires_goal(tid));
+                self.refuse_removed_requirement_forms(tid);
+                terms.push(tid);
             }
         }
         terms
-    }
-
-    /// WI-300: a rule-body goal `requires(X)` is not an ordinary predicate — it is
-    /// a requirement guard (spec X must resolve at the current binding). Rewrite it
-    /// to the distinguished `find_dictionary(X)` form so the resolver's
-    /// `BuiltinTag::FindDictionary` recognizes it; the typer sweep later rewrites it
-    /// into `find_dictionary(spec_base, op_functor, witness_args…)`. `requires` is a soft
-    /// keyword (grammar), so a rule-body `requires(X)` reaches here as an ordinary
-    /// `Term::Fn` whose functor is the bare interned name `"requires"` — matched by
-    /// name, exactly as the loader's `unify`/`eq` special-cases match by name.
-    fn rewrite_requires_goal(&mut self, tid: ParseTermId) -> ParseTermId {
-        let (spec_arg, span) = match self.terms.get(tid) {
-            Term::Fn {
-                functor,
-                pos_args,
-                named_args,
-            } if self.symbols.local_name(*functor) == "requires"
-                && pos_args.len() == 1
-                && named_args.is_empty() =>
-            {
-                (pos_args[0], self.terms.span(tid))
-            }
-            _ => return tid,
-        };
-        // The spec instance rides WHOLE, exactly as `lower_require`'s does — one
-        // spelling of one relation, so the check tier and the bind tier cannot acquire
-        // different readings of the same bracket. This used to strip the `[…]`
-        // decoration to keep a bare `T` out of scope resolution; the loader now lowers
-        // this argument as a TYPE (`Loader::build_require_spec_occurrence`), which is where that
-        // question belongs and where a name denoting no sort is dropped rather than
-        // reported. See `docs/design/060-implementation.md` §8.6.
-        let base = spec_arg;
-        let mut args: SmallVec<[ParseTermId; 4]> = SmallVec::new();
-        args.push(base);
-        // The address, as at `lower_require` (the `require[X]` producer): the typer
-        // asks for this relation by qualified name, so the address is what the two
-        // ends were agreeing on through a table in the middle.
-        self.alloc_fn_term(dt::FIND_DICTIONARY, args, span)
     }
 
     // ── Namespace ───────────────────────────────────────────────
@@ -5004,6 +4885,32 @@ impl<'a> Converter<'a> {
                 }
             })
             .collect()
+    }
+
+    /// Proposal 060.1 §8.6 — a requirement written with the `require` keyword. `require
+    /// WeakOrd[A]` is the guard `WeakOrd[A]`, the same term; `require up: WeakOrd[A]` is that
+    /// guard under the name `up` ([`SimpleTermStore::require_goal`]). `require[X]` written
+    /// as a goal reads as the keyword before a one-element list; it is the removed form
+    /// (§5) and refused as [`Self::refuse_removed_requirement_forms`] refuses it.
+    fn convert_require_goal(&mut self, node: Node) -> ParseTermId {
+        let span = self.span(node);
+        let Some(requirement) = self.field(node, "requirement") else {
+            self.err("`require` with no requirement after it", node);
+            return self.alloc_bottom(span);
+        };
+        let binder = self.field(node, "binder");
+        if requirement.kind() == "collection_literal" {
+            let mut cursor = requirement.walk();
+            let elements: Vec<Node> = requirement.named_children(&mut cursor).collect();
+            if let ([_], None) = (elements.as_slice(), binder) {
+                self.refuse_removed_requirement_form(span);
+                return self.alloc_bottom(span);
+            }
+        }
+        let tid = self.convert_term(requirement);
+        let name = binder.map(|b| self.intern(self.text(b)));
+        self.terms.set_require_goal(tid, name);
+        tid
     }
 
     /// proposal 049: lower a goal-position `let ?v = expr` to `unify(?v, expr)` — the same
@@ -6255,6 +6162,7 @@ fn is_term_kind(kind: &str) -> bool {
             // strips into a per-variable `Type` constraint.
             | "typed_var_arg"
             | "fn_term"
+            | "require_goal"
             | "nested_implication"
             | "bounded_quantification"
             | "application"

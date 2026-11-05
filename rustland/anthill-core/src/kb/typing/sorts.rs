@@ -381,46 +381,40 @@ pub(super) fn type_check_sorts_collect(
     // the call. Load-time (all OperationInfo facts loaded), like the WI-701 sibling,
     // and AFTER `type_rule_bodies` so a body/guard method call (`?x.effectful_op()`)
     // is already dispatched to `Apply` form — otherwise the un-dispatched `DotApply`
-    // would slip the functor walk (mirrors `record_find_dictionary_grounding` below).
+    // would slip the functor walk.
     errors.extend(check_simp_effectful_ops(kb));
 
-    // WI-300: rewrite every rule body's `find_dictionary(X)` guard (the converter's
-    // desugaring of a rule-body `requires(X)`) into the resolver-ready
-    // `find_dictionary(spec_base, op_functor, op_arg…)` form, recording which body
-    // op-call witnesses ground spec X. Runs AFTER dot-dispatch so a `?x.eq(?y)`
-    // witness is already an `Apply`, and after signature checks so the spec-op
-    // metadata the grounding reads is settled.
     // WI-742 (proposal 060 §2): compile every `?x: T` on a RELATIONAL head into a
-    // prepended `domain(?x, T)` body goal. BEFORE the requirement sweep below, so the
-    // typed binding is visible as the SECOND ANCHOR a `require[Spec[T]]` may ground on
-    // (proposal 060 §3); after `type_rule_bodies`, so the bodies it extends are settled
-    // and `collect_rule_var_types` has already read the body the AUTHOR wrote — the
-    // generated goal must not feed the inference whose output it exists to enforce.
+    // prepended `domain(?x, T)` body goal; after `type_rule_bodies`, so the bodies it
+    // extends are settled and `collect_rule_var_types` has already read the body the
+    // AUTHOR wrote — the generated goal must not feed the inference whose output it
+    // exists to enforce.
     install_typed_head_domain_goals(kb);
 
-    errors.extend(record_find_dictionary_grounding(kb));
+    // A rule's declared requirements — the head introducer's guards — compiled into reads
+    // of their dictionaries, each covered call woven through its own.
     errors.extend(install_rule_provider_dictionaries(kb));
-    // WI-642: the STATIC face of WI-300. `record_find_dictionary_grounding` above
-    // handles a rule that DECLARES its requirement (`requires(X)` → find_dictionary);
-    // this flags a rule-body spec-op call whose requirement is neither declared nor
-    // satisfiable by a provision — statically missing, so the WI-300 guard would only
-    // `DontFire` at resolution (a silent clause failure). Runs after the dictionary
-    // rewrite so a declared `requires` is visible, and after `type_rule_bodies` so the
+    // WI-642: this flags a rule-body spec-op call whose requirement is neither declared nor
+    // satisfiable by a provision — statically missing, so the call would fail at
+    // resolution for a reason no message names. Runs after the guards' reads are installed
+    // so a declared requirement is visible, and after `type_rule_bodies` so the
     // per-arg `inferred_type` the carrier decision reads is stamped; and BEFORE the
     // inference below, which weaves a call it reads unwoven: a call left to its clause with
     // a carrier no provision binds among its known ones is refused, not woven past.
-    errors.extend(check_rule_body_requirements(kb));
+    let (requirement_errors, refused_calls) = check_rule_body_requirements(kb);
+    errors.extend(requirement_errors);
     // WI-20260925-P7VP4: every rule-body call whose requirement is not known at load gets
     // the condition its author could have written — a read before the goal holding it, the
     // call woven through it. AFTER the requirement sweep, which grounds each WRITTEN
     // `require` on a body call and only finds that call unwoven (a transitive or inherited
     // witness woven first made a loading clause fail "no such call"); BEFORE
     // `settle_citation_routes`, so a citation routes the inferred reads as the written ones.
-    infer_rule_body_requirements(kb);
+    // A call the requirement sweep above refused is not refused again for what it lacks.
+    let undeclared = infer_rule_body_requirements(kb, &refused_calls);
     // WI-20261102-ATVC1: every rule-body goal whose callee takes dictionaries is given the ones
-    // its clause routes to it — forward slots the clause takes from its own caller, a
-    // bracket's instance built here. AFTER the inference, whose reads are what a callee takes;
-    // BEFORE `settle_citation_routes`, which routes the forward slots as it routes reads.
+    // its clause routes to it — a requirement the clause declares, a dictionary built here.
+    // AFTER the inference, whose reads are what a callee takes; BEFORE
+    // `settle_citation_routes`, which reads a cited clause's goals that pass nothing.
     let goals_refused = route_rule_goal_requirements(kb);
     // WI-20260911-5G28A S2: every rule read is now routable, so the citations queued while
     // the operation bodies were typed can be routed (`settle_citation_routes`). What it
@@ -452,6 +446,7 @@ pub(super) fn type_check_sorts_collect(
     sources.resize(errors.len(), None);
     for (err, src) in check_rule_body_goal_readings(kb)
         .into_iter()
+        .chain(undeclared)
         .chain(goals_refused)
         .chain(citations_refused)
     {

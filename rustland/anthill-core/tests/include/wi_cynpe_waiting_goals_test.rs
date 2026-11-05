@@ -102,7 +102,7 @@ namespace wicynpe
   -- CONTROLS
   rule early(?x) :- ?x <=> blue(), Colour.score(?x, 3)
   rule lateEq(x: Colour) :- Colour.score(x) = 3
-  rule convTagReq(?r) :- require[Conv[A = Meters, B = String]], Conv.tag("km", ?r)
+  rule convTagReq(?r) :- Conv[A = Meters, B = String].tag("km", ?r)
 end
 "#;
 
@@ -191,15 +191,16 @@ fn a_call_that_never_gets_its_argument_is_a_conditional_answer() {
 }
 
 /// PRVA2's row, the load-time half (WI-20261013-RYDNV): a clause that writes the call is
-/// refused, each, naming the `require` that would fix `A`. They loaded, and their goals reached
-/// the run time as the rows below ask them.
+/// refused, each, naming the instance written at the call that would fix `A` (it named the
+/// clause's `require[Conv[A = …]]`, which proposal 060.1 §5 removed). They loaded, and their
+/// goals reached the run time as the rows below ask them.
 #[test]
 fn a_clause_that_writes_the_unreduced_call_is_refused_at_load() {
     let src = SRC.replace("\nend\n", &format!("\n{}end\n", UNREDUCED_CLAUSES.concat()));
     let errs = crate::common::load_errors_of(&src);
     let refused = errs
         .iter()
-        .filter(|e| e.contains("wicynpe.Conv.tag") && e.contains("require[Conv[A = …]]"))
+        .filter(|e| e.contains("wicynpe.Conv.tag") && e.contains("`Conv[A = …].tag(…)`"))
         .count();
     assert_eq!(refused, UNREDUCED_CLAUSES.len(), "one refusal per clause: {errs:#?}");
 }
@@ -325,7 +326,8 @@ fn control_the_value_form_of_the_same_call() {
     assert_eq!(rows(&mut kb, "lateEq"), vec![("blue".to_string(), true)]);
 }
 
-/// With the instance named, the call runs: `3` either way.
+/// With the instance named, the call runs: `3` either way. Named on the call's receiver; it
+/// was the clause's `require[Conv[A = Meters, B = String]]`, removed by proposal 060.1 §5.
 #[test]
 fn control_a_supplied_call_runs() {
     let mut kb = kb();

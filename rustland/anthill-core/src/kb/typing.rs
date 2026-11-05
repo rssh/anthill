@@ -28,7 +28,7 @@
 //!    `tuples` (under `tuple_align`), `sort_alias`, `type_preds`, `extract`, `value_type`.
 //!  * Declaration checks — `sorts` (`type_check_sorts`), `signature`, `elaborate`,
 //!    `op_bodies`.
-//!  * Rules — `rules`, `rule_requirements`, `anchor`, `rule_dispatch`, `rule_constraints`.
+//!  * Rules — `rules`, `rule_requirements`, `call_shape`, `rule_dispatch`, `rule_constraints`.
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::rc::Rc;
@@ -80,7 +80,7 @@ mod tests;
 mod tuple_align;
 use tuple_align::{TupleAlign, TupleNames, TupleOrder, TupleWidth};
 
-mod anchor;
+mod call_shape;
 mod apply;
 mod arg_hints;
 mod args;
@@ -142,7 +142,7 @@ mod unify;
 mod value_type;
 mod visit;
 
-use anchor::*;
+use call_shape::*;
 pub use apply::*;
 use arg_hints::*;
 pub(crate) use args::*;
@@ -162,7 +162,7 @@ pub use display::*;
 use dot_rule::*;
 pub(crate) use effects::*;
 use elaborate::*;
-pub(crate) use elaborate::value_is_anonymous_wildcard;
+pub(crate) use elaborate::{type_value_spec_sym, value_is_anonymous_wildcard};
 pub use env::*;
 pub use error::*;
 pub(crate) use eta::*;

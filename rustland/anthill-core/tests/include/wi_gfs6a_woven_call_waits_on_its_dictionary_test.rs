@@ -8,8 +8,15 @@
 //! and waits while the carrier is unbound; the call waits with `?d` among its blockers
 //! (WI-20260926-CYNPE's coarse ones), answers once it is bound, and is a conditional answer if
 //! it never is. A ground carrier known to provide no instance makes the requirement
-//! unavailable: the goal fails, written `require[X]` or unwritten alike — a missing provider
-//! is no undecided answer (decided by the user, 2026-10-14).
+//! unavailable: the goal fails, stated by a head column's type or unwritten alike — a missing
+//! provider is no undecided answer (decided by the user, 2026-10-14).
+//!
+//! `Sp` receives on itself, so a clause states its requirement by typing a head column at it
+//! (`s: Sp`), as an operation types a parameter — the introducer's guard has no carrier
+//! parameter of `Sp` to bind. Four rows wrote `require[Sp]` instead, removed by proposal
+//! 060.1 §5: three are written so now, and the one whose subject was the read written AFTER
+//! the call it covers (`Sp.dflt(?s, ?r), require[Sp]`) is gone — no spelling puts a read
+//! there. The back-outs below that name those rows were measured on the removed form.
 //!
 //! BEFORE, measured on the ticket's two programs and on WI-20260923-KCNA0's three:
 //!   * over `Sp` with a type parameter (`Car provides Sp[T = Int64]`), the read built `Sp[T =
@@ -245,19 +252,20 @@ fn a_rule_citing_the_clause_answers() {
 }
 
 /// CONTROL for the element read off the provision: an element the author WROTE still selects
-/// the row. `require[Sp[T = String]]` at a `Car`, which provides `Sp` at `T = Int64` only, has
-/// no dictionary and the clause waits — a conditional row; written `T = Int64` it answers 42.
-/// FAILS with the provision's element taking the place of the written one: `wrongT` answers 42,
-/// definitely, through a requirement that does not hold.
+/// the row. A head column typed `Sp[T = String]` at a `Car`, which provides `Sp` at `T = Int64`
+/// only, holds no `Car`, and the clause has no row; typed `Sp[T = Int64]` it answers 42. (It
+/// was `require[Sp[T = String]]`, removed by proposal 060.1 §5, whose clause WAITED — a
+/// conditional row, which a missing provider is not; and it FAILED with the provision's element
+/// taking the place of the written one, `wrongT` answering 42 definitely.)
 #[test]
 fn a_written_element_still_selects_the_row() {
     let rules = "  import anthill.prelude.{String}\n  \
-                 rule wrongT(?s, ?r) :- require[Sp[T = String]], Sp.size(?s, ?r)\n  \
-                 rule rightT(?s, ?r) :- require[Sp[T = Int64]], Sp.size(?s, ?r)\n";
+                 rule wrongT(s: Sp[T = String], ?r) :- Sp.size(s, ?r)\n  \
+                 rule rightT(s: Sp[T = Int64], ?r) :- Sp.size(s, ?r)\n";
     let mut kb = crate::common::load_kb_with(&program("gfs6a.written", true, rules));
     assert_eq!(
         answers(&mut kb, "test.gfs6a.written.wrongT(test.gfs6a.written.Car.car(n: 1), ?r)"),
-        vec![(None, false)],
+        Vec::<(Option<i64>, bool)>::new(),
         "no row of `Sp` at `T = String` for a `Car`",
     );
     assert_eq!(
@@ -266,36 +274,23 @@ fn a_written_element_still_selects_the_row() {
     );
 }
 
-/// A `require[Sp]` ANCHORED at a typed head, with no call it covers: bound to a `Car` by a
-/// later goal, the dictionary it reads is `Car`'s, over both spellings of `Sp`. Before: a
-/// conditional row over the parameter (the anchor's goal took `T` as the wildcard), and
-/// `Sp`'s own dictionary without one.
+/// A head column TYPED AT THE SPEC, bound to a `Car` by a later goal: the call it holds
+/// answers `Car`'s member, over both spellings of `Sp`. The row was a `require[Sp]` anchored
+/// at the typed head with no call, whose DICTIONARY was asserted to be `Car`'s (before: a
+/// conditional row over the parameter — the anchor's goal took `T` as the wildcard — and
+/// `Sp`'s own dictionary without one); proposal 060.1 §5 removed the form, and the dictionary
+/// is checked by the answer it gives, 43 and not `Sp`'s 7.
 #[test]
 fn a_require_anchored_at_a_typed_head_reads_the_carriers_provision() {
     for (ns, param) in [("gfs6a.anchp", true), ("gfs6a.anch", false)] {
-        let rules = "  rule anchored(s: Sp, ?d) :- ?d = require[Sp]\n  \
+        let rules = "  rule anchored(s: Sp, ?r) :- Sp.dflt(s, ?r)\n  \
                      rule q(?r) :- anchored(?s, ?r), ?s <=> car(n: 1)\n";
         let mut kb = crate::common::load_kb_with(&program(ns, param, rules));
-        let rows: Vec<(Option<String>, bool)> = crate::common::query_unary(&mut kb, &format!("test.{ns}.q"))
-            .into_iter()
-            .map(|(v, definite)| (dictionary_impl(&kb, &v), definite))
-            .collect();
-        assert_eq!(rows, vec![(Some("Car".to_string()), true)], "param: {param}");
-    }
-}
-
-/// The local name of the sort a dictionary value's `impl` names, read through the view.
-fn dictionary_impl(kb: &KnowledgeBase, v: &anthill_core::eval::Value) -> Option<String> {
-    use anthill_core::kb::term_view::{TermView, ViewHead};
-    let key = v
-        .named_keys(kb)
-        .into_iter()
-        .find(|k| kb.local_name_of(*k) == "impl")?;
-    match v.named_arg(kb, key)?.to_value().head(kb) {
-        ViewHead::Ident(s) | ViewHead::Functor { functor: s, .. } => {
-            Some(kb.local_name_of(s).to_string())
-        }
-        _ => None,
+        assert_eq!(
+            crate::common::one_definite_int(&mut kb, &format!("test.{ns}.q")),
+            Some(43),
+            "param: {param}"
+        );
     }
 }
 
@@ -314,33 +309,6 @@ fn a_dictionary_bound_by_a_later_goal_answers() {
             Some(43),
             "param: {param}",
         );
-    }
-}
-
-/// THE ACCEPTANCE'S OWN SHAPE: the goal that binds the woven call's dictionary is WRITTEN
-/// AFTER the call — `require[Sp]` covers `Sp.dflt(?s, ?r)` and stands behind it, so the call
-/// runs first with `?d` unbound, waits on it, and answers once the read binds it. Before: a
-/// conditional row over the parameter (the read found no provider), 7 without one (`Sp`'s
-/// own dictionary).
-///
-/// THE WAIT ITSELF is what the count says: the clause with its read written after the call
-/// asks exactly one goal more than the same clause with the read first — the call, asked
-/// before its dictionary exists and again once the read binds it. A call that ran without
-/// its dictionary would answer on its first ask, and both clauses would ask alike.
-#[test]
-fn a_dictionary_a_later_read_binds_answers() {
-    for (ns, param) in [("gfs6a.readp", true), ("gfs6a.readnp", false)] {
-        let rules = "  rule laterRead(?s, ?r) :- Sp.dflt(?s, ?r), require[Sp]\n  \
-                     rule readFirst(?s, ?r) :- require[Sp], Sp.dflt(?s, ?r)\n";
-        let mut kb = crate::common::load_kb_with(&program(ns, param, rules));
-        let mut asked = |rel: &str| {
-            let pattern = format!("test.{ns}.{rel}(test.{ns}.Car.car(n: 1), ?r)");
-            assert_eq!(one_int(&mut kb, &pattern), Some(43), "param: {param}, {rel}");
-            let goal = crate::common::query_pattern_term(&mut kb, &pattern);
-            kb.resolve_with_stats(&[goal], &ResolveConfig::default()).1.goals_asked
-        };
-        let (later, first) = (asked("laterRead"), asked("readFirst"));
-        assert_eq!(later, first + 1, "param: {param}: the call waits once for its dictionary");
     }
 }
 
@@ -384,7 +352,7 @@ fn a_selection_an_operation_makes_reaches_the_rule_from_a_rule_goal() {
     let src = r#"
 namespace test.gfs6a.sel
   import anthill.prelude.{Int64, Error, EmptyStream, WeakOrd}
-  rule cmp(?a, ?b, ?c) :- WeakOrd.compare(?a, ?b, ?c)
+  rule cmp[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], WeakOrd.compare(?a, ?b, ?c)
   operation viaRule[A](x: A, y: A) -> Int64 effects {Error, Error[EmptyStream]}
       requires WeakOrd[T = A] = cmp(x, y).head.c
   sort Descending
@@ -476,7 +444,7 @@ fn a_dictionary_never_bound_is_a_conditional_answer() {
 
 /// `Van` provides no `Sp`: the requirement the call owes is known not to be available, so
 /// the goal fails and `not(…)` over it holds — as it did before this ticket, and as a written
-/// `require[Sp]` does (the row below). FAILS with that read made undecided: one row whose
+/// requirement stated by a head column's type does (the row below). FAILS with that read made undecided: one row whose
 /// cause is `Unreduced`, and the negation undecided.
 #[test]
 fn a_carrier_that_provides_none_fails() {
@@ -490,13 +458,14 @@ fn a_carrier_that_provides_none_fails() {
     assert_eq!(crate::common::one_definite_int(&mut kb, "test.gfs6a.novan.notVan"), Some(1));
 }
 
-/// A `require[Sp]` the AUTHOR wrote, at a carrier known to provide no instance, does not hold:
-/// the clause fails and `not(…)` over it holds, as the unwritten one does (the row above). It
-/// failed before this ticket too, and is here for the decision that a missing provider is no
-/// undecided answer, written or not.
+/// A requirement the AUTHOR stated — a head column typed at the spec, `s: Sp` — at a carrier
+/// known to provide no instance does not hold: the clause fails and `not(…)` over it holds, as
+/// the unwritten one does (the row above). It failed before this ticket too, and is here for
+/// the decision that a missing provider is no undecided answer, written or not. (Stated as
+/// `require[Sp]` before proposal 060.1 §5 removed that form.)
 #[test]
 fn a_written_require_at_a_carrier_that_provides_none_fails() {
-    let rules = "  rule written(?s, ?r) :- require[Sp], Sp.dflt(?s, ?r)\n  \
+    let rules = "  rule written(s: Sp, ?r) :- Sp.dflt(s, ?r)\n  \
                  rule notWritten(1) :- not(written(van(n: 1), 43))\n";
     let mut kb = crate::common::load_kb_with(&program("gfs6a.wrote", false, rules));
     assert_eq!(

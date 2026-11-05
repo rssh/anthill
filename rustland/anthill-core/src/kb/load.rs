@@ -2682,6 +2682,13 @@ pub enum LoadError {
         label: Option<String>,
         detail: String,
     },
+    /// Proposal 060.1 §5: the kernel's dictionary read, `find_dictionary`, written by a name
+    /// (`..anthill.kernel.find_dictionary(Desc[T = Leaf])`, its qualified name, an import) —
+    /// the removed requirement form by another spelling. `name` is the functor as written.
+    WrittenFindDictionary {
+        name: String,
+        span: Span,
+    },
     /// WI-023: a constraint uses a form the guard engine cannot yet enforce
     /// CORRECTLY — e.g. a `forall` with a multi-atom / nested `-:` body (whose
     /// negation needs `¬(Q1 ∧ Q2)`, which the per-goal negation can't express).
@@ -2910,9 +2917,10 @@ pub enum CallTypeArgsPosition {
     /// A rule HEAD carrying at least one CONCRETE binding (`rule r[A = Int64](…)`).
     /// The head channel exists but admits only the bare WI-582 introducer form.
     RuleHead,
-    /// Anywhere the bracket has no reader at all: a rule-body goal, a `fact` head, a
-    /// `constraint`, an operation's `requires` / `ensures` contract expression. A
-    /// constructor in one of them is a term the clause matches, and is among them.
+    /// Anywhere the bracket has no reader at all: a rule-body call of anything but a
+    /// relation, a `fact` head, a `constraint`, an operation's `requires` / `ensures`
+    /// contract expression. A constructor in one of them is a term the clause matches, and
+    /// is among them.
     NoChannel,
 }
 
@@ -2937,10 +2945,13 @@ fn call_type_args_unsupported_detail(callee: &str, position: CallTypeArgsPositio
         CallTypeArgsPosition::NoChannel => format!(
             "call-site type arguments `{callee}[…](…)` are not supported here — the \
              binding is parsed and would then be silently dropped. The bracket is read \
-             only on a call in an OPERATION BODY (and, as a bare introducer, on a rule \
-             head); a rule-body goal, a `fact` head, a `constraint` and a `requires` / \
+             on a call in an OPERATION BODY, on a rule-body goal of a relation that \
+             declares type parameters, and, as a bare introducer, on a rule head; any \
+             other rule-body call, a `fact` head, a `constraint` and a `requires` / \
              `ensures` contract expression have no channel for it. Where a rule body \
-             needs a chosen provider, call an operation whose body carries the bracket"
+             needs a chosen provider, declare it on the relation the goal calls (`rule \
+             r[A](…) :- Spec[T = A], …`) and write the bracket on that goal, or call an \
+             operation whose body carries the bracket"
         ),
     }
 }
@@ -3223,6 +3234,7 @@ impl LoadError {
             | LoadError::ProofInClause { span }
             | LoadError::AggregationConstraintUnsupported { span, .. }
             | LoadError::UnsupportedConstraintForm { span, .. }
+            | LoadError::WrittenFindDictionary { span, .. }
             | LoadError::UnresolvedTypeName { span, .. }
             | LoadError::InvalidFieldProjection { span, .. }
             | LoadError::ForbiddenInternalAccess { span, .. }
@@ -4354,6 +4366,14 @@ impl LoadError {
                     loc.format_start(*span),
                     label_suffix(label),
                     detail
+                )
+            }
+            LoadError::WrittenFindDictionary { name, span } => {
+                format!(
+                    "{}: `{name}` is the kernel's dictionary read, which a program does not \
+                     write: {}",
+                    loc.format_start(*span),
+                    crate::parse::desugar_target::DECLARE_A_REQUIREMENT
                 )
             }
             LoadError::ValueInTypeNotResolved { position, name } => {
@@ -6057,6 +6077,16 @@ impl std::fmt::Display for LoadError {
                     "constraint{} uses an unsupported form ({}) at {}..{}",
                     label_suffix(label),
                     detail,
+                    span.start,
+                    span.end
+                )
+            }
+            LoadError::WrittenFindDictionary { name, span } => {
+                write!(
+                    f,
+                    "`{name}` is the kernel's dictionary read, which a program does not write: \
+                     {} at {}..{}",
+                    crate::parse::desugar_target::DECLARE_A_REQUIREMENT,
                     span.start,
                     span.end
                 )
@@ -17239,8 +17269,9 @@ pub(crate) fn bracket_on_callable_message(name: &str, on: BracketedName) -> Stri
         ),
         BracketedName::Callable => format!(
             "`{name}[…]` is a bracket on an operation or a relation, which binds its type \
-             parameters and is read only before a call's arguments; the arguments are written \
-             in parentheses, `{name}(…)` (kernel-language.md §5.4)"
+             parameters and is read only before a call's arguments, `{name}[…](…)` — `{name}[…]()` \
+             where none is written; the arguments are written in parentheses, `{name}(…)` \
+             (kernel-language.md §5.4)"
         ),
         BracketedName::Other => format!(
             "`{name}[…]` writes type arguments of `{name}`, which takes none: only a sort or a \
@@ -18976,6 +19007,8 @@ fn load_phase_inner(
     let phase_first_source = kb.last_load.first_source;
     all_errors.extend(check_one_arity_per_name(kb, phase_first_rule, phase_first_source));
     mark!("check_one_arity_per_name");
+    all_errors.extend(check_one_parameter_list_per_relation(kb, phase_first_rule));
+    mark!("check_one_parameter_list_per_relation");
     // WI-346: requires-shadow lint — advisory (non-fatal), so it lands in
     // `all_warnings`, not `all_errors`. A legal-but-suspicious same-named op on
     // a `requires`-user (which does NOT override) should be flagged, not block.
@@ -19587,6 +19620,7 @@ fn load_with_visited(
     // function returns early when the file interned no `type_args` symbol at all, so a
     // file whose only bracket is a receiver's would have swept nothing.
     loader.check_unconsumed_recv_types();
+    loader.check_unread_require_goals();
 
     if !loader.errors.is_empty() {
         return Err(RefusedFile {
@@ -23420,6 +23454,77 @@ fn check_one_arity_per_name(
                 })
                 .collect(),
         });
+    }
+    errors
+}
+
+/// 060.1 §8.4 — ONE PARAMETER LIST PER RELATION: every clause of a relation that declares
+/// type parameters (`rule evenS[E](…)`) declares the same list, by name and in order, and a
+/// clause may declare none (a base case beside them). So a citation's bracket (§2) means one
+/// thing for the relation, as an operation's signature does. What each clause requires of
+/// its parameters is its own: `p[E] :- WeakOrd[T = E]` beside `p[E] :- Eq[T = E]` is one
+/// list.
+///
+/// Asked of each relation this load gave a clause, against every clause it has, as
+/// [`check_one_arity_per_name`] asks; reported once per relation, naming its first two
+/// lists.
+fn check_one_parameter_list_per_relation(kb: &KnowledgeBase, phase_first_rule: usize) -> Vec<LoadError> {
+    let mut names: Vec<Symbol> = Vec::new();
+    let mut seen: HashSet<Symbol> = HashSet::new();
+    for i in phase_first_rule..kb.rules.len() {
+        let rid = super::RuleId::from_index(i);
+        if kb.rules[i].retracted || kb.rule_type_params(rid).is_empty() {
+            continue;
+        }
+        if let Some((f, _)) = clause_head_arity(kb, rid) {
+            if seen.insert(f) {
+                names.push(f);
+            }
+        }
+    }
+    let render = |list: &[(Symbol, u32)]| {
+        let names: Vec<&str> = list.iter().map(|(n, _)| kb.local_name_of(*n)).collect();
+        format!("[{}]", names.join(", "))
+    };
+    let site = |rid: super::RuleId| {
+        kb.rule_head_span(rid)
+            .map_or_else(|| "a clause the loader derived".to_string(), |s| render_decl_site(kb, s))
+    };
+    let mut errors = Vec::new();
+    for f in names {
+        let mut first: Option<super::RuleId> = None;
+        for rid in kb.rules_by_functor_iter(f) {
+            let list = kb.rule_type_params(rid);
+            if list.is_empty() {
+                continue;
+            }
+            let Some(at) = first else {
+                first = Some(rid);
+                continue;
+            };
+            let same = list.len() == kb.rule_type_params(at).len()
+                && list
+                    .iter()
+                    .zip(kb.rule_type_params(at))
+                    .all(|((a, _), (b, _))| kb.local_name_of(*a) == kb.local_name_of(*b));
+            if !same {
+                errors.push(LoadError::Other {
+                    message: format!(
+                        "the clauses of `{}` declare different type-parameter lists, `{}` \
+                         at {} and `{}` at {}: a relation has one list, as an operation has \
+                         one signature, so a citation's bracket means one thing for it. \
+                         Declare the same list on every clause that declares one; a clause \
+                         may declare none",
+                        kb.qualified_name_of(f),
+                        render(kb.rule_type_params(at)),
+                        site(at),
+                        render(list),
+                        site(rid),
+                    ),
+                });
+                break;
+            }
+        }
     }
     errors
 }
@@ -28294,6 +28399,12 @@ struct RuleProviderRequirement {
     instance: TermId,
     carrier: Option<VarId>,
     carrier_param: Option<Symbol>,
+    /// The name the guard is written under, `require up: WeakOrd[A]` (060.1 §8.6).
+    name: Option<Symbol>,
+    /// A type variable a guard names at an element, not at its carrier (`U` of `Conv[A =
+    /// X, B = U]`): `carrier` is the variable its columns share, and the guard's requirement
+    /// is its carrier's, not its own.
+    element: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -28301,6 +28412,9 @@ struct RuleBoundAnchor {
     spec: Symbol,
     carrier: Option<VarId>,
     carrier_param: Option<Symbol>,
+    /// The anchor of an element's type variable ([`RuleProviderRequirement::element`]): its
+    /// column's type is the variable, with no requirement of its own.
+    element: bool,
 }
 
 /// WI-20260904-B8ESG — the clause head being converted, and which of its parse nodes
@@ -28606,24 +28720,23 @@ struct Loader<'a> {
     // ([`Self::citation_read_as_dot`]); a clause's own term — a fact, a rule head — keeps the
     // citation.
     in_body_occurrence: bool,
+    // Building the body of a rule's clause, whose goals the typer routes: where a goal's own
+    // bracket is read (060.1 §2). A constraint's body is also converted for its guard, which
+    // reads no bracket, so its goals keep the end-of-file sweep's refusal.
+    in_rule_clause_body: bool,
+    // 060.1 §8.6: the `require …` goals a rule's body has read; every other one the grammar
+    // admits — a head, a constraint's body, a quantifier's, an operation's `requires` list —
+    // is refused at the end of the file ([`Loader::check_unread_require_goals`]).
+    read_require_goals: HashSet<ParseTermId>,
     // WI-20260824-JM6ZW — true while the rule-body walk lowers a child whose ROLE is not
     // `ValueExpression` (design 055 §3: "a child whose role is head, callee, … member name
     // … or `TypeExpr` does not" admit a type value), so the walk's type-value record is not
-    // made there. Two such children reach the walk:
-    //
-    //  * the spec slot of `require[Spec]`, which `build_require_spec_occurrence` hands over
-    //    whole when it is not applied — a requirement's spec, read by its head
-    //    (`rewrite_find_dictionary_goal`), not a value. MEASURED with the flag never set
-    //    there: 8 rows fail, among them
-    //    `wi_51w18_require_spec_type_args_test::the_bare_spelling_is_unchanged`,
-    //    `wi_96ztm_two_dictionaries_test::two_anchors_the_bracket_cannot_choose_between_are_refused`
-    //    and `wi_gfs6a_woven_call_waits_on_its_dictionary_test::a_dictionary_a_later_read_binds_answers`;
-    //  * a SEGMENT of a written dotted name — a child of the converter's `field_access`
-    //    chain, which in a rule body's data slot stays the chain the clause stores and is
-    //    read as a NAME where it is read (`dotted_citation_operation`, §6.7). MEASURED
-    //    with the chain not setting it: `dotted_nullary_op_call_test::an_eq_operand_is_-
-    //    typed_and_run_as_the_call` — `0 = Box.zero` lost its citation reading to a
-    //    recorded `Box`.
+    // made there. One such child reaches the walk: a SEGMENT of a written dotted name — a
+    // child of the converter's `field_access` chain, which in a rule body's data slot stays
+    // the chain the clause stores and is read as a NAME where it is read
+    // (`dotted_citation_operation`, §6.7). MEASURED with the chain not setting it:
+    // `dotted_nullary_op_call_test::an_eq_operand_is_typed_and_run_as_the_call` — `0 =
+    // Box.zero` lost its citation reading to a recorded `Box`.
     //
     // CONSUMED BY EACH `Fn` NODE, as `in_body_goal` is: the node reads it for itself and
     // sets it for each of its own children, so it never reaches past one level — the
@@ -28738,6 +28851,13 @@ struct Loader<'a> {
     // decides whether an unresolved name is a typo, and "what does it denote" is only
     // askable of the bounded half.
     rule_tvar_bounds: HashMap<String, Option<RuleProviderRequirement>>,
+    // 060.1 §8.5: the guards of an introducer after its first (`rule p[A](…) :- WeakOrd[T =
+    // A], Eq[T = A]`), each a requirement of the carrier the first gives
+    // ([`Loader::register_further_guards`]). Cleared per rule with `rule_tvar_bounds`.
+    rule_tvar_further_guards: Vec<(String, RuleProviderRequirement)>,
+    // 060.1 §8.6: the current rule's named requirements — each name, its spec and the
+    // variable its dictionary is read into — for a body call through one (`up.compare(…)`).
+    rule_named_requirements: Vec<(String, Symbol, VarId)>,
     // WI-20260908-PW9A0: are we lowering a rule-head TYPE BOUND (`?x: T` / the §2.1
     // `x: T` parameter form)? That is the one position where a head-introduced type
     // variable DENOTES its guard-given bound — see [`Loader::rule_head_tvar`], which is
@@ -29123,23 +29243,6 @@ struct RuleHeadParams {
     params: Vec<(Symbol, ParseTermId)>,
 }
 
-/// How one `require` bracket binding lowered — THREE outcomes, not two.
-///
-/// `Dropped` and `Reported` are both 'no occurrence to store' and they are NOT the
-/// same thing, which a bare `Option` could not say. `/code-review` drove the cost: the
-/// projection rung reports its own located error and then answered `None`, so both
-/// callers ALSO ran `report_dropped_spec_binding` and the author got the accurate
-/// message followed by the very misdiagnosis — "`p.E` names neither a sort nor one of
-/// `Desc`'s own type parameters" — that the rung exists to prevent.
-enum SpecBindingLowering {
-    /// Lowered; this is the occurrence to store.
-    Lowered(Rc<NodeOccurrence>),
-    /// Not lowerable and NOT yet reported — the caller owns the drop diagnostic.
-    Dropped,
-    /// Not lowerable and ALREADY reported by the rung that recognized the shape.
-    Reported,
-}
-
 impl<'a> Loader<'a> {
     /// `source_id`: `Some` REUSES an already-registered source entry — the WI-936
     /// declaration pass builds a loader over the same file first, and registering it
@@ -29198,6 +29301,8 @@ impl<'a> Loader<'a> {
             in_body_goal: false,
             in_body_goal_wrapper: false,
             in_body_occurrence: false,
+            in_rule_clause_body: false,
+            read_require_goals: HashSet::new(),
             in_non_value_role: false,
             in_member_name: false,
             in_call_argument: false,
@@ -29217,6 +29322,8 @@ impl<'a> Loader<'a> {
             rule_head_type_bounds: Vec::new(),
             rule_param_vars: HashMap::new(),
             rule_tvar_bounds: HashMap::new(),
+            rule_tvar_further_guards: Vec::new(),
+            rule_named_requirements: Vec::new(),
             in_rule_head_bound: false,
             rule_head_bound_anchors: Vec::new(),
             in_op_contract_clause: false,
@@ -29917,6 +30024,7 @@ impl<'a> Loader<'a> {
             spec,
             carrier: None,
             carrier_param: Some(member),
+            element: false,
         });
         self.kb.record_rule_sort_use(crate::kb::RuleSortUse {
             sort: spec,
@@ -30103,6 +30211,78 @@ impl<'a> Loader<'a> {
         }
     }
 
+    /// 060.1 §8.5 / §8.6 — each guard of an introducer after its first, as a requirement of
+    /// the carrier the first gives: its instance with the carrier at the slot the guard writes
+    /// it at, as [`Self::materialize_rule_carrier_bound`] builds the first's. Two of one spec at
+    /// one type are two requirements, as two lines of an operation's `requires` are; a guard
+    /// written under a name (`require up: WeakOrd[A]`) is that requirement under the name, and
+    /// the carrier's requirements are then read as an operation's lines are
+    /// ([`KnowledgeBase::normalize_type_var_provider_requirement_names`]). Answers the clause's
+    /// named requirements — each name with its spec and the variable its dictionary is read
+    /// into — for the body's calls through them ([`Self::named_requirement_call`]).
+    fn register_further_guards(&mut self) -> Vec<(String, Symbol, VarId)> {
+        let mut carriers: Vec<VarId> = Vec::new();
+        let firsts: Vec<(VarId, Option<Symbol>)> = self
+            .rule_tvar_bounds
+            .values()
+            .filter_map(|r| r.as_ref().and_then(|r| r.carrier.map(|c| (c, r.name))))
+            .collect();
+        for (carrier, name) in firsts {
+            if let Some(name) = name {
+                self.kb.name_first_type_var_provider_requirement(carrier, name);
+            }
+            carriers.push(carrier);
+        }
+        // In the order the body writes them, which is the order of the clause's reads.
+        let further: Vec<(String, RuleProviderRequirement)> =
+            std::mem::take(&mut self.rule_tvar_further_guards);
+        for (tvar, guard) in further {
+            let Some(RuleTvar::Bounded(first)) = self.rule_head_tvar(&tvar) else {
+                continue;
+            };
+            let Some(carrier) = first.carrier else { continue };
+            let param = guard
+                .carrier_param
+                .expect("a guard with a carrier names the parameter it stands at");
+            let ty = self.kb.alloc(Term::Var(Var::Global(carrier)));
+            let mut bindings = match self.kb.get_term(guard.instance).clone() {
+                Term::Fn { named_args, .. } => named_args,
+                _ => SmallVec::new(),
+            };
+            bindings.push((param, ty));
+            let instance = self.kb.alloc(Term::Fn {
+                functor: guard.spec,
+                pos_args: SmallVec::new(),
+                named_args: bindings,
+            });
+            self.kb
+                .add_further_type_var_provider_requirement(carrier, instance, guard.name);
+        }
+        let mut named = Vec::new();
+        carriers.sort_by_key(|c| c.raw());
+        carriers.dedup();
+        for carrier in carriers {
+            // A refused carrier keeps its requirements as written, so a call through one of
+            // its names is still read, and the refusal is the one fault reported.
+            if let Err(why) = self.kb.normalize_type_var_provider_requirement_names(carrier) {
+                self.errors.push(LoadError::Other {
+                    message: format!(
+                        "rule type-variable `{}`: {why}",
+                        self.kb.local_name_of(carrier.name())
+                    ),
+                });
+            }
+            for (instance, dictionary, name) in self.kb.type_var_provider_requirement_entries(carrier) {
+                if let Some(name) = name {
+                    let spec = super::typing::sort_functor_of_view(self.kb, &TermIdView(instance))
+                        .expect("a requirement names its spec");
+                    named.push((self.kb.local_name_of(name).to_owned(), spec, dictionary));
+                }
+            }
+        }
+        named
+    }
+
     /// Separate the annotation's carrier type from its provider obligation.
     /// Introducer occurrences share a carrier variable; member sugar introduces
     /// an anonymous one. The requirement retains its complete instance.
@@ -30134,6 +30314,11 @@ impl<'a> Loader<'a> {
                 .any(|(key, _)| self.kb.local_name_of(*key) == self.kb.local_name_of(param))
             {
                 bindings.push((param, ty));
+            }
+            // An element's variable carries no requirement of its own: the guard that names it
+            // is its carrier's.
+            if anchor.element {
+                return ty;
             }
             let instance = self.kb.alloc(Term::Fn {
                 functor: anchor.spec,
@@ -30226,6 +30411,7 @@ impl<'a> Loader<'a> {
                     spec: requirement.spec,
                     carrier: requirement.carrier,
                     carrier_param: requirement.carrier_param,
+                    element: requirement.element,
                 });
                 Some(requirement.spec)
             }
@@ -31234,412 +31420,11 @@ impl<'a> Loader<'a> {
             && dotted_citation_name(&self.parsed.symbols, &self.parsed.terms, value).is_none()
     }
 
-    /// WI-20260909-51W18 — lower a `require[Spec[…]]` / `requires(Spec[…])` goal's SPEC
-    /// INSTANCE, which is a TYPE and not a value.
-    ///
-    /// This is `requirement-channel.md` §10 item 1's answer, and the answer is that
-    /// NEITHER channel the item offered is new. It asked whether the `[T…]` decoration
-    /// should ride the application type-args channel (WI-272/383) or a type-kind
-    /// occurrence child; it rides NEITHER — the names resolve through
-    /// [`Self::require_spec_binding_sort`], i.e. [`Self::parse_arg_sort_symbol`], the
-    /// SAME owner the §2.1 parameter form's bound reads, which already answers the
-    /// introducer rung (so `require[Desc[T = A]]` under `rule p[A](?x: A) :- Desc[A]`
-    /// substitutes `A` exactly as the head bound does) and the dotted rung, and which
-    /// answers `None` rather than reporting.
-    ///
-    /// TWO WALKS, AND BOTH NEED THIS ARM — corrected, and the correction is the lesson.
-    ///
-    /// S1 wrote the TERM-side twin (`convert_term_inner`'s `Term::Fn` arm), then DELETED
-    /// it on this argument: "the whole 4345-test binary passes with that arm disabled,
-    /// and the reason is structural — a rule BODY is stored as occurrences (WI-246) and
-    /// `require[…]` is legal ONLY as a body goal, so the term walk cannot meet one."
-    ///
-    /// THE GREEN SUITE PROVED NOTHING. A rule body is occurrences, but a CONSTRAINT body,
-    /// an operation's `ensures` body and an AGGREGATION-CONSTRAINT condition are all
-    /// stored as TERMS, and every one of them may carry a `requires(…)` or a
-    /// `?d = require[…]`. The corpus simply has no BRACKETED one — so the binary could
-    /// not have measured the arm it was cited as evidence about. `/code-review` drove all
-    /// four surfaces: `constraint c :- requires(Eq[T])`, the canonical stdlib typeclass
-    /// spelling, reported `unresolved name 'T'` where it loaded before this ticket.
-    ///
-    /// The doc even PREDICTED the failure — "IF a future position ever routes a
-    /// `find_dictionary` term through `convert_term_inner`, a free type parameter reports
-    /// `unresolved name`" — and filed it as a future cost rather than checking whether the
-    /// position already existed. It did, in three places.
-    /// `wi_51w18…::a_bracketed_requires_loads_in_every_term_surface` is the reader.
-    ///
-    /// A BINDING NAMING THE SPEC'S OWN DECLARED PARAMETER IS DROPPED, NOT REPORTED, and
-    /// that is what makes this change STRICTLY ADDITIVE rather than a new refusal. The
-    /// rule was first written as "a value that denotes no sort", which is too wide by
-    /// exactly the set [`Self::report_dropped_spec_binding`] now reports. `requires(Eq[T])`
-    /// in a free rule is the canonical typeclass spelling and its whole point is that
-    /// `T` is UNCONSTRAINED; dropping the binding leaves the goal as the old convert-time
-    /// strip produced it, so `witness_sort_goal`'s WI-20260830-X9PB4 loop synthesizes the
-    /// same wildcard it always did. MEASURED: 33 of 4338 `wi_tests` fail if such a name
-    /// is reported instead, all one cause, and ZERO shipped programs are affected — the
-    /// whole corpus writes no rule-body `requires(…)` / `require[…]` at all.
-    ///
-    /// A typo is therefore silent HERE, a deliberate boundary: telling `Desc[T = Zork]`
-    /// from `Desc[T]` needs a rule about which names an author may leave open, and
-    /// inventing one at this site would refuse the spelling the stdlib idiom depends on.
-    ///
-    /// The result is an ordinary `Expr::Apply` on the spec base, NOT a `Spliced` type
-    /// term: `typing::occ_head_symbol` — which `rewrite_find_dictionary_goal` uses to
-    /// read the spec base out of this very slot — recognizes `Apply`/`Constructor`/
-    /// `Instantiation`/`Ref`/`Ident` and not `Spliced`, so splicing here would have made
-    /// the rewrite report "an argument with no nominal spec head" for every goal.
-    fn build_require_spec_occurrence(&mut self, parse_id: ParseTermId) -> Rc<NodeOccurrence> {
-        let raw_span = self.parsed.terms.span(parse_id);
-        let span = SourceSpan::from_span(self.source_id, raw_span);
-        // A tuple type, an arrow type or an effect row standing where the spec instance
-        // goes — `require[(A, B)]`, `require[{}]` — names no spec. Said here: lowered as
-        // an entry it is a former of the type meta-language, which the grounding check
-        // then reports as a spec with operations to call.
-        if self.is_entry_type_aux(parse_id) {
-            let written = self
-                .parsed
-                .source
-                .get(raw_span.start as usize..raw_span.end as usize)
-                .unwrap_or("…")
-                .to_owned();
-            self.errors.push(LoadError::InvalidTypeArgument {
-                detail: format!(
-                    "`require[…]` takes a spec instance, `Spec` or `Spec[…]`; `{written}` is \
-                     a tuple type, an arrow type or an effect row and names no spec"
-                ),
-                span: Some(raw_span),
-            });
-            return NodeOccurrence::new_expr(Expr::Bottom, span, self.current_owner);
-        }
-        // NOT AN APPLICATION — a bare `Desc`, or a DOTTED base `ns.Desc`, both of which
-        // are NAMES. `parse_arg_type_is_applied` is the established discriminator and it
-        // asks `dotted_citation_name` FIRST, which is what keeps a dotted base out of the
-        // application path: read as a `Term::Fn` it is the converter's minted
-        // `field_access` chain, and the grounding scan then reported "a body call to one
-        // of `field_access`'s operations". A bare name is left to the ordinary walk,
-        // whose reading of it is what the whole corpus already exercises.
-        if !self.parse_arg_type_is_applied(parse_id) {
-            // THE TWO `_` CASES, MEASURED RATHER THAN ASSUMED. `/code-review` predicted
-            // both are wrong; one is not, and the other is a boundary with a cost.
-            //
-            //   * `(true, None)` — a DOTTED base naming no sort, `requires(a.b.Zork[T =
-            //     Leaf])`. Predicted to become a `field_access` chain and be reported as
-            //     "a body call to one of `field_access`'s operations". IT DOES NOT: the
-            //     ordinary walk reports `unresolved name 'a.b.Zork'` and the grounding
-            //     error names `a.b.Zork` too. Loud, and pointing at the right token.
-            //   * `(false, Some)` — a BARE introducer, `require[A]` under `rule p[A](?x:
-            //     A) :- Desc[A]`. This one IS a divergence: the name resolves through
-            //     `parse_arg_sort_symbol` one level in (`require[Desc[T = A]]` loads and
-            //     threads) and not at the top level, where the ordinary walk reports
-            //     `unresolved name 'A'`. Routing it to `Ref(sym)` would fix the spelling
-            //     and would also change the bare-name path for EVERY `require[Spec]` in
-            //     the corpus — a real blast radius for a spelling the documented form
-            //     already covers. Left as a boundary, with the measurement, rather than
-            //     widened on a guess.
-            return match (
-                matches!(self.parsed.terms.get(parse_id), Term::Fn { .. }),
-                self.require_spec_binding_sort(parse_id),
-            ) {
-                (true, Some(sym)) => {
-                    NodeOccurrence::new_expr(Expr::Ref(sym), span, self.current_owner)
-                }
-                _ => {
-                    // A requirement's spec, not a value: kept out of the walk's
-                    // type-value record ([`Self::in_non_value_role`]).
-                    let saved = std::mem::replace(&mut self.in_non_value_role, true);
-                    let occ = self.build_body_atom_occurrence(parse_id);
-                    self.in_non_value_role = saved;
-                    occ
-                }
-            };
-        }
-        let Term::Fn {
-            functor,
-            pos_args,
-            named_args,
-        } = self.parsed.terms.get(parse_id).clone()
-        else {
-            unreachable!("`parse_arg_type_is_applied` admitted a non-`Fn`")
-        };
-        // The base through the SAME ladder the bindings use, falling back to the
-        // reporting resolver. Both halves matter: the ladder answers for a
-        // head-introduced type variable at a NESTED head (`require[Desc[T = A[U = …]]]`),
-        // which `remap_symbol_strict` cannot — its `rule_head_bound_alias` is gated on
-        // `in_rule_head_bound`, false in a body — while the fallback keeps an
-        // unresolvable base (`require[Zork]`) LOUD, which is right at every depth.
-        let base = self
-            .require_spec_binding_sort(parse_id)
-            .unwrap_or_else(|| self.remap_symbol_strict(functor, raw_span));
-        // POSITIONALS ARE PAIRED WITH THE SPEC'S DECLARED PARAMS, and then ride as NAMED
-        // bindings. That is the language's own rule for a positional type argument —
-        // `KnowledgeBase::positional_param_slots` — applied here rather than re-derived.
-        //
-        // IT IS ALSO WHAT MAKES THE DROP SOUND, and that is the reason it is not left to
-        // the reader (S2). Keeping positionals AS POSITIONALS meant a dropped one
-        // silently RE-INDEXED the rest: `requires(Desc[Zork, Leaf])` stored `Leaf` — the
-        // SECOND argument — at slot `#0`, attributing it to the first type parameter,
-        // with a clean load and no diagnostic. Found by `/code-review`, driven, and fixed
-        // by paying attribution up front: a named binding cannot shift.
-        let declared = self.kb.type_params_of_sort(base);
-        // NAMED FIRST, because a POSITIONAL binds the next declared param NOT ALREADY
-        // BOUND BY NAME — the language's own rule, at `type_expr_to_child_inner`'s
-        // `positional_index` loop and in `check_sort_type_args`'s `free` count. Pairing
-        // by raw index instead paired the positional in `requires(Desc[T = Leaf, Leaf])`
-        // with `T`, which the named arg already claims, and the load was REFUSED as
-        // "binds 'T' more than once" — a VALID program rejected, with the diagnostic
-        // blaming the author. Found by `/code-review`, driven against the identical
-        // spelling in an ordinary type position, which loads clean.
-        // EVERY DECLARED PARAMETER A WRITTEN ARGUMENT CLAIMS, whether or not its value
-        // survived the drop. This is what the arity / param-name check must see: keying
-        // it off the SURVIVORS let a dropped argument make an over-application invisible
-        // (`Desc[Zork, Leaf]` on a one-parameter spec loaded clean, and `Desc[Bogus =
-        // Zork]` erased the bogus name before the check could reject it), so one mistake
-        // got two verdicts decided by an unrelated property of its value. Found by
-        // `/code-review`, driven over five spellings.
-        let mut claimed: Vec<Symbol> = Vec::new();
-        let mut named: Vec<(Symbol, Rc<NodeOccurrence>)> = Vec::new();
-        // Claimed BY NAME only — the skip loop below must not treat a slot an earlier
-        // POSITIONAL took as name-claimed, since positionals are consumed in order.
-        let mut claimed_by_name: Vec<String> = Vec::new();
-        for &(k, v) in named_args.iter() {
-            let key = self.reintern(k);
-            claimed.push(key);
-            claimed_by_name.push(self.kb.local_name_of(key).to_owned());
-            // A WRITTEN EFFECT ROW (`Spec[E = {}]`) is a `ParseAux` the ordinary named-arg
-            // loop lowers in place (WI-366 B1); `require_spec_binding_occurrence` answers
-            // `None` for it, so without this it vanished with no diagnostic — a different
-            // carrier, not "a name that denotes no sort", and so outside the drop rule.
-            // The row only: a tuple type and an arrow type ride the same payload and stay
-            // on the drop rule's list ([`Self::report_dropped_spec_binding`]).
-            if let Some(child) = self.lower_effect_row_entry_occ(v) {
-                named.push((key, child));
-                continue;
-            }
-            match self.require_spec_binding_occurrence(v) {
-                SpecBindingLowering::Lowered(o) => {
-                    named.push((key, o));
-                    continue;
-                }
-                // ALREADY REPORTED by the rung that recognized the shape — the
-                // slot stays claimed (above) so nothing re-indexes, and the drop
-                // rule below must NOT also fire, or the author gets the accurate
-                // error followed by the misdiagnosis it exists to replace.
-                SpecBindingLowering::Reported => continue,
-                SpecBindingLowering::Dropped => {}
-            }
-            // THE NAMED LOOP DROPS LOUDLY TOO. It used to drop with no diagnostic and
-            // without recording the claim, so the skip loop below read the slot as free
-            // and `Desc[T = Zork, Leaf]` re-indexed `Leaf` onto `T` — the same defect
-            // this ticket fixed for positionals, arriving from the other side. A rule
-            // written twice is an asymmetry waiting.
-            self.report_dropped_spec_binding(base, &declared, v, span.span);
-        }
-        let mut pos: Vec<Rc<NodeOccurrence>> = Vec::new();
-        let mut overflow = 0usize;
-        // THE SLOTS ARE CLAIMED BEFORE ANY VALUE IS JUDGED, and that ordering is the whole
-        // correctness of the drop. A positional's parameter is decided by WHERE THE AUTHOR
-        // WROTE IT; deciding it after the drop let a dropped argument yield its slot to the
-        // next one, so `Desc[Zork, Leaf]` bound `Leaf` — written SECOND — to `T`.
-        //
-        // NAMED FIRST, because a POSITIONAL binds the next declared param NOT ALREADY BOUND
-        // BY NAME — the language's own rule, owned by `KnowledgeBase::positional_param_slots`
-        // since WI-20260923-N3W68 (this site spelled it itself, correctly). Pairing by raw
-        // index instead paired the positional in `requires(Desc[T = Leaf, Leaf])` with `T`,
-        // which the named arg already claims, and the load was REFUSED as "binds 'T' more
-        // than once" — a VALID program rejected.
-        let mut slots = KnowledgeBase::positional_param_slots(
-            &declared,
-            |d| claimed_by_name.iter().any(|c| c == d),
-            pos_args.len(),
-        )
-        .into_iter();
-        for &v in pos_args.iter() {
-            let slot = slots.next().flatten().map(|i| declared[i].clone());
-            // The effect-row arm belongs on BOTH loops. It was on the named one only, so
-            // `requires(Walk[Src, {}])` dropped the row while `requires(Walk[C = Src, E =
-            // {}])` kept it, and `sort_goal_with_wildcards` skips effect-row params so
-            // nothing re-supplied it. The sibling occurrence walk has it on both.
-            let lowered = match self.lower_effect_row_entry_occ(v) {
-                Some(child) => SpecBindingLowering::Lowered(child),
-                None => self.require_spec_binding_occurrence(v),
-            };
-            let child = match lowered {
-                SpecBindingLowering::Lowered(child) => child,
-                // See the named loop: a REPORTED binding still claims its slot,
-                // and the drop rule must not speak over the rung's own error.
-                other => {
-                    if matches!(other, SpecBindingLowering::Dropped) {
-                        self.report_dropped_spec_binding(base, &declared, v, span.span);
-                    }
-                    match slot {
-                        Some(n) => claimed.push(self.kb.intern(&n)),
-                        None => overflow += 1,
-                    }
-                    continue;
-                }
-            };
-            match slot {
-                Some(n) => {
-                    // ONE KEY SPELLING FOR BOTH SURFACES. The named loop interns the
-                    // written short name, so a positional must too — keying it by the
-                    // spec-qualified symbol left `Desc[Leaf]` and `Desc[T = Leaf]` under
-                    // two different `Symbol`s for one slot, latent only while every reader
-                    // compares by local name. WI-1016's rule, one carrier over.
-                    let key = self.kb.intern(&n);
-                    claimed.push(key);
-                    named.push((key, child));
-                }
-                // Past the declared params there is no parameter to name. Kept POSITIONAL
-                // so the arity check below sees it and says so.
-                None => pos.push(child),
-            }
-        }
-        // THE SAME ARITY / PARAM-NAME CHECK THE SIBLING WALK RUNS on a nested sort
-        // application (`build_body_atom_occurrence_inner`'s `check_sort_type_args`). This
-        // slot bypassed it, so `requires(Desc[Bogus = Leaf])` and a three-argument
-        // application of a one-parameter spec both loaded clean and stored the bogus
-        // binding — harmless only while nothing read the bracket, which is precisely what
-        // this ticket ends. No new RULE, just the shared one applied at a site that was
-        // missing it — and fed the WRITTEN arguments, not the surviving ones.
-        if let Err(problem) =
-            self.kb
-                .check_sort_type_args(base, &declared, &claimed, pos.len() + overflow)
-        {
-            let detail = problem.describe(&self.kb, base);
-            self.errors.push(LoadError::InvalidTypeArgument {
-                detail,
-                span: Some(span.span),
-            });
-        }
-        NodeOccurrence::new_expr(
-            Expr::Apply {
-                recv_type: None,
-                functor: base,
-                pos_args: pos,
-                named_args: named,
-                type_args: Vec::new(),
-            },
-            span,
-            self.current_owner,
-        )
-    }
-
-    /// One binding VALUE inside a `require[…]` spec instance: its occurrence, or `None`
-    /// when it denotes no sort (see [`Self::build_require_spec_occurrence`] for why
-    /// `None` drops rather than reports).
-    ///
-    /// A NESTED APPLICATION recurses — `require[FiniteCollection[C = List[T = String]]]`
-    /// is the shape §10 item 1 names as saying "nothing the witness did not" — and only
-    /// once its OWN head denotes a sort, so a nested application on an unresolvable head
-    /// drops whole rather than reporting a name its caller has just decided to tolerate.
-    /// The recursion's own base resolves through this same ladder, which is what makes
-    /// that true at every depth: an earlier version let it fall to `remap_symbol_strict`,
-    /// and a nested head-introduced type variable was then reported `unresolved name`
-    /// — two resolvers answering one question, found by `/code-review`.
-    fn require_spec_binding_occurrence(&mut self, parse_id: ParseTermId) -> SpecBindingLowering {
-        // WI-20260909-S8CBV gate (1) — A PROJECTION IS A THIRD KIND. Asked FIRST, because
-        // the two rungs below are about NAMES (does this spell a sort? is it the spec's
-        // own parameter?) and `p.E` is neither, so the drop rule read it as a typo:
-        // "`p.E` names neither a sort nor one of `Desc`'s own type parameters".
-        match self.try_require_spec_projection(parse_id) {
-            SpecBindingLowering::Dropped => {}
-            other => return other,
-        }
-        // WI-20260922-QHDGC — A LOGICAL VARIABLE IS A TYPE, here as everywhere else.
-        //
-        // The other two type positions already honour CLAUDE.md's first paragraph — a
-        // BOUNDING GUARD (`:- Desc[?t]`) and a HEAD PARAMETER's type (`rule r(?x: ?t)`)
-        // both load a `?t` and let it unify. This slot did not: it asked only the two NAME
-        // rungs, a variable spells no name, and the drop rule then reported it with the
-        // message a literal `Desc[T = 3]` gets — "takes sorts and its own type parameter
-        // names; this argument is neither". ONE SITE OUT OF STEP, and the guard and the
-        // head parameter are what say so: were a variable genuinely a category error in
-        // type position, they would refuse it too.
-        //
-        // WHY THE CENSUS THAT CHOSE THE NARROW RULE DOES NOT DECIDE IT. It reads "every
-        // free-name binding in the corpus spells the spec's own declared parameter …
-        // anything else was already a mistake". That establishes nobody WROTE `?t` here,
-        // not that writing it means nothing — the "unread does not imply unowed" inference
-        // WI-20260921-3G1YT was filed to reject, one channel over.
-        //
-        // THROUGH THE ORDINARY WALK, NOT A COPY OF ITS VAR ARM. `build_body_atom_occurrence`
-        // owns the parse-var → KB-var mint (`var_map`, minting on first occurrence), and
-        // going through it is what makes the bracket's `?t` THE SAME VARIABLE as every
-        // other `?t` in the clause — which is the whole content of "it binds". A local
-        // `kb.fresh_var` here would have loaded identically and bound nothing to it.
-        //
-        // ORDER IS FREE against the projection rung above — a `Term::Var` carries no
-        // dotted name, so `try_require_spec_projection` answers `Dropped` for it either
-        // way. Asked here so that rung's "asked FIRST" reasoning stays true as written.
-        if matches!(self.parsed.terms.get(parse_id), Term::Var(_)) {
-            return SpecBindingLowering::Lowered(self.build_body_atom_occurrence(parse_id));
-        }
-        if let Some(name) = self
-            .parse_arg_type_name(parse_id)
-            .filter(|_| !self.parse_arg_type_is_applied(parse_id))
-        {
-            if let Some(RuleTvar::Bounded(RuleProviderRequirement {
-                carrier: Some(carrier),
-                ..
-            })) = self.rule_head_tvar(&name)
-            {
-                return SpecBindingLowering::Lowered(NodeOccurrence::new_expr(
-                    Expr::Var(Var::Global(carrier)),
-                    self.source_span_of(parse_id),
-                    self.current_owner,
-                ));
-            }
-        }
-        let Some(sym) = self.require_spec_binding_sort(parse_id) else {
-            return SpecBindingLowering::Dropped;
-        };
-        if self.parse_arg_type_is_applied(parse_id) {
-            return SpecBindingLowering::Lowered(self.build_require_spec_occurrence(parse_id));
-        }
-        let span = SourceSpan::from_span(self.source_id, self.parsed.terms.span(parse_id));
-        SpecBindingLowering::Lowered(NodeOccurrence::new_expr(
-            Expr::Ref(sym),
-            span,
-            self.current_owner,
-        ))
-    }
-
-    /// WI-20260909-51W18 — THE RULE the require-spec lowering asks: does this binding
-    /// value name a sort? [`Self::parse_arg_sort_symbol`] is the one owner of it —
-    /// the same one the §2.1 parameter form's bound reads — so the introducer rung
-    /// (`require[Desc[T = A]]` under `rule p[A](?x: A) :- Desc[A]`) and the dotted rung
-    /// come for free and cannot answer differently here than they do there.
-    /// WI-20260909-51W18 — a bracket binding whose value this slot cannot lower: is it
-    /// the WILDCARD the drop rule admits, or an author mistake that must be reported?
-    ///
-    /// THE RULE IS ABOUT NAMES, and stating it that way is the fix. `require[Spec[T]]`
-    /// where `T` is the spec's OWN declared parameter is how a caller says "any
-    /// instantiation" — WI-20260830-X9PB4's wildcard, and the reason un-stripping the
-    /// bracket could be strictly additive. But the drop was applied to every carrier the
-    /// loop met, so a literal (`Desc[T = 3]`), an entity constructor (`Desc[T = leaf]`), a
-    /// rule name, a logical variable in type position (`Desc[T = ?v]`) and a tuple type
-    /// all vanished with no diagnostic — and, before the pairing fix above, silently
-    /// re-indexed their neighbours. Driven by `/code-review` over all five.
-    ///
-    /// FOUR OF THOSE FIVE, SINCE WI-20260922-QHDGC. A LOGICAL VARIABLE NEVER REACHES HERE
-    /// any more: [`Self::require_spec_binding_occurrence`] admits it one rung above, on the
-    /// ground that a bounding guard (`Desc[?t]`) and a §2.1 head parameter's type
-    /// (`?x: ?t`) already took one, so reporting it here made this the ONE type position
-    /// out of step. The literal, the constructor, the rule name and the tuple type are
-    /// still mistakes and still say so, one driven row each in
-    /// `wi_qhdgc_require_spec_logical_variable_test`.
-    ///
-    /// A CENSUS SAYS THE NARROW RULE COSTS NOTHING: every free-name binding in the corpus
-    /// spells the spec's own declared parameter — `Eq[T]` ×24, `Desc[T]` ×23,
-    /// `PartialEq[T]` ×15, plus `WeakOrd[T]`, `Ord[T]`, `Relatable[T]`, `Spec[T]`,
-    /// `Spec[C]`, `Walk[C]`, `Bag[E]`, `Desc[T = T]`. Anything else was already a mistake;
-    /// it just could not say so.
-    ///
-    /// AND THE CENSUS IS EVIDENCE ABOUT THE CORPUS, NOT ABOUT THE LANGUAGE — worth stating
-    /// where it is quoted, because it was once read as the latter. "Nobody wrote `?v` here"
-    /// does not establish that writing it means nothing; that is the "unread does not imply
-    /// unowed" inference WI-20260921-3G1YT was filed to reject, and QHDGC is where it was
-    /// rejected one channel over.
+    /// A requirement guard's binding that is no type — a literal, a rule name, a tuple or
+    /// arrow type, a name that denotes neither a sort nor one of the spec's own type
+    /// parameters — reported naming itself, for [`Self::guard_binding_lowers`]. The spec's
+    /// own parameter name (`Sp[C = A, P = P]`) is the open binding and is not reported. Rows:
+    /// `wi_qhdgc_require_spec_logical_variable_test`, `wi_51w18_require_spec_type_args_test`.
     fn report_dropped_spec_binding(
         &mut self,
         base: Symbol,
@@ -31701,130 +31486,9 @@ impl<'a> Loader<'a> {
         });
     }
 
-    /// WI-20260909-S8CBV gate (1) — a `require` bracket binding written as a PATH
-    /// PROJECTION off one of this clause's own head parameters (`require[Desc[T = p.E]]`
-    /// under `rule r(p: Box, …)`), or `None` for everything else.
-    ///
-    /// THE RECEIVER IS A LOGIC VARIABLE, and that is what makes this a different lowering
-    /// from the operation-signature one. §2.1's sigil-free head parameter is bound to a
-    /// fresh `VarId` in [`Self::rule_param_vars`] and every body occurrence of the bare
-    /// name lowers to that variable; so the projection's receiver is `Var(vid)`, not the
-    /// `Ref(param)` an operation's `x.E` carries. `path-dependent-types.md` §4 names this
-    /// case directly — "a flexible projection … arises only where a receiver is a logic
-    /// variable, i.e. in rule bodies, never in operation signatures".
-    ///
-    /// THE ROOT MUST BE A HEAD PARAMETER OF THIS CLAUSE. That is the ticket's own rule
-    /// ("a projection whose root is not a head binding of this clause is REFUSED"), and
-    /// answering `None` for anything else is what keeps it: an unknown root falls to the
-    /// two name rungs and is reported by the drop rule exactly as it is today.
-    ///
-    /// A CAPITALIZED LAST SEGMENT, the same discriminator
-    /// [`Self::try_expr_carried_projection_segments`] applies — types are Capitalized and
-    /// value fields are not (`type-parameter-scoping.md` §1). Read here rather than
-    /// shared with that function because the two differ in the half that matters: this
-    /// one resolves its receiver in `rule_param_vars`, which the type ladder never
-    /// consults, and admits no other head at all.
-    fn try_require_spec_projection(&mut self, parse_id: ParseTermId) -> SpecBindingLowering {
-        let Some(name) = self.parse_arg_type_name(parse_id) else {
-            return SpecBindingLowering::Dropped;
-        };
-        let Some((root, member)) = name.rsplit_once('.') else {
-            return SpecBindingLowering::Dropped;
-        };
-        // ONE segment before the dot: `p.E`. A compound receiver (`p.f.E`) would need the
-        // receiver to be a field-access occurrence over a variable, which nothing
-        // downstream reads — left to the drop rule, which reports it by name.
-        if root.contains('.') {
-            return SpecBindingLowering::Dropped;
-        }
-        if !member.chars().next().is_some_and(|c| c.is_uppercase()) {
-            return SpecBindingLowering::Dropped;
-        }
-        let Some(&vid) = self.rule_param_vars.get(root) else {
-            return SpecBindingLowering::Dropped;
-        };
-        // THE DOTTED NAME MUST NOT ALSO BE A SORT. This rung is asked BEFORE
-        // [`Self::require_spec_binding_sort`], so a head parameter whose name happens to
-        // match a namespace would capture a qualified sort reference: under
-        // `namespace mylib`, `rule r(mylib: Foo, …) :- ?d = require[Desc[T = mylib.Thing]]`
-        // would read as a projection off `mylib` and never reach the sort resolver, with
-        // nothing said. §2.1's shadowing rule is about a BARE name; a dotted one is a
-        // qualified reference, and silently picking either reading is the capture the
-        // repo has been burned by before. Refused, naming both — found by `/code-review`.
-        if self.parse_arg_sort_symbol(&name).is_some() {
-            self.errors.push(LoadError::InvalidTypeArgument {
-                detail: format!(
-                    "`{name}` reads two ways here: as a path projection off this \
-                     clause's head parameter `{root}`, and as a qualified sort. \
-                     Rename the parameter, or write the sort under a different prefix"
-                ),
-                span: Some(self.parsed.terms.span(parse_id)),
-            });
-            return SpecBindingLowering::Reported;
-        }
-        let span = SourceSpan::from_span(self.source_id, self.parsed.terms.span(parse_id));
-        let member_sym = self.kb.intern(member);
-        // AN OCCURRENCE TREE, NOT AN INTERNED TERM, AND THE REASON IS DE BRUIJN.
-        //
-        // The obvious lowering — `make_expr_carried(Var(Global(vid)), M)` wrapped in an
-        // `Expr::Spliced` — loads and is WRONG. A rule's body occurrences are closed to
-        // De Bruijn at the assert (`node_to_debruijn`), and that walk does not descend
-        // into a `Spliced` `Value`: MEASURED, the receiver was still
-        // `Var(Global(VarId { id: 1386, name: p }))` when the typer read it, so at firing
-        // — where each De Bruijn index opens to a FRESH variable — the projection would
-        // have named a stale global that nothing binds. A clean load and a requirement
-        // that can never ground.
-        //
-        // Built as an `Expr::Apply` over the same functor and the same two keys
-        // `KnowledgeBase::make_expr_carried` uses, the receiver is an ordinary
-        // `Expr::Var` CHILD, which the closing walk sees and rewrites like any other. The
-        // two carriers read identically through `TermView` (`extract_type` keys on the
-        // functor and the `value` / `member` labels, never on the carrier), which is what
-        // lets the type readers take this shape unchanged.
-        //
-        // A `NodeKind::Type` occurrence was tried first and PANICS here — "type/effect
-        // occurrence in for_each_child var walk". This slot is an EXPRESSION position
-        // that happens to hold a type, exactly as the concrete binding `Desc[T = Leaf]`
-        // holds `Expr::Ref(Leaf)` rather than a type node.
-        // LOUD, NOT `?`. A first cut wrote `try_resolve_symbol(…)?`, which declines the
-        // whole rung on a KB where the prelude form is not registered — and declining
-        // here is not neutral: control falls to the two NAME rungs below and the author
-        // is told "`p.E` names neither a sort nor one of `Desc`'s own type parameters"
-        // for a program whose only fault is a missing prelude. `/code-review` found it.
-        // Every other reader of this symbol either panics or documents its `None` as
-        // "matches no functor, leaves the walk unchanged"; this one misdiagnoses, so it
-        // reports instead.
-        let Some(ec_sym) = self
-            .kb
-            .try_resolve_symbol("anthill.prelude.TypeExtractor.ExprCarried")
-        else {
-            self.errors.push(LoadError::InvalidTypeArgument {
-                detail: format!(
-                    "`{root}.{member}` is a path projection, lowered through \
-                     `anthill.prelude.TypeExtractor.ExprCarried` — and that name is \
-                     not registered in this knowledge base"
-                ),
-                span: Some(self.parsed.terms.span(parse_id)),
-            });
-            return SpecBindingLowering::Reported;
-        };
-        let value_key = self.kb.intern("value");
-        let member_key = self.kb.intern("member");
-        let recv = NodeOccurrence::new_expr(Expr::Var(Var::Global(vid)), span, self.current_owner);
-        let member_occ = NodeOccurrence::new_expr(Expr::Ref(member_sym), span, self.current_owner);
-        SpecBindingLowering::Lowered(NodeOccurrence::new_expr(
-            Expr::Apply {
-                recv_type: None,
-                functor: ec_sym,
-                pos_args: Vec::new(),
-                named_args: vec![(value_key, recv), (member_key, member_occ)],
-                type_args: Vec::new(),
-            },
-            span,
-            self.current_owner,
-        ))
-    }
-
+    /// Does a guard's binding value name a sort? [`Self::parse_arg_sort_symbol`] is the one
+    /// owner of it, the same one the §2.1 parameter form's bound reads, so the introducer
+    /// rung and the dotted rung answer here as they do there.
     fn require_spec_binding_sort(&self, parse_id: ParseTermId) -> Option<Symbol> {
         let name = self.parse_arg_type_name(parse_id)?;
         self.parse_arg_sort_symbol(&name)
@@ -32184,6 +31848,27 @@ impl<'a> Loader<'a> {
         });
     }
 
+    /// A dot call whose receiver is a bracket on a relation or an operation — the converter's
+    /// companion receiver, `cmp[A = Int64]` of `cmp[A = Int64].takeN(5)` — refused as that
+    /// bracket written alone is ([`Self::refuse_bracket_on_a_callable`]), and the receiver
+    /// marked read, so the type lowering does not report it again. Answers whether it refused.
+    fn refuse_bracket_on_a_callable_receiver(&mut self, parse_id: ParseTermId) -> bool {
+        let Some(TypeExpr::Parameterized { name, .. }) = self.read_parse_recv_type(parse_id) else {
+            return false;
+        };
+        let head = self.remap_name(&name);
+        if !matches!(bracketed_name(self.kb, head, false), Some(BracketedName::Callable)) {
+            return false;
+        }
+        self.consumed_recv_types.insert(parse_id);
+        self.errors.push(LoadError::BracketOnCallable {
+            name: self.kb.local_name_of(head).to_string(),
+            on: BracketedName::Callable,
+            span: self.parsed.terms.span(parse_id),
+        });
+        true
+    }
+
     /// Proposal 060 §2.1 — refuse a bracket written alone on a name that is no type
     /// ([`LoadError::BracketOnCallable`]): `mine[1, 2]` in a goal, a data slot or a value
     /// slot of a clause, an operation body, and a clause's own head `fact myrel[T = Red]`,
@@ -32294,6 +31979,77 @@ impl<'a> Loader<'a> {
     /// `Expr::DotApply` chain the `?p.t.abs()` spelling lowers to, or `None` for any other
     /// node. A bracket on it (`p.t.m[T = Int64]()`) is left unread: a call of a rule's own
     /// term takes none, and the end-of-file sweep refuses it as it refuses one on `?p.t.m`.
+    /// 060.1 §8.6 — A CALL THROUGH A NAMED REQUIREMENT, `up.compare(?a, ?b, ?c)` under `require
+    /// up: WeakOrd[T = A]`: the spec's operation, dispatched through that requirement's
+    /// dictionary and no other — built as the call a guard's covered call is woven into
+    /// (`Expr::ApplyWithin`), its dictionary the variable the requirement's read binds. `None`
+    /// where the head of the dotted name is no named requirement of the rule being lowered.
+    fn named_requirement_call(&mut self, parse_id: ParseTermId, span: SourceSpan) -> Option<Rc<NodeOccurrence>> {
+        if self.rule_named_requirements.is_empty() {
+            return None;
+        }
+        let Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } = self.parsed.terms.get(parse_id)
+        else {
+            return None;
+        };
+        let (root, member) = self.parsed.symbols.local_name(*functor).split_once('.')?;
+        let (spec, dictionary) = self
+            .rule_named_requirements
+            .iter()
+            .find(|(name, _, _)| name == root)
+            .map(|(_, spec, dictionary)| (*spec, *dictionary))?;
+        let (root, member) = (root.to_owned(), member.to_owned());
+        let (pos_args, named_args) = (pos_args.clone(), named_args.clone());
+        let op = self
+            .kb
+            .try_resolve_symbol(&format!("{}.{member}", self.kb.qualified_name_of(spec)))
+            .filter(|op| self.kb.has_kind(*op, SymbolKind::Operation));
+        let Some(op) = op else {
+            self.errors.push(LoadError::Other {
+                message: format!(
+                    "`{root}.{member}` at {}: the requirement `{root}` is a `{}`, which declares no \
+                     operation `{member}`",
+                    render_decl_site(self.kb, span),
+                    self.kb.qualified_name_of(spec),
+                ),
+            });
+            return Some(NodeOccurrence::new_expr(Expr::Bottom, span, self.current_owner));
+        };
+        let owner = self.current_owner;
+        let args = pos_args
+            .iter()
+            .map(|&a| self.build_body_atom_occurrence(a))
+            .collect();
+        let named_args: Vec<(Symbol, ParseTermId)> = named_args
+            .iter()
+            .copied()
+            .filter(|&(_, a)| self.named_child_survives_walk(a))
+            .collect();
+        let named_args = named_args
+            .iter()
+            .map(|&(k, a)| {
+                let key = self.kb.intern(self.parsed.symbols.local_name(k));
+                (key, self.build_body_atom_occurrence(a))
+            })
+            .collect();
+        let requirement = NodeOccurrence::new_expr(Expr::Var(Var::Global(dictionary)), span, owner);
+        Some(NodeOccurrence::new_expr(
+            Expr::ApplyWithin {
+                functor: op,
+                args,
+                named_args,
+                requirements: vec![requirement],
+                type_args: Vec::new(),
+            },
+            span,
+            owner,
+        ))
+    }
+
     fn clause_param_method_call(
         &mut self,
         parse_id: ParseTermId,
@@ -33011,25 +32767,12 @@ impl<'a> Loader<'a> {
                 } else {
                     None
                 };
-                // WI-20260909-51W18 — THE SPEC-INSTANCE SLOT, from the TERM walk.
-                //
-                // Slot 0 of a `find_dictionary` goal is a TYPE, and the two walks must
-                // lower it the same way or one spelling of one relation gets two
-                // readings. The occurrence walk got this arm first, and the term walk was
-                // left without it on the argument that "`require[…]` is legal ONLY as a
-                // body goal, so the term walk cannot meet one" — evidenced by the whole
-                // test binary passing with the arm disabled.
-                //
-                // THAT WAS A GREEN-SUITE ARGUMENT AND IT WAS WRONG. Constraint bodies,
-                // operation `ensures` bodies and aggregation-constraint conditions are
-                // all stored as TERMS, and every one of them may carry a `requires(…)` or
-                // a `?d = require[…]`. The corpus simply has no BRACKETED one — so the
-                // binary could not have measured it, and un-stripping the bracket turned
-                // `constraint c :- requires(Eq[T])`, the canonical stdlib typeclass
-                // spelling, into `unresolved name 'T'`. Found by `/code-review`, driven
-                // over five surfaces. A test in each is now the reader.
-                let spec_instance_slot =
-                    self.parsed.symbols.local_name(functor) == dt::FIND_DICTIONARY;
+                // Proposal 060.1 §5: the kernel's `find_dictionary` is not written. The
+                // converter mints none, so an application of it here is the removed
+                // requirement form by another spelling — its address, its qualified name, an
+                // import — and refused, here and in the occurrence walk: a rule's head rides
+                // this walk and its body the other.
+                self.refuse_written_find_dictionary(functor, new_functor, parse_id);
 
                 // WI-20260911-073GH — BINDER SCOPING, THE TWIN OF [`Self::visit_load`]'s.
                 //
@@ -33128,27 +32871,6 @@ impl<'a> Loader<'a> {
                                 binder_frame = self.local_names_stack.pop();
                                 binder_pushed = false;
                             }
-                        }
-                        if spec_instance_slot && i == 0 {
-                            let occ = self.build_require_spec_occurrence(id);
-                            return match node_occurrence::value_to_term(
-                                &mut self.kb,
-                                &Value::Node(occ),
-                            ) {
-                                Ok(t) => t,
-                                // Loud, not a silent `Bottom`: a spec instance that
-                                // cannot be written as a term would ground nothing and
-                                // the clause would fail for a reason no message names.
-                                Err(e) => {
-                                    self.errors.push(LoadError::Other {
-                                        message: format!(
-                                            "a `require`/`requires` spec instance is not \
-                                             term-representable: {e:?}"
-                                        ),
-                                    });
-                                    self.kb.alloc(Term::Bottom)
-                                }
-                            };
                         }
                         // The conversion hint is the declared field type, on
                         // whichever carrier it rides.
@@ -34321,7 +34043,12 @@ impl<'a> Loader<'a> {
                         // segment names a local binding.
                         let carries_bracket =
                             named_args.iter().any(|&(_, tid)| self.is_call_type_args_aux(tid));
-                        if (named_args.len() == visible_named.len() || carries_bracket)
+                        // A bracket on a relation or an operation named as the receiver,
+                        // `cmp[A = Int64].takeN(5)`, is that bracket written alone (§5.4),
+                        // refused as `cmp[A = Int64]` in a `let` is; the call is read as the
+                        // one written without it, so nothing else is reported of it.
+                        let refused_receiver = self.refuse_bracket_on_a_callable_receiver(parse_id);
+                        if (named_args.len() == visible_named.len() || carries_bracket || refused_receiver)
                             && self.try_identifier_dot_call(
                                 parse_id,
                                 &name,
@@ -36269,6 +35996,35 @@ impl<'a> Loader<'a> {
         self.kb.alias_head(sym)
     }
 
+    /// A rule-body goal's bracket (060.1 §2), built as a call's is — except an entry whose
+    /// value is a type parameter the clause's own head introduces (`cmp[A = A](…)` in `rule
+    /// outer[A](…)`), which no reader binds: refused, naming the spelling that passes the
+    /// clause's requirement, an argument of the goal typed at it.
+    fn goal_call_type_args(&mut self, parse_id: ParseTermId) -> Vec<(Option<Symbol>, crate::eval::value::Value)> {
+        let own = self.read_parse_call_type_args(parse_id).and_then(|bindings| {
+            bindings.iter().find_map(|b| match &b.bound {
+                crate::parse::ir::TypeExpr::Simple(n) if n.segments.len() == 1 => {
+                    let name = self.parsed.symbols.local_name(n.segments[0]).to_owned();
+                    self.rule_head_tvar(&name).is_some().then_some(name)
+                }
+                _ => None,
+            })
+        });
+        let Some(name) = own else {
+            return self.build_call_type_args(parse_id);
+        };
+        self.consumed_call_type_args.insert(parse_id);
+        self.errors.push(LoadError::InvalidTypeArgument {
+            detail: format!(
+                "the clause's own type parameter `{name}` written in a goal's bracket is not read: \
+                 a goal passes its callee the clause's requirement at `{name}` through its \
+                 arguments typed at it — drop the entry, and type the argument (`?x: {name}`)"
+            ),
+            span: Some(self.parsed.terms.span(parse_id)),
+        });
+        Vec::new()
+    }
+
     fn build_call_type_args(
         &mut self,
         parse_id: ParseTermId,
@@ -36352,6 +36108,29 @@ impl<'a> Loader<'a> {
                 callee,
                 position,
                 span,
+            });
+        }
+    }
+
+    /// 060.1 §8.6 — refuse every `require …` goal no rule's body read: the grammar admits the
+    /// keyword wherever a goal list stands, and outside a rule's own body the term after it
+    /// would stand as a plain goal (a constraint's, an operation's `requires`) or a head.
+    fn check_unread_require_goals(&mut self) {
+        let mut unread: Vec<ParseTermId> = self
+            .parsed
+            .terms
+            .ids()
+            .filter(|id| self.parsed.terms.require_goal(*id).is_some() && !self.read_require_goals.contains(id))
+            .collect();
+        unread.sort_by_key(|id| self.parsed.terms.span(*id).start);
+        for id in unread {
+            let at = render_decl_site(self.kb, self.source_span_of(id));
+            self.errors.push(LoadError::Other {
+                message: format!(
+                    "`require` at {at} states a requirement of a rule, and is read only as a \
+                     goal of a rule's body; an operation states one with `requires`, and a \
+                     head, a constraint or a nested goal states none"
+                ),
             });
         }
     }
@@ -36581,19 +36360,6 @@ impl<'a> Loader<'a> {
         // WI-753: located at the entry the author WROTE, not through `term_spans`.
         let site = self.source_span_of(pid);
         Some(self.entry_type_value_occ(type_tid, site))
-    }
-
-    /// [`Self::lower_entry_type_aux_occ`] of an effect row, and `None` for any other
-    /// entry: the one such entry a `require[…]` spec instance takes as a binding.
-    fn lower_effect_row_entry_occ(&mut self, pid: ParseTermId) -> Option<Rc<NodeOccurrence>> {
-        match self.parsed.terms.get(pid) {
-            Term::ParseAux(aux)
-                if matches!(aux.as_ref(), ParseAux::EntryType(TypeExpr::EffectRow(_))) =>
-            {
-                self.lower_entry_type_aux_occ(pid)
-            }
-            _ => None,
-        }
     }
 
     /// The node of a structural type written as a bracket's entry, in an operation body
@@ -38434,6 +38200,9 @@ impl<'a> Loader<'a> {
                 if let Some(occ) = self.clause_param_method_call(parse_id, span) {
                     return occ;
                 }
+                if let Some(occ) = self.named_requirement_call(parse_id, span) {
+                    return occ;
+                }
                 // WI-20261001-KDMQS — a dotted chain naming a const in a DATA slot is its
                 // value: the twin of `convert_term_inner`'s arm, so a fact holding
                 // `Float.infinity` and a body goal spelling it build one term.
@@ -38762,15 +38531,9 @@ impl<'a> Loader<'a> {
                     } else {
                         smallvec::SmallVec::new()
                     };
-                    // WI-20260909-51W18 — the OCCURRENCE twin of `convert_term_inner`'s
-                    // `find_dictionary` arm, and it is needed for the same reason WI-742
-                    // §2.1 needed two arms: a rule's HEAD rides the term path and its BODY
-                    // rides this one. MEASURED, by writing only the term arm first: an
-                    // un-stripped `require[Desc[T]]` still reported `unresolved name 'T'`,
-                    // raised HERE — this walk resolves the same names again, so a rule
-                    // written on one walk alone is a rule that does not hold.
-                    let spec_instance_slot =
-                        self.parsed.symbols.local_name(functor) == dt::FIND_DICTIONARY;
+                    // The occurrence walk's refusal of a written `find_dictionary`; see the
+                    // term walk's.
+                    self.refuse_written_find_dictionary(functor, new_functor, parse_id);
                     let fold_slots = match node_fold {
                         ConstFold::Goal => {
                             const_fold_goal_slots(self.kb, new_functor, pos_args.len())
@@ -38780,10 +38543,6 @@ impl<'a> Loader<'a> {
                     let mut pos: Vec<Rc<NodeOccurrence>> = Vec::with_capacity(pos_args.len());
                     for (i, &pid) in pos_args.iter().enumerate() {
                         self.const_fold = node_fold.child(fold_slots.iter().find(|s| s.index == i));
-                        if spec_instance_slot && i == 0 {
-                            pos.push(self.build_require_spec_occurrence(pid));
-                            continue;
-                        }
                         if let Some(child) = self.lower_entry_type_aux_occ(pid) {
                             pos.push(child);
                             continue;
@@ -38919,10 +38678,22 @@ impl<'a> Loader<'a> {
                             } else {
                                 self.build_recv_type(parse_id, new_functor)
                             },
+                            // A bracket on a goal of a relation binds what the relation
+                            // declares (060.1 §2), read by the typer's routing of the goal,
+                            // which refuses it where the relation declares nothing. On any
+                            // other callee it stays unread, for the end-of-file sweep.
+                            type_args: if !reread_reflect_form
+                                && self.in_rule_clause_body
+                                && self.kb.has_kind(new_functor, SymbolKind::Goal)
+                                && !self.kb.has_kind(new_functor, SymbolKind::Operation)
+                            {
+                                self.goal_call_type_args(parse_id)
+                            } else {
+                                Vec::new()
+                            },
                             functor: new_functor,
                             pos_args: pos,
                             named_args: named,
-                            type_args: Vec::new(),
                         }
                     }
                 }
@@ -41891,6 +41662,7 @@ impl<'a> Loader<'a> {
                             spec: requirement.spec,
                             carrier: requirement.carrier,
                             carrier_param: requirement.carrier_param,
+                            element: requirement.element,
                         });
                         return node_occurrence::TypeChild::Interned(requirement.instance);
                     }
@@ -45401,11 +45173,7 @@ impl<'a> Loader<'a> {
     /// introducer. A rule head mixing in a concrete binding (`keep[T, A = Int64](…)`)
     /// has that binding read by nobody, and leaving the node unmarked is what makes
     /// the sweep report it instead of dropping it.
-    fn collect_rule_tvar_names(
-        &mut self,
-        head_parse_id: ParseTermId,
-        out: &mut std::collections::HashSet<String>,
-    ) {
+    fn collect_rule_tvar_names(&mut self, head_parse_id: ParseTermId, out: &mut Vec<String>) {
         // For a connective head `keep[T](…) = rhs` the introducer rides on the LHS
         // operand (`pos_args[0]`), so read the type-args there rather than off the
         // whole `eq(lhs, rhs)` node. WI-619: recognize the connective head by its
@@ -45441,7 +45209,9 @@ impl<'a> Loader<'a> {
                 };
                 match introducer {
                     Some(name) => {
-                        out.insert(name);
+                        if !out.contains(&name) {
+                            out.push(name);
+                        }
                     }
                     None => all_introducers = false,
                 }
@@ -45463,11 +45233,16 @@ impl<'a> Loader<'a> {
     /// type-var. Named and positional instance bindings normalize against the
     /// declaration, including bindings fixed by an alias. The annotated value
     /// supplies the carrier; the remaining bindings stay in the requirement.
+    ///
+    /// A guard may name several of the head's type variables, as an operation's `requires`
+    /// line may (`Conv[A = X, B = U]`): the one at the spec's carrier parameter is the
+    /// carrier, and each other one is an ELEMENT, written in the instance as the variable its
+    /// columns share and answered beside the requirement ([`RuleProviderRequirement::element`]).
     fn try_body_tvar_guard(
         &mut self,
         gtid: ParseTermId,
         introducers: &std::collections::HashSet<String>,
-    ) -> Option<(String, RuleProviderRequirement)> {
+    ) -> Option<(String, RuleProviderRequirement, Vec<(String, RuleProviderRequirement)>)> {
         let Term::Fn {
             functor,
             pos_args,
@@ -45492,12 +45267,14 @@ impl<'a> Loader<'a> {
         if introduced.is_empty() {
             return None;
         }
-        if introduced.len() != 1 {
-            self.errors.push(LoadError::Other { message:
-                "a bounding guard must identify one carrier type variable; several carrier bindings are not supported".into() });
-            return None;
-        }
-        let tvar = introduced[0].clone();
+        // Each binding's value, where it is a type variable the head introduces.
+        let introduced_at: Vec<Option<String>> = pos_args
+            .iter()
+            .copied()
+            .chain(named_args.iter().map(|(_, value)| *value))
+            .map(introduced_name)
+            .collect();
+        let mut tvar = introduced[0].clone();
         let written = self.remap_symbol(functor, self.parsed.terms.span(gtid));
         // The established F[A] form may name an enclosing type parameter,
         // not a spec declaration with a parameter list (PW9A0). Preserve its
@@ -45518,11 +45295,35 @@ impl<'a> Loader<'a> {
                     instance,
                     carrier: None,
                     carrier_param: None,
+                    name: None,
+                    element: false,
                 },
+                Vec::new(),
             ));
         }
         let (spec, mut fixed) = self.type_alias_application(written);
         let params = self.kb.type_params_of_sort(spec);
+        // The carrier is the variable at the spec's carrier parameter, by name or by position;
+        // the first one written where none stands there.
+        if introduced.len() > 1 {
+            if let Some(key) = super::typing::spec_carrier_param_or_sole(self.kb, spec)
+                .map(|k| self.kb.local_name_of(k).to_owned())
+            {
+                let named = named_args.iter().enumerate().find_map(|(i, (k, _))| {
+                    (self.parsed.symbols.local_name(*k) == key)
+                        .then(|| introduced_at[pos_args.len() + i].clone())
+                        .flatten()
+                });
+                let positional = params
+                    .iter()
+                    .position(|p| *p == key)
+                    .filter(|i| *i < pos_args.len())
+                    .and_then(|i| introduced_at[i].clone());
+                if let Some(at_carrier) = named.or(positional) {
+                    tvar = at_carrier;
+                }
+            }
+        }
         // An argument giving one of the alias's own parameters is written where the parameter
         // is; the carrier, given one, is the slot the parameter stands at, which it must
         // stand at alone.
@@ -45543,8 +45344,10 @@ impl<'a> Loader<'a> {
             let is_carrier = matches!(self.parsed.terms.get(value), Term::Ref(sym) | Term::Ident(sym)
                 if self.parsed.symbols.local_name(*sym) == tvar);
             if !is_carrier {
-                let bound = self.convert_term(value);
-                gives.bind_term(self.kb, var, bound);
+                if self.guard_binding_lowers(spec, value, introducers) {
+                    let bound = self.convert_term(value);
+                    gives.bind_term(self.kb, var, bound);
+                }
                 continue;
             }
             let alone = |kb: &KnowledgeBase, v: TermId| matches!(kb.get_term(v), Term::Var(Var::Global(x)) if *x == var);
@@ -45596,27 +45399,92 @@ impl<'a> Loader<'a> {
             return None;
         }
         let mut carrier_param = None;
-        let values = pos_args
+        let mut elements: Vec<(String, RuleProviderRequirement)> = Vec::new();
+        // The carrier's variable: the one an earlier guard gave this type parameter, so every
+        // guard naming it is at one variable, else a fresh one.
+        let carrier = match self.rule_head_tvar(&tvar) {
+            Some(RuleTvar::Bounded(bound)) if bound.carrier.is_some() => bound.carrier.unwrap(),
+            _ => {
+                let label = self.kb.intern(&tvar);
+                self.kb.fresh_var(label)
+            }
+        };
+        let values: Vec<(ParseTermId, usize)> = pos_args
             .iter()
             .copied()
-            .chain(named_args.iter().map(|(_, value)| *value));
-        for (value, slot) in values.zip(fit.slots) {
-            let index = slot.expect("a successful type-argument fit assigns every guard binding");
+            .chain(named_args.iter().map(|(_, value)| *value))
+            .zip(fit.slots)
+            .map(|(value, slot)| {
+                (value, slot.expect("a successful type-argument fit assigns every guard binding"))
+            })
+            .collect();
+        let names_carrier = |this: &Self, value: ParseTermId| {
+            matches!(this.parsed.terms.get(value), Term::Ref(sym) | Term::Ident(sym)
+                if this.parsed.symbols.local_name(*sym) == tvar)
+        };
+        // Written at several parameters (`Conv[A = X, B = X]`), the carrier stands at the spec's
+        // carrier parameter, else at the first, and each other one is bound to its variable.
+        let spec_carrier_key = super::typing::spec_carrier_param_or_sole(self.kb, spec)
+            .map(|k| self.kb.local_name_of(k).to_owned());
+        let carrier_index = values
+            .iter()
+            .filter(|(value, _)| names_carrier(self, *value))
+            .map(|(_, index)| *index)
+            .find(|index| spec_carrier_key.as_deref() == Some(params[*index].as_str()))
+            .or_else(|| values.iter().find(|(value, _)| names_carrier(self, *value)).map(|(_, i)| *i));
+        for (value, index) in values {
             let key = &params[index];
             let param = self.kb.intern(key);
-            let is_carrier = matches!(self.parsed.terms.get(value), Term::Ref(sym) | Term::Ident(sym)
-                if self.parsed.symbols.local_name(*sym) == tvar);
+            let is_carrier = Some(index) == carrier_index;
             if is_carrier {
                 carrier_param = Some(param);
+            } else if names_carrier(self, value) {
+                fixed.push((param, self.kb.alloc(Term::Var(Var::Global(carrier)))));
+                continue;
             }
-            if is_carrier && (!named_args.is_empty() || pos_args.len() > 1) {
+            // Another of the head's type variables at an element: the variable its columns
+            // share, a bound one's own.
+            let element = match self.parsed.terms.get(value) {
+                Term::Ref(sym) | Term::Ident(sym) if !is_carrier => {
+                    let name = self.parsed.symbols.local_name(*sym);
+                    introducers.contains(name).then(|| name.to_owned())
+                }
+                _ => None,
+            };
+            if let Some(name) = element {
+                let var = match self.rule_head_tvar(&name) {
+                    Some(RuleTvar::Bounded(bound)) if bound.carrier.is_some() => bound.carrier.unwrap(),
+                    _ => {
+                        let label = self.kb.intern(&name);
+                        self.kb.fresh_var(label)
+                    }
+                };
+                fixed.push((param, self.kb.alloc(Term::Var(Var::Global(var)))));
+                elements.push((
+                    name,
+                    RuleProviderRequirement {
+                        spec,
+                        instance: self.kb.make_sort_ref(spec),
+                        carrier: Some(var),
+                        carrier_param: Some(param),
+                        name: None,
+                        element: true,
+                    },
+                ));
+                continue;
+            }
+            // A spec with no parameter a provider receives on (`TypePattern[T = P]`) states its
+            // requirement at the type the variable is, as an operation's `requires` line does;
+            // there is no carrier to check the variable against.
+            let over_a_parameter = super::typing::spec_over_parameter(self.kb, spec).is_some();
+            if is_carrier && over_a_parameter && (!named_args.is_empty() || pos_args.len() > 1) {
                 let member = self.kb.intern(&key);
                 self.kb.record_rule_sort_use(crate::kb::RuleSortUse {
                     sort: spec,
                     site: crate::kb::RuleSortSite::HeadMember(member),
                     span: self.source_span_of(gtid),
                 });
-            } else if !is_carrier {
+            } else if !is_carrier && self.guard_binding_lowers(spec, value, introducers) {
                 let bound = self.convert_term(value);
                 fixed.push((param, bound));
             }
@@ -45641,8 +45509,9 @@ impl<'a> Loader<'a> {
                 named_args: fixed,
             })
         };
-        let name = self.kb.intern(&tvar);
-        let carrier = self.kb.fresh_var(name);
+        for (_, element) in &mut elements {
+            element.instance = instance;
+        }
         Some((
             tvar,
             RuleProviderRequirement {
@@ -45650,8 +45519,71 @@ impl<'a> Loader<'a> {
                 instance,
                 carrier: Some(carrier),
                 carrier_param,
+                name: None,
+                element: false,
             },
+            elements,
         ))
+    }
+
+    /// Does a guard's binding other than its carrier LOWER? It is a TYPE: a logical variable
+    /// (the open case), an effect row, a type variable the head introduces or a type parameter
+    /// in scope, or a sort, spelled as a head bound spells one ([`Self::parse_arg_names_a_sort`]). The spec's
+    /// own parameter name (`Sp[C = A, P = P]`) is the open binding it was in `require[…]` and
+    /// is not lowered — the element is left unwritten. Anything else — a literal, a rule name,
+    /// a tuple or arrow, a name that denotes nothing — is refused as a `require[…]` binding was
+    /// ([`Self::report_dropped_spec_binding`]), naming itself: lowered as data it loaded and
+    /// matched no provision, so the guard answered nothing (`Sp[C = A, P = item]`). Neither is
+    /// lowered: the refused one's lowering would report the same text again as an unresolved
+    /// name.
+    fn guard_binding_lowers(
+        &mut self,
+        spec: Symbol,
+        value: ParseTermId,
+        introducers: &std::collections::HashSet<String>,
+    ) -> bool {
+        if matches!(self.parsed.terms.get(value), Term::Var(_)) {
+            return true;
+        }
+        // An effect row is an element (`Walk[C = A, E = {}]`); a tuple or an arrow is not.
+        if matches!(self.parsed.terms.get(value), Term::ParseAux(aux)
+            if matches!(aux.as_ref(), ParseAux::EntryType(TypeExpr::EffectRow(_))))
+        {
+            return true;
+        }
+        if let Some(name) = self.parse_arg_type_name(value) {
+            if introducers.contains(&name) || self.kb.symbols.is_type_param(self.current_scope, &name) {
+                return true;
+            }
+        }
+        // A sort applied to its arguments (`P = Box[E = Leaf]`) reads as a call to
+        // `parse_arg_names_a_sort`; its head is what names the sort, as in `require[…]`'s
+        // lowering ([`Self::require_spec_binding_sort`]).
+        if self.parse_arg_names_a_sort(value) || self.require_spec_binding_sort(value).is_some() {
+            return true;
+        }
+        let declared = self.kb.type_params_of_sort(spec);
+        let span = self.parsed.terms.span(value);
+        self.report_dropped_spec_binding(spec, &declared, value, span);
+        false
+    }
+
+    /// Refuse an application of the kernel's `find_dictionary` written in a program —
+    /// [`LoadError::WrittenFindDictionary`]. `functor` is the name as written and
+    /// `resolved` what it resolved to; a declaration of the user's own named so
+    /// (`kernel_mint_address_test`) resolves elsewhere and is not refused.
+    fn refuse_written_find_dictionary(
+        &mut self,
+        functor: Symbol,
+        resolved: Symbol,
+        parse_id: ParseTermId,
+    ) {
+        if self.kb.builtin_of(resolved) == Some(BuiltinTag::FindDictionary) {
+            self.errors.push(LoadError::WrittenFindDictionary {
+                name: self.parsed.symbols.local_name(functor).to_owned(),
+                span: self.parsed.terms.span(parse_id),
+            });
+        }
     }
 
     /// WI-20260901-719FJ — THE NAME A CLAUSE HEAD WRITES, whatever shape the converter
@@ -45764,7 +45696,7 @@ impl<'a> Loader<'a> {
             return None;
         };
         let head = *head;
-        let mut introducers = std::collections::HashSet::new();
+        let mut introducers = Vec::new();
         self.collect_rule_tvar_names(head, &mut introducers);
         if !introducers.is_empty() {
             return Some(
@@ -46055,15 +45987,19 @@ impl<'a> Loader<'a> {
         // from the body. The inline `?x: Spec` form needs none of this — the
         // introducer set is empty and `rule_tvar_bounds` stays empty.
         self.rule_tvar_bounds.clear();
+        self.rule_tvar_further_guards.clear();
+        self.rule_named_requirements.clear();
         let mut folded_guard_ids: std::collections::HashSet<ParseTermId> =
             std::collections::HashSet::new();
-        let mut introducers: std::collections::HashSet<String> = std::collections::HashSet::new();
-        {
-            for h in &r.heads {
-                if let RuleHead::Term(tid) = h {
-                    self.collect_rule_tvar_names(*tid, &mut introducers);
-                }
+        // In the order written: a citation's positional bracket counts them so (060.1 §2).
+        let mut introducer_order: Vec<String> = Vec::new();
+        for h in &r.heads {
+            if let RuleHead::Term(tid) = h {
+                self.collect_rule_tvar_names(*tid, &mut introducer_order);
             }
+        }
+        let introducers: std::collections::HashSet<String> = introducer_order.iter().cloned().collect();
+        {
             if !introducers.is_empty() {
                 // WI-20260908-PW9A0 — AN INTRODUCER MAY NOT SHADOW A NAME IN SCOPE.
                 //
@@ -46121,22 +46057,66 @@ impl<'a> Loader<'a> {
                 self.rule_tvar_bounds = introducers.iter().map(|tv| (tv.clone(), None)).collect();
                 if let Some(body) = r.body.as_ref() {
                     for &gtid in body {
-                        if let Some((tvar, requirement)) =
+                        if let Some((tvar, mut requirement, elements)) =
                             self.try_body_tvar_guard(gtid, &introducers)
                         {
-                            if matches!(self.rule_head_tvar(&tvar), Some(RuleTvar::Bounded(_))) {
-                                // A type-variable's bound must be declared once; a
-                                // second `Spec[T]` guard would be silently lost
-                                // (overwrite + drop). Reject loudly. Still fold it
-                                // out of the body to avoid a confusing secondary
-                                // "unresolved name T" error.
-                                self.errors.push(LoadError::Other {
-                                    message: format!(
-                                        "WI-582: rule type-variable `{tvar}` is bounded by more \
-                                         than one guard; declare its bound once (a compound bound \
-                                         spanning several guards is not yet supported)"
-                                    ),
-                                });
+                            // A type variable the guard names at an element is bounded by it,
+                            // where no earlier guard bounds it.
+                            for (name, element) in elements {
+                                if self.rule_head_tvar(&name) == Some(RuleTvar::Unbounded) {
+                                    self.rule_tvar_bounds.insert(name, Some(element));
+                                }
+                            }
+                            requirement.name = self
+                                .parsed
+                                .terms
+                                .require_goal(gtid)
+                                .flatten()
+                                .map(|n| self.reintern(n));
+                            // The name heads the body's calls through it (`up.compare(…)`), so one
+                            // that also names something in scope would read two ways, as an
+                            // introducer that does is refused for (above).
+                            if let Some(name) = requirement.name {
+                                let text = self.kb.local_name_of(name).to_owned();
+                                if !matches!(
+                                    self.kb.symbols.resolve_in_scope(&text, self.current_scope),
+                                    ResolveResult::NotFound
+                                ) {
+                                    self.errors.push(LoadError::Other {
+                                        message: format!(
+                                            "the requirement name `{text}` at {} also names something \
+                                             in scope, so `{text}.…` in the body would have two \
+                                             readings; rename the requirement",
+                                            render_decl_site(self.kb, self.source_span_of(gtid)),
+                                        ),
+                                    });
+                                }
+                            }
+                            // A variable an earlier guard named only at an element has this guard
+                            // as its bound, at the element's variable (`try_body_tvar_guard`).
+                            if matches!(self.rule_head_tvar(&tvar), Some(RuleTvar::Bounded(first)) if first.element) {
+                                self.rule_tvar_bounds.insert(tvar, Some(requirement));
+                                folded_guard_ids.insert(gtid);
+                                continue;
+                            }
+                            if let Some(RuleTvar::Bounded(first)) = self.rule_head_tvar(&tvar) {
+                                // 060.1 §8.5 — SEVERAL REQUIREMENTS AT ONE PARAMETER, as an
+                                // operation's `requires WeakOrd[T = A], Eq[T = A]`: the first
+                                // guard lowers the head's bound and gives the carrier, and
+                                // each further one is a requirement of that carrier
+                                // ([`Self::register_further_guards`]). A guard that names an
+                                // enclosing sort's parameter has no carrier to share.
+                                if first.carrier.is_none() || requirement.carrier.is_none() {
+                                    self.errors.push(LoadError::Other {
+                                        message: format!(
+                                            "rule type-variable `{tvar}` is bounded by a guard \
+                                             naming an enclosing sort's parameter and by another \
+                                             guard; such a guard bounds its variable alone"
+                                        ),
+                                    });
+                                } else {
+                                    self.rule_tvar_further_guards.push((tvar, requirement));
+                                }
                                 folded_guard_ids.insert(gtid);
                                 continue;
                             }
@@ -46178,6 +46158,31 @@ impl<'a> Loader<'a> {
                         ),
                     });
                 }
+            }
+        }
+
+        // A guard refused here is the clause's fault, reported once: the rules it heads are
+        // marked so the typer does not also refuse the calls the guard would have covered.
+        let mut guard_refused = false;
+        // 060.1 §8.6 — a goal written `require …` is a requirement of a type parameter the head
+        // introduces, which the scan above has folded into the head's bound; one it did not
+        // fold states nothing of the clause's parameters, and would load as a goal that
+        // answers nothing.
+        for &gtid in r.body.iter().flatten() {
+            if self.parsed.terms.require_goal(gtid).is_none() {
+                continue;
+            }
+            self.read_require_goals.insert(gtid);
+            let at = render_decl_site(self.kb, self.source_span_of(gtid));
+            if !folded_guard_ids.contains(&gtid) {
+                guard_refused = true;
+                self.errors.push(LoadError::Other {
+                    message: format!(
+                        "`require` at {at} states a requirement of a type parameter the rule's \
+                         head introduces, and this one names none: introduce it, `rule p[A](…) \
+                         :- require Spec[T = A], …`, and type a column at it (`?x: A`)"
+                    ),
+                });
             }
         }
 
@@ -46374,12 +46379,18 @@ impl<'a> Loader<'a> {
         // shared var identity across the body atoms and the (already-converted)
         // head, so `assert_rule_debruijn_with_nodes` can collect the rule's vars
         // from head + occurrences and close both to De Bruijn — no term body.
+        // The heads have lowered each introducer's first guard; the further ones, and the
+        // names, are read before the body, whose calls through a name read them.
+        self.rule_named_requirements = self.register_further_guards();
         let mut body_nodes: Vec<Rc<NodeOccurrence>> = Vec::new();
         if let Some(terms) = r.body.as_ref() {
             for &tid in terms {
                 // WI-582: a folded `Spec[T]` guard — its content became the
-                // bound on the `?x: T` variable, so it is not a body goal.
-                if folded_guard_ids.contains(&tid) {
+                // bound on the `?x: T` variable, so it is not a body goal. Nor is a
+                // `require …` goal the scan did not fold: it is refused above, and read as
+                // a goal it raised a second, unrelated refusal (`require (Leaf) -> Leaf`:
+                // "rule-body goal `arrow` names nothing").
+                if folded_guard_ids.contains(&tid) || self.parsed.terms.require_goal(tid).is_some() {
                     continue;
                 }
                 // §6.1 (061) — `true` IS the empty conjunction, so it contributes no
@@ -46402,7 +46413,9 @@ impl<'a> Loader<'a> {
                 // WI-20261001-KDMQS — and the const fold's state starts at the same
                 // place: a goal, whose data slots fold.
                 let prev_fold = std::mem::replace(&mut self.const_fold, ConstFold::Goal);
+                let prev_clause = std::mem::replace(&mut self.in_rule_clause_body, true);
                 let atom = self.build_body_atom_occurrence(tid);
+                self.in_rule_clause_body = prev_clause;
                 self.const_fold = prev_fold;
                 self.in_body_goal = prev_goal;
                 body_nodes.push(atom);
@@ -46492,6 +46505,21 @@ impl<'a> Loader<'a> {
         {
             self.refuse_rewrite_tags(r.meta.as_ref(), declaration);
         }
+        // 060.1 §2 — each declared type parameter with the frame variable its occurrences
+        // share, and whether some head's frame holds it.
+        let declared_params: Vec<(String, Option<VarId>)> = introducer_order
+            .iter()
+            .map(|name| {
+                let carrier = match self.rule_head_tvar(name) {
+                    Some(RuleTvar::Bounded(requirement)) => requirement.carrier,
+                    _ => None,
+                };
+                (name.clone(), carrier)
+            })
+            .collect();
+        let mut params_held = vec![false; declared_params.len()];
+        let kb_heads_equational = kb_heads.iter().any(|&h| is_equational_head(self.kb, h));
+        let mut rule_rids: Vec<crate::kb::RuleId> = Vec::new();
         for (head_idx, kb_head) in kb_heads.into_iter().enumerate() {
             // WI-20260911-5G28A — THIS HEAD'S BOUNDS CONTRIBUTE THEIR OWN VARIABLES TO
             // THE FRAME. `?t` in `?x: List[T = ?t]` is in neither the head term (the
@@ -46533,6 +46561,7 @@ impl<'a> Loader<'a> {
             if let Some(label) = label_sym {
                 self.kb.set_rule_label(rid, label);
             }
+            rule_rids.push(rid);
             // WI-458: key the head span on this rule's RuleId (per-occurrence),
             // not the hash-consed head TermId. A `⊥` denial head has no source
             // term (`positive_head_spans` is empty; the guard above rejects
@@ -46670,12 +46699,52 @@ impl<'a> Loader<'a> {
                     }
                 }
             }
+            // 060.1 §2 — the parameters this clause declares, which a citation's bracket
+            // binds. A parameter the guard names a provider at (`T[A]`, an enclosing
+            // sort's parameter) has no frame variable and is not one; one no head bound
+            // names is refused below.
+            if !declared_params.is_empty() {
+                let mut params: Vec<(Symbol, VarId)> = Vec::new();
+                for (i, (name, carrier)) in declared_params.iter().enumerate() {
+                    let Some(carrier) = carrier else { continue };
+                    if self.kb.rule_globals(rid).contains(carrier) {
+                        params_held[i] = true;
+                        params.push((self.kb.intern(name), *carrier));
+                    }
+                }
+                self.kb.install_rule_type_params(rid, &params);
+            }
             // WI-139: equational rules are cite-required by default. Deliberately
             // NOT folded into the tags read above: this asks about the head SHAPE
             // (an untagged equational head is a cite-required law whether or not it
             // is bodyless), the check above about what actually FIRES.
             if is_equational_head(self.kb, kb_head) && !meta_has_flag(self.kb, meta, "simp") {
                 self.kb.unindex_functor(rid);
+            }
+        }
+        // An introducer whose variable no head bound names, on a relational clause: its guard
+        // requires a spec of a type no value of the clause has, and was dropped with nothing
+        // reading it. An equation's introducer is its rewrite's (WI-582), and a citation reads
+        // no equation.
+        let relational = !kb_heads_equational;
+        for ((name, carrier), held) in declared_params.iter().zip(&params_held) {
+            if relational && carrier.is_some() && !held {
+                guard_refused = true;
+                let at = positive_head_spans
+                    .first()
+                    .map_or_else(String::new, |s| format!(" (the rule at {})", render_decl_site(self.kb, *s)));
+                self.errors.push(LoadError::Other {
+                    message: format!(
+                        "rule type-variable `{name}` is the type of no head column{at}, so its \
+                         guard requires a spec at a type no value of the clause has; write \
+                         it in a column's type (`?x: {name}`, `?l: List[T = {name}]`)"
+                    ),
+                });
+            }
+        }
+        if guard_refused {
+            for rid in rule_rids {
+                self.kb.note_refused_guard(rid);
             }
         }
 

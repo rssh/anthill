@@ -132,7 +132,7 @@ end
         r#"
 namespace wi948.bounded
   import anthill.prelude.{Int64, Eq}
-  rule eq[t](?x, ?y) :- Eq[t]
+  rule eq[t](?x: t, ?y) :- Eq[t]
 end
 "#,
     );

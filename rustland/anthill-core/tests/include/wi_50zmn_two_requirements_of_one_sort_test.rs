@@ -1584,11 +1584,11 @@ namespace wi50zmn.cite
     operation sign[A](x: A, y: A) -> Int64 requires WeakOrd[T = A] = WeakOrd.compare(x, y)
   end
 
-  rule cmp(?a, ?b, ?c) :- WeakOrd.compare(?a, ?b, ?c)
-  rule outer(?a, ?b, ?c) :- cmp(?a, ?b, ?c)
-  rule viaSign(?a, ?b, ?c) :- Util.sign(?a, ?b, ?c)
-  rule either(?a, ?b, ?c) :- WeakOrd.compare(?a, ?b, ?c)
-  rule either(?a, ?b, ?c) :- WeakOrd.compare(?b, ?a, ?c)
+  rule cmp[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], WeakOrd.compare(?a, ?b, ?c)
+  rule outer[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], cmp(?a, ?b, ?c)
+  rule viaSign[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], Util.sign(?a, ?b, ?c)
+  rule either[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], WeakOrd.compare(?a, ?b, ?c)
+  rule either[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], WeakOrd.compare(?b, ?a, ?c)
 
   sort Cite
     import anthill.prelude.Numeric.{add, mul}
@@ -1614,9 +1614,11 @@ fn two_orders_op(requires: &str, body: &str) -> String {
 /// is `WeakOrd` at `A`: the citation answered `Int64`'s own `-1`, neither `up`'s nor `down`'s,
 /// the search finding the two and routing nothing. So through `outer` and through `viaSign`,
 /// whose read is `Util.sign`'s requirement, and once for `either`, whose two clauses each read
-/// it. The repair the refusal names runs: an operation
-/// requiring one, called with `[WeakOrd = down]`, answers `-396` with `up = Ascending, down =
-/// Descending` and `396` swapped. FAILS with the refusal backed out: the three load, answering
+/// it. Each rule declares the requirement (060.1 stage 2), and the refusal names the repair a
+/// citation's bracket makes (proposal 060.1 §2), `cmp[WeakOrd = down](…)` — its rows are
+/// `wi_j9ssg_rule_citation_bracket_test`'s. The repair this row runs is the other one: an
+/// operation requiring one, called with `[WeakOrd = down]`, answers `-396` with `up = Ascending,
+/// down = Descending` and `396` swapped. FAILS with the refusal backed out: the three load, answering
 /// `-1`. CONTROLS, answering either way: one name (`4`), two names at two types (`4`), a
 /// citation at `Int64` itself, where neither is at the read's type (`-1`).
 #[test]
@@ -1635,7 +1637,7 @@ fn a_citation_two_named_requirements_answer_is_refused() {
             &[
                 &format!("the citation of `wi50zmn.cite.{rule}` needs"),
                 "two requirements of the citing declaration hold, `up` and `down`",
-                "`[WeakOrd = up]` or `[WeakOrd = down]`",
+                &format!("write `{rule}[WeakOrd = up](…)` or `{rule}[WeakOrd = down](…)`"),
             ],
             rule,
         );

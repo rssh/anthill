@@ -18,8 +18,12 @@
 //! Each test builds a dictionary on a side and asserts a VALUE — never that
 //! something loaded. The two sides are:
 //!
-//!  * **σ** — `?d = require[Desc[T]]` in a rule clause, resolved by the SLD
-//!    builtin (`read_dictionary_into` → `fetch_dictionary`);
+//!  * **σ** — the read a rule clause's guard makes, `find_dictionary(Desc[T = A], Desc, A,
+//!    out: ?d, carrier_type: true)` for `rule probe[A](?x: A) :- Desc[T = A]`, resolved by the
+//!    SLD builtin at a carrier (`read_dictionary_into` → `fetch_dictionary`). It was
+//!    `?d = require[Desc[T]]`, which bound the dictionary to a column; proposal 060.1 §5
+//!    removed that form, no clause binds a dictionary to a column now, and the rows run the
+//!    read the clause stores ([`sigma_dictionary`]);
 //!  * **eval** — an operation frame's `requirements` channel, entered through
 //!    `Interpreter::call_with_requirements` and read by the body's
 //!    `var_ref(__req_*)`.
@@ -88,9 +92,6 @@ namespace test.wi1045
     -- BODY-LESS, so a body call to it defers to the caller's frame slot
     -- (`DeferToRequirement`) — the eval side of the crossing.
     operation describe(x: T) -> Int64
-    -- Defaulted, and here only to be the rule clause's WITNESS: it grounds
-    -- `require[Desc[T]]` without being the op whose dispatch is under test.
-    operation tag(x: T) -> Int64 = 0
   end
 
   sort Leaf
@@ -119,22 +120,74 @@ namespace test.wi1045
     operation run(x: T) -> Int64 = Desc.describe(x)
   end
 
-  rule leafDict(?d) :- ?d = require[Desc[T]], Desc.tag(leaf(), ?i)
-  rule otherDict(?d) :- ?d = require[Desc[T]], Desc.tag(other(), ?i)
+  rule probe[A](?x: A) :- Desc[T = A]
 end
 "#;
 
-/// The single dictionary `{ns}.{rule}(?d)` binds, as the σ side built it.
+/// The single dictionary σ builds for `probe`'s guard `Desc[T = A]` at `carrier` (`Leaf`,
+/// `Other`): the read the clause stores for the guard, first of its body, opened, its
+/// carrier unified with the sort and its `out:` a fresh variable, resolved.
 ///
 /// Panics on anything but one definite answer — "the query returned nothing" must
-/// never read as a pass, and a second answer would mean the rule is not the
+/// never read as a pass, and a second answer would mean the read is not the
 /// single-provider case this file is about.
-fn sigma_dictionary(rule: &str) -> (Interpreter, Value) {
+fn sigma_dictionary(carrier: &str) -> (Interpreter, Value) {
+    use anthill_core::kb::node_occurrence::Expr;
+    use anthill_core::kb::term::{Literal, Term, Var};
     let mut kb = crate::common::load_kb_with(SRC);
-    let sols = crate::common::query_unary(&mut kb, &format!("test.wi1045.{rule}"));
+    let probe = kb.try_resolve_symbol("test.wi1045.probe").expect("probe in KB");
+    let rid = kb
+        .live_rule_ids()
+        .into_iter()
+        .find(|&rid| {
+            let Value::Term { id, .. } = *kb.rule_head_value(rid) else { return false };
+            matches!(kb.get_term(id), Term::Fn { functor, .. } if *functor == probe)
+        })
+        .expect("probe's clause");
+    let read = kb.rule_body_nodes(rid).first().cloned().expect("the guard's read");
+    let Some(Expr::Apply { functor, pos_args, named_args, .. }) = read.as_expr() else {
+        panic!("the guard's read is an application: {read:?}");
+    };
+    let spliced = |i: usize| match pos_args[i].as_expr() {
+        Some(Expr::Spliced(Value::Term { id, .. })) => *id,
+        other => panic!("slot {i} of the read: {other:?}"),
+    };
+    let (instance, spec) = (spliced(0), spliced(1));
+    let Some(Expr::Var(Var::DeBruijn(c))) = pos_args[2].as_expr() else {
+        panic!("the read's carrier is the clause's parameter: {:?}", pos_args[2]);
+    };
+    let (out_label, carrier_label) = (named_args[0].0, named_args[1].0);
+    assert_eq!(kb.local_name_of(out_label), "out");
+    assert_eq!(kb.local_name_of(carrier_label), "carrier_type");
+    let name = kb.intern("probe");
+    let fresh: Vec<_> = (0..=*c).map(|_| kb.fresh_var(name)).collect();
+    let instance = kb.term_from_debruijn(instance, &fresh);
+    let at = kb.alloc(Term::Var(Var::Global(fresh[*c as usize])));
+    let d = kb.fresh_var(name);
+    let out = kb.alloc(Term::Var(Var::Global(d)));
+    let yes = kb.alloc(Term::Const(Literal::Bool(true)));
+    let read_goal = kb.alloc(Term::Fn {
+        functor: *functor,
+        pos_args: smallvec::SmallVec::from_slice(&[instance, spec, at]),
+        named_args: smallvec::SmallVec::from_slice(&[(out_label, out), (carrier_label, yes)]),
+    });
+    let sort = kb.make_sort_ref_by_name(&format!("test.wi1045.{carrier}"));
+    let unify = kb
+        .try_resolve_symbol(&anthill_core::parse::desugar_target::qualified(
+            anthill_core::parse::pratt::UNIFY_FUNCTOR,
+        ))
+        .expect("unify");
+    let fix = kb.alloc(Term::Fn {
+        functor: unify,
+        pos_args: smallvec::SmallVec::from_slice(&[at, sort]),
+        named_args: smallvec::SmallVec::new(),
+    });
+    let sols = kb.resolve(&[fix, read_goal], &anthill_core::kb::resolve::ResolveConfig::default());
     let value = match sols.as_slice() {
-        [(v, true)] => v.clone(),
-        other => panic!("`{rule}(?d)` must bind exactly one definite dictionary, got {other:?}"),
+        [sol] if sol.is_definite() => kb
+            .answer_binding(d, &sol.subst)
+            .unwrap_or_else(|| panic!("the read at `{carrier}` bound no dictionary")),
+        other => panic!("the read at `{carrier}` must bind exactly one dictionary, got {}", other.len()),
     };
     // A FRESH interpreter needs its builtins bound — `register_standard_builtins`
     // is per-interpreter, not per-KB (WI-968).
@@ -173,8 +226,8 @@ fn as_dictionary(interp: &Interpreter, v: &Value) -> Dictionary {
 /// frame slot, both arms would answer `7`.)
 #[test]
 fn a_sigma_dictionary_dispatches_an_operation_frame() {
-    let run = |rule: &str| -> i64 {
-        let (mut interp, v) = sigma_dictionary(rule);
+    let run = |provider: &str| -> i64 {
+        let (mut interp, v) = sigma_dictionary(provider);
         let dict = as_dictionary(&interp, &v);
         let leaf = carrier(&mut interp, "Leaf");
         let got = interp.call_with_requirements(
@@ -185,19 +238,19 @@ fn a_sigma_dictionary_dispatches_an_operation_frame() {
         match got {
             Ok(Value::Int(n)) => n,
             other => {
-                panic!("Driver.run under the {rule} dictionary must answer an Int, got {other:?}")
+                panic!("Driver.run under the {provider} dictionary must answer an Int, got {other:?}")
             }
         }
     };
 
     assert_eq!(
-        run("leafDict"),
+        run("Leaf"),
         7,
         "the frame must dispatch through the dictionary σ bound — `7` is `Leaf`'s \
          own `describe`, and `1` would be the spec default (no dictionary read)",
     );
     assert_eq!(
-        run("otherDict"),
+        run("Other"),
         9,
         "and the dictionary DECIDES: the same op on the same argument answers \
          `Other`'s `9` when the frame carries `Other`'s dictionary",
@@ -215,7 +268,7 @@ fn a_sigma_dictionary_dispatches_an_operation_frame() {
 /// no arena half to drop.
 #[test]
 fn the_value_the_resolver_bound_is_the_value_the_frame_reads() {
-    let (mut interp, bound) = sigma_dictionary("leafDict");
+    let (mut interp, bound) = sigma_dictionary("Leaf");
     let dict = as_dictionary(&interp, &bound);
 
     // Seed a frame with the σ dictionary and run a body that reads it back by
@@ -254,7 +307,7 @@ fn the_value_the_resolver_bound_is_the_value_the_frame_reads() {
 
     // NON-VACUITY: the read reports WHAT WAS SEEDED, not a constant. Seeding the
     // other carrier's dictionary through the same body must deliver that one.
-    let (_, other_bound) = sigma_dictionary("otherDict");
+    let (_, other_bound) = sigma_dictionary("Other");
     let other = as_dictionary(&interp, &other_bound);
     assert_ne!(
         other, dict,
@@ -290,7 +343,7 @@ fn the_value_the_resolver_bound_is_the_value_the_frame_reads() {
 /// identically through BOTH readers, which is what "one representation" claims.
 #[test]
 fn a_conditional_provisions_sub_dictionary_projects_by_index_on_both_sides() {
-    let (mut interp, bound) = sigma_dictionary("leafDict");
+    let (mut interp, bound) = sigma_dictionary("Leaf");
     let dict = as_dictionary(&interp, &bound);
 
     assert_eq!(

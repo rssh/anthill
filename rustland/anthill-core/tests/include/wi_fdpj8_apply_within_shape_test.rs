@@ -81,12 +81,14 @@ use std::rc::Rc;
 
 use crate::common::load_kb_with;
 
-/// A clause carrying `require[Desc[T]]` over a covered call written in the WI-938
-/// arity+1 GOAL form, which is the only shape `collect_covered_calls` weaves — it
+/// A clause declaring `Desc[T = A]` at its head's introducer over a covered call written in
+/// the WI-938 arity+1 GOAL form, which is the only shape `collect_covered_calls` weaves — it
 /// weaves only callees that hook recognizes (`functional_relation_arity`), so an
 /// operand-position call produces no `Expr::ApplyWithin` at all. Lifted from
-/// `wi1040_require_clause_dictionary_test`'s own fixture, which is the producer's
-/// suite. `unwoven` is a PLAIN call, for the control row.
+/// `wi1040_require_clause_dictionary_test`'s own fixture, which is the producer's suite; it
+/// wrote `require[Desc[T]]`, which proposal 060.1 §5 removed, and the guard's dictionary is
+/// woven into the call as the written read's was. `unwoven` is a PLAIN call, for the control
+/// row.
 ///
 /// THE FIRST CUT OF THIS FIXTURE WROTE THE CALL AS AN `eq` OPERAND and produced ZERO
 /// woven calls — caught by `sole_woven_call`'s count assertion rather than by a row
@@ -109,7 +111,7 @@ const SRC: &str = r#"namespace fdpj8_aw
 
   operation plain(n: Int64) -> Int64 = n
 
-  rule woven(?x, ?r) :- require[Desc[T]], Desc.describe(?x, ?r)
+  rule woven[A](?x: A, ?r) :- Desc[T = A], Desc.describe(?x, ?r)
   rule unwoven(?r) :- eq(?r, plain(3))
 end
 "#;
@@ -157,7 +159,7 @@ fn sole_woven_call(kb: &KnowledgeBase, qn: &str) -> Rc<NodeOccurrence> {
 /// the head falls through to `_ => ViewHead::Opaque` and the `assert` names it.
 #[test]
 fn a_woven_call_heads_as_its_reflect_twin() {
-    let mut kb = load_kb_with(SRC);
+    let kb = load_kb_with(SRC);
     let occ = sole_woven_call(&kb, "fdpj8_aw.woven");
     let aw = kb
         .try_resolve_symbol("anthill.reflect.Expr.apply_within")

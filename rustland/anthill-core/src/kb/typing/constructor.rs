@@ -931,7 +931,7 @@ fn construction_meets_sort_requires(
         refusal.into_type_error(span, ctor_sym, sort, RequirementUse::Construction)
     };
     let mut unsuppliable: Option<Box<RequirementRefusal>> = None;
-    // No held bracket: a `require[…]` is a rule clause's, not a value definition's.
+    // Nothing held: a held requirement is a rule clause's guard, not a value definition's.
     build_concrete_dispatch_dict(
         kb,
         None,

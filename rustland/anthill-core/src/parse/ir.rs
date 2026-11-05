@@ -213,6 +213,12 @@ pub struct SimpleTermStore {
     /// red the moment the query converter started lowering.
     collection_literals: HashSet<ParseTermId>,
 
+    /// Proposal 060.1 §8.6: a rule-body goal written with the `require` keyword — `require
+    /// WeakOrd[A]`, and `require up: WeakOrd[A]` with the name the body calls through and a
+    /// citation's bracket binds. Recorded like [`Self::type_applications`]: only the surface
+    /// says it.
+    require_goals: HashMap<ParseTermId, Option<Symbol>>,
+
     /// WI-20260909-C7ANM: the WRITTEN argument order of a call whose argument list
     /// MIXES positional and named slots — the one shape `Term::Fn`'s positional/named
     /// SPLIT cannot express. Recorded like [`Self::minted`] / [`Self::type_applications`],
@@ -312,6 +318,17 @@ impl SimpleTermStore {
     /// data constructor, whose named args are FIELDS.
     pub fn is_type_application(&self, id: ParseTermId) -> bool {
         self.type_applications.contains(&id)
+    }
+
+    /// Record that the goal `id` was written `require …`, under `name` where one is written.
+    pub fn set_require_goal(&mut self, id: ParseTermId, name: Option<Symbol>) {
+        self.require_goals.insert(id, name);
+    }
+
+    /// Was the goal `id` written `require …` — `Some(None)` bare, `Some(Some(up))` as
+    /// `require up: …` — or not (`None`)?
+    pub fn require_goal(&self, id: ParseTermId) -> Option<Option<Symbol>> {
+        self.require_goals.get(&id).copied()
     }
 
     /// Record the type the bracket `id` writes ([`Self::type_readings`]).

@@ -1,79 +1,30 @@
-//! WI-20260909-QMFC5 — proposal 060 §3's SECOND ANCHOR: a TYPED HEAD BINDING grounds a
+//! WI-20260909-QMFC5 — proposal 060 §3's SECOND ANCHOR: a TYPED HEAD BINDING grounded a
 //! clause's `require[Spec]`, where before only a covered body call (the witness) could.
 //!
 //! Design and every measurement: `docs/design/060-implementation.md` §8.1–§8.9.
 //!
-//! ## The fixture is the point, and it was built deliberately
+//! ## Since proposal 060.1 §5
+//!
+//! `require[X]` and `requires(X)` are removed, and with them the anchor this file drove: the
+//! typed head binding that grounded a written requirement, the check tier that emitted its
+//! goal, and the refusals that told two bindings of one sort apart. A clause's requirement is
+//! its head introducer's guard — `anchored[A](?x: A, ?r) :- require d: Desc[T = A]` — whose
+//! parameter the head column's type names, as an operation's `requires` names its type
+//! parameter; and a NULLARY call, which writes no instance, names the requirement it reads,
+//! `d.tag(?r)`. At a CONCRETE head the instance is written on the call (`Desc[T = Leaf].tag(?r)`)
+//! and needs no requirement. The rows below drive those spellings and check the answers; the
+//! back-out ledger that follows was measured on the removed forms. Where the language decides
+//! otherwise now, the row says so: a bound that provides nothing fails when the clause runs,
+//! a missing provider being no undecided answer, rather than at load (the introducer is no
+//! sort to check at load); two parameters, or two names, say which requirement a call reads,
+//! so the refusals of an anchor the bracket could not choose are inverted.
+//!
+//! ## The fixture
 //!
 //! `Desc.tag()` is NULLARY. It has no argument to value-dispatch on, so the carrier's `7`
 //! is reachable ONLY through a dictionary — [`the_control_a_nullary_call_folds_the_spec_
-//! default`] measures that it answers `1` with no `require` at all. And because
-//! `op_has_spec_carrier_param` is false for it, it can never be a WITNESS, so no witness
-//! scan can ground the requirement either.
-//!
-//! That combination is what makes every `7` below evidence. The obvious fixture — a
-//! bodied `Desc.describe(?x, ?r)` — is SIMULTANEOUSLY the witness and the covered call
-//! (measured: it answers `7` on the witness path alone, and
-//! [`a_typed_head_beside_a_witness_call_is_unchanged`] pins that), so a test built on it
-//! would pass entirely without the anchor and never exercise a line of it.
-//!
-//! `Other` supplies `9` against `Leaf`'s `7`, and [`the_other_carrier_anchors_to_its_own_
-//! supplier`] drives it: neither number can be produced by accident.
-//!
-//! ## What fails when each half is backed out — MEASURED, not predicted
-//!
-//! Every count below is written from a run, after restoring the tree between each. An
-//! earlier version of this header said "8 of 11" while the file held 14 tests and 11
-//! failed — a count written from a prediction and never re-run. `/code-review` caught it.
-//!
-//!  * **The anchor scan** (`anchor_grounding` returning `None` unconditionally — the
-//!    pre-ticket code). **19 rows AS OF WI-20260909-QMFC5**; WI-20260909-96ZTM added two
-//!    rows here that also need it, so the count is now higher and is NOT re-measured in
-//!    this header — the owning file (`wi_96ztm…`) carries its own ledger. Stated rather
-//!    than silently left stale: a count written once and not re-run is exactly the defect
-//!    lines 25-27 below record being caught already. 18 of the original here and
-//!    [`wi_51w18…::a_head_introduced_type_variable_resolves_inside_the_bracket`], which
-//!    lives in S1's file and fails under S2's back-out because S2 is what lifted its
-//!    second half.
-//!  * **The check tier emitting its goal** (returning `goal: None` again, as an earlier
-//!    draft of this ticket did). **4 rows**:
-//!    [`the_check_tier_emits_the_same_goal_the_bind_tier_does`],
-//!    [`a_refining_carrier_answers_the_same_in_both_tiers`],
-//!    [`a_conditional_provision_is_decided_at_run_time_not_at_load`] and
-//!    [`equation_headed_anchor_keeps_its_body`] — the last of which PANICS rather than
-//!    failing, which is what that arm cost.
-//!  * **The `>1` refusal's collapse** (restoring the data-sort collapse that was built
-//!    and then removed). **2 rows**:
-//!    [`two_head_variables_of_one_data_sort_are_still_two_dictionaries`] and
-//!    [`a_parameterized_data_sort_at_two_instantiations_is_refused`].
-//!  * **The second gate** (presence test only, no agreement check). **1**:
-//!    [`a_spec_that_receives_on_a_non_carrier_parameter_is_refused`].
-//!  * **The written-binding disagreement refusal**. **1**:
-//!    [`a_written_binding_that_disagrees_with_the_bound_is_refused`].
-//!  * **`carrier_provides_spec` at both ends** (back to a bare `sort_provides`). **1**:
-//!    [`a_witness_supplied_provision_anchors_too`]. Backing out only ONE end was measured
-//!    to move the failure rather than remove it — a loud refusal becomes a silent
-//!    no-answer — which is why the two are written as a pair.
-//!
-//! [`the_untyped_twin_stays_refused`] and [`a_typed_head_beside_a_witness_call_is_
-//! unchanged`] pass under ALL of them BY DESIGN — the first has no bound to anchor with,
-//! the second is grounded by its witness before the anchor is ever reached. They are the
-//! yardsticks the rows above are read against.
-//!
-//! ## Two boundaries, stated rather than discovered — the first one CLOSED
-//!
-//!  * A SELF-REPRESENTING spec whose provider pins a sibling CONCRETELY used to delay, and
-//!    so did every other MULTI-PARAMETER spec. **Closed by WI-20260913-J38VE**, which gave
-//!    `fetch_dictionary` the slot-0 bracket S1 retains:
-//!    [`a_self_representing_spec_whose_provider_pins_a_sibling_concretely_answers`] and
-//!    [`a_multi_parameter_spec_answers_when_its_carrier_parameter_is_identifiable`] are
-//!    those two rows, now asserted by VALUE, and they are that ticket's acceptance. Its
-//!    own file (`wi_j38ve_written_bracket_fetch_test`) carries the back-out table; the two
-//!    rows here fail under the anchor's two branches, separately.
-//!  * TWO anchors are no longer refused outright — WI-20260909-96ZTM delivered the lift,
-//!    and [`the_written_bracket_chooses_between_two_anchors`] is it. What is still
-//!    refused is a pair the written bracket cannot separate: a bare `require[Spec]`, two
-//!    bounds of the same sort, or an applied bracket whose arguments the match discards.
+//! default`] measures that it answers `1` with no requirement at all. `Other` supplies `9`
+//! against `Leaf`'s `7`, so neither number can be produced by accident.
 
 use anthill_core::eval::Value;
 use anthill_core::kb::node_occurrence::Expr;
@@ -347,48 +298,48 @@ fn has_find_dictionary_goal(kb: &KnowledgeBase, qn: &str) -> bool {
     false
 }
 
-// ── the anchor grounds, and the dictionary threads ───────────────────────────
+// ── the requirement grounds, and the dictionary threads ───────────────────────
 
+/// The requirement at the type of `?x`, named, and the nullary call through it: `Leaf`'s 7.
+/// (It was `?x: Leaf` and `?d = require[Desc[T = Leaf]]`, the typed head the anchor.)
 #[test]
 fn a_concrete_typed_head_grounds_the_requirement() {
-    // THE TICKET'S DRIVING SURFACE. `?x: Leaf` is the only thing in the clause that says
-    // which carrier the requirement is at — there is no call to a `Desc` operation that
-    // could witness it, and `tag()` cannot value-dispatch. `7` is therefore reachable
-    // only through the dictionary the ANNOTATION grounded.
     assert_eq!(
         answer(&program(
             "  rule answer(?r) :- anchored(?x, ?r)\n  \
-             rule anchored(?x: Leaf, ?r) :- ?d = require[Desc[T = Leaf]], seed(?x), Desc.tag(?r)\n"
+             rule anchored[A](?x: A, ?r) :- require d: Desc[T = A], seed(?x), d.tag(?r)\n"
+        )),
+        7,
+    );
+    // AT A CONCRETE HEAD the instance is written on the call, and needs no requirement.
+    assert_eq!(
+        answer(&program(
+            "  rule answer(?r) :- anchored(?x, ?r)\n  \
+             rule anchored(?x: Leaf, ?r) :- seed(?x), Desc[T = Leaf].tag(?r)\n"
         )),
         7,
     );
 }
 
+/// The guard in its positional spelling, `Desc[A]`, under a name: 7.
 #[test]
 fn an_introducer_bound_grounds_it_too() {
-    // THE OTHER BOUND SHAPE, and it is not a spelling variant: after WI-582's
-    // substitution the recorded bound is the SPEC (`Desc`), not a carrier, so the anchor
-    // test is `bound == spec` where the row above needs `sort_provides`. Two
-    // non-overlapping tests over one channel — backing either out leaves the other row
-    // passing, which is what says they are separate.
     assert_eq!(
         answer(&program(
             "  rule answer(?r) :- anchored(?x, ?r)\n  \
-             rule anchored[A](?x: A, ?r) :- Desc[A], ?d = require[Desc[T = A]], seed(?x), Desc.tag(?r)\n"
+             rule anchored[A](?x: A, ?r) :- require d: Desc[A], seed(?x), d.tag(?r)\n"
         )),
         7,
     );
 }
 
+/// The same clause at the other carrier answers its own supplier's 9.
 #[test]
 fn the_other_carrier_anchors_to_its_own_supplier() {
-    // THE CONTROL THAT MAKES `7` MEAN SOMETHING. The same clause shape at the other
-    // carrier answers `9`. Without this row, a `7` could be the spec default read
-    // through some other path, or a constant nothing selected.
     assert_eq!(
         answer(&program(
             "  rule answer(?r) :- anchored(?y, ?r)\n  \
-             rule anchored(?y: Other, ?r) :- ?d = require[Desc[T = Other]], seedo(?y), Desc.tag(?r)\n"
+             rule anchored[A](?y: A, ?r) :- require d: Desc[T = A], seedo(?y), d.tag(?r)\n"
         )),
         9,
     );
@@ -396,173 +347,120 @@ fn the_other_carrier_anchors_to_its_own_supplier() {
 
 #[test]
 fn the_control_a_nullary_call_folds_the_spec_default() {
-    // WHY THE FIXTURE IS BUILT THIS WAY, asserted rather than asserted-about. With no
-    // `require` anywhere the nullary call folds the spec's own default. So every `7` and
-    // `9` above is a dictionary doing work; none of them can be value-dispatch.
     assert_eq!(answer(&program("  rule answer(?r) :- Desc.tag(?r)\n")), 1);
 }
 
 // ── the yardsticks ───────────────────────────────────────────────────────────
 
+/// THE UNTYPED TWIN, with no requirement: the nullary call names no instance and folds the
+/// spec's default, 1. (It wrote `require[Desc[T = Leaf]]` and was refused, "no such call in
+/// the rule body" — no witness, no typed head to anchor.)
 #[test]
 fn the_untyped_twin_stays_refused() {
-    // WHAT SAYS THE ANNOTATION IS WHAT GROUNDS IT. The same clause with the bound removed
-    // has nothing to anchor from, and keeps the WITNESS refusal word for word — the
-    // anchor scan is skipped entirely for a clause with no bound, which is why this row
-    // passes under every back-out BY DESIGN.
-    let errs = refusal(&program(
-        "  rule answer(?r) :- anchored(?x, ?r)\n  \
-         rule anchored(?x, ?r) :- ?d = require[Desc[T = Leaf]], seed(?x), Desc.tag(?r)\n",
-    ));
-    assert!(
-        errs.contains("no such call in the rule body"),
-        "the untyped twin must keep the witness refusal; got:\n{errs}",
-    );
-}
-
-#[test]
-fn a_typed_head_beside_a_witness_call_is_unchanged() {
-    // THE WITNESS PATH IS NOT DISPLACED. The anchor runs only after every witness scan
-    // misses, so a clause with both is grounded by its witness exactly as before this
-    // ticket. Passes either way BY DESIGN; it is here so that a future change which
-    // REORDERS the two is caught rather than absorbed.
     assert_eq!(
         answer(&program(
             "  rule answer(?r) :- anchored(?x, ?r)\n  \
-             rule anchored(?x: Leaf, ?r) :- ?d = require[Desc[T = Leaf]], seed(?x), Desc.describe(?x, ?r)\n"
+             rule anchored(?x, ?r) :- seed(?x), Desc.tag(?r)\n",
+        )),
+        1,
+    );
+}
+
+/// A typed head beside a carrier-bearing call: the call is answered at its argument, 7.
+#[test]
+fn a_typed_head_beside_a_witness_call_is_unchanged() {
+    assert_eq!(
+        answer(&program(
+            "  rule answer(?r) :- anchored(?x, ?r)\n  \
+             rule anchored(?x: Leaf, ?r) :- seed(?x), Desc.describe(?x, ?r)\n"
         )),
         7,
     );
 }
 
-// ── the refusals the anchor owns ─────────────────────────────────────────────
+// ── a bound that provides nothing ────────────────────────────────────────────
 
+/// A VALUE WHOSE SORT PROVIDES NOTHING FAILS THE GUARD: at `plain()` the requirement has no
+/// provider, and the query has no answer — a missing provider is no undecided answer. It was
+/// a load refusal, "head bound(s) — Plain — provide no `Desc`", at the typed head `?x: Plain`
+/// the anchor read; the introducer is no sort to check at load, and the value is what the
+/// guard reads. A rule's goal of the clause is typed by the clause, `?x` a `Plain`, and builds
+/// the dictionary at load (060.1 §1): refused there, naming `Desc[T = Plain]`.
 #[test]
 fn a_bound_that_does_not_provide_is_refused_by_its_own_message() {
-    // BEFORE THIS TICKET THIS ROW WAS REFUSED BY THE WITNESS ERROR — the right verdict
-    // for the wrong reason, which is why the umbrella ticket's own acceptance control
-    // ("a typed head whose bound does NOT provide stays refused") did not discriminate:
-    // it passed identically with and without any anchor at all. The message must name the
-    // BOUND, because the repair is to fix the annotation, not to add a call.
-    let errs = refusal(&program(
-        "  rule answer(?r) :- anchored(?x, ?r)\n  \
-         rule anchored(?x: Plain, ?r) :- ?d = require[Desc[T = Plain]], seedp(?x), Desc.tag(?r)\n",
-    ));
-    assert!(
-        errs.contains("head bound(s) — Plain — provide no `Desc`"),
-        "the refusal must name the bound and the spec; got:\n{errs}",
-    );
-    assert!(
-        !errs.contains("no such call in the rule body"),
-        "and must NOT be the witness error, which sends the author to fix the wrong \
-         thing; got:\n{errs}",
+    let anchored = "  rule anchored[A](?x: A, ?r) :- require d: Desc[T = A], seedp(?x), d.tag(?r)\n";
+    let mut kb = crate::common::load_kb_with(&program(anchored));
+    let goal = crate::common::query_pattern_term(&mut kb, "test.qmfc5.anchored(?x, ?r)");
+    let got = kb.resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default());
+    assert!(got.is_empty(), "`Plain` provides no `Desc`: no answer, got {} rows", got.len());
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&program(&format!("  rule answer(?r) :- anchored(?x, ?r)\n{anchored}"))),
+        &["answer.body", "no provider answers `test.qmfc5.Desc[T = test.qmfc5.Plain]`"],
+        "the goal at the clause's `Plain`",
     );
 }
 
+// ── two requirements ─────────────────────────────────────────────────────────
+
+/// TWO PARAMETERS, EACH WITH ITS NAMED REQUIREMENT, and a nullary call through each name:
+/// `d1` is `Leaf`'s and `d2` `Other`'s. (It was one `require` whose bracket chose between two
+/// typed heads, `Leaf` and `Other`.)
 #[test]
 fn the_written_bracket_chooses_between_two_anchors() {
-    // S2 REFUSED THIS SHAPE OUTRIGHT; WI-20260909-96ZTM lifts it the way the design
-    // always said it would — the WRITTEN BRACKET says which anchor this `require` means,
-    // with S1's retention as the reader. `Desc[T = Leaf]` names `Leaf`, so `?x` anchors.
-    //
-    // BY VALUE, and the pair is the point: one word apart, the answer moves from `Leaf`'s
-    // `7` to `Other`'s `9`. That is what says the BRACKET decides and not anchor order.
-    // `tag()` is nullary, so neither number is reachable without a dictionary.
-    assert_eq!(
-        answer(&program(
+    let clause = |call: &str| {
+        program(&format!(
             "  rule answer(?r) :- anchored(?x, ?y, ?r)\n  \
-             rule anchored(?x: Leaf, ?y: Other, ?r) :- ?d = require[Desc[T = Leaf]], seed(?x), seedo(?y), Desc.tag(?r)\n"
-        )),
-        7,
-    );
-    assert_eq!(
-        answer(&program(
-            "  rule answer(?r) :- anchored(?x, ?y, ?r)\n  \
-             rule anchored(?x: Leaf, ?y: Other, ?r) :- ?d = require[Desc[T = Other]], seed(?x), seedo(?y), Desc.tag(?r)\n"
-        )),
-        9,
-    );
-}
-
-#[test]
-fn two_anchors_the_bracket_cannot_choose_between_are_still_refused() {
-    // THE CHOICE MUST BE THE AUTHOR'S. A bare `require[Desc]` names no carrier, so with
-    // two anchors there is nothing to select on — refused, not guessed. The control for
-    // the pair above.
-    let errs = refusal(&program(
-        "  rule answer(?r) :- anchored(?x, ?y, ?r)\n  \
-         rule anchored(?x: Leaf, ?y: Other, ?r) :- ?d = require[Desc], seed(?x), seedo(?y), Desc.tag(?r)\n",
-    ));
-    assert!(
-        errs.contains("2 of them do — Leaf, Other")
-            && errs.contains("the written bracket names no one of them"),
-        "got:\n{errs}",
-    );
-}
-
-// ── the check tier ───────────────────────────────────────────────────────────
-
-#[test]
-fn the_check_tier_emits_the_same_goal_the_bind_tier_does() {
-    // `requires(X)` IS the no-`out` case of one relation (WI-1040), so it gets ONE
-    // producer and ONE consumer — the same goal the bind tier emits, minus `out:`.
-    //
-    // AN EARLIER DRAFT RESOLVED THIS TIER AT LOAD and left no goal, on the argument that
-    // the anchor selection had already established the requirement. `/code-review`
-    // falsified that three ways; the three rows below are those three, each a program
-    // where the load-time verdict said SATISFIED and the bind twin left a residual.
-    //
-    // TWO ASSERTIONS, because either alone is satisfiable the wrong way: the clause LOADS
-    // (a refusal would also leave a goal-free rule), and it answers the DEFAULT `1` —
-    // `requires` checks and does not thread, so a `7` here would mean the check tier had
-    // quietly become the bind tier.
-    let src = program(
-        "  rule answer(?r) :- anchored(?x, ?r)\n  \
-         rule anchored(?x: Leaf, ?r) :- requires(Desc[T = Leaf]), seed(?x), Desc.tag(?r)\n",
-    );
-    assert_eq!(answer(&src), 1);
-    let kb = crate::common::load_kb_with(&src);
-    assert!(
-        has_find_dictionary_goal(&kb, "test.qmfc5.anchored"),
-        "the check tier must emit the goal, not decide the requirement at load",
-    );
-}
-
-#[test]
-fn a_refining_carrier_answers_the_same_in_both_tiers() {
-    // HOLE 1 of 3 in the deleted load-time verdict. `sort_refines` — the `requires`
-    // chain — admits a carrier through `bare_sort_compatible` that `sort_provides` never
-    // walks, so a `Sub` that refines `Leaf` and provides NOTHING satisfied the bound.
-    //
-    // MEASURED BEFORE THE FIX: the check tier answered `1` with one solution while the
-    // bind tier answered nothing — one relation, two opposite answers, which is exactly
-    // what "`requires(X)` IS the no-`out` case" forbids. Both now answer nothing.
-    //
-    // BACKING OUT the goal emission (returning `goal: None` for the no-`out` case again)
-    // failed this row on the CHECK line only; the BIND line passes either way. MEASURED
-    // 2026-10-22: it passes with the emission backed out now, on the tree before
-    // WI-20261013-WF14Z's fourth part too — the typed head's own check refuses the `sub` —
-    // and what fails under that back-out is `the_check_tier_emits_the_same_goal_the_bind_tier_does`
-    // and `equation_headed_anchor_keeps_its_body`.
-    //
-    // The `sub` comes through `Seed`'s field, a `Term`, which says nothing of its type: read
-    // out of `seed`, whose column is `Sub`, beside `?x: Leaf`, the clause is refused at load
-    // (068-implementation §6.2, decision 3), as the last line says.
-    let src = |tier: &str| {
-        refining(&format!(
-            "  rule answer(?r) :- checked(?x, ?r)\n  \
-             entity Seed(v: anthill.reflect.Term)\n  fact Seed(v: sub())\n  \
-             rule checked(?x: Leaf, ?r) :- {tier}, Seed(v: ?x), Desc.tag(?r)\n"
+             rule anchored[A, B](?x: A, ?y: B, ?r) :- require d1: Desc[T = A], \
+             require d2: Desc[T = B], seed(?x), seedo(?y), {call}\n"
         ))
     };
-    let run = |t: &str| {
-        let mut kb = crate::common::load_kb_with(&src(t));
-        crate::common::query_unary(&mut kb, "test.qmfc5r.answer").len()
-    };
-    assert_eq!(run("requires(Desc[T = Leaf])"), 0, "check tier");
-    assert_eq!(run("?d = require[Desc[T = Leaf]]"), 0, "bind tier");
+    assert_eq!(answer(&clause("d1.tag(?r)")), 7);
+    assert_eq!(answer(&clause("d2.tag(?r)")), 9);
+}
+
+/// A NULLARY CALL UNDER TWO REQUIREMENTS NAMES ONE, or is refused naming the spelling: it was
+/// a bare `require[Desc]` the bracket could not place between two anchors.
+#[test]
+fn two_anchors_the_bracket_cannot_choose_between_are_still_refused() {
+    let errs = refusal(&program(
+        "  rule answer(?r) :- anchored(?x, ?y, ?r)\n  \
+         rule anchored[A, B](?x: A, ?y: B, ?r) :- Desc[T = A], Desc[T = B], seed(?x), seedo(?y), \
+         Desc.tag(?r)\n",
+    ));
+    assert!(errs.contains("`require s: Desc[…]`") && errs.contains("`s.tag(…)`"), "got:\n{errs}");
+}
+
+// ── the guard's read stands in the clause ────────────────────────────────────
+
+/// THE GUARD'S READ IS A GOAL OF THE CLAUSE, decided when it runs, not at load: the clause
+/// holds a `find_dictionary` goal and answers through it. (It was the check tier,
+/// `requires(Desc[T = Leaf])`, which emitted its goal and supplied nothing — `1`.)
+#[test]
+fn the_check_tier_emits_the_same_goal_the_bind_tier_does() {
+    let src = program(
+        "  rule answer(?r) :- anchored(?x, ?r)\n  \
+         rule anchored[A](?x: A, ?r) :- require d: Desc[T = A], seed(?x), d.tag(?r)\n",
+    );
+    assert_eq!(answer(&src), 7);
+    let kb = crate::common::load_kb_with(&src);
+    assert!(has_find_dictionary_goal(&kb, "test.qmfc5.anchored"), "the guard's read is a goal");
+}
+
+/// A REFINING CARRIER ANSWERS THROUGH WHAT IT REFINES, as an operation's requirement does:
+/// `Sub` refines `Leaf`, which provides `Desc`, so the guard at a `Sub` value reads `Leaf`'s
+/// provision — 7 — as `o[A](x: A) requires Desc[T = A]` cited at `Sub.sub()` loads and reads
+/// it (measured). Both removed tiers, check and bind, answered nothing: the anchor asked
+/// `sort_provides`, which walks no refinement.
+#[test]
+fn a_refining_carrier_answers_the_same_in_both_tiers() {
+    let mut kb = crate::common::load_kb_with(&refining(
+        "  rule answer(?r) :- checked(?x, ?r)\n  \
+         rule checked[A](?x: A, ?r) :- require d: Desc[T = A], seed(?x), d.tag(?r)\n",
+    ));
+    let got = crate::common::query_unary(&mut kb, "test.qmfc5r.answer");
+    assert!(matches!(got.as_slice(), [(Value::Int(7), true)]), "`Leaf`'s `tag`: {got:?}");
     let errs = crate::common::load_errors_of(&refining(
-        "  rule checked(?x: Leaf, ?r) :- requires(Desc[T = Leaf]), seed(?x), Desc.tag(?r)\n",
+        "  rule checked(?x: Leaf, ?r) :- seed(?x), Desc.tag(?r)\n",
     ));
     assert!(
         errs.len() == 1
@@ -571,18 +469,11 @@ fn a_refining_carrier_answers_the_same_in_both_tiers() {
     );
 }
 
+/// A CONDITIONAL PROVISION IS DECIDED WHEN THE CLAUSE RUNS: the guard's read survives load.
 #[test]
 fn a_conditional_provision_is_decided_at_run_time_not_at_load() {
-    // HOLE 2 of 3. `Wrap provides Sh[T = Wrap] :- Sh[A]` is not decided by the BOUND:
-    // `sort_provides` is type-argument-blind, so `Wrap[A = Bad]` — whose `A` provides
-    // nothing — passed the load-time verdict and the clause ran with the requirement
-    // unmet, answering the spec default. The bind twin correctly left a residual.
-    //
-    // The row asserts the CHECK tier now leaves a runtime goal for the question, which is
-    // the only thing that can decide it: `A` is not known until a carrier arrives.
     let src = conditional(
-        "  rule answer(?r) :- checked(?x, ?r)\n  \
-         rule checked(?x: Wrap, ?r) :- requires(Sh[T = Wrap]), seedb(?x), Sh.tag(?r)\n",
+        "  rule checked[A](?x: A, ?r) :- require s: Sh[T = A], seedb(?x), s.tag(?r)\n",
     );
     let kb = crate::common::load_kb_with(&src);
     assert!(
@@ -591,82 +482,41 @@ fn a_conditional_provision_is_decided_at_run_time_not_at_load() {
     );
 }
 
+/// A WITNESS SORT'S PROVISION ANSWERS THE GUARD: `Leaf` provides nothing itself, `Rival`
+/// provides `Desc[T = Leaf]`, and the requirement at a `Leaf` reads it, 9.
 #[test]
 fn a_witness_supplied_provision_anchors_too() {
-    // HOLE 3 of 3, and this one was a REFUSAL rather than a wrong answer: anchor
-    // selection asked bare `sort_provides`, which is blind to a provision another sort
-    // declares FOR the carrier (`sort Rival provides Desc[T = Leaf]`, WI-1043).
-    // `carrier_provides_spec` is the documented two-channel owner and both ends now ask
-    // it — the load site AND `anchor_guard`. Widening only one end was measured to turn
-    // the loud refusal into a silent no-answer, which is why they move together.
-    //
-    // ASSERTED BY VALUE: `9` is `Rival`'s, and it is reachable only through the
-    // dictionary — `tag()` is nullary, so nothing else can produce it.
     assert_eq!(
         rival_answer(
             "  rule answer(?r) :- anchored(?x, ?r)\n  \
-             rule anchored(?x: Leaf, ?r) :- ?d = require[Desc[T = Leaf]], seed(?x), Desc.tag(?r)\n"
+             rule anchored[A](?x: A, ?r) :- require d: Desc[T = A], seed(?x), d.tag(?r)\n"
         ),
         9,
     );
 }
 
+/// AN EQUATION-HEADED RULE WITH A GUARD keeps its body: the guard folds into the head's bound,
+/// and the rewrite answers. (It was `requires(Desc[T = Leaf])` on an equation, which the
+/// check tier's goal kept from panicking.)
 #[test]
 fn equation_headed_anchor_keeps_its_body() {
-    // AND THE DELETED ARM COULD EMPTY A RULE BODY. A `@[simp]` equation whose ONLY body
-    // atom is the `requires` goal had that atom dropped, so `set_rule_body_nodes` was
-    // handed `[]` and its fact-ness assert fired — `assertion left == right failed:
-    // set_rule_body_nodes must not flip a rule's fact-ness`. With `debug_assertions` off
-    // the assert vanishes and the rule silently becomes an UNCONDITIONAL law.
-    //
-    // NO ANCHORED EQUATION-HEADED ROW EXISTED, which is why the whole suite shipped green
-    // over it: every fixture in this file is relational, and a relational typed head gets
-    // a prepended `domain(?x, Leaf)` goal that keeps the body non-empty. This is that row.
     let src = refining(
-        "  rule answer(?r) :- f(sub(), ?r)\n  \
-         operation f(x: Sub) -> Int64\n  \
-         rule fe: f(?x: Leaf) <=> 1 :- requires(Desc[T = Leaf]) @[simp]\n",
+        "  rule answer(?r) :- f(leaf(), ?r)\n  \
+         operation f(x: Leaf) -> Int64\n  \
+         rule fe: f[A](?x: A) <=> 1 :- Desc[T = A] @[simp]\n",
     );
     let mut kb = crate::common::load_kb_with(&src);
-    // The point is that loading and querying do not PANIC; the answer is incidental.
     let _ = crate::common::query_unary(&mut kb, "test.qmfc5r.answer");
 }
 
-#[test]
-fn the_check_tier_still_refuses_a_bound_that_does_not_provide() {
-    // Resolved at load means DECIDED at load, in both directions. The failing side is the
-    // same located refusal the bind tier gets — one relation, one answer.
-    let errs = refusal(&program(
-        "  rule answer(?r) :- anchored(?x, ?r)\n  \
-         rule anchored(?x: Plain, ?r) :- requires(Desc[T = Plain]), seedp(?x), Desc.tag(?r)\n",
-    ));
-    assert!(
-        errs.contains("head bound(s) — Plain — provide no `Desc`"),
-        "got:\n{errs}"
-    );
-}
+// ── multi-parameter specs ────────────────────────────────────────────────────
 
-// ── a boundary, measured and pinned rather than left to be discovered ────────
-
+/// A SELF-REPRESENTING SPEC whose provider pins a sibling: `Cap` receives on itself, so a
+/// clause states its requirement by a column typed at the spec, as an operation types a
+/// parameter, and the instance of the nullary call is written on it. (It was `require[Cap[P =
+/// Int64]]` at a typed head `?x: Box`.)
 #[test]
 fn a_self_representing_spec_whose_provider_pins_a_sibling_concretely_answers() {
-    // DELIVERED BY WI-20260913-J38VE, and this row is what it had to change. `Cap` is
-    // SELF-REPRESENTING (`touch(c: Cap, …)`), so the anchor takes the carrier-by-sort
-    // branch and pins NO parameter; the sibling `P` used to ride as WI-20260830-X9PB4's
-    // wildcard, and a wildcard is REFUSED against a provider's CONCRETE binding
-    // (`Box provides Cap[P = Int64]`) — no provider answered, the fetch reported
-    // `Undecided`, and the call delayed on a clean load.
-    //
-    // The author WROTE `Cap[P = Int64]` all along and WI-20260909-51W18 retained that
-    // bracket on the goal's slot 0; what was missing was a reader. `fetch_dictionary` now
-    // takes it, and the written element fills what the carrier-by-sort branch cannot.
-    //
-    // ASSERTED BY VALUE, as the delay it replaces was: `7` is `Box`'s `tag()`, reachable
-    // only through the dictionary.
-    //
-    // FAILS UNDER the ANCHOR's SELF-REPRESENTING back-out, alone — that branch and the
-    // parameter branch below it are two call sites and move separately
-    // (`wi_j38ve_written_bracket_fetch_test`'s header table).
     let src = r#"namespace test.qmfc5.xz
   import anthill.prelude.Int64
   sort Cap
@@ -681,156 +531,72 @@ fn a_self_representing_spec_whose_provider_pins_a_sibling_concretely_answers() {
     operation touch(c: Box, x: Int64) -> Int64 = 7
     operation tag() -> Int64 = 7
   end
-  fact seed(box())
-  rule answer(?r) :- anchored(?x, ?r)
-  rule anchored(?x: Box, ?r) :- ?d = require[Cap[P = Int64]], seed(?x), Cap.tag(?r)
+  rule answer(?r) :- anchored(box(), ?r)
+  rule anchored(x: Cap[P = Int64], ?r) :- Cap.touch(x, 0, ?r)
 end
 "#;
     let mut kb = crate::common::load_kb_with(src);
     let got = crate::common::query_unary(&mut kb, "test.qmfc5.xz.answer");
-    assert!(
-        matches!(got.as_slice(), [(Value::Int(7), true)]),
-        "the written `P = Int64` must select `Box`'s row and the answer must be DEFINITE \
-         — an indefinite one is the requirement delaying again: {got:?}",
-    );
+    assert!(matches!(got.as_slice(), [(Value::Int(7), true)]), "`Box`'s `touch`: {got:?}");
 }
 
-// ── what `/code-review` found, driven and pinned ─────────────────────────────
-
+/// TWO PARAMETERS OF ONE SORT ARE TWO REQUIREMENTS, each read by its name: at two `leaf()`s,
+/// `(7, 7)` — the bracket could not tell `?x: Leaf, ?y: Leaf` apart, and the pair was refused.
 #[test]
 fn two_head_variables_of_one_data_sort_are_still_two_dictionaries() {
-    // A COLLAPSE WAS BUILT HERE AND THEN REMOVED. `rule p(?x: Leaf, ?y: Leaf)` is a
-    // natural spelling, and an earlier fix in this ticket admitted it by collapsing two
-    // anchors of one DATA sort into one dictionary — nothing can widen to a
-    // constructor-declaring sort, so both carriers ARE that sort at run time. The first
-    // clause is true; "and therefore select the same row" does not follow, and
-    // `/code-review` drove three counterexamples:
-    //
-    //   * a PARAMETERIZED data sort (`?x: Box[E = Leaf], ?y: Box[E = Other]`) collapses on
-    //     the head symbol alone and the conditional provision's sub-dictionary differs —
-    //     and that shape SHIPS, in `pair`, `list` and `option`;
-    //   * two BARE, byte-identical `Wrap` bounds still diverge under a conditional
-    //     provision — `7` one way and a residual the other, decided by which head
-    //     variable was written first, so comparing the full bound TERMS does not rescue
-    //     it either;
-    //   * the gate itself read `kind_of` and so was source-order dependent.
-    //
-    // SO THE REFUSAL STANDS AND THIS SPELLING IS REFUSED WITH IT. That is a real cost,
-    // taken deliberately: a refusal is loud and names its owner, where the collapse
-    // silently threaded one carrier's dictionary into the other's call. WI-20260909-96ZTM
-    // owns the honest repair — one goal per anchor plus a carrier-directed weave.
-    let errs = refusal(&program(
-        "  rule answer(?r) :- anchored(?x, ?y, ?r)\n  \
-         rule anchored(?x: Leaf, ?y: Leaf, ?r) :- ?d = require[Desc[T = Leaf]], seed(?x), seed(?y), Desc.tag(?r)\n"
-    ));
-    assert!(
-        errs.contains("the written bracket names no one of them"),
-        "got:\n{errs}"
-    );
-}
-
-#[test]
-fn a_parameterized_data_sort_at_two_instantiations_is_refused() {
-    // THE COUNTEREXAMPLE THE COLLAPSE COULD NOT SEE, kept as its own row because it is
-    // the one that ships: `sort_functor_of_view` answers `Box` for both bounds and
-    // discards the arguments, so a collapse keyed on the head symbol merged two carriers
-    // whose conditional sub-dictionaries differ. `pair`, `list` and `option` are all this
-    // shape. Refused now, and the refusal names the owner.
-    let errs = refusal(&boxed(
-        "  rule answer(?r) :- anchored(?x, ?y, ?r)\n  \
-         rule anchored(?x: Box[E = Leaf], ?y: Box[E = Other], ?r) :- ?d = require[Desc[T = Box]], seedbl(?x), seedbo(?y), Desc.tag(?r)\n"
-    ));
-    assert!(
-        errs.contains("the written bracket names no one of them"),
-        "got:\n{errs}"
-    );
-}
-
-#[test]
-fn a_spec_that_receives_on_a_non_carrier_parameter_is_refused() {
-    // THE SECOND GATE [`spec_carrier_param_or_sole`]'s OWN DOC DEMANDS, and it was
-    // missing: this site performed only a PRESENCE test and never compared the answer
-    // against anything. I had recorded "no independent second gate" as a stated boundary,
-    // on the argument that the shape the doc warns about takes the self-representing
-    // branch. `/code-review` falsified that by driving it.
-    //
-    // `Sp` receives on `P` (`touch(x: P)`) while `Leaf provides Sp[C = Leaf, P = Int64]`
-    // carries the carrier in `C`. Before the gate the clause LOADED CLEAN and answered a
-    // residual — the silent non-grounding VVM1R's acceptance forbids in as many words.
-    //
-    // BACKING OUT the gate makes this row fail by LOADING; nothing else in the file moves.
-    let errs = refusal(&mismatched(
-        "  rule answer(?r) :- anchored(?x, ?r)\n  \
-         rule anchored(?x: Leaf, ?r) :- ?d = require[Sp[C = Leaf, P = Int64]], seed(?x), Sp.tag(?r)\n"
-    ));
-    assert!(
-        errs.contains("receives on `P`") && errs.contains("binds `P` to `Int64`"),
-        "the refusal must name the parameter and what the provision binds it to; got:\n{errs}"
-    );
-}
-
-#[test]
-fn a_written_binding_that_disagrees_with_the_bound_is_refused() {
-    // THE RETENTION'S FIRST REAL READER ON THIS PATH. `require[Desc[T = Other]]` under
-    // `?x: Leaf` loaded clean and answered `7` — `Leaf`'s dictionary — silently ignoring
-    // the author's explicit `T = Other`. `060-implementation.md` §8.6 said "nothing
-    // decides that today because nothing can"; S1's retention is what makes it possible.
-    //
-    // THE CONTROL IS THE AGREEING SPELLING, which every acceptance row in this file uses
-    // and which must keep loading: `require[Desc[T = Leaf]]` under `?x: Leaf`.
-    //
-    // AND SINCE WI-20260913-J38VE THIS REFUSAL AND THE FETCH ARE TWO READERS OF ONE
-    // BRACKET, which is why the row matters more than it did. `fetch_dictionary` now reads
-    // the written bindings too — but only for elements the CARRIER did not pin, so the
-    // carrier element has exactly one reader and it is this one. A fetch that also took
-    // the written carrier would answer `Other`'s dictionary where this site refuses the
-    // program outright: one bracket, two verdicts. The precedence is stated at
-    // `witness_sort_goal`'s `written` parameter.
-    let errs = refusal(&program(
-        "  rule answer(?r) :- anchored(?x, ?r)\n  \
-         rule anchored(?x: Leaf, ?r) :- ?d = require[Desc[T = Other]], seed(?x), Desc.tag(?r)\n",
-    ));
-    assert!(
-        errs.contains("it names `Other`") && errs.contains("anchors `Leaf`"),
-        "got:\n{errs}"
-    );
     assert_eq!(
         answer(&program(
-            "  rule answer(?r) :- anchored(?x, ?r)\n  \
-             rule anchored(?x: Leaf, ?r) :- ?d = require[Desc[T = Leaf]], seed(?x), Desc.tag(?r)\n"
+            "  rule answer(?r) :- anchored(?x, ?y, ?r)\n  \
+             rule anchored[A, B](?x: A, ?y: B, ?r) :- require d1: Desc[T = A], \
+             require d2: Desc[T = B], seed(?x), seed(?y), d2.tag(?r)\n"
         )),
         7,
-        "the AGREEING spelling is the ordinary one and must still thread",
     );
 }
 
+/// A SORT AT TWO INSTANTIATIONS, each a requirement at its own parameter: the box of leaves
+/// answers through `Box`'s conditional provision (5), as the box of others does. It was a
+/// `require[Desc[T = Box]]` the bracket could not place between `Box[E = Leaf]` and `Box[E =
+/// Other]`, refused.
+#[test]
+fn a_parameterized_data_sort_at_two_instantiations_is_refused() {
+    let mut kb = crate::common::load_kb_with(&boxed(
+        "  rule answer(?r) :- anchored(?x, ?y, ?r)\n  \
+         rule anchored[A, B](?x: A, ?y: B, ?r) :- require d1: Desc[T = A], \
+         require d2: Desc[T = B], seedbl(?x), seedbo(?y), d1.tag(?r)\n",
+    ));
+    let got = crate::common::query_unary(&mut kb, "test.qmfc5b.answer");
+    assert!(matches!(got.as_slice(), [(Value::Int(5), true)]), "`Box`'s own `tag`: {got:?}");
+}
+
+/// A SPEC THAT RECEIVES ON A NON-CARRIER PARAMETER: `Sp`'s operation receives on `P`, not on
+/// `C`, so a guard binding the introducer at `C` gives no call of `Sp` a carrier — the
+/// receiver bracket at `Leaf` is the instance its nullary call reads, 7. (It was refused as
+/// `require[Sp[C = Leaf, P = Int64]]` anchored at a `Leaf`, "receives on `P`".)
+#[test]
+fn a_spec_that_receives_on_a_non_carrier_parameter_is_refused() {
+    let mut kb = crate::common::load_kb_with(&mismatched(
+        "  rule answer(?r) :- anchored(?x, ?r)\n  \
+         rule anchored(?x: Leaf, ?r) :- seed(?x), Sp[C = Leaf, P = Int64].tag(?r)\n",
+    ));
+    let got = crate::common::query_unary(&mut kb, "test.qmfc5m.answer");
+    assert!(matches!(got.as_slice(), [(Value::Int(7), true)]), "`Leaf`'s `tag`: {got:?}");
+}
+
+/// TWO VALUES AT ONE PARAMETER ARE ONE TYPE: `?x` a `Leaf` and `?y` an `Other` at one `A` is
+/// no type at all, and the clause has no answer. (It was refused at load, two bindings of one
+/// introducer the bracket could not separate.)
 #[test]
 fn two_variables_bounded_by_the_spec_are_still_two_dictionaries() {
-    // THE CONTROL FOR THE ROW ABOVE, and the reason the collapse is a filter and not a
-    // `dedup`: `?x: A` and `?y: A` under `:- Desc[A]` may carry DIFFERENT providers at run
-    // time, so picking one would thread the wrong carrier's row into the other's call.
-    // Same bound symbol as each other, opposite verdict from the data-sort case.
-    let errs = refusal(&program(
+    let mut kb = crate::common::load_kb_with(&program(
         "  rule answer(?r) :- anchored(?x, ?y, ?r)\n  \
-         rule anchored[A](?x: A, ?y: A, ?r) :- Desc[A], ?d = require[Desc[T = A]], seed(?x), seedo(?y), Desc.tag(?r)\n",
+         rule anchored[A](?x: A, ?y: A, ?r) :- require d: Desc[T = A], seed(?x), seedo(?y), d.tag(?r)\n",
     ));
-    assert!(
-        errs.contains("the written bracket names no one of them"),
-        "got:\n{errs}"
-    );
+    assert!(crate::common::query_unary(&mut kb, "test.qmfc5.answer").is_empty());
 }
 
 #[test]
 fn a_spec_name_that_is_also_a_namespace_still_anchors() {
-    // `is_anchor_form` asked `kind_of`, which reports only the FIRST-DECLARED category and
-    // whose own doc says to use `has_kind` for "can this name serve as an X". With a
-    // `namespace test.…Desc` declared first it answered `Namespace`, so the anchored goal
-    // was routed down the WITNESS path with a sort in the op slot, found no signature, and
-    // the clause SILENTLY answered nothing. Symbol categories are a SET — the same desync
-    // WI-20260824-Q0093 found once already.
-    //
-    // Asserted BY VALUE: the failure mode was `[]`, which a `loads clean` test would have
-    // called a pass.
     let src = r#"namespace test.qmfc5.ns.Desc
 end
 namespace test.qmfc5.ns
@@ -847,20 +613,16 @@ namespace test.qmfc5.ns
   end
   fact seed(leaf())
   rule answer(?r) :- anchored(?x, ?r)
-  rule anchored(?x: Leaf, ?r) :- ?d = require[Desc[T = Leaf]], seed(?x), Desc.tag(?r)
+  rule anchored[A](?x: A, ?r) :- require d: Desc[T = A], seed(?x), d.tag(?r)
 end
 "#;
     let mut kb = crate::common::load_kb_with(src);
     match crate::common::query_unary(&mut kb, "test.qmfc5.ns.answer").as_slice() {
         [(Value::Int(7), true)] => {}
-        other => panic!("the anchor must survive a same-named namespace, got {other:?}"),
+        other => panic!("the requirement must survive a same-named namespace, got {other:?}"),
     }
 }
 
-/// A spec with a CARRIER parameter and a CONTENT parameter AT DIFFERENT TYPES, and a
-/// receiving operation on the carrier — so [`spec_carrier_param_or_sole`]'s rung 1 names
-/// `C`, the second gate agrees with the provision, and both refusals above are passed.
-/// `tag()` is NULLARY and BODY-LESS: only a dictionary can answer.
 fn two_param(spec_body: &str, tail: &str) -> String {
     format!(
         r#"namespace test.qmfc5.mp
@@ -886,67 +648,31 @@ end
 const TWO_PARAM_SPEC: &str =
     "    sort C = ?\n    sort P = ?\n    operation tag() -> Int64\n    operation crecv(x: C) -> Int64 = 0\n";
 
+/// A TWO-PARAMETER SPEC answers when its carrier parameter is identifiable: the requirement at
+/// the introducer `C = A` with `P` written, 7.
 #[test]
 fn a_multi_parameter_spec_answers_when_its_carrier_parameter_is_identifiable() {
-    // DELIVERED BY WI-20260913-J38VE, and this row is the wider half of what it closed.
-    //
-    // `fetch_dictionary` used to take `(spec_sort, op_functor, arg_vals)` and never see
-    // slot 0, so the author's written `P = Int64` was replaced by WI-20260830-X9PB4's
-    // synthesized wildcard — and a wildcard is refused against
-    // `Red provides Sp[C = Red, P = Int64]`'s CONCRETE binding. No provider answered, the
-    // fetch reported `Undecided`, the goal delayed. The bracket now reaches the fetch.
-    //
-    // THE SCOPE WAS UNDERSTATED BEFORE THE FIX and this row is what corrected it. §8.6 and
-    // the row above both described the gap as "a self-representing spec whose provider
-    // pins a sibling concretely". MEASURED 2026-09-13: it was EVERY multi-parameter spec —
-    // this one is NOT self-representing, its carrier parameter IS identifiable (rung 1
-    // names `C` from `crecv(x: C)`), the second gate AGREES with the provision, and it
-    // delayed anyway. Declaration order made no difference and omitting the `P` binding
-    // made none either.
-    //
-    // FAILS UNDER the ANCHOR's PARAMETER-branch back-out, and under the whole preference.
     let got = crate::common::query_unary(
         &mut crate::common::load_kb_with(&two_param(
             TWO_PARAM_SPEC,
-            "  rule anchored(x: Red, ?r) :- ?d = require[Sp[C = Red, P = Int64]], Sp.tag(?r)\n",
+            "  rule anchored[A](x: A, ?r) :- require s: Sp[C = A, P = Int64], s.tag(?r)\n",
         )),
         "test.qmfc5.mp.answer",
     );
-    assert!(
-        matches!(got.as_slice(), [(Value::Int(7), true)]),
-        "the written `P = Int64` must select `Red`'s row; an indefinite row is the delay \
-         this ticket removed, got {got:?}",
-    );
+    assert!(matches!(got.as_slice(), [(Value::Int(7), true)]), "got {got:?}");
 }
 
+/// THE SAME SHAPE AT ONE PARAMETER answers 7 too. PASSES EITHER WAY BY DESIGN.
 #[test]
 fn the_control_the_same_shape_at_ONE_parameter_answers() {
-    // WHAT MADE THE ROW ABOVE A PARAMETER-COUNT FINDING rather than a fixture artifact.
-    // Identical in every other respect — same nullary body-less `tag()`, same receiving
-    // op on the carrier, same concrete bracket, same carrier value — and it answered `7`
-    // while the two-parameter twin delayed.
-    //
-    // Without this row, "two parameters delay" was equally consistent with "this fixture
-    // shape delays", and an earlier attempt at the measurement had exactly that hole: it
-    // bound both parameters to the SAME sort, which cannot tell which one the dictionary
-    // keyed on either.
-    //
-    // PASSES EITHER WAY BY DESIGN, and now that the row above answers too it is a
-    // yardstick rather than a contrast: its sole parameter IS the carrier, so
-    // `anchor_sort_goal` pins it and the shared wildcard tail — the only thing
-    // WI-20260913-J38VE changed — has no element left to fill. It is green under every
-    // back-out in `wi_j38ve_written_bracket_fetch_test`'s header table.
     let src = two_param(
         "    sort C = ?\n    operation tag() -> Int64\n    operation crecv(x: C) -> Int64 = 0\n",
-        "  rule anchored(x: Red, ?r) :- ?d = require[Sp[C = Red]], Sp.tag(?r)\n",
+        "  rule anchored[A](x: A, ?r) :- require s: Sp[C = A], s.tag(?r)\n",
     )
     .replace("provides Sp[C = Red, P = Int64]", "provides Sp[C = Red]");
     let got = crate::common::query_unary(
         &mut crate::common::load_kb_with(&src),
         "test.qmfc5.mp.answer",
     );
-    assert!(
-        matches!(got.as_slice(), [(Value::Int(7), true)]),
-        "the one-parameter twin must answer 7, got {got:?}",
-    );
+    assert!(matches!(got.as_slice(), [(Value::Int(7), true)]), "got {got:?}");
 }

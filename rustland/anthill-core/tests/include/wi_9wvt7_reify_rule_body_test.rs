@@ -510,8 +510,8 @@ namespace test.rrbg
   operation catchWith[P, R](p: P, body: () -> Int64 @ {Error[P], R}) -> Result[E = P, T = Int64]
       effects {R} requires TypePattern[T = P] =
     Error.reify(body)
-  rule eitherA(?p, ?n, ?r) :- catchAll(lambda () -> raiseEither(?p, ?n), ?r)
-  rule eitherW(?p, ?n, ?r) :- catchWith(?p, lambda () -> raiseEither(?p, ?n), ?r)
+  rule eitherA[P](?p: P, ?n, ?r) :- TypeValue[T = P], catchAll(lambda () -> raiseEither(?p, ?n), ?r)
+  rule eitherW[P](?p: P, ?n, ?r) :- TypeValue[T = P], catchWith(?p, lambda () -> raiseEither(?p, ?n), ?r)
 end
 "#;
 
@@ -540,7 +540,7 @@ fn a_generic_catcher_cited_from_a_rule_is_refused_at_load() {
     }
     let pinned = crate::common::replace_in_fixture(
         GENERIC_CATCHER,
-        "  rule eitherA(?p, ?n, ?r) :- catchAll(lambda () -> raiseEither(?p, ?n), ?r)\n  rule eitherW(?p, ?n, ?r) :- catchWith(?p, lambda () -> raiseEither(?p, ?n), ?r)\n",
+        "  rule eitherA[P](?p: P, ?n, ?r) :- TypeValue[T = P], catchAll(lambda () -> raiseEither(?p, ?n), ?r)\n  rule eitherW[P](?p: P, ?n, ?r) :- TypeValue[T = P], catchWith(?p, lambda () -> raiseEither(?p, ?n), ?r)\n",
         "  rule eitherB(?n, ?r) :- catchWith(boom(\"b\"), lambda () -> raiseEither(boom(\"b\"), ?n), ?r)\n  rule useW(?r) :- eitherB(7, ?r)\n  rule useWneg(?r) :- eitherB(0 - 1, ?r)\n",
     );
     let mut kb = crate::common::load_kb_with(&pinned);

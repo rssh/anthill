@@ -193,11 +193,22 @@ pub const LAMBDA_EXPR: &str = "..anthill.reflect.Expr.lambda_expr";
 /// [`crate::kb::resolve::BuiltinTag::Cut`].
 pub const CUT: &str = "..anthill.kernel.cut";
 
-/// `requires(X)` and `require[X]` — the rule-body requirement guard (WI-300, proposal
-/// 060 §1). Both spellings lower here, differing only in an `out:` named argument; keyed
-/// downstream by [`crate::kb::resolve::BuiltinTag::FindDictionary`] and by the typer,
-/// which reads this constant through [`qualified`].
+/// The dictionary read a rule's requirement guard makes (`rule r[A](?x: A) :- Spec[T = A]`),
+/// minted by the typer and never written: `requires(X)` and `require[X]`, which lowered
+/// here, are removed (proposal 060.1 §5), and a program naming it is refused
+/// ([`DECLARE_A_REQUIREMENT`]). Keyed downstream by
+/// [`crate::kb::resolve::BuiltinTag::FindDictionary`] and by the typer, which reads this
+/// constant through [`qualified`].
 pub const FIND_DICTIONARY: &str = "..anthill.kernel.find_dictionary";
+
+/// What a refusal of a removed requirement form advises: the converter's of `require[X]`,
+/// `?d = require[X]` and `requires(X)`, and the loader's of [`FIND_DICTIONARY`] written by
+/// its name.
+pub const DECLARE_A_REQUIREMENT: &str = "a rule declares a requirement as an operation \
+     does — a type parameter on the head's introducer and a guard naming the spec at it, \
+     `rule r[A](?x: A, …) :- Spec[T = A], …`, or with the keyword, `require Spec[T = A]`; to \
+     call through it by name, `require s: Spec[T = A]` and `s.op(…)`. A call at a concrete \
+     type needs no requirement";
 
 /// `(forall(?x, …), A₁, … -: C₁, …)` — the hereditary-Harrop discharge,
 /// `forall_impl(tuple(binders), tuple(antecedents), tuple(consequent))`. Also the marker

@@ -1,8 +1,9 @@
 //! WI-20260926-QPC89 — A RUN-TIME DICTIONARY IS DERIVED ONCE PER GOAL. A rule body's
 //! requirement read and a bridged call's frame hold argument values and no caller
-//! dictionary, so each resolves its goal in an empty scope; `rd(leaf(), ?n)` asks
-//! `Desc[T = Leaf]` at every query, and the answer is read off the declarations and the
-//! provisions alone. `typing::resolve_in_empty_scope` memoizes a ground goal's answer
+//! dictionary, so each resolves its goal in an empty scope; the query `rd(leaf(), ?n)` asks
+//! `Desc[T = Leaf]` each time it runs, and the answer is read off the declarations and the
+//! provisions alone. The rows ask QUERIES: a rule's goal at a concrete type builds its
+//! callee's dictionary at load (060.1 §1), and runs no read. `typing::resolve_in_empty_scope` memoizes a ground goal's answer
 //! (`KnowledgeBase::empty_scope_resolve_cache`), dropped at the start of a typer run and
 //! wherever a provision row is filed or unfiled.
 //!
@@ -50,10 +51,8 @@ namespace test.qpc89.reads
       Int64.add(Desc.describe(x), Desc.describe(x))
   end
 
-  rule rd(?x, ?n) :- Desc.describe(?x, ?n)
-  rule rdLeaf(?n) :- rd(leaf(), ?n)
-  rule tw(?x, ?n) :- Util.twice(?x, ?n)
-  rule twLeaf(?n) :- tw(leaf(), ?n)
+  rule rd[A](?x: A, ?n) :- Desc[T = A], Desc.describe(?x, ?n)
+  rule tw[A](?x: A, ?n) :- Desc[T = A], Util.twice(?x, ?n)
 end
 "#;
 
@@ -81,8 +80,7 @@ namespace test.qpc89.tie
     operation describe(x: Leaf) -> Int64 = 9
   end
 
-  rule rd(?x, ?n) :- Desc.describe(?x, ?n)
-  rule rdLeaf(?n) :- rd(leaf(), ?n)
+  rule rd[A](?x: A, ?n) :- Desc[T = A], Desc.describe(?x, ?n)
 end
 "#;
 
@@ -117,8 +115,7 @@ namespace test.qpc89.cond
     operation describe(x: Box[V = V]) -> Int64 = 5
   end
 
-  rule rd(?x, ?n) :- Desc.describe(?x, ?n)
-  rule rdBox(?n) :- rd(box(v: leaf()), ?n)
+  rule rd[A](?x: A, ?n) :- Desc[T = A], Desc.describe(?x, ?n)
 end
 "#;
 
@@ -135,14 +132,23 @@ namespace test.qpc89.met
 end
 "#;
 
-/// The relation `qn`'s one column, asked as a query: the definite integer answers.
-fn definite_ints(kb: &mut KnowledgeBase, qn: &str) -> Vec<i64> {
-    let rows = crate::common::query_unary(kb, qn);
-    rows.iter()
-        .filter(|(_, definite)| *definite)
-        .map(|(v, _)| {
-            crate::common::scalar_int(kb, v)
-                .unwrap_or_else(|| panic!("`{qn}` answers an integer; got {v:?}"))
+/// The query `pattern`'s last argument: the definite integer answers.
+fn definite_ints(kb: &mut KnowledgeBase, pattern: &str) -> Vec<i64> {
+    use anthill_core::kb::term_view::{TermView, ViewHead};
+    let goal = crate::common::query_pattern_term(kb, pattern);
+    let n = match TermView::head(&goal, kb) {
+        ViewHead::Functor { pos_arity, .. } => TermView::pos_arg(&goal, kb, pos_arity - 1)
+            .expect("the last argument is readable")
+            .to_value(),
+        other => panic!("`{pattern}` is not an application: {other:?}"),
+    };
+    kb.resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default())
+        .iter()
+        .filter(|sol| sol.is_definite())
+        .map(|sol| {
+            let v = kb.reify_value(&n, &sol.subst);
+            crate::common::scalar_int(kb, &v)
+                .unwrap_or_else(|| panic!("`{pattern}` answers an integer; got {v:?}"))
         })
         .collect()
 }
@@ -153,13 +159,13 @@ fn definite_ints(kb: &mut KnowledgeBase, qn: &str) -> Vec<i64> {
 fn a_rule_body_read_keeps_its_derivation() {
     let mut kb = crate::common::load_kb_with(READS);
     let before = kb.empty_scope_resolve_cache_len();
-    assert_eq!(definite_ints(&mut kb, "test.qpc89.reads.rdLeaf"), [7]);
+    assert_eq!(definite_ints(&mut kb, "test.qpc89.reads.rd(test.qpc89.reads.Leaf.leaf(), ?n)"), [7]);
     assert_eq!(
         kb.empty_scope_resolve_cache_len(),
         before + 1,
         "`Desc[T = Leaf]` is held after the first query",
     );
-    assert_eq!(definite_ints(&mut kb, "test.qpc89.reads.rdLeaf"), [7]);
+    assert_eq!(definite_ints(&mut kb, "test.qpc89.reads.rd(test.qpc89.reads.Leaf.leaf(), ?n)"), [7]);
     assert_eq!(kb.empty_scope_resolve_cache_len(), before + 1, "and asked again, not added");
 }
 
@@ -169,13 +175,13 @@ fn a_rule_body_read_keeps_its_derivation() {
 fn a_bridged_calls_frame_keeps_its_derivation() {
     let mut kb = crate::common::load_kb_with(READS);
     let before = kb.empty_scope_resolve_cache_len();
-    assert_eq!(definite_ints(&mut kb, "test.qpc89.reads.twLeaf"), [14]);
+    assert_eq!(definite_ints(&mut kb, "test.qpc89.reads.tw(test.qpc89.reads.Leaf.leaf(), ?n)"), [14]);
     assert_eq!(
         kb.empty_scope_resolve_cache_len(),
         before + 1,
         "`twice`'s slot is held after the first query",
     );
-    assert_eq!(definite_ints(&mut kb, "test.qpc89.reads.twLeaf"), [14]);
+    assert_eq!(definite_ints(&mut kb, "test.qpc89.reads.tw(test.qpc89.reads.Leaf.leaf(), ?n)"), [14]);
     assert_eq!(kb.empty_scope_resolve_cache_len(), before + 1, "and asked again, not added");
 }
 
@@ -184,14 +190,14 @@ fn a_bridged_calls_frame_keeps_its_derivation() {
 #[test]
 fn a_default_declared_by_a_later_load_answers_a_kept_tie() {
     let mut kb = crate::common::load_kb_with(TIE);
-    assert_eq!(definite_ints(&mut kb, "test.qpc89.tie.rdLeaf"), Vec::<i64>::new(), "a tie");
+    assert_eq!(definite_ints(&mut kb, "test.qpc89.tie.rd(test.qpc89.tie.Leaf.leaf(), ?n)"), Vec::<i64>::new(), "a tie");
     assert!(kb.empty_scope_resolve_cache_len() > 0, "the tie is held");
     crate::common::expect_loaded(crate::common::load_in_a_later_call(
         &mut kb,
         TIE_SETTLED,
         LoadOptions::default(),
     ));
-    assert_eq!(definite_ints(&mut kb, "test.qpc89.tie.rdLeaf"), [7], "`Rival`, the default");
+    assert_eq!(definite_ints(&mut kb, "test.qpc89.tie.rd(test.qpc89.tie.Leaf.leaf(), ?n)"), [7], "`Rival`, the default");
 }
 
 /// A provision filed after the memo filled — here by a load that stops before its typer —
@@ -200,7 +206,7 @@ fn a_default_declared_by_a_later_load_answers_a_kept_tie() {
 fn a_provision_filed_after_the_derivation_answers() {
     let mut kb = crate::common::load_kb_with(CONDITIONED);
     assert_eq!(
-        definite_ints(&mut kb, "test.qpc89.cond.rdBox"),
+        definite_ints(&mut kb, "test.qpc89.cond.rd(test.qpc89.cond.Box.box(v: test.qpc89.cond.Leaf.leaf()), ?n)"),
         Vec::<i64>::new(),
         "nothing provides `Desc[T = Leaf]`",
     );
@@ -213,5 +219,5 @@ fn a_provision_filed_after_the_derivation_answers() {
             ..LoadOptions::default()
         },
     ));
-    assert_eq!(definite_ints(&mut kb, "test.qpc89.cond.rdBox"), [5], "`Box`'s own `describe`");
+    assert_eq!(definite_ints(&mut kb, "test.qpc89.cond.rd(test.qpc89.cond.Box.box(v: test.qpc89.cond.Leaf.leaf()), ?n)"), [5], "`Box`'s own `describe`");
 }

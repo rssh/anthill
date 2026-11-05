@@ -206,6 +206,157 @@ pub(super) fn constructor_instance_for_hint(
     Some(ConstructionInstance { fixed, expected })
 }
 
+/// 060.1 §2 — A CITATION'S BRACKET READS WHAT THE RULE DECLARES, as a call's reads what
+/// the operation declares: `cmp[A = Int64](1, 5)` binds the parameter the head's introducer
+/// names, and `cmp[WeakOrd = down](x, y)` hands the requirement its guard states the
+/// caller's `down`, or a witness's dictionary. A key that names nothing the relation
+/// declares is refused as on an operation.
+///
+/// `params` is each declaring clause's variable for each parameter, opened for this
+/// citation ([`relation_columns_and_params`]): the bracket binds one variable per name, and
+/// every clause's is met with it. Answers the selections, which the citation's routes pin
+/// where they route a guard's read ([`citation_requirement_routes`]).
+pub(super) fn seed_rule_citation_bracket(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    env: &TypingEnv,
+    occ: &Rc<NodeOccurrence>,
+    relation: Symbol,
+    params: &[(Symbol, Value)],
+    span: Option<Span>,
+) -> Result<Vec<InstanceSelection>, TypeError> {
+    let Some(type_args) = call_type_args_of(occ) else {
+        return Ok(Vec::new());
+    };
+    let qn = kb.qualified_name_of(relation).to_string();
+    let rids = kb.rule_ids_by_qn(&qn);
+    // The relation's one list (§8.4), by bare name, each on a variable of its own.
+    let names: Vec<Symbol> = rids
+        .iter()
+        .map(|&rid| kb.rule_type_params(rid))
+        .find(|list| !list.is_empty())
+        .map(|list| list.iter().map(|(n, _)| *n).collect())
+        .unwrap_or_default();
+    let declared: Vec<(Symbol, Var)> = names
+        .iter()
+        .map(|&name| (name, Var::Global(kb.fresh_var(name))))
+        .collect();
+    // Each spec the clauses' guards state, as many times as one clause states it: an unnamed
+    // requirement, reached by its sort's short name, which names more than one where a clause
+    // writes two (060.1 §8.5, as two of an operation's `requires` lines are two slots).
+    let mut specs: Vec<(Symbol, usize)> = Vec::new();
+    // A requirement written under a name (§8.6), by its name: `cmpN[up = down](…)`.
+    let mut named: Vec<(Symbol, Symbol)> = Vec::new();
+    for &rid in &rids {
+        let mut here: Vec<(Symbol, usize)> = Vec::new();
+        for r in kb.rule_provider_requirements(rid).to_vec() {
+            let Some(spec) = sort_functor_of_view(kb, &TermIdView(r.instance)) else {
+                continue;
+            };
+            if let Some(name) = r.name {
+                if !named.iter().any(|(n, _)| kb.local_name_of(*n) == kb.local_name_of(name)) {
+                    named.push((name, spec));
+                }
+                continue;
+            }
+            match here.iter_mut().find(|(s, _)| same_sort_canonical(kb, *s, spec)) {
+                Some((_, n)) => *n += 1,
+                None => here.push((spec, 1)),
+            }
+        }
+        for (spec, n) in here {
+            match specs.iter_mut().find(|(s, _)| same_sort_canonical(kb, *s, spec)) {
+                Some((_, most)) => *most = (*most).max(n),
+                None => specs.push((spec, n)),
+            }
+        }
+    }
+    let slots: Vec<CalleeSlot> = specs
+        .into_iter()
+        .flat_map(|(spec, n)| std::iter::repeat_n(spec, n))
+        .map(|spec| CalleeSlot {
+            spec,
+            named: false,
+            key: SelectedSlot::Unnamed,
+            source: CalleeSlotSource::RuleGuard,
+        })
+        .collect();
+    let scope = BracketScope {
+        declared: &declared,
+        slots: &slots,
+    };
+    // An entry keyed by a named requirement selects its provider: a witness, or a requirement of
+    // the citing declaration by its name, as a named slot of an operation is selected.
+    let (by_name, rest): (Vec<(Option<Symbol>, Value)>, Vec<(Option<Symbol>, Value)>) =
+        type_args.iter().cloned().partition(|(key, _)| {
+            key.is_some_and(|k| named.iter().any(|(n, _)| kb.local_name_of(*n) == kb.local_name_of(k)))
+        });
+    let mut selections = seed_bracket_bindings(kb, subst, env, &rest, &scope, relation, span)?;
+    let mut concrete = None;
+    for (key, value) in by_name {
+        let key = key.expect("partitioned on a key");
+        let (binder, spec) = *named
+            .iter()
+            .find(|(n, _)| kb.local_name_of(*n) == kb.local_name_of(key))
+            .expect("partitioned on a named requirement");
+        let Some(provider) =
+            validate_written_selection(kb, env, relation, spec, &value, false, &mut concrete, span)?
+        else {
+            continue;
+        };
+        let witness_slots = match provider {
+            SelectedProvider::Witness(witness) => {
+                witness_value_slot_selections(kb, relation, witness, &value, span)?
+            }
+            SelectedProvider::Enclosing(_) => Vec::new(),
+        };
+        push_selection(
+            kb,
+            &mut selections,
+            spec,
+            SelectedSlot::Named(binder),
+            provider,
+            witness_slots,
+            relation,
+            span,
+        )?;
+    }
+    for (name, var) in &declared {
+        let bound = Value::Var(*var);
+        let written = walk_type_deep_value(kb, subst, &bound);
+        if resolved_var(kb, &written).is_some() {
+            continue;
+        }
+        let name_text = kb.local_name_of(*name).to_string();
+        let clause_params: Vec<Value> = params
+            .iter()
+            .filter(|(n, _)| kb.local_name_of(*n) == name_text)
+            .map(|(_, p)| p.clone())
+            .collect();
+        for clause_param in &clause_params {
+            if !unify_types(kb, subst, clause_param, &bound) {
+                let fixed = walk_type_deep_value(kb, subst, clause_param);
+                return Err(TypeError::Other {
+                    site: TypeError::here(),
+                    span,
+                    context: TypeErrorContext::Rule {
+                        name: relation,
+                        field: RuleField::Whole,
+                    },
+                    expected: format!("a binding of `{name_text}` that the relation's clauses admit"),
+                    actual: format!(
+                        "the bracket binds `{name_text}` to {}, and a clause of `{}` fixes it to {}",
+                        type_display_name_value(kb, &written),
+                        kb.qualified_name_of(relation),
+                        type_display_name_value(kb, &fixed),
+                    ),
+                });
+            }
+        }
+    }
+    Ok(selections)
+}
+
 /// What the bracket written on a callee may bind: the parameters a key names or a
 /// positional counts, and the requirement slots a key selects.
 struct BracketScope<'a> {
@@ -3277,6 +3428,9 @@ pub(super) enum CalleeSlotSource {
     SortRequires(RequiresEntry),
     /// A body-less spec op's own dispatch target; its goal comes from the subst.
     Dispatch,
+    /// A rule's guard (060.1 §2). Its goal is formed where the citation routes the guard's
+    /// read, which pins the selection there ([`seed_rule_citation_bracket`]).
+    RuleGuard,
 }
 
 /// WI-841 — the requirement slots a call bracket on `fn_sym` may select. THREE
@@ -3448,11 +3602,11 @@ fn validate_written_selection(
     }
     // WI-20261013-50ZMN — an UNNAMED requirement answered by a requirement the
     // enclosing declaration names: `[Mon = Plus]` under `requires Plus: Mon[T]`. There
-    // is no parameter for the name to ride in, so it is a selection.
-    if !binds_a_parameter {
-        if let Some(binder) = enclosing_requirement_named(kb, env, value, spec_sort) {
-            return Ok(Some(SelectedProvider::Enclosing(binder)));
-        }
+    // is no parameter for the name to ride in, so it is a selection. A sort's NAMED slot
+    // forwarded the same way, `Ranked[T = A, O = up]` under `requires up: WeakOrd[T = A]`,
+    // is the caller's dictionary too (060.1 §8.2).
+    if let Some(binder) = enclosing_requirement_named(kb, env, value, spec_sort) {
+        return Ok(Some(SelectedProvider::Enclosing(binder)));
     }
     let witness = selection_witness_sym(kb, value).ok_or(TypeError::SelectionValueNotASort {
         span,
@@ -4062,6 +4216,9 @@ fn selection_goals(
             CalleeSlotSource::OpRequires(entry) => {
                 let concrete = substituted_entry(kb, &entry, subst);
                 goal_from_op_requires_entry(kb, &concrete)
+            }
+            CalleeSlotSource::RuleGuard => {
+                unreachable!("a rule's guard is no slot of an operation's call")
             }
         };
         goals.extend(goal);

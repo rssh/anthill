@@ -29,8 +29,9 @@
 //!     is reported).
 //!
 //! Pass either way, by design: the positional twins beside each labelled spelling, and
-//! `a_name_no_parameter_list_declares_keeps_its_labels` — `find_dictionary`'s `out:` reaches
-//! the rewrite and is left as written, since that name declares no parameters.
+//! `a_name_no_parameter_list_declares_keeps_its_labels` — a guard's `find_dictionary` read,
+//! `out:` and `carrier_type:`, reaches the rewrite and is left as written, since that name
+//! declares no parameters.
 
 use anthill_core::kb::resolve::ResolveConfig;
 use anthill_core::kb::term::{Literal, Term, Var};
@@ -269,10 +270,12 @@ fn a_labelled_builtin_call_in_a_value_slot_answers_as_its_positional_twin() {
     assert_eq!(verdicts(&mut kb, "wpvvy.value.operand()"), vec![true]);
 }
 
-/// A NAME NO PARAMETER LIST DECLARES KEEPS ITS LABELS: the clause's `require[…]` is read
-/// through `find_dictionary(…, out: ?d)`, a labelled goal of a builtin-tagged name that
-/// reaches the rewrite and is not reordered, and the call answers `Meters`' 3. Passes either
-/// way by design.
+/// A NAME NO PARAMETER LIST DECLARES KEEPS ITS LABELS: the guard `Conv[A = X, B = String]` is
+/// read through `find_dictionary(…, out: ?d, carrier_type: true)`, a labelled goal of a
+/// builtin-tagged name that reaches the rewrite and is not reordered, and the call through it
+/// answers `Meters`' 7. Passes either way by design. (The clause wrote
+/// `require[Conv[A = Meters, B = String]]`, read as `find_dictionary(…, out: ?d)`; proposal
+/// 060.1 §5 removed it.)
 #[test]
 fn a_name_no_parameter_list_declares_keeps_its_labels() {
     let src = r#"
@@ -290,12 +293,13 @@ namespace wpvvy.req
     operation conv(a: Meters, b: String) -> Int64 = 7
     operation tag(b: String) -> Int64 = 3
   end
-  rule t(?r) :- require[Conv[A = Meters, B = String]], ?r <=> Conv.tag("km")
+  rule t[X](?x: X, ?r) :- Conv[A = X, B = String], ?r <=> Conv.conv(?x, "km")
+  rule u(?r) :- t(m(v: 1), ?r)
 end
 "#;
     let mut kb = crate::common::load_kb_with(src);
     assert_eq!(
-        crate::common::one_definite_int(&mut kb, "wpvvy.req.t"),
-        Some(3)
+        crate::common::one_definite_int(&mut kb, "wpvvy.req.u"),
+        Some(7)
     );
 }
