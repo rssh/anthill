@@ -2664,35 +2664,30 @@ one, and two names are two dictionaries. A requirement the clause declares holds
 of the clause's type parameters does not.
 
 Each element a guard writes selects the instance: `Sp[C = A, P = Int64]` reads the
-provision at `P = Int64`. An element left unwritten, or written as a variable, does not
-discriminate: `Sp[C = A, P = ?p]` reads what `Sp[C = A]` reads. An element is a type; a
-literal, a rule name, a tuple or an arrow type, or a name that denotes nothing is a load
-error naming it.
+provision at `P = Int64`. A guard at a spec with a carrier at two parameters names both,
+`Conv[A = X, B = U]`, and its read waits until each is known. An element left unwritten, or
+written as a variable, does not discriminate: `Sp[C = A, P = ?p]` reads what `Sp[C = A]`
+reads. An element is a type; a literal, a rule name, a tuple or an arrow type, or a name that
+denotes nothing is a load error naming it.
 
 `require[X]`, `?d = require[X]` and `requires(X)` are not rule-body goals: each is a load
 error naming the forms above, and so is the kernel's dictionary read written by its name.
 
-A requirement need not be written to be the clause's. A rule-body call that needs a
-dictionary at an argument whose type is not known at load — a spec operation, an operation
-that declares `requires`, or a member of a sort that does — makes that requirement a
-condition of the clause,
-wherever the goal runs the call (the goal itself, a side of `<=>`, an operand of `=`),
-read as though the clause declared it before the goal holding the call: `rule cmp(?a, ?b,
-?c) :- WeakOrd.compare(?a, ?b, ?c)` has a `WeakOrd` condition at `?a`'s type, and a
-call to `operation sign[A](x: A, y: A) -> Int64 requires WeakOrd[T = A]` has one per
-entry of `sign`'s `requires`. An operation that cites the clause while holding a
-dictionary for the requirement passes its own, so `operation viaRule[A](x: A, y: A)
--> Int64 requires WeakOrd[T = A] = cmp(x, y).head.c` called with a selected provider
-answers through that provider. A goal of another rule's body passes what that rule was
-passed for the condition, which is then that rule's condition too: over `rule outer(?a, ?b,
-?c) :- cmp(?a, ?b, ?c)`, `outer(x, y).head.c` in `viaRule` answers as `cmp(x, y).head.c`
-does. A goal of the clause's own relation passes the clause's own conditions where it writes
-each argument at its column's type; a goal of another relation of the same recursion passes
-nothing. Where nothing is passed — a query, an operation holding no such requirement — the
-clause derives the dictionary from the argument's carried type when the goal runs, and waits
-while the argument is unbound. Where that type is known to provide no instance, the requirement
-is not available: the condition does not hold and the goal fails, so `not(…)` over it
-holds — whether the clause declares it or the call owes it unwritten.
+A rule takes a dictionary at a type variable only where it declares it. A requirement that
+a rule-body call or goal needs is supplied as an operation call's is (§5.2): at a concrete
+instance it is built from the provisions, and at an instance that names a type a head column
+reaches, by the requirements the clause declares, directly or through a conditional
+provision; the clause is refused where none supplies it. A goal of another rule needs the
+requirements that rule's clauses declare. Over `rule cmp[A](?a: A, ?b: A, ?c) :- WeakOrd[T =
+A], WeakOrd.compare(?a, ?b, ?c)`, `rule ints(?c) :- cmp(1, 2, ?c)` loads, `rule outer(?a, ?b,
+?c) :- cmp(?a, ?b, ?c)` is refused, and `rule outer[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A],
+cmp(?a, ?b, ?c)` loads and hands `cmp` the dictionary it holds, at every turn of a recursion
+too. A citation fixes the clause's declared type parameters at the citing call's
+instantiation, as an operation call's are, and a dictionary it passes is the requirement's,
+whatever the value's own type. A requirement at a type no head column reaches (`rule
+answer(?r) :- keep(?x, ?r)`, `?x` bound by `keep`), and one no caller passes (a query), are
+found from the carried types when the goal runs, waiting while the value is unbound; where
+that type provides no instance, the goal fails, so `not(…)` over it holds.
 
 A call whose arguments' types are known at load is decided there, by its carrier, and
 has no condition: `rule cmpInt(?c) :- WeakOrd.compare(1, 5, ?c)` is `Int64`'s own
