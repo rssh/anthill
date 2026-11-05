@@ -1,6 +1,6 @@
 # Proposal 073: A value of an abstract type is an instance of its sort — no carrier is chosen at run time
 
-## Status: Draft (2026-11-05). Decided with the user while picking up WI-20260923-DK0QJ, point by point: no run-time step chooses a carrier or a provider (058 §3.9 holds everywhere); a sort is a set of operations, and a value of an abstract type is an instance of its sort, its dictionary deduced at load where its sort is known and kept in the requirement channel; a spec's default body is typed once; every call passes what its callee reads (§6.3); where no typed caller exists, a value used at a sort gives the dictionary of the sort that built it (§6.1, §6.2). §1–§4 and §6 are decided; §5's text is to be agreed; §7 is the plan.
+## Status: Draft (2026-11-05). Decided with the user while picking up WI-20260923-DK0QJ, point by point: no run-time step chooses a carrier or a provider (058 §3.9 holds everywhere); a sort is a set of operations, and a value of an abstract type is an instance of its sort, its dictionary deduced at load where its sort is known and kept in the requirement channel; a spec's default body is typed once; every call passes what its callee reads (§6.3); where no typed caller exists, the requirement's goal composes the dictionary from the entries load selected, keyed by the value's carried type, as 058 §3.9, 060 and 060.1 §4 already decide (§6.1, §6.2). Reviewed the same day: an operation with two operands at the abstract type is answered by the rule the language already has (§2), and a caller-less call over a conditional provision by 060's (§6.2). A value whose type is open where it is used is not given a type there without a dictionary (060.1), so no type is stored with a value (§6.2). §1–§4 and §6 are decided; §5's text is to be agreed; §7 is the plan.
 
 ## Extends: [058](058-modular-instances.md) §3.9 ("Dictionaries are PASSED at run time — instances are never CHOSEN at run time"); [060.1](060.1-written-rule-requirements.md) §4 (load decides where each requirement comes from, run time reads it) and §8.8, both kept in §6.2's words.
 
@@ -55,7 +55,7 @@ Measured over the full workspace run on `62882ef0` (11,714 tests), with a trace 
 
 ## 1. The rule
 
-> No step at run time chooses a carrier or a provider. What every call runs is decided at load: the caller passes the dictionary, it is built from the provisions, or the call is made on a value of an abstract type, which is an instance whose operations were fixed where it was made (§2). Where no typed caller exists — a query, a host call, a rule variable no head column reaches — a value used at a sort gives the dictionary of the sort that built it (§6.2), and that is no choice among providers.
+> No step at run time chooses a carrier or a provider. What every call runs is decided at load: the caller passes the dictionary, it is built from the provisions, or the call is made on a value of an abstract type, which is an instance whose operations were fixed where it was made (§2). Where no typed caller exists — a query, a host call, a rule variable no head column reaches — the requirement's goal composes the dictionary when it runs from the entries load selected, keyed by the value's carried type (058 §3.9, 060's rule, 060.1 §4): reads over decided entries, not a choice (§6.2).
 
 A call at a type the program knows is decided by that type, through any chain of provisions: `add(1, n)` at `n: Int64` is `Int64.add`, reached through `Numeric provides Additive[T = T]`, at load.
 
@@ -89,6 +89,30 @@ end
 
 The two elements of `streams(xs)` are a `List` instance and a `MappedStream` instance; each application of the lambda runs the operations of its `s`. (Today the two `takeN` calls run `List.splitFirst` and `MappedStream.splitFirst`, each chosen from the value — measured.)
 
+An operation with several operands at the abstract type runs the instance of its receiver, the parameter dispatch reads (kernel-language §8.7, a member's fit to its spec), and the other operands reach it as instances. A provider's member therefore takes them at the spec's type, as the language already requires: with `merge(a: Bag, b: Bag)`, `Bag provides Mergeable` is refused at load ("parameter 2 (`b: Bag`) takes less than the spec's … type `b` by the spec"). Nothing has to show that two values share a carrier, and no operation is barred from a value of an abstract type:
+
+```anthill
+sort Mergeable
+  operation size(a: Self) -> Int64
+  operation merge(a: Self, b: Self) -> Self
+end
+sort Bag
+  entity bag(n: Int64)
+  provides Mergeable
+  operation size(a: Bag) -> Int64 = match a case bag(n) -> n
+  operation merge(a: Bag, b: Mergeable) -> Bag = match a case bag(n) -> bag(n + Mergeable.size(b))
+end
+sort Tally
+  entity tally(k: Int64)
+  provides Mergeable
+  operation size(a: Tally) -> Int64 = match a case tally(k) -> k * 100
+  operation merge(a: Tally, b: Mergeable) -> Tally = match a case tally(n) -> tally(n + Mergeable.size(b))
+end
+operation two(x: Mergeable, y: Mergeable) -> Int64 = Mergeable.size(Mergeable.merge(x, y))
+```
+
+`two(bag(1), tally(2))` answers `201`, `Bag`'s `merge` given the `Tally` as a `Mergeable`, and `two(tally(2), bag(1))` answers `300`; so do the two elements of `[bag(1), tally(2)]` at `List[T = Mergeable]` (measured on `e4442b16`).
+
 A recursion whose instance grows at each turn (WI-817) needs nothing more: each turn passes the instance the previous one returned.
 
 ## 3. A spec's default body
@@ -97,8 +121,8 @@ A spec's default body is typed once, and each call in it is fixed at load (`appl
 
 ## 4. What goes
 
-- The interpreter's routes that choose from a value: dispatch of an unclassified spec operation on the argument's sort (`dispatch_resolved_operation` step 3b and its host-entry copy), the carrier-override redirect (step 3), and the resolver's value classification of a rule-body or query call. Where no typed caller exists, what stays of them is §6.2's read of the value's own sort.
-- Every dictionary built from argument values at run time — `resolve_bridge_requirements` and its callers: the SLD bridge, the redirected member's requirements, the fill of an operation's own slots on entry (§6.3), the host entry's op half (§6.1). With them the ranking question of WI-20260923-DK0QJ goes: no value-only route is left to rank.
+- The interpreter's routes that choose from a value: dispatch of an unclassified spec operation on the argument's sort (`dispatch_resolved_operation` step 3b and its host-entry copy), the carrier-override redirect (step 3), and the resolver's value classification of a rule-body or query call.
+- Every dictionary built from argument values where a typed caller exists, or ranked among providers — `resolve_bridge_requirements` and its callers: the SLD bridge, the redirected member's requirements, the fill of an operation's own slots on entry (§6.3), the host entry's op half (§6.1). With them the ranking question of WI-20260923-DK0QJ goes: no value-only route is left to rank. What stays is 060's fetch-and-compose where no typed caller exists (§6.2).
 - The run-time slot of an effect row's `EffectsRuntime` requirement (§6.3).
 - The typer's deferrals to the interpreter at a known type: the transitive-provision arm (WI-496) and the abstract-spec carrier arm (WI-598) in the spec-operation dispatch.
 - kernel-language's sentences that describe value-direction: §5.2 (the paragraph "Value-directed dispatch still serves …", the host-entry and rule-body halves of "every route into an operation fills its op-scoped slots", "resolves it from the value otherwise" in "A value carries no dictionary", "its member and its provider are found from the values"), the named-slot paragraph's "The same holds for value-directed dispatch", §5.1's "value-directed dispatch reaches `Stream.splitFirst` on a `Relation` through it", and §5.4's "reached by value".
@@ -109,9 +133,9 @@ A spec's default body is typed once, and each call in it is fixed at load (`appl
 
 > A value typed at a sort that is its own carrier (`rest : Stream[T, E]`) is an instance of that sort: the sort's operations as implemented by the sort that built the value. Its dictionary is fixed where its sort is known — by the member that returns it at a concrete sort, or where a value of a known sort is returned, passed or stored at the abstract type — and kept in the requirement channel. It is used only through the sort's operations, and a data structure of such values holds instances. No operation or dictionary is chosen from a value when the program runs.
 
-§5.3, replacing "A requirement at a type no head column reaches (…), and one no caller passes (a query), are found from the carried types when the goal runs, waiting while the value is unbound; where that type provides no instance, the goal fails, so `not(…)` over it holds":
+§5.3 keeps its sentence on a requirement no caller passes ("found from the carried types when the goal runs, waiting while the value is unbound; where that type provides no instance, the goal fails"), which is 060.1 §4's, and adds the host call to it and the case §6.2 measured:
 
-> A requirement no typed caller passes — at a type no head column reaches (`rule answer(?r) :- keep(?x, ?r)`, `?x` bound by `keep`), in a query, in a host call — is given by the value at the requirement's sort: the dictionary of the sort that built the value, `Int64`'s for `keep(1, ?r)`. The goal waits while the value is unbound; where its sort provides no instance, the goal fails, so `not(…)` over it holds. A value gives no type argument it does not hold: a `MySet` built at `O = ByLength` gives `MySet`'s dictionary and not `O`'s, which the caller passes or the call is refused naming the slot.
+> A value whose type leaves open a type argument the requirement needs is not given it without a dictionary: over `ListShow provides Show[T = List[T = E]]` under `requires Show[T = E]`, `keep[A](?x: A, ?t) :- src(?x), Show[A], Show.show(?x, ?t)` beside `fact src([])` is refused at load, naming `E`, and answers once the `[]` is written with its element type or the citation passes the dictionary, `keep[A = List[T = Int64]](?x, ?t)`.
 
 §5.4, two sentences:
 
@@ -125,7 +149,7 @@ kernel-language does not mention the `EffectsRuntime` anchor, and it already rea
 
 ### 6.1 The host entry
 
-A host call is a call with no typed caller, and it reads its requirements as a query does (§6.2). A dictionary the host passes is a run-time `Dictionary` value (requirement-dictionaries.md §1–§2; `alloc_dictionary`, `call_with_requirements`) and is used as given. A requirement the host does not pass is given by the value at the requirement's sort:
+A host call is a call with no typed caller, and it reads its requirements as a query does (§6.2). A dictionary the host passes is a run-time `Dictionary` value (requirement-dictionaries.md §1–§2; `alloc_dictionary`, `call_with_requirements`) and is used as given. A requirement the host does not pass is composed from the argument's carried type, as a query's is:
 
 ```anthill
 sort Desc
@@ -140,7 +164,7 @@ end
 operation gen[A](x: A) -> Int64 requires Desc[T = A] = Desc.describe(x)
 ```
 
-`interp.call("gen", &[leaf])` answers `7`: `leaf` used at `A` gives `Leaf`'s `Desc`, as the query `gen(leaf, ?r)` would. A slot the value cannot give is refused at the entry, naming it: `has(s, "a")` with `s` built at `O = ByInner[OI = Flat]` needs `O`, which the `MySet` value does not hold, so the host passes it or the call is refused naming `s.O` (WI-20260923-DK0QJ's half (a)). Nothing is built because only one provider exists. The three entries (`call`, `call_with_witnesses`, `call_with_requirements`) become one: a witness named by its sort is that sort's dictionary, and an operation's own `requires`, which `call_with_requirements` has no spelling for today, is passed the same way.
+`interp.call("gen", &[leaf])` answers `7`: `leaf`'s carried type `Leaf` keys `Leaf`'s `Desc`, as in the query `gen(leaf, ?r)`. A slot the carried type does not hold is refused at the entry, naming it: `has(s, "a")` with `s` built at `O = ByInner[OI = Flat]` needs `O`, which `s`'s carried type does not hold — no type is stored with a value (§6.2) — so the host passes it or the call is refused naming `s.O` (WI-20260923-DK0QJ's half (a)). Nothing is built because only one provider exists. The three entries (`call`, `call_with_witnesses`, `call_with_requirements`) become one: a witness named by its sort is that sort's dictionary, and an operation's own `requires`, which `call_with_requirements` has no spelling for today, is passed the same way.
 
 ### 6.2 No typed caller
 
@@ -168,7 +192,41 @@ namespace anthill.prelude.Bool
 end
 ```
 
-`answer(?t)` answers `1` and `2`, `keep(1, ?t)` answers `1`, `keep(true, ?t)` answers `2` (measured on `62882ef0`). No caller passes `keep` its `Marker`: the two `keep` goals are queries, and in `answer` the type of `?x` differs from one `src` fact to the next. A value is an instance of the sort that built it, and used at a sort it gives that sort's dictionary: `1` at `A` gives `Int64`'s `Marker`, `true` gives `Bool`'s. That is no choice among providers — the instance is the value's own sort, and §8.7's order answers at it as it would at load. 060.1 §4 and §8.8 stay in these words. A value gives no type argument it does not hold (§6.1's `MySet`).
+`answer(?t)` answers `1` and `2`, `keep(1, ?t)` answers `1`, `keep(true, ?t)` answers `2` (measured on `62882ef0`). No caller passes `keep` its `Marker`: the two `keep` goals are queries, and in `answer` the type of `?x` differs from one `src` fact to the next.
+
+058, 060 and 060.1 already decide this place, and 073 keeps their rule. `Marker[A]` compiles to a generated goal (060's rule) whose anchor is the head column `?x: A` (060 §3). When it runs, after `src(?x)` has bound `?x`, it reads `?x`'s carried type and composes the dictionary from the entries load selected (060.1 §4, the one place a dictionary is looked up at run time): "reads over decided entries, not choice" (058 §3.9). `1` keys `Int64`'s entry and `true` `Bool`'s.
+
+A conditional provision composes the same way, its type arguments flowing to the sub-fetches (060's rule):
+
+```anthill
+namespace c
+  import anthill.prelude.{Int64, List}
+  sort Show
+    sort T = ?
+    operation show(x: T) -> Int64
+  end
+  sort ListShow
+    import c.Show
+    sort E = ?
+    requires Show[T = E]
+    provides Show[T = List[T = E]]
+    operation show(x: List[T = E]) -> Int64 = match x case nil -> 100 case cons(h, t) -> Show.show(h) + 10
+  end
+  fact src([1, 2])
+  fact src([])
+  rule keep[A](?x: A, ?t) :- src(?x), Show[A], Show.show(?x, ?t)
+  rule answer(?t) :- keep(?x, ?t)
+end
+namespace anthill.prelude.Int64
+  import c.Show
+  provides Show[T = Int64]
+  operation show(x: Int64) -> Int64 = 1
+end
+```
+
+`[1, 2]`'s carried type `List[T = Int64]` keys `ListShow`'s entry, and `Int64` its condition's, `Int64`'s `Show`: `11`. `[]`'s type is `List[T = ?]` where the fact is written, and `keep`'s `?x: A` under `Show[A]` would make it typed with no dictionary, which 060.1 forbids (decided with the user, 2026-11-05): the program is refused at load, naming `E`, as a free type variable a requirement is owed at is. It answers `100` once the `[]` is written with its element type, or when the citation passes the dictionary, `keep[A = List[T = Int64]](?x, ?t)` (060.1 §2). Measured on `e4442b16`: `answer(?t)` answers `11` alone, the `[]` row failing in silence, and `keep([], ?t)` answers nothing.
+
+So no type is stored with a value (decided with the user, 2026-11-05), though 060 calls the carried type "a stored term": a value whose type is open where it is used is not given that type there without a dictionary. A `[]` built at `List[T = Int64]` (`operation noInts() -> List[T = Int64] = []`) that passes through a column nothing types brings its dictionary with it, and nothing recovers `Int64` from the value later; a `MySet`'s `O` is passed or the call is refused (§6.1). `src(1)`, `src(true)` and `src([1, 2])` are complete where the facts are written, and answer as above.
 
 ### 6.3 A call that passes nothing today
 
@@ -195,5 +253,5 @@ Filed with the user 2026-11-05, tag `proposal-073`; WI-20260923-DK0QJ depends on
 
 1. Calls at a known type are decided at load (§1): the typer's two deferral arms go, and the 1,527-test route then serves only calls at an abstract type. WI-20261105-C6GK8.
 2. Every call passes what its callee reads (§6.3): an operation used as a function value is the lambda that calls it; an effect row's slot is removed; a raise is passed its `TypeValue`; a requirement a call fixes in part is answered by §8.7's order at load; the type hole found beside it. The fill of an operation's own slots on entry goes. WI-20261105-89J6K.
-3. A value of an abstract type is an instance (§2, §3, §6.4): `Stream`'s and `Iterable`'s default bodies and the stream combinators run on it; the interpreter's value routes and the SLD bridge's dictionaries from values go (§4); kernel-language's text (§5). WI-20260923-DK0QJ's half (b) goes here. Depends on 1 and 2. WI-20261105-P0QGF.
-4. No typed caller (§6.1, §6.2): the host entry and a query read the value's own sort and nothing more; the three host entries become one; `resolve_bridge_requirements` goes with its last caller. WI-20260923-DK0QJ's half (a) goes here. Depends on 3. WI-20261105-CBRD2.
+3. A value of an abstract type is an instance (§2, §3, §6.4): `Stream`'s and `Iterable`'s default bodies and the stream combinators run on it, and so does an operation with two operands at the abstract type over two carriers (§2's `two`); the interpreter's value routes and the SLD bridge's dictionaries from values go (§4); kernel-language's text (§5). WI-20260923-DK0QJ's half (b) goes here. Depends on 1 and 2. WI-20261105-P0QGF.
+4. No typed caller (§6.1, §6.2): the host entry and a query compose a requirement from the argument's carried type, as 060 decides, and nothing more; a value whose type is open at a requirement is refused at load, naming it, where today the row fails in silence (§6.2's `src([])`); the three host entries become one; `resolve_bridge_requirements` goes with its last caller. WI-20260923-DK0QJ's half (a) goes here. Depends on 3. WI-20261105-CBRD2.
