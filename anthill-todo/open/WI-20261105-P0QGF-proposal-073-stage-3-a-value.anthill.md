@@ -1,0 +1,19 @@
+## Attributes
+
+- id: WI-20261105-P0QGF-proposal-073-stage-3-a-value
+- created: 2026-11-05T22:18:05Z
+
+- status: Open
+- status_agent: claude
+- status_at: 2026-11-05T22:18:05Z
+
+- acceptance: cargo-test, scaland-sbt-test
+
+- depends_on: WI-20261105-C6GK8-proposal-073-stage-1-a-call-at, WI-20261105-89J6K-proposal-073-stage-2-every
+
+- tags: proposal-073
+
+## Description
+
+PROPOSAL 073 STAGE 3 — A VALUE OF AN ABSTRACT TYPE IS AN INSTANCE OF ITS SORT (docs/proposals/073-abstract-values-are-instances.md §2, §3, §6.4): its dictionary is deduced at load where its sort is known and kept in the requirement channel, and no operation or dictionary is chosen from a value when the program runs. PROGRAM (073, The problem): `const people: Relation[T = (name: String, age: Int64)] = person_row` and `operation three() -> Int64 effects Error = length(people.takeN(3))`. `Stream.takeN`'s default body calls `splitFirst(s)` three times; today they run `Relation.splitFirst` and then `LogicalStream.splitFirst` twice, each chosen by the interpreter from the value's sort. DECIDED with the user 2026-11-05: `takeN` is typed once. `splitFirst(s)` runs the operation of `s` (`__req_self`), and `takeN(rest, sub(n, 1))` passes `rest`, whose dictionary the member that built it supplied: `Relation.splitFirst` returns `B = LogicalStream[…]`, `List.splitFirst` a `List`, and `Map.iterator` the `List` it returns at `Stream[…]`. A data structure of such values holds as many instances as values: `[xs, xs.map(twice)]` at `List[T = Stream[T = Int64, E = {}]]`, mapped with `lambda s -> takeN(s, 1)`, runs `List`'s operations on one element and `MappedStream`'s on the other; how the requirement channel holds one dictionary per element is written in a design note beside docs/design/requirement-channel.md. A defaulted spec operation on an abstract receiver runs the receiver instance's operation and is never redirected by the receiver's sort to the carrier's own member. WHAT GOES (073 §4): `dispatch_resolved_operation` step 3 (the carrier override by value) and step 3b (a spec operation dispatched on the argument's sort), and the resolver's value classification of a rule-body or query call — what stays of them where no typed caller exists is stage 4's; the SLD bridge's dictionaries built from argument values (`resolve_bridge_requirements`, 102 tests) and the redirected member's (`requirements_for_value_directed_impl`, 12 tests); kernel-language's value-direction sentences (073 §4 lists them), with 073 §5's text agreed with the user first. WI-20260923-DK0QJ's half (b), a carrier's own named slot reached by value through the sort half of `resolve_bridge_requirements`, goes here. ACCEPTANCE: 073's programs driven to their values with the routes removed — `three()` answering 3, `firsts`, `Map.iterator`, a combinator chain over a `Relation`, a recursion whose instance grows at each turn (WI-817); a census run again listing no value-directed step outside stage 4's sites; full workspace green via rustland/scripts/test.sh; families green on both carriers.
+

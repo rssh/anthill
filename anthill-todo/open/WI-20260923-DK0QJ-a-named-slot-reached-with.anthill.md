@@ -9,6 +9,8 @@
 
 - acceptance: cargo-test
 
+- depends_on: WI-20261105-P0QGF-proposal-073-stage-3-a-value, WI-20261105-CBRD2-proposal-073-stage-4-no-typed
+
 - tags: typing
 
 ## Description
@@ -32,4 +34,10 @@ FIXTURE LANDMINE, measured on ATFGH: a witness generic over an ABSTRACT element 
 ACCEPTANCE: a fixture per half — (a) nested, (b) sort half — with a generic witness beside a more specific rival: the value-only route refuses naming the slot or agrees with the typed route, never the rival's answer; each row's `Withhold` back-out measured to fail; ATFGH's rows still green; full workspace green via rustland/scripts/test.sh.
 
 REFERENCE: `DefaultRung::Unranked` and `resolve_inner`'s choice (kb/typing/synth.rs), `sole_provider` / `pick_most_specific` (kb/typing/candidates.rs), `rung_for_dep`, `resolve_bridge_requirements`, `resolve_param_witnesses` (kb/typing/bridge.rs), `param_slot_witness` / `witness_value_slot_selections` (the typed route), WI-456, WI-861.
+
+## Changes
+
+### 2026-11-05T19:50:00Z — feedback — claude
+
+Decided with the user 2026-11-05: not fixed by ranking. Proposal 073 (docs/proposals/073-abstract-values-are-instances.md) removes both routes this ticket ranks on: no dictionary is built from argument values at run time (073 §4), so (b), the sort half through resolve_bridge_requirements, goes with that stage, and (a), the nested slot reached by interp.call, goes with it and with the host-entry question (073 §6.1). This ticket stays open and depends on the 073 tickets that remove them. Its acceptance becomes theirs: a set built at the generic witness beside a more specific rival answers what the typed route answers, or is refused at load, never with the rival's dictionary.
 
