@@ -4385,13 +4385,11 @@ pub(super) fn unprovided_spec_at_carrier(
 /// The refusal for calling an operation of spec `goal.spec_sort` where the call leaves a
 /// slot of its carrier unfixed and the provisions that answer it do so at instances of that
 /// slot only ([`UnfixedAtInstances`], §5.2). `None` where that is not why no provision
-/// answered, and where `between_rivals_only` and fewer than two providers answer. A callee
-/// the host implements is exempt, as at [`unprovided_spec_at_carrier`].
+/// answered. A callee the host implements is exempt, as at [`unprovided_spec_at_carrier`].
 pub(super) fn unfixed_slot_at_call(
     kb: &mut KnowledgeBase,
     goal: &SortGoal,
     sigma: &SigmaCtx,
-    between_rivals_only: bool,
     callee_op: Symbol,
     span: Option<Span>,
 ) -> Option<TypeError> {
@@ -4399,9 +4397,6 @@ pub(super) fn unfixed_slot_at_call(
         return None;
     }
     let unfixed = UnfixedAtInstances::of(kb, goal, Some(sigma))?;
-    if between_rivals_only && unfixed.providers.len() < 2 {
-        return None;
-    }
     Some(TypeError::UnsatisfiableRequirement {
         span,
         op: callee_op,

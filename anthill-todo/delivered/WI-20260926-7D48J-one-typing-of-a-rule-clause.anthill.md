@@ -3,9 +3,9 @@
 - id: WI-20260926-7D48J-one-typing-of-a-rule-clause
 - created: 2026-09-26T09:52:03Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-26T09:52:03Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-11-05T12:08:52Z
 
 - acceptance: cargo-test
 
@@ -105,4 +105,8 @@ A RULE BODY ANSWERS AN UNFIXED SLOT THROUGH A PROVISION AT AN INSTANCE, where an
 ### 2026-11-02T11:20:14Z — feedback — claude
 
 DEPENDENCY REWIRED (user, 2026-11-02, dependency review): from WI-20260911-5G28A to WI-20261102-ATVC1. This umbrella was wired to 5G28A on 2026-10-14 for S7 alone (rule → rule implicit arguments); S7 and its decision B row are now that ticket, split out of 5G28A, so this no longer waits on the rest of 5G28A or on SHED7 behind it.
+
+### 2026-11-05T12:08:51Z — feedback — claude
+
+CLOSED WITH THE USER (2026-11-05). Every part is delivered (P7VP4, ATVC1, GGXCX, WF14Z, R1W5A, RYDNV); the 060 half (decision 3, the 2026-10-08 rows) is superseded by proposal 060.1, which withdrew the inference at a type a head column reaches — the declared guard now loads where row (3) said nothing cured. The rows no part held, run again: (a) 2026-10-23, a dot in a resolver-fired @[unfold] equation kept as data — written @[simp], the user's reading, both the dot and the written call are refused at load by the effectful-rewrite gate, so nothing is owed here; @[unfold] is to be retired (the user, 2026-11-05). (b) 2026-11-01 (SGXYH), a rule body answering an unfixed slot through one provision at an instance: decided by 060.1's principle, a rule held to what an operation is held to, and refused now as the operation body is — the exemption was for the check-only requires(…), which 060.1 §5 removed (wi_sgxyh_unfixed_slot_test::a_rule_body_call_is_refused_between_two_instances, rule_one refused). A third row I reported to the user was no defect: in a rule body ?c = Util.sign(1, 5) is the equality test, which waits on an unbound ?c and holds at ?c = -1; binding is <=>'s, which answers -1.
 

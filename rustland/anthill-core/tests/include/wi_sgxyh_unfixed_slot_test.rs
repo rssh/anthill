@@ -416,13 +416,13 @@ fn an_applied_head_still_outranks_a_bare_one() {
     }
 }
 
-/// IN A RULE BODY THE CALL IS REFUSED BETWEEN TWO PROVISIONS AT INSTANCES, as the tie was,
-/// and one is left to the rule body's own check. The instance written on the call's
+/// IN A RULE BODY THE CALL IS REFUSED AS IN AN OPERATION BODY, beside one provision at an
+/// instance and beside two: a rule is held to what an operation is held to (proposal 060.1
+/// §1), and no guard can be written at the instance. The instance written on the call's
 /// receiver, `Store[State = Buf[T = Int64, N = Bool]].peek(…)`, fixes the slot — the
-/// refusal's repair — and answers `QB`'s 41 beside one provision and beside two. (The
-/// declared variant was the check-only `requires(Store[State = …])` before the call, which
-/// proposal 060.1 §5 removed; it named no dictionary, and beside two provisions it was
-/// refused as the bare call is.)
+/// refusal's repair — and answers `QB`'s 41 beside one provision and beside two. FAILS with the
+/// rule body refused between two provisions only, as it was while the check-only `requires(…)`
+/// could name the dictionary (060.1 §5 removed it): `rule_one` loads and answers 41.
 #[test]
 fn a_rule_body_call_is_refused_between_two_instances() {
     let qb = at("QB", BUF_BOOL, 41);
@@ -430,7 +430,7 @@ fn a_rule_body_call_is_refused_between_two_instances() {
     let body = "?x <=> Store.peek(buf(v: 1))".to_owned();
     let written = format!("?x <=> Store[State = {BUF_BOOL}].peek(buf(v: 1))");
     for (ns, providers, goals, refused) in [
-        ("wisgxyh.rule_one", &qb, &body, false),
+        ("wisgxyh.rule_one", &qb, &body, true),
         ("wisgxyh.rule_one_written", &qb, &written, false),
         ("wisgxyh.rule_two", &qs, &body, true),
         ("wisgxyh.rule_two_written", &qs, &written, false),
@@ -438,11 +438,16 @@ fn a_rule_body_call_is_refused_between_two_instances() {
         let rules = format!("{providers}\n  rule r(?x) :- {goals}\n");
         let src = program(ns, &rules, "0");
         if refused {
+            let providers = if providers == &qb {
+                format!("`{ns}.QB` provides")
+            } else {
+                format!("`{ns}.QB` and `{ns}.QS` provide")
+            };
             assert_refused_naming(
                 &load_errors_of(&src),
                 &[
                     "nothing here fixes `N` of `Buf`",
-                    &format!("`{ns}.QB` and `{ns}.QS` provide `{ns}.Store` only at an instance"),
+                    &format!("{providers} `{ns}.Store` only at an instance"),
                 ],
                 ns,
             );
