@@ -1201,8 +1201,9 @@ module.exports = grammar({
 
     // Open-keyed: any Name optionally followed by `: Term`. Well-known
     // keys (trust, agent, timestamp, iteration, source, supersedes,
-    // and the WI-139 rule-attribute flags simp/unfold/hint) have
-    // kernel semantics; additional keys are project-defined.
+    // and the WI-139 rule-attribute flags simp/hint) have kernel
+    // semantics; `unfold` is refused by the loader (WI-906); additional
+    // keys are project-defined.
     //
     // Flag form: `@[simp]` is shorthand for `@[simp: true]` — the
     // converter sees a missing value and defaults to Term::Bottom,

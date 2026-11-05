@@ -1412,7 +1412,7 @@ pub(super) fn check_rule_body_requirements(kb: &KnowledgeBase) -> (Vec<TypeError
         // a concrete carrier that cannot satisfy it (the guard decides that at fire
         // time; the user has explicitly acknowledged the obligation). A Horn rule
         // does NOT inherit its enclosing sort's `requires` chain (that gates
-        // `@[simp]`/`@[unfold]` equations, not clause bodies), so the in-body goal is
+        // `@[simp]` equations, not clause bodies), so the in-body goal is
         // the only declaration site.
         let mut declared: SmallVec<[Symbol; 2]> = SmallVec::new();
         if let Some(fd) = fd_sym {

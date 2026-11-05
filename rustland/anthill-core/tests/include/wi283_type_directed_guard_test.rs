@@ -243,7 +243,7 @@ fn resolver_does_not_fire_requires_guarded_equation_when_carrier_lacks_spec() {
 //
 // WI-292 termination guard. `apply_eq_rules` fires via the discrimination tree,
 // which RETAINS equational rules that load `unindex_functor`s for lacking a
-// `@[simp]`/`@[unfold]` tag (the tag is cleared only from `rules_by_functor`). A
+// `@[simp]` tag (the tag is cleared only from `rules_by_functor`). A
 // plain LAW in a requires-bearing spec sort — here commutativity
 // `flip(?a, ?b) = flip(?b, ?a)` — is a candidate AND its carrier (Int64) provides
 // the spec, so the type guard alone would fire it; firing a non-reducing law

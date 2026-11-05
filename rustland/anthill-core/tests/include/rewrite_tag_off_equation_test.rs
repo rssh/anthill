@@ -1,5 +1,5 @@
-//! A `@[simp]` or `@[unfold]` tag stands on an equation and nowhere else (kernel-language.md
-//! §5.3).
+//! A `@[simp]` tag stands on an equation and nowhere else (kernel-language.md §5.3).
+//! (`@[unfold]` is refused wherever it stands, equation or not: `wi906_unfold_tag_test`.)
 //!
 //! THE RULE. The tag makes an equation run; on an operation, a predicate rule, a denial, a fact,
 //! a constraint, a sort, an entity or a const it does nothing, and it is a load error there. A
@@ -25,18 +25,17 @@ fn ns(name: &str, body: &str) -> String {
     )
 }
 
-/// The load of `body` is refused with ONE error, the tag's, naming `declaration` and `tag`.
+/// The load of `body` is refused with ONE error, the tag's, naming `declaration`.
 #[track_caller]
-fn assert_refused_on(name: &str, body: &str, tag: &str, declaration: &str) {
+fn assert_refused_on(name: &str, body: &str, declaration: &str) {
     let errors = unrendered_load_errors_of(&ns(name, body));
     let peeled: Vec<&LoadError> = errors.iter().map(LoadError::peel).collect();
     assert!(
         matches!(
             peeled.as_slice(),
-            [LoadError::RewriteTagOffEquation { tag: t, declaration: d, .. }]
-                if t == tag && *d == declaration
+            [LoadError::RewriteTagOffEquation { declaration: d, .. }] if *d == declaration
         ),
-        "{name}: expected the one refusal of `@[{tag}]` on {declaration}, got {errors:?}"
+        "{name}: expected the one refusal of `@[simp]` on {declaration}, got {errors:?}"
     );
 }
 
@@ -44,50 +43,47 @@ fn assert_refused_on(name: &str, body: &str, tag: &str, declaration: &str) {
 /// with the refusal backed out (`refuse_rewrite_tags` pushing nothing): each loads clean.
 #[test]
 fn a_rewrite_tag_off_an_equation_is_refused() {
-    for (name, body, tag, declaration) in [
+    for (name, body, declaration) in [
         (
             "rt.op",
             "  operation g(x: Int64) -> Int64 = x @[simp]",
-            "simp",
             "an operation",
         ),
         (
             "rt.pred",
             "  rule p(?x) :- a(?x) @[simp]",
-            "simp",
             "a predicate rule",
         ),
+        // A QUALIFIED key is stored by its last segment, so `@[a.simp]` fires on an
+        // equation and is the same mistake off one (WI-906 /code-review: a one-segment
+        // test let it load, the tag dropped).
         (
-            "rt.unfold",
-            "  rule p(?x) :- a(?x) @[unfold]",
-            "unfold",
+            "rt.qualified",
+            "  rule p(?x) :- a(?x) @[a.simp]",
             "a predicate rule",
         ),
-        ("rt.denial", "  rule ⊥ :- a(2) @[simp]", "simp", "a denial"),
+        ("rt.denial", "  rule ⊥ :- a(2) @[simp]", "a denial"),
         (
             "rt.identity",
             "  operation pick(x: Int64) -> Int64 = x\n  rule pick(?x) === 7 :- a(?x) @[simp]",
-            "simp",
             "a structural identity test (`===`)",
         ),
-        ("rt.fact", "  fact b(1) @[simp]", "simp", "a fact"),
+        ("rt.fact", "  fact b(1) @[simp]", "a fact"),
         (
             "rt.constraint",
             "  constraint c: eq(?x, 1) :- a(?x) @[simp]",
-            "simp",
             "a constraint",
         ),
-        ("rt.sort", "  sort S = ? @[simp]", "simp", "a sort"),
+        ("rt.sort", "  sort S = ? @[simp]", "a sort"),
         (
             "rt.sortbody",
             "  sort W\n    operation h() -> Int64 = 1\n  end @[simp]",
-            "simp",
             "a sort",
         ),
-        ("rt.entity", "  entity box(v: Int64) @[simp]", "simp", "an entity"),
-        ("rt.const", "  const k: Int64 = 3 @[simp]", "simp", "a const"),
+        ("rt.entity", "  entity box(v: Int64) @[simp]", "an entity"),
+        ("rt.const", "  const k: Int64 = 3 @[simp]", "a const"),
     ] {
-        assert_refused_on(name, body, tag, declaration);
+        assert_refused_on(name, body, declaration);
     }
 }
 
@@ -100,7 +96,6 @@ fn a_tag_set_in_front_of_a_rule_is_refused_on_the_declaration_before() {
         "rt.front",
         "  operation g(x: Int64) -> Int64 = x\n  @[simp] rule g(?x) <=> 20\n  \
          operation run() -> Int64 = g(1)",
-        "simp",
         "an operation",
     );
 }
@@ -115,7 +110,7 @@ fn an_equation_takes_the_tag() {
         "rt.equation",
         "  operation g(x: Int64) -> Int64 = x\n  \
          rule g(?x) = 10 :- a(2) @[simp]\n  \
-         rule g(?x) <=> 20 @[unfold, simp]\n  \
+         rule g(?x) <=> 20 @[hint, simp]\n  \
          operation run() -> Int64 = g(1)",
     );
     assert_eq!(run_int64(&src, "test.rt.equation.run"), Ok(20));

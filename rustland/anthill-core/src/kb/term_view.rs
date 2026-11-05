@@ -2633,7 +2633,7 @@ impl TermView for TermId {
     }
     // WI-20260827-W1YKH — IN PLACE, no `Vec`. The default `named_field` goes through
     // `named_keys`, which allocates on every impl; this carrier can scan its own
-    // storage, and it is the one the `@[simp]` / `@[unfold]` firing gate reads through
+    // storage, and it is the one the `@[simp]` firing gate reads through
     // (`equation_is_directional_rewrite` asks twice per candidate rule, per
     // resolution). Same answer, no allocation — raised by /code-review, which measured
     // the default onto that path.

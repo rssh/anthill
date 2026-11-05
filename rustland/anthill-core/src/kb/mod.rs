@@ -2103,14 +2103,15 @@ pub struct KnowledgeBase {
     pub(crate) has_dot_applies: bool,
 
     /// WI-646 — cached O(1) answer to "does this KB hold ANY directional
-    /// (`@[simp]`/`@[unfold]`) equation under the `eq` or `unify` functor?" — the
+    /// (`@[simp]`) equation under the `eq` or `unify` functor?" — the
     /// gate [`Self::has_directional_rewrite`] reads so the resolver's
     /// `apply_eq_rules` short-circuits a no-rewrite KB on the SLD hot path
     /// WITHOUT the per-call `rules_by_functor` bucket scan (2 `Vec` allocs). It
     /// mirrors `equation_is_directional_rewrite` over BOTH functors, so it is the
-    /// CORRECT gate — unlike the `@[simp]`-only/`eq`-only `has_simp_equations`,
-    /// whose narrowness made WI-643's naive gate skip unfold-only / `<=>`-only
-    /// KBs. `None` = not yet computed / invalidated; recomputed lazily on the next
+    /// CORRECT gate — unlike the `eq`-only one whose narrowness made WI-643's naive
+    /// gate skip `<=>`-only KBs. The typer reads it too since WI-906
+    /// (`simp_rewrite::has_simp_equations`). `None` = not yet computed /
+    /// invalidated; recomputed lazily on the next
     /// gate read. Set to `None` wherever the `eq`/`unify` functor buckets (or a
     /// member's retracted/meta state) change: `push_value_head_entry`, `retract`,
     /// `unindex_functor`.
@@ -8054,13 +8055,13 @@ impl KnowledgeBase {
     /// indexed or not).
     ///
     /// What the unindex actually changes is the `rules_by_functor()` enumeration
-    /// — notably `simp_rewrite`'s `@[simp]`/`@[unfold]` gather
+    /// — notably `simp_rewrite`'s `@[simp]` gather
     /// (`has_simp_equations` and the eq-rule walk read `rules_by_functor(eq)`):
     /// after unindexing the cite-only equations, that bucket holds *only* the
-    /// indexed `@[simp]`/`@[unfold]` equations.
+    /// indexed `@[simp]` equations.
     ///
     /// Used for opt-in equational rules per WI-139: equational laws (head is an
-    /// `=` / `<=>` application) without a `@[simp]` / `@[unfold]` attribute are
+    /// `=` / `<=>` application) without a `@[simp]` attribute are
     /// cite-required only and must not drive automatic `@[simp]` rewriting (which
     /// would loop on rules like `add_comm: add(a, b) = add(b, a)`).
     pub fn unindex_functor(&mut self, id: RuleId) {
@@ -11100,7 +11101,7 @@ impl KnowledgeBase {
             RuntimeAccount::ALL.map(|account| self.try_resolve_symbol(account.qualified_name()));
     }
 
-    /// WI-646 — the candidate equational rule ids for `@[simp]`/`@[unfold]` firing:
+    /// WI-646 — the candidate equational rule ids for `@[simp]` firing:
     /// the `eq` (`=`) bucket plus the `unify` (`<=>`) bucket. ONE helper for the eq+unify
     /// SELECTION that `has_simp_equations`, `try_fire`, `fire_simp_equation` (and
     /// the [`Self::has_directional_rewrite`] gate) all previously spelled inline —
@@ -11167,7 +11168,7 @@ impl KnowledgeBase {
     /// "Conditional rewrite rules"), evaluated post-match against the match
     /// substitution by [`super::simp_rewrite::guard_holds`] — so a non-empty body
     /// no longer disqualifies a rule from being a rewrite, it gives it a
-    /// precondition. `@[simp]`/`@[unfold]` remains the ENABLEMENT (WI-881): the tag,
+    /// precondition. `@[simp]` remains the ENABLEMENT (WI-881): the tag,
     /// not the body, is what decides whether anything fires.
     pub fn has_equational_head(&self, id: RuleId) -> bool {
         let entry = &self.rules[id.index()];

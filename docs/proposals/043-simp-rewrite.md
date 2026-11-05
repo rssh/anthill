@@ -368,7 +368,7 @@ See `docs/design/simp-rewrite-design.md`. In brief: extend `TermView` so `Value:
 ## Open questions
 
 - **Scope of a simp set** — global / per-namespace / transitive `requires` / named sets. 025.1 deferred it; the typer phase reraises it (expression bodies cross namespaces). Especially live now that §5 invites *user-authored* simp rules across the codebase.
-- **`@[unfold]` at the typer phase** — when does a tagged op expand (always / inside a simp context / when reached by a firing rule)? (Client C.)
+- **`@[unfold]` at the typer phase** — when does a tagged op expand (always / inside a simp context / when reached by a firing rule)? (Client C.) *Closed 2026-11-05 (WI-906): the question was never answered — `@[unfold]` came to mean "a `@[simp]` that only the resolver fires", by which predicate each firing site asked — and the tag was removed; it is a load error, and `@[simp]` is the one rewrite tag.*
 - **`constant_fold` power** — literal arithmetic only / ground resolution / full SLD. More power ⇒ more folding, tighter termination.
 - **Termination policy** — reject vs warn vs trust on detectably non-terminating `@[simp]` tags (§4.5).
 - **`self` marker** — redundant for dispatch under this design; keep as doc/codegen hint or drop? Lean: drop.

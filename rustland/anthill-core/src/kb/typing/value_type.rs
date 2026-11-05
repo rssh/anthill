@@ -1388,7 +1388,7 @@ fn provision_admits_carriers(
 ///
 /// This is only the *type* half of the resolver's firing decision; the caller
 /// ([`crate::kb::resolve::KnowledgeBase::fire_simp_equation`]) gates it behind the
-/// `@[simp]`/`@[unfold]` tag (`equation_is_directional_rewrite` — a non-directional
+/// `@[simp]` tag (`equation_is_directional_rewrite` — a non-directional
 /// law like `add_comm` must never fire) and `equation_is_requires_guarded`.
 /// Returns `true` only for a body-less SPEC-OP redex whose carrier arguments
 /// provide the spec; a non-`Fn` redex or a non-spec-op (a concrete / defaulted

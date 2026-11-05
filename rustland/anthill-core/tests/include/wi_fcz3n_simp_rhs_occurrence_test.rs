@@ -131,7 +131,6 @@
 //! would go red the day that ticket lands.
 
 use anthill_core::eval::Value;
-use anthill_core::kb::load::meta_has_flag;
 
 /// The shared fixture: `zzfc.inner.rel` is a real one-clause relation, `zzfc.two.rel2`
 /// its one-segment twin, `sink` an `Int64`-taking operation to write it into, and `extra`
@@ -375,7 +374,7 @@ fn a_written_field_access_in_a_simp_rhs_is_still_not_a_citation() {
 /// write. Censused over a full stdlib load plus one `@[simp]` fixture.
 ///
 /// MEASURED at delivery: **192** live equations, **90** of them carrying a written RHS,
-/// and **21** tagged `@[simp]` / `@[unfold]` — the only ones `simp_rewrite::try_fire`,
+/// and **21** tagged `@[simp]` — the only ones `simp_rewrite::try_fire`,
 /// `typing::try_fire_dot_rule` and `resolve::fire_simp_equation` will ever open — **all
 /// 21** with one. So `build_rhs_template`'s term arm serves the 102 UNTAGGED (inert)
 /// equations and any clause a host or a runtime `assert` built, of which this corpus has
@@ -403,16 +402,12 @@ fn every_fireable_source_equation_keeps_its_rhs_occurrence() {
     let mut tagged = 0usize;
     let mut missing: Vec<String> = Vec::new();
     for rid in kb.live_rule_ids_iter() {
-        // WI-20260820-8RJK8: `has_equational_head`, not `is_equation` — a GUARDED
-        // equation is fireable now, so it is in this census's population and its
-        // producer (the loader's `equation_rhs_occurrence` install) had to widen with
-        // it. Left as `is_equation` the census would simply not look at the rules the
-        // widening added, which is the shape of miss this test exists to catch.
-        if !kb.has_equational_head(rid) {
-            continue;
-        }
-        let meta = kb.rule_meta(rid);
-        if !meta_has_flag(&kb, meta, "simp") && !meta_has_flag(&kb, meta, "unfold") {
+        // The firing sites' own predicate, not a re-spelling of its conjuncts (its doc
+        // says why). WI-20260820-8RJK8 widened its equation-hood half to
+        // `has_equational_head`: a GUARDED equation is fireable, so it is in this
+        // census's population and its producer (the loader's `equation_rhs_occurrence`
+        // install) had to widen with it — the shape of miss this test exists to catch.
+        if !kb.is_directional_equation(rid) {
             continue;
         }
         tagged += 1;

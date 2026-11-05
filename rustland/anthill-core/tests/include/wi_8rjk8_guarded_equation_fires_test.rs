@@ -33,21 +33,27 @@
 //!    carried an unbound variable, which is a wrong value rather than a missing one.
 //!
 //! WHAT FAILS WHEN EACH PIECE IS BACKED OUT — RUN, not predicted. Each row below is the
-//! measured result of mutating that one site and re-running this file (9 tests).
+//! measured result of mutating that one site and re-running this file, over as many tests
+//! as it had when that row was taken: the file grew from 9 to 11 rows across the tickets
+//! that added rows, and WI-906 deleted one (10 now). Only the first row was re-run since,
+//! and it says so; the others' green counts are those of their own run.
 //!
 //! | back out | red | green |
 //! |---|---|---|
-//! | `has_equational_head` → `is_equation` in `is_directional_equation` | 7: everything except the two named opposite | `control_an_unguarded_…`, `the_typer_fires_…` |
-//! | the same in `simp_rewrite::is_simp_equation` | 1: `the_typer_fires_a_guarded_equation_in_an_operation_body` | the other 8 |
-//! | the `guard_holds` call in `fire_simp_equation` | 5: `guard_decides_…`, `a_guard_reads_…`, `an_undetermined_…`, `a_value_guard_and_a_requires_guard_compose`, `stdlib_indexed_seq_…` | `control_…`, `the_typer_…`, `an_unfold_…`, the tag census |
+//! | `has_equational_head` → `is_equation` in `is_directional_equation` (re-run for WI-906, 10 tests) | 9: everything but the control | `control_an_unguarded_…` |
+//! | the `guard_holds` call in `fire_simp_equation` | 5: `guard_decides_…`, `a_guard_reads_…`, `an_undetermined_…`, `a_value_guard_and_a_requires_guard_compose`, `stdlib_indexed_seq_…` | `control_…`, `the_typer_…`, the tag census, and a since-deleted `@[unfold]` row |
 //! | `definite_only: true` in `guard_holds` | 1: `an_undetermined_guard_suspends_rather_than_naf_deciding` | the other 8 — including its OWN two control rows, which is the point |
 //! | the `@[simp]` tag on `indexed_seq.anthill`'s `nth_oob_lo` | 2: `stdlib_indexed_seq_…` and the tag census | the other 7 |
 //! | `guard_verdict`'s `HoldsWith` arm (drop the witness) | 1: `a_variable_the_guard_binds_reaches_the_right_hand_side` | the other 10 |
 //! | `guard_verdict`'s open-world test | 1: `a_guard_over_symbolic_parameters_declines_at_the_typer` | the other 10 |
 //!
-//! TWO AXES, TWO CALL SITES: the first two rows show that `is_directional_equation` and
-//! `is_simp_equation` are separate widenings with separate coverage — backing out either
-//! one leaves the other's row green, so neither is credited to the other's work.
+//! ONE PREDICATE SINCE WI-906. When this ticket landed, `is_directional_equation` (the
+//! resolver's) and `simp_rewrite::is_simp_equation` (the typer's) were separate
+//! widenings, measured separately: backing out the first left `the_typer_fires_…` green
+//! and backing out the second turned it alone red. They differed by `@[unfold]`, which
+//! the resolver accepted and the typer did not; with that tag removed the typer's
+//! predicate IS the resolver's, so one back-out now reaches both firing sites — the
+//! first row, re-measured.
 //!
 //! `control_an_unguarded_equation_fires_either_way` is in its OWN fixture (no guard
 //! anywhere in it) and survives every back-out above: it is the row that says the
@@ -243,22 +249,6 @@ end
             assert_eq!(out, t, "gt({v}, 3) is refuted → the redex stands");
         }
     }
-}
-
-/// `@[unfold]` is a directional rewrite too (`is_directional_equation` is
-/// `@[simp] OR @[unfold]`), so a guarded `@[unfold]` equation fires in the RESOLVER.
-/// It does NOT fire in the typer, which selects `@[simp]` alone — that asymmetry is
-/// older than this ticket and untouched by it.
-#[test]
-fn an_unfold_tagged_guarded_equation_fires() {
-    let mut kb = crate::common::load_kb_with(&guarded_src("<=>", "@[unfold]"));
-    let t = call_ints(&mut kb, "test.wi8rjk8.Lib.pick", &[9, 2]);
-    let out = kb.simplify(t);
-    assert_eq!(
-        kb.get_term(out),
-        &Term::Const(Literal::Int(9)),
-        "a guarded `@[unfold]` equation fires in the resolver",
-    );
 }
 
 // ── 2. the typer fires it too ───────────────────────────────────────────

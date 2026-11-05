@@ -1426,7 +1426,7 @@ fn refuse_handed_functions(
 /// first, already reported it — a call in an argument of `=` or of an arithmetic operation,
 /// which this walk enters before it types the whole atom — or `at` itself did.
 ///
-/// Not in an equation's guard: a `@[simp]` or `@[unfold]` rule's body is refused for every
+/// Not in an equation's guard: a `@[simp]` rule's body is refused for every
 /// operation it names whose row holds any effect (`check_simp_effectful_ops`), and an
 /// untagged equation's never runs.
 #[allow(clippy::too_many_arguments)]

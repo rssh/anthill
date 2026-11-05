@@ -1,8 +1,8 @@
 //! WI-903 — a typed rule pattern (`?x: T`) on a DOT rule is REFUSED at load.
 //!
 //! WI-582's bound is enforced by exactly ONE site: the resolver's
-//! `apply_eq_rules` / `typed_pattern_bounds_hold`, over a `@[simp]`/`@[unfold]`
-//! directional rewrite. `load.rs` therefore refuses the annotation on every
+//! `apply_eq_rules` / `typed_pattern_bounds_hold`, over a `@[simp]` directional
+//! rewrite. `load.rs` therefore refuses the annotation on every
 //! other rule shape LOUDLY — "a non-rewrite rule would silently ignore it".
 //!
 //! A DOT rule (`rule dr: dot_apply(?e, m, ?x) = rhs @[simp]`, WI-279 INC2) passed
@@ -199,40 +199,91 @@ end
     );
 }
 
-/// The refusal is exactly as wide as the site that IGNORES the bound. `@[simp]` is
-/// what the typer's dot path selects (`simp_rewrite::is_simp_equation` is
-/// `@[simp]`-only), and that path reads no bounds; nothing in the typer selects
-/// `@[unfold]`, so that rule keeps its annotation rather than being refused on a
-/// hazard it has not been shown to have.
+/// A dot rule written OUTSIDE a sort, its `rule_domain` a namespace — the residual
+/// WI-906 recorded at `simp_rewrite::is_typer_fired_dot_rule`. The refusal is keyed on
+/// the rule's shape and does not ask the typer's per-receiver enclosing-sort guard, so
+/// this rule is refused a bound although no receiver passes that guard. The one place
+/// its bound would be read is a defect's path (WI-20261105-8412E: a dot left as a term
+/// in the right-hand side of a typed-bound equation, which the resolver alone fires),
+/// and the user decided (2026-11-05) the bound stays refused there too.
 ///
-/// This asserts STORAGE, not enforcement, and deliberately claims no more: the
-/// premise that the resolver reaches a `dot_apply` TERM redex and enforces the
-/// bound there is code-read (`fire_simp_equation` → `typed_pattern_bounds_hold`)
-/// and UNMEASURED — WI-906 drives it, and settles whether this carve-out survives.
-#[test]
-fn typed_bound_on_an_unfold_dot_rule_is_kept() {
-    const SRC: &str = r#"
-namespace test.wi903unfold
+/// `RULE_IN_SORT` / `RULE_OUTSIDE` place the one rule text, and `CALLER` is written
+/// beside the sort either way, so the two placements differ in where the rule is and in
+/// nothing else.
+const PLACED_DOT_RULE: &str = r#"
+namespace test.wi903ns
   import anthill.prelude.{Int64, String}
   import anthill.prelude.Numeric.{add}
 
   sort Holder
     entity holder(value: Int64)
-
     operation wrapped(h: Holder, v: Int64) -> Int64 = add(v, 100)
-
-    rule dr: dot_apply(?e, bump, ?x: String) <=> wrapped(?e, ?x) @[unfold]
+RULE_IN_SORT
   end
+RULE_OUTSIDE
+CALLER
 end
 "#;
-    let kb = load_kb_with(SRC);
-    let rid = kb
-        .rule_id_by_qn("test.wi903unfold.Holder.dr")
-        .expect("the `@[unfold]` dot rule loads");
+
+/// `PLACED_DOT_RULE` with the rule `inside` its sort or beside it, its `?x` annotated
+/// `bound`, and `caller` written beside the sort.
+fn placed_dot_rule(inside: bool, bound: &str, caller: &str) -> String {
+    let rule = format!("  rule dr: dot_apply(?e, bump, ?x{bound}) <=> Holder.wrapped(?e, ?x) @[simp]");
+    let (in_sort, outside) = if inside { (rule, String::new()) } else { (String::new(), rule) };
+    PLACED_DOT_RULE
+        .replace("RULE_IN_SORT", &in_sort)
+        .replace("RULE_OUTSIDE", &outside)
+        .replace("CALLER", caller)
+}
+
+const CONSUMER: &str = "  operation consumer(h: Holder) -> Int64 = ?h.bump(5)";
+
+#[test]
+fn typed_bound_on_a_dot_rule_outside_a_sort_is_refused() {
+    let errs = try_load_kb_with(&placed_dot_rule(false, ": String", ""))
+        .err()
+        .expect("a typed-bound dot rule outside a sort is refused like any other");
+    let found = mentioning(&errs, WI903);
+    let [msg] = found[..] else {
+        panic!("expected exactly one WI-903 refusal, got: {errs:?}");
+    };
+    assert!(msg.contains("dr"), "the refusal must name the rule: {msg}");
+    // CONTROL: without the annotation the rule loads — the refusal is the bound's.
+    assert!(
+        try_load_kb_with(&placed_dot_rule(false, "", "")).is_ok(),
+        "the unannotated rule must load"
+    );
+}
+
+/// …and it fires at no dot call: beside the sort, `?h.bump(5)` finds no member. Passes
+/// either way by design — it pins a property of the dot path, not of the refusal. The
+/// next row is its control.
+#[test]
+fn a_dot_rule_outside_a_sort_fires_at_no_dot_call() {
+    let errs = try_load_kb_with(&placed_dot_rule(false, "", CONSUMER))
+        .err()
+        .expect("the dot call must find no member: the rule beside the sort does not fire");
+    assert!(
+        errs.iter().any(|e| e.contains("bump") && e.contains("no such member")),
+        "expected the dot call to be answered `no such member`, got: {errs:?}"
+    );
+}
+
+/// The control for the row above (found missing by `/code-review`): the SAME fixture
+/// and the same caller, with only the rule moved into its sort — and the call is
+/// rewritten. So "no such member" above is the rule's placement, not the caller's or
+/// the fixture's.
+#[test]
+fn the_same_dot_rule_inside_its_sort_fires_at_that_call() {
+    let kb = load_kb_with(&placed_dot_rule(true, "", CONSUMER));
+    let consumer = kb
+        .try_resolve_symbol("test.wi903ns.consumer")
+        .expect("consumer resolves");
+    let body = kb.op_body_node(consumer).expect("consumer has a body node");
     assert_eq!(
-        kb.rule_type_bounds(rid).len(),
-        1,
-        "a resolver-fired dot rule keeps its bound — the refusal must not over-reach",
+        head_short(&kb, &body),
+        "wrapped",
+        "inside its sort, the dot rule must rewrite `?h.bump(5)` to `wrapped(h, 5)`",
     );
 }
 

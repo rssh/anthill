@@ -376,7 +376,7 @@ pub(super) fn type_check_sorts_collect(
         oracle_type_sealed_rules(kb);
     }
 
-    // WI-702 (proposal 054 §"Consumers"): reject a `@[simp]`/`@[unfold]` rewrite whose
+    // WI-702 (proposal 054 §"Consumers"): reject a `@[simp]` rewrite whose
     // sides mention an effectful operation — firing it would duplicate/reorder/drop
     // the call. Load-time (all OperationInfo facts loaded), like the WI-701 sibling,
     // and AFTER `type_rule_bodies` so a body/guard method call (`?x.effectful_op()`)
@@ -1157,7 +1157,7 @@ fn check_branch_external_exclusion(kb: &mut KnowledgeBase) -> Vec<TypeError> {
 }
 
 /// WI-702: collect every `Term::Fn` functor reachable in the hash-consed head
-/// term `id` — the operation symbols an equational `@[simp]`/`@[unfold]` head
+/// term `id` — the operation symbols an equational `@[simp]` head
 /// (`eq(lhs, rhs)`) mentions, so the formation gate can test each for an effect
 /// row. Iterative to survive a deep head.
 ///
@@ -1195,7 +1195,7 @@ fn collect_op_functors_in_term(kb: &KnowledgeBase, id: TermId, out: &mut Vec<Sym
             }
             // WI-20260902-CZJ2N — A NULLARY CALL IS STORED BARE, so `rule tau() <=> 7
             // @[simp]` has a `Term::Ref` LHS and the `Fn`-only walk never pushed `tau`.
-            // That SILENTLY DROPS WI-702's soundness refusal: a `@[simp]`/`@[unfold]`
+            // That SILENTLY DROPS WI-702's soundness refusal: a `@[simp]`
             // rule naming an EFFECTFUL nullary operation loaded clean, and the firing
             // sites are effect-blind by design, so the effectful call was free to be
             // duplicated, reordered or dropped at rewrite time. Reaches a nested call
@@ -1221,12 +1221,12 @@ fn collect_op_functors_in_value(kb: &KnowledgeBase, v: &Value, out: &mut Vec<Sym
 }
 
 /// WI-702 / proposal 054 §"Consumers that must decline it — loudly": the FORMATION
-/// HOLE. A `@[simp]`/`@[unfold]`-tagged equation is a DIRECTIONAL rewrite the resolver
+/// HOLE. A `@[simp]`-tagged equation is a DIRECTIONAL rewrite the resolver
 /// (`fire_simp_equation`) and typer (`fire_simp`) fire LHS→RHS, so firing DUPLICATES,
 /// REORDERS, or DROPS the matched redex. That is sound today only because effectful
 /// ops never *become* simp equations — the defining-equation family declines them
 /// (`body_specialize::defining_equations`, WI-702 part 1). The one hole left is a
-/// USER-WRITTEN `@[simp]`/`@[unfold]` rule whose sides mention an EFFECTFUL operation:
+/// USER-WRITTEN `@[simp]` rule whose sides mention an EFFECTFUL operation:
 /// rewriting its call is unsound for the same reason equations of it are refused (an
 /// `External` `create_issue` rewritten twice mints two issues; a `Modify`/`Error` op
 /// is not equational either — the FUNCTION-HOOD predicate, matching the part-1 gate).
@@ -1250,15 +1250,13 @@ fn collect_op_functors_in_value(kb: &KnowledgeBase, v: &Value, out: &mut Vec<Sym
 fn check_simp_effectful_ops(kb: &mut KnowledgeBase) -> Vec<TypeError> {
     let mut errors: Vec<TypeError> = Vec::new();
     // Candidate directional rewrites live under the `eq`/`unify` functors — an
-    // equational head keeps its functor index only when `@[simp]`/`@[unfold]`-tagged
+    // equational head keeps its functor index only when `@[simp]`-tagged
     // (an untagged law is `unindex_functor`'d at load, WI-139). Filter to the
     // tagged ones; their own `is_fact` status is irrelevant (a `lhs <=> rhs` law is
-    // stored as an empty-body rule, i.e. a fact — so DO NOT skip facts here).
+    // stored as an empty-body rule, i.e. a fact — so DO NOT skip facts here). Asked
+    // through the firing sites' own predicate, not a third spelling of it (WI-906).
     for rid in kb.simp_equation_rids() {
-        let meta = kb.rule_meta(rid);
-        if !(crate::kb::load::meta_has_flag(kb, meta, "simp")
-            || crate::kb::load::meta_has_flag(kb, meta, "unfold"))
-        {
+        if !crate::kb::simp_rewrite::is_simp_equation(kb, rid) {
             continue;
         }
         // Every operation symbol the rule's sides mention: the head equation term
@@ -1286,10 +1284,11 @@ fn check_simp_effectful_ops(kb: &mut KnowledgeBase) -> Vec<TypeError> {
         //
         // `macro_expanded_rhs_head` — NOT a local `is_macro` test — is what keeps the
         // exemption tied to the expansion that justifies it: it re-applies `try_fire`'s
-        // own conditions (@[simp] only, no typed bounds, positional RHS), so a rule the
-        // typer does NOT expand keeps the gate. MEASURED: keyed on `is_macro` alone,
-        // an effectful macro under `@[unfold]` — fired by the RESOLVER, which never
-        // macro-expands — loaded clean and rewrote the effectful call into the program.
+        // own conditions (@[simp], no typed bounds, positional RHS), so a rule the
+        // typer does NOT expand keeps the gate. MEASURED while the resolver-only tag
+        // `@[unfold]` existed (WI-906 removed it): keyed on `is_macro` alone, an
+        // effectful macro under it — fired by the RESOLVER, which never macro-expands —
+        // loaded clean and rewrote the effectful call into the program.
         //
         // Skipping by SYMBOL also exempts that macro elsewhere in the same rule. Every
         // such spelling is refused AHEAD of here, measured: as a body goal by WI-583
@@ -1321,7 +1320,7 @@ fn check_simp_effectful_ops(kb: &mut KnowledgeBase) -> Vec<TypeError> {
     errors
 }
 
-/// How a `@[simp]`/`@[unfold]` rule puts a call of an operation where it fires — the
+/// How a `@[simp]` rule puts a call of an operation where it fires — the
 /// first clause of its refusal ([`effectful_rewrite_error`]).
 #[derive(Clone, Copy, Debug)]
 pub(super) enum RewriteCall {
@@ -1365,7 +1364,7 @@ pub(super) fn effectful_rewrite_error(
         // dot and the written name of the operation it reaches are one call.
         expected: match how {
             RewriteCall::Named => format!(
-                "{label} `@[simp]`/`@[unfold]` rewrite not to mention potentially \
+                "{label} `@[simp]` rewrite not to mention potentially \
                  effectful operation `{op_name}`"
             ),
             RewriteCall::Dot => format!(

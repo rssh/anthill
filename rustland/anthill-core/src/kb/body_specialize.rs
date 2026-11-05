@@ -1293,7 +1293,7 @@ impl KnowledgeBase {
     /// §"Consumers"). Two consumers name this row in a LOUD decline rather than a
     /// silent absence: the proof-time goal-closure sweep
     /// ([`Self::synthesize_body_derived_defrules`], deduped once per op) and the
-    /// load-time `@[simp]`/`@[unfold]` formation gate (`check_simp_effectful_ops`,
+    /// load-time `@[simp]` formation gate (`check_simp_effectful_ops`,
     /// as a `TypeError`). A test asserts this predicate directly so the mechanism
     /// is non-vacuous.
     ///

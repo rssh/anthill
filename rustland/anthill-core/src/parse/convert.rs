@@ -3712,6 +3712,15 @@ impl<'a> Converter<'a> {
 
     fn convert_meta_entry(&mut self, node: Node) -> MetaEntry {
         let span = self.span(node);
+        // WI-906: `@[unfold]` is no rewrite tag. Refused HERE because every written entry
+        // is converted here — a proof step's block too, which the loader never lowers —
+        // and keyed by the LAST segment, as the loader stores a key (`@[a.unfold]` would
+        // otherwise be stored as `unfold` and read by nothing).
+        if let Some(k) = self.field(node, "key") {
+            if self.text(k).rsplit('.').next() == Some("unfold") {
+                self.err(super::error::UNFOLD_TAG, k);
+            }
+        }
         let key = self
             .field(node, "key")
             .map(|n| self.convert_name(n))
