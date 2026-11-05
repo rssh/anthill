@@ -1194,13 +1194,13 @@ fn branch_guarded_external_co_occurrence_rejected() {
     );
 }
 
-// ── WI-702: the `@[simp]`/`@[unfold]` formation gate (proposal 054 §"Consumers") ──
+// ── WI-702: the `@[simp]` formation gate (proposal 054 §"Consumers") ──
 //
-// A `@[simp]`/`@[unfold]` equation is a DIRECTIONAL rewrite — `fire_simp` /
+// A `@[simp]` equation is a DIRECTIONAL rewrite — `fire_simp` /
 // `fire_simp_equation` fire it LHS→RHS, so firing DUPLICATES / REORDERS / DROPS the
 // matched redex. That is sound today only because effectful ops never *become* simp
 // equations (the defining-equation family declines them — the part-1 gate). The one
-// hole left is a USER-WRITTEN `@[simp]`/`@[unfold]` rule whose sides MENTION an effectful
+// hole left is a USER-WRITTEN `@[simp]` rule whose sides MENTION an effectful
 // operation symbol: rewriting its call is unsound (an External `create_issue` rewritten
 // twice mints two issues). WI-702 rejects such a rule at LOAD; the firing sites stay
 // effect-blind. The gate keys on the EFFECT ROW (any effect — function-hood), NOT
@@ -1220,19 +1220,6 @@ namespace smoke.h1_simp_external
   = x
 
   rule poke_ext(?x) <=> ?x @[simp]
-end
-"#;
-
-/// The `@[unfold]` tag is a directional rewrite too, so it is gated identically.
-const UNFOLD_EXTERNAL_SRC: &str = r#"
-namespace smoke.h2_unfold_external
-  import anthill.prelude.{Int64, External}
-
-  operation poke_unf(x: Int64) -> Int64
-    effects {External}
-  = x
-
-  rule poke_unf(?x) <=> ?x @[unfold]
 end
 "#;
 
@@ -1274,7 +1261,7 @@ end
 "#;
 
 /// Scope control: an UNTAGGED equation mentioning the SAME `External`-rowed op LOADS.
-/// The hazard is FIRING (only `@[simp]`/`@[unfold]` rewrites fire); an untagged equation
+/// The hazard is FIRING (only `@[simp]` rewrites fire); an untagged equation
 /// is an inert cite-required LAW (`unindex_functor`'d, WI-139) that never rewrites, so
 /// it is out of scope — this locks the gate to the tagged rewrites, not all equations.
 const UNTAGGED_EXTERNAL_SRC: &str = r#"
@@ -1301,16 +1288,6 @@ fn simp_rule_mentioning_external_op_rejected() {
     );
 }
 
-/// WI-702: the `@[unfold]` tag is gated identically (both are directional rewrites).
-#[test]
-fn unfold_rule_mentioning_external_op_rejected() {
-    expect_reject(
-        &[UNFOLD_EXTERNAL_SRC],
-        &["poke_unf", "External"],
-        "an `@[unfold]` rewrite mentioning an External-rowed op",
-    );
-}
-
 /// WI-702: the gate is effect-GENERAL — a user-declared effect (`Outside`) trips it
 /// too, so the decision is "any non-empty effect row", not "External only".
 #[test]
@@ -1330,7 +1307,7 @@ fn simp_rule_over_pure_ops_still_loads() {
 }
 
 /// WI-702 scope control: an UNTAGGED equation mentioning an effectful op loads — only
-/// FIRING rewrites (`@[simp]`/`@[unfold]`) are the hazard, not every equational law.
+/// FIRING rewrites (`@[simp]`) are the hazard, not every equational law.
 #[test]
 fn untagged_equation_mentioning_external_op_still_loads() {
     expect_load(

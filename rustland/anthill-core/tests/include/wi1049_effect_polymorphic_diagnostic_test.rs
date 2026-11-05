@@ -1,5 +1,5 @@
 //! WI-1049 — an effect-POLYMORPHIC operation is not an effectful one, and the
-//! `@[simp]`/`@[unfold]` formation gate now says which it is refusing.
+//! `@[simp]` formation gate now says which it is refusing.
 //!
 //! FOUND BY DRIVING, not by reading. Writing proposal-054's own example law on
 //! `PersistentCollection` —

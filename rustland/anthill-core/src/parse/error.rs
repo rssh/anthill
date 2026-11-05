@@ -107,6 +107,15 @@ pub(crate) fn description_without_target(kind: &str) -> String {
     )
 }
 
+/// The refusal of a written `@[unfold]` (WI-906), raised by `parse::convert` for every
+/// entry of every block. It was a second rewrite tag, enabling an equation at the
+/// resolver alone and never at the typer; it is gone, and `@[simp]` is the one enablement
+/// (§5.3). Refused rather than read as an ordinary entry — a block's keys are free-form —
+/// which would leave an equation that carries it an inert law with no diagnostic.
+pub(crate) const UNFOLD_TAG: &str = "`@[unfold]` is not a rewrite tag (WI-906 removed it): an \
+    equation runs under `@[simp]` alone — `rule f(?x) <=> … @[simp]` — which fires it both where \
+    a body is typed and where a goal is resolved";
+
 /// §7's twin of [`description_without_target`] for a `@[…]` block (WI-20260914-DV7DP): a
 /// declaration's block is recorded under the name it declares, and this construct
 /// declares none. One raise site today — an unlabeled `constraint`, in `parse::convert`.

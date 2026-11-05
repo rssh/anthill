@@ -1,5 +1,5 @@
 //! WI-139: equational rules are cite-required by default; opt-in
-//! via `@[simp]` / `@[unfold]` to enter the `rules_by_functor` index for
+//! via `@[simp]` to enter the `rules_by_functor` index for
 //! SLD goal resolution. (`@[hint]` is recognised by the parser but
 //! its SMT-side semantics — auto-include in proof preamble — are
 //! deferred for v0; the attribute itself parses and stores cleanly.)
@@ -85,30 +85,6 @@ fn simp_attributed_equational_rule_is_indexed() {
         with_simp > baseline,
         "@[simp]-tagged equational rule must be in rules_by_functor — \
          got baseline {baseline} → with_simp {with_simp}"
-    );
-}
-
-#[test]
-fn unfold_attributed_equational_rule_is_indexed() {
-    let baseline = equational_indexed_count(load_with(
-        r#"
-        namespace test.eqattr.unfold_baseline
-          rule Marker(?x) :- ?x = 1
-        end
-    "#,
-    ));
-    let with_unfold = equational_indexed_count(load_with(
-        r#"
-        namespace test.eqattr.unfold_with
-          rule Marker(?x) :- ?x = 1
-          rule my_def: g(?a) <=> h(?a) @[unfold]
-        end
-    "#,
-    ));
-    assert!(
-        with_unfold > baseline,
-        "@[unfold]-tagged equational rule must be in rules_by_functor — \
-         got baseline {baseline} → with_unfold {with_unfold}"
     );
 }
 

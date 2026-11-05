@@ -189,7 +189,7 @@ At `load.rs:28639` the `NotARewrite` arm becomes a three-way classification:
 
 | head | today | after |
 |---|---|---|
-| directional equation (`@[simp]`/`@[unfold]`, bodyless) | bound installed, enforced at `apply_eq_rules` | **unchanged** |
+| directional equation (`@[simp]`, bodyless) | bound installed, enforced at `apply_eq_rules` | **unchanged** |
 | typer-fired dot rule | refused (`DotRule`, WI-903) | **unchanged** |
 | untagged equation | refused (`NotARewrite`) | **unchanged** — no body to prepend to, no wakeup site |
 | **relational head with a body** | refused (`NotARewrite`) | bound installed; §3 generates the goal |
@@ -1750,7 +1750,7 @@ MEASURED 2026-09-09 for the ENCLOSING half:
 
 **I1 ≡ I3**: the enclosing sort's `requires` has no effect on the clause. That is
 `check_rule_body_requirements`' own documented rule — *"A Horn rule does NOT inherit its
-enclosing sort's `requires` chain (that gates `@[simp]`/`@[unfold]` equations, not clause
+enclosing sort's `requires` chain (that gates `@[simp]` equations, not clause
 bodies), so the in-body goal is the only declaration site"* — and I1 vs I2 is what it
 costs: the correct spelling refuses to fire, the declared-on-the-sort spelling folds the
 spec default and answers. Silently, and in the direction that produces a value.

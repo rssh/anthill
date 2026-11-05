@@ -387,7 +387,7 @@ spellings load and fire:
   **loud load errors**.
 
 *Enforcement scope (deliberate):* the bound is enforced **only** where it can be — the resolver's
-`apply_eq_rules`, firing a `@[simp]`/`@[unfold]` **equational** rewrite. A typed annotation on any other
+`apply_eq_rules`, firing a `@[simp]` **equational** rewrite. A typed annotation on any other
 rule (relational, or an untagged equation) is a **loud load error** rather than a silently-ignored
 bound. The **typer** also rewrites with `@[simp]` rules (`simp_rewrite::try_fire`) but its match keys
 its substitution by fresh globals, not the synthetic-DeBruijn entries the firing check reads — so it

@@ -75,7 +75,6 @@ use crate::eval::value::Value;
 use crate::intern::Symbol;
 use crate::parse::desugar_target as dt;
 
-use super::load::meta_has_flag;
 use super::node_occurrence::{self, Expr, MatchBranch, NodeKind, NodeOccurrence, OccurrenceOrigin};
 use super::occurrence::PassId;
 use super::subst::Substitution;
@@ -147,29 +146,28 @@ pub enum FireRefusal {
 /// Whether any indexed `@[simp]` equation exists — the gate the typer's firing
 /// sites (`typing::type_check_node`'s `simp_enabled`, and [`run`]) use to skip
 /// all firing work in the common no-rule case. Read once per typer walk (WI-283)
-/// and once per [`run`]. Not cached (the typer runs at load, not the SLD hot
-/// path — the resolver's O(1) `has_directional_rewrite` gate is the cached one).
+/// and once per [`run`].
 ///
-/// WI-646: selects over BOTH the `eq` (`=`) AND `unify` (`<=>`) functor buckets
-/// via the shared [`KnowledgeBase::simp_equation_rids`] — fixing the former
-/// `eq`-only narrowness that left the typer UNDER-firing for a KB whose `@[simp]`
-/// laws are all `<=>`-headed (the stdlib case: 14/14) and which has no
-/// dot-applies. The `@[simp]`-only per-rule filter is kept deliberately: it
-/// matches the typer's `try_fire`, which fires `@[simp]` (never `@[unfold]`), so
-/// gating on `@[simp]` OR `@[unfold]` would enable a wasted (always-declining) walk
-/// on an unfold-only KB. (The resolver's `has_directional_rewrite` gate, by
-/// contrast, IS `@[simp]` OR `@[unfold]` — it fronts a firer that fires both.)
+/// WI-646: over BOTH the `eq` (`=`) AND `unify` (`<=>`) functor buckets — the former
+/// `eq`-only narrowness left the typer UNDER-firing for a KB whose `@[simp]` laws are
+/// all `<=>`-headed (the stdlib case: 14/14) and which has no dot-applies.
+///
+/// THE RESOLVER'S GATE since WI-906: with `@[unfold]` gone the two engines enable the
+/// same equations ([`is_simp_equation`] asks `is_directional_equation`), so this reads
+/// the resolver's KB-cached bit rather than computing the same answer a second,
+/// uncached way that could disagree with it.
 pub(super) fn has_simp_equations(kb: &mut KnowledgeBase) -> bool {
-    kb.simp_equation_rids()
-        .into_iter()
-        .any(|rid| is_simp_equation(kb, rid))
+    kb.has_directional_rewrite()
 }
 
 /// WI-646: the typer's per-rule fire predicate — `rid` is a `@[simp]`-tagged
 /// EQUATION. Shared by `try_fire` AND the `has_simp_equations` gate so the two
-/// can't drift (the typer's peer of the resolver's `is_directional_equation`).
-/// `@[simp]`-only, not `@[simp]`/`@[unfold]`: the typer fires only `@[simp]` (never
-/// `@[unfold]`), so gating on both would enable an always-declining walk.
+/// can't drift.
+///
+/// THE RESOLVER'S PREDICATE, not a peer of it (WI-906). The two were separate while
+/// a second tag, `@[unfold]`, enabled an equation at the resolver alone; with that
+/// tag removed both engines fire exactly the `@[simp]` equations, so this asks
+/// [`KnowledgeBase::is_directional_equation`] rather than re-spelling its conjuncts.
 ///
 /// WI-902 raised it to `pub(super)`: `typing::try_fire_dot_rule` had inlined a
 /// third copy of the predicate, which is how it came to select on the `eq` bucket
@@ -183,7 +181,7 @@ pub(super) fn has_simp_equations(kb: &mut KnowledgeBase) -> bool {
 /// decision — it moved to where a guard belongs, POST-MATCH ([`guard_verdict`]),
 /// exactly as the type-directed guard and the typed-pattern bound already sit.
 pub(super) fn is_simp_equation(kb: &KnowledgeBase, rid: RuleId) -> bool {
-    kb.has_equational_head(rid) && meta_has_flag(kb, kb.rule_meta(rid), "simp")
+    kb.is_directional_equation(rid)
 }
 
 /// WI-20260820-8RJK8 — how deep the conditional-rewrite guard recursion may go.
@@ -988,7 +986,7 @@ pub(super) fn try_fire(
     // WI-646: `rids` are the eq+unify candidates gathered ONCE by the caller
     // (`KnowledgeBase::simp_equation_rids` — `eq` for a legacy `=` equation,
     // `unify` for the `<=>` head, proposal 049; WI-139 keeps only
-    // `@[simp]`/`@[unfold]`-tagged equations there). Scanning both functors makes
+    // `@[simp]`-tagged equations there). Scanning both functors makes
     // an `<=>`-spelled `@[simp]` rule fire identically to an `=` one. (Moving
     // selection onto most-specific-first `query()` is proposal 043 §4.6, deferred
     // — type-independent recognition needs only that both functors are covered.)
@@ -1431,7 +1429,7 @@ pub(super) fn instantiate_rhs_verbatim(
 /// unchanged by it — which is the point, σ over an occurrence having ONE owner.
 ///
 /// THE BOUND ON EITHER TICKET'S BLAST RADIUS, censused and kept here because it is the only
-/// place it sits beside the code: **0** of the 21 `@[simp]`/`@[unfold]` equations in a stdlib
+/// place it sits beside the code: **0** of the 21 `@[simp]` equations in a stdlib
 /// load carry a type position (`recv_type` or `type_args`) in their RHS at all, let alone a
 /// variable in one. So nothing shipped depended on the old answer, and nothing shipped
 /// depends on the new one; the rows that do are H054K's own.
@@ -1689,11 +1687,11 @@ fn stored_rhs_functor(kb: &KnowledgeBase, rid: RuleId) -> Option<Symbol> {
 /// rule the typer leaves alone, where the RHS call really does survive the rewrite
 /// into the program and must stay gated:
 ///
-/// - `@[simp]` ONLY. `@[unfold]` is fired by the RESOLVER (`fire_simp_equation`),
-///   which substitutes the RHS template verbatim and never macro-expands — so an
-///   `@[unfold]` rule's effectful RHS is exactly the hazard WI-702 exists for.
-///   MEASURED: with the exemption keyed on `is_macro` alone, an effectful macro
-///   under `@[unfold]` loaded clean.
+/// - `@[simp]`. An untagged equation is fired by nothing. (This bullet once
+///   excluded a second tag, `@[unfold]`, fired by the RESOLVER alone, which
+///   substitutes the RHS template verbatim and never macro-expands — MEASURED: with
+///   the exemption keyed on `is_macro` alone, an effectful macro under it loaded
+///   clean. WI-906 removed the tag.)
 /// - NO typed-pattern bounds. WI-582: [`try_fire`] skips a rule carrying `?x: T`
 ///   bounds outright, leaving it to the resolver's `apply_eq_rules` — which, again,
 ///   does not expand macros. WI-903 made this condition EXACT rather than merely
@@ -1971,20 +1969,23 @@ pub(super) fn fires_as_dot_rule(kb: &KnowledgeBase, rid: RuleId, dot_apply: Symb
 /// [`fires_as_dot_rule`] resolving the symbol itself — for a caller that tests one
 /// rule rather than looping (the loader's WI-903 refusal).
 ///
-/// `@[simp]`-only, exactly as [`is_simp_equation`] is — but read the reason
-/// precisely, because the obvious one is WRONG: the resolver fires `@[simp]`
-/// equations TOO (`fire_simp_equation` gates on `is_directional_equation`, which
-/// accepts `@[simp]` OR `@[unfold]`) and enforces the bound there. What singles
-/// `@[simp]` out is that it ALSO has a firing site that IGNORES the bound, so the
-/// bound cannot be relied on; nothing in the typer selects `@[unfold]`, so refusing
-/// that would refuse a shape this refusal has no evidence against.
+/// The resolver fires such a rule TOO, and enforces the bound there — but only at a
+/// `dot_apply` TERM redex, and a dot call the program writes is not one: it reaches the
+/// TYPER's dot path (MEASURED, WI-906: in an operation body and in a rule body, a dot
+/// rule that site does not select is answered "no such member"). So at every dot call
+/// the rule is written for the bound is ignored, and the refusal holds for every dot
+/// rule. It used to exempt an `@[unfold]` dot rule, on the premise that the resolver
+/// fires it; that rule fired at no dot call, and WI-906 removed the tag.
 ///
-/// Two residuals, both WI-906, both code-read rather than driven: whether a
-/// `dot_apply` TERM redex ever reaches the resolver at all is UNMEASURED (if it
-/// does not, the `@[unfold]` carve-out is unjustified and both should be refused);
-/// and this is NOT narrowed by the typer's per-receiver enclosing-SORT guard, which
-/// a rule alone cannot decide — so a `dot_apply` `@[simp]` rule whose `rule_domain`
-/// no receiver can conform to is refused although only the resolver could fire it.
+/// The one `dot_apply` term the resolver does meet is a DEFECT's (WI-20260926-7D48J):
+/// the typer never fires a typed-bound equation (WI-582), so a dot in such an
+/// equation's right-hand side is never dispatched, and the resolver's rewrite by it
+/// leaves the dot as a term. A dot rule written OUTSIDE a sort fires on that term
+/// (MEASURED, WI-906; one written inside its sort did not) — and only there, the
+/// typer's per-receiver enclosing-SORT guard, which a rule alone cannot decide, keeping
+/// it from every dot call. Its bound would be read on that path alone. It is refused
+/// like any other's (the user's decision, 2026-11-05): the path is 7D48J's to close,
+/// not one to build on.
 pub(super) fn is_typer_fired_dot_rule(kb: &KnowledgeBase, rid: RuleId) -> bool {
     dot_apply_head_sym(kb).is_some_and(|dot| fires_as_dot_rule(kb, rid, dot))
 }

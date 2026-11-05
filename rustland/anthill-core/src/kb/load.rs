@@ -2122,7 +2122,7 @@ pub enum LoadError {
     /// WI-582 / WI-903 — a typed rule pattern (`?x: T`) written on a rule shape
     /// whose firing site never consults it. The bound has exactly ONE enforcer:
     /// the resolver's `apply_eq_rules`, via [`super::typing::typed_pattern_bounds_hold`],
-    /// over a `@[simp]`/`@[unfold]` directional rewrite. Carried on any other shape
+    /// over a `@[simp]` directional rewrite. Carried on any other shape
     /// the annotation would load and do nothing — so it is refused here rather
     /// than installed (loud-over-silent). See [`TypedPatternRefusal`] for the two
     /// shapes and why each cannot enforce it.
@@ -2488,12 +2488,10 @@ pub enum LoadError {
     GoalIsANamedTuple {
         span: Span,
     },
-    /// A `@[simp]` or `@[unfold]` tag on a declaration that is not an equation. The tag makes an
+    /// A `@[simp]` tag on a declaration that is not an equation. The tag makes an
     /// equation run (§5.3), so anywhere else it does nothing; and a declaration's `@[…]` is
     /// written after it, so a tag set in front of a rule is the tag of the declaration before.
     RewriteTagOffEquation {
-        /// `simp` or `unfold`, as written.
-        tag: String,
         /// What the tag stands on: "an operation", "a fact", …
         declaration: &'static str,
         span: Span,
@@ -3087,7 +3085,7 @@ pub enum TypedPatternRefusal {
     /// (WI-20260820-8RJK8). WI-903 added the guarded case because
     /// `f(?x: T) = g(?x) :- p(?x)` had a body, so `is_equation` rejected it and no
     /// site could read the bound — MEASURED then. `is_directional_equation` now
-    /// answers `true` for a `@[simp]`/`@[unfold]`-tagged guarded equation, and
+    /// answers `true` for a `@[simp]`-tagged guarded equation, and
     /// `fire_simp_equation` runs `typed_pattern_bounds_hold` on it like any other,
     /// so the bound HAS its reader and the refusal lifts by itself. An UNTAGGED
     /// guarded equation is still refused, for the reason it always was: nothing
@@ -3097,16 +3095,18 @@ pub enum TypedPatternRefusal {
     /// `Expr.dot_apply` ENTITY — a WI-279 INC2 DOT rule, which clears
     /// [`Self::NotARewrite`]'s test and still cannot enforce the bound. It is
     /// fired by `typing::try_fire_dot_rule`, against a surface `Expr::DotApply`
-    /// occurrence; the resolver never sees that head, and NO typer-side site
-    /// enforces typed bounds (`simp_rewrite::try_fire` skips a bound-carrying rule
-    /// outright). So the bound could only be ignored — MEASURED before this
+    /// occurrence, and NO typer-side site enforces typed bounds
+    /// (`simp_rewrite::try_fire` skips a bound-carrying rule outright). The resolver
+    /// meets a `dot_apply` head only through a defect (see
+    /// `simp_rewrite::is_typer_fired_dot_rule`), never at a dot call. So at every dot
+    /// call the bound could only be ignored — MEASURED before this
     /// refusal: an unsatisfiable `?x: String` against a literal `5` loaded clean
     /// and fired.
     ///
     /// Keyed on `simp_rewrite::is_typer_fired_dot_rule` — the firing site's OWN
-    /// conditions — so it stays exactly as wide as that site: an `@[unfold]` dot
-    /// rule, fired by the RESOLVER (which does enforce the bound), keeps its
-    /// annotation.
+    /// conditions — so it stays exactly as wide as that site. That is every dot rule
+    /// since WI-906: the `@[unfold]` dot rule it once exempted fired at no dot call
+    /// (MEASURED), and the tag is gone.
     DotRule,
 }
 
@@ -3125,7 +3125,7 @@ fn typed_pattern_refusal_detail(rule: Option<&str>, reason: TypedPatternRefusal)
         TypedPatternRefusal::NotARewrite => format!(
             "WI-582: a typed rule pattern (`?x: T`) is enforced only where the \
              resolver fires a directional rewrite — an EQUATION tagged \
-             `@[simp]`/`@[unfold]` (§8.3). {rule} is not one, so it would silently \
+             `@[simp]` (§8.3). {rule} is not one, so it would silently \
              ignore the bound. Tag it or drop the annotation. (A GUARD is not what \
              disqualifies a rule: since WI-20260820-8RJK8 a tagged \
              `f(?x: T) = g(?x) :- p(?x)` is a conditional rewrite and enforces the \
@@ -3133,11 +3133,11 @@ fn typed_pattern_refusal_detail(rule: Option<&str>, reason: TypedPatternRefusal)
              it — `@[simp]` is the enablement, WI-881.)"
         ),
         TypedPatternRefusal::DotRule => format!(
-            "WI-903: {rule} is a DOT rule (`dot_apply(?receiver, member, …)`), \
-             fired by the typer's sort-scoped dot path. A typed rule pattern \
-             (`?x: T`) is enforced only by the RESOLVER, which never sees a \
-             `dot_apply` head, so the bound would be silently ignored. Drop the \
-             annotation, or write the law as an operation-headed `@[simp]` equation"
+            "WI-903: {rule} is a DOT rule (`dot_apply(?receiver, member, …)`). A \
+             dot call is rewritten by the typer's dot path, which enforces no typed \
+             rule pattern (`?x: T`), so at every dot call the bound would be silently \
+             ignored. Drop the annotation, or write the law as an operation-headed \
+             `@[simp]` equation"
         ),
     }
 }
@@ -4228,14 +4228,10 @@ impl LoadError {
                     crate::parse::error::description_without_target(kind)
                 )
             }
-            LoadError::RewriteTagOffEquation {
-                tag,
-                declaration,
-                span,
-            } => format!(
+            LoadError::RewriteTagOffEquation { declaration, span } => format!(
                 "{}: {}",
                 loc.format_start(*span),
-                rewrite_tag_off_equation(tag, declaration)
+                rewrite_tag_off_equation(declaration)
             ),
             LoadError::GoalIsANamedTuple { span } => {
                 format!("{}: {}", loc.format_start(*span), GOAL_IS_A_NAMED_TUPLE)
@@ -5912,14 +5908,10 @@ impl std::fmt::Display for LoadError {
                     span.end
                 )
             }
-            LoadError::RewriteTagOffEquation {
-                tag,
-                declaration,
-                span,
-            } => write!(
+            LoadError::RewriteTagOffEquation { declaration, span } => write!(
                 f,
                 "{} (at {}..{})",
-                rewrite_tag_off_equation(tag, declaration),
+                rewrite_tag_off_equation(declaration),
                 span.start,
                 span.end
             ),
@@ -24712,13 +24704,14 @@ const GOAL_IS_A_NAMED_TUPLE: &str = "a named tuple is not a goal: its labels nam
     conjunction, or put the tuple in a value position (`?t <=> (k: …)`)";
 
 /// The sentence of [`LoadError::RewriteTagOffEquation`], one owner for both renderings.
-fn rewrite_tag_off_equation(tag: &str, declaration: &str) -> String {
+fn rewrite_tag_off_equation(declaration: &str) -> String {
     format!(
-        "`@[{tag}]` stands on {declaration}, which is not an equation: the tag makes an equation \
-         run (`rule f(?x) <=> … @[{tag}]`). A declaration's `@[…]` is written after it, so a tag \
+        "`@[simp]` stands on {declaration}, which is not an equation: the tag makes an equation \
+         run (`rule f(?x) <=> … @[simp]`). A declaration's `@[…]` is written after it, so a tag \
          set in front of a rule belongs to the declaration before it"
     )
 }
+
 
 pub fn meta_has_flag(kb: &KnowledgeBase, meta: Option<TermId>, key: &str) -> bool {
     match meta {
@@ -45137,18 +45130,18 @@ impl<'a> Loader<'a> {
             .any(|e| matches!(e, LoadError::AmbiguousSymbol { .. }))
     }
 
-    /// Refuse each `@[simp]` / `@[unfold]` entry of `meta`, the block of `declaration`, which is
+    /// Refuse each `@[simp]` entry of `meta`, the block of `declaration`, which is
     /// no equation ([`LoadError::RewriteTagOffEquation`]).
+    ///
+    /// Keyed by the LAST segment, as [`Self::load_meta_block`] stores a key: `@[a.simp]`
+    /// is stored as `simp` and fires on an equation, so off one it is the same mistake
+    /// (WI-906 /code-review — a one-segment test let it through, dropped).
     fn refuse_rewrite_tags(&mut self, meta: Option<&MetaBlock>, declaration: &'static str) {
         let Some(mb) = meta else { return };
         for entry in &mb.entries {
-            let [key] = entry.key.segments.as_slice() else {
-                continue;
-            };
-            let tag = self.parsed.symbols.local_name(*key);
-            if tag == "simp" || tag == "unfold" {
+            // `@[unfold]` is refused for itself, wherever it stands (`parse::convert`).
+            if self.parsed.symbols.local_name(entry.key.last()) == "simp" {
                 self.errors.push(LoadError::RewriteTagOffEquation {
-                    tag: tag.to_string(),
                     declaration,
                     span: entry.key.span,
                 });
@@ -46681,10 +46674,7 @@ impl<'a> Loader<'a> {
             // NOT folded into the tags read above: this asks about the head SHAPE
             // (an untagged equational head is a cite-required law whether or not it
             // is bodyless), the check above about what actually FIRES.
-            if is_equational_head(self.kb, kb_head)
-                && !meta_has_flag(self.kb, meta, "simp")
-                && !meta_has_flag(self.kb, meta, "unfold")
-            {
+            if is_equational_head(self.kb, kb_head) && !meta_has_flag(self.kb, meta, "simp") {
                 self.kb.unindex_functor(rid);
             }
         }

@@ -6056,7 +6056,7 @@ impl KnowledgeBase {
         result.expect_term()
     }
 
-    /// Try firing a directional `@[simp]`/`@[unfold]` equation at `redex` (a term
+    /// Try firing a directional `@[simp]` equation at `redex` (a term
     /// OR a `Value::Node` occurrence) via the one-directional `match_view`
     /// matcher — the convergence of the resolver and typer rewriters (see the
     /// simp-rewriter-convergence note). `match_view` binds the rule's opened head
@@ -6088,7 +6088,7 @@ impl KnowledgeBase {
         // WI-646: `rids` are the eq+unify candidates gathered ONCE per
         // `simp_rewrite::rewrite` walk by `ResolverSimpFirer` (from
         // `KnowledgeBase::simp_equation_rids`) — `eq` for a legacy `=` equation,
-        // `unify` for the `<=>` head; WI-139 keeps only `@[simp]`/`@[unfold]`-tagged
+        // `unify` for the `<=>` head; WI-139 keeps only `@[simp]`-tagged
         // equations there. Mirrors the typer's `simp_rewrite::try_fire` selection.
         for &rid in rids {
             if !self.is_directional_equation(rid) {
@@ -6236,7 +6236,7 @@ impl KnowledgeBase {
         None
     }
 
-    /// Apply equational `@[simp]`/`@[unfold]` rules to rewrite a redex, carrier-
+    /// Apply equational `@[simp]` rules to rewrite a redex, carrier-
     /// neutrally: the redex arrives as a `Value` (a hash-consed term or a
     /// `Value::Node` occurrence) and the rewrite is rebuilt in the SAME carrier,
     /// so a resolution goal keeps its occurrence identity. Strategy: innermost —
@@ -6255,15 +6255,14 @@ impl KnowledgeBase {
     /// same firing DECISIONS at the same depth — the former term/Node fuel
     /// divergence (depth-bounded vs chain-bounded) is gone.
     ///
-    /// O(1) gate (WI-646): short-circuit a KB with NO directional
-    /// (`@[simp]`/`@[unfold]`) equation via [`Self::has_directional_rewrite`] — a
-    /// KB-cached bit, NOT a per-call bucket scan. This is the CORRECT gate the
-    /// WI-643 note deferred: it mirrors `equation_is_directional_rewrite`
-    /// (`@[simp]` OR `@[unfold]`) over BOTH `eq` AND `unify`, so — unlike the
-    /// `@[simp]`-only/`eq`-only `has_simp_equations` that WI-643 refused to ship as
-    /// a gate — it never skips an unfold-only or `<=>`-only KB's rewrites. When it
-    /// returns `false` nothing could fire anyway, so returning the redex unchanged
-    /// is exactly what the driver would produce, at a bool-read's cost.
+    /// O(1) gate (WI-646): short-circuit a KB with NO directional (`@[simp]`)
+    /// equation via [`Self::has_directional_rewrite`] — a KB-cached bit, NOT a
+    /// per-call bucket scan. This is the CORRECT gate the WI-643 note deferred: it
+    /// mirrors [`Self::is_directional_equation`] over BOTH `eq` AND `unify`, so —
+    /// unlike the `eq`-only gate WI-643 refused to ship — it never skips a `<=>`-only
+    /// KB's rewrites. When it returns `false`
+    /// nothing could fire anyway, so returning the redex unchanged is exactly what
+    /// the driver would produce, at a bool-read's cost.
     pub fn apply_eq_rules(
         &mut self,
         redex: &Value,
@@ -6282,22 +6281,19 @@ impl KnowledgeBase {
         (rewritten, changes)
     }
 
-    /// WI-292: whether `rid` is a DIRECTIONAL `@[simp]`/`@[unfold]` rewrite — the
-    /// firing gate the typer's `simp_rewrite` already applies via
-    /// [`super::load::meta_has_flag`]. An equational head that carries neither tag
-    /// is a logical LAW, not a rewrite, and is `unindex_functor`'d at load
-    /// (load.rs WI-139); the discrim tree [`apply_eq_rules`] queries still returns
-    /// it, so the rewriter re-checks the tag here so it doesn't fire a
-    /// non-reducing law (commutativity / a recursive definition) into a
-    /// fuel-bounded loop.
+    /// WI-292: whether `rid` is a DIRECTIONAL rewrite — tagged `@[simp]`, the one
+    /// rewrite tag (WI-906 removed `@[unfold]`, which enabled an equation at this
+    /// engine alone). An equational head without the tag is a logical LAW, not a
+    /// rewrite, and is `unindex_functor`'d at load (load.rs WI-139); the discrim tree
+    /// [`apply_eq_rules`] queries still returns it, so the rewriter re-checks the tag
+    /// here so it doesn't fire a non-reducing law (commutativity / a recursive
+    /// definition) into a fuel-bounded loop.
     fn equation_is_directional_rewrite(&self, rid: RuleId) -> bool {
-        let meta = self.rule_meta(rid);
-        super::load::meta_has_flag(self, meta, "simp")
-            || super::load::meta_has_flag(self, meta, "unfold")
+        super::load::meta_has_flag(self, self.rule_meta(rid), "simp")
     }
 
     /// WI-646: the resolver's per-rule fire predicate — `rid` is a directional
-    /// (`@[simp]`/`@[unfold]`) EQUATION. Shared by the `has_directional_rewrite`
+    /// (`@[simp]`) EQUATION. Shared by the `has_directional_rewrite`
     /// gate AND the `fire_simp_equation` loop so the two can't drift apart: a gate
     /// that under-counts relative to the fire site would silently skip a KB that
     /// would fire (the WI-643 regression class). The additional fire-time filters
@@ -6321,11 +6317,15 @@ impl KnowledgeBase {
     /// `pub` since the same ticket, for the reason that made it `pub(super)` one hop
     /// out: a TEST asserting that a stdlib law "will fire" must ask this rather than
     /// re-spell its two conjuncts, or the assertion drifts from the site it is about.
+    ///
+    /// The TYPER asks it too since WI-906 (`simp_rewrite::is_simp_equation`): with
+    /// `@[unfold]` gone the two engines enable exactly the same equations, so the
+    /// typer's predicate is this one rather than a second spelling of it.
     pub fn is_directional_equation(&self, rid: RuleId) -> bool {
         self.has_equational_head(rid) && self.equation_is_directional_rewrite(rid)
     }
 
-    /// WI-646: whether the KB holds ANY directional (`@[simp]`/`@[unfold]`) equation
+    /// WI-646: whether the KB holds ANY directional (`@[simp]`) equation
     /// under `eq` or `unify` — the O(1) gate [`Self::apply_eq_rules`] short-
     /// circuits on. Reads a KB-cached bit ([`KnowledgeBase::simp_gate_cache`]),
     /// computing it once on a miss by mirroring the per-rule fire filter
@@ -6337,7 +6337,11 @@ impl KnowledgeBase {
     /// (`push_value_head_entry` / `retract` / `unindex_functor`), so it can't go
     /// stale; during a query no rule mutates, so this is O(1) amortized on the hot
     /// path.
-    fn has_directional_rewrite(&mut self) -> bool {
+    ///
+    /// `pub(super)` since WI-906: the TYPER's gate (`simp_rewrite::has_simp_equations`)
+    /// is this bit too, the two engines enabling the same equations once `@[unfold]`
+    /// was removed.
+    pub(super) fn has_directional_rewrite(&mut self) -> bool {
         if let Some(cached) = self.simp_gate_cache {
             return cached;
         }
@@ -15932,7 +15936,7 @@ mod tests {
     }
 
     /// Build a `meta(simp: true)` term — the `@[simp]` tag a loaded directional
-    /// rewrite carries. `apply_eq_rules` fires only `@[simp]`/`@[unfold]`-tagged
+    /// rewrite carries. `apply_eq_rules` fires only `@[simp]`-tagged
     /// equations (WI-292, mirroring the typer's `simp_rewrite`), so a test that
     /// asserts an equation directly (bypassing the loader) must tag it to have it
     /// fire — exactly as `simp_rewrite.rs`'s `build_add_zero` does.
@@ -17707,68 +17711,6 @@ mod tests {
             };
         }
         assert_eq!(cur, seven, "innermost add(7, 0) should have rewritten to 7");
-    }
-
-    #[test]
-    fn apply_eq_rules_fires_unfold_only_kb() {
-        // WI-643 regression: `apply_eq_rules` fires `@[simp]` OR `@[unfold]`
-        // (`equation_is_directional_rewrite`), so it must NOT gate on a
-        // simp-ONLY predicate. A KB with an `@[unfold]`-tagged equation and ZERO
-        // `@[simp]` equations must still rewrite — an earlier `has_simp_equations`
-        // short-circuit (simp-only) silently skipped every unfold rewrite here.
-        let mut kb = kb_with_prelude();
-        let sort = ClauseKind::Fact; // requires-free → the resolver fires it
-        let domain = kb.intern("test");
-        let eq_sym = kb.eq_functor();
-        let unfold_me = kb.intern("unfold_me");
-        let done = kb.intern("done");
-
-        // @[unfold] eq(unfold_me(?x), done(?x)) — NO @[simp] rule anywhere.
-        let x_sym = kb.intern("x");
-        let vx = kb.fresh_var(x_sym);
-        let var_x = kb.alloc(Term::Var(Var::Global(vx)));
-        let lhs = kb.alloc(Term::Fn {
-            functor: unfold_me,
-            pos_args: SmallVec::from_elem(var_x, 1),
-            named_args: SmallVec::new(),
-        });
-        let rhs = kb.alloc(Term::Fn {
-            functor: done,
-            pos_args: SmallVec::from_elem(var_x, 1),
-            named_args: SmallVec::new(),
-        });
-        let eq_head = kb.alloc(Term::Fn {
-            functor: eq_sym,
-            pos_args: SmallVec::from_slice(&[lhs, rhs]),
-            named_args: SmallVec::new(),
-        });
-        let unfold_sym = kb.intern("unfold");
-        let meta_sym = kb.intern("meta");
-        let tru = kb.alloc(Term::Const(Literal::Bool(true)));
-        let meta = kb.alloc(Term::Fn {
-            functor: meta_sym,
-            pos_args: SmallVec::new(),
-            named_args: SmallVec::from_slice(&[(unfold_sym, tru)]),
-        });
-        kb.assert_rule_debruijn_with_nodes(eq_head, vec![], sort, domain, Some(meta));
-
-        // simplify(unfold_me(7)) → done(7)
-        let seven = kb.alloc(Term::Const(Literal::Int(7)));
-        let redex = kb.alloc(Term::Fn {
-            functor: unfold_me,
-            pos_args: SmallVec::from_elem(seven, 1),
-            named_args: SmallVec::new(),
-        });
-        let expected = kb.alloc(Term::Fn {
-            functor: done,
-            pos_args: SmallVec::from_elem(seven, 1),
-            named_args: SmallVec::new(),
-        });
-        assert_eq!(
-            kb.simplify(redex),
-            expected,
-            "an @[unfold]-only KB (no @[simp] rules) must still rewrite unfold_me(7) → done(7)"
-        );
     }
 
     #[test]

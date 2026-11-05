@@ -35,9 +35,10 @@ use super::*;
 ///
 /// WI-903: this site does NOT consult `kb.rule_type_bounds`, and does not have to
 /// — a dot rule it fires can carry none. A `?x: T` bound is enforced at one site,
-/// the RESOLVER's `apply_eq_rules`, which never sees a `dot_apply` head; the loader
-/// therefore refuses the annotation here rather than letting it load and be ignored
-/// (`load::TypedPatternRefusal::DotRule`). Adding a second, typer-side enforcer was
+/// the RESOLVER's `apply_eq_rules`, which meets no `dot_apply` head at a dot call
+/// (only through the defect `simp_rewrite::is_typer_fired_dot_rule` describes); the
+/// loader therefore refuses the annotation here rather than letting it load and be
+/// ignored (`load::TypedPatternRefusal::DotRule`). Adding a second, typer-side enforcer was
 /// the alternative and was declined: the typer does not enforce typed bounds
 /// anywhere ([`crate::kb::simp_rewrite::try_fire`] skips bound-carrying rules), and a
 /// compile-time firing decision keyed on an inferred type would make the rule's

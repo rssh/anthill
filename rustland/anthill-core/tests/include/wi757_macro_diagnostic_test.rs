@@ -322,18 +322,21 @@ end
     );
 }
 
-/// …and not for a macro the typer's expander does NOT fire. `@[unfold]` is fired by
-/// the RESOLVER (`fire_simp_equation`), which substitutes the RHS template verbatim
-/// and never macro-expands — so the effectful call really is rewritten into the
-/// program, exactly the hazard WI-702 exists for.
+/// …and not for a macro the typer's expander does NOT fire. A rule with a typed
+/// pattern bound is one: `simp_rewrite::try_fire` skips a bound-carrying rule outright
+/// (WI-582), leaving it to the RESOLVER (`fire_simp_equation`), which substitutes the
+/// RHS template verbatim and never macro-expands — so the effectful call really is
+/// rewritten into the program, exactly the hazard WI-702 exists for.
 ///
-/// This was a live hole: with the exemption keyed on `is_macro` alone, this source
-/// LOADED CLEAN. `macro_expanded_rhs_head` ties the exemption to `try_fire`'s own
-/// firing conditions so it cannot outrun the expansion that justifies it.
+/// This was a live hole: with the exemption keyed on `is_macro` alone, the row LOADED
+/// CLEAN (measured when it was spelled with `@[unfold]`, a resolver-only tag WI-906
+/// removed). `macro_expanded_rhs_head` ties the exemption to `try_fire`'s own firing
+/// conditions so it cannot outrun the expansion that justifies it. FAILS with its
+/// typed-bound condition backed out: the gate's refusal is gone.
 #[test]
 fn the_rewrite_gate_still_refuses_an_effectful_macro_the_typer_never_expands() {
     const SRC: &str = r#"
-namespace test.wi757unfold
+namespace test.wi757bounded
   import anthill.prelude.{Int64, String}
   import anthill.prelude.Numeric.{add}
   import anthill.reflect.{NodeOccurrence}
@@ -343,15 +346,15 @@ namespace test.wi757unfold
   operation m(x: NodeOccurrence) -> NodeOccurrence effects Error[Boom] =
     Error.raise(boom(why: "nope"))
   operation trigger(x: Int64) -> Int64 = x
-  rule trigger(?x) <=> m(?x) @[unfold]
+  rule trigger(?x: Int64) <=> m(?x) @[simp]
   operation consumer() -> Int64 = add(trigger(5), 1)
 end
 "#;
     let errs = load_errors(SRC);
     assert!(
         errs.iter()
-            .any(|e| e.contains("test.wi757unfold.m") && e.contains(EFFECTFUL_REWRITE_MARKER)),
-        "an effectful macro under `@[unfold]` is never expanded, so it must stay \
+            .any(|e| e.contains("test.wi757bounded.m") && e.contains(EFFECTFUL_REWRITE_MARKER)),
+        "an effectful macro under a typed-bound rule is never expanded, so it must stay \
          refused, got: {errs:?}",
     );
 }
