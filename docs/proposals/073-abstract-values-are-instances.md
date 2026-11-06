@@ -1,6 +1,6 @@
 # Proposal 073: A value of an abstract type is an instance of its sort — no carrier is chosen at run time
 
-## Status: Draft (2026-11-05). Decided with the user while picking up WI-20260923-DK0QJ, point by point: no run-time step chooses a carrier or a provider (058 §3.9 holds everywhere); a sort is a set of operations, and a value of an abstract type is an instance of its sort, its dictionary deduced at load where its sort is known and kept in the requirement channel; a spec's default body is typed once; every call passes what its callee reads (§6.3); where no typed caller exists, the requirement's goal composes the dictionary from the entries load selected, keyed by the value's carried type, as 058 §3.9, 060 and 060.1 §4 already decide (§6.1, §6.2). Reviewed the same day: an operation with two operands at the abstract type is answered by the rule the language already has (§2), and a caller-less call over a conditional provision by 060's (§6.2). A value whose type is open where it is used is not given a type there without a dictionary (060.1), so no type is stored with a value (§6.2). §1–§4 and §6 are decided; §5's text is to be agreed; §7 is the plan.
+## Status: Draft (2026-11-05). Decided with the user while picking up WI-20260923-DK0QJ, point by point: no run-time step chooses a carrier or a provider (058 §3.9 holds everywhere); a sort is a set of operations, and a value of an abstract type is an instance of its sort, its dictionary deduced at load where its sort is known and kept in the requirement channel; a spec's default body is typed once; every call passes what its callee reads (§6.3); where no typed caller exists, the requirement's goal composes the dictionary from the entries load selected, keyed by the value's carried type, as 058 §3.9, 060 and 060.1 §4 already decide (§6.1, §6.2). Reviewed the same day: an operation with two operands at the abstract type is answered by the rule the language already has (§2), and a caller-less call over a conditional provision by 060's (§6.2). A value whose type is open where it is used is not given a type there without a dictionary (060.1), so no type is stored with a value (§6.2). Extended 2026-11-06: a value typed at a spec over a parameter is an instance at the carrier its type fixes, written as the spec application where the spec is expected (§2). §1–§4 and §6 are decided; §5's text is to be agreed; §7 is the plan.
 
 ## Extends: [058](058-modular-instances.md) §3.9 ("Dictionaries are PASSED at run time — instances are never CHOSEN at run time"); [060.1](060.1-written-rule-requirements.md) §4 (load decides where each requirement comes from, run time reads it) and §8.8, both kept in §6.2's words.
 
@@ -112,6 +112,35 @@ operation two(x: Mergeable, y: Mergeable) -> Int64 = Mergeable.size(Mergeable.me
 ```
 
 `two(bag(1), tally(2))` answers `201`, `Bag`'s `merge` given the `Tally` as a `Mergeable`, and `two(tally(2), bag(1))` answers `300`; so do the two elements of `[bag(1), tally(2)]` at `List[T = Mergeable]` (measured on `e4442b16`).
+
+A spec over a parameter, one whose operations receive on a parameter as `Additive`'s do on `T`, is not a type its providers' values belong to (kernel-language §8.2): `2` is no `Additive`, and a value typed at `Additive` is no `T`. A value typed at such a spec is an instance of it at the carrier its type fixes (decided with the user, 2026-11-06): `x: Additive` holds `Additive`'s operations at `x.T`, and a call at `x.T` takes its dictionary from `x`. Where the spec is expected, the spec application is the instance: `Additive[T = Int64]` is the dictionary load builds by kernel-language §8.7's order, and under `requires Additive[T = P]`, `Additive[T = P]` is the clause's own. Where a `Type` is expected, the same text is a `Type` value, as today.
+
+```anthill
+namespace p.inst
+  import anthill.prelude.{Int64, Float, Additive}
+  operation add2(x: Additive, a: x.T, b: x.T) -> x.T = a + b
+  operation ints() -> Int64 = add2(Additive[T = Int64], 2, 3)
+  operation sum2[X](a: X, b: X) -> X requires Additive[T = X] = add2(Additive[T = X], a, b)
+end
+```
+
+`ints()` answers `5`, `sum2(2, 3)` `5` and `sum2(1.5, 2.5)` `4.0`: in `sum2`, `Additive[T = X]` is the instance `sum2`'s caller supplied. `add2(2, 2, 3)` stays refused, and so does a body `x + a`. A member that takes no `T`, as `zero`, is reached the same way: `Additive.zero[T = x.T]()` reads `x`'s instance. `x.zero()` stays refused, for now: a dot passes its receiver as the first argument, and `zero` takes none (decided with the user, 2026-11-06). The instance's `T` is in its static type, so no value chooses a type (058 §3.9): `if c then Additive[T = Int64] else Additive[T = Float]` is `Additive[T = ?]`, and `add2` of it, `2` and `3` is refused, `2` not being its `T`. Today `add2`'s body is refused for a missing `requires Additive[T = …]`, and its calls because `Additive[T = Int64]` there is a `Type` ("type 'anthill.prelude.Type' has no member 'T'"; measured on `3395af90`).
+
+A function over a requirement is written so, as a type: `(x: Additive, a: x.T, b: x.T) -> x.T`. A generic operation calls one with the instance it is given:
+
+```anthill
+namespace p.witness
+  import anthill.prelude.{Int64, Float, Additive}
+  operation sumWith[X](f: (x: Additive, a: x.T, b: x.T) -> x.T, a: X, b: X) -> X requires Additive[T = X] =
+    f(Additive[T = X], a, b)
+  operation both() -> Float =
+    let f = lambda (x: Additive, a: x.T, b: x.T) -> a + b
+    let n = sumWith(f, 2, 3)
+    sumWith(f, 1.5, 2.5)
+end
+```
+
+One closure is called at `Int64` (`n` is `5`) and at `Float` (`4.0`): each call of `sumWith` hands `f` the instance its own caller supplied, and the closure holds none (WI-817's witness). That spelling also needs a lambda binder and an arrow type to read `x.T` off an earlier parameter, which neither does today (WI-20261002-DNDZF).
 
 A recursion whose instance grows at each turn (WI-817) needs nothing more: each turn passes the instance the previous one returned.
 
@@ -246,13 +275,15 @@ Found beside it, wrong whatever the answer: with `provides Spec2[A = Int64, B = 
 
 One case the trace did not see, because it dies at the frame push before any slot is filled: a provision's member from a third sort. With `namespace Leaf provides Desc[T = Leaf, describe = LeafDesc.describeLeaf] end`, `sort LeafDesc { sort L = ?  requires Tag[G = L]  operation describeLeaf(x: L) -> Int64 = Tag.tagval(x) }` and `Leaf` providing `Tag[G = Leaf]` with `tagval` answering `7`, `Desc.describe(leaf())` answers `7`, and `gen(leaf())` over `gen[A](x: A) -> Int64 requires Desc[T = A] = Desc.describe(x)` dies Internal: the dictionary at `Desc[T = Leaf]` holds nothing for `LeafDesc` (measured on `3395af90`). The member is the lambda that calls it, `describe = lambda (x: Leaf) -> LeafDesc.describeLeaf(x)`: its call is typed at `L = Leaf` and passes `Leaf`'s `Tag`, built at load, and with no `Tag` at `Leaf` the program is refused at load (decided with the user, 2026-11-05; WI-20261105-0BD56).
 
+Nor did the trace see a spec's member taken as a function value through the spec application. Where `() -> Int64` is expected, `Additive[T = Int64].zero` is read as the call and refused ("expected () -> Int64, got Int64"), while `Int64.zero` answers `0`; in a generic body, `let z: () -> X = Additive[T = X].zero` loads and the body then answers nothing, `z` applied or not (measured on `3395af90`). By the same rule it is the lambda that calls it, `lambda () -> Additive[T = X].zero()`, typed at the instance it is used at (stage 2).
+
 ### 6.4 Representation
 
 Where a value of a known type is used at a type class over it — a `List` passed, returned or stored as a `Stream`; values of types `X` and `Y` at `TypeClass[X, Y]` — the dictionary is deduced at load and kept in the requirement channel (requirement-channel.md); nothing reads the value for it. How the channel holds one for each element of a data structure (§2's `[xs, xs.map(twice)]`) is the implementation's, written in the design note beside requirement-channel.md.
 
 ## 7. Stages
 
-Filed with the user 2026-11-05, tag `proposal-073`; WI-20260923-DK0QJ depends on stages 3 and 4. WI-20260909-SM910, rewritten the same day to this proposal's method, carries the rule-body ordering family and `eq` (§4), and stage 3 depends on it. Stage 3 also depends on WI-20261015-ZPETZ, which makes the host entry hand a call to the in-body dispatch, so the value routes are removed from one dispatch. Stage 2 depends on WI-20261105-0BD56, a provision's member from a third sort (§6.3).
+Filed with the user 2026-11-05, tag `proposal-073`; WI-20260923-DK0QJ depends on stages 3 and 4. WI-20260909-SM910, rewritten the same day to this proposal's method, carries the rule-body ordering family and `eq` (§4), and stage 3 depends on it. Stage 3 also depends on WI-20261015-ZPETZ, which makes the host entry hand a call to the in-body dispatch, so the value routes are removed from one dispatch. Stage 2 depends on WI-20261105-0BD56, a provision's member from a third sort (§6.3). Stage 3 also carries §2's instance of a spec over a parameter (`add2`, `sum2`, decided 2026-11-06); its lambda and arrow spelling (`sumWith`) waits on WI-20261002-DNDZF.
 
 1. Calls at a known type are decided at load (§1): the typer's two deferral arms go, and the 1,527-test route then serves only calls at an abstract type. WI-20261105-C6GK8.
 2. Every call passes what its callee reads (§6.3): an operation used as a function value is the lambda that calls it; an effect row's slot is removed; a raise is passed its `TypeValue`; a requirement a call fixes in part is answered by §8.7's order at load; the type hole found beside it. The fill of an operation's own slots on entry goes. WI-20261105-89J6K.
