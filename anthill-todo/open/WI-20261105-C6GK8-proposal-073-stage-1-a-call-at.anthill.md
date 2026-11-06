@@ -25,3 +25,7 @@ DONE IN PART (the commit after 65f8438b; wi_c6gk8_known_type_call_test, 18 rows,
 
 LEFT (a) MOVED TO STAGE 3 with the user 2026-11-06: the WI-598 arm goes with WI-20261105-P0QGF, a row there with this ticket's measurement; this ticket no longer owns it. Left here: (b) WI-496's deferral where the dispatch finds no candidate, (c) `Rel.mix` at a known type.
 
+### 2026-11-06T11:43:48Z — feedback — claude
+
+LEFT (b) MOVED TO WI-20261025-053QV with the user 2026-11-06: a row there — the dispatch reads 053QV's rule and WI-496's deferral goes with it. Left here: (c) `Rel.mix` at a known type.
+

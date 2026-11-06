@@ -40,3 +40,9 @@ WHAT FOLLOWS. WI-20261025-27050's C2 is no defect: a provision at `Tagger` handi
 
 ACCEPTANCE: rows 1–13 as listed, each driven in a test; in the family `g-compatibility` the `param-spec` row's six typing positions run 1 — its six exceptions under this ticket come off with 27050's `type_admits` one, since P4 calls an exception live while any spelling of the row still differs; §8.2 reworded as reviewed with the user; the full gate green; the families green on both carriers.
 
+## Changes
+
+### 2026-11-06T11:43:46Z — feedback — claude
+
+ROW ADDED WITH THE USER 2026-11-06, moved from WI-20261105-C6GK8: THE SPEC-OPERATION DISPATCH READS THIS RULE, AND WI-496'S DEFERRAL GOES. Over `sort Tagger { sort C = ?  operation tag(c: C) -> Int64 }`, `sort Desc { sort T = ?  operation d(x: T) -> Int64 }`, `sort W { provides Desc[T = Tagger]  operation d(x: Tagger) -> Int64 = 100 }` and `sort Bk { entity bk(k: Int64)  provides Tagger[C = Bk]  operation tag(c: Bk) -> Int64 = match c case bk(k) -> k }`, `operation probe() -> Int64 = Desc.d(bk(k: 0))` answers 100 on a88ec85b, by eval's value-directed dispatch (step 3b): the dispatch reads a `Bk` as no `Tagger` and finds no candidate, and the call is left unstamped by WI-496's deferral, which C6GK8 kept for this case alone (kb/typing/apply.rs, after the chain step; `wi_c6gk8_known_type_call_test::a_provision_at_a_spec_over_a_parameter_still_answers_its_providers_value`). With the deferral removed the program is refused at load: "requirement `Desc[T = Bk]` cannot be supplied for call to `Desc.d`; `Bk` provides no `Desc`". It is this rule at a provision: `W`'s member takes `x: Tagger`, and `Bk`'s own provision gives `Tagger[C = Bk]`. ROW: the dispatch finds `W` for `Desc.d(bk(k: 0))`, the call is decided at load (the stamp `W.d`, which the C6GK8 row asserts as `None` today), the deferral is deleted, and the family row `g-compatibility pair=param-spec,position=provision` keeps `runs 1`.
+
