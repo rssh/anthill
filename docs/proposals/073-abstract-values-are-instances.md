@@ -250,7 +250,7 @@ Where a value of a known type is used at a type class over it — a `List` passe
 
 ## 7. Stages
 
-Filed with the user 2026-11-05, tag `proposal-073`; WI-20260923-DK0QJ depends on stages 3 and 4. WI-20260909-SM910, rewritten the same day to this proposal's method, carries the rule-body ordering family and `eq` (§4), and stage 3 depends on it.
+Filed with the user 2026-11-05, tag `proposal-073`; WI-20260923-DK0QJ depends on stages 3 and 4. WI-20260909-SM910, rewritten the same day to this proposal's method, carries the rule-body ordering family and `eq` (§4), and stage 3 depends on it. Stage 3 also depends on WI-20261015-ZPETZ, which makes the host entry hand a call to the in-body dispatch, so the value routes are removed from one dispatch.
 
 1. Calls at a known type are decided at load (§1): the typer's two deferral arms go, and the 1,527-test route then serves only calls at an abstract type. WI-20261105-C6GK8.
 2. Every call passes what its callee reads (§6.3): an operation used as a function value is the lambda that calls it; an effect row's slot is removed; a raise is passed its `TypeValue`; a requirement a call fixes in part is answered by §8.7's order at load; the type hole found beside it. The fill of an operation's own slots on entry goes. WI-20261105-89J6K.
