@@ -9,7 +9,7 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
-- depends_on: WI-20261105-C6GK8-proposal-073-stage-1-a-call-at, WI-20261105-89J6K-proposal-073-stage-2-every
+- depends_on: WI-20261105-C6GK8-proposal-073-stage-1-a-call-at, WI-20261105-89J6K-proposal-073-stage-2-every, WI-20260909-SM910-make-the-ordering-family-value
 
 - tags: proposal-073
 
