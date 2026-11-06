@@ -244,13 +244,15 @@ Today the last row's two-provider programs load clean and die when the call runs
 
 Found beside it, wrong whatever the answer: with `provides Spec2[A = Int64, B = NoSp]` alone (`both(a: Int64, b: NoSp) -> Int64 = 100`), `useB`'s body still hands `both` the `WIS` value `a`, and `go()` answers `100`. `A` is unwritten, so either the body may not use it at `WIS`, or the call owes `A = WIS` and is refused for want of a provider; which of the two is stage 2's question.
 
+One case the trace did not see, because it dies at the frame push before any slot is filled: a provision's member from a third sort. With `namespace Leaf provides Desc[T = Leaf, describe = LeafDesc.describeLeaf] end`, `sort LeafDesc { sort L = ?  requires Tag[G = L]  operation describeLeaf(x: L) -> Int64 = Tag.tagval(x) }` and `Leaf` providing `Tag[G = Leaf]` with `tagval` answering `7`, `Desc.describe(leaf())` answers `7`, and `gen(leaf())` over `gen[A](x: A) -> Int64 requires Desc[T = A] = Desc.describe(x)` dies Internal: the dictionary at `Desc[T = Leaf]` holds nothing for `LeafDesc` (measured on `3395af90`). The member is the lambda that calls it, `describe = lambda (x: Leaf) -> LeafDesc.describeLeaf(x)`: its call is typed at `L = Leaf` and passes `Leaf`'s `Tag`, built at load, and with no `Tag` at `Leaf` the program is refused at load (decided with the user, 2026-11-05; WI-20261105-0BD56).
+
 ### 6.4 Representation
 
 Where a value of a known type is used at a type class over it — a `List` passed, returned or stored as a `Stream`; values of types `X` and `Y` at `TypeClass[X, Y]` — the dictionary is deduced at load and kept in the requirement channel (requirement-channel.md); nothing reads the value for it. How the channel holds one for each element of a data structure (§2's `[xs, xs.map(twice)]`) is the implementation's, written in the design note beside requirement-channel.md.
 
 ## 7. Stages
 
-Filed with the user 2026-11-05, tag `proposal-073`; WI-20260923-DK0QJ depends on stages 3 and 4. WI-20260909-SM910, rewritten the same day to this proposal's method, carries the rule-body ordering family and `eq` (§4), and stage 3 depends on it. Stage 3 also depends on WI-20261015-ZPETZ, which makes the host entry hand a call to the in-body dispatch, so the value routes are removed from one dispatch.
+Filed with the user 2026-11-05, tag `proposal-073`; WI-20260923-DK0QJ depends on stages 3 and 4. WI-20260909-SM910, rewritten the same day to this proposal's method, carries the rule-body ordering family and `eq` (§4), and stage 3 depends on it. Stage 3 also depends on WI-20261015-ZPETZ, which makes the host entry hand a call to the in-body dispatch, so the value routes are removed from one dispatch. Stage 2 depends on WI-20261105-0BD56, a provision's member from a third sort (§6.3).
 
 1. Calls at a known type are decided at load (§1): the typer's two deferral arms go, and the 1,527-test route then serves only calls at an abstract type. WI-20261105-C6GK8.
 2. Every call passes what its callee reads (§6.3): an operation used as a function value is the lambda that calls it; an effect row's slot is removed; a raise is passed its `TypeValue`; a requirement a call fixes in part is answered by §8.7's order at load; the type hole found beside it. The fill of an operation's own slots on entry goes. WI-20261105-89J6K.

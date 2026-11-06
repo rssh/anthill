@@ -9,6 +9,8 @@
 
 - acceptance: cargo-test, scaland-sbt-test
 
+- depends_on: WI-20261105-0BD56-a-dispatch-through-a-run-time
+
 - tags: proposal-073
 
 ## Description
