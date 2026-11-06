@@ -1093,7 +1093,7 @@ impl KnowledgeBase {
             builtins: plain(&self.builtins),
             entity_fields: plain(&self.entity_fields),
             constructor_symbols: plain(&self.constructor_symbols),
-            head_argument_sites: plain(&self.head_argument_sites),
+            head_name_sites: plain(&self.head_name_sites),
             effect_guard_sites: plain(&self.effect_guard_sites),
             sort_goal_declarations: plain(&self.sort_goal_declarations),
             absence_records: plain(&self.absence_records),

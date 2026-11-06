@@ -414,10 +414,12 @@ fn compound_links_still_answer_their_matched_subterm() {
 // redex was visited, matched, FIRED, and its result silently DISCARDED (found by
 // /code-review, after the descent had already landed).
 
-/// A `@[simp]` equation plus a compound to nest its redex inside.
+/// A `@[simp]` equation plus a compound to nest its redex inside. `dbl` is declared so the
+/// replacement names something (WI-20260825-6RRVA); what it computes is not read.
 const SIMP_SRC: &str = r#"
 namespace n20ez_s
   entity Box(v: Int64)
+  operation dbl(n: Int64) -> Int64 = n
   rule twice(?n) <=> dbl(?n) @[simp]
 end
 "#;
@@ -461,7 +463,7 @@ fn a_top_level_redex_fires() {
     assert!(!changes.is_empty(), "the `@[simp]` equation must fire at all");
     assert_eq!(
         head_functor(&kb, &out).as_deref(),
-        Some("dbl"),
+        Some("n20ez_s.dbl"),
         "a top-level `twice(7)` rewrites to `dbl(7)`",
     );
 }
@@ -487,7 +489,7 @@ fn a_redex_nested_in_an_entity_is_rewritten() {
     };
     assert_eq!(
         head_functor(&kb, &pos[0]).as_deref(),
-        Some("dbl"),
+        Some("n20ez_s.dbl"),
         "the nested `twice(7)` must be REWRITTEN in the reassembled spine, not discarded",
     );
 }
@@ -509,7 +511,7 @@ fn a_redex_nested_in_a_tuple_is_rewritten() {
     };
     assert_eq!(
         head_functor(&kb, &pos[0]).as_deref(),
-        Some("dbl"),
+        Some("n20ez_s.dbl"),
         "the nested `twice(7)` must be REWRITTEN in the reassembled tuple",
     );
 }

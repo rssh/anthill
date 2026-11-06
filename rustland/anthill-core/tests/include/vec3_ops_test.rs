@@ -690,9 +690,10 @@ end
 /// WHAT THIS ROW MEASURES NOW:
 ///   * THE AGREEMENT WI-942 asked for — generic and concrete behave IDENTICALLY. That was
 ///     the ticket's question, and it is still answered three verdicts later.
-///   * THAT THE ANSWER IS A VALUE. 5.0 rather than "it loads": WI-20260825-6RRVA is open
-///     because a name that denotes nothing can load, so loadability is not evidence that
-///     an address is live. A number computed off `Float`'s own `add` is.
+///   * THAT THE ANSWER IS A VALUE. 5.0 rather than "it loads": loading says at most that
+///     an address names SOMETHING (WI-20260825-6RRVA refuses one that names nothing), not
+///     that it reaches the operation that computes. A number computed off `Float`'s own
+///     `add` does.
 ///
 /// FAILS IF the provision rung is backed out (both loads go back to "unknown functor"),
 /// and fails differently if `Ring` regains its own `add` declaration (the call dies with

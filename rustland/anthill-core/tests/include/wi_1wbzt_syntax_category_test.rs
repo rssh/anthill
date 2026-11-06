@@ -571,7 +571,8 @@ end
 }
 
 /// THE FIVE ADDRESSES `algebra.VectorSpace`'s LAWS NAME ARE LIVE — driven through the
-/// GUARDED position, because the position the laws actually sit in checks nothing.
+/// GUARDED position, because the position the laws actually sit in checked nothing when
+/// this row was written.
 ///
 /// THIS ROW EXISTS BECAUSE THE CHANGE SHIPPED WRONG ONCE. `Ring` stopped declaring
 /// `add`/`sub`/`mul`/`zero`/`one`, and `VectorSpace`'s `vec_sub_def`, `vec_scale_identity`,
@@ -579,7 +580,9 @@ end
 /// Ring.one)` and friends — five addresses that then named NOTHING. The full stdlib load
 /// stayed clean and both workspaces stayed green, because an equational law's HEAD and RHS
 /// are unchecked: `rule r: f(?a) <=> Bogus.nope(?a)` loads byte-identically. Found by
-/// `/code-review`; the missing guard is WI-20260825-6RRVA.
+/// `/code-review`; the missing guard was WI-20260825-6RRVA, which now refuses a law
+/// address that names nothing (`wi_6rrva_law_names_nothing_test`). This row stays for what
+/// that check cannot say: WHICH declaration each live address lands on.
 ///
 /// SO THE ASSERTION IS MADE SOMEWHERE ELSE. A rule-body GOAL over the same name IS checked
 /// (WI-1034), so each address goes there instead.

@@ -476,7 +476,7 @@ namespace test.s8w
     rule: "test.s8w.Outer.requires.written_by_hand",
     strategy: anthill.realization.ProofStrategyOpen,
     body: anthill.realization.ProofBodyNone,
-    result: anthill.realization.Pending,
+    result: anthill.realization.ObligationStatus.Pending,
     dependencies: nil,
     using: nil,
     witness: anthill.realization.witness.ProofWitness.TrustedAxiom(reason: "a record a program wrote"),

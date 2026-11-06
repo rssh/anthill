@@ -151,9 +151,10 @@ end
 /// — which is only possible if both addresses landed on the one declaration. An
 /// alias-shaped fix that minted `anthill.prelude.Numeric.zero` would name itself here.
 ///
-/// It is also the row that separates "resolved" from "loads": WI-20260825-6RRVA is open
-/// precisely because a law position accepts a name that denotes nothing, so loadability
-/// proves nothing about an address. A dispatch complaint that spells the target does.
+/// It is also the row that separates "resolved" from "loads": since WI-20260825-6RRVA a
+/// load refuses an address that names nothing, in a law as elsewhere, but loading still
+/// says nothing about WHICH declaration an address lands on. A dispatch complaint that
+/// spells the target does.
 #[test]
 fn the_resolved_target_is_the_declaring_spec() {
     let goal = |head: &str| {

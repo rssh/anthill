@@ -3,9 +3,9 @@
 - id: WI-20260825-6RRVA-an-equational-law-s-head-and
 - created: 2026-08-25T20:14:09Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-08-25T20:14:09Z
+- status_at: 2026-11-06T09:18:26Z
 
 - acceptance: cargo-test
 
@@ -73,4 +73,32 @@ TWO CORRECTIONS TO THIS TICKET'S BODY, both from delivering WI-20260825-X9RRN, a
 WHAT THAT COSTS THIS TICKET IS NOTHING, AND WHAT IT COSTS THE CENSUS IS REAL. The gap here is unchanged: an equational law's head and RHS are unchecked positions, `rule r: f(?a) <=> Bogus.nope(?a)` still loads clean, and the five addresses `VectorSpace`'s laws carried after 1WBZT still went unreported for as long as they were wrong. But the CENSUS this ticket asks for — "how many law heads / RHS terms across the tree name something unresolvable today" — must now be run against the POST-X9RRN resolver, because a name reached by conversion is no longer unresolvable. Running it against the old reading would count the whole `Ring.*` family as dead and report a number that is too large.
 
 The renamed row still stands as the proxy this ticket wants replaced, and it is a stronger one than before: it asserts which SYMBOL each address lands on (via the nullary "ambiguous dispatch of …", which spells the target) rather than that the goal loads, and it keeps a `Ring.nope` / `Additive.nope` row that must stay loud — so the proxy cannot be satisfied by a ladder that accepts everything.
+
+### 2026-11-06T09:16:22Z — feedback — user
+
+DELIVERED. One check, B8ESG's, widened (decided with the user): an equational law's REPLACEMENT and a PAREN-LESS DOTTED name anywhere in a head are judged by the authority the other positions ask (`symbol_declares_nothing`). `rule r: f(?a) <=> Bogus.nope(?a)` is refused "equation replacement term `Bogus.nope` names nothing" (LoadError::UndefinedEquationReplacement, its own sentence); `vec_scale(Nope.one, ?v) <=> ?v` and `fact holds(Bogus.zero)` "head argument term `Nope.one` names nothing". kernel-language.md §5.3 "Naming one from elsewhere" says so.
+
+THE NULLARY CARRIER THE 2026-08-25 NOTE COULD NOT NAME: a paren-less dotted name parses as a MINTED `field_access` chain, and B8ESG's provenance gate (`!is_minted`) passed over it. It is asked by `Loader::judge_head_dotted_name`: the whole path through `qualified_name_resolves` (the dotted ladder, X9RRN's provision rung included, hidden names counted), judged where resolution FAILS so `Bogus.x.y` is refused once as `Bogus.x`. Not judged, each not a path: a chain rooted at a clause parameter or a local binder, one with a value prefix (rule / const / nullary op), one read through a requirement's name (`R.zero` under `requires R: Ring[F]`, WI-50ZMN's lookup, now shared as `requirement_name_member`). A bare nullary name stays a symbolic constant.
+
+CENSUS, before the check was on: stdlib 104 equation heads and the five examples, zero sites; control — VectorSpace's laws restored with `Nope.sub(Nope.zero, …)` / `Nope.one`, all three refused, HEAD loads them clean. Suites (anthill-core + smt-gen), 9 rows over 5 fixtures: a REAL typo, `anthill.realization.Pending` for `ObligationStatus.Pending` in wi_s8cyd's fixture (fixed); `dbl` (wi_n20ez) and `bar` (equational_attr) never declared (declared); the guarded `bar(?a) = bar(?a)` of wi627 (now exempt, below); `vv.H` over a `let` binder in qk77s (the binding gate). Also found by a probe: `anthill.prelude.Bool.true` written inside a namespace is a relative path since WI-1075 and named nothing, silently.
+
+FROM /code-review, 11 findings, all done:
+  * `fact Bogus.zero` + `fact holds(Bogus.zero)` was refused: a paren-less fact is an arity-0 proposition only the discrimination tree holds. A paren-less site now gets the goal walk's backstop.
+  * `rule r: Foo.Bar.c <=> 0` judged the subject's inner `Foo.Bar`: a dotted subject's span is one name (EquationHead::subject_name).
+  * `R.zero` / `R.add(?a, ?a)` under `requires R: Ring[F]` were refused; MEASURED with the replacement exempt, `R.add` in a `@[simp]` right-hand side type-checks where it fires. Exempt in both checks.
+  * `fact holds(Vault.secret)` over an `internal` member loaded silently while `Vault.secret2(1)` was refused: now refused as the forbidden access (`hidden_dotted_internal`).
+  * a guarded `bar(?a) = bar(?a) :- g` was refused while `baz(?a) = 0 :- g` loaded: the subject's own functor repeated in its replacement is exempt (EquationHead::subject_functor); wi627's fixture is back as it was.
+  * PROPOSED AND DECLINED, MEASURED: exempting a call through a sigil-free parameter (`app(f: (x: Int64) -> Int64, x: Int64) <=> f(x) @[simp]`). `f` stays a bare name in the stored term; with the replacement exempt `app(inc, 4)` died OperationBodyMissing, typed by the arrow or by a sort alias of it. The refusal is true and is pinned (`a_call_through_a_parameter_names_nothing`).
+  * stale ClauseHead doc, test gaps (a dotted fact-head row, a control that reaches the check — `K.seven` folds before it), half-done rename (field `head_name_sites`, `check_undefined_head_names`), rustfmt in the changed hunks.
+
+TEST: wi_6rrva_law_names_nothing_test, 15 rows. Back-out table MEASURED over 114 rows (this file plus the suites it touches), ten parts each backed out alone, each failing its own rows (table in the file's module doc); the restored tree 114/114. Families green, no verdict moved. Full workspace 11,729 passed, 0 failed (36 binaries).
+
+LEFT, NOT FILED (to discuss):
+  1. The same dotted blind spot in a RULE-BODY data slot: `rule q :- p(Bogus.zero)` loads clean — unresolved, the chain is an application of `field_access` over two bare names, and WI-1058's typer-side check asks only whether `field_access` names something. Not folded in: WI-1058 judges occurrences, where the chain has lost the parse provenance this check reads, and a loader-side copy would be a second mechanism for WI-1058's question.
+  2. A dotted sort member written paren-less in a `@[simp]` right-hand side — `f(?a) <=> K.seven @[simp]` (const) or `K.one` (nullary op) — dies in the typer where it fires with "expected a type value recorded where the sort is written … a defect in the walk that built this occurrence"; `K.one()` runs. Pre-existing, loud.
+  3. A guarded equation's SUBJECT naming nothing is still not judged: `baz(?a) = 0 :- g` with nothing declaring `baz` loads, and no redex can ever be written.
+
+### 2026-11-06T09:26:07Z — feedback — user
+
+The three LEFT items above are filed with the user: (1) WI-20261106-ES95W, the rule-body data slot; (2) WI-20261106-BYJ0X, a paren-less dotted sort member in a `@[simp]` right-hand side; (3) WI-20261106-9G5K2, a guarded equation's subject naming nothing.
 
