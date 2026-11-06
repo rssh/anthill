@@ -907,11 +907,22 @@ pub enum LoadError {
     /// stopped matching.
     ///
     /// The head's OWN functor is not judged — a head INTRODUCES its name (WI-896) — so
-    /// this is about the arguments and their compound subterms only.
+    /// this is about the arguments and their compound subterms, and since
+    /// WI-20260825-6RRVA a paren-less dotted name among them (`holds(Bogus.zero)`).
     UndefinedHeadArgument {
         /// The term's functor, qualified.
         functor: String,
         /// Where the term is written.
+        span: Span,
+    },
+    /// WI-20260825-6RRVA — the REPLACEMENT twin of [`Self::UndefinedHeadArgument`]: a
+    /// name in the right-hand side of an equation head (`<=>`, `=`, `===`) that names
+    /// nothing. The subject is what the equation defines and is not judged; what it is
+    /// said to equal introduces nothing.
+    UndefinedEquationReplacement {
+        /// The name, qualified.
+        functor: String,
+        /// Where it is written.
         span: Span,
     },
     /// WI-20260902-JB6RS — `S(…)` written where `S` names only a type: a sort with no
@@ -3283,6 +3294,7 @@ impl LoadError {
             | LoadError::OperationWithoutDefinition { span, .. }
             | LoadError::UndefinedRuleBodyTerm { span, .. }
             | LoadError::UndefinedHeadArgument { span, .. }
+            | LoadError::UndefinedEquationReplacement { span, .. }
             | LoadError::SortAppliedAsData { span, .. }
             | LoadError::BracketOnCallable { span, .. }
             | LoadError::ConstantInGoalPosition { span, .. }
@@ -3619,6 +3631,13 @@ impl LoadError {
                     "{}: {}",
                     loc.format_start(*span),
                     undefined_head_argument_message(functor)
+                )
+            }
+            LoadError::UndefinedEquationReplacement { functor, span } => {
+                format!(
+                    "{}: {}",
+                    loc.format_start(*span),
+                    undefined_equation_replacement_message(functor)
                 )
             }
             LoadError::UndefinedEffectGuardGoal {
@@ -5461,6 +5480,15 @@ impl std::fmt::Display for LoadError {
                     f,
                     "{} at {}..{}",
                     undefined_head_argument_message(functor),
+                    span.start,
+                    span.end
+                )
+            }
+            LoadError::UndefinedEquationReplacement { functor, span } => {
+                write!(
+                    f,
+                    "{} at {}..{}",
+                    undefined_equation_replacement_message(functor),
                     span.start,
                     span.end
                 )
@@ -17383,6 +17411,22 @@ fn undefined_head_argument_message(functor: &str) -> String {
     )
 }
 
+/// WI-20260825-6RRVA — the one wording of [`LoadError::UndefinedEquationReplacement`].
+/// Same census and repair as the head argument's, a different consequence: a replacement
+/// does not match, it is what the subject is said to EQUAL, so a name that denotes nothing
+/// there makes the equation about a term nothing gives a meaning to. Untagged, a law is
+/// read only by the proof layers, and the load was the one place left to say so.
+fn undefined_equation_replacement_message(functor: &str) -> String {
+    format!(
+        "equation replacement term `{functor}` names nothing: {}, so this equation says \
+         its left-hand side equals a term nothing gives a meaning to — a rewrite by it \
+         leaves that term where it fires, and a proof that cites it reasons about a name no \
+         declaration backs. {}",
+        no_declaration_census(),
+        undefined_name_repair(functor),
+    )
+}
+
 /// The one wording of [`LoadError::UndefinedSortGoal`].
 fn undefined_sort_goal_message(sort: &str, functor: &str) -> String {
     format!(
@@ -18403,8 +18447,8 @@ fn load_phase_inner(
     // indexed until its own file lands. Load-blocking, like its two siblings: a head
     // pattern built on a name that denotes nothing matches only another undenoting term of
     // the same spelling, which is silence, not an error.
-    all_errors.extend(check_undefined_head_arguments(kb));
-    mark!("check_undefined_head_arguments");
+    all_errors.extend(check_undefined_head_names(kb));
+    mark!("check_undefined_head_names");
     // An effect guard's goal that names nothing, beside the head-argument check and for its
     // reason: the verdict needs every file's clauses, and it stands above the `run_typer`
     // return so a partial load drains its own guards too.
@@ -23090,7 +23134,7 @@ pub(crate) fn sorts_with_constructors(kb: &KnowledgeBase) -> std::collections::H
 /// ASKS ONE AUTHORITY with the other two positions —
 /// [`KnowledgeBase::symbol_declares_nothing`] — so the three cannot disagree about which
 /// names exist. What differs is WHERE the candidates come from: the sites are recorded by
-/// the loader while it converts a head ([`KnowledgeBase::record_head_argument_site`]),
+/// the loader while it converts a head ([`KnowledgeBase::record_head_name_site`]),
 /// because only the loader can answer the two questions that decide whether a term is
 /// judged at all, and the stored head term cannot answer either:
 ///
@@ -23108,18 +23152,44 @@ pub(crate) fn sorts_with_constructors(kb: &KnowledgeBase) -> std::collections::H
 /// defect that walk had — every one of its 434 reports rendered at `0..0`, because the
 /// term-span table is keyed on the hash-consed `TermId` and two identical subterms
 /// written in two files share one entry.
-fn check_undefined_head_arguments(kb: &mut KnowledgeBase) -> Vec<LoadError> {
-    kb.take_head_argument_sites()
-        .into_iter()
-        .filter(|(functor, _)| kb.symbol_declares_nothing(*functor))
-        .map(|(functor, at)| {
-            LoadError::UndefinedHeadArgument {
-                functor: kb.qualified_name_of(functor).to_string(),
-                span: at.span,
+///
+/// WI-20260825-6RRVA widened it to the rest of a head: an equation's REPLACEMENT, refused
+/// in its own sentence ([`LoadError::UndefinedEquationReplacement`]), and a paren-less
+/// DOTTED name in either part. MEASURED before: zero sites in the stdlib and the examples,
+/// and five fixtures in the suites, one of them a real typo
+/// (`anthill.realization.Pending` for `ObligationStatus.Pending`).
+///
+/// A PAREN-LESS name is asked what a goal of that name would be asked
+/// ([`KnowledgeBase::undefined_query_goal_functors`]'s head test and its
+/// discrimination-tree backstop): `fact Bogus.zero` files an arity-0 proposition only the
+/// tree holds, and `rule drive :- Bogus.zero` answers it, so `fact holds(Bogus.zero)` names
+/// it too. A compound's functor is not, as before: an arity-0 `fact cons` is no
+/// declaration of `cons(head: 1, tail: nil)`.
+fn check_undefined_head_names(kb: &mut KnowledgeBase) -> Vec<LoadError> {
+    let mut errors = Vec::new();
+    for site in kb.take_head_name_sites() {
+        if !kb.symbol_declares_nothing(site.name) {
+            continue;
+        }
+        if site.paren_less {
+            let goal = kb.alloc(Term::Ident(site.name));
+            if !kb.browse_program_clauses_matching(&goal).is_empty() {
+                continue;
             }
-            .located_in_kb_source(kb, at.source)
-        })
-        .collect()
+        }
+        let functor = kb.qualified_name_of(site.name).to_string();
+        let span = site.at.span;
+        let error = match site.position {
+            crate::kb::HeadNamePosition::Argument => {
+                LoadError::UndefinedHeadArgument { functor, span }
+            }
+            crate::kb::HeadNamePosition::Replacement => {
+                LoadError::UndefinedEquationReplacement { functor, span }
+            }
+        };
+        errors.push(error.located_in_kb_source(kb, site.at.source));
+    }
+    errors
 }
 
 /// The effect-guard position of the undefined-name family: every goal of a guard the
@@ -28548,33 +28618,49 @@ struct RuleBoundAnchor {
 }
 
 /// WI-20260904-B8ESG — the clause head being converted, and which of its parse nodes
-/// the head-argument name check does NOT judge.
+/// the head name check does NOT judge.
 ///
 /// A HEAD WRITTEN WITH AN EQUALITY-FAMILY CONNECTIVE (`lhs <=> rhs`, `lhs = rhs :- g`,
 /// `lhs === rhs`, or a written call resolving to one of those kernel symbols) is stored as
-/// `Fn{connective, [lhs, rhs]}`, and two of its nodes are not patterns:
-///
-///  * the SUBJECT node itself — what the rule defines (or, for `===`, tests), whose
-///    functor introduces a name the way a predicate head's does
-///    (`wi948_written_connective_head_test::an_argument_of_a_written_connective_head_is_not_the_subject`);
-///  * the whole REPLACEMENT. WHAT THIS DOES NOT CLAIM: that an RHS naming nothing is
-///    harmless. It produces an inert term — WI-1058's stated harm one position over — and
-///    answering it means deciding whether a law introduces its operands the way `<=>`
-///    introduces its subject, a question about equations that this ticket did not take.
-///    The test corpus writes placeholder laws (`rule my_def: foo(?a) <=> bar(?a) @[simp]`)
-///    where `bar` denoting nothing is the fixture's point.
+/// `Fn{connective, [lhs, rhs]}` ([`EquationHead`]). Its SUBJECT node is not judged — what
+/// the rule defines (or, for `===`, tests), whose functor introduces a name the way a
+/// predicate head's does
+/// (`wi948_written_connective_head_test::an_argument_of_a_written_connective_head_is_not_the_subject`).
 ///
 /// THE SUBJECT'S ARGUMENTS ARE JUDGED, because they MATCH: `rule length(cons(head: ?h,
 /// tail: ?t)) <=> …` with only the `List` sort imported is exactly the silent defect the
 /// check exists for — the rewrite never fires. Found by `/code-review`; the first cut
 /// exempted everything below the connective.
+///
+/// THE REPLACEMENT IS JUDGED TOO since WI-20260825-6RRVA, in a sentence of its own: it was
+/// exempt as a whole, and an equational law whose right-hand side named nothing loaded
+/// clean — `VectorSpace`'s scalar-side laws went on writing `Ring.sub(Ring.zero, Ring.one)`
+/// for as long as `Ring` held none of the three.
 #[derive(Clone, Copy)]
 struct ClauseHead {
     /// The head's own node — never judged, a head INTRODUCES its functor (WI-896).
     node: ParseTermId,
-    /// For a connective head: its subject node, and the span its replacement covers.
-    /// Set when the head node itself converts and its RESOLVED functor is known.
-    connective: Option<(ParseTermId, crate::span::SourceSpan)>,
+    /// For a connective head, its two sides. Set when the head node itself converts and
+    /// its RESOLVED functor is known.
+    connective: Option<EquationHead>,
+}
+
+/// The two sides of an equation head, as [`ClauseHead`] reads them.
+#[derive(Clone, Copy)]
+struct EquationHead {
+    /// The subject node.
+    subject: ParseTermId,
+    /// The subject's span when the subject is a paren-less dotted NAME (`Foo.Bar.c <=> 0`):
+    /// every node inside it is a segment of that one name, which the subject introduces as
+    /// its `()` twin introduces `Foo.Bar.c` (WI-20260902-CZJ2N), and none is an argument.
+    subject_name: Option<crate::span::SourceSpan>,
+    /// What the subject's functor resolved to, once the subject has converted. The
+    /// replacement naming it again is about the name the subject introduces, whether or not
+    /// anything else declares it: `bar(?a) = bar(?a) :- g` is a law about `bar` exactly as
+    /// `baz(?a) = 0 :- g` is one about `baz`, and only the first was refused (`/code-review`).
+    subject_functor: Option<Symbol>,
+    /// The span the replacement covers.
+    replacement: crate::span::SourceSpan,
 }
 
 impl ClauseHead {
@@ -28585,16 +28671,41 @@ impl ClauseHead {
         }
     }
 
-    /// Is `parse_id`, written `at`, a connective's subject node or inside its replacement?
-    /// BY SPAN for the replacement, because its subtree is converted by the ordinary
-    /// recursion, which this does not bracket.
-    fn exempts(&self, parse_id: ParseTermId, at: crate::span::SourceSpan) -> bool {
-        self.connective.is_some_and(|(subject, replacement)| {
-            parse_id == subject
-                || (at.source == replacement.source
-                    && replacement.start() <= at.start()
-                    && at.end() <= replacement.end())
-        })
+    /// Where `parse_id`, written `at`, stands in this head, or `None` when it is not judged:
+    /// the head's own node, a connective's SUBJECT node and — for a subject that is a dotted
+    /// name — every segment of it. BY SPAN for the replacement and for a dotted subject,
+    /// because their subtrees are converted by the ordinary recursion, which this does not
+    /// bracket.
+    fn judged_position(
+        &self,
+        parse_id: ParseTermId,
+        at: crate::span::SourceSpan,
+    ) -> Option<crate::kb::HeadNamePosition> {
+        if parse_id == self.node {
+            return None;
+        }
+        let Some(eq) = self.connective else {
+            return Some(crate::kb::HeadNamePosition::Argument);
+        };
+        let within = |outer: crate::span::SourceSpan| {
+            at.source == outer.source && outer.start() <= at.start() && at.end() <= outer.end()
+        };
+        if parse_id == eq.subject || eq.subject_name.is_some_and(within) {
+            None
+        } else if within(eq.replacement) {
+            Some(crate::kb::HeadNamePosition::Replacement)
+        } else {
+            Some(crate::kb::HeadNamePosition::Argument)
+        }
+    }
+
+    /// Is `functor`, written at `position`, the subject's own functor repeated in the
+    /// replacement ([`EquationHead::subject_functor`])?
+    fn repeats_subject(&self, functor: Symbol, position: crate::kb::HeadNamePosition) -> bool {
+        position == crate::kb::HeadNamePosition::Replacement
+            && self
+                .connective
+                .is_some_and(|eq| eq.subject_functor == Some(functor))
     }
 }
 
@@ -32265,6 +32376,105 @@ impl<'a> Loader<'a> {
         Some(name)
     }
 
+    /// WI-20260825-6RRVA — judge a paren-less dotted chain written in a clause head: record
+    /// it for the post-load check when its name has no answer, and refuse it here when its
+    /// one answer is hidden. The nullary half of the head name check: `vec_scale(Ring.one,
+    /// ?v)` and `… <=> Bogus.zero` are minted `field_access` chains, which the compound
+    /// check's provenance gate passes over, so a dead address in one loaded clean beside a
+    /// refused `Ring.mul(?c, ?d)`.
+    ///
+    /// A qualified name is not a symbolic constant (kernel-language.md §5.3 — that
+    /// reading is the BARE name's): it is a path, and a path names something or nothing.
+    /// Not judged, each a chain that is not a path:
+    ///   * one rooted at a clause parameter or a local binder
+    ///     ([`Self::dotted_name_rooted_at_no_binding`]) — a projection on that binding;
+    ///   * one with a VALUE prefix — a rule, a const, a nullary operation
+    ///     ([`Self::name_has_value_prefix`]) — a field read on that value;
+    ///   * one read through a requirement's name (`R.zero` under `requires R: Ring[F]`,
+    ///     [`Self::requirement_name_member`]) — the operation that requirement's dictionary
+    ///     holds, as an operation body reads it.
+    ///
+    /// "No answer" is [`Self::qualified_name_resolves`]'s, which counts a name hidden by
+    /// `internal` or contested between two readings as answered. A HIDDEN one is refused
+    /// here as the forbidden access it is, the refusal `remap_name_str` gives the compound
+    /// spelling (`Vault.secret2(1)`); a contested one is not this check's.
+    ///
+    /// Judged where resolution FAILS, so a chain is named once: `Bogus.x.y` is the chain
+    /// `Bogus.x` read `.y`, and the inner node, whose prefix is the bare root, is the one
+    /// that reports. An outer node whose prefix has no answer leaves it to that node.
+    fn judge_head_dotted_name(
+        &mut self,
+        parse_id: ParseTermId,
+        at: crate::span::SourceSpan,
+        position: crate::kb::HeadNamePosition,
+    ) {
+        let Some(name) = self.dotted_name_rooted_at_no_binding(parse_id) else {
+            return;
+        };
+        if let Some((prefix, _)) = name.rsplit_once('.') {
+            if prefix.contains('.') && !self.qualified_name_resolves(prefix) {
+                return;
+            }
+        }
+        if self.name_has_value_prefix(&name) || self.reads_through_requirement_name(&name) {
+            return;
+        }
+        if self.qualified_name_resolves(&name) {
+            let visible = self
+                .kb
+                .symbols
+                .resolve_in_scope(&name, self.current_scope)
+                .or_else(|| self.resolve_dotted(&name, DottedVisibility::VisibleOnly));
+            if matches!(visible, ResolveResult::NotFound) {
+                // The ladder's own probe, as `resolve_dotted_reported` asks it: the in-scope
+                // one (`hidden_internal`) walks no dotted rung.
+                if let Some(hidden) = hidden_dotted_internal(self.kb, &name, self.current_scope) {
+                    self.push_forbidden_internal(hidden, &name, self.parsed.terms.span(parse_id));
+                }
+            }
+            return;
+        }
+        // The bare intern a reference to the name gets — what a paren-less fact head
+        // `fact Bogus.zero` is filed under, which the post-load verdict looks for.
+        let name = self.kb.symbols.intern(&name);
+        self.kb.record_head_name_site(crate::kb::HeadNameSite {
+            name,
+            at,
+            position,
+            paren_less: true,
+        });
+    }
+
+    /// Does a compound written in a clause head call through a BINDING — a
+    /// `lambda`/`let`/`match`-bound name (its functor remapped to the binder's own symbol,
+    /// `new_functor`), or a requirement's name (`R.add(?a, ?a)` under `requires R:
+    /// Ring[F]`, which a `@[simp]` right-hand side reads where it fires)? Each denotes the
+    /// binding, which declares nothing by construction. `functor` is the parse symbol, as
+    /// written.
+    ///
+    /// NOT a sigil-free clause PARAMETER, and that is measured rather than overlooked
+    /// (`/code-review` proposed it): `app(f: (x: Int64) -> Int64, x: Int64) <=> f(x)
+    /// @[simp]` keeps `f` as a bare name in the stored term, not the parameter's variable,
+    /// and `app(inc, 4)` died `OperationBodyMissing` with the replacement exempt — as it
+    /// did with `f` typed by a sort alias of the arrow. The name it was refused for names
+    /// nothing.
+    fn head_functor_is_a_binding(&self, functor: Symbol, new_functor: Symbol) -> bool {
+        self.local_names_stack
+            .iter()
+            .any(|frame| frame.values().any(|&bound| bound == new_functor))
+            || self.reads_through_requirement_name(self.parsed.symbols.local_name(functor))
+    }
+
+    /// Is the dotted `name` an operation read through a requirement's name in scope here
+    /// ([`Self::requirement_name_member`])?
+    fn reads_through_requirement_name(&self, name: &str) -> bool {
+        name.rsplit_once('.')
+            .filter(|(receiver, _)| !receiver.contains('.'))
+            .is_some_and(|(receiver, member)| {
+                self.requirement_name_member(receiver, member).is_some()
+            })
+    }
+
     /// Convert a parse term to a KB term, re-allocating into the hash-consed store.
     fn convert_term(&mut self, parse_id: ParseTermId) -> TermId {
         self.convert_term_with_expected(parse_id, None)
@@ -32736,7 +32946,8 @@ impl<'a> Loader<'a> {
                 //    (`convert_rule_head_with_params`) converts its arguments without
                 //    passing the head through `convert_term`, so an absolute depth was off
                 //    by one there and skipped every argument of such a head.
-                //  * NOT A CONNECTIVE'S SUBJECT OR REPLACEMENT — see `ClauseHead`.
+                //  * NOT A CONNECTIVE'S SUBJECT — see `ClauseHead`. Its REPLACEMENT is judged,
+                //    in a sentence of its own (WI-20260825-6RRVA).
                 //  * NOT `is_minted` — the node was WRITTEN. A minted node is a desugar
                 //    target (`pattern_constructor` / `match_branch` / `pattern_var` /
                 //    `lambda_expr` / …), and the KB declares nothing under those by
@@ -32744,11 +32955,17 @@ impl<'a> Loader<'a> {
                 //    WI-1009's rule; MEASURED, they are 404 of the 434 reports a
                 //    spelling-blind walk over the head TERM produced on
                 //    `examples/classic-mini/ancestor` — 141 `pattern_constructor`, 132
-                //    `match_branch`, 131 `pattern_var`.
+                //    `match_branch`, 131 `pattern_var`. The one minted node that IS a
+                //    written name — a paren-less dotted chain — is asked by its own
+                //    question below ([`Self::judge_head_dotted_name`]).
                 //  * NOT A LOCAL BINDER — a call through a `lambda`/`let`/`match`-bound
                 //    name (`fact twice(lambda f -> lambda x -> f(f(x)))`) remaps its functor
                 //    to the binder's own unique symbol, which declares nothing by
-                //    construction and denotes the binding all the same.
+                //    construction and denotes the binding all the same. Nor through a
+                //    requirement's name, for the same reason
+                //    ([`Self::head_functor_is_a_binding`]).
+                //  * NOT THE SUBJECT'S OWN FUNCTOR, repeated in its replacement — see
+                //    `EquationHead::subject_functor`.
                 //
                 // The span is the PARSE node's, which is why this records here and not
                 // over the stored term: the hash-consed term table keys one span per
@@ -32759,28 +32976,49 @@ impl<'a> Loader<'a> {
                         if let Term::Fn { pos_args, .. } = self.parsed.terms.get(parse_id) {
                             if let [subject, replacement] = pos_args.as_slice() {
                                 let (subject, replacement) = (*subject, *replacement);
+                                let subject_name = dotted_citation_name(
+                                    &self.parsed.symbols,
+                                    &self.parsed.terms,
+                                    subject,
+                                )
+                                .map(|_| self.source_span_of(subject));
                                 self.clause_head = Some(ClauseHead {
-                                    connective: Some((subject, self.source_span_of(replacement))),
+                                    connective: Some(EquationHead {
+                                        subject,
+                                        subject_name,
+                                        subject_functor: None,
+                                        replacement: self.source_span_of(replacement),
+                                    }),
                                     ..head
                                 });
                             }
                         }
                     }
+                    if let Some(eq) = head.connective.filter(|eq| eq.subject == parse_id) {
+                        self.clause_head = Some(ClauseHead {
+                            connective: Some(EquationHead {
+                                subject_functor: Some(new_functor),
+                                ..eq
+                            }),
+                            ..head
+                        });
+                    }
                 }
-                if let Some(head) = self.clause_head {
+                if let Some(head) = self.clause_head.filter(|_| !self.in_quoted_term) {
                     let at = self.source_span_of(parse_id);
-                    // By the RESOLVED symbol: the functor denotes a binder in scope.
-                    let written_local_call = self
-                        .local_names_stack
-                        .iter()
-                        .any(|frame| frame.values().any(|&bound| bound == new_functor));
-                    if parse_id != head.node
-                        && !head.exempts(parse_id, at)
-                        && !self.in_quoted_term
-                        && !self.parsed.terms.is_minted(parse_id)
-                        && !written_local_call
-                    {
-                        self.kb.record_head_argument_site(new_functor, at);
+                    if let Some(position) = head.judged_position(parse_id, at) {
+                        if self.parsed.terms.is_minted(parse_id) {
+                            self.judge_head_dotted_name(parse_id, at, position);
+                        } else if !self.head_functor_is_a_binding(functor, new_functor)
+                            && !head.repeats_subject(new_functor, position)
+                        {
+                            self.kb.record_head_name_site(crate::kb::HeadNameSite {
+                                name: new_functor,
+                                at,
+                                position,
+                                paren_less: false,
+                            });
+                        }
                     }
                 }
 
@@ -41302,6 +41540,47 @@ impl<'a> Loader<'a> {
     /// AND IT IS HELD TO WHAT THE QUALIFIED NAME IS HELD TO: an `internal` operation of
     /// another scope is refused through the name as it is by its own
     /// ([`Self::push_forbidden_internal`]).
+    /// WI-20261013-50ZMN — the requirement name `receiver` in scope here and the operation
+    /// `receiver.member` reads through it, or `None`. The name is a type parameter of the
+    /// scope that declares it — the operation's own, or its sort's — which a `requires`
+    /// line names; the member is the required sort's operation or one of a sort it
+    /// provides ([`operation_through_requirement_name`]). ONE READING for the call the
+    /// loader lowers ([`Self::requirement_name_call`]) and for the head name check, which
+    /// must not call such a name undeclared (WI-20260825-6RRVA).
+    fn requirement_name_member(&self, receiver: &str, member: &str) -> Option<(Symbol, Symbol)> {
+        let ResolveResult::Found(param) = self
+            .kb
+            .symbols
+            .resolve_in_scope(receiver, self.current_scope)
+        else {
+            return None;
+        };
+        let declared_in = self.kb.symbols.declaring_scope(param)?;
+        if !self.kb.symbols.is_type_param(declared_in, receiver) {
+            return None;
+        }
+        let owner = declared_in.owner();
+        let written = self
+            .kb
+            .requirement_sort_named(owner, receiver)
+            .or_else(|| {
+                self.kb
+                    .named_requirement_slots(owner)
+                    .iter()
+                    .find(|slot| self.kb.local_name_of(slot.binder) == receiver)
+                    .and_then(|slot| slot.spec_base)
+            })?;
+        let spec = match super::typing::alias_expansion(self.kb, written) {
+            None => written,
+            Some(super::typing::AliasExpansion::Sort { base, .. }) => base,
+            Some(_) => return None,
+        };
+        Some((
+            param,
+            operation_through_requirement_name(self.kb, spec, member)?,
+        ))
+    }
+
     fn requirement_name_call(
         &mut self,
         parse_functor: Symbol,
@@ -41318,31 +41597,7 @@ impl<'a> Loader<'a> {
             }
             (receiver.to_owned(), member.to_owned())
         };
-        let ResolveResult::Found(param) =
-            self.kb.symbols.resolve_in_scope(&receiver, self.current_scope)
-        else {
-            return None;
-        };
-        // A type parameter of the scope that declares it: the operation's own, or its
-        // sort's.
-        let declared_in = self.kb.symbols.declaring_scope(param)?;
-        if !self.kb.symbols.is_type_param(declared_in, &receiver) {
-            return None;
-        }
-        let owner = declared_in.owner();
-        let written = self.kb.requirement_sort_named(owner, &receiver).or_else(|| {
-            self.kb
-                .named_requirement_slots(owner)
-                .iter()
-                .find(|slot| self.kb.local_name_of(slot.binder) == receiver)
-                .and_then(|slot| slot.spec_base)
-        })?;
-        let spec = match super::typing::alias_expansion(self.kb, written) {
-            None => written,
-            Some(super::typing::AliasExpansion::Sort { base, .. }) => base,
-            Some(_) => return None,
-        };
-        let spec_op = operation_through_requirement_name(self.kb, spec, &member)?;
+        let (param, spec_op) = self.requirement_name_member(&receiver, &member)?;
         let span = self.parsed.terms.span(parse_id);
         if !self
             .kb

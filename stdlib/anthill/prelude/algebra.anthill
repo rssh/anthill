@@ -53,8 +53,10 @@ namespace anthill.prelude.algebra
   -- owns that gap; this sort is the shape it has to keep safe.
   sort Ring
     -- WI-20260825-KD9SW: a WRITTEN name in a LAW or CONSTRAINT HEAD needs the import.
-    -- A minted operator carries its own address; these positions spell the name out, and
-    -- neither a constraint head nor a law body is name-checked, so a miss here is SILENT.
+    -- A minted operator carries its own address; these positions spell the name out. A
+    -- name there that denotes NOTHING is refused at load (WI-20260904-B8ESG, and for a
+    -- law's right-hand side WI-20260825-6RRVA), but one that lands on some OTHER
+    -- declaration is not, so a miss here is still SILENT: without this line the file loads.
     import anthill.prelude.Additive.{add}
 
     sort T = ?
@@ -88,8 +90,8 @@ namespace anthill.prelude.algebra
   -- via per-component implementations.
   sort VectorSpace
     -- The scalar-side categories the laws below name. WRITTEN OUT rather than left to the
-    -- `requires Ring[F]` chain, because an import is a CHECKED position and the laws are
-    -- not: measured on scaland, loading `algebra.anthill` without `arithmetic.anthill`
+    -- `requires Ring[F]` chain, because an import is a CHECKED position and the laws
+    -- were not: measured on scaland, loading `algebra.anthill` without `arithmetic.anthill`
     -- makes this line say "unresolved name 'Additive' in scope 'anthill.prelude'", while
     -- `Ring`'s own `provides Additive[T = T]` says NOTHING — an unresolved provision
     -- target degrades to an interned name. So this import is what turns "the categories
@@ -121,14 +123,16 @@ namespace anthill.prelude.algebra
     -- `Ring` reaches its operations by `provides` and declares none of them.
     --
     -- NOTHING CAUGHT IT, which is why this note is long. An equational law's head and RHS
-    -- are UNCHECKED positions: driven on the built tree, `rule r: f(?a) <=> Bogus.nope(?a)`
-    -- inside a sort loads clean, byte-identically to the `Ring.sub` spelling — so "the
-    -- stdlib loads" distinguishes a live address from a typo not at all. The same name in
-    -- a rule-body GOAL is two loud errors ("rule-body term `Ring.sub` names nothing")
-    -- and in an operation body one ("unknown functor"); only the law position is silent.
-    -- Filed as WI-20260825-6RRVA; `wi_1wbzt_syntax_category_test::
-    -- the_scalar_side_law_addresses_are_live_and_a_dead_one_is_still_loud` is the row that
-    -- pins these five through the guarded position instead.
+    -- were UNCHECKED positions: `rule r: f(?a) <=> Bogus.nope(?a)` inside a sort loaded
+    -- clean, byte-identically to the `Ring.sub` spelling — so "the stdlib loads"
+    -- distinguished a live address from a typo not at all, while the same name in a
+    -- rule-body GOAL was two loud errors and in an operation body one. WI-20260825-6RRVA
+    -- closed the position: a name in a law's arguments or right-hand side that denotes
+    -- nothing, `Ring.zero` spelled without parentheses included, is refused at load
+    -- (`wi_6rrva_law_names_nothing_test` restores the five with dead spellings).
+    -- `wi_1wbzt_syntax_category_test::
+    -- the_scalar_side_law_addresses_are_live_and_a_dead_one_is_still_loud` still pins
+    -- which SYMBOL each address lands on, which "names something" does not say.
     --
     -- `Ring.sub` RESOLVES AGAIN SINCE WI-20260825-X9RRN — to `Additive.sub`, through the
     -- `provides` above — so the spelling below is now a CHOICE rather than a repair, and

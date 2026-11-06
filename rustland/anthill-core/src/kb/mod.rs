@@ -808,6 +808,34 @@ pub(crate) struct SortOpsTable {
 
 // ── KnowledgeBase ───────────────────────────────────────────────
 
+/// WI-20260825-6RRVA — which part of a clause head a name the post-load check judges is
+/// written in ([`KnowledgeBase::record_head_name_site`]). The two are refused by one
+/// authority in two sentences: an argument is a pattern the head matches, a replacement is
+/// what an equation says its subject equals.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum HeadNamePosition {
+    /// An argument of the head, or of an equation's subject.
+    Argument,
+    /// Inside an equation head's replacement — the right-hand side of `<=>`, `=` or `===`.
+    Replacement,
+}
+
+/// One name the loader met in a clause head that the post-load undefined-name check
+/// judges ([`KnowledgeBase::record_head_name_site`]).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct HeadNameSite {
+    /// A compound's functor, or the bare intern of a paren-less dotted name.
+    pub name: Symbol,
+    /// Where it is written.
+    pub at: crate::span::SourceSpan,
+    /// Which part of the head it is written in.
+    pub position: HeadNamePosition,
+    /// A paren-less dotted name (`Bogus.zero`) rather than a compound's functor. Such a
+    /// name is a declaration of its own where a paren-less fact head files a proposition
+    /// under it (`fact Bogus.zero`), which only the discrimination tree holds.
+    pub paren_less: bool,
+}
+
 /// One goal of an effect guard, as the loader lowered it, for the post-load undefined-name
 /// check ([`KnowledgeBase::record_effect_guard_site`]).
 #[derive(Clone, Debug)]
@@ -1336,10 +1364,9 @@ pub struct KnowledgeBase {
     // Set of functor symbols that are constructors (entities with a parent sort).
     // Populated by register_entity_of, used by is_constructor_symbol for O(1) lookup.
     constructor_symbols: HashSet<Decl>,
-    /// WI-20260904-B8ESG — `(functor, where)` per head-ARGUMENT compound the loader met,
-    /// drained by the post-load undefined-name check. See
-    /// [`Self::record_head_argument_site`].
-    head_argument_sites: Vec<(Symbol, crate::span::SourceSpan)>,
+    /// WI-20260904-B8ESG — one per name the loader met in a clause head that the post-load
+    /// undefined-name check judges. See [`Self::record_head_name_site`].
+    head_name_sites: Vec<HeadNameSite>,
     /// One per goal of an effect guard the loader lowered, drained by the post-load
     /// undefined-name check. See [`Self::record_effect_guard_site`].
     effect_guard_sites: Vec<EffectGuardSite>,
@@ -3085,7 +3112,7 @@ impl KnowledgeBase {
             builtins: HashMap::new(),
             entity_fields: HashMap::new(),
             constructor_symbols: HashSet::new(),
-            head_argument_sites: Vec::new(),
+            head_name_sites: Vec::new(),
             effect_guard_sites: Vec::new(),
             sort_goal_declarations: Vec::new(),
             absence_records: HashMap::new(),
@@ -12973,32 +13000,29 @@ impl KnowledgeBase {
         self.parameterized_type_sites.push(site);
     }
 
-    /// WI-20260904-B8ESG — record one head-ARGUMENT compound's `(functor, where)`, for
-    /// the post-load undefined-name check. The loader cannot take the verdict itself:
-    /// whether a name declares anything is only settled once every file has loaded, since
-    /// a predicate defined purely by FACTS keeps an `Unresolved` functor until its clauses
-    /// land. Same record-now-decide-later split, and the same draining ownership, as
-    /// [`Self::record_parameterized_type_site`] just above.
-    pub(crate) fn record_head_argument_site(
-        &mut self,
-        functor: Symbol,
-        span: crate::span::SourceSpan,
-    ) {
-        self.head_argument_sites.push((functor, span));
+    /// WI-20260904-B8ESG — record one name written in a clause head — a compound's
+    /// functor, or a paren-less dotted name (WI-20260825-6RRVA) — with where and in which
+    /// part of the head, for the post-load undefined-name check. The loader cannot take the
+    /// verdict itself: whether a name declares anything is only settled once every file has
+    /// loaded, since a predicate defined purely by FACTS keeps an `Unresolved` functor until
+    /// its clauses land. Same record-now-decide-later split, and the same draining
+    /// ownership, as [`Self::record_parameterized_type_site`] just above.
+    pub(crate) fn record_head_name_site(&mut self, site: HeadNameSite) {
+        self.head_name_sites.push(site);
     }
 
-    /// WI-20260904-B8ESG — take the recorded head-argument sites, leaving the registry
+    /// WI-20260904-B8ESG — take the recorded head-name sites, leaving the registry
     /// empty. DRAINING for the reason its WI-835 neighbour is: a later `load_all` into
     /// this KB must judge only its own sites, not re-report every batch before it.
-    pub(crate) fn take_head_argument_sites(&mut self) -> Vec<(Symbol, crate::span::SourceSpan)> {
-        std::mem::take(&mut self.head_argument_sites)
+    pub(crate) fn take_head_name_sites(&mut self) -> Vec<HeadNameSite> {
+        std::mem::take(&mut self.head_name_sites)
     }
 
     /// Record one goal of an effect guard (`eq(b, 0)` in `Error[D] :- eq(b, 0)`), for the
     /// post-load undefined-name check. Recorded where the guard is lowered, which is the one
     /// place a guarded atom is built, so every row a guard can be written in reaches it: an
     /// operation's own row, a function type's row, a binding of a row parameter. Decided
-    /// after the load, as [`Self::record_head_argument_site`] is, because a predicate a
+    /// after the load, as [`Self::record_head_name_site`] is, because a predicate a
     /// later file defines is not declared yet when the signature is lowered.
     pub(crate) fn record_effect_guard_site(&mut self, site: EffectGuardSite) {
         self.effect_guard_sites.push(site);

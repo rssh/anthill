@@ -76,7 +76,9 @@ fn simp_attributed_equational_rule_is_indexed() {
     let with_simp = equational_indexed_count(load_with(
         r#"
         namespace test.eqattr.simp_with
+          import anthill.prelude.{Int64}
           rule Marker(?x) :- ?x = 1
+          operation bar(a: Int64) -> Int64 = a
           rule my_def: foo(?a) <=> bar(?a) @[simp]
         end
     "#,
