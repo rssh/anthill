@@ -181,6 +181,149 @@ end
     assert_eq!(int(&mut interp, "c6gk8.mul.eight"), 8);
 }
 
+/// A provision whose other column names the carrier bare is decided at load: behind `Car
+/// provides Rel[A = Car, B = Car]`, `Rel[A = Self, B = MyCar]` (`sort MyCar = Car`) and `Rel[A
+/// = Self, B = Car[V = ?]]` — each `B` any `Car` (proposal 070) — `Rel.mix(x, y)` over an
+/// `Int64` car and a `String` car runs `Car.mix`, 7 (6 + 1), from an operation body and from
+/// a rule. FAILS with the provider's own parameters grounded at every column (arm (2.5) of
+/// `match_candidate_against_goal`): `A`'s instance binds `V` to `Int64`, `B`'s is refused at
+/// `String`, and the dispatch finds no candidate (the stamp `None`); the values pass either
+/// way, the run time's value route computing them.
+#[test]
+fn a_bare_carrier_at_another_column_is_any_instance_at_load() {
+    const PROGRAM: &str = r#"
+namespace @NS@
+  import anthill.prelude.{Int64, String}
+  sort Rel
+    sort A = ?
+    sort B = ?
+    operation mix(a: A, b: B) -> Int64
+  end
+  sort Car
+    sort V = ?
+    entity car(v: V, n: Int64)
+    provides Rel[A = @A@, B = @B@]
+    operation mix[W](a: Self, b: Car[V = W]) -> Int64 = b.n + 1
+  end
+  sort MyCar = Car
+  operation go() -> Int64 =
+    let x: Car[V = Int64] = car(v: 1, n: 1)
+    let y: Car[V = String] = car(v: "s", n: 6)
+    Rel.mix(x, y)
+  rule viaRule(?r) :- Rel.mix(car(v: 1, n: 1), car(v: "s", n: 6), ?r)
+end
+"#;
+    for (n, a, b) in [
+        ("bare", "Car", "Car"),
+        ("alias", "Self", "MyCar"),
+        ("open", "Self", "Car[V = ?]"),
+    ] {
+        let ns = format!("c6gk8.rel.{n}");
+        let mut interp = interp_for(
+            &PROGRAM
+                .replace("@NS@", &ns)
+                .replace("@A@", a)
+                .replace("@B@", b),
+        );
+        let mix = format!("{ns}.Rel.mix");
+        let car_mix = some(&format!("{ns}.Car.mix"));
+        assert_eq!(
+            decided_in_op(interp.kb(), &format!("{ns}.go"), &mix),
+            car_mix,
+            "{n}"
+        );
+        assert_eq!(
+            decided_in_rule(interp.kb(), &format!("{ns}.viaRule"), &mix),
+            car_mix,
+            "{n}"
+        );
+        assert_eq!(int(&mut interp, &format!("{ns}.go")), 7, "{n}");
+        assert_eq!(
+            rule_int(&mut interp, &format!("{ns}.viaRule")),
+            Some(7),
+            "{n}"
+        );
+    }
+}
+
+/// The provider's own parameter is the receiver's slot, so a condition on it reads the receiver's
+/// instance: behind `Car provides Rel[A = Car, B = Car] :- Tag[T = V]` with only `Tag[T = Int64]`
+/// provided, `Rel.mix(x, y)` at an `Int64` receiver is `Car.mix`, 7, decided at load, and at a
+/// `String` receiver it is refused, "unresolved: `Tag[T = String]`"; providing `Tag[T = String]`
+/// is the repair (7). FAILS with the provider's parameters grounded at every column (at `Int64`
+/// the stamp is `None`); on the tree before, the `String` receiver loaded and answered 7 by
+/// value, its condition never asked. CONTROL, passing either way by design: a more specific
+/// witness, `Wit provides Rel[A = Car[V = Int64], B = Car[V = String]]`, still answers (500).
+#[test]
+fn a_condition_on_the_providers_parameter_reads_the_receivers_instance() {
+    const PROGRAM: &str = r#"
+namespace @NS@
+  import anthill.prelude.{Int64, String}
+  sort Tag
+    sort T = ?
+    operation tag(x: T) -> Int64
+  end
+  sort IntTag
+    import @NS@.Tag
+    provides Tag[T = Int64]
+    operation tag(x: Int64) -> Int64 = x
+  end
+  sort Rel
+    sort A = ?
+    sort B = ?
+    operation mix(a: A, b: B) -> Int64
+  end
+  sort Car
+    import @NS@.{Rel, Tag}
+    sort V = ?
+    entity car(v: V, n: Int64)
+    provides Rel[A = Car, B = Car] :- Tag[T = V]
+    operation mix[W](a: Self, b: Car[V = W]) -> Int64 = b.n + 1
+  end
+  @EXTRA@
+  operation go() -> Int64 =
+    let x: Car[V = @X@] = car(v: @XV@, n: 1)
+    let y: Car[V = @Y@] = car(v: @YV@, n: 6)
+    Rel.mix(x, y)
+end
+"#;
+    let program = |ns: &str, extra: &str, (x, xv): (&str, &str), (y, yv): (&str, &str)| {
+        PROGRAM
+            .replace("@NS@", ns)
+            .replace("@EXTRA@", extra)
+            .replace("@X@", x)
+            .replace("@XV@", xv)
+            .replace("@Y@", y)
+            .replace("@YV@", yv)
+    };
+    let int64 = ("Int64", "1");
+    let string = ("String", "\"s\"");
+    let mut at_int = interp_for(&program("c6gk8.cond.int", "", int64, string));
+    assert_eq!(
+        decided_in_op(at_int.kb(), "c6gk8.cond.int.go", "c6gk8.cond.int.Rel.mix"),
+        some("c6gk8.cond.int.Car.mix"),
+    );
+    assert_eq!(int(&mut at_int, "c6gk8.cond.int.go"), 7);
+    crate::common::assert_refused_naming(
+        &load_errors_of(&program("c6gk8.cond.str", "", string, int64)),
+        &[
+            "c6gk8.cond.str.Rel.mix",
+            "unresolved: c6gk8.cond.str.Tag[T = anthill.prelude.String]",
+        ],
+        "a condition at the receiver's instance",
+    );
+    let str_tag = "sort StrTag\n    import c6gk8.cond.rep.Tag\n    provides Tag[T = String]\n    \
+                   operation tag(x: String) -> Int64 = 0\n  end";
+    let mut repaired = interp_for(&program("c6gk8.cond.rep", str_tag, string, int64));
+    assert_eq!(int(&mut repaired, "c6gk8.cond.rep.go"), 7);
+
+    let witness = "sort Wit\n    import c6gk8.cond.wit.{Rel, Car}\n    \
+                   provides Rel[A = Car[V = Int64], B = Car[V = String]]\n    \
+                   operation mix(a: Car[V = Int64], b: Car[V = String]) -> Int64 = 500\n  end";
+    let mut with_witness = interp_for(&program("c6gk8.cond.wit", witness, int64, string));
+    assert_eq!(int(&mut with_witness, "c6gk8.cond.wit.go"), 500);
+}
+
 /// A program's own two-step chain: `Box provides Mid`, `Mid provides Top[C = Self]`, and
 /// `Top.get(box(n: 7))` runs `Mid.get` within `Box`'s `Mid` instance — `midGet(m) * 10`, `70`
 /// — in an operation body and in a rule body; `Box` writes no `get`, so `Mid`'s is its answer.

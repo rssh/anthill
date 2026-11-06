@@ -671,6 +671,9 @@ fn candidates_at(
         .as_ref()
         .is_some_and(|c| provider_spec_view_bindings(kb, c.sort, goal.spec_sort).is_some());
 
+    // The column whose instance grounds a provider's own parameters ([`MatchAt::of_column`]).
+    let carrier_column = spec_carrier_param_or_sole(kb, goal.spec_sort);
+
     let mut out: Vec<Candidate> = Vec::new();
     for row in candidates {
         // WI-1110 — A CONVERSION IS NOT A PROVIDER. `Ord provides WeakOrd[T = T]` says
@@ -840,10 +843,11 @@ fn candidates_at(
                     break;
                 }
             };
+            let at = MatchAt::of_column(kb, carrier_column, *binding_short);
             if !match_candidate_against_goal(
                 kb,
                 impl_sort,
-                MatchAt::Top, // top-level spec-view binding — arm (2.5) may self-capture here
+                at, // a top-level binding: at the carrier column arm (2.5) may self-capture
                 candidate_value,
                 &per_call_value,
                 &impl_param_set,
@@ -1370,8 +1374,13 @@ pub(super) fn impl_param_symbols(kb: &KnowledgeBase, impl_sort: Symbol) -> Small
 /// Where [`match_candidate_against_goal`] stands in the binding it started at.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum MatchAt {
-    /// The binding itself, a provision's carrier slot: arms (2a) and (2.5) read it.
+    /// The binding itself, at the spec's carrier column ([`spec_carrier_param_or_sole`]),
+    /// the one its operations receive on: arms (2a) and (2.5) read it.
     Top,
+    /// The binding itself, at another column of the spec: arm (2a) reads it as it reads the
+    /// carrier's, and arm (2.5) does not — the provider's own parameters are the receiver's
+    /// slots, so only the carrier column's instance grounds them.
+    Column,
     /// A part of the binding.
     Part,
     /// Inside an arrow's parameter, which that arrow matches back the other way as a
@@ -1385,7 +1394,22 @@ impl MatchAt {
     fn part(self) -> MatchAt {
         match self {
             MatchAt::InParameter => MatchAt::InParameter,
-            MatchAt::Top | MatchAt::Part => MatchAt::Part,
+            MatchAt::Top | MatchAt::Column | MatchAt::Part => MatchAt::Part,
+        }
+    }
+
+    /// Where the binding of a spec's parameter `key` is matched from, given the spec's carrier
+    /// column (`carrier`, [`spec_carrier_param_or_sole`], asked once per goal): [`MatchAt::Top`]
+    /// at it, [`MatchAt::Column`] at every other one, and at every column of a spec with none
+    /// (a self-representing one, whose parameters are its elements).
+    pub(super) fn of_column(kb: &KnowledgeBase, carrier: Option<Symbol>, key: Symbol) -> MatchAt {
+        let at_carrier = carrier.is_some_and(|c| {
+            short_name_of(kb.local_name_of(c)) == short_name_of(kb.local_name_of(key))
+        });
+        if at_carrier {
+            MatchAt::Top
+        } else {
+            MatchAt::Column
         }
     }
 }
@@ -1616,7 +1640,7 @@ pub(super) fn match_candidate_against_goal(
         // and is false for nearly every candidate head (`List[A]`, `Pair[A, B]` — data
         // sorts nothing provides), so the provision walk below runs only where it can
         // answer.
-        if at == MatchAt::Top && spec_has_any_providers(kb, c_base) {
+        if matches!(at, MatchAt::Top | MatchAt::Column) && spec_has_any_providers(kb, c_base) {
             if let Some(viewed) = carrier_viewed_at(kb, per_call_value, c_base) {
                 // The view is keyed by `c_base`'s own parameters, as the candidate's
                 // bindings are: one sort on both sides, so the key rule is the same-base
@@ -1796,6 +1820,14 @@ pub(super) fn match_candidate_against_goal(
     // (code-review). A provider whose compared-type is a different parameterized
     // sort at top level (`EqList provides Eq[T = List[A]]`) is parametric, handled
     // by step (2), and never reaches here.
+    //
+    // AT THE CARRIER COLUMN ONLY (proposal 070; kernel-language §8.7, the member rule): the
+    // provider's own parameters are the receiver's slots, and a bare reference to the
+    // provider's sort at another column is any instance of it, matched by step (3). Grounded
+    // at every column, `Car provides Rel[A = Car, B = Car]` took `V` from `A`'s `Car[V =
+    // Int64]` and then refused `B`'s `Car[V = String]`: `Rel.mix(x, y)` found no candidate
+    // at load and was dispatched by value when it ran (MEASURED, WI-20261105-C6GK8), and so
+    // was `Rel[A = Self, B = MyCar]`, whose `MyCar` is the sort's alias.
     if at == MatchAt::Top
         && extract_sort_ref_sym(kb, candidate_value)
             .is_some_and(|s| kb.canonical_sort_sym(s) == kb.canonical_sort_sym(impl_sort))
@@ -2618,6 +2650,7 @@ fn head_answers_at(kb: &mut KnowledgeBase, row: &RankedHead, asked: &RankedHead)
         reading: GoalReading::ProvisionHead,
         ..MatchNotes::default()
     };
+    let carrier_column = spec_carrier_param_or_sole(kb, goal.spec_sort);
     for (key, candidate_value) in &row.written {
         let Some(asked_value) = goal_binding_value(kb, goal, *key).cloned() else {
             let short = kb.local_name_of(*key).to_string();
@@ -2626,10 +2659,11 @@ fn head_answers_at(kb: &mut KnowledgeBase, row: &RankedHead, asked: &RankedHead)
             }
             return false;
         };
+        let at = MatchAt::of_column(kb, carrier_column, *key);
         if !match_candidate_against_goal(
             kb,
             row.provider,
-            MatchAt::Top,
+            at,
             candidate_value,
             &asked_value,
             &row.impl_params,

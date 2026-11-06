@@ -3,9 +3,9 @@
 - id: WI-20261105-C6GK8-proposal-073-stage-1-a-call-at
 - created: 2026-11-05T22:17:34Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-11-05T22:17:34Z
+- status_at: 2026-11-06T12:30:44Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -28,4 +28,8 @@ LEFT (a) MOVED TO STAGE 3 with the user 2026-11-06: the WI-598 arm goes with WI-
 ### 2026-11-06T11:43:48Z — feedback — claude
 
 LEFT (b) MOVED TO WI-20261025-053QV with the user 2026-11-06: a row there — the dispatch reads 053QV's rule and WI-496's deferral goes with it. Left here: (c) `Rel.mix` at a known type.
+
+### 2026-11-06T12:30:43Z — feedback — claude
+
+LEFT (c) DONE: a bare reference to the provider's own sort at a provision's other column is any instance of it at the dispatch too (proposal 070; kernel-language §8.7, the member rule). `match_candidate_against_goal`'s arm (2.5) took the call's instance into the provider's own parameters at every column, so behind `Car provides Rel[A = Car, B = Car]`, `Rel[A = Self, B = MyCar]` (`sort MyCar = Car`) or `Rel[A = Self, B = Car[V = ?]]`, `Rel.mix(x, y)` over a `Car[V = Int64]` and a `Car[V = String]` bound `V` from `A`, refused `B` at `String`, found no candidate at load and was dispatched by value when it ran. The provider's own parameters are the receiver's slots: the arm grounds them at the spec's carrier column only (`MatchAt::of_column`, at the dispatch and in the provision ranking), and a bare reference at any other column is matched as any instance. The call is decided at load, `Car.mix`, 7, from an operation body and from a rule (`a_bare_carrier_at_another_column_is_any_instance_at_load`, failing with the arm at every column). A condition on the provider's parameter reads the receiver's instance with it: `provides Rel[A = Car, B = Car] :- Tag[T = V]` at a `Car[V = String]` receiver with no `Tag[T = String]` is refused at load, "unresolved: `Tag[T = String]`", where 65f8438b loaded it and answered 7 by value, the condition never asked; a more specific witness still answers (`a_condition_on_the_providers_parameter_reads_the_receivers_instance`). CENSUS on this tree: step 3b 555 tests / 18,439 calls (1,527 / 96,542 on 65f8438b); every choice left is a call at an abstract type — a receiver typed at a spec (`Stream`, `FiniteStream`, `MySet[T = Int64]`, …), `Self` in a default body, a type variable — or 053QV's row, moved there. The acceptance is met, (a) and (b) moved with the user: delivered.
 
