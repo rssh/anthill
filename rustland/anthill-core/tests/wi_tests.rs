@@ -2426,3 +2426,5 @@ mod wi_6hvxm_every_arrow_is_a_function_test;
 mod wi_34j8z_tuple_pattern_shape_test;
 #[path = "include/wi_skwth_a_pinned_call_takes_the_overrides_labels_test.rs"]
 mod wi_skwth_a_pinned_call_takes_the_overrides_labels_test;
+#[path = "include/wi_c6gk8_known_type_call_test.rs"]
+mod wi_c6gk8_known_type_call_test;

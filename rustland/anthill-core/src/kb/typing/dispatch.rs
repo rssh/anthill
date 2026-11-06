@@ -889,7 +889,7 @@ fn provider_of_the_instance(
 /// `Iterable.map(src)` on it would otherwise mis-pin to `FiniteCollection`'s OWN `map`, a
 /// different operation. A concrete carrier — direct OR transitive — does pin.
 ///
-/// That leg is what the body-less block's WI-496/WI-598 deferral now ASKS rather than
+/// That leg is what the body-less block's WI-598 deferral now ASKS rather than
 /// spells: its arm reads this function's answer instead of calling
 /// `carrier_is_abstract_spec` itself, so the predicate has one owner AND one evaluation
 /// per call site. That matters for cost, not only for tidiness — it reaches

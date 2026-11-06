@@ -762,10 +762,11 @@ fn check_apply_call(
                 });
             }
         }
-        // WI-1027 — the ONE projection of that 7-tuple's carrier field, read by three
-        // sites (the WI-496/598 abstract-spec deferral and both `statically_pinned_carrier`
-        // calls). The tuple is positional and seven wide, so a `|(_, c, ..)|` pattern keeps
-        // compiling with the WRONG element if a field is ever inserted before the carrier.
+        // WI-1027 — the ONE projection of that 7-tuple's carrier field, read by every site
+        // that asks for the receiver's carrier (the WI-598 abstract-spec deferral, both
+        // `statically_pinned_carrier` calls, `carrier_the_call_binds`, `call_names_no_carrier`).
+        // The tuple is positional and seven wide, so a `|(_, c, ..)|` pattern keeps compiling
+        // with the WRONG element if a field is ever inserted before the carrier.
         let carrier_param_sym: Option<Symbol> = carrier_param_info.as_ref().map(|(_, c, ..)| *c);
         // WI-20261001-80ZV8 — a parameter of the callee's SORT that several arguments bind
         // takes their join ([`join_repeated_sort_params`]), BEFORE the receiver's carrier binds
@@ -3870,8 +3871,13 @@ fn check_apply_call(
                     )?;
                     // PinNow, or ConcreteApplyWithin when the impl's OWN sort declares
                     // `requires` (so its dict threads) — the Unique-arm discipline. Only
-                    // a runnable impl is rewritten (a body-less one stays the spec op).
-                    if op_has_runnable_body(kb, impl_op) {
+                    // an impl this runtime can run is rewritten, a body or its host
+                    // implementation; one with neither stays the spec op. Asked for a body
+                    // alone, a host member was left as the spec op, which has no body:
+                    // the program loaded clean and died at run time (MEASURED,
+                    // `wi_c6gk8_known_type_call_test::a_higher_kinded_members_host_
+                    // implementation_is_pinned`).
+                    if op_is_interpretable(kb, impl_op) {
                         classify_pin_or_apply_within(
                             kb,
                             occ,
@@ -4136,37 +4142,23 @@ fn check_apply_call(
                     });
                 }
             }
-            // WI-496: a body-less CARRIER-PARAM spec op (`Iterable.iterator(c: C)`)
-            // on a concrete carrier that provides the spec only TRANSITIVELY — a
-            // `List`, whose Iterable-ness rides through `List provides Stream` +
-            // `Stream provides Iterable` with no direct `List provides Iterable`
-            // fact (the `transitive` flag the classification above already set on
-            // `carrier_param_info`). Direct dispatch cannot resolve it:
-            // `dispatch_spec_op_cached` LOOSELY matches `Stream provides Iterable`
-            // (List ≤ Stream, provider admissibility) and then recurses into
-            // Stream's `requires EffectsRuntime`, which an identity iterator never
-            // threads → a spurious `DispatchNoMatch`. Leave the call as the spec op
-            // — its return type is already threaded from that same transitive
-            // provision view — and let eval's value-directed dispatch (WI-492,
-            // `transitive_carrier_for_param` → `Stream.iterator`) resolve the impl
-            // from the runtime value's own sort, exactly the deferral the abstract-
-            // receiver arm above takes. A DIRECT (`IntBag provides Iterable[C =
-            // IntBag]`) or WITNESS (`IntBar provides Bar[T = Int64]`, WI-450)
-            // provider has `transitive == false` and still dispatches concretely.
+            // WI-598: a CARRIER-PARAM spec op whose receiver is typed at an ABSTRACT SPEC — a
+            // value whose static type is `FiniteStream` (`Dictionary.ops`' declared return),
+            // which provides FiniteCollection and has no representation of its own — is a
+            // call at an abstract type. It is left as the spec op for eval's value-directed
+            // dispatch, the carrier-param analogue of the abstract self-receiver arm
+            // (`carrier == Abstract`) above, until proposal 073 stage 3 runs it on the
+            // instance the value is (073 §2). MEASURED (WI-20261105-C6GK8): dispatched here
+            // instead, `collect(fs())` over `fs() -> FiniteStream[T = Int64, E = {}] = [1, 2,
+            // 3]` is pinned to `FiniteStream.collect`, and eval's carrier override (its step
+            // 3) enters `List.collect` with `FiniteStream`'s dictionary and panics at the
+            // frame push.
             //
-            // WI-598: the SAME deferral is owed when the carrier sort is ITSELF an
-            // abstract spec — a value whose static type is `FiniteStream` (the
-            // declared return of the finite `map`/`filter`), which provides
-            // FiniteCollection DIRECTLY (so `transitive == false`) yet has no
-            // concrete representation of its own. Resolving it concretely picks the
-            // FiniteStream impl and then recurses into `FiniteStream provides Stream
-            // → Stream requires EffectsRuntime[E]`, unsatisfiable at the abstract
-            // access row `E` → the same spurious `DispatchNoMatch`. The runtime value
-            // is some concrete provider (a `List`), so defer to eval's
-            // value-directed dispatch exactly as the abstract self-receiver arm
-            // (`carrier == Abstract`) above does — the carrier-param analogue of it.
+            // A CONCRETE carrier that provides the spec only through a chain of provisions is
+            // dispatched below like any other (073 §1); see the rest of the chain and WI-496's
+            // fallback after the dispatch.
             //
-            // WI-1027 — the abstract-spec half of that test is asked THROUGH
+            // WI-1027 — that test is asked THROUGH
             // [`statically_pinned_carrier`], and the answer is kept, because the two
             // consumers of it in this frame must not each pay for it: `carrier_is_abstract_-
             // spec` reaches `sort_has_constructors`, which `format!`s a prefix and SCANS
@@ -4182,15 +4174,9 @@ fn check_apply_call(
             let pinned_carrier =
                 statically_pinned_carrier(kb, &carrier, carrier_param_sym, Some(spec_sort))
                     .map(|c| c.sort);
-            if matches!(&carrier_param_info, Some((.., true, _)))
-                || (carrier_param_sym.is_some() && pinned_carrier.is_none())
-            {
-                // An open carrier: the clause's condition, as at the abstract receiver above. A
-                // concrete one reached transitively is the value's, dispatched where it runs.
-                if pinned_carrier.is_none()
-                    && carrier_param_sym.is_some()
-                    && env.clause_supplies_requirements(pos_args, named_args)
-                {
+            if carrier_param_sym.is_some() && pinned_carrier.is_none() {
+                // An open carrier: the clause's condition, as at the abstract receiver above.
+                if env.clause_supplies_requirements(pos_args, named_args) {
                     dispatch_to_the_clause(kb, env, occ, fn_sym, spec_sort, span)?;
                 }
                 stamp_spec_op_supply(
@@ -4216,7 +4202,14 @@ fn check_apply_call(
             // sole coarse cover whose compound element σ-disagrees (shallow-vs-deep)
             // does NOT re-defer here after `find_requires_location` above already
             // refused it — construction of the deeper dictionary runs instead.
-            let dispatch = |kb: &mut KnowledgeBase, subst: &Substitution, carrier| {
+            //
+            // Asked of the call's own spec and, along a chain of provisions, of an intermediate
+            // spec's member (below), so the two ask with one set of arguments.
+            let dispatch = |kb: &mut KnowledgeBase,
+                            subst: &Substitution,
+                            spec: Symbol,
+                            short: Symbol,
+                            carrier: Option<GoalCarrier>| {
                 let sigma = SigmaCtx {
                     subst,
                     param_rigids: env.param_rigids(),
@@ -4224,8 +4217,8 @@ fn check_apply_call(
                 dispatch_spec_op_cached(
                     kb,
                     subst,
-                    spec_sort,
-                    op_short_sym,
+                    spec,
+                    short,
                     enclosing_requires,
                     carrier,
                     Some(&sigma),
@@ -4233,7 +4226,8 @@ fn check_apply_call(
                     env.sub_goal_requires(),
                 )
             };
-            let (outcome, resolved_tree) = dispatch(kb, &subst, dispatch_carrier.clone());
+            let (outcome, resolved_tree) =
+                dispatch(kb, &subst, spec_sort, op_short_sym, dispatch_carrier.clone());
             // A CALL THAT NAMES ITS WITNESS REACHES IT where the receiver matches no provision
             // as it stands — a slot no type decides (`box(v: none)` behind witnesses at `Box[V =
             // Option[T = Int64]]` and `[… = String]`): the bracket says which covering witness
@@ -4258,10 +4252,164 @@ fn check_apply_call(
                 ),
                 _ => None,
             };
-            let (outcome, resolved_tree) = match narrowed {
-                Some(narrowed) => dispatch(kb, &narrowed, dispatch_carrier),
+            let (mut outcome, mut resolved_tree) = match narrowed {
+                Some(narrowed) => {
+                    dispatch(kb, &narrowed, spec_sort, op_short_sym, dispatch_carrier.clone())
+                }
                 None => (outcome, resolved_tree),
             };
+            // THE REST OF A CHAIN OF PROVISIONS (proposal 073 §1, WI-20261105-C6GK8). The
+            // provision a dispatch selects may be an intermediate spec's (`Mid provides Top[C =
+            // Self]`), and it answers with that spec's own member, which receives on `Self`: a
+            // spec operation the concrete carrier answers in its turn, by its own member or by
+            // the intermediate's default where it writes none. `Top.get(box(n: 7))` over `Box
+            // provides Mid` is what `Mid.get(box(n: 7))` is. The member is dispatched as a call
+            // of it is — under its own name, at the receiver's carrier, its spec's parameters
+            // bound from that carrier's provision at the receiver's type — and what that
+            // dispatch refuses (two suppliers, an unmet condition, a tie) is the call's refusal.
+            // MEASURED on the tree before: a body-less `Mid.get` left the call loaded and
+            // answering nothing; over a bodied one an operation body answered `Box.get` by eval's
+            // carrier override and a rule body `Mid.get`'s default; `Stream.splitFirst(chained(…))`
+            // over a `Mid` declaring `splitFirst` was dispatched by value at every call.
+            //
+            // The member the kept tree was dispatched for, with the substitution that binds its
+            // spec: the call is classified as a call of it below, so the dictionary the tree
+            // builds is read in the layout it was built in.
+            let mut chain_member: Option<(Symbol, Substitution)> = None;
+            // The member whose dispatch refused, which the refusal names: its repair (a bracket
+            // naming one of two providers of `Mid`) is written on a call of it, not of `Top.get`.
+            let mut chain_refused_at: Option<Symbol> = None;
+            // The carrier's sort, read off what the dispatch was built from; the receiver whole
+            // only once a member to follow is found.
+            let chain_carrier_sort = match (&dispatch_carrier, &carrier_param_info) {
+                (Some(goal_carrier), _) => Some(goal_carrier.sort),
+                (None, Some(_)) => pinned_carrier
+                    .map(|c| kb.canonical_sort_sym(kb.type_arg_owner(c).unwrap_or(c))),
+                (None, None) => None,
+            };
+            let mut chain_receiver: Option<(GoalCarrier, Value)> = None;
+            let mut visited: SmallVec<[Symbol; 4]> =
+                SmallVec::from_elem(kb.canonical_sort_sym(spec_sort), 1);
+            while let (DispatchOutcome::Unique(target), Some(carrier_sort)) =
+                (&outcome, chain_carrier_sort)
+            {
+                let target = *target;
+                // A member of another spec, receiving on that spec's `Self`. The carrier's own
+                // member — the answer at nearly every call (`Int64.add`) — is none, and ends it.
+                let Some(member_spec) =
+                    spec_op_parent_sort(kb, target).map(|s| kb.canonical_sort_sym(s))
+                else {
+                    break;
+                };
+                if member_spec == carrier_sort || visited.contains(&member_spec) {
+                    break;
+                }
+                let receives_on_self = crate::kb::op_info::with_op_signature(kb, target, |sig| {
+                    self_receiver_param_index(kb, &sig.params, member_spec).is_some()
+                })
+                .unwrap_or(false);
+                if !receives_on_self {
+                    break;
+                }
+                visited.push(member_spec);
+                if chain_receiver.is_none() {
+                    chain_receiver = match (&dispatch_carrier, &carrier_param_info) {
+                        (Some(goal_carrier), _) => {
+                            self_receiver_param_index(kb, &op.params, spec_sort)
+                                .and_then(|idx| {
+                                    supplied_arg_type(
+                                        kb,
+                                        &op.params,
+                                        &pos_call_params,
+                                        idx,
+                                        pos_results,
+                                        named_args,
+                                        named_results,
+                                    )
+                                })
+                                .map(|recv_ty| (goal_carrier.clone(), recv_ty))
+                        }
+                        (None, Some((_, _, recv_ty, ..))) => {
+                            let args = receiver_type_args(kb, recv_ty);
+                            Some((GoalCarrier { sort: carrier_sort, args }, recv_ty.clone()))
+                        }
+                        (None, None) => None,
+                    };
+                }
+                let Some((chain_carrier, recv_ty)) = chain_receiver.clone() else {
+                    break;
+                };
+                let mut member_subst = match &chain_member {
+                    Some((_, at)) => at.clone(),
+                    None => subst.clone(),
+                };
+                bind_spec_params_from_provision(
+                    kb,
+                    &mut member_subst,
+                    member_spec,
+                    chain_carrier.sort,
+                    &recv_ty,
+                    None,
+                );
+                let member_short = {
+                    let short = kb.local_name_of(target).to_string();
+                    kb.intern(&short)
+                };
+                let (next, tree) =
+                    dispatch(kb, &member_subst, member_spec, member_short, Some(chain_carrier));
+                match next {
+                    DispatchOutcome::Unique(member) if member != target => {
+                        outcome = DispatchOutcome::Unique(member);
+                        resolved_tree = tree;
+                        chain_member = Some((target, member_subst));
+                    }
+                    // The intermediate's member is the carrier's answer: it writes none of its own.
+                    DispatchOutcome::Unique(_) => break,
+                    refused @ (DispatchOutcome::NoMatch { .. }
+                    | DispatchOutcome::Ambiguous(_)
+                    | DispatchOutcome::Unsupplied(_)) => {
+                        outcome = refused;
+                        resolved_tree = tree;
+                        chain_refused_at = Some(target);
+                        break;
+                    }
+                    DispatchOutcome::NoCandidates | DispatchOutcome::Deferred => break,
+                }
+            }
+            // WI-496's DEFERRAL, KEPT WHERE THE DISPATCH FINDS NO CANDIDATE AT A CARRIER THE
+            // CHAIN REACHES (WI-20261105-C6GK8). Every chain the dispatch has a candidate for is
+            // decided above, a refusal included; what the chain walk
+            // ([`transitive_provision_view`]) reaches and the dispatch does not is a carrier read
+            // through ANOTHER sort's provision at a spec over a parameter: `Desc.d(bk(k: 0))`
+            // beside `W provides Desc[T = Tagger]` and `Bk provides Tagger[C = Bk]`. The dispatch
+            // reads a `Bk` as no `Tagger` (kernel-language §8.2), and WI-20261025-053QV decides
+            // that a provision at `Tagger` answers it (its family row `g-compatibility`
+            // `pair=param-spec,position=provision`, `runs 1`). Until that rule reaches the
+            // dispatch the call is left to eval's value-directed dispatch, which walks the same
+            // chain. MEASURED: refused at load with this arm gone ("requirement `Desc[T = Bk]`
+            // cannot be supplied"); `wi_c6gk8_known_type_call_test::a_provision_at_a_spec_
+            // over_a_parameter_still_answers_its_providers_value` drives it.
+            if matches!(outcome, DispatchOutcome::NoCandidates)
+                && matches!(&carrier_param_info, Some((.., true, _)))
+            {
+                stamp_spec_op_supply(
+                    kb,
+                    env,
+                    occ,
+                    fn_sym,
+                    &subst,
+                    &selections,
+                    &projection_receivers,
+                    &held_views,
+                    span,
+                )?;
+                return Ok(TypeResult {
+                    ty: resolved_ret.clone(),
+                    env: env.clone(),
+                    effects,
+                    node: Rc::clone(occ),
+                });
+            }
             // WI-508: a NULLARY spec op (`new() -> C`, carrier only in the
             // RESULT) gets no carrier from value args, so value-directed
             // dispatch finds nothing. Resolve the carrier from the EXPECTED
@@ -4939,17 +5087,24 @@ fn check_apply_call(
                     // WI-228 semantics encoded by which CallClass
                     // variant we tag.
                     //
-                    // WI-237: only rewrite to a *concrete* impl op — one
-                    // that has a runnable body. A body-less `impl_op_sym`
-                    // is a spec-level declaration (e.g. the auto-bound
-                    // `anthill.prelude.String.eq` a `provides` block
-                    // registers, or a derived `Ord.lt` whose body
-                    // lives in a separate `rule {}`). Rewriting the call
-                    // to it produces a runtime `unknown operation`
-                    // (no body, no builtin) or — worse — mis-resolves to
-                    // the wrong sibling op. Leaving the call as the spec
-                    // op lets the runtime resolve it via its registered
-                    // builtin or the spec's own derived rule.
+                    // WI-237: only rewrite to an impl op that HAS an implementation — a
+                    // runnable body, or a host one this runtime registers (an
+                    // `operation_map` entry; see the pin below). A body-less `impl_op_sym`
+                    // with neither is a spec-level declaration (e.g. the auto-bound
+                    // `anthill.prelude.String.eq` a `provides` block registers, or a derived
+                    // `Ord.lt` whose body lives in a separate `rule {}`). Rewriting the call
+                    // to it produces a runtime `unknown operation` (no body, no builtin) or
+                    // — worse — mis-resolves to the wrong sibling op. Leaving the call as
+                    // the spec op lets the runtime resolve it via its registered builtin or
+                    // the spec's own derived rule.
+                    //
+                    // A HOST member is pinned as a bodied one is (proposal 073 §1,
+                    // WI-20261105-C6GK8): `add(1, n)` at `n: Int64` is `Int64.add`, an
+                    // `operation_map` entry reached through `Numeric provides Additive[T =
+                    // T]`. Asked for a body alone, the call was left as `Additive.add` and
+                    // eval found `Int64.add` from the value `1` at every call — `List.length`'s
+                    // `add(1, length(xs))` among them, the commonest value-directed dispatch
+                    // of the workspace.
                     // A provider with no member of its own answers through the spec's
                     // operation — its default body, or what implements it for the host
                     // (`@[host_implemented]`: a builtin, an `operation_map` entry) — which
@@ -4990,22 +5145,40 @@ fn check_apply_call(
                         && resolved_tree.as_ref().and_then(|tree| tree.impl_sort()).is_some_and(
                             |provider| resolve_op_target(kb, provider, fn_sym).is_ok_and(|t| t == fn_sym),
                         );
-                    if (impl_op_sym != fn_sym && op_has_runnable_body(kb, impl_op_sym))
+                    // A pin is what eval enters, so it is asked of the implementation THIS runtime
+                    // has ([`op_is_interpretable`]): a member only a cpp `operation_map` or a
+                    // resolver builtin implements stays the spec operation. Pinned through
+                    // `op_is_executable`, a rule-body goal over such a member answered `no
+                    // solutions` and its negation succeeded, where the unpinned call stays
+                    // undecided (MEASURED).
+                    if (impl_op_sym != fn_sym && op_is_interpretable(kb, impl_op_sym))
                         || through_spec_op
                     {
                         // Pass the `resolved_tree` to the shared tail: a same-sort
                         // callee inherits the frame at eval; a CROSS-SORT one that
                         // constructs a dictionary has it emitted AS `dispatch_dict`
                         // there (WI-829), since eval threads the dict, not the tree.
+                        //
+                        // Reached through a chain of provisions, the tree is the intermediate
+                        // spec's and the call is classified as a call of its member, so eval
+                        // reads the dictionary in the layout it was built in. Classified as the
+                        // written operation, a member reading its sort's slots was handed a
+                        // dictionary laid out for (`Mid`, `Box`) and read as (`Top`, `Box`):
+                        // an internal error at the frame push, or the wrong slot where the two
+                        // layouts had one arity (MEASURED).
+                        let (spec_op_at, subst_at) = match &chain_member {
+                            Some((member, at)) => (*member, at),
+                            None => (fn_sym, &subst),
+                        };
                         classify_pin_or_apply_within(
                             kb,
                             occ,
-                            fn_sym,
+                            spec_op_at,
                             impl_op_sym,
                             enclosing_sort,
                             resolved_tree.clone(),
                             Some(&OpSupplyCtx {
-                                subst: &subst,
+                                subst: subst_at,
                                 caller_requires: env.enclosing_frame_chain(),
                                 param_rigids: env.param_rigids(),
                                 selected: &selections,
@@ -5095,7 +5268,7 @@ fn check_apply_call(
                     }
                     return Err(TypeError::DispatchNoMatch {
                         span,
-                        op: fn_sym,
+                        op: chain_refused_at.unwrap_or(fn_sym),
                         unmet,
                     });
                 }
@@ -5140,7 +5313,7 @@ fn check_apply_call(
                     }
                     return Err(TypeError::DispatchAmbiguous {
                         span,
-                        op: fn_sym,
+                        op: chain_refused_at.unwrap_or(fn_sym),
                         tie,
                         in_rule_own_term: env.in_rule_own_term(),
                     });
@@ -5148,7 +5321,7 @@ fn check_apply_call(
                 // The provider is chosen and supplies the operation twice: no slot or bracket
                 // can break that, since either names the same provider.
                 DispatchOutcome::Unsupplied(refusal) => {
-                    return Err(refusal.type_error(fn_sym, span, None));
+                    return Err(refusal.type_error(chain_refused_at.unwrap_or(fn_sym), span, None));
                 }
                 DispatchOutcome::Deferred => {
                     // Fallback: the WI-239 pre-check above already caught

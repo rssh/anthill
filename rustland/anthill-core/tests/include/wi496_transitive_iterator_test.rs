@@ -7,17 +7,19 @@
 //! `iterator(xs)` on a concrete `List`:
 //!
 //!   * type-checks — the typer recognises the carrier (`List`) provides the spec
-//!     only through a provides-chain, threads the return type from the transitive
-//!     provision view (`Stream[T = xs.T, E = {}]`), and leaves the call as the
-//!     spec op for eval (it cannot dispatch concretely — `List` ≤ `Stream` would
-//!     drag in `Stream`'s `requires EffectsRuntime`, which an identity iterator
-//!     never threads);
-//!   * evaluates — eval's value-directed dispatch (WI-492) routes the `List` value
-//!     to `Stream.iterator`, returning the list itself as a stream.
+//!     only through a provides-chain and threads the return type from the transitive
+//!     provision view (`Stream[T = xs.T, E = {}]`);
+//!   * is decided at load (WI-20261105-C6GK8, proposal 073 §1): the dispatch composes
+//!     the chain and the call runs `Stream.iterator` within `List`'s `Stream` dictionary.
+//!     WI-496 left it as the spec op for eval's value-directed dispatch (WI-492), for a
+//!     `DispatchNoMatch` on `Stream`'s `requires EffectsRuntime` the dispatch no longer
+//!     gives, and leaves it so now only where the dispatch finds nothing;
+//!     `wi_c6gk8_known_type_call_test`'s chain rows fail with that deferral back;
+//!   * evaluates — the list itself, as a stream.
 //!
 //! Contrast WI-495's `IntBag` (a DIRECT `provides Iterable` carrier) and WI-218's
-//! `IntBar` (a WITNESS `fact Bar[T = Int64]`): both still dispatch concretely to
-//! their own impl — only the provides-chain carrier defers.
+//! `IntBar` (a WITNESS `fact Bar[T = Int64]`), which dispatch concretely to their own impl
+//! as they always did.
 
 use anthill_core::kb::term_view::TermView;
 
@@ -66,5 +68,26 @@ fn transitive_iterator_evaluates() {
         got.literal_int64(interp.kb()),
         Some(3),
         "iterator(xs) over a 3-element list, counted"
+    );
+}
+
+/// `iterator(xs)` in `walk` is decided at load: `Stream.iterator`, within `List`'s `Stream`
+/// dictionary (WI-20261105-C6GK8). FAILS with WI-496's deferral restored (no stamp); the two
+/// rows above pass either way, value-direction computing the same 3.
+#[test]
+fn transitive_iterator_is_decided_at_load() {
+    use anthill_core::kb::node_occurrence::{visit_classifications, ApplyDispatch};
+    let kb = crate::common::load_kb_with(SRC);
+    let walk = kb.try_resolve_symbol("wi496.transitive.walk").expect("walk resolves");
+    let body = kb.op_body_node(walk).expect("walk has a body");
+    let mut decided = Vec::new();
+    visit_classifications(body, &mut |occ, _| {
+        if let ApplyDispatch::Pin(t) | ApplyDispatch::NeedsDict(t) = occ.apply_dispatch() {
+            decided.push(kb.qualified_name_of(t).to_string());
+        }
+    });
+    assert!(
+        decided.iter().any(|t| t == "anthill.prelude.Stream.iterator"),
+        "`iterator(xs)` is stamped with `Stream.iterator`; stamps: {decided:?}"
     );
 }

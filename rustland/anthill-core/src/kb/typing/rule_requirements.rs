@@ -3156,12 +3156,24 @@ fn aligned_carrier_args(
 ///   none, as a body-less call dispatches on its value. MEASURED carrier-blind, the same
 ///   `two` with a defaulted `describe` answered `7, 7` (`wi_gp8jc_defaulted_weave_test`).
 ///
-/// * **Only where the typer did not already pin** (channel doc §5). Where
-///   `check_apply_iter` resolved the call at compile stage the dispatch is decided
-///   and installed; weaving it would put a run-time dictionary read in front of a
-///   solved case — and the resolver honours the pin
-///   (`classified_apply_target`), so the two would also disagree about which
-///   decision wins.
+/// * **A carrier-less call only where the typer did not already pin** (channel doc §5).
+///   Where `check_apply_iter` resolved it at compile stage the dispatch is decided and
+///   installed; weaving it would put a run-time dictionary read in front of a solved case
+///   — and the resolver honours the pin (`classified_apply_target`), so the two would also
+///   disagree about which decision wins.
+///
+///   A CARRIER-BEARING call at the dictionary's carrier is woven whatever the typer pinned:
+///   the clause's requirement supplies a call at its type parameter however the parameter
+///   reached its argument (060.1 §1), and a dictionary the citation passes decides over the
+///   value's own type (§8.9). The typer pins at the type the clause's typing gives the
+///   argument, which a fact can make concrete: `srcPair(?a, ?b)` over `fact srcPair(m(n:
+///   1), m(n: 5))` types `?a: A` at `Money`, and the pin there is `Money`'s own `compare`.
+///   MEASURED on the tree before (WI-20261105-C6GK8): `cmpS[A = Money, WeakOrd =
+///   DescMoney]()` over `rule cmpS[A](?a: A, ?b: A, ?c) :- WeakOrd[T = A], srcPair(?a, ?b),
+///   WeakOrd.compare(?a, ?b, ?c)` answered `Money`'s `-4`, where the passed `DescMoney`
+///   answers `4`; over `Int64` it answered `4` only because `Int64.compare`, a host member,
+///   was not pinned. The woven call's dictionary target replaces the pin where the resolver
+///   reduces it (`reduce_op_value`'s `ApplyWithin` arm), so the two do not disagree.
 pub(super) fn collect_covered_calls(
     kb: &KnowledgeBase,
     body_nodes: &[Rc<NodeOccurrence>],
@@ -3214,7 +3226,8 @@ pub(super) fn collect_covered_calls(
         // `wi_5g28a_rule_dictionary_test::a_call_at_another_carrier_keeps_its_own_dispatch`
         // (`7, 7` without it), `wi_hrfr5…::a_typed_head_carrier_is_readable_too` (refused
         // without it) and, for a defaulted callee, `wi_gp8jc_defaulted_weave_test`.
-        if op_has_spec_carrier_param(kb, *functor, spec_canon)
+        let carrier_bearing = op_has_spec_carrier_param(kb, *functor, spec_canon);
+        if carrier_bearing
             && !call_args_at_spec_carrier(kb, *functor, pos_args, named_args, spec_canon)
                 .iter()
                 .any(|arg| at.iter().any(|a| views_structurally_equal(kb, arg, a)))
@@ -3241,7 +3254,18 @@ pub(super) fn collect_covered_calls(
         // Narrowing this to `apply_dispatch() != Unclassified` remains a live choice
         // about which route OWNS these calls; it belongs to whoever revisits WI-1040's
         // weaving population, and that test is what would move.
-        if cand.classified_apply_target().is_some() {
+        //
+        // A carrier-bearing call reaching here is at the dictionary's carrier, and is woven
+        // pinned or not (this function's doc): FAILS with the pin skipping it here too,
+        // `wi_c6gk8_known_type_call_test::a_guard_decides_a_call_the_typer_pins_at_the_values_
+        // type` and `wi_j9ssg_rule_citation_bracket_test::a_bracket_on_a_paren_less_reference_
+        // is_refused`. Except a call that writes its own bracket: what it selects is the
+        // author's choice at the call, which outranks a deferral to the clause's dictionary
+        // (kernel-language §8.7). Woven, `WeakOrd.compare[WeakOrd = DescMoney](?a, ?b)` read
+        // the guard's dictionary instead (MEASURED: `Money`'s -4 for `DescMoney`'s 4).
+        if cand.classified_apply_target().is_some()
+            && (!carrier_bearing || call_type_args_of(&cand).is_some())
+        {
             continue;
         }
         if out.iter().any(|c| Rc::ptr_eq(c, &cand)) {

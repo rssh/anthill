@@ -114,7 +114,11 @@ fn nullary_carrier_impl_op(
     impl_op: Symbol,
     spec_op_sym: Symbol,
 ) -> Option<Symbol> {
-    if impl_op == spec_op_sym || !op_has_runnable_body(kb, impl_op) {
+    // A member this runtime can run, a body or its host implementation, as the `Unique` arm
+    // of the call's dispatch pins one. Asked for a body alone, a host member left the call
+    // as the spec operation, which has no body: loaded clean, died at run time (MEASURED,
+    // `wi_c6gk8_known_type_call_test::a_nullary_members_host_implementation_is_pinned`).
+    if impl_op == spec_op_sym || !op_is_interpretable(kb, impl_op) {
         return None;
     }
     impl_parent_of_op(kb, impl_op)?;

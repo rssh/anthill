@@ -11738,6 +11738,33 @@ impl KnowledgeBase {
         }
     }
 
+    /// The arguments a WOVEN call hands the member its dictionary selects. A label names a
+    /// parameter of the operation the call is written on, and the member — which may spell
+    /// its parameters otherwise (`describe(item: Leaf, n: Int64)` behind `Desc.describe(x: T,
+    /// k: Int64)`) — takes them one for one, so a labelled call is handed over by position,
+    /// in the written operation's order. Rebuilt on the member with its labels kept,
+    /// `Desc.describe(k: 1, x: ?x)` read them against the member's own names and stayed
+    /// un-reduced (MEASURED, WI-20261105-C6GK8). A label naming no place keeps the call as
+    /// written.
+    fn woven_args_at_member(
+        &self,
+        functor: Symbol,
+        args: &[Rc<NodeOccurrence>],
+        named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    ) -> (Vec<Rc<NodeOccurrence>>, Vec<(Symbol, Rc<NodeOccurrence>)>) {
+        let places: Vec<Symbol> = self.symbols.arg_places(functor).to_vec();
+        let positional = (!named_args.is_empty() && places.len() == args.len() + named_args.len())
+            .then(|| super::typing::bound_args(self, &places, args.len(), named_args))
+            .flatten();
+        match positional {
+            Some(bound) => (
+                bound.into_iter().map(|arg| Rc::clone(arg.of(args, named_args))).collect(),
+                Vec::new(),
+            ),
+            None => (args.to_vec(), named_args.to_vec()),
+        }
+    }
+
     /// The arguments of the written call `occ`, σ-walked, in the order of `params` — the
     /// callee's arg places. `None` where the call does not fill them
     /// ([`super::typing::bound_args`]), and for anything that is not a written application.
@@ -12025,11 +12052,12 @@ impl KnowledgeBase {
                         },
                     })
                 });
+                let (pos_args, named_args) = self.woven_args_at_member(*functor, args, named_args);
                 let call = occ.rebuilt_expr(Expr::Apply {
                     recv_type: None,
                     functor: target,
-                    pos_args: args.clone(),
-                    named_args: named_args.clone(),
+                    pos_args,
+                    named_args,
                     type_args: type_args.clone(),
                 });
                 // WI-1037 — RE-STAMP the rebuilt call, and this is load-bearing rather
@@ -13084,11 +13112,12 @@ impl KnowledgeBase {
                 }
                 let (target, _) = self.dictionary_dispatch_target(*functor, requirements, subst)?;
                 self.op_body_node(target)?;
+                let (pos_args, named_args) = self.woven_args_at_member(*functor, args, named_args);
                 return Some(o.rebuilt_expr(Expr::Apply {
                     recv_type: None,
                     functor: target,
-                    pos_args: args.clone(),
-                    named_args: named_args.clone(),
+                    pos_args,
+                    named_args,
                     type_args: type_args.clone(),
                 }));
             }

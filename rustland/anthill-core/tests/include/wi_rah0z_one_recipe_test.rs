@@ -238,6 +238,11 @@ const PINNED: &[(&str, usize, &str)] = &[
         "registers an embedder's host function before the load, which is its subject",
     ),
     (
+        "include/wi_c6gk8_known_type_call_test.rs",
+        1,
+        "registers an embedder's host function before the load: a member only the host implements",
+    ),
+    (
         "include/wi_ndg34_const_goal_test.rs",
         1,
         "folds a `Bool` const whose value is an embedder's host function, registered before the load",

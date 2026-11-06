@@ -904,12 +904,11 @@ fn compose_provision_views(
 ///
 /// The returned flag is `true` iff the view came via the TRANSITIVE (provides-
 /// chain) branch at the top level — `carrier_sym` does not itself bind the carrier
-/// param, the impl lives on an intermediate spec sort. WI-496 reads it to leave a
-/// body-less spec-op call (`iterator(xs:List)`) as the spec op for eval rather
-/// than attempting concrete dispatch (which would die on the intermediate's own
-/// `requires`); a DIRECT / WITNESS provider (flag `false`) still dispatches
-/// concretely. No separate walk is needed — the branch that built the view IS the
-/// classification.
+/// param, the impl lives on an intermediate spec sort. Such a call is dispatched like any
+/// other (proposal 073 §1, `iterator(xs: List)` runs `Stream.iterator` within `List`'s
+/// `Stream` dictionary); the flag is read only where that dispatch finds nothing, to leave
+/// the call to eval as WI-496 left every one (see the fallback in `check_apply_call`). No
+/// separate walk is needed — the branch that built the view IS the classification.
 pub(super) fn transitive_provision_view(
     kb: &KnowledgeBase,
     spec_sort: Symbol,
@@ -1426,7 +1425,7 @@ pub(super) fn supplied_arg_type(
 /// vid (WI-593) lets the binder skip the carrier param `C` (bound by argument
 /// unification, not the provision); `transitive?` (WI-496) is `true` iff the carrier
 /// provides the spec only through a provides-chain (the impl lives on an intermediate
-/// spec sort), the bit the dispatch gate reads to defer to eval; and the receiver-arg
+/// spec sort), the bit a dispatch that finds nothing reads to defer to eval; and the receiver-arg
 /// var-sym (WI-612) is the projection subject for threading an abstract carrier param.
 ///
 /// WI-20260828-N2FHM — the receiver's TYPE arrives through `recv_ty_of`, not off the
@@ -3660,13 +3659,13 @@ impl SpecRowVerdict {
 /// override's added to it, as before the pin: the call may be charged more than it incurs, never
 /// less.
 ///
-/// The spec's row is no longer the bound when it is replaced, so the pin must be what runs. A
-/// runnable override is: the call is rewritten to it. A body-less one is a host operation, which
-/// only the standard library declares, and the call stays the spec operation, dispatched by the
-/// value — whose carrier is the one pinned: a value of a concrete sort is one of its
-/// constructors, and a constructor carries no provision of its own (a `namespace` at one is
-/// refused, MEASURED), while a later load may not provide a spec at a standard-library type
-/// (§8.3).
+/// The spec's row is no longer the bound when it is replaced, so the pin must be what runs. An
+/// override this runtime can run — a body, or a host implementation it registers
+/// ([`op_is_interpretable`]) — is: the call is rewritten to it. One with neither stays the spec
+/// operation, dispatched by the value — whose carrier is the one pinned: a value of a concrete
+/// sort is one of its constructors, and a constructor carries no provision of its own (a
+/// `namespace` at one is refused, MEASURED), while a later load may not provide a spec at a
+/// standard-library type (§8.3).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn effects_of_pinned_call(
     kb: &mut KnowledgeBase,
