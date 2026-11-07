@@ -31708,10 +31708,12 @@ impl<'a> Loader<'a> {
     }
 
     /// A requirement guard's binding that is no type — a literal, a rule name, a tuple or
-    /// arrow type, a name that denotes neither a sort nor one of the spec's own type
-    /// parameters — reported naming itself, for [`Self::guard_binding_lowers`]. The spec's
-    /// own parameter name (`Sp[C = A, P = P]`) is the open binding and is not reported. Rows:
-    /// `wi_qhdgc_require_spec_logical_variable_test`, `wi_51w18_require_spec_type_args_test`.
+    /// arrow type, a name that denotes nothing where it is written — reported naming itself,
+    /// for [`Self::guard_binding_lowers`]. The spec's own parameter name is such a name:
+    /// `Sp[C = A, P = P]` at namespace level is refused, as an operation's `requires Sp[C =
+    /// A, P = P]` is, and the element that selects nothing is written `P = ?` or left out.
+    /// Rows: `wi_qhdgc_require_spec_logical_variable_test`,
+    /// `wi_51w18_require_spec_type_args_test`.
     fn report_dropped_spec_binding(
         &mut self,
         base: Symbol,
@@ -31728,25 +31730,27 @@ impl<'a> Loader<'a> {
                     .flatten()
                     .map(str::to_owned)
             });
-        if written
-            .as_deref()
-            .is_some_and(|n| declared.iter().any(|d| d == n))
-        {
-            return; // the spec's own parameter name — an open binding, not a mistake.
-        }
+        let spec = self.kb.local_name_of(base).to_owned();
         let detail = match written {
-            Some(n) => format!(
-                "`{}` has a type parameter list, and `{}` in it names neither a sort nor \
-                 one of `{}`'s own type parameters ({})",
-                self.kb.local_name_of(base),
-                n,
-                self.kb.local_name_of(base),
-                if declared.is_empty() {
+            Some(n) => {
+                let own = if declared.iter().any(|d| *d == n) {
+                    format!(
+                        " (`{n}` is the name of one of `{spec}`'s own type parameters, not a type)"
+                    )
+                } else {
+                    String::new()
+                };
+                let declares = if declared.is_empty() {
                     "it declares none".to_owned()
                 } else {
-                    declared.join(", ")
-                },
-            ),
+                    format!("it declares {}", declared.join(", "))
+                };
+                format!(
+                    "`{spec}` has a type parameter list ({declares}), and `{n}` in it names \
+                     neither a sort nor a type parameter in scope{own}; an element that selects \
+                     no instance is written `?` or left out"
+                )
+            }
             // NO CARRIER IS KNOWN TO REACH THIS ARM SINCE WI-20260922-QHDGC, and it is kept
             // anyway. The LOGICAL VARIABLE was the one shape that did — `parse_arg_type_name_of`
             // answers `None` for a `Term::Var` and `Some(name)` for every other spelling that
@@ -31761,11 +31765,9 @@ impl<'a> Loader<'a> {
             // over. Removing a diagnostic on that inference would trade a message for a silent
             // drop at whatever shape the survey missed. What the note buys is that a reader
             // who sees this text quoted in a ticket knows to check the variable rung first.
-            None => format!(
-                "`{}`'s type parameter list takes sorts and its own type parameter names; \
-                 this argument is neither",
-                self.kb.local_name_of(base),
-            ),
+            None => {
+                format!("`{spec}`'s type parameter list takes types, and this argument is none")
+            }
         };
         self.errors.push(LoadError::InvalidTypeArgument {
             detail,
@@ -45985,14 +45987,14 @@ impl<'a> Loader<'a> {
 
     /// Does a guard's binding other than its carrier LOWER? It is a TYPE: a logical variable
     /// (the open case), an effect row, a type variable the head introduces or a type parameter
-    /// in scope, or a sort, spelled as a head bound spells one ([`Self::parse_arg_names_a_sort`]). The spec's
-    /// own parameter name (`Sp[C = A, P = P]`) is the open binding it was in `require[…]` and
-    /// is not lowered — the element is left unwritten. Anything else — a literal, a rule name,
-    /// a tuple or arrow, a name that denotes nothing — is refused as a `require[…]` binding was
-    /// ([`Self::report_dropped_spec_binding`]), naming itself: lowered as data it loaded and
-    /// matched no provision, so the guard answered nothing (`Sp[C = A, P = item]`). Neither is
-    /// lowered: the refused one's lowering would report the same text again as an unresolved
-    /// name.
+    /// in scope, or a sort, spelled as a head bound spells one ([`Self::parse_arg_names_a_sort`]).
+    /// Anything else — a literal, a rule name, a tuple or arrow, a name that denotes nothing
+    /// where it is written, the spec's own parameter name at namespace level (`Sp[C = A, P =
+    /// P]`) among them — is refused naming itself ([`Self::report_dropped_spec_binding`]):
+    /// lowered as data it loaded and matched no provision, so the guard answered nothing (`Sp[C
+    /// = A, P = item]`), and the spec's own parameter name was read as the element left out.
+    /// The refused binding is not lowered: its lowering would report the same text again as an
+    /// unresolved name.
     fn guard_binding_lowers(
         &mut self,
         spec: Symbol,

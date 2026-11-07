@@ -13,17 +13,17 @@
 //! it folds the guard (`try_body_tvar_guard`): positional and named against the spec's
 //! declared parameters, a bogus name or an over-application refused there already. What this
 //! file drove for the bracket is driven for the guard, by the answers the requirement gives
-//! rather than the stored goal's shape: a written binding selects, positional is named, the
-//! spec's own parameter name is the open binding, and a binding that names no sort — which a
-//! guard lowered as DATA, loading and answering nothing — is refused in the bracket's words
-//! (`guard_binding_lowers`). The rows on the stored shape, on the check tier and on the term
+//! rather than the stored goal's shape: a written binding selects, positional is named, a name
+//! is resolved where it is written — the spec's own parameter name at namespace level is
+//! refused, inside a sort declaring it is that sort's (WI-20261021-Z2P21) — and a binding that
+//! names no sort — which a guard lowered as DATA, loading and answering nothing — is refused in
+//! the bracket's words (`guard_binding_lowers`). The rows on the stored shape, on the check tier and on the term
 //! surfaces of `requires(X)` went with the forms; the term surfaces refuse the removed
 //! spelling now.
 //!
 //! What fails when `guard_binding_lowers` is backed out (every binding lowered as written):
 //! [`a_name_that_denotes_nothing_is_reported`] and [`a_binding_that_is_not_a_name_at_all_is_reported`]
-//! (each loads), [`the_free_parameter_spelling_answers_as_the_bare_one_does`] (an unresolved
-//! name).
+//! (each loads).
 
 /// A two-parameter spec: a CARRIER `C`, which `crecv(x: C)` receives on, and a content `P`
 /// no operation names. `Red` provides it at `P = Int64` (5), `ByBool` at `P = Bool` (6) — so
@@ -64,7 +64,12 @@ end
 
 /// The definite `Int64` answers of `{ns}.answer`, sorted.
 fn answers(ns: &str, spec: &str) -> Vec<i64> {
-    let mut kb = crate::common::load_kb_with(&program(ns, spec));
+    answers_of(&program(ns, spec), ns)
+}
+
+/// [`answers`] over the program `src`.
+fn answers_of(src: &str, ns: &str) -> Vec<i64> {
+    let mut kb = crate::common::load_kb_with(src);
     let mut out: Vec<i64> = crate::common::query_unary(&mut kb, &format!("{ns}.answer"))
         .iter()
         .map(|sol| match sol {
@@ -114,25 +119,64 @@ fn a_bogus_parameter_name_and_an_over_application_are_refused() {
     }
 }
 
-/// THE SPEC'S OWN PARAMETER NAME IS THE OPEN BINDING, as it was in `require[Spec[T]]`: `Sp[C
-/// = A, P = P]` answers what `Sp[C = A]` answers. With `P` open, `Red`'s own provision is the
-/// default among the two at `Red` (058 §3.6: a carrier that provides a spec for itself is its
-/// own default), so both answer its 5. FAILS with the binding lowered as written: an
-/// unresolved name `P`.
+/// A NAME IN THE GUARD IS RESOLVED WHERE IT IS WRITTEN, and the spec's own parameter name is
+/// no exception (WI-20261021-Z2P21): at namespace level nothing is named `P`, so `Sp[C = A, P =
+/// P]` is refused naming it, as an operation's `requires Sp[C = A, P = P]` is, positionally
+/// (`Sp[A, P]`), with the keyword and under a name alike. The element that selects no instance
+/// is written `?` or left out, and each spelling of that answers `Red`'s own 5 (058 §3.6: a
+/// carrier that provides a spec for itself is its own default among the two at `Red`). FAILS
+/// with the spec's own parameter name read as the element left out (the early return in
+/// `report_dropped_spec_binding`): each of the four loads and answers 5.
 #[test]
-fn the_free_parameter_spelling_answers_as_the_bare_one_does() {
-    assert_eq!(answers("test.w51w18.bare", "Sp[C = A]"), vec![5]);
-    assert_eq!(answers("test.w51w18.free", "Sp[C = A, P = P]"), vec![5]);
+fn the_specs_own_parameter_name_is_refused_where_nothing_declares_it() {
+    for spec in ["Sp[C = A, P = P]", "Sp[A, P]", "require Sp[C = A, P = P]"] {
+        let errs = refusal("test.w51w18.free", spec);
+        assert!(
+            errs.contains("`P` in it names neither a sort nor a type parameter in scope (`P` is the name of one of `Sp`'s own type parameters")
+                && errs.contains("written `?` or left out"),
+            "`{spec}` must be refused naming `P` and the repair; got:\n{errs}",
+        );
+    }
+    let named = crate::common::try_load_kb_with(
+        &program("test.w51w18.named", "require s: Sp[C = A, P = P]").replace("Sp.crecv(?x, ?r)", "s.crecv(?x, ?r)"),
+    )
+    .err()
+    .expect("the named form must be refused")
+    .join("\n");
+    assert!(named.contains("`P` in it names neither a sort nor a type parameter in scope"), "got:\n{named}");
+    for repair in ["Sp[C = A]", "Sp[C = A, P = ?]", "Sp[A, ?]"] {
+        assert_eq!(answers("test.w51w18.repair", repair), vec![5], "`{repair}`");
+    }
 }
 
-/// A NAME THAT DENOTES NOTHING IS REPORTED, naming itself and the spec's own parameters. A
-/// guard lowered it as data and the load reported an unresolved name in a scope's words; the
-/// bracket's sentence says what the position takes.
+/// Inside a sort that declares `P` the guard's `P` is that sort's, fixed where the rule is
+/// cited, as an operation's `requires` there is: `Box[P = Bool].g` is `ByBool`'s 6 and `Box[P =
+/// Int64].g` `Red`'s 5. Passes with the early return in `report_dropped_spec_binding` restored,
+/// by design (the name resolves before it is asked); fails with the citation's read of `P`
+/// backed out (`dictionary_at_goal`, wi_z2p21_guard_at_a_sort_parameter_test): 5 at `Bool`.
+#[test]
+fn the_name_is_the_enclosing_sorts_parameter_where_one_is_declared() {
+    for (bracket, want) in [("Bool", 6), ("Int64", 5)] {
+        let ns = format!("test.w51w18.insort{bracket}");
+        let src = program(&ns, "Sp[C = A]").replace(
+            "  rule g[A](?x: A, ?r) :- Sp[C = A], Sp.crecv(?x, ?r)\n",
+            "  sort Box\n    import anthill.prelude.Int64\n    sort P = ?\n    \
+             rule g[A](?x: A, ?r) :- Sp[C = A, P = P], Sp.crecv(?x, ?r)\n  end\n",
+        );
+        assert!(src.contains("sort Box"), "the fixture's rule line moved");
+        let src = src.replace("g(red(), ?r)", &format!("Box[P = {bracket}].g(red(), ?r)"));
+        assert_eq!(answers_of(&src, &ns), vec![want], "`Box[P = {bracket}]`");
+    }
+}
+
+/// A NAME THAT DENOTES NOTHING IS REPORTED, naming itself. A guard lowered it as data and the
+/// load reported an unresolved name in a scope's words; the bracket's sentence says what the
+/// position takes.
 #[test]
 fn a_name_that_denotes_nothing_is_reported() {
     let errs = refusal("test.w51w18.zork", "Sp[C = A, P = Zork]");
     assert!(
-        errs.contains("`Zork` in it names neither a sort nor one of `Sp`'s own type parameters (C, P)"),
+        errs.contains("`Sp` has a type parameter list (it declares C, P), and `Zork` in it names neither a sort nor a type parameter in scope;"),
         "got:\n{errs}",
     );
     assert!(!errs.contains("unresolved name"), "reported once, in the bracket's words: {errs}");

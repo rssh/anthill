@@ -246,7 +246,7 @@ end
 fn a_literal_stays_refused() {
     let errs = refusal("test.qhdgc.lit", "Sp[C = A, P = 3]");
     assert!(
-        errs.contains("`3` in it names neither a sort nor one of `Sp`'s own type parameters"),
+        errs.contains("`3` in it names neither a sort nor a type parameter in scope"),
         "the diagnostic must name the literal; got:\n{errs}",
     );
 }
@@ -266,7 +266,7 @@ fn an_entity_constructor_stays_refused() {
 fn a_rule_name_stays_refused() {
     let errs = refusal("test.qhdgc.rule", "Sp[C = A, P = item]");
     assert!(
-        errs.contains("`item` in it names neither a sort nor one of `Sp`'s own type parameters"),
+        errs.contains("`item` in it names neither a sort nor a type parameter in scope"),
         "the diagnostic must name the rule; got:\n{errs}",
     );
 }
@@ -275,7 +275,7 @@ fn a_rule_name_stays_refused() {
 fn a_tuple_type_stays_refused() {
     let errs = refusal("test.qhdgc.tup", "Sp[C = A, P = (Red, Red)]");
     assert!(
-        errs.contains("names neither a sort nor one of `Sp`'s own type parameters"),
+        errs.contains("names neither a sort nor a type parameter in scope"),
         "a tuple type must stay refused; got:\n{errs}",
     );
 }

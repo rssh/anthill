@@ -199,9 +199,13 @@ fn route_goal(
     }
     // The bracket's instance, built here: nothing a caller passes can change it — a sort's
     // bracket on the relation, or the goal's own on what the relation declares (060.1 §2).
-    let built = if call_recv_type_of(site).is_some() || call_type_args_of(site).is_some() {
+    // Beside it, what the goal fixes each parameter of the callee's sort to — its bracket, an
+    // argument at a column typed with it, the parameter's default — which a guard of the callee
+    // that names one is built at; read for a goal with no bracket where a guard is built.
+    let bracketed = call_recv_type_of(site).is_some() || call_type_args_of(site).is_some();
+    let (built, mut sort_params): (_, Option<Vec<CitedParam>>) = if bracketed {
         let mut misfits = Vec::new();
-        let routes = match bracketed_goal_routes(kb, site, callee, &mut misfits) {
+        let (routes, params) = match bracketed_goal_routes(kb, site, callee, &mut misfits) {
             Ok(routes) => routes,
             Err(refusal) => {
                 refused.push((refusal, Some(site.span.source)));
@@ -211,9 +215,9 @@ fn route_goal(
         for misfit in misfits {
             refused.push(citation_misfit_error(kb, callee, site.span, misfit));
         }
-        routes
+        (routes, Some(params))
     } else {
-        SmallVec::new()
+        (SmallVec::new(), None)
     };
     // A goal of the clause's own relation at its own column types: the clause's parameters,
     // at its own offset in the layout.
@@ -240,6 +244,8 @@ fn route_goal(
         .collect();
     let mut callee_reads: HashMap<RuleId, Vec<Rc<NodeOccurrence>>> = HashMap::new();
     let mut tie: Option<(Symbol, Symbol)> = None;
+    // Where the goal cannot be read as a citation of its callee, for the guard it builds.
+    let mut unread: Option<TypeError> = None;
     let declared: Vec<GuardRoute> = positions
         .iter()
         .map(|&(crid, k)| {
@@ -271,9 +277,34 @@ fn route_goal(
             }
             match at {
                 Some(at) if instance_is_concrete(kb, &at) => {
-                    match dictionary_at_goal(kb, site, crid, carrier, &instance, &at) {
+                    if sort_params.is_none() {
+                        match goal_sort_param_values(kb, site, callee) {
+                            Ok(params) => sort_params = Some(params),
+                            Err(refusal) => {
+                                unread.get_or_insert(refusal);
+                                return GuardRoute::NoGuard;
+                            }
+                        }
+                    }
+                    let sort_params = sort_params.as_deref().expect("read above");
+                    let dict = dictionary_at_goal(
+                        kb,
+                        site,
+                        callee,
+                        crid,
+                        carrier,
+                        &instance,
+                        &at,
+                        sort_params,
+                    );
+                    match dict {
                         Ok(dict) => GuardRoute::Concrete(dict),
-                        Err(why) => GuardRoute::Unbuilt(spec, why),
+                        // A bracket's citation has refused the parameter it leaves unfixed
+                        // (`CarriedMisfit::Unfixed`, above): one fault, one refusal.
+                        Err(GoalDictMiss::Unfixed(_)) if bracketed => GuardRoute::NoGuard,
+                        Err(GoalDictMiss::Unfixed(why) | GoalDictMiss::Fetch(why)) => {
+                            GuardRoute::Unbuilt(spec, why)
+                        }
                     }
                 }
                 Some(at) if !clause_sort_supplies(kb, rid, spec) => {
@@ -287,6 +318,10 @@ fn route_goal(
             }
         })
         .collect();
+    if let Some(refusal) = unread {
+        refused.push((refusal, Some(site.span.source)));
+        return None;
+    }
     if let Some((first, second)) = tie {
         refused.push((
             TypeError::Other {
@@ -444,18 +479,32 @@ enum GuardRoute {
     NoGuard,
 }
 
+/// Why [`dictionary_at_goal`] builds no dictionary, said as the goal's refusal.
+enum GoalDictMiss {
+    /// The guard names a parameter of the callee's sort and the goal fixes nothing for it.
+    Unfixed(String),
+    /// The fetch's account: no provision there, or two that answer.
+    Fetch(String),
+}
+
 /// The dictionary of the callee's guard `instance` (closed over `callee_clause`'s frame) at
 /// the types goal `site` gives its carrier — `at` — and its elements, built from the
-/// provisions as a read at those types would fetch it. `Err` with what the fetch says where it
-/// fetches none: no provision there, or two that answer.
+/// provisions as a read at those types would fetch it. An element at a parameter of the sort
+/// `callee` is written in stands where the goal fixes it (`sort_params`, [`cited_param_values`]):
+/// `Box[P = Bool].g(…)` builds `g`'s `Sp[C = A, P = P]` at `P = Bool`. `Err` with what the fetch
+/// says where it fetches none — no provision there, or two that answer — and where the goal
+/// fixes nothing for such a parameter.
+#[allow(clippy::too_many_arguments)]
 fn dictionary_at_goal(
     kb: &mut KnowledgeBase,
     site: &Rc<NodeOccurrence>,
+    callee: Symbol,
     callee_clause: RuleId,
     carrier: u32,
     instance: &Value,
     at: &Value,
-) -> Result<Value, String> {
+    sort_params: &[CitedParam],
+) -> Result<Value, GoalDictMiss> {
     let name = kb.intern("goal_instance");
     let frame_len = (kb.rule_arity(callee_clause) as usize).max(kb.rule_globals(callee_clause).len());
     let fresh: Vec<VarId> = (0..frame_len).map(|_| kb.fresh_var(name)).collect();
@@ -467,25 +516,43 @@ fn dictionary_at_goal(
             Some(ty) if instance_is_concrete(kb, &ty) => {
                 pins.bind_value(kb, fresh[element as usize], ty);
             }
-            _ => return Err("the goal's arguments fix no type at the guard's elements".to_string()),
+            _ => {
+                return Err(GoalDictMiss::Fetch(
+                    "the goal's arguments fix no type at the guard's elements".to_string(),
+                ))
+            }
         }
     }
     let (opened, _) = crate::kb::node_occurrence::open_value_type(kb, instance, &fresh);
     let ground = walk_type_deep_value(kb, &pins, &opened);
-    match fetch_dictionary_from_type(kb, &Substitution::new(), &ground, at, DefaultRung::Consult, None) {
+    let (ground, unfixed) =
+        cited_sort_params(kb, sort_params, callee_clause, &fresh, &pins, &ground);
+    if let Some(param) = unfixed {
+        let sort = kb.local_name_of(kb.rule_domain(callee_clause)).to_owned();
+        let param = kb.local_name_of(param).to_owned();
+        return Err(GoalDictMiss::Unfixed(format!(
+            "the guard names `{sort}`'s `{param}`, and nothing at the goal fixes it: write it in \
+             the goal's bracket, `{sort}[{param} = …].{}(…)`, or pass an argument at a column \
+             typed `{param}`",
+            kb.local_name_of(callee),
+        )));
+    }
+    let none = Substitution::new();
+    let fetched = fetch_dictionary_from_type(kb, &none, &ground, at, DefaultRung::Consult, None);
+    match fetched {
         FindDictFetch::Fetched(dict) => Ok(dict),
-        FindDictFetch::Guard(FindDictOutcome::DontFire) => Err(format!(
+        FindDictFetch::Guard(FindDictOutcome::DontFire) => Err(GoalDictMiss::Fetch(format!(
             "nothing provides `{}` there",
             type_display_name_value(kb, &ground)
-        )),
+        ))),
         // The fetch's account, said of a read at run time; here it is the goal's, at load.
         FindDictFetch::Undecided { detail } | FindDictFetch::Defect { detail } => {
-            Err(detail.replace(" at run time:", ":"))
+            Err(GoalDictMiss::Fetch(detail.replace(" at run time:", ":")))
         }
-        FindDictFetch::Guard(_) => Err(format!(
+        FindDictFetch::Guard(_) => Err(GoalDictMiss::Fetch(format!(
             "`{}` is not decided by the goal's types",
             type_display_name_value(kb, &ground)
-        )),
+        ))),
     }
 }
 

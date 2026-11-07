@@ -34,6 +34,7 @@ pub(super) fn relation_reference_type(
     let column_types: Vec<(Symbol, Value)> =
         columns.iter().map(|c| (c.name, c.ty.clone())).collect();
     let ty = relation_type_from_columns(kb, sym, columns, occ.span, span)?;
+    let opened_params = opened.as_ref().map(|(_, params)| params.clone()).unwrap_or_default();
     let ty = settle_citation_type(
         kb,
         site.env,
@@ -49,7 +50,18 @@ pub(super) fn relation_reference_type(
     // routed over the columns' own types at this citation. QUEUED, not computed — see
     // [`PendingCitationRoutes`].
     // A bare reference takes no bracket: the loader refuses one on a relation's name.
-    queue_citation_routes(kb, site.env, occ, sym, column_types, Vec::new(), subst, unopened, Vec::new());
+    queue_citation_routes(
+        kb,
+        site.env,
+        occ,
+        sym,
+        column_types,
+        Vec::new(),
+        subst,
+        opened_params,
+        unopened,
+        Vec::new(),
+    );
     Ok(ty)
 }
 
@@ -66,6 +78,7 @@ pub(super) struct CitationSite<'a> {
 
 /// WI-20260911-5G28A S1 — one type parameter of the cited relation's ENCLOSING SORT, as
 /// one citation sees it: a variable of its own, fresh per citation.
+#[derive(Clone)]
 pub(super) struct CitationParam {
     /// The declared parameter, qualified.
     param: Symbol,
@@ -128,10 +141,11 @@ fn open_citation_params(
     Some((owner, params))
 }
 
-/// A parameter of the cited sort no column mentions, which [`open_citation_params`] opens no
-/// variable for, with what the citation writes for it ([`unopened_citation_params`]).
+/// A parameter of the cited sort with what the citation writes for it: one no column mentions,
+/// which [`open_citation_params`] opens no variable for ([`unopened_citation_params`]), or one a
+/// column mentions, at what the citation's σ binds its variable to ([`cited_param_values`]).
 #[derive(Clone)]
-pub(crate) struct UnopenedParam {
+pub(crate) struct CitedParam {
     /// The declared parameter, qualified.
     param: Symbol,
     /// The sort's canonical variable for it — the one the sort's `requires` mention.
@@ -147,13 +161,13 @@ pub(crate) struct UnopenedParam {
 /// of the relation's clauses ([`sort_requirement_route`]): in `sort GSat[C, E] requires Pc2[C =
 /// C, Element = E]`, the citation `GSat[C = Bag, E = Bit].model(…)` reads `Pc2[C = Bag, Element
 /// = Bit]`, and `GSat[C = Bag].model(…)` fixes no `E` the read needs.
-fn unopened_citation_params(
+pub(super) fn unopened_citation_params(
     kb: &mut KnowledgeBase,
     occ: &Rc<NodeOccurrence>,
     sym: Symbol,
     opened: Option<&(Symbol, Vec<CitationParam>)>,
     env: &TypingEnv,
-) -> Vec<UnopenedParam> {
+) -> Vec<CitedParam> {
     let Some(owner) = impl_parent_sort_of_op(kb, sym) else {
         return Vec::new();
     };
@@ -196,7 +210,7 @@ fn unopened_citation_params(
                         .find(|fill| fill.default_of == Some(*param))
                         .map(|fill| fill.value.clone())
                 });
-            UnopenedParam {
+            CitedParam {
                 param: *param,
                 canonical,
                 written,
@@ -758,6 +772,7 @@ pub(super) fn relation_reference_type_applied(
         })
         .collect();
     let ty = relation_type_from_columns(kb, sym, free, occ.span, span)?;
+    let opened_params = opened.as_ref().map(|(_, params)| params.clone()).unwrap_or_default();
     let ty = settle_citation_type(
         kb,
         site.env,
@@ -769,7 +784,18 @@ pub(super) fn relation_reference_type_applied(
         ty,
     )?;
     let ty = close_unfixed_clause_vars(kb, &column_types, &bound, &subst, ty);
-    queue_citation_routes(kb, site.env, occ, sym, column_types, bound_types, subst, unopened, selections);
+    queue_citation_routes(
+        kb,
+        site.env,
+        occ,
+        sym,
+        column_types,
+        bound_types,
+        subst,
+        opened_params,
+        unopened,
+        selections,
+    );
     Ok(ty)
 }
 
@@ -897,8 +923,11 @@ pub(crate) struct PendingCitationRoutes {
     subst: Substitution,
     chain: DictChain,
     param_rigids: Vec<(VarId, TermId)>,
+    /// The cited sort's parameters a column mentions, each at this citation's variable
+    /// ([`open_citation_params`]), which `subst` binds.
+    opened: Vec<CitationParam>,
     /// The cited sort's parameters no column mentions ([`unopened_citation_params`]).
-    unopened: Vec<UnopenedParam>,
+    unopened: Vec<CitedParam>,
     /// The providers the citation's bracket selects for the requirements the rule's guards
     /// state (060.1 §2, [`seed_rule_citation_bracket`]), pinned where a guard's read is
     /// routed. Empty for a citation with no bracket.
@@ -914,7 +943,8 @@ fn queue_citation_routes(
     column_types: Vec<(Symbol, Value)>,
     bound_types: Vec<(Symbol, Value)>,
     subst: Substitution,
-    unopened: Vec<UnopenedParam>,
+    opened: Vec<CitationParam>,
+    unopened: Vec<CitedParam>,
     selections: Vec<InstanceSelection>,
 ) {
     kb.pending_citation_routes.push(PendingCitationRoutes {
@@ -925,6 +955,7 @@ fn queue_citation_routes(
         subst,
         chain: env.enclosing_frame_chain().clone(),
         param_rigids: env.param_rigids().to_vec(),
+        opened,
         unopened,
         selections,
     });
@@ -1498,13 +1529,42 @@ pub(super) fn bracketed_goal_routes(
     goal: &Rc<NodeOccurrence>,
     callee: Symbol,
     misfits: &mut Vec<CarriedMisfit>,
-) -> Result<SmallVec<[Option<TermId>; 2]>, TypeError> {
+) -> Result<(SmallVec<[Option<TermId>; 2]>, Vec<CitedParam>), TypeError> {
+    // A parameter the bracket leaves free is not refused here: a rule body's goal owes its
+    // callee nothing at load, and the callee derives what no route gives.
+    let edge = rule_goal_edge(kb, goal, callee)?;
+    let params = cited_param_values(kb, &edge);
+    Ok((citation_requirement_routes(kb, &edge, misfits), params))
+}
+
+/// What a rule-body goal of `callee` with no bracket fixes each parameter of `callee`'s sort to
+/// ([`cited_param_values`]): an argument at a column typed with it, else the parameter's
+/// default. The refusal where the goal cannot be read as a citation of `callee`.
+pub(super) fn goal_sort_param_values(
+    kb: &mut KnowledgeBase,
+    goal: &Rc<NodeOccurrence>,
+    callee: Symbol,
+) -> Result<Vec<CitedParam>, TypeError> {
+    let parametric = impl_parent_sort_of_op(kb, callee)
+        .is_some_and(|owner| !sort_type_params_as_pairs(kb, owner).is_empty());
+    if !parametric {
+        return Ok(Vec::new());
+    }
+    let edge = rule_goal_edge(kb, goal, callee)?;
+    Ok(cited_param_values(kb, &edge))
+}
+
+/// A rule-body goal of `callee` read as a citation of it ([`goal_edge_citation`]): a rule body
+/// has no caller frame, and an argument is at its literal's sort or the type inferred for it.
+fn rule_goal_edge(
+    kb: &mut KnowledgeBase,
+    goal: &Rc<NodeOccurrence>,
+    callee: Symbol,
+) -> Result<PendingCitationRoutes, TypeError> {
     let arg_type = |kb: &mut KnowledgeBase, arg: &Rc<NodeOccurrence>| match arg.as_expr() {
         Some(Expr::Const(lit)) => Some(literal_sort(kb, lit)),
         _ => arg.inferred_type(),
     };
-    // A parameter the bracket leaves free is not refused here: a rule body's goal owes its
-    // callee nothing at load, and the callee derives what no route gives.
     let (edge, _) = goal_edge_citation(
         kb,
         goal,
@@ -1514,7 +1574,7 @@ pub(super) fn bracketed_goal_routes(
         DictChain::empty(),
         Vec::new(),
     )?;
-    Ok(citation_requirement_routes(kb, &edge, misfits))
+    Ok(edge)
 }
 
 /// WI-20261102-ATVC1 — a rule-body GOAL of `callee` read as a citation of it: the relation's
@@ -1645,6 +1705,7 @@ fn goal_edge_citation(
         subst,
         chain,
         param_rigids,
+        opened: opened.map(|(_, params)| params).unwrap_or_default(),
         unopened,
         selections,
     };
@@ -1683,6 +1744,19 @@ fn route_requirement_read(
         };
         let instance = kb.term_from_debruijn(*id, fresh);
         let instance = walk_type_deep_value(kb, carrier_subst, &Value::term(instance));
+        // An element at a parameter of the sort the clause is written in is what the citation
+        // fixes for it, as for the sort's own requirement: `Box[P = Bool].g(…)` reads `g`'s
+        // `Sp[C = A, P = P]` at `P = Bool`.
+        let params = cited_param_values(kb, pending);
+        let (instance, unfixed) =
+            cited_sort_params(kb, &params, rid, fresh, carrier_subst, &instance);
+        if let Some(param) = unfixed {
+            misfits.push(CarriedMisfit::Unfixed {
+                param,
+                sort: kb.rule_domain(rid),
+            });
+            return None;
+        }
         let bracket = requirement_bracket(kb, &instance);
         // The provider the citation's bracket selects for the requirement this guard states
         // (060.1 §2): nothing else is asked for it.
@@ -1787,6 +1861,9 @@ fn route_requirement_read(
         let at_concrete = spec_carrier_param_or_sole(kb, kb.canonical_sort_sym(spec_sort))
             .and_then(|key| spec_binding_value(kb, &instance, kb.local_name_of(key)))
             .is_some_and(|carrier| instance_is_concrete(kb, &carrier));
+        // An element the citation writes at a type parameter of the citing body (`Box[P =
+        // X].g(…)` in `kr[X]`) selects the caller's instance, which its `requires` supplies.
+        let at_concrete = at_concrete && !value_contains_rigid(kb, &instance);
         let covering: Vec<_> = if at_concrete {
             Vec::new()
         } else {
@@ -2448,6 +2525,69 @@ impl ClauseTypes {
     }
 }
 
+/// `ty`, a type a clause of `rid` states, at a citation: each parameter of the sort the clause
+/// is written in read as the clause variable that stands for it — the one the clause was closed
+/// over, opened as `fresh` — through `pins`, and a parameter no typed head reads as the citation
+/// writes it (`params`). Beside it, a parameter the type names and the citation fixes nothing
+/// for.
+pub(super) fn cited_sort_params(
+    kb: &mut KnowledgeBase,
+    params: &[CitedParam],
+    rid: crate::kb::RuleId,
+    fresh: &[VarId],
+    pins: &Substitution,
+    ty: &Value,
+) -> (Value, Option<Symbol>) {
+    let globals = kb.rule_globals(rid).to_vec();
+    let unfixed: std::cell::Cell<Option<Symbol>> = std::cell::Cell::new(None);
+    let rewritten = rewrite_type_leaves(kb, ty, &|kb, leaf| {
+        // The parameter, written by its name or carried as its own variable.
+        let vid = match crate::kb::term_view::TermView::head(leaf, kb) {
+            crate::kb::term_view::ViewHead::Var(Var::Global(v)) => v,
+            _ => type_param_global_var(kb, ref_or_nullary_name_view(kb, leaf)?)?,
+        };
+        // A De Bruijn index is the position counted from the frame's end
+        // ([`KnowledgeBase::extend_rule_frame_with_bounds`]).
+        let opened = globals
+            .iter()
+            .position(|g| *g == vid)
+            .and_then(|position| fresh.get(globals.len() - 1 - position).copied());
+        if let Some(opened) = opened {
+            match walk_type_deep_value(kb, pins, &Value::Var(Var::Global(opened))) {
+                Value::Var(Var::Global(end)) if end == opened => {}
+                pinned => return Some(pinned),
+            }
+        }
+        // A parameter no typed head reads is the one the citation writes.
+        let param = params.iter().find(|p| p.canonical == vid)?;
+        if param.written.is_none() {
+            unfixed.set(Some(param.param));
+        }
+        param.written.clone()
+    })
+    .unwrap_or_else(|| ty.clone());
+    (rewritten, unfixed.get())
+}
+
+/// Each parameter of the cited sort with what `pending`'s citation fixes it to: one a column
+/// mentions at its variable through the citation's σ — the bracket, and the arguments met with
+/// the columns — where σ binds it, and one no column mentions as the citation writes it.
+pub(super) fn cited_param_values(
+    kb: &mut KnowledgeBase,
+    pending: &PendingCitationRoutes,
+) -> Vec<CitedParam> {
+    let mut params = pending.unopened.clone();
+    for p in &pending.opened {
+        let at = walk_type_deep_value(kb, &pending.subst, &Value::Var(Var::Global(p.var)));
+        params.push(CitedParam {
+            param: p.param,
+            canonical: p.canonical,
+            written: resolved_var(kb, &at).is_none().then_some(at),
+        });
+    }
+    params
+}
+
 /// The route of a read of the requirement at `spec_sort` that the sort clause `rid` is written
 /// in states ([`route_requirement_read`]): the entry, each of the sort's parameters read as the
 /// clause variable that stands for it — the one the clause was closed over, opened as `fresh` —
@@ -2472,36 +2612,8 @@ fn sort_requirement_route(
     let entry = requires_chain(kb, kb.rule_domain(rid))
         .into_iter()
         .find(|e| same_sort_canonical(kb, e.required_sort, spec_sort))?;
-    let globals = kb.rule_globals(rid).to_vec();
-    // A parameter the read names and the citation fixes nothing for.
-    let unfixed: std::cell::Cell<Option<Symbol>> = std::cell::Cell::new(None);
-    let spec = rewrite_type_leaves(kb, &entry.spec, &|kb, leaf| {
-        // The parameter, written by its name or carried as its own variable.
-        let vid = match crate::kb::term_view::TermView::head(leaf, kb) {
-            crate::kb::term_view::ViewHead::Var(Var::Global(v)) => v,
-            _ => type_param_global_var(kb, ref_or_nullary_name_view(kb, leaf)?)?,
-        };
-        // A De Bruijn index is the position counted from the frame's end
-        // ([`KnowledgeBase::extend_rule_frame_with_bounds`]).
-        let opened = globals
-            .iter()
-            .position(|g| *g == vid)
-            .and_then(|position| fresh.get(globals.len() - 1 - position).copied());
-        if let Some(opened) = opened {
-            match walk_type_deep_value(kb, pins, &Value::Var(Var::Global(opened))) {
-                Value::Var(Var::Global(end)) if end == opened => {}
-                pinned => return Some(pinned),
-            }
-        }
-        // A parameter no typed head reads is the one the citation writes.
-        let unopened = pending.unopened.iter().find(|p| p.canonical == vid)?;
-        if unopened.written.is_none() {
-            unfixed.set(Some(unopened.param));
-        }
-        unopened.written.clone()
-    })
-    .unwrap_or_else(|| entry.spec.clone());
-    if let Some(param) = unfixed.get() {
+    let (spec, unfixed) = cited_sort_params(kb, &pending.unopened, rid, fresh, pins, &entry.spec);
+    if let Some(param) = unfixed {
         return Some(Err(CarriedMisfit::Unfixed {
             param,
             sort: kb.rule_domain(rid),

@@ -826,8 +826,8 @@ end
 /// nothing types, `size(?z, ?n)`, stay refused. FAILS with the guards not held (the six
 /// `size` calls refused), with the clause's type variables read as open in the demand (the
 /// first control loads), and with an open carrier left out of it (the second loads). With an
-/// effect row refused as an element, `wovenE` is refused ("names neither a sort nor one of
-/// `FiniteCollection`'s own type parameters").
+/// effect row refused as an element, `wovenE` is refused ("names neither a sort nor a type
+/// parameter in scope").
 #[test]
 fn a_guard_holds_its_specs_requires_chain() {
     let program = |decls: &str| {
