@@ -292,7 +292,7 @@ fn resolve_op_remembers_the_named_spec_op() {
                import anthill.prelude.{Int64, Ord, WeakOrd}\n\
                import anthill.prelude.Numeric.{sub}\n\
                sort Descending\n\
-               fact Ord[T = Int64]\n\
+               provides Ord[T = Int64]\n\
                operation compare(a: Int64, b: Int64) -> Int64 = sub(b, a)\n\
                end\n\
                end\n";
@@ -382,7 +382,7 @@ fn opref_named_reads_the_spec_op_through_the_accessor() {
                import anthill.prelude.{Int64, Ord, WeakOrd}\n\
                import anthill.prelude.Numeric.{sub}\n\
                sort Descending\n\
-               fact Ord[T = Int64]\n\
+               provides Ord[T = Int64]\n\
                operation compare(a: Int64, b: Int64) -> Int64 = sub(b, a)\n\
                end\n\
                end\n";

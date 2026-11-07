@@ -32,21 +32,109 @@ pub(crate) fn carrier_requirements_hold(
     scope_subst.bind_value(kb, carrier, ty.clone());
     for instance in requirements {
         let instance = walk_type_deep_value(kb, &scope_subst, &Value::term(instance));
-        let goal = match provider_requirement_goal(kb, subst, ty, &instance) {
-            Ok(goal) => goal,
-            Err(verdict) => return verdict,
-        };
-        // The empty scope's question, read through its memo, as the clause's read of the same
-        // requirement is ([`resolve_in_empty_scope`]).
-        match resolve_in_empty_scope(kb, &goal, DefaultRung::Consult) {
-            ResolutionResult::Resolved(_) => {}
-            ResolutionResult::NoMatch { .. } => return TypeBoundVerdict::Refuted,
-            ResolutionResult::Ambiguous { .. } | ResolutionResult::Cyclic { .. } => {
-                return TypeBoundVerdict::Suspend
-            }
+        match instance_at_carrier(kb, subst, ty, &instance) {
+            InstanceVerdict::Holds(_) => {}
+            InstanceVerdict::Refuted => return TypeBoundVerdict::Refuted,
+            InstanceVerdict::Suspend => return TypeBoundVerdict::Suspend,
         }
     }
     TypeBoundVerdict::Holds
+}
+
+/// What type checking answers for a spec instance: found, at the goal its search answered;
+/// not found; or not decided yet.
+pub(crate) enum InstanceVerdict {
+    Holds(SortGoal),
+    Refuted,
+    Suspend,
+}
+
+/// Does `instance` hold at its carrier `ty`: the instance search a rule's guard reads, through
+/// the empty scope's memo, as the clause's read of the same requirement does
+/// ([`resolve_in_empty_scope`]). Two providers, or a chain that re-enters its own goal,
+/// decide nothing.
+pub(crate) fn instance_at_carrier(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    ty: &Value,
+    instance: &Value,
+) -> InstanceVerdict {
+    let goal = match provider_requirement_goal(kb, subst, ty, instance) {
+        Ok(goal) => goal,
+        Err(TypeBoundVerdict::Refuted) => return InstanceVerdict::Refuted,
+        Err(TypeBoundVerdict::Suspend) => return InstanceVerdict::Suspend,
+        Err(TypeBoundVerdict::Holds) => unreachable!("building a requirement returns its goal on success"),
+    };
+    resolved_instance(kb, goal)
+}
+
+fn resolved_instance(kb: &mut KnowledgeBase, goal: SortGoal) -> InstanceVerdict {
+    match resolve_in_empty_scope(kb, &goal, DefaultRung::Consult) {
+        ResolutionResult::Resolved(_) => InstanceVerdict::Holds(goal),
+        ResolutionResult::NoMatch { .. } => InstanceVerdict::Refuted,
+        ResolutionResult::Ambiguous { .. } | ResolutionResult::Cyclic { .. } => InstanceVerdict::Suspend,
+    }
+}
+
+/// A sort's type application written as a goal or a query, `WeakOrd[T = Int64]`: it holds
+/// where type checking finds the instance — a provision, a conversion through another spec's
+/// provision, a conditional provision whose condition holds — by the search a rule's guard
+/// reads ([`instance_at_carrier`]). A spec read at a carrier parameter waits until the
+/// carrier is known (`WeakOrd[T = ?t]`, the bare `WeakOrd`); a sort with no carrier parameter
+/// is asked at its written elements, each known, and holds nowhere when nothing provides it
+/// (`Pair[A = Int64, B = Int64]`).
+pub(crate) fn type_application_goal(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    goal: &Value,
+) -> InstanceVerdict {
+    let instance = walk_type_deep_value(kb, subst, goal);
+    let Some(written_spec) = sort_functor_of_view(kb, &instance) else {
+        return InstanceVerdict::Refuted;
+    };
+    let spec = kb.canonical_sort_sym(written_spec);
+    let written = requirement_bracket(kb, &instance).written;
+    if let Some(carrier_param) = spec_carrier_param_or_sole(kb, spec) {
+        let Some((_, ty)) = written.iter().find(|(key, _)| same_label(kb, carrier_param, *key)) else {
+            return InstanceVerdict::Suspend;
+        };
+        // The effect-row kind anchor is satisfied structurally by an effect row, as type
+        // checking reads it ([`effects_runtime_sym`]), and never resolved against providers.
+        if is_effects_runtime(kb, spec) {
+            return match type_head(kb, ty) {
+                TypeHead::EffectsRows => InstanceVerdict::Holds(SortGoal {
+                    spec_sort: spec,
+                    bindings: SmallVec::new(),
+                    carrier: None,
+                    left_open: SmallVec::new(),
+                }),
+                _ if type_is_undetermined(kb, ty) => InstanceVerdict::Suspend,
+                _ => InstanceVerdict::Refuted,
+            };
+        }
+        // A carrier with a variable in it (`Store[State = Buf[T = ?x]]`) waits as an unbound
+        // one does: the search reads it as written, and found nothing at `?x`. The instance is
+        // σ-walked, so a global variable left in it is unbound; a rigid one is a type, which the
+        // guard's check reads too.
+        if type_is_undetermined(kb, ty) || mentions_unbound(kb, ty) {
+            return InstanceVerdict::Suspend;
+        }
+        let ty = ty.clone();
+        return instance_at_carrier(kb, subst, &ty, &instance);
+    }
+    if provides_rows_of_spec(kb, spec).next().is_none() {
+        return InstanceVerdict::Refuted;
+    }
+    if written.iter().any(|(_, value)| mentions_unbound(kb, value)) {
+        return InstanceVerdict::Suspend;
+    }
+    let WitnessGoal { goal, .. } = sort_goal_with_wildcards(kb, spec, SmallVec::new(), None, &written);
+    resolved_instance(kb, goal)
+}
+
+/// Does the σ-walked `v` hold a variable nothing has bound? A rigid one is a type.
+fn mentions_unbound(kb: &KnowledgeBase, v: &Value) -> bool {
+    kb.mentions_var(v, &|x| matches!(x, Var::Global(_)))
 }
 
 /// Read obligations before losing the carrier variable to a type substitution.
@@ -167,8 +255,38 @@ pub(crate) fn provider_requirement_goal_with_provider(
         let Some(base) = provider.or_else(|| sort_functor_of_view(kb, ty)) else {
             return Err(TypeBoundVerdict::Suspend);
         };
+        // No provision of the carrier's sort to read them off: they are read off the provisions
+        // that answer the written elements, a witness's among them, as an operation's
+        // `requires` reads an element it leaves out ([`open_slots_said`]). Where none answers,
+        // the requirement is known unavailable and fails — a missing provider is no undecided
+        // answer (`Sp[C = Float]` with nothing providing `Sp` at `Float`); where two name
+        // different types for an element, nothing is decided yet. A provider handed in with a
+        // dictionary is the one whose provision says them, and none of its own is no answer
+        // another witness gives.
         let Some((view, _)) = subtype_provider_view(kb, base, spec) else {
-            return Err(TypeBoundVerdict::Suspend);
+            if provider.is_some() {
+                return Err(TypeBoundVerdict::Suspend);
+            }
+            let mut open = goal.clone();
+            open.bindings.retain(|(key, _)| !omitted.contains(key));
+            open.left_open.extend(omitted.iter().copied());
+            let said = match open_slots_said(kb, &open, &omitted) {
+                OpenSlotsSaid::One(said) => said,
+                OpenSlotsSaid::Apart(_) => return Err(TypeBoundVerdict::Suspend),
+                OpenSlotsSaid::Nothing => return Err(TypeBoundVerdict::Refuted),
+            };
+            for (key, value) in omitted.iter().zip(said) {
+                let Some(value) = value else {
+                    return Err(TypeBoundVerdict::Suspend);
+                };
+                let slot = goal
+                    .bindings
+                    .iter_mut()
+                    .find(|(k, _)| same_label(kb, *k, *key))
+                    .expect("an omitted element belongs to the goal");
+                slot.1 = value;
+            }
+            return Ok(goal);
         };
         let args = receiver_type_args(kb, ty);
         let (view, _) = provider_view_at_instance(kb, subst, base, &args, view);

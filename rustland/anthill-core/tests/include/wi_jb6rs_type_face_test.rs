@@ -723,11 +723,10 @@ namespace test.jb6rs.sortapp
     entity circle(r: Int64)
   end
   fact holds(Shape[])
-  fact Eq[T = Int64]
   fact listy(List[T = Int64])
   rule bareFindsBracket(1) :- holds(Shape)
   rule bracketFindsBracket(1) :- holds(Shape[])
-  rule eqByBracket(?q) :- Eq[T = ?q]
+  rule eqByBracket(1) :- Eq[T = Int64]
 end
 "#;
 
@@ -735,7 +734,8 @@ end
 /// empty bracket are one term (`Shape` is `Shape[]`, the canon in `alloc` exempting no sort
 /// since step 6), and its PARENTHESIZED spelling names nothing to apply — `Shape()` and
 /// `Eq(T: ?q)` are refused in a clause and in a query, where they used to be the type
-/// silently (`Eq(T: ?q)` answered from `fact Eq[T = Int64]`). A sort that is also an
+/// silently (`Eq(T: ?q)` answered from a `fact Eq[T = Int64]`, which is refused since
+/// WI-20261107-FDJ0E; the bracket goal is a type check). A sort that is also an
 /// operation is applied as the operation. And its type, printed as data, takes the bracket
 /// — `List[T = Int64]` — which reloads as itself where `List(T: Int64)` would be refused.
 ///
@@ -757,7 +757,7 @@ fn a_sort_has_one_reading_and_names_nothing_to_apply() {
     };
     assert_eq!(answers(&mut kb, "bareFindsBracket"), 1, "`Shape` is `Shape[]`");
     assert_eq!(answers(&mut kb, "bracketFindsBracket"), 1);
-    assert_eq!(answers(&mut kb, "eqByBracket"), 1, "the bracket goal answers from the fact");
+    assert_eq!(answers(&mut kb, "eqByBracket"), 1, "the bracket goal is a type check: `Int64` provides `Eq`");
     let shape = kb
         .try_resolve_symbol("test.jb6rs.sortapp.Shape")
         .expect("Shape resolves");
@@ -772,7 +772,7 @@ fn a_sort_has_one_reading_and_names_nothing_to_apply() {
         load_errors_of(&format!(
             "namespace test.jb6rs.sortapp2\n  import anthill.prelude.{{Int64, Eq}}\n  \
              sort Shape\n    entity circle(r: Int64)\n  end\n  fact holds(Shape[])\n  \
-             fact Eq[T = Int64]\n  {decl}\nend\n"
+             {decl}\nend\n"
         ))
     };
     for (decl, sort) in [

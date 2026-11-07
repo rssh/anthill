@@ -132,12 +132,13 @@ class ParserIntegrationTest extends munit.FunSuite:
     assert(result.isRight, s"Parse failed: ${result.left.getOrElse(IndexedSeq.empty).map(_.message).mkString(", ")}")
     val pf = result.toOption.get
 
-    // Top-level: 2 sorts (List, Polynom) + 1 fact (Polynom[Int])
+    // Top-level: 2 sorts (List, Polynom), and no fact: `fact Polynom[Int64]` was refused as a
+    // clause headed by a type application (rustland's WI-20261107-FDJ0E) and removed.
     val sortItems = pf.items.collect { case Item.SortWithBodyItem(s) => s }
     val factItems = pf.items.collect { case Item.FactItem(f) => f }
 
     assertEquals(sortItems.length, 2, s"Expected 2 sorts, got ${sortItems.length}")
-    assertEquals(factItems.length, 1, "Expected 1 fact")
+    assertEquals(factItems.length, 0, "Expected no fact")
 
     val sortNames = sortItems.map(s => pf.symbols.name(s.name.last)).toSet
     assert(sortNames.contains("List"), "Should have List sort")

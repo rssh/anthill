@@ -321,6 +321,12 @@ pub enum BuiltinTag {
     /// fails if a ground carrier has no provider; SUSPENDS as residual (Delay) when
     /// a carrier type is under-determined (never NAF-decide; WI-519 / WI-067).
     FindDictionary,
+    /// A sort's type application as a goal, `WeakOrd[T = Int64]`: holds where type checking
+    /// finds the instance ([`super::typing::type_application_goal`]). Registered for no
+    /// symbol: the resolver gives it to a goal whose functor is a type
+    /// ([`KnowledgeBase::is_type_value_head`]), which no clause can head (the loader refuses
+    /// one, `LoadError::TypeApplicationHead`).
+    TypeApplication,
     /// WI-742 (proposal 060 §2) — `anthill.kernel.domain(?x, T)`: the CONFORMANCE check.
     /// Two things are spelled with it since WI-20260925-SHED7: a PRIMITIVE's `fill` — the
     /// waiting type check, `Int64.domain(?x) :- domain(?x, Int64)` (`kb::fill_derive`) —
@@ -2473,14 +2479,18 @@ impl SearchStream {
             return Some(StepResult::Continue);
         }
 
-        // 4. Builtin goal — classify by functor read through TermView.
+        // 4. Builtin goal — classify by functor read through TermView. A goal headed by a type
+        // is a type check, answered by the instance search ([`BuiltinTag::TypeApplication`]).
         let registered_builtin_tag = kb.get_builtin_view(&goal_val);
+        let type_application = registered_builtin_tag.is_none()
+            && matches!(goal_val.head(kb), ViewHead::Functor { functor, .. } if kb.is_type_value_head(functor));
+        let registered_builtin_tag = registered_builtin_tag.or(type_application.then_some(BuiltinTag::TypeApplication));
 
         // Every handler below reads its operands by position, so a labelled call is put in
         // its parameters' order first ([`KnowledgeBase::builtin_call_in_param_order`]) —
         // here, above WI-899's split, so the written clauses beside the builtin match the
         // same goal the builtin answers.
-        if registered_builtin_tag.is_some() {
+        if registered_builtin_tag.is_some() && !type_application {
             match kb.builtin_call_in_param_order(&goal_val) {
                 BuiltinCallOrder::AsWritten => {}
                 BuiltinCallOrder::InParamOrder(positional) => goal_val = positional,
@@ -6646,6 +6656,7 @@ impl KnowledgeBase {
             BuiltinTag::SubOccurrences => self.builtin_sub_occurrences(goal, answer_subst),
             BuiltinTag::OperationBody => self.builtin_operation_body(goal, answer_subst),
             BuiltinTag::FindDictionary => self.builtin_find_dictionary(goal, answer_subst),
+            BuiltinTag::TypeApplication => self.builtin_type_application(goal, answer_subst),
             BuiltinTag::TypeDomain => self.builtin_type_domain(goal, answer_subst, false),
             BuiltinTag::TypeDomainGuard => self.builtin_type_domain(goal, answer_subst, true),
             // `apply_domain` that `step_init` could not lower DELAYS. It is reached only on that
@@ -9666,6 +9677,43 @@ impl KnowledgeBase {
                 in_form,
             ),
             None => unreachable!("`named_keys` listed `out` but `named_arg` has no child for it"),
+        }
+    }
+
+    /// A sort's type application as a goal ([`BuiltinTag::TypeApplication`]): holds where type
+    /// checking finds the instance, binding an element written as a variable to the one the
+    /// provision gives (`Sp[C = Red, P = ?p]`); waits while the carrier is not known.
+    fn builtin_type_application(&mut self, goal: &Value, subst: &Substitution) -> BuiltinResult {
+        use super::typing::InstanceVerdict;
+        let found = match super::typing::type_application_goal(self, subst, goal) {
+            InstanceVerdict::Holds(found) => found,
+            InstanceVerdict::Refuted => return BuiltinResult::Failure,
+            InstanceVerdict::Suspend => return BuiltinResult::delay(),
+        };
+        let written = super::typing::requirement_bracket(self, goal).written;
+        let mut work = Substitution::with_parent(subst.clone());
+        for (key, value) in written {
+            let walked = self.reify_value(&value, subst);
+            if !matches!(walked.head(self), ViewHead::Var(_)) {
+                continue;
+            }
+            let Some((_, given)) = found
+                .bindings
+                .iter()
+                .find(|(k, _)| super::typing::same_label(self, *k, key))
+            else {
+                continue;
+            };
+            match self.unify_values(walked, given.clone(), &mut work) {
+                UnifyOutcome::Ok if !work.is_contradiction() => {}
+                UnifyOutcome::Delay => return BuiltinResult::delay(),
+                _ => return BuiltinResult::Failure,
+            }
+        }
+        if work.bindings.is_empty() {
+            BuiltinResult::Success
+        } else {
+            BuiltinResult::SuccessWithBindings(work)
         }
     }
 

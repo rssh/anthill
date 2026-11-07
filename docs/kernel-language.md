@@ -1101,7 +1101,7 @@ sort C = SPair[B, A]     -- SPair[A = B, B = A] — positional, swaps params
 
 Note that `Eq[T]` inside a scope where `T` is a sort parameter works because `T` is positionally bound to `Eq`'s first parameter — which happens to be named `T`. This is a positional coincidence, not name-based punning.
 
-**"The next unfilled parameter" means not bound BY NAME, in every position** (WI-20260923-N3W68). A positional written after a name skips the parameter that name bound — `Spec2[T = C, String]` is `Spec2[T = C, U = String]` — and the rule is the same wherever the application is written: a type, a binding value inside a clause, a sort's `provides` / `requires` clause, an operation's `requires`. In those positions a positional left with no unfilled parameter is a **load error** (`… is over-applied`) — except on a spec that declares **no** type parameters, where a positional is the instance's **carrier**. Two positions read a leftover positional as the carrier on any spec, and are not refused: an operation's `ensures` names its existential carrier first (`-> C ensures KVStore[C, K = String, V = String]`, WI-402), and an instance claim names its carrier (`fact NonMonotonicStore[FileStore]`). (Until WI-20260923-N3W68 the `provides` / `requires` clause lowering paired by raw index — binding `T` twice in the example above — and an over-applied clause loaded with the extra argument silently dropped.)
+**"The next unfilled parameter" means not bound BY NAME, in every position** (WI-20260923-N3W68). A positional written after a name skips the parameter that name bound — `Spec2[T = C, String]` is `Spec2[T = C, U = String]` — and the rule is the same wherever the application is written: a type, a binding value inside a clause, a sort's `provides` / `requires` clause, an operation's `requires`. In those positions a positional left with no unfilled parameter is a **load error** (`… is over-applied`) — except on a spec that declares **no** type parameters, where a positional is the instance's **carrier**. One position reads a leftover positional as the carrier on any spec, and is not refused: an operation's `ensures` names its existential carrier first (`-> C ensures KVStore[C, K = String, V = String]`, WI-402). (Until WI-20260923-N3W68 the `provides` / `requires` clause lowering paired by raw index — binding `T` twice in the example above — and an over-applied clause loaded with the extra argument silently dropped.)
 
 The head of a type application is a sort or a constructor of one. Type arguments bind the type parameters of a sort: the sort applied, or — when the head is a constructor — the sort that declares it, since a constructor has no parameters of its own (§8.2: `Option.some[T = Int64]`, and positionally `Option.some[Int64]`). Both spellings are read by the rules above, against that sort's parameters in its declaration order. Any other head — an operation, a namespace, a constant, a parameter — takes no type argument: in a type, and in a binding value inside a clause, applying one to it is a load error where it is written. In those two positions an argument that binds nothing — a name the sort does not declare, a parameter bound twice, a positional with no unfilled parameter left — is refused for a constructor head exactly as for a sort head, and is not part of the type that is then built.
 
@@ -1573,14 +1573,16 @@ what `fact Spec[Carrier]` emitted, and it says the carrier by ADDRESS rather tha
 derivation — so the swap is not a bare keyword rename, and text that kept a positional
 carrier after the keyword would record a different provision.
 
-**A `fact` is an ordinary fact wherever it stands, and that is what closes a silence
-no diagnostic could.** A `fact Spec[…]` was a provision only when `Spec` RESOLVED to a
-sort; with the spec unimported, the identical text minted an ordinary fact-only
-predicate, emitting no provision and no warning. The two readings were undecidable from
-the source — `sort Rec { fact helper(1) }` is a legitimate fact-only predicate, and
-`fact Box` has the same shape at every level, CST included — so the repair could not be
-a diagnostic. With one reading left there is nothing to tell apart: the author who
-means a provision writes `provides`, which refuses an unresolved spec loudly.
+**A `fact` is never a provision.** A `fact Spec[…]` was a provision only when `Spec`
+RESOLVED to a sort; with the spec unimported, the identical text minted an ordinary
+fact-only predicate, emitting no provision and no warning. The author who means a
+provision writes `provides`, which refuses an unresolved spec loudly.
+
+**A clause is not headed by a sort's type application.** `fact WeakOrd[T = Red]` and
+`rule WeakOrd[T = Red] :- …` are load errors naming `provides WeakOrd[…]`: an instance of a
+sort is a provision, and the goal `WeakOrd[T = Red]` holds where type checking finds one
+(§5.3), so a clause stating it would be read by nothing. A sort written as data in a
+relation's argument is not a head, `fact holds(WeakOrd[T = Red])`.
 
 **A bracketed head on a relation is refused.** A bracket on an operation or a relation
 writes its type arguments (§5.4), so `fact myrel[T = Red]` declares nothing a relation
@@ -1645,9 +1647,9 @@ the second changing an upcast's verdict, since a bogus edge admits the widening 
 refusal that follows is then about something else. The **written surface** could not
 decide it: `[…]` applies types and `(…)` constructs, but a data `fact` is ordinarily
 written with brackets, so brackets carried no claim of provision. Since WI-20260917-S8JYF
-retired the `fact` spelling of a provision there is nothing to classify — every `fact` is
-an ordinary fact — and the data-sort rule survives only on the `provides` side, where it
-was always a refusal rather than a reading.
+retired the `fact` spelling of a provision there is nothing to classify — no `fact` is a
+provision, and one headed by a sort's type application is refused — and the data-sort rule
+survives only on the `provides` side, where it was always a refusal rather than a reading.
 
 **A spec clause reads a type alias as the spec it stands for** (WI-20260924-F8PYZ). With
 `sort StoreAlias = Store`, a `provides` clause (its `where` block and `default` mark with
@@ -2663,6 +2665,15 @@ one, and two names are two dictionaries. A requirement the clause declares holds
 ?n)` at `?ls: C` has the `Iterable` that `FiniteCollection` requires, and a call at another
 of the clause's type parameters does not.
 
+A sort's type application written as a goal or a query is a type check: it holds where
+type checking finds the instance, by the search a guard reads. Over the standard library
+`WeakOrd[T = Int64]`, `Ord[T = Int64]` and `WeakOrd[T = Pair[A = Int64, B = Int64]]` hold,
+the last by `Pair`'s conditional provision, and `WeakOrd[T = Float]` does not; so `rule
+cmp1(?c) :- WeakOrd[T = Int64], WeakOrd.compare(1, 5, ?c)` gives `-1`. An element written as
+a variable is bound to the one the provision writes, `Sp[C = Red, P = ?p]` binding `?p`, and
+a goal whose carrier is not known waits until it is, `WeakOrd[T = ?t]` and the bare
+`WeakOrd` alike.
+
 Each element a guard writes selects the instance: `Sp[C = A, P = Int64]` reads the
 provision at `P = Int64`. A guard at a spec with a carrier at two parameters names both,
 `Conv[A = X, B = U]`, and its read waits until each is known. An element left unwritten, or
@@ -2935,9 +2946,9 @@ a multi-head rule's heads share one body, so `rule twin: aa(x: Red, ?d), bb(?d,
 x: Red) :- …` reads one `x` in both heads, exactly as the `?x` spelling does.
 
 Only a `(…)` ARGUMENT LIST carries parameters. A `[…]` BRACKET is a type
-application, so `T = Red` inside one is the type ARGUMENT it has always been:
-`rule Spec[T = Red] :- …` binds `Spec`'s type parameter and means what the
-`fact Spec[T = Red]` spelling means, not a column named `T`.
+application, so `T = Red` inside one is the type ARGUMENT it has always been, not a
+column named `T`, and `rule Spec[T = Red] :- …` is a sort's type application at a head,
+a load error (§5.1).
 
 The form reaches every head that has one, not only a relational clause's head
 atom (WI-20260910-7NBZX):

@@ -2136,7 +2136,7 @@ fn self_represented_elements(
 /// subtle enough (see below, and [`WitnessGoal`]) that a copy is a copy that drifts —
 /// and the flag decides whether a resolution TIE reads as a defect or as "cannot decide",
 /// which is a verdict neither producer may answer differently.
-fn sort_goal_with_wildcards(
+pub(super) fn sort_goal_with_wildcards(
     kb: &mut KnowledgeBase,
     spec_sort: Symbol,
     mut bindings: SmallVec<[(Symbol, Value); 2]>,

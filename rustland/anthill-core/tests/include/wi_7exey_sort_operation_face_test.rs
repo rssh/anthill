@@ -110,43 +110,49 @@ fn the_requirement_and_the_call_both_work_in_both_orders() {
     );
 }
 
-/// A bracket written as a rule-body GOAL is the sort's atom, in both orders: answered by a
-/// fact of that bracket whichever order its bindings are written in, and with a binding
-/// left open. The rule-body walk headed a GOAL's bracket by the plain symbol, where the
-/// clause converter and the query converter head it by the face, so it was the
-/// operation's call — refused for labels the operation does not have. The CONTROL is the
-/// spec alone. The same walk headed an eponymous entity's bracket goal by the constructor,
-/// so the fact its bracket stored (WI-20260902-JB6RS) was never found; that is the last
-/// case.
+/// A bracket written as a rule-body GOAL is the sort's atom, in both orders: a type check
+/// answered by a provision of that bracket whichever order its bindings are written in, and
+/// waiting with a binding left open (WI-20261107-FDJ0E; it was answered by a written fact of
+/// the bracket, which is refused now). The rule-body walk headed a GOAL's bracket by the
+/// plain symbol, where the clause converter and the query converter head it by the face, so
+/// it was the operation's call — refused for labels the operation does not have. The
+/// CONTROL is the spec alone. The same walk headed an eponymous entity's bracket goal by the
+/// constructor; such a sort has constructors, so nothing provides it and the goal answers
+/// nothing — that is the last case.
 ///
 /// BACKED OUT: GOAL FACE — the pair's two orders are refused, "named argument 'T' names
-/// no parameter of this operation", and the eponymous entity's goal answers nothing
-/// (measured alone); NO FACE and FACE FOR CONSTRUCTORS fail it too. The control passes.
+/// no parameter of this operation" (measured alone); NO FACE and FACE FOR CONSTRUCTORS fail
+/// it too. The control passes, and so does the eponymous entity's case, which answers
+/// nothing either way.
 #[test]
 fn a_bracket_goal_is_the_sorts_atom_in_both_orders() {
     let spec = "  sort Pair\n    sort T = ?\n    sort U = ?\n  end\n";
     let op = "  operation Pair(x: Int64) -> Bool = x > 0\n";
-    let uses = "  import anthill.prelude.String\n  fact Pair[U = String, T = Int64]\n  \
-                rule inOrder(1) :- Pair[T = Int64, U = String]\n  \
-                rule reversed(1) :- Pair[U = String, T = Int64]\n  \
-                rule open(1) :- Pair[T = Int64, U = ?u]\n";
+    let provision = "  sort PairW\n    provides Pair[T = Int64, U = String]\n  end\n";
+    let goals = "  rule inOrder(1) :- Pair[T = Int64, U = String]\n  \
+                 rule reversed(1) :- Pair[U = String, T = Int64]\n  \
+                 rule open(1) :- Pair[T = Int64, U = ?u]\n  \
+                 rule other(1) :- Pair[T = Int64, U = Int64]\n";
+    let answers = |kb: &mut anthill_core::kb::KnowledgeBase, rule: &str| -> Vec<bool> {
+        query_unary(kb, &format!("test.x7exey.{rule}")).into_iter().map(|(_, definite)| definite).collect()
+    };
     for (order, decls) in [
         ("the spec first", format!("{spec}{op}")),
         ("the operation first", format!("{op}{spec}")),
         ("CONTROL, the spec alone", spec.to_string()),
-        (
-            "an eponymous entity's sort",
-            "  sort Pair\n    sort T = ?\n    sort U = ?\n    entity Pair(n: Int64)\n  end\n".to_string(),
-        ),
     ] {
-        let mut kb = load_kb_with(&program(&decls, uses));
-        for rule in ["inOrder", "reversed", "open"] {
-            assert_eq!(
-                query_unary(&mut kb, &format!("test.x7exey.{rule}")).len(),
-                1,
-                "{order}: `{rule}` is answered by the fact",
-            );
+        let uses = format!("  import anthill.prelude.String\n{provision}{goals}");
+        let mut kb = load_kb_with(&program(&decls, &uses));
+        for rule in ["inOrder", "reversed"] {
+            assert_eq!(answers(&mut kb, rule), [true], "{order}: `{rule}` holds by the provision");
         }
+        assert_eq!(answers(&mut kb, "open"), [false], "{order}: `open` waits for `?u`");
+        assert_eq!(answers(&mut kb, "other"), Vec::<bool>::new(), "{order}: no provision at `U = Int64`");
+    }
+    let eponymous = "  sort Pair\n    sort T = ?\n    sort U = ?\n    entity Pair(n: Int64)\n  end\n";
+    let mut kb = load_kb_with(&program(eponymous, &format!("  import anthill.prelude.String\n{goals}")));
+    for rule in ["inOrder", "reversed", "other"] {
+        assert_eq!(answers(&mut kb, rule), Vec::<bool>::new(), "an eponymous entity's sort: `{rule}`");
     }
 }
 
@@ -268,8 +274,9 @@ fn an_unmarked_bracket_builds_the_type_in_eval() {
 
 /// A sort-named operation written as a BINDING of a bracket is its type, in every body, as
 /// the clause holding the bracket reads it: a rule body's `held(Box[V = Positive])` finds
-/// `fact held(Box[V = Positive])`, a goal `:- Box[V = Positive]` finds `fact Box[V =
-/// Positive]`, and an operation body's `Box[V = Positive]` binds the face. The two body
+/// `fact held(Box[V = Positive])`, a goal `:- Box[V = Positive]` holds by `provides Box[V =
+/// Positive]` (a type check since WI-20261107-FDJ0E) and fails at `Box[V = Amount]`, and an
+/// operation body's `Box[V = Positive]` binds the face. The two body
 /// walks gave the face to a constructor only, so the binding was the operation there and
 /// the plain sort in the clause. The CONTROL is the spec alone, whose binding is the plain
 /// sort everywhere.
@@ -281,7 +288,8 @@ fn an_unmarked_bracket_builds_the_type_in_eval() {
 fn a_bracket_binding_is_the_type_in_every_body_in_both_orders() {
     let uses = "  import anthill.prelude.Type\n  sort Box\n    sort V = ?\n  end\n  \
                 fact held(Box[V = Positive])\n  rule viaData(1) :- held(Box[V = Positive])\n  \
-                fact Box[V = Positive]\n  rule viaGoal(1) :- Box[V = Positive]\n  \
+                sort BoxW\n    provides Box[V = Positive]\n  end\n  \
+                rule viaGoal(1) :- Box[V = Positive]\n  rule viaOther(1) :- Box[V = Amount]\n  \
                 operation theBox() -> Type = Box[V = Positive]\n";
     for (order, decls, face) in [
         ("the spec first", format!("{SPEC}{PREDICATE}"), true),
@@ -293,6 +301,7 @@ fn a_bracket_binding_is_the_type_in_every_body_in_both_orders() {
         for rule in ["viaData", "viaGoal"] {
             assert_eq!(query_unary(&mut kb, &format!("test.x7exey.{rule}")).len(), 1, "{order}: {rule}");
         }
+        assert_eq!(query_unary(&mut kb, "test.x7exey.viaOther").len(), 0, "{order}: viaOther");
         let mut interp = interp_for(&src);
         let positive = interp.kb().try_resolve_symbol("test.x7exey.Positive").expect("resolves");
         let Ok(the_box) = interp.call("test.x7exey.theBox", &[]) else {
@@ -318,13 +327,16 @@ fn a_bracket_binding_is_the_type_in_every_body_in_both_orders() {
 /// is refused exactly as it is for an operation with no sort beside it, the CONTROL. (A
 /// clause's bracket refuses an operation slot as no type parameter of the sort, in both.)
 ///
-/// The instance claim is the third producer: `fact Combiner[T = Tag, combine = tagCombine]`
-/// is found by a rule-body goal that writes the same bracket, the clause converter and the
-/// rule-body walk reading the slot alike.
+/// The rule-body goal that writes the same bracket is the third reader: a type check, it
+/// holds by `Tag`'s provision (WI-20261107-FDJ0E; a `fact` of the bracket, which it used to
+/// find, is refused now).
 ///
-/// BACKED OUT: SLOT and LEAF — the operation body's binding is the face, and loads clean;
-/// RULE SLOT — the goal finds no fact, the walk and the clause converter reading the slot
-/// apart. FACE FOR CONSTRUCTORS and BARE IS THE TYPE fail it too.
+/// BACKED OUT: SLOT and LEAF — the operation body's binding is the face, and loads clean.
+/// FACE FOR CONSTRUCTORS and BARE IS THE TYPE fail it too. RULE SLOT passes either way since
+/// the goal is a type check: an operation slot supplies an implementation and selects no
+/// provision, as at an operation's `requires` (`Combiner[T = Tag, combine = otherOp]` holds,
+/// as `requires Combiner[T = A, combine = otherOp]` is supplied at `Tag`), so the check reads
+/// no operation slot and the row no longer drives the rule-body walk's reading of one.
 #[test]
 fn an_operation_slot_binds_the_operation_in_both_orders() {
     let uses = |the_sort: &str, entry: &str| {
@@ -339,8 +351,7 @@ fn an_operation_slot_binds_the_operation_in_both_orders() {
                     Combiner.combine(a, a)\n  operation go() -> Int64 =\n    match f(tag(n: 1))\n      \
                     case tag(v) -> v\n";
     let type_value = "  operation theCombiner() -> Type = Combiner[T = Tag, combine = tagCombine]\n";
-    let claim = "  fact Combiner[T = Tag, combine = tagCombine]\n  \
-                 rule viaGoal(1) :- Combiner[T = Tag, combine = tagCombine]\n";
+    let claim = "  rule viaGoal(1) :- Combiner[T = Tag, combine = tagCombine]\n";
     let the_sort = "  sort tagCombine\n    entity tc\n  end\n";
     let op_first = |entry: &str| uses("", &format!("{the_sort}{entry}"));
     // The refusals without their `line:col: ` prefix, which the declarations move.
@@ -362,29 +373,30 @@ fn an_operation_slot_binds_the_operation_in_both_orders() {
     ] {
         assert_eq!(run_int64(&program(SPEC, &sort_first), "test.x7exey.go"), Ok(99), "{order}");
         assert_eq!(refusal(&program(SPEC, &op_after)), control, "{order}: the operation body");
-        assert_eq!(answered(&program(SPEC, &claims)), 1, "{order}: the goal finds the fact");
+        assert_eq!(answered(&program(SPEC, &claims)), 1, "{order}: the goal holds by the provision");
     }
     assert_eq!(run_int64(&program(SPEC, &uses("", requires)), "test.x7exey.go"), Ok(99), "CONTROL");
-    assert_eq!(answered(&program(SPEC, &uses("", claim))), 1, "CONTROL: the goal finds the fact");
+    assert_eq!(answered(&program(SPEC, &uses("", claim))), 1, "CONTROL: the goal holds by the provision");
 }
 
 /// A type face is never the operation of its name: two facts of a sort-named operation's
-/// BRACKET at two arities load, as they do for a sort alone, where the face was asked the
-/// operation's questions and refused as "an operation written at more than one arity".
+/// BRACKET at two arities are refused as a sort alone's are, each as a clause headed by a type
+/// application (WI-20261107-FDJ0E), where the face was asked the operation's questions and
+/// refused as "an operation written at more than one arity".
 ///
-/// BACKED OUT: FACE KINDS — both orders are refused; GOAL FACE, NO FACE and FACE FOR
-/// CONSTRUCTORS fail it too. The control passes.
+/// BACKED OUT: FACE KINDS — the arity refusal is added in both orders; GOAL FACE, NO FACE and
+/// FACE FOR CONSTRUCTORS fail it too. The control passes.
 #[test]
 fn bracket_facts_of_two_arities_load_in_both_orders() {
-    let uses = "  fact Positive[T = Int64]\n  fact Positive[T = Int64, sign = amountSign]\n  \
-                rule both(1) :- Positive[T = Int64]\n";
+    let uses = "  fact Positive[T = Int64]\n  fact Positive[T = Int64, sign = amountSign]\n";
     for (order, decls) in [
         ("the spec first", format!("{SPEC}{PREDICATE}")),
         ("the predicate first", format!("{PREDICATE}{SPEC}")),
         ("CONTROL, the spec alone", SPEC.to_string()),
     ] {
-        let mut kb = load_kb_with(&program(&decls, uses));
-        assert_eq!(query_unary(&mut kb, "test.x7exey.both").len(), 1, "{order}");
+        let errs = load_errors_of(&program(&decls, uses));
+        assert_eq!(errs.len(), 2, "{order}: one refusal per head: {errs:#?}");
+        assert!(errs.iter().all(|e| e.contains("`Positive[…]` heads a clause")), "{order}: {errs:#?}");
     }
 }
 

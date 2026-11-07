@@ -93,6 +93,21 @@ fn errors(src: &str) -> Vec<String> {
 /// Every `anthill.reflect.SortProvidesInfo` head in `kb`, rendered. Mirrors
 /// `wi210_dispatch_test::provides_info_heads` — the direct reader, so a test can say
 /// "no edge was filed" rather than inferring it from a downstream symptom.
+/// The refusal of a clause headed by `sort`'s type application (WI-20261107-FDJ0E): such a
+/// clause states an instance, so it files nothing — it does not load. Its repair is a
+/// provision for a spec, and a relation's argument for a sort with constructors (`data`),
+/// which nothing provides.
+fn assert_head_refused(errs: &[String], sort: &str, data: bool) {
+    let repair = match data {
+        false => format!("`provides {sort}[…]`"),
+        true => format!("`{sort}` declares constructors, so nothing provides it"),
+    };
+    assert!(
+        errs.iter().any(|e| e.contains(&format!("`{sort}[…]` heads a clause")) && e.contains(&repair)),
+        "a clause headed by `{sort}[…]` is refused naming {repair}; got {errs:?}"
+    );
+}
+
 fn provides_info_heads(kb: &mut KnowledgeBase) -> Vec<String> {
     crate::common::rendered_facts(kb, "anthill.reflect.SortProvidesInfo")
 }
@@ -204,7 +219,7 @@ end
 /// shipped test-case fixture still filing its edge.
 #[test]
 fn a_parametric_data_sorts_type_argument_is_not_its_carrier() {
-    let mut kb = try_load_kb_with(
+    let errs = errors(
         r#"
 namespace test.wi1106.polynom
   import anthill.prelude.{Int64}
@@ -222,16 +237,10 @@ namespace test.wi1106.polynom
   fact Wi1106Poly[Int64]
 end
 "#,
-    )
-    .expect("the instantiation fact must load clean");
-    let heads = provides_info_heads(&mut kb);
-    assert!(
-        !heads
-            .iter()
-            .any(|h| h.contains("Wi1106Poly") && h.contains("Int64")),
-        "`fact Wi1106Poly[Int64]` binds the sort's PARAMETER; it does not make Int64 a \
-         Wi1106Poly; saw:\n{heads:#?}"
     );
+    // `fact Wi1106Poly[Int64]` binds the sort's PARAMETER and never made Int64 a Wi1106Poly;
+    // since WI-20261107-FDJ0E a clause headed by a type application is refused outright.
+    assert_head_refused(&errs, "Wi1106Poly", true);
 }
 
 /// THE CONTROL FOR THE WIDENING: a real spec — parametric, NO constructors — still
@@ -448,9 +457,9 @@ end
 ///
 /// A tuple type and an arrow type were lowered the same way and reported the same way;
 /// they were three separate reports and one cause. Each is a type, and since
-/// WI-20261012-TCSGT the bracket holds it as one: the clause is the fact its head
-/// writes, and — what this ticket guards — files no provision under a carrier nothing
-/// declares.
+/// WI-20261012-TCSGT the bracket holds it as one; since WI-20261107-FDJ0E the clause its
+/// head writes is refused, as every clause headed by a type application is, and files no
+/// provision under a carrier nothing declares.
 #[test]
 fn a_binding_that_resolved_to_nothing_is_refused_not_filed() {
     let source = |binding: &str| {
@@ -475,20 +484,27 @@ end
         "`[T = 1]` names no type, so the bracket must be refused rather than lowered to a \
          symbol nothing declares; got {errs:?}"
     );
+    // A tuple type and an arrow type are types, so the bracket holds them, and the clause
+    // its head writes is refused as every clause headed by a type application is
+    // (WI-20261107-FDJ0E) — not for its entry.
     for (binding, printed) in [
         ("(a: Int64)", "(a: Int64)"),
         // One parameter's name is not part of an arrow.
         ("(x: Int64) -> Int64", "(Int64) -> Int64"),
     ] {
-        let mut kb = try_load_kb_with(&source(binding))
-            .unwrap_or_else(|errs| panic!("`[T = {binding}]` holds a type; got {errs:?}"));
-        let heads = provides_info_heads(&mut kb);
+        let errs = errors(&source(binding));
+        assert_head_refused(&errs, "Wi1106URSpec", false);
         assert!(
-            !heads.iter().any(|h| h.contains("spec: SortView(Wi1106URSpec")),
-            "`[T = {binding}]` on a fact files no provision of the spec; saw:\n{heads:#?}"
+            !errs.iter().any(|e| e.contains("unresolved name")),
+            "`[T = {binding}]` holds a type; got {errs:?}"
         );
-        // The clause is stored, holding the type its bracket writes.
-        let stored = crate::common::rendered_facts(&mut kb, "test.wi1106.unres.Wi1106URSpec");
+        // As data in a relation's argument the bracket is stored holding the type it writes.
+        let held = source(binding).replace(
+            &format!("  fact Wi1106URSpec[T = {binding}]"),
+            &format!("  fact heldSpec(Wi1106URSpec[T = {binding}])"),
+        );
+        let mut kb = try_load_kb_with(&held).unwrap_or_else(|errs| panic!("`[T = {binding}]` as data: {errs:?}"));
+        let stored = crate::common::rendered_facts(&mut kb, "test.wi1106.unres.heldSpec");
         assert_eq!(stored.len(), 1, "`[T = {binding}]`: {stored:?}");
         assert!(stored[0].contains(printed), "`[T = {binding}]`: {stored:?}");
     }
@@ -531,7 +547,7 @@ end
 /// `wi407_provider_edges_test` are its driven half.
 #[test]
 fn a_non_parametric_data_sort_was_already_skipped() {
-    let mut kb = try_load_kb_with(
+    let errs = errors(
         r#"
 namespace test.wi1106.nonparam
   sort Wi1106Colour
@@ -546,13 +562,7 @@ namespace test.wi1106.nonparam
   fact Wi1106Colour[Wi1106Holder]
 end
 "#,
-    )
-    .expect("the data fact must load clean");
-    let heads = provides_info_heads(&mut kb);
-    assert!(
-        !heads
-            .iter()
-            .any(|h| h.contains("Wi1106Holder") && h.contains("Wi1106Colour")),
-        "a non-parametric data sort files no edge, as it did before; saw:\n{heads:#?}"
     );
+    // It filed no edge, as it did before; since WI-20261107-FDJ0E it does not load.
+    assert_head_refused(&errs, "Wi1106Colour", true);
 }

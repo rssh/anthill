@@ -944,7 +944,8 @@ end
 /// What the two rows assert instead is the pair of facts that replaces them: the texts
 /// LOAD, and they record NOTHING. A row asserting only "loads clean" would pass against
 /// a loader that silently dropped them, which is the defect this ticket was filed for —
-/// so each reads the provision relation back.
+/// so each reads the provision relation back. Since WI-20261107-FDJ0E the bracketed text
+/// does not load: a clause headed by a type application is refused, naming `provides`.
 #[test]
 fn a_carrier_less_fact_loads_and_records_no_provision() {
     let snippet = r#"namespace test.wi431.no_carrier
@@ -962,18 +963,12 @@ fn a_carrier_less_fact_loads_and_records_no_provision() {
   fact Combiner[combine = tagCombine]
 end
 "#;
-    assert_eq!(
-        load_errors(&[snippet]),
-        Vec::<String>::new(),
-        "an op-only binding names no carrier, and a `fact` needs none — it is an \
-         ordinary fact"
-    );
-    let kb = crate::common::try_load_kb_with(snippet).expect("loads");
+    let errs = load_errors(&[snippet]);
+    assert_eq!(errs.len(), 1, "one refusal: {errs:?}");
     assert!(
-        !crate::common::sort_provisions(&kb)
-            .iter()
-            .any(|(_, spec)| spec == "test.wi431.no_carrier.Combiner"),
-        "and it records no provision — the claim is written `provides`"
+        errs[0].contains("`Combiner[…]` heads a clause") && errs[0].contains("`provides Combiner[…]`"),
+        "an op-only binding names no carrier, and the clause is refused naming the claim's \
+         spelling, `provides`: {errs:?}"
     );
 }
 

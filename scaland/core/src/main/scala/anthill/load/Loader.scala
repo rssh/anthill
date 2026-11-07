@@ -68,6 +68,11 @@ enum LoadError:
     * its type parameters, never its arguments. It was read as the argument list, the two
     * surfaces building one term. */
   case BracketOnCallable(name: String, on: BracketedName, span: Span)
+  /** Rustland's `TypeApplicationHead` — a clause headed by a sort's type application,
+    * `fact WeakOrd[T = Red]` or `rule WeakOrd[T = Red] :- …`. An instance of a sort is a
+    * provision, and the goal `WeakOrd[…]` holds where type checking finds one
+    * (kernel-language.md §5.1), so such a clause states nothing either reads. */
+  case TypeApplicationHead(sort: String, data: Boolean, span: Span)
   /** WI-20261029-50361 (rustland's `ClauseHeadNamesNoRelation` for a namespace) — a `fact`
     * or a `rule` clause whose head names a namespace, which holds no clauses. A head
     * reaches one only where a predicate of its own would take the namespace's name: in the
@@ -136,6 +141,17 @@ enum LoadError:
       span.render(s"`$name[…]` writes type arguments of `$name`, which takes none: only a sort or a " +
         "constructor is applied to a bracket, and a call's bracket is written before its " +
         "arguments (kernel-language.md §5.4)")
+    // Rustland's `type_application_head_message`, word for word.
+    case TypeApplicationHead(sort, true, span) =>
+      span.render(s"`$sort[…]` heads a clause, which claims an instance of the sort `$sort`; " +
+        s"`$sort` declares constructors, so nothing provides it and the goal `$sort[…]` holds " +
+        s"nowhere — a type written as data stands in a relation's argument, `fact " +
+        s"holds($sort[…])` (kernel-language.md §5.1)")
+    case TypeApplicationHead(sort, false, span) =>
+      span.render(s"`$sort[…]` heads a clause, which claims an instance of the sort `$sort`; an " +
+        s"instance is a provision, `provides $sort[…]`, written in the carrier's declaration or " +
+        s"in a `namespace <Carrier>` entry, and the goal `$sort[…]` holds where type checking " +
+        "finds one (kernel-language.md §5.1)")
     case NamespaceAsGoal(position, namespace, span) =>
       span.render(s"the $position `$namespace` names a namespace, and a namespace is not a " +
         "goal: it is not a relation and holds no clauses (kernel-language.md §5.3)")
@@ -3697,9 +3713,15 @@ object Loader:
         // parameters, never its arguments (proposal 060 §2.1; rustland's
         // `refuse_bracket_on_a_callable`): written alone it is refused, at a clause's own
         // head too, where `mine[1, 2]` was the term `mine(1, 2)`.
+        // And at a clause's own head a bracket on a type claims an instance, which only a
+        // provision states (rustland's `TypeApplicationHead`, in `refuse_bracket_on_a_callable`).
         if isTypeApp && !fileTerms.isMinted(termId) then
-          kb.bracketedName(resolved, atHead).foreach(on =>
-            errors += LoadError.BracketOnCallable(kb.resolveSym(resolved), on, fileTerms.spanOf(termId)))
+          if atHead && kb.hasTypeReading(resolved) then
+            errors += LoadError.TypeApplicationHead(kb.resolveSym(resolved), kb.sortHasConstructors(resolved),
+              fileTerms.spanOf(termId))
+          else
+            kb.bracketedName(resolved, atHead).foreach(on =>
+              errors += LoadError.BracketOnCallable(kb.resolveSym(resolved), on, fileTerms.spanOf(termId)))
         // A GOAL SLOT IS A GOAL: `not`'s negand is proved, not matched, so it is read
         // as a logical subject like the body goal it sits in — `not(ns.flag)` negates
         // the predicate `ns.flag`, where a data reading would negate a `field_access`

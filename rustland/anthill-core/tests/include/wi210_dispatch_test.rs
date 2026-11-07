@@ -118,15 +118,13 @@ fn fact_for_non_spec_sort_does_not_emit_provides_info() {
     // (`?`) for the value keeps the fixture independent of cross-sort
     // name resolution.
     // Wi210Color has no `sort X = ?` decl, so even with bracket
-    // notation this should not be treated as spec satisfaction.
-    let mut kb = load_with(src);
-    let heads = provides_info_heads(&mut kb);
-    let found = heads
-        .iter()
-        .any(|h| h.contains("Wi210Holder") && h.contains("Wi210Color"));
+    // notation this should not be treated as spec satisfaction. Since
+    // WI-20261107-FDJ0E a clause headed by a type application is refused, so it
+    // files nothing at all.
+    let errs = crate::common::try_load_kb_with(src).err().expect("the bracketed head is refused");
     assert!(
-        !found,
-        "fact for non-parametric sort must not emit SortProvidesInfo; saw:\n{heads:#?}"
+        errs.iter().any(|e| e.contains("`Wi210Color[…]` heads a clause")),
+        "fact for non-parametric sort is refused, naming the head; saw:\n{errs:#?}"
     );
 }
 

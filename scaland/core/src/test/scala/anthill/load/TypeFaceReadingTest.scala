@@ -255,11 +255,9 @@ class TypeFaceReadingTest extends munit.FunSuite:
       |  end
       |  fact holds(Shape[])
       |  fact sortTy(Int64[])
-      |  fact Tag[T = Int64]
       |  rule bareFindsBracket(1) :- holds(Shape)
       |  rule bracketFindsBracket(1) :- holds(Shape[])
       |  rule sortTyBare(1) :- sortTy(Int64)
-      |  rule tagByBracket(?q) :- Tag[T = ?q]
       |end
       |""".stripMargin
 
@@ -268,15 +266,14 @@ class TypeFaceReadingTest extends munit.FunSuite:
     * spelling names nothing to apply — `Shape()` and `Tag(T: ?q)` are refused in a fact
     * and in a rule body, where they used to be the type in silence (`Tag(T: ?q)` answered
     * from `fact Tag[T = Int64]`). Each is reported once, and a rule HEAD that resolves to
-    * the sort is refused alike. */
+    * the sort is refused alike. Its BRACKET at a clause's head, `fact Tag[T = Int64]`, claims
+    * an instance, which only a provision states, and is refused too (rustland's
+    * `TypeApplicationHead`; fails with the refusal in `Loader.reallocTerm` backed out). */
   test("a sort has one reading and names nothing to apply") {
     val kb = LoadFixture.loaded(sortApps, "sortapp.anthill")
     assertEquals(answers(kb, "zzsortapp.bareFindsBracket"), 1, "`Shape` is `Shape[]`")
     assertEquals(answers(kb, "zzsortapp.bracketFindsBracket"), 1)
     assertEquals(answers(kb, "zzsortapp.sortTyBare"), 1, "`Int64[]` is `Int64`")
-    assertEquals(bound(kb, "zzsortapp.tagByBracket"),
-      IndexedSeq(kb.getTerm(kb.alloc(Term.Ref(kb.resolveSymbol("anthill.prelude.Int64"))))),
-      "the bracket goal answers from the fact")
     val shape = kb.resolveSymbol("zzsortapp.Shape")
     assertEquals(kb.alloc(Term.Fn(shape, IArray.empty, IArray.empty)), kb.alloc(Term.Ref(shape)),
       "one term in the store")
@@ -305,6 +302,22 @@ class TypeFaceReadingTest extends munit.FunSuite:
         .map(_.toString)
     }
     assertEquals(headErrs.count(_.contains("`Shape(…)` is an application")), 1, s"$headErrs")
+
+    for decl <- Seq("fact Tag[T = Int64]", "rule Tag[T = Int64] :- true", "fact Tag[Int64]") do
+      val kb4 = KnowledgeBase()
+      Prelude.register(kb4)
+      LoadFixture.registerKernel(kb4)
+      val errs = Loader.loadAll(kb4, IndexedSeq(LoadFixture.parsed(
+        sortApps.stripSuffix("end\n") + s"  $decl\nend\n", "sorttyhead.anthill"))).map(_.toString)
+      assertEquals(errs.count(_.contains("`Tag[…]` heads a clause")), 1, s"`$decl` is refused, once: $errs")
+      assert(errs.exists(_.contains("`provides Tag[…]`")), s"`$decl` names the provision: $errs")
+    // A sort with constructors is provided by nothing: the repair names a relation's argument.
+    val kb5 = KnowledgeBase()
+    Prelude.register(kb5)
+    LoadFixture.registerKernel(kb5)
+    val dataErrs = Loader.loadAll(kb5, IndexedSeq(LoadFixture.parsed(
+      sortApps.stripSuffix("end\n") + "  fact Shape[]\nend\n", "sortdatahead.anthill"))).map(_.toString)
+    assertEquals(dataErrs.count(_.contains("`Shape` declares constructors, so nothing provides it")), 1, s"$dataErrs")
   }
 
   /** Inside a field declared `anthill.reflect.Term` — or a `List` or `Option` of one — the

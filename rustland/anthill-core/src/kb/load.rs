@@ -951,6 +951,20 @@ pub enum LoadError {
         /// Where the bracket is written.
         span: Span,
     },
+    /// A clause headed by a sort's type application, `fact WeakOrd[T = Red]` or `rule
+    /// WeakOrd[T = Red] :- …`. An instance of a sort is stated by a provision, and the goal
+    /// `WeakOrd[…]` holds where type checking finds one (kernel-language.md §5.1), so such a
+    /// clause states nothing either reads: it stored a row the goal found and type checking
+    /// never did, and `WeakOrd[T = Red]` answered true where `requires WeakOrd[T = Red]` was
+    /// refused.
+    TypeApplicationHead {
+        /// The sort, by its short name.
+        sort: String,
+        /// Does the sort declare constructors? Nothing provides one, so the repair differs.
+        data: bool,
+        /// Where the head is written.
+        span: Span,
+    },
     /// WI-343: a carrier provides a spec whose own `requires` is not
     /// satisfied by that carrier — e.g. `fact PersistentCollection[List]`
     /// where `PersistentCollection requires Iterable` but `List` provides
@@ -3300,6 +3314,7 @@ impl LoadError {
             | LoadError::UndefinedEquationReplacement { span, .. }
             | LoadError::SortAppliedAsData { span, .. }
             | LoadError::BracketOnCallable { span, .. }
+            | LoadError::TypeApplicationHead { span, .. }
             | LoadError::ConstantInGoalPosition { span, .. }
             | LoadError::ConstInGoalPosition { span, .. }
             | LoadError::EquationSubjectInGoalPosition { span, .. }
@@ -3673,6 +3688,9 @@ impl LoadError {
             }
             LoadError::BracketOnCallable { name, on, span } => {
                 format!("{}: {}", loc.format_start(*span), bracket_on_callable_message(name, *on))
+            }
+            LoadError::TypeApplicationHead { sort, data, span } => {
+                format!("{}: {}", loc.format_start(*span), type_application_head_message(sort, *data))
             }
             LoadError::UndefinedRuleBodyGoal { functor, span } => {
                 format!(
@@ -5547,6 +5565,13 @@ impl std::fmt::Display for LoadError {
                 f,
                 "{} at {}..{}",
                 bracket_on_callable_message(name, *on),
+                span.start,
+                span.end
+            ),
+            LoadError::TypeApplicationHead { sort, data, span } => write!(
+                f,
+                "{} at {}..{}",
+                type_application_head_message(sort, *data),
                 span.start,
                 span.end
             ),
@@ -17314,6 +17339,26 @@ pub(crate) fn sort_applied_as_data_message(sort: &str) -> String {
         "`{sort}(…)` is an application, and `{sort}` names no constructor, predicate or \
          operation to apply — it is a sort, and its type is written `{sort}[…]` \
          (kernel-language.md §4.4)"
+    )
+}
+
+/// The one wording of [`LoadError::TypeApplicationHead`]. A sort with constructors (`data`) is
+/// provided by nothing, so `provides` is no repair there: its type is data in a relation's
+/// argument.
+pub(crate) fn type_application_head_message(sort: &str, data: bool) -> String {
+    if data {
+        return format!(
+            "`{sort}[…]` heads a clause, which claims an instance of the sort `{sort}`; `{sort}` \
+             declares constructors, so nothing provides it and the goal `{sort}[…]` holds \
+             nowhere — a type written as data stands in a relation's argument, `fact \
+             holds({sort}[…])` (kernel-language.md §5.1)"
+        );
+    }
+    format!(
+        "`{sort}[…]` heads a clause, which claims an instance of the sort `{sort}`; an instance is \
+         a provision, `provides {sort}[…]`, written in the carrier's declaration or in a \
+         `namespace <Carrier>` entry, and the goal `{sort}[…]` holds where type checking finds \
+         one (kernel-language.md §5.1)"
     )
 }
 
@@ -32161,11 +32206,22 @@ impl<'a> Loader<'a> {
     /// Proposal 060 §2.1 — refuse a bracket written alone on a name that is no type
     /// ([`LoadError::BracketOnCallable`]): `mine[1, 2]` in a goal, a data slot or a value
     /// slot of a clause, an operation body, and a clause's own head `fact myrel[T = Red]`,
-    /// which declares the relation (`at_head`). Not a node the converter minted. Answers
-    /// whether it refused.
+    /// which declares the relation (`at_head`); and at a clause's own head a bracket on a
+    /// name that is a type, `fact WeakOrd[T = Red]` ([`LoadError::TypeApplicationHead`]).
+    /// Not a node the converter minted. Answers whether it refused.
     fn refuse_bracket_on_a_callable(&mut self, parse_id: ParseTermId, functor: Symbol, at_head: bool) -> bool {
         if !self.parsed.terms.is_type_application(parse_id) || self.parsed.terms.is_minted(parse_id) {
             return false;
+        }
+        // A sort's type application at a clause's head claims an instance, which only a
+        // provision states ([`LoadError::TypeApplicationHead`]).
+        if at_head && self.kb.has_type_reading(functor) {
+            self.errors.push(LoadError::TypeApplicationHead {
+                sort: self.kb.local_name_of(functor).to_string(),
+                data: self.kb.sort_has_constructors(functor),
+                span: self.parsed.terms.span(parse_id),
+            });
+            return true;
         }
         let Some(on) = bracketed_name(self.kb, functor, at_head) else {
             return false;
@@ -45518,41 +45574,13 @@ impl<'a> Loader<'a> {
         self.kb.mark_source_clause(rule_id);
         self.fact_rule_ids.push(rule_id);
 
-        // WI-20260917-S8JYF (058 §4, COMPLETED) — A `fact` IS AN ORDINARY FACT AND
-        // NOTHING ELSE. `maybe_emit_fact_provides_info` stood here and filed a
-        // `SortProvidesInfo` for a head whose functor named a constructor-less sort:
-        // in a sort body the enclosing type was the provider, at a namespace or a
-        // file's root scope the carrier was DERIVED from a binding value. Both
-        // readings are gone, and with them the construct whose meaning depended on
-        // its container. A spec claim is `provides Spec[…]` — in the carrier's own
-        // declaration, or in a `namespace <Carrier>` SECONDARY ENTRY (059 R2/R3)
-        // where the carrier has no body to write it in.
-        //
-        // WHAT THE RETIREMENT BUYS is a silence this loader could not otherwise
-        // close. `fact Spec[T = C]` was a provision only when `Spec` RESOLVED to a
-        // sort, so a missing import turned the claim into an ordinary fact-only
-        // predicate — no provision, no diagnostic, identical text. The two readings
-        // were undecidable from the source (`sort Rec { fact helper(1) }` is a
-        // legitimate fact-only predicate, and `fact Box` is the same shape as a
-        // bare provider claim), so no diagnostic could tell them apart. With one
-        // reading left there is nothing to tell apart: an author who means a
-        // provision writes `provides`, which refuses an unresolved spec loudly.
-        //
-        // AND NO GATE REPLACES IT AT THIS HEAD. A bracketed head whose functor names no
-        // declared sort was refused for one build of this ticket — 055-implementation §7
-        // lists the fact HEAD beside three sibling positions where a bracketed
-        // application over an unresolved name already reports, and it looked like the
-        // fourth. It is not: those three are REFERENCE positions, where a name must
-        // resolve, and a clause head is a DECLARATION (WI-20260821-RDGQC — a fact head
-        // declares its predicate at the scope it is written in). `fact myrel[T = Red]`
-        // is a rule-introduced predicate carrying a type argument, driven by
-        // `wi_c7anm_head_parameter_column_test::a_bracketed_head_binds_a_type_argument_
-        // not_a_parameter`, and it is byte-identical to the missing-import shape — the
-        // only thing separating them is that one name is capitalized, which this
-        // language does not read (§2.3). MEASURED: the refusal took that test with it.
-        //
-        // What closes the silence is therefore the retirement itself and not a
-        // diagnostic. There is no second reading left to drop into.
+        // WI-20260917-S8JYF (058 §4) — A `fact` IS NO PROVISION. `maybe_emit_fact_provides_info`
+        // stood here and filed a `SortProvidesInfo` for a head whose functor named a
+        // constructor-less sort; a spec claim is `provides Spec[…]`, in the carrier's own
+        // declaration or a `namespace <Carrier>` secondary entry (059 R2/R3), which refuses
+        // an unresolved spec loudly. A head that is a sort's type application is refused where
+        // the head is converted ([`LoadError::TypeApplicationHead`]): the goal `Spec[…]` is
+        // answered by type checking, which never reads a clause (WI-20261107-FDJ0E).
 
         self.current_owner = prev_owner;
     }

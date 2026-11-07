@@ -1938,6 +1938,8 @@ mod wi_51w18_require_spec_type_args_test;
 
 #[path = "include/wi_z2p21_guard_at_a_sort_parameter_test.rs"]
 mod wi_z2p21_guard_at_a_sort_parameter_test;
+#[path = "include/wi_fdj0e_type_application_goal_test.rs"]
+mod wi_fdj0e_type_application_goal_test;
 
 #[path = "include/wi_qhdgc_require_spec_logical_variable_test.rs"]
 mod wi_qhdgc_require_spec_logical_variable_test;

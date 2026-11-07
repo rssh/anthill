@@ -4553,8 +4553,6 @@ sort Polynom
   operation eval(p: Polynom[R], x: R) -> R = eval(p, x)
 end
 
-fact Polynom[Int64]
-
 namespace anthill.prelude.Int64
   provides Ring[Int64]
 end

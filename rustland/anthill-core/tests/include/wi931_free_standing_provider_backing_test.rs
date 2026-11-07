@@ -426,9 +426,9 @@ namespace wi931.controlok
   end
   sort W931OkCarrier {
     entity W931OkCarrier(v: Int64)
+    provides W931OkSpec[T = W931OkCarrier]
     operation w931ok(x: W931OkCarrier) -> W931OkCarrier = x
   }
-  fact W931OkSpec[T = W931OkCarrier]
 end
 ";
     let errs = match try_load_kb_with(src) {

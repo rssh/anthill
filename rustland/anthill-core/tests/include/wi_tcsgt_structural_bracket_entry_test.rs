@@ -353,16 +353,17 @@ fn a_positional_entry_in_a_clauses_term_is_the_named_one() {
     }
     let body = "  fact holds(Box[String])\n  rule r(?x) :- holds(Box[V = String]), ?x <=> 1";
     assert_eq!(ints("tcsgtposfactnominal", body), [1]);
-    // A fact and a rule may write the bracket as their head, entry and all.
-    for (ns, body) in [
-        ("tcsgtposheadfact", "  fact Box[(Int64) -> Int64]\n  rule r(?x) :- Box[(Int64) -> Int64], ?x <=> 1"),
-        ("tcsgtposheadrule", "  rule Box[(Int64) -> String] :- true\n  rule r(?x) :- Box[(Int64) -> String], ?x <=> 1"),
-        ("tcsgtposheadrow", "  fact Eb[{}]\n  rule r(?x) :- Eb[{}], ?x <=> 1"),
+    // A fact and a rule headed by the bracket, entry and all, claim an instance, which only a
+    // provision states (WI-20261107-FDJ0E): refused, and for the head, not for its entry.
+    for (ns, body, sort) in [
+        ("tcsgtposheadfact", "  fact Box[(Int64) -> Int64]", "Box"),
+        ("tcsgtposheadrule", "  rule Box[(Int64) -> String] :- true", "Box"),
+        ("tcsgtposheadrow", "  fact Eb[{}]", "Eb"),
     ] {
-        assert_eq!(ints(ns, body), [1], "{ns}");
+        let errs = refusal(ns, body);
+        assert!(errs.contains(&format!("`{sort}[…]` heads a clause")), "{ns}: {errs}");
+        assert!(!errs.contains("unresolved"), "{ns}: {errs}");
     }
-    let body = "  fact Box[(Int64) -> Int64]\n  rule r(?x) :- Box[(Int64) -> String], ?x <=> 1";
-    assert_eq!(ints("tcsgtposheadno", body), [0i64; 0]);
 }
 
 /// A parenthesized receiver in an operation body is its companion call: each calls

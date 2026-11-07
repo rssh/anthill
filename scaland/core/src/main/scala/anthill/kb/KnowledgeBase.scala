@@ -120,6 +120,12 @@ class KnowledgeBase:
       d.hasKind(SymbolKind.Sort) && !d.hasKind(SymbolKind.Entity)
     }
 
+  /** Does `sym` have a reading in a type context — a sort, a constructor, a face (rustland's
+    * `has_type_reading`)? */
+  def hasTypeReading(sym: TermSymbol): Boolean =
+    val d = symbols.get(sym)
+    sym.isTypeFace || d.hasKind(SymbolKind.Sort) || d.hasKind(SymbolKind.Entity)
+
   /** WI-20260823-53W12 (rustland's `bracketed_name`) — what a bracket written alone on `sym`
     * is, where it is refused ([[anthill.load.LoadError.BracketOnCallable]]): `None` for a
     * name that is a type — a sort, a constructor, a face — and for a name that resolves to
@@ -128,7 +134,7 @@ class KnowledgeBase:
   def bracketedName(sym: TermSymbol, atHead: Boolean): Option[anthill.load.BracketedName] =
     import anthill.load.BracketedName
     val d = symbols.get(sym)
-    if sym.isTypeFace || d.hasKind(SymbolKind.Sort) || d.hasKind(SymbolKind.Entity) then None
+    if hasTypeReading(sym) then None
     else if atHead then Some(BracketedName.Head)
     else if Seq(SymbolKind.Operation, SymbolKind.Goal, SymbolKind.Fact, SymbolKind.Rule,
         SymbolKind.EquationFunctor).exists(d.hasKind) then Some(BracketedName.Callable)
@@ -352,6 +358,12 @@ class KnowledgeBase:
     * never a construction. A caller asking about the DECLARATION says `.plain`. */
   def isConstructorSymbol(functor: TermSymbol): Boolean =
     !functor.isTypeFace && constructorSymbols_.contains(Decl.of(functor))
+
+  /** Does the DECLARATION `sym` names (a type face read as its own) construct anything — a
+    * constructor itself, or a sort with an entity (rustland's `sort_has_constructors`)? */
+  def sortHasConstructors(sym: TermSymbol): Boolean =
+    val decl = Decl.of(sym.plain)
+    constructorSymbols_.contains(decl) || sortEntities_.get(decl).exists(_.nonEmpty)
 
   /** The symbol a NAME term spells, or `None` for any other term (an application, a
     * variable, a literal). A nullary `Term.Fn` is no name: [[alloc]] stores every name's

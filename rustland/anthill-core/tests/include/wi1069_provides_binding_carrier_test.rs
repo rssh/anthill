@@ -254,66 +254,42 @@ fn the_provides_spelling_records_the_witness() {
     );
 }
 
-/// THE DIVERGENCE ROW — where the two spellings are NOT interchangeable, and the
-/// reason the test above is scoped to the provision rather than to the statement.
-///
-/// A `fact` is a rule with an empty body, so `load_fact` also asserts its head into the
-/// rule/fact index; `load_provides_clause` asserts `SortProvidesInfo` and nothing else.
-/// The provision is therefore identical and the QUERYABLE SURFACE is not: a goal naming
-/// the spec directly answers under `fact` and not under `provides`.
-///
-/// This row exists because the conclusion without it was measurably too wide — the file
-/// claimed "the same statement" on the strength of an instrument that only ever read
-/// `provision_carrier`. Driving the place two spellings SHOULD differ is what separates
-/// "they agree" from "my instrument cannot tell them apart".
-///
-/// It is also the standing reason 059's fact ban costs something real rather than
-/// nothing: what an entry loses with the `fact` spelling is this surface, not the claim.
+/// THE SPELLINGS NO LONGER DIVERGE (WI-20261107-FDJ0E). A `fact Desc[T = Leaf]` was a rule
+/// with an empty body, so a goal naming the spec answered from it and not from the
+/// `provides` clause: the queryable surface and the provision disagreed. The goal `Desc[T =
+/// Leaf]` is now a type check, answered by the provision, and the `fact` spelling is refused
+/// naming `provides`; a goal whose carrier is unbound waits.
 #[test]
 fn the_two_spellings_diverge_outside_the_provision() {
     use anthill_core::kb::resolve::ResolveConfig;
     use anthill_core::kb::term::{Term, Var};
     use smallvec::SmallVec;
 
-    /// Solutions of `{ns}.Desc(T: ?q)` — the spec named as a goal in its own right.
-    ///
-    /// WITHOUT the `probe` call, on both spellings alike: under `fact` nothing provides
-    /// `Desc` at `Leaf` (a `fact` provides nothing since WI-20260917-S8JYF), so that call
-    /// is refused at load since WI-883. The row measures the queryable surface, which the
-    /// call never touched.
-    fn spec_goal_solutions(ns: &str, claim: &str) -> usize {
-        let src = witness_program(ns, claim)
-            .replace("  operation probe() -> Int64 = Desc.describe(leaf())\n", "");
-        assert!(!src.contains("probe"), "the fixture must really lose its call");
-        let mut kb = crate::common::load_kb_with(&src);
-        let functor = kb
-            .try_resolve_symbol(&format!("{ns}.Desc"))
-            .expect("the spec sort must resolve");
-        let q = kb.intern("q");
-        let vid = kb.fresh_var(q);
-        let var = kb.alloc(Term::Var(Var::Global(vid)));
-        let t_arg = kb.intern("T");
+    let refused = crate::common::try_load_kb_with(&witness_program("test.wi1069.fdiv", "fact Desc[T = Leaf]"))
+        .err()
+        .expect("the `fact` spelling is refused");
+    assert!(
+        refused.iter().any(|e| e.contains("`Desc[…]` heads a clause") && e.contains("`provides Desc[…]`")),
+        "{refused:?}"
+    );
+    let ns = "test.wi1069.pdiv";
+    let mut kb = crate::common::load_kb_with(&witness_program(ns, "provides Desc[T = Leaf]"));
+    let functor = kb.try_resolve_symbol(&format!("{ns}.Desc")).expect("the spec sort must resolve");
+    let leaf = kb.try_resolve_symbol(&format!("{ns}.Leaf")).expect("the carrier must resolve");
+    let t_arg = kb.intern("T");
+    let q = kb.intern("q");
+    let vid = kb.fresh_var(q);
+    // `Desc[T = Leaf]` holds, definitely; `Desc[T = ?q]` waits for `?q`.
+    for (arg, definite) in [(kb.alloc(Term::Ref(leaf)), true), (kb.alloc(Term::Var(Var::Global(vid))), false)] {
         let goal = kb.alloc(Term::Fn {
             functor,
             pos_args: SmallVec::new(),
-            named_args: SmallVec::from_slice(&[(t_arg, var)]),
+            named_args: SmallVec::from_slice(&[(t_arg, arg)]),
         });
-        kb.resolve(&[goal], &ResolveConfig::default()).len()
+        let sols = kb.resolve(&[goal], &ResolveConfig::default());
+        assert_eq!(sols.len(), 1, "one answer");
+        assert_eq!(sols[0].is_definite(), definite, "definite only at a known carrier");
     }
-
-    assert_eq!(
-        spec_goal_solutions("test.wi1069.fdiv", "fact Desc[T = Leaf]"),
-        1,
-        "a `fact` is a rule with an empty body, so its head is an answerable goal — and \
-         since WI-20260917-S8JYF that is ALL it is"
-    );
-    assert_eq!(
-        spec_goal_solutions("test.wi1069.pdiv", "provides Desc[T = Leaf]"),
-        0,
-        "a `provides` clause asserts the provision and NOTHING ELSE — which is what the \
-         retirement costs, and the standing reason to keep a fact BESIDE a provision \
-         where some rule resolves the spec as a goal"
-    );
 }
 
 /// WITNESS — the dispatch half. A green load and an answered relation are both

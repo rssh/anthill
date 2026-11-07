@@ -22,7 +22,8 @@
 //! and `fact somePredicate` are the same shape at every level, CST included.
 //!
 //! SO THE SECOND READING IS REMOVED (058 §4, completed at both levels). A `fact` is
-//! an ordinary fact wherever it stands; an author who means a provision writes
+//! never a provision, and since WI-20261107-FDJ0E one headed by a sort's type application
+//! is refused naming `provides`; an author who means a provision writes
 //! `provides` — in the carrier's own body, or in a `namespace <Carrier>` SECONDARY
 //! ENTRY (059 R2/R3) where the carrier has no body to write it in. `provides`
 //! already refuses an unresolved spec loudly, so the silence has nowhere left to
@@ -34,12 +35,12 @@
 //!
 //! | test | on back-out |
 //! |---|---|
-//! | [`a_fact_in_a_sort_body_records_no_provision`] | FAILS — the fact records one |
-//! | [`a_namespace_level_fact_records_no_provision`] | FAILS — the fact records one |
+//! | [`a_fact_in_a_sort_body_records_no_provision`] | FAILS — the fact records one (refused since WI-20261107-FDJ0E) |
+//! | [`a_namespace_level_fact_records_no_provision`] | FAILS — the fact records one (refused since WI-20261107-FDJ0E) |
 //! | [`the_secondary_entry_records_what_the_fact_used_to`] | passes either way (BY DESIGN — the `provides` route is what the migration moves TO, and it must work before and after; it is here so no other row can pass vacuously against a loader that records nothing at all) |
-//! | [`the_provision_dispatches_and_the_fact_does_not`] | FAILS — its fact leg dispatches |
+//! | [`the_provision_dispatches_and_the_fact_does_not`] | FAILS — its fact leg dispatches (refused since WI-20261107-FDJ0E) |
 //! | [`an_unresolved_bracketed_head_is_refused`] | passes either way (BY DESIGN — this ticket adds no gate at the head; the refusal is WI-20260823-53W12's bracket on a relation, and fails with that backed out) |
-//! | [`a_bracketed_fact_head_over_a_declared_sort_still_loads`] | passes either way (BY DESIGN — its control) |
+//! | [`a_bracketed_fact_head_over_a_declared_sort_is_refused`] | WI-20261107-FDJ0E's refusal, not this ticket's |
 //! | [`a_parenthesised_head_records_no_provision`] | FAILS — the mirror defect: it banked a provision binding a spec parameter to the literal `1` |
 //! | [`an_effect_kind_registers_through_provides_only`] | FAILS on its fact leg — the fact registered the kind |
 //!
@@ -98,10 +99,25 @@ namespace s8jyf.inbody
 end
 "#
     );
-    assert_eq!(
-        provisions_of(&src, "s8jyf.inbody.Sp"),
-        Vec::<String>::new(),
-        "a `fact` in a sort body is an ordinary fact and records no provision"
+    assert_head_refused(&errors(&src), "Sp");
+}
+
+/// The refusal of a clause headed by `sort`'s type application (WI-20261107-FDJ0E), which
+/// records nothing because it does not load.
+fn assert_head_refused(errs: &[String], sort: &str) {
+    assert!(
+        errs.iter().any(|e| e.contains(&format!("`{sort}[…]` heads a clause")) && e.contains(&format!("`provides {sort}[…]`"))),
+        "a clause headed by `{sort}[…]` is refused naming `provides`: {errs:?}"
+    );
+}
+
+/// The same refusal over a sort with constructors, which nothing provides: its repair is a
+/// relation's argument.
+fn assert_data_head_refused(errs: &[String], sort: &str) {
+    assert!(
+        errs.iter().any(|e| e.contains(&format!("`{sort}[…]` heads a clause"))
+            && e.contains(&format!("`{sort}` declares constructors, so nothing provides it"))),
+        "a clause headed by `{sort}[…]` is refused naming a relation's argument: {errs:?}"
     );
 }
 
@@ -121,12 +137,7 @@ namespace s8jyf.atns
 end
 "#
     );
-    assert_eq!(
-        provisions_of(&src, "s8jyf.atns.Sp"),
-        Vec::<String>::new(),
-        "a namespace-level `fact` records no provision; nothing derives a carrier \
-         from a binding value any more"
-    );
+    assert_head_refused(&errors(&src), "Sp");
 }
 
 /// THE MIGRATION TARGET, and the control for the two rows above: the secondary entry
@@ -156,8 +167,9 @@ end
 
 /// AND IT DISPATCHES — the capability, driven rather than inferred from the fact row.
 /// The carrier's own `describe` must be reached through the spec name, which happens
-/// only if the provision reached the dispatch tables; the fact leg answers the spec's
-/// DEFAULT instead, which is what "records nothing" costs at run time.
+/// only if the provision reached the dispatch tables; the fact leg answered the spec's
+/// DEFAULT instead, which is what "records nothing" cost at run time, and is refused at
+/// load since WI-20261107-FDJ0E.
 #[test]
 fn the_provision_dispatches_and_the_fact_does_not() {
     let program = |ns: &str, claim: &str| {
@@ -188,11 +200,7 @@ end
         "Ok(Int(42))",
         "the provision routes `Sp.describe` to the carrier's own member"
     );
-    assert_eq!(
-        drive("s8jyf.disp.no", "    fact Sp[T = Carrier]"),
-        "Ok(Int(0))",
-        "the `fact` claims nothing, so the call takes the spec's default body"
-    );
+    assert_head_refused(&errors(&program("s8jyf.disp.no", "    fact Sp[T = Carrier]")), "Sp");
 }
 
 // ── What the retirement does NOT add: a gate at the head ─────────────────────
@@ -229,12 +237,12 @@ end
     );
 }
 
-/// THE CONTROL that keeps the row above from being about brackets at all: the same
-/// bracketed shape over names that DO resolve loads clean, including a parametric DATA
-/// sort, whose ordinary instantiation fact (`fact Polynom[Int64]`,
-/// `anthill-testcases/ring-polynom`) must keep loading.
+/// The same bracketed shape over names that DO resolve is a clause headed by a sort's type
+/// application — a spec's and a parametric DATA sort's (the instantiation fact `fact
+/// Polynom[Int64]` `anthill-testcases/ring-polynom` wrote) — refused, each once, naming
+/// `provides`, not as a relation's bracket (WI-20261107-FDJ0E; it loaded before).
 #[test]
-fn a_bracketed_fact_head_over_a_declared_sort_still_loads() {
+fn a_bracketed_fact_head_over_a_declared_sort_is_refused() {
     let src = format!(
         r#"
 namespace s8jyf.gate.ok
@@ -249,7 +257,11 @@ namespace s8jyf.gate.ok
 end
 "#
     );
-    assert_eq!(errors(&src), Vec::<String>::new());
+    let errs = errors(&src);
+    assert_eq!(errs.len(), 2, "{errs:?}");
+    assert_head_refused(&errs, "Sp");
+    assert_data_head_refused(&errs, "Poly");
+    assert!(!errs.iter().any(|e| e.contains("declares the relation")), "{errs:?}");
 }
 
 // ── The mirror defect, and the effect-kind registration ──────────────────────
