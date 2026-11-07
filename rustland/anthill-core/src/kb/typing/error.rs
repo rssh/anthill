@@ -167,12 +167,13 @@ pub enum TypeError {
         namespace: Symbol,
     },
     /// A dotted name that names nothing, reported once for the whole name: `prefix`, a
-    /// namespace, declares no `missing`, or — `prefix` is `None` — no `missing` is visible
-    /// from `from_scope`, the first segment.
+    /// namespace or a sort, declares no `missing`, or — `prefix` is `None` — no `missing` is
+    /// visible from `from_scope`, the first segment.
     DottedNameNamesNothing {
         span: Option<Span>,
         path: String,
-        prefix: Option<Symbol>,
+        /// The prefix, and what it is as the refusal says it: `"namespace"` or `"sort"`.
+        prefix: Option<(Symbol, &'static str)>,
         missing: String,
         from_scope: crate::intern::ScopeId,
     },
@@ -1121,6 +1122,15 @@ pub enum TypeError {
         /// The scope the dot was written in.
         from_scope: ScopeId,
     },
+    /// An `internal` name reached by a dotted name path from a scope that cannot see it
+    /// (`zz.Q.Sec`), named by its qualified name as the import and the parameter type of
+    /// the same name are refused.
+    ForbiddenInternalPath {
+        span: Option<Span>,
+        hidden: Symbol,
+        /// The scope the path was written in.
+        from_scope: ScopeId,
+    },
     /// WI-757 (the WI-722 macro contract's diagnostic channel): a `@[simp]` lowering
     /// whose macro-headed RHS was expanded here, and the MACRO rejected the
     /// occurrences it was handed — `where(λ c -> ite(true, true, false))`, whose
@@ -1226,7 +1236,8 @@ fn const_applied_as_call(kb: &KnowledgeBase, name: Symbol) -> Option<String> {
 }
 
 /// `(declaring scope, name)` of an `internal` member, as both renderings of
-/// [`TypeError::ForbiddenInternalMember`] name it.
+/// [`TypeError::ForbiddenInternalMember`] name it ([`TypeError::ForbiddenInternalPath`]
+/// takes the scope).
 fn internal_member_address(kb: &KnowledgeBase, member: Symbol) -> (&str, &str) {
     let qualified = kb.qualified_name_of(member);
     qualified.rsplit_once('.').unwrap_or(("", qualified))
@@ -1737,7 +1748,7 @@ impl TypeError {
                 ..
             } => crate::kb::load::dotted_name_names_nothing_message(
                 path,
-                prefix.map(|p| kb.qualified_name_of(p)),
+                prefix.map(|(p, kind)| (kind, kb.qualified_name_of(p))),
                 missing,
                 kb.scope_display_name(*from_scope),
             ),
@@ -2517,6 +2528,17 @@ impl TypeError {
                     kb.scope_display_name(*from_scope),
                 )
             }
+            TypeError::ForbiddenInternalPath {
+                hidden, from_scope, ..
+            } => {
+                let (declared_in, _) = internal_member_address(kb, *hidden);
+                format!(
+                    "'{}' is internal to '{}' and cannot be referenced from scope '{}'",
+                    kb.qualified_name_of(*hidden),
+                    declared_in,
+                    kb.scope_display_name(*from_scope),
+                )
+            }
             // WI-757: rendered by the channel's own owner (`eval::macro_rejection_message`),
             // shared with the eval `Display` and both `LoadError` renderings.
             TypeError::MacroRejected {
@@ -2646,6 +2668,7 @@ impl TypeError {
             | TypeError::DotDispatchNoMatch { span, .. }
             | TypeError::ForbiddenInternalField { span, .. }
             | TypeError::ForbiddenInternalMember { span, .. }
+            | TypeError::ForbiddenInternalPath { span, .. }
             | TypeError::UnsatisfiedPrecondition { span, .. }
             | TypeError::MacroRejected { span, .. }
             | TypeError::BottomExpr { span }
@@ -2741,7 +2764,7 @@ impl TypeError {
                 ..
             } => LoadError::DottedNameNamesNothing {
                 path: path.clone(),
-                prefix: prefix.map(|p| kb.qualified_name_of(p).to_string()),
+                prefix: prefix.map(|(p, kind)| (kind, kb.qualified_name_of(p).to_string())),
                 missing: missing.clone(),
                 scope_name: kb.scope_display_name(*from_scope).to_string(),
                 span: self.span(kb),
@@ -3493,6 +3516,17 @@ impl TypeError {
                 let (declared_in, name) = internal_member_address(kb, *member);
                 LoadError::ForbiddenInternalAccess {
                     name: name.to_string(),
+                    declared_in: declared_in.to_string(),
+                    scope_name: kb.scope_display_name(*from_scope).to_string(),
+                    span: self.span(kb).unwrap_or_default(),
+                }
+            }
+            TypeError::ForbiddenInternalPath {
+                hidden, from_scope, ..
+            } => {
+                let (declared_in, _) = internal_member_address(kb, *hidden);
+                LoadError::ForbiddenInternalAccess {
+                    name: kb.qualified_name_of(*hidden).to_string(),
                     declared_in: declared_in.to_string(),
                     scope_name: kb.scope_display_name(*from_scope).to_string(),
                     span: self.span(kb).unwrap_or_default(),

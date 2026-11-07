@@ -314,8 +314,8 @@ end
 }
 
 /// NO SILENT FALLBACK: a receiver naming neither a local value nor a rule is refused —
-/// a member a sort does not declare by the `field_access` path's unresolved-name
-/// diagnostic, a path whose first segment names nothing as that path. Both sources present
+/// a member a sort does not declare as that sort's, a path whose first segment names
+/// nothing as that path. Both sources present
 /// the widened gate with a genuine NEAR MISS — a rule IS in scope, just not at the
 /// name used — so a gate that probed too loosely (any symbol kind, or a short-name /
 /// last-segment match) would re-route instead of failing, and be caught here.
@@ -346,7 +346,7 @@ namespace test.wi749loud2
 end
 "#;
     for (src, said) in [
-        (NO_SUCH_MEMBER, ["isEmpty", "unresolved"]),
+        (NO_SUCH_MEMBER, ["`test.wi749loud1.Queen.nosuch.isEmpty` names nothing", "the sort `test.wi749loud1.Queen` declares no `nosuch`"]),
         (NOTHING_IN_SCOPE, ["`nosuchns.nosuchrule.isEmpty` names nothing", "no `nosuchns`"]),
     ] {
         let errs = try_load_kb_with(src)

@@ -1367,6 +1367,10 @@ pub struct KnowledgeBase {
     /// WI-20260904-B8ESG — one per name the loader met in a clause head that the post-load
     /// undefined-name check judges. See [`Self::record_head_name_site`].
     head_name_sites: Vec<HeadNameSite>,
+    /// The equations whose replacement the post-load undefined-name check refused
+    /// ([`Self::refuse_replacement`]). The typer fires none of them: the refusal is the
+    /// report, and a fired copy would report its text again at each call it rewrites.
+    refused_replacements: HashSet<RuleId>,
     /// One per goal of an effect guard the loader lowered, drained by the post-load
     /// undefined-name check. See [`Self::record_effect_guard_site`].
     effect_guard_sites: Vec<EffectGuardSite>,
@@ -3118,6 +3122,7 @@ impl KnowledgeBase {
             entity_fields: HashMap::new(),
             constructor_symbols: HashSet::new(),
             head_name_sites: Vec::new(),
+            refused_replacements: HashSet::new(),
             effect_guard_sites: Vec::new(),
             sort_goal_declarations: Vec::new(),
             absence_records: HashMap::new(),
@@ -13023,6 +13028,27 @@ impl KnowledgeBase {
     /// this KB must judge only its own sites, not re-report every batch before it.
     pub(crate) fn take_head_name_sites(&mut self) -> Vec<HeadNameSite> {
         std::mem::take(&mut self.head_name_sites)
+    }
+
+    /// Mark the equations whose replacement holds the refused site `at` (an undefined name
+    /// in the right-hand side), so the typer does not fire them ([`Self::replacement_refused`]).
+    pub(crate) fn refuse_replacement(&mut self, at: crate::span::SourceSpan) {
+        for rid in self.simp_equation_rids() {
+            let Some(rhs) = self.rule_equation_rhs_node(rid) else {
+                continue;
+            };
+            if rhs.span.source == at.source
+                && rhs.span.span.start <= at.span.start
+                && at.span.end <= rhs.span.span.end
+            {
+                self.refused_replacements.insert(rid);
+            }
+        }
+    }
+
+    /// Was `rid`'s replacement refused at load ([`Self::refuse_replacement`])?
+    pub(crate) fn replacement_refused(&self, rid: RuleId) -> bool {
+        self.refused_replacements.contains(&rid)
     }
 
     /// Record one goal of an effect guard (`eq(b, 0)` in `Error[D] :- eq(b, 0)`), for the

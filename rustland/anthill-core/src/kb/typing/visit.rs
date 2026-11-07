@@ -597,6 +597,12 @@ pub(super) fn visit_type(
             // run cannot rank one this small: 326.36s before, 326.64s after, with five
             // tests added), just the cheap tests written first.
             if pos_args.len() == 2 && named_args.is_empty() {
+                // A segment hidden from the scope the text is written in is refused before
+                // the readings below, which look the whole name up without asking.
+                if let Some(e) = dotted_name_hidden(kb, &*env, &occ) {
+                    results.push(Err(e));
+                    return;
+                }
                 if let Some(rel) = dotted_citation_relation(kb, &occ) {
                     let r = relation_reference_type(kb, rel, occ_span, &occ, None)
                         .map(|ty| TypeResult::pure_value(ty, unwrap_env(env), Rc::clone(&occ)));
@@ -626,7 +632,7 @@ pub(super) fn visit_type(
                 // only the rule-body walk (and the materializer it falls back on) sets it. It
                 // becomes load-bearing the day an operation-body producer marks its dots too.
                 if env.in_rule_body() {
-                    if let Some((op, recv_type)) = dotted_citation_operation(kb, &occ) {
+                    if let Some((op, recv_type)) = dotted_citation_operation(kb, &*env, &occ) {
                         if let Some(r) = member_as_function(
                             kb,
                             &*env,
@@ -662,10 +668,35 @@ pub(super) fn visit_type(
                     }
                 }
                 // A dotted name no reading above gave a value is refused once, as the name it
-                // is, in both bodies: its segments are no values to type one by one.
-                if let Some(e) = dotted_name_without_value(kb, &*env, &occ) {
-                    results.push(Err(e));
-                    return;
+                // is, in both bodies: its segments are no values to type one by one. One with
+                // a value prefix is the dot on that value, member by member, as the operation
+                // body's walk builds it.
+                match dotted_name_without_value(kb, &*env, &occ) {
+                    Some(DottedNameReading::Refused(e)) => {
+                        results.push(Err(e));
+                        return;
+                    }
+                    Some(DottedNameReading::MembersOf { receiver, members }) => {
+                        let pass = crate::kb::simp_rewrite::simp_pass(kb);
+                        let dot = members.into_iter().fold(receiver, |receiver, name| {
+                            NodeOccurrence::synthesized_expr_written(
+                                Expr::DotApply {
+                                    receiver,
+                                    name,
+                                    pos_args: Vec::new(),
+                                    named_args: Vec::new(),
+                                    type_args: Vec::new(),
+                                },
+                                Rc::clone(&occ),
+                                pass,
+                                occ.owner,
+                                true,
+                            )
+                        });
+                        push_visit_at(work, dot, env, expected, fuel, pos);
+                        return;
+                    }
+                    None => {}
                 }
             }
             // Proposal 069 §3 — a compound argument a default the call takes names is

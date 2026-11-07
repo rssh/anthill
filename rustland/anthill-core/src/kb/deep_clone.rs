@@ -1094,6 +1094,7 @@ impl KnowledgeBase {
             entity_fields: plain(&self.entity_fields),
             constructor_symbols: plain(&self.constructor_symbols),
             head_name_sites: plain(&self.head_name_sites),
+            refused_replacements: plain(&self.refused_replacements),
             effect_guard_sites: plain(&self.effect_guard_sites),
             sort_goal_declarations: plain(&self.sort_goal_declarations),
             absence_records: plain(&self.absence_records),

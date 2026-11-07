@@ -418,27 +418,53 @@ fn domain_value_face_refusal(
     })
 }
 
-/// The refusal of a dotted name, written where a value is, that no reading above gave a
-/// value: reported once for the whole name, never once per segment, and saying what the
-/// name is. `None` when `occ` is not such a name, or when its walk reaches a prefix that
-/// has a value or a type reading — a const, a constructor, a sort — whose member the
-/// ordinary path reads.
-///
-/// The name is walked from its first segment, each prefix resolved as a qualified name,
-/// so a segment that is `internal` and hidden from the scope the text is written in is
-/// found where the visible walk of the loader stopped at it, and refused as a dot to it
-/// is ([`hidden_dot_member`]). A prefix that is a namespace and declares no next segment,
-/// or a first segment no name answers, names nothing; a whole name that is a namespace
-/// has no value. The node must be the loader's desugaring of a dot at every level
-/// ([`NodeOccurrence::is_dot_chain`]): a written `anthill.reflect.field_access(ns, x)` is
-/// a call, and its `x` an argument.
-pub(super) fn dotted_name_without_value(
+/// The refusal of a dotted name with a segment `internal` to a scope the text is not
+/// written in, asked before any reading of the name: the relation and operation readings
+/// look a name up whole, by its qualified name, which does not ask.
+pub(super) fn dotted_name_hidden(
     kb: &KnowledgeBase,
     env: &TypingEnv,
     occ: &Rc<NodeOccurrence>,
 ) -> Option<TypeError> {
-    let (root, members) = dot_chain_segments(kb, occ)?;
-    if let Err(word) = root {
+    let chain = dot_chain_segments(kb, occ)?;
+    match walk_dotted_name(kb, &chain, written_scope(kb, env, occ), Some(occ.span.span)) {
+        Walked::Hidden(e) => Some(e),
+        Walked::NoRoot(_) | Walked::Resolved { .. } => None,
+    }
+}
+
+/// What a dotted name no reading above took is ([`dotted_name_without_value`]).
+pub(super) enum DottedNameReading {
+    /// Refused, once for the whole name.
+    Refused(TypeError),
+    /// A prefix that names a value, and the members read off it, each a dot on what the
+    /// one before it gives (`zz.S.mk.x` is `(zz.S.mk).x`), as the operation body's walk
+    /// reads a name with a value prefix.
+    MembersOf {
+        receiver: Rc<NodeOccurrence>,
+        members: Vec<Symbol>,
+    },
+}
+
+/// A dotted name, written where a value is, that no reading above gave a value: refused
+/// once for the whole name, saying what the name is, or read as the dot on the value a
+/// prefix of it names. `None` when `occ` is not such a name, or when the whole name
+/// resolved to something that is not a namespace.
+///
+/// The name is walked from its first segment, each prefix resolved as a qualified name
+/// ([`walk_dotted_name`]). A namespace or a sort that declares no next segment, or a first
+/// segment no name answers, names nothing; a whole name that is a namespace has no value;
+/// a prefix with a value reading — a const, a constructor, an operation, a relation — is
+/// the receiver of the rest. The node must be the loader's desugaring of a dot at every
+/// level ([`NodeOccurrence::is_dot_chain`]): a written `anthill.reflect.field_access(ns, x)`
+/// is a call, and its `x` an argument.
+pub(super) fn dotted_name_without_value(
+    kb: &KnowledgeBase,
+    env: &TypingEnv,
+    occ: &Rc<NodeOccurrence>,
+) -> Option<DottedNameReading> {
+    let chain = dot_chain_segments(kb, occ)?;
+    if let Err(word) = chain.root {
         if env.lookup_var(word).is_some() {
             return None;
         }
@@ -447,63 +473,131 @@ pub(super) fn dotted_name_without_value(
     let from_scope = written_scope(kb, env, occ);
     // The name as the walk reads it: the first segment qualified where it resolved.
     let path = || {
-        let head = match root {
+        let head = match chain.root {
             Ok(sym) => kb.qualified_name_of(sym),
             Err(word) => kb.local_name_of(word),
         };
-        std::iter::once(head).chain(members.iter().copied()).collect::<Vec<_>>().join(".")
+        std::iter::once(head).chain(chain.members.iter().copied()).collect::<Vec<_>>().join(".")
     };
-    let mut cur = match root {
-        Ok(sym) => sym,
-        Err(word) => {
-            return Some(TypeError::DottedNameNamesNothing {
+    let names_nothing = |prefix: Option<(Symbol, &'static str)>, missing: &str| {
+        DottedNameReading::Refused(TypeError::DottedNameNamesNothing {
+            span,
+            path: path(),
+            prefix,
+            missing: missing.to_string(),
+            from_scope,
+        })
+    };
+    let (prefix, stop) = match walk_dotted_name(kb, &chain, from_scope, span) {
+        Walked::Hidden(e) => return Some(DottedNameReading::Refused(e)),
+        Walked::NoRoot(word) => return Some(names_nothing(None, short_name_of(kb.local_name_of(word)))),
+        Walked::Resolved { prefix, stop } => (prefix, stop),
+    };
+    let Some(&missing) = chain.members.get(stop) else {
+        return namespace_only(kb, prefix).then_some(DottedNameReading::Refused(
+            TypeError::NamespaceHasNoValue {
                 span,
-                path: path(),
-                prefix: None,
-                missing: short_name_of(kb.local_name_of(word)).to_string(),
-                from_scope,
-            })
-        }
+                namespace: prefix,
+            },
+        ));
     };
-    let namespace_only = |s: Symbol| {
-        let kinds = kb.kinds(s);
-        let ns = crate::intern::SymbolKind::Namespace;
-        kinds.contains(ns) && kinds.without(ns).is_empty()
-    };
-    for member in &members {
-        match kb.try_resolve_symbol(&format!("{}.{member}", kb.qualified_name_of(cur))) {
-            Some(next) => {
-                if let Some(hidden) = hidden_dot_member(kb, next, from_scope, span) {
-                    return Some(hidden);
-                }
-                cur = next;
-            }
-            None if namespace_only(cur) => {
-                return Some(TypeError::DottedNameNamesNothing {
-                    span,
-                    path: path(),
-                    prefix: Some(cur),
-                    missing: member.to_string(),
-                    from_scope,
-                });
-            }
-            None => return None,
-        }
+    if namespace_only(kb, prefix) {
+        return Some(names_nothing(Some((prefix, "namespace")), missing));
     }
-    namespace_only(cur).then_some(TypeError::NamespaceHasNoValue {
-        span,
-        namespace: cur,
+    if kb.has_kind(prefix, crate::intern::SymbolKind::Sort) && !kb.is_entity_constructor(prefix) {
+        return declared_type_member(kb, prefix, missing)
+            .is_none()
+            .then(|| names_nothing(Some((prefix, "sort")), missing));
+    }
+    Some(DottedNameReading::MembersOf {
+        receiver: Rc::clone(&chain.nodes[stop]),
+        members: chain.member_syms[stop..].to_vec(),
     })
 }
 
-/// The segments of a dotted name the loader desugared to a `field_access` chain: the first
-/// segment — its symbol where the loader resolved it, else the word written — and the
-/// short names of the rest. `None` unless every level is the loader's desugaring of a dot.
-fn dot_chain_segments<'k>(
-    kb: &'k KnowledgeBase,
-    occ: &Rc<NodeOccurrence>,
-) -> Option<(Result<Symbol, Symbol>, Vec<&'k str>)> {
+/// A namespace and nothing else: no sort or constructor of its name gives it a reading.
+fn namespace_only(kb: &KnowledgeBase, s: Symbol) -> bool {
+    let kinds = kb.kinds(s);
+    let ns = crate::intern::SymbolKind::Namespace;
+    kinds.contains(ns) && kinds.without(ns).is_empty()
+}
+
+/// What [`walk_dotted_name`] found.
+enum Walked {
+    /// A segment `internal` to a scope the text is not written in, refused as its import
+    /// is ([`TypeError::ForbiddenInternalPath`]).
+    Hidden(TypeError),
+    /// The first segment, which no name answers.
+    NoRoot(Symbol),
+    /// The first segment and `members[..stop]` name `prefix`, and `members[stop]` is no
+    /// qualified name under it; `stop` is the number of members when the whole name did.
+    Resolved { prefix: Symbol, stop: usize },
+}
+
+/// Walk a dotted name from its first segment, each prefix resolved as a qualified name — or,
+/// under a sort, through an alias or a sort it provides — other than a value place's, so a
+/// segment hidden from `from_scope` is found where the loader's visible walk stopped at it.
+fn walk_dotted_name(
+    kb: &KnowledgeBase,
+    chain: &DotChain<'_>,
+    from_scope: ScopeId,
+    span: Option<Span>,
+) -> Walked {
+    let mut cur = match chain.root {
+        Ok(sym) => sym,
+        Err(word) => return Walked::NoRoot(word),
+    };
+    for (stop, member) in chain.members.iter().enumerate() {
+        // A value place — a constructor's field, an operation's parameter — has a qualified
+        // name and is no member a path reaches: a field is read off a value, and the
+        // loader's ladder passes over both alike.
+        let next = kb
+            .try_resolve_symbol(&format!("{}.{member}", kb.qualified_name_of(cur)))
+            .or_else(|| {
+                // A sort's member reached through an alias or a sort it provides.
+                kb.has_kind(cur, crate::intern::SymbolKind::Sort)
+                    .then(|| crate::kb::load::member_past_qualified_names(kb, cur, member))
+                    .flatten()
+            })
+            .filter(|s| !kb.kinds(*s).is_value_place());
+        match next {
+            Some(next) => {
+                if !kb.symbols.internal_visible_from(next, from_scope) {
+                    return Walked::Hidden(TypeError::ForbiddenInternalPath {
+                        span,
+                        hidden: next,
+                        from_scope,
+                    });
+                }
+                cur = next;
+            }
+            None => return Walked::Resolved { prefix: cur, stop },
+        }
+    }
+    Walked::Resolved {
+        prefix: cur,
+        stop: chain.members.len(),
+    }
+}
+
+/// A dotted name the loader desugared to a `field_access` chain ([`dot_chain_segments`]).
+struct DotChain<'k> {
+    /// The first segment: its symbol where the loader resolved it, else the word written.
+    root: Result<Symbol, Symbol>,
+    /// `nodes[k]` names the first segment and `members[..k]`: `nodes[0]` is the first
+    /// segment's node, the last the whole name's.
+    nodes: Vec<Rc<NodeOccurrence>>,
+    /// The short names of the members, and the symbols they are written as.
+    members: Vec<&'k str>,
+    member_syms: Vec<Symbol>,
+}
+
+/// The segments of a dotted name the loader desugared to a `field_access` chain. `None`
+/// unless every level is the loader's desugaring of a dot.
+fn dot_chain_segments<'k>(kb: &'k KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Option<DotChain<'k>> {
     let mut members: Vec<&'k str> = Vec::new();
+    let mut member_syms: Vec<Symbol> = Vec::new();
+    let mut nodes: Vec<Rc<NodeOccurrence>> = Vec::new();
     let mut cur = Rc::clone(occ);
     let root = loop {
         match cur.as_expr()? {
@@ -520,14 +614,13 @@ fn dot_chain_segments<'k>(
                 // The rule body's walk writes the member as the word (`Ident`), the
                 // operation body's as a reference (`VarRef`); its short name either way.
                 let field = match pos_args[1].as_expr()? {
-                    Expr::Ref(f) | Expr::Ident(f) | Expr::VarRef { name: f } => {
-                        short_name_of(kb.local_name_of(*f))
-                    }
+                    Expr::Ref(f) | Expr::Ident(f) | Expr::VarRef { name: f } => *f,
                     _ => return None,
                 };
-                members.push(field);
+                members.push(short_name_of(kb.local_name_of(field)));
+                member_syms.push(field);
                 let receiver = Rc::clone(&pos_args[0]);
-                cur = receiver;
+                nodes.push(std::mem::replace(&mut cur, receiver));
             }
             // The first segment, below the outermost level only: a name alone is not a chain.
             _ if members.is_empty() => return None,
@@ -535,17 +628,28 @@ fn dot_chain_segments<'k>(
                 break if kb.kinds(*sym).is_empty() { Err(*sym) } else { Ok(*sym) };
             }
             // A prefix that names a sort, which the walk recorded as its type value where
-            // it read it (`zz.Q` of `zz.Q.hidden`).
-            Expr::TypeValue {
-                head,
-                pos_args,
-                named_args,
-            } if pos_args.is_empty() && named_args.is_empty() => break Ok(*head),
+            // it read it (`zz.Q` of `zz.Q.hidden`) — with the bracket of an alias it named
+            // (`zz.CA` over `sort CA = Box[V = Int64]` is `zz.Box[V = Int64]`).
+            Expr::TypeValue { head, .. } => break Ok(*head),
+            // A prefix that names a constructor or an operation, which the walk built as
+            // the construction or the call its name is (`zz.Color.blue` of
+            // `zz.Color.blue.n`, a rule body's with its omitted fields as variables;
+            // `zz.Box.wrap` of `zz.Box.wrap.x`). The stamp on the level above says the
+            // whole chain was written as names, so this node is one.
+            Expr::Constructor { name, .. } | Expr::Apply { functor: name, .. } => break Ok(*name),
             _ => return None,
         }
     };
+    nodes.push(cur);
+    nodes.reverse();
     members.reverse();
-    Some((root, members))
+    member_syms.reverse();
+    Some(DotChain {
+        root,
+        nodes,
+        members,
+        member_syms,
+    })
 }
 
 /// WI-20260902-4NEKZ — THE DOTTED NAME a LOADER-BUILT `field_access` chain spells, when
@@ -569,41 +673,32 @@ fn dot_chain_segments<'k>(
 /// nodes — same functor, a resolved `Ref` receiver and a bare `Ident` selector in both.
 ///
 /// AND THEN NO SCOPE IS CONSULTED, which is what makes the rest a read rather than a
-/// second resolution ladder: the loader re-routes the chain LEVEL BY LEVEL, so each
-/// receiver segment already carries its FULLY-QUALIFIED symbol and only the final field is
-/// a bare intern. Measured on all three citation forms — `zzls.inner.rel` (absolute),
-/// `inner.rel` written inside `zzls2` (relative), and `..zzls3.inner.rel` (marked
-/// absolute) — the receiver leaf is `Ref` with qualified name `zzls.inner` /
-/// `zzls2.inner` / `zzls3.inner` in each. Joining that with the field's SHORT name
+/// second resolution ladder: the loader re-routes the chain LEVEL BY LEVEL, so the first
+/// segment already carries its FULLY-QUALIFIED symbol — a `Ref`, or the type value of a
+/// sort a path names (`zz.S` of `zz.S.seven`) — and the rest are the words written
+/// ([`dot_chain_segments`]). Measured on all three citation forms — `zzls.inner.rel`
+/// (absolute), `inner.rel` written inside `zzls2` (relative), and `..zzls3.inner.rel`
+/// (marked absolute) — the receiver leaf is `Ref` with qualified name `zzls.inner` /
+/// `zzls2.inner` / `zzls3.inner` in each. Joining that with the members' SHORT names
 /// therefore reproduces the name the author wrote, wherever they wrote it.
 ///
-/// `None` the moment a segment does NOT resolve (an `Expr::Ident` root or receiver), so a
-/// chain naming nothing keeps whatever the ordinary path says about it.
+/// `None` the moment the first segment does NOT resolve, so a chain naming nothing keeps
+/// whatever [`dotted_name_without_value`] says about it.
 fn loader_chain_dotted_name(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Option<String> {
-    match occ.as_expr()? {
-        Expr::Ref(sym) => Some(kb.qualified_name_of(*sym).to_string()),
-        Expr::Apply {
-            functor,
-            pos_args,
-            named_args,
-            ..
-        } if occ.is_dot_chain()
-            && named_args.is_empty()
-            && pos_args.len() == 2
-            && kb.try_resolve_symbol(dt::qualified(dt::FIELD_ACCESS)) == Some(*functor) =>
-        {
-            let base = loader_chain_dotted_name(kb, &pos_args[0])?;
-            // A written member is an `Ident`, the bare intern of the word it spells
-            // (`Loader::member_name`); the root alone is a `Ref`. The SHORT name is taken
-            // either way, since `base` already carries the qualification.
-            let field = match pos_args[1].as_expr()? {
-                Expr::Ref(f) | Expr::Ident(f) => short_name_of(kb.local_name_of(*f)).to_string(),
-                _ => return None,
-            };
-            Some(format!("{base}.{field}"))
-        }
-        _ => None,
-    }
+    let DotChain {
+        root: Ok(root),
+        members,
+        ..
+    } = dot_chain_segments(kb, occ)?
+    else {
+        return None;
+    };
+    Some(
+        std::iter::once(kb.qualified_name_of(root))
+            .chain(members)
+            .collect::<Vec<_>>()
+            .join("."),
+    )
 }
 
 /// WI-20260902-4NEKZ — the RELATION a dotted paren-less citation in a rule-body value slot
@@ -660,13 +755,32 @@ pub(super) fn dotted_citation_relation(
 /// typed, as the operation body reads the call it lowers the chain to
 /// (`Loader::try_qualified_op_ref`), so `0 = Box.zero` types as `0 = seven` does instead of
 /// walking into its segments. A nullary operation's call is made by the resolver where it
-/// reduces the chain as an operand (`reduce_dot_value`).
+/// reduces the chain as an operand (`reduce_dot_value`). A receiver named by a path to an
+/// alias reaches here as the alias's bracket (`zz.CA.wrap` as `zz.Box[V = Int64].wrap`),
+/// and that bracket is the receiver's type.
 pub(super) fn dotted_citation_operation(
     kb: &mut KnowledgeBase,
+    env: &TypingEnv,
     occ: &Rc<NodeOccurrence>,
 ) -> Option<(Symbol, Option<Value>)> {
     let (sym, alias) = dotted_operation_through(kb, occ)?;
-    let recv_type = alias.and_then(|a| alias_receiver_type(kb, a)).map(Value::term);
+    let recv_type = match alias {
+        Some(a) => alias_receiver_type(kb, a).map(Value::term),
+        None => {
+            let root = dot_chain_segments(kb, occ).map(|chain| Rc::clone(&chain.nodes[0]));
+            match root.as_ref().and_then(|r| r.as_expr()) {
+                Some(Expr::TypeValue {
+                    pos_args,
+                    named_args,
+                    ..
+                }) if !(pos_args.is_empty() && named_args.is_empty()) => {
+                    type_value_denoted_type(kb, env, root.as_ref().expect("matched above"))
+                        .map(Value::term)
+                }
+                _ => None,
+            }
+        }
+    };
     Some((sym, recv_type))
 }
 

@@ -991,7 +991,9 @@ pub(super) fn try_fire(
     // selection onto most-specific-first `query()` is proposal 043 §4.6, deferred
     // — type-independent recognition needs only that both functors are covered.)
     for &rid in rids {
-        if !is_simp_equation(kb, rid) {
+        // An equation whose replacement the loader refused is not fired: its refusal is the
+        // report, and the rewritten text would be reported again at each call.
+        if !is_simp_equation(kb, rid) || kb.replacement_refused(rid) {
             continue;
         }
         // WI-582: a rule carrying EXPLICIT typed-pattern bounds (`?x: T`) is fired

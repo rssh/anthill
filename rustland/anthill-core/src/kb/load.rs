@@ -737,9 +737,9 @@ pub enum LoadError {
     DottedNameNamesNothing {
         /// The name as the walk read it, its resolved prefix qualified.
         path: String,
-        /// The namespace that declares no `missing`, qualified; `None` when `missing` is
-        /// the first segment.
-        prefix: Option<String>,
+        /// What declares no `missing` — `"namespace"` or `"sort"` — and its qualified name;
+        /// `None` when `missing` is the first segment.
+        prefix: Option<(&'static str, String)>,
         missing: String,
         scope_name: String,
         span: Option<Span>,
@@ -3609,7 +3609,12 @@ impl LoadError {
                 span,
             } => {
                 let msg =
-                    dotted_name_names_nothing_message(path, prefix.as_deref(), missing, scope_name);
+                    dotted_name_names_nothing_message(
+                    path,
+                    prefix.as_ref().map(|(kind, name)| (*kind, name.as_str())),
+                    missing,
+                    scope_name,
+                );
                 match span {
                     Some(sp) => format!("{}: {msg}", loc.format_start(*sp)),
                     None => msg,
@@ -5394,7 +5399,12 @@ impl std::fmt::Display for LoadError {
                 span,
             } => {
                 let msg =
-                    dotted_name_names_nothing_message(path, prefix.as_deref(), missing, scope_name);
+                    dotted_name_names_nothing_message(
+                    path,
+                    prefix.as_ref().map(|(kind, name)| (*kind, name.as_str())),
+                    missing,
+                    scope_name,
+                );
                 match span {
                     Some(sp) => write!(f, "{msg} at {}..{}", sp.start, sp.end),
                     None => write!(f, "{msg}"),
@@ -17490,13 +17500,13 @@ pub(crate) fn namespace_has_no_value_message(namespace: &str) -> String {
 /// that denotes nothing is given elsewhere ([`undefined_name_repair`]).
 pub(crate) fn dotted_name_names_nothing_message(
     path: &str,
-    prefix: Option<&str>,
+    prefix: Option<(&str, &str)>,
     missing: &str,
     scope_name: &str,
 ) -> String {
     match prefix {
-        Some(ns) => format!(
-            "`{path}` names nothing: the namespace `{ns}` declares no `{missing}`. Fix the \
+        Some((kind, name)) => format!(
+            "`{path}` names nothing: the {kind} `{name}` declares no `{missing}`. Fix the \
              spelling."
         ),
         None => format!(
@@ -23311,6 +23321,7 @@ fn check_undefined_head_names(kb: &mut KnowledgeBase) -> Vec<LoadError> {
                 LoadError::UndefinedHeadArgument { functor, span }
             }
             crate::kb::HeadNamePosition::Replacement => {
+                kb.refuse_replacement(site.at);
                 LoadError::UndefinedEquationReplacement { functor, span }
             }
         };
@@ -28308,6 +28319,20 @@ pub(crate) fn member_through_aliases(kb: &KnowledgeBase, path: &str) -> Option<S
     member_and_alias_through_aliases(kb, path).map(|(member, _)| member)
 }
 
+/// The member `member` that `owner` reaches by a rung of the dotted ladder past the
+/// qualified names: through an alias (`CA.zero` over `sort CA = Box[V = Int64]`), or through
+/// a sort it provides (`Int64.compare`). `None` when neither reaches one, or two provided
+/// sorts each declare one.
+pub(crate) fn member_past_qualified_names(kb: &KnowledgeBase, owner: Symbol, member: &str) -> Option<Symbol> {
+    let path = format!("{}.{member}", kb.qualified_name_of(owner));
+    member_and_alias_through_aliases(kb, &path).map(|(sym, _)| sym).or_else(|| {
+        match dotted_by_provision(kb, owner, member, &|_| true) {
+            ResolveResult::Found(sym) => Some(sym),
+            ResolveResult::Ambiguous(..) | ResolveResult::NotFound => None,
+        }
+    })
+}
+
 /// [`member_through_aliases`] with the type alias the path read through, the receiver whose
 /// fixed bindings the member is read at (`CA` for `test.r.CA.wrap`), as
 /// [`dotted_alias_receiver`] answers a name written at a scope.
@@ -32586,7 +32611,8 @@ impl<'a> Loader<'a> {
     ///
     /// Judged where resolution FAILS, so a chain is named once: `Bogus.x.y` is the chain
     /// `Bogus.x` read `.y`, and the inner node, whose prefix is the bare root, is the one
-    /// that reports. An outer node whose prefix has no answer leaves it to that node.
+    /// that reports. An outer node whose prefix has no answer, or a hidden one, leaves it
+    /// to that node: `Q.hidden.x` is refused once, as the access to `Q.hidden`.
     fn judge_head_dotted_name(
         &mut self,
         parse_id: ParseTermId,
@@ -32597,7 +32623,9 @@ impl<'a> Loader<'a> {
             return;
         };
         if let Some((prefix, _)) = name.rsplit_once('.') {
-            if prefix.contains('.') && !self.qualified_name_resolves(prefix) {
+            if prefix.contains('.')
+                && (!self.qualified_name_resolves(prefix) || !self.visible_here(prefix))
+            {
                 return;
             }
         }
@@ -32605,12 +32633,7 @@ impl<'a> Loader<'a> {
             return;
         }
         if self.qualified_name_resolves(&name) {
-            let visible = self
-                .kb
-                .symbols
-                .resolve_in_scope(&name, self.current_scope)
-                .or_else(|| self.resolve_dotted(&name, DottedVisibility::VisibleOnly));
-            if matches!(visible, ResolveResult::NotFound) {
+            if !self.visible_here(&name) {
                 // The ladder's own probe, as `resolve_dotted_reported` asks it: the in-scope
                 // one (`hidden_internal`) walks no dotted rung.
                 if let Some(hidden) = hidden_dotted_internal(self.kb, &name, self.current_scope) {
@@ -32628,6 +32651,16 @@ impl<'a> Loader<'a> {
             position,
             paren_less: true,
         });
+    }
+
+    /// Does `name` resolve from the scope being converted, past what `internal` hides?
+    fn visible_here(&self, name: &str) -> bool {
+        let visible = self
+            .kb
+            .symbols
+            .resolve_in_scope(name, self.current_scope)
+            .or_else(|| self.resolve_dotted(name, DottedVisibility::VisibleOnly));
+        !matches!(visible, ResolveResult::NotFound)
     }
 
     /// Does a compound written in a clause head call through a BINDING — a

@@ -14,6 +14,8 @@
 //! | `zz.nosuch.x = 7` | 3 × "unresolved" | 1, `zz` declares no `nosuch` |
 //! | `nosuch.x = 7` | 2 × "unresolved" | 1, no `nosuch` is visible |
 //! | `zz.Q.Sec`, `zz.Q.hidden.x` | 1 / 2 × "unresolved" | 1, internal to `zz.Q` |
+//! | `zz.Color.nosuch` | 1 × "unresolved" | 1, the sort `zz.Color` declares no `nosuch` |
+//! | rule body: `7 = zz.S.seven`, `3 = zz.S.mk.x` | "unresolved" | hold, as their one-segment twins |
 //!
 //! The rows that already answered once — a rule, a constructor, a sort by a path — keep
 //! their errors ([`the_names_with_a_reading_keep_it`]), and so does a name no scope has,
@@ -32,6 +34,24 @@
 //!     operation-body half of the five rows of the rung.
 //!   * a sort prefix read as the chain's first segment:
 //!     [`an_internal_name_by_a_path_is_refused_as_internal`].
+//!
+//!
+//! The follow-up's parts, each backed out alone over the rows below them:
+//!   * a sort a path names, recorded as its type value, read as the chain's first segment
+//!     by the relation and operation readings: [`a_member_by_a_path_to_its_sort_is_read_in_a_rule_body`],
+//!     [`a_path_with_a_value_prefix_is_read_off_the_value`];
+//!   * an alias's bracket handed to the operation as its receiver's type: the first of those;
+//!   * a sort prefix that declares no next segment: [`a_member_a_sort_does_not_declare_is_refused_once`];
+//!   * the rest of a path read off a value prefix, a value place passed over by the walk, and
+//!     a constructor or an operation as the first segment: [`a_path_with_a_value_prefix_is_read_off_the_value`];
+//!   * the `internal` check before the relation and operation readings:
+//!     [`an_internal_operation_by_a_path_is_refused_in_a_rule_body`];
+//!   * an equation whose replacement the loader refused left unfired, and the loader's
+//!     outer node leaving a hidden prefix to the inner one: [`a_refused_replacement_is_reported_once`];
+//!   * a hidden path named by its qualified name, as the loader names it:
+//!     [`an_internal_name_by_a_path_is_refused_as_internal`],
+//!     [`an_internal_operation_by_a_path_is_refused_in_a_rule_body`],
+//!     [`a_refused_replacement_is_reported_once`].
 //!
 //! [`the_names_with_a_reading_keep_it`], [`a_name_alone_that_names_nothing_keeps_its_refusal`]
 //! and [`a_value_prefix_is_read_as_before`] pass either way, by design: they are the bound.
@@ -129,7 +149,7 @@ fn a_first_segment_that_names_nothing_is_refused_once() {
 /// is, and so is a hidden const read by a path.
 #[test]
 fn an_internal_name_by_a_path_is_refused_as_internal() {
-    for (body, name) in [("zz.Q.Sec", "'Sec'"), ("zz.Q.hidden.x", "'hidden'")] {
+    for (body, name) in [("zz.Q.Sec", "'zz.Q.Sec'"), ("zz.Q.hidden.x", "'zz.Q.hidden'")] {
         for (at, errs) in both_bodies("k40f", body) {
             refused_once(&errs, &[name, "is internal to 'zz.Q'"], &format!("{at}: {body}"));
         }
@@ -148,7 +168,7 @@ end
         "{probe}namespace user\n  import anthill.prelude.{{Int64, Type}}\n  \
          operation nm(t: Type) -> Int64 = 1\n  operation useIt() -> Int64 = nm(probe.Hid.Sec)\nend\n"
     ));
-    refused_once(&errs, &["'Sec' is internal to 'probe.Hid'", "scope 'user"], "nm(probe.Hid.Sec)");
+    refused_once(&errs, &["'probe.Hid.Sec' is internal to 'probe.Hid'", "scope 'user"], "nm(probe.Hid.Sec)");
     let import = load_errors_of(&format!(
         "{probe}namespace user\n  import anthill.prelude.Int64\n  import probe.Hid.Sec\nend\n"
     ));
@@ -229,4 +249,152 @@ fn every_value_position_reads_the_name_whole() {
         ));
         refused_once(&errs, &["`zz.inner` is a namespace"], at);
     }
+}
+
+// ── the follow-up: members of a sort or a value by a path, and refused replacements ──
+
+const MEMBERS: &str = "\
+namespace zm
+  import anthill.prelude.Int64
+  sort Color
+    entity red
+    entity blue(n: Int64)
+  end
+  sort P
+    entity pt(x: Int64, y: Int64)
+  end
+  sort S
+    operation mk() -> P = P.pt(3, 4)
+    operation seven() -> Int64 = 7
+    internal operation sec() -> Int64 = 1
+  end
+  sort Box[V]
+    entity bx(v: V)
+    entity nul
+    operation zero() -> Int64 = 0
+    operation empty() -> Box[V = V] = nul
+    operation wrapIt(x: V) -> Box[V = V] = bx(x)
+  end
+  sort CA = Box[V = Int64]
+end
+";
+
+/// `test.<ns>.r(1)`'s answers over `MEMBERS` and a rule `r(1) :- <body>` written in `ns`.
+fn holds(ns: &str, body: &str) -> usize {
+    let mut kb = crate::common::load_kb_with(&format!(
+        "{MEMBERS}namespace {ns}\n  import anthill.prelude.{{Int64, String}}\n  rule r(1) :- {body}\nend\n"
+    ));
+    crate::common::query_unary(&mut kb, &format!("{ns}.r")).len()
+}
+
+/// `body` compared with `7` in a rule body and in an operation body, over `MEMBERS`.
+fn both_bodies_over_members(ns: &str, body: &str) -> [(&'static str, Vec<String>); 2] {
+    let rule = load_errors_of(&format!(
+        "{MEMBERS}namespace {ns}r\n  import anthill.prelude.Int64\n  rule r(1) :- {body} = 7\nend\n"
+    ));
+    let op = load_errors_of(&format!(
+        "{MEMBERS}namespace {ns}o\n  import anthill.prelude.{{Int64, Bool}}\n  \
+         operation viaOp() -> Bool = {body} = 7\nend\n"
+    ));
+    [("rule body", rule), ("operation body", op)]
+}
+
+/// A member named through a path to its sort is read in a rule body as the one-segment
+/// spelling is: `7 = zm.S.seven` holds as `7 = S.seven` does. It was refused, "seven …
+/// unresolved", because the walk records the sort a path names as its type value. An
+/// alias's path gives the alias's bracket as the receiver's type, as `CA.empty` does.
+#[test]
+fn a_member_by_a_path_to_its_sort_is_read_in_a_rule_body() {
+    assert_eq!(holds("k40m", "7 = zm.S.seven"), 1);
+    assert_eq!(holds("k40n", "8 = zm.S.seven"), 0);
+    assert_eq!(holds("k40o", "7 = ..zm.S.seven"), 1);
+    assert_eq!(holds("k40p", "0 = zm.CA.zero"), 1);
+    let bracket = load_errors_of(&format!(
+        "{MEMBERS}namespace k40q\n  import anthill.prelude.{{Int64, String}}\n  \
+         rule r(?v) :- ?v = zm.CA.empty, ?v = zm.Box.bx(\"s\")\nend\n"
+    ));
+    assert_refused_naming(&bracket, &["expected Box[V = String], got Box[V = Int64]"], "the alias's bracket");
+    let open = load_errors_of(&format!(
+        "{MEMBERS}namespace k40r\n  import anthill.prelude.{{Int64, String}}\n  \
+         rule r(?v) :- ?v = zm.Box.empty, ?v = zm.Box.bx(\"s\")\nend\n"
+    ));
+    assert!(open.is_empty(), "no bracket, no binding: {open:#?}");
+}
+
+/// A member a sort does not declare is refused about that sort, once, in both bodies. A
+/// member reached past the qualified names — through a sort the sort provides, through an
+/// alias — is no such member, and the rest of the path is read off it.
+#[test]
+fn a_member_a_sort_does_not_declare_is_refused_once() {
+    for (body, sort, missing) in [("zm.Color.nosuch", "zm.Color", "nosuch"), ("zm.P.x", "zm.P", "x")] {
+        for (at, errs) in both_bodies_over_members("k40s", body) {
+            refused_once(
+                &errs,
+                &[&format!("`{body}` names nothing: the sort `{sort}` declares no `{missing}`")],
+                &format!("{at}: {body}"),
+            );
+        }
+    }
+    for (at, errs) in both_bodies_over_members("k40t", "Int64.compare") {
+        assert!(errs.iter().all(|e| !e.contains("names nothing")), "{at}: provided: {errs:#?}");
+    }
+    // Past the provided member, the rest is read off it.
+    for (at, errs) in both_bodies_over_members("k40t2", "Int64.compare.x") {
+        refused_once(&errs, &["compare"], at);
+    }
+}
+
+/// A path whose prefix names a value reads the rest off that value, as the operation body
+/// does: `3 = zm.S.mk.x` holds in a rule body and `4 = zm.S.mk.x` does not; a field the
+/// value's sort lacks is refused about the sort; a constructor's field by a path is read
+/// off its bare instance, refused once in an operation body, where that instance is an
+/// incomplete construction; an operation's parameter by a path is no member.
+#[test]
+fn a_path_with_a_value_prefix_is_read_off_the_value() {
+    assert_eq!(holds("k40u", "3 = zm.S.mk.x"), 1);
+    assert_eq!(holds("k40v", "4 = zm.S.mk.x"), 0);
+    for (at, errs) in both_bodies_over_members("k40w", "zm.S.mk.z") {
+        refused_once(&errs, &["zm.P.z", "no such member"], at);
+    }
+    let [(_, rule), (_, op)] = both_bodies_over_members("k40x", "zm.Color.blue.n");
+    assert!(rule.is_empty(), "the bare instance's field in a rule body: {rule:#?}");
+    refused_once(&op, &["`blue` is constructed without its field `n`"], "operation body");
+    for (at, errs) in both_bodies_over_members("k40y", "zm.Box.wrapIt.x") {
+        refused_once(&errs, &["wrapIt"], at);
+    }
+}
+
+/// An `internal` operation by a path is refused in a rule body as in an operation body.
+/// Read whole, as the relation and operation readings look a name up, it loaded.
+#[test]
+fn an_internal_operation_by_a_path_is_refused_in_a_rule_body() {
+    for (at, errs) in both_bodies_over_members("k40z", "zm.S.sec") {
+        refused_once(&errs, &["'zm.S.sec' is internal to 'zm.S'"], at);
+    }
+}
+
+/// An equation whose replacement the loader refused is not fired into the typer, which
+/// reported the same text again at its call; a path through a hidden prefix is refused
+/// once, as the access to that prefix, in a replacement and in a fact's argument.
+#[test]
+fn a_refused_replacement_is_reported_once() {
+    for (at, rule, tokens) in [
+        ("a compound", "rule f(?x) <=> nosuchfn(?x) @[simp]", &["`nosuchfn` names nothing"][..]),
+        ("a path", "rule f(?x) <=> zz.inner.nosuch @[simp]", &["`zz.inner.nosuch` names nothing"][..]),
+        ("a hidden path", "rule f(?x) <=> zz.Q.Sec @[simp]", &["'zz.Q.Sec' is internal to 'zz.Q'"][..]),
+        ("a hidden prefix", "rule f(?x) <=> zz.Q.hidden.x @[simp]", &["'zz.Q.hidden' is internal to 'zz.Q'"][..]),
+    ] {
+        for caller in ["", "\n  operation g() -> Int64 = f(1)"] {
+            let errs = load_errors_of(&format!(
+                "{DECL}namespace k40fire\n  import anthill.prelude.Int64\n  \
+                 operation f(x: Int64) -> Int64\n  {rule}{caller}\nend\n"
+            ));
+            assert_eq!(errs.len(), 1, "{at}, caller {:?}: {errs:#?}", !caller.is_empty());
+            assert_refused_naming(&errs, tokens, at);
+        }
+    }
+    let fact = load_errors_of(&format!(
+        "{DECL}namespace k40fact\n  import anthill.prelude.Int64\n  fact holds(zz.Q.hidden.x)\nend\n"
+    ));
+    refused_once(&fact, &["'zz.Q.hidden' is internal to 'zz.Q'"], "a fact's argument");
 }
