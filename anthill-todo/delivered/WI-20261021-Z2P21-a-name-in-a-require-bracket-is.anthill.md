@@ -3,9 +3,9 @@
 - id: WI-20261021-Z2P21-a-name-in-a-require-bracket-is
 - created: 2026-10-21T16:18:34Z
 
-- status: Claimed
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-11-07T05:29:30Z
+- status_at: 2026-11-07T09:38:49Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -28,4 +28,8 @@ RESCOPED with the user (2026-11-07), after proposal 060.1 §5 removed require[X]
 ### 2026-11-07T09:14:53Z — feedback — claude
 
 PARTS (1) AND (3) DELIVERED (this commit); (2) waits on the user. (1) A name in a guard is resolved where it is written: at namespace level `rule g[A](?x: A, ?r) :- Sp[C = A, P = P], …` is refused naming `P` ("`Sp` has a type parameter list (it declares C, P), and `P` in it names neither a sort nor a type parameter in scope (`P` is the name of one of `Sp`'s own type parameters, not a type); an element that selects no instance is written `?` or left out"), positional, with the keyword and under a name alike; `Sp[C = A]`, `Sp[C = A, P = ?]`, `Sp[A, ?]` answer 5 (report_dropped_spec_binding's early return removed). (3) A guard element at a parameter of the sort the rule is written in is fixed where the rule is cited: in `sort Box { sort P = ?; rule g[A](?x: A, ?r) :- Sp[C = A, P = P], Sp.crecv(?x, ?r) }` beside `IntW provides Sp[C = Red, P = Int64]` (5) and `BoolW provides Sp[C = Red, P = Bool]` (6), `Box[P = Bool].g(red(), ?r)` 6 and `Box[P = Int64].g` 5 (refused 'not decided' on 7c203fd9), by an argument at a column typed `P` (6) and by a default (6); a goal fixing nothing is refused naming `Box[P = …].g(…)` (a sibling's goal inside the sort too); from an operation body `Box[P = Bool].g(red()).head.r` 6 (conditional before), and inside `kr[X]() requires Sp[C = Red, P = X]` `Box[P = X].g(red())` takes kr's dictionary, 6 at X = Bool, 5 at Int64. Not changed, measured the same before and after: `krn[X]()` with no `requires` citing `Box[P = X].g(red())` answers conditionally where the operation twin is refused. (2) NOT DONE — the guard written with no introducer (`rule guarded(?c) :- WeakOrd[T = Int64], WeakOrd.compare(1, 5, ?c)`, no solutions) is also the goal over the sort's atom: with `fact WeakOrd[T = Int64]` it answers -1 (kernel-language §5.1 'a fact is an ordinary fact wherever it stands'; the `rule Spec[T = Red] :- …` paragraph), so refusing it removes that reading; 060.1 Q6 says it is refused. Asked the user.
+
+### 2026-11-07T09:38:48Z — feedback — claude
+
+PART (2) RESOLVED with the user (2026-11-07): no refusal. The guard written with no introducer (`rule guarded(?c) :- WeakOrd[T = Int64], …`) answers nothing because a type check as a goal or a query reads only written facts, never provisions — a defect against 'rules should match typing'; filed as WI-20261107-FDJ0E, which also answers the 9SNR2 addendum (a disagreeing `Store[State = Buf[T = String]]` becomes a check that fails). The keyword form's refusal stays ('we can allow both'). Parts (1) and (3) delivered in c80394e1.
 
