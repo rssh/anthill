@@ -360,5 +360,5 @@ fn a_row_in_an_operations_requires_is_judged_once() {
     let errs = load_errors_of(&program("wi_tj3g4.row", decl));
     let rows: Vec<&String> = errs.iter().filter(|e| e.contains("is not a REGISTERED effect kind")).collect();
     assert_eq!(rows.len(), 1, "{errs:#?}");
-    assert!(rows[0].contains("`wi_tj3g4.row.k`'s `requires` clause"), "{rows:#?}");
+    assert!(rows[0].contains("`wi_tj3g4.row.k`'s `requires Holder[C = Spec[E = {Beep}]]`"), "{rows:#?}");
 }

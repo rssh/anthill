@@ -1174,7 +1174,7 @@ pub enum LoadError {
     /// measured answering `None` for exactly these symbols — `functor_span` keys off a
     /// converted `Term::Fn` functor (a name APPLIED in a body, not a declaration) and
     /// `rule_head_span` is empty for a loader-emitted metadata fact. Those refusals name
-    /// the owner and the clause keyword instead, which is enough to grep for and not
+    /// the owner and the clause as written instead, which is enough to grep for and not
     /// enough to click.
     WrittenEffectRowLabel {
         /// The sort whose row parameter is bound (`test.Spec`), qualified.
@@ -1184,10 +1184,13 @@ pub enum LoadError {
         /// The offending label as written, rendered (`Beep`, `Modify[T = Thing]`).
         label: String,
         /// WHERE the row was written, as the subject of the sentence: a spec clause
-        /// renders as ``test.C provides test.Spec``, an operation's contract clause as
-        /// ``test.ask`'s `requires` clause`, and a written type argument says only that
-        /// much — its SPAN is what locates it. Built by the pass, which is the only
-        /// thing that knows which source the binding came through.
+        /// renders as ``test.C provides Spec[E = {Beep}]``, a condition as
+        /// ``test.C provides Lo[T = Int64] :- Spec[E = {Beep}]``, a goal of an
+        /// operation's contract as ``test.ask`'s `requires b: Spec[E = {Beep}]``, and a
+        /// written type argument says only that much — its SPAN is what locates it. Two
+        /// clauses that read the same each say which they are, in parentheses. Built by
+        /// the pass, which is the only thing that knows which source the binding came
+        /// through.
         origin: String,
         /// Why it is refused and how to repair it — the rule-specific half.
         detail: String,
@@ -24425,6 +24428,16 @@ pub(crate) fn provides_spec_base_sym_view<V: TermView>(
 /// Read through the view, so the answer is the same on whichever carrier the spec rides:
 /// a binding written through a type alias is the type it stands for.
 fn spec_binding_texts<V: TermView>(kb: &KnowledgeBase, spec: &V) -> Vec<(String, String)> {
+    spec_binding_texts_by(kb, spec, super::typing::type_qualified_text)
+}
+
+/// [`spec_binding_texts`] with each binding's value written by `text`: the qualified text
+/// for a record's name, a diagnostic's spelling for [`spec_display_text`].
+fn spec_binding_texts_by<V: TermView>(
+    kb: &KnowledgeBase,
+    spec: &V,
+    text: impl Fn(&KnowledgeBase, &crate::kb::term_view::ViewItem<'_>) -> String,
+) -> Vec<(String, String)> {
     let spec_qn = provides_spec_base_sym_view(kb, spec).map(|s| kb.qualified_name_of(s));
     let mut bindings: Vec<(String, String)> = spec
         .named_keys(kb)
@@ -24451,7 +24464,7 @@ fn spec_binding_texts<V: TermView>(kb: &KnowledgeBase, spec: &V) -> Vec<(String,
             }
             Some((
                 last_segment(kb.local_name_of(k_sym)).to_owned(),
-                super::typing::type_qualified_text(kb, &value),
+                text(kb, &value),
             ))
         })
         .collect();
@@ -24501,6 +24514,39 @@ fn spec_text_at(base_qn: &str, bindings: &[(String, String)]) -> String {
 pub fn qualified_spec_text<V: TermView>(kb: &KnowledgeBase, spec: &V) -> Option<String> {
     let base = provides_spec_base_sym_view(kb, spec)?;
     Some(spec_text_at(kb.qualified_name_of(base), &spec_binding_texts(kb, spec)))
+}
+
+/// A spec at its bindings as a diagnostic writes a type — `Spec[C = Int64, E = {Beep}]`,
+/// an alias by the type it stands for — with the bindings [`qualified_spec_text`] keeps, in
+/// the same order: what names a written clause in a load error. `None` for a spec that
+/// names no sort.
+///
+/// A bare application keeps a positional bracket as written — an operation's contract
+/// goal `Spec[Int64, {Beep}]` — ahead of its named bindings; a `SortView`'s one positional
+/// is its base.
+pub(crate) fn spec_display_text<V: TermView>(kb: &KnowledgeBase, spec: &V) -> Option<String> {
+    let base = provides_spec_base_sym_view(kb, spec)?;
+    let written = |kb: &KnowledgeBase, value: &crate::kb::term_view::ViewItem<'_>| {
+        super::typing::type_display_name_value(kb, &value.to_value())
+    };
+    let positional: Vec<String> = match spec.head(kb) {
+        ViewHead::Functor {
+            functor, pos_arity, ..
+        } if !super::typing::is_sort_view_functor(kb, functor) => (0..pos_arity)
+            .filter_map(|i| spec.pos_arg(kb, i))
+            .map(|v| written(kb, &v))
+            .collect(),
+        _ => Vec::new(),
+    };
+    let named = spec_binding_texts_by(kb, spec, written);
+    if positional.is_empty() {
+        return Some(spec_text_at(kb.local_name_of(base), &named));
+    }
+    let parts: Vec<String> = positional
+        .into_iter()
+        .chain(named.iter().map(|(k, v)| format!("{k} = {v}")))
+        .collect();
+    Some(format!("{}[{}]", kb.local_name_of(base), parts.join(", ")))
 }
 
 /// One `requires <SE>` clause of a scope, as [`requires_clauses_of`] reads it off the

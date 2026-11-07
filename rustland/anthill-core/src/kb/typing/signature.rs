@@ -4740,18 +4740,9 @@ pub(crate) fn check_written_row_bindings<'s>(
 
     // Snapshot first: the judging walk below mutates `kb` (interning, row explosion).
     struct RowBinding {
-        /// The phrase that completes "… binds `Spec`'s row parameter `E`", naming
-        /// WHERE the author wrote it. A spec clause names the clause and its keyword; a
-        /// written type argument says only that much and leans on its span.
-        ///
-        /// IT IS ALSO THE DEDUP IDENTITY, and that is the /code-review finding: keyed on
-        /// the owner SYMBOL instead, a sort writing the same bad label in `provides
-        /// Spec[E = {Beep}]` AND `requires Spec[E = {Beep}]` reported ONCE, naming only
-        /// the `provides` — MEASURED — and the author fixed that, reloaded, and met the
-        /// other. Keying on the rendered origin makes the key exactly as fine as the
-        /// message, which is the only key that cannot collapse two things a reader has
-        /// to fix separately.
-        origin: String,
+        /// WHERE the author wrote it — named only if a label of it is refused
+        /// ([`RowOrigin::names`]), since nearly every label is lawful.
+        origin: RowOrigin,
         spec: Symbol,
         /// WI-20260831-RSRP5 (/code-review) — WHICH row parameter this binds. A spec may
         /// declare more than one (`effects E = ?` beside `effects F = ?`), and without it
@@ -4768,7 +4759,8 @@ pub(crate) fn check_written_row_bindings<'s>(
     let mut row_params_by_spec: HashMap<Symbol, Vec<Symbol>> = HashMap::new();
 
     // ── Source 2: the three spec-clause facts ────────────────────────────────
-    for clause in all_spec_clause_views(kb) {
+    let clauses = all_spec_clause_views(kb);
+    for (at, clause) in clauses.iter().enumerate() {
         // ONCE PER KB, not once per load (/code-review). This walk has no batch
         // boundary of its own — unlike source 1, whose registry is drained per load — so
         // a `load_all` into a live KB of a CLEAN file into a KB already holding an offending
@@ -4790,7 +4782,6 @@ pub(crate) fn check_written_row_bindings<'s>(
             continue;
         }
         let spec_qn = kb.qualified_name_of(spec_base).to_string();
-        let owner_qn = kb.qualified_name_of(clause.owner).to_string();
         // NO SPAN, and the two candidates were BUILT AND MEASURED ANSWERING `None`
         // rather than argued away (/code-review raised the gap and proposed the first).
         // `functor_span` is keyed off a converted `Term::Fn` FUNCTOR — it holds spans for
@@ -4808,7 +4799,7 @@ pub(crate) fn check_written_row_bindings<'s>(
                 continue;
             }
             bindings.push(RowBinding {
-                origin: format!("`{owner_qn} {} {spec_qn}`", clause.kind.keyword()),
+                origin: RowOrigin::SpecClause(at),
                 spec: spec_base,
                 param,
                 value: v.clone(),
@@ -4845,7 +4836,7 @@ pub(crate) fn check_written_row_bindings<'s>(
                 continue;
             }
             bindings.push(RowBinding {
-                origin: "a written type argument".to_string(),
+                origin: RowOrigin::Site,
                 spec: site.base,
                 param,
                 value: bound.clone(),
@@ -4861,80 +4852,67 @@ pub(crate) fn check_written_row_bindings<'s>(
     // converter — and no `TypeExpr` lowering runs. MEASURED: with sources 1 and 2 alone
     // `operation go(…) requires Spec[E = {Beep}]` and its named-binder twin were the
     // only two positions of the census still loading clean.
-    for (rid, op_sym, clauses) in crate::kb::op_info::all_operation_contract_clauses(kb) {
+    for contract in crate::kb::op_info::all_operation_contract_clauses(kb) {
         // Once per KB, for the spec-clause loop's reason, and claimed per FACT rather
         // than per clause because one `OperationInfo` fact carries both lists. The batch
         // that RE-PRESENTS the file still reports it, and only a batch that does not
         // present it at all skips it — but the claim does not deliver that on its own
         // (the assert dedups onto the claimed id), so see
         // `KnowledgeBase::note_metadata_fact_presented`, which is what drops it.
-        if !kb.claim_row_binding_clause(rid) {
+        if !kb.claim_row_binding_clause(contract.rid) {
             continue;
         }
         if !judging {
             continue;
         }
-        let mut found: Vec<(&'static str, Symbol, Symbol, Value)> = Vec::new();
-        for (keyword, clause) in clauses {
-            let mut in_clause: Vec<(Symbol, Symbol, Value)> = Vec::new();
-            collect_row_bindings_in_goal(kb, &clause, &mut row_params_by_spec, &mut in_clause, 0);
-            found.extend(in_clause.into_iter().map(|(s, p, v)| (keyword, s, p, v)));
+        // Each GOAL of the lists is named on its own: `requires A, b: B` is one stored
+        // clause, a `conjunction(…)`, and its goals are two things to fix. A `requires`
+        // goal is named by its binder where it has one, read where every reader of the
+        // list reads it ([`op_requires_entries_of`]).
+        let mut ensures = Vec::new();
+        for clause in &contract.ensures {
+            push_op_requires_clause(kb, clause, &mut ensures);
         }
-        if found.is_empty() {
-            continue;
-        }
-        let op_qn = kb.qualified_name_of(op_sym).to_string();
-        // No span — see the spec-clause loop above, where the same two lookups were
-        // measured answering `None`.
-        let span = None;
-        for (keyword, spec, param, value) in found {
-            bindings.push(RowBinding {
-                origin: format!("`{op_qn}`'s `{keyword}` clause"),
-                spec,
-                param,
-                value,
-                span,
-            });
+        let goals = op_requires_entries_of(kb, contract.op, &contract.requires)
+            .into_iter()
+            .enumerate()
+            .map(|(at, e)| ("requires", at, e))
+            .chain(ensures.into_iter().enumerate().map(|(at, e)| ("ensures", at, e)));
+        for (keyword, at, goal) in goals {
+            let mut in_goal: Vec<(Symbol, Symbol, Value)> = Vec::new();
+            collect_row_bindings_in_goal(kb, &goal.spec, &mut row_params_by_spec, &mut in_goal, 0);
+            if in_goal.is_empty() {
+                continue;
+            }
+            // No span — see the spec-clause loop above, where the same two lookups were
+            // measured answering `None`.
+            for (spec, param, value) in in_goal {
+                bindings.push(RowBinding {
+                    origin: RowOrigin::Goal {
+                        op: contract.op,
+                        keyword,
+                        at,
+                        goal: goal.spec.clone(),
+                        binder: goal.binder,
+                    },
+                    spec,
+                    param,
+                    value,
+                    span: None,
+                });
+            }
         }
     }
 
-    let mut errors = Vec::new();
-    // THE ORIGIN, NOT THE OWNER SYMBOL (/code-review). The key has to be exactly as fine
-    // as the message: `provides` and `requires` on ONE sort render differently and are
-    // two things to fix, but share an owner — measured collapsing to a single
-    // `provides`-only diagnostic when the owner keyed it. The SPAN is in the key beside
-    // it because two written type arguments in one signature share the constant site
-    // origin and are separated by nothing else.
-    let mut reported: HashSet<(
-        String,
-        Option<crate::span::SourceSpan>,
-        Symbol,
-        Symbol,
-        String,
-    )> = HashSet::new();
+    // JUDGED FIRST, NAMED AFTER: a refusal is `(binding, label, detail)`, and only a
+    // refused binding's clause is written out below — nearly every label is lawful.
+    let mut refused: Vec<(usize, String, String)> = Vec::new();
     // The modifiable sorts, read once and only if a written place needs judging.
     let mut regions: Option<HashSet<Symbol>> = None;
-    for b in &bindings {
+    for (at, b) in bindings.iter().enumerate() {
         for label in effect_element_labels(kb, &b.value, keys.label) {
             let display = type_display_name_value(kb, &label);
-            if !reported.insert((b.origin.clone(), b.span, b.spec, b.param, display.clone())) {
-                continue;
-            }
-            let spec_qn = kb.qualified_name_of(b.spec).to_string();
-            let slot = kb.local_name_of(b.param).to_string();
-            let span = b.span.map(|s| s.span);
-            let source = b.span.map(|s| s.source);
-            let mut push = |detail: String| {
-                let err = crate::kb::load::LoadError::WrittenEffectRowLabel {
-                    spec: spec_qn.clone(),
-                    param: slot.clone(),
-                    label: display.clone(),
-                    origin: b.origin.clone(),
-                    detail,
-                    span,
-                };
-                errors.push((err, source));
-            };
+            let mut push = |detail: String| refused.push((at, display.clone(), detail));
             if let Some((_, kind)) = classify_modify_target(kb, &label, modify, &keys) {
                 let which = match kind {
                     // WI-20260823-TR8CF — the operation-row rule, at the row's origin: a
@@ -5007,15 +4985,138 @@ pub(crate) fn check_written_row_bindings<'s>(
             ));
         }
     }
-    // WI-745: attribute a site-sourced refusal to the file its span indexes into, so it
-    // renders `path:line:col`. A spec-clause refusal has no span and stays bare.
+    if refused.is_empty() {
+        return Vec::new();
+    }
+
+    // Each refused binding's clause, written out: one name for each line it stands for
+    // (a requirement two names gave is two lines), with what tells it from another
+    // clause that reads the same.
+    let mut names: HashMap<usize, Vec<ClauseName>> = HashMap::new();
+    for (at, _, _) in &refused {
+        if !names.contains_key(at) {
+            let named = bindings[*at].origin.names(kb, &clauses);
+            names.insert(*at, named);
+        }
+    }
+    // TWO CLAUSES THAT READ THE SAME are each told apart by what only it has — its place,
+    // or its spec in full: `provides Lo :- Spec[E = {Beep}]` in two provisions of `Lo`,
+    // one goal written twice in a list, `Spec[C = a.P]` beside `Spec[C = b.P]`.
+    let mut apart: HashMap<&str, HashSet<&str>> = HashMap::new();
+    for name in names.values().flatten() {
+        if let Some(which) = &name.which {
+            apart.entry(name.text.as_str()).or_default().insert(which.as_str());
+        }
+    }
+    let written = |name: &ClauseName| match &name.which {
+        Some(which) if apart.get(name.text.as_str()).is_some_and(|w| w.len() > 1) => {
+            format!("{} ({which})", name.text)
+        }
+        _ => name.text.clone(),
+    };
+
+    // THE ORIGIN AS WRITTEN, NOT THE OWNER SYMBOL (/code-review). The key has to be
+    // exactly as fine as the message: `provides` and `requires` on ONE sort render
+    // differently and are two things to fix, but share an owner — measured collapsing to a
+    // single `provides`-only diagnostic when the owner keyed it; and two clauses of one
+    // kind on one owner read as one until the clause was written out (WI-20260901-BGKWA).
+    // The SPAN is in the key beside it because two written type arguments in one signature
+    // share the constant site origin and are separated by nothing else. Asked at the
+    // refusal, so one clause reaching the walk down two routes is still one error.
+    let mut reported: HashSet<(
+        String,
+        Option<crate::span::SourceSpan>,
+        Symbol,
+        Symbol,
+        String,
+    )> = HashSet::new();
+    let mut errors = Vec::new();
+    for (at, label, detail) in &refused {
+        let b = &bindings[*at];
+        for name in &names[at] {
+            let origin = written(name);
+            if !reported.insert((origin.clone(), b.span, b.spec, b.param, label.clone())) {
+                continue;
+            }
+            let err = crate::kb::load::LoadError::WrittenEffectRowLabel {
+                spec: kb.qualified_name_of(b.spec).to_string(),
+                param: kb.local_name_of(b.param).to_string(),
+                label: label.clone(),
+                origin,
+                detail: detail.clone(),
+                span: b.span.map(|s| s.span),
+            };
+            // WI-745: attribute a site-sourced refusal to the file its span indexes into, so
+            // it renders `path:line:col`. A spec-clause refusal has no span and stays bare.
+            errors.push(match b.span {
+                Some(s) => err.located_in_kb_source(kb, s.source),
+                None => err,
+            });
+        }
+    }
     errors
-        .into_iter()
-        .map(|(err, source)| match source {
-            Some(src) => err.located_in_kb_source(kb, src),
-            None => err,
-        })
-        .collect()
+}
+
+/// Where a judged row binding was written, for [`check_written_row_bindings`]: what is
+/// needed to write the clause out, done only for a binding with a refused label.
+enum RowOrigin {
+    /// A written type argument; its span locates it.
+    Site,
+    /// A spec-clause fact, by its place in the walk's [`all_spec_clause_views`].
+    SpecClause(usize),
+    /// A goal of an operation's `requires` / `ensures` list, by its place in the list as
+    /// [`op_requires_entries_of`] reads it.
+    Goal {
+        op: Symbol,
+        keyword: &'static str,
+        at: usize,
+        goal: Value,
+        binder: Option<Symbol>,
+    },
+}
+
+/// One name of a written clause: the clause as the diagnostic's subject, and what tells
+/// it from another clause that reads the same — said only when one does.
+struct ClauseName {
+    text: String,
+    which: Option<String>,
+}
+
+impl RowOrigin {
+    fn names(&self, kb: &KnowledgeBase, clauses: &[SpecClauseView]) -> Vec<ClauseName> {
+        match self {
+            RowOrigin::Site => vec![ClauseName {
+                text: "a written type argument".to_string(),
+                which: None,
+            }],
+            RowOrigin::SpecClause(at) => clauses[*at].names(kb),
+            RowOrigin::Goal {
+                op,
+                keyword,
+                at,
+                goal,
+                binder,
+            } => {
+                let binder = binder
+                    .map(|b| format!("{}: ", kb.local_name_of(b)))
+                    .unwrap_or_default();
+                vec![ClauseName {
+                    text: format!(
+                        "`{}`'s `{keyword} {binder}{}`",
+                        kb.qualified_name_of(*op),
+                        clause_spec_text(kb, goal)
+                    ),
+                    which: Some(format!("goal {} of the list", at + 1)),
+                }]
+            }
+        }
+    }
+}
+
+/// A clause's spec as a diagnostic writes it, at its bindings
+/// ([`crate::kb::load::spec_display_text`]).
+fn clause_spec_text(kb: &KnowledgeBase, spec: &Value) -> String {
+    crate::kb::load::spec_display_text(kb, spec).unwrap_or_else(|| type_display_name_value(kb, spec))
 }
 
 /// WI-20260831-V25N3 — every `Spec[rowParam = …]` reachable inside one GOAL term, as
@@ -5063,6 +5164,27 @@ fn collect_row_bindings_in_goal(
                 out.push((base, param, bound));
             }
         }
+        // A POSITIONAL binding too: the goal converter keeps the bracket as written, so
+        // `requires Spec[Int64, {Beep}]` binds `E` by its place, and read by named keys
+        // alone it loaded clean where `Spec[C = Int64, E = {Beep}]` is refused. Paired with
+        // the declared parameters the way the typer pairs it.
+        let entry = RequiresEntry {
+            required_sort: base,
+            spec: v.clone(),
+            supply: SupplySource::Required,
+            binder: None,
+        };
+        if let Some((_, positional)) = op_requires_application_bindings(kb, &entry) {
+            for (name, bound) in positional {
+                let Some(param) = kb
+                    .try_resolve_symbol(&format!("{spec_qn}.{name}"))
+                    .filter(|p| row_params.contains(p))
+                else {
+                    continue;
+                };
+                out.push((base, param, bound));
+            }
+        }
     }
     let mut kids: Vec<Value> = Vec::new();
     let mut i = 0;
@@ -5103,27 +5225,20 @@ fn row_params_of(
     computed
 }
 
-/// WI-20260831-V25N3 — WHICH SPEC CLAUSE a row binding was written in. Only the keyword
-/// differs in the diagnostic, but the three are three FACTS, so the walk that gathers
-/// them has to name them.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// WI-20260831-V25N3 — WHICH SPEC CLAUSE a row binding was written in. The three are
+/// three FACTS, so the walk that gathers them has to name them.
+#[derive(Clone, Debug)]
 pub(super) enum SpecClauseKind {
     Provides,
     Requires,
-    ProvidesCondition,
-}
-
-impl SpecClauseKind {
-    /// The keyword the author wrote, for the diagnostic. A provision CONDITION is a
-    /// `provides X :- Y` tail, so its keyword names the tail rather than the clause —
-    /// otherwise the message points at the provided spec, which is not the one at fault.
-    fn keyword(self) -> &'static str {
-        match self {
-            SpecClauseKind::Provides => "provides",
-            SpecClauseKind::Requires => "requires",
-            SpecClauseKind::ProvidesCondition => "provides … :-",
-        }
-    }
+    /// One condition of a `provides X :- …` tail, with the provision it conditions —
+    /// `X` as the fact's `provided` holds it — and that provision's place among its
+    /// sort's `provides` clauses, which tells two provisions of one `X` apart. Both are
+    /// for the diagnostic alone: a fact that lacks one is judged all the same.
+    ProvidesCondition {
+        provided: Option<Value>,
+        clause: Option<i64>,
+    },
 }
 
 /// WI-20260831-V25N3 — one written SPEC CLAUSE: its owning sort and the `SortView` it
@@ -5139,6 +5254,59 @@ struct SpecClauseView {
     pub(super) rid: RuleId,
 }
 
+impl SpecClauseView {
+    /// The clause, as the subject of the diagnostic:
+    /// `` `test.C provides Spec[E = {Beep}]` ``, and a condition with the provision it
+    /// conditions, `` `test.C provides Lo[T = Int64] :- Spec[E = {Beep}]` ``. The spec is
+    /// written with its bindings, so two clauses of one kind on one owner read as two.
+    ///
+    /// A `requires` fact has one name for each name its lines gave it: `requires A:
+    /// Spec[…]` beside `requires B: Spec[…]` states one fact and two requirements
+    /// ([`collect_sort_requires`]), each a line to fix.
+    fn names(&self, kb: &KnowledgeBase) -> Vec<ClauseName> {
+        let owner_qn = kb.qualified_name_of(self.owner);
+        let spec = clause_spec_text(kb, &self.spec_view);
+        // A provision or a requirement that reads like another differs from it in a
+        // binding's namespace: its spec in full says which.
+        let qualified = || crate::kb::load::qualified_spec_text(kb, &self.spec_view).map(|q| format!("`{q}`"));
+        match &self.kind {
+            SpecClauseKind::Provides => vec![ClauseName {
+                text: format!("`{owner_qn} provides {spec}`"),
+                which: qualified(),
+            }],
+            SpecClauseKind::Requires => {
+                let mut entries = Vec::new();
+                collect_sort_requires(kb, self.owner, &mut entries);
+                let mut binders: Vec<Option<Symbol>> = entries
+                    .iter()
+                    .filter(|e| crate::kb::term_view::views_structurally_equal(kb, &e.spec, &self.spec_view))
+                    .filter_map(|e| e.binder.map(Some))
+                    .collect();
+                if binders.is_empty() {
+                    binders.push(None);
+                }
+                binders
+                    .into_iter()
+                    .map(|b| ClauseName {
+                        text: match b {
+                            Some(b) => format!("`{owner_qn} requires {}: {spec}`", kb.local_name_of(b)),
+                            None => format!("`{owner_qn} requires {spec}`"),
+                        },
+                        which: qualified(),
+                    })
+                    .collect()
+            }
+            SpecClauseKind::ProvidesCondition { provided, clause } => vec![ClauseName {
+                text: format!(
+                    "`{owner_qn} provides {} :- {spec}`",
+                    provided.as_ref().map_or("…".to_string(), |p| clause_spec_text(kb, p))
+                ),
+                which: clause.map(|c| format!("`provides` clause {} of `{owner_qn}`", c + 1)),
+            }],
+        }
+    }
+}
+
 /// Every `provides` / `requires` / `provides … :-` clause in the KB, as
 /// [`SpecClauseView`]s.
 ///
@@ -5148,24 +5316,38 @@ struct SpecClauseView {
 /// `spec` / `condition` slots, because the row binding under judgement is a written
 /// token, not a derived one.
 fn all_spec_clause_views(kb: &KnowledgeBase) -> Vec<SpecClauseView> {
+    // The kind of one fact of the relation: a condition's carries the provision it
+    // conditions, read off the same fact.
+    type KindOf = fn(&KnowledgeBase, RuleId) -> SpecClauseKind;
     let mut out = Vec::new();
-    for (qn, kind, spec_field) in [
+    let relations: [(&str, KindOf, &str); 3] = [
         (
             "anthill.reflect.SortProvidesInfo",
-            SpecClauseKind::Provides,
+            |_, _| SpecClauseKind::Provides,
             "spec",
         ),
         (
             "anthill.reflect.SortRequiresInfo",
-            SpecClauseKind::Requires,
+            |_, _| SpecClauseKind::Requires,
             "spec",
         ),
         (
             "anthill.reflect.ProvidesConditionInfo",
-            SpecClauseKind::ProvidesCondition,
+            |kb, rid| {
+                let head = kb.rule_head_value(rid);
+                let provided = crate::kb::op_info::head_field_value(kb, head, "provided");
+                let clause = crate::kb::op_info::head_field_term(kb, head, "clause").and_then(|t| {
+                    match kb.get_term(t) {
+                        Term::Const(Literal::Int(n)) => Some(*n),
+                        _ => None,
+                    }
+                });
+                SpecClauseKind::ProvidesCondition { provided, clause }
+            },
             "condition",
         ),
-    ] {
+    ];
+    for (qn, kind_of, spec_field) in relations {
         let Some(sym) = kb.try_resolve_symbol(qn) else {
             continue;
         };
@@ -5174,7 +5356,7 @@ fn all_spec_clause_views(kb: &KnowledgeBase) -> Vec<SpecClauseView> {
                 continue;
             };
             out.push(SpecClauseView {
-                kind,
+                kind: kind_of(kb, rid),
                 owner,
                 spec_view,
                 rid,

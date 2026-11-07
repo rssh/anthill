@@ -813,7 +813,7 @@ end
         (
             "an operation's `requires` beside its `ensures`",
             op_level,
-            ["`requires` clause", "`ensures` clause"],
+            ["`requires Spec[E = {BeepU}]`", "`ensures Spec[E = {BeepU}]`"],
         ),
     ] {
         let errs = load_errors(&[OUT, SPEC, src]);
@@ -833,6 +833,297 @@ end
             );
         }
     }
+}
+
+/// TWO CLAUSES OF ONE KIND ON ONE OWNER, TWO REFUSALS, EACH NAMING ITS CLAUSE
+/// (WI-20260901-BGKWA) — the third axis of the dedup key. RSRP5's
+/// `each_bad_row_parameter_is_reported_against_its_own_slot` separates two SLOTS of one
+/// clause, `two_clause_kinds_on_one_owner_are_each_reported` two KINDS of clause on one
+/// owner, and this two clauses of the SAME kind.
+///
+/// The key is the rendered origin, so it is as fine as the message — and the origin
+/// named a clause by its owner, its keyword and its spec's name, which two clauses of one
+/// kind share. Each row reported ONCE before (the positional row not at all): the author
+/// fixed the clause named, reloaded and met the other. The origin now writes the clause:
+/// the spec at its bindings, a condition with the provision it conditions, a
+/// goal of an operation's list on its own, and a requirement by the name its line gave it;
+/// and two clauses that still read the same each say which they are. Each row asserts the
+/// two origins exactly, so two copies of one message fail it as one message does.
+///
+/// Not a row: a binding written through an alias beside its written-out twin, `C = I64`
+/// beside `C = Int64` or `{BD}` beside `{BeepD}`. An alias is the type it stands for, so
+/// the two lines state one provision, as a requirement stated twice is one, and are
+/// refused once — on either carrier, though the plain one holds the pair as two facts.
+///
+/// BACKED OUT, one part at a time (a temporary switch per part, all in one build):
+///
+/// ```text
+///   part backed out                                  rows that fail
+///   ──────────────────────────────────────────────── ───────────────────────────────────
+///   a sort clause's spec named by its base alone     8: every sort row
+///   a condition without the provision it conditions  4: the condition rows
+///   an operation goal without its text               6: every operation row
+///   an operation goal without its binder             2: the two named goals
+///   a sort requirement without its binder            1: two named requirements
+///   no "which" for two clauses that read the same    3: the last three rows
+///   a positional binding not judged                  1: two positional goals
+///   a positional bracket not written                 1: two positional goals
+/// ```
+///
+/// All fourteen fail with every part backed out together. RSRP5's slot test passes with
+/// each; `two_clause_kinds_on_one_owner_are_each_reported` and tj3g4's
+/// `a_row_in_an_operations_requires_is_judged_once` fail with the goal's text backed out,
+/// since they name their clauses by it too, and `a_check_less_load_claims_a_row_it_derived_too`
+/// with the spec's bindings.
+#[test]
+fn two_clauses_of_one_kind_on_one_owner_are_each_reported() {
+    const AB: &str = r#"
+namespace test.bgkwa.ab
+  sort SA
+    sort C = ?
+  end
+  sort SB
+    sort C = ?
+  end
+end
+namespace test.bgkwa.na
+  sort P
+    entity p
+  end
+end
+namespace test.bgkwa.nb
+  sort P
+    entity p
+  end
+end
+"#;
+    // The sort-level rows: `CD` writes the unregistered `BeepD` in two clauses of one
+    // kind.
+    let on_sort = |ns: &str, clauses: &str| {
+        format!(
+            r#"
+namespace test.bgkwa.{ns}
+  import anthill.prelude.{{Error, String, Int64, EffectsRuntime}}
+  import test.v25n3.spec.{{Spec}}
+  import test.bgkwa.ab.{{SA, SB}}
+  sort BeepD
+    entity beepd
+  end
+  sort CD
+    import test.bgkwa.{ns}.{{BeepD}}
+    entity cd(t: String)
+    {clauses}
+  end
+end
+"#
+        )
+    };
+    // The operation rows: `askD` writes the unregistered `BeepE` twice in its contract.
+    let on_op = |ns: &str, clauses: &str| {
+        format!(
+            r#"
+namespace test.bgkwa.{ns}
+  import anthill.prelude.{{Error, String, Int64, EffectsRuntime}}
+  import anthill.prelude.PartialEq.{{eq}}
+  import test.v25n3.out.{{Out}}
+  import test.v25n3.out.Out.{{out}}
+  import test.v25n3.spec.{{Spec}}
+  sort BeepE
+    entity beepe
+  end
+  operation askD(p: String) -> Out
+    {clauses}
+    effects {{Error}} = out(v: p)
+end
+"#
+        )
+    };
+    let rows: [(&str, String, [&str; 2]); 14] = [
+        (
+            "conditions of two provisions",
+            on_sort(
+                "cond",
+                "provides SA[C = String] :- Spec[E = {BeepD}]\n    \
+                 provides SB[C = String] :- Spec[E = {BeepD}]",
+            ),
+            [
+                "`test.bgkwa.cond.CD provides SA[C = String] :- Spec[E = {BeepD}]`",
+                "`test.bgkwa.cond.CD provides SB[C = String] :- Spec[E = {BeepD}]`",
+            ],
+        ),
+        (
+            "two goals of one `requires` list, one named",
+            on_op("named", "requires Spec[E = {BeepE}], b: Spec[E = {BeepE}]"),
+            [
+                "`test.bgkwa.named.askD`'s `requires Spec[E = {BeepE}]`",
+                "`test.bgkwa.named.askD`'s `requires b: Spec[E = {BeepE}]`",
+            ],
+        ),
+        (
+            "two provisions of one spec",
+            on_sort(
+                "prov",
+                "provides Spec[C = Int64, E = {BeepD}]\n    \
+                 provides Spec[C = String, E = {BeepD}]",
+            ),
+            [
+                "`test.bgkwa.prov.CD provides Spec[C = Int64, E = {BeepD}]`",
+                "`test.bgkwa.prov.CD provides Spec[C = String, E = {BeepD}]`",
+            ],
+        ),
+        (
+            "two requirements of one spec",
+            on_sort(
+                "req",
+                "requires Spec[C = Int64, E = {BeepD}]\n    \
+                 requires Spec[C = String, E = {BeepD}]",
+            ),
+            [
+                "`test.bgkwa.req.CD requires Spec[C = Int64, E = {BeepD}]`",
+                "`test.bgkwa.req.CD requires Spec[C = String, E = {BeepD}]`",
+            ],
+        ),
+        (
+            // One fact, two requirements: the lines differ only in their names.
+            "two named requirements at one type",
+            on_sort(
+                "names",
+                "requires A: Spec[E = {BeepD}]\n    requires B: Spec[E = {BeepD}]",
+            ),
+            [
+                "`test.bgkwa.names.CD requires A: Spec[E = {BeepD}]`",
+                "`test.bgkwa.names.CD requires B: Spec[E = {BeepD}]`",
+            ],
+        ),
+        (
+            "two conditions of one provision",
+            on_sort(
+                "conj",
+                "provides SA[C = String] :- Spec[C = Int64, E = {BeepD}], \
+                 Spec[C = String, E = {BeepD}]",
+            ),
+            [
+                "`test.bgkwa.conj.CD provides SA[C = String] :- Spec[C = Int64, E = {BeepD}]`",
+                "`test.bgkwa.conj.CD provides SA[C = String] :- Spec[C = String, E = {BeepD}]`",
+            ],
+        ),
+        (
+            "one condition under two provisions of one spec",
+            on_sort(
+                "twice",
+                "provides SA[C = String] :- Spec[C = Int64, E = {BeepD}]\n    \
+                 provides SA[C = Int64] :- Spec[C = Int64, E = {BeepD}]",
+            ),
+            [
+                "`test.bgkwa.twice.CD provides SA[C = Int64] :- Spec[C = Int64, E = {BeepD}]`",
+                "`test.bgkwa.twice.CD provides SA[C = String] :- Spec[C = Int64, E = {BeepD}]`",
+            ],
+        ),
+        (
+            "two `requires` lines of one operation",
+            on_op(
+                "lines",
+                "requires Spec[C = Int64, E = {BeepE}]\n    \
+                 requires Spec[C = String, E = {BeepE}]",
+            ),
+            [
+                "`test.bgkwa.lines.askD`'s `requires Spec[C = Int64, E = {BeepE}]`",
+                "`test.bgkwa.lines.askD`'s `requires Spec[C = String, E = {BeepE}]`",
+            ],
+        ),
+        (
+            "two goals of one `ensures` list",
+            on_op(
+                "ens",
+                "ensures Spec[C = Int64, E = {BeepE}], Spec[C = String, E = {BeepE}]",
+            ),
+            [
+                "`test.bgkwa.ens.askD`'s `ensures Spec[C = Int64, E = {BeepE}]`",
+                "`test.bgkwa.ens.askD`'s `ensures Spec[C = String, E = {BeepE}]`",
+            ],
+        ),
+        (
+            // The binder is found by the goal's place in the list, a precondition's too.
+            "a named goal after a precondition",
+            on_op(
+                "pre",
+                "requires eq(p, p), b: Spec[C = Int64, E = {BeepE}], \
+                 Spec[C = String, E = {BeepE}]",
+            ),
+            [
+                "`test.bgkwa.pre.askD`'s `requires b: Spec[C = Int64, E = {BeepE}]`",
+                "`test.bgkwa.pre.askD`'s `requires Spec[C = String, E = {BeepE}]`",
+            ],
+        ),
+        (
+            // Judged by its place as the named spelling is by its name, and written as
+            // the author wrote it.
+            "two positional goals",
+            on_op("posn", "requires Spec[Int64, {BeepE}], Spec[String, {BeepE}]"),
+            [
+                "`test.bgkwa.posn.askD`'s `requires Spec[Int64, {BeepE}]`",
+                "`test.bgkwa.posn.askD`'s `requires Spec[String, {BeepE}]`",
+            ],
+        ),
+        // The rows below read the same twice, and each says which it is.
+        (
+            "one goal written twice",
+            on_op("dup", "requires Spec[E = {BeepE}], Spec[E = {BeepE}]"),
+            [
+                "`test.bgkwa.dup.askD`'s `requires Spec[E = {BeepE}]` (goal 1 of the list)",
+                "`test.bgkwa.dup.askD`'s `requires Spec[E = {BeepE}]` (goal 2 of the list)",
+            ],
+        ),
+        (
+            "one condition in two provisions of one view",
+            on_sort(
+                "disj",
+                "provides SA[C = String] :- Spec[E = {BeepD}]\n    \
+                 provides SA[C = String] :- Spec[E = {BeepD}], SB[C = Int64]",
+            ),
+            [
+                "`test.bgkwa.disj.CD provides SA[C = String] :- Spec[E = {BeepD}]` \
+                 (`provides` clause 1 of `test.bgkwa.disj.CD`)",
+                "`test.bgkwa.disj.CD provides SA[C = String] :- Spec[E = {BeepD}]` \
+                 (`provides` clause 2 of `test.bgkwa.disj.CD`)",
+            ],
+        ),
+        (
+            "two provisions apart by a namespace",
+            on_sort(
+                "ns",
+                "provides Spec[C = test.bgkwa.na.P, E = {BeepD}]\n    \
+                 provides Spec[C = test.bgkwa.nb.P, E = {BeepD}]",
+            ),
+            [
+                "`test.bgkwa.ns.CD provides Spec[C = P, E = {BeepD}]` \
+                 (`test.v25n3.spec.Spec[C = test.bgkwa.na.P, E = {test.bgkwa.ns.BeepD}]`)",
+                "`test.bgkwa.ns.CD provides Spec[C = P, E = {BeepD}]` \
+                 (`test.v25n3.spec.Spec[C = test.bgkwa.nb.P, E = {test.bgkwa.ns.BeepD}]`)",
+            ],
+        ),
+    ];
+    let mut failed = Vec::new();
+    for (what, src, expected) in &rows {
+        let errs = load_errors(&[OUT, SPEC, AB, src]);
+        let mut origins: Vec<String> = errs
+            .iter()
+            .filter(|e| e.contains("is not a REGISTERED effect kind"))
+            .map(|e| {
+                let at = e
+                    .find(" binds ")
+                    .unwrap_or_else(|| panic!("row-label message must carry ` binds `: {e}"));
+                e[..at].to_string()
+            })
+            .collect();
+        origins.sort();
+        let mut want: Vec<String> = expected.iter().map(|s| s.to_string()).collect();
+        want.sort();
+        if origins != want {
+            failed.push(format!("{what}: expected {want:#?}; got {origins:#?}; all errors: {errs:#?}"));
+        }
+    }
+    assert!(failed.is_empty(), "{} of {} rows:\n{}", failed.len(), rows.len(), failed.join("\n"));
 }
 
 /// A CHECK-LESS LOAD RECORDS NO LOAD-CHECK WORK.
@@ -1377,7 +1668,7 @@ end
 /// presentation-keyed claim (record every `note_metadata_fact_presented` id, claim them
 /// at the return) took the four-producer test above to green and left THIS fixture
 /// leaking: batch 3, one clean unrelated sort, reported
-/// ``test.v47vwx.fwd.CF provides test.v47vwx.fwd.SpecLo`` — a file it was never given.
+/// ``test.v47vwx.fwd.CF provides SpecLo[E = {BeepF}]`` — a file it was never given.
 /// A census of the loader's own writers could not have found it, because the writer is
 /// not in the loader. Keying the claim on the CHECK'S OWN WALK
 /// (`typing::RowBindingRun::ClaimOnly`) is what makes the producer irrelevant.
@@ -1458,8 +1749,8 @@ namespace test.v47vwx.fwd2
   end
 end
 "#;
-    // The ORIGIN phrase only — `owner keyword spec` — which is what says WHICH row was
-    // judged. The rest of the message is the shared explanation.
+    // The ORIGIN phrase only — `owner keyword spec[bindings]` — which is what says WHICH
+    // row was judged. The rest of the message is the shared explanation.
     let rows = |errs: &[String]| {
         let mut out: Vec<String> = errs
             .iter()
@@ -1494,8 +1785,8 @@ end
             .map(|extra| parse::parse(extra).expect("parse extra"))
             .collect()
     };
-    let written = "`test.v47vwx.fwd.CF provides test.v47vwx.fwd.SpecHi`";
-    let derived = "`test.v47vwx.fwd.CF provides test.v47vwx.fwd.SpecLo`";
+    let written = "`test.v47vwx.fwd.CF provides SpecHi[E = {BeepF}]`";
+    let derived = "`test.v47vwx.fwd.CF provides SpecLo[E = {BeepF}]`";
 
     // A BATCH THAT IS GIVEN THE FILE REFUSES BOTH ROWS. Without this the test cannot
     // tell "the derived row is claimed" from "the derived row is never judged at all",

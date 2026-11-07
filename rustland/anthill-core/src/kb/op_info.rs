@@ -205,28 +205,40 @@ pub fn all_operation_signature_facts(
         .collect()
 }
 
-/// WI-20260831-V25N3 — every operation's own `requires` / `ensures` clauses, each with
-/// the keyword it was written under. The contract-clause twin of
-/// [`all_operation_params_and_effects`], and ONE ENTRY PER FACT for that function's
-/// reason: a spec op and its impl are separate facts, each with its OWN clause list.
+/// One `OperationInfo` fact's own contract clauses, as [`all_operation_contract_clauses`]
+/// reads them.
+pub struct OperationContractClauses {
+    /// The fact.
+    pub rid: RuleId,
+    /// The operation it declares.
+    pub op: Symbol,
+    /// Its `requires` clause list, as stored: a multi-goal clause is one `conjunction(…)`.
+    pub requires: Vec<Value>,
+    /// Its `ensures` clause list, likewise.
+    pub ensures: Vec<Value>,
+}
+
+/// WI-20260831-V25N3 — every operation's own `requires` / `ensures` clauses. The
+/// contract-clause twin of [`all_operation_params_and_effects`], and ONE ENTRY PER FACT
+/// for that function's reason: a spec op and its impl are separate facts, each with its
+/// OWN clause list. A fact with neither list is left out.
 ///
 /// The AUTO-INFERRED `EffectsRuntime[Effects = E]` clauses WI-320 appends ride in this
 /// list too and are NOT filtered out — filtering them would mean re-deriving which
 /// clauses the loader synthesized, a second answer to a settled question. A consumer
 /// that must tell them apart does what `check_override_refinement` does.
-pub fn all_operation_contract_clauses(
-    kb: &KnowledgeBase,
-) -> Vec<(RuleId, Symbol, Vec<(&'static str, Value)>)> {
+pub fn all_operation_contract_clauses(kb: &KnowledgeBase) -> Vec<OperationContractClauses> {
     let mut out = Vec::new();
-    for (rid, op_sym, head) in operation_info_fact_rows(kb) {
-        let mut clauses = Vec::new();
-        for keyword in ["requires", "ensures"] {
-            for clause in clause_list_field(kb, head, keyword) {
-                clauses.push((keyword, clause));
-            }
-        }
-        if !clauses.is_empty() {
-            out.push((rid, op_sym, clauses));
+    for (rid, op, head) in operation_info_fact_rows(kb) {
+        let requires = clause_list_field(kb, head, "requires");
+        let ensures = clause_list_field(kb, head, "ensures");
+        if !requires.is_empty() || !ensures.is_empty() {
+            out.push(OperationContractClauses {
+                rid,
+                op,
+                requires,
+                ensures,
+            });
         }
     }
     out

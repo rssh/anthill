@@ -3354,8 +3354,18 @@ pub(super) fn op_requires_entries(kb: &KnowledgeBase, op_sym: Symbol) -> Vec<Req
     let Some(rec) = crate::kb::op_info::lookup_operation_info(kb, op_sym) else {
         return Vec::new();
     };
+    op_requires_entries_of(kb, op_sym, &rec.requires)
+}
+
+/// [`op_requires_entries`] of one `requires` clause list of `op_sym`, for a reader that
+/// walks an `OperationInfo` fact of its own rather than the one the lookup answers with.
+pub(super) fn op_requires_entries_of(
+    kb: &KnowledgeBase,
+    op_sym: Symbol,
+    requires: &[Value],
+) -> Vec<RequiresEntry> {
     let mut out = Vec::new();
-    for v in &rec.requires {
+    for v in requires {
         // WI-662: preserve a denoted op-`requires` clause too (was `if let
         // Value::Term` — dropping `Value::Node` clauses for want of a `TermId`).
         push_op_requires_clause(kb, v, &mut out);
