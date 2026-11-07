@@ -313,8 +313,9 @@ end
     }
 }
 
-/// NO SILENT FALLBACK: a receiver naming neither a local value nor a rule keeps the
-/// `field_access` path and its loud unresolved-name diagnostic. Both sources present
+/// NO SILENT FALLBACK: a receiver naming neither a local value nor a rule is refused —
+/// a member a sort does not declare by the `field_access` path's unresolved-name
+/// diagnostic, a path whose first segment names nothing as that path. Both sources present
 /// the widened gate with a genuine NEAR MISS — a rule IS in scope, just not at the
 /// name used — so a gate that probed too loosely (any symbol kind, or a short-name /
 /// last-segment match) would re-route instead of failing, and be caught here.
@@ -344,14 +345,16 @@ namespace test.wi749loud2
     nosuchns.nosuchrule.isEmpty
 end
 "#;
-    for src in [NO_SUCH_MEMBER, NOTHING_IN_SCOPE] {
+    for (src, said) in [
+        (NO_SUCH_MEMBER, ["isEmpty", "unresolved"]),
+        (NOTHING_IN_SCOPE, ["`nosuchns.nosuchrule.isEmpty` names nothing", "no `nosuchns`"]),
+    ] {
         let errs = try_load_kb_with(src)
             .err()
             .expect("a receiver naming neither a local nor a rule must NOT load");
         assert!(
-            errs.iter()
-                .any(|e| e.contains("isEmpty") && e.contains("unresolved")),
-            "the miss must stay the loud unresolved-name error, got: {errs:?}"
+            errs.iter().any(|e| said.iter().all(|t| e.contains(t))),
+            "the miss must stay loud, naming {said:?}, got: {errs:?}"
         );
     }
 }

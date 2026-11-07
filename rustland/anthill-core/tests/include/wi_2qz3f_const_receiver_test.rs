@@ -226,7 +226,7 @@ fn a_hidden_const_is_no_receiver_from_outside() {
     ));
     assert_refused_naming(
         &errs,
-        &["hidden.name", "expected resolved name"],
+        &["'hidden' is internal to 'test.cr15.Q'"],
         "the const is internal to `Q`",
     );
 }

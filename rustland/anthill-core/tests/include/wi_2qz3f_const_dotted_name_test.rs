@@ -138,7 +138,7 @@ fn a_hidden_const_is_not_reached_by_its_dotted_name() {
     ));
     assert_refused_naming(
         &errs,
-        &["c.name", "expected resolved name"],
+        &["'c' is internal to 'test.dn9.S'"],
         "the const is internal to `S`, and nothing else is named `S.c`",
     );
 }

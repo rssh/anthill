@@ -418,6 +418,136 @@ fn domain_value_face_refusal(
     })
 }
 
+/// The refusal of a dotted name, written where a value is, that no reading above gave a
+/// value: reported once for the whole name, never once per segment, and saying what the
+/// name is. `None` when `occ` is not such a name, or when its walk reaches a prefix that
+/// has a value or a type reading — a const, a constructor, a sort — whose member the
+/// ordinary path reads.
+///
+/// The name is walked from its first segment, each prefix resolved as a qualified name,
+/// so a segment that is `internal` and hidden from the scope the text is written in is
+/// found where the visible walk of the loader stopped at it, and refused as a dot to it
+/// is ([`hidden_dot_member`]). A prefix that is a namespace and declares no next segment,
+/// or a first segment no name answers, names nothing; a whole name that is a namespace
+/// has no value. The node must be the loader's desugaring of a dot at every level
+/// ([`NodeOccurrence::is_dot_chain`]): a written `anthill.reflect.field_access(ns, x)` is
+/// a call, and its `x` an argument.
+pub(super) fn dotted_name_without_value(
+    kb: &KnowledgeBase,
+    env: &TypingEnv,
+    occ: &Rc<NodeOccurrence>,
+) -> Option<TypeError> {
+    let (root, members) = dot_chain_segments(kb, occ)?;
+    if let Err(word) = root {
+        if env.lookup_var(word).is_some() {
+            return None;
+        }
+    }
+    let span = Some(occ.span.span);
+    let from_scope = written_scope(kb, env, occ);
+    // The name as the walk reads it: the first segment qualified where it resolved.
+    let path = || {
+        let head = match root {
+            Ok(sym) => kb.qualified_name_of(sym),
+            Err(word) => kb.local_name_of(word),
+        };
+        std::iter::once(head).chain(members.iter().copied()).collect::<Vec<_>>().join(".")
+    };
+    let mut cur = match root {
+        Ok(sym) => sym,
+        Err(word) => {
+            return Some(TypeError::DottedNameNamesNothing {
+                span,
+                path: path(),
+                prefix: None,
+                missing: short_name_of(kb.local_name_of(word)).to_string(),
+                from_scope,
+            })
+        }
+    };
+    let namespace_only = |s: Symbol| {
+        let kinds = kb.kinds(s);
+        let ns = crate::intern::SymbolKind::Namespace;
+        kinds.contains(ns) && kinds.without(ns).is_empty()
+    };
+    for member in &members {
+        match kb.try_resolve_symbol(&format!("{}.{member}", kb.qualified_name_of(cur))) {
+            Some(next) => {
+                if let Some(hidden) = hidden_dot_member(kb, next, from_scope, span) {
+                    return Some(hidden);
+                }
+                cur = next;
+            }
+            None if namespace_only(cur) => {
+                return Some(TypeError::DottedNameNamesNothing {
+                    span,
+                    path: path(),
+                    prefix: Some(cur),
+                    missing: member.to_string(),
+                    from_scope,
+                });
+            }
+            None => return None,
+        }
+    }
+    namespace_only(cur).then_some(TypeError::NamespaceHasNoValue {
+        span,
+        namespace: cur,
+    })
+}
+
+/// The segments of a dotted name the loader desugared to a `field_access` chain: the first
+/// segment — its symbol where the loader resolved it, else the word written — and the
+/// short names of the rest. `None` unless every level is the loader's desugaring of a dot.
+fn dot_chain_segments<'k>(
+    kb: &'k KnowledgeBase,
+    occ: &Rc<NodeOccurrence>,
+) -> Option<(Result<Symbol, Symbol>, Vec<&'k str>)> {
+    let mut members: Vec<&'k str> = Vec::new();
+    let mut cur = Rc::clone(occ);
+    let root = loop {
+        match cur.as_expr()? {
+            Expr::Apply {
+                functor,
+                pos_args,
+                named_args,
+                ..
+            } if cur.is_dot_chain()
+                && named_args.is_empty()
+                && pos_args.len() == 2
+                && kb.try_resolve_symbol(dt::qualified(dt::FIELD_ACCESS)) == Some(*functor) =>
+            {
+                // The rule body's walk writes the member as the word (`Ident`), the
+                // operation body's as a reference (`VarRef`); its short name either way.
+                let field = match pos_args[1].as_expr()? {
+                    Expr::Ref(f) | Expr::Ident(f) | Expr::VarRef { name: f } => {
+                        short_name_of(kb.local_name_of(*f))
+                    }
+                    _ => return None,
+                };
+                members.push(field);
+                let receiver = Rc::clone(&pos_args[0]);
+                cur = receiver;
+            }
+            // The first segment, below the outermost level only: a name alone is not a chain.
+            _ if members.is_empty() => return None,
+            Expr::Ref(sym) | Expr::Ident(sym) | Expr::VarRef { name: sym } => {
+                break if kb.kinds(*sym).is_empty() { Err(*sym) } else { Ok(*sym) };
+            }
+            // A prefix that names a sort, which the walk recorded as its type value where
+            // it read it (`zz.Q` of `zz.Q.hidden`).
+            Expr::TypeValue {
+                head,
+                pos_args,
+                named_args,
+            } if pos_args.is_empty() && named_args.is_empty() => break Ok(*head),
+            _ => return None,
+        }
+    };
+    members.reverse();
+    Some((root, members))
+}
+
 /// WI-20260902-4NEKZ — THE DOTTED NAME a LOADER-BUILT `field_access` chain spells, when
 /// every segment of it is already resolved.
 ///
@@ -506,12 +636,9 @@ fn loader_chain_dotted_name(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Opt
 /// one-segment spelling already says in the same position — which is the parity this
 /// ticket is about — and does not invent a reading for one spelling only.
 ///
-/// SCOPE — A RULE, AND NOTHING ELSE. A chain naming a constructor, a sort, a namespace, an
-/// entity, or nothing at all is left exactly as it was: measured, the OPERATION body
-/// reports those five identically to the rule body (2-3 per-segment errors each), so they
-/// are a SHARED, wider defect in [`check_bare_ref`]'s fall-through message and not this
-/// spelling's — **WI-20260902-40KSW** owns them. Only the RULE row diverged between the two
-/// positions, and it is the only one this closes.
+/// SCOPE — A RULE, AND NOTHING ELSE. A chain naming a constructor, a sort or an entity has
+/// its own reading in both bodies; one naming a namespace, nothing, or an `internal` name
+/// is refused once as that, in both bodies, by [`dotted_name_without_value`].
 ///
 /// The precedence — the WHOLE chain first, a member of a shorter prefix second — is
 /// `Loader::try_qualified_rule_ref`'s, quoted: "that ordering is what makes `Queen.find`

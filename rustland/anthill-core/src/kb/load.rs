@@ -726,6 +726,24 @@ pub enum LoadError {
         span: Span,
         scope_name: String,
     },
+    /// A namespace named where a value is ([`super::typing::TypeError::NamespaceHasNoValue`]).
+    NamespaceHasNoValue {
+        /// The namespace, qualified.
+        namespace: String,
+        span: Option<Span>,
+    },
+    /// A dotted name that names nothing, once for the whole name
+    /// ([`super::typing::TypeError::DottedNameNamesNothing`]).
+    DottedNameNamesNothing {
+        /// The name as the walk read it, its resolved prefix qualified.
+        path: String,
+        /// The namespace that declares no `missing`, qualified; `None` when `missing` is
+        /// the first segment.
+        prefix: Option<String>,
+        missing: String,
+        scope_name: String,
+        span: Option<Span>,
+    },
     /// WI-20260902-JB6RS — a construction in an operation body that leaves out a field its
     /// entity declares, other than an `Option` ([`super::typing::TypeError::IncompleteConstruction`]).
     /// Its own class, not a field's type mismatch: no value was given to mismatch, and a
@@ -3404,6 +3422,8 @@ impl LoadError {
             | LoadError::DeclarationCarriesClauseText { span, .. } => Some(*span),
             LoadError::TypeMismatch { span, .. }
             | LoadError::IncompleteConstruction { span, .. }
+            | LoadError::NamespaceHasNoValue { span, .. }
+            | LoadError::DottedNameNamesNothing { span, .. }
             | LoadError::BareMemberCall { span, .. }
             | LoadError::UnreducedEquationFunctor { span, .. }
             | LoadError::KeyWithoutEq { span, .. }
@@ -3574,6 +3594,27 @@ impl LoadError {
                 ),
                 None => incomplete_construction_message(ctor, missing),
             },
+            LoadError::NamespaceHasNoValue { namespace, span } => {
+                let msg = namespace_has_no_value_message(namespace);
+                match span {
+                    Some(sp) => format!("{}: {msg}", loc.format_start(*sp)),
+                    None => msg,
+                }
+            }
+            LoadError::DottedNameNamesNothing {
+                path,
+                prefix,
+                missing,
+                scope_name,
+                span,
+            } => {
+                let msg =
+                    dotted_name_names_nothing_message(path, prefix.as_deref(), missing, scope_name);
+                match span {
+                    Some(sp) => format!("{}: {msg}", loc.format_start(*sp)),
+                    None => msg,
+                }
+            }
             LoadError::TypeMismatch {
                 entity_name,
                 field_name,
@@ -5338,6 +5379,27 @@ impl std::fmt::Display for LoadError {
                 ),
                 None => write!(f, "{}", incomplete_construction_message(ctor, missing)),
             },
+            LoadError::NamespaceHasNoValue { namespace, span } => {
+                let msg = namespace_has_no_value_message(namespace);
+                match span {
+                    Some(sp) => write!(f, "{msg} at {}..{}", sp.start, sp.end),
+                    None => write!(f, "{msg}"),
+                }
+            }
+            LoadError::DottedNameNamesNothing {
+                path,
+                prefix,
+                missing,
+                scope_name,
+                span,
+            } => {
+                let msg =
+                    dotted_name_names_nothing_message(path, prefix.as_deref(), missing, scope_name);
+                match span {
+                    Some(sp) => write!(f, "{msg} at {}..{}", sp.start, sp.end),
+                    None => write!(f, "{msg}"),
+                }
+            }
             LoadError::TypeMismatch {
                 entity_name,
                 field_name,
@@ -17412,6 +17474,35 @@ fn bracketed_name(kb: &KnowledgeBase, sym: Symbol, at_head: bool) -> Option<Brac
         None
     } else {
         Some(BracketedName::Other)
+    }
+}
+
+/// The one wording of [`LoadError::NamespaceHasNoValue`] and of the typer's error it renders.
+pub(crate) fn namespace_has_no_value_message(namespace: &str) -> String {
+    format!(
+        "`{namespace}` is a namespace, and a namespace has no value: name one of its \
+         members, `{namespace}.<member>`"
+    )
+}
+
+/// The one wording of [`LoadError::DottedNameNamesNothing`] and of the typer's error it
+/// renders, said of the segment that is missing; a first segment takes the repair a name
+/// that denotes nothing is given elsewhere ([`undefined_name_repair`]).
+pub(crate) fn dotted_name_names_nothing_message(
+    path: &str,
+    prefix: Option<&str>,
+    missing: &str,
+    scope_name: &str,
+) -> String {
+    match prefix {
+        Some(ns) => format!(
+            "`{path}` names nothing: the namespace `{ns}` declares no `{missing}`. Fix the \
+             spelling."
+        ),
+        None => format!(
+            "`{path}` names nothing: no `{missing}` is visible in scope `{scope_name}`. {}",
+            undefined_name_repair(missing),
+        ),
     }
 }
 
@@ -35469,6 +35560,8 @@ impl<'a> Loader<'a> {
                     recv_type,
                     // The dotted name was written without parentheses.
                     paren_less: true,
+                    // The call the chain names, not the chain.
+                    dot_chain: false,
                 },
                 &mut self.expr_occ_results,
             );
@@ -36332,6 +36425,15 @@ impl<'a> Loader<'a> {
                             type_args,
                             recv_type,
                             paren_less: self.parsed.terms.is_paren_less_citation(outer_parse_id),
+                            // A dotted name none of the re-routes above read, stamped as
+                            // the rule-body walk stamps it, so the typer reads it whole
+                            // ([`crate::kb::typing`]'s `dotted_name_without_value`).
+                            dot_chain: dotted_citation_name(
+                                &self.parsed.symbols,
+                                &self.parsed.terms,
+                                outer_parse_id,
+                            )
+                            .is_some(),
                         }
                     };
                     node_occurrence::build_frame(self.kb, frame, &mut self.expr_occ_results);

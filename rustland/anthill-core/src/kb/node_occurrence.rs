@@ -8016,6 +8016,8 @@ pub(crate) enum BuildFrame {
         recv_type: Option<Value>,
         /// Written without parentheses — see `NodeKind::Expr`'s `paren_less`.
         paren_less: bool,
+        /// The converter's desugaring of a dot — see `NodeKind::Expr`'s `dot_chain`.
+        dot_chain: bool,
     },
     Constructor {
         span: SourceSpan,
@@ -8364,6 +8366,7 @@ fn visit_fn(
                     recv_type: None,
                     // A term carries no parse surface either.
                     paren_less: false,
+                    dot_chain: false,
                 },
                 span,
                 work,
@@ -8871,6 +8874,7 @@ pub(crate) fn build_frame(
             type_args,
             recv_type,
             paren_less,
+            dot_chain,
         } => {
             let (pos_args, named_args) = pop_apply_like(results, pos_count, named_keys);
             let expr = Expr::Apply {
@@ -8880,7 +8884,7 @@ pub(crate) fn build_frame(
                 named_args,
                 type_args,
             };
-            results.push(NodeOccurrence::new_expr_written(expr, span, None, false, paren_less));
+            results.push(NodeOccurrence::new_expr_written(expr, span, None, dot_chain, paren_less));
         }
         BuildFrame::TypeValue {
             span,

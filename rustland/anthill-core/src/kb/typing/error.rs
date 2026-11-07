@@ -160,6 +160,22 @@ pub enum TypeError {
         span: Option<Span>,
         name: Symbol,
     },
+    /// A namespace named where a value is, alone or by a dotted path. A namespace has no
+    /// value: the name resolved, and nothing it names can stand there.
+    NamespaceHasNoValue {
+        span: Option<Span>,
+        namespace: Symbol,
+    },
+    /// A dotted name that names nothing, reported once for the whole name: `prefix`, a
+    /// namespace, declares no `missing`, or — `prefix` is `None` — no `missing` is visible
+    /// from `from_scope`, the first segment.
+    DottedNameNamesNothing {
+        span: Option<Span>,
+        path: String,
+        prefix: Option<Symbol>,
+        missing: String,
+        from_scope: crate::intern::ScopeId,
+    },
     /// Constructor symbol has no declared entity-field-types entry.
     /// Reported from `check_constructor_iter` when `entity_field_types`
     /// returns None for what looked like a constructor invocation.
@@ -1710,6 +1726,21 @@ impl TypeError {
             TypeError::UnresolvedName { name, .. } => {
                 format!("unresolved name: {}", kb.local_name_of(*name))
             }
+            TypeError::NamespaceHasNoValue { namespace, .. } => {
+                crate::kb::load::namespace_has_no_value_message(kb.qualified_name_of(*namespace))
+            }
+            TypeError::DottedNameNamesNothing {
+                path,
+                prefix,
+                missing,
+                from_scope,
+                ..
+            } => crate::kb::load::dotted_name_names_nothing_message(
+                path,
+                prefix.map(|p| kb.qualified_name_of(p)),
+                missing,
+                kb.scope_display_name(*from_scope),
+            ),
             TypeError::NoConstructor { name, .. } => {
                 format!("no constructor: {}", kb.local_name_of(*name))
             }
@@ -2557,6 +2588,8 @@ impl TypeError {
         match self {
             TypeError::TypeMismatch { span, .. }
             | TypeError::UnresolvedName { span, .. }
+            | TypeError::NamespaceHasNoValue { span, .. }
+            | TypeError::DottedNameNamesNothing { span, .. }
             | TypeError::NoConstructor { span, .. }
             | TypeError::IncompleteConstruction { span, .. }
             | TypeError::UnknownApplyFunctor { span, .. }
@@ -2694,6 +2727,23 @@ impl TypeError {
                 field_name: "name".to_string(),
                 expected_type: "resolved name".to_string(),
                 actual_type: "unresolved".to_string(),
+                span: self.span(kb),
+            },
+            TypeError::NamespaceHasNoValue { namespace, .. } => LoadError::NamespaceHasNoValue {
+                namespace: kb.qualified_name_of(*namespace).to_string(),
+                span: self.span(kb),
+            },
+            TypeError::DottedNameNamesNothing {
+                path,
+                prefix,
+                missing,
+                from_scope,
+                ..
+            } => LoadError::DottedNameNamesNothing {
+                path: path.clone(),
+                prefix: prefix.map(|p| kb.qualified_name_of(p).to_string()),
+                missing: missing.clone(),
+                scope_name: kb.scope_display_name(*from_scope).to_string(),
                 span: self.span(kb),
             },
             TypeError::NoConstructor { name, .. } => LoadError::TypeMismatch {

@@ -1524,5 +1524,13 @@ pub(super) fn check_bare_ref(
             census,
         });
     }
+    // A namespace has no value. A name that is a namespace and a sort or a constructor
+    // took that reading above.
+    if kb.has_kind(sym, crate::intern::SymbolKind::Namespace) {
+        return Err(TypeError::NamespaceHasNoValue {
+            span,
+            namespace: sym,
+        });
+    }
     Err(TypeError::UnresolvedName { span, name: sym })
 }

@@ -1861,6 +1861,8 @@ mod wi_vzc2c_connective_branch_op_test;
 
 #[path = "include/wi_4nekz_dotted_equation_operand_test.rs"]
 mod wi_4nekz_dotted_equation_operand_test;
+#[path = "include/wi_40ksw_dotted_name_without_value_test.rs"]
+mod wi_40ksw_dotted_name_without_value_test;
 
 #[path = "include/wi_2sz88_entity_ctor_native_occurrence_test.rs"]
 mod wi_2sz88_entity_ctor_native_occurrence_test;

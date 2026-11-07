@@ -661,6 +661,12 @@ pub(super) fn visit_type(
                         return;
                     }
                 }
+                // A dotted name no reading above gave a value is refused once, as the name it
+                // is, in both bodies: its segments are no values to type one by one.
+                if let Some(e) = dotted_name_without_value(kb, &*env, &occ) {
+                    results.push(Err(e));
+                    return;
+                }
             }
             // Proposal 069 §3 — a compound argument a default the call takes names is
             // bound to a local first, and the call is typed under the binding: the

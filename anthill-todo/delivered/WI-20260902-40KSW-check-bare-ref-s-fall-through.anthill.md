@@ -3,9 +3,9 @@
 - id: WI-20260902-40KSW-check-bare-ref-s-fall-through
 - created: 2026-09-02T14:18:22Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-02T14:18:22Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-11-07T20:55:39Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -66,4 +66,8 @@ and a fix applied at one position only would re-open the split 4NEKZ just closed
 ### 2026-10-12T11:18:08Z — feedback — claude
 
 THE MATRIX MOVED WITH WI-20261012-RXT6S (2026-10-12, 4f282c2a): a chain that names a SORT or a free-standing ENTITY is that name's type value in an OPERATION body now, so `zz4nf.Color = 7` and `zz4nf.acct = 7` there draw one true refusal, 'eq.b (op-arg): expected Type, got Int64', and a CONSTRUCTOR past a sort, `zz4nf.Color.red = 7`, draws one about `red` where it drew three. The RULE body column is unchanged (3, 2, 2), and the NAMESPACE and NOTHING rows are unchanged in both. `wi_4nekz_dotted_equation_operand_test::the_five_other_name_kinds_still_agree_with_the_operation_body` pairs the two bodies for those two rows only. ONE MORE NAME THAT RESOLVES AND IS CALLED UNRESOLVED: an `internal` sort named by a path from another namespace — over `sort Hid { internal sort Sec … }` in `probe`, `nm(probe.Hid.Sec)` in namespace `user` says 'Sec.name: expected resolved name, got unresolved', where `import probe.Hid.Sec`, the parameter type `x: probe.Hid.Sec` and the bracket entry `Bx[V = probe.Hid.Sec]` say ''probe.Hid.Sec' is internal to 'probe.Hid' and cannot be referenced from scope …'. The ladder's rungs read the whole name under visibility (`Loader::resolve_qualified_readonly`), so a hidden const by a path is reported the same way; the companion call `probe.Hid.Sec.sx()` answers.
+
+### 2026-11-07T20:55:35Z — feedback — claude
+
+DELIVERED 2026-11-07. Re-measured on a3082618 first: the rule, constructor, sort and entity rows had closed already (4NEKZ, RXT6S, 9WVT7, QK77S); a namespace by a path (2 errors), a namespace alone (1), a path naming nothing (3, or 2 when the first segment names nothing) and an internal name by a path (the addendum's probe.Hid.Sec, a hidden const Q.hidden.x) still said 'expected resolved name, got unresolved', identically in both bodies. Now each is one error, the same in a rule body, an operation body, a const value, a constraint, a lambda, a call argument and a fired @[simp] right-hand side: '`zz.inner` is a namespace, and a namespace has no value', '`zz.nosuch.x` names nothing: the namespace `zz` declares no `nosuch`', '`nosuch.x` names nothing: no `nosuch` is visible in scope …' with the WI-1034 repair, and the import's "'Sec' is internal to 'probe.Hid'". Controls kept: a rule, a constructor and a sort by a path keep their one eq.b (op-arg) error; a bare name nothing declares keeps its refusal; a written anthill.reflect.field_access(…) keeps its second argument an argument; a field read off a const in an operation body answers. NOT CHANGED, put to the user: a member missing on a sort prefix (zz.Color.nosuch) and a field read off a value prefix in a rule body (zz.Q.origin.x, after the const-in-a-data-slot refusal) still say unresolved; a @[simp] right-hand side naming nothing or an internal name gets the loader's equation-replacement error beside this one (2 where it was 4).
 
