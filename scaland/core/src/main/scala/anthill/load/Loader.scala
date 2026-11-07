@@ -72,7 +72,7 @@ enum LoadError:
     * `fact WeakOrd[T = Red]` or `rule WeakOrd[T = Red] :- …`. An instance of a sort is a
     * provision, and the goal `WeakOrd[…]` holds where type checking finds one
     * (kernel-language.md §5.1), so such a clause states nothing either reads. */
-  case TypeApplicationHead(sort: String, data: Boolean, span: Span)
+  case TypeApplicationHead(written: String, sort: String, data: Boolean, span: Span)
   /** WI-20261029-50361 (rustland's `ClauseHeadNamesNoRelation` for a namespace) — a `fact`
     * or a `rule` clause whose head names a namespace, which holds no clauses. A head
     * reaches one only where a predicate of its own would take the namespace's name: in the
@@ -142,13 +142,13 @@ enum LoadError:
         "constructor is applied to a bracket, and a call's bracket is written before its " +
         "arguments (kernel-language.md §5.4)")
     // Rustland's `type_application_head_message`, word for word.
-    case TypeApplicationHead(sort, true, span) =>
-      span.render(s"`$sort[…]` heads a clause, which claims an instance of the sort `$sort`; " +
-        s"`$sort` declares constructors, so nothing provides it and the goal `$sort[…]` holds " +
+    case TypeApplicationHead(written, sort, true, span) =>
+      span.render(s"`$written` heads a clause, which claims an instance of the sort `$sort`; " +
+        s"`$sort` declares constructors, so nothing provides it and the goal `$written` holds " +
         s"nowhere — a type written as data stands in a relation's argument, `fact " +
-        s"holds($sort[…])` (kernel-language.md §5.1)")
-    case TypeApplicationHead(sort, false, span) =>
-      span.render(s"`$sort[…]` heads a clause, which claims an instance of the sort `$sort`; an " +
+        s"holds($written)` (kernel-language.md §5.1)")
+    case TypeApplicationHead(written, sort, false, span) =>
+      span.render(s"`$written` heads a clause, which claims an instance of the sort `$sort`; an " +
         s"instance is a provision, `provides $sort[…]`, written in the carrier's declaration or " +
         s"in a `namespace <Carrier>` entry, and the goal `$sort[…]` holds where type checking " +
         "finds one (kernel-language.md §5.1)")
@@ -1586,6 +1586,20 @@ object Loader:
         case Term.Fn(_, pos, _) if pos.nonEmpty => kb.headFunctorOf(pos(0))
         case _                                  => None
       else kb.headFunctorOf(head)
+    // A bare sort at a head, `fact WeakOrd`, is its type with every parameter open: refused as
+    // its bracket is where the head is converted (rustland's `TypeApplicationHead`, in
+    // `refuse_if_head_names_no_relation`). A bracket was refused there already, and an
+    // application in parentheses is refused as one.
+    val bareSort = named.filter(s =>
+      !equation && !fileTerms.isTypeApplication(parseHead) && kb.namesOnlyAType(s) &&
+        (kb.getTerm(head) match
+          case Term.Ref(_) | Term.Ident(_) => true
+          case Term.Fn(_, pos, named) => pos.isEmpty && named.isEmpty
+          case _ => false))
+    if bareSort.isDefined then
+      val sort = kb.resolveSym(bareSort.get)
+      errors += LoadError.TypeApplicationHead(sort, sort, kb.sortHasConstructors(bareSort.get), span)
+      return true
     named.filter(isNamespaceOnly(kb, _)) match
       case Some(ns) =>
         errors += (
@@ -3717,7 +3731,8 @@ object Loader:
         // provision states (rustland's `TypeApplicationHead`, in `refuse_bracket_on_a_callable`).
         if isTypeApp && !fileTerms.isMinted(termId) then
           if atHead && kb.hasTypeReading(resolved) then
-            errors += LoadError.TypeApplicationHead(kb.resolveSym(resolved), kb.sortHasConstructors(resolved),
+            val sort = kb.resolveSym(resolved)
+            errors += LoadError.TypeApplicationHead(s"$sort[…]", sort, kb.sortHasConstructors(resolved),
               fileTerms.spanOf(termId))
           else
             kb.bracketedName(resolved, atHead).foreach(on =>

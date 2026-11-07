@@ -985,16 +985,12 @@ fn a_bare_fact_at_namespace_level_loads_and_records_no_provision() {
   fact Holder
 end
 "#;
-    assert_eq!(
-        load_errors(&[snippet]),
-        Vec::<String>::new(),
-        "a bare `fact Holder` is an ordinary nullary fact"
-    );
-    let kb = crate::common::try_load_kb_with(snippet).expect("loads");
+    // Since WI-20261107-FDJ0E the bare sort at a head is `Holder[T = ?]`, an instance claim,
+    // refused as its bracket is, naming `provides`.
+    let errs = load_errors(&[snippet]);
+    assert_eq!(errs.len(), 1, "one refusal: {errs:?}");
     assert!(
-        !crate::common::sort_provisions(&kb)
-            .iter()
-            .any(|(_, spec)| spec == "test.wi431.type_only.Holder"),
-        "and it records no provision"
+        errs[0].contains("`Holder` heads a clause") && errs[0].contains("`provides Holder[…]`"),
+        "a bare `fact Holder` claims an instance and is refused naming `provides`: {errs:?}"
     );
 }

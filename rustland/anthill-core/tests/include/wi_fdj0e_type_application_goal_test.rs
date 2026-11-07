@@ -19,7 +19,8 @@
 //!   wi_7exey's goal rows and wi_jb6rs's `a_sort_has_one_reading_and_names_nothing_to_apply`;
 //! - the head refused (`LoadError::TypeApplicationHead`):
 //!   [`a_clause_headed_by_a_type_application_is_refused`], and the refusal rows of wi1069,
-//!   wi1106, wi_7exey, wi_s8jyf and wi_tcsgt;
+//!   wi1106, wi_7exey, wi_s8jyf and wi_tcsgt; its bare-sort arm
+//!   (`refuse_if_head_names_no_relation`): [`a_bare_sort_at_a_head_is_refused`];
 //! - an omitted element read off the provisions that answer the rest (`open_slots_said`
 //!   where the carrier's sort has no view of the spec):
 //!   [`a_witness_provision_answers_the_goal_and_the_guard`] and
@@ -289,6 +290,38 @@ fn a_clause_headed_by_a_type_application_is_refused() {
     // The advised repair for a sort with constructors: the type as data in a relation.
     let src = heads("fact holds(Box[V = Int64])\n  rule seenBox(?r) :- holds(Box[V = Int64]), ?r <=> 1");
     assert_eq!(rows(&src, "test.fdj0e.head.seenBox"), definite("1"));
+}
+
+/// A BARE SORT AT A HEAD IS ITS TYPE WITH EVERY PARAMETER OPEN, `fact WeakOrd` being `fact
+/// WeakOrd[T = ?]`, and is refused as the bracket is: a spec, qualified, as a rule, in a
+/// multi-head rule, a sort with constructors at namespace level and in its own body. It was
+/// stored as the nullary atom `WeakOrd`, which only the bare goal found — not `WeakOrd[T = ?]`,
+/// not `WeakOrd[T = Float]` — and which type checking never read: the goal held where
+/// `requires WeakOrd` is refused. A constructor's instance at a head is no sort, and loads.
+#[test]
+fn a_bare_sort_at_a_head_is_refused() {
+    for (head, sort, data) in [
+        ("fact WeakOrd", "WeakOrd", false),
+        ("fact anthill.prelude.WeakOrd", "WeakOrd", false),
+        ("rule WeakOrd :- true", "WeakOrd", false),
+        ("rule two: WeakOrd, hh(1) :- true", "WeakOrd", false),
+        ("fact Red", "Red", true),
+        ("sort Car\n    entity car\n    fact Car\n  end", "Car", true),
+    ] {
+        let errs = try_load_kb_with(&heads(head)).err().unwrap_or_else(|| panic!("`{head}` loaded clean"));
+        let want = format!("`{sort}` heads a clause, which claims an instance of the sort `{sort}`");
+        assert_eq!(errs.iter().filter(|e| e.contains(&want)).count(), 1, "`{head}`: {errs:?}");
+        let repair = match data {
+            false => format!("`provides {sort}[…]`"),
+            true => format!("`{sort}` declares constructors, so nothing provides it"),
+        };
+        assert!(errs.iter().any(|e| e.contains(&repair)), "`{head}`: {errs:?}");
+    }
+    // The advised repair for the bare sort with constructors: the type as data in a relation.
+    let src = heads("fact holds(Red)\n  rule seenRed(?r) :- holds(Red), ?r <=> 1");
+    assert_eq!(rows(&src, "test.fdj0e.head.seenRed"), definite("1"));
+    let src = heads("fact Box\n  fact red\n  rule seenBare(?r) :- Box(v: ?v), red, ?r <=> 1");
+    assert_eq!(rows(&src, "test.fdj0e.head.seenBare").len(), 1, "a constructor's instance at a head loads");
 }
 
 /// A SORT AS DATA IS NOT A HEAD: in a relation's argument, and an eponymous constructor's

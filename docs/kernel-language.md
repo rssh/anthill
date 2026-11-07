@@ -1581,8 +1581,10 @@ provision writes `provides`, which refuses an unresolved spec loudly.
 **A clause is not headed by a sort's type application.** `fact WeakOrd[T = Red]` and
 `rule WeakOrd[T = Red] :- …` are load errors naming `provides WeakOrd[…]`: an instance of a
 sort is a provision, and the goal `WeakOrd[T = Red]` holds where type checking finds one
-(§5.3), so a clause stating it would be read by nothing. A sort written as data in a
-relation's argument is not a head, `fact holds(WeakOrd[T = Red])`.
+(§5.3), so a clause stating it would be read by nothing. So is the bare sort, `fact
+WeakOrd`, which is `WeakOrd[T = ?]`. A sort with constructors is provided by nothing, and
+its refusal names a relation's argument instead: a sort written as data there is not a
+head, `fact holds(WeakOrd[T = Red])`.
 
 **A bracketed head on a relation is refused.** A bracket on an operation or a relation
 writes its type arguments (§5.4), so `fact myrel[T = Red]` declares nothing a relation

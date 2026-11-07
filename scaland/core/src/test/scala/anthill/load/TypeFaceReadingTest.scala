@@ -261,6 +261,15 @@ class TypeFaceReadingTest extends munit.FunSuite:
       |end
       |""".stripMargin
 
+  /** The rendered load errors of [[sortApps]] with `tail` written at the end of its namespace,
+    * over a fresh KB. */
+  private def errorsWith(tail: String): Seq[String] =
+    val kb = KnowledgeBase()
+    Prelude.register(kb)
+    LoadFixture.registerKernel(kb)
+    Loader.loadAll(kb, IndexedSeq(LoadFixture.parsed(sortApps.stripSuffix("end\n") + tail + "end\n",
+      "sortapp-tail.anthill"))).map(_.toString).toSeq
+
   /** A sort with no constructor of its name has ONE reading, its type: its bare name and
     * its empty bracket are one term (the canon exempting no sort), and its PARENTHESIZED
     * spelling names nothing to apply — `Shape()` and `Tag(T: ?q)` are refused in a fact
@@ -293,31 +302,23 @@ class TypeFaceReadingTest extends munit.FunSuite:
 
     // A rule head that resolves to the sort applies it, and is refused too — it mints no
     // predicate of the sort's name (§4.4; rustland's row reaches the same refusal).
-    val headErrs = {
-      val kb3 = KnowledgeBase()
-      Prelude.register(kb3)
-      LoadFixture.registerKernel(kb3)
-      Loader.loadAll(kb3, IndexedSeq(LoadFixture.parsed(
-        sortApps.stripSuffix("end\n") + "  rule Shape(1) :- holds(Shape)\nend\n", "sorthead.anthill")))
-        .map(_.toString)
-    }
+    val headErrs = errorsWith("  rule Shape(1) :- holds(Shape)\n")
     assertEquals(headErrs.count(_.contains("`Shape(…)` is an application")), 1, s"$headErrs")
 
     for decl <- Seq("fact Tag[T = Int64]", "rule Tag[T = Int64] :- true", "fact Tag[Int64]") do
-      val kb4 = KnowledgeBase()
-      Prelude.register(kb4)
-      LoadFixture.registerKernel(kb4)
-      val errs = Loader.loadAll(kb4, IndexedSeq(LoadFixture.parsed(
-        sortApps.stripSuffix("end\n") + s"  $decl\nend\n", "sorttyhead.anthill"))).map(_.toString)
+      val errs = errorsWith(s"  $decl\n")
       assertEquals(errs.count(_.contains("`Tag[…]` heads a clause")), 1, s"`$decl` is refused, once: $errs")
       assert(errs.exists(_.contains("`provides Tag[…]`")), s"`$decl` names the provision: $errs")
     // A sort with constructors is provided by nothing: the repair names a relation's argument.
-    val kb5 = KnowledgeBase()
-    Prelude.register(kb5)
-    LoadFixture.registerKernel(kb5)
-    val dataErrs = Loader.loadAll(kb5, IndexedSeq(LoadFixture.parsed(
-      sortApps.stripSuffix("end\n") + "  fact Shape[]\nend\n", "sortdatahead.anthill"))).map(_.toString)
+    val dataErrs = errorsWith("  fact Shape[]\n")
     assertEquals(dataErrs.count(_.contains("`Shape` declares constructors, so nothing provides it")), 1, s"$dataErrs")
+    // The bare sort at a head is its type with every parameter open, refused as the bracket is
+    // (rustland's bare arm of `refuse_if_head_names_no_relation`; fails with it backed out).
+    for (decl, want) <- Seq(
+        ("fact Tag", "`Tag` heads a clause"), ("rule Tag :- true", "`Tag` heads a clause"),
+        ("fact Shape", "`Shape` declares constructors")) do
+      val errs = errorsWith(s"  $decl\n")
+      assertEquals(errs.count(_.contains(want)), 1, s"`$decl` is refused, once: $errs")
   }
 
   /** Inside a field declared `anthill.reflect.Term` — or a `List` or `Option` of one — the

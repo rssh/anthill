@@ -44,10 +44,10 @@
 //! | [`a_parenthesised_head_records_no_provision`] | FAILS — the mirror defect: it banked a provision binding a spec parameter to the literal `1` |
 //! | [`an_effect_kind_registers_through_provides_only`] | FAILS on its fact leg — the fact registered the kind |
 //!
-//! STILL OUT OF REACH, and deliberately: the BARE in-sort claim (`sort X { fact Box }`,
-//! WI-365's effect-row-only spec, which has no bindings to write). It is textually
-//! identical to an ordinary nullary fact, so no surface gate separates them — and after
-//! the retirement it simply IS one. Every corpus site was bracketed.
+//! THE BARE in-sort claim (`sort X { fact Box }`, WI-365's effect-row-only spec, which has
+//! no bindings to write) was out of reach here and after the retirement simply was a nullary
+//! fact. Since WI-20261107-FDJ0E a bare sort at a head is refused as its bracket is, `Box`
+//! being `Box[…]` with every parameter open (`wi_fdj0e_type_application_goal_test`).
 
 use crate::common::{sort_provisions, try_load_kb_with};
 

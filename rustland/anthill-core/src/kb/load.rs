@@ -952,12 +952,15 @@ pub enum LoadError {
         span: Span,
     },
     /// A clause headed by a sort's type application, `fact WeakOrd[T = Red]` or `rule
-    /// WeakOrd[T = Red] :- …`. An instance of a sort is stated by a provision, and the goal
+    /// WeakOrd[T = Red] :- …`, or by the bare sort, `fact WeakOrd`, which is its type with every
+    /// parameter open. An instance of a sort is stated by a provision, and the goal
     /// `WeakOrd[…]` holds where type checking finds one (kernel-language.md §5.1), so such a
     /// clause states nothing either reads: it stored a row the goal found and type checking
     /// never did, and `WeakOrd[T = Red]` answered true where `requires WeakOrd[T = Red]` was
     /// refused.
     TypeApplicationHead {
+        /// The head as written: `Sort[…]`, or the bare `Sort`.
+        written: String,
         /// The sort, by its short name.
         sort: String,
         /// Does the sort declare constructors? Nothing provides one, so the repair differs.
@@ -3689,8 +3692,8 @@ impl LoadError {
             LoadError::BracketOnCallable { name, on, span } => {
                 format!("{}: {}", loc.format_start(*span), bracket_on_callable_message(name, *on))
             }
-            LoadError::TypeApplicationHead { sort, data, span } => {
-                format!("{}: {}", loc.format_start(*span), type_application_head_message(sort, *data))
+            LoadError::TypeApplicationHead { written, sort, data, span } => {
+                format!("{}: {}", loc.format_start(*span), type_application_head_message(written, sort, *data))
             }
             LoadError::UndefinedRuleBodyGoal { functor, span } => {
                 format!(
@@ -5568,10 +5571,10 @@ impl std::fmt::Display for LoadError {
                 span.start,
                 span.end
             ),
-            LoadError::TypeApplicationHead { sort, data, span } => write!(
+            LoadError::TypeApplicationHead { written, sort, data, span } => write!(
                 f,
                 "{} at {}..{}",
-                type_application_head_message(sort, *data),
+                type_application_head_message(written, sort, *data),
                 span.start,
                 span.end
             ),
@@ -17345,17 +17348,17 @@ pub(crate) fn sort_applied_as_data_message(sort: &str) -> String {
 /// The one wording of [`LoadError::TypeApplicationHead`]. A sort with constructors (`data`) is
 /// provided by nothing, so `provides` is no repair there: its type is data in a relation's
 /// argument.
-pub(crate) fn type_application_head_message(sort: &str, data: bool) -> String {
+pub(crate) fn type_application_head_message(written: &str, sort: &str, data: bool) -> String {
     if data {
         return format!(
-            "`{sort}[…]` heads a clause, which claims an instance of the sort `{sort}`; `{sort}` \
-             declares constructors, so nothing provides it and the goal `{sort}[…]` holds \
+            "`{written}` heads a clause, which claims an instance of the sort `{sort}`; `{sort}` \
+             declares constructors, so nothing provides it and the goal `{written}` holds \
              nowhere — a type written as data stands in a relation's argument, `fact \
-             holds({sort}[…])` (kernel-language.md §5.1)"
+             holds({written})` (kernel-language.md §5.1)"
         );
     }
     format!(
-        "`{sort}[…]` heads a clause, which claims an instance of the sort `{sort}`; an instance is \
+        "`{written}` heads a clause, which claims an instance of the sort `{sort}`; an instance is \
          a provision, `provides {sort}[…]`, written in the carrier's declaration or in a \
          `namespace <Carrier>` entry, and the goal `{sort}[…]` holds where type checking finds \
          one (kernel-language.md §5.1)"
@@ -32216,8 +32219,10 @@ impl<'a> Loader<'a> {
         // A sort's type application at a clause's head claims an instance, which only a
         // provision states ([`LoadError::TypeApplicationHead`]).
         if at_head && self.kb.has_type_reading(functor) {
+            let sort = self.kb.local_name_of(functor).to_string();
             self.errors.push(LoadError::TypeApplicationHead {
-                sort: self.kb.local_name_of(functor).to_string(),
+                written: format!("{sort}[…]"),
+                sort,
                 data: self.kb.sort_has_constructors(functor),
                 span: self.parsed.terms.span(parse_id),
             });
@@ -45385,6 +45390,24 @@ impl<'a> Loader<'a> {
         let Some(functor) = self.kb.head_functor(named_term) else {
             return false;
         };
+        // A bare sort at a head, `fact WeakOrd`, is its type with every parameter open: an
+        // instance claim, refused as its bracket is where the head is converted
+        // ([`LoadError::TypeApplicationHead`]). A bracket was refused there already, and an
+        // application in parentheses is refused as one (`SortAppliedAsData`).
+        if !equation
+            && !self.parsed.terms.is_type_application(parse_head)
+            && self.kb.is_type_value_head(functor)
+            && crate::kb::head_functor_and_arity(self.kb, &TermIdView(named_term)).is_some_and(|(_, arity)| arity == 0)
+        {
+            let sort = self.kb.local_name_of(functor).to_string();
+            self.errors.push(LoadError::TypeApplicationHead {
+                written: sort.clone(),
+                sort,
+                data: self.kb.sort_has_constructors(functor),
+                span,
+            });
+            return true;
+        }
         let Some(named) = not_a_relation(self.kb, functor) else {
             return false;
         };
