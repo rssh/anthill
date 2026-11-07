@@ -467,6 +467,11 @@ pub enum RequirementFailure {
     /// WI-20261003-QGVB1 — the requirement leaves slots unwritten, and the provisions that
     /// answer the rest name different types for them, so it says none; `account` says which.
     OpenSlotsNamedApart { account: String },
+    /// A requirement of a member a provision binds names a parameter of the member's sort
+    /// that the member's signature does not fix at the provision's types.
+    UnfixedMemberParams { goal: String, params: Vec<String> },
+    /// The provision's types fix one parameter of the bound member's sort to two types.
+    MemberParamTwice { param: String, first: String, second: String },
 }
 
 /// The clause after "which requires `{required}`" in an [`LoadError::UnsatisfiedProviderRequires`].
@@ -516,7 +521,43 @@ fn requirement_failure_clause(
              {detail}"
         ),
         RequirementFailure::OpenSlotsNamedApart { account } => format!("but {account}"),
+        RequirementFailure::UnfixedMemberParams { goal, params } => format!(
+            "at `{goal}`, which names {} — a parameter of the member's sort that its signature \
+             does not fix at this provision, so nothing chooses the type it is owed at",
+            params
+                .iter()
+                .map(|p| format!("`{p}`"))
+                .collect::<Vec<_>>()
+                .join(", "),
+        ),
+        RequirementFailure::MemberParamTwice {
+            param,
+            first,
+            second,
+        } => format!(
+            "but the provision's types fix `{param}` to `{first}` and to `{second}`, and no call \
+             of the member takes both"
+        ),
     }
+}
+
+/// The message of a [`LoadError::UnsatisfiedMemberRequires`].
+fn unsatisfied_member_requires_message(
+    carrier: &str,
+    spec: &str,
+    op: &str,
+    member: &str,
+    required: &str,
+    clause: Option<&ProvisionClause>,
+    failure: &RequirementFailure,
+) -> String {
+    format!(
+        "'{carrier}' provides '{spec}' with `{op} = {member}`, whose sort requires \
+         '{required}', {}{}{}",
+        requirement_failure_clause(carrier, required, failure),
+        requirement_failure_repair(required, failure),
+        provision_clause_note(spec, clause),
+    )
 }
 
 /// The repair an [`LoadError::UnsatisfiedProviderRequires`] advises, per failure kind.
@@ -544,9 +585,13 @@ fn requirement_failure_repair(required: &str, failure: &RequirementFailure) -> S
         RequirementFailure::OpenSlotsNamedApart { .. } => {
             " (write it in the requirement)".to_string()
         }
+        RequirementFailure::UnfixedMemberParams { .. } => {
+            " (write the member's requirement at a parameter its signature takes)".to_string()
+        }
         RequirementFailure::Cyclic { .. }
         | RequirementFailure::Refused { .. }
-        | RequirementFailure::Below { .. } => String::new(),
+        | RequirementFailure::Below { .. }
+        | RequirementFailure::MemberParamTwice { .. } => String::new(),
     }
 }
 
@@ -985,6 +1030,22 @@ pub enum LoadError {
         /// to name.
         clause: Option<ProvisionClause>,
         /// WI-20260925-4ZZKZ — why the requirement does not hold.
+        failure: RequirementFailure,
+    },
+    /// A provision binds a spec operation to a member of a third sort whose `requires`
+    /// does not hold at the provision's bindings: `Leaf provides Desc[T = Leaf, describe =
+    /// LeafDesc.describeLeaf]` with `LeafDesc requires Tag[G = L]` owes `Tag[G = Leaf]`,
+    /// which the provision's dictionary carries for the member's frame.
+    UnsatisfiedMemberRequires {
+        carrier: String,
+        spec: String,
+        /// The spec operation the binding names, by its short name.
+        op: String,
+        /// The bound member.
+        member: String,
+        required: String,
+        /// As on `UnsatisfiedProviderRequires`.
+        clause: Option<ProvisionClause>,
         failure: RequirementFailure,
     },
     /// WI-1046 (spec §6.6): a boolean operator written in a GOAL position that has no
@@ -3608,6 +3669,23 @@ impl LoadError {
                     provision_clause_note(spec, clause.as_ref()),
                     derived_row_clause(spec, derived_from.as_deref()))
             }
+            LoadError::UnsatisfiedMemberRequires {
+                carrier,
+                spec,
+                op,
+                member,
+                required,
+                clause,
+                failure,
+            } => unsatisfied_member_requires_message(
+                carrier,
+                spec,
+                op,
+                member,
+                required,
+                clause.as_ref(),
+                failure,
+            ),
             LoadError::ProvisionConditionsTooWeak {
                 carrier,
                 spec,
@@ -5364,6 +5442,23 @@ impl std::fmt::Display for LoadError {
                     derived_row_clause(spec, derived_from.as_deref())
                 )
             }
+            LoadError::UnsatisfiedMemberRequires {
+                carrier,
+                spec,
+                op,
+                member,
+                required,
+                clause,
+                failure,
+            } => f.write_str(&unsatisfied_member_requires_message(
+                carrier,
+                spec,
+                op,
+                member,
+                required,
+                clause.as_ref(),
+                failure,
+            )),
             LoadError::ProvisionConditionsTooWeak {
                 carrier,
                 spec,

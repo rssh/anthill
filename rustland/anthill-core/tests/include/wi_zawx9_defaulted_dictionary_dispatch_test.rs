@@ -36,7 +36,9 @@
 //!  * M3 — `provision_supplier`'s witness leg not asking the reader's test of the member;
 //!  * M4 — `defaulted_call_target` not reading the provider's suppliers (`fn_sym` always);
 //!  * M5 — the typer's application hint dropped;
-//!  * M6 — an uncovered binding falling through (`Ok(None)`) instead of refused;
+//!  * M6 — an uncovered binding falling through (`Ok(None)`) instead of refused (its row went
+//!    with WI-20261105-0BD56: a provision's dictionary carries the requirements of the member it
+//!    binds, so that binding enters and answers — `wi_0bd56_third_sort_member_dictionary_test`);
 //!  * M7 — `Dictionary.ops` asking every row as itself;
 //!  * M8 — a tie answered by its first candidate;
 //!  * M9 — the provider's provisions not read (its own member alone);
@@ -57,7 +59,6 @@
 //! | `a_witness_binding_reached_through_the_subtype_relation_answers_every_spelling` | M1 M9 |
 //! | `a_binding_reached_through_the_subtype_relation_brings_its_effects` | M1 M4 M9 |
 //! | `a_tie_at_a_provider_reached_through_the_subtype_relation_is_refused_at_load` | M1 M4 M8 M9 |
-//! | `a_binding_the_instance_cannot_enter_is_refused_at_load` | M1 M4 M6 M9 |
 //! | `a_witness_supplying_differently_at_two_sorts_is_refused_through_the_dictionary` | M1 M4 M5 M9 M10 M14 |
 //! | `a_witness_member_the_interpreter_cannot_run_gives_way_to_its_binding` | M1 M2 M3 M9 |
 //! | `a_witness_writing_its_member_and_a_binding_supplies_two` | M1 M4 M8 M9 M12 |
@@ -451,55 +452,6 @@ end
                 && e.contains(&format!("an instance fact binding `cmp = {ns}.animalCmp`"))
         }),
         "the provider's two suppliers, refused where the call is typed: {errs:?}",
-    );
-}
-
-/// A BINDING THE INSTANCE'S DICTIONARY CANNOT ENTER is refused at load: `Helper.cmp` reads
-/// `Helper`'s own requirement, and a `TOrd` dictionary at `AscW` carries no slot for it. Eval's
-/// dispatch through that dictionary cannot fill the frame either (`expand_dispatching_dict`);
-/// the call by name fell through and ran the default's 20 in silence.
-#[test]
-fn a_binding_the_instance_cannot_enter_is_refused_at_load() {
-    let ns = "test.zawx9.uncovered";
-    let src = format!(
-        r#"namespace {ns}
-  import anthill.prelude.{{Int64}}
-  sort TOrd
-    sort T = ?
-    operation cmp(a: T, b: T) -> Int64 = 20
-  end
-  sort Tag
-    sort T = ?
-    operation tag() -> Int64
-  end
-  sort Seven
-    entity seven
-    provides Tag[T = Seven]
-    operation tag() -> Int64 = 7
-  end
-  sort Animal
-    entity animal(n: Int64)
-  end
-  sort Dog
-    requires Animal
-    entity dog(n: Int64)
-  end
-  sort Helper
-    requires Tag[T = Seven]
-    operation cmp(a: Animal, b: Animal) -> Int64 = 30
-  end
-  sort AscW
-    provides TOrd[T = Animal, cmp = Helper.cmp]
-  end
-  operation direct() -> Int64 = TOrd.cmp(dog(1), dog(2))
-end
-"#
-    );
-    let errs = crate::common::load_errors_of(&src);
-    assert!(
-        errs.iter().any(|e| e.contains(&format!("`{ns}.Helper.cmp`, which `{ns}.AscW` supplies for it"))
-            && e.contains(&format!("the requirements of `{ns}.Helper`"))),
-        "the binding no dictionary of the instance can enter: {errs:?}",
     );
 }
 

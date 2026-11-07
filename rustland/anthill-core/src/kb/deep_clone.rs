@@ -1208,6 +1208,7 @@ impl KnowledgeBase {
             op_frame_names_cache: RefCell::new(HashMap::new()),
             member_slots_at_spec_op_cache: RefCell::new(HashMap::new()),
             provider_dict_chain_cache: RefCell::new(HashMap::new()),
+            provider_dispatch_chain_cache: RefCell::new(HashMap::new()),
             provision_layout_key_cache: plain(&self.provision_layout_key_cache),
             provision_member_cache: plain(&self.provision_member_cache),
             sort_param_pairs_cache: RefCell::new(HashMap::new()),

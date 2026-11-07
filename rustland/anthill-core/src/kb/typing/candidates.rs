@@ -2019,7 +2019,7 @@ fn note_open_at_bottom(
 /// Does `v` name the type parameter `param` anywhere: by its name, or by its variable, as a
 /// parameter is written in one clause and in another (`node_occurrence::type_in_clause_canon`).
 /// [`view_contains_type_param`]'s walk, asked of one parameter.
-fn value_names_param(kb: &KnowledgeBase, v: &Value, param: Symbol) -> bool {
+pub(super) fn value_names_param(kb: &KnowledgeBase, v: &Value, param: Symbol) -> bool {
     let var = kb.canonical_type_param_var(param).and_then(|t| match kb.get_term(t) {
         Term::Var(Var::Global(var)) => Some(*var),
         _ => None,
@@ -3166,7 +3166,7 @@ pub(super) fn candidate_provider_sub_goals(
     impl_subst: &[(Symbol, Value)],
     goal_spec: Symbol,
 ) -> Vec<SortGoal> {
-    let chain = provider_dict_entries(kb, impl_sort, Some(goal_spec)).entries_rc();
+    let chain = provider_dispatch_chain(kb, impl_sort, goal_spec);
     instantiate_provider_entries(kb, &chain, impl_subst)
 }
 

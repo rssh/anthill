@@ -3,9 +3,9 @@
 - id: WI-20261105-0BD56-a-dispatch-through-a-run-time
 - created: 2026-11-05T17:31:03Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-11-05T17:31:03Z
+- status_at: 2026-11-07T16:10:53Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -24,4 +24,8 @@ DECIDED WITH THE USER (2026-11-05), correcting the description: there is NO run-
 ### 2026-11-06T06:26:31Z — feedback — claude
 
 PLACED UNDER PROPOSAL 073 WITH THE USER 2026-11-06 (docs/proposals/073-abstract-values-are-instances.md). Re-run on 3395af90 over the description's program with `operation probe() -> Int64 = Desc.describe(leaf())` and `operation useGen() -> Int64 = gen(leaf())`, read through `rule rProbe(?r) :- unify(?r, probe())` and `rule rUse(?r) :- unify(?r, useGen())`: `rProbe` answers 7 (the call typed at `Leaf`, 6GAS1's route); `rUse` panics the CLI with the frame-push Internal error quoted above. The rule decided 2026-11-05 is 073 §5.4's function-value rule applied to a provision's member: `describe = LeafDesc.describeLeaf` reads as `describe = lambda (x: Leaf) -> LeafDesc.describeLeaf(x)`, the call in it typed at `L = Leaf` and passing `Leaf`'s `Tag`, built at load; with no `Tag` at `Leaf` the program is refused at load. It is a fifth case of 073 stage 2 (every call passes what its callee reads), one that stage 2's trace of the slot fill did not see: the program dies at the frame push, before any slot is filled. Tagged proposal-073; WI-20261105-89J6K depends on this ticket.
+
+### 2026-11-07T16:10:52Z — feedback — claude
+
+DELIVERED, by the rule decided 2026-11-05 (073 §6.3: a provision's binding to a member of a third sort is the call lambda (x: Leaf) -> LeafDesc.describeLeaf(x), typed at the provision). (1) The dictionary of a provision carries the member's requires at the provision's binding: the provider half is laid out by a DISPATCH chain (typing::provider_dispatch_chain), the provision's frame chain followed by each bound member's frame chain with the member sort's parameters read where the spec operation's parameters meet the member's (bound_member_requirements_of_row). Members' own frames are untouched, a frame being a prefix, so a where-block member reads its slots where they were; the frame push into such a member reads its slots off the dictionary (DictLayout::bound_member_slots in expand_dispatching_dict), and dictionary_covers_target says covered. useGen() answers 7 through the interpreter, viaGen 7 from a rule (both were Internal, the rule a CLI panic); a second provider with its own member answers its own (7, 109); a parametric provision gen(box(v: leaf())) 80 and nested 90; a witness 1007; a provision of two clauses at one application 3; two provisions binding each other's block members 9 and 8. (2) The load check of a provision's contract owes the members' requirements as it owes the spec's: with no Tag at Leaf the provision is refused, naming the member and Tag, with no call anywhere (LoadError::UnsatisfiedMemberRequires); a parametric provision without the condition its member needs is refused naming Tag[G = Box.V]; the advised repairs answer. From /code-review, also refused: a member requirement at a parameter of its sort the binding does not fix, and a parameter the provision's types fix twice (loaded clean before). WI-20261025-ZAWX9's refusal row went: its program now answers (30 by name on a Dog, on an Animal, through a requirement); the refusal it measured is reached by no program in the workspace (measured with a panic on it), and stays as the loud form. The 6GAS1 typer arm stays: measured, only MappedStream.map (wi_2nmxa) reaches it now, a member the provider's table holds from another sort. Spec: kernel-language §8.7, one sentence. 12 rows (wi_0bd56_third_sort_member_dictionary_test), each part backed out alone failing the rows its header names; 6GAS1's and WI-1037's rows unchanged. Full workspace 11,785 passed and 0 failed; families green on both carriers; scaland 51 + 799, no Scala file changed.
 

@@ -2577,50 +2577,60 @@ impl Interpreter {
         // Proposal 066 §7: the target's OWN frame — its sort's chain under its provision.
         let names =
             crate::kb::typing::op_owner_dict_entries(&mut self.kb, target).names(&mut self.kb);
-        let Some(slots) = layout.slots_for(&self.kb, owner) else {
+        let at: Vec<usize> = match layout.slots_for(&self.kb, owner) {
+            // The slice IS `owner`'s own chain, so its length is `synth_req_names(owner)`'s
+            // by construction — unless `owner` and the layout's spec/provider are two
+            // interned copies of one sort whose `SortRequiresInfo` differs, which
+            // `same_sort_canonical` would bridge for identity while the two chain reads
+            // disagreed. Checked rather than `debug_assert`ed because the alternative is
+            // a frame silently short of the slots its body reads.
+            //
+            // AT LEAST, not exactly (proposal 066 §7): a dispatch through a provision lays
+            // the provider half out for that provision, and a target written outside every
+            // block reads only its sort-level PREFIX — whose names every chain of the
+            // carrier shares, so binding the first `names.len()` slots is exact for it.
+            Some(slots) => {
+                if slots.len() < names.len() {
+                    return Err(EvalError::Internal(format!(
+                        "deferred dispatch frame-push: `{}` reads {} requirement slot(s) but \
+                         the dictionary layout gives it {} ({})",
+                        self.kb.qualified_name_of(owner),
+                        names.len(),
+                        slots.len(),
+                        layout.describe(&self.kb),
+                    )));
+                }
+                slots.take(names.len()).collect()
+            }
             // `resolve_op_target` can land on a THIRD sort — a same-short-name
             // default the provider merely inherits, or an instance-fact binding
-            // whose target lives in another sort. This dictionary carries nothing
-            // for such an owner: fine when it declares no `requires`, and a loud
+            // whose target lives in another sort. The dictionary of a provision that
+            // binds the member carries its frame, built at load where the provision's
+            // dictionary is (`bound_member_requirements_of_row`); for any other such owner
+            // it carries nothing: fine when it declares no `requires`, and a loud
             // internal error when it does, rather than a frame silently short of
             // the slots its body reads.
-            if names.is_empty() {
-                return Ok(reqs);
-            }
-            return Err(EvalError::Internal(format!(
-                "deferred dispatch frame-push: dispatch of `{}` landed on `{}`, whose \
-                 parent `{}` is neither the spec nor the provider of the dictionary \
-                 ({}), so its {} requirement slot(s) cannot be filled",
-                self.kb.qualified_name_of(dispatched_from),
-                self.kb.qualified_name_of(target),
-                self.kb.qualified_name_of(owner),
-                layout.describe(&self.kb),
-                names.len(),
-            )));
+            None if names.is_empty() => return Ok(reqs),
+            None => match layout
+                .bound_member_slots(&mut self.kb, target)
+                .filter(|at| at.len() == names.len())
+            {
+                Some(at) => at,
+                None => {
+                    return Err(EvalError::Internal(format!(
+                        "deferred dispatch frame-push: dispatch of `{}` landed on `{}`, whose \
+                         parent `{}` is neither the spec nor the provider of the dictionary \
+                         ({}), so its {} requirement slot(s) cannot be filled",
+                        self.kb.qualified_name_of(dispatched_from),
+                        self.kb.qualified_name_of(target),
+                        self.kb.qualified_name_of(owner),
+                        layout.describe(&self.kb),
+                        names.len(),
+                    )))
+                }
+            },
         };
-        // The slice IS `owner`'s own chain, so its length is `synth_req_names(owner)`'s
-        // by construction — unless `owner` and the layout's spec/provider are two
-        // interned copies of one sort whose `SortRequiresInfo` differs, which
-        // `same_sort_canonical` would bridge for identity while the two chain reads
-        // disagreed. Checked rather than `debug_assert`ed because the alternative is
-        // a frame silently short of the slots its body reads.
-        //
-        // AT LEAST, not exactly (proposal 066 §7): a dispatch through a provision lays
-        // the provider half out for that provision, and a target written outside every
-        // block reads only its sort-level PREFIX — whose names every chain of the
-        // carrier shares, so binding the first `names.len()` slots is exact for it.
-        if slots.len() < names.len() {
-            return Err(EvalError::Internal(format!(
-                "deferred dispatch frame-push: `{}` reads {} requirement slot(s) but \
-                 the dictionary layout gives it {} ({})",
-                self.kb.qualified_name_of(owner),
-                names.len(),
-                slots.len(),
-                layout.describe(&self.kb),
-            )));
-        }
-        for (k, name) in names.iter().enumerate() {
-            let i = slots.start + k;
+        for (name, i) in names.iter().zip(at) {
             reqs.push((
                 *name,
                 dict.sub(i).ok_or_else(|| {

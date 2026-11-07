@@ -6483,8 +6483,13 @@ fn requirement_of_spec_in_scope(kb: &KnowledgeBase, env: &TypingEnv, spec: Symbo
 /// A BINDING THE DICTIONARY DOES NOT COVER is refused: an operation of another sort whose
 /// `requires` the instance carries no slot for. Eval's dispatch through the same dictionary
 /// cannot fill its frame and raises (`expand_dispatching_dict`); left `None` here, the call
-/// fell through and ran the default in silence. The provider's OWN member uncovered keeps
-/// that `None`, the answer WI-1091 gave a member whose frame the instance does not lay out.
+/// fell through and ran the default in silence. NO PROGRAM REACHES THE REFUSAL, measured over
+/// the workspace: a provision's dictionary carries the requirements of the member it binds
+/// (`bound_member_requirements_of_row`), and a provider binding one spec's operations at two
+/// applications is refused as an ambiguous instance. It is the loud form of the silent
+/// default, kept for a binding a later change leaves uncovered. The provider's OWN member
+/// uncovered keeps that `None`, the answer WI-1091 gave a member whose frame the instance
+/// does not lay out.
 /// `None` is also the answer for a tree that names no provider.
 fn defaulted_call_target(
     kb: &mut KnowledgeBase,

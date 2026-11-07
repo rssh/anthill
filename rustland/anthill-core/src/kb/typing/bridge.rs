@@ -1150,9 +1150,15 @@ pub(crate) fn dictionary_covers_target(
     // shares. A longer slice binds slots the target never reads; a shorter one is the
     // missing frame this guards.
     let self_provision = op_owner_provision(kb, target);
-    dict_layout(kb, spec, provider, self_provision)
-        .slots_for(kb, owner)
-        .is_some_and(|slots| slots.len() >= names.len())
+    let layout = dict_layout(kb, spec, provider, self_provision);
+    match layout.slots_for(kb, owner) {
+        Some(slots) => slots.len() >= names.len(),
+        // A member of a third sort the provision binds: the provision's dictionary carries
+        // its frame ([`bound_member_requirements_of_row`]).
+        None => layout
+            .bound_member_slots(kb, target)
+            .is_some_and(|slots| slots.len() == names.len()),
+    }
 }
 
 /// Could a provision row that binds an element to `cand` answer a goal that fixed it to

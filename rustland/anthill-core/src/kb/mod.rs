@@ -2633,6 +2633,11 @@ pub struct KnowledgeBase {
     /// load that emits them.
     pub(crate) provider_dict_chain_cache:
         RefCell<HashMap<(Symbol, Symbol), Rc<Vec<crate::kb::typing::RequiresEntry>>>>,
+    /// Memoized `typing::provider_dispatch_chain` per (provider, spec): the chain above
+    /// followed by the requirements of the third-sort members the provision binds. Cleared
+    /// with the chain caches, which it extends.
+    pub(crate) provider_dispatch_chain_cache:
+        RefCell<HashMap<(Symbol, Symbol), Rc<crate::kb::typing::DispatchLayout>>>,
     /// Proposal 066 §7 — memoized `typing::provision_layout_key` per (carrier, provision)
     /// and `typing::provision_member_of` per operation. Both decode facts
     /// (`ProvidesConditionInfo`, `ProvisionMemberInfo`) and both are read per dispatch —
@@ -3151,6 +3156,7 @@ impl KnowledgeBase {
             sort_domain_declined: HashMap::new(),
             domain_value_face_declined: HashMap::new(),
             provider_dict_chain_cache: RefCell::new(HashMap::new()),
+            provider_dispatch_chain_cache: RefCell::new(HashMap::new()),
             provision_layout_key_cache: RefCell::new(HashMap::new()),
             provision_member_cache: RefCell::new(HashMap::new()),
             sort_alias_index: None,
@@ -3268,6 +3274,7 @@ impl KnowledgeBase {
         self.requires_tree_cache.borrow_mut().clear();
         self.synth_req_names_cache.borrow_mut().clear();
         self.provider_dict_chain_cache.borrow_mut().clear();
+        self.provider_dispatch_chain_cache.borrow_mut().clear();
         self.provision_layout_key_cache.borrow_mut().clear();
         self.provision_member_cache.borrow_mut().clear();
         // WI-822 LEG 1: the op-keyed half of the same layout — its names are the

@@ -516,6 +516,9 @@ fn provision_requirement_errors(
         /// added the provenance channel for exactly this wording one check over
         /// (`check_provider_operations`); this is its second reader.
         rid: crate::kb::RuleId,
+        /// The members of a third sort the provision binds, with what their frames read at
+        /// its bindings ([`bound_member_requirements_of_row`]) — owed as the spec's `requires` is.
+        members: Vec<BoundMemberRequirements>,
     }
     let mut provisions: Vec<Provision> = Vec::new();
     let rows: Vec<ProvidesRow> = provides_rows_from(kb, first_slot).collect();
@@ -579,11 +582,13 @@ fn provision_requirement_errors(
                 }
             }
         }
+        let members = bound_member_requirements_of_row(kb, &row);
         provisions.push(Provision {
             carrier: row.provider,
             spec: spec_base,
             sigma,
             rid: row.rid,
+            members,
         });
     }
 
@@ -622,7 +627,58 @@ fn provision_requirement_errors(
         // built, and why has been reported where that was found — each goal then goes
         // unresolved.
         let mut scope_of_provision: Option<Option<ProvisionScope>> = None;
-        for goal in provider_requires_subgoals(kb, p.spec, &p.sigma, &[]) {
+        // The spec's `requires` at σ, then each bound member's frame: the call the binding
+        // stands for is typed at the provision (073 §6.3), so what it passes is owed here.
+        let mut goals: Vec<(SortGoal, Option<&BoundMemberRequirements>)> =
+            provider_requires_subgoals(kb, p.spec, &p.sigma, &[])
+                .into_iter()
+                .map(|g| (g, None))
+                .collect();
+        for bound in &p.members {
+            // A member whose parameters the provision does not fix, or fixes twice, owes its
+            // requirements at no one type: refused as such, and its goals not asked.
+            let unfit = if let Some((param, first, second)) = &bound.conflicting {
+                Some(crate::kb::load::RequirementFailure::MemberParamTwice {
+                    param: kb.qualified_name_of(*param).to_string(),
+                    first: declared_type_display(kb, first),
+                    second: declared_type_display(kb, second),
+                })
+            } else if !bound.unfixed.is_empty() {
+                let goal = bound
+                    .entries
+                    .iter()
+                    .find(|e| bound.unfixed.iter().any(|&u| value_names_param(kb, &e.spec, u)))
+                    .map(|e| render_requires_entry(kb, e))
+                    .unwrap_or_default();
+                Some(crate::kb::load::RequirementFailure::UnfixedMemberParams {
+                    goal,
+                    params: bound
+                        .unfixed
+                        .iter()
+                        .map(|&u| kb.qualified_name_of(u).to_string())
+                        .collect(),
+                })
+            } else {
+                None
+            };
+            if let Some(failure) = unfit {
+                let required = bound.entries.first().map_or(p.spec, |e| e.required_sort);
+                errors.push(LoadError::UnsatisfiedMemberRequires {
+                    carrier: kb.qualified_name_of(p.carrier).to_string(),
+                    spec: kb.qualified_name_of(p.spec).to_string(),
+                    op: bound.op.clone(),
+                    member: kb.qualified_name_of(bound.member).to_string(),
+                    required: kb.qualified_name_of(required).to_string(),
+                    clause: None,
+                    failure,
+                });
+                continue;
+            }
+            for g in requires_chain_goals(kb, &bound.entries, &|_, v| v.clone()) {
+                goals.push((g, Some(bound)));
+            }
+        }
+        for (goal, member) in goals {
             let required = goal.spec_sort;
             if Some(required) == effects_runtime {
                 continue;
@@ -674,6 +730,26 @@ fn provision_requirement_errors(
                     (ResolutionResult::Resolved(_), _) => continue,
                     failed => failed,
                 };
+                if let Some(bound) = member {
+                    let clause = several.then(|| clause_of(kb, clause));
+                    errors.push(LoadError::UnsatisfiedMemberRequires {
+                        carrier: kb.qualified_name_of(p.carrier).to_string(),
+                        spec: kb.qualified_name_of(p.spec).to_string(),
+                        op: bound.op.clone(),
+                        member: kb.qualified_name_of(bound.member).to_string(),
+                        required: kb.qualified_name_of(required).to_string(),
+                        clause,
+                        failure: requirement_failure_of(
+                            kb,
+                            &failure,
+                            top.as_ref(),
+                            &goal,
+                            p.carrier,
+                            p.spec,
+                        ),
+                    });
+                    break;
+                }
                 let unentailed = unentailed_condition(kb, &failure, top.as_ref(), p.carrier);
                 // The open slots' account, where it is why: not beside a parameter of the
                 // PROVIDED spec the provision leaves unwritten, whose repair comes first.

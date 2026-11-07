@@ -1312,6 +1312,8 @@ mod wi1010_defaulted_op_instance_fact_test;
 mod wi1012_static_supplier_tie_test;
 #[path = "include/wi_zawx9_defaulted_dictionary_dispatch_test.rs"]
 mod wi_zawx9_defaulted_dictionary_dispatch_test;
+#[path = "include/wi_0bd56_third_sort_member_dictionary_test.rs"]
+mod wi_0bd56_third_sort_member_dictionary_test;
 #[path = "include/wi_7k84m_one_supplier_answer_test.rs"]
 mod wi_7k84m_one_supplier_answer_test;
 #[path = "include/wi_tsys6_own_eq_decides_test.rs"]

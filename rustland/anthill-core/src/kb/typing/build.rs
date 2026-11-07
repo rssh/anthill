@@ -2360,12 +2360,13 @@ pub(crate) fn classify_pin_or_apply_within(
 
 /// The dictionary a dispatched call carries into a member of a THIRD sort — neither the spec
 /// the call is dispatched through nor the provider the resolution found — whose sort reads
-/// requirement slots of its own: `namespace Leaf provides Desc[T = Leaf, describe =
-/// LeafDesc.describeLeaf]` with `LeafDesc requires Tag[G = L]`. The provider's dictionary
-/// carries nothing for that sort, so the call is the direct call of the member and takes the
-/// dictionary the direct call builds: the member's sort at the types the call gives the
-/// member's parameters, each read off the spec operation's parameter at the same place. `None`
-/// where the dispatched dictionary serves the member, or nothing pins it.
+/// requirement slots of its own, where the provider's dictionary carries nothing for that
+/// sort. A member a provision binds is carried (`bound_member_requirements_of_row`), so what
+/// reaches here is a member the provider's table holds from another sort (measured:
+/// `MappedStream.map` in `wi_2nmxa_denoted_provision_binding_test`). The call is then the direct call of the
+/// member and takes the dictionary the direct call builds: the member's sort at the types the
+/// call gives the member's parameters, each read off the spec operation's parameter at the
+/// same place. `None` where the dispatched dictionary serves the member, or nothing pins it.
 fn third_sort_member_dict(
     kb: &mut KnowledgeBase,
     occ: &Rc<NodeOccurrence>,

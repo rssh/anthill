@@ -599,6 +599,297 @@ pub(super) fn provider_dict_chain(
     rc
 }
 
+/// The chain the provider half of a dictionary of `spec` at `provider` is laid out by: the
+/// provider's chain under the provision ([`provider_dict_entries`], the frame of the
+/// provision's own members), followed by the requirements of the members of a third sort the
+/// provision binds ([`bound_member_requirements_of_row`]), each one the chain does not
+/// already hold.
+/// A frame is a prefix of it, so a member of the provision reads its slots where they stand
+/// and the members' requirements are read only by a dispatch landing on such a member
+/// ([`bound_member_slots`]).
+///
+/// They are owed whichever clause of the provision holds, so alternatives lay them out too.
+/// A provider binding one spec's operations at two applications is refused as an ambiguous
+/// instance; where the relation holds two rows of the provision nonetheless, a member's
+/// requirements may differ between them, and none is laid out.
+pub(crate) fn provider_dispatch_chain(
+    kb: &mut KnowledgeBase,
+    provider: Symbol,
+    spec: Symbol,
+) -> Rc<Vec<RequiresEntry>> {
+    Rc::clone(&provider_dispatch_layout(kb, provider, spec).chain)
+}
+
+/// [`provider_dispatch_chain`], with where each bound member's frame sits in it.
+pub(crate) struct DispatchLayout {
+    pub(crate) chain: Rc<Vec<RequiresEntry>>,
+    /// Each member of a third sort the provision binds, with the slot of the chain each
+    /// entry of its frame chain is, in that chain's order.
+    members: Vec<(Symbol, Vec<usize>)>,
+}
+
+fn provider_dispatch_layout(
+    kb: &mut KnowledgeBase,
+    provider: Symbol,
+    spec: Symbol,
+) -> Rc<DispatchLayout> {
+    if let Some(cached) = kb.provider_dispatch_chain_cache.borrow().get(&(provider, spec)) {
+        return cached.clone();
+    }
+    let frame = provider_dict_entries(kb, provider, Some(spec)).entries_rc();
+    let rows = provision_rows(kb, provider, spec);
+    let mut chain: Vec<RequiresEntry> = Vec::new();
+    let mut members = Vec::new();
+    if let [row] = rows.as_slice() {
+        for bound in bound_member_requirements_of_row(kb, row) {
+            if chain.is_empty() {
+                chain = (*frame).clone();
+            }
+            let mut at = Vec::with_capacity(bound.entries.len());
+            for entry in bound.entries {
+                let i = match position_in_chain(kb, &chain, &entry) {
+                    Some(i) => i,
+                    None => {
+                        chain.push(entry);
+                        chain.len() - 1
+                    }
+                };
+                at.push(i);
+            }
+            members.push((kb.canonical_sym(bound.member), at));
+        }
+    }
+    let chain = if chain.len() > frame.len() {
+        Rc::new(chain)
+    } else {
+        frame
+    };
+    let layout = Rc::new(DispatchLayout { chain, members });
+    kb.provider_dispatch_chain_cache
+        .borrow_mut()
+        .insert((provider, spec), layout.clone());
+    layout
+}
+
+/// Where `chain` holds `entry`: the same required sort at bindings structurally equal
+/// (`views_structurally_equal`, WI-486's single owner — `RequiresEntry`'s own `PartialEq`
+/// is the `resolve_cache` key and prefers a false miss, and a miss here is a duplicated
+/// slot the namer cannot split).
+fn position_in_chain(
+    kb: &KnowledgeBase,
+    chain: &[RequiresEntry],
+    entry: &RequiresEntry,
+) -> Option<usize> {
+    chain.iter().position(|e| {
+        e.required_sort == entry.required_sort
+            && crate::kb::term_view::views_structurally_equal(kb, &e.spec, &entry.spec)
+    })
+}
+
+/// A spec operation a provision binds to a member of a third sort, and what that member's
+/// frame reads there.
+pub(crate) struct BoundMemberRequirements {
+    /// The spec operation's short name, as the binding key writes it.
+    pub(crate) op: String,
+    /// The bound operation.
+    pub(crate) member: Symbol,
+    /// The member's frame chain ([`op_owner_dict_entries`]), entry for entry, at the types
+    /// the provision gives the member's parameters.
+    pub(crate) entries: Vec<RequiresEntry>,
+    /// Parameters of the member's sort that its signature does not fix at the provision
+    /// and that an entry names: the requirement would be owed at a type nothing chooses.
+    pub(crate) unfixed: Vec<Symbol>,
+    /// A parameter of the member's sort the provision's types fix to two different types,
+    /// with the two: no call of the member takes both.
+    pub(crate) conflicting: Option<(Symbol, Value, Value)>,
+}
+
+/// The rows of the relation by which `provider` provides `spec`.
+fn provision_rows(kb: &KnowledgeBase, provider: Symbol, spec: Symbol) -> Vec<ProvidesRow> {
+    let spec_canon = kb.canonical_sort_sym(spec);
+    provides_rows_of_provider(kb, provider)
+        .filter(|row| kb.canonical_sort_sym(row.spec_base) == spec_canon)
+        .collect()
+}
+
+/// The members a provision row binds in a third sort — neither the provider nor the spec —
+/// whose frame reads requirement slots, each with its requirements at the provision's binding:
+/// `Leaf provides Desc[T = Leaf, describe = LeafDesc.describeLeaf]`, with `LeafDesc requires
+/// Tag[G = L]`, gives `describeLeaf` with `Tag[G = Leaf]`. The
+/// binding is the call `lambda (x: Leaf) -> LeafDesc.describeLeaf(x)`, typed at the
+/// provision (proposal 073 §6.3), so the provision's dictionary carries what that call
+/// passes, as it carries the provision's conditions.
+///
+/// The member's type parameters are read where the spec operation's parameters, at the
+/// provision's bindings, meet the member's. Each entry is written in the provider's own
+/// parameters, as a condition is, so a dispatch instantiates it at the goal's.
+pub(super) fn bound_member_requirements_of_row(
+    kb: &mut KnowledgeBase,
+    row: &ProvidesRow,
+) -> Vec<BoundMemberRequirements> {
+    let bindings = row.bindings(kb);
+    let spec = row.spec_base;
+    let spec_qn = kb.qualified_name_of(spec).to_string();
+    let bound: Vec<(String, Symbol)> = bindings
+        .iter()
+        .filter(|(k, _)| !is_type_param_binding(kb, *k, &spec_qn))
+        .filter_map(|(k, v)| {
+            let member = binding_op_symbol(kb, v)?;
+            Some((short_name_of(kb.qualified_name_of(*k)).to_string(), member))
+        })
+        .collect();
+    if bound.is_empty() {
+        return Vec::new();
+    }
+    let sigma = spec_param_sigma(kb, spec, &bindings);
+    let effects_runtime = effects_runtime_sym(kb);
+    let mut out = Vec::new();
+    for (op, member) in bound {
+        let Some(owner) = impl_parent_of_op(kb, member) else {
+            continue;
+        };
+        if same_sort_canonical(kb, owner, row.provider) || same_sort_canonical(kb, owner, spec) {
+            continue;
+        }
+        let chain = op_owner_dict_entries(kb, member);
+        if chain.is_empty() {
+            continue;
+        }
+        // A key naming no operation of the spec is refused where the provision's coverage
+        // is checked, and binds nothing here.
+        let Some(spec_op) = kb.try_resolve_symbol(&format!("{spec_qn}.{op}")) else {
+            continue;
+        };
+        let (Some(spec_info), Some(member_info)) = (
+            crate::kb::op_info::lookup_operation_info(kb, spec_op),
+            crate::kb::op_info::lookup_operation_info(kb, member),
+        ) else {
+            debug_assert!(
+                false,
+                "a provision of `{spec_qn}` binds `{op}` to `{}`, and one of the two has no \
+                 operation record",
+                kb.qualified_name_of(member),
+            );
+            continue;
+        };
+        let owner_params: Vec<Symbol> = kb.type_param_syms_of(owner).to_vec();
+        let mut at_member: Vec<(Symbol, Value)> = Vec::new();
+        let mut conflicting = None;
+        let pairs = spec_info
+            .params
+            .iter()
+            .map(|(_, t)| t)
+            .zip(member_info.params.iter().map(|(_, t)| t))
+            .chain(std::iter::once((&spec_info.return_type, &member_info.return_type)));
+        for (spec_ty, member_ty) in pairs {
+            let at = sigma_subst_type(kb, spec_ty, &sigma);
+            bind_member_params(
+                kb,
+                &owner_params,
+                member_ty,
+                &at,
+                &mut at_member,
+                &mut conflicting,
+            );
+        }
+        let mut unfixed: Vec<Symbol> = Vec::new();
+        let mut entries = Vec::with_capacity(chain.len());
+        for e in chain.entries() {
+            if Some(e.required_sort) != effects_runtime {
+                for &p in &owner_params {
+                    if !unfixed.contains(&p)
+                        && !at_member.iter().any(|(q, _)| *q == p)
+                        && value_names_param(kb, &e.spec, p)
+                    {
+                        unfixed.push(p);
+                    }
+                }
+            }
+            entries.push(RequiresEntry {
+                required_sort: e.required_sort,
+                spec: sigma_subst_type(kb, &e.spec, &at_member),
+                supply: SupplySource::Required,
+                binder: None,
+            });
+        }
+        out.push(BoundMemberRequirements {
+            op,
+            member,
+            entries,
+            unfixed,
+            conflicting,
+        });
+    }
+    out
+}
+
+/// Bind each of `owner_params` that `member_ty` names to what `at` holds in its place: a
+/// parameter met at a leaf takes the whole of `at` there, an application of one sort on both
+/// sides is read argument by argument. A parameter met twice at two different types is
+/// recorded in `conflicting`, its first binding kept.
+fn bind_member_params(
+    kb: &KnowledgeBase,
+    owner_params: &[Symbol],
+    member_ty: &Value,
+    at: &Value,
+    out: &mut Vec<(Symbol, Value)>,
+    conflicting: &mut Option<(Symbol, Value, Value)>,
+) {
+    let param = view_ref_symbol(kb, member_ty)
+        .or_else(|| match member_ty.head(kb) {
+            ViewHead::Var(Var::Global(vid)) => kb.type_param_of_canonical_var(vid),
+            _ => None,
+        })
+        .filter(|p| owner_params.contains(p));
+    if let Some(p) = param {
+        match out.iter().find(|(q, _)| *q == p) {
+            None => out.push((p, at.clone())),
+            Some((_, first)) => {
+                if conflicting.is_none()
+                    && !crate::kb::term_view::views_structurally_equal(kb, first, at)
+                {
+                    *conflicting = Some((p, first.clone(), at.clone()));
+                }
+            }
+        }
+        return;
+    }
+    let (Some((mf, member_args)), Some((af, at_args))) =
+        (parametric_view_parts(kb, member_ty), parametric_view_parts(kb, at))
+    else {
+        return;
+    };
+    if !same_sort_canonical(kb, mf, af) {
+        return;
+    }
+    for (k, m) in &member_args {
+        let k_short = short_name_of(kb.qualified_name_of(*k));
+        if let Some((_, a)) = at_args
+            .iter()
+            .find(|(ak, _)| short_name_of(kb.qualified_name_of(*ak)) == k_short)
+        {
+            bind_member_params(kb, owner_params, m, a, out, conflicting);
+        }
+    }
+}
+
+/// The slots of `provider`'s dispatch chain under `spec` ([`provider_dispatch_chain`]) that
+/// hold the frame of `member`, a member of a third sort the provision binds — one per entry
+/// of the member's frame chain, in its order. `None` where the chain lays no such member out.
+pub(crate) fn bound_member_slots(
+    kb: &mut KnowledgeBase,
+    provider: Symbol,
+    spec: Symbol,
+    member: Symbol,
+) -> Option<Vec<usize>> {
+    let member_canon = kb.canonical_sym(member);
+    provider_dispatch_layout(kb, provider, spec)
+        .members
+        .iter()
+        .find(|(m, _)| *m == member_canon)
+        .map(|(_, at)| at.clone())
+}
+
 /// Proposal 066 §7 — the operation-scoped half of the diagnostic
 /// [`TypeError::ProvisionConditionOutOfScope`]: the provisions of `op_sym`'s carrier
 /// holding a `spec_sort` condition that `op_sym`'s own chain does not — the evidence
@@ -2066,7 +2357,7 @@ pub fn dict_layout(
         };
     }
     let spec_len = direct_requires_chain_rc(kb, spec).len();
-    let provider_len = provider_dict_entries(kb, provider, Some(spec)).len();
+    let provider_len = provider_dispatch_chain(kb, provider, spec).len();
     DictLayout {
         spec,
         provider,
@@ -2203,6 +2494,21 @@ impl DictLayout {
         } else {
             None
         }
+    }
+
+    /// The dictionary slots that hold the frame of `member`, a member of a third sort the
+    /// provision binds ([`bound_member_slots`]), one per entry of its frame chain. `None`
+    /// where the provision binds no such member, and for a self-provider's one list.
+    pub(crate) fn bound_member_slots(
+        &self,
+        kb: &mut KnowledgeBase,
+        member: Symbol,
+    ) -> Option<Vec<usize>> {
+        if same_sort_canonical(kb, self.spec, self.provider) {
+            return None;
+        }
+        let at = bound_member_slots(kb, self.provider, self.spec, member)?;
+        Some(at.into_iter().map(|i| self.spec_len + i).collect())
     }
 
     /// Render the two halves for the arity diagnostic — a bare "expected N" cannot
