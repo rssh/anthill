@@ -799,11 +799,9 @@ fn row_present_values_by_view(kb: &mut KnowledgeBase, row: &impl TermView) -> Ve
 ///                          land with v1b)
 ///   - `open(tail)`        → push `tail` (the row-tail Var) to `out`
 ///   - `merge(left, right)`→ stack both subtrees
-///   - bare `Term::Var`    → push as tail (matches the shape the WI-320
-///                          bridge fact emits: `effects_rows(?expr)` whose
-///                          inner is an unbound Var. Without this, the
-///                          bridge head decodes to an empty flat list and
-///                          effects silently vanish.)
+///   - bare `Term::Var`    → push as tail (`effects_rows(?expr)` whose inner
+///                          is an unbound Var; without this the row decodes
+///                          to an empty flat list and effects silently vanish.)
 ///
 /// **Non-wrapper tolerance** — when `ty` is not an `effects_rows` term, the
 /// function falls back to `list_to_vec(kb, ty)` for back-compat with the
@@ -838,8 +836,8 @@ pub(crate) fn effects_rows_to_flat_list(kb: &KnowledgeBase, ty: TermId) -> Vec<T
     let mut stack: Vec<TermId> = vec![expr];
     while let Some(node) = stack.pop() {
         match kb.get_term(node) {
-            // Bare Var inside effects_rows is an open-row tail (e.g. the
-            // WI-320 bridge fact head shape `effects_rows(?expr)`). Treat
+            // Bare Var inside effects_rows is an open-row tail
+            // (`effects_rows(?expr)`). Treat
             // as if wrapped in `open(tail = ?expr)` — pushing it to `out`
             // keeps the row-tail visible to downstream readers.
             Term::Var(_) => out.push(node),

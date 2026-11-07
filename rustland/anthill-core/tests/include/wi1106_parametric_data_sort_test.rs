@@ -96,11 +96,11 @@ fn errors(src: &str) -> Vec<String> {
 /// The refusal of a clause headed by `sort`'s type application (WI-20261107-FDJ0E): such a
 /// clause states an instance, so it files nothing — it does not load. Its repair is a
 /// provision for a spec, and a relation's argument for a sort with constructors (`data`),
-/// which nothing provides.
+/// which provides itself.
 fn assert_head_refused(errs: &[String], sort: &str, data: bool) {
     let repair = match data {
         false => format!("`provides {sort}[…]`"),
-        true => format!("`{sort}` declares constructors, so nothing provides it"),
+        true => format!("`{sort}` declares constructors, so it provides itself"),
     };
     assert!(
         errs.iter().any(|e| e.contains(&format!("`{sort}[…]` heads a clause")) && e.contains(&repair)),

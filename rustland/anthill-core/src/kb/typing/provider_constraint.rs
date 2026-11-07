@@ -81,8 +81,9 @@ fn resolved_instance(kb: &mut KnowledgeBase, goal: SortGoal) -> InstanceVerdict 
 /// provision, a conditional provision whose condition holds — by the search a rule's guard
 /// reads ([`instance_at_carrier`]). A spec read at a carrier parameter waits until the
 /// carrier is known (`WeakOrd[T = ?t]`, the bare `WeakOrd`); a sort with no carrier parameter
-/// is asked at its written elements, each known, and holds nowhere when nothing provides it
-/// (`Pair[A = Int64, B = Int64]`).
+/// is asked at its written elements, each known: one with constructors, or with no type
+/// parameter, provides itself, as a refinement clause is discharged (`Pair[A = Int64, B =
+/// Int64]`, `Blue`), and a spec nothing provides fails (`Two[A = Int64, B = Int64]`).
 pub(crate) fn type_application_goal(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
@@ -121,9 +122,6 @@ pub(crate) fn type_application_goal(
         }
         let ty = ty.clone();
         return instance_at_carrier(kb, subst, &ty, &instance);
-    }
-    if provides_rows_of_spec(kb, spec).next().is_none() {
-        return InstanceVerdict::Refuted;
     }
     if written.iter().any(|(_, value)| mentions_unbound(kb, value)) {
         return InstanceVerdict::Suspend;

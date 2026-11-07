@@ -111,12 +111,12 @@ fn assert_head_refused(errs: &[String], sort: &str) {
     );
 }
 
-/// The same refusal over a sort with constructors, which nothing provides: its repair is a
+/// The same refusal over a sort with constructors, which provides itself: its repair is a
 /// relation's argument.
 fn assert_data_head_refused(errs: &[String], sort: &str) {
     assert!(
         errs.iter().any(|e| e.contains(&format!("`{sort}[…]` heads a clause"))
-            && e.contains(&format!("`{sort}` declares constructors, so nothing provides it"))),
+            && e.contains(&format!("`{sort}` declares constructors, so it provides itself"))),
         "a clause headed by `{sort}[…]` is refused naming a relation's argument: {errs:?}"
     );
 }

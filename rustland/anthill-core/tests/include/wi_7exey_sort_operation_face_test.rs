@@ -117,13 +117,12 @@ fn the_requirement_and_the_call_both_work_in_both_orders() {
 /// plain symbol, where the clause converter and the query converter head it by the face, so
 /// it was the operation's call — refused for labels the operation does not have. The
 /// CONTROL is the spec alone. The same walk headed an eponymous entity's bracket goal by the
-/// constructor; such a sort has constructors, so nothing provides it and the goal answers
-/// nothing — that is the last case.
+/// constructor; such a sort has constructors, so it provides itself and the goal holds at
+/// every binding written, waiting at one left open — that is the last case.
 ///
 /// BACKED OUT: GOAL FACE — the pair's two orders are refused, "named argument 'T' names
-/// no parameter of this operation" (measured alone); NO FACE and FACE FOR CONSTRUCTORS fail
-/// it too. The control passes, and so does the eponymous entity's case, which answers
-/// nothing either way.
+/// no parameter of this operation" (measured alone, before a sort with constructors held as
+/// a goal); NO FACE and FACE FOR CONSTRUCTORS fail it too. The control passes.
 #[test]
 fn a_bracket_goal_is_the_sorts_atom_in_both_orders() {
     let spec = "  sort Pair\n    sort T = ?\n    sort U = ?\n  end\n";
@@ -152,8 +151,9 @@ fn a_bracket_goal_is_the_sorts_atom_in_both_orders() {
     let eponymous = "  sort Pair\n    sort T = ?\n    sort U = ?\n    entity Pair(n: Int64)\n  end\n";
     let mut kb = load_kb_with(&program(eponymous, &format!("  import anthill.prelude.String\n{goals}")));
     for rule in ["inOrder", "reversed", "other"] {
-        assert_eq!(answers(&mut kb, rule), Vec::<bool>::new(), "an eponymous entity's sort: `{rule}`");
+        assert_eq!(answers(&mut kb, rule), [true], "an eponymous entity's sort provides itself: `{rule}`");
     }
+    assert_eq!(answers(&mut kb, "open"), [false], "an eponymous entity's sort: `open` waits for `?u`");
 }
 
 /// A BARE `Positive` in a data context is the OPERATION (§4.4: the context's own reading

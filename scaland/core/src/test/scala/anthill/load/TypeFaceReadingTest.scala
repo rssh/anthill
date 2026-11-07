@@ -311,7 +311,7 @@ class TypeFaceReadingTest extends munit.FunSuite:
       assert(errs.exists(_.contains("`provides Tag[…]`")), s"`$decl` names the provision: $errs")
     // A sort with constructors is provided by nothing: the repair names a relation's argument.
     val dataErrs = errorsWith("  fact Shape[]\n")
-    assertEquals(dataErrs.count(_.contains("`Shape` declares constructors, so nothing provides it")), 1, s"$dataErrs")
+    assertEquals(dataErrs.count(_.contains("`Shape` declares constructors, so it provides itself")), 1, s"$dataErrs")
     // The bare sort at a head is its type with every parameter open, refused as the bracket is
     // (rustland's bare arm of `refuse_if_head_names_no_relation`; fails with it backed out).
     for (decl, want) <- Seq(

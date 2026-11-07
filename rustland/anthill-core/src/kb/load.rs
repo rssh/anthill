@@ -963,7 +963,7 @@ pub enum LoadError {
         written: String,
         /// The sort, by its short name.
         sort: String,
-        /// Does the sort declare constructors? Nothing provides one, so the repair differs.
+        /// Does the sort declare constructors? One provides itself, so the repair differs.
         data: bool,
         /// Where the head is written.
         span: Span,
@@ -15537,7 +15537,7 @@ const KERNEL_FUNCTORS: &[(&str, &str)] = &[("SortAlias", "SortAlias"), ("meta", 
 /// This function IS the bootstrap: kernel vocabulary, stdlib scope hierarchy
 /// (`register_stdlib_scopes`), builtin tags
 /// (`KnowledgeBase::register_builtin_tags` — `pub(crate)`, and this is its
-/// only caller), the `TermView` field keys, and the WI-320 bridge fact. Two
+/// only caller), and the `TermView` field keys. Two
 /// rules cover every caller:
 ///
 /// 1. **About to load? Do NOT call this.** Every load entry point — [`load_all`],
@@ -15557,9 +15557,7 @@ const KERNEL_FUNCTORS: &[(&str, &str)] = &[("SortAlias", "SortAlias"), ("meta", 
 /// reaches a load entry point already bootstrapped. Every step guards itself:
 /// `define_qualified_only` returns the existing symbol, `register_stdlib_scopes`
 /// early-returns once `anthill` exists, `register_builtin_tag` re-resolves and
-/// re-inserts the same tag, and `emit_effects_runtime_bridge_fact` early-returns
-/// — the one step that would otherwise DUPLICATE, since
-/// `assert_rule_debruijn_with_nodes` does not consult `fact_dedup`.
+/// re-inserts the same tag.
 ///
 /// # A KB without the prelude (WI-969)
 ///
@@ -15636,114 +15634,6 @@ pub fn register_prelude(kb: &mut KnowledgeBase) {
     ] {
         kb.intern(k);
     }
-    // WI-320 (proposal 045 §2.0.1) — emit the EffectsRuntime ↔ effects_rows
-    // bridge fact. Lives here in Rust (not in stdlib/effects-runtime.anthill)
-    // because surface `_type` doesn't admit entity-construction terms like
-    // `effects_rows(?)` in type-arg position — that position is an
-    // `application` (the `parameterized_type`/`instantiation_term` rules
-    // were merged into one `application` rule under WI-311), and
-    // `application` carries a type-arg list, not a value-position
-    // entity-construction expression. The fact registers any
-    // `effects_rows(...)`-shape Type as a valid `EffectsRuntime[Effects]`
-    // binding — the kind discrimination for the `effects E = ? requires
-    // EffectsRuntime[E]` desugaring.
-    emit_effects_runtime_bridge_fact(kb);
-}
-
-/// Emit the WI-320 bridge fact:
-/// `EffectsRuntime[Effects = effects_rows(effects_expr = ?fresh)]`.
-///
-/// Shape-analogous to `fact Effect[T = Modify[?]]` in effects.anthill — both
-/// register a parameterized-sort-instantiation pattern as a satisfiable
-/// goal — but emitted in Rust because the surface grammar's `_type` rule
-/// does not admit entity-construction terms like `effects_rows(?)` in
-/// type-arg position. WI-922: it is indexed exactly like any other fact —
-/// `ClauseKind::Fact` plus `by_domain[EffectsRuntime]`, the domain carrying
-/// the intent (a statement about `EffectsRuntime`). It used to be filed under
-/// a *kind* of `EffectsRuntime`, which no other clause in the KB did. See
-/// proposal 045 §2.0.1.
-///
-/// **Idempotency** — `register_prelude` is called more than once on the same KB
-/// whenever that KB is loaded into more than once (`load_stdlib` then
-/// `load_all` into a live KB, or two `load_all`s), since every load entry point
-/// bootstraps. Until WI-967 it was re-entered far more often than that: the
-/// "house sequence" at 172 files pre-registered and then called `load_all`,
-/// which re-entered `register_prelude` itself. Those caller-side lines are gone;
-/// this guard is still required for the loaded-twice case.
-/// `assert_rule_debruijn_with_nodes` does
-/// NOT consult `fact_dedup` (only `assert_fact` does), so an unguarded second
-/// call duplicates the rule entry in `by_sort` / `rules_by_functor` / `by_domain`
-/// / `discrim`. We therefore early-return when `rules_by_functor[EffectsRuntime]`
-/// is non-empty — at prelude-bootstrap time the bridge is the only fact
-/// with this functor, so a non-empty entry means the bridge is already
-/// installed.
-fn emit_effects_runtime_bridge_fact(kb: &mut KnowledgeBase) {
-    // Resolve the symbols. Both are unconditionally pre-registered by
-    // `register_stdlib_scopes` above (`TypeExtractor.EffectsRows` and
-    // `EffectsRuntime`). A missing symbol here means
-    // `register_stdlib_scopes` was bypassed or its definitions were
-    // accidentally removed — a serious bootstrap regression. Per CLAUDE.md
-    // (`avoid fallbacks, better know about errors early`) we panic with a
-    // clear message rather than silently skipping the bridge (which would
-    // leave the `requires EffectsRuntime[E]` desugaring undischargeable and
-    // surface as a confusing "requires unmet" error at every effect-using
-    // operation).
-    let er_sort_sym = kb
-        .try_resolve_symbol("anthill.prelude.EffectsRuntime")
-        .expect(
-            "WI-320 bootstrap invariant: anthill.prelude.EffectsRuntime symbol \
-         pre-registered by register_stdlib_scopes — see kb/load.rs",
-        );
-    let effects_rows_sym = kb
-        .try_resolve_symbol("anthill.prelude.TypeExtractor.EffectsRows")
-        .expect(
-            "WI-320 bootstrap invariant: anthill.prelude.TypeExtractor.EffectsRows symbol \
-         pre-registered by register_stdlib_scopes — see kb/load.rs",
-        );
-
-    // Idempotency guard — see doc-comment above. The bridge is the only
-    // rule with EffectsRuntime as its head functor at prelude bootstrap,
-    // so a non-empty `rules_by_functor` entry means it is already installed.
-    if kb.rules_by_functor_iter(er_sort_sym).next().is_some() {
-        return;
-    }
-
-    let effects_field_sym = kb.intern("Effects");
-    let effects_expr_field_sym = kb.intern("effects_expr");
-
-    // The inner wildcard — built as a Global var that
-    // `assert_rule_debruijn_with_nodes` closes to `DeBruijn(0)` at rule
-    // finalization. The name `expr` is for
-    // diagnostic display only (rendered as `?expr` by the pretty-printer's
-    // sigil convention); equality / hash-cons key on VarId uses `id` only.
-    let expr_var_name = kb.intern("expr");
-    let expr_vid = kb.fresh_var(expr_var_name);
-    let expr_var_term = kb.alloc(Term::Var(Var::Global(expr_vid)));
-
-    // Build `effects_rows(effects_expr = ?expr)`.
-    let effects_rows_term = kb.alloc(Term::Fn {
-        functor: effects_rows_sym,
-        pos_args: SmallVec::new(),
-        named_args: SmallVec::from_slice(&[(effects_expr_field_sym, expr_var_term)]),
-    });
-
-    // Build the head: `EffectsRuntime(Effects = effects_rows(effects_expr = ?expr))`.
-    let head = kb.alloc(Term::Fn {
-        functor: er_sort_sym,
-        pos_args: SmallVec::new(),
-        named_args: SmallVec::from_slice(&[(effects_field_sym, effects_rows_term)]),
-    });
-
-    // Assert via the occurrence-native DeBruijn path to close the Global var to
-    // a DeBruijn — fact = rule with empty body (empty occurrence body). WI-922:
-    // the clause KIND is `Fact`; `EffectsRuntime` is what the fact is ABOUT and
-    // stays as its domain and its head functor. (The comment here used to
-    // justify filing it under `EffectsRuntime` as "the same convention as the
-    // stdlib's `fact Effect[T = Modify[?]]`". There is no such convention: a
-    // source `fact` has always been filed under the `Fact` tag — `Fact.sort` is
-    // `None` at the only site that builds one — and no `fact Effect[…]` remains
-    // in the stdlib.)
-    kb.assert_rule_debruijn_with_nodes(head, vec![], ClauseKind::Fact, er_sort_sym, None);
 }
 
 /// WI-719: register one prelude constructor (`nil`/`cons`/`none`/`some`) as a
@@ -17345,16 +17235,16 @@ pub(crate) fn sort_applied_as_data_message(sort: &str) -> String {
     )
 }
 
-/// The one wording of [`LoadError::TypeApplicationHead`]. A sort with constructors (`data`) is
-/// provided by nothing, so `provides` is no repair there: its type is data in a relation's
-/// argument.
+/// The one wording of [`LoadError::TypeApplicationHead`]. A sort with constructors (`data`)
+/// provides itself, so the goal holds without the clause and `provides` is no repair there: its
+/// type is data in a relation's argument.
 pub(crate) fn type_application_head_message(written: &str, sort: &str, data: bool) -> String {
     if data {
         return format!(
             "`{written}` heads a clause, which claims an instance of the sort `{sort}`; `{sort}` \
-             declares constructors, so nothing provides it and the goal `{written}` holds \
-             nowhere — a type written as data stands in a relation's argument, `fact \
-             holds({written})` (kernel-language.md §5.1)"
+             declares constructors, so it provides itself, as type checking reads its \
+             `requires`, and the clause states nothing more — a type written as data stands in \
+             a relation's argument, `fact holds({written})` (kernel-language.md §5.1)"
         );
     }
     format!(
@@ -43545,8 +43435,13 @@ impl<'a> Loader<'a> {
         let parent_domain = self.current_domain();
         self.emit_own_descriptions(ns_domain, &n.descriptions, parent_domain);
 
-        // Assert namespace as a fact — a namespace is its own domain.
-        self.kb.assert_fact(ns_term, ns_sort, ns_domain, None);
+        // Assert namespace as a fact — a namespace is its own domain. Not a type's secondary
+        // entry (`namespace Type … end` beside `sort Type = ?`): its name is the sort, and a
+        // clause headed by a sort states an instance no goal reads, the goal being a type
+        // check (`LoadError::TypeApplicationHead`, WI-20261107-FDJ0E).
+        if !self.kb.has_type_reading(ns_domain) {
+            self.kb.assert_fact(ns_term, ns_sort, ns_domain, None);
+        }
 
         // Set scope to namespace for member resolution
         self.current_scope = ns_scope;
@@ -50938,17 +50833,12 @@ impl<'a> Loader<'a> {
     /// distinct from what a hand-written `requires EffectsRuntime[Effects = E]`
     /// lowers to (which routes through convert_instantiation_term →
     /// convert_type_value and produces a `Term::Ref(E_sym)` value, not the
-    /// SortAlias Var). Both shapes happen to unify against the bridge fact
-    /// head `EffectsRuntime[Effects = effects_rows(?expr)]` — the Var/Ref
-    /// query-side binds to the effects_rows subterm via the discrim tree's
-    /// standard Var-skip path — but they are NOT interchangeable Terms,
-    /// despite the symmetry the surface syntax suggests.
+    /// SortAlias Var). They are NOT interchangeable Terms, despite the symmetry
+    /// the surface syntax suggests.
     fn infer_effects_row_requires(&mut self, o: &Operation) -> Vec<TermId> {
         // EffectsRuntime is unconditionally pre-registered by
-        // `register_stdlib_scopes` (and the bridge fact emission at
-        // `emit_effects_runtime_bridge_fact` `.expect()`s the same symbol).
-        // A missing symbol here is the same bootstrap regression as the
-        // bridge-fact path — surface it loudly rather than silently dropping
+        // `register_stdlib_scopes`. A missing symbol here is a bootstrap
+        // regression — surface it loudly rather than silently dropping
         // every operation's auto-requires (which would mask the upstream
         // failure behind confusing per-operation 'requires unmet' errors).
         // Matches code-review #9's policy from commit 9ed183d.

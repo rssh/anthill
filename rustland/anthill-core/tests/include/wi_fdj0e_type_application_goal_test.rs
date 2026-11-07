@@ -26,8 +26,10 @@
 //!   [`a_witness_provision_answers_the_goal_and_the_guard`] and
 //!   [`an_element_written_as_a_variable_is_bound`] (both wait at `Teal`),
 //!   [`no_provider_fails_the_goal_and_the_guard`] (both wait at `Float`);
-//! - a carrier holding a variable waits (the `value_deep_ground` gate):
-//!   [`an_unknown_carrier_waits`] (`Store[State = Buf[T = ?x]]` failed).
+//! - a carrier holding a variable waits (the unbound-variable gate):
+//!   [`an_unknown_carrier_waits`] (`Store[State = Buf[T = ?x]]` failed);
+//! - a sort with no carrier parameter asked of the resolver, not refuted where nothing
+//!   provides it: [`a_sort_that_provides_itself_holds`] and wi_7exey's eponymous case.
 //!
 //! [`a_sort_as_data_is_not_a_head`] passes under each, by design, and
 //! [`no_provider_fails_the_goal_and_the_guard`] passes with the goal's search backed out: no
@@ -234,9 +236,32 @@ fn with_tail(src: &str, tail: &str) -> String {
     format!("{}{tail}end\n", src.strip_suffix("end\n").expect("the namespace closes last"))
 }
 
-/// A QUERY IS THE SAME CHECK as the goal in a rule body. The effect-row anchor's rows pass
-/// with the goal's search backed out too, by the loader's bridge fact (WI-320), which the
-/// search no longer reads.
+/// A SORT THAT PROVIDES ITSELF HOLDS, as type checking reads its `requires`: one with
+/// constructors (`Red`, `Pair[A = Int64, B = Int64]`, an eponymous `Box[V = Int64]`) or with no
+/// type parameter, whose clause is discharged as a refinement is. A spec with parameters and no
+/// constructors that nothing provides fails (`Two[A = Int64, B = Int64]`), and its `requires`
+/// at a call is refused, where `requires Red` loads. Before, the goal failed for all four.
+#[test]
+fn a_sort_that_provides_itself_holds() {
+    let src = heads(
+        "sort Two\n    sort A = ?\n    sort B = ?\n  end\n  \
+         rule redHolds(?r) :- Red, ?r <=> 1\n  rule pairHolds(?r) :- Pair[A = Int64, B = Int64], ?r <=> 1\n  \
+         rule boxHolds(?r) :- Box[V = Int64], ?r <=> 1\n  rule twoHolds(?r) :- Two[A = Int64, B = Int64], ?r <=> 1",
+    );
+    for rel in ["redHolds", "pairHolds", "boxHolds"] {
+        assert_eq!(rows(&src, &format!("test.fdj0e.head.{rel}")), definite("1"), "`{rel}`");
+    }
+    assert_eq!(rows(&src, "test.fdj0e.head.twoHolds"), vec![], "`twoHolds`");
+    let call = |req: &str| {
+        with_tail(&src, &format!("  operation needs() -> Int64 requires {req} = 1\n  operation callN() -> Int64 = needs()\n"))
+    };
+    assert!(try_load_kb_with(&call("Red")).is_ok(), "`requires Red` is discharged at a call");
+    let refused = try_load_kb_with(&call("Two[A = Int64, B = Int64]")).err().expect("`requires Two[…]` is refused");
+    assert!(refused.iter().any(|e| e.contains("no impl provides")), "{refused:?}");
+}
+
+/// A QUERY IS THE SAME CHECK as the goal in a rule body, the effect-row anchor's rows
+/// included (the loader's bridge fact that answered them by an SLD match is removed).
 #[test]
 fn a_query_is_the_same_check() {
     let mut kb = load_kb_with(ORDERED);
@@ -262,7 +287,7 @@ fn a_query_is_the_same_check() {
 
 /// A CLAUSE HEADED BY A TYPE APPLICATION IS REFUSED: a spec's bracket, by name and by position,
 /// qualified, as a rule and in a multi-head rule, naming `provides`; a sort with constructors
-/// — `Pair`, an eponymous sort's type face — which nothing provides, naming a relation's
+/// — `Pair`, an eponymous sort's type face — which provides itself, naming a relation's
 /// argument instead, and that advised repair loads and answers. Type checking never read such
 /// a clause, so `WeakOrd[T = Red]` answered true from it where `requires WeakOrd[T = Red]` is
 /// refused.
@@ -283,7 +308,7 @@ fn a_clause_headed_by_a_type_application_is_refused() {
         assert_eq!(errs.iter().filter(|e| e.contains(&want)).count(), 1, "`{head}`: {errs:?}");
         let repair = match data {
             false => format!("`provides {sort}[…]`"),
-            true => format!("`{sort}` declares constructors, so nothing provides it"),
+            true => format!("`{sort}` declares constructors, so it provides itself"),
         };
         assert!(errs.iter().any(|e| e.contains(&repair)), "`{head}`: {errs:?}");
     }
@@ -313,7 +338,7 @@ fn a_bare_sort_at_a_head_is_refused() {
         assert_eq!(errs.iter().filter(|e| e.contains(&want)).count(), 1, "`{head}`: {errs:?}");
         let repair = match data {
             false => format!("`provides {sort}[…]`"),
-            true => format!("`{sort}` declares constructors, so nothing provides it"),
+            true => format!("`{sort}` declares constructors, so it provides itself"),
         };
         assert!(errs.iter().any(|e| e.contains(&repair)), "`{head}`: {errs:?}");
     }
@@ -322,6 +347,31 @@ fn a_bare_sort_at_a_head_is_refused() {
     assert_eq!(rows(&src, "test.fdj0e.head.seenRed"), definite("1"));
     let src = heads("fact Box\n  fact red\n  rule seenBare(?r) :- Box(v: ?v), red, ?r <=> 1");
     assert_eq!(rows(&src, "test.fdj0e.head.seenBare").len(), 1, "a constructor's instance at a head loads");
+}
+
+/// NO CLAUSE THE LOADER FILES IS HEADED BY A TYPE a program can name. The standard library
+/// load filed three: the `EffectsRuntime[Effects = effects_rows(?)]` bridge fact, and the
+/// clause each of `namespace Type` and `namespace Symbol` — secondary entries of a sort —
+/// filed under its own name, which answered the goals `Type` and `Symbol` true. Both are gone;
+/// what is left is the kernel's `Constraint` reflection facts, a meta-sort no scope names.
+/// Fails with either removal backed out.
+#[test]
+fn no_clause_of_the_standard_library_is_headed_by_a_type() {
+    use anthill_core::kb::term_view::{TermView, ViewHead};
+    let kb = crate::common::load_stdlib_kb();
+    let mut heads: Vec<String> = kb
+        .live_rule_ids()
+        .into_iter()
+        .filter_map(|rid| match kb.rule_head_value(rid).head(&kb) {
+            ViewHead::Functor { functor, .. } if kb.is_type_value_head(functor) => {
+                Some(kb.qualified_name_of(functor).to_string())
+            }
+            _ => None,
+        })
+        .collect();
+    heads.sort();
+    heads.dedup();
+    assert_eq!(heads, ["Constraint"], "the clauses headed by a type");
 }
 
 /// A SORT AS DATA IS NOT A HEAD: in a relation's argument, and an eponymous constructor's

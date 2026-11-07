@@ -144,9 +144,9 @@ enum LoadError:
     // Rustland's `type_application_head_message`, word for word.
     case TypeApplicationHead(written, sort, true, span) =>
       span.render(s"`$written` heads a clause, which claims an instance of the sort `$sort`; " +
-        s"`$sort` declares constructors, so nothing provides it and the goal `$written` holds " +
-        s"nowhere — a type written as data stands in a relation's argument, `fact " +
-        s"holds($written)` (kernel-language.md §5.1)")
+        s"`$sort` declares constructors, so it provides itself, as type checking reads its " +
+        s"`requires`, and the clause states nothing more — a type written as data stands in " +
+        s"a relation's argument, `fact holds($written)` (kernel-language.md §5.1)")
     case TypeApplicationHead(written, sort, false, span) =>
       span.render(s"`$written` heads a clause, which claims an instance of the sort `$sort`; an " +
         s"instance is a provision, `provides $sort[…]`, written in the carrier's declaration or " +

@@ -1582,9 +1582,9 @@ provision writes `provides`, which refuses an unresolved spec loudly.
 `rule WeakOrd[T = Red] :- …` are load errors naming `provides WeakOrd[…]`: an instance of a
 sort is a provision, and the goal `WeakOrd[T = Red]` holds where type checking finds one
 (§5.3), so a clause stating it would be read by nothing. So is the bare sort, `fact
-WeakOrd`, which is `WeakOrd[T = ?]`. A sort with constructors is provided by nothing, and
-its refusal names a relation's argument instead: a sort written as data there is not a
-head, `fact holds(WeakOrd[T = Red])`.
+WeakOrd`, which is `WeakOrd[T = ?]`. A sort with constructors provides itself, so the
+clause states nothing more, and its refusal names a relation's argument instead: a sort
+written as data there is not a head, `fact holds(WeakOrd[T = Red])`.
 
 **A bracketed head on a relation is refused.** A bracket on an operation or a relation
 writes its type arguments (§5.4), so `fact myrel[T = Red]` declares nothing a relation
@@ -2674,7 +2674,8 @@ the last by `Pair`'s conditional provision, and `WeakOrd[T = Float]` does not; s
 cmp1(?c) :- WeakOrd[T = Int64], WeakOrd.compare(1, 5, ?c)` gives `-1`. An element written as
 a variable is bound to the one the provision writes, `Sp[C = Red, P = ?p]` binding `?p`, and
 a goal whose carrier is not known waits until it is, `WeakOrd[T = ?t]` and the bare
-`WeakOrd` alike.
+`WeakOrd` alike. A sort with constructors, or with no type parameter, provides itself, as
+its `requires` clause is discharged: `Pair[A = Int64, B = Int64]` holds.
 
 Each element a guard writes selects the instance: `Sp[C = A, P = Int64]` reads the
 provision at `P = Int64`. A guard at a spec with a carrier at two parameters names both,
