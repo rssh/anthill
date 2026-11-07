@@ -346,8 +346,8 @@ namespace test.wi749loud2
 end
 "#;
     for (src, said) in [
-        (NO_SUCH_MEMBER, ["`test.wi749loud1.Queen.nosuch.isEmpty` names nothing", "the sort `test.wi749loud1.Queen` declares no `nosuch`"]),
-        (NOTHING_IN_SCOPE, ["`nosuchns.nosuchrule.isEmpty` names nothing", "no `nosuchns`"]),
+        (NO_SUCH_MEMBER, ["`test.wi749loud1.Queen.nosuch` names nothing", "the sort `test.wi749loud1.Queen` declares no `nosuch`"]),
+        (NOTHING_IN_SCOPE, ["`nosuchns.nosuchrule` names nothing", "no `nosuchns`"]),
     ] {
         let errs = try_load_kb_with(src)
             .err()

@@ -11,7 +11,7 @@
 //! |---|---|---|
 //! | `zz.inner = 7` | 2 × "unresolved" | 1, `zz.inner` is a namespace |
 //! | `zz = 7` | 1 × "unresolved" | 1, `zz` is a namespace |
-//! | `zz.nosuch.x = 7` | 3 × "unresolved" | 1, `zz` declares no `nosuch` |
+//! | `zz.nosuch.x = 7` | 3 × "unresolved" | 1, `zz.nosuch` names nothing: `zz` declares no `nosuch` |
 //! | `nosuch.x = 7` | 2 × "unresolved" | 1, no `nosuch` is visible |
 //! | `zz.Q.Sec`, `zz.Q.hidden.x` | 1 / 2 × "unresolved" | 1, internal to `zz.Q` |
 //! | `zz.Color.nosuch` | 1 × "unresolved" | 1, the sort `zz.Color` declares no `nosuch` |
@@ -52,6 +52,16 @@
 //!     [`an_internal_name_by_a_path_is_refused_as_internal`],
 //!     [`an_internal_operation_by_a_path_is_refused_in_a_rule_body`],
 //!     [`a_refused_replacement_is_reported_once`].
+//!
+//!
+//! A rule body's data slots, each part backed out alone:
+//!   * the dotted name judged in a data slot (`data_dotted_name_error`):
+//!     [`a_dotted_name_in_a_rule_body_data_slot_is_judged_as_in_a_head`];
+//!   * a type parameter's member left to what it is bound to:
+//!     [`data_slot_readings_with_an_answer_keep_it`];
+//!   * a refusal named through the failing segment, which makes the value reading and the
+//!     data reading of one name one diagnostic: [`a_path_that_names_nothing_is_refused_once`],
+//!     [`a_dotted_name_in_a_rule_body_data_slot_is_judged_as_in_a_head`].
 //!
 //! [`the_names_with_a_reading_keep_it`], [`a_name_alone_that_names_nothing_keeps_its_refusal`]
 //! and [`a_value_prefix_is_read_as_before`] pass either way, by design: they are the bound.
@@ -124,13 +134,17 @@ fn a_path_that_names_nothing_is_refused_once() {
     for (at, errs) in both_bodies("k40c", "zz.nosuch.x") {
         refused_once(
             &errs,
-            &["`zz.nosuch.x` names nothing", "the namespace `zz` declares no `nosuch`"],
+            &["`zz.nosuch` names nothing", "the namespace `zz` declares no `nosuch`"],
             at,
         );
     }
-    // Deeper, the prefix named is the longest one that resolved.
+    // Deeper, it is named where resolution fails, as a clause head names it.
     for (at, errs) in both_bodies("k40d", "zz.inner.nosuch.y") {
-        refused_once(&errs, &["the namespace `zz.inner` declares no `nosuch`"], at);
+        refused_once(
+            &errs,
+            &["`zz.inner.nosuch` names nothing", "the namespace `zz.inner` declares no `nosuch`"],
+            at,
+        );
     }
 }
 
@@ -397,4 +411,63 @@ fn a_refused_replacement_is_reported_once() {
         "{DECL}namespace k40fact\n  import anthill.prelude.Int64\n  fact holds(zz.Q.hidden.x)\nend\n"
     ));
     refused_once(&fact, &["'zz.Q.hidden' is internal to 'zz.Q'"], "a fact's argument");
+}
+
+// ── a rule body's data slots: a `<=>` operand, a `let`, an argument of a goal or a term ──
+
+/// A dotted name in a rule body's data slot is judged as a clause head judges one. An
+/// `internal` name by a path is refused — `?v <=> zz.Q.sec` ran the hidden operation from
+/// outside its sort and answered 1 — and a name a namespace or a sort declares nowhere
+/// names nothing, once, where resolution fails (`zz.inner.nosuch.y` as `zz.inner.nosuch`).
+/// A namespace is data a term may hold, as in a head.
+#[test]
+fn a_dotted_name_in_a_rule_body_data_slot_is_judged_as_in_a_head() {
+    let hidden_op = "namespace zh\n  import anthill.prelude.Int64\n  sort Q\n    \
+                     internal operation sec() -> Int64 = 1\n    rule inside(?v) :- ?v <=> Q.sec\n  end\nend\n";
+    for slot in ["?v <=> {p}", "let ?v = {p}", "?v <=> box(v: {p})", "foo({p}), ?v <=> 0"] {
+        let rule = |p: &str| {
+            format!(
+                "{DECL}{hidden_op}namespace k40d{}\n  import anthill.prelude.Int64\n  fact foo(1)\n  \
+                 entity box(v: Int64)\n  rule r(?v) :- {}\nend\n",
+                slot.len(),
+                slot.replace("{p}", p)
+            )
+        };
+        for (path, tokens) in [
+            ("zh.Q.sec", &["'zh.Q.sec' is internal to 'zh.Q'"][..]),
+            ("zz.Q.hidden.x", &["'zz.Q.hidden' is internal to 'zz.Q'"][..]),
+            ("zz.inner.nosuch.y", &["`zz.inner.nosuch` names nothing", "the namespace `zz.inner`"][..]),
+            ("zz.Color.nosuch", &["the sort `zz.Color` declares no `nosuch`"][..]),
+            ("nosuch.x", &["no `nosuch` is visible"][..]),
+        ] {
+            refused_once(&load_errors_of(&rule(path)), tokens, &format!("{slot} at {path}"));
+        }
+        let namespace = load_errors_of(&rule("zz.inner"));
+        assert!(namespace.is_empty(), "{slot}: a namespace is data: {namespace:#?}");
+    }
+    // Inside its sort, the hidden operation is its own and answers.
+    let mut kb = crate::common::load_kb_with(&format!("{DECL}{hidden_op}"));
+    assert_eq!(crate::common::query_unary(&mut kb, "zh.Q.inside").len(), 1);
+}
+
+/// The bound: a member read through a requirement's name is no undeclared member — the
+/// name is a type parameter, read through what it requires — and the readings with an
+/// answer keep it: a nullary operation by a path is its value, a relation by a path its
+/// name, a dotted name in a goal's argument still matches the fact that holds it.
+#[test]
+fn data_slot_readings_with_an_answer_keep_it() {
+    let errs = load_errors_of(
+        "namespace k40req\n  import anthill.prelude.{Int64, Additive, Multiplicative}\n  \
+         import anthill.prelude.algebra.{Ring}\n  sort G\n    sort F = ?\n    requires R: Ring[F]\n    \
+         fact holdsF(R.one)\n    rule b1(?v) :- ?v <=> R.zero\n    rule b2(1) :- holdsF(R.one)\n  end\nend\n",
+    );
+    assert!(errs.is_empty(), "read through the requirement: {errs:#?}");
+    let mut kb = crate::common::load_kb_with(&format!(
+        "{MEMBERS}namespace k40keep\n  import anthill.prelude.Int64\n  fact holds(zm.S.seven)\n  \
+         rule seven(?v) :- ?v <=> zm.S.seven\n  rule matched(1) :- holds(zm.S.seven)\nend\n"
+    ));
+    let seven = crate::common::query_unary(&mut kb, "k40keep.seven");
+    assert_eq!(seven.len(), 1);
+    assert!(matches!(seven[0].0, Value::Int(7)), "{seven:?}");
+    assert_eq!(crate::common::query_unary(&mut kb, "k40keep.matched").len(), 1);
 }

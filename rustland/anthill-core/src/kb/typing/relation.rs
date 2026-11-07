@@ -427,8 +427,9 @@ pub(super) fn dotted_name_hidden(
     occ: &Rc<NodeOccurrence>,
 ) -> Option<TypeError> {
     let chain = dot_chain_segments(kb, occ)?;
-    match walk_dotted_name(kb, &chain, written_scope(kb, env, occ), Some(occ.span.span)) {
-        Walked::Hidden(e) => Some(e),
+    let from_scope = written_scope(kb, env, occ);
+    match walk_dotted_name(kb, &chain, from_scope) {
+        walked @ Walked::Hidden { .. } => name_refusal(kb, &chain, from_scope, &walked),
         Walked::NoRoot(_) | Walked::Resolved { .. } => None,
     }
 }
@@ -447,72 +448,156 @@ pub(super) enum DottedNameReading {
 }
 
 /// A dotted name, written where a value is, that no reading above gave a value: refused
-/// once for the whole name, saying what the name is, or read as the dot on the value a
-/// prefix of it names. `None` when `occ` is not such a name, or when the whole name
-/// resolved to something that is not a namespace.
+/// once, saying what the name is, or read as the dot on the value a prefix of it names.
+/// `None` when `occ` is not such a name, or when the whole name resolved to something that
+/// is not a namespace, or a prefix's member is read through what it is bound to (a type
+/// member, a type parameter's).
 ///
-/// The name is walked from its first segment, each prefix resolved as a qualified name
-/// ([`walk_dotted_name`]). A namespace or a sort that declares no next segment, or a first
-/// segment no name answers, names nothing; a whole name that is a namespace has no value;
-/// a prefix with a value reading — a const, a constructor, an operation, a relation — is
-/// the receiver of the rest. The node must be the loader's desugaring of a dot at every
-/// level ([`NodeOccurrence::is_dot_chain`]): a written `anthill.reflect.field_access(ns, x)`
-/// is a call, and its `x` an argument.
+/// The refusal is [`name_refusal`]'s, named through the segment where resolution fails, as
+/// a data slot's check reports it too ([`data_dotted_name_error`]): read both ways, one name
+/// is one diagnostic. A whole name that is a namespace has no value; a prefix with a value reading
+/// — a const, a constructor, an operation, a relation — is the receiver of the rest. The
+/// node must be the loader's desugaring of a dot at every level
+/// ([`NodeOccurrence::is_dot_chain`]): a written `anthill.reflect.field_access(ns, x)` is a
+/// call, and its `x` an argument.
 pub(super) fn dotted_name_without_value(
     kb: &KnowledgeBase,
     env: &TypingEnv,
     occ: &Rc<NodeOccurrence>,
 ) -> Option<DottedNameReading> {
-    let chain = dot_chain_segments(kb, occ)?;
-    if let Err(word) = chain.root {
-        if env.lookup_var(word).is_some() {
-            return None;
-        }
-    }
-    let span = Some(occ.span.span);
+    let chain = dotted_name_of_no_binding(kb, env, occ)?;
     let from_scope = written_scope(kb, env, occ);
-    // The name as the walk reads it: the first segment qualified where it resolved.
-    let path = || {
-        let head = match chain.root {
-            Ok(sym) => kb.qualified_name_of(sym),
-            Err(word) => kb.local_name_of(word),
-        };
-        std::iter::once(head).chain(chain.members.iter().copied()).collect::<Vec<_>>().join(".")
+    let walked = walk_dotted_name(kb, &chain, from_scope);
+    if let Some(refusal) = name_refusal(kb, &chain, from_scope, &walked) {
+        return Some(DottedNameReading::Refused(refusal));
+    }
+    let Walked::Resolved { prefix, stop } = walked else {
+        unreachable!("a hidden segment and a first segment no name answers are refused")
     };
-    let names_nothing = |prefix: Option<(Symbol, &'static str)>, missing: &str| {
-        DottedNameReading::Refused(TypeError::DottedNameNamesNothing {
-            span,
-            path: path(),
-            prefix,
-            missing: missing.to_string(),
-            from_scope,
-        })
-    };
-    let (prefix, stop) = match walk_dotted_name(kb, &chain, from_scope, span) {
-        Walked::Hidden(e) => return Some(DottedNameReading::Refused(e)),
-        Walked::NoRoot(word) => return Some(names_nothing(None, short_name_of(kb.local_name_of(word)))),
-        Walked::Resolved { prefix, stop } => (prefix, stop),
-    };
-    let Some(&missing) = chain.members.get(stop) else {
+    if stop == chain.members.len() {
         return namespace_only(kb, prefix).then_some(DottedNameReading::Refused(
             TypeError::NamespaceHasNoValue {
-                span,
+                span: Some(occ.span.span),
                 namespace: prefix,
             },
         ));
-    };
-    if namespace_only(kb, prefix) {
-        return Some(names_nothing(Some((prefix, "namespace")), missing));
     }
-    if kb.has_kind(prefix, crate::intern::SymbolKind::Sort) && !kb.is_entity_constructor(prefix) {
-        return declared_type_member(kb, prefix, missing)
-            .is_none()
-            .then(|| names_nothing(Some((prefix, "sort")), missing));
+    if declares_its_members(kb, prefix) || is_type_parameter(kb, prefix) {
+        return None;
     }
     Some(DottedNameReading::MembersOf {
         receiver: Rc::clone(&chain.nodes[stop]),
         members: chain.member_syms[stop..].to_vec(),
     })
+}
+
+/// A dotted name in a rule body's data slot — an argument of a goal or of a term, an
+/// operand of `<=>` — judged as a clause head judges one ([`name_refusal`]): a segment
+/// `internal` to a scope the text is not written in is refused as that access, and a name a
+/// namespace or a sort declares nowhere names nothing, in the one text every node of the
+/// chain gives it, so one report is kept. A namespace and a
+/// value's field (`zz.S.mk.x`) are data a term may hold, as in a head.
+pub(super) fn data_dotted_name_error(
+    kb: &KnowledgeBase,
+    env: &TypingEnv,
+    occ: &Rc<NodeOccurrence>,
+) -> Option<TypeError> {
+    let chain = dotted_name_of_no_binding(kb, env, occ)?;
+    let from_scope = written_scope(kb, env, occ);
+    let walked = walk_dotted_name(kb, &chain, from_scope);
+    name_refusal(kb, &chain, from_scope, &walked)
+}
+
+/// [`dot_chain_segments`], unless the first segment is a local binding — the chain is then
+/// a dot on that value, as the loader's walks read it, and no name.
+fn dotted_name_of_no_binding<'k>(
+    kb: &'k KnowledgeBase,
+    env: &TypingEnv,
+    occ: &Rc<NodeOccurrence>,
+) -> Option<DotChain<'k>> {
+    let chain = dot_chain_segments(kb, occ)?;
+    match chain.root {
+        Err(word) if env.lookup_var(word).is_some() => None,
+        _ => Some(chain),
+    }
+}
+
+/// Where resolution of a dotted name fails, and how it is refused: a segment `internal` to
+/// `from_scope` as that access, a first segment no name answers, and a member a namespace
+/// or a sort declares nowhere as naming nothing. Named through the failing segment, so
+/// every node of the chain and both readings of it — as a value and as data — refuse it in
+/// one text and one report is kept, as a clause head's is: `zz.inner.nosuch.y` as
+/// `zz.inner.nosuch`.
+/// `None` where nothing fails, and where a prefix the walk stopped at has a value, a type
+/// member or a type parameter's reading.
+fn name_refusal(
+    kb: &KnowledgeBase,
+    chain: &DotChain<'_>,
+    from_scope: ScopeId,
+    walked: &Walked,
+) -> Option<TypeError> {
+    let span = Some(chain.nodes[chain.nodes.len() - 1].span.span);
+    // The name written up to and including `members[upto]`, its first segment qualified.
+    let path = |upto: usize| {
+        let head = match chain.root {
+            Ok(sym) => kb.qualified_name_of(sym),
+            Err(word) => kb.local_name_of(word),
+        };
+        std::iter::once(head)
+            .chain(chain.members[..=upto].iter().copied())
+            .collect::<Vec<_>>()
+            .join(".")
+    };
+    match *walked {
+        Walked::Hidden { hidden } => Some(TypeError::ForbiddenInternalPath {
+            span,
+            hidden,
+            from_scope,
+        }),
+        Walked::NoRoot(word) => Some(TypeError::DottedNameNamesNothing {
+            span,
+            path: path(0),
+            prefix: None,
+            missing: short_name_of(kb.local_name_of(word)).to_string(),
+            from_scope,
+        }),
+        Walked::Resolved { prefix, stop } => {
+            let missing = *chain.members.get(stop)?;
+            let kind = if namespace_only(kb, prefix) {
+                "namespace"
+            } else if declares_its_members(kb, prefix)
+                && declared_type_member(kb, prefix, missing).is_none()
+            {
+                "sort"
+            } else {
+                return None;
+            };
+            Some(TypeError::DottedNameNamesNothing {
+                span,
+                path: path(stop),
+                prefix: Some((prefix, kind)),
+                missing: missing.to_string(),
+                from_scope,
+            })
+        }
+    }
+}
+
+/// A sort whose members are the names it declares, asked of a prefix that lacks one: not a
+/// constructor, whose name is its instance, and not a type parameter — a requirement's
+/// name among them (`R.zero` under `requires R: Ring[F]`) — whose members are read through
+/// what it is bound to.
+fn declares_its_members(kb: &KnowledgeBase, prefix: Symbol) -> bool {
+    kb.has_kind(prefix, crate::intern::SymbolKind::Sort)
+        && !kb.is_entity_constructor(prefix)
+        && !is_type_parameter(kb, prefix)
+}
+
+/// Is `sym` a type parameter of the scope that declares it?
+fn is_type_parameter(kb: &KnowledgeBase, sym: Symbol) -> bool {
+    kb.symbols
+        .declaring_scope(sym)
+        .is_some_and(|scope| kb.symbols.is_type_param(scope, kb.local_name_of(sym)))
 }
 
 /// A namespace and nothing else: no sort or constructor of its name gives it a reading.
@@ -524,9 +609,9 @@ fn namespace_only(kb: &KnowledgeBase, s: Symbol) -> bool {
 
 /// What [`walk_dotted_name`] found.
 enum Walked {
-    /// A segment `internal` to a scope the text is not written in, refused as its import
-    /// is ([`TypeError::ForbiddenInternalPath`]).
-    Hidden(TypeError),
+    /// A segment, `hidden`, `internal` to a scope the text is not written in; its
+    /// qualified name is the path through it.
+    Hidden { hidden: Symbol },
     /// The first segment, which no name answers.
     NoRoot(Symbol),
     /// The first segment and `members[..stop]` name `prefix`, and `members[stop]` is no
@@ -537,12 +622,7 @@ enum Walked {
 /// Walk a dotted name from its first segment, each prefix resolved as a qualified name — or,
 /// under a sort, through an alias or a sort it provides — other than a value place's, so a
 /// segment hidden from `from_scope` is found where the loader's visible walk stopped at it.
-fn walk_dotted_name(
-    kb: &KnowledgeBase,
-    chain: &DotChain<'_>,
-    from_scope: ScopeId,
-    span: Option<Span>,
-) -> Walked {
+fn walk_dotted_name(kb: &KnowledgeBase, chain: &DotChain<'_>, from_scope: ScopeId) -> Walked {
     let mut cur = match chain.root {
         Ok(sym) => sym,
         Err(word) => return Walked::NoRoot(word),
@@ -563,11 +643,7 @@ fn walk_dotted_name(
         match next {
             Some(next) => {
                 if !kb.symbols.internal_visible_from(next, from_scope) {
-                    return Walked::Hidden(TypeError::ForbiddenInternalPath {
-                        span,
-                        hidden: next,
-                        from_scope,
-                    });
+                    return Walked::Hidden { hidden: next };
                 }
                 cur = next;
             }

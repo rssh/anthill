@@ -176,7 +176,9 @@ pub(super) fn dispatch_calls_in_occ(
     // cannot make, which is whether any of those clauses could match it at all.
     let checked_not_typed = match shape {
         CallDispatch::Subgoal => Some(subgoal_shape_error(kb, &walked, rule_sym)),
-        CallDispatch::DataTerm => Some(data_functor_error(kb, &walked, rule_sym)),
+        CallDispatch::DataTerm => Some(
+            data_dotted_name_error(kb, env, &walked).or_else(|| data_functor_error(kb, &walked, rule_sym)),
+        ),
         _ => None,
     };
     // WI-20260904-50B2K part (b) — `expected` IS DROPPED HERE, and that is not a lost
