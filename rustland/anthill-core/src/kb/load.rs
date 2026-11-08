@@ -542,15 +542,27 @@ fn requirement_failure_clause(
 }
 
 /// The message of a [`LoadError::UnsatisfiedMemberRequires`].
+#[allow(clippy::too_many_arguments)]
 fn unsatisfied_member_requires_message(
     carrier: &str,
     spec: &str,
     op: &str,
     member: &str,
+    spec_body: bool,
     required: &str,
     clause: Option<&ProvisionClause>,
     failure: &RequirementFailure,
 ) -> String {
+    if spec_body {
+        return format!(
+            "'{carrier}' provides '{spec}' and writes no `{op}` of its own, so `{member}` runs \
+             the body written in '{spec}', which requires '{required}', {}{}, or write `{op}` \
+             for '{carrier}'{}",
+            requirement_failure_clause(carrier, required, failure),
+            requirement_failure_repair(required, failure),
+            provision_clause_note(spec, clause),
+        );
+    }
     format!(
         "'{carrier}' provides '{spec}' with `{op} = {member}`, whose sort requires \
          '{required}', {}{}{}",
@@ -1054,13 +1066,20 @@ pub enum LoadError {
     /// does not hold at the provision's bindings: `Leaf provides Desc[T = Leaf, describe =
     /// LeafDesc.describeLeaf]` with `LeafDesc requires Tag[G = L]` owes `Tag[G = Leaf]`,
     /// which the provision's dictionary carries for the member's frame.
+    ///
+    /// Or the provider writes no member for a spec operation that has a body in the spec,
+    /// whose `requires` does not hold at the provision's bindings (`spec_body`): `Pt provides
+    /// PartialOrd[T = Pt]` writing no `gt` takes `PartialOrd.gt`'s body, which requires
+    /// `WeakOrd[T = Pt]`, which the body reads when it runs.
     UnsatisfiedMemberRequires {
         carrier: String,
         spec: String,
         /// The spec operation the binding names, by its short name.
         op: String,
-        /// The bound member.
+        /// The bound member, or the spec operation whose body the provision takes.
         member: String,
+        /// The provider writes no member, and `member` runs the body written in the spec.
+        spec_body: bool,
         required: String,
         /// As on `UnsatisfiedProviderRequires`.
         clause: Option<ProvisionClause>,
@@ -3720,6 +3739,7 @@ impl LoadError {
                 spec,
                 op,
                 member,
+                spec_body,
                 required,
                 clause,
                 failure,
@@ -3728,6 +3748,7 @@ impl LoadError {
                 spec,
                 op,
                 member,
+                *spec_body,
                 required,
                 clause.as_ref(),
                 failure,
@@ -5519,6 +5540,7 @@ impl std::fmt::Display for LoadError {
                 spec,
                 op,
                 member,
+                spec_body,
                 required,
                 clause,
                 failure,
@@ -5527,6 +5549,7 @@ impl std::fmt::Display for LoadError {
                 spec,
                 op,
                 member,
+                *spec_body,
                 required,
                 clause.as_ref(),
                 failure,
@@ -22460,7 +22483,8 @@ pub fn derive_carrier_builtin_tags(kb: &mut KnowledgeBase) -> Vec<LoadError> {
             let Some(spec_op) = kb.sort_ops_lookup(spec, short) else {
                 continue;
             };
-            let Some(tag) = kb.builtin_of(spec_op) else {
+            let Some(tag) = kb.builtin_of(spec_op).or_else(|| kb.spec_op_primitive_of(spec_op))
+            else {
                 continue;
             };
             // Condition 4: `op` must be the carrier's OWN member of this spec op — not
@@ -23794,7 +23818,10 @@ fn check_one_parameter_list_per_relation(kb: &KnowledgeBase, phase_first_rule: u
 /// independent implementation: its body-derived view WOULD have answered, and a clause
 /// there replaces it.
 fn would_derive_bool_relation(kb: &KnowledgeBase, f: Symbol) -> bool {
-    if kb.builtin_of(f).is_some() {
+    // A builtin answers its goal, and so does the primitive a goal on a spec operation lands
+    // on (`PartialOrd.lte` dispatched to `Int64.lte`): a clause beside either is an
+    // alternative answer (WI-899), not a second definition, and no derived view is taken.
+    if kb.builtin_of(f).is_some() || kb.spec_op_primitive_of(f).is_some() {
         return false;
     }
     let Some(sig) = kb.op_record(f).and_then(|r| r.signature.as_ref()) else {

@@ -2140,6 +2140,13 @@ pub(crate) fn classify_pin_or_apply_within(
     // feed `ConcreteApplyWithin`'s `op_dicts` field and was DISCARDED on the `PinNow`
     // arm; the stamp is read on every apply route, so a pinned callee with an op-scoped
     // clause now gets its evidence too.
+    // A call through a requirement the caller holds, of a spec operation with a body in the
+    // spec, owes none of that body's own `requires`: they are owed by the provision that takes
+    // the body (`spec_body_requirements_of_row`). The call passes the ones its types resolve,
+    // and parks none ([`call_park_site`]).
+    let through_held = impl_op == fn_sym
+        && matches!(resolved_tree, Some(ResolvedRequiresNode::FromScope { .. }))
+        && spec_body_requires_are_the_provisions(kb, impl_op);
     if let Some(ctx) = op_supply {
         // The call was written for `fn_sym`, and its substitution and selections are in
         // that operation's parameters and names. A member it is handed to reads its own
@@ -2159,13 +2166,17 @@ pub(crate) fn classify_pin_or_apply_within(
             ctx.caller_requires,
             ctx.param_rigids,
             selected,
-            OpSlotParkSite::for_call(
-                kb,
-                impl_op,
-                ctx.enclosing_op,
-                Some(occ.span.span),
-                occ.span.source,
-            ),
+            if through_held {
+                None
+            } else {
+                OpSlotParkSite::for_call(
+                    kb,
+                    impl_op,
+                    ctx.enclosing_op,
+                    Some(occ.span.span),
+                    occ.span.source,
+                )
+            },
             ctx.param_arg_types,
             ctx.held,
             Some(occ.span.span),
@@ -2456,6 +2467,7 @@ pub(crate) fn stamp_spec_op_supply(
     {
         return Ok(());
     }
+    let park = call_park_site(kb, env, held, fn_sym, span, occ.span.source);
     stamp_op_scoped_dicts(
         kb,
         occ,
@@ -2464,12 +2476,33 @@ pub(crate) fn stamp_spec_op_supply(
         env.enclosing_frame_chain(),
         env.param_rigids(),
         selected,
-        OpSlotParkSite::for_call(kb, fn_sym, env.enclosing_op(), span, occ.span.source),
+        park,
         param_arg_types,
         held,
         span,
         RequirementUse::Call,
     )
+}
+
+/// Where a call's unsuppliable `requires` is parked, to be refused ([`OpSlotParkSite::for_call`]):
+/// nowhere for a call through a dictionary the caller holds of an operation with a body in its
+/// spec. Those `requires` are the body's condition, owed by each provision that takes it and
+/// checked there (`spec_body_requirements_of_row`); the call passes the ones its types resolve,
+/// `Unit[T = Bit]` under `requires Pc2[C = C, Element = Bit]`, and owes none.
+pub(super) fn call_park_site(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    held: &[HeldSpecView],
+    callee: Symbol,
+    span: Option<Span>,
+    source: crate::span::SourceId,
+) -> Option<OpSlotParkSite> {
+    let through_held = spec_body_requires_are_the_provisions(kb, callee)
+        && defaulted_spec_op_parent(kb, callee).is_some_and(|spec| caller_holds_spec(kb, env, held, spec));
+    if through_held {
+        return None;
+    }
+    OpSlotParkSite::for_call(kb, callee, env.enclosing_op(), span, source)
 }
 
 /// WI-822 LEG 1 — the call-site context [`build_op_scoped_dicts`] needs, bundled so

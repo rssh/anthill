@@ -3790,14 +3790,13 @@ pub(super) fn spec_has_an_abstract_member(kb: &KnowledgeBase, spec: Symbol) -> b
 ///    ORDINARY case there, not a defect. This is WI-945's own gate, one channel over,
 ///    and it is load-bearing: stdlib `platform.needs_rebuild`'s `gt(?t_in, ?t_out)`
 ///    compares two `Timestamp`s and `Ord[Timestamp]` has no provider, measured.
-///  * **NOT A RESOLVER BUILTIN.** `PartialOrd.gt`/`gte`/`lt`/`lte` are registered as
-///    builtins and resolve STRUCTURALLY; the default body carrying the `requires Ord[T]`
-///    is never entered, so the slot is never consulted and no `provides` line would
-///    change the outcome. The same exemption, for the same reason and with the same
-///    witness, that [`check_one_spec_op_requirement`] takes at its own `is_builtin` gate
-///    — see `wi642 builtin_comparison_op_on_concrete_no_instance_loads`. Measured
-///    without it: `SortedSet.insertSorted`'s `gt(c, 0)` at `Int64` is refused in every
-///    stdlib-only KB, `fact Ord[T = Int64]` living in the Rust bindings.
+///  * **NOT A RESOLVER BUILTIN.** A spec op registered as a builtin (`PartialEq.eq`, the
+///    arithmetic family) resolves STRUCTURALLY; the body carrying its `requires` is never
+///    entered, so the slot is never consulted and no `provides` line would change the
+///    outcome — the exemption [`check_one_spec_op_requirement`] takes through
+///    [`host_implements`]. The comparisons left it with WI-20260909-SM910: a comparison is
+///    its carrier's member, and its call owes what any call does (`wi642
+///    builtin_comparison_op_on_concrete_no_instance_is_refused`).
 #[derive(Clone, Copy)]
 pub(super) struct OpSlotParkSite {
     pub(super) span: Option<Span>,
@@ -4549,7 +4548,7 @@ pub(super) fn carrier_is_an_instance(kb: &KnowledgeBase, carrier: Symbol, spec: 
 }
 
 /// WI-883 — does the HOST owe `op`'s implementation, for every carrier? A resolver builtin
-/// (`PartialOrd.gt` answers structurally), an `operation_map` entry on the operation itself,
+/// (`PartialEq.eq` answers structurally), an `operation_map` entry on the operation itself,
 /// or the declaration's own `@[host_implemented]` claim. ONE reader, for the refusal's
 /// callee exemption and for [`spec_has_an_abstract_member`] — two spellings of it
 /// disagreed on the canonical symbol and on the claim (found by /code-review).

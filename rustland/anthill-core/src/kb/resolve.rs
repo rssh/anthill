@@ -1655,6 +1655,16 @@ enum UnstampedDispatch {
     Refused,
 }
 
+/// What one written call came to in [`KnowledgeBase::reduce_op_value`].
+pub(crate) enum OpReduction {
+    /// The value it ran to, or the call itself where it did not run.
+    Value(Value),
+    /// Its callee is a resolver builtin, which the caller runs on `call` through the
+    /// builtin's result column: the operation the call is written with, or the member its
+    /// dispatch landed on (`PartialOrd.gt(3, 1)` dispatched to `Int64.gt`).
+    Builtin { tag: BuiltinTag, call: Value },
+}
+
 /// WI-20260909-NAR1X — the evidence a WOVEN call (`Expr::ApplyWithin`, WI-1040)
 /// carries one hop past the member it selected.
 ///
@@ -2481,7 +2491,8 @@ impl SearchStream {
 
         // 4. Builtin goal — classify by functor read through TermView. A goal headed by a type
         // is a type check, answered by the instance search ([`BuiltinTag::TypeApplication`]).
-        let registered_builtin_tag = kb.get_builtin_view(&goal_val);
+        let registered_builtin_tag =
+            kb.goal_builtin_tag(&goal_val, &self.stack.last().unwrap().subst);
         let type_application = registered_builtin_tag.is_none()
             && matches!(goal_val.head(kb), ViewHead::Functor { functor, .. } if kb.is_type_value_head(functor));
         let registered_builtin_tag = registered_builtin_tag.or(type_application.then_some(BuiltinTag::TypeApplication));
@@ -8807,9 +8818,9 @@ impl KnowledgeBase {
 
     /// WI-616 (proposal 051 Phase 2) — `eq(?a, ?b)`, the SEMANTIC `PartialEq.eq` spec
     /// op. See [`Self::sem_eq_core`].
-    fn builtin_sem_eq<V: TermView>(
+    fn builtin_sem_eq(
         &mut self,
-        goal: &V,
+        goal: &Value,
         subst: &Substitution,
         faults: &mut ReduceFaults,
     ) -> BuiltinResult {
@@ -8818,9 +8829,9 @@ impl KnowledgeBase {
 
     /// WI-616 — `neq(?a, ?b)`, semantic inequality (`neq(a,b) <=> not(eq(a,b))`,
     /// the `Eq` law): [`Self::sem_eq_core`] with the verdict inverted.
-    fn builtin_sem_neq<V: TermView>(
+    fn builtin_sem_neq(
         &mut self,
-        goal: &V,
+        goal: &Value,
         subst: &Substitution,
         faults: &mut ReduceFaults,
     ) -> BuiltinResult {
@@ -8854,19 +8865,50 @@ impl KnowledgeBase {
     /// 4. **Structural** — purely structural operands get the structural
     ///    verdict: structural equality IS their instance (`Int` stays an i64
     ///    compare).
-    fn sem_eq_core<V: TermView>(
+    ///
+    /// A goal the typer pinned to a carrier's own `eq` (`PartialEq.eq` at `Pt`, pinned to
+    /// `Pt.eq`) dispatches to that member, the type known at load deciding it
+    /// (WI-20260909-SM910); the index decides only a goal nothing typed. At three positional
+    /// arguments the third is the result column, as [`Self::builtin_cmp`] reads its own:
+    /// `eq(a, b, ?r)` binds `?r` to the verdict, where it answered with `?r` free.
+    fn sem_eq_core(
         &mut self,
-        goal: &V,
+        goal: &Value,
         subst: &Substitution,
         positive: bool,
         faults: &mut ReduceFaults,
     ) -> BuiltinResult {
-        match self.eq_operands(goal, subst, faults) {
+        let ViewHead::Functor {
+            functor, pos_arity, ..
+        } = goal.head(self)
+        else {
+            return BuiltinResult::Failure;
+        };
+        // `eq`'s pin only: the dispatch proves the target as the carrier's `eq` and `neq`
+        // negates it, so a `neq` goal reads the `eq` the index names (a carrier writes no
+        // `neq` of its own, §8.3).
+        let pinned = match goal {
+            Value::Node(o) if positive => o
+                .classified_apply_target()
+                .filter(|t| *t != functor && self.builtin_of(*t).is_none()),
+            _ => None,
+        };
+        let verdict = match self.eq_operands(goal, subst, faults) {
             EqOperands::Delay => BuiltinResult::delay(),
             EqOperands::Stuck(state) => state.verdict(),
             EqOperands::Absent => BuiltinResult::Failure,
-            EqOperands::Ready(a, b) => self.sem_eq_values(a, b, subst, positive),
+            EqOperands::Ready(a, b) => self.sem_eq_values_at(a, b, subst, positive, pinned),
+        };
+        if pos_arity < 3 {
+            return verdict;
         }
+        let holds = match verdict {
+            BuiltinResult::Success => true,
+            BuiltinResult::Failure => false,
+            other => return other,
+        };
+        let target = self.resolve_result_target(goal.pos_arg(self, 2), subst);
+        self.finish_result_value(target, Value::Bool(holds))
     }
 
     /// WI-616/WI-625/WI-664 — the VALUE-level core of semantic `eq`/`neq`, shared
@@ -8881,6 +8923,19 @@ impl KnowledgeBase {
         b: Value,
         subst: &Substitution,
         positive: bool,
+    ) -> BuiltinResult {
+        self.sem_eq_values_at(a, b, subst, positive, None)
+    }
+
+    /// [`Self::sem_eq_values`] at the member a typed goal was pinned to, which step (4)
+    /// dispatches to ahead of the index.
+    fn sem_eq_values_at(
+        &mut self,
+        a: Value,
+        b: Value,
+        subst: &Substitution,
+        positive: bool,
+        pinned: Option<Symbol>,
     ) -> BuiltinResult {
         // (1) Float operand pair — IEEE `==` (nan != nan, -0.0 == +0.0), NOT the
         // structural reflexivity shortcut below (which reads nan == nan through
@@ -8916,12 +8971,13 @@ impl KnowledgeBase {
         }
         // (3) No carrier overrides eq at all (the common KB): straight to
         // the structural verdict — no per-operand probes or scans.
-        if !self.has_eq_dispatch_entries() {
+        if pinned.is_none() && !self.has_eq_dispatch_entries() {
             return sem_verdict(false, positive);
         }
-        // (4) Head-carrier override over GROUND operands ⇒ dispatch.
-        let target = self
-            .sem_eq_dispatch_target(&a)
+        // (4) Head-carrier override over GROUND operands ⇒ dispatch: the typer's pin, else the
+        // index.
+        let target = pinned
+            .or_else(|| self.sem_eq_dispatch_target(&a))
             .or_else(|| self.sem_eq_dispatch_target(&b));
         if let Some(target) = target {
             if !self.value_deep_ground(&a, subst) || !self.value_deep_ground(&b, subst) {
@@ -11987,7 +12043,7 @@ impl KnowledgeBase {
         // [`WovenDispatch`].
         woven: Option<&WovenDispatch>,
         faults: &mut ReduceFaults,
-    ) -> Value {
+    ) -> OpReduction {
         let occ = match &v {
             Value::Node(o) => Rc::clone(o),
             // WI-20260910-FDPJ8 — EVERY OTHER CARRIER MATERIALIZES. `_ => return v`
@@ -12018,7 +12074,7 @@ impl KnowledgeBase {
             // makes true.
             _ => match self.op_call_occurrence_to_reduce(&v) {
                 Some(o) => o,
-                None => return v,
+                None => return OpReduction::Value(v),
             },
         };
         // WI-1040 — a WOVEN call: the typer sweep rewrote a spec-op call covered by a
@@ -12072,7 +12128,7 @@ impl KnowledgeBase {
                 let Some((target, dict)) =
                     self.dictionary_dispatch_target(*functor, requirements, subst)
                 else {
-                    return v;
+                    return OpReduction::Value(v);
                 };
                 // WI-20260909-NAR1X — DOES THE SELECTED IMPL NEED THE DICTIONARY ITSELF?
                 //
@@ -12142,14 +12198,16 @@ impl KnowledgeBase {
             // `woven_next` its target reads — or they are re-derived from the values and the
             // answer depends on goal order. Returned by one exit for both arms, so neither can
             // lose them alone.
-            return match &reduced {
-                Value::Node(o) if Rc::ptr_eq(o, &call) => v,
-                _ => reduced,
+            // A builtin member the dictionary selected is run on the rebuilt call, whose
+            // arguments are the member's.
+            return match reduced {
+                OpReduction::Value(Value::Node(o)) if Rc::ptr_eq(&o, &call) => OpReduction::Value(v),
+                reduced => reduced,
             };
         }
         let functor = match occ.as_expr() {
             Some(Expr::Apply { functor, .. }) => *functor,
-            _ => return v,
+            _ => return OpReduction::Value(v),
         };
         // WI-1026 — run the operation the TYPER pinned this site to, not the functor it is
         // spelled with. `classified_apply_target` is the same read eval performs at its own
@@ -12172,7 +12230,7 @@ impl KnowledgeBase {
         let dispatch = match occ.apply_dispatch() {
             node_occurrence::ApplyDispatch::Unclassified => {
                 match self.classify_unstamped_spec_op_call(&occ, functor, subst) {
-                    UnstampedDispatch::Refused => return v,
+                    UnstampedDispatch::Refused => return OpReduction::Value(v),
                     // `classify_pin_or_apply_within` wrote the stamp onto `occ` — read
                     // it back through the SAME decode every other site uses, rather
                     // than deciding Pin-vs-NeedsDict a second way here.
@@ -12196,9 +12254,10 @@ impl KnowledgeBase {
         let needs_dict =
             matches!(dispatch, node_occurrence::ApplyDispatch::NeedsDict(_)) || woven.is_some();
         // A builtin (field_access, arith, eq, …) is run by the caller through its own result
-        // column (`run_builtin_for_value`), not by the interpreter.
-        if self.builtins.get(&op).is_some() {
-            return v;
+        // column (`run_builtin_for_value`), not by the interpreter: the spelled one, or the
+        // member the dispatch landed on (`PartialOrd.gt` pinned to `Int64.gt`).
+        if let Some(tag) = self.builtins.get(&op).copied() {
+            return OpReduction::Builtin { tag, call: v };
         }
         // What the interpreter can run: a body; a HOST-IMPLEMENTED operation
         // (WI-20260826-VPEWK — the predicate the goal side asks through
@@ -12219,7 +12278,7 @@ impl KnowledgeBase {
                 && super::typing::op_is_interpretable(self, op)
                 && (!self.is_interpreter_mapped_op(op) || self.host_op_runs_in_rule_body(op)));
         if !runnable {
-            return v;
+            return OpReduction::Value(v);
         }
         // Param symbols in declaration order — the WI-352 arg-place list, read O(1) off the
         // op symbol rather than rescanning every `OperationInfo` fact per call.
@@ -12233,7 +12292,7 @@ impl KnowledgeBase {
                 .and_then(|r| r.signature.as_ref())
                 .map(|s| s.params.len());
             if declared != Some(0) {
-                return v;
+                return OpReduction::Value(v);
             }
         }
         // Each place read as the call binds it ([`Self::call_args_in_param_order`]), by
@@ -12255,7 +12314,7 @@ impl KnowledgeBase {
             self.call_args_in_param_order(&occ, &params, subst)
         };
         let Some(walked) = walked else {
-            return v;
+            return OpReduction::Value(v);
         };
         let param_args: HashMap<Symbol, Value> = params.iter().copied().zip(walked).collect();
         // THE CALL SITE'S OWN EVIDENCE FOR ITS CALLEE'S `requires` rides with it to the
@@ -12308,7 +12367,7 @@ impl KnowledgeBase {
             .map(WovenDispatch::Stamped);
         let woven = woven.or(classified.as_ref()).or(stamped.as_ref());
         self.bridge_op_to_eval(op, &params, &param_args, subst, woven, faults)
-            .unwrap_or(v)
+            .map_or(OpReduction::Value(v), OpReduction::Value)
     }
 
     /// WI-20260925-P7VP4 — the dictionary a woven call's requirement variable is BOUND to in
@@ -13601,6 +13660,99 @@ impl KnowledgeBase {
             return None;
         }
         Some(params)
+    }
+
+    /// The builtin a goal runs (the goal step's item 4), or `None` for a goal the relational
+    /// views and the clause search answer.
+    ///
+    /// A goal the typer pinned to a member runs that member: the member's tag where a
+    /// resolver primitive realizes it (`PartialOrd.gt(?x, 5)` pinned to `Int64.gt`), and none
+    /// where it has a body (`Point.gt`), which the views run through the pin — unless the
+    /// spelled functor is itself a builtin that dispatches (`PartialEq.eq` at `Pt`, pinned to
+    /// `Pt.eq`), whose handler reads the pin ([`Self::sem_eq_core`]).
+    ///
+    /// A goal on a spec operation whose primitive runs only behind dispatch
+    /// ([`Self::spec_op_primitive_of`]) that nothing typed — a constraint guard's goal, a goal
+    /// built by hand — is read at the type its arguments carry (073 §6.2, no typed caller):
+    /// the member that type binds, which this classifies as the typer would
+    /// ([`Self::classify_unstamped_spec_op_call`]); the spec's own body where it binds none,
+    /// for the views; and the primitive while no argument names a type, which delays it.
+    pub(crate) fn goal_builtin_tag(
+        &mut self,
+        goal: &Value,
+        subst: &Substitution,
+    ) -> Option<BuiltinTag> {
+        use crate::eval::eval::{spec_op_dispatch_by_value, ValueDirectedDispatch};
+        let ViewHead::Functor { functor, .. } = goal.head(self) else {
+            return None;
+        };
+        if let Value::Node(o) = goal {
+            if let Some(target) = o.classified_apply_target().filter(|t| *t != functor) {
+                if let Some(tag) = self.builtin_of(target) {
+                    return Some(tag);
+                }
+                // A spelled builtin that dispatches itself (`PartialEq.eq`) reads the pin in
+                // its own handler ([`Self::sem_eq_core`]).
+                if self.builtin_of(functor).is_none() {
+                    return None;
+                }
+            }
+        }
+        if let Some(tag) = self.builtin_of(functor) {
+            return Some(tag);
+        }
+        let primitive = self.spec_op_primitive_of(functor)?;
+        if let Value::Node(o) = goal {
+            if !matches!(o.apply_dispatch(), node_occurrence::ApplyDispatch::Unclassified) {
+                return None;
+            }
+        }
+        // Read in parameter order, as the builtin reads it; a call whose labels do not fill
+        // the parameters goes to the primitive, whose goal step refuses it naming why.
+        let in_order = match self.builtin_call_in_param_order(goal) {
+            BuiltinCallOrder::AsWritten => goal.clone(),
+            BuiltinCallOrder::InParamOrder(positional) => positional,
+            BuiltinCallOrder::NotFilled(_) => return Some(primitive),
+        };
+        let places = self.symbols.arg_places(functor).len();
+        let walked: Option<Vec<Value>> = (0..places)
+            .map(|i| self.walk_arg(in_order.pos_arg(self, i), subst))
+            .collect();
+        let Some(walked) = walked else {
+            return Some(primitive);
+        };
+        let args: Vec<Value> = walked.iter().map(|a| self.reify_value(a, subst)).collect();
+        if let Some(tag) = self.primitive_while_no_carrier(functor, &args) {
+            return Some(tag);
+        }
+        match spec_op_dispatch_by_value(
+            self,
+            functor,
+            &args,
+            super::typing::carrier_override_suppliers,
+        ) {
+            ValueDirectedDispatch::Sole(target) if target != functor => {
+                if let Value::Node(o) = goal {
+                    self.classify_unstamped_spec_op_call(o, functor, subst);
+                }
+                self.builtin_of(target)
+            }
+            ValueDirectedDispatch::Sole(_) | ValueDirectedDispatch::NoSupplier => None,
+            // Two suppliers the value cannot choose between: the primitive, whose arm for a
+            // pair it has no order for is loud (an error on the stream, the goal residualized),
+            // where no answer would read as a refutation.
+            ValueDirectedDispatch::Tie { .. } => Some(primitive),
+        }
+    }
+
+    /// The primitive of `functor`, a spec operation whose primitive runs behind dispatch
+    /// ([`Self::spec_op_primitive_of`]), while none of `args` names a carrier: the call then
+    /// waits for one. `None` where one does, or `functor` has no such primitive.
+    fn primitive_while_no_carrier(&self, functor: Symbol, args: &[Value]) -> Option<BuiltinTag> {
+        let primitive = self.spec_op_primitive_of(functor)?;
+        crate::eval::eval::spec_call_runtime_carrier(self, functor, args)
+            .is_none()
+            .then_some(primitive)
     }
 
     /// WI-1043 — [`Self::functional_relation_arity`] asked of the operation the goal

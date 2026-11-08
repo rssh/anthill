@@ -695,7 +695,7 @@ fn cell_tower(eq_cond: &str) -> String {
         match a\n          case cell(x) ->\n            match b\n              case cell(y) -> PartialEq.eq(x, y)\n    \
     end\n    \
     provides Eq[Self] :- {eq_cond}\n    \
-    provides PartialOrd[Self] :- PartialOrd[E]\n    \
+    provides PartialOrd[Self] :- WeakOrd[E]\n    \
     provides WeakOrd[Self] :- WeakOrd[E] where\n      \
       operation compare(a: Self, b: Self) -> Int64 =\n        \
         match a\n          case cell(x) ->\n            match b\n              case cell(y) -> WeakOrd.compare(x, y)\n    \
@@ -855,17 +855,19 @@ fn each_condition_is_joined_to_its_own_provision() {
         .collect();
     pairs.sort();
     pairs.dedup();
-    // Each of `Pair`'s four provisions is conditioned on its OWN floor at both
-    // components — exactly the shape a shared chain could not express.
-    for spec in [
-        "anthill.prelude.PartialEq",
-        "anthill.prelude.Eq",
-        "anthill.prelude.PartialOrd",
-        "anthill.prelude.Ord",
+    // Each of `Pair`'s provisions is conditioned on its OWN floor at both components —
+    // exactly the shape a shared chain could not express. `PartialOrd`'s is `WeakOrd`: the
+    // provision takes `PartialOrd`'s bodies, which require `WeakOrd` at the pair
+    // (WI-20260909-SM910).
+    for (spec, condition) in [
+        ("anthill.prelude.PartialEq", "anthill.prelude.PartialEq"),
+        ("anthill.prelude.Eq", "anthill.prelude.Eq"),
+        ("anthill.prelude.PartialOrd", "anthill.prelude.WeakOrd"),
+        ("anthill.prelude.Ord", "anthill.prelude.Ord"),
     ] {
         assert!(
-            pairs.iter().any(|(p, c)| p == spec && c == spec),
-            "`provides {spec}[Pair] :- {spec}[…]` must be readable as a fact; \
+            pairs.iter().any(|(p, c)| p == spec && c == condition),
+            "`provides {spec}[Pair] :- {condition}[…]` must be readable as a fact; \
              found {pairs:?}",
         );
     }

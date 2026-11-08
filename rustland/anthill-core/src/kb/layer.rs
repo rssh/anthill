@@ -148,6 +148,7 @@ kb_scoped_fields!(
     inferred_column_bounds,
     // ── declarations: what makes a name MEAN something ─────────
     builtins,
+    spec_op_primitives,
     entity_fields,
     entity_field_types,
     constructor_symbols,
@@ -443,6 +444,7 @@ fn classify_every_field_for_layering(kb: &KnowledgeBase) {
         clauses_with_a_refused_guard: _,
         inferred_column_bounds: _,
         builtins: _,
+        spec_op_primitives: _,
         entity_fields: _,
         entity_field_types: _,
         constructor_symbols: _,

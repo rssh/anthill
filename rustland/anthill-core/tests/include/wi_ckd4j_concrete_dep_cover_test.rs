@@ -25,8 +25,11 @@
 //!
 //! Removing the `dep_is_concrete` guard in `explain_dep_refusal` fails
 //! `a_concrete_dep_is_not_blamed_on_an_unrelated_requires` on BOTH fixtures with the
-//! refusal quoted above. `with_nothing_in_scope_the_same_call_loads` passes either way
-//! by design: it is the control showing what the verdict should agree with.
+//! refusal quoted above. `with_nothing_in_scope_the_same_call_is_refused` passes either way
+//! by design: it is the control showing what the verdict should agree with. Since
+//! WI-20260909-SM910 that verdict is a refusal — `gt` at `Opaque` is the carrier's member,
+//! refused for want of an order whatever is in scope — and that row fails with
+//! `PartialOrd.gt` registered as a builtin again (the call loads).
 
 const SORT_LEVEL: &str = r#"
 namespace wickd4j.cover.sortlevel
@@ -78,19 +81,43 @@ fn refusals(src: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// `src`'s refusals with each fixture's namespace and the location dropped, so the three
+/// fixtures' verdicts compare.
+fn verdict(src: &str, ns: &str) -> Vec<String> {
+    refusals(src)
+        .iter()
+        .map(|e| {
+            let text = e.split_once(": ").map_or(e.as_str(), |(_, t)| t);
+            text.replace(ns, "NS")
+        })
+        .collect()
+}
+
+/// Since WI-20260909-SM910 the call is refused with nothing in scope: `gt` at `Opaque` is the
+/// carrier's member, and `Opaque` provides no order (`PartialOrd`'s `PartialEq[Opaque]`,
+/// and the `WeakOrd[Opaque]` its body requires). Until then it loaded, as a builtin
+/// answered structurally.
 #[test]
-fn with_nothing_in_scope_the_same_call_loads() {
-    assert_eq!(refusals(NOTHING_IN_SCOPE), Vec::<String>::new());
+fn with_nothing_in_scope_the_same_call_is_refused() {
+    let got = verdict(NOTHING_IN_SCOPE, "wickd4j.cover.none");
+    assert!(
+        got.iter().any(|e| e.contains("`anthill.prelude.PartialEq[T = NS.Opaque]` of `anthill.prelude.PartialOrd` cannot be supplied")),
+        "{got:#?}"
+    );
 }
 
 #[test]
 fn a_concrete_dep_is_not_blamed_on_an_unrelated_requires() {
-    for (spelling, src) in [("sort-level", SORT_LEVEL), ("conditional", CONDITIONAL)] {
+    let none = verdict(NOTHING_IN_SCOPE, "wickd4j.cover.none");
+    for (spelling, src, ns) in [
+        ("sort-level", SORT_LEVEL, "wickd4j.cover.sortlevel"),
+        ("conditional", CONDITIONAL, "wickd4j.cover.conditional"),
+    ] {
         assert_eq!(
-            refusals(src),
-            Vec::<String>::new(),
+            verdict(src, ns),
+            none,
             "{spelling} `PartialEq[T]` in scope must not change the verdict on the \
-             concrete `PartialEq[Int64]` dependency of `gt(i, 0)`"
+             concrete `PartialEq[Opaque]` dependency of `gt(i, i)`"
         );
     }
 }

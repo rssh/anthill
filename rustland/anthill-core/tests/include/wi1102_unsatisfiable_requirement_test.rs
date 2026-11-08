@@ -355,24 +355,22 @@ end
     assert_eq!(eval_int(&repaired, "wi1102.silent.Driver.drive"), 5);
 }
 
-/// THE BUILTIN GATE. `PartialOrd.gt` is registered as a resolver builtin and resolves
-/// STRUCTURALLY; the default body carrying `requires Ord[T]` is never entered, so no
-/// `provides` line would change the outcome and its absence is not a defect to report.
-/// Same claim, same shape, as `wi642 builtin_comparison_op_on_concrete_no_instance_
-/// loads` — restated here on an OPERATION body, so the gate is driven where the
-/// rule-body gate cannot cover for it.
+/// A COMPARISON AT A CARRIER WITH NO ORDER IS REFUSED, as its neighbour is
+/// (WI-20260909-SM910). `PartialOrd.gt` was a resolver builtin answered structurally, and
+/// this row asserted that the call loaded; its built-in answer now runs only a member a
+/// carrier binds to a primitive (`Int64.gt`), so `gt(a, b)` at `Blob` is the call of the
+/// body written in `PartialOrd`, and owes its `WeakOrd[T = Blob]`, which nothing provides.
+/// Restated on an OPERATION body beside `wi642 builtin_comparison_op_on_concrete_no_
+/// instance_is_refused`'s rule body.
 ///
-/// `Blob` and NOT `Int64`, deliberately: these fixtures load the Rust host bindings,
-/// where `fact Ord[T = Int64]` lives, so an `Int64` row would be outside the refusal
-/// population for a second reason and would pass with the gate removed — a control that
-/// measures nothing. `Blob` provides no `Ord` anywhere.
+/// `Blob` and NOT `Int64`: `Int64` binds its comparison to the host, and loads.
 ///
-/// THE NEIGHBOUR IS THE OTHER HALF. `Desc.describe` is the same call shape at the same
-/// carrier with the ONE difference that decides — its spec op is not a builtin — and it
-/// IS refused. Without it, "the program loads" could equally mean the fixture never
-/// reached the check.
+/// THE NEIGHBOUR is the same call shape at the same carrier through a spec op that never
+/// was a builtin, refused as before. Fails with `PartialOrd.gt` registered as a builtin
+/// again (`register_builtin_tag_as` in place of `register_spec_op_primitive`): the program
+/// loads.
 #[test]
-fn control_a_builtin_comparison_at_a_no_instance_carrier_still_loads() {
+fn a_comparison_at_a_carrier_with_no_order_is_refused_like_its_neighbour() {
     const BUILTIN: &str = r#"
 namespace wi1102.builtincmp
   import anthill.prelude.{Int64, Bool}
@@ -385,11 +383,11 @@ namespace wi1102.builtincmp
   end
 end
 "#;
+    let text = refusal(BUILTIN, "the comparison at `Blob`");
     assert!(
-        crate::common::try_load_kb_with(BUILTIN).is_ok(),
-        "`PartialOrd.gt` resolves structurally — refusing its unfillable `Ord[Blob]` \
-         slot would take `wi642 builtin_comparison_op_on_concrete_no_instance_loads` \
-         and the stdlib's own `needs_rebuild` with it"
+        text.contains("`anthill.prelude.WeakOrd[T = wi1102.builtincmp.Blob]` cannot be supplied")
+            && text.contains("`anthill.prelude.PartialOrd.gt`"),
+        "`gt` at `Blob` owes the `WeakOrd[T = Blob]` its body requires; got:\n{text}"
     );
 
     // THE NEIGHBOUR: identical but for the spec op, which is not a builtin.

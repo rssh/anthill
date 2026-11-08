@@ -234,8 +234,7 @@ fn the_stdlib_without_its_binding_layer_does_not_load() {
         );
     }
     assert!(
-        errs.iter()
-            .all(|e| e.contains("is declared `@[host_implemented]`, but no binding block")),
+        errs.iter().all(|e| crate::common::a_binding_less_stdlib_refusal(e)),
         "every refusal of a binding-less stdlib is an unsupplied claim, nothing else: {errs:#?}"
     );
 }

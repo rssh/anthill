@@ -221,8 +221,7 @@ fn stdlib_alone_declares_no_store_provision() {
         Err(errs) => errs.iter().map(|e| e.to_string()).collect(),
     };
     assert!(
-        errs.iter()
-            .all(|e| e.contains("is declared `@[host_implemented]`, but no binding block")),
+        errs.iter().all(|e| crate::common::a_binding_less_stdlib_refusal(e)),
         "the stdlib-only load must fail for its unsupplied host claims ONLY: {errs:#?}"
     );
     assert!(

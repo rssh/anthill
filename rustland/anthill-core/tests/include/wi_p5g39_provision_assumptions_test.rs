@@ -59,7 +59,7 @@ fn cell_tower(extra: &str, eq_cond: &str, ord_cond: &str) -> String {
         match a\n          case cell(x) ->\n            match b\n              case cell(y) -> PartialEq.eq(x, y)\n    \
     end\n    \
     provides Eq[Self] :- {eq_cond}\n    \
-    provides PartialOrd[Self] :- PartialOrd[E]\n    \
+    provides PartialOrd[Self] :- WeakOrd[E]\n    \
     provides WeakOrd[Self] :- WeakOrd[E] where\n      \
       operation compare(a: Self, b: Self) -> Int64 =\n        \
         match a\n          case cell(x) ->\n            match b\n              case cell(y) -> WeakOrd.compare(x, y)\n    \

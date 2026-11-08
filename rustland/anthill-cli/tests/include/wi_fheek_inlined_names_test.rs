@@ -378,9 +378,10 @@ fn an_inlined_rules_own_variable_is_named_apart_from_the_clauses() {
 }
 
 /// AN OWN VARIABLE OF A DECLARED SORT IS DECLARED AT IT (BR7P3's control). `between`'s
-/// `?b` is of `T` by what it is compared with, and is named past `p`'s frame — `var_5`, the
-/// frame holding the parameter's slots too. By its index it was `p`'s `?y`: the document
-/// said `(lt@T var_1 var_1)`.
+/// `?b` is of `T` by what it is compared with, and is named past `p`'s frame — `var_6`, the
+/// frame holding the parameter's slots and the clause's read of `PartialOrd` too (its `lt`
+/// dispatches through the dictionary `Scope`'s `requires` holds, WI-20260909-SM910; `var_5`
+/// before). By its index it was `p`'s `?y`: the document said `(lt@T var_1 var_1)`.
 #[test]
 fn an_own_variable_of_a_declared_sort_is_declared_at_it() {
     let out = dry_run(
@@ -405,9 +406,9 @@ end
     let lt = format!("anthill.prelude.PartialOrd.lt@{t}");
     let document = stated(&out, "test.fheek.sorted.Scope.p");
     for line in [
-        format!("(declare-const var_5 {t})"),
-        format!("(assert ({lt} var_2 var_5))"),
-        format!("(assert ({lt} var_5 var_1))"),
+        format!("(declare-const var_6 {t})"),
+        format!("(assert ({lt} var_2 var_6))"),
+        format!("(assert ({lt} var_6 var_1))"),
         format!("(assert ({lt} var_1 var_2))"),
     ] {
         assert!(document.contains(&line.as_str()), "`{line}`:\n{}", document.join("\n"));
@@ -540,7 +541,9 @@ fn a_construction_crosses_into_an_inlined_rule_closed_over_its_callers_frame() {
 /// disjuncts of one document, and a name of it is one constant. Numbered in each world from
 /// the clause's frame, `two`'s clause 1 named its `?b` (of `T`) and clause 2 its `?c` (a
 /// real) alike, and the proof was refused — "of sort T in one world … and of Real in
-/// another" (/code-review, measured); on d7a8ffcb it was z3's "unknown constant".
+/// another" (/code-review, measured); on d7a8ffcb it was z3's "unknown constant". Clause
+/// 2's `?c` is `var_7`: clause 1's `lt` reads `PartialOrd` through the dictionary `Scope`'s
+/// `requires` holds (WI-20260909-SM910), one more name of the frame (`var_6` before).
 #[test]
 fn own_names_run_on_across_the_worlds_of_a_document() {
     let out = dry_run(
@@ -568,9 +571,9 @@ end
     for line in [
         format!("(declare-const var_2 {t})"),
         format!("(declare-const var_4 {t})"),
-        "(declare-const var_6 Real)".to_owned(),
+        "(declare-const var_7 Real)".to_owned(),
         format!("(and (anthill.prelude.PartialOrd.lt@{t} var_2 var_4) (>= 0.0 5.0))"),
-        "(and (<= var_6 1.0) (>= 1.0 5.0))".to_owned(),
+        "(and (<= var_7 1.0) (>= 1.0 5.0))".to_owned(),
     ] {
         assert!(document.contains(&line.as_str()), "`{line}`:\n{}", document.join("\n"));
     }

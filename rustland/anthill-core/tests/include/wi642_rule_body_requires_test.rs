@@ -202,12 +202,14 @@ end
     );
 }
 
-/// A structural-BUILTIN spec op (`Ord.gt`) on a concrete sort with no `Ord`
-/// instance loads clean — it resolves structurally, so its requirement is never
-/// "missing". This is exactly the stdlib `needs_rebuild` pattern (`gt` on two
-/// `Timestamp`s); flagging it would break the stdlib.
+/// A comparison (`gt`) on a concrete sort with no order is refused at load
+/// (WI-20260909-SM910). It loaded clean while `PartialOrd.gt` was a resolver builtin
+/// answered structurally; it is now the call of the body written in `PartialOrd`, which
+/// requires `WeakOrd[T = Blob]`, and nothing provides it. The stdlib's `needs_rebuild`,
+/// which compared two `Timestamp`s this way, compares their `String` values. Loads with
+/// `PartialOrd.gt` registered as a builtin again.
 #[test]
-fn builtin_comparison_op_on_concrete_no_instance_loads() {
+fn builtin_comparison_op_on_concrete_no_instance_is_refused() {
     let src = r#"
 namespace test.wi642.builtin_cmp
   import anthill.prelude.{Int64, Bool, Ord}
@@ -225,11 +227,10 @@ namespace test.wi642.builtin_cmp
 end
 "#;
     let (_kb, errs) = try_load(src);
+    let text = fmt_errs(&errs);
     assert!(
-        errs.is_empty(),
-        "a builtin comparison op (`gt`) resolves structurally — no missing-requirement \
-         error even at a no-instance concrete carrier; got:\n{}",
-        fmt_errs(&errs),
+        text.contains("`anthill.prelude.WeakOrd[T = test.wi642.builtin_cmp.Blob]` cannot be supplied"),
+        "`gt` at `Blob` owes the `WeakOrd[T = Blob]` its body requires; got:\n{text}"
     );
 }
 

@@ -2231,9 +2231,8 @@ pub(super) fn check_one_spec_op_requirement(
     declared: &[Symbol],
     errors: &mut Vec<TypeError>,
 ) {
-    // A spec op registered as a resolver BUILTIN never fails for a *missing spec
-    // instance*, so it is not this pass's concern — skip it. Two disjoint reasons,
-    // both `is_builtin`:
+    // A spec op the HOST answers for every carrier never fails for a *missing spec
+    // instance*, so it is not this pass's concern — skip it ([`host_implements`]):
     //   * `PartialEq.eq`/`PartialEq.neq` (SemEq) — structural equality IS the default
     //     `PartialEq` instance (kernel-language.md §equality / proposal 051 / WI-616: "a
     //     carrier with no override keeps the structural compare — structural equality
@@ -2255,11 +2254,14 @@ pub(super) fn check_one_spec_op_requirement(
     //     predates the split that the registration site states two lines above ("eq/neq
     //     live on PartialEq, gt/lt/gte/lte on PartialOrd (the partial bases); Eq/Ord are
     //     the lawful/total markers").
-    //   * `Ord.gt`/`lt`/`gte`/`lte`, `Numeric.add`/`sub`/`mul` — numeric-constant
-    //     builtins (`builtin_cmp` / arithmetic) that NEVER consult an `Ord`/
-    //     `Numeric` instance, so a `requires Ord[…]` could not even fix them; a
-    //     non-numeric carrier is a plain resolution failure, not a missing dictionary.
-    //     (Why stdlib `needs_rebuild`'s `gt` on two `Timestamp`s must not be flagged.)
+    //   * `Additive.add`/`sub`, `Multiplicative.mul` and the rest of the arithmetic
+    //     family — builtins that never consult an instance, so a `requires` could not fix
+    //     them; a non-numeric carrier is a plain resolution failure.
+    //   * NOT the comparisons, since WI-20260909-SM910. `PartialOrd.gt`/`gte`/`lt`/`lte`
+    //     are no builtins: their primitive runs a carrier's member it realizes
+    //     (`Int64.gt`), behind dispatch, so a carrier with no order is a missing
+    //     dictionary, refused here like any spec op's. (Stdlib `needs_rebuild` compared
+    //     two `Timestamp`s this way, which provide no order; it compares their values.)
     //   * WI-883 — and any callee the HOST owes ([`host_implements`]): an `operation_map`
     //     entry or `@[host_implemented]` claim on the operation itself serves every
     //     carrier, as the operation-body refusal already reads it. Two predicates for one

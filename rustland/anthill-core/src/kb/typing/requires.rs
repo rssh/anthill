@@ -691,8 +691,12 @@ fn position_in_chain(
 pub(crate) struct BoundMemberRequirements {
     /// The spec operation's short name, as the binding key writes it.
     pub(crate) op: String,
-    /// The bound operation.
+    /// The bound operation, or the spec operation whose body in the spec the provision
+    /// takes.
     pub(crate) member: Symbol,
+    /// `member` is the spec's own operation, run by its body in the spec, and `entries` are
+    /// that operation's own `requires` ([`spec_body_requirements_of_row`]).
+    pub(crate) spec_body: bool,
     /// The member's frame chain ([`op_owner_dict_entries`]), entry for entry, at the types
     /// the provision gives the member's parameters.
     pub(crate) entries: Vec<RequiresEntry>,
@@ -815,9 +819,139 @@ pub(super) fn bound_member_requirements_of_row(
         out.push(BoundMemberRequirements {
             op,
             member,
+            spec_body: false,
             entries,
             unfixed,
             conflicting,
+        });
+    }
+    out
+}
+
+/// Are the `requires` written on `op`, an operation with a body in its spec, owed by the
+/// provision that takes that body rather than by its call? They are where each is written over
+/// the spec's parameters alone, which the provision fixes: `PartialOrd.gt(a: T, b: T) requires
+/// WeakOrd[T]`. One that names a type parameter of the operation is the call's, since only the
+/// call fixes it and the call may select its provider (`Desc.solo[Tagger = Loud](x, "s")`
+/// over `solo[U](x: T, y: U) requires Tagger[T = U]`), and then all of them are.
+pub(crate) fn spec_body_requires_are_the_provisions(kb: &mut KnowledgeBase, op: Symbol) -> bool {
+    if defaulted_spec_op_parent(kb, op).is_none() {
+        return false;
+    }
+    let own: Vec<RequiresEntry> = op_dict_entries(kb, op).op_entries().to_vec();
+    if own.is_empty() {
+        return false;
+    }
+    let Some(info) = crate::kb::op_info::lookup_operation_info(kb, op) else {
+        return false;
+    };
+    let op_qn = kb.qualified_name_of(op).to_string();
+    let op_params: Vec<Symbol> = info
+        .type_params
+        .iter()
+        .flat_map(|(name, _)| {
+            let scoped = kb.try_resolve_symbol(&format!("{op_qn}.{}", kb.local_name_of(*name)));
+            std::iter::once(*name).chain(scoped)
+        })
+        .collect();
+    own.iter()
+        .all(|e| !op_params.iter().any(|&p| value_names_param(kb, &e.spec, p)))
+}
+
+/// Does the caller hold an instance of `spec` — a `requires` of its operation or of its sort,
+/// a condition its clause declares, or the sort the clause is written in, each with what it
+/// requires? A call of an operation of `spec` is then a call through a dictionary of `spec`,
+/// and owes the requirements of a body written in the spec none of its own
+/// ([`spec_body_requires_are_the_provisions`]): `bigger[A](a: A, b: A) requires PartialOrd[T
+/// = A] = PartialOrd.gt(a, b)` owes no `WeakOrd[T = A]`. A call through nothing it holds is
+/// the body's own call and owes them, as any call of an operation does.
+pub(super) fn caller_holds_spec(
+    kb: &KnowledgeBase,
+    env: &TypingEnv,
+    held: &[HeldSpecView],
+    spec: Symbol,
+) -> bool {
+    let reaches = |s: Symbol| {
+        same_sort_canonical(kb, s, spec)
+            || transitive_required_sorts(kb, s)
+                .iter()
+                .any(|r| same_sort_canonical(kb, *r, spec))
+    };
+    let chain = env.enclosing_frame_chain();
+    chain.entries.iter().any(|e| reaches(e.required_sort))
+        || held.iter().any(|h| reaches(h.spec_sort))
+        || env.rule_domain().is_some_and(reaches)
+}
+
+/// The operations of the spec a provision row provides whose body in the spec the provider
+/// takes — it writes no member for them, binds none, and no witness supplies one
+/// ([`resolve_op_target`] answers the spec operation itself) — and which declare a `requires`
+/// of their own, each with those requirements at the provision's binding: `Pt provides
+/// PartialOrd[T = Pt]`, writing no `gt`, takes `PartialOrd.gt`'s body and owes its
+/// `WeakOrd[T = Pt]`. Such a `requires` is the body's condition, owed by the provision and
+/// checked where the provision is written, and not by a call through its dictionary.
+///
+/// NOT LAID OUT IN THE DICTIONARY, as a bound member's frame is: in the ordering tower it would
+/// hold itself. `PartialOrd[T = Pair]`'s would carry `WeakOrd[T = Pair]`, whose own half carries
+/// `PartialOrd[T = Pair]` (`WeakOrd` requires it) — measured, the load reported the cycle for
+/// every carrier that provides both and writes `compare` alone. The body's slot is filled when
+/// the body is entered, as an operation's own `requires` is.
+pub(super) fn spec_body_requirements_of_row(
+    kb: &mut KnowledgeBase,
+    row: &ProvidesRow,
+) -> Vec<BoundMemberRequirements> {
+    let spec = row.spec_base;
+    if same_sort_canonical(kb, spec, row.provider) {
+        return Vec::new();
+    }
+    let ops: Vec<Symbol> = crate::kb::op_requirements::operations_of_sort(kb, spec)
+        .into_iter()
+        .filter(|&op| kb.op_body_node(op).is_some())
+        .collect();
+    if ops.is_empty() {
+        return Vec::new();
+    }
+    let bindings = row.bindings(kb);
+    let sigma = spec_param_sigma(kb, spec, &bindings);
+    let spec_params: Vec<Symbol> = kb.type_param_syms_of(spec).to_vec();
+    let effects_runtime = effects_runtime_sym(kb);
+    let mut out = Vec::new();
+    for op in ops {
+        if !spec_body_requires_are_the_provisions(kb, op)
+            || resolve_op_target(kb, row.provider, op).ok() != Some(op)
+        {
+            continue;
+        }
+        let own: Vec<RequiresEntry> = op_dict_entries(kb, op).op_entries().to_vec();
+        let mut unfixed: Vec<Symbol> = Vec::new();
+        let entries = own
+            .iter()
+            .map(|e| {
+                if Some(e.required_sort) != effects_runtime {
+                    for &p in &spec_params {
+                        if !unfixed.contains(&p)
+                            && !sigma.iter().any(|(q, _)| *q == p)
+                            && value_names_param(kb, &e.spec, p)
+                        {
+                            unfixed.push(p);
+                        }
+                    }
+                }
+                RequiresEntry {
+                    required_sort: e.required_sort,
+                    spec: sigma_subst_type(kb, &e.spec, &sigma),
+                    supply: SupplySource::Required,
+                    binder: None,
+                }
+            })
+            .collect();
+        out.push(BoundMemberRequirements {
+            op: short_name_of(kb.qualified_name_of(op)).to_string(),
+            member: op,
+            spec_body: true,
+            entries,
+            unfixed,
+            conflicting: None,
         });
     }
     out

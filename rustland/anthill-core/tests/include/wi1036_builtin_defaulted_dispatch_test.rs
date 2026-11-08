@@ -31,9 +31,8 @@
 //! `reduce_op_value` returns early exactly as before — the corpus gets the refusal, not a
 //! dispatch change.
 //!
-//! WHAT IS STILL BROKEN AND IS NOT THIS GATE'S — see
-//! `a_supplied_override_of_a_builtin_mapped_spec_op_is_unreachable_from_a_rule_body_goal`.
-//! Deleting the clause does not fix the GOAL-position silence, and its owner is **WI-879**.
+//! WHAT WAS STILL BROKEN AND WAS NOT THIS GATE'S — the GOAL-position silence, closed by
+//! WI-20260909-SM910: see `a_supplied_override_of_a_spec_op_is_reached_from_a_rule_body_goal`.
 
 use anthill_core::eval::Value;
 use anthill_core::kb::KnowledgeBase;
@@ -111,26 +110,23 @@ fn a_rule_body_classification_emits_no_dispatch_rewrite() {
     );
 }
 
-/// THE BOUND ON WHAT DELETING THE CLAUSE CHANGES FOR THE CORPUS — a pin is stamped at
-/// the four newly-decided stdlib sites, and it redirects nothing, because both the
-/// spelled spec op and the impls it names are registered builtins and `reduce_op_value`
-/// returns early on either. So the corpus behaviour change is the load REFUSAL the other
-/// two tests drive, not a dispatch redirect in the stdlib's `gt(?i, 0)` goals.
+/// THE STDLIB FAMILY RUNS ITS PRIMITIVE BEHIND THE PIN (WI-20260909-SM910). The spelled
+/// spec ops `PartialOrd.gt`/`gte`/`lt`/`lte` are no resolver builtins: their primitive is
+/// what a carrier's member runs, so a goal at `Int64` or `Float` reaches `builtin_cmp`
+/// through the typer's pin to `Int64.gt` / `Float.gt`, which keep their tags. Until SM910
+/// both sides were builtins and the pin redirected nothing in the corpus.
 ///
-/// STATED AS A BOUND, NOT AS THE REASON, because the reason was wrong that way round:
-/// "every carrier impl a pin would redirect to is a builtin" is true of THIS family and
-/// false of the population — `wi1036.own.Point.gt` below is an ordinary bodied operation,
-/// and the operand-position test measures exactly the redirect that follows from it.
-///
-/// CONTROL: this passes with the clause and without it (nothing here depends on the
-/// clause — it is the bound, and the two drivers are what depend on it). It fails when a
-/// carrier in the stdlib family stops being builtin-backed on either side — WI-879's
-/// registry rewrite is that change — at which point the corpus DOES get a dispatch
-/// redirect and this comment's bound has to be re-measured.
+/// CONTROL: register `PartialOrd.gt` as a builtin again and the first assertion fails;
+/// the goal rows answer either way (the spelled builtin and the pinned member run the same
+/// primitive at a scalar).
 #[test]
-fn the_stdlib_family_is_builtin_on_both_sides_of_the_pin() {
-    let kb = crate::common::load_kb_with("namespace wi1036.tags\nend\n");
-    let builtin = |qn: &str| {
+fn the_stdlib_family_runs_its_primitive_behind_the_pin() {
+    let mut kb = crate::common::load_kb_with(
+        "namespace wi1036.tags\n  import anthill.prelude.{Int64, Float, Bool, PartialOrd}\n  \
+         rule i(?r) :- PartialOrd.gt(3, 1, ?r)\n  \
+         rule f(?r) :- PartialOrd.lt(2.5, 1.5, ?r)\nend\n",
+    );
+    let builtin = |kb: &anthill_core::kb::KnowledgeBase, qn: &str| {
         let s = kb
             .try_resolve_symbol(qn)
             .unwrap_or_else(|| panic!("no symbol `{qn}`"));
@@ -138,17 +134,22 @@ fn the_stdlib_family_is_builtin_on_both_sides_of_the_pin() {
     };
     for short in ["gt", "gte", "lt", "lte"] {
         assert!(
-            builtin(&format!("anthill.prelude.PartialOrd.{short}")),
-            "`PartialOrd.{short}` is the spelled functor of the newly-decided sites",
+            !builtin(&kb, &format!("anthill.prelude.PartialOrd.{short}")),
+            "`PartialOrd.{short}` runs its primitive behind dispatch, and is no builtin",
         );
         for carrier in ["Int64", "Float"] {
             assert!(
-                builtin(&format!("anthill.prelude.{carrier}.{short}")),
-                "`{carrier}.{short}` is what their pins name; if it is not a builtin, \
-                 `reduce_op_value` stops returning early and the corpus gets a dispatch \
-                 redirect this ticket did not measure",
+                builtin(&kb, &format!("anthill.prelude.{carrier}.{short}")),
+                "`{carrier}.{short}` is what a pin names, and runs the primitive",
             );
         }
+    }
+    for (relation, want) in [("i", true), ("f", false)] {
+        let rows = crate::common::query_unary(&mut kb, &format!("wi1036.tags.{relation}"));
+        assert!(
+            matches!(rows.as_slice(), [(Value::Bool(b), true)] if *b == want),
+            "`{relation}` answers {want}; got {rows:?}"
+        );
     }
 }
 
@@ -222,38 +223,18 @@ fn own_gt_answer(tail: &str) -> String {
         .join(", ")
 }
 
-/// THE ONE HOLE DELETING THE CLAUSE DOES NOT CLOSE, PINNED WITH ITS OWNER.
-/// `PartialOrd.gt(pt(2,1), pt(1,9))` on a carrier that supplies its own `gt` answers the
-/// override (`false`) from an operation body and NOTHING from a rule-body GOAL.
+/// A CARRIER'S SUPPLIED `gt` IS REACHED FROM A RULE-BODY GOAL (WI-20260909-SM910, which this
+/// row named as its owner). `PartialOrd.gt(pt(2,1), pt(1,9))` on a carrier that supplies its
+/// own `gt` answers the override, `false`, from an operation body and from the goal. The
+/// pin (`PartialOrd.gt -> wi1036.own.Point.gt`, stamped at `classify_pin_or_apply_within`)
+/// is read where the goal runs (`KnowledgeBase::goal_builtin_tag`); until SM910 the goal
+/// took `BuiltinTag::Gt` off its spelled functor, and `builtin_cmp`, with no order for two
+/// entities, left it UNDECIDED (WI-879) — before that, `[]`.
 ///
-/// MEASURED BOTH WAYS, which is what says it is not this ticket's: with the clause and
-/// without it the goal answers `[]`. The call IS classified now and the pin IS stamped
-/// (`PartialOrd.gt -> wi1036.own.Point.gt`, observed at `classify_pin_or_apply_within`) —
-/// and never read, because a goal takes `BuiltinTag::Gt` off its SPELLED functor and no
-/// goal-position reader consults a pin; `builtin_cmp` then had no order for two entities.
-///
-/// WI-879 LANDED HALF OF WHAT THIS DOC USED TO PREDICT, and the assertion below is updated
-/// to what it MEASURES rather than to what was hoped. The rule-body goal no longer answers
-/// `[]` — a definite refutation of a comparison that never happened, which a NAF or
-/// constraint guard reading emptiness as falsity would then decide from. It now
-/// RESIDUALIZES: one row, `definite = false`, plus a trace naming the operand pair. That
-/// is WI-879's acceptance ("either answers correctly or raises, never silently fails") met
-/// on the "never silently" clause.
-///
-/// WHAT IS STILL OPEN IS THE `false`, AND IT IS RE-OWNED: reaching the carrier's supplied
-/// `gt` from GOAL position needs ORDERING DISPATCH — the analogue of `sem_eq_dispatch`,
-/// which routes a carrier's own `eq` from a goal — and WI-879 did not build it.
-/// **WI-20260909-SM910 owns it now**, and this assertion is the one to update again when
-/// it lands: the answer becomes `false`, the operation body's. So this test keeps naming a
-/// position gap; only its shape changed, from a wrong answer to a withheld one.
-///
-/// CONTROL: the operation-body arm fails if the WI-444 supplied-override pin regresses.
-/// The rule-body arm fails if `builtin_cmp`'s `NoOrder` arm goes back to
-/// `BuiltinResult::Failure` (the row returns to `[]`). The OPERAND-position sibling above
-/// is the contrast that makes this a position gap rather than a rule-body one: same
-/// carrier, same override, same rule — and in operand position the pin IS read.
+/// CONTROL: register `PartialOrd.gt` as a builtin again and the goal row is UNDECIDED. The
+/// operation-body row passes either way by design; it fails if the WI-444 pin regresses.
 #[test]
-fn a_supplied_override_of_a_builtin_mapped_spec_op_is_unreachable_from_a_rule_body_goal() {
+fn a_supplied_override_of_a_spec_op_is_reached_from_a_rule_body_goal() {
     let from_op_body = own_gt_answer(
         "  operation probe() -> Bool = PartialOrd.gt(pt(2, 1), pt(1, 9))\n\
          \n  rule answer(?r) :- unify(?r, probe())\n",
@@ -261,17 +242,13 @@ fn a_supplied_override_of_a_builtin_mapped_spec_op_is_unreachable_from_a_rule_bo
     assert_eq!(
         from_op_body, "false",
         "an OPERATION body reaches the carrier's supplied `gt` (WI-444): `false`, not the \
-         spec default's `true`",
+         spec body's `true`",
     );
-
     let from_rule_goal =
         own_gt_answer("  rule answer(?r) :- PartialOrd.gt(pt(2, 1), pt(1, 9), ?r)\n");
     assert_eq!(
-        from_rule_goal, "UNDECIDED",
-        "WI-879: the same call as a rule-body GOAL is now UNDECIDED rather than an \
-         indistinguishable `[]` — `builtin_cmp` has no order for two entities and says so \
-         instead of claiming `not greater`. The remaining gap is that it does not reach \
-         the carrier's supplied `gt` either; that needs ordering dispatch, WI-20260909-SM910",
+        from_rule_goal, "false",
+        "the same call as a rule-body GOAL answers the carrier's supplied `gt`",
     );
 }
 

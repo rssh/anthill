@@ -583,28 +583,37 @@ impl KnowledgeBase {
         // (WI-1026): `PartialOrd.gt(pt(…), pt(…))` is spelled with a builtin and pinned
         // to the carrier's own bodied `gt`. `reduce_op_value` reads that pin, and hands a
         // call back at once when its callee is a builtin — which then runs here.
-        let r = self.reduce_op_value(call.clone(), subst, None, faults);
+        let (ran, builtin) = match self.reduce_op_value(call.clone(), subst, None, faults) {
+            OpReduction::Builtin { tag, call: at } => (None, Some((tag, at))),
+            OpReduction::Value(r) if !self.declined(&r, &call) => (Some(r), None),
+            OpReduction::Value(_) => (
+                None,
+                functor
+                    .and_then(|f| self.builtins.get(&f).copied())
+                    .map(|tag| (tag, call.clone())),
+            ),
+        };
         let mut projected_call = false;
-        let reduced = if !self.declined(&r, &call) {
-            Some(r)
+        let reduced = if ran.is_some() {
+            ran
         } else {
-            match functor.and_then(|f| self.builtins.get(&f).copied()) {
+            match builtin {
                 // A projection reads the receiver's field — or, for a dotted NULLARY
                 // operation (`Box.zero`), becomes that operation's call, which is
                 // evaluated in turn below. One the occurrence path left untouched (a
                 // term-carried `field_access`) goes through the builtin's result column.
-                Some(BuiltinTag::FieldAccess) => {
-                    let projected = self.reduce_dot_value(call.clone(), subst);
-                    if self.declined(&projected, &call) {
-                        self.run_builtin_for_value(BuiltinTag::FieldAccess, &call, subst, faults)
+                Some((BuiltinTag::FieldAccess, at)) => {
+                    let projected = self.reduce_dot_value(at.clone(), subst);
+                    if self.declined(&projected, &at) {
+                        self.run_builtin_for_value(BuiltinTag::FieldAccess, &at, subst, faults)
                             .into_value()?
                     } else {
                         projected_call = true;
                         Some(projected)
                     }
                 }
-                Some(tag) => self
-                    .run_builtin_for_value(tag, &call, subst, faults)
+                Some((tag, at)) => self
+                    .run_builtin_for_value(tag, &at, subst, faults)
                     .into_value()?,
                 None => None,
             }

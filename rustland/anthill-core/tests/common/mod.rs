@@ -1168,6 +1168,20 @@ pub fn parses_clean(src: &str) {
 /// copies of the assertion would let two files drift on what "refused" is allowed to mean.
 #[track_caller]
 #[allow(dead_code)]
+/// Is `e` one of the refusals the standard library gets loaded without its host binding
+/// layer: a `@[host_implemented]` claim no binding block supplies, or a comparison at a
+/// carrier whose order is a provision of that layer (`Int64`, `String`). Since
+/// WI-20260909-SM910 a comparison is its carrier's member, so the library's own
+/// `PartialOrd.gt` at `Int64` reads the `PartialOrd[T = Int64]` the layer provides.
+#[allow(dead_code)]
+pub fn a_binding_less_stdlib_refusal(e: &str) -> bool {
+    e.contains("is declared `@[host_implemented]`, but no binding block")
+        || (e.contains("cannot be supplied for call to `anthill.prelude.PartialOrd.")
+            && ["anthill.prelude.Int64]", "anthill.prelude.String]"]
+                .iter()
+                .any(|carrier| e.contains(&format!("[T = {carrier}`"))))
+}
+
 pub fn assert_refused_naming(errs: &[String], tokens: &[&str], why: &str) {
     let joined = errs.join(" | ");
     assert!(

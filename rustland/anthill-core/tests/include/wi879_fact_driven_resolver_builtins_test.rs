@@ -124,22 +124,21 @@ fn an_sld_string_comparison_answers_and_answers_correctly() {
     );
 }
 
-/// `Bool` is the other literal eval's `value_compare` orders and the resolver did not.
-/// `false < true`.
-///
-/// CONTROL, RUN: back out `value_ord`'s `Bool` arm and the first row goes to `[]`; the
-/// second stays `[]` either way and is what says the order is the right way round.
+/// `Bool` provides no order, so a comparison of two `Bool`s is refused at load
+/// (WI-20260909-SM910). It answered `true > false` while `PartialOrd.gt` was a resolver
+/// builtin, the order `value_compare` gives two literals; the comparison is now the
+/// carrier's member, and `Bool` has none. Loads with `PartialOrd.gt` a builtin again.
 #[test]
-fn an_sld_bool_comparison_answers() {
-    assert_eq!(
-        answer("PartialOrd.gt(true, false), unify(?r, 1)"),
-        "1",
-        "`true > false`, the order `value_compare` has always given eval",
+fn a_bool_comparison_is_refused_for_want_of_an_order() {
+    let errs = crate::common::load_errors_of(
+        "namespace wi879.sld\n  import anthill.prelude.{Int64, Bool, PartialOrd}\n  \
+         import anthill.kernel.{unify}\n\n  \
+         rule answer(?r) :- PartialOrd.gt(true, false), unify(?r, 1)\nend\n",
     );
-    assert_eq!(
-        answer("PartialOrd.gt(false, true), unify(?r, 1)"),
-        "[]",
-        "and not the other way round",
+    crate::common::assert_refused_naming(
+        &errs,
+        &["`anthill.prelude.PartialOrd.gt`", "`anthill.prelude.Bool` provides no"],
+        "`true > false`",
     );
 }
 
@@ -157,11 +156,11 @@ fn an_sld_bool_comparison_answers() {
 /// `load_phase_inner` and every `{carrier}.gt(…, ?r)` row here goes to `[]`. FOUR tests
 /// fail on that back-out: this one, `the_derived_arithmetic_closes_a_gap_the_array_had`,
 /// `a_new_carriers_binding_block_is_enough`, and — the one that is not this file's —
-/// `wi1036…::the_stdlib_family_is_builtin_on_both_sides_of_the_pin`, which asserts
+/// `wi1036…::the_stdlib_family_runs_its_primitive_behind_the_pin`, which asserts
 /// `is_builtin` for eight of the carrier members the deleted array used to register. The
-/// `PartialOrd.gt` rows pass either way BY DESIGN: that is the spec op, still registered in
-/// `register_builtin_tags`, and they are here to say that deleting the carrier array did
-/// not take the generic caller's comparison with it.
+/// `PartialOrd.gt` rows pass either way BY DESIGN: that is the spec op, whose primitive is
+/// registered in `register_builtin_tags` to run behind dispatch, and they are here to say
+/// that deleting the carrier array did not take the generic caller's comparison with it.
 #[test]
 fn a_carrier_member_gets_its_tag_from_the_binding_block() {
     for (carrier, a, b) in [
@@ -316,17 +315,22 @@ fn a_new_carriers_binding_block_is_enough() {
     let program = |entry: &str, claim: &str| {
         format!(
             r#"namespace wi879.newc
-  import anthill.prelude.{{Int64, Bool, PartialOrd, PartialEq, WeakOrd, Ord}}
+  import anthill.prelude.{{Int64, Bool, PartialOrd, PartialEq, Eq, WeakOrd, Ord}}
   import anthill.kernel.{{unify}}
 
   sort Tick
-    import anthill.prelude.{{Int64, Bool, PartialOrd, PartialEq, WeakOrd, Ord}}
+    import anthill.prelude.{{Int64, Bool, PartialOrd, PartialEq, Eq, WeakOrd, Ord}}
     entity tick(v: Int64)
     operation eq(a: Tick, b: Tick) -> Bool = true
     -- BODY-LESS: its implementation is the host's, named below and nowhere else.
     operation lt(a: Tick, b: Tick) -> Bool{claim}
+    -- `gt`, `gte` and `lte` take `PartialOrd`'s bodies, which require `WeakOrd`
+    -- (WI-20260909-SM910); `compare` is what they read.
+    operation compare(a: Tick, b: Tick) -> Int64 = 0
     provides PartialEq[T = Tick]
+    provides Eq[T = Tick]
     provides PartialOrd[T = Tick]
+    provides WeakOrd[T = Tick]
   end
 
   provides Tick language rust
@@ -518,14 +522,24 @@ fn a_cross_sort_literal_pair_is_undecided_and_diagnosed() {
 #[test]
 fn an_eager_constraint_guard_cannot_decide_from_a_comparison_with_no_order() {
     let src = r#"namespace wi879.guard
-  import anthill.prelude.{Int64, Bool, PartialOrd, PartialEq, Eq}
+  import anthill.prelude.{Int64, Bool, PartialOrd, PartialEq, Eq, WeakOrd}
 
   sort Pt
-    import anthill.prelude.{Int64, Bool, PartialOrd, PartialEq, Eq}
+    import anthill.prelude.{Int64, Bool, PartialOrd, PartialEq, Eq, WeakOrd}
     entity p(v: Int64)
     provides PartialEq[T = Pt]
+    provides Eq[T = Pt]
     provides PartialOrd[T = Pt]
+    provides WeakOrd[T = Pt]
     operation eq(a: Pt, b: Pt) -> Bool = true
+    operation compare(a: Pt, b: Pt) -> Int64 = 0
+    -- The comparison primitive at two entities, which has no order for them.
+    operation gt(a: Pt, b: Pt) -> Bool @[host_implemented]
+  end
+
+  provides Pt language rust
+    artifact "nowhere.rs"
+    operation_map { gt: "ordered_gt" }
   end
 
   fact has(p(1))
@@ -587,29 +601,18 @@ end
     .to_string()
 }
 
-/// **THE SILENT FAILURE, NOW UNDECIDED.** `PartialOrd.gt` over two ENTITIES is a pair the
-/// resolver has no order for. It used to answer `[]` — a definite refutation of a
-/// comparison that never happened, which a NAF or constraint guard reading emptiness as
-/// falsity would then decide from. It now residualizes: the row comes back with
-/// `definite = false`, and the trace says why.
-///
-/// NOT `false`, WHICH WOULD BE THE *CORRECT* ANSWER (the carrier supplies `gt = false`,
-/// and WI-1036 measured an operation body reaching it). Reaching it from goal position
-/// needs ORDERING DISPATCH — the analogue of `sem_eq_dispatch` — which this ticket does
-/// not build and WI-20260909-SM910 owns. What WI-879 does is stop the engine from claiming
-/// the opposite.
-///
-/// CONTROL, RUN: restore `BuiltinResult::Failure` in the `NoOrder` arm and this row goes
-/// back to `[]`. It is ALSO the row `wi1036…::a_supplied_override_of_a_builtin_mapped_spec_
-/// op_is_unreachable_from_a_rule_body_goal` pins from the other side; that test named this
-/// ticket as its owner and its assertion moved with this change.
+/// **A CARRIER'S OWN `gt`, FROM A RULE-BODY GOAL** (WI-20260909-SM910). `PartialOrd.gt` over
+/// two `Point`s answers `false`, the carrier's member, where WI-879 left it UNDECIDED —
+/// `builtin_cmp` has no order for two entities, and its arm residualizes rather than
+/// answering `[]`, a refutation of a comparison that never ran (that arm is driven by
+/// `a_new_carriers_binding_block_is_enough`). The goal now reads the typer's pin to
+/// `Point.gt`. UNDECIDED with `PartialOrd.gt` a builtin again.
 #[test]
-fn a_comparison_with_no_order_is_undecided_not_false() {
+fn a_carriers_own_gt_answers_a_rule_body_goal() {
     let mut kb = crate::common::load_kb_with(&own_gt_program());
     assert_eq!(
         rows_of(&mut kb, "wi879.own.answer"),
-        "UNDECIDED",
-        "an operand pair `builtin_cmp` has no order for suspends as a WI-519 residual; \
-         before WI-879 it was an indistinguishable `Failure`",
+        "false",
+        "the goal answers `Point.gt`'s `false`",
     );
 }

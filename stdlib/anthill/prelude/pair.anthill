@@ -105,7 +105,9 @@ enum anthill.prelude.Pair
               if PartialEq.eq(al, bl) then PartialEq.eq(ar, br) else false
   end
   provides Eq[Self]         :- Eq[A], Eq[B]
-  provides PartialOrd[Self] :- PartialOrd[A], PartialOrd[B]
+  -- Conditioned on `WeakOrd`, not `PartialOrd`: the provision takes `PartialOrd`'s bodies,
+  -- which derive the order from `compare` and require `WeakOrd` at the pair.
+  provides PartialOrd[Self] :- WeakOrd[A], WeakOrd[B]
   -- WI-1109: TWO conditional provisions, not one. A lexicographic `Pair` is a WEAK
   -- order iff both components are, and a STRONG one iff both are strong — strictly
   -- different conditions, which is exactly why 058 §3.8 puts a `:- goals` tail on the

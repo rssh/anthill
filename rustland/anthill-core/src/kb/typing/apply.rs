@@ -5680,7 +5680,9 @@ fn check_apply_call(
                         // `wi1110 …a_converted_spec_lends_its_names` is refused although
                         // `gte` never consults the slot. The harm the WI-945 signature
                         // exists to prevent is an eval-time `__req_* not bound`, and a
-                        // structural resolution cannot produce one.
+                        // structural resolution cannot produce one. (`gte` left the gate with
+                        // WI-20260909-SM910, a comparison being its carrier's member; the
+                        // wi1110 row still loads, measured.)
                         if !kb.is_builtin(fn_sym) {
                             kb.unsuppliable_requirements.push(UnsuppliableRequirement {
                                 span,
@@ -5705,9 +5707,38 @@ fn check_apply_call(
                         let chain = op_dict_entries(kb, fn_sym);
                         chain.entries().len() > chain.sort_len()
                     };
+                    // A SPEC operation with a body in the spec, at a type the call does not fix,
+                    // called through a dictionary of the spec the caller holds
+                    // ([`caller_holds_spec`]): its member is the one that dictionary holds, and the
+                    // body's own `requires` are owed by the provision that takes it
+                    // (`spec_body_requirements_of_row`), not by the call. In a rule's own term the
+                    // clause's condition is that dictionary.
+                    let own_half_open =
+                        has_own_half && !own_requirements_fixed_at(kb, fn_sym, &subst, &projection_receivers);
+                    let spec_body_open = (own_half_open
+                        && spec_body_requires_are_the_provisions(kb, fn_sym))
+                    .then(|| defaulted_spec_op_parent(kb, fn_sym))
+                    .flatten()
+                    .filter(|spec| caller_holds_spec(kb, env, &held_views, *spec));
+                    let clause_dispatches =
+                        spec_body_open.is_some() && env.clause_supplies_requirements(pos_args, named_args);
+                    // A comparison at a type the clause leaves open and holds no dictionary of
+                    // its spec for — `rule related(?a, ?b) :- gte(?a, ?b)`, or `gte(?a, ?a)` at
+                    // the `T` of a sort that requires nothing — has no typed caller (073 §6.2):
+                    // it is left unclassified, owing the clause nothing, and its goal reads the
+                    // type its values carry when it runs (`KnowledgeBase::goal_builtin_tag`), as
+                    // the resolver's built-in comparison did (decided with the user 2026-11-08).
+                    let no_typed_caller = own_half_open
+                        && spec_body_open.is_none()
+                        && env.clause_supplies_requirements(pos_args, named_args)
+                        && kb.spec_op_primitive_of(fn_sym).is_some();
+                    if let Some(spec_sort) = spec_body_open.filter(|_| clause_dispatches) {
+                        dispatch_to_the_clause(kb, env, occ, fn_sym, spec_sort, span)?;
+                    }
+                    if !no_typed_caller {
                     let own_half_to_the_clause = env.clause_supplies_requirements(pos_args, named_args)
-                        && has_own_half
-                        && !own_requirements_fixed_at(kb, fn_sym, &subst, &projection_receivers)
+                        && spec_body_open.is_none()
+                        && own_half_open
                         && own_requirements_carried_by_arguments(kb, fn_sym);
                     // A chain the clause supplies: the call carries its slots, each read by a
                     // condition of the clause. Not a call woven as dispatched, whose condition is
@@ -5719,7 +5750,8 @@ fn check_apply_call(
                     {
                         leave_to_the_clause(kb, occ, fn_sym, ClauseCondition::Slots);
                     }
-                    if !own_half_to_the_clause {
+                    if !own_half_to_the_clause && !clause_dispatches {
+                    let park = call_park_site(kb, env, &held_views, fn_sym, span, occ.span.source);
                     stamp_op_scoped_dicts(
                         kb,
                         occ,
@@ -5728,13 +5760,7 @@ fn check_apply_call(
                         &caller_requires,
                         env.param_rigids(),
                         &selections,
-                        OpSlotParkSite::for_call(
-                            kb,
-                            fn_sym,
-                            env.enclosing_op(),
-                            span,
-                            occ.span.source,
-                        ),
+                        park,
                         &projection_receivers,
                         &held_views,
                         span,
@@ -5758,6 +5784,7 @@ fn check_apply_call(
                             enclosing_op: env.enclosing_op(),
                         },
                     );
+                    }
                 }
             }
         }

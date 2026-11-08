@@ -1091,6 +1091,7 @@ impl KnowledgeBase {
             fact_dedup: plain(&self.fact_dedup),
             value_fact_dedup: plain(&self.value_fact_dedup),
             builtins: plain(&self.builtins),
+            spec_op_primitives: plain(&self.spec_op_primitives),
             entity_fields: plain(&self.entity_fields),
             constructor_symbols: plain(&self.constructor_symbols),
             head_name_sites: plain(&self.head_name_sites),

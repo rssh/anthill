@@ -127,7 +127,9 @@ fn the_gate_population_is_not_vacuous() {
 }
 
 /// A BUILTIN-MAPPED DEFAULTED SPEC OP IS ONE, and the gate says so by what it IS.
-/// `PartialOrd.gt` is defaulted AND builtin-mapped; every reader of the gate admits it.
+/// `PartialOrd.gt` is defaulted, and its primitive runs behind dispatch (no builtin since
+/// WI-20260909-SM910, which registers it as its carriers' primitive); every reader of the
+/// gate admits it.
 /// When this was written one reader — the rule-body walk trigger — excluded it through a
 /// `!is_builtin` clause of its own, and this test's subject was that the clause was
 /// SITE-LOCAL and could not become a claim about the shape. WI-1036 then deleted the
@@ -143,7 +145,10 @@ fn a_builtin_backed_defaulted_spec_op_is_in_the_shared_gate() {
     let gt = kb
         .try_resolve_symbol("anthill.prelude.PartialOrd.gt")
         .expect("the stdlib declares PartialOrd.gt");
-    assert!(kb.is_builtin(gt), "`PartialOrd.gt` is builtin-mapped");
+    assert!(
+        !kb.is_builtin(gt),
+        "`PartialOrd.gt`'s primitive runs behind dispatch: the spelled spec op is no builtin"
+    );
     assert!(
         defaulted_spec_op_parent(&kb, gt).is_some(),
         "the shared gate must classify a builtin-backed defaulted spec op by what it IS; \

@@ -1966,7 +1966,7 @@ Where it does not reach, each a row in that file:
   Descending](…)`), answers `Int64`'s own `-1`; called by the interpreter it answers `4`.
   P7VP4's own `viaRule` reads the same, with this change and without it.
 
-Builtins (`eq`, `<`) read no dictionary and wait on WI-20260909-SM910.
+`eq` reads no dictionary. Since WI-20260909-SM910 a comparison (`<`) is its carrier's member: a clause that declares its spec dispatches through that dictionary, and one at a type the clause leaves open and declares nothing for is read at the type its values carry when it runs.
 
 ## 8.10 Build sequence — filed 2026-09-09, VVM1R as umbrella
 

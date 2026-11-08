@@ -1356,6 +1356,11 @@ pub struct KnowledgeBase {
 
     // Builtin dispatch: functor symbol → builtin tag
     builtins: HashMap<Symbol, BuiltinTag>,
+    /// The primitive that runs a carrier's host-mapped member of a spec operation, keyed by
+    /// the spec operation (`PartialOrd.gt` ↦ [`BuiltinTag::Gt`]). Not a builtin: a goal on
+    /// the spec operation dispatches like any spec operation's, and only the carrier member
+    /// it lands on is one ([`load::derive_carrier_builtin_tags`] tags it from this table).
+    spec_op_primitives: HashMap<Symbol, BuiltinTag>,
 
     // Entity field registry: functor symbol → ordered field names.
     // Populated during load_entity, used by convert_term for partial named-arg expansion.
@@ -3119,6 +3124,7 @@ impl KnowledgeBase {
             fact_dedup: HashMap::new(),
             value_fact_dedup: HashMap::new(),
             builtins: HashMap::new(),
+            spec_op_primitives: HashMap::new(),
             entity_fields: HashMap::new(),
             constructor_symbols: HashSet::new(),
             head_name_sites: Vec::new(),
@@ -13400,7 +13406,29 @@ impl KnowledgeBase {
     }
 
     fn register_builtin_tag_as(&mut self, qualified_name: &str, tag: BuiltinTag, kind: SymbolKind) {
-        let sym = if let Some(&resolved) = self.symbols.by_qualified_name.get(qualified_name) {
+        let sym = self.bootstrap_symbol(qualified_name, kind);
+        self.builtins.insert(sym, tag);
+    }
+
+    /// Record `tag` as the primitive that runs a carrier's host-mapped member of the spec
+    /// operation `qualified_name` ([`Self::spec_op_primitive_of`]). The spec operation is no
+    /// builtin.
+    fn register_spec_op_primitive(&mut self, qualified_name: &str, tag: BuiltinTag) {
+        let sym = self.bootstrap_symbol(qualified_name, SymbolKind::Operation);
+        self.spec_op_primitives.insert(sym, tag);
+    }
+
+    /// The primitive that runs a carrier's host-mapped member of the spec operation `spec_op`
+    /// (`PartialOrd.gt` ↦ [`BuiltinTag::Gt`]), which [`load::derive_carrier_builtin_tags`]
+    /// gives that member.
+    pub(crate) fn spec_op_primitive_of(&self, spec_op: Symbol) -> Option<BuiltinTag> {
+        self.spec_op_primitives.get(&spec_op).copied()
+    }
+
+    /// The symbol of a bootstrap registration's qualified name, minted in its namespace's
+    /// scope when the name is not yet defined.
+    fn bootstrap_symbol(&mut self, qualified_name: &str, kind: SymbolKind) -> Symbol {
+        if let Some(&resolved) = self.symbols.by_qualified_name.get(qualified_name) {
             resolved
         } else {
             let short = qualified_name.rsplit('.').next().unwrap_or(qualified_name);
@@ -13422,8 +13450,7 @@ impl KnowledgeBase {
                 )
             };
             self.symbols.define(short, qualified_name, kind, scope)
-        };
-        self.builtins.insert(sym, tag);
+        }
     }
 
     /// WI-879 — bind an ALREADY-RESOLVED operation symbol to a [`BuiltinTag`], for the
@@ -13582,10 +13609,10 @@ impl KnowledgeBase {
         self.register_builtin_tag("anthill.prelude.PartialEq.eq", BuiltinTag::SemEq);
         self.register_builtin_tag("anthill.kernel.struct_eq", BuiltinTag::Eq);
         self.register_builtin_tag("anthill.prelude.PartialEq.neq", BuiltinTag::SemNeq);
-        self.register_builtin_tag("anthill.prelude.PartialOrd.gt", BuiltinTag::Gt);
-        self.register_builtin_tag("anthill.prelude.PartialOrd.lt", BuiltinTag::Lt);
-        self.register_builtin_tag("anthill.prelude.PartialOrd.gte", BuiltinTag::Gte);
-        self.register_builtin_tag("anthill.prelude.PartialOrd.lte", BuiltinTag::Lte);
+        self.register_spec_op_primitive("anthill.prelude.PartialOrd.gt", BuiltinTag::Gt);
+        self.register_spec_op_primitive("anthill.prelude.PartialOrd.lt", BuiltinTag::Lt);
+        self.register_spec_op_primitive("anthill.prelude.PartialOrd.gte", BuiltinTag::Gte);
+        self.register_spec_op_primitive("anthill.prelude.PartialOrd.lte", BuiltinTag::Lte);
         // WI-879 — THE FOUR ABOVE STAY, AND NOTHING PER-CARRIER JOINS THEM. The spec-op
         // entries are load-bearing and are not a leftover: a bare `gt(?x, 5)` written in
         // any namespace but a scalar carrier's own resolves to `PartialOrd.gt`, so
@@ -13684,23 +13711,37 @@ impl KnowledgeBase {
     /// If scan_definitions created a new resolved symbol for a builtin's
     /// qualified name (from .anthill source), remap the builtin to use it.
     pub fn resolve_builtins(&mut self) {
-        let old: Vec<(Symbol, BuiltinTag)> = self.builtins.drain().collect();
-        for (old_sym, tag) in old {
-            let qualified = match self.symbols.get(old_sym) {
-                SymbolDef::Resolved { qualified_name, .. } => qualified_name.clone(),
-                SymbolDef::Unresolved { name } => name.clone(),
-            };
-            let sym = self
-                .symbols
-                .by_qualified_name
-                .get(&qualified)
-                .copied()
-                .unwrap_or(old_sym);
-            self.builtins.insert(sym, tag);
-        }
+        let builtins = std::mem::take(&mut self.builtins);
+        self.builtins = self.remapped_to_defined_symbols(builtins);
+        let primitives = std::mem::take(&mut self.spec_op_primitives);
+        self.spec_op_primitives = self.remapped_to_defined_symbols(primitives);
         // WI-627: a builtin's canonical symbol may have been remapped above;
         // re-sync the equality-connective cache to the final symbols.
         self.cache_connective_syms();
+    }
+
+    /// A bootstrap table keyed by the symbols the registrations minted, re-keyed by the
+    /// symbol each qualified name resolves to now ([`Self::resolve_builtins`]).
+    fn remapped_to_defined_symbols(
+        &self,
+        table: HashMap<Symbol, BuiltinTag>,
+    ) -> HashMap<Symbol, BuiltinTag> {
+        table
+            .into_iter()
+            .map(|(old_sym, tag)| {
+                let qualified = match self.symbols.get(old_sym) {
+                    SymbolDef::Resolved { qualified_name, .. } => qualified_name.as_str(),
+                    SymbolDef::Unresolved { name } => name.as_str(),
+                };
+                let sym = self
+                    .symbols
+                    .by_qualified_name
+                    .get(qualified)
+                    .copied()
+                    .unwrap_or(old_sym);
+                (sym, tag)
+            })
+            .collect()
     }
 
     /// True iff `sym` is a registered resolver builtin (`anthill.prelude.PartialEq.eq`,

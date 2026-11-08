@@ -1999,6 +1999,8 @@ mod wi_y9hsg_rule_body_default_body_test;
 mod wi_me8wr_receiver_less_default_test;
 #[path = "include/wi_d5wfq_default_frame_test.rs"]
 mod wi_d5wfq_default_frame_test;
+#[path = "include/wi_sm910_ordering_dispatch_test.rs"]
+mod wi_sm910_ordering_dispatch_test;
 #[path = "include/wi_shed7_fillable_test.rs"]
 mod wi_shed7_fillable_test;
 #[path = "include/wi_shed7_reads_wait_test.rs"]

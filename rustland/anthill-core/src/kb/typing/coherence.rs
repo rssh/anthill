@@ -517,7 +517,9 @@ fn provision_requirement_errors(
         /// (`check_provider_operations`); this is its second reader.
         rid: crate::kb::RuleId,
         /// The members of a third sort the provision binds, with what their frames read at
-        /// its bindings ([`bound_member_requirements_of_row`]) — owed as the spec's `requires` is.
+        /// its bindings ([`bound_member_requirements_of_row`]), and the bodies in the spec it
+        /// takes, with their `requires` there ([`spec_body_requirements_of_row`]) — owed as
+        /// the spec's `requires` is.
         members: Vec<BoundMemberRequirements>,
     }
     let mut provisions: Vec<Provision> = Vec::new();
@@ -582,7 +584,8 @@ fn provision_requirement_errors(
                 }
             }
         }
-        let members = bound_member_requirements_of_row(kb, &row);
+        let mut members = bound_member_requirements_of_row(kb, &row);
+        members.extend(spec_body_requirements_of_row(kb, &row));
         provisions.push(Provision {
             carrier: row.provider,
             spec: spec_base,
@@ -668,6 +671,7 @@ fn provision_requirement_errors(
                     spec: kb.qualified_name_of(p.spec).to_string(),
                     op: bound.op.clone(),
                     member: kb.qualified_name_of(bound.member).to_string(),
+                    spec_body: bound.spec_body,
                     required: kb.qualified_name_of(required).to_string(),
                     clause: None,
                     failure,
@@ -737,6 +741,7 @@ fn provision_requirement_errors(
                         spec: kb.qualified_name_of(p.spec).to_string(),
                         op: bound.op.clone(),
                         member: kb.qualified_name_of(bound.member).to_string(),
+                        spec_body: bound.spec_body,
                         required: kb.qualified_name_of(required).to_string(),
                         clause,
                         failure: requirement_failure_of(

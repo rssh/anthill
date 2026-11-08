@@ -1781,8 +1781,10 @@ class ParserIntegrationTest extends munit.FunSuite:
     // a provision condition. MEASURED: before conditions were routed through the same
     // resolution, moving `requires PartialEq[A]` into `provides PartialEq[Pair] :-
     // PartialEq[A]` removed these links silently and `sbt test` stayed green.
+    // `PartialOrd[Pair]` is conditioned on `WeakOrd` (WI-20260909-SM910: the provision takes
+    // `PartialOrd`'s bodies, which require it), so `WeakOrd` is the link it makes.
     for (spec <- List("anthill.prelude.PartialEq", "anthill.prelude.Eq",
-                      "anthill.prelude.PartialOrd", "anthill.prelude.Ord"))
+                      "anthill.prelude.WeakOrd", "anthill.prelude.Ord"))
       assert(parents.contains(scopeOf(spec)),
         s"`provides … :- $spec[…]` should link $spec; parents = " +
         parents.map(p => kb.scopeDisplayName(p)).mkString(", "))

@@ -5901,7 +5901,7 @@ pub(crate) fn spec_call_reads(
 ///
 /// WI-1044 lifted this off `Interpreter` — it only ever read `self.kb`, and the
 /// resolver and the query-term walk need the same classification without one.
-fn spec_call_runtime_carrier(
+pub(crate) fn spec_call_runtime_carrier(
     kb: &KnowledgeBase,
     spec_op: Symbol,
     arg_values: &[Value],

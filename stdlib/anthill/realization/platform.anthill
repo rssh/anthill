@@ -129,8 +129,8 @@ namespace anthill.realization.platform
   rule needs_rebuild(?fs, ?input, ?output) :-
     exists(?fs, ?input),
     exists(?fs, ?output),
-    status(?fs, ?input, FileStatus(size: ?, modified: ?t_in, is_dir: ?, permissions: ?)),
-    status(?fs, ?output, FileStatus(size: ?, modified: ?t_out, is_dir: ?, permissions: ?)),
+    status(?fs, ?input, FileStatus(size: ?, modified: Timestamp(value: ?t_in), is_dir: ?, permissions: ?)),
+    status(?fs, ?output, FileStatus(size: ?, modified: Timestamp(value: ?t_out), is_dir: ?, permissions: ?)),
     gt(?t_in, ?t_out)
 
   -- ================================================================

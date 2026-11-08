@@ -3767,7 +3767,15 @@ fn compile_condition(
     // unprovable and the `where` came back silently empty — precisely the failure the
     // rejection is written to prevent. `EquationFunctor` is deliberately excluded,
     // which restores it.
-    if interp.kb.builtin_of(*functor).is_none() && !interp.kb.cites_a_relation(*functor) {
+    //
+    // A spec operation whose primitive runs behind dispatch (`PartialOrd.gte`,
+    // WI-20260909-SM910) is such a goal too: the atom is a value no typer saw, so the
+    // resolver reads it at the type its filled columns carry
+    // (`KnowledgeBase::goal_builtin_tag`).
+    if interp.kb.builtin_of(*functor).is_none()
+        && interp.kb.spec_op_primitive_of(*functor).is_none()
+        && !interp.kb.cites_a_relation(*functor)
+    {
         return Err(macro_rejects(
             "a goal-expressible predicate (a builtin such as `eq`/`neq`/`lt`, \
              or a rule) as a row-lambda condition atom",

@@ -30,7 +30,10 @@
 //!    whether or not the caller declared `requires Unit[T = E]`, and its rule twin floundered
 //!    at `find_dictionary(Pc2, …)`. Now the parameter is read at the body's rigid for it
 //!    (`bind_params_the_requirement_says`, at any depth), so the call's own requirement is
-//!    `Unit[T = E]`, forwarded from the caller or refused naming the clause to add (§5.2). In
+//!    `Unit[T = E]`, forwarded from the caller where it holds one. (It was refused where the
+//!    caller held none, naming the clause to add; since WI-20260909-SM910 a call through the
+//!    caller's dictionary of `Pc2` owes the body's `requires` nothing — each provision taking
+//!    the body owes it, checked where the provision is written.) In
 //!    a rule, the citation's bracket writes `E`, which no column mentions: it reaches the
 //!    route of the clause's read of `Pc2` (`bracket_params_no_column_reads`), and the default
 //!    entered through that dictionary reads `Element` off its provider's provision
@@ -70,9 +73,7 @@
 //!   The rule rows of `the_default_is_read_at_the_requirement_answering_it` answer either way
 //!   since the provision read below: `Bag`'s provision says `Element = Bit` too;
 //! - the rigid reading out (the requirement's binding taken where ground, as before):
-//!   `the_default_is_read_at_the_callers_parameter` dies `__req_unit not bound`, and
-//!   `a_call_owing_evidence_at_the_callers_parameter_is_refused` loads clean — with one
-//!   provider of `Unit` that program answered, through the bridge's derivation;
+//!   `the_default_is_read_at_the_callers_parameter` dies `__req_unit not bound`;
 //! - the bracket's unopened parameters out of the citation's route: the rows of
 //!   `a_rule_reads_the_parameter_its_citation_writes` cited from outside the sort flounder at
 //!   `find_dictionary(Pc2, …)` (`ruleInner` answers either way, its citation reads the
@@ -279,7 +280,7 @@ namespace d5wfq.generic
   sort PBox[T]
     entity pnil
     entity psome(x: T)
-    provides Pc2[C = PBox[T = T], Element = T]
+    provides Pc2[C = PBox[T = T], Element = T] :- Unit[T = T]
     operation fill(xs: List[T = T]) -> PBox[T = T] = match xs
       case nil() -> pnil()
       case cons(x, rest) -> psome(x: x)
@@ -621,42 +622,36 @@ fn the_default_is_read_at_the_callers_parameter() {
     );
 }
 
-/// The same calls where the caller holds no `Unit[T = E]`: refused where they are written,
-/// naming the requirement and the clause to add — the caller's frame is the only thing that
-/// could supply it (kernel-language §5.2). Each loaded and died `__req_unit not bound`.
+/// The same calls where the caller holds no `Unit[T = E]` load: they are calls through the
+/// dictionary of `Pc2` the caller holds, and the `requires` of `both`'s body is owed by each
+/// provision that takes the body, checked there (WI-20260909-SM910; `Bag` provides `Unit`'s
+/// binding, and `PBox` states it as its condition). Until SM910 each was refused naming
+/// `Unit[T = E]` and the clause to add, and before D5WFQ each loaded and died.
+///
+/// WHAT RUNS IS NOT YET RIGHT, and the row says so: nothing passes the provision's `Unit`
+/// to the body it takes, and with no argument to derive it from, `NoUnit.m()` and `viaNo`
+/// die `__req_unit not bound` — WI-20261105-89J6K's case (5), which flips the two rows to
+/// `bsome(b: t)`. One provider of `Unit` answers through the bridge's derivation.
+///
+/// Fails with the caller's park restored (`call_park_site` answering `for_call`): each is
+/// refused naming `Unit[T = E]` / `Unit[T = Y]`.
 #[test]
-fn a_call_owing_evidence_at_the_callers_parameter_is_refused() {
-    for (decl, requirement, owner) in [
-        (
-            "  sort NoUnit[C, E]\n    requires Pc2[C = C, Element = E]\n    \
-             operation m() -> C = Pc2.both()\n  end\n",
-            "d5wfq.generic.Unit[T = E]",
-            "d5wfq.generic.NoUnit",
-        ),
-        (
-            "  operation viaNo[X, Y]() -> X requires Pc2[C = X, Element = Y] = Pc2.both()\n",
-            "d5wfq.generic.Unit[T = Y]",
-            "d5wfq.generic.viaNo",
-        ),
-    ] {
-        let src = GENERIC.swap("  sort Driver\n", &format!("{decl}  sort Driver\n"));
-        assert_owes(&src, requirement, owner);
+fn a_call_through_the_callers_dictionary_owes_the_body_none_of_its_requirement() {
+    let decl = "  sort NoUnit[C, E]\n    requires Pc2[C = C, Element = E]\n    \
+                operation m() -> C = Pc2.both()\n  end\n  \
+                operation viaNo[X, Y]() -> X requires Pc2[C = X, Element = Y] = Pc2.both()\n";
+    let drivers = "  sort Driver\n    operation opNoUnit() -> Bag = NoUnit[C = Bag, E = Bit].m()\n    \
+                   operation opViaNo() -> Bag = viaNo[X = Bag, Y = Bit]()\n";
+    let src = GENERIC.swap("  sort Driver\n", &format!("{decl}{drivers}"));
+    let mut interp = crate::common::interp_for(&src);
+    for entry in ["opNoUnit", "opViaNo"] {
+        let got = format!("{:?}", interp.call(&format!("d5wfq.generic.Driver.{entry}"), &[]));
+        assert!(
+            got.contains("__req_unit") && got.contains("not bound"),
+            "`{entry}` loads and dies for want of the provision's `Unit` (89J6K); got {got}"
+        );
     }
-    // One provider of `Unit`: the bridge's derivation chose it, and the call answered
-    // `bsome(b: t)`; the evidence is still the caller's to hold (§5.2).
-    assert_owes(ONE_UNIT, "d5wfq.one.Unit[T = E]", "d5wfq.one.NoUnit");
-}
-
-/// `src` loads with the one refusal of a call whose requirement `requirement` only `owner`'s
-/// frame could supply.
-fn assert_owes(src: &str, requirement: &str, owner: &str) {
-    let errors = crate::common::load_errors_of(src);
-    assert!(
-        errors.len() == 1
-            && errors[0].contains(&format!("requirement `{requirement}` cannot be supplied"))
-            && errors[0].contains(&format!("Declare `requires {requirement}` on `{owner}`")),
-        "one refusal naming `{requirement}` and `{owner}`; got {errors:#?}"
-    );
+    assert_answers(ONE_UNIT, "d5wfq.one", &[("op", "bsome(b: t)")]);
 }
 
 /// A rule: the citation's bracket writes `E`, which no column of the clause mentions, so the
@@ -683,10 +678,22 @@ fn a_rule_reads_the_parameter_its_citation_writes() {
 }
 
 /// A provision whose `Element` is its own parameter says no type for it, so the default is
-/// read at the call's stamps: the rule sort's requirement writes `Element = Bit`.
+/// read at the call's stamps: the rule sort's requirement writes `Element = Bit`. The
+/// provision states `Unit[T = T]` as its condition: it takes `both`'s body, whose `requires`
+/// it owes (WI-20260909-SM910); written without it, it is refused naming
+/// `Unit[T = d5wfq.generic.PBox.T]`.
 #[test]
 fn a_parametric_provision_takes_the_call_sites_evidence() {
     assert_answers(GENERIC, "d5wfq.generic", &[("boxT", "1"), ("boxF", "0")]);
+    let unconditional = GENERIC.swap(
+        "provides Pc2[C = PBox[T = T], Element = T] :- Unit[T = T]\n",
+        "provides Pc2[C = PBox[T = T], Element = T]\n",
+    );
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&unconditional),
+        &["'d5wfq.generic.PBox' provides 'd5wfq.generic.Pc2' and writes no `both`", "Unit[T = d5wfq.generic.PBox.T]"],
+        "`PBox` taking `both`'s body without its `Unit`",
+    );
 }
 
 /// A citation in an operation body at an instance where nothing provides the cited sort's
