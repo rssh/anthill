@@ -109,9 +109,10 @@
 //!    the op-half channel reliable at every entry" — and that is what landed. Three
 //!    routes had closed already (a HOST entry seeds the op half from the argument values
 //!    since WI-1091; an eta carries its slots captured; value-direction reads the
-//!    composed chain); the DEFERRED route was the remaining hole and
-//!    `Interpreter::fill_missing_op_scoped_slots` fills it at `enter_operation`. Only
-//!    then did the builder widen to `enclosing_frame_chain()`.
+//!    composed chain); the DEFERRED route was the remaining hole, filled at
+//!    `enter_operation` from the argument values (until WI-20261105-89J6K, which made the
+//!    call's own stamp reach the member instead). Only then did the builder widen to
+//!    `enclosing_frame_chain()`.
 //!
 //! So `a_sort_level_slot_is_the_repair` is no longer THE repair, only A repair — the
 //! message's tail still names it because it is the one that needs no type parameters,

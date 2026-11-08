@@ -472,13 +472,18 @@ end
 /// witnesses — whatever the provisions answering the requirement say of its OTHER slots:
 /// `W1` provides `Storage` at `Bag` with `Key = String, Val = Int64`, and `AnyVal` at every
 /// carrier with `Key = String, Val = Bool`, so at `X = Bag` the two say `Key` alike and name
-/// `Val` apart. `X.Key` is `String`: `f(bag, "k")` runs to 1 (the dictionary is `W1`'s, the
-/// more specific), and `f(bag, 5)` is refused at the argument. The parent refused both, "`X.Key`
-/// does not read at this call": saying `Key` alone, it read the unwritten `Val` as a slot the
-/// goal omits, which no provision matched.
+/// `Val` apart. `X.Key` is `String`: `f(bag, 5)` is refused at the argument. The parent
+/// refused it, "`X.Key` does not read at this call": saying `Key` alone, it read the
+/// unwritten `Val` as a slot the goal omits, which no provision matched.
+///
+/// The call is refused too, the requirement being fixed only in part (WI-20261105-89J6K,
+/// kernel-language §8.7): `Storage[C = Bag]` leaves `Val` unwritten, and `W1` and `AnyVal`
+/// both answer it, neither more specific than the other — `AnyVal` does not answer at `Val =
+/// Int64`, nor `W1` at `AnyVal`'s `Bool`. Until then `f(bag, "k")` ran to 1, its body reading
+/// no dictionary. Naming the provider at the call answers 1, as does writing `Val`.
 #[test]
 fn a_projection_reads_its_member_whatever_the_provisions_say_of_another() {
-    let program = |ns: &str, key: &str| {
+    let program = |ns: &str, clause: &str, call: &str| {
         format!(
             r#"
 namespace {ns}
@@ -503,18 +508,26 @@ namespace {ns}
       operation get(s: X, k: String) -> Bool = true
     end
   end
-  operation f[X](x: X, k: X.Key) -> Int64 requires Storage[C = X] = 1
-  operation main() -> Int64 = f(bag, {key})
+  operation f[X](x: X, k: X.Key) -> Int64 requires {clause} = 1
+  operation main() -> Int64 = {call}
 end
 "#
         )
     };
-    assert_eq!(
-        run_int64(&program("wi_dnx0e.lent.string", "\"k\""), "wi_dnx0e.lent.string.main"),
-        Ok(1)
-    );
+    let open = "Storage[C = X]";
     assert_refused(
-        &program("wi_dnx0e.lent.int", "5"),
+        &program("wi_dnx0e.lent.tie", open, "f(bag, \"k\")"),
+        "`wi_dnx0e.lent.tie.W1` and `wi_dnx0e.lent.tie.AnyVal` answer",
+        "a requirement two incomparable provisions answer",
+    );
+    for (ns, clause, call) in [
+        ("wi_dnx0e.lent.named", open, "f[Storage = W1](bag, \"k\")"),
+        ("wi_dnx0e.lent.written", "Storage[C = X, Val = Int64]", "f(bag, \"k\")"),
+    ] {
+        assert_eq!(run_int64(&program(ns, clause, call), &format!("{ns}.main")), Ok(1), "{ns}");
+    }
+    assert_refused(
+        &program("wi_dnx0e.lent.int", open, "f(bag, 5)"),
         "expected String, got Int64",
         "`X.Key` given an `Int64`",
     );

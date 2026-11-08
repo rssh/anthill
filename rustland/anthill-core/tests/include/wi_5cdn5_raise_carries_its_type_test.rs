@@ -48,8 +48,9 @@
 //! * A builtin handed no channel and no arguments (`Interpreter::call_host`): 64 rows of the
 //!   reify suites — every raise, `Error.raise` being a builtin too — among them every row of
 //!   this file that catches.
-//! * A slot no route stamped left unfilled at the raise (`host_raised_type`'s
-//!   `fill_missing_op_scoped_slots`): `wi_8y5be_interpreter_stream_failure_test`'s
+//! * A host's call of a builtin given no op-scoped slots (`Interpreter::call_op_sym`'s
+//!   `seed_entry_op_requirements`; until WI-20261105-89J6K a fill from the arguments at the
+//!   raise): `wi_8y5be_interpreter_stream_failure_test`'s
 //!   `a_query_that_does_not_lower_raises_malformed_query` and three rows of
 //!   `wi_spgbp_scoped_kb_test` (`KB.execute`, `KB.loaded`).
 //! * The bridge running a dictionary-reading callee on an argument still a call

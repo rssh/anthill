@@ -229,19 +229,28 @@ fn a_call_whose_conditional_provision_holds_runs() {
 }
 
 /// A call a provider meets loads and runs, the body dispatching through the requirement.
+///
+/// A requirement that leaves `A` unwritten does not let the body hand its `both` a `WIS` there:
+/// the slot is any type, the instance's own (WI-20261105-89J6K, decided with the user
+/// 2026-11-08), and with only `Both` at `B = NoSp` nothing answers `Spec2[A = WIS, B = P]` at
+/// the caller's `P`. Both spellings ran to 9 until then, and with `Both2` at `A = Int64` beside
+/// them handed `Both2.both` the `WIS`.
 #[test]
 fn a_provided_call_runs_in_every_spelling() {
+    for decl in [
+        "  operation useB[P](a: WIS, b: P) -> Int64 requires Spec2[B = P] = Spec2.both(a, b)",
+        "  operation useB(a: WIS, b: Spec2.B) -> Int64 = Spec2.both(a, b)",
+    ] {
+        let errs = try_load_kb_with(&program(decl, "useB(wis(n: 4), nosp(n: 5))"))
+            .err()
+            .unwrap_or_default();
+        assert_refused_naming(
+            &errs,
+            &["leaves it: any type, the instance's own", "`A = t.WIS` at this call"],
+            decl,
+        );
+    }
     let rows = [
-        (
-            "  operation useB[P](a: WIS, b: P) -> Int64 requires Spec2[B = P] = Spec2.both(a, b)",
-            "useB(wis(n: 4), nosp(n: 5))",
-            9,
-        ),
-        (
-            "  operation useB(a: WIS, b: Spec2.B) -> Int64 = Spec2.both(a, b)",
-            "useB(wis(n: 4), nosp(n: 5))",
-            9,
-        ),
         (
             "  operation useB[P](a: WIS, b: P) -> Int64 requires Spec2[A = WIS, B = P] = Spec2.both(a, b)",
             "useB(wis(n: 4), nosp(n: 5))",

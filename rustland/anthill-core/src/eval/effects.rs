@@ -668,7 +668,9 @@ impl Interpreter {
     pub fn type_value_of(&mut self, value: &Value) -> Result<Dictionary, EvalError> {
         let raise =
             crate::eval::builtins::require_symbol(self, "anthill.prelude.Error.raise", "raise")?;
-        match self.raise_type_of(raise, smallvec::SmallVec::new(), Some(vec![value.clone()])) {
+        let mut requirements = smallvec::SmallVec::new();
+        self.seed_entry_op_requirements(raise, std::slice::from_ref(value), &mut requirements)?;
+        match self.raise_type_of(raise, requirements) {
             Ok(Some(RaisedType::Evidence(evidence))) => Ok(evidence),
             Ok(_) => Err(EvalError::Internal(
                 "type_value_of: `Error.raise` states its payload's type by `requires \
@@ -697,29 +699,28 @@ impl Interpreter {
     /// [`Self::invoke_effect_handler`] — is of the unknown type: no operation states what it
     /// raises.
     fn raise_point_admits(&mut self) -> Result<Option<RaisedType>, EvalError> {
-        let Some((op, requirements, args)) = self
+        let Some((op, requirements)) = self
             .running_builtin
             .as_ref()
-            .map(|b| (b.op, b.requirements.clone(), b.args.clone()))
+            .map(|b| (b.op, b.requirements.clone()))
         else {
             return Ok(Some(RaisedType::Unknown));
         };
-        self.raise_type_of(op, requirements, args)
+        self.raise_type_of(op, requirements)
     }
 
     /// [`Self::raise_point_admits`] of `op`, called with `requirements` and `args`.
     ///
-    /// THE CHANNEL IS READ HERE, AS A BODY'S IS ON ENTRY, AND ONLY HERE: a call that does not
-    /// raise resolves nothing. The type is the running operation's — the member's, where a
-    /// value directed the call to it through its spec operation — and a slot its route
-    /// stamped none for is filled from the argument values (`fill_missing_op_scoped_slots`):
-    /// a host's call, the SLD bridge. What is still missing has no type in hand and is refused
+    /// THE CHANNEL IS READ HERE, AND ONLY HERE: a call that does not raise reads nothing. The
+    /// type is the running operation's — the member's, where a value directed the call to it
+    /// through its spec operation — and its slot is what the call passed: a typed call the
+    /// `TypeValue` built at load, a host's call the one its entry composed at the arguments'
+    /// types. A slot no route passed has no type in hand and is refused
     /// ([`EvalError::RaiseTypeUnread`]), before anything is raised.
     fn raise_type_of(
         &mut self,
         op: Symbol,
         requirements: smallvec::SmallVec<[(Symbol, Dictionary); 2]>,
-        args: Option<Vec<Value>>,
     ) -> Result<Option<RaisedType>, EvalError> {
         let unread = |detail: String| EvalError::RaiseTypeUnread { detail };
         let slot = match crate::kb::typing::host_raise_type(&mut self.kb, op) {
@@ -756,10 +757,6 @@ impl Interpreter {
              to hand — a call whose arguments do not pin it",
             self.kb.qualified_name_of(op)
         );
-        let mut requirements = requirements;
-        if let Some(args) = args {
-            self.fill_missing_op_scoped_slots(op, &args, &mut requirements, None)?;
-        }
         let name = crate::kb::typing::op_dict_entries(&mut self.kb, op).name_at(&mut self.kb, slot);
         let Some(evidence) =
             name.and_then(|name| super::eval::find_requirement(&requirements, name).cloned())

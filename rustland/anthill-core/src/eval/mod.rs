@@ -382,9 +382,6 @@ pub(crate) struct ErrorLayer {
     pub match_failed_type: crate::eval::value::Dictionary,
     pub relation_floundered_type: crate::eval::value::Dictionary,
     pub resolve_stream_failure_type: crate::eval::value::Dictionary,
-    /// `anthill.reflect.TypeValue`: a builtin whose chain requires it keeps its argument
-    /// values for its raise (`Interpreter::call_host`).
-    pub type_value: Symbol,
     /// The type a raise of the unknown type is asked about, and the type a pattern's open slot
     /// names at run time (`KnowledgeBase::run_time_pattern_slot`).
     pub open_slot: crate::kb::term::TermId,
@@ -440,7 +437,6 @@ impl ErrorLayer {
                 ))
             })
         };
-        let type_value = r(kb, "anthill.reflect.TypeValue");
         let match_failed_type = account(kb, "anthill.prelude.MatchFailed");
         let relation_floundered_type = account(kb, "anthill.prelude.RelationFloundered");
         let resolve_stream_failure_type = account(kb, "anthill.reflect.ResolveStreamFailure");
@@ -462,27 +458,21 @@ impl ErrorLayer {
             match_failed_type,
             relation_floundered_type,
             resolve_stream_failure_type,
-            type_value,
             open_slot: kb.run_time_pattern_slot(),
         })
     }
 }
 
 /// The requirement channel a builtin call carries ([`Interpreter::running_builtin`]), read
-/// only where its host function raises (`Interpreter::raise_error`): what is missing from it
-/// is resolved there, never on a call that does not raise.
+/// only where its host function raises (`Interpreter::raise_error`).
 pub(crate) struct RunningBuiltin {
     /// The builtin's own operation.
     pub op: Symbol,
     /// The channel as the call handed it. Where a route built it for the spec operation a
     /// value directed the call through, its slots are named as the member's are wherever the
     /// two chains agree — a member restates its spec operation's `requires` — and a slot
-    /// named otherwise reads as missing, and is filled from [`Self::args`].
+    /// named otherwise reads as missing.
     pub requirements: smallvec::SmallVec<[(Symbol, value::Dictionary); 2]>,
-    /// The argument values, kept for an operation whose clauses require a `TypeValue`, so that
-    /// a slot the route stamped none for is filled from them at the raise as a body's is on
-    /// entry (`fill_missing_op_scoped_slots`). `None` for every other builtin.
-    pub args: Option<Vec<Value>>,
 }
 
 /// Top-level interpreter state. Owns the KB so builtins and effect handlers
@@ -551,6 +541,11 @@ pub struct Interpreter {
     /// per-dispatch path in `requirements_for_value_directed_impl`, where every
     /// leaf-impl call would otherwise pay an env lookup to print nothing.
     pub(crate) trace_requirements: bool,
+    /// Per operation: is it a body written in a spec whose `requires` the provision taking it
+    /// passes (`kb::typing::spec_body_requires_are_the_provisions`)? Asked at every frame push
+    /// through a dictionary (`push_spec_body_slots`); a declaration's answer, which nothing
+    /// changes while the program runs.
+    pub(crate) spec_body_ops: HashMap<Symbol, bool>,
     pub(crate) config: EvalConfig,
     /// 068 §2 — the rule world's UNKNOWNS a bridged call was handed: the unbound logic
     /// variables of its arguments. Empty everywhere else, and then nothing below changes
@@ -626,6 +621,7 @@ impl Interpreter {
             const_cache: HashMap::new(),
             profiling: std::env::var_os("ANTHILL_PROFILE").is_some(),
             trace_requirements: std::env::var_os("ANTHILL_TRACE_REQ").is_some(),
+            spec_body_ops: HashMap::new(),
             config,
             bridge_unknowns: std::rc::Rc::from([]),
             pattern_read_unknown: std::cell::Cell::new(false),
@@ -888,7 +884,12 @@ impl Interpreter {
                     ),
                 ));
             }
-            return self.call_host(sym, &builtin, args, smallvec::SmallVec::new());
+            // A host's call has no typed caller: the operation's own `requires` are read at
+            // the arguments' types here, as a body's are below (proposal 073 §6.1) — the
+            // `TypeValue` of what it raises among them.
+            let mut requirements = smallvec::SmallVec::new();
+            self.seed_entry_op_requirements(sym, args, &mut requirements)?;
+            return self.call_host(sym, &builtin, args, requirements);
         }
         // A BODY-LESS operation is entered by value-directed dispatch to a provider's,
         // and `invoke_op_with_requirements` builds THAT frame from the provider's own
@@ -1117,11 +1118,10 @@ impl Interpreter {
         // firing on something ordinary today.
         //
         // The callee's OWN `requires` follow the dictionary's half, as eval's apply places
-        // them (`push_op_scoped_slots`): what the call supplied for a slot, and for the rest
-        // the derivation from the argument values every entry into a body makes
-        // (`fill_missing_op_scoped_slots`). Expanded from the dictionary alone, the frame
-        // had no op-scoped slot, and a default body reading its own `requires`
-        // (`both() -> C requires Unit[T = Element]`) floundered in a rule.
+        // them (`push_op_scoped_slots`): what the call supplied for a slot, after what the
+        // dictionary's provision passes a body written in a spec (`push_spec_body_slots`,
+        // inside `expand_dispatching_dict`). A default body reading its own `requires`
+        // (`both() -> C requires Unit[T = Element]`) runs on the provision's `Unit`.
         if let Some((dispatched_from, dict)) = dispatched_through {
             let mut requirements = self.expand_dispatching_dict(dispatched_from, sym, dict)?;
             if !supplied_slots.is_empty() {
@@ -1134,12 +1134,6 @@ impl Interpreter {
                     }
                 }
             }
-            self.fill_missing_op_scoped_slots(
-                sym,
-                args,
-                &mut requirements,
-                Some(dict.impl_sort()),
-            )?;
             return self.invoke_op_with_requirements(sym, args, requirements);
         }
         // WI-20260925-P7VP4 — the calling clause's conditions stand in for their slots
@@ -1153,7 +1147,6 @@ impl Interpreter {
                 args,
                 crate::kb::typing::NamedSlotTies::Raise,
                 supplied_slots,
-                None,
             ) {
                 BridgeRequirements::NoneNeeded => smallvec::SmallVec::new(),
                 BridgeRequirements::Unresolvable { detail } => {
@@ -1361,19 +1354,9 @@ impl Interpreter {
         if args.iter().any(|a| self.mentions_unknown(a)) {
             return Err(self.reads_unknown(&format!("host `{}`", self.kb.qualified_name_of(sym))));
         }
-        // Only an operation whose own clauses require a `TypeValue` can raise with a slot to
-        // fill from them; one requiring `Eq` or `Ord` keeps nothing.
-        let args_kept = self.error_layer.as_ref().map(|l| l.type_value).and_then(|tv| {
-            let tv = self.kb.canonical_sort_sym(tv);
-            crate::kb::typing::op_requires_chain_rc(&mut self.kb, sym)
-                .iter()
-                .any(|e| self.kb.canonical_sort_sym(e.required_sort) == tv)
-                .then(|| args.to_vec())
-        });
         let saved = self.running_builtin.replace(RunningBuiltin {
             op: sym,
             requirements,
-            args: args_kept,
         });
         let result = (builtin)(self, args);
         self.running_builtin = saved;
@@ -1444,7 +1427,12 @@ impl Interpreter {
             }
         })?;
         if let Some(builtin) = self.builtins.get(&sym).cloned() {
-            return self.call_host(sym, &builtin, args, smallvec::SmallVec::new());
+            // A host's call has no typed caller: the operation's own `requires` are read at
+            // the arguments' types here, as a body's are below (proposal 073 §6.1) — the
+            // `TypeValue` of what it raises among them.
+            let mut requirements = smallvec::SmallVec::new();
+            self.seed_entry_op_requirements(sym, args, &mut requirements)?;
+            return self.call_host(sym, &builtin, args, requirements);
         }
         // Names model: `__req_self` → a self-referential placeholder for
         // the parent sort; `__req_<spec>` → each host-supplied chain

@@ -4966,6 +4966,36 @@ fn check_apply_call(
                                 site: RequiresSite::Clause,
                             });
                         }
+                        // A requirement in scope of this spec that leaves a slot unwritten the
+                        // call fixes at a type of its own: the slot is that instance's unknown,
+                        // so the call is not one through it (§5.4) — said so, where the
+                        // advice below would ask for the clause the caller already wrote.
+                        if !abstract_params.is_empty() {
+                            let held: Vec<RequiresEntry> =
+                                env.enclosing_frame_chain().entries().to_vec();
+                            for entry in &held {
+                                if let Some((param, at)) =
+                                    slot_the_call_fixes_and_the_entry_leaves(kb, &subst, spec_sort, entry)
+                                {
+                                    let slot = short_name_of(kb.local_name_of(param)).to_string();
+                                    return Err(TypeError::Other {
+                                        site: TypeError::here(),
+                                        span,
+                                        context: TypeErrorContext::OperationTypeParams { op_name: fn_sym },
+                                        expected: format!(
+                                            "`{slot}` as `requires {}` leaves it: any type, the \
+                                             instance's own",
+                                            render_requires_entry(kb, entry),
+                                        ),
+                                        actual: format!(
+                                            "`{slot} = {}` at this call — write `{slot}` in the \
+                                             requirement, or call at the type it leaves",
+                                            format_value_for_goal(kb, &at),
+                                        ),
+                                    });
+                                }
+                            }
+                        }
                         if !abstract_params.is_empty() {
                             let class = CallClass::UnresolvedSpecOp {
                                 spec_op_sym: fn_sym,
@@ -5502,9 +5532,9 @@ fn check_apply_call(
                     // values (WI-1091 `seed_entry_op_requirements`), an eta'd `OpRef`
                     // carries its slots captured (`push_captured_op_scoped_slots`),
                     // value-directed dispatch already resolves the COMPOSED chain, and
-                    // `Interpreter::fill_missing_op_scoped_slots` now fills whatever the
-                    // entering route left unbound — which is what the DEFERRED route
-                    // left. So the premise the narrowing rested on no longer holds.
+                    // the DEFERRED route passes the call's own stamp (an entry fill from
+                    // argument values stood there until WI-20261105-89J6K). So the premise
+                    // the narrowing rested on no longer holds.
                     //
                     // MEASURED, both halves, on this tree:
                     //  * the widening ALONE — 4841 passed, 2 failed, and both failures

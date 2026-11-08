@@ -25,19 +25,19 @@
 //!
 //! **The eval half.** That channel is read STRICTLY at eval: a `var_ref(__req_*)` in a
 //! forwarded dictionary must resolve or the dispatch has no target. So the widening is
-//! sound only if EVERY route into an operation fills its op-scoped slots.
-//! `Interpreter::fill_missing_op_scoped_slots` is the gate that makes that true, at
-//! `enter_operation` — the last point every body-entry route passes through.
+//! sound only if EVERY route into an operation fills its op-scoped slots. This ticket did
+//! it with a fill of the op-scoped slots from the argument values at `enter_operation`;
+//! WI-20261105-89J6K removed that fill, every call passing what its callee reads — the
+//! deferred route hands the member the call's own stamp for the spec operation
+//! (`hand_spec_op_slots`).
 //!
 //! # BACK-OUT MATRIX — MEASURED on this tree (`wi_tests`, 4847 rows), not reasoned
 //!
-//!  * **the eval gate alone** (drop the `fill_missing_op_scoped_slots` call from
-//!    `enter_operation`, keep the widened chain) → **1 failure**,
-//!    [`a_deferred_dispatch_fills_the_targets_op_scoped_slot`] ALONE, as
-//!    `Internal(var_ref(__req_desc) unbound in requirement position (running
-//!    `…SpLeaf.m`; frame binds ["__req_self"]))`. That row is the whole reason the two
-//!    halves are ONE change: with the typer half and without the gate, that program
-//!    LOADS CLEAN and dies at eval — strictly worse than the load refusal it had before.
+//!  * **the eval gate alone** (drop the fill from `enter_operation`, keep the widened
+//!    chain) → **1 failure** when measured, [`a_deferred_dispatch_fills_the_targets_op_scoped_slot`]
+//!    ALONE, as `Internal(var_ref(__req_desc) unbound in requirement position (running
+//!    `…SpLeaf.m`; frame binds ["__req_self"]))`. The row now answers with no fill at all
+//!    (WI-20261105-89J6K, measured): the call's stamp reaches the member.
 //!
 //!  * **the typer half alone** (restore `env.enclosing_dict_chain()`) → **20 failures**,
 //!    in three groups. The first five are this ticket's:
@@ -249,8 +249,10 @@ end
 /// fill the target's own op-scoped slots: the stamp a call site would carry is built
 /// against the SPEC's chain, and the impl chosen at run time lays out its own
 /// (WI-20260921-28TAT measured exactly that and `push_op_scoped_slots`' `built_for !=
-/// target` guard is what refuses it). So the fill has to happen at ENTRY, from the
-/// argument values, which is [`fill_missing_op_scoped_slots`].
+/// target` guard is what refuses it). This ticket filled it at ENTRY, from the argument
+/// values; since WI-20261105-89J6K the call's stamp for the spec operation is handed to the
+/// member under the names it reads them by (`hand_spec_op_slots`), and nothing is read off
+/// the arguments.
 ///
 /// THE SHAPE IS THE ONLY ONE §8.7 ADMITS. An override may not STRENGTHEN a
 /// precondition, so `SpLeaf.m` cannot declare an op-scoped clause `Sp.m` lacks — both
@@ -259,9 +261,9 @@ end
 /// "it strengthens the precondition"; so is the one where the two range over different
 /// sorts' params. This is the reachable configuration.)
 ///
-/// FAILS WITHOUT THE GATE with `Internal(var_ref(__req_desc) unbound in requirement
-/// position (running `…SpLeaf.m`; frame binds ["__req_self"]))` — loading clean and
-/// dying at eval, which is the regression the typer half would otherwise introduce.
+/// Failed, before the stamp reached the member, with `Internal(var_ref(__req_desc) unbound
+/// in requirement position (running `…SpLeaf.m`; frame binds ["__req_self"]))` — loading
+/// clean and dying at eval.
 #[test]
 fn a_deferred_dispatch_fills_the_targets_op_scoped_slot() {
     let src = format!(

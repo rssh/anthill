@@ -5384,7 +5384,8 @@ fn effect_row_params_of_spec(kb: &mut KnowledgeBase, spec: Symbol) -> Vec<Symbol
     // symbol that need not be that one — the WI-422 class of silent miss, and MEASURED
     // as one here (the chain held `SortView[Effects = E]` and the symbol lookup found
     // nothing in it).
-    direct_requires_chain(kb, spec)
+    // The declared `requires`, which hold the anchor: the dictionary chain does not.
+    direct_requires(kb, spec)
         .iter()
         .filter_map(|entry| effects_anchor_row(kb, entry, anchor))
         .collect()

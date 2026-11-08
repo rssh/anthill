@@ -73,21 +73,6 @@ pub fn build_dep_projection(
     // fixtures use.
     rung: DefaultRung,
 ) -> Option<TermId> {
-    // WI-424: the `EffectsRuntime` kind-anchor (synthesized from `effects
-    // E = ?`) is satisfied STRUCTURALLY by the effect-row machinery — there is
-    // no carrier `fact` to resolve it against and no runtime dispatch ever
-    // consults it (the same convention `check_provider_requires` and the
-    // override-contract check follow). Project it as a synthetic structural
-    // leaf so a chain containing it still completes: without this, a
-    // `require_complete` dict build aborts on the un-projectable anchor and
-    // the callee's frame slot stays unfilled, while a forwarded
-    // `var_ref(__req_effectsruntime)` read (a cross-sort delegating body —
-    // `Iterable.find` → `Stream.find`) then dies "unbound in requirement
-    // position" at eval.
-    if is_effects_runtime(kb, dep.required_sort) {
-        return Some(build_empty_bundle(kb, syms, dep.required_sort));
-    }
-
     // WI-1091 — Strategy 0: the dep IS THE ENCLOSING SORT'S OWN SPEC, at its own
     // parameters. The caller's `requires` chain cannot cover that — a sort does not
     // `requires` itself — but the frame already holds the evidence under `__req_self`:
@@ -1729,10 +1714,8 @@ pub(super) fn build_req_at_sort(
     })
 }
 
-/// Build `Dictionary(impl: <Ref(functor)>)` — a dictionary bundling nothing.
-/// Two producers need it: a `Leaf` resolution and `build_dep_projection`'s synthetic
-/// `EffectsRuntime` anchor. One owner, so the spelling of a childless dictionary has one
-/// definition.
+/// Build `Dictionary(impl: <Ref(functor)>)` — a dictionary bundling nothing, a `Leaf`
+/// resolution's. One owner, so the spelling of a childless dictionary has one definition.
 fn build_empty_bundle(kb: &mut KnowledgeBase, syms: &ProjectionSyms, functor: Symbol) -> TermId {
     build_dictionary_term(kb, syms, functor, &[])
 }

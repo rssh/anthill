@@ -337,6 +337,136 @@ impl ProvisionScope {
     }
 }
 
+/// What a body written in a spec owes when it is entered through a dictionary of one of its
+/// providers ([`spec_body_supply`]).
+pub(crate) enum SpecBodySupply {
+    /// The operation is no such body, its `requires` are not the provision's, or the provider
+    /// writes its own member: the dictionary places nothing for it.
+    Nothing,
+    /// The body's own slots, by name, each resolved at the provider's own parameters. A
+    /// `FromScope` leaf names an entry of the provider's frame chain, which is the dictionary's
+    /// provider half from its first slot ([`DictLayout::slots_for`]).
+    Slots(Vec<(Symbol, ResolvedRequiresNode)>),
+    /// The provision owes a requirement nothing answers here, said in a sentence. The load
+    /// refuses such a provision where it is written, so a dictionary of it is not entered.
+    Refused(String),
+}
+
+/// The requirements of `op`, a body written in its spec whose `requires` are the provision's
+/// ([`spec_body_requires_are_the_provisions`]), for the provision `provider` makes of that spec:
+/// at the provision's binding and at `provider`'s own parameters, under what the provision's
+/// frame holds — the slots of its dictionary's provider half. `Point provides PartialOrd[Point]`
+/// writing only `compare` takes `PartialOrd.gt`'s body, whose `requires WeakOrd[T]` is
+/// `WeakOrd[T = Point]` here; a `Cell[E]` providing it under `:- WeakOrd[E]` answers
+/// `WeakOrd[T = Cell[E]]` through that condition's slot.
+///
+/// Not laid out in the dictionary (see [`spec_body_requirements_of_row`]): the body's frame is
+/// built from the dictionary when the body is entered, and read off the provision, never off
+/// the arguments of the call (proposal 073 §6.3).
+pub(crate) fn spec_body_supply(kb: &mut KnowledgeBase, op: Symbol, provider: Symbol) -> SpecBodySupply {
+    if !spec_body_requires_are_the_provisions(kb, op) {
+        return SpecBodySupply::Nothing;
+    }
+    let Some(spec) = defaulted_spec_op_parent(kb, op) else {
+        return SpecBodySupply::Nothing;
+    };
+    if same_sort_canonical(kb, spec, provider) || resolve_op_target(kb, provider, op).ok() != Some(op) {
+        return SpecBodySupply::Nothing;
+    }
+    let refused = |kb: &KnowledgeBase, why: String| {
+        SpecBodySupply::Refused(format!(
+            "`{}` provides `{}` and takes `{}`'s body, {why}",
+            kb.qualified_name_of(provider),
+            kb.qualified_name_of(spec),
+            kb.qualified_name_of(op),
+        ))
+    };
+    let spec_canon = kb.canonical_sort_sym(spec);
+    // Several clauses of one provision at one head (alternative conditions, 066 §7) are one
+    // provision here: the body's requirement is read at the head they share.
+    let mut rows: Vec<ProvidesRow> = Vec::new();
+    for row in provides_rows_of_provider(kb, provider) {
+        if kb.canonical_sort_sym(row.spec_base) == spec_canon
+            && !rows.iter().any(|r| {
+                crate::kb::term_view::views_structurally_equal(kb, &r.spec_view, &row.spec_view)
+            })
+        {
+            rows.push(row);
+        }
+    }
+    let [row] = rows.as_slice() else {
+        return refused(
+            kb,
+            format!("and provides it by {} clauses: which one the dictionary holds is not read", rows.len()),
+        );
+    };
+    let Some(bound) = spec_body_requirements_of_row(kb, row)
+        .into_iter()
+        .find(|b| b.member == op)
+    else {
+        return SpecBodySupply::Nothing;
+    };
+    if !bound.unfixed.is_empty() {
+        return refused(kb, "and leaves a parameter its `requires` names unwritten".to_string());
+    }
+    let chain = op_dict_entries(kb, op);
+    let names = chain.names(kb);
+    let op_names: Vec<Symbol> = names[chain.sort_len().min(names.len())..].to_vec();
+    if op_names.len() != bound.entries.len() {
+        return refused(
+            kb,
+            format!(
+                "whose {} requirement(s) its frame names {} slot(s) for",
+                bound.entries.len(),
+                op_names.len()
+            ),
+        );
+    }
+    let own = match CarrierAtOwnParams::of(kb, provider) {
+        Ok(own) => own,
+        Err(param) => {
+            return refused(
+                kb,
+                format!("and `{}` has no published variable", kb.qualified_name_of(param)),
+            )
+        }
+    };
+    let key = provision_layout_key(kb, provider, Some(spec));
+    let frame: Vec<RequiresEntry> = provider_dict_chain(kb, provider, key).to_vec();
+    let no_call = Substitution::new();
+    let sigma = SigmaCtx {
+        subst: &no_call,
+        param_rigids: &own.param_rigids,
+    };
+    let scope = ResolutionScope {
+        available_requires: &frame,
+        sigma: Some(&sigma),
+        pin: None,
+        sub_goal_requires: &[],
+    };
+    let mut slots = Vec::with_capacity(op_names.len());
+    for (entry, name) in bound.entries.iter().zip(op_names) {
+        let goals = requires_chain_goals(kb, std::slice::from_ref(entry), &|_, v| v.clone());
+        let [goal] = goals.as_slice() else {
+            return refused(kb, format!("whose `{}` reads as no one goal", render_requires_entry(kb, entry)));
+        };
+        let goal = match own.applied {
+            Some(applied) => goal_at_own_params(kb, goal, provider, applied),
+            None => goal.clone(),
+        };
+        match resolve_within_provider(kb, &goal, &scope, provider).0 {
+            ResolutionResult::Resolved(tree) => slots.push((name, tree)),
+            _ => {
+                return refused(
+                    kb,
+                    format!("and nothing answers its `{}` there", render_requires_entry(kb, entry)),
+                )
+            }
+        }
+    }
+    SpecBodySupply::Slots(slots)
+}
+
 /// WI-20260925-P5G39 — [`CarrierAtOwnParams`] for `carrier`, built once; `None` when it
 /// cannot be built, which is REPORTED the first time and only then, naming the carrier's
 /// declaration.
@@ -494,7 +624,6 @@ fn provision_requirement_errors(
     first_slot: usize,
 ) -> (Vec<crate::kb::load::LoadError>, usize) {
     use crate::kb::load::LoadError;
-    let effects_runtime = effects_runtime_sym(kb);
 
     // Snapshot each provision before the requires walk, which mutates `kb`
     // (`provider_requires_subgoals` allocates substituted terms).
@@ -684,9 +813,6 @@ fn provision_requirement_errors(
         }
         for (goal, member) in goals {
             let required = goal.spec_sort;
-            if Some(required) == effects_runtime {
-                continue;
-            }
             // WI-1110: `derived_from` is `Some(origin)` when the row is one this load
             // DERIVED, so the message can stop attributing a `provides` clause to an
             // author who wrote a different one.

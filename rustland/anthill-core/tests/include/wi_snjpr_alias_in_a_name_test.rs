@@ -200,16 +200,24 @@ const SPEC2: &str = "  sort Spec2\n    sort A = ?\n    sort B = ?\n    \
                      operation both(a: WIS, b: NoSp) -> Int64 = a.n + b.n\n  end\n";
 
 /// Through an alias fixing SOME parameters, the synthesized requirement keeps them: `S2A.B`
-/// requires `Spec2[A = WIS, B = ?P]`, which the body's call at `A = WIS` needs.
+/// requires `Spec2[A = WIS, B = ?P]`, which the body's call at `A = WIS` needs. Through
+/// `Spec2.B` it is `Spec2[B = ?P]`, which leaves `A` unwritten — any type, the instance's own —
+/// and the body's `WIS` there is refused (WI-20261105-89J6K; it ran to 9 until then).
 #[test]
 fn the_sugar_through_an_alias_keeps_what_it_fixes() {
-    for member in ["Spec2.B", "S2A.B"] {
-        let src = program(
+    let src = |member: &str| {
+        program(
             &format!("{SPEC2}  operation useB(a: WIS, b: {member}) -> Int64 = Spec2.both(a, b)"),
             "useB(wis(n: 4), nosp(n: 5))",
-        );
-        assert_eq!(run(&src), 9, "b: {member}");
-    }
+        )
+    };
+    assert_eq!(run(&src("S2A.B")), 9, "b: S2A.B");
+    let errs = try_load_kb_with(&src("Spec2.B")).err().unwrap_or_default();
+    crate::common::assert_refused_naming(
+        &errs,
+        &["leaves it: any type, the instance's own", "`A = t.WIS` at this call"],
+        "b: Spec2.B",
+    );
 }
 
 /// … and the requirement the sugar synthesizes names what the alias fixes: `useB`'s

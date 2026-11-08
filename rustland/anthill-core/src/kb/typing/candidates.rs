@@ -306,6 +306,71 @@ pub(super) fn open_slots_said(
     }
 }
 
+/// The slots a requirement a call fixes only in part leaves `open`, as kernel-language §8.7
+/// answers a dispatch: the one provision that answers what the call writes; of several, the
+/// strictly more specific (`Both` at `Spec2[A = WIS, B = NoSp]` over `AnyA` at `Spec2[A = X, B =
+/// NoSp]`); the default; and otherwise [`OpenSlotsSaid::Apart`], naming the provisions no
+/// other outranks. A chosen provision that leaves an open slot to a parameter of its own says
+/// `None` there, as [`open_slots_said`] does.
+pub(super) fn open_slots_chosen(
+    kb: &mut KnowledgeBase,
+    goal: &SortGoal,
+    open: &[Symbol],
+    // The provider the call selects for the requirement (`useB[Spec2 = Both](…)`): the
+    // provisions it makes are the only candidates.
+    selected: Option<Symbol>,
+) -> OpenSlotsSaid {
+    note_open_slot_search();
+    let (written, open_names) = written_slots(kb, goal, open);
+    let mut unread = open_names.clone();
+    for k in &goal.left_open {
+        let name = short_name_of(kb.local_name_of(*k)).to_owned();
+        if !unread.contains(&name) {
+            unread.push(name);
+        }
+    }
+    let mut candidates = candidates_at(kb, &written, None, &unread, GoalReading::CallSite);
+    if let Some(selected) = selected {
+        candidates.retain(|c| same_sort_canonical(kb, c.impl_sort, selected));
+    }
+    if candidates.is_empty() {
+        return OpenSlotsSaid::Nothing;
+    }
+    let chosen = match pick_most_specific(kb, &candidates) {
+        Some(i) => i,
+        None => {
+            let top = maximal_candidates(kb, &candidates);
+            match default_among_candidates(kb, &written, &candidates, &top) {
+                Some(i) => i,
+                None => {
+                    let mut providers: Vec<Symbol> = Vec::new();
+                    for &i in &top {
+                        let p = candidates[i].impl_sort;
+                        if !providers.contains(&p) {
+                            providers.push(p);
+                        }
+                    }
+                    return OpenSlotsSaid::Apart(providers);
+                }
+            }
+        }
+    };
+    let cand = &candidates[chosen];
+    let view = provision_fact_spec(kb, cand.row)
+        .expect("a candidate is a provision row, which holds its spec");
+    let row = spec_view_bindings_value(kb, &view);
+    let said = open_names
+        .iter()
+        .map(|name| {
+            row.iter()
+                .find(|(k, _)| short_name_of(kb.local_name_of(*k)) == name)
+                .map(|(_, b)| sigma_subst_type(kb, b, &cand.impl_subst))
+                .filter(|v| !view_contains_type_param(kb, v))
+        })
+        .collect();
+    OpenSlotsSaid::One(said)
+}
+
 /// Each parameter of `goal`'s spec it leaves out — unbound, or bound to a variable nothing has
 /// fixed (the call's result, left open) — with what the provisions answering the ones it
 /// writes say of it ([`open_slots_said`]): at `Pc[C = Bag]`, `Element = Int64` beside `Bag
@@ -2940,6 +3005,12 @@ pub(super) fn reached_carrier_matches_call(
             .find(|(rp, _)| *rp == *cp)
             .map(|(_, v)| v)
         else {
+            // A slot the requirement leaves unwritten is any type, its instance's unknown
+            // (§5.4): a call that fixes it at a type of its own is not a call through that
+            // instance (`Spec2.both(a, b)` with `a: WIS` under `requires Spec2[B = P]`).
+            if type_is_ground(kb, cc) && !is_type_param_view(kb, cc) {
+                return false;
+            }
             continue;
         };
         if !sigma_pair_precise(kb, ctx, rc, cc) {

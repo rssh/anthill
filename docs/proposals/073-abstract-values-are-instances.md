@@ -169,7 +169,7 @@ Over `sort Holder { sort C = ?  operation size(c: C) -> Int64  operation size2(c
 
 > A value whose type leaves open a type argument the requirement needs is not given it without a dictionary: over `ListShow provides Show[T = List[T = E]]` under `requires Show[T = E]`, `keep[A](?x: A, ?t) :- src(?x), Show[A], Show.show(?x, ?t)` beside `fact src([])` is refused at load, naming `E`, and answers once the `[]` is written with its element type or the citation passes the dictionary, `keep[A = List[T = Int64]](?x, ?t)`.
 
-§5.4, two sentences:
+§5.4, two sentences (written with stage 2, 2026-11-08, with the unwritten slot's rule beside the second):
 
 > An operation used as a function value is the lambda that calls it: `app(useS, a)` is `app(lambda (x: A) -> useS(x), a)`, and the call in it is typed at the instance the value is used at.
 
@@ -273,7 +273,7 @@ The 73 tests that reach the fill of an operation's own slots on entry, traced by
 
 Today the last row's two-provider programs load clean and die when the call runs, "`__req_spec2` not bound in caller frame", both the incomparable pair and the nested one (measured).
 
-Found beside it, wrong whatever the answer: with `provides Spec2[A = Int64, B = NoSp]` alone (`both(a: Int64, b: NoSp) -> Int64 = 100`), `useB`'s body still hands `both` the `WIS` value `a`, and `go()` answers `100`. `A` is unwritten, so either the body may not use it at `WIS`, or the call owes `A = WIS` and is refused for want of a provider; which of the two is stage 2's question.
+Found beside it, wrong whatever the answer: with `provides Spec2[A = Int64, B = NoSp]` alone (`both(a: Int64, b: NoSp) -> Int64 = 100`), `useB`'s body still hands `both` the `WIS` value `a`, and `go()` answers `100`. `A` is unwritten, so either the body may not use it at `WIS`, or the call owes `A = WIS` and is refused for want of a provider; which of the two is stage 2's question. Decided with the user 2026-11-08: the body may not. A slot a requirement leaves unwritten is any type, its instance's own, so `useB`'s body is refused at load, as GVGSQ's rule refuses `Tagger.useOut(x, "s")` under `requires Tagger[C = P]`.
 
 One case the trace did not see, because it dies at the frame push before any slot is filled: a provision's member from a third sort. With `namespace Leaf provides Desc[T = Leaf, describe = LeafDesc.describeLeaf] end`, `sort LeafDesc { sort L = ?  requires Tag[G = L]  operation describeLeaf(x: L) -> Int64 = Tag.tagval(x) }` and `Leaf` providing `Tag[G = Leaf]` with `tagval` answering `7`, `Desc.describe(leaf())` answers `7`, and `gen(leaf())` over `gen[A](x: A) -> Int64 requires Desc[T = A] = Desc.describe(x)` dies Internal: the dictionary at `Desc[T = Leaf]` holds nothing for `LeafDesc` (measured on `3395af90`). The member is the lambda that calls it, `describe = lambda (x: Leaf) -> LeafDesc.describeLeaf(x)`: its call is typed at `L = Leaf` and passes `Leaf`'s `Tag`, built at load, and with no `Tag` at `Leaf` the program is refused at load (decided with the user, 2026-11-05; WI-20261105-0BD56).
 

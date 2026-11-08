@@ -635,7 +635,8 @@ fn effects_param_head_is(
     let Some(effects_runtime) = effects_runtime_sym(kb) else {
         return false;
     };
-    for entry in direct_requires_chain_rc(kb, sort).iter() {
+    // The declared `requires`, which hold the anchor: the dictionary chain does not.
+    for entry in direct_requires(kb, sort).iter() {
         if !same_sort_canonical(kb, entry.required_sort, effects_runtime) {
             continue;
         }

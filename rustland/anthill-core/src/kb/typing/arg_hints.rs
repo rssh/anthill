@@ -453,6 +453,7 @@ pub(super) fn known_arg_types_and_staged(
             || tp_pinning.contains(psym)
             || spec_carrier.contains(psym))
             && !is_hof_shaped(kb, a)
+            && !arg_holds_function_value(kb, a)
         {
             staged.push(unified);
         }
@@ -532,7 +533,7 @@ fn op_tp_pinning_params(
         mentions[j]
             && param_arg_index(kb, ps, pos_slots, j, named_args)
                 .and_then(|u| arg_at(pos_args, named_args, u))
-                .is_some_and(|a| is_hof_shaped(kb, a))
+                .is_some_and(|a| is_hof_shaped(kb, a) || arg_holds_function_value(kb, a))
     });
     if !some_hof_mentions_tp {
         return Vec::new();
@@ -708,7 +709,11 @@ pub(super) fn one_arg_hint(
     // caller names, and the argument check refused it against the eliminated slot (MEASURED:
     // review 9 — reached once the receiver's provision binds `J` at depth).
     let pt_hof = match (inst, pt_hof) {
-        (Some(s), Some(t)) if is_hof_shaped(kb, arg) || seq_literal_kind(kb, arg).is_some() => {
+        (Some(s), Some(t))
+            if is_hof_shaped(kb, arg)
+                || seq_literal_kind(kb, arg).is_some()
+                || arg_holds_function_value(kb, arg) =>
+        {
             Some(resolve_type_deep_value(kb, s, &t))
         }
         (_, t) => t,
@@ -1344,6 +1349,50 @@ pub(super) fn arg_is_function_value_literal(kb: &KnowledgeBase, arg: &Rc<NodeOcc
     ) || arg_is_bare_operation_name(kb, arg)
 }
 
+/// Does `arg` hold a function value written where it stands — a lambda or an operation name,
+/// alone or as a field or element of a construction or a literal (`some(tyOf)`, `[tyOf]`,
+/// `h(f: lambda (x) -> tyOf(x))`)? Such a value is typed at the instance the call gives its
+/// slot, so a sibling that fixes that instance is typed first ([`op_tp_pinning_params`]) and
+/// the argument is hinted at the call's instantiation ([`one_arg_hint`]) — the requirement of
+/// the operation it calls is built there, at load (proposal 073 §6.3).
+pub(super) fn arg_holds_function_value(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> bool {
+    if arg_is_function_value_literal(kb, arg) {
+        return true;
+    }
+    match &arg.kind {
+        NodeKind::Expr {
+            expr: Expr::ListLit(es) | Expr::SetLit(es),
+            ..
+        } => es.iter().any(|e| arg_holds_function_value(kb, e)),
+        NodeKind::Expr {
+            expr:
+                Expr::Constructor {
+                    pos_args,
+                    named_args,
+                    ..
+                },
+            ..
+        } => pos_args
+            .iter()
+            .chain(named_args.iter().map(|(_, a)| a))
+            .any(|a| arg_holds_function_value(kb, a)),
+        NodeKind::Expr {
+            expr:
+                Expr::Apply {
+                    functor,
+                    pos_args,
+                    named_args,
+                    ..
+                },
+            ..
+        } if kb.entity_field_types(*functor).is_some() => pos_args
+            .iter()
+            .chain(named_args.iter().map(|(_, a)| a))
+            .any(|a| arg_holds_function_value(kb, a)),
+        _ => false,
+    }
+}
+
 /// WI-20260828-8Q0Q5: is `arg` a BARE OPERATION NAME — the spelling that eta-lifts?
 ///
 /// An `Expr::Apply` is excluded: `inc` is a name the reader may lift to a function value;
@@ -1624,7 +1673,7 @@ pub(super) fn ctor_arg_unlocks_a_field_hint(
     // call that reaches the hint chain, and `entity_field_types(..).to_vec()` allocates.
     // Nothing below can fire unless some argument has a shape a field hint reads.
     let reads_a_field_hint = |kb: &KnowledgeBase, a: &Rc<NodeOccurrence>| {
-        arg_is_bare_operation_name(kb, a) || arg_is_constructor_application(kb, a)
+        arg_is_function_value_literal(kb, a) || arg_is_constructor_application(kb, a)
     };
     if !pos_args
         .iter()
@@ -1661,8 +1710,14 @@ pub(super) fn ctor_arg_unlocks_a_field_hint(
                         .is_some_and(|e| element_is_read_by_the_checking_direction(kb, &e))
                 };
                 !read(kb, declared) && read(kb, &walked)
-            } else if arg_is_bare_operation_name(kb, a) {
-                !type_head_is_callable(kb, declared) && type_head_is_callable(kb, &walked)
+            } else if arg_is_function_value_literal(kb, a) {
+                // A function value is typed at the instance the construction states, which
+                // its own requirement is built at (proposal 073 §6.3): `h(f: tyOf)` expected
+                // at `H[A = Int64]` gives the declared `(x: A) -> Type` its `A`. A declared
+                // arrow the walk leaves as it was gains nothing from the expected type.
+                type_head_is_callable(kb, &walked)
+                    && (!type_head_is_callable(kb, declared)
+                        || !crate::kb::term_view::views_structurally_equal(kb, declared, &walked))
             } else if arg_is_constructor_application(kb, a) {
                 !type_head_names_an_entity(kb, declared) && type_head_names_an_entity(kb, &walked)
             } else {

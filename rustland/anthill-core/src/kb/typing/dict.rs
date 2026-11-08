@@ -2635,6 +2635,63 @@ pub(super) fn build_op_scoped_dicts(
             // these slots, so it is the one whose named slots decide.
             rung_for_dep(kb, callee_op, dep.required_sort),
         );
+        // A requirement the call fixes only in part, which nothing forwards and no provider
+        // matches as it stands: completed by §8.7's order and built at what it says
+        // ([`dep_completed_by_provisions`]). After the forwards, so a caller holding the
+        // requirement hands its own dictionary on.
+        let (dep, projected) = if projected.is_none()
+            && tie.is_none()
+            && matches!(s3_failure, Some(ResolutionResult::NoMatch { .. }))
+        {
+            let witness = pin.and_then(|s| match s.provider {
+                SelectedProvider::Witness(w) => Some(w),
+                SelectedProvider::Enclosing(_) => None,
+            });
+            // A call through a dictionary the caller holds is given what the body owes by
+            // the provision ([`call_park_site`], whose other `None` is a builtin callee).
+            let through_held = park.is_none() && !kb.is_builtin(callee_op);
+            let required = dep.required_sort;
+            let left_unbound = |kb: &KnowledgeBase, v: &Value| {
+                !through_held
+                    && ref_or_nullary_name_view(kb, v).is_some_and(|sym| {
+                        // A slot at the required spec's own parameter is its instance's
+                        // own (`Llm[C = Llm.C]`), not one the call left open.
+                        !kb.type_param_syms_of(required).contains(&sym)
+                            && type_param_global_var(kb, sym).is_some_and(|var| {
+                                subst.resolve_as_value(var).is_none()
+                                    && !param_rigids.iter().any(|(r, _)| *r == var)
+                            })
+                    })
+            };
+            match dep_completed_by_provisions(kb, &dep, witness, &left_unbound) {
+                PartialCompletion::Completed(completed) => {
+                    s3_failure = None;
+                    let projected = build_dep_projection(
+                        kb,
+                        &completed,
+                        caller_requires,
+                        &caller_sub_chains,
+                        &syms,
+                        Some(&disambig),
+                        Some(&mut s3_failure),
+                        Some(&mut tie),
+                        pin,
+                        rung_for_dep(kb, callee_op, completed.required_sort),
+                    );
+                    (completed, projected)
+                }
+                PartialCompletion::Unchanged => (dep, projected),
+                PartialCompletion::Apart(account) => {
+                    kb.unsuppliable_requirements.truncate(parked_mark);
+                    return Err(Box::new(RequirementRefusal::carrying_its_repair(
+                        kb, &dep, account,
+                    ))
+                    .into());
+                }
+            }
+        } else {
+            (dep, projected)
+        };
         // WI-20261025-7K84M — a dictionary built from an instance whose provider supplies an
         // operation twice is refused here, as the sort half refuses it: a verdict, like the
         // tie below, and not a slot left absent.
@@ -3397,6 +3454,142 @@ fn dep_completed_at_carrier(kb: &mut KnowledgeBase, dep: &RequiresEntry) -> Opti
     kb.canonicalize_record_named_args(functor, &mut completed);
     let pos = view_pos_children(kb, &dep.spec, pos_arity).into_vec();
     Some(RequiresEntry {
+        required_sort: spec,
+        spec: kb.fn_value(functor, pos, completed),
+        supply: dep.supply,
+        binder: dep.binder,
+    })
+}
+
+/// What [`dep_completed_by_provisions`] makes of a requirement a call fixes only in part.
+enum PartialCompletion {
+    /// The requirement writes every parameter, or the provision chosen leaves an open one to a
+    /// parameter of its own: nothing to complete here.
+    Unchanged,
+    /// The requirement with each parameter it leaves unwritten as the chosen provision says.
+    Completed(RequiresEntry),
+    /// Several provisions answer what the call writes and none outranks the others: the
+    /// account, naming them.
+    Apart(String),
+}
+
+/// A requirement the call fixes only in part, answered at load as kernel-language §8.7
+/// answers a dispatch ([`open_slots_chosen`]): under `requires Spec2[B = P]`, which leaves `A`
+/// unwritten, `useB(nosp(n: 5))` takes the one provision that agrees with `B = NoSp`, the more
+/// specific of two that agree, or the default — and is refused naming them otherwise, at load,
+/// where it loaded and died for want of the slot (proposal 073 §6.3).
+///
+/// After [`dep_completed_at_carrier`], which answers a requirement whose carrier is written
+/// from that carrier's provision; this one answers where the carrier is the slot left out.
+fn dep_completed_by_provisions(
+    kb: &mut KnowledgeBase,
+    dep: &RequiresEntry,
+    selected: Option<Symbol>,
+    // Is this binding a parameter of the callee's the call leaves unbound — not one of the
+    // caller's own, and not at a call through a dictionary the caller holds, whose provision
+    // passes what the body owes ([`call_park_site`]).
+    left_unbound: &dyn Fn(&KnowledgeBase, &Value) -> bool,
+) -> PartialCompletion {
+    let ViewHead::Functor {
+        functor,
+        pos_arity,
+        ..
+    } = dep.spec.head(kb)
+    else {
+        return PartialCompletion::Unchanged;
+    };
+    if !is_sort_view_functor(kb, functor) {
+        return PartialCompletion::Unchanged;
+    }
+    let spec = dep.required_sort;
+    // A library spec has an instance at every type, and an element the call leaves open is
+    // refused with that account (`Holder.tv(0)` under `requires TypeValue[T = V]`). A slot
+    // supplied from a parameter is the one the argument's own type names.
+    if library_instances(kb, spec).is_some() || matches!(dep.supply, SupplySource::FromParam { .. }) {
+        return PartialCompletion::Unchanged;
+    }
+    let spec_params = sort_type_params_as_pairs(kb, spec).to_vec();
+    let mut completed: Vec<(Symbol, Value)> = view_named_children(kb, &dep.spec).into_vec();
+    // Unwritten: a parameter the requirement leaves out, or one it writes at a variable the
+    // call left open, or at a parameter of the callee's the call does not bind and the caller
+    // does not hold (`Box.tagOf2(0)` leaves `Box.V`, so `requires Tag[T = V]` is `Tag[T = ?]`
+    // there). A slot written at a parameter of the caller is one the caller's own requirement
+    // answers, by a forward, and not one the provisions decide here.
+    let mut unwritten: Vec<Symbol> = Vec::new();
+    for (p, _) in &spec_params {
+        let Some(vid) = type_param_global_var(kb, *p) else {
+            continue;
+        };
+        let at = completed
+            .iter()
+            .position(|(k, _)| type_param_vid_in_sort(kb, spec, *k) == Some(vid));
+        match at {
+            None => unwritten.push(*p),
+            Some(i)
+                if kb.value_global_var(&completed[i].1).is_some()
+                    || left_unbound(kb, &completed[i].1) =>
+            {
+                completed.remove(i);
+                unwritten.push(*p);
+            }
+            Some(i) if type_is_ground(kb, &completed[i].1) => {}
+            Some(_) => return PartialCompletion::Unchanged,
+        }
+    }
+    if unwritten.is_empty() {
+        return PartialCompletion::Unchanged;
+    }
+    let asked = SortGoal {
+        spec_sort: spec,
+        bindings: completed.iter().cloned().collect(),
+        carrier: None,
+        left_open: unwritten.iter().copied().collect(),
+    };
+    let said = match open_slots_chosen(kb, &asked, &unwritten, selected) {
+        OpenSlotsSaid::One(said) => said,
+        OpenSlotsSaid::Nothing => return PartialCompletion::Unchanged,
+        // A requirement the call fixes nothing of is told apart by none of its provisions: the
+        // one provision answers it, and several leave it to the refusal of an element nothing
+        // determines.
+        OpenSlotsSaid::Apart(_)
+            if !completed
+                .iter()
+                .any(|(k, _)| type_param_vid_in_sort(kb, spec, *k).is_some()) =>
+        {
+            return PartialCompletion::Unchanged
+        }
+        OpenSlotsSaid::Apart(providers) => {
+            let slots = unwritten
+                .iter()
+                .map(|p| format!("`{}`", short_name_of(kb.local_name_of(*p))))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let providers = providers
+                .iter()
+                .map(|p| format!("`{}`", kb.qualified_name_of(*p)))
+                .collect::<Vec<_>>()
+                .join(" and ");
+            return PartialCompletion::Apart(format!(
+                "the requirement leaves {slots} unwritten, and {providers} answer `{}`, \
+                 none of them more specific than the others; write it in the requirement, or \
+                 name the provider at the call",
+                format_goal(kb, &asked),
+            ));
+        }
+    };
+    for (param, said) in unwritten.into_iter().zip(said) {
+        // The chosen provision leaves this slot to a parameter of its own (`AnyA` at `Spec2[A =
+        // X, B = NoSp]`): the requirement is that provision at any binding of it, which a fresh
+        // variable asks for and only such a head answers.
+        let said = said.unwrap_or_else(|| {
+            let var = kb.fresh_var(param);
+            Value::term(kb.alloc(Term::Var(Var::Global(var))))
+        });
+        completed.push((param, said));
+    }
+    kb.canonicalize_record_named_args(functor, &mut completed);
+    let pos = view_pos_children(kb, &dep.spec, pos_arity).into_vec();
+    PartialCompletion::Completed(RequiresEntry {
         required_sort: spec,
         spec: kb.fn_value(functor, pos, completed),
         supply: dep.supply,

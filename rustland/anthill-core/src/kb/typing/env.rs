@@ -180,9 +180,10 @@ pub struct TypingEnv {
     /// `UnsatisfiableRequirement` into an eval-time unbound `var_ref`. All four now
     /// fill: a host `interp.call` (WI-1091 `seed_entry_op_requirements`), an eta'd
     /// `OpRef` (`push_captured_op_scoped_slots`), value-directed dispatch (which reads
-    /// the composed chain), and the DEFERRED route (159S9's
-    /// `Interpreter::fill_missing_op_scoped_slots`, at `enter_operation`). The premise
-    /// went away before the narrowing did.
+    /// the composed chain), and the DEFERRED route — the call's own stamp, and for a body
+    /// written in a spec the provision's slots (`push_spec_body_slots`). Nothing fills a
+    /// slot from argument values on entry (WI-20261105-89J6K). The premise went away
+    /// before the narrowing did.
     ///
     /// WHAT STILL READS THIS FIELD ALONE is [`Self::enclosing_requires`] — the DEFER
     /// decision, "is this call served by a frame slot or by value-direction" — and that

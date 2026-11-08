@@ -36,8 +36,8 @@
 //!    the body owes it, checked where the provision is written.) In
 //!    a rule, the citation's bracket writes `E`, which no column mentions: it reaches the
 //!    route of the clause's read of `Pc2` (`bracket_params_no_column_reads`), and the default
-//!    entered through that dictionary reads `Element` off its provider's provision
-//!    (`resolve_bridge_requirements_through`).
+//!    entered through that dictionary is passed its `Unit` by the provider's provision
+//!    (`push_spec_body_slots`; it was read off the arguments until WI-20261105-89J6K).
 //!
 //! 4. A citation at an instance where nothing provides the cited sort's requirement —
 //!    `Sat[C = Foo].model(foo())` under `sort Sat[C] requires Pc2[C = C, Element = Bit]`,
@@ -622,19 +622,17 @@ fn the_default_is_read_at_the_callers_parameter() {
     );
 }
 
-/// The same calls where the caller holds no `Unit[T = E]` load: they are calls through the
-/// dictionary of `Pc2` the caller holds, and the `requires` of `both`'s body is owed by each
-/// provision that takes the body, checked there (WI-20260909-SM910; `Bag` provides `Unit`'s
-/// binding, and `PBox` states it as its condition). Until SM910 each was refused naming
-/// `Unit[T = E]` and the clause to add, and before D5WFQ each loaded and died.
-///
-/// WHAT RUNS IS NOT YET RIGHT, and the row says so: nothing passes the provision's `Unit`
-/// to the body it takes, and with no argument to derive it from, `NoUnit.m()` and `viaNo`
-/// die `__req_unit not bound` — WI-20261105-89J6K's case (5), which flips the two rows to
-/// `bsome(b: t)`. One provider of `Unit` answers through the bridge's derivation.
+/// The same calls where the caller holds no `Unit[T = E]` load and answer: they are calls
+/// through the dictionary of `Pc2` the caller holds, and the `requires` of `both`'s body is
+/// owed by each provision that takes the body (WI-20260909-SM910; `Bag` provides `Unit`'s
+/// binding, and `PBox` states it as its condition). The provision passes it: the body entered
+/// through `Bag`'s dictionary runs on `Unit[T = Bit]`, built from the provision, with no
+/// argument to read it from (WI-20261105-89J6K). Until SM910 each was refused naming
+/// `Unit[T = E]`, and until 89J6K each loaded and died `__req_unit not bound`.
 ///
 /// Fails with the caller's park restored (`call_park_site` answering `for_call`): each is
-/// refused naming `Unit[T = E]` / `Unit[T = Y]`.
+/// refused naming `Unit[T = E]` / `Unit[T = Y]`. Fails with the provision's slots not placed
+/// on entry (`push_spec_body_slots`): each dies `__req_unit not bound`.
 #[test]
 fn a_call_through_the_callers_dictionary_owes_the_body_none_of_its_requirement() {
     let decl = "  sort NoUnit[C, E]\n    requires Pc2[C = C, Element = E]\n    \
@@ -643,14 +641,11 @@ fn a_call_through_the_callers_dictionary_owes_the_body_none_of_its_requirement()
     let drivers = "  sort Driver\n    operation opNoUnit() -> Bag = NoUnit[C = Bag, E = Bit].m()\n    \
                    operation opViaNo() -> Bag = viaNo[X = Bag, Y = Bit]()\n";
     let src = GENERIC.swap("  sort Driver\n", &format!("{decl}{drivers}"));
-    let mut interp = crate::common::interp_for(&src);
-    for entry in ["opNoUnit", "opViaNo"] {
-        let got = format!("{:?}", interp.call(&format!("d5wfq.generic.Driver.{entry}"), &[]));
-        assert!(
-            got.contains("__req_unit") && got.contains("not bound"),
-            "`{entry}` loads and dies for want of the provision's `Unit` (89J6K); got {got}"
-        );
-    }
+    assert_answers(
+        &src,
+        "d5wfq.generic",
+        &[("opNoUnit", "bsome(b: t)"), ("opViaNo", "bsome(b: t)")],
+    );
     assert_answers(ONE_UNIT, "d5wfq.one", &[("op", "bsome(b: t)")]);
 }
 

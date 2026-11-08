@@ -564,6 +564,18 @@ pub(super) fn visit_type(
             recv_type,
             ..
         } => {
+            if let Some(lambda) = spec_member_as_lambda(
+                kb,
+                &occ,
+                *functor,
+                pos_args,
+                named_args,
+                recv_type.as_ref(),
+                expected.as_ref(),
+            ) {
+                push_visit_at(work, lambda, env, expected, fuel, pos);
+                return;
+            }
             if let Some(r) = paren_less_member_as_function(
                 kb,
                 &*env,
@@ -777,7 +789,14 @@ pub(super) fn visit_type(
             // WI-821: keep the WHOLE record — `known_arg_types_and_staged` reads
             // `type_params` besides `params`, and re-looking the record up there
             // would clone every field a second time per hof-bearing call.
-            let reads_params = has_hof_arg || has_call_arg || has_ctor_arg;
+            // A function value held in a construction or a literal (`some(tyOf)`, `[λ]`) is
+            // typed at the instance its slot has, which a sibling may fix: it stages that
+            // sibling as a callback argument does ([`arg_holds_function_value`]).
+            let has_fn_value_arg = pos_args
+                .iter()
+                .chain(named_args.iter().map(|(_, a)| a))
+                .any(|a| !is_hof_shaped(kb, a) && arg_holds_function_value(kb, a));
+            let reads_params = has_hof_arg || has_call_arg || has_ctor_arg || has_fn_value_arg;
             // WI-20261013-M32C2: WHAT THE CALLEE IS decides where its slots are read. A value
             // in scope — a parameter, a `let` — is a function value, whose slots are its
             // arrow's ([`function_value_param_slots`]); any other name is an operation, whose
@@ -806,7 +825,7 @@ pub(super) fn visit_type(
             // `known_arg_types_and_staged` for the ordering problem and why staging is the
             // fix; built only when a higher-order argument is present, since a hint is only
             // load-bearing for a lambda.
-            let (known_param_arg_types, staged) = match (&op_info, has_hof_arg) {
+            let (known_param_arg_types, staged) = match (&op_info, has_hof_arg || has_fn_value_arg) {
                 (Some(op), true) => {
                     known_arg_types_and_staged(kb, &env, functor, op, pos_args, named_args)
                 }

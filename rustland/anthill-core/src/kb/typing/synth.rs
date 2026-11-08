@@ -1519,7 +1519,6 @@ pub(super) fn resolve_inner<'a>(
     let mut spec_half: Vec<ResolvedRequiresNode> = Vec::with_capacity(provider_half_start);
     let mut provider_half: Vec<ResolvedRequiresNode> =
         Vec::with_capacity(sub_goals.len() - provider_half_start);
-    let anchor = effects_runtime_sym(kb);
     // THE PROVIDER HALF FIRST (WI-20260925-4ZZKZ). Both halves now fail the resolution,
     // and the first failure is the one reported — so the order is what the refusal says.
     // The provider half is the provision's OWN conditions, and WI-869 made the unmet one
@@ -1533,27 +1532,6 @@ pub(super) fn resolve_inner<'a>(
     let order = (provider_half_start..sub_goals.len()).chain(0..provider_half_start);
     for i in order {
         let sg = &sub_goals[i];
-        // WI-857: the `EffectsRuntime` kind-anchor occupies its slot as a STRUCTURAL
-        // LEAF, never resolved — see [`effects_runtime_sym`]. Byte-identical to what
-        // `build_dep_projection` emits for the same anchor, so the two dictionary
-        // producers agree.
-        //
-        // A `Leaf` over the anchor sort, and the point is that it IS satisfied —
-        // structurally, by the effect-row machinery — and names a real sort a body can
-        // read (`var_ref(__req_effectsruntime)` in a cross-sort delegating body).
-        if anchor.is_some_and(|er| same_sort_canonical(kb, sg.spec_sort, er)) {
-            let leaf = ResolvedRequiresNode::Leaf {
-                impl_sort: sg.spec_sort,
-                spec_sort: sg.spec_sort,
-                bindings: SmallVec::new(),
-            };
-            if i < provider_half_start {
-                spec_half.push(leaf);
-            } else {
-                provider_half.push(leaf);
-            }
-            continue;
-        }
         // WI-857, the LOCALITY rule (058 §3.8): the sub-goals of `chosen_impl_sort`'s
         // dictionary see that provider FIRST. Once the spec half is bundled (see
         // `dict_sub_goals`), a bundled witness — the only lawful form of an

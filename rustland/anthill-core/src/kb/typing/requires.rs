@@ -746,7 +746,6 @@ pub(super) fn bound_member_requirements_of_row(
         return Vec::new();
     }
     let sigma = spec_param_sigma(kb, spec, &bindings);
-    let effects_runtime = effects_runtime_sym(kb);
     let mut out = Vec::new();
     for (op, member) in bound {
         let Some(owner) = impl_parent_of_op(kb, member) else {
@@ -799,14 +798,12 @@ pub(super) fn bound_member_requirements_of_row(
         let mut unfixed: Vec<Symbol> = Vec::new();
         let mut entries = Vec::with_capacity(chain.len());
         for e in chain.entries() {
-            if Some(e.required_sort) != effects_runtime {
-                for &p in &owner_params {
-                    if !unfixed.contains(&p)
-                        && !at_member.iter().any(|(q, _)| *q == p)
-                        && value_names_param(kb, &e.spec, p)
-                    {
-                        unfixed.push(p);
-                    }
+            for &p in &owner_params {
+                if !unfixed.contains(&p)
+                    && !at_member.iter().any(|(q, _)| *q == p)
+                    && value_names_param(kb, &e.spec, p)
+                {
+                    unfixed.push(p);
                 }
             }
             entries.push(RequiresEntry {
@@ -914,7 +911,6 @@ pub(super) fn spec_body_requirements_of_row(
     let bindings = row.bindings(kb);
     let sigma = spec_param_sigma(kb, spec, &bindings);
     let spec_params: Vec<Symbol> = kb.type_param_syms_of(spec).to_vec();
-    let effects_runtime = effects_runtime_sym(kb);
     let mut out = Vec::new();
     for op in ops {
         if !spec_body_requires_are_the_provisions(kb, op)
@@ -927,14 +923,12 @@ pub(super) fn spec_body_requirements_of_row(
         let entries = own
             .iter()
             .map(|e| {
-                if Some(e.required_sort) != effects_runtime {
-                    for &p in &spec_params {
-                        if !unfixed.contains(&p)
-                            && !sigma.iter().any(|(q, _)| *q == p)
-                            && value_names_param(kb, &e.spec, p)
-                        {
-                            unfixed.push(p);
-                        }
+                for &p in &spec_params {
+                    if !unfixed.contains(&p)
+                        && !sigma.iter().any(|(q, _)| *q == p)
+                        && value_names_param(kb, &e.spec, p)
+                    {
+                        unfixed.push(p);
                     }
                 }
                 RequiresEntry {
@@ -1990,9 +1984,12 @@ pub(crate) fn op_requires_chain_rc(
     if let Some(cached) = kb.op_requires_chain_cache.borrow().get(&op_sym) {
         return cached.clone();
     }
+    // Nor an operation's: an effect row's anchor holds no slot ([`direct_requires_chain_rc`]).
     let raw: Vec<RequiresEntry> = op_requires_entries(kb, op_sym)
         .into_iter()
-        .filter(|e| !is_value_precondition_clause(kb, &e.spec))
+        .filter(|e| {
+            !is_value_precondition_clause(kb, &e.spec) && !is_effects_runtime(kb, e.required_sort)
+        })
         .collect();
     // NORMALIZED HERE, once per operation, so the re-spelling is not redone at every
     // frame push and every call-site build: [`normalize_op_requires_entry`] allocates
@@ -2368,29 +2365,19 @@ pub struct DictLayout {
     pub(super) provider_len: usize,
 }
 
-/// WI-857 — the `EffectsRuntime` kind-anchor that every effect-row parameter
-/// (`effects E = ?`) synthesizes as a `requires` entry. It is satisfied
-/// STRUCTURALLY by the effect-row machinery and never by a carrier `fact`, so it is
-/// never resolved: it rides as a structural leaf, occupying its dictionary slot so
-/// the [`DictLayout`] halves stay positionally exact.
+/// The `EffectsRuntime` kind-anchor that every effect-row parameter (`effects E = ?`)
+/// synthesizes as a `requires` entry. It marks the parameter as a row and is satisfied by
+/// the effect-row machinery, never by a carrier `fact`.
 ///
-/// One owner for the FOUR readers that must agree about the ANCHOR'S SLOT — the
-/// resolver's slot placement, `check_provider_requires`' exemption,
-/// `build_dep_projection`'s synthetic projection, and (WI-20260830-DQD5W)
-/// [`resolve_bridge_requirements`]'s structural leaf. They previously spelled the name
-/// two ways (`try_resolve_symbol` and a qualified-name comparison) and, worse,
-/// DISAGREED about the slot: the provider half dropped the anchor while the
-/// parent-bundle projection kept it, so a provider with an effect-row param built a
-/// dictionary SHORTER than the chain it is indexed by (MEASURED: 144 such
-/// dictionaries across the suite — `Iterable`-over-`Stream` alone accounts for 140).
-///
-/// The FOURTH was the one that had never been written, and its absence had a
-/// different shape: the bridge did not drop the slot, it tried to RESOLVE it — so a
-/// bodied spec op reached from a rule body (`Iterable.isEmpty` at a `List`) suspended
-/// on "`EffectsRuntime[Effects = Iterable.E]` is not fully pinned by the argument
-/// types", which no argument type ever could be.
-/// Other checks look the anchor up for their own purposes (`check_provider_-
-/// operations`, `sort_param_is_effect_row`); they decide nothing about slots.
+/// It holds NO DICTIONARY SLOT: an effect row is typed and has nothing at run time, the
+/// effect handlers being the interpreter's (`Interpreter::effect_handlers`; proposal 073
+/// §6.3). The requires tree leaves it out where it is built ([`build_requires_tree`]), as
+/// does an operation's chain ([`op_requires_chain_rc`]), so every layout reader — the
+/// resolver's halves, the projections, the bridge, the frame names — sees one list. Until
+/// then the slot was kept as a constant leaf so the positions agreed, filled on entry from
+/// nothing (WI-857, WI-20260830-DQD5W). What reads the anchor reads the declared `requires`
+/// (`direct_requires`): which parameters are rows ([`sort_param_is_effect_row`],
+/// `effect_row_params_of_spec`), and the provision checks that exempt it.
 pub(crate) fn effects_runtime_sym(kb: &KnowledgeBase) -> Option<Symbol> {
     kb.try_resolve_symbol("anthill.prelude.EffectsRuntime")
 }
@@ -2741,6 +2728,10 @@ fn collect_required_sorts(
     }
     visited.push(sort_sym);
     for entry in direct_requires(kb, sort_sym) {
+        // As the tree leaves the anchor out ([`build_requires_tree`]), so the two paths agree.
+        if is_effects_runtime(kb, entry.required_sort) {
+            continue;
+        }
         if !out.contains(&entry.required_sort) {
             out.push(entry.required_sort);
         }
@@ -2785,6 +2776,13 @@ pub(super) fn build_requires_tree(
     let raw_entries = direct_requires(kb, sort_sym);
     let mut nodes = Vec::with_capacity(raw_entries.len());
     for raw in raw_entries {
+        // An effect row's `EffectsRuntime` anchor is no requirement a dictionary holds: the
+        // row is typed and has nothing at run time, its handlers being the interpreter's
+        // (proposal 073 §6.3). It marks the parameter as a row, which is read off the
+        // declared `requires` ([`sort_param_is_effect_row`]).
+        if is_effects_runtime(kb, raw.required_sort) {
+            continue;
+        }
         let substituted_spec = substitute_in_spec(kb, &raw.spec, subst);
         let entry = RequiresEntry {
             required_sort: raw.required_sort,

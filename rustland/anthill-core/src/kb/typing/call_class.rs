@@ -2070,6 +2070,15 @@ fn entry_matches_subst(
     let Some(pairs) = entry_type_param_bindings(kb, subst, spec_sort, spec_qn, entry) else {
         return false;
     };
+    // A slot the requirement leaves unwritten is any type, its instance's unknown (§5.4): a
+    // call that fixes it at a type of its own is not a call through that instance. `useB[P](a:
+    // WIS, b: P) requires Spec2[B = P] = Spec2.both(a, b)` hands `both` a `WIS` where the
+    // instance it was given has an `A` the body does not know — the instance `Both2` at `A =
+    // Int64` answers the requirement — so the call is no cover, as a concrete value at an open
+    // parameter is not (below), and is answered as any call at its types is.
+    if slot_the_call_fixes_and_the_entry_leaves(kb, subst, spec_sort, entry).is_some() {
+        return false;
+    }
     for (per_call_value, entry_value) in &pairs {
         // WI-414: a CONCRETE per-call value (e.g. `Eq.T := Int` from `eq(i: Int,
         // 0)`) must NOT defer to an OPEN-T requirement entry (`requires Eq[T]`,
@@ -2091,6 +2100,41 @@ fn entry_matches_subst(
         }
     }
     true
+}
+
+/// The parameter of `spec_sort` that `entry` leaves unwritten and the call binds at a type no
+/// parameter of the caller is, with that type — the first such ([`entry_matches_subst`]).
+pub(super) fn slot_the_call_fixes_and_the_entry_leaves(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    spec_sort: Symbol,
+    entry: &RequiresEntry,
+) -> Option<(Symbol, Value)> {
+    if kb.canonical_sort_sym(entry.required_sort) != kb.canonical_sort_sym(spec_sort) {
+        return None;
+    }
+    let written: SmallVec<[Symbol; 2]> = match entry.spec.head(kb) {
+        ViewHead::Functor { functor, .. } if is_sort_view_functor(kb, functor) => {
+            view_named_children(kb, &entry.spec).into_iter().map(|(k, _)| k).collect()
+        }
+        _ => return None,
+    };
+    let params = sort_type_params_as_pairs(kb, spec_sort).to_vec();
+    for (param, _) in &params {
+        let Some(vid) = type_param_global_var(kb, *param) else {
+            continue;
+        };
+        if written.iter().any(|k| type_param_vid_in_sort(kb, spec_sort, *k) == Some(vid)) {
+            continue;
+        }
+        let Some(per_call) = spec_param_binding(kb, subst, vid) else {
+            continue;
+        };
+        if type_is_ground(kb, &per_call) && !is_type_param_view(kb, &per_call) {
+            return Some((*param, per_call));
+        }
+    }
+    None
 }
 
 /// WI-613 / WI-829 — the σ verdict for a coarse-covering `entry` against the

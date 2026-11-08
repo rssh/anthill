@@ -146,68 +146,15 @@ pub(crate) enum NamedSlotTies {
 /// instance-synthesis the typer uses, and anything it can't decide uniquely maps to
 /// `Unresolvable` (→ the bridge delays).
 ///
-/// Targets effect-free spec-op providers (`eq`/`cmp`/comparison-style `Combiner`s).
-/// The `EffectsRuntime` hazard this paragraph used to describe is GONE (WI-857): the
-/// synthetic anchor a provider's effect-row params contribute used to be SKIPPED by
-/// the sub-goal walk but counted by `synth_req_names`, so such a provider built a
-/// handle short of its own chain; both halves now keep the anchor's slot as a
-/// structural leaf, and the producer asserts its count against [`dict_layout`].
+/// Targets effect-free spec-op providers (`eq`/`cmp`/comparison-style `Combiner`s). An
+/// effect row's `EffectsRuntime` anchor holds no slot here or anywhere ([`effects_runtime_sym`]).
 pub(crate) fn resolve_bridge_requirements(
     kb: &mut KnowledgeBase,
     op: Symbol,
     args: &[Value],
     named_slot_ties: NamedSlotTies,
 ) -> BridgeRequirements {
-    resolve_bridge_requirements_supplied(kb, op, args, named_slot_ties, &[], None)
-}
-
-/// [`resolve_bridge_requirements`] for a body entered through a dictionary of `provider`: a
-/// parameter of the op's spec the arguments leave open is the one that provider's provision
-/// of the spec writes ([`bind_params_the_provision_says`]).
-pub(crate) fn resolve_bridge_requirements_through(
-    kb: &mut KnowledgeBase,
-    op: Symbol,
-    args: &[Value],
-    named_slot_ties: NamedSlotTies,
-    provider: Symbol,
-) -> BridgeRequirements {
-    resolve_bridge_requirements_supplied(kb, op, args, named_slot_ties, &[], Some(provider))
-}
-
-/// Bind each parameter of `spec` that `subst` leaves unbound (`[]` at `List[T = Element]` binds
-/// none) to what `provider`'s provision of it writes, where ground: the default `both() -> C
-/// requires Unit[T = Element]`, entered through a dictionary of `Bag provides Pc2[C = Bag,
-/// Element = Bit]`, runs at `Element = Bit`, so its own requirement is `Unit[T = Bit]`. A
-/// provider with two provisions of the spec says none: which one the dictionary holds is not
-/// read here.
-fn bind_params_the_provision_says(
-    kb: &mut KnowledgeBase,
-    subst: &mut Substitution,
-    spec: Symbol,
-    provider: Symbol,
-) {
-    let spec_canon = kb.canonical_sort_sym(spec);
-    let rows: SmallVec<[ProvidesRow; 1]> = provides_rows_of_provider(kb, provider)
-        .filter(|row| kb.canonical_sort_sym(row.spec_base) == spec_canon)
-        .collect();
-    let [row] = rows.as_slice() else {
-        return;
-    };
-    let written = row.bindings(kb);
-    for (param, vid) in spec_param_vars(kb, spec) {
-        if subst.resolve_as_value(vid).is_some() {
-            continue;
-        }
-        let name = short_name_of(kb.local_name_of(param));
-        let Some((_, value)) = written
-            .iter()
-            .find(|(k, _)| short_name_of(kb.local_name_of(*k)) == name)
-            .filter(|(_, v)| type_is_ground(kb, v))
-        else {
-            continue;
-        };
-        subst.bind_value(kb, vid, value.clone());
-    }
+    resolve_bridge_requirements_supplied(kb, op, args, named_slot_ties, &[])
 }
 
 /// [`resolve_bridge_requirements`] for a caller that already HOLDS dictionaries for some of
@@ -223,7 +170,6 @@ pub(crate) fn resolve_bridge_requirements_supplied(
     args: &[Value],
     named_slot_ties: NamedSlotTies,
     supplied: &[Option<crate::eval::value::Dictionary>],
-    through: Option<Symbol>,
 ) -> BridgeRequirements {
     let Some(parent) = impl_parent_of_op(kb, op) else {
         // A caller that SUPPLIED slots holds dictionaries for a chain this op must then have,
@@ -318,11 +264,8 @@ pub(crate) fn resolve_bridge_requirements_supplied(
     // types the pinning loop already computes. Two readers of one rule; a second spelling
     // of the discharge would drift from it.
     let entries_have_projection = chain.iter().any(|e| value_contains_projection(kb, &e.spec));
-    let (mut subst, param_arg_types) =
+    let (subst, param_arg_types) =
         pin_params_from_args(kb, op, &rec.params, args, entries_have_projection);
-    if let Some(provider) = through {
-        bind_params_the_provision_says(kb, &mut subst, parent, provider);
-    }
     // One resolved tree per requires slot, keyed by the frame requirement-param name.
     let names = chain.names(kb);
     // WI-822 LEG 1 — where the OP half starts. A failure in the SORT half aborts the
@@ -347,42 +290,6 @@ pub(crate) fn resolve_bridge_requirements_supplied(
             continue;
         }
         let op_half = i >= sort_len;
-        // WI-20260830-DQD5W — the `EffectsRuntime` KIND-ANCHOR keeps its slot as a
-        // STRUCTURAL LEAF here too, exactly as [`build_dep_projection`] projects it at
-        // compile time and as `check_provider_requires` exempts it. It is synthesized
-        // from `effects E = ?` (WI-320) and satisfied by the effect-row machinery, never
-        // by a carrier `fact` — so there is nothing to resolve, and `E` is a row
-        // PARAMETER that no argument type can pin.
-        //
-        // WITHOUT THIS THE SORT HALF FAILED THE `all_pinned` GATE and the whole call was
-        // `Unresolvable`. MEASURED: bridging `anthill.prelude.Iterable.isEmpty` at a
-        // `List` argument suspended with "`anthill.prelude.EffectsRuntime[Effects =
-        // anthill.prelude.Iterable.E]` is not fully pinned by the argument types". That
-        // gate is right about every OTHER slot — an abstract binding matches ANY
-        // provider — and wrong about this one for the reason WI-857 records: the anchor
-        // has no provider to pick WRONGLY, so "not pinned" carries no hazard here.
-        //
-        // The `Leaf` with no bindings is the runtime twin of `build_empty_bundle`'s
-        // `Dictionary(impl: EffectsRuntime)`: `dictionary_of_tree` ports it to a
-        // sub-dictionary-free `Dictionary` rooted at the anchor, so the slot the
-        // [`DictLayout`] halves count is present and positionally exact. WI-857's
-        // "one owner for the three readers that must agree about the ANCHOR'S SLOT"
-        // now has a fourth, and this is it.
-        // WI-20260921-28TAT — and a REFINEMENT clause (`sort Narrow requires Boom`,
-        // where `Boom` is a data sort with no type parameter, so nothing can provide it
-        // and no member could be reached through a slot held for it). Same treatment,
-        // same reason: a leaf that keeps the slot positionally exact.
-        if is_effects_runtime(kb, entry.required_sort) {
-            trees.push((
-                *name,
-                BridgeSlot::Resolved(ResolvedRequiresNode::Leaf {
-                    impl_sort: entry.required_sort,
-                    spec_sort: entry.required_sort,
-                    bindings: SmallVec::new(),
-                }),
-            ));
-            continue;
-        }
         // WI-20260909-S8CBV — A PROJECTION THAT DID NOT GROUND IS A DELAY, NOT A SKIP.
         //
         // δ turns `Desc[T = x.E]` into the argument's actual member when the receiver's

@@ -90,9 +90,9 @@
 //! into an eval-time unbound `var_ref`. WI-1091 closed three of those routes
 //! (see the paragraph above); 159S9 closed the fourth — a DEFERRED dispatch,
 //! whose target is chosen at run time and whose call site therefore cannot
-//! build evidence for it, now fills its op half at entry
-//! (`Interpreter::fill_missing_op_scoped_slots`) — and only then widened the
-//! builders to the whole frame. So a `requires` written on an OPERATION now
+//! build evidence for it, filled its op half at entry from the argument values
+//! (until WI-20261105-89J6K, which made the call's own stamp reach the member) —
+//! and only then widened the builders to the whole frame. So a `requires` written on an OPERATION now
 //! forwards a dictionary exactly as one written on its SORT does, which is what
 //! `docs/kernel-language.md` §5.3 had already said an author could not observe a
 //! difference in. The general form and its back-out matrix are in
@@ -612,8 +612,8 @@ end
 /// parameters, so `Holder.probe(leaf())` pins `Desc[HT := Leaf]` exactly. So there is no
 /// longer a failure to attribute: the slot IS filled, the dictionary IS forwarded, and
 /// the program RUNS. WI-20260921-159S9 then closed the last unfilled route (the
-/// DEFERRED one, at `Interpreter::fill_missing_op_scoped_slots`) and widened the builder
-/// to `TypingEnv::enclosing_frame_chain()`.
+/// DEFERRED one, by a fill at entry that WI-20261105-89J6K replaced with the call's own
+/// stamp) and widened the builder to `TypingEnv::enclosing_frame_chain()`.
 ///
 /// # SO THIS IS A VALUE ASSERTION NOW, AND IT HAD TO BECOME ONE
 ///

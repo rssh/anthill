@@ -874,6 +874,55 @@ fn requirement_passing_wrapper(
     arity: usize,
 ) -> (Rc<NodeOccurrence>, Rc<NodeOccurrence>) {
     let pass = kb.register_pass("anthill.typer.requirement_passing_wrapper");
+    calling_wrapper(kb, reference, functor, None, arity, pass)
+}
+
+/// A member of a spec named without parentheses on a spec application, where a function is
+/// expected — `Additive[T = Int64].zero` at `() -> Int64`, `Additive[T = X].zero` at `() -> X`
+/// under `requires Additive[T = X]` — is the lambda that calls it, `lambda () ->
+/// Additive[T = Int64].zero()`, whose call is typed at the instance the receiver names
+/// (proposal 073 §6.3, kernel-language §5.4). An operation with a body of its own is lifted as
+/// it stands ([`check_bare_ref`]); a member of a spec has none, and nothing else could hand
+/// its call the instance. `None` for every other shape.
+pub(super) fn spec_member_as_lambda(
+    kb: &mut KnowledgeBase,
+    occ: &Rc<NodeOccurrence>,
+    functor: Symbol,
+    pos_args: &[Rc<NodeOccurrence>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    recv_type: Option<&Value>,
+    expected: Option<&Value>,
+) -> Option<Rc<NodeOccurrence>> {
+    let (recv, exp) = (recv_type?, expected?);
+    if !occ.is_paren_less()
+        || !pos_args.is_empty()
+        || !named_args.is_empty()
+        || !kb.has_kind(functor, crate::intern::SymbolKind::Operation)
+        || op_has_runnable_body(kb, functor)
+        || arrow_parts(kb, exp).is_none()
+    {
+        return None;
+    }
+    if operation_is_nullary(kb, functor)
+        && !nullary_member_is_function_value(kb, functor, Some(recv), exp)
+    {
+        return None;
+    }
+    let arity = lookup_operation_info_full(kb, functor)?.params.len();
+    let pass = kb.register_pass("anthill.typer.spec_member_as_lambda");
+    Some(calling_wrapper(kb, occ, functor, Some(recv.clone()), arity, pass).0)
+}
+
+/// `lambda (y₁, …, yₙ) -> functor(y₁, …, yₙ)`, the call at `recv_type` where one is given, and
+/// the call in it ([`requirement_passing_wrapper`], [`spec_member_as_lambda`]).
+fn calling_wrapper(
+    kb: &mut KnowledgeBase,
+    reference: &Rc<NodeOccurrence>,
+    functor: Symbol,
+    recv_type: Option<Value>,
+    arity: usize,
+    pass: crate::kb::occurrence::PassId,
+) -> (Rc<NodeOccurrence>, Rc<NodeOccurrence>) {
     let (span, owner) = (reference.span, reference.owner);
     let names: Vec<Symbol> = (0..arity)
         .map(|i| kb.intern(&format!("__ctx_arg{i}")))
@@ -898,7 +947,7 @@ fn requirement_passing_wrapper(
         .collect();
     let apply = NodeOccurrence::synthesized_expr(
         Expr::Apply {
-            recv_type: None,
+            recv_type,
             functor,
             pos_args: args,
             named_args: Vec::new(),
@@ -965,7 +1014,7 @@ pub(super) fn member_as_function(
     solving: &mut WalkSolutions,
 ) -> Option<Result<TypeResult, TypeError>> {
     if operation_is_nullary(kb, functor)
-        && !expected.is_some_and(|exp| nullary_name_is_function_value(kb, functor, exp))
+        && !expected.is_some_and(|exp| nullary_member_is_function_value(kb, functor, recv_type, exp))
     {
         return None;
     }
@@ -982,6 +1031,35 @@ pub(super) fn member_as_function(
     Some(check_bare_ref(
         kb, env, flow, functor, span, &reference, expected, recv_type, solving,
     ))
+}
+
+/// [`nullary_name_is_function_value`] of a member named on a receiver, its result read at
+/// the receiver's instance: `Additive[T = Int64].zero` returns `Int64` there, which no
+/// `() -> Int64` fits, so where one is expected it is the function value — as `Int64.zero` is
+/// — and not the call its declared `T` would fit (proposal 073 §6.3).
+fn nullary_member_is_function_value(
+    kb: &mut KnowledgeBase,
+    functor: Symbol,
+    recv_type: Option<&Value>,
+    expected: &Value,
+) -> bool {
+    if arrow_parts(kb, expected).is_none() {
+        return false;
+    }
+    let Some(ret) = lookup_operation_return_type(kb, functor) else {
+        return true;
+    };
+    let ret = match (recv_type, impl_parent_sort_of_op(kb, functor)) {
+        (Some(recv), Some(owner)) => match parametric_view_parts(kb, recv) {
+            Some((head, bindings)) if same_sort_canonical(kb, head, owner) => {
+                let sigma = spec_param_sigma(kb, owner, &bindings);
+                sigma_subst_type(kb, &ret, &sigma)
+            }
+            _ => ret,
+        },
+        _ => ret,
+    };
+    !types_compatible(kb, &mut Substitution::new(), &ret, expected)
 }
 
 /// Is the nullary operation `functor`, named without parentheses where `expected` is
@@ -1126,10 +1204,10 @@ pub(super) fn check_bare_ref(
                 // reading below (its pre-WI-700 behavior). A non-nullary op is never a
                 // zero-arg call, so it always eta-lifts (the check short-circuits on
                 // `operation_is_nullary`, which alone has both readings).
+                // The result is read at the receiver's instance, where one is named
+                // (`Additive[T = Int64].zero` returns `Int64`).
                 let eta_shadows_return_type = operation_is_nullary(kb, sym)
-                    && lookup_operation_return_type(kb, sym).is_some_and(|ret| {
-                        types_compatible(kb, &mut Substitution::new(), &ret, exp)
-                    });
+                    && !nullary_member_is_function_value(kb, sym, receiver, exp);
                 if !eta_shadows_return_type {
                     // WI-1083 — ∀-ELIMINATION AT THE REFERENCE, and this is the ONE site:
                     // §5.6 says an operation's type parameter is "the CALLER's to

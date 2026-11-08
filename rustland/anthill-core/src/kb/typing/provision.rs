@@ -1838,9 +1838,8 @@ pub(super) fn provider_requires_subgoals(
 ///
 /// WI-857: THE WALK IS POSITIONAL, because it produces a dictionary's halves and not only
 /// a load check's goals, so an entry is never dropped — dropping one would shift every
-/// later slot into it. That includes the synthetic `requires EffectsRuntime[E]` an
-/// effect-row parameter contributes, which `resolve_inner` fills with a structural leaf
-/// rather than resolving ([`effects_runtime_sym`] has the measurement).
+/// later slot into it. The chain it walks holds no effect row's `EffectsRuntime` anchor
+/// ([`effects_runtime_sym`]).
 ///
 /// An entry whose spec has no readable head KEEPS ITS SLOT too, and the slot is a GUESS: a
 /// bindings-free goal is one every provider matches, so it is RESOLVABLE, and resolving is
