@@ -83,6 +83,16 @@ use evaluate::{Holes, Stuck};
 /// SELECTED `test.sh` run, which stays unoptimized. Left documented rather than guarded
 /// (user, 2026-10-06). Re-measure on BOTH builds when this path grows: 16/escape ∈
 /// (1.0, 1.5] MiB at opt-level 0, ∈ (384, 512] KiB at opt-level 2.
+///
+/// **Re-measured 2026-11-08 (WI-20260909-SM910), on the tree before that change and after
+/// it: (1.5, 2.0] MiB at opt-level 0, (512, 1024] KiB at opt-level 2.** The crossing has
+/// deepened since the figures above, and at opt-level 0 the default 2 MiB thread clears the
+/// fixture by less than 512 KiB. The fixture reaches the cap through `neq` since that change:
+/// a binding's `eq` is pinned at load, and `loopEq(x, y) = eq(x, y)` loops inside one
+/// interpreter. A circle through an `eq` written as clauses — `ceq` proved by a clause that
+/// evaluates an operation calling `eq` again — crosses resolver, bridge, interpreter and
+/// resolver at each turn and needs (2, 3] MiB at opt-level 0, (512, 768] KiB at opt-level 2:
+/// at opt-level 0 it overflows a 2 MiB thread before the cap stops it, on both trees.
 const BRIDGE_REENTRY_CAP: usize = 16;
 
 thread_local! {
@@ -397,14 +407,6 @@ impl BuiltinTag {
     /// one implements there is.
     pub(crate) fn answers_from_its_dictionary(self) -> bool {
         matches!(self, BuiltinTag::TypeValueOf)
-    }
-
-    /// Is this builtin SEMANTIC EQUALITY, which dispatches itself — reflexivity, the
-    /// carrier's `eq` through the equality index and the eval→SLD bridge's re-entry cap,
-    /// structure ([`KnowledgeBase::sem_eq_core`]) — rather than leaving the choice of an
-    /// implementation to the call's dispatch?
-    pub(crate) fn dispatches_through_carrier_equality(self) -> bool {
-        matches!(self, BuiltinTag::SemEq | BuiltinTag::SemNeq)
     }
 }
 

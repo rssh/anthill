@@ -15,7 +15,12 @@
 //! parameters is owed by each provision that takes the body, and a call through a
 //! dictionary of the spec its caller holds owes it nothing (decided with the user
 //! 2026-11-08; kernel-language §8.7); (4) `eq`'s handler reads the pin before its value
-//! index, and both families read their result column at three arguments.
+//! index, and both families read their result column at three arguments; (5) an `eq` a
+//! binding supplies is the call's member as an own member is (`resolve_at_goal`, decided
+//! with the user 2026-11-08), so a recursive binding compares at any depth; (6) the `eq` of
+//! a carrier that provides `Eq` is not entered on identical operands
+//! (`dispatch_resolved_operation`), as §8.3 says, so a pinned call answers what the
+//! resolver's semantic equality answers.
 //!
 //! ## Back-out
 //!
@@ -35,10 +40,17 @@
 //! - the result column out of `sem_eq_core` (`pos_arity < 3` read as a test):
 //!   `equality_reads_its_result_column` answers with `?r` free;
 //! - `no_typed_caller` off in `check_apply_call`:
-//!   `an_untyped_comparison_runs_at_the_type_its_values_carry` is refused.
+//!   `an_untyped_comparison_runs_at_the_type_its_values_carry` is refused;
+//! - semantic equality answered from the provider's table again in `resolve_at_goal`:
+//!   `a_binding_eq_is_the_calls_member` is undecided at the bridge's re-entry cap, and
+//!   wi_tsys6's `a_circular_binding_runs_to_the_step_budget` is undecided instead;
+//! - the law out of `dispatch_resolved_operation`:
+//!   `identical_operands_of_a_lawful_carrier_are_equal` answers 0 for `own` and `bound`,
+//!   and wi_7k84m's `identical_operands_of_a_lawful_binding_are_equal` and wi_tsys6's
+//!   `a_type_providing_eq_keeps_reflexivity` fail.
 //!
 //! Measured 2026-11-08, one switch each, over the rows of this file, wi_d5wfq, wi1036,
-//! wi879, wi1102, wi642 and wi_ckd4j.
+//! wi879, wi1102, wi642, wi_ckd4j, wi_tsys6, wi_7k84m, wi625 and wi1092.
 //!
 //! PASS EITHER WAY, BY DESIGN: `equality_at_a_known_type_answers_the_carriers_own_eq`
 //! — the pin `sem_eq_core` reads names the member the value index names, on every program
@@ -349,5 +361,149 @@ end
             _ => panic!("`{pattern}`: {} rows", got.len()),
         };
         assert_eq!(verdict, want, "`{pattern}`");
+    }
+}
+
+/// Is `pattern` proved: `Some(true)` for one definite solution, `Some(false)` for none, `None`
+/// while undecided.
+fn holds(kb: &mut anthill_core::kb::KnowledgeBase, pattern: &str) -> Option<bool> {
+    let goal = crate::common::query_pattern_term(kb, pattern);
+    let got = kb.resolve(&[goal], &anthill_core::kb::resolve::ResolveConfig::default());
+    match got.as_slice() {
+        [] => Some(false),
+        [one] if one.is_definite() => Some(true),
+        _ => None,
+    }
+}
+
+/// `Chain`'s `eq` is a binding, `chainEq`, which compares the rest of a chain with `eq` again.
+const CHAIN: &str = r#"namespace sm910.chain
+  import anthill.prelude.{Int64, Bool, PartialEq}
+  import anthill.prelude.PartialEq.{eq}
+  sort Chain
+    entity link(n: Int64, next: Chain)
+    entity stop(n: Int64)
+  end
+  operation stopEq(a: Int64, y: Chain) -> Bool =
+    match y
+      case stop(b) -> eq(a, b)
+      case link(b, r) -> false
+  operation linkEq(a: Int64, r: Chain, y: Chain) -> Bool =
+    match y
+      case stop(b) -> false
+      case link(b, s) -> if eq(a, b) then eq(r, s) else false
+  operation chainEq(x: Chain, y: Chain) -> Bool =
+    match x
+      case stop(a) -> stopEq(a, y)
+      case link(a, r) -> linkEq(a, r, y)
+  namespace Chain
+    provides PartialEq[T = Chain, eq = chainEq]
+  end
+  operation build(k: Int64, tail: Int64) -> Chain =
+    if Int64.lte(k, 0) then stop(tail) else link(k, build(Int64.sub(k, 1), tail))
+  operation apart() -> Bool = eq(build(20, 1), build(20, 2))
+  operation same() -> Bool = eq(build(40, 1), build(40, 1))
+  rule apartGoal() :- eq(build(40, 1), build(40, 2))
+  rule sameGoal() :- eq(build(40, 1), build(40, 1))
+end
+"#;
+
+/// An `eq` a binding supplies is the call's member at load, as a carrier's own member is (decided
+/// with the user 2026-11-08): a call of `eq` at `Chain` runs `chainEq`, and so does the call
+/// inside it, so a chain compares to any depth in both bodies. Fails with the equality clause
+/// back in `resolve_at_goal` (a call of `eq` keeping the provider's table row, which holds no
+/// binding): each nested `eq` then goes through the builtin and the equality bridge, and at the
+/// bridge's re-entry cap (16) the four are undecided.
+#[test]
+fn a_binding_eq_is_the_calls_member() {
+    let mut interp = crate::common::interp_for(CHAIN);
+    for (entry, want) in [("apart", false), ("same", true)] {
+        let got = interp.call(&format!("sm910.chain.{entry}"), &[]);
+        assert!(
+            matches!(got, Ok(Value::Bool(b)) if b == want),
+            "{entry} answers {want}; got {got:?}"
+        );
+    }
+    let mut kb = crate::common::load_kb_with(CHAIN);
+    for (pattern, want) in [("sm910.chain.apartGoal()", false), ("sm910.chain.sameGoal()", true)] {
+        assert_eq!(holds(&mut kb, pattern), Some(want), "`{pattern}`");
+    }
+}
+
+/// Identical operands of a carrier that provides `Eq` are equal by the law `eq_refl`, whatever
+/// its `eq` says (kernel-language §8.3), in both bodies and whether the `eq` is a member or a
+/// binding: `Own` writes `eq = false` as its member, `Loop` binds `neverEq`. The resolver applied
+/// the law before it read the pin; an operation body entered the pinned member, and `own()`
+/// answered 0. Fails with the law out of `dispatch_resolved_operation`: `own()` and `bound()`
+/// answer 0.
+#[test]
+fn identical_operands_of_a_lawful_carrier_are_equal() {
+    let src = r#"namespace sm910.refl
+  import anthill.prelude.{Int64, Bool, PartialEq, Eq}
+  sort Own
+    import anthill.prelude.{Int64, Bool, PartialEq, Eq}
+    entity ow(v: Int64)
+    provides PartialEq[Own]
+    provides Eq[Own]
+    operation eq(x: Own, y: Own) -> Bool = false
+  end
+  sort Loop
+    entity lp(v: Int64)
+  end
+  operation neverEq(x: Loop, y: Loop) -> Bool = false
+  namespace Loop
+    provides PartialEq[T = Loop, eq = neverEq]
+    provides Eq[T = Loop, eq = neverEq]
+  end
+  operation own() -> Int64 = if PartialEq.eq(ow(v: 1), ow(v: 1)) then 1 else 0
+  operation bound() -> Int64 = if PartialEq.eq(lp(v: 1), lp(v: 1)) then 1 else 0
+  operation ownApart() -> Int64 = if PartialEq.eq(ow(v: 1), ow(v: 2)) then 1 else 0
+  rule ownGoal() :- PartialEq.eq(ow(v: 1), ow(v: 1))
+  rule boundGoal() :- PartialEq.eq(lp(v: 1), lp(v: 1))
+end
+"#;
+    for (entry, want) in [("own", 1), ("bound", 1), ("ownApart", 0)] {
+        assert_eq!(
+            crate::common::run_int64(src, &format!("sm910.refl.{entry}")),
+            Ok(want),
+            "{entry}"
+        );
+    }
+    let mut kb = crate::common::load_kb_with(src);
+    for pattern in ["sm910.refl.ownGoal()", "sm910.refl.boundGoal()"] {
+        assert_eq!(holds(&mut kb, pattern), Some(true), "`{pattern}`");
+    }
+}
+
+/// A generic operation bound as a lawful carrier's `eq` keeps the law at that carrier alone: it
+/// is called at other types too, where `Eq` says nothing. `never[A]` answers `false` for every
+/// pair; bound as `X`'s `eq` beside `provides Eq[T = X]`, `eq(xx(1), xx(1))` is `true` by the law,
+/// and `never(1, 1)` at `Int64` is `false`, as its body says. Found by /code-review: with the law
+/// keyed by the member alone (`EqLaw::AtItsCarriers` read as `Always`) `atInt()` answers 1;
+/// with the generic member given no law (read as `Never`) `atX()` answers 0.
+#[test]
+fn a_generic_binding_keeps_the_law_at_its_carrier_alone() {
+    let src = r#"namespace sm910.gen
+  import anthill.prelude.{Int64, Bool, PartialEq, Eq}
+  operation never[A](x: A, y: A) -> Bool = false
+  sort X
+    entity xx(n: Int64)
+  end
+  namespace X
+    import anthill.prelude.{PartialEq, Eq}
+    provides PartialEq[T = X, eq = never]
+    provides Eq[T = X]
+  end
+  operation atInt() -> Int64 = if never(1, 1) then 1 else 0
+  operation atX() -> Int64 = if PartialEq.eq(xx(1), xx(1)) then 1 else 0
+  operation apartX() -> Int64 = if PartialEq.eq(xx(1), xx(2)) then 1 else 0
+end
+"#;
+    for (entry, want) in [("atInt", 0), ("atX", 1), ("apartX", 0)] {
+        assert_eq!(
+            crate::common::run_int64(src, &format!("sm910.gen.{entry}")),
+            Ok(want),
+            "{entry}"
+        );
     }
 }

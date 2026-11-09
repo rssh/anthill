@@ -5084,22 +5084,10 @@ pub(super) fn resolve_at_goal(
                 let Some(spec_op) = kb.sort_ops_lookup(goal.spec_sort, op_short_sym) else {
                     return (DispatchOutcome::NoMatch { unmet: None }, None);
                 };
-                // SEMANTIC EQUALITY KEEPS THE TABLE'S ANSWER: its builtin dispatches itself
-                // ([`BuiltinTag::dispatches_through_carrier_equality`]), and two suppliers of
-                // a carrier's `eq` are refused at load by the equality index
-                // (`AmbiguousEqDispatch`). Pinned here to a provision's `eq = loopEq`, a
-                // circular `loopEq(x, y) = eq(x, y)` never returned, where the builtin's
-                // bridge refuses it at its re-entry cap (MEASURED,
-                // `wi625_eval_semantic_eq_test::eval_undecidable_instance_fact_eq_is_loud_not_false`).
-                if kb
-                    .builtin_of(spec_op)
-                    .is_some_and(|tag| tag.dispatches_through_carrier_equality())
-                {
-                    return match kb.sort_ops_lookup(*impl_sort, op_short_sym) {
-                        Some(s) => (DispatchOutcome::Unique(s), Some(tree)),
-                        None => (DispatchOutcome::NoMatch { unmet: None }, None),
-                    };
-                }
+                // Semantic equality is no exception: a carrier's `eq` supplied by a binding
+                // (`provides PartialEq[T = Tagged, eq = taggedEq]`) is the call's member as
+                // its own member is (decided with the user 2026-11-08). A circular binding,
+                // `loopEq(x, y) = eq(x, y)`, then calls itself, as a circular member does.
                 // A provider whose table holds no row for the short name — no member, no
                 // inherited default, not the spec's own — has nothing a call could reach, and
                 // is no match, as the table read answered it.

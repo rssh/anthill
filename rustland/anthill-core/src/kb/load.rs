@@ -22732,6 +22732,7 @@ pub fn build_eq_dispatch_index(kb: &mut KnowledgeBase) -> Vec<LoadError> {
     let Some(eq_index) = EqDispatchIndex::build(kb) else {
         return Vec::new();
     };
+    kb.clear_eq_members();
     let carriers = eq_dispatch_carrier_domain(kb, sort_ops.keys().copied());
     // WI-1125 — the SIBLING refusal, over the same carrier domain and the same three
     // supply routes, one member over. Collected first so it is reported even when a
@@ -22775,6 +22776,21 @@ pub fn build_eq_dispatch_index(kb: &mut KnowledgeBase) -> Vec<LoadError> {
         // the index never keyed (WI-856). For a `sort … end` carrier the two agree —
         // the sort symbol itself carries no field schema.
         let partial = !lawful(kb, sort_sym);
+        // The law decides a call of the member on identical operands only where the member
+        // is typed at this carrier: an operation with type parameters of its own, bound as the
+        // carrier's `eq`, is called at other types too, where `Eq` says nothing.
+        let generic = super::op_info::lookup_operation_info(kb, target)
+            .is_some_and(|rec| !rec.type_params.is_empty());
+        kb.note_eq_member(
+            target,
+            if partial {
+                super::EqLaw::Never
+            } else if generic {
+                super::EqLaw::AtItsCarriers
+            } else {
+                super::EqLaw::Always
+            },
+        );
         for ctor in kb.field_constructors_of_sort(sort_sym) {
             entries.push((ctor, target, partial));
         }

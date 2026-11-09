@@ -5146,10 +5146,10 @@ fn check_apply_call(
                     //
                     // ONLY WHERE THE SPEC'S OPERATION IS WHAT EVAL ENTERS: eval reads the
                     // dictionary's own member for the operation (`resolve_op_target`), and a
-                    // provision's operation binding is one — handed `Loop`'s instance under
-                    // `provides PartialEq[T = Loop, eq = loopEq]`, the call entered `loopEq`
-                    // directly, past the equality bridge's re-entry cap, and never returned.
-                    // The defaulted arm asks the same question for the same reason. Not
+                    // provision's operation binding is one — under `provides PartialEq[T =
+                    // Loop, eq = loopEq]` the dispatch answers `loopEq` itself, and the call is
+                    // classified as a call of it above. The defaulted arm asks the same question
+                    // for the same reason. Not
                     // `Error.reify`, whose frame the interpreter installs by symbol.
                     //
                     // AND ONLY TO AN OPERATION THAT READS THE INSTANCE: a default body, whose

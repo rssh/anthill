@@ -52,7 +52,7 @@
 //! | `wi_zawx9…::an_own_member_beside_a_binding_is_refused_where_the_dictionary_is_built` | K4 |
 //! | `wi453_hk_concrete_fill_test::arg_carrier_dispatches_to_instance_impl` | K1 |
 //! | `the_reflect_faces_agree_on_a_bodyless_tie` | K7 |
-//! | `semantic_equality_is_left_to_its_builtin` | EQ |
+//! | `semantic_equality_is_left_to_its_builtin` (now `identical_operands_of_a_lawful_binding_are_equal`) | EQ |
 //! | `wi625_eval_semantic_eq_test::eval_undecidable_instance_fact_eq_is_loud_not_false` | EQ (never returns) |
 //! | the family `f-supplier-routes` | K1 (3 verdicts moved), K2 (4), K3 (6), K4 (4) |
 //!
@@ -62,10 +62,14 @@
 //!
 //! PASSES EITHER WAY BY DESIGN: `one_supplier_runs_on_every_route`, one supplier on every route.
 //!
-//! SEMANTIC EQUALITY KEEPS ITS OWN DISPATCH (`resolve_at_goal`): a call of `PartialEq.eq` is not
-//! pinned to a provision's binding. Without that clause the workspace gate never finished, at
+//! SEMANTIC EQUALITY KEPT ITS OWN DISPATCH here (`resolve_at_goal`): a call of `PartialEq.eq` was
+//! not pinned to a provision's binding. Without that clause the workspace gate never finished, at
 //! `wi625…`'s circular `loopEq(x, y) = eq(x, y)`, pinned to itself where the equality builtin's
-//! bridge refuses it at its re-entry cap; `semantic_equality_is_left_to_its_builtin` fails at once.
+//! bridge refuses it at its re-entry cap; `semantic_equality_is_left_to_its_builtin` failed at once.
+//! WI-20260909-SM910 dropped the clause (the user, 2026-11-08): a binding's `eq` is pinned as a
+//! member is, a circular one loops as a circular member does, `wi625…`'s canary reaches the cap
+//! through `neq`, and identical operands of a carrier providing `Eq` are equal by the law where
+//! the member is entered (`identical_operands_of_a_lawful_binding_are_equal`).
 //!
 //! K5'S OTHER HALF IS UNOBSERVABLE, measured: the higher-kinded arm now pins a carrier's own
 //! member where nothing binds the operation, and the dispatch reached the same member at run
@@ -456,16 +460,15 @@ fn the_reflect_faces_agree_on_a_bodyless_tie() {
     }
 }
 
-/// SEMANTIC EQUALITY IS LEFT TO ITS BUILTIN, which dispatches itself: `PartialEq.eq(lp(v: 1),
-/// lp(v: 1))` beside `provides Eq[T = Loop, eq = neverEq]` is answered by the builtin's
-/// reflexivity, `Eq`'s law. MEASURED with `resolve_at_goal`'s equality clause backed out: the
-/// call was pinned to `neverEq` and answered 0 — and a circular binding never returned
-/// (`wi625_eval_semantic_eq_test::eval_undecidable_instance_fact_eq_is_loud_not_false`), which
-/// this row reports as a failure where that one hangs. The type provides `Eq`: one providing
-/// only `PartialEq` has its binding asked on identical operands too (WI-20261025-TSYS6), and
-/// answers 0 either way.
+/// IDENTICAL OPERANDS OF A LAWFUL BINDING ARE EQUAL: `PartialEq.eq(lp(v: 1), lp(v: 1))` beside
+/// `provides Eq[T = Loop, eq = neverEq]` answers 1, by `Eq`'s law `eq_refl` (kernel-language
+/// §8.3). The call is pinned to `neverEq` at load (WI-20260909-SM910) and the interpreter applies
+/// the law where it enters the member (`dispatch_resolved_operation`), as the builtin applied it
+/// while the call went through the builtin. Fails with the law out of that entry: 0. The type
+/// provides `Eq`: one providing only `PartialEq` has its binding asked on identical operands too
+/// (WI-20261025-TSYS6), and answers 0 either way.
 #[test]
-fn semantic_equality_is_left_to_its_builtin() {
+fn identical_operands_of_a_lawful_binding_are_equal() {
     let ns = "test.k84m.eq";
     let src = format!(
         r#"namespace {ns}

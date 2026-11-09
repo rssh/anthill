@@ -42,6 +42,7 @@ namespace wi1092.ruledef
   sort Color
     entity red
     entity blue
+    entity green
     operation ceq(a: Color, b: Color) -> Bool
 {rules}
     provides PartialEq[T = Color, eq = ceq]
@@ -77,6 +78,9 @@ fn drive(src: &str) -> Result<Value, EvalError> {
 /// structural equality at every point. Written the agreeing way (`ceq(red, red)`,
 /// `ceq(blue, blue)`) the whole test passes with `ceq` never consulted at all, which
 /// is how WI-580's twin fixture and WI-1092's own filing both came to measure nothing.
+///
+/// The identical pair is the exception, and fails with the law out of the interpreter's entry
+/// (`dispatch_resolved_operation`): the dictionary route then answers 0 (WI-20260909-SM910).
 #[test]
 fn a_rule_defined_eq_decides_the_dictionary_route_and_the_named_one() {
     // Every pair below is structurally UNEQUAL and `ceq`-EQUAL, or the reverse.
@@ -89,12 +93,11 @@ fn a_rule_defined_eq_decides_the_dictionary_route_and_the_named_one() {
          is a clause, so `same(red, blue)` is true even though the two are structurally \
          different; got {dispatched:?}"
     );
-    let dispatched_neg = drive(&program(inverted, "Holder.same(red(), red())"));
+    let dispatched_neg = drive(&program(inverted, "Holder.same(red(), green())"));
     assert!(
         matches!(dispatched_neg, Ok(Value::Int(0))),
-        "and the same route must REFUTE where the clauses do not reach: `ceq(red, red)` \
-         is not a clause, so `same(red, red)` is false even though the two are \
-         identical; got {dispatched_neg:?}"
+        "and the same route must REFUTE where the clauses do not reach: `ceq(red, green)` \
+         is not a clause, so `same(red, green)` is false; got {dispatched_neg:?}"
     );
 
     let named = drive(&program(inverted, "PartialEq.eq(red(), blue())"));
@@ -103,12 +106,14 @@ fn a_rule_defined_eq_decides_the_dictionary_route_and_the_named_one() {
         "the NAMED route reaches the same `ceq` for the same pair, so it must give the \
          same answer as the dictionary route; got {named:?}"
     );
-    // The one asymmetry, stated rather than pinned: `PartialEq.eq(red(), red())` is 1
-    // here, from the structural fast path, which settles two IDENTICAL operands before
-    // any carrier dispatch — so it disagrees with `ceq(red, red)` above. That is a
-    // reflexivity assumption over a carrier that also `provides Eq`, not WI-1092's
-    // defect, and it is exactly what made the filed "control" vacuous: on identical
-    // operands the named route never reaches the carrier's `eq` at all.
+    // Identical operands are equal on both routes, by `Eq`'s law `eq_refl` (`Color` provides
+    // `Eq`; kernel-language §8.3), and `ceq` is not asked: `ceq(red, red)` is no clause. The
+    // dictionary route answered 0 here, entering `ceq`, while the named one answered 1 by the
+    // builtin's reflexivity, until WI-20260909-SM910 put the law where a member is entered.
+    for call in ["Holder.same(red(), red())", "PartialEq.eq(red(), red())"] {
+        let got = drive(&program(inverted, call));
+        assert!(matches!(got, Ok(Value::Int(1))), "`{call}` is 1 by the law; got {got:?}");
+    }
 }
 
 /// kernel-language.md §8.7's carrier declaration, VERBATIM, driven.

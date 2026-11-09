@@ -804,6 +804,24 @@ pub(crate) struct SortOpsTable {
     /// (`eq_refl`) and not `PartialEq`'s (kernel-language.md §8.3). Written with each entry,
     /// so a later load that gives the carrier `Eq` takes its key out.
     eq_dispatch_partial: HashSet<Symbol>,
+    /// The members of [`Self::eq_dispatch`], each under its symbol and its canonical copy, with
+    /// whether every carrier whose `eq` it is provides `Eq` and the member is typed at it: then
+    /// identical operands are equal by `eq_refl` and the member is not asked
+    /// (kernel-language.md §8.3). Rebuilt by `load::build_eq_dispatch_index`.
+    eq_members: HashMap<Symbol, EqLaw>,
+}
+
+/// Where the law `eq_refl` decides a call of a carrier's `eq` member on identical operands
+/// ([`KnowledgeBase::eq_law_of_member`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EqLaw {
+    /// At every call: the member is typed at carriers that each provide `Eq`.
+    Always,
+    /// Only on values of the carriers it is the `eq` of: the member has type parameters of its
+    /// own, so it is called at other types too, where `Eq` says nothing.
+    AtItsCarriers,
+    /// Never: a carrier whose `eq` it is provides no `Eq`.
+    Never,
 }
 
 // ── KnowledgeBase ───────────────────────────────────────────────
@@ -8702,6 +8720,49 @@ impl KnowledgeBase {
         } else {
             self.sort_ops.eq_dispatch_partial.remove(&functor);
         }
+    }
+
+    /// Forget which members are a carrier's `eq` ([`Self::is_lawful_eq_member`]), ahead of the
+    /// load's rebuild of the index, which may give a carrier `Eq`.
+    pub(crate) fn clear_eq_members(&mut self) {
+        self.sort_ops.eq_members.clear();
+    }
+
+    /// Record `member` as the `eq` of one carrier, with where the law decides its call there.
+    /// A member several carriers share takes the narrowest. Keyed under the symbol and its
+    /// canonical copy, so [`Self::eq_law_of_member`] reads the symbol a call holds without
+    /// canonicalizing it. Called only by `load::build_eq_dispatch_index`.
+    pub(crate) fn note_eq_member(&mut self, member: Symbol, law: EqLaw) {
+        let canon = self.canonical_sym(member);
+        for key in [member, canon] {
+            let entry = self.sort_ops.eq_members.entry(key).or_insert(EqLaw::Always);
+            *entry = match (*entry, law) {
+                (EqLaw::Never, _) | (_, EqLaw::Never) => EqLaw::Never,
+                (EqLaw::AtItsCarriers, _) | (_, EqLaw::AtItsCarriers) => EqLaw::AtItsCarriers,
+                (EqLaw::Always, EqLaw::Always) => EqLaw::Always,
+            };
+        }
+    }
+
+    /// Where the law `eq_refl` answers `true` for a call of `op` on identical operands without
+    /// running it (kernel-language.md §8.3), as the resolver's semantic equality does
+    /// ([`Self::sem_eq_values`], reflexivity): `Never` for an operation that is no carrier's
+    /// `eq`. One hash probe of the symbol the call holds.
+    pub(crate) fn eq_law_of_member(&self, op: Symbol) -> EqLaw {
+        self.sort_ops
+            .eq_members
+            .get(&op)
+            .copied()
+            .unwrap_or(EqLaw::Never)
+    }
+
+    /// Is `v` a value of a carrier, providing `Eq`, whose `eq` is `member`? Asked only for a
+    /// member with type parameters of its own ([`EqLaw::AtItsCarriers`]).
+    pub(crate) fn value_of_lawful_carrier_of(&self, v: &crate::eval::value::Value, member: Symbol) -> bool {
+        let Some(target) = self.sem_eq_dispatch_target(v) else {
+            return false;
+        };
+        !self.sem_eq_partial_head(v) && self.canonical_sym(target) == self.canonical_sym(member)
     }
 
     /// WI-20261025-TSYS6 — is a value headed by `functor` of a carrier whose own `eq` decides

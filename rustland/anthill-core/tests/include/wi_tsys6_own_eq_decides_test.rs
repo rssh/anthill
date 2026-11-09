@@ -12,9 +12,9 @@
 //! The builtin's reflexivity step, and the WI-664 field-wise compare before it, stand aside for
 //! an operand headed by such a type (`KnowledgeBase::eq_dispatch_is_partial`, set where the
 //! equality index is built), in eval (`semantic_equal`) and in the resolver (`sem_eq_values`).
-//! The routes stay as they were (the user's choice): the member is pinned and runs, the binding
-//! is reached through the builtin, so a circular member still runs to the step budget where a
-//! circular binding is refused at the bridge's re-entry cap.
+//! Since WI-20260909-SM910 (the user, 2026-11-08) the binding is pinned at load as the member
+//! is, so a circular binding runs to the step budget as a circular member does; it was refused
+//! at the bridge's re-entry cap while the builtin reached it.
 //!
 //! BACK-OUTS, MEASURED: with the gate on `eq_dispatch_is_partial` removed from both halves, the
 //! five rows that name the binding or an open operand fail; the member's two rows and the
@@ -71,20 +71,26 @@ fn a_binding_decides_identical_operands_in_a_rule_body() {
     assert!(query_unary(&mut kb, &format!("{ns}.rq")).is_empty());
 }
 
-/// A CIRCULAR binding is refused on identical operands too, at the bridge's re-entry cap. It
-/// answered 1.
+/// A CIRCULAR binding runs, as a circular member does (`a_circular_member_runs_to_the_step_budget`):
+/// the call at `Loop` is pinned to `loopEq` at load, and so is the call inside it, so it stops
+/// at a step budget where one is set. It was refused at the bridge's re-entry cap, "could not
+/// be decided", while the builtin reached the binding (before WI-20260909-SM910); with the
+/// equality clause back in `resolve_at_goal` this row fails on that error.
 #[test]
-fn a_circular_binding_is_refused_on_identical_operands() {
+fn a_circular_binding_runs_to_the_step_budget() {
     let ns = "test.tsys6.circular";
     let supply = "  operation loopEq(x: Loop, y: Loop) -> Bool = PartialEq.eq(x, y)\n  \
                   namespace Loop\n    provides PartialEq[T = Loop, eq = loopEq]\n  end\n";
     let src = program(ns, "", supply);
-    let answer = run_int64(&src, &format!("{ns}.go"));
+    let mut interp = crate::common::interp_for(&src);
+    interp.config_mut().step_cap = Some(1_000_000);
+    let answer = interp.call(&format!("{ns}.go"), &[]);
     assert!(
-        answer
-            .as_ref()
-            .is_err_and(|e| e.contains("could not be decided")),
-        "refused at the cap: {answer:?}"
+        matches!(
+            answer,
+            Err(anthill_core::eval::EvalError::StepsExhausted { .. })
+        ),
+        "the step budget: {answer:?}"
     );
 }
 
@@ -141,9 +147,8 @@ fn a_non_ground_operand_is_undecided() {
     );
 }
 
-/// A CIRCULAR MEMBER runs, as the routes were left (the member is pinned at load and the
-/// binding reached through the builtin, the user's choice): it stops at a step budget where one
-/// is set, and not at the bridge's cap. Passes either way by design; it pins the route.
+/// A CIRCULAR MEMBER runs: the call is pinned to it at load, and it stops at a step budget where
+/// one is set, and not at the bridge's cap. Passes either way by design; it pins the route.
 #[test]
 fn a_circular_member_runs_to_the_step_budget() {
     let ns = "test.tsys6.member_loop";

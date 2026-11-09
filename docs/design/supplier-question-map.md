@@ -211,9 +211,9 @@ WI-20261025-7K84M, in four parts, each a reader of the table above made to ask t
 
 - **And the readers the map had not listed.** `Dictionary.ops` asks an own-member row by the
   spec operation it backs for both halves (`spec_op_backed_by`), so it agrees with
-  `Dictionary.resolveOp` on a tie. Semantic equality keeps the table's answer in the
-  projection, because its builtin dispatches itself: pinned to a provision's `eq = loopEq`, a
-  circular binding never returned where the builtin's bridge refuses it at its re-entry cap.
+  `Dictionary.resolveOp` on a tie. Semantic equality is no exception: a provision's `eq =
+  loopEq` is the call's member as the carrier's own member is (decided by the user on
+  2026-11-08), so a circular binding calls itself, as a circular member does.
 
 The rule-body route is still proposal 068's, and the bracket on a rule-body call is
 WI-20261024-TC54R's (footnote 2).

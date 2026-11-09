@@ -313,17 +313,30 @@ fn eval_instance_fact_neq_dispatches() {
 /// Finding 1 (correctness review): an APPLICABLE instance-fact override that
 /// cannot be DECIDED must never masquerade as a structural `false` (which would
 /// report equal values unequal, or swallow a callee error). A circular `eq`
-/// (`loopEq = eq`) exhausts the bridge re-entry cap ⇒ UNDECIDED; top-level eval
-/// must surface it LOUDLY, not return `Ok(false)`.
+/// exhausts the bridge re-entry cap ⇒ UNDECIDED; top-level eval must surface it
+/// LOUDLY, not return `Ok(false)`.
+///
+/// The circle crosses the bridge at every turn, so this row is the canary of the bridge's native
+/// stack budget (`BRIDGE_REENTRY_CAP`): `loopEq` answers `neq`, which the builtin decides by
+/// asking `Loop`'s `eq` again through the bridge (that it is no equality does not matter: it
+/// never returns). Until WI-20260909-SM910 it asked `eq(x, y)`; that call is now pinned to
+/// `loopEq` at load and loops in one interpreter, as a circular member does
+/// (`wi_tsys6…::a_circular_binding_runs_to_the_step_budget`).
+///
+/// THE ROUTE IS BORROWED: `neq` reaches `loopEq` through the builtin's lookup from the value,
+/// which the planned rework of `eq`/`neq` removes (proposal 051 Phase 2, under 073). When
+/// `neq` is pinned too, this circle no longer crosses the bridge, and the canary must move to a
+/// circle that does — one through an `eq` written as clauses, which at opt-level 0 needs more
+/// than a 2 MiB thread before the cap stops it (see `BRIDGE_REENTRY_CAP`).
 #[test]
 fn eval_undecidable_instance_fact_eq_is_loud_not_false() {
     let src = r#"namespace gap2.loopeq
   import anthill.prelude.{Int64, Bool, Eq, PartialEq}
-  import anthill.prelude.PartialEq.{eq}
+  import anthill.prelude.PartialEq.{neq}
   sort Loop
     entity lp(v: Int64)
   end
-  operation loopEq(x: Loop, y: Loop) -> Bool = eq(x, y)
+  operation loopEq(x: Loop, y: Loop) -> Bool = neq(x, y)
   namespace Loop
     provides PartialEq[T = Loop, eq = loopEq]
     provides Eq[T = Loop, eq = loopEq]

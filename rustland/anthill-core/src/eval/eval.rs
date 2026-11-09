@@ -3080,6 +3080,24 @@ impl Interpreter {
             return self.enter_reify_boundary(&arg_values, &requirements);
         }
 
+        // The `eq` of a carrier that provides `Eq`, on identical operands: equal by the law
+        // `eq_refl`, and not asked (kernel-language.md §8.3) — as the resolver's semantic
+        // equality and the `PartialEq.eq` builtin answer before they reach the member. A call
+        // pinned to the member at load, or entered through a dictionary, ran it and answered
+        // what a member breaking the law says.
+        // A member with type parameters of its own is called at other types too, where `Eq`
+        // says nothing: there the law holds only on its carriers' values.
+        if let [a, b] = arg_values.as_slice() {
+            let law = match self.kb.eq_law_of_member(target) {
+                crate::kb::EqLaw::Never => false,
+                crate::kb::EqLaw::Always => true,
+                crate::kb::EqLaw::AtItsCarriers => self.kb.value_of_lawful_carrier_of(a, target),
+            };
+            if law && crate::kb::term_view::views_structurally_equal(&self.kb, a, b) {
+                return Ok(StepOutcome::Deliver(Value::Bool(true)));
+            }
+        }
+
         // 1c. WI-20260921-R10KC — A SPEC DEFAULT BODY REACHES ITS OWN SPEC'S MEMBERS
         // THROUGH THE DICTIONARY IT WAS ENTERED WITH. See
         // [`Self::spec_instance_for_sibling_call`].
