@@ -23,6 +23,9 @@ arguments flow to the sub-dictionary fetches). Even a typed head's conformance t
 is such a read: sort relations are facts, so conformance at a ground carried
 type is lookup over stored relations, not derivation.
 
+Replaced in part by 073 §6.2 (2026-11-09): a requirement no caller passes is refused at
+load, not fetched from the carried type.
+
 Three instances, one mechanism:
 
 | written | generated body goal | does |

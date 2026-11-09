@@ -9,7 +9,7 @@
 
 - acceptance: cargo-test
 
-- depends_on: WI-20261105-89J6K-proposal-073-stage-2-every
+- depends_on: WI-20261105-89J6K-proposal-073-stage-2-every, WI-20261109-5BP39-proposal-051-phase-2-2-of-4, WI-20261109-JEE0E-proposal-051-phase-2-4-of-4
 
 - tags: proposal-073
 
