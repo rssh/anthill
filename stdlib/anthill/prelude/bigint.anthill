@@ -7,14 +7,18 @@
 sort anthill.prelude.BigInt
   import anthill.prelude.{Eq, Ord, Numeric}
   import anthill.reflect.{TypeValue}
-  -- WI-20260825-KD9SW: a WRITTEN bare `eq`/`neq` (an effect guard, a law) names the
-  -- operation by import now; a minted `=`/`!=` carries its own address and needs nothing.
-  import anthill.prelude.PartialEq.{eq}
+  -- The division guards name `PartialEq.eq`, as the specs they refine do; a bare `eq`
+  -- written here is `BigInt.eq`, declared below.
+  import anthill.prelude.{PartialEq}
 
   -- WI-876: `BigInt`'s ORDERING, declared here and backed by the host in
   -- `rustland/anthill-stl/anthill/bigint.anthill`'s `operation_map`. See
   -- `int64.anthill`'s note for why a host-backed operation must still be DECLARED
   -- on its carrier.
+  --
+  -- `BigInt`'s equality, the member a call of `PartialEq.eq` at `BigInt` runs.
+  operation eq(a: BigInt, b: BigInt) -> Bool @[host_implemented]
+
   operation {
     compare(a: BigInt, b: BigInt) -> Int64 @[host_implemented]  -- -1 | 0 | 1
     gt(a: BigInt, b: BigInt) -> Bool @[host_implemented]        -- >
@@ -35,9 +39,9 @@ sort anthill.prelude.BigInt
   -- ONLY THE ZERO DIVISOR IS PARTIAL: `BigInt` is unbounded, so there is no
   -- `Int64.div`-style overflow arm. The guarded effect is the one `Int64` writes.
   operation {
-    div(a: BigInt, b: BigInt) -> BigInt effects { Error[DivisionByZero] :- eq(b, 0) } requires TypeValue[T = DivisionByZero] @[host_implemented]  -- truncated quotient; partial: b ≠ 0
-    mod(a: BigInt, b: BigInt) -> BigInt effects { Error[DivisionByZero] :- eq(b, 0) } requires TypeValue[T = DivisionByZero] @[host_implemented]  -- Euclidean remainder, never negative; partial: b ≠ 0
-    rem(a: BigInt, b: BigInt) -> BigInt effects { Error[DivisionByZero] :- eq(b, 0) } requires TypeValue[T = DivisionByZero] @[host_implemented]  -- truncated remainder, sign follows the dividend; partial: b ≠ 0
+    div(a: BigInt, b: BigInt) -> BigInt effects { Error[DivisionByZero] :- PartialEq.eq(b, 0) } requires TypeValue[T = DivisionByZero] @[host_implemented]  -- truncated quotient; partial: b ≠ 0
+    mod(a: BigInt, b: BigInt) -> BigInt effects { Error[DivisionByZero] :- PartialEq.eq(b, 0) } requires TypeValue[T = DivisionByZero] @[host_implemented]  -- Euclidean remainder, never negative; partial: b ≠ 0
+    rem(a: BigInt, b: BigInt) -> BigInt effects { Error[DivisionByZero] :- PartialEq.eq(b, 0) } requires TypeValue[T = DivisionByZero] @[host_implemented]  -- truncated remainder, sign follows the dividend; partial: b ≠ 0
   }
 
   -- WI-880: `BigInt`'s ARITHMETIC, host-backed and named in this carrier's

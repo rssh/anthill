@@ -21,8 +21,9 @@ sort anthill.prelude.PartialEq
   import anthill.kernel.{not}
 
   sort T = ?
+  -- `eq` is each carrier's: a scalar's host member, a sort's own `eq`, a binding.
   operation {
-    eq(a: T, b: T) -> Bool @[host_implemented]
+    eq(a: T, b: T) -> Bool
     neq(a: T, b: T) -> Bool @[host_implemented]
   }
   -- The law that makes `neq` DERIVED, and since WI-1125 the reason a carrier may

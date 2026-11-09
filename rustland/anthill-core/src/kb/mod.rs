@@ -13670,6 +13670,9 @@ impl KnowledgeBase {
         // WI-644 / proposal 004: eq/neq live on PartialEq, gt/lt/gte/lte on
         // PartialOrd (the partial bases); Eq/Ord are the lawful/total markers.
         self.register_builtin_tag("anthill.prelude.PartialEq.eq", BuiltinTag::SemEq);
+        // What a scalar carrier's own `eq` runs (`Int64.eq` ↦ `ScalarEq`). `PartialEq.eq`
+        // keeps `SemEq` for a goal no type reaches.
+        self.register_spec_op_primitive("anthill.prelude.PartialEq.eq", BuiltinTag::ScalarEq);
         self.register_builtin_tag("anthill.kernel.struct_eq", BuiltinTag::StructEq);
         self.register_builtin_tag("anthill.kernel.struct_neq", BuiltinTag::StructNeq);
         self.register_builtin_tag("anthill.prelude.PartialEq.neq", BuiltinTag::SemNeq);

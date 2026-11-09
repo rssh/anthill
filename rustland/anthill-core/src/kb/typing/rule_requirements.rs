@@ -2235,8 +2235,8 @@ pub(super) fn check_one_spec_op_requirement(
     // instance*, so it is not this pass's concern — skip it ([`host_implements`]):
     //   * `PartialEq.eq`/`PartialEq.neq` (SemEq) — structural equality IS the default
     //     `PartialEq` instance (kernel-language.md §equality / proposal 051 / WI-616: "a
-    //     carrier with no override keeps the structural compare — structural equality
-    //     *is* its instance"), so EVERY carrier already satisfies `PartialEq`; a carrier
+    //     composite with no `eq` of its own keeps the structural compare", and a scalar
+    //     carrier supplies its own), so EVERY carrier already satisfies `PartialEq`; a carrier
     //     wanting non-structural equality *overrides* it (`Set.eq`/`Map.eq`, `Float`'s
     //     IEEE `eq`), and the explicitly structural test is `===`/`struct_eq`. Never a
     //     missing requirement.

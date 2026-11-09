@@ -76,9 +76,9 @@ pub fn register_standard_builtins(interp: &mut Interpreter) {
     // carrier inherits now that nothing shadows it. The same holds for the ordering
     // family (WI-876): each total scalar carrier maps its own `compare`/`gt`/…/`max`/`min`.
     //
-    // `PartialEq.eq`/`neq` ARE keyed to the spec op, and that is a design, not a leftover
-    // — see `rustland/anthill-stl/anthill/eq.anthill` for why a dispatching implementation
-    // cannot simply be re-keyed per carrier.
+    // `PartialEq.neq` is keyed to the spec op (`rustland/anthill-stl/anthill/eq.anthill`);
+    // `PartialEq.eq` is each carrier's, and a call that reaches the spec operation with no
+    // member is compared by its values (`Interpreter::eq_spec_op`).
     register_operation_mappings(interp);
     // WI-889 — the const-level peer: register the `const_map` value sources (the Float
     // IEEE specials) against their const symbols, from the same `HOST_FNS` registry.
@@ -109,6 +109,10 @@ const HOST_FNS: &[(
     usize,
     fn(&mut Interpreter, &[Value]) -> Result<Value, EvalError>,
 )] = &[
+    // Equality of a scalar carrier: the literal's own for `Int64`, `BigInt`, `String`,
+    // `Bool`, IEEE for `Float`.
+    ("literal_eq", 2, literal_eq),
+    ("float_eq", 2, float_eq),
     // The TOTAL scalar order (`Ord`): `Int64`, `BigInt`, `String`.
     ("ordered_compare", 2, ordered_compare),
     ("ordered_gt", 2, ordered_gt),
@@ -317,10 +321,9 @@ const HOST_FNS: &[(
     // as everything above. Each binding block records what its operations reach that no
     // anthill body can; the functions themselves did not change.
     //
-    // `PartialEq`'s pair is keyed to the SPEC op (`rustland/anthill-stl/anthill/eq.anthill`
+    // `PartialEq.neq` is keyed to the SPEC op (`rustland/anthill-stl/anthill/eq.anthill`
     // says why): the function dispatches, through `semantic_equal`, to the head carrier's
     // own `eq` before deciding anything structurally.
-    ("partial_eq_eq", 2, builtin_eq),
     ("partial_eq_neq", 2, builtin_neq),
     // `===`, the one kernel operation an operation body evaluates (`kernel.anthill`).
     // WI-615 / proposal 051: a Bool-returning TEST like `eq`. WI-644: PURELY STRUCTURAL,
@@ -1478,7 +1481,40 @@ fn struct_equal(
     Ok(Value::Bool(equal == positive))
 }
 
-fn builtin_eq(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+/// `Int64.eq`, `String.eq`, `Bool.eq`, `BigInt.eq` — two literals of one carrier are equal
+/// when they are the same literal. A pair of any other kind is refused, as
+/// [`value_compare`] refuses one: a `Float` pair is `Float.eq`'s (IEEE).
+fn literal_eq(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    use crate::kb::term::Literal;
+    use crate::kb::term_view::TermView;
+    let [a, b] = expect_args::<2>("eq", args)?;
+    let mismatch = || EvalError::TypeMismatch {
+        expected: "Int64, String, Bool or BigInt operands of one type",
+        got: format!("{} and {}", a.type_name(), b.type_name()),
+    };
+    let (Some(la), Some(lb)) = (a.as_literal(i.kb()), b.as_literal(i.kb())) else {
+        return Err(mismatch());
+    };
+    Ok(Value::Bool(match (la, lb) {
+        (Literal::Int(x), Literal::Int(y)) => x == y,
+        (Literal::BigInt(x), Literal::BigInt(y)) => x == y,
+        (Literal::Bool(x), Literal::Bool(y)) => x == y,
+        (Literal::String(x), Literal::String(y)) => x == y,
+        _ => return Err(mismatch()),
+    }))
+}
+
+/// `Float.eq` — IEEE `==`: a NaN operand is equal to nothing, itself included, and `-0.0`
+/// equals `0.0`.
+fn float_eq(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    let [a, b] = expect_args::<2>("Float.eq", args)?;
+    let (x, y) = float_operands(i, &a, &b)?;
+    Ok(Value::Bool(x == y))
+}
+
+/// `PartialEq.eq` reached with no member: the operands compared by their values
+/// ([`semantic_equal`]). Entered through [`Interpreter::eq_by_value`].
+pub(crate) fn builtin_eq(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
     let [a, b] = expect_args::<2>("PartialEq.eq", args)?;
     Ok(Value::Bool(semantic_equal(i, &a, &b)?))
 }
@@ -1582,14 +1618,13 @@ fn semantic_equal(i: &mut Interpreter, a: &Value, b: &Value) -> Result<bool, Eva
             // different question and would be the wrong one here: their host-mapping leg
             // would be true for an `eq` no rule backs and no body defines.
             //
-            // THAT DIVERGENCE IS NOT REACHABLE TODAY AND ITS BOUNDARY IS EXACT: no
-            // carrier's `eq` is `operation_map`ped anywhere in the tree, because
-            // `PartialEq.eq` is the ONE spec-op registration WI-880 kept (see
-            // `register_standard_builtins` for the argument). The day an `eq` IS
-            // host-mapped, a host-mapped-and-body-less one would take the `else` branch
-            // below, find no clauses, and Refute — EQUAL VALUES REPORTED UNEQUAL, which
-            // is the failure this whole function exists to prevent. Whoever maps an `eq`
-            // owns this line and its twin in `resolve.rs`'s `sem_eq_dispatch`.
+            // A HOST-MAPPED `eq` (a scalar carrier's, `Int64.eq`) takes the `else`
+            // branch below and is decided there: the member carries the resolver
+            // primitive `BuiltinTag::ScalarEq` (`load::derive_carrier_builtin_tags`), so
+            // its goal runs that primitive, never a clause search that would refute equal
+            // values. The index keys such a member only under its carrier's
+            // self-returning operations, which head no evaluated value. Its twin is in
+            // `resolve.rs`'s `sem_eq_dispatch`.
             if crate::kb::typing::op_has_runnable_body(i.kb(), target) {
                 return match i
                     .kb_mut()

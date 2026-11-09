@@ -22,6 +22,7 @@ namespace anthill.prelude
     -- equation). So are `nonEqRefl`'s, `zero`'s and `one`'s. Every other declared
     -- operation is here.
     operation_map {
+      eq: "float_eq",
       gt: "float_gt",
       gte: "float_gte",
       lt: "float_lt",

@@ -52,6 +52,7 @@ namespace anthill.prelude
     -- inlined to `div(1.0, a)` at LOAD and never reaches any backend. Every other
     -- declared operation of the sort is here.
     operation_map {
+      eq: "($1 == $2)",
       gt: "std::isgreater($1, $2)",
       gte: "std::isgreaterequal($1, $2)",
       lt: "std::isless($1, $2)",

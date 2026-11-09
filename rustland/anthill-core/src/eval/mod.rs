@@ -484,6 +484,13 @@ pub struct Interpreter {
     pub(crate) builtins: HashMap<Symbol, BuiltinFn>,
     pub(crate) reflect: ReflectSymbols,
     pub(crate) error_layer: Option<ErrorLayer>,
+    /// `anthill.prelude.PartialEq.eq`, the spec operation a call reaches when no member was
+    /// found for it: one no type reaches, or one at a composite with no `eq` of its own.
+    /// The spec declares no implementation; `dispatch_resolved_operation` compares such a
+    /// call's operands by their values ([`Self::eq_by_value`]). Resolved once, under both
+    /// spellings one qualified name can be interned with — the name's own and the
+    /// declaration's — as a host registration is ([`Self::is_eq_spec_op`]).
+    pub(crate) eq_spec_op: [Option<Symbol>; 2],
     /// WI-20260919-HXGXF — the dispatching DICTIONARY of the builtin currently running,
     /// or `None` outside one.
     ///
@@ -596,6 +603,15 @@ impl Interpreter {
     pub fn with_config(mut kb: KnowledgeBase, config: EvalConfig) -> Self {
         let reflect = ReflectSymbols::resolve(&kb);
         let error_layer = ErrorLayer::resolve(&mut kb);
+        let eq_spec_op = {
+            let named = kb.try_resolve_symbol("anthill.prelude.PartialEq.eq");
+            let short = kb.intern("eq");
+            let declared = kb
+                .try_resolve_symbol("anthill.prelude.PartialEq")
+                .and_then(|spec| kb.sort_ops_lookup(spec, short))
+                .filter(|d| Some(*d) != named);
+            [named, declared]
+        };
         let fields = FieldSymbols::resolve(&mut kb);
         let stack = match config.depth_cap {
             Some(cap) => ActivationStack::with_cap(cap),
@@ -609,6 +625,7 @@ impl Interpreter {
             builtins: HashMap::new(),
             reflect,
             error_layer,
+            eq_spec_op,
             fields,
             closures: ClosureArenaRef::new(),
             streams: StreamArenaRef::new(),
@@ -1363,6 +1380,21 @@ impl Interpreter {
         result
     }
 
+    /// Is `sym` `PartialEq.eq` ([`Self::eq_spec_op`])?
+    pub(crate) fn is_eq_spec_op(&self, sym: Symbol) -> bool {
+        self.eq_spec_op.contains(&Some(sym))
+    }
+
+    /// `PartialEq.eq` reached with no member ([`Self::eq_spec_op`]): the operands compared by
+    /// their values ([`builtins::builtin_eq`]), entered as a host call is
+    /// ([`Self::call_host`]) — one that reads a variable the rule has not bound waits.
+    pub(crate) fn eq_by_value(&mut self, args: &[Value]) -> Result<Value, EvalError> {
+        if args.iter().any(|a| self.mentions_unknown(a)) {
+            return Err(self.reads_unknown("`anthill.prelude.PartialEq.eq`"));
+        }
+        builtins::builtin_eq(self, args)
+    }
+
     /// The suspension a read of one of the caller's unknowns raises: the call cannot be
     /// evaluated YET, and the resolver delays it until a binding wakes it (068 §2.2).
     pub(crate) fn reads_unknown(&self, what: &str) -> EvalError {
@@ -1548,6 +1580,11 @@ impl Interpreter {
         // ([`Self::invoke_reify_boundary`]). Keyed by symbol, as in the two in-body faces.
         if Some(sym) == self.error_layer.as_ref().map(|l| l.reify) {
             return self.invoke_reify_boundary(sym, args, &requirements);
+        }
+        // `PartialEq.eq` reached with no member, as in `dispatch_resolved_operation`'s
+        // step 2b: a host call of the spec operation compares by the values.
+        if self.is_eq_spec_op(sym) {
+            return self.eq_by_value(args);
         }
         // WI-1057 — `sym` and `requirements` are REBOUND rather than passed to a
         // recursive call. When the body-less arm below dispatches value-directed, the

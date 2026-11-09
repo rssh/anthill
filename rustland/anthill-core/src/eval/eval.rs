@@ -3082,7 +3082,8 @@ impl Interpreter {
 
         // The `eq` of a carrier that provides `Eq`, on identical operands: equal by the law
         // `eq_refl`, and not asked (kernel-language.md §8.3) — as the resolver's semantic
-        // equality and the `PartialEq.eq` builtin answer before they reach the member. A call
+        // equality and a call reaching `PartialEq.eq` with no member (step 2b) answer before
+        // they reach the member. A call
         // pinned to the member at load, or entered through a dictionary, ran it and answered
         // what a member breaking the law says.
         // A member with type parameters of its own is called at other types too, where `Eq`
@@ -3138,6 +3139,14 @@ impl Interpreter {
             };
             self.builtin_dispatch_dict = saved_dict;
             return Ok(StepOutcome::Deliver(result?));
+        }
+
+        // 2b. `PartialEq.eq` reached with no member: a call no type reaches, or one at a
+        // composite with no `eq` of its own. The spec declares no implementation, so its
+        // operands are compared by their values, as the resolver's `SemEq` compares a goal
+        // no type reaches.
+        if self.is_eq_spec_op(target) {
+            return Ok(StepOutcome::Deliver(self.eq_by_value(&arg_values)?));
         }
 
         // 3. Anthill-defined operation body.

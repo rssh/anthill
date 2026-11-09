@@ -488,13 +488,12 @@ end
 fn pinned_call_does_not_get_apply_within_rewrite() {
     // Counter-test: when an enclosing sort doesn't declare `requires
     // Eq[T]`, a ground `eq(a, b)` call must NOT be defer-to-requirement-
-    // classified as apply_within. WI-237's `impl_op == fn_sym` guard
-    // collapses the dispatch into an unrewritten direct call (no
-    // classification, no `dispatch_origin` entry), so we verify the
-    // intent by walking `pin_call`'s body and asserting it carries no
-    // CallClass tag — scoped to this body to avoid being thrown off by
-    // legitimate stdlib classifications (e.g. List's own apply_within
-    // entries after WI-325 added `requires Eq[T]` to List).
+    // classified as apply_within. At `Int64` the call is pinned to the
+    // carrier's own `Int64.eq` (WI-20261109-5BP39), a plain `PinNow` — it was
+    // left unclassified while `PartialEq.eq` had no member at a scalar. We walk
+    // `pin_call`'s body — scoped to this body to avoid being thrown off by
+    // legitimate stdlib classifications (e.g. List's own apply_within entries
+    // after WI-325 added `requires Eq[T]` to List).
     let src = r#"
 namespace test.wi222.no_defer
   import anthill.prelude.Eq.{eq}
@@ -515,11 +514,17 @@ end
         classifications.push(c.clone());
     });
 
+    let int64_eq = kb
+        .try_resolve_symbol("anthill.prelude.Int64.eq")
+        .expect("Int64.eq");
     assert!(
-        classifications.is_empty(),
-        "pin_call's body must have no spec-op classifications — the only \
-         call (eq) resolves to an `impl_op == spec_op` collapse so no \
-         apply_within emerges; got {} classifications: {:?}",
+        matches!(
+            classifications.as_slice(),
+            [anthill_core::kb::typing::CallClass::PinNow { impl_op_sym, .. }]
+                if *impl_op_sym == int64_eq
+        ),
+        "pin_call's only call (eq) is pinned to `Int64.eq`, no apply_within; got {} \
+         classifications: {:?}",
         classifications.len(),
         classifications,
     );

@@ -56,12 +56,14 @@ namespace anthill.reflect
   -- Use for identifiers/references; use Term for complex type expressions.
   sort Symbol = ?
 
-  -- A symbol's equality is its identity, which is lawful, so a symbol is a `Map` key.
+  -- A symbol's equality is its identity (`symbolEq`), which is lawful, so a symbol is a
+  -- `Map` key.
   -- Written in a secondary entry because `sort Symbol = ?` has no body to write it in.
   -- `Term` provides no `Eq`: `=` on a term holding a `Float` is IEEE, so a term holding
   -- `nan` is not equal to itself.
+  operation symbolEq(a: Symbol, b: Symbol) -> Bool = a === b
   namespace Symbol
-    provides anthill.prelude.PartialEq[T = Symbol]
+    provides anthill.prelude.PartialEq[T = Symbol, eq = symbolEq]
     provides anthill.prelude.Eq[T = Symbol]
   end
 

@@ -38,8 +38,10 @@ namespace anthill.prelude
   -- These operations are reached on a type value by name, `PartialEq.eq(t, u)`,
   -- or by a dot on a `Type` whose sort is not known at the dot. A receiver that
   -- denotes a sort resolves its dot in that sort (kernel-language.md §5.4).
+  -- A type's equality is its identity.
+  operation typeEq(a: Type, b: Type) -> Bool = a === b
   namespace Type
-    provides PartialEq[T = Type]      -- WI-644: Eq requires the PartialEq base
+    provides PartialEq[T = Type, eq = typeEq]      -- WI-644: Eq requires the PartialEq base
     provides Eq[T = Type]
     provides Lattice[T = Type]
   end

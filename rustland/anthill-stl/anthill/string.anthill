@@ -6,6 +6,7 @@ namespace anthill.prelude
     -- WI-876: `String`'s ordering is the host's lexicographic `Ord` — same total
     -- comparison functions `Int64` names, keyed to this carrier.
     operation_map {
+      eq: "literal_eq",
       compare: "ordered_compare",
       gt: "ordered_gt",
       gte: "ordered_gte",

@@ -4,13 +4,16 @@
 sort anthill.prelude.String
   import anthill.prelude.{Eq, Ord, Int64}
   import anthill.prelude.Additive.{sub}
-  -- WI-20260825-KD9SW: a WRITTEN name in a LAW or CONSTRAINT HEAD needs the import.
-  import anthill.prelude.PartialEq.{eq}
+  import anthill.prelude.{PartialEq}
 
   -- WI-876: `String`'s ORDERING (lexicographic by code unit), declared here and
   -- backed by the host in `rustland/anthill-stl/anthill/string.anthill`'s
   -- `operation_map`. See `int64.anthill`'s note for why a host-backed operation
   -- must still be DECLARED on its carrier.
+  -- `String`'s equality, the member a call of `PartialEq.eq` at `String` runs. A bare
+  -- `eq` written in this sort is this one.
+  operation eq(a: String, b: String) -> Bool @[host_implemented]
+
   operation {
     compare(a: String, b: String) -> Int64 @[host_implemented]  -- -1 | 0 | 1
     gt(a: String, b: String) -> Bool @[host_implemented]        -- >
@@ -135,7 +138,7 @@ sort anthill.prelude.String
   -- lives on the mapping, in `rustland/anthill-stl/anthill/string.anthill`. Untagged,
   -- the law also stops `eq(length(s), 0)` inlining into every proof and codegen
   -- output where the author wrote `isEmpty(s)`.
-  rule isEmpty(?s) <=> eq(length(?s), 0)
+  rule isEmpty(?s) <=> PartialEq.eq(length(?s), 0)
 
   -- The other five are each true and each PARTIAL — a single case of an operation
   -- whose other cases the host answers, so none of them could back its operation even

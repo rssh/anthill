@@ -257,6 +257,11 @@ pub enum BuiltinTag {
     /// `Eq` instance. See [`KnowledgeBase::sem_eq_core`] for the full
     /// reflexivity / dispatch / buried-override / structural cascade.
     SemEq,
+    /// The equality a scalar carrier's own `eq` runs (`Int64.eq`, `Float.eq`, `String.eq`,
+    /// `Bool.eq`, `BigInt.eq`): IEEE `==` for two floats, the literal's own otherwise. The
+    /// primitive of `PartialEq.eq` ([`KnowledgeBase::spec_op_primitive_of`]), so a goal
+    /// the typer pinned to such a member runs it and nothing value-directed.
+    ScalarEq,
     /// WI-20260919-HXGXF — `anthill.reflect.TypeValue.type_value[X]()` (proposal 065 §2).
     ///
     /// REGISTERED FOR ITS LOAD-TIME EFFECT, not for an SLD one. `op_backed` accepts a
@@ -2862,7 +2867,7 @@ impl SearchStream {
             // expanded by case-splitting the callee's body — one `Continuation`
             // per `match` arm — instead of delaying. Mirrors the `push_choice` /
             // Γ special-cases above (set the frame's ChoicePoint, then continue).
-            if !open_world_operand && tag == BuiltinTag::SemEq {
+            if !open_world_operand && matches!(tag, BuiltinTag::SemEq | BuiltinTag::ScalarEq) {
                 let sub = self.stack.last().unwrap().subst.clone();
                 if let Some(candidates) = kb.unfold_eq_operand(&goal_val, &sub) {
                     let f = self.stack.last_mut().unwrap();
@@ -4508,7 +4513,7 @@ impl SearchStream {
             // FAILURE is value-dependent in precisely the way `eq(c, 1)`'s is. Unlike the
             // ordering family it has the safe carve-out. (A binding
             // `SuccessWithBindings` is never reconsidered — see the caller.)
-            BuiltinTag::SemEq | BuiltinTag::StructEq | BuiltinTag::Unify => {
+            BuiltinTag::SemEq | BuiltinTag::ScalarEq | BuiltinTag::StructEq | BuiltinTag::Unify => {
                 matches!(result, BuiltinResult::Failure)
             }
             BuiltinTag::SemNeq | BuiltinTag::StructNeq => {
@@ -6568,6 +6573,7 @@ impl KnowledgeBase {
             BuiltinTag::StructEq => self.builtin_struct_eq(goal, answer_subst, true, faults),
             BuiltinTag::StructNeq => self.builtin_struct_eq(goal, answer_subst, false, faults),
             BuiltinTag::SemEq => self.builtin_sem_eq(goal, answer_subst, faults),
+            BuiltinTag::ScalarEq => self.builtin_scalar_eq(goal, answer_subst, faults),
             BuiltinTag::SemNeq => self.builtin_sem_neq(goal, answer_subst, faults),
             BuiltinTag::Unify => self.builtin_unify(goal, answer_subst, faults),
             BuiltinTag::Gt => self.builtin_cmp(
@@ -8846,6 +8852,28 @@ impl KnowledgeBase {
         self.finish_result_value(target, Value::Bool(holds))
     }
 
+    /// A scalar carrier's own `eq` ([`BuiltinTag::ScalarEq`]): IEEE `==` for two floats
+    /// (`nan` equals nothing, `-0.0` equals `0.0`), structural identity otherwise — the
+    /// literal's, or a rigid variable's. A flex operand delays, a stuck one takes its
+    /// state, and a third argument is the result column, as for `===`.
+    fn builtin_scalar_eq(
+        &mut self,
+        goal: &Value,
+        subst: &Substitution,
+        faults: &mut ReduceFaults,
+    ) -> BuiltinResult {
+        let verdict = match self.eq_operands(goal, subst, faults) {
+            EqOperands::Delay => BuiltinResult::delay(),
+            EqOperands::Stuck(state) => state.verdict(),
+            EqOperands::Absent => BuiltinResult::Failure,
+            EqOperands::Ready(a, b) => match (self.value_f64(&a), self.value_f64(&b)) {
+                (Some(x), Some(y)) => sem_verdict(x == y, true),
+                _ => sem_verdict(self.values_equal(&a, &b), true),
+            },
+        };
+        self.verdict_into_result_column(goal, subst, verdict)
+    }
+
     /// WI-616 (proposal 051 Phase 2) — `eq(?a, ?b)`, the SEMANTIC `PartialEq.eq` spec
     /// op. See [`Self::sem_eq_core`].
     fn builtin_sem_eq(
@@ -9184,10 +9212,9 @@ impl KnowledgeBase {
         // `eval/builtins.rs`'s `semantic_equal` gate; the full argument is there, and
         // the two must move together. In one line: `op_is_executable` /
         // `op_is_interpretable` ask "can the interpreter INVOKE it", and a host-mapped
-        // body-less `eq` would answer yes to that while falling into
-        // `prove_rule_predicate` below, which finds no clause and REFUTES — equal values
-        // reported unequal. Unreachable while `PartialEq.eq` is the one spec-op
-        // registration WI-880 kept and no carrier `eq` is mapped.
+        // body-less `eq` (`Int64.eq`) answers yes to that and falls into
+        // `prove_rule_predicate` below, where its goal runs the primitive the member
+        // carries (`BuiltinTag::ScalarEq`), not a clause search.
         if super::typing::op_has_runnable_body(self, target) {
             return match self.bridge_eq_op_to_eval(target, a, b) {
                 Ok(BridgeEqOutcome::Decided(v)) => sem_verdict(v, positive),

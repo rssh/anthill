@@ -45,6 +45,7 @@ sort anthill.prelude.Float
   -- a spec that owns "has a max" independent of totality, or 058 §3.8's per-provision
   -- conditions so `Ord`'s derivation can be conditioned rather than inherited.
   operation {
+    eq(a: Float, b: Float) -> Bool @[host_implemented]         -- IEEE ==: false if either operand is NaN, -0.0 equals 0.0
     gt(a: Float, b: Float) -> Bool @[host_implemented]         -- >, false if either operand is NaN
     gte(a: Float, b: Float) -> Bool @[host_implemented]        -- >=, false if either operand is NaN
     lt(a: Float, b: Float) -> Bool @[host_implemented]         -- <, false if either operand is NaN

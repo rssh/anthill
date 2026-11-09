@@ -34,6 +34,7 @@ namespace anthill.prelude
     --     question (a guarded `Error` row) of exactly the shape WI-882 opens for
     --     `Float.floor`.
     operation_map {
+      eq: "($1 == $2)",
       compare: "[](int64_t l, int64_t r) { return static_cast<int64_t>((l > r) - (l < r)); }($1, $2)",
       gt: "($1 > $2)",
       gte: "($1 >= $2)",

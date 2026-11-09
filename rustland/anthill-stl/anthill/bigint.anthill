@@ -5,6 +5,7 @@ namespace anthill.prelude
     carrier { BigInt: "num_bigint::BigInt" }
     -- WI-876: `BigInt`'s ordering — the same total comparison functions, keyed here.
     operation_map {
+      eq: "literal_eq",
       compare: "ordered_compare",
       gt: "ordered_gt",
       gte: "ordered_gte",

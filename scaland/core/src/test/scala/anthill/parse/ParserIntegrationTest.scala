@@ -952,7 +952,9 @@ class ParserIntegrationTest extends munit.FunSuite:
     // a bodied operation where an inert untagged equation stood — so the rules lose
     // `nonEqRefl`. `recip` gained a body beside its `@[simp]` equation (no dispatch through
     // `Field` can run an equation), so it keeps its rule.
-    assertEquals(opCount, 40, "Float should expose 40 operations")
+    // WI-20261109-5BP39: + `eq`, IEEE `==` — the member a typed `PartialEq.eq` at `Float`
+    // runs, which the spec used to answer by the value for every carrier.
+    assertEquals(opCount, 41, "Float should expose 41 operations")
     assertEquals(countItems(ns.items) { case Item.RuleItem(_) => }, 4,
       "Float should declare 4 algebraic rules (neg, abs, recip, tau)")
     // WI-882: WAS 6 — `recip_nonzero`, `div_float_nonzero`, `sqrt_nonneg`,

@@ -22484,7 +22484,9 @@ pub fn derive_carrier_builtin_tags(kb: &mut KnowledgeBase) -> Vec<LoadError> {
             let Some(spec_op) = kb.sort_ops_lookup(spec, short) else {
                 continue;
             };
-            let Some(tag) = kb.builtin_of(spec_op).or_else(|| kb.spec_op_primitive_of(spec_op))
+            // The primitive first: `PartialEq.eq` is a builtin (`SemEq`, for a goal no type
+            // reaches) and has a primitive (`ScalarEq`), which is what its members run.
+            let Some(tag) = kb.spec_op_primitive_of(spec_op).or_else(|| kb.builtin_of(spec_op))
             else {
                 continue;
             };
@@ -22794,6 +22796,13 @@ pub fn build_eq_dispatch_index(kb: &mut KnowledgeBase) -> Vec<LoadError> {
         );
         for ctor in kb.field_constructors_of_sort(sort_sym) {
             entries.push((ctor, target, partial));
+        }
+        // An `eq` the host implements (`Int64.eq`) compares the host's values, which no
+        // operation heads: a term headed by `Int64.add` is a call or a quoted term, never an
+        // `Int64`, and keyed here it would send an untyped comparison of two quoted terms to
+        // `Int64.eq`. Its law is noted above.
+        if kb.is_host_mapped_op(target) {
+            continue;
         }
         let sort_canon = kb.canonical_sort_sym(sort_sym);
         for &op_sym in sort_ops.get(&sort_sym).into_iter().flatten() {

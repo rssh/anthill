@@ -11,6 +11,7 @@ namespace anthill.prelude
     -- reader that paid was the rule-body operand path: `and(true, true) = true` answered
     -- NOTHING because the gate asks the mapping, not the interpreter's own registry.
     operation_map {
+      eq: "literal_eq",
       and: "bool_and",
       or: "bool_or",
       not: "bool_not"

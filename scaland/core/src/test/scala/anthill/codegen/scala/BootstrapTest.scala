@@ -1347,7 +1347,8 @@ class BootstrapTest extends munit.FunSuite:
   test("WI-1055 B1: a name this file DECLARES and Bootstrap emits no type for is refused") {
     // `sort.anthill` declares `sort Type = ?` at NAMESPACE level — an opaque handle
     // whose Scala spelling would be an `opaque type`, which needs an enclosing
-    // object rather than a package. Bootstrap emits nothing for it, and
+    // object rather than a package. Bootstrap emits nothing for it, and `typeEq` (a
+    // type's equality, the first declaration in the file to name it) and
     // `EffectExpression`'s members are typed by it, so a bare `Type` in the output
     // names nothing in the tree.
     //
@@ -1360,7 +1361,7 @@ class BootstrapTest extends munit.FunSuite:
       gen(parseStdlib("anthill/prelude/sort.anthill")))
     assert(err.getMessage.contains("`Type`"),
       s"refusal must name the type: ${err.getMessage}")
-    assert(err.getMessage.contains("EffectExpression"),
+    assert(err.getMessage.contains("operation `typeEq`"),
       s"refusal must name the declaration: ${err.getMessage}")
     assert(err.getMessage.contains("sort.anthill:"),
       s"refusal must be located: ${err.getMessage}")
@@ -3217,7 +3218,10 @@ class BootstrapTest extends munit.FunSuite:
       // nothing declares, and both compiled files were the whole of the closure's error
       // count. A qualified name is now placed by the package it NAMES, `anthill.reflect`
       // is not in this closure, and Bootstrap says so instead of emitting elsewhere.
+      // FIVE SINCE WI-20261109-5BP39: `typeEq`, a type's equality bound on `Type`'s
+      // provision, is typed by `Type` as `EffectExpression` is.
       "sort.anthill" -> Seq(
+        ("operation `typeEq`", "emits no Scala type for"),
         ("sort `EffectExpression`", "emits no Scala type for"),
         ("entity `TypeBinding`", "declares `Symbol` in `anthill.reflect`"),
         ("entity `NamedTupleElement`", "declares `Symbol` in `anthill.reflect`"),

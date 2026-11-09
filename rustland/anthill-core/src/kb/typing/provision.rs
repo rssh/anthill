@@ -1516,6 +1516,8 @@ pub(super) fn collect_eq_defined_ops(kb: &KnowledgeBase) -> std::collections::Ha
 /// deliberately NOT [`op_backed`]'s:
 ///   - the BUILTIN leg stays dropped — admitting `PartialEq.eq`'s builtin-ness
 ///     would mask exactly the empty `Map.eq` override this guard exists to catch;
+///   - a HOST MAPPING counts — a scalar carrier's `eq` (`Int64.eq`) is its binding's
+///     `operation_map` entry, which is authorship as a body is;
 ///   - the `eq=` leg stays admitted — a carrier backing `eq` via an equational
 ///     `eq(?a, ?b) = rhs` (invisible to the general-clause probe, unindexed by
 ///     WI-139) must not be flagged spuriously. This does not unmask Map, whose
@@ -1535,6 +1537,7 @@ pub(super) fn eq_override_backed(
     eq_defined: &std::collections::HashSet<Symbol>,
 ) -> bool {
     op_has_runnable_body(kb, op)
+        || kb.is_host_mapped_op(op)
         || eq_defined.contains(&op)
         || kb
             .rules_by_functor_iter(op)

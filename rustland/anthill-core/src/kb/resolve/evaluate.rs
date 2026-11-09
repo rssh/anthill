@@ -1076,7 +1076,11 @@ impl KnowledgeBase {
         // leaves the call to `stuck_state`, which tells an unbound operand from a rigid one.
         if matches!(
             tag,
-            BuiltinTag::SemEq | BuiltinTag::SemNeq | BuiltinTag::StructEq | BuiltinTag::StructNeq
+            BuiltinTag::SemEq
+                | BuiltinTag::ScalarEq
+                | BuiltinTag::SemNeq
+                | BuiltinTag::StructEq
+                | BuiltinTag::StructNeq
         ) {
             return match self.execute_builtin(tag, call, subst, faults) {
                 BuiltinResult::Success => BuiltinValue::Value(Value::Bool(true)),

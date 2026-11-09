@@ -10,6 +10,7 @@ namespace anthill.prelude
     -- was registered on the SPEC op (`anthill.prelude.Ord.compare`) and served
     -- every carrier — including structural ones whose values it cannot compare.
     operation_map {
+      eq: "literal_eq",
       compare: "ordered_compare",
       gt: "ordered_gt",
       gte: "ordered_gte",

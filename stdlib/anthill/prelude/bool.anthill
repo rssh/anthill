@@ -7,6 +7,7 @@ sort anthill.prelude.Bool
   -- Every operation declared here is backed by a host builtin. `ite` is NOT declared
   -- as one — see its own rule block below.
   operation {
+    eq(a: Bool, b: Bool) -> Bool @[host_implemented]    -- the member a call of `PartialEq.eq` at `Bool` runs
     and(a: Bool, b: Bool) -> Bool @[host_implemented]
     or(a: Bool, b: Bool) -> Bool @[host_implemented]
     not(a: Bool) -> Bool @[host_implemented]

@@ -220,7 +220,7 @@ fn the_stdlib_without_its_binding_layer_does_not_load() {
     for (op, owner) in [
         ("anthill.prelude.Map.get", "anthill.prelude.Map"),
         ("anthill.prelude.Int64.compare", "anthill.prelude.Int64"),
-        ("anthill.prelude.PartialEq.eq", "anthill.prelude.PartialEq"),
+        ("anthill.prelude.PartialEq.neq", "anthill.prelude.PartialEq"),
         ("anthill.reflect.term_field", "anthill.reflect"),
     ] {
         assert!(
@@ -356,9 +356,10 @@ const REFLECT_SET: [&str; 24] = [
 
 /// The registrations `register_standard_builtins` made by hardcoded qualified name
 /// before this ticket (`register_if_present`), each now an `operation_map` entry: 46 then,
-/// 44 since WI-200 retired `ModifyRuntime.get` and `.set` with their sort.
-const MIGRATED: [&str; 44] = [
-    "anthill.prelude.PartialEq.eq",
+/// 44 since WI-200 retired `ModifyRuntime.get` and `.set` with their sort, 43 since
+/// WI-20261109-5BP39 left `PartialEq.eq` with no host implementation (each scalar carrier
+/// maps its own `eq`).
+const MIGRATED: [&str; 43] = [
     "anthill.prelude.PartialEq.neq",
     "anthill.kernel.struct_eq",
     "anthill.prelude.Map.empty",

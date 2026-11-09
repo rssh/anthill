@@ -44,6 +44,7 @@
 namespace anthill.prelude
   provides String language cpp
     operation_map {
+      eq: "($1 == $2)",
       -- Ord (WI-876). `std::string`'s relational operators compare byte-by-byte as
       -- UNSIGNED char (`std::char_traits<char>::lt`), which for valid UTF-8 is code-point
       -- order — the same total order rust's `str: Ord` gives, so the two hosts agree.
