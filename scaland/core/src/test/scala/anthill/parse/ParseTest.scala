@@ -947,6 +947,17 @@ class ParseTest extends munit.FunSuite:
     assertEquals(functorName(pf, body(0)), Pratt.structEqFunctor)
   }
 
+  // Proposal 051 phase 2: `!==` lowers to `struct_neq`, and is one token — not `!=`
+  // followed by `=` — while `!=` keeps its own reading beside it.
+  test("`!==` in a rule body lowers to the `struct_neq` functor") {
+    val pf = Parser.parse("rule apart(?x, ?y) :- ?x !== ?y, ?x != ?y", "<structneq>").toOption
+      .getOrElse(fail("parse failed"))
+    val body = pf.items.collectFirst { case Item.RuleItem(r) => r }.flatMap(_.body)
+      .getOrElse(fail("no body"))
+    assertEquals(functorName(pf, body(0)), Pratt.structNeqFunctor)
+    assertEquals(functorName(pf, body(1)), Pratt.neqFunctor)
+  }
+
   // WI-568: the cut control primitive `!`.
   test("WI-568: a bare `!` rule-body goal lowers to `cut()` (not prefix negation)") {
     val pf = Parser.parse("rule p(?x) :- q(?x), !, r(?x)", "<cut>").toOption

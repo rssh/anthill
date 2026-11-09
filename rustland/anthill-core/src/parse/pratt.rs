@@ -234,6 +234,9 @@ pub const SPEC_OP_FUNCTORS: &[&str] = &[
 pub const EQ_FUNCTOR: &str = "..anthill.prelude.PartialEq.eq";
 pub const UNIFY_FUNCTOR: &str = "..anthill.kernel.unify";
 pub const STRUCT_EQ_FUNCTOR: &str = "..anthill.kernel.struct_eq";
+/// `!==`, the negation of `===` (proposal 051): addressed at the kernel beside it, for the
+/// same reason — it names a primitive with no carrier to choose.
+pub const STRUCT_NEQ_FUNCTOR: &str = "..anthill.kernel.struct_neq";
 
 /// The equality-family connectives — every functor the infix desugar mints for a
 /// binary equality operator, whatever it MEANS. One SHAPE: the connective at the
@@ -247,7 +250,15 @@ pub const STRUCT_EQ_FUNCTOR: &str = "..anthill.kernel.struct_eq";
 /// WI-1090 learned that the hard way: narrowing [`EQUATION_FUNCTORS`] alone silently
 /// took a bodied `g[T](?x) === ?x :- p(?x)`'s bracket away from the one reader that
 /// consumes it, which is precisely the WI-619 defect for a new spelling.
-pub const EQUALITY_FAMILY_FUNCTORS: &[&str] = &[EQ_FUNCTOR, UNIFY_FUNCTOR, STRUCT_EQ_FUNCTOR];
+///
+/// `!==` is a member: its head has the same shape, and a bodyless `!==` head is refused
+/// as a `===` one is, through this list.
+pub const EQUALITY_FAMILY_FUNCTORS: &[&str] = &[
+    EQ_FUNCTOR,
+    UNIFY_FUNCTOR,
+    STRUCT_EQ_FUNCTOR,
+    STRUCT_NEQ_FUNCTOR,
+];
 
 /// The EQUATION connectives: the SUBSET of [`EQUALITY_FAMILY_FUNCTORS`] whose minted
 /// node, as a bodyless rule head, is a DEFINING EQUATION — the subject at
@@ -391,7 +402,7 @@ fn infix_entry(op: &str) -> Option<&'static InfixEntry> {
         // WI-615 / proposal 051: `===` = structural identity test (anthill.kernel.struct_eq).
         // Like `<=>`, it lexes as one `operator_symbol` token — the longest-run regex makes
         // `===` win over `==`/`=` — so no grammar change is needed. Maps to the `struct_eq`
-        // functor; the resolver reuses `builtin_eq` (structural, never dispatches). Distinct
+        // functor; the resolver runs `builtin_struct_eq` (structural, never dispatches). Distinct
         // from `=`/`eq` (`anthill.prelude.PartialEq.eq`), which is semantic (Phase 2 / WI-616).
         (
             "===",
@@ -399,6 +410,18 @@ fn infix_entry(op: &str) -> Option<&'static InfixEntry> {
                 priority: 3,
                 assoc: Assoc::None,
                 functor: STRUCT_EQ_FUNCTOR,
+                continuation: None,
+            },
+        ),
+        // `!==` = the negation of `===` (anthill.kernel.struct_neq). Unlike `===` it is
+        // not an `operator_symbol` run (`!` is not an operator character), so the grammar
+        // lists it as its own token beside `!=`, and the longest match takes it.
+        (
+            "!==",
+            InfixEntry {
+                priority: 3,
+                assoc: Assoc::None,
+                functor: STRUCT_NEQ_FUNCTOR,
                 continuation: None,
             },
         ),
@@ -842,7 +865,7 @@ mod tests {
         // because that is where their declarations are. Spelled as a pair rather than a
         // loop over the family: `EQ_FUNCTOR` is the member for which this is FALSE, and
         // a loop with an exclusion reads as if the exclusion were incidental.
-        for f in [UNIFY_FUNCTOR, STRUCT_EQ_FUNCTOR] {
+        for f in [UNIFY_FUNCTOR, STRUCT_EQ_FUNCTOR, STRUCT_NEQ_FUNCTOR] {
             assert!(
                 f.starts_with("..anthill.kernel."),
                 "`{f}` is a RESOLVER PRIMITIVE (proposal 049 §8.3: never dispatches), \
@@ -931,6 +954,9 @@ mod tests {
         // WI-615 / proposal 051: `===` desugars to the `struct_eq` functor (greedy over `==`/`=`).
         let (terms, symbols, result) = run(&["a", "===", "b"]);
         assert_eq!(fmt_term(&terms, &symbols, result), "struct_eq(a, b)");
+
+        let (terms, symbols, result) = run(&["a", "!==", "b"]);
+        assert_eq!(fmt_term(&terms, &symbols, result), "struct_neq(a, b)");
     }
 
     #[test]

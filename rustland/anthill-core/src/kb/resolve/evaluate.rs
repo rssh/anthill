@@ -1068,12 +1068,16 @@ impl KnowledgeBase {
             }
         };
         let call = positional.as_ref().unwrap_or(call);
-        // `PartialEq.eq(a, b)`, `neq` and `struct_eq` (`===`) are operations, `-> Bool`, and
+        // `PartialEq.eq(a, b)`, `neq`, `struct_eq` (`===`) and `struct_neq` (`!==`) are
+        // operations, `-> Bool`, and
         // each call denotes its value in a value slot as any other does (068 §1.3):
         // `(Int64, PartialEq.eq(1, 1))` is `(Int64, true)`. They were read as goals written
         // as data, and kept as the term `eq(1, 1)` in a definite answer. A test that waits
         // leaves the call to `stuck_state`, which tells an unbound operand from a rigid one.
-        if matches!(tag, BuiltinTag::SemEq | BuiltinTag::SemNeq | BuiltinTag::Eq) {
+        if matches!(
+            tag,
+            BuiltinTag::SemEq | BuiltinTag::SemNeq | BuiltinTag::StructEq | BuiltinTag::StructNeq
+        ) {
             return match self.execute_builtin(tag, call, subst, faults) {
                 BuiltinResult::Success => BuiltinValue::Value(Value::Bool(true)),
                 BuiltinResult::Failure => BuiltinValue::Value(Value::Bool(false)),

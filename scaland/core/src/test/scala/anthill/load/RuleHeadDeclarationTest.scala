@@ -462,6 +462,8 @@ class RuleHeadDeclarationTest extends munit.FunSuite:
       "eqbad.anthill" -> "namespace sbz.eqbad\n  rule tau() = 7\nend")
     refused("is the structural identity TEST",
       "eqbad2.anthill" -> "namespace sbz.eqbad2\n  rule tau() === 7\nend")
+    refused("`!==` is the structural inequality TEST",
+      "neqbad.anthill" -> "namespace sbz.neqbad\n  rule tau() !== 7\nend")
     // AND `:- true` REACHES THEM, which is what makes the widened emptiness real: the
     // explicit spelling of the same empty body must be refused exactly as the arrow-less
     // form is.

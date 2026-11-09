@@ -95,7 +95,7 @@ namespace anthill.kernel
   -- Structural identity test (proposal 051 / WI-615). The `===` operator: a
   -- total, carrier-agnostic, dispatch-free comparison of two values by raw
   -- structure (opaque carriers compare by handle identity). Resolver-implemented
-  -- via the same `builtin_eq` structural comparator `=`/`eq` shortcut to today —
+  -- via the structural comparator `builtin_struct_eq`, which `=`/`eq` once shared —
   -- but under its OWN symbol, so when `=`/`eq` become genuinely dispatched
   -- semantic equality (`Eq.eq`, Phase 2 / WI-616) `===` stays structural. Needs
   -- no `Eq` instance. Never dispatches — in the same sense `unify` above spells out
@@ -107,6 +107,10 @@ namespace anthill.kernel
   -- spec op, so it carries an OPERATION-LEVEL type parameter `[T]` (proposal 042)
   -- the typer binds per call — letting `a === b` type-check in an operation body.
   operation struct_eq[T](a: T, b: T) -> Bool @[host_implemented]
+
+  -- Structural inequality, the `!==` operator: the negation of `struct_eq` where
+  -- it decides, and undecided where it is.
+  operation struct_neq[T](a: T, b: T) -> Bool @[host_implemented]
 
   -- Cut (`!`). Commits to the current rule invocation: discards the other
   -- clauses of the rule whose body the `!` appears in, and every choice point

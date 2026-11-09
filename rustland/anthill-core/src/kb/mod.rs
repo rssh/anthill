@@ -7059,14 +7059,15 @@ impl KnowledgeBase {
                 || self.kernel_connective_is(functor, "anthill.kernel.and"))
     }
 
-    /// WI-20260904-B8ESG — is `functor` one of the THREE equality-family connectives a
-    /// clause head can be written with: `eq` (`=`), `unify` (`<=>`) or `struct_eq`
-    /// (`===`)? [`Self::is_equality_connective_functor`] is the `eq`/`unify` pair the simp
-    /// gate counts and has no `struct_eq`; a head's operands are a subject and a
-    /// replacement for all three, which is the question this answers.
+    /// WI-20260904-B8ESG — is `functor` one of the equality-family connectives a clause
+    /// head can be written with: `eq` (`=`), `unify` (`<=>`), `struct_eq` (`===`) or
+    /// `struct_neq` (`!==`)? [`Self::is_equality_connective_functor`] is the `eq`/`unify`
+    /// pair the simp gate counts; a head's operands are a subject and a replacement for
+    /// all four, which is the question this answers.
     pub(crate) fn is_equality_family_connective(&self, functor: Symbol) -> bool {
         self.is_equality_connective_functor(functor)
             || self.kernel_connective_is(functor, "anthill.kernel.struct_eq")
+            || self.kernel_connective_is(functor, "anthill.kernel.struct_neq")
     }
 
     /// WI-1034 — the span a goal with no source location of its own is reported at,
@@ -13663,12 +13664,14 @@ impl KnowledgeBase {
         // Arithmetic and comparison. WI-616 (proposal 051 Phase 2): `=`/`eq`
         // and `neq` are the SEMANTIC `Eq` ops — structural until a carrier
         // declares its own `eq` override (`Set.eq`/`Map.eq`), which then
-        // dispatches at SLD. `===` (struct_eq, WI-615) keeps the structural
-        // `builtin_eq`: total, carrier-agnostic, never dispatches.
+        // dispatches at SLD. `===` (struct_eq, WI-615) and its negation `!==`
+        // (struct_neq) are the structural `builtin_struct_eq`: total,
+        // carrier-agnostic, never dispatch.
         // WI-644 / proposal 004: eq/neq live on PartialEq, gt/lt/gte/lte on
         // PartialOrd (the partial bases); Eq/Ord are the lawful/total markers.
         self.register_builtin_tag("anthill.prelude.PartialEq.eq", BuiltinTag::SemEq);
-        self.register_builtin_tag("anthill.kernel.struct_eq", BuiltinTag::Eq);
+        self.register_builtin_tag("anthill.kernel.struct_eq", BuiltinTag::StructEq);
+        self.register_builtin_tag("anthill.kernel.struct_neq", BuiltinTag::StructNeq);
         self.register_builtin_tag("anthill.prelude.PartialEq.neq", BuiltinTag::SemNeq);
         self.register_spec_op_primitive("anthill.prelude.PartialOrd.gt", BuiltinTag::Gt);
         self.register_spec_op_primitive("anthill.prelude.PartialOrd.lt", BuiltinTag::Lt);

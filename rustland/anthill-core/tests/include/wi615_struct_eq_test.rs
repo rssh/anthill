@@ -1,8 +1,8 @@
 //! WI-615 / proposal 051 — `===` structural identity test.
 //!
 //! `a === b` desugars (pratt) to `struct_eq(a, b)` → `anthill.kernel.struct_eq`,
-//! registered as `BuiltinTag::Eq`, so the resolver runs the SAME structural
-//! `builtin_eq` comparator `=`/`eq` shortcut to today — but under its own symbol,
+//! registered as `BuiltinTag::StructEq`, so the resolver runs the structural
+//! `builtin_struct_eq` comparator `=`/`eq` once shared — but under its own symbol,
 //! so the Phase-2 flip of `=`/`eq` to dispatched semantic equality (WI-616)
 //! leaves `===` structural. Phase-1 behaviour verified here: `===` is a total,
 //! dispatch-free structural equality test that needs no `Eq` instance.
@@ -107,7 +107,7 @@ fn struct_eq_on_structurally_equal_compounds_succeeds() {
 fn struct_eq_evaluates_in_an_operation_body() {
     // `===` is a Bool-returning TEST, so it must also work when EVALUATED in an
     // operation body — not only as a rule-body goal. Registered on the eval side
-    // (`anthill.kernel.struct_eq` → `builtin_eq`) mirroring `Eq.eq`; without that
+    // (`anthill.kernel.struct_eq` → `builtin_struct_eq`) mirroring `Eq.eq`; without that
     // registration this call errors `UnknownOperation`.
     use anthill_core::eval::Value;
     let src = "namespace test.wi615.eval\n\

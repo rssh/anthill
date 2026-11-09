@@ -1912,6 +1912,7 @@ private class AnthillParserImpl(
     * diagnostic in the chain. */
   private def infixOp[$: P]: P[OpToken] =
     P(located(
+      "!==".!.map(_ => intern("!==")) |
       "!=".!.map(_ => intern("!=")) |
       keyword("or").map(_ => intern("or")) |
       keyword("and").map(_ => intern("and")) |

@@ -265,6 +265,7 @@ const NO_SURFACE_FUNCTOR: &[&str] = &[
     SOME_IN,
     crate::parse::pratt::UNIFY_FUNCTOR,
     crate::parse::pratt::STRUCT_EQ_FUNCTOR,
+    crate::parse::pratt::STRUCT_NEQ_FUNCTOR,
 ];
 
 /// Is `target` one of the kernel CONTROL targets rather than reflect vocabulary?

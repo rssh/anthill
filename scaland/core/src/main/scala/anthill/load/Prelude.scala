@@ -253,7 +253,7 @@ object Prelude:
     *
     * `anthill.kernel` is NOT parented here, though `registerStdlibScopes` now defines it
     * (WI-20260820-MH90F). Its members are reached through their OPERATORS (`<=>` → `unify`,
-    * `===` → `struct_eq`, `|` → `or`, a bare `!` → `cut`) or by qualified name; bulk-parenting the
+    * `===` → `struct_eq`, `!==` → `struct_neq`, `|` → `or`, a bare `!` → `cut`) or by qualified name; bulk-parenting the
     * namespace would additionally put those short names into every user scope as ambiguity
     * candidates, which is a wider change than moving one symbol. The one member spelled bare
     * — `not` — imports itself, in `registerBuiltinTags` above.

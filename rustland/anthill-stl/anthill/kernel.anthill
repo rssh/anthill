@@ -2,10 +2,11 @@
 --
 -- WI-20260922-BRT4Y: `struct_eq` (`===`) is a kernel operation an OPERATION BODY
 -- evaluates, so it has an eval-side host function; registered by hardcoded qualified
--- name in `eval/builtins.rs` until that ticket. `not` is the other (WI-20260923-9R5HN):
+-- name in `eval/builtins.rs` until that ticket; its negation `struct_neq` (`!==`) is
+-- bound beside it. `not` is the other kernel operation with an eval face (WI-20260923-9R5HN):
 -- `anthill.kernel.not(q)` over a reified goal runs a one-shot NAF search, registered by
 -- qualified name in anthill-stl until this block named it. Both keep their RESOLVER
--- primitive — the goal reading, `BuiltinTag::Eq` / `BuiltinTag::Not` — which this
+-- primitive — the goal reading, `BuiltinTag::StructEq` / `StructNeq` / `Not` — which this
 -- mapping does not touch. The kernel's remaining body-less declarations (`unify`,
 -- `push_choice`, `domain_member`, …) are resolver primitives only, with no eval face, so
 -- they have no `operation_map` entry and claim no `@[host_implemented]`.
@@ -17,7 +18,8 @@ namespace anthill.kernel
   provides anthill.kernel language rust
     artifact "rustland/anthill-core/src/eval/builtins.rs"
     operation_map {
-      struct_eq: "kernel_struct_eq"
+      struct_eq: "kernel_struct_eq",
+      struct_neq: "kernel_struct_neq"
     }
   end
   provides anthill.kernel language rust

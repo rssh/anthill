@@ -1578,9 +1578,11 @@ object Loader:
   ): Boolean =
     val span = fileTerms.spanOf(parseHead)
     // An EQUATION's head is its connective, so for one the SUBJECT is asked: a rewriting
-    // connective (`<=>`, a guarded `=`), not `===`, which tests and defines nothing.
+    // connective (`<=>`, a guarded `=`); `===` and `!==` test and define nothing. Named by
+    // the connectives that rewrite, as rustland's twin names them.
     val equation = parseConnectiveHead(fileSym, fileTerms, parseHead)
-      .exists((connective, _) => connective != Pratt.structEqFunctor)
+      .exists((connective, _) =>
+        Pratt.isEquationFunctor(connective) || connective == Pratt.eqFunctor)
     val named =
       if equation then kb.getTerm(head) match
         case Term.Fn(_, pos, _) if pos.nonEmpty => kb.headFunctorOf(pos(0))
@@ -2392,14 +2394,17 @@ object Loader:
       s"the alternative here: `lhs = rhs :- guard` is a guarded equation, which no " +
       s"firing site reads."
     else
-      val op = if connective == Pratt.structEqFunctor then "===" else connective
+      val (op, test) =
+        if connective == Pratt.structEqFunctor then ("===", "identity")
+        else if connective == Pratt.structNeqFunctor then ("!==", "inequality")
+        else (connective, "equality")
       val what = subject match
         case Some(s) => s"the rule `$s(…) $op …` defines nothing, and `$s` is left naming no callable"
         case None    => s"a `lhs $op rhs` rule with no body goals defines nothing"
       val remedy = subject match
         case Some(s) => s"Write `<=>` to define `$s` by equations"
         case None    => "Write `<=>` to define by equations"
-      s"`$op` is the structural identity TEST, not a defining connective, so $what: " +
+      s"`$op` is the structural $test TEST, not a defining connective, so $what: " +
       s"`$op` is a resolver builtin that answers every goal itself, so no clause of it is " +
       s"ever consulted, and a `@[simp]` tag on it never fires (the normalizer reads only " +
       s"the `<=>` equations). $remedy, or give the rule a BODY GOAL to state it " +

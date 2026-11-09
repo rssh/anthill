@@ -9013,7 +9013,7 @@ fn bodyless_declares_nothing_detail(
 /// useless, an `=` head worked — so the message branches on the connective
 /// ([`non_defining_connective_head_message`]) while this reader does not.
 struct NonDefiningHead {
-    /// The connective's functor spelling (`struct_eq` / `eq`) — carried rather than
+    /// The connective's functor spelling (`struct_eq` / `struct_neq` / `eq`) — carried rather than
     /// assumed, so a later family member gets the refusal without a second site
     /// learning its name.
     connective: &'static str,
@@ -9474,11 +9474,6 @@ fn duplicate_type_message(
 /// to define `===` by equations" — a remedy telling the author to define the operator
 /// they had just used.
 fn non_defining_connective_head_message(connective: &str, subject: Option<&str>) -> String {
-    let op = match connective {
-        crate::parse::pratt::STRUCT_EQ_FUNCTOR => "===",
-        crate::parse::pratt::EQ_FUNCTOR => "=",
-        other => other,
-    };
     if connective == crate::parse::pratt::EQ_FUNCTOR {
         // WI-888: the `=` half. No diagnosis — the rule worked — so the sentence is the
         // rule and the spelling, plus the one thing an author cannot see from here:
@@ -9502,6 +9497,12 @@ fn non_defining_connective_head_message(connective: &str, subject: Option<&str>)
              fires only where its guard is proved at the redex."
         );
     }
+    // `<=>` defines, and `=` returned above: what is left is the two structural tests.
+    let (op, test) = match connective {
+        crate::parse::pratt::STRUCT_EQ_FUNCTOR => ("===", "identity"),
+        crate::parse::pratt::STRUCT_NEQ_FUNCTOR => ("!==", "inequality"),
+        other => unreachable!("`{other}` is not a non-defining equality connective"),
+    };
     let what = match subject {
         Some(s) => format!(
             "the rule `{s}(…) {op} …` defines nothing, and `{s}` is left naming no callable"
@@ -9513,7 +9514,7 @@ fn non_defining_connective_head_message(connective: &str, subject: Option<&str>)
         None => "Write `<=>` to define by equations".to_string(),
     };
     format!(
-        "`{op}` is the structural identity TEST, not a defining connective, so {what}: \
+        "`{op}` is the structural {test} TEST, not a defining connective, so {what}: \
          `{op}` is a resolver builtin that answers every goal itself, so no clause of it \
          is ever consulted, and a `@[simp]` tag on it never fires (the normalizer reads \
          only the `<=>` equations). {remedy}, or give the rule a BODY GOAL to \
@@ -25131,8 +25132,13 @@ fn head_that_is_no_equation(
     }
     Some(match kb.get_term(head) {
         Term::Bottom => "a denial",
+        // `=` and `<=>` are equations, so the family's other two are the structural tests.
         Term::Fn { functor, .. } if kb.is_equality_family_connective(*functor) => {
-            "a structural identity test (`===`)"
+            if kb.kernel_connective_is(*functor, "anthill.kernel.struct_neq") {
+                "a structural inequality test (`!==`)"
+            } else {
+                "a structural identity test (`===`)"
+            }
         }
         _ => predicate,
     })

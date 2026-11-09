@@ -22,6 +22,7 @@ object LoadFixture:
     val file = parsed("""namespace anthill.kernel
       |operation unify(a: Int64, b: Int64) -> Bool
       |operation struct_eq(a: Int64, b: Int64) -> Bool
+      |operation struct_neq(a: Int64, b: Int64) -> Bool
       |operation cut() -> Bool
       |operation find_dictionary(spec: Int64) -> Bool
       |end""".stripMargin, "<kernel-fixture>")

@@ -112,7 +112,7 @@
 //! documented not to — is a MIS-ATTRIBUTION, and
 //! [`a_folding_operand_is_not_new_under_unify_or_struct_eq`] is the control that says
 //! so: both fold on the `Node` carrier at HEAD. The docs claiming otherwise were
-//! corrected (kernel.anthill's `unify` and `struct_eq` declarations, `BuiltinTag::Eq` /
+//! corrected (kernel.anthill's `unify` and `struct_eq` declarations, `BuiltinTag::StructEq` /
 //! `Unify`, `builtin_unify`) rather than the code reverted — "never dispatches" is
 //! true of the COMPARISON (no carrier's `Eq` member is selected) and was never true of
 //! the OPERANDS.

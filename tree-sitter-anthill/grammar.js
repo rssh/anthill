@@ -1571,8 +1571,9 @@ module.exports = grammar({
 
     // Operator token: any sequence of operator chars (maximal munch).
     // prec(-1) ensures keywords and other tokens take priority.
-    // Note: `!` is excluded — it is a dedicated prefix token. `!=` is
-    // handled as an explicit anonymous token in `_infix_op`.
+    // Note: `!` is excluded — it is a dedicated prefix token. `!=` and `!==`
+    // are explicit anonymous tokens in `_infix_op`; the lexer's longest match
+    // takes `!==` over `!=`.
     operator_symbol: $ => token(prec(-1, /[+\-*/%^|&=<>~]+/)),
 
     // Flat infix: all operators at one grammar level, Pratt resolver handles precedence.
@@ -1594,6 +1595,7 @@ module.exports = grammar({
     _infix_op: $ => choice(
       $.operator_symbol,                    // symbolic: +, ->, >=, ...
       '!=',                                 // explicit (since ! not in operator_symbol)
+      '!==',                                // structural inequality, the negation of `===`
       '@',                                  // effect annotation on arrows
       'or', 'and', 'mod', 'div',            // word operators
     ),

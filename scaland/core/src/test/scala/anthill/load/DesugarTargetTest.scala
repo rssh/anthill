@@ -62,12 +62,14 @@ class DesugarTargetTest extends munit.FunSuite:
   }
 
   test("goal let and infix binding mint the same connective") {
-    val (pf, goals) = body("let ?x = 1, ?d <=> 1, ?d === 1")
+    val (pf, goals) = body("let ?x = 1, ?d <=> 1, ?d === 1, ?d !== 2")
     assertEquals(functor(pf, goals(0)), functor(pf, goals(1)))
     assertEquals(functor(pf, goals(1)), Pratt.unifyFunctor)
     assert(functor(pf, goals(1)).startsWith(".."))
     assertEquals(functor(pf, goals(2)), Pratt.structEqFunctor)
     assert(functor(pf, goals(2)).startsWith(".."))
+    assertEquals(functor(pf, goals(3)), Pratt.structNeqFunctor)
+    assert(functor(pf, goals(3)).startsWith(".."))
   }
 
   // Proposal 060.1 §5. With the refusal dropped from `goalTerm`, the row fails at its
@@ -85,7 +87,8 @@ class DesugarTargetTest extends munit.FunSuite:
     assertEquals(functor(pf, goals(2)), "find_dictionary")
     assertEquals(functor(pf, goals(3)), "requires")
     for address <- Seq(DesugarTarget.Cut, DesugarTarget.FindDictionary, DesugarTarget.ForallImpl,
-        DesugarTarget.ForallIn, DesugarTarget.SomeIn, Pratt.unifyFunctor, Pratt.structEqFunctor) do
+        DesugarTarget.ForallIn, DesugarTarget.SomeIn, Pratt.unifyFunctor, Pratt.structEqFunctor,
+        Pratt.structNeqFunctor) do
       intercept[IllegalArgumentException](DesugarTarget.is(DesugarTarget.short(address), address))
   }
 

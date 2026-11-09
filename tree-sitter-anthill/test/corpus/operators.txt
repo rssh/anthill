@@ -120,6 +120,32 @@ rule r: ?a != ?b
           (variable))))))
 
 =====================================
+Structural inequality !== (longest match over !=)
+=====================================
+
+rule r() :- ?a !== ?b, ?a != ?b
+
+---
+
+(source_file
+  (rule_declaration
+    heads: (rule_heads
+      (fn_term
+        name: (name
+          (identifier))))
+    body: (rule_body
+      (infix_term
+        (variable_term
+          (variable))
+        (variable_term
+          (variable)))
+      (infix_term
+        (variable_term
+          (variable))
+        (variable_term
+          (variable))))))
+
+=====================================
 Arrow operator
 =====================================
 

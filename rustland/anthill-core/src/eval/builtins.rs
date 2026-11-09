@@ -327,6 +327,8 @@ const HOST_FNS: &[(
     // not the semantic `builtin_eq` above (IEEE for a Float pair) — `nan === nan` must
     // stay true.
     ("kernel_struct_eq", 2, builtin_struct_eq),
+    // `!==`, its negation (`kernel.anthill`).
+    ("kernel_struct_neq", 2, builtin_struct_neq),
     // `Map` — the interpreter's map arena (`map.anthill`).
     ("map_empty", 0, map_empty),
     ("map_put", 3, map_put),
@@ -1455,12 +1457,25 @@ fn float_val(i: &Interpreter, v: &Value) -> Option<f64> {
 /// structural identity. WI-486: a `Value::Term` operand and its structurally-equal
 /// `Value::Node`/`Entity` twin compare equal.
 fn builtin_struct_eq(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    let [a, b] = expect_args::<2>("struct_eq", args)?;
-    Ok(Value::Bool(crate::kb::term_view::views_structurally_equal(
-        i.kb(),
-        &a,
-        &b,
-    )))
+    struct_equal("struct_eq", i, args, true)
+}
+
+/// `anthill.kernel.struct_neq` (`!==`) — the negation of [`builtin_struct_eq`]: `nan !== nan`
+/// is false.
+fn builtin_struct_neq(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
+    struct_equal("struct_neq", i, args, false)
+}
+
+/// Are the two arguments structurally equal (`positive`), or apart?
+fn struct_equal(
+    name: &'static str,
+    i: &mut Interpreter,
+    args: &[Value],
+    positive: bool,
+) -> Result<Value, EvalError> {
+    let [a, b] = expect_args::<2>(name, args)?;
+    let equal = crate::kb::term_view::views_structurally_equal(i.kb(), &a, &b);
+    Ok(Value::Bool(equal == positive))
 }
 
 fn builtin_eq(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {

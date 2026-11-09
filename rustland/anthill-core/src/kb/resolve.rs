@@ -236,8 +236,8 @@ pub enum BuiltinTag {
     // ── Arithmetic and comparison builtins ───────────────────
     /// `anthill.kernel.struct_eq(?a, ?b)` (`===`) — structural equality
     /// (succeeds/fails). Total, carrier-agnostic, never dispatches (WI-615 /
-    /// proposal 051). Until WI-616 this tag also backed `PartialEq.eq`; structural
-    /// inequality is `not(a === b)`.
+    /// proposal 051). Until WI-616 this tag also backed `PartialEq.eq`, under the name
+    /// `Eq`; structural inequality is [`Self::StructNeq`].
     ///
     /// "NEVER DISPATCHES" IS ABOUT THE COMPARISON, NOT THE OPERANDS. It selects no
     /// carrier's `Eq` member — the contrast with [`Self::SemEq`] below. It does NOT
@@ -248,7 +248,10 @@ pub enum BuiltinTag {
     /// WI-20260910-FDPJ8: `struct_eq(dbl(2), 4)` SUCCEEDS. That ticket made the same
     /// true on the `Term` and `Entity` carriers, which is what put a reader in front
     /// of the older unqualified wording.
-    Eq,
+    StructEq,
+    /// `anthill.kernel.struct_neq(?a, ?b)` (`!==`) — [`Self::StructEq`] with the verdict
+    /// inverted where it decides; where it delays or is undecided, so is this.
+    StructNeq,
     /// `anthill.prelude.PartialEq.eq(?a, ?b)` — SEMANTIC equality (WI-616 / proposal
     /// 051 Phase 2): the `PartialEq.eq` spec op, dispatched through the carrier's
     /// `Eq` instance. See [`KnowledgeBase::sem_eq_core`] for the full
@@ -273,11 +276,11 @@ pub enum BuiltinTag {
     /// verdict inverted.
     SemNeq,
     /// `anthill.kernel.unify(?a, ?b)` — structural unification (proposal 049).
-    /// The bind-counterpart of `Eq`: same structural walk, but a flex var head
+    /// The bind-counterpart of `StructEq`: same structural walk, but a flex var head
     /// **binds** to the other side (an occurs-checked frame effect →
     /// `SuccessWithBindings`) instead of merely comparing. The object-level face
     /// of `<=>` (and `let ?v = e`). Carrier-agnostic, and never dispatches in
-    /// [`Self::Eq`]'s sense — no carrier's `Eq` member is selected, while an operand
+    /// [`Self::StructEq`]'s sense — no carrier's `Eq` member is selected, while an operand
     /// that is a CALL is still reduced first and an undecidable one delays. See that
     /// tag's paragraph; `unify` shares the one operand pipeline with it.
     Unify,
@@ -4480,8 +4483,8 @@ impl SearchStream {
     ///
     /// | tag | verdict that is FORCED (structure decided it) | verdict that DEPENDS on the value |
     /// |---|---|---|
-    /// | `SemEq` / `Eq` / `Unify` | `Success` — `eq(c, c)` holds for every `c` | `Failure` — `eq(c, 1)`, `c` might BE 1 |
-    /// | `SemNeq` | `Failure` — `neq(c, c)` fails for every `c` | `Success` — `neq(c, 1)`, same reason |
+    /// | `SemEq` / `StructEq` / `Unify` | `Success` — `eq(c, c)` holds for every `c` | `Failure` — `eq(c, 1)`, `c` might BE 1 |
+    /// | `SemNeq` / `StructNeq` | `Failure` — `neq(c, c)` fails for every `c` | `Success` — `neq(c, 1)`, same reason |
     ///
     /// Both directions matter and they are separate axes: the `SemEq` row turns a wrong
     /// FAILURE into `Unknown`, the `SemNeq` row a wrong SUCCESS. A fix that handled only
@@ -4505,10 +4508,12 @@ impl SearchStream {
             // FAILURE is value-dependent in precisely the way `eq(c, 1)`'s is. Unlike the
             // ordering family it has the safe carve-out. (A binding
             // `SuccessWithBindings` is never reconsidered — see the caller.)
-            BuiltinTag::SemEq | BuiltinTag::Eq | BuiltinTag::Unify => {
+            BuiltinTag::SemEq | BuiltinTag::StructEq | BuiltinTag::Unify => {
                 matches!(result, BuiltinResult::Failure)
             }
-            BuiltinTag::SemNeq => matches!(result, BuiltinResult::Success),
+            BuiltinTag::SemNeq | BuiltinTag::StructNeq => {
+                matches!(result, BuiltinResult::Success)
+            }
             _ => false,
         }
     }
@@ -6560,7 +6565,8 @@ impl KnowledgeBase {
             BuiltinTag::Kind => self.builtin_kind(goal, answer_subst),
             BuiltinTag::Provenance => self.builtin_provenance(goal, answer_subst),
             BuiltinTag::FieldAccess => self.builtin_field_access(goal, answer_subst),
-            BuiltinTag::Eq => self.builtin_eq(goal, answer_subst, faults),
+            BuiltinTag::StructEq => self.builtin_struct_eq(goal, answer_subst, true, faults),
+            BuiltinTag::StructNeq => self.builtin_struct_eq(goal, answer_subst, false, faults),
             BuiltinTag::SemEq => self.builtin_sem_eq(goal, answer_subst, faults),
             BuiltinTag::SemNeq => self.builtin_sem_neq(goal, answer_subst, faults),
             BuiltinTag::Unify => self.builtin_unify(goal, answer_subst, faults),
@@ -8794,28 +8800,50 @@ impl KnowledgeBase {
 
     // ── Equality and comparison builtins ─────────────────────
 
-    /// `eq(?a, ?b)` — structural equality after walking. Succeeds if both
-    /// args resolve to the same TermId (hash-consed identity = structural equality).
-    /// Delays only on flex (`Var::Global`); rigid vars compare by TermId
-    /// identity (hash-consing ensures `Rigid(a) == Rigid(a)`).
-    fn builtin_eq<V: TermView>(
+    /// `struct_eq(?a, ?b)` (`===`, `positive`) and `struct_neq(?a, ?b)` (`!==`) — structural
+    /// equality of the evaluated operands, and its negation. Only a decided comparison is
+    /// inverted: a flex operand delays and a stuck one takes its state for both, so
+    /// `?x !== 1` with `?x` unbound is undecided, never true. A third argument is the
+    /// result column ([`Self::verdict_into_result_column`]).
+    fn builtin_struct_eq(
         &mut self,
-        goal: &V,
+        goal: &Value,
         subst: &Substitution,
+        positive: bool,
         faults: &mut ReduceFaults,
     ) -> BuiltinResult {
-        match self.eq_operands(goal, subst, faults) {
+        let verdict = match self.eq_operands(goal, subst, faults) {
             EqOperands::Delay => BuiltinResult::delay(),
             EqOperands::Stuck(state) => state.verdict(),
-            EqOperands::Ready(a, b) => {
-                if self.values_equal(&a, &b) {
-                    BuiltinResult::Success
-                } else {
-                    BuiltinResult::Failure
-                }
-            }
+            EqOperands::Ready(a, b) => sem_verdict(self.values_equal(&a, &b), positive),
             EqOperands::Absent => BuiltinResult::Failure,
+        };
+        self.verdict_into_result_column(goal, subst, verdict)
+    }
+
+    /// An equality test's verdict, read at three positional arguments as its relation: the
+    /// third is the result column, as [`Self::builtin_cmp`] reads its own, and is bound to
+    /// (or compared with) the `Bool` the test decided. A verdict that decided nothing is
+    /// handed back as it is. At two arguments the verdict is the answer.
+    fn verdict_into_result_column(
+        &mut self,
+        goal: &Value,
+        subst: &Substitution,
+        verdict: BuiltinResult,
+    ) -> BuiltinResult {
+        let ViewHead::Functor { pos_arity, .. } = goal.head(self) else {
+            return verdict;
+        };
+        if pos_arity < 3 {
+            return verdict;
         }
+        let holds = match verdict {
+            BuiltinResult::Success => true,
+            BuiltinResult::Failure => false,
+            other => return other,
+        };
+        let target = self.resolve_result_target(goal.pos_arg(self, 2), subst);
+        self.finish_result_value(target, Value::Bool(holds))
     }
 
     /// WI-616 (proposal 051 Phase 2) — `eq(?a, ?b)`, the SEMANTIC `PartialEq.eq` spec
@@ -8880,10 +8908,7 @@ impl KnowledgeBase {
         positive: bool,
         faults: &mut ReduceFaults,
     ) -> BuiltinResult {
-        let ViewHead::Functor {
-            functor, pos_arity, ..
-        } = goal.head(self)
-        else {
+        let ViewHead::Functor { functor, .. } = goal.head(self) else {
             return BuiltinResult::Failure;
         };
         // `eq`'s pin only: the dispatch proves the target as the carrier's `eq` and `neq`
@@ -8901,16 +8926,7 @@ impl KnowledgeBase {
             EqOperands::Absent => BuiltinResult::Failure,
             EqOperands::Ready(a, b) => self.sem_eq_values_at(a, b, subst, positive, pinned),
         };
-        if pos_arity < 3 {
-            return verdict;
-        }
-        let holds = match verdict {
-            BuiltinResult::Success => true,
-            BuiltinResult::Failure => false,
-            other => return other,
-        };
-        let target = self.resolve_result_target(goal.pos_arg(self, 2), subst);
-        self.finish_result_value(target, Value::Bool(holds))
+        self.verdict_into_result_column(goal, subst, verdict)
     }
 
     /// WI-616/WI-625/WI-664 — the VALUE-level core of semantic `eq`/`neq`, shared
@@ -9554,7 +9570,7 @@ impl KnowledgeBase {
     // ── Unification builtin (proposal 049) ───────────────────────
 
     /// `unify(?a, ?b)` — structural unification, the object-level face of `<=>`
-    /// (and `let ?v = e`). The bind-counterpart of [`Self::builtin_eq`]: the
+    /// (and `let ?v = e`). The bind-counterpart of [`Self::builtin_struct_eq`]: the
     /// same structural walk, but a flex var head **binds** to the other side (an
     /// occurs-checked substitution effect) instead of being compared, and a
     /// functor match recurses binding sub-vars on EITHER side (`some(?x) <=>
@@ -9563,7 +9579,7 @@ impl KnowledgeBase {
     /// `Success` when the two sides are already equal with nothing to bind,
     /// `Delay` on a complex op-call operand (substitution transparency), and
     /// `Failure` on a mismatch or occurs-check violation. Carrier-agnostic, and
-    /// "never dispatches" in the sense [`BuiltinTag::Eq`] spells out: the proposal
+    /// "never dispatches" in the sense [`BuiltinTag::StructEq`] spells out: the proposal
     /// Invariant is that no carrier's `Eq` member is selected. It is NOT "compares raw
     /// terms" — [`Self::unify_evaluated`] EVALUATES both sides first (WI-20260926-K4JGC,
     /// proposal 068 §1.1) and never binds a call that did not run, so `unify(dbl(2), 4)`
@@ -20656,7 +20672,7 @@ mod tests {
         let builtin_sym = kb.intern("test_builtin");
         // Register `test_builtin` as a non-Not/PushChoice builtin so the
         // pre-check classifies the goal (Eq is an arbitrary qualifying tag).
-        kb.builtins.insert(builtin_sym, BuiltinTag::Eq);
+        kb.builtins.insert(builtin_sym, BuiltinTag::StructEq);
 
         let g_sym = kb.intern("g");
         let t_sym = kb.intern("T");
@@ -20718,7 +20734,7 @@ mod tests {
     fn no_delay_on_caller_var_in_value_structure() {
         let mut kb = KnowledgeBase::new();
         let builtin_sym = kb.intern("test_builtin");
-        kb.builtins.insert(builtin_sym, BuiltinTag::Eq);
+        kb.builtins.insert(builtin_sym, BuiltinTag::StructEq);
 
         let g_sym = kb.intern("g");
         let caller_sym = kb.intern("caller");
@@ -20808,7 +20824,7 @@ mod tests {
     fn delay_propagates_on_caller_var_in_node_type_arg_spine() {
         let mut kb = KnowledgeBase::new();
         let builtin_sym = kb.intern("test_builtin");
-        kb.builtins.insert(builtin_sym, BuiltinTag::Eq);
+        kb.builtins.insert(builtin_sym, BuiltinTag::StructEq);
 
         let g_sym = kb.intern("g");
         let h_sym = kb.intern("h");
@@ -20879,7 +20895,7 @@ mod tests {
     fn delay_propagates_on_caller_var_in_type_node_spine() {
         let mut kb = KnowledgeBase::new();
         let builtin_sym = kb.intern("test_builtin");
-        kb.builtins.insert(builtin_sym, BuiltinTag::Eq);
+        kb.builtins.insert(builtin_sym, BuiltinTag::StructEq);
 
         let g_sym = kb.intern("g");
         let t_sym = kb.intern("T");

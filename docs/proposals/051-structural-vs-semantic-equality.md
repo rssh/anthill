@@ -101,7 +101,7 @@ must be split:
   the carrier's — these stay `=` and gain real dispatch.
 
 `neq` (`neq(a,b) <=> not(eq(a,b))`) pairs with semantic `=`; structural inequality is
-`not(a === b)` (a `!==` sugar is possible but not required). Doing the `===` **surface +
+`!==` (`struct_neq`), the negation of `===` where `===` decides. Doing the `===` **surface +
 the structural-intent migration first** (Phase 1) means that when `=` flips (Phase 2), the
 structural sites are already off `=` and cannot break.
 
@@ -149,5 +149,3 @@ grammar + loader only, no typer).
 - E-unification / AC-matching (still 049's non-goal; a future engine capability).
 - Building the SLD→eval spec-op dispatch bridge itself (a prerequisite for Phase 2,
   tracked separately as WI-300 Tier B / WI-483/487).
-- A `!==` structural-inequality glyph (`not(a === b)` suffices; revisit if ergonomics
-  demand).

@@ -40,6 +40,7 @@ object DesugarTarget:
   def short(address: String): String = qualified(address).split('.').last
 
   def is(name: String, address: String): Boolean =
-    require(!isKernelControl(address) && address != Pratt.unifyFunctor && address != Pratt.structEqFunctor,
+    require(!isKernelControl(address) && address != Pratt.unifyFunctor &&
+      address != Pratt.structEqFunctor && address != Pratt.structNeqFunctor,
       "kernel control targets do not admit short spellings")
     name == address || name == qualified(address) || name == short(address)

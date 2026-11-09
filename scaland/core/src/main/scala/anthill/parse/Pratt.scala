@@ -72,6 +72,7 @@ object Pratt:
   // ERF7T: goal let and infix <=> share this target; DesugarTargetTest compares them.
   val unifyFunctor: String = "..anthill.kernel.unify"
   private val structEqAddress: String = "..anthill.kernel.struct_eq"
+  private val structNeqAddress: String = "..anthill.kernel.struct_neq"
 
   private val infixTable: Map[String, InfixEntry] = Map(
     "|"   -> InfixEntry(1, Assoc.Left,  orFunctor),
@@ -90,6 +91,9 @@ object Pratt:
     // `struct_eq` functor, mirroring rustland's pratt.rs. (scaland has no resolver-side
     // builtin; the head/body functor just round-trips.)
     "===" -> InfixEntry(3, Assoc.None,  structEqAddress),
+    // `!==` = its negation (anthill.kernel.struct_neq). `!` is not an operator
+    // character, so the parser lists it as its own token before `!=`.
+    "!==" -> InfixEntry(3, Assoc.None,  structNeqAddress),
     "<"   -> InfixEntry(4, Assoc.None,  ltFunctor),
     "<="  -> InfixEntry(4, Assoc.None,  lteFunctor),
     ">"   -> InfixEntry(4, Assoc.None,  gtFunctor),
@@ -124,7 +128,7 @@ object Pratt:
     * meaning — WHERE a head's `[T]` introducer rides is such a question, and the answer
     * is "the LHS operand" for every member, including the ones that define nothing. */
   private val equalityFamilyFunctors: Set[String] =
-    Set("=", "<=>", "===").flatMap(infixTable.get).map(_.functor)
+    Set("=", "<=>", "===", "!==").flatMap(infixTable.get).map(_.functor)
 
   def isEqualityFamilyFunctor(name: String): Boolean = equalityFamilyFunctors.contains(name)
 
@@ -149,10 +153,12 @@ object Pratt:
 
   def isEquationFunctor(name: String): Boolean = equationFunctors.contains(name)
 
-  /** The functors `===` and `=` desugar to — the non-defining members of the family,
-    * needed by the loader's refusal so it can name the operator back to the author. */
+  /** The functors `===` and `!==` desugar to — with `=`, the non-defining members of the
+    * family, needed by the loader's refusal so it can name the operator back to the author. */
   val structEqFunctor: String =
     infixTable("===").functor
+  val structNeqFunctor: String =
+    infixTable("!==").functor
   // `eqFunctor` is a LITERAL above, not derived here: WI-20260825-KD9SW made the table
   // reference it, and a `val` reading `infixTable` initialises after the table — so
   // deriving it would be a circular forward reference (null at class init, silently).
