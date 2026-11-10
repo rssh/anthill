@@ -3,9 +3,9 @@
 - id: WI-20261106-3TFWV-a-bool-goal-of-a-body-less
 - created: 2026-11-06T11:42:10Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-11-06T11:42:10Z
+- status_at: 2026-11-10T15:22:06Z
 
 - acceptance: cargo-test
 

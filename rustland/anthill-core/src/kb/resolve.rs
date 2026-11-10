@@ -13648,8 +13648,7 @@ impl KnowledgeBase {
         // meaningless bare goal to `= true` (harmless), never a wrong answer.
         // Shared with the typer's `check_rule_body_goal_readings` so the goal-routing
         // gate and its static check cannot drift.
-        let returns_bool = super::typing::sort_functor_of_view(self, &sig.return_type)
-            .is_some_and(|s| self.sort_sym_is_bool(s));
+        let returns_bool = self.signature_returns_bool(sig);
         // Rule-less last: the borrowing `rules_by_functor_iter` short-circuits at
         // the first rule with no `Vec` alloc — this leg is reached only for a pure
         // bodied Bool op, which is rare.
@@ -14008,6 +14007,16 @@ impl KnowledgeBase {
     /// nothing and keeps the old reading's population by construction.
     ///
     /// Driven by `wi1043_bodyless_rule_body_test::a_pinned_body_less_bool_goal_decides`.
+    ///
+    /// A goal on a body-less spec `Bool` op the typer did not pin is the view too
+    /// ([`Self::body_less_bool_relation`]), as the arity+1 sibling admits one: the guard's
+    /// woven `ApplyWithin` reduces through its dictionary, and a goal with neither pin nor
+    /// dictionary reduces as the same call in a value slot does. Read as a relation instead,
+    /// it had no clause, so `rule chkG[A](?x: A) :- Pred[T = A], Pred.ok(?x)` failed and its
+    /// `not` held (WI-20261106-3TFWV).
+    ///
+    /// The body-less leg is asked last: its dispatch lookup is the expensive read, and a
+    /// pinned goal is answered before it.
     fn dispatched_bool_relation(&self, goal: &Value, f: Symbol) -> bool {
         if self.bare_bodied_bool_relation(f) {
             return true;
@@ -14018,7 +14027,16 @@ impl KnowledgeBase {
         };
         pinned.is_some_and(|target| {
             self.rules_by_functor_iter(f).next().is_none() && self.bare_bodied_bool_relation(target)
-        })
+        }) || self.body_less_bool_relation(f)
+    }
+
+    /// The Bool view of the SPELLED functor `f`: a bodied `Bool` operation
+    /// ([`Self::bare_bodied_bool_relation`]) or a body-less spec one
+    /// ([`Self::body_less_bool_relation`]). What the typer's weave asks of a goal at its
+    /// declared arity (`woven_goal_has_reader`), so it weaves — and refuses at an open type —
+    /// exactly the goals this view reads.
+    pub(crate) fn spelled_bool_relation(&self, f: Symbol) -> bool {
+        self.bare_bodied_bool_relation(f) || self.body_less_bool_relation(f)
     }
 
     /// The operation a goal headed `f` may be read as the call of, and its signature: not a
@@ -14291,6 +14309,32 @@ impl KnowledgeBase {
             return None;
         }
         self.body_less_dispatchable(f).then_some(sig.params.len())
+    }
+
+    /// The Bool view of a BODY-LESS SPEC OP at its declared arity (kernel-language §5.2, a
+    /// `Bool` operation in goal position is the condition `eq(f(args), true)`): a `Bool`
+    /// return and [`Self::body_less_relation_arity`]'s clauses. What supplies the operation
+    /// is decided where the call reduces, as for that view. The return is read before the
+    /// dispatch lookup, which is the expensive leg.
+    ///
+    /// Not the `eq` a carrier's equality dispatches to ([`Self::is_eq_dispatch_target`]): a call
+    /// of that one is run by proving this very goal (eval's `eq_bridge_target`, through
+    /// [`Self::prove_rule_predicate`]), so its goal is its clauses. Read as the call, the proof
+    /// re-entered the bridge: a witness `ColorEq.eq` whose one equation is inert came back an
+    /// internal error instead of `OperationBodyMissing`
+    /// (`wi1092_dispatched_rule_defined_target_test::a_witness_eq_with_no_clause_is_loud_on_every_route`).
+    pub(crate) fn body_less_bool_relation(&self, f: Symbol) -> bool {
+        self.op_record(f)
+            .and_then(|r| r.signature.as_ref())
+            .is_some_and(|sig| self.signature_returns_bool(sig))
+            && self.body_less_relation_arity(f).is_some()
+            && !self.is_eq_dispatch_target(f)
+    }
+
+    /// Does `sig` return `Bool` — a sort head read as [`Self::sort_sym_is_bool`] reads it? The
+    /// one reading the two Bool views share.
+    fn signature_returns_bool(&self, sig: &super::op_info::OpSignature) -> bool {
+        super::typing::sort_functor_of_view(self, &sig.return_type).is_some_and(|s| self.sort_sym_is_bool(s))
     }
 
     /// WI-1057 — `op` is a BODY-LESS SPEC OP: nothing for [`Self::reduce_op_value`]

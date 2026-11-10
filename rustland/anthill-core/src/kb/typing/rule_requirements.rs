@@ -1184,7 +1184,9 @@ fn weave_calls(
 ///   * the FUNCTIONAL-RELATION form `f(args…, result)` of a callee that form reads — a
 ///     rule-less bodied operation, or WI-1057's body-less spec op (the WI-938 hook);
 ///   * the BOOL VIEW — a bodied `Bool` operation at its declared arity, `eq(f(args…), true)`
-///     (WI-583) — which is how `rule less(?a, ?b) :- Util.isLess(?a, ?b)` answers.
+///     (WI-583) — which is how `rule less(?a, ?b) :- Util.isLess(?a, ?b)` answers; and a
+///     body-less spec `Bool` operation there, so `rule chk(?x) :- Pred.ok(?x)` at an open
+///     type is refused as its result-column twin is (WI-20261106-3TFWV).
 ///
 /// Anything else at goal position — a non-`Bool` call at its declared arity — is WI-583's
 /// load error, and a woven call would slip past that check.
@@ -1212,7 +1214,7 @@ fn woven_goal_has_reader(
     let relational = kb
         .functional_relation_goal(&crate::eval::Value::Node(Rc::clone(goal)))
         .is_some();
-    let bool_view = kb.bare_bodied_bool_relation(functor)
+    let bool_view = kb.spelled_bool_relation(functor)
         && kb
             .op_record(functor)
             .and_then(|r| r.signature.as_ref())

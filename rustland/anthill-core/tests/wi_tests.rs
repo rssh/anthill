@@ -53,6 +53,8 @@ mod wi_12nkg_arrow_and_tuple_cover_test;
 mod wi_0gyw1_arrow_provision_labels_test;
 #[path = "include/provision_own_parameter_in_structural_type_test.rs"]
 mod provision_own_parameter_in_structural_type_test;
+#[path = "include/wi_3tfwv_body_less_bool_goal_test.rs"]
+mod wi_3tfwv_body_less_bool_goal_test;
 #[path = "include/wi_34822_clause_parameter_one_spelling_test.rs"]
 mod wi_34822_clause_parameter_one_spelling_test;
 #[path = "include/wi_5jyh9_arrow_row_binding_test.rs"]
