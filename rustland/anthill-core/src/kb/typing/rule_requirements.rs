@@ -2358,6 +2358,7 @@ pub(super) fn check_one_spec_op_requirement(
                 callee_op: functor,
                 spec_sort_sym: spec_sort,
                 bindings: bindings.into_vec(),
+                body: CallBody::Rule,
             });
             return;
         }
@@ -2444,9 +2445,44 @@ fn aligned_carrier_outcome(
         aligned
             .and_then(|args| args.get(i))
             .and_then(|a| a.inferred_type())
-            .and_then(|t| sort_functor_of_view(kb, &t))
-            .filter(|s| !is_sort_param_symbol(kb, *s) && !carrier_is_abstract_spec(kb, *s))
+            .and_then(|t| known_call_carrier(kb, &t))
     })
+}
+
+/// The carrier a call's argument of type `ty` stands at, for the carrier decision
+/// ([`simp_guard_decision`]), or `None` where load does not know it — the two shapes
+/// [`aligned_carrier_outcome`] names, an abstract type parameter and an abstract spec sort.
+/// One reader for a rule body's call and an operation body's
+/// ([`carriers_no_provision_binds`]), so the two cannot disagree on which carriers are known.
+pub(super) fn known_call_carrier(kb: &KnowledgeBase, ty: &Value) -> Option<Symbol> {
+    sort_functor_of_view(kb, ty)
+        .filter(|s| !is_sort_param_symbol(kb, *s) && !carrier_is_abstract_spec(kb, *s))
+}
+
+/// WI-20260926-Y6ZCD — the carriers of an operation body's call to `functor` that no
+/// provision of `spec_sort` binds together, asked as a rule body's call asks it
+/// ([`check_one_spec_op_requirement`], WI-20260925-PRVA2 (c)). `arg_carriers[i]` is the
+/// carrier of the argument at parameter `i` ([`known_call_carrier`]), `None` where load does
+/// not know it.
+///
+/// Asked where the dispatch found no candidate at the call's types and the carrier at the
+/// spec's carrier parameter is an instance by some route ([`unprovided_spec_at_carrier`]
+/// answers `None`). The call was then passed to the run time, which dispatched on that one
+/// carrier: `Conv.conv(leaf(v: 1), "s")` under `W provides Conv[A = Leaf, B = Int64]` ran
+/// `W.conv` with a `String` in its `Int64` parameter.
+pub(super) fn carriers_no_provision_binds(
+    kb: &KnowledgeBase,
+    functor: Symbol,
+    spec_sort: Symbol,
+    arg_carriers: &[Option<Symbol>],
+) -> Option<Vec<(Symbol, Symbol)>> {
+    let decision = simp_guard_decision(kb, functor, spec_sort, |i| {
+        arg_carriers.get(i).copied().flatten()
+    });
+    match decision.1 {
+        Some(GuardRefusal::NoProvision(bindings)) => Some(bindings.into_vec()),
+        Some(GuardRefusal::Carrier(_)) | None => None,
+    }
 }
 
 /// WI-1043 — is `carrier` an instance of `spec_sort` through a WITNESS provision, i.e.

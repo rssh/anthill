@@ -3065,8 +3065,40 @@ fn check_apply_call(
                 // not just the carrier's own member — a WI-431 instance fact's
                 // op-valued binding fills the same gap and must win over the
                 // default for the same reason. See [`carrier_override_suppliers`].
-                let cands =
+                let mut cands =
                     carrier_override_suppliers(kb, spec_sort, carrier_sym, fn_sym, op_short_sym);
+                // WI-20260926-Y6ZCD: found by the carrier at the spec's carrier parameter, a
+                // supplier answers only where its provision binds the call's other carriers
+                // ([`supplier_answers_at`]); with none left, the provision at the call's types
+                // decides below, as at a carrier that supplies nothing.
+                if !cands.is_empty() {
+                    let arg_carriers = call_arg_carriers(
+                        kb,
+                        &op.params,
+                        &pos_call_params,
+                        pos_results,
+                        named_args,
+                        named_results,
+                        &subst,
+                    );
+                    if let Some(carriers) = call_carriers(kb, fn_sym, spec_sort, |i| {
+                        arg_carriers.get(i).copied().flatten()
+                    })
+                    .filter(|c| c.at_several_parameters)
+                    {
+                        cands.retain(|s| {
+                            supplier_answers_at(
+                                kb,
+                                spec_sort,
+                                fn_sym,
+                                op_short_sym,
+                                carrier_sym,
+                                s,
+                                &carriers,
+                            )
+                        });
+                    }
+                }
                 // WI-1012 — a TIE on a STATICALLY CONCRETE carrier is refused HERE, at
                 // load. WI-1010 left it to eval, which costs three things: `anthill check`
                 // passes on a program the interpreter will refuse; a tie in a branch that
@@ -4668,6 +4700,34 @@ fn check_apply_call(
                         // … and a carrier that is no sort at all: a tuple or an arrow.
                         if let Some(refusal) = unprovided_spec_at_former(kb, &goal, fn_sym, span) {
                             return Err(refusal);
+                        }
+                        // … and carriers at several parameters that no provision binds
+                        // together, the rule body's question ([`carriers_no_provision_binds`]).
+                        if !host_implements(kb, fn_sym) {
+                            let arg_carriers = call_arg_carriers(
+                                kb,
+                                &op.params,
+                                &pos_call_params,
+                                pos_results,
+                                named_args,
+                                named_results,
+                                &subst,
+                            );
+                            if let Some(bindings) =
+                                carriers_no_provision_binds(kb, fn_sym, spec_sort, &arg_carriers)
+                            {
+                                return Err(TypeError::NoProvisionAtCarriers {
+                                    span,
+                                    callee_op: fn_sym,
+                                    spec_sort_sym: spec_sort,
+                                    bindings,
+                                    body: if env.enclosing_op().is_some() {
+                                        CallBody::Operation
+                                    } else {
+                                        CallBody::Constant
+                                    },
+                                });
+                            }
                         }
                     }
                     // A CARRIER THAT LEAVES A SLOT UNFIXED where only provisions at instances
@@ -6548,6 +6608,35 @@ fn requirement_of_spec_in_scope(kb: &KnowledgeBase, env: &TypingEnv, spec: Symbo
 /// uncovered keeps that `None`, the answer WI-1091 gave a member whose frame the instance
 /// does not lay out.
 /// `None` is also the answer for a tree that names no provider.
+/// WI-20260926-Y6ZCD — the carrier each of a call's arguments stands at, by parameter index
+/// ([`known_call_carrier`] of its type under `subst`), `None` where the call supplies none or
+/// load does not know it: what a rule body's call reads off its stamped argument types.
+fn call_arg_carriers(
+    kb: &mut KnowledgeBase,
+    params: &[(Symbol, Value)],
+    pos_call_params: &[Option<usize>],
+    pos_results: &[Result<TypeResult, TypeError>],
+    named_args: &[(Symbol, Rc<NodeOccurrence>)],
+    named_results: &[Result<TypeResult, TypeError>],
+    subst: &Substitution,
+) -> SmallVec<[Option<Symbol>; 4]> {
+    (0..params.len())
+        .map(|i| {
+            let ty = supplied_arg_type(
+                kb,
+                params,
+                pos_call_params,
+                i,
+                pos_results,
+                named_args,
+                named_results,
+            )?;
+            let ty = resolve_type_deep_value(kb, subst, &ty);
+            known_call_carrier(kb, &ty)
+        })
+        .collect()
+}
+
 fn defaulted_call_target(
     kb: &mut KnowledgeBase,
     spec_sort: Symbol,

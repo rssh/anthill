@@ -5807,7 +5807,32 @@ pub(crate) fn spec_op_dispatch_by_value(
     let Some(op_short_sym) = kb.lookup_symbol(op_short) else {
         return ValueDirectedDispatch::NoSupplier;
     };
-    let cands = suppliers(kb, spec_sort, carrier, spec_op, op_short_sym);
+    let mut cands = suppliers(kb, spec_sort, carrier, spec_op, op_short_sym);
+    // WI-20260926-Y6ZCD — a supplier found by the carrier at the spec's carrier parameter
+    // answers only where its provision binds the call's other carriers, the typer's question
+    // ([`crate::kb::typing::supplier_answers_at`]) asked of the argument values. Asked at load
+    // too, so a call the typer pinned to the spec's own body is not redirected here to a
+    // supplier at other bindings: `Conv.conv(leaf(v: 1), "s")` beside `W provides Conv[A =
+    // Leaf, B = Int64]` and `WS provides Conv[A = Leaf, B = String]` ran `W.conv`.
+    if !cands.is_empty() {
+        if let Some(carriers) = crate::kb::typing::call_carriers(kb, spec_op, spec_sort, |i| {
+            arg_values.get(i).and_then(|v| runtime_carrier_sort(kb, v))
+        })
+        .filter(|c| c.at_several_parameters)
+        {
+            cands.retain(|s| {
+                crate::kb::typing::supplier_answers_at(
+                    kb,
+                    spec_sort,
+                    spec_op,
+                    op_short_sym,
+                    carrier,
+                    s,
+                    &carriers,
+                )
+            });
+        }
+    }
     match cands.as_slice() {
         [] => ValueDirectedDispatch::NoSupplier,
         [only] => ValueDirectedDispatch::Sole(only.target),

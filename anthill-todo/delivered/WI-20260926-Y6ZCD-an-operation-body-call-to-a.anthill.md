@@ -3,9 +3,9 @@
 - id: WI-20260926-Y6ZCD-an-operation-body-call-to-a
 - created: 2026-09-26T12:54:23Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-09-26T12:54:23Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-11-10T20:00:57Z
 
 - acceptance: cargo-test, scaland-sbt-test
 

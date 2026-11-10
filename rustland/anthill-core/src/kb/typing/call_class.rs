@@ -1505,6 +1505,68 @@ pub(crate) fn carrier_override_suppliers(
     })
 }
 
+/// WI-20260926-Y6ZCD — does `supplier`, one of [`carrier_override_suppliers`] at `carrier`,
+/// answer a call whose carriers stand at several of the spec's parameters
+/// ([`CallCarriers::at_several_parameters`])? The suppliers are found by `carrier`, the
+/// carrier at the spec's carrier parameter, alone; a supplier answers only at the carriers its
+/// provision binds.
+///
+///   * A witness's member or a provision's binding answers where its own provision binds the
+///     call's carriers ([`row_admits_carriers`]).
+///   * The carrier's own member answers the carrier's provisions and a witness's that supplies
+///     none of its own ([`provision_supplier`]), so no one row is its; its own signature is
+///     what it admits.
+///
+/// MEASURED on 3a8f34a3, `Conv[A, B]`'s `conv(a: A, b: B) -> Int64 = 0`: beside `W provides
+/// Conv[A = Leaf, B = Int64]` with `W.conv` answering `9` and `WS provides Conv[A = Leaf, B =
+/// String]` writing no member, `Conv.conv(leaf(v: 1), "s")` answered `9`, `W.conv` run with a
+/// `String` in its `Int64` parameter, where `WS` takes the spec's body; and with `Leaf`'s own
+/// `conv(a: Leaf, b: Int64)` answering `7` in place of `W`'s, `7`.
+pub(crate) fn supplier_answers_at(
+    kb: &KnowledgeBase,
+    spec_sort: Symbol,
+    spec_op: Symbol,
+    op_short_sym: Symbol,
+    carrier: Symbol,
+    supplier: &SpecOpSupplier,
+    carriers: &CallCarriers,
+) -> bool {
+    match supplier.route {
+        SupplyRoute::Own => {
+            let Some(rec) = crate::kb::op_info::lookup_operation_info(kb, supplier.target) else {
+                // A supplier is a runnable member: it has a signature.
+                unreachable!(
+                    "own member `{}` supplies `{}` with no signature",
+                    kb.qualified_name_of(supplier.target),
+                    kb.qualified_name_of(spec_op),
+                );
+            };
+            carriers.known.iter().all(|&(i, _, at)| {
+                rec.params
+                    .get(i)
+                    .is_some_and(|(_, ty)| type_head_admits_carrier(kb, ty, at))
+            })
+        }
+        SupplyRoute::Witness(_) | SupplyRoute::Fact => {
+            let bindings = carriers.known_bindings();
+            let carrier = kb.canonical_sort_sym(carrier);
+            let target = kb.canonical_sym(supplier.target);
+            // Every supplier of the row, runnable or not: the readers filter differently
+            // (`carrier_override_suppliers` by what the interpreter runs, the body-less
+            // coherence walk not at all), and the question is only whose `supplier` is.
+            provides_rows_of_spec(kb, spec_sort).any(|row| {
+                let (at, suppliers) =
+                    provision_supplier(kb, spec_sort, spec_op, op_short_sym, &row, &|_| true);
+                at == carrier
+                    && suppliers
+                        .iter()
+                        .any(|s| kb.canonical_sym(s.target) == target)
+                    && row_admits_carriers(kb, &row, &bindings)
+            })
+        }
+    }
+}
+
 /// WI-20261025-ZAWX9 — [`carrier_override_suppliers`] for a reader that holds a
 /// DICTIONARY: the suppliers its provider writes ([`spec_op_suppliers_of_provider`]),
 /// under the same interpretability filter and for the same reason — a default is this

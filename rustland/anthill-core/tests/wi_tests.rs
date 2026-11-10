@@ -55,6 +55,8 @@ mod wi_0gyw1_arrow_provision_labels_test;
 mod provision_own_parameter_in_structural_type_test;
 #[path = "include/wi_3tfwv_body_less_bool_goal_test.rs"]
 mod wi_3tfwv_body_less_bool_goal_test;
+#[path = "include/wi_y6zcd_call_at_several_carriers_test.rs"]
+mod wi_y6zcd_call_at_several_carriers_test;
 #[path = "include/wi_34822_clause_parameter_one_spelling_test.rs"]
 mod wi_34822_clause_parameter_one_spelling_test;
 #[path = "include/wi_5jyh9_arrow_row_binding_test.rs"]

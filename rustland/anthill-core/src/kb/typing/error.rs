@@ -95,6 +95,42 @@ impl RequirementUse {
     }
 }
 
+/// The body a [`TypeError::NoProvisionAtCarriers`] call is written in, which decides the
+/// second repair: a rule clause takes the requirement on with its head's introducer and a
+/// guard, an operation with a `requires` line, and a constant's value has no way to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallBody {
+    Rule,
+    Operation,
+    Constant,
+}
+
+impl CallBody {
+    /// What declares no requirement of its own, as the refusal names it.
+    fn declarer(self) -> &'static str {
+        match self {
+            CallBody::Rule => "this clause declares",
+            CallBody::Operation => "this operation declares",
+            CallBody::Constant => "a constant's value declares",
+        }
+    }
+
+    /// The repair that takes the requirement on in this body, after the provision.
+    fn take_it_on(self, short: &str) -> String {
+        match self {
+            CallBody::Rule => {
+                ", or take the obligation on in this clause with the rule head's introducer and \
+                 a guard"
+                    .to_string()
+            }
+            CallBody::Operation => {
+                format!(", or take the obligation on with `requires {short}[…]` on the operation")
+            }
+            CallBody::Constant => String::new(),
+        }
+    }
+}
+
 /// Where a `requires` that covers a spec operation's call is written, for the refusal that
 /// asks for one ([`TypeError::MissingRequiresForSpecOp`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -830,10 +866,12 @@ pub enum TypeError {
         spec_sort_sym: Symbol,
         carrier_sym: Symbol,
     },
-    /// WI-20260925-PRVA2 (c) — a rule-body call to a spec operation whose carriers, known at
-    /// load, stand at spec parameters other than its carrier parameter, and NO provision
-    /// binds them together: `Conv.conv(m(v: 3), 5)` where `Conv[A, B]`'s one provision is
-    /// `sort Meters provides Conv[A = Meters, B = String]`.
+    /// WI-20260925-PRVA2 (c) — a call to a spec operation whose carriers, known at load, stand
+    /// at spec parameters other than its carrier parameter, and NO provision binds them
+    /// together: `Conv.conv(m(v: 3), 5)` where `Conv[A, B]`'s one provision is `sort Meters
+    /// provides Conv[A = Meters, B = String]`. In a rule body and, since WI-20260926-Y6ZCD,
+    /// in an operation body, where the call was passed to the run time and dispatched on the
+    /// carrier at `A` alone.
     ///
     /// THE SIBLING OF [`Self::UnfillableOperationRequirement`], whose sentence is about ONE
     /// carrier — "`X` provides no `Spec`" — and is false here: `Int64` at `B` is a
@@ -846,6 +884,7 @@ pub enum TypeError {
         spec_sort_sym: Symbol,
         /// `(spec parameter, carrier sort)` for each known carrier, in parameter order.
         bindings: Vec<(Symbol, Symbol)>,
+        body: CallBody,
     },
     /// WI-20261010-9BKZ4 — the KB holds something that changes what a SEALED load's
     /// code means, and a sealed load's bodies are typed once (`typing::sealed`, where
@@ -2346,20 +2385,29 @@ impl TypeError {
                 callee_op,
                 spec_sort_sym,
                 bindings,
+                body,
                 ..
             } => {
                 let spec_qn = kb.qualified_name_of(*spec_sort_sym);
+                let short = short_name_of(spec_qn);
                 let at = carrier_bindings_text(kb, bindings);
-                format!(
-                    "`{}` requires `{}` at `{at}`, and no provision binds that — this clause \
-                     can neither supply it nor declare it. Add a `provides {}[{at}]` (on a \
-                     sort, or a witness sort), or declare it with the rule head's \
-                     introducer, `rule r[A](…) :- {}[…]`, to take the obligation on",
-                    kb.qualified_name_of(*callee_op),
-                    spec_qn,
-                    short_name_of(spec_qn),
-                    short_name_of(spec_qn),
-                )
+                let op_qn = kb.qualified_name_of(*callee_op);
+                match body {
+                    CallBody::Rule => format!(
+                        "`{op_qn}` requires `{spec_qn}` at `{at}`, and no provision binds that — \
+                         this clause can neither supply it nor declare it. Add a `provides \
+                         {short}[{at}]` (on a sort, or a witness sort), or declare it with the \
+                         rule head's introducer, `rule r[A](…) :- {short}[…]`, to take the \
+                         obligation on"
+                    ),
+                    CallBody::Operation | CallBody::Constant => format!(
+                        "`{op_qn}` requires `{spec_qn}` at `{at}`, and no provision binds that — \
+                         {} no `{short}` requirement of its own. Add a `provides {short}[{at}]` \
+                         (on a sort, or a witness sort){}",
+                        body.declarer(),
+                        body.take_it_on(short),
+                    ),
+                }
             }
             TypeError::SortParamWithoutCarrier {
                 op,
@@ -3297,6 +3345,7 @@ impl TypeError {
                 callee_op,
                 spec_sort_sym,
                 bindings,
+                body,
                 ..
             } => {
                 let spec_qn = kb.qualified_name_of(*spec_sort_sym);
@@ -3308,11 +3357,11 @@ impl TypeError {
                     field_name: "requires".to_string(),
                     expected_type: format!("a `{spec_qn}` provision binding `{at}`"),
                     actual_type: format!(
-                        "no provision of `{spec_qn}` binds `{at}`, and this clause declares \
-                         no `{short}` requirement of its own — so no call here can discharge \
-                         it. Add a `provides {short}[{at}]` (on a sort, or a witness sort), or \
-                         take the obligation on in this clause with the rule head's \
-                         introducer and a guard"
+                        "no provision of `{spec_qn}` binds `{at}`, and {} no `{short}` \
+                         requirement of its own — so no call here can discharge it. Add a \
+                         `provides {short}[{at}]` (on a sort, or a witness sort){}",
+                        body.declarer(),
+                        body.take_it_on(short),
                     ),
                     span: self.span(kb),
                 }

@@ -1224,14 +1224,68 @@ pub(super) fn simp_guard_decision(
     spec_sort: Symbol,
     arg_carrier_sort: impl Fn(usize) -> Option<Symbol>,
 ) -> (FindDictOutcome, Option<GuardRefusal>) {
+    let Some(carriers) = call_carriers(kb, functor, spec_sort, arg_carrier_sort) else {
+        return (FindDictOutcome::DontFire, None);
+    };
+    let known = carriers.known_bindings();
+    let refusal = if !carriers.at_several_parameters {
+        // A carrier that IS the sort provides it ([`sort_provides`]): the value there is
+        // the sort's own or some provider's, and the law is each one's.
+        known
+            .iter()
+            .find(|&&(_, carrier)| !carrier_provides_spec(kb, carrier, spec_sort))
+            .map(|&(_, carrier)| GuardRefusal::Carrier(carrier))
+    } else if !known.is_empty() && !provision_admits_carriers(kb, spec_sort, &known) {
+        Some(GuardRefusal::NoProvision(known))
+    } else {
+        None
+    };
+    match refusal {
+        Some(refusal) => (FindDictOutcome::DontFire, Some(refusal)),
+        None if carriers.known.len() < carriers.count => (FindDictOutcome::Suspend, None),
+        None => (FindDictOutcome::Fire, None),
+    }
+}
+
+/// The carrier arguments of one call of a spec operation, read once for the questions asked
+/// of them: [`simp_guard_decision`]'s, and which supplier of a defaulted operation answers the
+/// call ([`supplier_answers_at`]).
+pub(crate) struct CallCarriers {
+    /// How many of the operation's parameters carry the spec.
+    count: usize,
+    /// `(parameter index, spec parameter, carrier sort)` for each carrier the reader knows, in
+    /// parameter order.
+    pub(crate) known: SmallVec<[(usize, Symbol, Symbol); 4]>,
+    /// A carrier stands at a parameter other than the spec's carrier parameter, so the question
+    /// is whether a provision binds the carriers together ([`provision_admits_carriers`]), not
+    /// whether each carrier provides the spec.
+    pub(crate) at_several_parameters: bool,
+}
+
+impl CallCarriers {
+    /// The known carriers as a provision binds them, `(spec parameter, carrier sort)`.
+    pub(crate) fn known_bindings(&self) -> SmallVec<[(Symbol, Symbol); 4]> {
+        self.known
+            .iter()
+            .map(|&(_, param, carrier)| (param, carrier))
+            .collect()
+    }
+}
+
+/// [`CallCarriers`] of a call to `functor`, each carrier read by `arg_carrier_sort` at its
+/// parameter's index; `None` for an operation with no signature or no carrier parameter.
+pub(crate) fn call_carriers(
+    kb: &KnowledgeBase,
+    functor: Symbol,
+    spec_sort: Symbol,
+    arg_carrier_sort: impl Fn(usize) -> Option<Symbol>,
+) -> Option<CallCarriers> {
     // The caller has already resolved `functor`'s spec sort (one
     // `lookup_spec_op_dispatch` per firing decision, shared with its own
     // non-spec-op default) and passes it in — a non-spec-op functor never
     // reaches here. Without the signature we can't tell which arguments carry the spec,
     // so we can't verify the law applies — don't fire.
-    let Some(rec) = crate::kb::op_info::lookup_operation_info(kb, functor) else {
-        return (FindDictOutcome::DontFire, None);
-    };
+    let rec = crate::kb::op_info::lookup_operation_info(kb, functor)?;
     let type_params = kb.type_params_of_sort(spec_sort);
 
     // WI-596 — two shapes of spec sort name their carrier differently, and the
@@ -1263,32 +1317,20 @@ pub(super) fn simp_guard_decision(
         })
         .collect();
     if carrier_params.is_empty() {
-        return (FindDictOutcome::DontFire, None);
+        return None;
     }
-    let known: SmallVec<[(Symbol, Symbol); 4]> = carrier_params
+    let known = carrier_params
         .iter()
-        .filter_map(|&(i, param)| arg_carrier_sort(i).map(|carrier| (param, carrier)))
+        .filter_map(|&(i, param)| arg_carrier_sort(i).map(|carrier| (i, param, carrier)))
         .collect();
-    let refusal = if self_representing
+    let at_several_parameters = !(self_representing
         || type_params.len() <= 1
-        || every_carrier_at_carrier_param(kb, spec_sort, &carrier_params)
-    {
-        // A carrier that IS the sort provides it ([`sort_provides`]): the value there is
-        // the sort's own or some provider's, and the law is each one's.
-        known
-            .iter()
-            .find(|&&(_, carrier)| !carrier_provides_spec(kb, carrier, spec_sort))
-            .map(|&(_, carrier)| GuardRefusal::Carrier(carrier))
-    } else if !known.is_empty() && !provision_admits_carriers(kb, spec_sort, &known) {
-        Some(GuardRefusal::NoProvision(known.clone()))
-    } else {
-        None
-    };
-    match refusal {
-        Some(refusal) => (FindDictOutcome::DontFire, Some(refusal)),
-        None if known.len() < carrier_params.len() => (FindDictOutcome::Suspend, None),
-        None => (FindDictOutcome::Fire, None),
-    }
+        || every_carrier_at_carrier_param(kb, spec_sort, &carrier_params));
+    Some(CallCarriers {
+        count: carrier_params.len(),
+        known,
+        at_several_parameters,
+    })
 }
 
 /// Does every carrier stand at `spec_sort`'s CARRIER parameter — the one its operations
@@ -1335,41 +1377,53 @@ fn provision_admits_carriers(
     spec_sort: Symbol,
     carriers: &[(Symbol, Symbol)],
 ) -> bool {
-    provides_rows_of_spec(kb, spec_sort).any(|row| {
-        if is_conversion_row(kb, &row) {
-            return false;
-        }
-        let bindings = row.bindings(kb);
-        let mut variables: SmallVec<[(ValueIdentity, Symbol); 4]> = SmallVec::new();
-        carriers.iter().all(|&(param, carrier)| {
-            let name = kb.local_name_of(param);
-            let Some((_, bound)) = bindings.iter().find(|(k, _)| kb.local_name_of(*k) == name)
-            else {
-                return true;
-            };
-            if is_type_param_view(kb, bound) {
-                let variable = value_identity_key(bound);
-                return match variables.iter().find(|(v, _)| *v == variable) {
-                    Some(&(_, earlier)) => {
-                        same_sort_canonical(kb, earlier, carrier)
-                            || sort_provides(kb, earlier, carrier)
-                            || sort_provides(kb, carrier, earlier)
-                    }
-                    None => {
-                        variables.push((variable, carrier));
-                        true
-                    }
-                };
-            }
-            match sort_functor_of_view(kb, bound) {
-                Some(sort) if is_sort_param_symbol(kb, sort) => true,
-                Some(sort) => {
-                    same_sort_canonical(kb, sort, carrier) || sort_provides(kb, carrier, sort)
+    provides_rows_of_spec(kb, spec_sort).any(|row| row_admits_carriers(kb, &row, carriers))
+}
+
+/// [`provision_admits_carriers`] for one provision `row`: does it bind each of `carriers`'
+/// parameters at its carrier?
+pub(super) fn row_admits_carriers(
+    kb: &KnowledgeBase,
+    row: &ProvidesRow,
+    carriers: &[(Symbol, Symbol)],
+) -> bool {
+    if is_conversion_row(kb, row) {
+        return false;
+    }
+    let bindings = row.bindings(kb);
+    let mut variables: SmallVec<[(ValueIdentity, Symbol); 4]> = SmallVec::new();
+    carriers.iter().all(|&(param, carrier)| {
+        let name = kb.local_name_of(param);
+        let Some((_, bound)) = bindings.iter().find(|(k, _)| kb.local_name_of(*k) == name) else {
+            return true;
+        };
+        if is_type_param_view(kb, bound) {
+            let variable = value_identity_key(bound);
+            return match variables.iter().find(|(v, _)| *v == variable) {
+                Some(&(_, earlier)) => {
+                    same_sort_canonical(kb, earlier, carrier)
+                        || sort_provides(kb, earlier, carrier)
+                        || sort_provides(kb, carrier, earlier)
                 }
-                None => false,
-            }
-        })
+                None => {
+                    variables.push((variable, carrier));
+                    true
+                }
+            };
+        }
+        type_head_admits_carrier(kb, bound, carrier)
     })
+}
+
+/// Does a type with this head admit a value of sort `carrier` — the head is a type
+/// parameter, or `carrier` is that sort or provides it? A type with no sort head (an arrow, a
+/// tuple, `Nothing`) admits none: a carrier here is a sort head.
+pub(super) fn type_head_admits_carrier(kb: &KnowledgeBase, ty: &Value, carrier: Symbol) -> bool {
+    match sort_functor_of_view(kb, ty) {
+        Some(sort) if is_sort_param_symbol(kb, sort) => true,
+        Some(sort) => same_sort_canonical(kb, sort, carrier) || sort_provides(kb, carrier, sort),
+        None => false,
+    }
 }
 
 /// WI-292 — the RESOLVER-side type-satisfaction check for a requires-guarded
