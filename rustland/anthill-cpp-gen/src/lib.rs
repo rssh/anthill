@@ -372,7 +372,11 @@ impl OpImplTable {
                 _ => continue,
             };
             // Read the materialized body NodeOccurrence from the KB.
-            // Ops with no body (spec-level declarations) are skipped.
+            // Ops with no body (spec-level declarations) are skipped, and so is a
+            // composite's derived `eq`: the emitted struct's `operator==` is its equality.
+            if kb.is_derived_eq_member(op_sym) {
+                continue;
+            }
             if let Some(node) = kb.op_body_node(op_sym) {
                 by_op.insert(op_sym, node.clone());
             }
@@ -2240,6 +2244,10 @@ fn operations_in_sort(
             Some(s) => s,
             None => continue,
         };
+        // A composite's derived `eq` is the struct's `operator==`, not a method.
+        if kb.is_derived_eq_member(op_sym) {
+            continue;
+        }
         // The operation's parent sort is the prefix of its qualified
         // name (test.simple.Greeter.count → test.simple.Greeter).
         // We don't use SymbolTable::scope_of because that helper finds
@@ -3098,6 +3106,9 @@ fn classify_namespace(
             let Some(op_sym) = anthill_core::kb::op_info::head_name_ref(kb, &row) else {
                 continue;
             };
+            if kb.is_derived_eq_member(op_sym) {
+                continue;
+            }
             let Some(parent_qn) = parent_qualified_name(kb, op_sym) else {
                 continue;
             };

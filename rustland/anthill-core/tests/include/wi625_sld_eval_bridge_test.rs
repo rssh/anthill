@@ -427,14 +427,11 @@ fn transitive_requires_guard_blocks_non_eq_element() {
 
 #[test]
 fn bridge_mode_suspends_on_buried_override() {
-    // {1,2} and {2,1} are one Set by membership but structurally distinct; buried
-    // under `some(…)` the head is Option (structural eq), so eval's step-5 verdict
-    // is the membership-WRONG `false`.
-    //
-    // Top-level eval keeps that documented structural answer; under the resolver
-    // bridge (bridge_mode) importing it into resolution would be unsound, so eval
-    // must SUSPEND — the resolver then delays exactly as its own `builtin_sem_eq`
-    // does on a buried override.
+    // {1,2} and {2,1} are one Set by membership but structurally distinct. Under
+    // `some(…)` `Option`'s derived `eq` compares the element by `Set.eq`
+    // (WI-20261109-FEM1J), which is undecided today (WI-20260926-K4JGC): top-level eval
+    // says so loudly — it answered the membership-wrong structural `false` before — and
+    // under the resolver bridge (bridge_mode) eval SUSPENDS, so the resolver delays.
     let mut plain = plain_interp();
     let (a, b) = (
         some_of_set(plain.kb_mut(), &[1, 2]),
@@ -442,8 +439,8 @@ fn bridge_mode_suspends_on_buried_override() {
     );
     let r = plain.call(EQ, &[a, b]);
     assert!(
-        matches!(r, Ok(Value::Bool(false))),
-        "top-level eval keeps its documented structural verdict, got {r:?}",
+        matches!(&r, Err(e) if format!("{e:?}").contains("could not be decided")),
+        "top-level eval reports the undecided `Set.eq`, got {r:?}",
     );
 
     let mut bridged = bridge_interp();
@@ -454,7 +451,7 @@ fn bridge_mode_suspends_on_buried_override() {
     let r = bridged.call(EQ, &[a, b]);
     assert!(
         matches!(r, Err(EvalError::Suspended { .. })),
-        "under the resolver bridge a buried override must SUSPEND, got {r:?}",
+        "under the resolver bridge an undecided inner `eq` must SUSPEND, got {r:?}",
     );
 }
 
@@ -1095,37 +1092,34 @@ fn instance_fact_eq_dispatches_at_resolution() {
 }
 
 #[test]
-fn instance_fact_buried_override_delays_not_structural() {
-    // `some(tagged(1,9))` vs `some(tagged(1,8))`: the head (Option.some) does not
-    // override eq, but an instance-fact carrier is BURIED inside. Adding the
-    // carrier to the eq-dispatch index makes `value_reaches_eq_override` see it
-    // (it probes the same index), so the resolver DELAYS rather than answering the
-    // membership-wrong structural verdict (false) — exactly like a buried `Set`.
-    // Full recursive semantic descent into the buried carrier is a WI-625 follow-up.
+fn instance_fact_inside_a_composite_is_reached() {
+    // `some(tagged(1,9))` vs `some(tagged(1,8))`: an instance-fact carrier inside
+    // `Option`. `Option`'s derived `eq` compares the element by its type's `eq`
+    // (WI-20261109-FEM1J), here `taggedEq`, which reads the keys alone: equal. Before, the
+    // resolver delayed on the buried carrier rather than answer the structural `false`.
     let mut kb = common::load_kb_with(INSTFACT_SRC);
     let some = kb
         .try_resolve_symbol("anthill.prelude.Option.some")
         .expect("Option.some");
-    let inner_a = tagged_entity(&mut kb, 1, 9);
-    let inner_b = tagged_entity(&mut kb, 1, 8);
-    let sa = kb.alloc(Term::Fn {
-        functor: some,
-        pos_args: SmallVec::from_slice(&[inner_a]),
-        named_args: SmallVec::new(),
-    });
-    let sb = kb.alloc(Term::Fn {
-        functor: some,
-        pos_args: SmallVec::from_slice(&[inner_b]),
-        named_args: SmallVec::new(),
-    });
-    let g = goal(&mut kb, EQ, &[sa, sb]);
-    let sols = kb.resolve(&[g], &ResolveConfig::default());
-    assert!(
-        sols.iter().all(|s| !s.residual.is_empty()),
-        "a buried instance-fact override must DELAY (residualize), never yield a \
-         definite structural verdict — got {} solution(s), some definite",
-        sols.len(),
-    );
+    let answers = |kb: &mut KnowledgeBase, key_b: i64| {
+        let inner_a = tagged_entity(kb, 1, 9);
+        let inner_b = tagged_entity(kb, key_b, 8);
+        let sa = kb.alloc(Term::Fn {
+            functor: some,
+            pos_args: SmallVec::from_slice(&[inner_a]),
+            named_args: SmallVec::new(),
+        });
+        let sb = kb.alloc(Term::Fn {
+            functor: some,
+            pos_args: SmallVec::from_slice(&[inner_b]),
+            named_args: SmallVec::new(),
+        });
+        let g = goal(kb, EQ, &[sa, sb]);
+        let sols = kb.resolve(&[g], &ResolveConfig::default());
+        (sols.len(), sols.iter().filter(|s| s.residual.is_empty()).count())
+    };
+    assert_eq!(answers(&mut kb, 1), (1, 1), "equal keys: one definite answer");
+    assert_eq!(answers(&mut kb, 2), (0, 0), "keys apart: refuted");
 }
 
 #[test]

@@ -822,6 +822,11 @@ pub(crate) enum EqLaw {
     AtItsCarriers,
     /// Never: a carrier whose `eq` it is provides no `Eq`.
     Never,
+    /// A derived member of a carrier that provides `Eq` under a condition or not at all: two
+    /// identical operands are equal by the law where every value inside them is of a lawful
+    /// carrier ([`KnowledgeBase::value_self_equal_by_law`]) — the member compares field by
+    /// field, so its own answer there is the same.
+    ByItsFields,
 }
 
 // ── KnowledgeBase ───────────────────────────────────────────────
@@ -2299,26 +2304,6 @@ pub struct KnowledgeBase {
     /// sort in an `ensures` (that stays the strict escape). Keyed on the op symbol.
     pub(crate) existential_return_ops: std::collections::HashSet<Symbol>,
 
-    /// WI-664 — entity-constructor functors whose SORT is classified `NonEq`: its
-    /// congruent (field-wise) equality is non-reflexive because it reaches an
-    /// unshielded partial `Float` leaf, NOT behind a lawful-Eq own-`eq` boundary
-    /// (`TotalFloat`/`Set`/`Map`). The SEMANTIC `eq` of such a value is computed
-    /// FIELD-WISE (`eq(Point(nan,_), Point(nan,_)) = eq(nan,nan) ∧ … = false`),
-    /// agreeing with the field-wise C++ `operator==`, instead of taking the
-    /// structural reflexivity shortcut (which would launder a nested NaN). Built
-    /// once post-load by [`eq_derive::run`]; read by the resolver
-    /// (`sem_eq_core`) and interpreter (`eval::builtins::semantic_equal`) via
-    /// [`Self::value_reaches_partial_carrier`]. Empty ⇒ zero behavioral change
-    /// (a KB with no Float-containing composites is byte-identical to pre-WI-664).
-    pub(crate) field_wise_noneq_carriers: std::collections::HashSet<Symbol>,
-    /// WI-20260918-CKD4J (the `NonEq` mirror) — constructor functors of PARAMETRIC
-    /// composites. Whether a value of one reaches a partial carrier is a question about
-    /// its ARGUMENTS (`some(nan)` does, `some(1)` does not), so the partial-carrier gate
-    /// WALKS THROUGH such a constructor instead of stopping at it — where a constructor
-    /// of a non-parametric sort is decided by its classification alone
-    /// (`field_wise_noneq_carriers`), a `TotalFloat` shielding its `Float`. Built by
-    /// `eq_derive::run` beside that set.
-    pub(crate) partial_transparent_carriers: std::collections::HashSet<Symbol>,
     /// WI-20260919-9KYPA — (canonical carrier, spec) → the type parameters its DERIVED
     /// conditional provision of that spec rests on (`Eq[List] :- Eq[T]` ⇒
     /// `(List, Eq) → [T]`). Both `PartialEq` and `Eq` are recorded, because the `NonEq`
@@ -2345,6 +2330,12 @@ pub struct KnowledgeBase {
     /// key on a guess. `Pair[A = Float, …]` therefore stays the gap §8.3 names.
     pub(crate) conditional_eq_params:
         std::collections::HashMap<(Symbol, Symbol), Vec<Symbol>>,
+    /// The `eq` members the derivation gave composites (`eq_derive::derived_eq_member_source`,
+    /// loaded by `load::load_derived_eq_members`), each by its symbol and its canonical
+    /// copy. A code generator realizes a composite's equality itself (`operator==`,
+    /// `derive`) and emits none of them; a declaration capturing one, or one capturing a
+    /// name, is no capture: the loader wrote it, and no text reads it by its bare name.
+    pub(crate) derived_eq_members: std::collections::HashSet<Symbol>,
     /// WI-20260919-HXGXF — canonical carriers whose `anthill.reflect.TypeValue` provision
     /// THIS LOADER DERIVED, so the derived-only refusal can tell its own rows from an
     /// author's.
@@ -3224,9 +3215,8 @@ impl KnowledgeBase {
             ranking_rigids: HashMap::new(),
             rigid_projection_formations: Vec::new(),
             existential_return_ops: std::collections::HashSet::new(),
-            field_wise_noneq_carriers: std::collections::HashSet::new(),
-            partial_transparent_carriers: std::collections::HashSet::new(),
             conditional_eq_params: std::collections::HashMap::new(),
+            derived_eq_members: std::collections::HashSet::new(),
             derived_type_value_carriers: std::collections::HashSet::new(),
             entity_field_types: HashMap::new(),
             parameterized_type_sites: Vec::new(),
@@ -8739,10 +8729,22 @@ impl KnowledgeBase {
             let entry = self.sort_ops.eq_members.entry(key).or_insert(EqLaw::Always);
             *entry = match (*entry, law) {
                 (EqLaw::Never, _) | (_, EqLaw::Never) => EqLaw::Never,
+                (EqLaw::AtItsCarriers, EqLaw::ByItsFields)
+                | (EqLaw::ByItsFields, EqLaw::AtItsCarriers) => EqLaw::Never,
                 (EqLaw::AtItsCarriers, _) | (_, EqLaw::AtItsCarriers) => EqLaw::AtItsCarriers,
+                (EqLaw::ByItsFields, _) | (_, EqLaw::ByItsFields) => EqLaw::ByItsFields,
                 (EqLaw::Always, EqLaw::Always) => EqLaw::Always,
             };
         }
+    }
+
+    /// Is `op` an `eq` member the derivation gave a composite
+    /// ([`Self::derived_eq_members`])?
+    ///
+    /// Asked on the paths every `=` takes, so it reads the symbol as given: the set holds
+    /// each member under its symbol and its canonical copy.
+    pub fn is_derived_eq_member(&self, op: Symbol) -> bool {
+        self.derived_eq_members.contains(&op)
     }
 
     /// Where the law `eq_refl` answers `true` for a call of `op` on identical operands without

@@ -83,8 +83,10 @@
 //!   nanrg fokg fgen  (0, 0) (1, 1) (2, 2) — unmoved in all four
 //!   gen genw genb (2, 2) each      — unmoved in all four
 //!   cost costg    (1, 1) each      — unmoved in all four
-//!   g wg burg     (1, 1) (1, 1) (1, 0)   — unmoved in all four
-//!   fldg plain tagr  (1, 0) (1, 1) (1, 1) — unmoved in all four
+//!   g wg burg     (1, 1) (1, 1) (1, 0)   — unmoved in all four (`burg` (1, 1) since the
+//!                 derived members, WI-20261109-FEM1J)
+//!   fldg plain tagr  (1, 0) (1, 1) (1, 1) — unmoved in all four (`fldg` (1, 1) since the
+//!                 derived members)
 //! ```
 //!
 //! Read the two right-hand columns together: `bodyNest` is the answer XBHX3 measured the
@@ -313,20 +315,20 @@ fn naf_over_the_refutation_no_longer_proves_a_falsehood() {
 /// children, so nothing in the type mentions `AE` — and that asymmetry is why the
 /// delivered key reads the RESIDUAL, which carries the actual `wrap(v: ae(…))` value.
 ///
-/// Both ground twins SUSPEND rather than answering (a buried override is delayed, not
-/// dispatched), so the claim for each unground row is "not decided false", exactly what
-/// the ground reading of the same equation is willing to say.
+/// Both ground twins ANSWER: `Option`'s and `Wrap`'s derived `eq` compare the element
+/// and the field by `aeq` (WI-20261109-FEM1J), which reads `k` alone, so each holds. They
+/// SUSPENDED before, a buried override being delayed rather than dispatched. The unground
+/// rows still decline the unfold — a suspension, which is sound, and never the refutation
+/// the structural `unify` would give.
 ///
-/// BACK OUT the decline and this goes RED at BOTH `bur` and `fld`: (1, 0) → (0, 0). The
-/// two `…g` rows are (1, 0) either way.
+/// BACK OUT the decline and this goes RED at BOTH `bur` and `fld`: (1, 0) → (0, 0).
 #[test]
 fn an_override_buried_under_structure_declines_both_ways_down() {
     let mut kb = crate::common::load_kb_with(SRC);
     assert_eq!(
         counts(&mut kb, "p1tpe.burg(1)"),
-        (1, 0),
-        "the ground twin SUSPENDS. So the strongest sound answer for the unground row is \
-         a suspension too, never a refutation. Unmoved by this change"
+        (1, 1),
+        "the ground twin answers through the derived members: `aeq` reads `k` alone"
     );
     assert_eq!(
         counts(&mut kb, "p1tpe.bur(?c)"),
@@ -335,8 +337,8 @@ fn an_override_buried_under_structure_declines_both_ways_down() {
     );
     assert_eq!(
         counts(&mut kb, "p1tpe.fldg(1)"),
-        (1, 0),
-        "the same, for the nominal-field carrier: the ground twin suspends"
+        (1, 1),
+        "the same, for the nominal-field carrier: the ground twin answers"
     );
     assert_eq!(
         counts(&mut kb, "p1tpe.fld(?c)"),

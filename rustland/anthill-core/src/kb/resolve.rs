@@ -4545,7 +4545,7 @@ impl SearchStream {
     /// the whole corpus; a third copy of that knowledge is a third chance to drift.
     ///
     /// REDUCED FIRST, with the builtin's own reducer. THE VERDICT BEING SECOND-GUESSED
-    /// IS ABOUT THE REDUCED OPERANDS: `builtin_cmp` and `sem_eq_values` both read their
+    /// IS ABOUT THE REDUCED OPERANDS: `builtin_cmp` and `sem_eq_values_at` both read their
     /// operands EVALUATED before comparing, so a projection or op-call is already folded
     /// by the time they answer. Walking the RAW goal asks about different terms — and
     /// UNSOUNDLY: `ensures neq(result.value, 1)` on `wrap(x) = box(value: x)` arrives as
@@ -5752,11 +5752,13 @@ enum HeadCheck {
     /// raw `Functor` functor ONLY (a bare `Ref` is a 0-ary constructor, never a
     /// bodied op, so it takes the recurse-over-no-children path to the identity).
     BodiedOpCall,
-    /// WI-664: the head is a `Float` leaf (an unshielded partial carrier) or a
-    /// sort/constructor whose precomputed per-constructor NonEq classification
-    /// decides in O(1) and STOPS (it already stopped at lawful-Eq boundaries, so
-    /// its fields are not re-walked); a functor-less aggregate walks its fields.
-    PartialCarrier,
+    /// The head is a `Float` leaf; anything else walks its children.
+    FloatLeaf,
+    /// Is the value equal to itself by `Eq`'s law alone? A `Float` is not (`nan`); a value
+    /// of a carrier whose own `eq` is lawful is; one whose `eq` is not, or is lawful only
+    /// on some carriers, may not be; a derived member's carrier is equal to itself where
+    /// its fields are, so its children are read.
+    SelfEqualByLaw,
 }
 
 /// The outcome of a [`HeadCheck`] at a node: a definite short-circuit verdict, or
@@ -5802,19 +5804,24 @@ pub(crate) const HAS_BODIED_OP_CALL: GateSpec = GateSpec {
     depth_cap: None,
 };
 
-/// WI-664 — does the value reach an UNSHIELDED partial (Float) carrier?
-///
-/// WI-20260918-CKD4J — CAPPED, as [`REACHES_EQ_OVERRIDE`] is, and for the reason the cap
-/// became necessary: since the gate walks THROUGH a parametric constructor
-/// (`KnowledgeBase::partial_transparent_carriers`), a container's whole spine is scanned
-/// per `eq`, where the head answered in O(1) before. Past the cap it answers "reaches",
-/// which is the SAFE direction — the value is then compared FIELD-WISE, which agrees
-/// with the structural shortcut wherever the shortcut was right and is the correct
-/// answer wherever it was not.
-pub(crate) const REACHES_PARTIAL_CARRIER: GateSpec = GateSpec {
+/// Is the value equal to itself by `Eq`'s law, whatever it is compared with — so that a
+/// comparison of it with an identical value need not enter a member? See
+/// [`HeadCheck::SelfEqualByLaw`]. A variable and an opaque handle are not known to be;
+/// past the cap, no.
+pub(crate) const SELF_EQUAL_BY_LAW: GateSpec = GateSpec {
+    combine: Combine::All,
+    chase_sigma: true,
+    head_check: HeadCheck::SelfEqualByLaw,
+    opaque: false,
+    depth_cap: Some((REACH_DEPTH_CAP, false)),
+};
+
+/// Does the value hold a `Float` anywhere? Capped as [`REACHES_EQ_OVERRIDE`] is: past
+/// the cap it answers "holds", the direction its one reader declines in.
+pub(crate) const REACHES_FLOAT: GateSpec = GateSpec {
     combine: Combine::Any,
     chase_sigma: false,
-    head_check: HeadCheck::PartialCarrier,
+    head_check: HeadCheck::FloatLeaf,
     opaque: false,
     depth_cap: Some((REACH_DEPTH_CAP, true)),
 };
@@ -5825,8 +5832,14 @@ impl HeadCheck {
     fn classify(self, kb: &KnowledgeBase, head: &ViewHead) -> HeadVerdict {
         match self {
             HeadCheck::AlwaysRecurse => HeadVerdict::Recurse,
-            HeadCheck::EqOverride => match head.functor_sym() {
-                Some(s) if kb.eq_dispatch_target(s).is_some() => HeadVerdict::Stop(true),
+            // A composite's derived `eq` compares its constructor and each field through
+            // the field's own `eq`: it is an override exactly where a field is, so the scan
+            // looks inside it.
+            HeadCheck::EqOverride => match head
+                .functor_sym()
+                .and_then(|s| kb.eq_dispatch_target(s))
+            {
+                Some(target) if !kb.is_derived_eq_member(target) => HeadVerdict::Stop(true),
                 _ => HeadVerdict::Recurse,
             },
             HeadCheck::BodiedOpCall => match head {
@@ -5856,27 +5869,22 @@ impl HeadCheck {
                 }
                 _ => HeadVerdict::Recurse,
             },
-            HeadCheck::PartialCarrier => {
-                // A `Float` literal read carrier-neutrally through the view (a bare
-                // `Value::Float`, a `Value::Term(Const)`, a Node float-literal).
-                if matches!(head, ViewHead::Const(Literal::Float(_))) {
-                    return HeadVerdict::Stop(true);
-                }
-                match head.functor_sym() {
-                    // A sort/constructor head reads the O(1) per-constructor NonEq
-                    // classification and STOPS (no descent into a shielded field).
-                    Some(f) if kb.field_wise_noneq_carriers.contains(&f) => HeadVerdict::Stop(true),
-                    // WI-20260918-CKD4J — …except a PARAMETRIC composite's constructor,
-                    // whose partiality is its arguments': `some(nan)` reaches `Float`,
-                    // `some(1)` does not, and no per-constructor verdict can say both.
-                    // MEASURED before: `eq(some(nan), some(nan))`, `eq(cons(nan, nil),
-                    // …)` and `eq(holder(o: some(nan)), …)` all answered TRUE — the
-                    // structural shortcut on a value the gate never looked inside.
-                    Some(f) if kb.partial_transparent_carriers.contains(&f) => HeadVerdict::Recurse,
-                    Some(_) => HeadVerdict::Stop(false),
+            // A `Float` literal read carrier-neutrally through the view (a bare
+            // `Value::Float`, a `Value::Term(Const)`, a Node float-literal).
+            HeadCheck::FloatLeaf => match head {
+                ViewHead::Const(Literal::Float(_)) => HeadVerdict::Stop(true),
+                _ => HeadVerdict::Recurse,
+            },
+            HeadCheck::SelfEqualByLaw => match head {
+                ViewHead::Const(Literal::Float(_)) => HeadVerdict::Stop(false),
+                _ => match head.functor_sym().and_then(|s| kb.eq_dispatch_target(s)) {
+                    Some(t) if kb.is_derived_eq_member(t) => HeadVerdict::Recurse,
+                    Some(t) => {
+                        HeadVerdict::Stop(matches!(kb.eq_law_of_member(t), super::EqLaw::Always))
+                    }
                     None => HeadVerdict::Recurse,
-                }
-            }
+                },
+            },
         }
     }
 }
@@ -8957,24 +8965,11 @@ impl KnowledgeBase {
         self.verdict_into_result_column(goal, subst, verdict)
     }
 
-    /// WI-616/WI-625/WI-664 — the VALUE-level core of semantic `eq`/`neq`, shared
-    /// by [`Self::sem_eq_core`] (the SLD goal, after [`Self::eq_operands`] walks the
-    /// operands) and the WI-664 field-wise recursion (each field pair). `positive`
-    /// requests the EQUAL verdict (`eq`) or its negation (`neq`). Outcome order is
-    /// [`Self::sem_eq_core`]'s doc, with the WI-664 field-wise step inserted between
-    /// the Float-pair (1) and reflexivity (2) outcomes.
-    fn sem_eq_values(
-        &mut self,
-        a: Value,
-        b: Value,
-        subst: &Substitution,
-        positive: bool,
-    ) -> BuiltinResult {
-        self.sem_eq_values_at(a, b, subst, positive, None)
-    }
-
-    /// [`Self::sem_eq_values`] at the member a typed goal was pinned to, which step (4)
-    /// dispatches to ahead of the index.
+    /// WI-616/WI-625 — the VALUE-level core of semantic `eq`/`neq`, for
+    /// [`Self::sem_eq_core`] (the SLD goal, after [`Self::eq_operands`] walks the
+    /// operands), at the member a typed goal was pinned to, which step (4) dispatches to
+    /// ahead of the index. `positive` requests the EQUAL verdict (`eq`) or its negation
+    /// (`neq`). Outcome order is [`Self::sem_eq_core`]'s doc.
     fn sem_eq_values_at(
         &mut self,
         a: Value,
@@ -8990,29 +8985,26 @@ impl KnowledgeBase {
         if let (Some(x), Some(y)) = (self.value_f64(&a), self.value_f64(&b)) {
             return sem_verdict(x == y, positive);
         }
-        // WI-664: a composite reaching an UNSHIELDED partial (Float) carrier
-        // compares FIELD-WISE, not by the structural reflexivity shortcut below
-        // (which would launder a nested NaN). Mirrors eval's `semantic_equal`; a
-        // carrier with its own eq (`TotalFloat`/`Set`/`Map`) is not a partial carrier
-        // for that walk and is untouched — one that provides no `Eq` is the head gate's
-        // below, and buried in a carrier with no eq of its own is still read as a
-        // boundary.
+        // A tuple has no `eq` member: its components are compared, each by these steps
+        // (eval's twin is in `semantic_equal`).
+        if let Some(pairs) = self.tuple_component_pairs(&a, &b) {
+            if self.value_self_equal_by_law(&a, Some(subst)) && self.values_equal(&a, &b) {
+                return sem_verdict(true, positive);
+            }
+            return self.tuple_components_sem_eq(pairs, subst, positive);
+        }
         // WI-20261025-TSYS6 — an operand of a carrier whose own `eq` decides identical operands
-        // too (one that provides no `Eq`) goes to that `eq`, past the field-wise compare and
-        // reflexivity (§8.3: reflexivity is `Eq`'s law, not `PartialEq`'s).
+        // too (one that provides no `Eq`, or provides it under a condition) goes to that `eq`,
+        // past reflexivity (§8.3: reflexivity is `Eq`'s law, not `PartialEq`'s). A composite
+        // holding a `Float` has its own `eq`, a derived member.
         let own_eq_decides = self.has_partial_eq_dispatch()
             && (self.sem_eq_partial_head(&a) || self.sem_eq_partial_head(&b));
-        if !own_eq_decides
-            && (self.value_reaches_partial_carrier(&a) || self.value_reaches_partial_carrier(&b))
+        // (2) Reflexivity — structurally-identical operands, where `Eq`'s law decides them:
+        // at a carrier whose own `eq` decides identical operands too, where every value
+        // inside is of a lawful one (`some(7)`, not `some(nan)`).
+        if (!own_eq_decides || self.value_self_equal_by_law(&a, Some(subst)))
+            && self.values_equal(&a, &b)
         {
-            if let Some(result) = self.composite_field_wise_sem_eq(&a, &b, subst, positive) {
-                return result;
-            }
-            // Not both same-shape composites: fall through to the structural verdict.
-        }
-        // (2) Reflexivity — structurally-identical operands (sound here: no
-        // unshielded partial carrier reaches this point).
-        if !own_eq_decides && self.values_equal(&a, &b) {
             return sem_verdict(true, positive);
         }
         // (3) No carrier overrides eq at all (the common KB): straight to
@@ -9039,109 +9031,59 @@ impl KnowledgeBase {
         sem_verdict(false, positive)
     }
 
-    /// WI-664 — field-wise SEMANTIC equality for two composites whose carrier is a
-    /// derived `NonEq` (field-wise) carrier: decompose to identical shape and AND
-    /// [`Self::sem_eq_values`] over the matching fields, so a nested `Float` follows
-    /// IEEE. `Some(sem_verdict(false, …))` on a shape mismatch; `None` when the
-    /// operands are not both functor-headed composites (caller keeps the structural
-    /// verdict). Requires GROUND operands — a var field can't be IEEE-compared, so
-    /// a non-ground operand suspends (Delay), consistent with the dispatch path.
-    fn composite_field_wise_sem_eq(
+    /// Two tuples' semantic equality: equal iff every pair of components is. A definite
+    /// `Failure` of one pair refutes the whole; an undecided pair does NOT short-circuit —
+    /// a LATER pair may still refute, or may TRUNCATE (WI-628), and returning on the first
+    /// flounder would drop that truncation, making the verdict depend on component order.
+    /// So every pair is read, and the strongest undecidedness is kept: a pending pair
+    /// outranks an undecided (`Unknown`) one, since a later binding can still settle it.
+    /// A faulted pair is returned at once — a refutation reached past it would rest on a
+    /// component nobody compared. `eq` never binds, so reading a later pair after an
+    /// earlier flounder has no effect.
+    fn tuple_components_sem_eq(
         &mut self,
-        a: &Value,
-        b: &Value,
+        pairs: super::eq_derive::TuplePairs,
         subst: &Substitution,
         positive: bool,
-    ) -> Option<BuiltinResult> {
-        // Shared shape-decomposition (mirrors eval's `composite_field_wise_eq`).
-        let pairs = match self.same_shape_child_pairs(a, b) {
-            super::eq_derive::FieldPairs::NotComposite => return None, // keep structural verdict
-            super::eq_derive::FieldPairs::Mismatch => return Some(sem_verdict(false, positive)),
-            super::eq_derive::FieldPairs::Pairs(pairs) => {
-                // A var field can't be IEEE-compared: suspend like the dispatch path.
-                if !self.value_deep_ground(a, subst) || !self.value_deep_ground(b, subst) {
-                    return Some(BuiltinResult::delay());
-                }
-                pairs
-            }
+    ) -> BuiltinResult {
+        let super::eq_derive::TuplePairs::Pairs(pairs) = pairs else {
+            return sem_verdict(false, positive);
         };
-        // Recurse per field; the composite is EQUAL iff every field is. `positive =
-        // true` per field, so a `Failure` means "this field is unequal" — a DEFINITE
-        // unequal verdict that short-circuits regardless of other fields (sound: one
-        // unequal field makes the composite unequal). An UNDECIDED field must NOT
-        // short-circuit: WI-628 — a LATER field may TRUNCATE, and returning on the
-        // first flounder would DROP that truncation, making soundness depend on
-        // field order (a truncated field would read as a mere flounder → the outer
-        // guard decides from an incomplete search). So scan ALL fields, accumulating
-        // the strongest undecidedness: a truncation ANYWHERE ⇒ the composite is
-        // truncated. `eq` never binds, so evaluating a later field after an earlier
-        // flounder has no side effect.
         let mut saw_delay = false;
         let mut saw_truncated = false;
         let mut saw_unknown: Option<UnknownCause> = None;
-        for (ca, cb) in pairs {
-            match self.sem_eq_values(ca, cb, subst, true) {
+        for (x, y) in pairs {
+            let (x, y) = (self.chase_value(x, subst), self.chase_value(y, subst));
+            // A component no binding has reached yet is compared once one has (§8.3: a
+            // compare holding an unbound variable suspends).
+            if self.value_is_flex(&x) || self.value_is_flex(&y) {
+                saw_delay = true;
+                continue;
+            }
+            match self.sem_eq_values_at(x, y, subst, true, None) {
                 BuiltinResult::Success => {}
-                BuiltinResult::Failure => return Some(sem_verdict(false, positive)),
+                BuiltinResult::Failure => return sem_verdict(false, positive),
                 BuiltinResult::Delay { truncated } => {
                     saw_delay = true;
                     saw_truncated |= truncated;
                 }
-                // A field with no ANSWER makes the composite undecided too — recorded
-                // rather than returned, for the same reason `saw_delay` is: a LATER
-                // field may still `Failure`, and a refutation is a real verdict that
-                // must win over an undecided one.
-                //
-                // NOT REACHABLE TODAY, and says so rather than pretending otherwise:
-                // both `Unknown` producers (`step_init`'s open-world guard and its
-                // skolem reconsideration) sit above this call and never inside it. The arm is here because it is the
-                // answer this scan's own rule ("accumulate the strongest
-                // undecidedness") gives — `Unknown` is strictly stronger than `Delay`,
-                // being terminal rather than provisional — and because a `_ =>` here
-                // would silently degrade a future undecided field to "equal".
                 BuiltinResult::Unknown { cause } => saw_unknown = saw_unknown.or(Some(cause)),
-                // A FAULTED FIELD propagates immediately, unlike the two recorded
-                // above: `Delay` and `Unknown` are recorded so a LATER field can still
-                // `Failure` and refute the composite outright, which beats a non-answer.
-                // A fault is different in kind — it says this comparison could not be
-                // performed, so a refutation reached past it would rest on a field
-                // nobody evaluated. Return it and let the caller record it once.
-                BuiltinResult::Error(err) => return Some(BuiltinResult::Error(err)),
+                BuiltinResult::Error(err) => return BuiltinResult::Error(err),
                 // `eq` never binds; a surprise binding can't be trusted as a verdict.
                 BuiltinResult::SuccessWithBindings(_) | BuiltinResult::SuccessSplicing { .. } => {
                     saw_delay = true
                 }
             }
         }
-        // DELAY DOMINATES UNKNOWN — asked FIRST, and the order is the whole rule.
-        //
-        // The first draft had this backwards on the theory that `Unknown` is "strictly
-        // stronger". It is not: a delayed field's operands may still be bound by a
-        // later goal, and `Unknown` claims "no later binding can change this" — false
-        // for the composite the moment one field is merely waiting. So a pending field
-        // outranks an undecided one, and `saw_truncated` rides out on the `Delay` it
-        // was set alongside.
-        //
-        // ONE CONDITION, NOT TWO. An intermediate draft guarded this as
-        // `saw_delay || saw_truncated`, reasoning about `Delay { truncated: true }`
-        // carrying a completeness bit `Unknown` has no slot for. The reasoning is sound
-        // and the second disjunct is DEAD: `saw_truncated` is set only inside the arm
-        // that sets `saw_delay`, so it cannot be true alone. A guard with no reachable
-        // case is a claimed protection, and claiming one is worse than not having it.
-        // Should an `Unknown`-with-truncation producer ever appear, the bit will need a
-        // home on `Unknown` itself — not a disjunct here that could not see it.
-        //
-        // So `Unknown` is the composite's answer only when NOTHING is still pending:
-        // every field either matched or had no answer at all.
         if saw_delay {
-            return Some(BuiltinResult::Delay {
+            return BuiltinResult::Delay {
                 truncated: saw_truncated,
-            });
+            };
         }
         if let Some(cause) = saw_unknown {
-            return Some(BuiltinResult::Unknown { cause });
+            return BuiltinResult::Unknown { cause };
         }
-        Some(sem_verdict(true, positive))
+        sem_verdict(true, positive)
     }
 
     /// WI-616 — the eq-dispatch index probe for one operand: its head functor's
@@ -9528,12 +9470,17 @@ impl KnowledgeBase {
         self.fold_gate(v, None, 0, REACHES_EQ_OVERRIDE)
     }
 
+    /// [`SELF_EQUAL_BY_LAW`] over a value, σ-threaded where a σ is given.
+    pub(crate) fn value_self_equal_by_law(&self, v: &Value, subst: Option<&Substitution>) -> bool {
+        self.fold_gate(v, subst, 0, SELF_EQUAL_BY_LAW)
+    }
+
     /// WI-616 — the σ-threaded reach scan ([`REACHES_EQ_OVERRIDE`]) whose every
     /// carrier (term / entity / tuple / occurrence, WI-685) reads through the ONE
     /// view-generic fold.
     ///
     /// TWO READERS, ONE QUESTION — "would a STRUCTURAL verdict over this value be the
-    /// wrong relation?". [`Self::sem_eq_values`] outcome 5 asks it of an `eq` OPERAND
+    /// wrong relation?". [`Self::sem_eq_values_at`] outcome 5 asks it of an `eq` OPERAND
     /// and suspends; WI-20260827-P1TPE's decline in [`Self::unfold_eq_operand`] asks it
     /// of a case-split ARM'S RESIDUAL, the value that arm's `unify` goal is about to
     /// compare, and declines the whole unfold. Both are the same predicate on the same
@@ -12096,7 +12043,7 @@ impl KnowledgeBase {
             // [`Self::is_unreduced_op_call`] opened with the same match — internally
             // consistent, and the consequence was one level up: on the `Value::Term`
             // and `Value::Entity` carriers a bodied op call was NEITHER REDUCED NOR
-            // DELAYED, so it entered `sem_eq_values`' ladder as DATA and fell out the
+            // DELAYED, so it entered `sem_eq_values_at`' ladder as DATA and fell out the
             // structural tail. MEASURED over `operation dbl(n: Int64) -> Int64 =
             // add(n, n)`, one program with two readings decided only by where the goal
             // was written: `neq(dbl(2), 4)` answered 1 where the truth is 0,
@@ -13098,7 +13045,7 @@ impl KnowledgeBase {
     /// else { return false }`, matching [`Self::reduce_op_value`]'s own carrier match —
     /// internally consistent, and the consequence one level up: on `Value::Term` and
     /// `Value::Entity` a bodied op call was neither REDUCED nor DELAYED, so it entered
-    /// `sem_eq_values`' ladder as DATA. Every arm of that ladder asks about a CARRIER
+    /// `sem_eq_values_at`' ladder as DATA. Every arm of that ladder asks about a CARRIER
     /// (reflexivity, a head `Eq` override, a Float, a partial carrier); an operation
     /// application matches none, so it fell out the structural tail. MEASURED, one
     /// program with two readings decided only by where the goal was written (rule body
@@ -14287,15 +14234,15 @@ impl KnowledgeBase {
         };
         // WI-20260827-P1TPE — the OTHER half of the per-arm decline below, asked ONCE:
         // it does not depend on `arm`, and inside the loop it re-folded `other` per arm.
-        // `has_eq_dispatch_entries` first, mirroring `sem_eq_values` outcome 3 — on a KB
+        // `has_eq_dispatch_entries` first, mirroring `sem_eq_values_at` outcome 3 — on a KB
         // where no carrier overrides `eq` this is the only question that can be answered
         // without a fold, and it is the common KB.
         let other_can_meet_an_override =
             self.has_eq_dispatch_entries() && self.value_reaches_eq_override(&other, subst);
-        // WI-664's leg of the same question, asked here too: an UNSHIELDED partial (Float)
-        // carrier is the OTHER way a structural verdict is the wrong relation, and
-        // `sem_eq_values` reaches for it one step BEFORE the override legs.
-        let other_reaches_partial_carrier = self.value_reaches_partial_carrier(&other);
+        // The `Float` leg of the same question: a structural verdict reads `nan` as equal to
+        // itself, the OTHER way it is the wrong relation. A composite holding a `Float` has
+        // an `eq` of its own (a derived member) and is the override legs'.
+        let other_reaches_float = self.value_reaches_float(&other);
         let mut cands = Vec::with_capacity(arms.len());
         for arm in arms {
             let mut rename: Vec<(Symbol, VarId)> = Vec::new();
@@ -14346,19 +14293,16 @@ impl KnowledgeBase {
             // each went 2 DEFINITE (a complete answer set) to a suspension. Found by
             // /code-review on the residual-only version.
             //
-            // AND THE SAME QUESTION HAS A THIRD LEG, which `sem_eq_values` asks FIRST:
-            // WI-664's unshielded partial (`Float`) carrier, where a structural verdict is
+            // AND THE SAME QUESTION HAS A THIRD LEG: a `Float`, where a structural verdict is
             // wrong in the OPPOSITE and worse direction — a definite PROOF rather than a
             // dropped solution. MEASURED before this leg, ground vs unground again:
             //   `C.pick(red()) = p(f: nan)`  0 total   correctly REFUTED (IEEE nan != nan)
             //   `C.pick(?c)    = p(f: nan)`  1 DEFINITE `?c = red`         WRONG
             // The per-arm `unify` reads `nan` as reflexive (`OrderedFloat`), so the arm
             // succeeds and the goal is PROVED of a relation that is false. Found by
-            // /code-review; it is carrier-level, exactly as `sem_eq_values`'s own
-            // field-wise trigger is, so it also declines a Float compare where structural
-            // and IEEE happen to AGREE (`C.fplain(?c) = p(f: 2.5)`, 1 DEFINITE → suspension).
-            // That is the same over-approximation the sibling reader already makes, taken
-            // here so the two cannot disagree about which values need the semantic path.
+            // /code-review. It is read off the values, so it also declines a Float compare
+            // where structural and IEEE happen to AGREE (`C.fplain(?c) = p(f: 2.5)`, 1
+            // DEFINITE → suspension).
             //
             // WHAT IT DOES NOT COVER, and this is the handover to WI-20260827-XBHX3
             // rather than a gap left open: an OTHER that is an UN-REDUCED CALL reduces to
@@ -14383,7 +14327,7 @@ impl KnowledgeBase {
             // incomplete DEFINITE set for a suspension that omits nothing.
             let residual = Value::Node(Rc::clone(&result_occ));
             if (other_can_meet_an_override && self.value_reaches_eq_override(&residual, subst))
-                || (other_reaches_partial_carrier && self.value_reaches_partial_carrier(&residual))
+                || (other_reaches_float && self.value_reaches_float(&residual))
             {
                 return None;
             }

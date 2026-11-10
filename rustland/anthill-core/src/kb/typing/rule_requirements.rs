@@ -2976,6 +2976,46 @@ fn carrier_self_provides_eq(kb: &KnowledgeBase, carrier: Symbol, syms: &EqFamily
             .is_some_and(|pe| sort_provides(kb, carrier, pe))
 }
 
+/// Which of `sorts` declare an `eq` of their own for their own provision and leave it
+/// unimplemented (`Map`'s) — [`carrier_has_unbacked_eq_override`], the reading
+/// [`check_eq_override_backing`] refuses a comparison by. The equality derivation reads a
+/// field of such a sort as one nothing decides. The equational-definition scan the
+/// predicate needs is made only when a sort has an `eq` with no body and no host mapping.
+pub(crate) fn sorts_with_unbacked_eq(
+    kb: &KnowledgeBase,
+    sorts: &std::collections::HashSet<Symbol>,
+) -> std::collections::HashSet<Symbol> {
+    let (Some(eq_spec), Some(eq_short)) = (
+        kb.try_resolve_symbol("anthill.prelude.PartialEq.eq"),
+        kb.symbols.lookup("eq"),
+    ) else {
+        return std::collections::HashSet::new();
+    };
+    let syms = EqFamilySyms {
+        eq_spec,
+        eq_short,
+        neq_spec: None,
+        partial_eq_sort: impl_parent_of_op(kb, eq_spec),
+        eq_sort: kb.try_resolve_symbol("anthill.prelude.Eq"),
+    };
+    let suspects: Vec<Symbol> = sorts
+        .iter()
+        .copied()
+        .filter(|&s| {
+            carrier_own_op(kb, s, eq_spec, eq_short)
+                .is_some_and(|own| !op_has_runnable_body(kb, own) && !kb.is_host_mapped_op(own))
+        })
+        .collect();
+    if suspects.is_empty() {
+        return std::collections::HashSet::new();
+    }
+    let eq_defined = collect_eq_defined_ops(kb);
+    suspects
+        .into_iter()
+        .filter(|&s| carrier_has_unbacked_eq_override(kb, s, &syms, &eq_defined))
+        .collect()
+}
+
 /// WI-650 — is rule `r` a GENERAL clause defining `own`'s equality — head
 /// `own(a, b, …)` whose positional args are ALL variables, so it matches any
 /// operands (`Set.eq`'s `eq(?a, ?b) :- subset(…)`)? A compound-headed rule

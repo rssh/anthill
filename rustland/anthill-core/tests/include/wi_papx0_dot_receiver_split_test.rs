@@ -234,9 +234,10 @@ end
     );
 }
 
-/// The stdlib's own case: `Type` provides `Eq`, `Box` declares no `eq`. `t.eq(u)` is
-/// refused, as the written `Box[V = Int64].eq(u)` is, and the named call compares the
-/// two type values.
+/// The stdlib's own case: `Type` provides `Eq`, and `Box`, a composite, declares the `eq`
+/// its equality derives (kernel-language §8.3). The receiver denotes the sort, so `t.eq(u)`
+/// is the sort's — `Box.eq` given one argument, refused — as the written `Box[V =
+/// Int64].eq(u)` is, and the named call compares the two type values.
 #[test]
 fn eq_is_refused_on_a_denoting_receiver_and_the_named_call_answers() {
     let rendered = refusal(
@@ -245,8 +246,7 @@ fn eq_is_refused_on_a_denoting_receiver_and_the_named_call_answers() {
         "  operation go() -> Bool =\n    let t = Box[V = Int64]\n    let u = Box[V = Int64]\n    t.eq(u)",
     );
     assert!(
-        rendered.contains("`Box` declares no `eq`")
-            && rendered.contains("anthill.prelude.PartialEq.eq(…)"),
+        rendered.contains("the parameter list `test.papx0eq.Box.eq` declares"),
         "{rendered}"
     );
     // The written spelling refuses the same program.

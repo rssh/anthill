@@ -1534,7 +1534,8 @@ fn builtin_neq(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> 
 ///    (which would read `nan == nan` through `OrderedFloat`).
 /// 2. **Reflexivity** — structurally identical operands are equal under any
 ///    lawful `Eq`; the pre-WI-616 answer, and the hot path. Not for an operand of a
-///    carrier whose own `eq` provides no `Eq` (WI-20261025-TSYS6), which goes to step 4.
+///    carrier whose own `eq` provides no `Eq`, or provides it under a condition
+///    (WI-20261025-TSYS6), which goes to step 4.
 /// 3. **No override anywhere** — a KB with no eq-dispatch entries takes the
 ///    structural verdict directly (one flag read; the pre-WI-616 behaviour).
 /// 4. **Head-carrier override** — an operand headed by an eq-overriding carrier
@@ -1556,32 +1557,36 @@ fn semantic_equal(i: &mut Interpreter, a: &Value, b: &Value) -> Result<bool, Eva
     if let Some(v) = float_ieee_eq(i, a, b) {
         return Ok(v);
     }
-    // WI-664: a composite reaching an UNSHIELDED partial (Float) carrier compares
-    // FIELD-WISE, not by the structural reflexivity shortcut below (which would
-    // launder a nested NaN): `eq(Point(nan,_), Point(nan,_)) = eq(nan,nan) ∧ … =
-    // false`, matching the field-wise C++ `operator==`. A carrier with its own `eq`
-    // (`TotalFloat`/`Set`/`Map`) is NOT a partial carrier for that walk, so its
-    // structural / dispatch equality is untouched (`eq(TotalFloat(nan), …)` stays
-    // true). Comes BEFORE the reflexivity shortcut. One of them that provides no `Eq`
-    // is the head gate's below, and only at the head: buried in a carrier with no `eq`
-    // of its own it is still read as a boundary, and reflexivity answers at the top.
+    // A tuple has no `eq` member: its components are compared, each by these steps — so
+    // `(nan, 1)` is apart from itself and `(some(pt(1, 2)), 0)` reaches `Option`'s `eq`.
+    // The resolver's twin is in `sem_eq_values_at`.
+    if let Some(pairs) = i.kb().tuple_component_pairs(a, b) {
+        if i.kb().value_self_equal_by_law(a, None)
+            && crate::kb::term_view::views_structurally_equal(i.kb(), a, b)
+        {
+            return Ok(true);
+        }
+        let crate::kb::eq_derive::TuplePairs::Pairs(pairs) = pairs else {
+            return Ok(false);
+        };
+        for (x, y) in &pairs {
+            if !semantic_equal(i, x, y)? {
+                return Ok(false);
+            }
+        }
+        return Ok(true);
+    }
     // WI-20261025-TSYS6 — an operand of a carrier whose own `eq` decides identical operands
-    // too (one that provides no `Eq`) goes to that `eq`, past the field-wise compare and
-    // reflexivity (§8.3: reflexivity is `Eq`'s law, not `PartialEq`'s). The resolver's twin
-    // is in `sem_eq_values`.
+    // too (one that provides no `Eq`, or provides it under a condition) goes to that `eq`,
+    // past reflexivity (§8.3: reflexivity is `Eq`'s law, not `PartialEq`'s). A composite
+    // holding a `Float` has its own `eq`, a derived member. The resolver's twin is in
+    // `sem_eq_values_at`.
     let own_eq_decides = i.kb().has_partial_eq_dispatch()
         && (i.kb().sem_eq_partial_head(a) || i.kb().sem_eq_partial_head(b));
-    if !own_eq_decides
-        && (i.kb().value_reaches_partial_carrier(a) || i.kb().value_reaches_partial_carrier(b))
+    // 2. Reflexivity, where `Eq`'s law decides identical operands (the resolver's twin).
+    if (!own_eq_decides || i.kb().value_self_equal_by_law(a, None))
+        && crate::kb::term_view::views_structurally_equal(i.kb(), a, b)
     {
-        if let Some(v) = composite_field_wise_eq(i, a, b)? {
-            return Ok(v);
-        }
-        // Not both same-shape composites (e.g. a bare Float vs an entity — a type
-        // mismatch the structural verdict answers `false`): fall through.
-    }
-    // 2. Reflexivity.
-    if !own_eq_decides && crate::kb::term_view::views_structurally_equal(i.kb(), a, b) {
         return Ok(true);
     }
     // 3. No carrier overrides eq at all (the common KB): structural verdict.
@@ -1766,33 +1771,6 @@ fn semantic_equal(i: &mut Interpreter, a: &Value, b: &Value) -> Result<bool, Eva
         });
     }
     Ok(false)
-}
-
-/// WI-664 — field-wise SEMANTIC equality for two composites whose carrier is a
-/// derived `NonEq` (field-wise) carrier. Decomposes both to identical shape and
-/// ANDs `semantic_equal` over the matching fields, so a nested `Float` follows
-/// IEEE (`eq(Point(nan,_), Point(nan,_)) → eq(nan,nan) ∧ … = false`) exactly as
-/// the field-wise C++ `operator==`. Returns `Some(false)` on any shape mismatch
-/// (different functor / arity / keys), and `None` when the operands are not both
-/// functor-headed composites (the caller keeps the structural verdict).
-fn composite_field_wise_eq(
-    i: &mut Interpreter,
-    a: &Value,
-    b: &Value,
-) -> Result<Option<bool>, EvalError> {
-    use crate::kb::eq_derive::FieldPairs;
-    // Shared shape-decomposition (releases the kb borrow before the recursion).
-    let pairs = match i.kb().same_shape_child_pairs(a, b) {
-        FieldPairs::NotComposite => return Ok(None), // caller keeps the structural verdict
-        FieldPairs::Mismatch => return Ok(Some(false)), // shape mismatch ⇒ not equal
-        FieldPairs::Pairs(pairs) => pairs,
-    };
-    for (ca, cb) in &pairs {
-        if !semantic_equal(i, ca, cb)? {
-            return Ok(Some(false));
-        }
-    }
-    Ok(Some(true))
 }
 
 /// Total order on primitive scalars. Floats use `total_cmp` so NaN has a

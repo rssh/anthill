@@ -224,7 +224,11 @@ fn a_later_load_types_its_own_bodies_and_no_sealed_one() {
         assert!(ops > 100, "the oracle types every sealed operation body; typed {ops}");
         return;
     }
-    assert_eq!(ops, 1, "the later load declares ONE operation with a body, and types that one");
+    assert_eq!(
+        ops, 2,
+        "the later load types its own bodies: the ONE operation it declares, and the `eq` its \
+         composite `Item` derives (kernel-language §8.3)"
+    );
 
     let mut unsealed = crate::common::load_unsealed(&[LIB_DESC]);
     assert_eq!(unsealed.sealed_census(), (0, 0, 0), "the fixture: nothing is sealed");

@@ -400,9 +400,9 @@ fn a_member_the_sort_does_not_declare_is_refused_about_the_sort() {
             vec!["Box.nosuch", "no such member"],
         ),
         (
-            "a3fy2eqmember",
-            "  rule r(1) :- (Box).eq(Box)",
-            vec!["`Box` declares no `eq`", "anthill.prelude.PartialEq.eq(…)"],
+            "a3fy2typemember",
+            "  rule r(1) :- (Box).lub(Box)",
+            vec!["`Box` declares no `lub`", "anthill.prelude.Lattice.lub(…)"],
         ),
     ] {
         let rendered = refusal(ns, "", body);

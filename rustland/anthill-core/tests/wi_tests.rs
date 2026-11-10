@@ -2003,6 +2003,8 @@ mod wi_d5wfq_default_frame_test;
 mod wi_sm910_ordering_dispatch_test;
 #[path = "include/wi_5bp39_scalar_eq_members_test.rs"]
 mod wi_5bp39_scalar_eq_members_test;
+#[path = "include/wi_fem1j_derived_composite_eq_test.rs"]
+mod wi_fem1j_derived_composite_eq_test;
 #[path = "include/wi_shed7_fillable_test.rs"]
 mod wi_shed7_fillable_test;
 #[path = "include/wi_shed7_reads_wait_test.rs"]

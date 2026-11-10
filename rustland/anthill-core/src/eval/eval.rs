@@ -3093,6 +3093,7 @@ impl Interpreter {
                 crate::kb::EqLaw::Never => false,
                 crate::kb::EqLaw::Always => true,
                 crate::kb::EqLaw::AtItsCarriers => self.kb.value_of_lawful_carrier_of(a, target),
+                crate::kb::EqLaw::ByItsFields => self.kb.value_self_equal_by_law(a, None),
             };
             if law && crate::kb::term_view::views_structurally_equal(&self.kb, a, b) {
                 return Ok(StepOutcome::Deliver(Value::Bool(true)));

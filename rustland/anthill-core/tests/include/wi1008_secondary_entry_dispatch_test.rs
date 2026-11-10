@@ -360,9 +360,11 @@ fn sort_info_operations(kb: &KnowledgeBase, sort_qn: &str) -> Vec<String> {
 #[test]
 fn sort_info_lists_the_secondary_entrys_operation() {
     let mut kb = crate::common::load_kb_with(&secondary_entry_fixture());
+    // `eq` is the member `Rec`'s derived equality gives it (kernel-language §8.3), merged
+    // after the program's own entries.
     assert_eq!(
         sort_info_operations(&kb, "test.wi1008.Rec"),
-        vec!["test.wi1008.Rec.show".to_string()],
+        vec!["test.wi1008.Rec.show".to_string(), "test.wi1008.Rec.eq".to_string()],
         "a secondary entry's operation is a member of the sort (059 R2)"
     );
 
@@ -439,7 +441,7 @@ fn rerunning_the_pass_rewrites_nothing() {
     // rather than a pass that never fired.
     assert_eq!(
         sort_info_operations(&kb, "test.wi1008.Rec"),
-        vec!["test.wi1008.Rec.show".to_string()]
+        vec!["test.wi1008.Rec.show".to_string(), "test.wi1008.Rec.eq".to_string()]
     );
 
     anthill_core::kb::load::resolve_instantiations(&mut kb);

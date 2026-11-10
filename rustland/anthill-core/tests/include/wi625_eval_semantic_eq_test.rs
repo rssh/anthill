@@ -181,31 +181,22 @@ fn eval_rule_backed_set_eq_runs_via_bridge() {
     call2_undecided(&mut i, SET_EQ, c, d);
 }
 
-// ── buried override under non-carrier structure: eval answers STRUCTURALLY
-// (non-regressing), NOT a hard error. Full semantic descent is a follow-up. ──
+// ── an override inside a composite: the composite's derived `eq` reaches it ──
 
 #[test]
-fn eval_eq_buried_override_stays_structural_not_error() {
-    // `some({1,2})` vs `some({2,1})`: the head (Option.some) has no eq override
-    // but a membership-equal Set is buried inside. The resolver SUSPENDS such a
-    // compare; eval cannot, and — crucially — must NOT hard-error (that would
-    // break any program comparing a compound that embeds a set). It falls back
-    // to the structural verdict, exactly as it did before WI-625.
+fn eval_eq_reaches_an_override_inside_a_composite() {
+    // `some({1,2})` vs `some({2,1})`: `Option`'s derived `eq` compares the element by the
+    // element type's `eq`, so the comparison is `Set.eq`'s — undecided today, as a direct
+    // `Set.eq` call is (`eval_rule_backed_set_eq_runs_via_bridge`). Before the derived
+    // members (WI-20261109-FEM1J) eval answered the structural `false`, which a
+    // membership-equal pair of sets made wrong.
     let mut i = interp();
     let s12 = set_term(&mut i, &[1, 2]);
     let s21 = set_term(&mut i, &[2, 1]);
     let some1 = Value::term(fn_term(&mut i, "anthill.prelude.Option.some", &[s12]));
     let some2 = Value::term(fn_term(&mut i, "anthill.prelude.Option.some", &[s21]));
-    // Must return a Bool (not Err); structural spelling differs ⇒ false.
-    let r = i
-        .call(EQ, &[some1.clone(), some2.clone()])
-        .unwrap_or_else(|e| panic!("buried-override eq must return a Bool, not error: {e:?}"));
-    assert_eq!(
-        r.literal_bool(i.kb()),
-        Some(false),
-        "buried override falls back to structural (false)"
-    );
-    // Identical spellings still hold by reflexivity.
+    call2_undecided(&mut i, EQ, some1, some2);
+    // Identical spellings still hold, by `Eq`'s law: `Set` provides `Eq`.
     let s12b = set_term(&mut i, &[1, 2]);
     let s12c = set_term(&mut i, &[1, 2]);
     let same1 = Value::term(fn_term(&mut i, "anthill.prelude.Option.some", &[s12b]));

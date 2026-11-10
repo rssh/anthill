@@ -238,10 +238,11 @@ end
     assert!(!call_bool(&mut interp, &format!("{NS}.st.apart"), &[]));
 }
 
-/// A composite with no `eq` of its own reaches the spec operation, which declares no
-/// implementation: its operands are compared by their values, in an operation body and from
-/// a host call, as before (3 of 4 gives such a composite its member). FAILS with the
-/// interpreter's route out: `OperationBodyMissing` for `PartialEq.eq`.
+/// A composite that writes no `eq` is given the one its equality derives (3 of 4,
+/// WI-20261109-FEM1J), and a typed call is pinned to it. A host call reaches the spec
+/// operation, which declares no implementation: its operands are compared by their values,
+/// which reach the member through the equality index. FAILS with the interpreter's route
+/// out: `OperationBodyMissing` for `PartialEq.eq`, at the host call.
 #[test]
 fn a_composite_with_no_eq_of_its_own_compares_by_value() {
     let src = format!(
@@ -259,8 +260,8 @@ end
     let mut interp = interp_for(&src);
     assert_eq!(
         decided_in_op(interp.kb(), &format!("{NS}.bx.same")),
-        vec![None],
-        "no member: the call is left to the spec operation"
+        pinned(&format!("{NS}.bx.Cell.eq")),
+        "the derived member"
     );
     assert!(call_bool(&mut interp, &format!("{NS}.bx.same"), &[]));
     assert!(!call_bool(&mut interp, &format!("{NS}.bx.apart"), &[]));

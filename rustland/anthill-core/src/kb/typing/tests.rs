@@ -4258,6 +4258,19 @@ end
             ops.len()
         );
         for &op in &ops {
+            // A composite's derived `eq` member is the one library operation of a
+            // kind-hidden sort (a top-level `entity X(…)` is its own sort): there the
+            // fixed gate answers the sort, which is what the member is typed in, and the
+            // written-keyword spelling answers nothing.
+            if kb.is_derived_eq_member(op) {
+                assert_eq!(
+                    impl_parent_sort_of_op(&kb, op),
+                    impl_parent_of_op(&kb, op),
+                    "`{}`: a derived member is its sort's",
+                    kb.qualified_name_of(op),
+                );
+                continue;
+            }
             assert_eq!(
                 impl_parent_of_op(&kb, op).filter(|p| written_keyword(&kb, *p) == Some("Sort")),
                 impl_parent_sort_of_op(&kb, op),

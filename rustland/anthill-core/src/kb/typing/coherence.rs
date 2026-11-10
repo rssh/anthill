@@ -1922,6 +1922,11 @@ pub fn check_provider_operations(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
             if answered_by_its_dictionary(kb, spec_op) {
                 continue;
             }
+            // A composite's derived `eq` is its `PartialEq` provision's member, not an
+            // operation the sort read as a spec asks of its providers.
+            if kb.is_derived_eq_member(spec_op) {
+                continue;
+            }
             let op_short = kb
                 .qualified_name_of(spec_op)
                 .rsplit('.')

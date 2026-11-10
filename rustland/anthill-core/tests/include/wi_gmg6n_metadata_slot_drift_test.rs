@@ -143,19 +143,21 @@ fn an_operations_effect_row_is_readable_from_anthill() {
     // declaration grew `type_params` no goal could ask it. Zero solutions before the fix.
     let mut kb = subject_kb();
     let rows = crate::common::definite_unary(&mut kb, "probe.subject_row");
-    assert_eq!(
-        rows.len(),
-        1,
-        "probe.Thing declares exactly one operation, so exactly one row is expected; got {rows:?}"
-    );
-    let labels = names_in(&kb, &rows[0]);
+    // `act`, which `probe.Thing` declares, and the `eq` its derived equality gives it
+    // (kernel-language §8.3), whose row is empty.
+    let mut labels: Vec<Vec<String>> = rows.iter().map(|r| names_in(&kb, r)).collect();
+    labels.sort();
     assert_eq!(
         labels,
         vec![
-            "anthill.prelude.External".to_string(),
-            "anthill.prelude.Error".to_string()
+            Vec::new(),
+            vec![
+                "anthill.prelude.External".to_string(),
+                "anthill.prelude.Error".to_string()
+            ],
         ],
-        "the declared row {{External, Error}} must come back, in declaration order"
+        "the declared row {{External, Error}} must come back, in declaration order, beside \
+         the derived `eq`'s empty one"
     );
 }
 

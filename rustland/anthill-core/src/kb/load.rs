@@ -10171,6 +10171,10 @@ pub(crate) struct LastLoad {
     /// left it and not a flag: what is asserted between there and a seal — a pass placed
     /// below the check, a harness — is above this, and a later load reads it.
     pub(crate) provisions_checked: Option<CheckedProvisions>,
+    /// The source holding the `eq` members its derivation wrote (`load_derived_eq_members`),
+    /// registered after its own files: it is the load's as a whole, and a seal of every
+    /// file the load was handed holds it too.
+    pub(crate) derived_source: Option<SourceId>,
 }
 
 /// WI-20261011-A3NND — the KB as a load's provision check left it: every provision in a
@@ -10340,7 +10344,14 @@ pub fn seal_declarations(kb: &mut KnowledgeBase) {
 /// which only the library is to be sealed.
 pub fn seal_declarations_of(kb: &mut KnowledgeBase, first_source: usize, library_files: usize) {
     let library = first_source..first_source + library_files;
-    seal_declarations_where(kb, |source| library.contains(&source.index()));
+    // The derived members' source is of every file of the load: the library's when the
+    // library is all the load was handed.
+    let derived = kb.last_load.derived_source;
+    let written = kb.source_count() - first_source - usize::from(derived.is_some());
+    let derived_is_the_librarys = library_files == written;
+    seal_declarations_where(kb, |source| {
+        library.contains(&source.index()) || (derived_is_the_librarys && Some(source) == derived)
+    });
 }
 
 fn seal_declarations_where(kb: &mut KnowledgeBase, of_the_library: impl Fn(SourceId) -> bool) {
@@ -18373,6 +18384,125 @@ fn refused_constraint_guards(kb: &KnowledgeBase, errors: &[LoadError]) -> Vec<su
 }
 
 #[allow(unused_assignments)]
+/// The `eq` members of the composites whose `PartialEq` this load derived
+/// (`eq_derive::derived_eq_member_source`), loaded in this load: the derivation writes
+/// each as the text of a secondary entry of its sort, and the text is scanned and
+/// loaded as a file of this load is, before the typer, which types the members with
+/// the rest.
+///
+/// After the classification, because which composites derive is decided there, and
+/// the scan of the load's own files is over by then. So the text gets a scan of its
+/// own, and what a scan clears for the load's later checks — the declaration sites, the
+/// scopes each file opens, the alias and type declarations the seal reads — is kept,
+/// with the text's own added. The text declares no type, alias, import, rule or fact:
+/// one operation per entry.
+///
+/// Each member is placed in its provision's `where` block as the loader reads one, by
+/// its `provision`. The grammar admits that block only in a sort body, and the member
+/// is written where the derivation can write it, in an entry of the sort.
+fn load_derived_eq_members(
+    kb: &mut KnowledgeBase,
+    carriers: &[Symbol],
+    resolver: &dyn SourceResolver,
+    loaded_paths: &mut HashSet<String>,
+    warnings: &mut Vec<LoadWarning>,
+    derived_source: &mut Option<std::sync::Arc<str>>,
+) -> Vec<LoadError> {
+    let (text, carriers) = match super::eq_derive::derived_eq_member_source(kb, carriers) {
+        Ok(None) => return Vec::new(),
+        Ok(Some((text, carriers))) => (text, carriers),
+        Err(why) => {
+            return vec![LoadError::Other {
+                message: format!("the derived `eq` members could not be written: {why}"),
+            }]
+        }
+    };
+    let mut parsed = match crate::parse::parse(&text) {
+        Ok(parsed) => parsed,
+        Err(errors) => {
+            return vec![LoadError::Other {
+                message: format!(
+                    "the derived `eq` members do not parse: {errors:?}\n{text}"
+                ),
+            }]
+        }
+    };
+    // `..anthill.prelude.PartialEq`, in the text's own symbols.
+    let spec = TypeExpr::Simple(Name {
+        segments: ["..anthill", "prelude", "PartialEq"]
+            .into_iter()
+            .map(|s| parsed.symbols.intern(s))
+            .collect(),
+        span: crate::span::Span::default(),
+    });
+    fn place_in_provision(items: &mut [Item], spec: &TypeExpr) {
+        for item in items {
+            match item {
+                Item::Namespace(ns) => place_in_provision(&mut ns.items, spec),
+                Item::Operation(o) => o.provision = Some(spec.clone()),
+                _ => unreachable!("a derived entry holds its `eq` alone"),
+            }
+        }
+    }
+    place_in_provision(&mut parsed.items, &spec);
+    *derived_source = Some(parsed.source.clone());
+    let source_id =
+        kb.sources
+            .register_file("<derived eq members>".to_string(), parsed.source.clone(), None);
+    kb.last_load.derived_source = Some(source_id);
+    let files = [&parsed];
+    let kept_sites = std::mem::take(&mut kb.decl_sites);
+    let kept_aliases = std::mem::take(&mut kb.scan_alias_decls);
+    let kept_scope_files = std::mem::take(&mut kb.scope_text_files);
+    let kept_types = std::mem::take(&mut kb.scan_type_decls);
+    let mut errors = scan_definitions_with_sources(
+        kb,
+        &files,
+        &[source_id],
+        ImportAttribution::PerFile,
+        SourceRole::Program,
+    );
+    let mut sites = kept_sites;
+    sites.append(&mut kb.decl_sites);
+    kb.decl_sites = sites;
+    debug_assert!(kb.scan_alias_decls.is_empty() && kb.scan_type_decls.is_empty());
+    kb.scan_alias_decls = kept_aliases;
+    kb.scan_type_decls = kept_types;
+    let mut scope_files = kept_scope_files;
+    for (scope, files) in std::mem::take(&mut kb.scope_text_files) {
+        let entry = scope_files.entry(scope).or_default();
+        for f in files {
+            if !entry.contains(&f) {
+                entry.push(f);
+            }
+        }
+    }
+    kb.scope_text_files = scope_files;
+    kb.symbols.set_asking_file(Some(source_id));
+    match load_with_visited(kb, &parsed, resolver, loaded_paths, source_id) {
+        Ok(result) => warnings.extend(result.warnings),
+        Err(refused) => errors.extend(refused.errors),
+    }
+    kb.symbols.set_asking_file(None);
+    // A secondary entry's operations join its sort's `SortInfo` here, as the load's own
+    // entries joined theirs in `resolve_instantiations`, which has run: the sort-ops
+    // table is built off that record.
+    merge_secondary_entry_operations(kb);
+    for &carrier in &carriers {
+        let member = format!("{}.eq", kb.qualified_name_of(carrier));
+        match kb.try_resolve_symbol(&member) {
+            Some(op) => {
+                let canonical = kb.canonical_sym(op);
+                kb.derived_eq_members.extend([op, canonical]);
+            }
+            None => errors.push(LoadError::Other {
+                message: format!("the derived `eq` member `{member}` was written and not declared"),
+            }),
+        }
+    }
+    errors
+}
+
 fn load_phase_inner(
     kb: &mut KnowledgeBase,
     files: &[&ParsedFile],
@@ -18395,6 +18525,7 @@ fn load_phase_inner(
         ran_typer: options.run_typer,
         first_source: kb.source_count(),
         provisions_checked: None,
+        derived_source: None,
     };
     kb.sort_alias_index = None;
     // WI-1049 — same reset, and it is what makes the duplicate-operation refusal
@@ -18656,7 +18787,10 @@ fn load_phase_inner(
     // it refuses two distinct `eq` impls for one carrier, because it has no later
     // site to complain from — equality dispatches from unification (058 §4.9).
     // Load-blocking.
-    all_errors.extend(build_eq_dispatch_index(kb));
+    let eq_index_refusals = build_eq_dispatch_index(kb);
+    // What the rebuild over the derived members must say again (see below).
+    let eq_index_said: Vec<String> = eq_index_refusals.iter().map(|e| e.to_string()).collect();
+    all_errors.extend(eq_index_refusals);
     mark!("build_eq_dispatch_index");
     // WI-20260909-M8QWJ — a body-less operation nothing can ever run, at its declaration.
     // After the host mappings and the `eq` dispatch index, two of the routes it reads, and
@@ -18693,10 +18827,26 @@ fn load_phase_inner(
     // before `eq_derive` re-runs. Do not read the split as "below the check ⇒ exempt"
     // and delete the mark — that re-opens a five-carrier phase-2 refusal.
     let eq_classification = super::eq_derive::classify(kb);
-    super::eq_derive::derive_total_eq(kb, &eq_classification);
+    let mut given_partial_eq = super::eq_derive::derive_total_eq(kb, &eq_classification);
     // WI-20260918-CKD4J — the CONDITIONAL rows, after the total ones so a composite
     // with a field of a derived-total sort reads that row as a provision.
-    super::eq_derive::derive_conditional_eq(kb, &eq_classification);
+    given_partial_eq.extend(super::eq_derive::derive_conditional_eq(kb, &eq_classification));
+    // The `eq` member of each composite given `PartialEq` above, before the typer, which
+    // types the members and pins every call at the composite to its member. Not over a
+    // load already refused: its field types are what the refusals are about, and a member
+    // over them would report them again.
+    let mut derived_source: Option<std::sync::Arc<str>> = None;
+    if all_errors.is_empty() {
+        all_errors.extend(load_derived_eq_members(
+            kb,
+            &given_partial_eq,
+            resolver,
+            &mut loaded_paths,
+            &mut all_warnings,
+            &mut derived_source,
+        ));
+    }
+    mark!("load_derived_eq_members");
     // WI-20260919-HXGXF — BEFORE THE TYPER, for `derive_total_eq`'s reason and measured
     // the same way. The typer RESOLVES a call's `requires TypeValue[…]` against the
     // provider relation, so a row asserted after it does not exist for the only reader
@@ -18765,6 +18915,17 @@ fn load_phase_inner(
     // Its OWN bucket: this is a full sort-ops pass, and folding it into the derivation's
     // mark would attribute the table build to the classification.
     mark!("build_sort_ops_table (derived-provision delta)");
+    // The derived `eq` members (`load_derived_eq_members`) are their carriers' own `eq`s,
+    // in the table since the delta above: the index the classification read was built
+    // before they were loaded. A derived member is the `eq` of a carrier that had none and
+    // adds no refusal; the passes between the builds may have added a supplier (a forwarded
+    // provision), and what the rebuild refuses that the first did not is reported here.
+    all_errors.extend(
+        build_eq_dispatch_index(kb)
+            .into_iter()
+            .filter(|e| !eq_index_said.contains(&e.to_string())),
+    );
+    mark!("build_eq_dispatch_index (derived members)");
     // WI-879 — the RESOLVER's builtin registry, derived from the `operation_map` facts.
     // HERE and not beside `build_host_op_mappings`: the derivation reads DIRECT provision
     // rows, and `Int64 provides Divisible` / `EuclideanDomain` exists only once
@@ -19028,10 +19189,8 @@ fn load_phase_inner(
     let sort_uses = kb.take_rule_sort_uses();
     all_errors.extend(super::typing::check_rule_sort_uses(kb, &sort_uses));
     mark!("check_rule_sort_uses");
-    // WI-664: derive composite Eq/NonEq classification. Builds the field-wise-eq
-    // carrier set (`field_wise_noneq_carriers`, read by the resolver and
-    // interpreter to compare a Float-containing composite FIELD-WISE) and asserts
-    // the derived `NonEq`+`PartialEq` provision facts for each such composite.
+    // WI-664: the `NonEq` half of the composite equality classification — the derived
+    // `NonEq` of each Float-containing composite whose `PartialEq` was derived.
     // Placed AFTER the provider-coverage checks — a derived `NonEq`'s `nonEqRefl`
     // witness is a propagated classification, not a hand-declared op held to
     // backing — and BEFORE `check_eq_noneq_exclusive`, so a user `provides
@@ -19309,7 +19468,10 @@ fn load_phase_inner(
         // `dedup_rendered_load_errors` for why the channel owns this and the per-file
         // `dedup_load_errors` cannot.
         kb.note_refused_load(phase_first_rule..kb.rules.len());
-        Err(dedup_rendered_load_errors(all_errors))
+        Err(dedup_rendered_load_errors(drop_derived_member_cascades(
+            all_errors,
+            derived_source.as_ref(),
+        )))
     }
 }
 
@@ -20006,6 +20168,26 @@ fn dedup_load_errors(errors: Vec<LoadError>) -> Vec<LoadError> {
 /// than through a load phase. Left alone deliberately, and not because it is out of
 /// reach: it is ONE pass over ONE file, so it has no two producers to pair — the shape
 /// this exists for cannot arise there, and no duplicate from it appears in the census.
+/// A refusal raised inside a derived `eq` member (`load_derived_eq_members`) beside one
+/// raised elsewhere is that one again: the member reads the composite's field types, and
+/// what is wrong with a field type is refused where the program writes it. Alone, it is the
+/// derivation's own defect, and it is kept.
+fn drop_derived_member_cascades(
+    errors: Vec<LoadError>,
+    derived_source: Option<&std::sync::Arc<str>>,
+) -> Vec<LoadError> {
+    let Some(derived) = derived_source else {
+        return errors;
+    };
+    let in_member = |e: &LoadError| {
+        matches!(e, LoadError::Located { source, .. } if std::sync::Arc::ptr_eq(source, derived))
+    };
+    if errors.iter().all(in_member) {
+        return errors;
+    }
+    errors.into_iter().filter(|e| !in_member(e)).collect()
+}
+
 fn dedup_rendered_load_errors(errors: Vec<LoadError>) -> Vec<LoadError> {
     // Rendered in a borrowing pass of its own — `LineIndex` holds a `&str` into the
     // error's own `Arc`, so the cache cannot outlive the borrow the `into_iter` below
@@ -22748,9 +22930,13 @@ pub fn build_eq_dispatch_index(kb: &mut KnowledgeBase) -> Vec<LoadError> {
     let eq_about: std::collections::HashSet<Symbol> = eq_spec
         .map(|e| super::typing::provisions_about(kb, e).into_iter().map(|p| p.about).collect())
         .unwrap_or_default();
+    // A CONDITIONAL `Eq` (`provides Eq[Option] :- Eq[T]`) holds at some instances only, and
+    // the law is read where the member is entered, from the operands alone: at `Option[T =
+    // Float]` it does not hold, and `eq(some(nan), some(nan))` is the member's `false`.
     let lawful = |kb: &KnowledgeBase, sort: Symbol| {
-        eq_about.contains(&kb.canonical_sort_sym(sort))
-            || eq_spec.is_some_and(|e| super::typing::sort_provides(kb, sort, e))
+        (eq_about.contains(&kb.canonical_sort_sym(sort))
+            || eq_spec.is_some_and(|e| super::typing::sort_provides(kb, sort, e)))
+            && !eq_spec.is_some_and(|e| super::typing::provision_is_conditional(kb, sort, e))
     };
     let mut entries: Vec<(Symbol, Symbol, bool)> = Vec::new();
     // Collected rather than built into `LoadError`s as we go: `carriers` comes from
@@ -22760,7 +22946,13 @@ pub fn build_eq_dispatch_index(kb: &mut KnowledgeBase) -> Vec<LoadError> {
     // the index walks provisions in `provides_rids_by_spec` order).
     let mut ambiguous: Vec<(String, Vec<String>)> = Vec::new();
     for &sort_sym in &carriers {
-        let cands = eq_index.candidates(kb, sort_sym);
+        let mut cands = eq_index.candidates(kb, sort_sym);
+        // A derived member is the `eq` of a composite no `eq` was written for: one written
+        // since — a witness's, in a later load — is the carrier's, and that load's change
+        // to a closed equality is `eq_derive::later_equality_refusals`' to refuse.
+        if cands.iter().any(|c| !kb.is_derived_eq_member(c.target)) {
+            cands.retain(|c| !kb.is_derived_eq_member(c.target));
+        }
         let target = match cands.as_slice() {
             // No eq override for this sort — structural equality IS its instance.
             [] => continue,
@@ -22786,7 +22978,9 @@ pub fn build_eq_dispatch_index(kb: &mut KnowledgeBase) -> Vec<LoadError> {
             .is_some_and(|rec| !rec.type_params.is_empty());
         kb.note_eq_member(
             target,
-            if partial {
+            if partial && kb.is_derived_eq_member(target) {
+                super::EqLaw::ByItsFields
+            } else if partial {
                 super::EqLaw::Never
             } else if generic {
                 super::EqLaw::AtItsCarriers
@@ -24229,7 +24423,8 @@ fn check_name_captures(kb: &KnowledgeBase) -> Vec<LoadError> {
     // inherits one of ours.
     let saved_asker = kb.symbols.set_asking_file(None);
     for decl in decls {
-        if !decl.category.can_capture() {
+        // A derived `eq` member is the loader's, and no text reads it by its bare name.
+        if !decl.category.can_capture() || kb.is_derived_eq_member(decl.sym) {
             continue;
         }
         // 059's classification, and the same reading WI-956/WI-979 settled for the
@@ -24270,7 +24465,10 @@ fn check_name_captures(kb: &KnowledgeBase) -> Vec<LoadError> {
                 if other == decl.sym {
                     continue;
                 }
-                if kb.is_namespace_only(other) || capture_is_excused(kb, sort, other) {
+                if kb.is_namespace_only(other)
+                    || kb.is_derived_eq_member(other)
+                    || capture_is_excused(kb, sort, other)
+                {
                     continue;
                 }
                 hit = Some(other);
@@ -47747,6 +47945,12 @@ impl<'a> Loader<'a> {
         // `check_duplicate_operation_declarations` can name both lines.
         let decl_site = SourceSpan::from_span(self.source_id, o.span);
         self.kb.record_op_decl_site(functor, decl_site);
+        // An operation declared over a derived `eq` member is the program's: the member is
+        // recorded as derived only after the derivation's own text has loaded
+        // (`load_derived_eq_members`), so this takes out a member a later load declares.
+        let canonical = self.kb.canonical_sym(functor);
+        self.kb.derived_eq_members.remove(&functor);
+        self.kb.derived_eq_members.remove(&canonical);
 
         // WI-1070: the operation's own description blocks (§4.1) — see
         // `emit_own_descriptions`. Emitted here, before the signature conversion that
@@ -51278,7 +51482,12 @@ impl<'a> Loader<'a> {
                 }
                 Item::Namespace(n) => {
                     let sym = self.remap_name(&n.name);
-                    self.emit_member_fact(sym, MemberKind::Namespace, parent);
+                    // At a sort's address it is a secondary entry (059 R2), which adds
+                    // members to the sort and declares nothing: the sort is listed once,
+                    // by its own declaration.
+                    if !self.kb.has_kind(sym, SymbolKind::Sort) {
+                        self.emit_member_fact(sym, MemberKind::Namespace, parent);
+                    }
                 }
                 Item::Const(c) => {
                     let sym = self.remap_name(&c.name);

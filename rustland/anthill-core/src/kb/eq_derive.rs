@@ -23,13 +23,12 @@
 //!   lawfully `Eq` — and shields a composite that wraps it — while a plain
 //!   `Point(x: Float, y: Float)` becomes `NonEq`.
 //!
-//! * **Behavior wiring** — [`KnowledgeBase::field_wise_noneq_carriers`] (the
-//!   constructor functors of `Partial` sorts) is what the resolver's `sem_eq_core`
-//!   and the interpreter's `semantic_equal` read (via
-//!   [`KnowledgeBase::value_reaches_partial_carrier`]) to compare such a value
-//!   FIELD-WISE instead of taking the structural reflexivity shortcut — so
-//!   `eq(Point(nan,_), Point(nan,_))` reduces to `eq(nan,nan) ∧ … = false`,
-//!   agreeing with the field-wise C++ `operator==`.
+//! * **The `eq` member** — each composite this module gives `PartialEq` also gets the
+//!   `eq` a program would write for it ([`derived_eq_member_source`]): it compares the
+//!   constructors and then each field through the `eq` the field's type supplies, so
+//!   `eq(Point(nan,_), Point(nan,_))` is `Float.eq(nan, nan) ∧ … = false`, agreeing
+//!   with the field-wise C++ `operator==`, and a field of a sort with its own `eq`
+//!   (`Box.p: Pt`) is compared by that `eq`.
 //!
 //! * **Provision assertion, at TWO points in the pipeline.** [`run`] asserts the
 //!   derived `NonEq`+`PartialEq` for each `Partial` composite so a user
@@ -59,11 +58,10 @@
 //! ([`derive_conditional_eq`]), reading a field's full TYPE rather than its head sort; and
 //! mirrors it for the `NonEq` half: a composite reaching `Float` through a parametric
 //! field's ARGUMENTS classifies `Partial` ([`composite_field_sorts`]), and the
-//! partial-carrier gate walks THROUGH a parametric constructor
-//! (`KnowledgeBase::partial_transparent_carriers`), so `some(nan)` is compared
-//! field-wise. WI-20260919-9KYPA closes the last leg: a parametric sort derives the
-//! CONDITIONAL `NonEq` row itself ([`derive_conditional_noneq`], `NonEq[List] :-
-//! NonEq[T]`). The use-site key check (`check_use_site_requires_eq`) asks the positive
+//! member of a parametric sort compares a field typed by its parameter through the
+//! parameter's `eq`, so `some(nan)` is unequal to itself. WI-20260919-9KYPA closes the
+//! last leg: a parametric sort derives the CONDITIONAL `NonEq` row itself
+//! ([`derive_conditional_noneq`], `NonEq[List] :- NonEq[T]`). The use-site key check (`check_use_site_requires_eq`) asks the positive
 //! goal `Eq[T = key]` at the whole written key, so it reads the conditional `Eq` row
 //! rather than this one: `Map[K = List[T = Float]]` is refused where the type is written
 //! while `Map[K = List[T = Int64]]` loads, and a tuple key is read by its components.
@@ -97,6 +95,9 @@ pub(crate) struct EqClassification {
     partial: HashSet<Symbol>,
     /// Each composite's field sorts, canonical on both sides — the fixpoint's edges.
     field_sorts: Vec<(Symbol, Vec<Symbol>)>,
+    /// Field sorts, canonical, whose own `eq` is declared and left unimplemented (`Map`'s,
+    /// `typing::sorts_with_unbacked_eq`): a field of one is a field nothing decides.
+    unbacked_eq: HashSet<Symbol>,
 }
 
 /// WI-664 — compute the classification. Runs ONCE, at the EARLIER of the two
@@ -114,8 +115,7 @@ pub(crate) struct EqClassification {
 /// type ARGUMENTS (`rigidify_unwritten_sort_params`) without touching the head — so
 /// the edge set is the same either side of it. [`run`] asserts that in debug rather
 /// than trusting it: an elaboration that DID move a head would silently drop a
-/// composite's `NonEq` and with it `field_wise_noneq_carriers`, re-laundering
-/// `eq(Point(nan,_), Point(nan,_))` to true with nothing pointing at the cause.
+/// composite's `NonEq` with nothing pointing at the cause.
 pub(crate) fn classify(kb: &mut KnowledgeBase) -> EqClassification {
     let noneq_sym = kb.try_resolve_symbol("anthill.prelude.NonEq");
     // The eq-dispatch supply index — built here, before any `assert_provides`, so the
@@ -171,11 +171,16 @@ pub(crate) fn classify(kb: &mut KnowledgeBase) -> EqClassification {
         }
     }
 
+    let field_heads: HashSet<Symbol> =
+        field_sorts.iter().flat_map(|(_, fs)| fs.iter().copied()).collect();
+    let unbacked_eq = super::typing::sorts_with_unbacked_eq(kb, &field_heads);
+
     EqClassification {
         sorts,
         boundary,
         partial,
         field_sorts,
+        unbacked_eq,
     }
 }
 
@@ -204,9 +209,11 @@ pub(crate) fn classify(kb: &mut KnowledgeBase) -> EqClassification {
 /// PartialEq[T = Colour]` is, and that spelling passes both provider-coverage checks
 /// today (the explicit-`provides` control). So this half is held to the same bar as a
 /// written provision, which is what it should be.
-pub(crate) fn derive_total_eq(kb: &mut KnowledgeBase, c: &EqClassification) {
+pub(crate) fn derive_total_eq(kb: &mut KnowledgeBase, c: &EqClassification) -> Vec<Symbol> {
     let partialeq_sym = kb.try_resolve_symbol("anthill.prelude.PartialEq");
     let eq_sym = kb.try_resolve_symbol("anthill.prelude.Eq");
+    // The carriers given `PartialEq` here, for [`derived_eq_member_source`].
+    let mut given: Vec<Symbol> = Vec::new();
     // `Eq` requires `PartialEq`, so BOTH are asserted, exactly as the `NonEq` half
     // asserts its own `PartialEq` base.
     //
@@ -221,31 +228,16 @@ pub(crate) fn derive_total_eq(kb: &mut KnowledgeBase, c: &EqClassification) {
     for s in total_composites(kb, c) {
         if let Some(pe) = partialeq_sym {
             assert_provides(kb, s, pe);
+            given.push(s);
         }
         if let Some(eq) = eq_sym {
             assert_provides(kb, s, eq);
         }
     }
-    // WI-20260918-CKD4J — THE `PartialEq` HALF OF A `Partial` COMPOSITE, here and not in
-    // [`run`], for the same reason as the rows above: a provision reaches a call site
-    // only through the typer. MEASURED: `same[X](a: X, b: X) requires PartialEq[X]` at
-    // `pt(x: Float)` was refused at load ("`PartialEq[T = Pt]` cannot be supplied") —
-    // a partial composite HAS a partial equality, and said so only after the typer had
-    // finished. Only the `NonEq` half has a reason to stay in `run` (its unbacked
-    // `nonEqRefl`); `PartialEq`'s `eq` is the builtin structural one, held to the same
-    // provider-coverage bar as any written provision, which it passes.
-    if let Some(pe) = partialeq_sym {
-        let mut seen: HashSet<Symbol> = HashSet::new();
-        for &s in &c.sorts {
-            let cs = kb.canonical_sort_sym(s);
-            if c.partial.contains(&cs)
-                && seen.insert(cs)
-                && !super::typing::sort_provides(kb, s, pe)
-            {
-                assert_provides(kb, s, pe);
-            }
-        }
-    }
+    // The `PartialEq` of a `Partial` composite is [`derive_conditional_eq`]'s, which
+    // derives it where every field's equality is decided: a `Float` field's is, an
+    // opaque handle's (`NodeOccurrence`) is not.
+    given
 }
 
 /// WI-20260918-CKD4J — a derived condition: `spec[P]` over the carrier's OWN type
@@ -275,21 +267,25 @@ pub(crate) type Condition = (Symbol, Symbol);
 /// T, tail: List[T = T])`, lawful iff `T` is, which only an optimistic seed derives.
 /// Run AFTER [`derive_total_eq`], so the rows that pass asserted are read as provisions.
 ///
-/// NOT DERIVED, each deliberately: a `Partial` composite (it derives `NonEq`), an
-/// equality BOUNDARY (its `eq` is the author's), a carrier any equality provision
-/// already names (`Pair` writes its own — not duplicated), and a sort with a field whose
-/// equality nothing decides (an arrow, a `Float` argument, an unwritten argument).
-/// THE `NonEq` MIRROR is the other half of the classification: `holder(o: Option[T =
-/// Float])` reaches `Float` through its field type's ARGUMENTS ([`composite_field_sorts`])
-/// and so classifies `Partial` — derived `NonEq` + `PartialEq`, compared field-wise — and
-/// is no candidate here.
-pub(crate) fn derive_conditional_eq(kb: &mut KnowledgeBase, c: &EqClassification) {
+/// NOT DERIVED, each deliberately: an equality BOUNDARY (its `eq` is the author's), a
+/// carrier any equality provision already names (`Pair` writes its own — not
+/// duplicated), and a sort with a field whose equality nothing decides (an arrow, an
+/// opaque handle, an unwritten argument; for `Eq`, a `Float`).
+///
+/// A `Partial` composite is a candidate for `PartialEq` and not for `Eq`: `holder(o:
+/// Option[T = Float])` reaches `Float` through its field type's ARGUMENTS
+/// ([`composite_field_sorts`]) and so classifies `Partial`, and its `PartialEq` rests on
+/// `PartialEq[Float]`, which holds. One with a field nothing decides derives no
+/// `PartialEq`, and [`run`] then derives it no `NonEq`.
+pub(crate) fn derive_conditional_eq(kb: &mut KnowledgeBase, c: &EqClassification) -> Vec<Symbol> {
     let (Some(partial_eq), Some(eq)) = (
         kb.try_resolve_symbol("anthill.prelude.PartialEq"),
         kb.try_resolve_symbol("anthill.prelude.Eq"),
     ) else {
-        return;
+        return Vec::new();
     };
+    // The carriers given `PartialEq` here, for [`derived_eq_member_source`].
+    let mut given: Vec<Symbol> = Vec::new();
     let spoken_for: HashSet<Symbol> = EQUALITY_SPECS
         .into_iter()
         .filter_map(|n| kb.try_resolve_symbol(&format!("anthill.prelude.{n}")))
@@ -298,7 +294,7 @@ pub(crate) fn derive_conditional_eq(kb: &mut KnowledgeBase, c: &EqClassification
         .collect();
     // One symbol per canonical composite, in registration order.
     let mut seen: HashSet<Symbol> = HashSet::new();
-    let candidates: Vec<Symbol> = c
+    let all_candidates: Vec<Symbol> = c
         .sorts
         .iter()
         .copied()
@@ -306,13 +302,19 @@ pub(crate) fn derive_conditional_eq(kb: &mut KnowledgeBase, c: &EqClassification
             let cs = kb.canonical_sort_sym(s);
             seen.insert(cs)
                 && !c.boundary.contains(&cs)
-                && !c.partial.contains(&cs)
                 && !spoken_for.contains(&cs)
                 && !super::typing::sort_provides(kb, s, eq)
                 && !super::typing::sort_provides(kb, s, partial_eq)
         })
         .collect();
     for spec in [partial_eq, eq] {
+        let candidates: Vec<Symbol> = all_candidates
+            .iter()
+            .copied()
+            .filter(|&s| {
+                spec == partial_eq || !c.partial.contains(&kb.canonical_sort_sym(s))
+            })
+            .collect();
         // Optimistic seed: every candidate derivable, resting on nothing.
         let mut derived: std::collections::HashMap<Symbol, Vec<Condition>> = candidates
             .iter()
@@ -333,7 +335,9 @@ pub(crate) fn derive_conditional_eq(kb: &mut KnowledgeBase, c: &EqClassification
                         continue;
                     };
                     for (_, ftype) in fields.to_vec() {
-                        match field_conditions(kb, &ftype, spec, &params, &derived) {
+                        let fc =
+                            field_conditions(kb, &ftype, spec, &params, &derived, &c.unbacked_eq);
+                        match fc {
                             Some(fc) => {
                                 for x in fc {
                                     if !conds.contains(&x) {
@@ -366,6 +370,9 @@ pub(crate) fn derive_conditional_eq(kb: &mut KnowledgeBase, c: &EqClassification
             };
             assert_provides(kb, s, spec);
             record_derived_conditions(kb, s, spec, &conds);
+            if spec == partial_eq {
+                given.push(s);
+            }
             // WI-20260919-9KYPA — carry the parameters across to `run`, which mirrors
             // them into the `NonEq` half. BOTH specs: the mirror needs the `Eq` list for
             // its disjuncts and the `PartialEq` list for the conditions `NonEq requires
@@ -377,6 +384,240 @@ pub(crate) fn derive_conditional_eq(kb: &mut KnowledgeBase, c: &EqClassification
             }
         }
     }
+    given
+}
+
+/// The `eq` a composite whose `PartialEq` this load derived is given: the member a
+/// program would write for it, as the text of one secondary entry of the sort per
+/// carrier. The loader loads the text in this same load, before the typer, with each
+/// member in the derived provision's `where` block, so a member of a parametric sort
+/// reads its provision's conditions (`provides PartialEq[Option] :- PartialEq[T]`)
+/// as a written member does (`load::load_derived_eq_members`).
+///
+/// A member compares the constructors and then each field through the `eq` the
+/// field's type supplies:
+///
+/// ```text
+/// operation eq(left: Self, right: Self) -> Bool =
+///   match (left, right)
+///     case (just(l1), just(r1)) -> PartialEq.eq(l1, r1)
+///     case (nada(), nada()) -> true
+///     case _ -> false
+/// ```
+///
+/// The typer pins each field's call at the field's type (`Box.p` → `Pt.eq`), or reads
+/// it through the parameter's dictionary (`some(v)` → `T`'s). A recursive composite's
+/// member calls itself. A composite whose every field compares by structure
+/// ([`structural_carriers`]) is compared by structure, `left === right`, which is the
+/// same answer.
+///
+/// The text is written in the standard library's names (`PartialEq.eq`, `Bool`, `===`), so
+/// a knowledge base loaded without the library has no members, as it has no `eq` spec
+/// operation to dispatch to one.
+///
+/// The text, with the carriers it gives a member, in its order; `None` when it gives
+/// none. An `Err` is a carrier the text cannot be written for, which is a defect of this
+/// function, reported rather than skipped.
+pub(crate) fn derived_eq_member_source(
+    kb: &KnowledgeBase,
+    carriers: &[Symbol],
+) -> Result<Option<(String, Vec<Symbol>)>, String> {
+    // Declared, not merely named: the bootstrap names `struct_eq` without the library.
+    let declared = |n: &str| {
+        kb.try_resolve_symbol(n)
+            .is_some_and(|s| super::op_info::operation_is_declared(kb, s))
+    };
+    let library = declared("anthill.prelude.PartialEq.eq")
+        && declared("anthill.kernel.struct_eq")
+        && kb.try_resolve_symbol("anthill.prelude.Bool").is_some();
+    if !library {
+        return Ok(None);
+    }
+    let mut seen: HashSet<Symbol> = HashSet::new();
+    let mut carriers: Vec<Symbol> = carriers
+        .iter()
+        .copied()
+        .filter(|&s| seen.insert(kb.canonical_sort_sym(s)))
+        .collect();
+    if carriers.is_empty() {
+        return Ok(None);
+    }
+    // In one order on every run: the carriers arrive in a hash map's, and the text's order
+    // is the order its names are interned in.
+    carriers.sort_by(|a, b| kb.qualified_name_of(*a).cmp(kb.qualified_name_of(*b)));
+    // The desugaring targets (`TupleLiteral`, `ListLiteral`, …) are how a tuple or a literal
+    // is represented, not sorts a program compares by their constructors: a tuple's
+    // components are compared where `=` meets one (`KnowledgeBase::tuple_component_pairs`).
+    {
+        use crate::parse::desugar_target as dt;
+        let literals = [dt::TUPLE_LITERAL, dt::LIST_LITERAL, dt::SET_LITERAL].map(dt::qualified);
+        carriers.retain(|&c| !literals.contains(&kb.qualified_name_of(c)));
+    }
+    // A sort whose scope declares `eq` already — a predicate its rules define, which is no
+    // operation and so no `eq` of the carrier's — has the name for the program: a member
+    // there would be a second definition of it.
+    carriers.retain(|&c| {
+        kb.try_resolve_symbol(&format!("{}.eq", kb.qualified_name_of(c)))
+            .is_none()
+    });
+    if carriers.is_empty() {
+        return Ok(None);
+    }
+    let structural = structural_carriers(kb, &carriers);
+    let mut out = String::new();
+    for &carrier in &carriers {
+        let by_structure = structural.contains(&kb.canonical_sort_sym(carrier));
+        write_member(kb, carrier, by_structure, &mut out)?;
+    }
+    Ok(Some((out, carriers)))
+}
+
+/// The scalar sorts whose `eq` is structural identity: a literal compare
+/// (`literal_eq`) or `===` (`symbolEq`, `typeEq`).
+const STRUCTURAL_SCALARS: [&str; 6] = [
+    "anthill.prelude.Int64",
+    "anthill.prelude.BigInt",
+    "anthill.prelude.String",
+    "anthill.prelude.Bool",
+    "anthill.prelude.Type",
+    "anthill.reflect.Symbol",
+];
+
+/// The carriers, canonical, whose every field compares by structure: a field of a
+/// [`STRUCTURAL_SCALARS`] sort, or of a non-parametric carrier of this set. A greatest
+/// fixpoint, so a recursive composite of such fields is in it. A parametric carrier is
+/// never in it — a field typed by its parameter compares through the parameter's `eq`.
+fn structural_carriers(kb: &KnowledgeBase, carriers: &[Symbol]) -> HashSet<Symbol> {
+    let scalars: HashSet<Symbol> = STRUCTURAL_SCALARS
+        .into_iter()
+        .filter_map(|n| kb.try_resolve_symbol(n))
+        .map(|s| kb.canonical_sort_sym(s))
+        .collect();
+    let mut set: HashSet<Symbol> = carriers
+        .iter()
+        .filter(|&&s| kb.type_param_syms_of(s).is_empty())
+        .map(|&s| kb.canonical_sort_sym(s))
+        .collect();
+    loop {
+        let mut changed = false;
+        for &carrier in carriers {
+            let cs = kb.canonical_sort_sym(carrier);
+            if !set.contains(&cs) {
+                continue;
+            }
+            let structural_field = |ty: &Value| {
+                super::typing::sort_functor_of_view(kb, ty).is_some_and(|head| {
+                    let h = kb.canonical_sort_sym(head);
+                    kb.type_param_syms_of(head).is_empty()
+                        && (scalars.contains(&h) || set.contains(&h))
+                })
+            };
+            let every_field_structural =
+                kb.field_constructors_of_sort(carrier).into_iter().all(|ctor| {
+                    kb.entity_field_types(ctor)
+                        .is_none_or(|fields| fields.iter().all(|(_, ty)| structural_field(ty)))
+                });
+            if !every_field_structural {
+                set.remove(&cs);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    set
+}
+
+/// A name `base`, or `base` with `_` appended until it is, that nothing visible from
+/// `scope` is called — so a binder of a member's pattern is a binder, never a
+/// constructor pattern of a constructor in scope that happens to have its name.
+fn unused_name(kb: &KnowledgeBase, scope: crate::intern::ScopeId, base: &str) -> String {
+    let mut name = base.to_string();
+    while !matches!(
+        kb.symbols.resolve_in_scope(&name, scope),
+        crate::intern::ResolveResult::NotFound
+    ) {
+        name.push('_');
+    }
+    name
+}
+
+/// One carrier's secondary entry with its member; see [`derived_eq_member_source`].
+fn write_member(
+    kb: &KnowledgeBase,
+    carrier: Symbol,
+    by_structure: bool,
+    out: &mut String,
+) -> Result<(), String> {
+    use std::fmt::Write;
+    const EQ: &str = "..anthill.prelude.PartialEq.eq";
+    let qn = kb.qualified_name_of(carrier);
+    let scope = kb.symbols.scope_id(carrier);
+    let left = unused_name(kb, scope, "left");
+    let right = unused_name(kb, scope, "right");
+    // One entry per segment, each opening its child from its parent: an internal sort
+    // is visible from the namespace that declares it, not from the top level.
+    let segments: Vec<&str> = qn.split('.').collect();
+    for (depth, segment) in segments.iter().enumerate() {
+        let _ = writeln!(out, "{}namespace {segment}", "  ".repeat(depth));
+    }
+    let indent = "  ".repeat(segments.len());
+    let _ = writeln!(
+        out,
+        "{indent}operation eq({left}: Self, {right}: Self) -> ..anthill.prelude.Bool ="
+    );
+    let close = |out: &mut String| {
+        for depth in (0..segments.len()).rev() {
+            let _ = writeln!(out, "{}end", "  ".repeat(depth));
+        }
+    };
+    if by_structure {
+        let _ = writeln!(out, "{indent}  {left} === {right}");
+        close(out);
+        return Ok(());
+    }
+    let mut ctors = kb.field_constructors_of_sort(carrier);
+    ctors.sort_by_key(|c| c.index());
+    ctors.dedup();
+    if ctors.is_empty() {
+        return Err(format!("the composite `{qn}` has no constructor to compare"));
+    }
+    let _ = writeln!(out, "{indent}  match ({left}, {right})");
+    for &ctor in &ctors {
+        // A case names a constructor of the scrutinee's own sort by its short name, which
+        // is looked up among that sort's entities whatever the scope.
+        let name = kb.local_name_of(ctor).to_string();
+        let arity = kb.entity_field_types(ctor).map_or(0, |f| f.len());
+        let binders = |side: &str| -> Vec<String> {
+            (1..=arity)
+                .map(|i| unused_name(kb, scope, &format!("{side}{i}")))
+                .collect()
+        };
+        let (ls, rs) = (binders("l"), binders("r"));
+        // Each field's equality, the next field's only where it holds.
+        let compare = match arity {
+            0 => "true".to_string(),
+            _ => {
+                let mut acc = format!("{EQ}({}, {})", ls[arity - 1], rs[arity - 1]);
+                for i in (0..arity - 1).rev() {
+                    acc = format!("(if {EQ}({}, {}) then {acc} else false)", ls[i], rs[i]);
+                }
+                acc
+            }
+        };
+        let _ = writeln!(
+            out,
+            "{indent}    case ({name}({}), {name}({})) -> {compare}",
+            ls.join(", "),
+            rs.join(", ")
+        );
+    }
+    if ctors.len() > 1 {
+        let _ = writeln!(out, "{indent}    case _ -> false");
+    }
+    close(out);
+    Ok(())
 }
 
 /// WI-20260918-CKD4J — what a field of type `ty` needs for its `spec` equality, as
@@ -389,6 +630,7 @@ fn field_conditions<V: TermView>(
     spec: Symbol,
     params: &[Symbol],
     derived: &std::collections::HashMap<Symbol, Vec<Condition>>,
+    unbacked_eq: &HashSet<Symbol>,
 ) -> Option<Vec<Condition>> {
     // A field typed by one of the carrier's own parameters (`value: T`) is that
     // parameter's CANONICAL variable (`KnowledgeBase::canonical_type_param_var`) — or,
@@ -417,7 +659,22 @@ fn field_conditions<V: TermView>(
         // Some OTHER sort's parameter: nothing here decides it.
         return None;
     }
+    if unbacked_eq.contains(&kb.canonical_sort_sym(head)) {
+        return None;
+    }
     let h_params: Vec<Symbol> = kb.type_param_syms_of(head).to_vec();
+    // A parameter the field type leaves unwritten is an open slot (kernel-language §5.2,
+    // a bare sort is a fresh instance), opened per value: two values' fields are of two
+    // instances, and nothing decides an equality between them — `tail: List` inside `List`
+    // as much as `s: Strm[T = Int64]` beside an unwritten `E`.
+    let written: Vec<String> = ty
+        .named_keys(kb)
+        .into_iter()
+        .map(|k| kb.local_name_of(k).to_string())
+        .collect();
+    if h_params.iter().any(|q| !written.iter().any(|w| w == kb.local_name_of(*q))) {
+        return None;
+    }
     // `head`'s own conditions for `spec`, over ITS parameters: a candidate's current
     // verdict, else a written/derived provision (unconditional, or ONE conditional
     // clause — alternatives are not translated), else nothing.
@@ -448,25 +705,40 @@ fn field_conditions<V: TermView>(
     } else {
         return None;
     };
-    // Translate each of `head`'s conditions through the field type's argument for it.
-    // An UNWRITTEN argument of a SELF-reference (`tail: List` inside `List`) is the
-    // carrier's own parameter of that name — the reading the typer's
-    // `rigidify_unwritten_sort_params` gives it; unwritten anywhere else, nothing decides it.
-    let self_ref = h_params.iter().all(|q| params.contains(q)) && !h_params.is_empty();
+    // `head`'s own `requires` hold at the field's arguments too: a dispatch to its `eq`
+    // there builds its sort's dictionary (`Set[T = X]` asks `Eq[X]`). One of the equality
+    // family over a parameter is a condition; any other must hold outright.
+    let equality: Vec<Symbol> = ["PartialEq", "Eq"]
+        .into_iter()
+        .filter_map(|n| kb.try_resolve_symbol(&format!("anthill.prelude.{n}")))
+        .map(|s| kb.canonical_sort_sym(s))
+        .collect();
+    let mut needs_of_head: Vec<(Symbol, Symbol, bool)> =
+        h_conds.into_iter().map(|(cspec, q)| (cspec, q, true)).collect();
+    for entry in super::typing::direct_requires(kb, head) {
+        let (base, bindings) = super::typing::unwrap_spec_view_value(kb, &entry.spec)?;
+        let Some(q) = bindings.iter().find_map(|(_, t)| {
+            super::typing::sort_functor_of_view(kb, t).filter(|q| h_params.contains(q))
+        }) else {
+            // Over none of `head`'s parameters: nothing the field's arguments change.
+            continue;
+        };
+        needs_of_head.push((base, q, equality.contains(&kb.canonical_sort_sym(base))));
+    }
+    // Translate each through the field type's argument for its parameter.
     let mut out: Vec<Condition> = Vec::new();
-    for (cspec, q) in h_conds {
+    for (cspec, q, may_rest_on_a_parameter) in needs_of_head {
         let q_name = kb.local_name_of(q).to_string();
         let arg = ty
             .named_keys(kb)
             .into_iter()
             .find(|k| kb.local_name_of(*k) == q_name)
             .and_then(|k| ty.named_arg(kb, k))
-            .map(|it| it.to_value());
-        let needs = match arg {
-            Some(arg) => field_conditions(kb, &arg, cspec, params, derived)?,
-            None if self_ref => vec![(cspec, q)],
-            None => return None,
-        };
+            .map(|it| it.to_value())?;
+        let needs = field_conditions(kb, &arg, cspec, params, derived, unbacked_eq)?;
+        if !may_rest_on_a_parameter && !needs.is_empty() {
+            return None;
+        }
         for x in needs {
             if !out.contains(&x) {
                 out.push(x);
@@ -584,59 +856,32 @@ pub(crate) fn run(kb: &mut KnowledgeBase, c: &EqClassification) {
         },
         "eq_derive: a pass between `classify` and `run` moved a field's HEAD SORT, so \
          the Partial/Total classification was computed on edges that no longer exist — \
-         a composite silently loses its derived `NonEq` and its field-wise comparison"
+         a composite silently loses its derived `NonEq`"
     );
 
-    // Build the field-wise carrier set + derive `NonEq`/`PartialEq` for each Partial
-    // composite. (Leaf `NonEq` providers like `Float` are in `partial` but not in
-    // `sorts`, so they neither add constructors nor re-derive.)
-    let mut field_wise: HashSet<Symbol> = HashSet::new();
-    let mut derive: Vec<Symbol> = Vec::new();
-    for &s in &c.sorts {
-        if c.partial.contains(&kb.canonical_sort_sym(s)) {
-            for ctor in kb.field_constructors_of_sort(s) {
-                field_wise.insert(ctor);
-            }
-            derive.push(s);
-        }
-    }
-    kb.field_wise_noneq_carriers = field_wise;
-    // WI-20260918-CKD4J — the parametric composites' constructors, walked THROUGH by the
-    // partial-carrier gate (see `partial_transparent_carriers`). Every one, boundary or
-    // not: a parametric boundary's own `eq` (`Pair.eq`) compares its components, so a
-    // `Float` argument makes it partial too. A NON-parametric boundary (`TotalFloat`)
-    // is not here, and still shields what it holds.
-    let mut transparent: HashSet<Symbol> = c
+    // (Leaf `NonEq` providers like `Float` are in `partial` but not in `sorts`, so they do
+    // not re-derive.)
+    let derive: Vec<Symbol> = c
         .sorts
         .iter()
-        .filter(|&&s| !kb.type_param_syms_of(s).is_empty())
-        .flat_map(|&s| kb.field_constructors_of_sort(s))
+        .copied()
+        .filter(|&s| c.partial.contains(&kb.canonical_sort_sym(s)))
         .collect();
-    // A tuple is walked through too: it is no sort's constructor, its partiality is its
-    // components', and a tuple value reads as its `TupleLiteral(_1: …)` twin.
-    transparent.insert(kb.resolve_symbol(crate::parse::desugar_target::qualified(
-        crate::parse::desugar_target::TUPLE_LITERAL,
-    )));
-    kb.partial_transparent_carriers = transparent;
-
     // WI-1103 — MARK every row asserted here. The exemption from provider-coverage
     // op-backing is this pass's placement made a property of the ROW, so it holds in
     // the phase that derives the row AND in every later phase, which walks the row
-    // before this pass re-runs. Both specs are marked, not just `NonEq`: the placement
-    // exempted both, and reproducing it exactly is what keeps a second phase's verdict
-    // equal to the first's rather than merely closer to it.
+    // before this pass re-runs.
+    //
+    // A `Partial` composite derives `NonEq` where it has the `PartialEq` `NonEq` requires —
+    // derived before the typer ([`derive_conditional_eq`]), where every field's equality is
+    // decided. One with a field nothing decides derives neither.
     for s in derive {
-        if let Some(ne) = noneq_sym {
-            if !super::typing::sort_provides(kb, s, ne) {
-                let rid = assert_provides(kb, s, ne);
-                kb.mark_unbacked_derived_provision(rid);
-            }
-        }
-        if let Some(pe) = partialeq_sym {
-            if !super::typing::sort_provides(kb, s, pe) {
-                let rid = assert_provides(kb, s, pe);
-                kb.mark_unbacked_derived_provision(rid);
-            }
+        let (Some(ne), Some(pe)) = (noneq_sym, partialeq_sym) else {
+            continue;
+        };
+        if super::typing::sort_provides(kb, s, pe) && !super::typing::sort_provides(kb, s, ne) {
+            let rid = assert_provides(kb, s, ne);
+            kb.mark_unbacked_derived_provision(rid);
         }
     }
 
@@ -726,13 +971,17 @@ fn equality_signatures(
             });
         }
     }
-    // No `PartialEq.eq` ⇒ no `eq` spec op, and nothing can supply an impl of it.
+    // No `PartialEq.eq` ⇒ no `eq` spec op, and nothing can supply an impl of it. A derived
+    // member is the derivation's, recorded with the provisions it rides: a supplier is an
+    // `eq` a program wrote, and one declared over a derived member is one
+    // (`load::Loader::load_operation` takes the member out of the derived set).
     if let Some(eq_index) = super::load::EqDispatchIndex::build(kb) {
         for &carrier in &composites {
             let suppliers: Vec<Symbol> = eq_index
                 .candidates(kb, carrier)
                 .iter()
                 .map(|c| kb.canonical_sym(c.target))
+                .filter(|&t| !kb.is_derived_eq_member(t))
                 .collect();
             if let Some(signature) = out.get_mut(&carrier) {
                 signature.suppliers.extend(suppliers);
@@ -1047,6 +1296,7 @@ fn total_composites(kb: &KnowledgeBase, c: &EqClassification) -> Vec<Symbol> {
         boundary,
         partial,
         field_sorts,
+        unbacked_eq,
     } = c;
     let Some(eq_sym) = kb.try_resolve_symbol("anthill.prelude.Eq") else {
         return Vec::new();
@@ -1104,6 +1354,7 @@ fn total_composites(kb: &KnowledgeBase, c: &EqClassification) -> Vec<Symbol> {
                 && !spoken_for.contains(&cs)
                 && !parametric(kb, s)
                 && !provides_eq(kb, s)
+                && every_field_names_a_sort(kb, s)
         })
         .map(|s| kb.canonical_sort_sym(s))
         .collect();
@@ -1113,10 +1364,11 @@ fn total_composites(kb: &KnowledgeBase, c: &EqClassification) -> Vec<Symbol> {
             if !total.contains(cs) {
                 continue;
             }
-            if fsorts
-                .iter()
-                .any(|&f| parametric(kb, f) || !(provides_eq(kb, f) || total.contains(&f)))
-            {
+            if fsorts.iter().any(|&f| {
+                parametric(kb, f)
+                    || unbacked_eq.contains(&f)
+                    || !(provides_eq(kb, f) || total.contains(&f))
+            }) {
                 total.remove(cs);
                 changed = true;
             }
@@ -1142,6 +1394,20 @@ fn total_composites(kb: &KnowledgeBase, c: &EqClassification) -> Vec<Symbol> {
             total.contains(&cs) && seen.insert(cs)
         })
         .collect()
+}
+
+/// Does every field of `sort`'s constructors have a type headed by a sort? A field whose
+/// type has none — a type projection (`MemStore.Key`), an arrow — contributes no edge to
+/// the fixpoint ([`composite_field_sorts`]), and a composite is not lawful for want of one:
+/// nothing decides that field's equality.
+fn every_field_names_a_sort(kb: &KnowledgeBase, sort: Symbol) -> bool {
+    kb.field_constructors_of_sort(sort).into_iter().all(|ctor| {
+        kb.entity_field_types(ctor).is_none_or(|fields| {
+            fields
+                .iter()
+                .all(|(_, ty)| super::typing::sort_functor_of_view(kb, ty).is_some())
+        })
+    })
 }
 
 /// Every composite carrier sort: data sorts (with variant constructors) plus
@@ -1188,12 +1454,19 @@ pub(crate) fn composite_sorts(kb: &KnowledgeBase) -> Vec<Symbol> {
 /// An AMBIGUOUS carrier (more than one candidate) is a boundary here and a load error
 /// at the index build: this pass runs after that refusal is already recorded, and
 /// treating it as non-boundary would pile a spurious `NonEq` conflict on top.
+///
+/// A derived member is no boundary: it is the `eq` an earlier load derived from the fields,
+/// and a composite holding its carrier is classified through those fields as it was there.
 fn is_eq_boundary(
     kb: &KnowledgeBase,
     eq_index: Option<&super::load::EqDispatchIndex>,
     sort: Symbol,
 ) -> bool {
-    eq_index.is_some_and(|ix| !ix.candidates(kb, sort).is_empty())
+    eq_index.is_some_and(|ix| {
+        ix.candidates(kb, sort)
+            .iter()
+            .any(|c| !kb.is_derived_eq_member(c.target))
+    })
 }
 
 /// The sorts that ALREADY provide `NonEq` — the partial leaves the fixpoint seeds
@@ -1328,85 +1601,63 @@ pub(crate) fn assert_provides(kb: &mut KnowledgeBase, carrier: Symbol, spec: Sym
     )
 }
 
-/// WI-664 — the outcome of decomposing two operands for a FIELD-WISE semantic
-/// equality compare ([`KnowledgeBase::same_shape_child_pairs`]).
-pub(crate) enum FieldPairs {
-    /// Either operand is not functor-headed ⇒ not applicable; the caller keeps its
-    /// structural verdict.
-    NotComposite,
-    /// Same-kind composites of DIFFERENT shape (functor / arity / named-key set) ⇒
-    /// definitively not equal.
+/// Two operands of `=` that are both tuples ([`KnowledgeBase::tuple_component_pairs`]).
+pub(crate) enum TuplePairs {
+    /// Two tuples of different shape (arity, labels): not equal.
     Mismatch,
-    /// Same-shape composites: the matching child-value pairs to compare AND-wise.
+    /// Their components, pairwise, in the order a tuple's view lists them.
     Pairs(Vec<(Value, Value)>),
 }
 
 impl KnowledgeBase {
-    /// WI-664 — decompose two operands for a field-wise compare into their matching
-    /// child pairs. The single shape-walk shared by eval's `composite_field_wise_eq`
-    /// and the resolver's `composite_field_wise_sem_eq` (only the per-field
-    /// recursion leaf differs: a `bool` vs a three-way `BuiltinResult`), so the
-    /// decomposition — which must agree with [`views_structurally_equal`]'s
-    /// `Functor` arm and the field-wise C++ `operator==` — lives in ONE place.
-    /// Children are materialized as owned [`Value`]s, releasing the borrow before
-    /// the caller's (possibly `&mut self`) recursion.
-    pub(crate) fn same_shape_child_pairs(&self, a: &Value, b: &Value) -> FieldPairs {
-        let (pa, na) = match (a.head(self), b.head(self)) {
-            (
-                ViewHead::Functor {
-                    functor: fa,
-                    pos_arity: pa,
-                    named_arity: na,
-                },
-                ViewHead::Functor {
-                    functor: fb,
-                    pos_arity: pb,
-                    named_arity: nb,
-                },
-            ) => {
-                if fa != fb || pa != pb || na != nb {
-                    return FieldPairs::Mismatch;
-                }
-                (pa, na)
-            }
-            _ => return FieldPairs::NotComposite,
+    /// The components of two tuples, pairwise — `None` unless both operands are tuples. A
+    /// tuple is no sort's value, so no `eq` member compares it: semantic equality compares
+    /// its components, each by the steps it takes for any operand.
+    pub(crate) fn tuple_component_pairs(&self, a: &Value, b: &Value) -> Option<TuplePairs> {
+        let (
+            ViewHead::Functor {
+                functor: fa,
+                pos_arity: pa,
+                named_arity: na,
+            },
+            ViewHead::Functor {
+                functor: fb,
+                pos_arity: pb,
+                named_arity: nb,
+            },
+        ) = (a.head(self), b.head(self))
+        else {
+            return None;
         };
+        if !self.is_ordered_product_functor(fa) || !self.is_ordered_product_functor(fb) {
+            return None;
+        }
+        if pa != pb || na != nb {
+            return Some(TuplePairs::Mismatch);
+        }
         let mut pairs = Vec::with_capacity(pa + na);
         for i in 0..pa {
             match (a.pos_arg(self, i), b.pos_arg(self, i)) {
-                (Some(ca), Some(cb)) => pairs.push((ca.to_value(), cb.to_value())),
-                _ => return FieldPairs::Mismatch,
+                (Some(x), Some(y)) => pairs.push((x.to_value(), y.to_value())),
+                _ => return Some(TuplePairs::Mismatch),
             }
         }
         for key in a.named_keys(self) {
             match (a.named_arg(self, key), b.named_arg(self, key)) {
-                (Some(ca), Some(cb)) => pairs.push((ca.to_value(), cb.to_value())),
-                _ => return FieldPairs::Mismatch,
+                (Some(x), Some(y)) => pairs.push((x.to_value(), y.to_value())),
+                _ => return Some(TuplePairs::Mismatch),
             }
         }
-        FieldPairs::Pairs(pairs)
+        Some(TuplePairs::Pairs(pairs))
     }
 
-    /// WI-664 — does `v` reach an UNSHIELDED partial (non-reflexive) carrier — a
-    /// `Float` leaf NOT behind a lawful-Eq own-`eq` boundary — so its SEMANTIC
-    /// equality must be computed FIELD-WISE rather than by the structural
-    /// reflexivity shortcut? `true` for a bare `Float` (read carrier-neutrally
-    /// through the view from ANY carrier), for an entity whose constructor is a
-    /// derived `NonEq` carrier ([`Self::field_wise_noneq_carriers`]), and for a
-    /// tuple any of whose fields reaches one. `false` for a lawful-Eq boundary
-    /// (`TotalFloat`/`Set`/`Map` — own `eq`, so NOT in the set), an all-`Eq`
-    /// composite, and every scalar.
-    ///
-    /// WI-689 — a thin [`KnowledgeBase::fold_gate`] over
-    /// [`crate::kb::resolve::REACHES_PARTIAL_CARRIER`]: a structural (non-σ) `Any`
-    /// scan whose head-check stops at a `Float` leaf and at any sort/constructor
-    /// head — reading the precomputed per-constructor classification in O(1) (it
-    /// already stopped at lawful-Eq boundaries, so there is no descent into a
-    /// `TotalFloat` field) — while a tuple, a partial-transparent carrier, walks its
-    /// fields.
-    pub(crate) fn value_reaches_partial_carrier(&self, v: &Value) -> bool {
-        // A structural (non-σ) gate — `None` is the inert empty σ `fold_gate` never
-        // consults for `chase_sigma: false`, so no `Substitution` is minted per call.
-        self.fold_gate(v, None, 0, crate::kb::resolve::REACHES_PARTIAL_CARRIER)
+    /// Does `v` hold a `Float` anywhere? A structural compare reads `nan` as equal to
+    /// itself, so it is not a `Float`'s equality, and the resolver's equation unfold
+    /// declines where both sides hold one (`resolve.rs`, the per-arm decline). A
+    /// structural (non-σ) [`KnowledgeBase::fold_gate`] over
+    /// [`crate::kb::resolve::REACHES_FLOAT`].
+    pub(crate) fn value_reaches_float(&self, v: &Value) -> bool {
+        // `None` is the inert empty σ `fold_gate` never consults for `chase_sigma: false`.
+        self.fold_gate(v, None, 0, crate::kb::resolve::REACHES_FLOAT)
     }
 }

@@ -80,7 +80,9 @@ existing `BuiltinTag::Eq` / `builtin_eq`. `===` is a *test* (never binds), so �
 instance. For a concrete argument the carrier pins the impl (`Int → IntEq.eq`, still an
 `i64` compare, so **every current ground use keeps its answer**); for an abstract argument
 the requirement dictionary supplies it (WI-300 Tier B). A `Set` carrier's `Eq` is
-membership-based, and `=`/`eq` finally honor it. This **replaces** the structural shortcut
+membership-based, and `=`/`eq` finally honor it. A composite with no `eq` of its own is given one: the
+loader derives the member a program would write, which compares the constructors and then
+each field through the `eq` the field's type supplies (kernel-language §8.3). This **replaces** the structural shortcut
 with real dispatch — the change 049 deferred.
 
 This half is **gated on spec-op dispatch at SLD**, which does not yet exist: a rule-body
