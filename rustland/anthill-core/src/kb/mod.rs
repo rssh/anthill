@@ -2224,6 +2224,13 @@ pub struct KnowledgeBase {
     /// never goes stale.
     eq_connective_sym: Option<Symbol>,
     unify_connective_sym: Option<Symbol>,
+    /// `anthill.prelude.PartialEq.neq`, cached with the connectives above for the goal step,
+    /// which asks of every goal whether it is a `neq` no type reached
+    /// ([`Self::untyped_neq_as_not_eq`]). `None` before the prelude loads.
+    neq_sym: Option<Symbol>,
+    /// `anthill.kernel.not`, negation as failure, which a `neq` no type reached is read
+    /// through. Cached with `neq_sym`.
+    kernel_not_sym: Option<Symbol>,
 
     /// WI-20260826-XED22 — the two GOAL CONNECTIVES (`anthill.kernel.or` / `.and`),
     /// cached for the same reason and refreshed at the same place as the pair above:
@@ -3210,6 +3217,8 @@ impl KnowledgeBase {
             runtime_account_syms: [None; RuntimeAccount::ALL.len()],
             induction_axioms: HashSet::new(),
             unify_connective_sym: None,
+            neq_sym: None,
+            kernel_not_sym: None,
             tuple_literal_sym: None,
             unrouted_read_sym: std::cell::Cell::new(None),
             ranking_rigids: HashMap::new(),
@@ -11185,6 +11194,13 @@ impl KnowledgeBase {
         }
     }
 
+    /// Is `op` `anthill.prelude.PartialEq.neq` — the one spec operation whose body no carrier
+    /// may replace (`LoadError::CarrierSuppliesNeq`)?
+    pub fn is_neq_op(&self, op: Symbol) -> bool {
+        self.neq_sym
+            .is_some_and(|neq| op == neq || self.canonical_sym(op) == neq)
+    }
+
     /// WI-627: (re)resolve and cache the equality-connective symbols read by
     /// [`Self::is_equality_connective_functor`]. Called at the end of
     /// [`Self::register_builtin_tags`] (where `register_builtin_tag` first defines
@@ -11200,6 +11216,8 @@ impl KnowledgeBase {
         // WI-627 fixed.
         self.eq_connective_sym = self.try_resolve_symbol("anthill.prelude.PartialEq.eq");
         self.unify_connective_sym = self.try_resolve_symbol("anthill.kernel.unify");
+        self.neq_sym = self.try_resolve_symbol("anthill.prelude.PartialEq.neq");
+        self.kernel_not_sym = self.try_resolve_symbol("anthill.kernel.not");
         self.or_connective_sym = self.try_resolve_symbol("anthill.kernel.or");
         self.and_connective_sym = self.try_resolve_symbol("anthill.kernel.and");
         self.reify_operation_sym = self.try_resolve_symbol("anthill.prelude.Error.reify");
@@ -13664,9 +13682,8 @@ impl KnowledgeBase {
         // [`BuiltinTag::RefinedDomain`].
         self.register_builtin_tag(crate::kb::fill_derive::REFINED_DOMAIN, BuiltinTag::RefinedDomain);
         // Arithmetic and comparison. WI-616 (proposal 051 Phase 2): `=`/`eq`
-        // and `neq` are the SEMANTIC `Eq` ops — structural until a carrier
-        // declares its own `eq` override (`Set.eq`/`Map.eq`), which then
-        // dispatches at SLD. `===` (struct_eq, WI-615) and its negation `!==`
+        // is the SEMANTIC `PartialEq` op, for a goal no member answers; `neq` is a
+        // body in the spec and has no tag. `===` (struct_eq, WI-615) and its negation `!==`
         // (struct_neq) are the structural `builtin_struct_eq`: total,
         // carrier-agnostic, never dispatch.
         // WI-644 / proposal 004: eq/neq live on PartialEq, gt/lt/gte/lte on
@@ -13677,7 +13694,6 @@ impl KnowledgeBase {
         self.register_spec_op_primitive("anthill.prelude.PartialEq.eq", BuiltinTag::ScalarEq);
         self.register_builtin_tag("anthill.kernel.struct_eq", BuiltinTag::StructEq);
         self.register_builtin_tag("anthill.kernel.struct_neq", BuiltinTag::StructNeq);
-        self.register_builtin_tag("anthill.prelude.PartialEq.neq", BuiltinTag::SemNeq);
         self.register_spec_op_primitive("anthill.prelude.PartialOrd.gt", BuiltinTag::Gt);
         self.register_spec_op_primitive("anthill.prelude.PartialOrd.lt", BuiltinTag::Lt);
         self.register_spec_op_primitive("anthill.prelude.PartialOrd.gte", BuiltinTag::Gte);

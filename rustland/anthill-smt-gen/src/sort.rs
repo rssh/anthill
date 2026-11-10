@@ -993,6 +993,11 @@ impl<'kb> Emitter<'kb> {
     /// (`anthill.prelude.PartialEq.eq@test.sg.Scope.T`), so the law that states it and
     /// the body that uses it name one function, and the same operation at another
     /// parameter is another.
+    ///
+    /// `PartialEq.neq` is the one spec operation whose body no carrier may replace
+    /// (`CarrierSuppliesNeq`), so it is no function of its own: it is the negation of the
+    /// carrier's `eq`, `(not (anthill.prelude.PartialEq.eq@… a b))`, as the resolver reads a
+    /// `neq` goal and the C++ generator writes `!=`.
     pub(crate) fn uninterpreted_call(
         &mut self,
         functor: Symbol,
@@ -1001,6 +1006,14 @@ impl<'kb> Emitter<'kb> {
         expected: Option<&SmtSort>,
         bindings: &BTreeMap<String, String>,
     ) -> Result<Option<(String, SmtSort)>, SmtGenError> {
+        if self.kb.is_neq_op(functor) {
+            let Some(eq) = self.kb.try_resolve_symbol("anthill.prelude.PartialEq.eq") else {
+                return Ok(None);
+            };
+            return Ok(self
+                .uninterpreted_call(eq, pos_args, named_args, expected, bindings)?
+                .map(|(applied, sort)| (format!("(not {applied})"), sort)));
+        }
         if spec_op_parent_sort(self.kb, functor).is_none() {
             return Ok(None);
         }

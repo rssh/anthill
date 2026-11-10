@@ -958,7 +958,7 @@ pub struct FlowEnv {
     /// than an argument about symbol uniqueness.
     ///
     /// `Rc` for the same reason `facts` is: an unchanged env clones as a refcount bump.
-    pub(super) skolems: Rc<std::collections::HashSet<Symbol>>,
+    pub(super) skolems: Rc<crate::kb::resolve::OpaqueSkolems>,
     /// Proposal 050.1 — the branch of the body this Γ holds at, as the forks above it took
     /// it ([`BranchPath`]). Forked with Γ at an `if` and at each `match` arm, and read with
     /// the memory record's connections, each of which carries the branch it was made in.
@@ -978,23 +978,28 @@ impl FlowEnv {
     pub fn empty() -> Self {
         FlowEnv {
             facts: Rc::new(SubstTree::new()),
-            skolems: Rc::new(std::collections::HashSet::new()),
+            skolems: Rc::new(crate::kb::resolve::OpaqueSkolems::default()),
             branch: None,
             scope_mark: 0,
             memory: None,
         }
     }
 
-    /// Record `sym` as one of this proof's eigenvariables — see [`Self::skolems`].
+    /// Record `sym` as one of this proof's eigenvariables — see [`Self::skolems`] — standing
+    /// for a parameter whose declared type is, or is not, equal to itself by `Eq`'s law.
     /// Copy-on-write, like [`Self::assume`].
-    pub fn with_skolem(&self, sym: Symbol) -> FlowEnv {
+    pub fn with_skolem(&self, sym: Symbol, self_equal_by_law: bool) -> FlowEnv {
         let mut next = self.clone();
-        Rc::make_mut(&mut next.skolems).insert(sym);
+        let skolems = Rc::make_mut(&mut next.skolems);
+        skolems.all.insert(sym);
+        if !self_equal_by_law {
+            skolems.not_self_equal.insert(sym);
+        }
         next
     }
 
     /// This env's eigenvariables, for seeding [`crate::kb::resolve::ResolveConfig`].
-    pub(crate) fn skolems(&self) -> Rc<std::collections::HashSet<Symbol>> {
+    pub(crate) fn skolems(&self) -> Rc<crate::kb::resolve::OpaqueSkolems> {
         Rc::clone(&self.skolems)
     }
 

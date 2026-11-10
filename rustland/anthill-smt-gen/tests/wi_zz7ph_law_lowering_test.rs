@@ -59,12 +59,12 @@ fn instances_of(kb: &mut KnowledgeBase) -> Vec<RequirementInstance> {
 #[test]
 fn every_law_a_lawful_library_requirement_gives_lowers_at_an_abstract_parameter() {
     for (spec, given) in [
-        ("anthill.prelude.PartialEq", 1),
-        ("anthill.prelude.Eq", 2),           // its own, and `PartialEq`'s
+        ("anthill.prelude.PartialEq", 0),    // its `neq` is a body, read through `eq`
+        ("anthill.prelude.Eq", 1),           // its own
         ("anthill.prelude.algebra.Ring", 9), // 2, `Additive`'s 5, `Multiplicative`'s 2
-        ("anthill.prelude.WeakOrd", 11),     // 9, `Eq`'s, `PartialEq`'s
-        ("anthill.prelude.Lattice", 11),     // 9, `Eq`'s, `PartialEq`'s
-        ("anthill.prelude.Ord", 12),         // 1, and `WeakOrd`'s 11
+        ("anthill.prelude.WeakOrd", 10),     // 9, and `Eq`'s
+        ("anthill.prelude.Lattice", 10),     // 9, and `Eq`'s
+        ("anthill.prelude.Ord", 11),         // 1, and `WeakOrd`'s 10
     ] {
         let mut kb = load_kb_with(&scope_requiring(spec));
         let mut lowered = 0;
@@ -91,7 +91,7 @@ fn every_law_a_lawful_library_requirement_gives_lowers_at_an_abstract_parameter(
 }
 
 /// NO LAW IS LOWERED AT A CONCRETE CARRIER: a law is asserted of a carrier's own sort.
-/// `Int64` is modelled by the theory's reals, where each of the eleven `WeakOrd[T =
+/// `Int64` is modelled by the theory's reals, where each of the ten `WeakOrd[T =
 /// Int64]` gives is a theorem already (`eq_refl`, of `=`) or is not known to hold — and
 /// a law true of the integers alone would be inconsistent there. Each is refused and
 /// says so; none is an uninterpreted function at a theory sort.
@@ -116,8 +116,8 @@ end
             }
         }
     }
-    assert_eq!(refused.len(), 11);
-    // The eight whose every operation has a theory row are refused for the carrier;
+    assert_eq!(refused.len(), 10);
+    // The seven whose every operation has a theory row are refused for the carrier;
     // the three that name `compare`, `max` or `min` are refused before that, as an
     // operation with no row at a theory sort always was.
     assert!(

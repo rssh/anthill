@@ -1006,7 +1006,7 @@ pub(super) fn var_ref_name_symbol(kb: &KnowledgeBase, named_args: &[(Symbol, Ter
 /// a gate in front of [`refute_guard`] that suspended every `eq`/`neq` conjunct
 /// whose operands could reach a carrier with its own equality, because `eq` was
 /// then a purely STRUCTURAL builtin whose refutation would have ignored the
-/// override. WI-616 retired that premise: `eq`/`neq` are `BuiltinTag::SemEq`/`SemNeq`
+/// override. WI-616 retired that premise: `eq` is `BuiltinTag::SemEq`, `neq` its negation,
 /// and decide SEMANTICALLY (`resolve.rs` `sem_eq_values`) — a head-carrier override
 /// over deep-ground operands DISPATCHES `<carrier>.eq(a,b)` by bounded
 /// sub-resolution, a BURIED override or a non-ground operand DELAYS, and only a

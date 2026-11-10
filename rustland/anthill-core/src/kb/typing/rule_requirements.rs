@@ -2233,7 +2233,7 @@ pub(super) fn check_one_spec_op_requirement(
 ) {
     // A spec op the HOST answers for every carrier never fails for a *missing spec
     // instance*, so it is not this pass's concern — skip it ([`host_implements`]):
-    //   * `PartialEq.eq`/`PartialEq.neq` (SemEq) — structural equality IS the default
+    //   * `PartialEq.eq` (SemEq) — structural equality IS the default
     //     `PartialEq` instance (kernel-language.md §equality / proposal 051 / WI-616: "a
     //     composite with no `eq` of its own keeps the structural compare", and a scalar
     //     carrier supplies its own), so EVERY carrier already satisfies `PartialEq`; a carrier
@@ -2532,9 +2532,8 @@ pub(super) fn view_is_sort_view(kb: &KnowledgeBase, spec: &impl TermView) -> boo
 /// [`check_eq_override_backing`] run. `eq_short` is the sort-ops key
 /// (`kb.intern("eq")`, as [`carrier_own_op`]'s callers use); the `*_spec`s are
 /// the canonical `PartialEq.eq`/`PartialEq.neq` builtins the call functor is matched against.
-/// Only the EQ override's backing is probed — a `neq` call dispatches through the
-/// carrier's `eq` override too (`sem_eq_dispatch` resolves `eq_dispatch_target`
-/// for both, negating the verdict), so there is no distinct `neq` override to key.
+/// Only the EQ override's backing is probed — a `neq` call is the negation of the
+/// carrier's `eq` (its body in `PartialEq`), so there is no distinct `neq` override to key.
 /// Since WI-1125 that last clause is ENFORCED rather than merely true in practice:
 /// a carrier supplying its own `neq` is refused at load
 /// ([`crate::kb::load::LoadError::CarrierSuppliesNeq`]), so no program reaching this

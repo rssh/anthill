@@ -361,9 +361,11 @@ sort Ord {
   requires Eq[T]    ; imports Eq laws for T
 }
 
-→ (assert (forall ((a T) (b T))
-    (= (neq a b) (not (eq a b)))))
+→ (assert (forall ((a T))
+    (= (eq a a) true)))
 ```
+
+`neq` is no function of its own: `neq(a, b)` lowers to `(not (eq a b))`.
 
 **As `anthill prove` emits it** (WI-20261012-ZZ7PH; `anthill-smt-gen/src/sort.rs`, and proposal 030 §*What a requirement's record lowers to* for the decisions). A `by z3` proof is handed the laws of every `requires` of its enclosing scopes, and of what each required spec requires or provides in turn. The scope's abstract parameter is a sort of its own, a spec's operation at it an uninterpreted function named by the operation and the carrier, and a variable has that sort by its bound:
 
@@ -382,18 +384,14 @@ end
 
 (declare-sort ns.Scope.T 0)
 (declare-fun anthill.prelude.PartialEq.eq@ns.Scope.T (ns.Scope.T ns.Scope.T) Bool)
-(declare-fun anthill.prelude.PartialEq.neq@ns.Scope.T (ns.Scope.T ns.Scope.T) Bool)
 
 (declare-const var_1 ns.Scope.T)
 
 ; Laws of the specs the enclosing scopes require.
 (assert (forall ((var_0 ns.Scope.T))
   (= (anthill.prelude.PartialEq.eq@ns.Scope.T var_0 var_0) true)))
-(assert (forall ((var_0 ns.Scope.T) (var_1 ns.Scope.T))
-  (= (anthill.prelude.PartialEq.neq@ns.Scope.T var_1 var_0)
-     (not (anthill.prelude.PartialEq.eq@ns.Scope.T var_1 var_0)))))
 
-(assert (anthill.prelude.PartialEq.neq@ns.Scope.T var_1 var_1))
+(assert (not (anthill.prelude.PartialEq.eq@ns.Scope.T var_1 var_1)))
 (check-sat)                                  ; unsat
 ```
 
@@ -402,7 +400,7 @@ What decides each line:
 | | |
 |---|---|
 | a variable's sort | its bound (`?a: T`, written on a head variable only; a step of a structured proof has its parent's), the signature of an operation it is an operand of, or the declared type of the entity field that binds it; where a rule read for the document is under a scope that has an abstract parameter one that none gives a sort is refused, elsewhere it is a `Real` |
-| a spec's operation at a declared sort | an uninterpreted function `<operation>@<carrier>`, `eq` and the comparisons included; its default body is not a hypothesis |
+| a spec's operation at a declared sort | an uninterpreted function `<operation>@<carrier>`, `eq` and the comparisons included; its default body is not a hypothesis — `neq` excepted: the negation of `eq`, its body no carrier replaces |
 | an operation at `Int64` / `Float` / `Bool` operands | its theory row (§3.3), or the "unhandled" error — never an uninterpreted function |
 | an equation `lhs <=> rhs` | `(= lhs rhs)`; a guard is the premise |
 | `constraint c: conclusion :- guard` | `(=> guard conclusion)` |
@@ -565,7 +563,6 @@ Rule: eq(red, red) = true
 Rule: eq(green, green) = true
 Rule: eq(blue, blue) = true
 Rule: eq(?_, ?_) = false
-Rule: neq(?a, ?b) = not(eq(?a, ?b))
 ```
 
 ### Generated SMT-LIB
@@ -581,7 +578,6 @@ Rule: neq(?a, ?b) = not(eq(?a, ?b))
 
 ; ─── Functions ─────────────────────────────────────
 (declare-fun eq-Color (Color Color) Bool)
-(declare-fun neq-Color (Color Color) Bool)
 
 ; ─── Axioms ────────────────────────────────────────
 (assert (! (= (eq-Color red red) true)     :named eq_red_red))
@@ -594,10 +590,6 @@ Rule: neq(?a, ?b) = not(eq(?a, ?b))
                (and (is-blue a) (is-blue b))))
       (= (eq-Color a b) false)))
   :named eq_default))
-
-(assert (! (forall ((a Color) (b Color))
-  (= (neq-Color a b) (not (eq-Color a b))))
-  :named neq_derived))
 
 ; ─── Check ─────────────────────────────────────────
 (check-sat)  ; expected: sat (axioms are consistent)

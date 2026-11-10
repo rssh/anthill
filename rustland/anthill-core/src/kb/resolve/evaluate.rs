@@ -1068,7 +1068,7 @@ impl KnowledgeBase {
             }
         };
         let call = positional.as_ref().unwrap_or(call);
-        // `PartialEq.eq(a, b)`, `neq`, `struct_eq` (`===`) and `struct_neq` (`!==`) are
+        // `PartialEq.eq(a, b)`, `struct_eq` (`===`) and `struct_neq` (`!==`) are
         // operations, `-> Bool`, and
         // each call denotes its value in a value slot as any other does (068 §1.3):
         // `(Int64, PartialEq.eq(1, 1))` is `(Int64, true)`. They were read as goals written
@@ -1078,7 +1078,6 @@ impl KnowledgeBase {
             tag,
             BuiltinTag::SemEq
                 | BuiltinTag::ScalarEq
-                | BuiltinTag::SemNeq
                 | BuiltinTag::StructEq
                 | BuiltinTag::StructNeq
         ) {

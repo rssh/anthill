@@ -1163,6 +1163,8 @@ impl KnowledgeBase {
             type_var_provider_requirements: plain(&self.type_var_provider_requirements),
             eq_connective_sym: plain(&self.eq_connective_sym),
             unify_connective_sym: plain(&self.unify_connective_sym),
+            neq_sym: plain(&self.neq_sym),
+            kernel_not_sym: plain(&self.kernel_not_sym),
             or_connective_sym: plain(&self.or_connective_sym),
             and_connective_sym: plain(&self.and_connective_sym),
             reify_operation_sym: plain(&self.reify_operation_sym),

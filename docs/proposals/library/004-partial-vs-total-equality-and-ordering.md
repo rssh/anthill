@@ -45,7 +45,7 @@ Ord[T]        requires Eq[T], PartialOrd[T]
                                       -- compare(a,b) -> Int64 ; + compare_refl / compare_antisym / compare_eq (total)
 ```
 
-- **`PartialEq`** is the base — it holds the `eq`/`neq` *operations*. Any two-valued comparison lives here; `neq(?a,?b) <=> not(eq(?a,?b))` moves here unchanged.
+- **`PartialEq`** is the base — it holds the `eq`/`neq` *operations*. Any two-valued comparison lives here; `neq(?a,?b) <=> not(eq(?a,?b))` moves here unchanged. Proposal 051 Phase 2 replaced the law and the host operation with a body in the spec, `operation neq(a: T, b: T) -> Bool = Bool.not(eq(a, b))`.
 - **`Eq`** adds *only* the reflexivity law (a marker + obligation, no new operation). `Eq.eq` is the inherited `PartialEq.eq`; requiring `Eq[T]` means "and it is lawful."
 - **`PartialOrd`** is `compare` returning `Option[Int64]` (`none` = *unordered*, the IEEE case for a `NaN` operand); `gt`/`lt`/`gte`/`lte` derive from it and answer `false` on `none`.
 - **`Ord`** is the total order (`compare -> Int64`; renamed from `Ordered`, done 2026-08-07) with reflexivity/antisymmetry.

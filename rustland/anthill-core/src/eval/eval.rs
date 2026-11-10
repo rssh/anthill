@@ -3088,16 +3088,8 @@ impl Interpreter {
         // what a member breaking the law says.
         // A member with type parameters of its own is called at other types too, where `Eq`
         // says nothing: there the law holds only on its carriers' values.
-        if let [a, b] = arg_values.as_slice() {
-            let law = match self.kb.eq_law_of_member(target) {
-                crate::kb::EqLaw::Never => false,
-                crate::kb::EqLaw::Always => true,
-                crate::kb::EqLaw::AtItsCarriers => self.kb.value_of_lawful_carrier_of(a, target),
-                crate::kb::EqLaw::ByItsFields => self.kb.value_self_equal_by_law(a, None),
-            };
-            if law && crate::kb::term_view::views_structurally_equal(&self.kb, a, b) {
-                return Ok(StepOutcome::Deliver(Value::Bool(true)));
-            }
+        if self.equal_by_the_law_at(target, &arg_values) {
+            return Ok(StepOutcome::Deliver(Value::Bool(true)));
         }
 
         // 1c. WI-20260921-R10KC — A SPEC DEFAULT BODY REACHES ITS OWN SPEC'S MEMBERS
@@ -3142,11 +3134,29 @@ impl Interpreter {
             return Ok(StepOutcome::Deliver(result?));
         }
 
-        // 2b. `PartialEq.eq` reached with no member: a call no type reaches, or one at a
-        // composite with no `eq` of its own. The spec declares no implementation, so its
-        // operands are compared by their values, as the resolver's `SemEq` compares a goal
-        // no type reaches.
+        // 2b. `PartialEq.eq` reached with no member. In a body of `PartialEq` itself — `neq`'s
+        // `eq(a, b)`, at the spec's own `T`, entered with the dictionary of the carrier its
+        // caller was typed at — it is that dictionary's member, as a receiver-less sibling's is
+        // (step 3c). Not in another spec's body: an `eq` there may be at another type than the
+        // carrier its dictionary is for. Otherwise a call no type reaches, or one at a
+        // composite with no `eq` of its own: the spec declares no implementation, so its
+        // operands are compared by their values, as the resolver's `SemEq` compares a goal no
+        // type reaches.
         if self.is_eq_spec_op(target) {
+            let in_its_spec = self.stack.top().is_some_and(|frame| {
+                crate::kb::typing::impl_parent_sort_of_op(&self.kb, frame.op)
+                    == crate::kb::typing::impl_parent_sort_of_op(&self.kb, target)
+            });
+            if let Some(member) = in_its_spec.then(|| self.dictionary_resolved_sibling(target)).flatten() {
+                if self.equal_by_the_law_at(member, &arg_values) {
+                    return Ok(StepOutcome::Deliver(Value::Bool(true)));
+                }
+                if let Some(outcome) =
+                    self.enter_dictionary_resolved_sibling(member, target, &arg_values, &requirements)?
+                {
+                    return Ok(outcome);
+                }
+            }
             return Ok(StepOutcome::Deliver(self.eq_by_value(&arg_values)?));
         }
 
@@ -3267,31 +3277,10 @@ impl Interpreter {
         // Runs only after step 3b found no supplier, so every call it serves is one that
         // raised a moment ago. See [`Self::dictionary_resolved_sibling`].
         if let Some(impl_target) = self.dictionary_resolved_sibling(target) {
-            if let Some(builtin) = self.builtins.get(&impl_target).cloned() {
-                self.note_dispatch(impl_target);
-                let saved_dict = self.builtin_dispatch_dict.take();
-                self.builtin_dispatch_dict =
-                    find_requirement(&requirements, self.fields.req_self).cloned();
-                let result =
-                    self.call_host(impl_target, &builtin, &arg_values, requirements);
-                self.builtin_dispatch_dict = saved_dict;
-                return Ok(StepOutcome::Deliver(result?));
-            }
-            if let Some((body_node, params)) = self.cached_operation_body(impl_target) {
-                self.note_dispatch(impl_target);
-                let requirements = self.requirements_for_value_directed_impl(
-                    impl_target,
-                    target,
-                    &arg_values,
-                    requirements,
-                )?;
-                return self.enter_operation(
-                    impl_target,
-                    body_node,
-                    &params,
-                    arg_values,
-                    requirements,
-                );
+            if let Some(outcome) =
+                self.enter_dictionary_resolved_sibling(impl_target, target, &arg_values, &requirements)?
+            {
+                return Ok(outcome);
             }
         }
 
@@ -3535,6 +3524,57 @@ impl Interpreter {
     ///
     /// `resolve_op_target_checked` additionally refuses a marker functor, so an
     /// absence-carrying dictionary still raises rather than dispatching.
+    /// Are `args` two identical operands of a call of `member`, an `eq` whose carrier provides
+    /// `Eq`, so that the law `eq_refl` answers `true` without entering it (kernel-language.md
+    /// §8.3)? A member with type parameters of its own is called at other types too, where `Eq`
+    /// says nothing: there the law holds only on its carriers' values.
+    fn equal_by_the_law_at(&self, member: Symbol, args: &[Value]) -> bool {
+        let [a, b] = args else {
+            return false;
+        };
+        let law = match self.kb.eq_law_of_member(member) {
+            crate::kb::EqLaw::Never => false,
+            crate::kb::EqLaw::Always => true,
+            crate::kb::EqLaw::AtItsCarriers => self.kb.value_of_lawful_carrier_of(a, member),
+            crate::kb::EqLaw::ByItsFields => self.kb.value_self_equal_by_law(a, None),
+        };
+        law && crate::kb::term_view::views_structurally_equal(&self.kb, a, b)
+    }
+
+    /// Enter `impl_target`, the member [`Self::dictionary_resolved_sibling`] found for a call
+    /// of `target`: a host member with the dictionary handed to it, a bodied one with its own
+    /// `requires` resolved at the arguments' types. `None` for a member with neither.
+    fn enter_dictionary_resolved_sibling(
+        &mut self,
+        impl_target: Symbol,
+        target: Symbol,
+        arg_values: &[Value],
+        requirements: &SmallVec<[(Symbol, super::value::Dictionary); 2]>,
+    ) -> Result<Option<StepOutcome>, EvalError> {
+        if let Some(builtin) = self.builtins.get(&impl_target).cloned() {
+            self.note_dispatch(impl_target);
+            let saved_dict = self.builtin_dispatch_dict.take();
+            self.builtin_dispatch_dict =
+                find_requirement(requirements, self.fields.req_self).cloned();
+            let result = self.call_host(impl_target, &builtin, arg_values, requirements.clone());
+            self.builtin_dispatch_dict = saved_dict;
+            return Ok(Some(StepOutcome::Deliver(result?)));
+        }
+        if let Some((body_node, params)) = self.cached_operation_body(impl_target) {
+            self.note_dispatch(impl_target);
+            let requirements = self.requirements_for_value_directed_impl(
+                impl_target,
+                target,
+                arg_values,
+                requirements.clone(),
+            )?;
+            return self
+                .enter_operation(impl_target, body_node, &params, arg_values.to_vec(), requirements)
+                .map(Some);
+        }
+        Ok(None)
+    }
+
     fn dictionary_resolved_sibling(&mut self, target: Symbol) -> Option<Symbol> {
         let dict = find_requirement(&self.stack.top()?.requirements, self.fields.req_self)?.clone();
         let spec = crate::kb::typing::impl_parent_sort_of_op(&self.kb, target)?;

@@ -76,9 +76,9 @@ pub fn register_standard_builtins(interp: &mut Interpreter) {
     // carrier inherits now that nothing shadows it. The same holds for the ordering
     // family (WI-876): each total scalar carrier maps its own `compare`/`gt`/…/`max`/`min`.
     //
-    // `PartialEq.neq` is keyed to the spec op (`rustland/anthill-stl/anthill/eq.anthill`);
     // `PartialEq.eq` is each carrier's, and a call that reaches the spec operation with no
-    // member is compared by its values (`Interpreter::eq_spec_op`).
+    // member is compared by its values (`Interpreter::eq_spec_op`); `PartialEq.neq` is a
+    // body in the spec, the negation of that `eq`.
     register_operation_mappings(interp);
     // WI-889 — the const-level peer: register the `const_map` value sources (the Float
     // IEEE specials) against their const symbols, from the same `HOST_FNS` registry.
@@ -321,10 +321,6 @@ const HOST_FNS: &[(
     // as everything above. Each binding block records what its operations reach that no
     // anthill body can; the functions themselves did not change.
     //
-    // `PartialEq.neq` is keyed to the SPEC op (`rustland/anthill-stl/anthill/eq.anthill`
-    // says why): the function dispatches, through `semantic_equal`, to the head carrier's
-    // own `eq` before deciding anything structurally.
-    ("partial_eq_neq", 2, builtin_neq),
     // `===`, the one kernel operation an operation body evaluates (`kernel.anthill`).
     // WI-615 / proposal 051: a Bool-returning TEST like `eq`. WI-644: PURELY STRUCTURAL,
     // not the semantic `builtin_eq` above (IEEE for a Float pair) — `nan === nan` must
@@ -1519,14 +1515,9 @@ pub(crate) fn builtin_eq(i: &mut Interpreter, args: &[Value]) -> Result<Value, E
     Ok(Value::Bool(semantic_equal(i, &a, &b)?))
 }
 
-fn builtin_neq(i: &mut Interpreter, args: &[Value]) -> Result<Value, EvalError> {
-    let [a, b] = expect_args::<2>("PartialEq.neq", args)?;
-    Ok(Value::Bool(!semantic_equal(i, &a, &b)?))
-}
-
 /// WI-625 (proposal 051 Phase 2, the eval→SLD dual) — eval's SEMANTIC equality,
-/// the interpreter mirror of the resolver's `sem_eq_core` (`kb/resolve.rs`).
-/// Returns the EQUAL verdict (`neq` negates it). The order matches the resolver
+/// the interpreter mirror of the resolver's `builtin_sem_eq` (`kb/resolve.rs`).
+/// Returns the EQUAL verdict. The order matches the resolver
 /// exactly so eval, SLD, and the C++ codegen agree on every operand:
 ///
 /// 1. **Float IEEE pair** — the PARTIAL-eq carrier (`nan != nan`,
@@ -3799,9 +3790,13 @@ fn compile_condition(
     // A spec operation whose primitive runs behind dispatch (`PartialOrd.gte`,
     // WI-20260909-SM910) is such a goal too: the atom is a value no typer saw, so the
     // resolver reads it at the type its filled columns carry
-    // (`KnowledgeBase::goal_builtin_tag`).
+    // (`KnowledgeBase::goal_builtin_tag`). So is `PartialEq.neq`, a body in the spec that
+    // no carrier may replace (`LoadError::CarrierSuppliesNeq`): its body, the negation of
+    // `eq`, answers the atom at whatever type the columns carry. An ordinary operation's
+    // body is not the answer for every carrier, and stays refused.
     if interp.kb.builtin_of(*functor).is_none()
         && interp.kb.spec_op_primitive_of(*functor).is_none()
+        && !interp.kb.is_neq_op(*functor)
         && !interp.kb.cites_a_relation(*functor)
     {
         return Err(macro_rejects(

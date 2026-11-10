@@ -413,7 +413,7 @@ end
 /// inside it, so a chain compares to any depth in both bodies. Fails with the equality clause
 /// back in `resolve_at_goal` (a call of `eq` keeping the provider's table row, which holds no
 /// binding): each nested `eq` then goes through the builtin and the equality bridge, and at the
-/// bridge's re-entry cap (16) the four are undecided.
+/// bridge's re-entry cap the four are undecided.
 #[test]
 fn a_binding_eq_is_the_calls_member() {
     let mut interp = crate::common::interp_for(CHAIN);

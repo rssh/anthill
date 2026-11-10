@@ -102,7 +102,7 @@ must be split:
 - **semantic intent → `=`**: value comparisons over data whose equality is (or may become)
   the carrier's — these stay `=` and gain real dispatch.
 
-`neq` (`neq(a,b) <=> not(eq(a,b))`) pairs with semantic `=`; structural inequality is
+`neq`, a body in `PartialEq` (`Bool.not(eq(a, b))`), pairs with semantic `=`; structural inequality is
 `!==` (`struct_neq`), the negation of `===` where `===` decides. Doing the `===` **surface +
 the structural-intent migration first** (Phase 1) means that when `=` flips (Phase 2), the
 structural sites are already off `=` and cannot break.

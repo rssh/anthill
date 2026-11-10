@@ -523,6 +523,32 @@ fn contract_target(kb: &KnowledgeBase, rule_qn: &str) -> Option<(Symbol, Contrac
     None
 }
 
+/// Does `op`, or the sort it is written in, require `Eq` at `ty` — directly or through what it
+/// requires in turn (`requires Ord[T = T]` reaches `Eq[T = T]`)? Then a value of `ty`, an
+/// abstract parameter included, is equal to itself by the law.
+fn eq_required_at(kb: &mut KnowledgeBase, op: Symbol, ty: &Value) -> bool {
+    use crate::kb::term_view::{views_structurally_equal, TermView};
+    let Some(eq) = kb.try_resolve_symbol("anthill.prelude.Eq") else {
+        return false;
+    };
+    let eq = kb.canonical_sort_sym(eq);
+    let mut entries: Vec<crate::kb::typing::RequiresEntry> =
+        crate::kb::typing::op_requires_chain_rc(kb, op).to_vec();
+    if let Some(sort) = crate::kb::typing::impl_parent_sort_of_op(kb, op) {
+        entries.extend(crate::kb::typing::requires_chain(kb, sort));
+    }
+    entries.iter().any(|entry| {
+        kb.canonical_sort_sym(entry.required_sort) == eq
+            && entry.spec.named_keys(kb).into_iter().any(|key| {
+                kb.local_name_of(key) == "T"
+                    && entry
+                        .spec
+                        .named_arg(kb, key)
+                        .is_some_and(|bound| views_structurally_equal(kb, &bound.to_value(), ty))
+            })
+    })
+}
+
 /// Discharge an operation-contract proof and write the verdict back onto its
 /// `ProofRecord` (`rid`). Strategy (the body symbolic execution): map each
 /// parameter to a fresh GROUND skolem constant and `result` to the operation
@@ -588,8 +614,9 @@ fn discharge_contract_proof(
     // opaque constants the resolver compares definitely, instead of flex vars it
     // would delay on — the eigenvariable reading of a ∀-quantified contract).
     let mut sigma: HashMap<Symbol, TermId> = HashMap::new();
-    let mut skolems: Vec<Symbol> = Vec::new();
-    for (param_sym, _ty) in &rec.params {
+    let mut skolems: Vec<(Symbol, bool)> = Vec::new();
+    let eq_providers = super::load::EqProviders::of(kb);
+    for (param_sym, ty) in &rec.params {
         let sk_sym = kb.intern_unique("contract_skolem");
         // COLLECTED, then handed to the proof's `FlowEnv` below. The resolver has to be
         // told what these constants ARE: each is ground, so the structural compare
@@ -597,7 +624,10 @@ fn discharge_contract_proof(
         // not force is a closed-world reading of an EIGENVARIABLE — exactly what this
         // proof's "holds for all inputs" claim forbids. Untold, `ensures eq(x, 1)`
         // comes back REFUTED ("not derivable from the body") when nothing decided it.
-        skolems.push(sk_sym);
+        // And at the parameter's type: reflexivity is `Eq`'s law, so it forces nothing
+        // about a `Float` parameter, which may be `nan`.
+        let self_equal = eq_providers.type_is_self_equal_by_law(kb, ty) || eq_required_at(kb, op_sym, ty);
+        skolems.push((sk_sym, self_equal));
         let sk = kb.alloc(Term::Ref(sk_sym));
         sigma.insert(*param_sym, sk);
     }
@@ -638,8 +668,8 @@ fn discharge_contract_proof(
     let mut flow = FlowEnv::empty();
     // The eigenvariables travel WITH Γ, on the same env and for the same span: both are
     // this proof's, both are gone when it returns.
-    for sk in &skolems {
-        flow = flow.with_skolem(*sk);
+    for &(sk, self_equal_by_law) in &skolems {
+        flow = flow.with_skolem(sk, self_equal_by_law);
     }
     for c in &rec.requires {
         if !is_value_precondition_clause(kb, c) {

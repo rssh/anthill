@@ -31,7 +31,7 @@
 //! under a requirement holds its laws (`a_requirement_adds_its_laws_…`), the warning is
 //! of a law that does NOT lower and no longer of every law
 //! (`the_warning_counts_the_laws_left_out_and_names_them`), `requires Ord[T]` gives the
-//! twelve laws of its chain (`the_laws_of_what_a_spec_provides_in_turn_are_read`), and
+//! eleven laws of its chain (`the_laws_of_what_a_spec_provides_in_turn_are_read`), and
 //! the claim about the carrier that proved of the reals is refused for want of a bound
 //! (`a_claim_about_the_carrier_with_no_bound_is_refused`). What a lowered law IS, row by
 //! row, is `wi_zz7ph_law_lowering_test`; the rows here still hold what BVG8M built — a
@@ -130,15 +130,15 @@ fn the_law_warning<'a>(out: &'a Output, scope: &str, spec: &str) -> &'a str {
 }
 
 /// THE REPRODUCTION, as far as its document. The proof is under `requires Eq[T = T]`;
-/// it is emitted, and — WI-20261012-ZZ7PH — with the laws it is owed: `Eq`'s `eq_refl`
-/// and the `neq` law of the `PartialEq` that `Eq` provides. Nothing is left out, so
-/// nothing is said.
+/// it is emitted, and — WI-20261012-ZZ7PH — with the law it is owed: `Eq`'s `eq_refl`
+/// (the `PartialEq` that `Eq` provides has none). Nothing is left out, so nothing is
+/// said.
 #[test]
 fn a_proof_under_a_requirement_is_emitted_with_the_laws_it_is_owed() {
     let out = prove_dry_run("under_eq", &fixture("test.bvg8m.eq", REQUIRES_EQ));
     assert_emitted(&out);
     let laws = laws_of(&out, "test.bvg8m.eq.Scope.r");
-    assert_eq!(laws.len(), 2, "stdout:\n{}", out.stdout);
+    assert_eq!(laws.len(), 1, "stdout:\n{}", out.stdout);
     assert_eq!(laws[0], eq_refl_at("test.bvg8m.eq.Scope.T"));
     assert_eq!(laws_left_out(&out), Vec::<&str>::new(), "stderr:\n{}", out.stderr);
 }
@@ -157,7 +157,7 @@ fn a_requirement_adds_its_laws_and_what_they_declare_and_nothing_else() {
     assert_emitted(&without);
     // THE CONTROL: the proof with no requirement in scope is given nothing.
     assert_eq!(laws_of(&without, "test.bvg8m.doc.Scope.r"), Vec::<&str>::new());
-    assert_eq!(laws_of(&with, "test.bvg8m.doc.Scope.r").len(), 2);
+    assert_eq!(laws_of(&with, "test.bvg8m.doc.Scope.r").len(), 1);
     assert_ne!(with.stdout, without.stdout);
 
     let mut stripped = String::new();
@@ -194,7 +194,7 @@ fn a_requirement_of_a_spec_with_no_law_says_nothing() {
 }
 
 /// TWO REQUIREMENTS OF ONE SCOPE, each its own clause: `Lawless` gives nothing and `Eq`
-/// its two laws.
+/// its law.
 #[test]
 fn two_requirements_of_one_scope_are_each_their_own() {
     let out = prove_dry_run(
@@ -206,16 +206,16 @@ fn two_requirements_of_one_scope_are_each_their_own() {
     );
     assert_emitted(&out);
     let laws = laws_of(&out, "test.bvg8m.two.Scope.r");
-    assert_eq!(laws.len(), 2, "stdout:\n{}", out.stdout);
+    assert_eq!(laws.len(), 1, "stdout:\n{}", out.stdout);
     assert_eq!(laws[0], eq_refl_at("test.bvg8m.two.Scope.T"));
     assert_eq!(laws_left_out(&out), Vec::<&str>::new(), "stderr:\n{}", out.stderr);
 }
 
 /// THE WARNING IS OF THE LAWS THAT ARE NOT LOWERED, counted against what the requirement
-/// gives and named: `WeakOrd` at `Int64` gives eleven — its nine, `Eq`'s, `PartialEq`'s —
-/// and at a concrete carrier none is lowered (a law is asserted of a carrier's own
-/// sort). Three of the eleven are cited by a label; the rest are counted by what they
-/// are. At the scope's own parameter all eleven lower, and nothing is said.
+/// gives and named: `WeakOrd` at `Int64` gives ten — its nine and `Eq`'s — and at a
+/// concrete carrier none is lowered (a law is asserted of a carrier's own sort). Three of
+/// the ten are cited by a label; the rest are counted by what they are. At the scope's
+/// own parameter all ten lower, and nothing is said.
 #[test]
 fn the_warning_counts_the_laws_left_out_and_names_them() {
     let out = prove_dry_run(
@@ -230,12 +230,12 @@ fn the_warning_counts_the_laws_left_out_and_names_them() {
     );
     assert!(
         warning.contains(
-            ", and 11 of the 11 laws it gives a proof are not lowered to SMT — a `by z3` proof \
+            ", and 10 of the 10 laws it gives a proof are not lowered to SMT — a `by z3` proof \
              under it runs without: anthill.prelude.WeakOrd.compare_antisym, \
-             anthill.prelude.WeakOrd.compare_refl, anthill.prelude.Eq.eq_refl, 7 unlabelled \
+             anthill.prelude.WeakOrd.compare_refl, anthill.prelude.Eq.eq_refl, 6 unlabelled \
              equations, 1 constraint ("
         ),
-        "eleven laws, all left out, three named: {warning}"
+        "ten laws, all left out, three named: {warning}"
     );
     assert_eq!(laws_of(&out, "test.bvg8m.woi.Scope.r"), Vec::<&str>::new(), "{}", out.stdout);
 
@@ -247,15 +247,15 @@ fn the_warning_counts_the_laws_left_out_and_names_them() {
         ),
     );
     assert_emitted(&out);
-    assert_eq!(laws_of(&out, "test.bvg8m.wo.Scope.r").len(), 11, "stdout:\n{}", out.stdout);
+    assert_eq!(laws_of(&out, "test.bvg8m.wo.Scope.r").len(), 10, "stdout:\n{}", out.stdout);
     assert_eq!(laws_left_out(&out), Vec::<&str>::new(), "stderr:\n{}", out.stderr);
 }
 
 /// THE CHAIN IS FOLLOWED (user, 2026-10-12; WI-20261012-ZZ7PH). `Ord` has one law of
-/// its own and provides `WeakOrd`, which has nine and reaches `Eq` and `PartialEq`:
-/// twelve. `Strict` has none of its own and provides `Ord`: the same twelve. BVG8M read
-/// a spec's OWN laws, and held this row the other way — one law under `Ord`, and
-/// nothing at all under `Strict`.
+/// its own and provides `WeakOrd`, which has nine and reaches `Eq` (and `PartialEq`,
+/// which has none): eleven. `Strict` has none of its own and provides `Ord`: the same
+/// eleven. BVG8M read a spec's OWN laws, and held this row the other way — one law under
+/// `Ord`, and nothing at all under `Strict`.
 #[test]
 fn the_laws_of_what_a_spec_provides_in_turn_are_read() {
     let out = prove_dry_run(
@@ -266,7 +266,7 @@ fn the_laws_of_what_a_spec_provides_in_turn_are_read() {
         ),
     );
     assert_emitted(&out);
-    assert_eq!(laws_of(&out, "test.bvg8m.ord.Scope.r").len(), 12, "stdout:\n{}", out.stdout);
+    assert_eq!(laws_of(&out, "test.bvg8m.ord.Scope.r").len(), 11, "stdout:\n{}", out.stdout);
     assert_eq!(laws_left_out(&out), Vec::<&str>::new(), "stderr:\n{}", out.stderr);
 
     let src = r#"
@@ -292,7 +292,7 @@ end
     assert_eq!(out.diagnostics("error:").count(), 0, "stderr:\n{}", out.stderr);
     assert_eq!(
         laws_of(&out, "test.bvg8m.strict.Scope.r").len(),
-        12,
+        11,
         "`Strict` provides `Ord`; stdout:\n{}",
         out.stdout
     );
@@ -326,7 +326,7 @@ end
     assert_emitted(&out);
     // The requirement is the OUTER scope's: its law is over the outer scope's parameter.
     let laws = laws_of(&out, "test.bvg8m.nest.Outer.Inner.r");
-    assert_eq!(laws.len(), 2, "stdout:\n{}", out.stdout);
+    assert_eq!(laws.len(), 1, "stdout:\n{}", out.stdout);
     assert_eq!(laws[0], eq_refl_at("test.bvg8m.nest.Outer.T"));
 }
 
@@ -374,7 +374,7 @@ fn a_step_of_a_structured_proof_under_a_requirement_is_emitted() {
     // The step is under the scope's requirement: its document holds the laws. (A dry
     // run stops at the step; the conclusion's query is the verdict row's.)
     let laws = laws_of(&out, "test.bvg8m.step.Scope.big_lemma.h1");
-    assert_eq!(laws.len(), 2, "stdout:\n{}", out.stdout);
+    assert_eq!(laws.len(), 1, "stdout:\n{}", out.stdout);
     assert_eq!(laws[0], eq_refl_at("test.bvg8m.step.Scope.T"));
 }
 

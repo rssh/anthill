@@ -87,13 +87,20 @@ use evaluate::{Holes, Stuck};
 /// **Re-measured 2026-11-08 (WI-20260909-SM910), on the tree before that change and after
 /// it: (1.5, 2.0] MiB at opt-level 0, (512, 1024] KiB at opt-level 2.** The crossing has
 /// deepened since the figures above, and at opt-level 0 the default 2 MiB thread clears the
-/// fixture by less than 512 KiB. The fixture reaches the cap through `neq` since that change:
-/// a binding's `eq` is pinned at load, and `loopEq(x, y) = eq(x, y)` loops inside one
-/// interpreter. A circle through an `eq` written as clauses — `ceq` proved by a clause that
-/// evaluates an operation calling `eq` again — crosses resolver, bridge, interpreter and
-/// resolver at each turn and needs (2, 3] MiB at opt-level 0, (512, 768] KiB at opt-level 2:
-/// at opt-level 0 it overflows a 2 MiB thread before the cap stops it, on both trees.
-const BRIDGE_REENTRY_CAP: usize = 16;
+/// fixture by less than 512 KiB.
+///
+/// **WI-20261109-JEE0E — 16 → 8, and the fixture moved (user, 2026-11-10).** The fixture
+/// reached the cap through `neq`'s lookup from the value; with `neq` a body pinned at the
+/// carrier, `loopEq(x, y) = neq(x, y)` loops inside one interpreter and crosses nothing. The
+/// circle that crosses at each turn — resolver, bridge, interpreter, resolver — goes through
+/// an `eq` written as clauses: `ceq` proved by a clause that evaluates `again`, which calls
+/// `eq` again. MEASURED at 16: (2.25, 2.5] MiB at opt-level 0, which overflows a 2 MiB test
+/// thread before the cap stops it, so a selected unoptimized run of the binary holding it
+/// aborted; (640, 768] KiB at opt-level 2. At 8: (1.25, 1.5] MiB at opt-level 0, (320, 384] KiB
+/// at opt-level 2 — both clear the default thread. The figures to re-measure when this path
+/// grows, on both builds, are those of
+/// `wi625_eval_semantic_eq_test::eval_undecidable_instance_fact_eq_is_loud_not_false`.
+const BRIDGE_REENTRY_CAP: usize = 8;
 
 thread_local! {
     /// Current eval↔SLD bridge nesting depth on this thread (resolution and its
@@ -254,7 +261,7 @@ pub enum BuiltinTag {
     StructNeq,
     /// `anthill.prelude.PartialEq.eq(?a, ?b)` — SEMANTIC equality (WI-616 / proposal
     /// 051 Phase 2): the `PartialEq.eq` spec op, dispatched through the carrier's
-    /// `Eq` instance. See [`KnowledgeBase::sem_eq_core`] for the full
+    /// `Eq` instance. See [`KnowledgeBase::builtin_sem_eq`] for the full
     /// reflexivity / dispatch / buried-override / structural cascade.
     SemEq,
     /// The equality a scalar carrier's own `eq` runs (`Int64.eq`, `Float.eq`, `String.eq`,
@@ -276,10 +283,6 @@ pub enum BuiltinTag {
     /// `type_value` GOAL has nothing to resolve against and the arm below says so rather
     /// than inventing a type.
     TypeValueOf,
-    /// `anthill.prelude.PartialEq.neq(?a, ?b)` — semantic inequality
-    /// (`neq(a,b) <=> not(eq(a,b))`): [`KnowledgeBase::sem_eq_core`] with the
-    /// verdict inverted.
-    SemNeq,
     /// `anthill.kernel.unify(?a, ?b)` — structural unification (proposal 049).
     /// The bind-counterpart of `StructEq`: same structural walk, but a flex var head
     /// **binds** to the other side (an occurs-checked frame effect →
@@ -815,7 +818,8 @@ impl BuiltinResult {
 }
 
 /// WI-616 — map an "equal?" answer to the requested verdict: `positive` is
-/// `true` for `eq` (equal ⇒ Success) and `false` for `neq` (equal ⇒ Failure).
+/// `true` for an equality test (equal ⇒ Success) and `false` for its negation, `!==`
+/// (equal ⇒ Failure).
 fn sem_verdict(equal: bool, positive: bool) -> BuiltinResult {
     if equal == positive {
         BuiltinResult::Success
@@ -932,6 +936,19 @@ enum GroundCheck {
 
 // ── Configuration ───────────────────────────────────────────────
 
+/// A proof's eigenvariables ([`ResolveConfig::opaque_skolems`]): the opaque constant each
+/// parameter of a contract stands as, and those whose parameter's declared type is not
+/// equal to itself by `Eq`'s law.
+#[derive(Clone, Debug, Default)]
+pub struct OpaqueSkolems {
+    /// Every eigenvariable of the proof.
+    pub all: std::collections::HashSet<Symbol>,
+    /// Those of a type that is not equal to itself by `Eq`'s law — `Float` (`nan`), a type
+    /// that provides `PartialEq` alone, an abstract type: an `eq` holding of such a constant
+    /// and itself is a closed-world reading too.
+    pub not_self_equal: std::collections::HashSet<Symbol>,
+}
+
 /// Configuration for SLD resolution.
 pub struct ResolveConfig {
     /// Maximum resolution depth (default 100).
@@ -977,7 +994,7 @@ pub struct ResolveConfig {
     /// guard discharge goes through the same bridge and seeds an EMPTY set, because no
     /// contract σ ran. That is the point of the placement — a resolution that minted no
     /// eigenvariables cannot see one.
-    pub opaque_skolems: Option<Rc<std::collections::HashSet<Symbol>>>,
+    pub opaque_skolems: Option<Rc<OpaqueSkolems>>,
     /// WI-FFPGD — is this resolution asking for ANSWERS or for PROOFS?
     ///
     /// `true` (the default): [`SearchStream::is_duplicate_answer`] collapses two
@@ -1993,6 +2010,37 @@ impl SearchStream {
         }
     }
 
+    /// In a proof from Γ, the hypotheses that are `goal_val` as written, as the step that tries
+    /// them — for a goal the step is about to rewrite, which no hypothesis would then match.
+    /// `None` outside a proof from Γ, or where none is.
+    fn answer_from_hypotheses_as_written(
+        &mut self,
+        kb: &mut KnowledgeBase,
+        goal_val: &Value,
+        delay_mode: &DelayMode,
+    ) -> Option<StepResult> {
+        if self.config.gamma.is_none() {
+            return None;
+        }
+        let found = self.hypothesis_candidates(kb, goal_val);
+        if found.is_empty() {
+            return None;
+        }
+        let f = self.stack.last_mut().unwrap();
+        f.state = FrameState::ChoicePoint {
+            delay_mode: delay_mode.clone(),
+            original_goal: goal_val.clone(),
+            candidates: found,
+            next: 0,
+            extent_rows: Vec::new(),
+            extent_next: 0,
+            any_delayed: false,
+            child_solutions: 0,
+            cut_barrier: None,
+        };
+        Some(StepResult::Continue)
+    }
+
     /// Local hypotheses that match `goal_val`, as zero-body `Assumption` candidates —
     /// resolved *inside* the normal SLD search, so they chain through KB rules and obey
     /// backtracking / floundering with no duplicated logic. Two sources:
@@ -2030,11 +2078,28 @@ impl SearchStream {
     /// language-level subject is its LHS. An explicitly written `rule eq(...)` is not
     /// equational and remains eligible. In a proof from Γ, a guarded `=` law is a premise too
     /// ([`KnowledgeBase::is_guarded_eq_law`]): `isEmpty(s)` is shown where Γ holds
-    /// `splitFirst(s) === none`.
-    fn answers_beside_builtin(&self, kb: &KnowledgeBase, rid: RuleId) -> bool {
+    /// `splitFirst(s) === none` — where `laws_answer` ([`Self::guarded_laws_answer`]).
+    fn answers_beside_builtin(&self, kb: &KnowledgeBase, rid: RuleId, laws_answer: bool) -> bool {
         kb.clause_origin(rid) == super::ClauseOrigin::Source
-            && (!kb.has_equational_head(rid)
-                || (self.config.gamma.is_some() && kb.is_guarded_eq_law(rid)))
+            && (!kb.has_equational_head(rid) || (laws_answer && kb.is_guarded_eq_law(rid)))
+    }
+
+    /// Do the guarded `=` laws answer this goal beside its builtin? In a proof from Γ, and only
+    /// where the goal's left operand is no variable nothing has bound. A law is a premise about
+    /// the call on its left; `eq` is a test and binds nothing, so `eq(?x, true)` holds by no
+    /// law, and met as a head every law's left side would bind `?x` — the placeholder of a call
+    /// that cannot run (`eq(nonZero(?n), true)`, the Bool view of a goal over an unbound `?n`),
+    /// or the operand of `not(eq(?k, ?k2))`, `neq`'s reading in `Map`'s law guards, which meets
+    /// those laws again without end.
+    fn guarded_laws_answer(&self, kb: &KnowledgeBase, goal_val: &Value) -> bool {
+        if self.config.gamma.is_none() {
+            return false;
+        }
+        let subst = &self.stack.last().unwrap().subst;
+        match kb.walk_arg(goal_val.pos_arg(kb, 0), subst) {
+            Some(lhs) => !kb.value_is_flex(&lhs),
+            None => true,
+        }
     }
 
     /// Proposal 050 (WI-537) — the Γ-overlay candidates for a goal: each
@@ -2499,6 +2564,25 @@ impl SearchStream {
             return Some(StepResult::Continue);
         }
 
+        // 3.8 `neq(a, b)` no type reached is `not(eq(a, b))` ([`KnowledgeBase::untyped_neq_as_not_eq`]).
+        // Not under a citation's marker: a marked goal carries its callee's dictionaries.
+        if within.is_none() {
+            let not_eq = kb.untyped_neq_as_not_eq(&goal_val, &self.stack.last().unwrap().subst);
+            if let Some(not_eq) = not_eq {
+                // In a proof from Γ, a hypothesis that is the goal as written answers it first —
+                // an earlier `match` arm's `neq(s, p)`, an assumed conclusion.
+                if let Some(step) = self.answer_from_hypotheses_as_written(kb, &goal_val, &delay_mode) {
+                    return Some(step);
+                }
+                let fr = self.stack.last_mut().unwrap();
+                // As the `field_access` rewrite below: goal[0] in place, same goal count,
+                // `delay_mode` threaded through unchanged.
+                fr.goals[0].goal = not_eq;
+                fr.state = FrameState::Init { delay_mode };
+                return Some(StepResult::Continue);
+            }
+        }
+
         // 4. Builtin goal — classify by functor read through TermView. A goal headed by a type
         // is a type check, answered by the instance search ([`BuiltinTag::TypeApplication`]).
         let registered_builtin_tag =
@@ -2531,9 +2615,10 @@ impl SearchStream {
         //
         // Which clauses count is [`Self::answers_beside_builtin`].
         if registered_builtin_tag.is_some() && !builtin_only && !clauses_only {
+            let laws_answer = self.guarded_laws_answer(kb, &goal_val);
             let has_written_clauses = goal_val.head(kb).functor_sym().is_some_and(|functor| {
                 kb.rules_by_functor_iter(functor)
-                    .any(|rid| self.answers_beside_builtin(kb, rid))
+                    .any(|rid| self.answers_beside_builtin(kb, rid, laws_answer))
             });
             if has_written_clauses {
                 let f = self.stack.last_mut().unwrap();
@@ -3091,23 +3176,8 @@ impl SearchStream {
                 // In a proof from Γ, a hypothesis that is the goal as written answers it: an
                 // `if isEmpty(xs)` branch, a callee's own guard, a `forall` antecedent.
                 // Rewritten first, the goal heads `eq` and no such hypothesis matches it.
-                if self.config.gamma.is_some() {
-                    let found = self.hypothesis_candidates(kb, &goal_val);
-                    if !found.is_empty() {
-                        let f = self.stack.last_mut().unwrap();
-                        f.state = FrameState::ChoicePoint {
-                            delay_mode,
-                            original_goal: goal_val.clone(),
-                            candidates: found,
-                            next: 0,
-                            extent_rows: Vec::new(),
-                            extent_next: 0,
-                            any_delayed: false,
-                            child_solutions: 0,
-                            cut_barrier: None,
-                        };
-                        return Some(StepResult::Continue);
-                    }
+                if let Some(step) = self.answer_from_hypotheses_as_written(kb, &goal_val, &delay_mode) {
+                    return Some(step);
                 }
                 let eq_sym = kb.eq_functor();
                 // WI-20260830-DQD5W — THE OPERAND GOES IN ON THE OCCURRENCE CARRIER, and
@@ -3503,7 +3573,8 @@ impl SearchStream {
         // The clause-only child admits exactly the rows whose presence created
         // the combined choice point above.
         if clauses_only {
-            rule_candidates.retain(|(rid, _)| self.answers_beside_builtin(kb, *rid));
+            let laws_answer = self.guarded_laws_answer(kb, &goal_val);
+            rule_candidates.retain(|(rid, _)| self.answers_beside_builtin(kb, *rid, laws_answer));
         }
 
         candidates.extend(
@@ -4409,7 +4480,10 @@ impl SearchStream {
     /// `ensures eq(result.value, x)` projects to exactly that shape, so it still
     /// discharges. Suppressing it instead — which is what widening
     /// `value_has_open_world_ref` to skolems would have done — is the version of this
-    /// change that looks simpler and silently breaks the passing corpus.
+    /// change that looks simpler and silently breaks the passing corpus. The carve-out is
+    /// `Eq`'s law, so it holds at a parameter whose type is equal to itself by that law and
+    /// at no other: `eq(c, c)` over a `Float` parameter is undecided, `c` might be `nan`
+    /// ([`Self::success_rests_on_a_skolem_not_self_equal`]).
     ///
     /// NOT the `nonvar` / `ground` / `ho_apply` family: those answer about the
     /// CONSTANT (a skolem genuinely is ground, genuinely is nonvar), not about the
@@ -4434,9 +4508,6 @@ impl SearchStream {
         if self.config.gamma.is_none() {
             return result;
         }
-        if !matches!(result, BuiltinResult::Success | BuiltinResult::Failure) {
-            return result;
-        }
         if matches!(
             tag,
             BuiltinTag::NonVar | BuiltinTag::Ground | BuiltinTag::HoApply
@@ -4446,10 +4517,27 @@ impl SearchStream {
         let Some(skolems) = self.config.opaque_skolems.as_deref() else {
             return result;
         };
-        if !kb.value_mentions_opaque_skolem(goal, subst, skolems) {
+        if !kb.value_mentions_opaque_skolem(goal, subst, &skolems.all) {
             return result;
         }
-        if !Self::skolem_verdict_is_value_dependent(tag, &result) {
+        // A comparison written with its result column (`eq(c, 1, false)`, `eq(c, 1, ?r)`)
+        // answers what its two operands' comparison answers. Folded into the column, a
+        // value-dependent verdict read as a forced one (`false` against `false` is a success),
+        // and one bound into the column was not reconsidered at all.
+        if let Some(pair) = Self::comparison_of_result_column(kb, tag, goal) {
+            let raw = kb.execute_builtin(tag, &pair, subst, faults);
+            let verdict = self.reconsider_verdict_over_skolem(kb, tag, &pair, subst, raw, faults);
+            if matches!(verdict, BuiltinResult::Unknown { .. }) {
+                return verdict;
+            }
+            return result;
+        }
+        if !matches!(result, BuiltinResult::Success | BuiltinResult::Failure) {
+            return result;
+        }
+        if !Self::skolem_verdict_is_value_dependent(tag, &result)
+            && !Self::success_rests_on_a_skolem_not_self_equal(kb, tag, &result, goal, subst, skolems, faults)
+        {
             return result;
         }
         // TWO QUESTIONS, AND THE FIRST DRAFT ASKED ONLY ONE. The polarity test above says
@@ -4464,7 +4552,7 @@ impl SearchStream {
         // CONSTRUCTORS — true for every `c` — and the first draft flipped it to
         // `Unknown`, un-discharging a contract that had always discharged. A predicate
         // true OF the target does not identify it.
-        if Self::difference_is_skolem_free(kb, goal, subst, skolems, faults) {
+        if Self::difference_is_skolem_free(kb, goal, subst, &skolems.all, faults) {
             return result;
         }
         BuiltinResult::Unknown {
@@ -4489,10 +4577,10 @@ impl SearchStream {
     /// | tag | verdict that is FORCED (structure decided it) | verdict that DEPENDS on the value |
     /// |---|---|---|
     /// | `SemEq` / `StructEq` / `Unify` | `Success` — `eq(c, c)` holds for every `c` | `Failure` — `eq(c, 1)`, `c` might BE 1 |
-    /// | `SemNeq` / `StructNeq` | `Failure` — `neq(c, c)` fails for every `c` | `Success` — `neq(c, 1)`, same reason |
+    /// | `StructNeq` | `Failure` — `c !== c` fails for every `c` | `Success` — `c !== 1`, same reason |
     ///
     /// Both directions matter and they are separate axes: the `SemEq` row turns a wrong
-    /// FAILURE into `Unknown`, the `SemNeq` row a wrong SUCCESS. A fix that handled only
+    /// FAILURE into `Unknown`, the `StructNeq` row a wrong SUCCESS. A fix that handled only
     /// one would look right on half the tests.
     ///
     /// THE ORDERING FAMILY (`Lt`, `Gte`, …) IS ABSENT, and for a reason: neither of its
@@ -4516,9 +4604,7 @@ impl SearchStream {
             BuiltinTag::SemEq | BuiltinTag::ScalarEq | BuiltinTag::StructEq | BuiltinTag::Unify => {
                 matches!(result, BuiltinResult::Failure)
             }
-            BuiltinTag::SemNeq | BuiltinTag::StructNeq => {
-                matches!(result, BuiltinResult::Success)
-            }
+            BuiltinTag::StructNeq => matches!(result, BuiltinResult::Success),
             _ => false,
         }
     }
@@ -4564,19 +4650,9 @@ impl SearchStream {
         skolems: &std::collections::HashSet<Symbol>,
         faults: &mut ReduceFaults,
     ) -> bool {
-        // Read both operands out to owned `Value`s first — `pos_arg` borrows `kb`, and
-        // `evaluate_value` needs it mutably.
-        let (Some(a), Some(b)) = (
-            goal.pos_arg(kb, 0).map(|v| v.to_value()),
-            goal.pos_arg(kb, 1).map(|v| v.to_value()),
-        ) else {
+        let Some((a, b)) = Self::compared_operands(kb, goal, subst, faults) else {
             return false; // not a two-operand comparison — nothing to compare
         };
-        // WI-20260926-K4JGC — evaluated as the comparison itself read them; a side holding
-        // a call that did not run is compared as it stands, and the structural core below
-        // waits on it rather than failing.
-        let a = kb.evaluate_operand(a.clone(), subst, faults).unwrap_or(a);
-        let b = kb.evaluate_operand(b.clone(), subst, faults).unwrap_or(b);
         // Every eigenvariable becomes a fresh unknown. `substitute_ref_terms` is the
         // carrier-neutral σ (`Value::Term` grounds in term-land, a denoted `Value::Node`
         // is rebuilt through the View layer) and its term core replaces exactly
@@ -4601,6 +4677,80 @@ impl SearchStream {
             kb.unify_values(a, b, &mut work),
             UnifyOutcome::Fail
         )
+    }
+
+    /// `f(a, b)` for an equality test written with its result column, `f(a, b, r)`; `None` for
+    /// any other goal.
+    fn comparison_of_result_column(
+        kb: &mut KnowledgeBase,
+        tag: BuiltinTag,
+        goal: &Value,
+    ) -> Option<Value> {
+        if !matches!(
+            tag,
+            BuiltinTag::SemEq | BuiltinTag::ScalarEq | BuiltinTag::StructEq | BuiltinTag::StructNeq
+        ) {
+            return None;
+        }
+        let ViewHead::Functor {
+            functor,
+            pos_arity: 3,
+            named_arity: 0,
+        } = goal.head(kb)
+        else {
+            return None;
+        };
+        let (a, b) = (goal.pos_arg(kb, 0)?.to_value(), goal.pos_arg(kb, 1)?.to_value());
+        Some(kb.make_goal_value(functor, vec![a, b]))
+    }
+
+    /// The two operands of a comparison as the comparison read them: evaluated, a side holding
+    /// a call that did not run as it stands (WI-20260926-K4JGC). `None` for a goal with no two
+    /// operands.
+    fn compared_operands(
+        kb: &mut KnowledgeBase,
+        goal: &Value,
+        subst: &Substitution,
+        faults: &mut ReduceFaults,
+    ) -> Option<(Value, Value)> {
+        // Read both operands out to owned `Value`s first — `pos_arg` borrows `kb`, and
+        // `evaluate_value` needs it mutably.
+        let (Some(a), Some(b)) = (
+            goal.pos_arg(kb, 0).map(|v| v.to_value()),
+            goal.pos_arg(kb, 1).map(|v| v.to_value()),
+        ) else {
+            return None;
+        };
+        let a = kb.evaluate_operand(a.clone(), subst, faults).unwrap_or(a);
+        let b = kb.evaluate_operand(b.clone(), subst, faults).unwrap_or(b);
+        Some((a, b))
+    }
+
+    /// Does this equality's SUCCESS rest on an eigenvariable whose type is not equal to itself
+    /// by `Eq`'s law ([`OpaqueSkolems::not_self_equal`])? Then it is the reflexivity carve-out
+    /// read where the law does not hold — `eq(c, c)` over a `Float` parameter — and as
+    /// value-dependent as the failure of `eq(c, 1)`. Asked of the operands as the comparison
+    /// read them, so a skolem projected away (`eq(fst(pair(1, c)), 1)`) decides nothing.
+    fn success_rests_on_a_skolem_not_self_equal(
+        kb: &mut KnowledgeBase,
+        tag: BuiltinTag,
+        result: &BuiltinResult,
+        goal: &Value,
+        subst: &Substitution,
+        skolems: &OpaqueSkolems,
+        faults: &mut ReduceFaults,
+    ) -> bool {
+        if !matches!(tag, BuiltinTag::SemEq | BuiltinTag::ScalarEq)
+            || !matches!(result, BuiltinResult::Success)
+            || !kb.value_mentions_opaque_skolem(goal, subst, &skolems.not_self_equal)
+        {
+            return false;
+        }
+        let Some((a, b)) = Self::compared_operands(kb, goal, subst, faults) else {
+            return false;
+        };
+        kb.value_mentions_opaque_skolem(&a, subst, &skolems.not_self_equal)
+            || kb.value_mentions_opaque_skolem(&b, subst, &skolems.not_self_equal)
     }
 
     /// Residualize-or-rotate a goal the resolver could not answer — the scheduling half
@@ -6582,7 +6732,6 @@ impl KnowledgeBase {
             BuiltinTag::StructNeq => self.builtin_struct_eq(goal, answer_subst, false, faults),
             BuiltinTag::SemEq => self.builtin_sem_eq(goal, answer_subst, faults),
             BuiltinTag::ScalarEq => self.builtin_scalar_eq(goal, answer_subst, faults),
-            BuiltinTag::SemNeq => self.builtin_sem_neq(goal, answer_subst, faults),
             BuiltinTag::Unify => self.builtin_unify(goal, answer_subst, faults),
             BuiltinTag::Gt => self.builtin_cmp(
                 goal,
@@ -8883,29 +9032,7 @@ impl KnowledgeBase {
     }
 
     /// WI-616 (proposal 051 Phase 2) — `eq(?a, ?b)`, the SEMANTIC `PartialEq.eq` spec
-    /// op. See [`Self::sem_eq_core`].
-    fn builtin_sem_eq(
-        &mut self,
-        goal: &Value,
-        subst: &Substitution,
-        faults: &mut ReduceFaults,
-    ) -> BuiltinResult {
-        self.sem_eq_core(goal, subst, true, faults)
-    }
-
-    /// WI-616 — `neq(?a, ?b)`, semantic inequality (`neq(a,b) <=> not(eq(a,b))`,
-    /// the `Eq` law): [`Self::sem_eq_core`] with the verdict inverted.
-    fn builtin_sem_neq(
-        &mut self,
-        goal: &Value,
-        subst: &Substitution,
-        faults: &mut ReduceFaults,
-    ) -> BuiltinResult {
-        self.sem_eq_core(goal, subst, false, faults)
-    }
-
-    /// WI-616 (proposal 051 Phase 2) — the shared core of semantic `eq`/`neq`
-    /// (`positive` = which verdict "equal" maps to). Outcomes, in order:
+    /// op, for a goal no member answers. Outcomes, in order:
     ///
     /// 1. **Reflexivity** — structurally identical operands are equal under any
     ///    lawful `Eq` instance: verdict with no lookups (the hot path, and
@@ -8937,21 +9064,17 @@ impl KnowledgeBase {
     /// (WI-20260909-SM910); the index decides only a goal nothing typed. At three positional
     /// arguments the third is the result column, as [`Self::builtin_cmp`] reads its own:
     /// `eq(a, b, ?r)` binds `?r` to the verdict, where it answered with `?r` free.
-    fn sem_eq_core(
+    fn builtin_sem_eq(
         &mut self,
         goal: &Value,
         subst: &Substitution,
-        positive: bool,
         faults: &mut ReduceFaults,
     ) -> BuiltinResult {
         let ViewHead::Functor { functor, .. } = goal.head(self) else {
             return BuiltinResult::Failure;
         };
-        // `eq`'s pin only: the dispatch proves the target as the carrier's `eq` and `neq`
-        // negates it, so a `neq` goal reads the `eq` the index names (a carrier writes no
-        // `neq` of its own, §8.3).
         let pinned = match goal {
-            Value::Node(o) if positive => o
+            Value::Node(o) => o
                 .classified_apply_target()
                 .filter(|t| *t != functor && self.builtin_of(*t).is_none()),
             _ => None,
@@ -8960,22 +9083,20 @@ impl KnowledgeBase {
             EqOperands::Delay => BuiltinResult::delay(),
             EqOperands::Stuck(state) => state.verdict(),
             EqOperands::Absent => BuiltinResult::Failure,
-            EqOperands::Ready(a, b) => self.sem_eq_values_at(a, b, subst, positive, pinned),
+            EqOperands::Ready(a, b) => self.sem_eq_values_at(a, b, subst, pinned),
         };
         self.verdict_into_result_column(goal, subst, verdict)
     }
 
-    /// WI-616/WI-625 — the VALUE-level core of semantic `eq`/`neq`, for
-    /// [`Self::sem_eq_core`] (the SLD goal, after [`Self::eq_operands`] walks the
+    /// WI-616/WI-625 — the VALUE-level core of semantic `eq`, for
+    /// [`Self::builtin_sem_eq`] (the SLD goal, after [`Self::eq_operands`] walks the
     /// operands), at the member a typed goal was pinned to, which step (4) dispatches to
-    /// ahead of the index. `positive` requests the EQUAL verdict (`eq`) or its negation
-    /// (`neq`). Outcome order is [`Self::sem_eq_core`]'s doc.
+    /// ahead of the index. Outcome order is [`Self::builtin_sem_eq`]'s doc.
     fn sem_eq_values_at(
         &mut self,
         a: Value,
         b: Value,
         subst: &Substitution,
-        positive: bool,
         pinned: Option<Symbol>,
     ) -> BuiltinResult {
         // (1) Float operand pair — IEEE `==` (nan != nan, -0.0 == +0.0), NOT the
@@ -8983,15 +9104,15 @@ impl KnowledgeBase {
         // `OrderedFloat`). Mirrors eval's `float_ieee_eq` so resolver, interpreter,
         // and C++ codegen agree (the WI-645 acceptance).
         if let (Some(x), Some(y)) = (self.value_f64(&a), self.value_f64(&b)) {
-            return sem_verdict(x == y, positive);
+            return sem_verdict(x == y, true);
         }
         // A tuple has no `eq` member: its components are compared, each by these steps
         // (eval's twin is in `semantic_equal`).
         if let Some(pairs) = self.tuple_component_pairs(&a, &b) {
             if self.value_self_equal_by_law(&a, Some(subst)) && self.values_equal(&a, &b) {
-                return sem_verdict(true, positive);
+                return sem_verdict(true, true);
             }
-            return self.tuple_components_sem_eq(pairs, subst, positive);
+            return self.tuple_components_sem_eq(pairs, subst);
         }
         // WI-20261025-TSYS6 — an operand of a carrier whose own `eq` decides identical operands
         // too (one that provides no `Eq`, or provides it under a condition) goes to that `eq`,
@@ -9005,12 +9126,12 @@ impl KnowledgeBase {
         if (!own_eq_decides || self.value_self_equal_by_law(&a, Some(subst)))
             && self.values_equal(&a, &b)
         {
-            return sem_verdict(true, positive);
+            return sem_verdict(true, true);
         }
         // (3) No carrier overrides eq at all (the common KB): straight to
         // the structural verdict — no per-operand probes or scans.
         if pinned.is_none() && !self.has_eq_dispatch_entries() {
-            return sem_verdict(false, positive);
+            return sem_verdict(false, true);
         }
         // (4) Head-carrier override over GROUND operands ⇒ dispatch: the typer's pin, else the
         // index.
@@ -9021,14 +9142,14 @@ impl KnowledgeBase {
             if !self.value_deep_ground(&a, subst) || !self.value_deep_ground(&b, subst) {
                 return BuiltinResult::delay();
             }
-            return self.sem_eq_dispatch(target, a, b, subst, positive);
+            return self.sem_eq_dispatch(target, a, b, subst);
         }
         // (5) Buried override → suspend rather than mis-decide structurally.
         if self.value_reaches_eq_override(&a, subst) || self.value_reaches_eq_override(&b, subst) {
             return BuiltinResult::delay();
         }
         // (6) Structural verdict.
-        sem_verdict(false, positive)
+        sem_verdict(false, true)
     }
 
     /// Two tuples' semantic equality: equal iff every pair of components is. A definite
@@ -9044,10 +9165,9 @@ impl KnowledgeBase {
         &mut self,
         pairs: super::eq_derive::TuplePairs,
         subst: &Substitution,
-        positive: bool,
     ) -> BuiltinResult {
         let super::eq_derive::TuplePairs::Pairs(pairs) = pairs else {
-            return sem_verdict(false, positive);
+            return sem_verdict(false, true);
         };
         let mut saw_delay = false;
         let mut saw_truncated = false;
@@ -9060,9 +9180,9 @@ impl KnowledgeBase {
                 saw_delay = true;
                 continue;
             }
-            match self.sem_eq_values_at(x, y, subst, true, None) {
+            match self.sem_eq_values_at(x, y, subst, None) {
                 BuiltinResult::Success => {}
-                BuiltinResult::Failure => return sem_verdict(false, positive),
+                BuiltinResult::Failure => return sem_verdict(false, true),
                 BuiltinResult::Delay { truncated } => {
                     saw_delay = true;
                     saw_truncated |= truncated;
@@ -9083,7 +9203,7 @@ impl KnowledgeBase {
         if let Some(cause) = saw_unknown {
             return BuiltinResult::Unknown { cause };
         }
-        sem_verdict(true, positive)
+        sem_verdict(true, true)
     }
 
     /// WI-616 — the eq-dispatch index probe for one operand: its head functor's
@@ -9117,7 +9237,7 @@ impl KnowledgeBase {
     /// caller's frame (`=` never binds), and the first DEFINITE proof settles
     /// the verdict (no solution multiplicity leaks — `eq` stays
     /// semi-deterministic). Three-way, never wrong-by-truncation:
-    /// * a definite proof            → equal (`Success`/`Failure` per `positive`);
+    /// * a definite proof            → equal (`Success`);
     /// * exhausted, complete search  → not equal;
     /// * undecided → `Delay { truncated }` (never decide from an incomplete
     ///   search). WI-628: the truncated bit is CARRIED, not collapsed — a TRUNCATED
@@ -9131,7 +9251,6 @@ impl KnowledgeBase {
         a: Value,
         b: Value,
         subst: &Substitution,
-        positive: bool,
     ) -> BuiltinResult {
         // Close the operands under the caller's σ: groundness was checked
         // AGAINST σ, but the sub-resolution starts from an empty substitution —
@@ -9159,7 +9278,7 @@ impl KnowledgeBase {
         // carries (`BuiltinTag::ScalarEq`), not a clause search.
         if super::typing::op_has_runnable_body(self, target) {
             return match self.bridge_eq_op_to_eval(target, a, b) {
-                Ok(BridgeEqOutcome::Decided(v)) => sem_verdict(v, positive),
+                Ok(BridgeEqOutcome::Decided(v)) => sem_verdict(v, true),
                 // WI-628: carry the incompleteness bit straight through — a re-entry
                 // cap OR a nested truncation surfaced via the eval bridge is
                 // `truncated: true`, propagated so an eager NAF/guard consumer does
@@ -9196,8 +9315,8 @@ impl KnowledgeBase {
             };
         }
         match self.prove_rule_predicate(target, vec![a, b]) {
-            PredicateProof::Proved => sem_verdict(true, positive),
-            PredicateProof::Refuted => sem_verdict(false, positive),
+            PredicateProof::Proved => sem_verdict(true, true),
+            PredicateProof::Refuted => sem_verdict(false, true),
             // Never decide from an incomplete search: suspend as undecided, carrying
             // the truncated bit. WI-628 — a TRUNCATED sub-proof taints the outer
             // stream (the step loop folds `Delay { truncated: true }` onto it), so a
@@ -13654,6 +13773,60 @@ impl KnowledgeBase {
         Some(params)
     }
 
+    /// `PartialEq.neq(a, b)` as the goal `not(eq(a, b))` — its body, `Bool.not(eq(a, b))`,
+    /// read in a goal position, where `Bool.not` is negation as failure — for a goal no type
+    /// reached; `None` for any other goal. A typed `neq` runs the body at its pin, with the
+    /// carrier's dictionary. One no type reached has no dictionary to run it with, and read
+    /// through `eq` it has `eq`'s verdicts: decided where `eq` decides, waiting where `eq`
+    /// waits, undecided where `eq` is over a proof's eigenvariable (`ensures neq(x, 1)`), and
+    /// refuted by `Eq`'s law over identical operands (`neq(x, x)`). `eq` the test never binds,
+    /// so the negation of its answer is the answer of `neq`.
+    ///
+    /// Untyped means: no classification on the occurrence, or a goal on no occurrence (a
+    /// contract clause substituted as a term, a goal built by hand). One written with labels
+    /// is read in its parameters' order; one written with a `Bool` result column is `eq` at
+    /// the negated column.
+    pub(crate) fn untyped_neq_as_not_eq(&mut self, goal: &Value, subst: &Substitution) -> Option<Value> {
+        let ViewHead::Functor {
+            functor,
+            pos_arity,
+            named_arity,
+        } = goal.head(self)
+        else {
+            return None;
+        };
+        if !matches!(pos_arity + named_arity, 2 | 3) || !self.is_neq_op(functor) {
+            return None;
+        }
+        // No classification at all: a call deferred to a requirement or a dictionary reads
+        // the instance at dispatch, and is no call no type reached.
+        if let Value::Node(o) = goal {
+            if !o.classification_is_none() {
+                return None;
+            }
+        }
+        let call = match self.builtin_call_in_param_order(goal) {
+            BuiltinCallOrder::AsWritten => goal.clone(),
+            BuiltinCallOrder::InParamOrder(positional) => positional,
+            // Labels that do not fill `a` and `b`: the body route reports the call.
+            BuiltinCallOrder::NotFilled(_) => return None,
+        };
+        let (a, b) = (call.pos_arg(self, 0)?.to_value(), call.pos_arg(self, 1)?.to_value());
+        let eq = self.eq_functor();
+        // With its result column written as a Bool, `neq(a, b, true)` is `eq(a, b, false)`.
+        // One holding a variable keeps the body: its value is computed, not tested.
+        if pos_arity + named_arity == 3 {
+            let column = self.walk_arg(call.pos_arg(self, 2), subst)?;
+            let ViewHead::Const(Literal::Bool(holds)) = column.head(self) else {
+                return None;
+            };
+            return Some(self.make_goal_value(eq, vec![a, b, Value::Bool(!holds)]));
+        }
+        let not = self.kernel_not_sym?;
+        let eq_goal = self.make_goal_value(eq, vec![a, b]);
+        Some(self.make_goal_value(not, vec![eq_goal]))
+    }
+
     /// The builtin a goal runs (the goal step's item 4), or `None` for a goal the relational
     /// views and the clause search answer.
     ///
@@ -13661,7 +13834,7 @@ impl KnowledgeBase {
     /// resolver primitive realizes it (`PartialOrd.gt(?x, 5)` pinned to `Int64.gt`), and none
     /// where it has a body (`Point.gt`), which the views run through the pin — unless the
     /// spelled functor is itself a builtin that dispatches (`PartialEq.eq` at `Pt`, pinned to
-    /// `Pt.eq`), whose handler reads the pin ([`Self::sem_eq_core`]).
+    /// `Pt.eq`), whose handler reads the pin ([`Self::builtin_sem_eq`]).
     ///
     /// A goal on a spec operation whose primitive runs only behind dispatch
     /// ([`Self::spec_op_primitive_of`]) that nothing typed — a constraint guard's goal, a goal
@@ -13684,7 +13857,7 @@ impl KnowledgeBase {
                     return Some(tag);
                 }
                 // A spelled builtin that dispatches itself (`PartialEq.eq`) reads the pin in
-                // its own handler ([`Self::sem_eq_core`]).
+                // its own handler ([`Self::builtin_sem_eq`]).
                 if self.builtin_of(functor).is_none() {
                     return None;
                 }
@@ -19277,8 +19450,9 @@ mod tests {
         assert_eq!(solutions.len(), 0, "eq(1, 2) should fail");
     }
 
+    /// A `neq` goal no type reached is `not(eq(a, b))` (`untyped_neq_as_not_eq`).
     #[test]
-    fn builtin_neq_succeeds_on_different() {
+    fn untyped_neq_succeeds_on_different() {
         let mut kb = kb_with_prelude();
         let neq_sym = kb.resolve_symbol("anthill.prelude.PartialEq.neq");
         let a = kb.alloc(Term::Const(Literal::String("hello".into())));

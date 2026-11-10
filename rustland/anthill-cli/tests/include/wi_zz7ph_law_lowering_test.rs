@@ -94,9 +94,9 @@ fn laws_of(out: &Output) -> Vec<&str> {
 const IRREFLEXIVE: &str = "rule p(?a: T) :- neq(?a, ?a)";
 
 /// THE CONTROL, as far as its document: `neq(?a, ?a)` for a `?a: T` under `requires
-/// Eq[T = T]`. The parameter is a declared sort; `eq` and `neq` at it are declared
-/// functions; `?a` is a constant of the sort; and `Eq`'s `eq_refl` and the `neq` law of
-/// the `PartialEq` that `Eq` provides are each an `(assert (forall …))` over it.
+/// Eq[T = T]`. The parameter is a declared sort; `eq` at it is a declared function, and
+/// `neq` is its negation (no carrier supplies a `neq` of its own); `?a` is a constant of
+/// the sort; and `Eq`'s `eq_refl` is an `(assert (forall …))` over it.
 ///
 /// This is the document BVG8M's `a_law_left_out_changes_nothing_in_the_document` said
 /// would change.
@@ -113,28 +113,22 @@ fn a_law_is_an_assertion_over_the_parameters_own_sort() {
     );
     let t = carrier("irr");
     let eq = format!("anthill.prelude.PartialEq.eq@{t}");
-    let neq = format!("anthill.prelude.PartialEq.neq@{t}");
     assert_stated(
         &out,
         &[
             format!("(declare-sort {t} 0)"),
             format!("(declare-fun {eq} ({t} {t}) Bool)"),
-            format!("(declare-fun {neq} ({t} {t}) Bool)"),
             format!("(declare-const var_1 {t})"),
             format!("(assert (forall ((var_0 {t})) (= ({eq} var_0 var_0) true)))"),
-            format!(
-                "(assert (forall ((var_0 {t}) (var_1 {t})) \
-                 (= ({neq} var_1 var_0) (not ({eq} var_1 var_0)))))"
-            ),
-            format!("(assert ({neq} var_1 var_1))"),
+            format!("(assert (not ({eq} var_1 var_1)))"),
         ],
     );
-    assert_eq!(
-        laws_of(&out).len(),
-        2,
-        "`Eq`'s law and `PartialEq`'s:\n{}",
+    assert!(
+        !out.stdout.contains("PartialEq.neq"),
+        "`neq` is no function of its own:\n{}",
         out.stdout
     );
+    assert_eq!(laws_of(&out).len(), 1, "`Eq`'s law:\n{}", out.stdout);
     // Every law lowered: nothing is left out, and nothing is said.
     assert_eq!(
         laws_not_lowered(&out),
@@ -145,10 +139,11 @@ fn a_law_is_an_assertion_over_the_parameters_own_sort() {
 }
 
 /// THE CHAIN IS FOLLOWED (user, 2026-10-12): under `requires PartialEq[T = T]` alone
-/// the proof is handed the `neq` law and NOT `eq_refl` — reflexivity is `Eq`'s law, and
-/// `eq` as `=` gave it for nothing. Under `requires Ord[T = T]` it is handed twelve:
-/// `Ord`'s one, the nine of the `WeakOrd` it provides, `Eq`'s and `PartialEq`'s — each
-/// once, though `PartialEq` is reached through `Eq` and through `PartialOrd`.
+/// the proof is handed NO law, `eq_refl` included — reflexivity is `Eq`'s law, and `eq`
+/// as `=` gave it for nothing (`PartialEq` has no law: its `neq` is a body, read as the
+/// negation of `eq`). Under `requires Ord[T = T]` it is handed eleven: `Ord`'s one, the
+/// nine of the `WeakOrd` it provides and `Eq`'s — `Eq`'s once, though it is reached
+/// through `Ord` and through `WeakOrd`.
 ///
 /// This is the row BVG8M's `the_laws_of_what_a_spec_provides_in_turn_are_not_read`
 /// said would change.
@@ -169,13 +164,7 @@ fn a_requirement_gives_the_laws_of_what_its_spec_requires_or_provides_in_turn() 
         "stderr:\n{}",
         alone.stderr
     );
-    let laws = laws_of(&alone);
-    assert_eq!(laws.len(), 1, "`PartialEq` has one law:\n{}", alone.stdout);
-    assert!(
-        laws[0].contains("anthill.prelude.PartialEq.neq@"),
-        "{}",
-        laws[0]
-    );
+    assert_eq!(laws_of(&alone), Vec::<&str>::new(), "`PartialEq` has no law:\n{}", alone.stdout);
 
     let ord = prove_dry_run(
         "ord",
@@ -188,7 +177,7 @@ fn a_requirement_gives_the_laws_of_what_its_spec_requires_or_provides_in_turn() 
     );
     assert_eq!(errors(&ord), Vec::<&str>::new(), "stderr:\n{}", ord.stderr);
     let laws = laws_of(&ord);
-    assert_eq!(laws.len(), 12, "1 + 9 + 1 + 1:\n{}", ord.stdout);
+    assert_eq!(laws.len(), 11, "1 + 9 + 1:\n{}", ord.stdout);
     let t = carrier("ord");
     // `Ord`'s own, the first: `eq(?a, ?b) <=> eq(WeakOrd.compare(?a, ?b), 0)` — `eq` at
     // the carrier is the carrier's, and `eq` of two `Int64` is the theory's `=`.
@@ -400,9 +389,8 @@ fn a_law_is_asserted_of_a_carriers_own_sort_and_not_at_a_concrete_carrier() {
     assert!(
         said[0].starts_with(
             "warning: `test.zz7ph.int.Scope` requires `anthill.prelude.Eq[T = \
-             anthill.prelude.Int64]`, and 2 of the 2 laws it gives a proof are not lowered to \
-             SMT — a `by z3` proof under it runs without: anthill.prelude.Eq.eq_refl, 1 \
-             unlabelled equation ("
+             anthill.prelude.Int64]`, and 1 of the 1 law it gives a proof is not lowered to \
+             SMT — a `by z3` proof under it runs without: anthill.prelude.Eq.eq_refl ("
         ) && said[0].contains("a law is asserted of a carrier's own sort"),
         "{}",
         said[0]
@@ -780,7 +768,8 @@ end
 }
 
 /// TWO REQUIREMENTS OF ONE SPEC AT TWO PARAMETERS: `eq` at `T` and `eq` at `U` are two
-/// functions, each with its own law, and a variable's is the one of its sort. An
+/// functions, each with its own law, and a variable's is the one of its sort — `neq` of
+/// either is the negation of its `eq`. An
 /// application across the two carriers is of no instance, and is refused — at load, where
 /// `neq(?a, ?b)` makes the sort's parameter `U` the `T` of `?a` (068-implementation §6.2,
 /// decision 3). The translation refused it before, "of two sorts".
@@ -819,14 +808,14 @@ end
             format!("(declare-fun anthill.prelude.PartialEq.eq@{u} ({u} {u}) Bool)"),
             format!("(assert (forall ((var_0 {t})) (= (anthill.prelude.PartialEq.eq@{t} var_0 var_0) true)))"),
             format!("(assert (forall ((var_0 {u})) (= (anthill.prelude.PartialEq.eq@{u} var_0 var_0) true)))"),
-            format!("(assert (anthill.prelude.PartialEq.neq@{t} var_3 var_3))"),
-            format!("(assert (anthill.prelude.PartialEq.neq@{u} var_2 var_2))"),
+            format!("(assert (not (anthill.prelude.PartialEq.eq@{t} var_3 var_3)))"),
+            format!("(assert (not (anthill.prelude.PartialEq.eq@{u} var_2 var_2)))"),
         ],
     );
     assert_eq!(
         laws_of(&out).len(),
-        4,
-        "two laws at each carrier:\n{}",
+        2,
+        "one law at each carrier:\n{}",
         out.stdout
     );
 
@@ -954,7 +943,7 @@ end
 /// <=> top`) and in a body, which stores `top` as an application of no arguments. And a
 /// law headed by a RELATION of its spec — `less(bottom, ?a) :- true` is neither an
 /// equation nor a comparison — is not read: the two are left out and named, of the
-/// seventeen `BoundedLattice` gives (its six, `Lattice`'s nine, `Eq`'s, `PartialEq`'s).
+/// sixteen `BoundedLattice` gives (its six, `Lattice`'s nine, `Eq`'s).
 #[test]
 fn a_nullary_operation_is_a_constant_and_a_relation_headed_law_is_left_out() {
     let out = prove_dry_run(
@@ -988,7 +977,9 @@ end
             format!("(declare-fun {top} () {t})"),
             format!("(assert (forall ((var_0 {t})) (= ({lub} var_0 {top}) {top})))"),
             // In a BODY, where `top` is stored as an application of no arguments …
-            format!("(assert (anthill.prelude.PartialEq.neq@{t} ({lub} var_1 {top}) {top}))"),
+            format!(
+                "(assert (not (anthill.prelude.PartialEq.eq@{t} ({lub} var_1 {top}) {top})))"
+            ),
             // … and in a HEAD, where it is a `Ref`: the position it stands in is of the
             // carrier, and so is it.
             format!(
@@ -998,15 +989,15 @@ end
     );
     assert_eq!(
         laws_of(&out).len(),
-        15,
-        "seventeen, less two:\n{}",
+        14,
+        "sixteen, less two:\n{}",
         out.stdout
     );
     let said = laws_not_lowered(&out);
     assert_eq!(said.len(), 1, "stderr:\n{}", out.stderr);
     assert!(
         said[0].contains(
-            ", and 2 of the 17 laws it gives a proof are not lowered to SMT — a `by z3` proof \
+            ", and 2 of the 16 laws it gives a proof are not lowered to SMT — a `by z3` proof \
              under it runs without: anthill.prelude.BoundedLattice.less_bottom, \
              anthill.prelude.BoundedLattice.less_top ("
         ) && said[0].contains("rule head shape not supported"),
@@ -1062,9 +1053,9 @@ end
 
 /// THE VERDICTS, where there is a solver.
 ///
-///   * the control proves under `requires Eq[T = T]` — the body is unsat by `eq_refl`
-///     and `PartialEq`'s `neq` law — and under `requires PartialEq[T = T]` alone it does
-///     NOT: reflexivity is `Eq`'s law;
+///   * the control proves under `requires Eq[T = T]` — the body, `neq` read as the
+///     negation of `eq`, is unsat by `eq_refl` — and under `requires PartialEq[T = T]`
+///     alone it does NOT: reflexivity is `Eq`'s law;
 ///   * `gte(?a: T, ?a) :- gte(?a, ?b)` does not prove under `requires PartialOrd[T = T]`;
 ///   * antisymmetry of `gt` proves from `WeakOrd`'s laws, for two head variables;
 ///   * a proof whose document declares a function runs under the logic it wrote with

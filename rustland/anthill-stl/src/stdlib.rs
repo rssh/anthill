@@ -395,12 +395,11 @@ pub static SOURCES: &[(&str, &str)] = &[
         "rustland/anthill-stl/persistence",
         include_str!("../anthill/persistence.anthill"),
     ),
-    // WI-20260922-BRT4Y: the LAST hardcoded registrations' bindings — `PartialEq`'s
-    // dispatching pair, `anthill.kernel.struct_eq`, `Map`, the relational algebra, the
-    // runtime-effect surface and the dispatch-value readers. Load-bearing twice over: a
-    // bundle without them has none of those operations, and since this ticket the stdlib
-    // declares them `@[host_implemented]`, so it does not even LOAD without them.
-    ("rustland/anthill-stl/eq", include_str!("../anthill/eq.anthill")),
+    // WI-20260922-BRT4Y: the LAST hardcoded registrations' bindings — `anthill.kernel`'s
+    // structural tests, `Map`, the relational algebra, the runtime-effect surface and the
+    // dispatch-value readers. Load-bearing twice over: a bundle without them has none of
+    // those operations, and since this ticket the stdlib declares them
+    // `@[host_implemented]`, so it does not even LOAD without them.
     (
         "rustland/anthill-stl/kernel",
         include_str!("../anthill/kernel.anthill"),

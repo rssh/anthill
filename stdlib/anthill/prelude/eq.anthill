@@ -18,23 +18,13 @@
 -- `Map[K = Float]` field type is a load error (WI-644) — is `check_use_site_requires_eq`:
 -- a parametric sort `requires Eq[param]` bound to a `NonEq` carrier is rejected.
 sort anthill.prelude.PartialEq
-  import anthill.kernel.{not}
-
   sort T = ?
   -- `eq` is each carrier's: a scalar's host member, a sort's own `eq`, a binding.
-  operation {
-    eq(a: T, b: T) -> Bool
-    neq(a: T, b: T) -> Bool @[host_implemented]
-  }
-  -- The law that makes `neq` DERIVED, and since WI-1125 the reason a carrier may
-  -- not supply its own: `eq` is the authority, every evaluator computes `neq` as
-  -- its negation (resolver `sem_eq_core`, eval `builtin_neq`, C++ `!=`), and
-  -- equality dispatch keys `PartialEq.eq` suppliers alone. A `neq` binding —
-  -- own member, `fact PartialEq[T = C, neq = …]`, or witness sort — was therefore
-  -- accepted and honoured nowhere; it is now a load error (`CarrierSuppliesNeq`).
-  -- Override `eq` instead; `neq` follows. Spec §8.3 (the rule), §8.7 (the
-  -- binding forms it applies to).
-  rule neq(?a, ?b) <=> not(eq(?a, ?b))
+  operation eq(a: T, b: T) -> Bool
+  -- `neq` is the negation of the carrier's `eq`, for every carrier: a carrier may not
+  -- supply its own (`CarrierSuppliesNeq`; spec §8.3, the binding forms §8.7). The C++
+  -- generator writes it `!=`.
+  operation neq(a: T, b: T) -> Bool = Bool.not(eq(a, b))
 end
 
 -- Eq: lawful (reflexive) equality. The `eq`/`neq` operations are inherited from

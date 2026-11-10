@@ -155,7 +155,8 @@ fn a_law_is_a_rule_or_a_constraint_written_in_the_spec() {
 ///
 /// * `PartialOrd` — four operations with default bodies, and no law;
 /// * `WeakOrd` — eight equations and a constraint, beside two default bodies;
-/// * `PartialEq` — one equation, with no label; `Eq` — one, labelled;
+/// * `PartialEq` — one operation with a body (`neq`), and no law (one equation until
+///   WI-20261109-JEE0E made `neq` that body); `Eq` — one, labelled;
 /// * `Constructive` — eight declarations, which assert nothing;
 /// * `EffectsRuntime` — a fact that is no equation, and no law.
 #[test]
@@ -169,7 +170,7 @@ fn the_librarys_laws_are_not_its_default_bodies() {
         count_and_labels(&kb, &prelude("WeakOrd")),
         (9, labels(&["compare_antisym", "compare_refl"]))
     );
-    assert_eq!(count_and_labels(&kb, &prelude("PartialEq")), (1, labels(&[])));
+    assert_eq!(count_and_labels(&kb, &prelude("PartialEq")), (0, labels(&[])));
     assert_eq!(count_and_labels(&kb, &prelude("Eq")), (1, labels(&["eq_refl"])));
     assert_eq!(
         count_and_labels(&kb, "anthill.logic.Constructive.Constructive"),

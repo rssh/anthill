@@ -1464,17 +1464,11 @@ pub enum LoadError {
         span: Option<Span>,
     },
     /// WI-1125 — a carrier supplies its own **`neq`**. Refused, because `neq` is not
-    /// an override point at all: `neq(a, b) <=> not(eq(a, b))` (§8.3,
-    /// `stdlib/anthill/prelude/eq.anthill`) makes `neq` DERIVED, and every evaluator
-    /// implements it that way — the resolver's `sem_eq_core` runs one
-    /// `sem_eq_values` with the verdict inverted, `eval::builtins`' `builtin_neq` is
-    /// `!semantic_equal`, and C++ codegen maps the pair to `==`/`!=` so the host
-    /// language derives one from the other. Equality dispatch keys `PartialEq.eq`
-    /// suppliers only ([`build_eq_dispatch_index`]), so a supplied `neq` is honoured
-    /// NOWHERE. That symmetry is why refusing the declaration touches ONE pass: had
-    /// `neq` been made dispatchable instead, the index would have had to carry a
-    /// polarity and all three evaluators change together to keep the WI-645
-    /// agreement.
+    /// an override point at all: `PartialEq.neq` is a body in the spec, `Bool.not(eq(a,
+    /// b))` (§8.3, `stdlib/anthill/prelude/eq.anthill`), the negation of the carrier's
+    /// `eq` for every carrier, and C++ codegen maps the pair to `==`/`!=` so the host
+    /// language derives one from the other. A carrier's own `neq` would be a second
+    /// answer beside the one its `eq` gives.
     ///
     /// Before this variant such a declaration was ACCEPTED and silently ignored, in
     /// two shapes that failed differently and both silently:
@@ -22877,13 +22871,88 @@ fn check_const_sources_agree(kb: &KnowledgeBase) -> Vec<LoadError> {
         .collect()
 }
 
+/// How a carrier provides `Eq` ([`EqProviders::carrier_eq`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum CarrierEq {
+    Unconditional,
+    /// Under a condition (`provides Eq[Pair] :- Eq[A], Eq[B]`), so at some instances only.
+    Conditional,
+}
+
+/// Who provides `Eq`: a carrier by a provision of its own (and the specs it provides,
+/// `sort_provides`), or a witness's about it (`provisions_about`). Read by the equality index,
+/// for the law at a carrier's `eq`, and by a contract proof, for the law at a parameter's
+/// declared type ([`Self::type_is_self_equal_by_law`]).
+pub(crate) struct EqProviders {
+    eq_spec: Option<Symbol>,
+    about: std::collections::HashSet<Symbol>,
+}
+
+impl EqProviders {
+    pub(crate) fn of(kb: &KnowledgeBase) -> Self {
+        let eq_spec = kb.try_resolve_symbol("anthill.prelude.Eq");
+        let about = eq_spec
+            .map(|e| super::typing::provisions_about(kb, e).into_iter().map(|p| p.about).collect())
+            .unwrap_or_default();
+        EqProviders { eq_spec, about }
+    }
+
+    /// How `sort` provides `Eq`; `None` where it does not.
+    pub(crate) fn carrier_eq(&self, kb: &KnowledgeBase, sort: Symbol) -> Option<CarrierEq> {
+        let eq_spec = self.eq_spec?;
+        let provides = self.about.contains(&kb.canonical_sort_sym(sort))
+            || super::typing::sort_provides(kb, sort, eq_spec);
+        if !provides {
+            return None;
+        }
+        Some(if super::typing::provision_is_conditional(kb, sort, eq_spec) {
+            CarrierEq::Conditional
+        } else {
+            CarrierEq::Unconditional
+        })
+    }
+
+    /// Is every value of the type `ty` equal to itself by `Eq`'s law? Its sort provides `Eq`,
+    /// or provides it under a condition and every type argument is such a type — the reading
+    /// a value gets (`resolve::SELF_EQUAL_BY_LAW`: a conditional `Eq` holds where every value
+    /// inside is of a lawful carrier; each such condition in the library is `Eq` of the sort's
+    /// parameters). A value standing in a type argument (`N = 3`) compares nothing. A type
+    /// variable, a function type, a type with no sort: no — `Float`'s `nan` is not equal to
+    /// itself, and an abstract type may be such a carrier.
+    pub(crate) fn type_is_self_equal_by_law(&self, kb: &KnowledgeBase, ty: &Value) -> bool {
+        let Some(sort) = ty.head(kb).functor_sym() else {
+            return false;
+        };
+        match self.carrier_eq(kb, sort) {
+            None => false,
+            Some(CarrierEq::Unconditional) => true,
+            Some(CarrierEq::Conditional) => {
+                let ViewHead::Functor { pos_arity, .. } = ty.head(kb) else {
+                    return false;
+                };
+                let args: Vec<Value> = (0..pos_arity)
+                    .filter_map(|i| ty.pos_arg(kb, i).map(|a| a.to_value()))
+                    .chain(
+                        ty.named_keys(kb)
+                            .into_iter()
+                            .filter_map(|k| ty.named_arg(kb, k).map(|a| a.to_value())),
+                    )
+                    .collect();
+                args.iter().all(|arg| {
+                    super::typing::is_denoted_type(kb, arg) || self.type_is_self_equal_by_law(kb, arg)
+                })
+            }
+        }
+    }
+}
+
 /// WI-616 — build the semantic-equality dispatch index. Must run right AFTER
 /// [`build_sort_ops_table`], whose table it reads.
 ///
 /// For every sort with an `eq` override, key that target under the shapes the sort's
 /// VALUES are headed by: its entity constructors and its SELF-RETURNING ops
 /// (`Set.insert`/`Set.empty`; `Map.get` returns an Option, not a Map, and must not
-/// key Map dispatch). The resolver's `eq`/`neq` builtin probes this per
+/// key Map dispatch). The resolver's `eq` builtin probes this per
 /// structurally-unequal goal — precomputing here keeps that path to one hash lookup.
 ///
 /// WHICH sorts are walked is [`eq_dispatch_carrier_domain`] — the `SortInfo` sorts
@@ -22923,20 +22992,14 @@ pub fn build_eq_dispatch_index(kb: &mut KnowledgeBase) -> Vec<LoadError> {
     // supply routes, one member over. Collected first so it is reported even when a
     // carrier is also ambiguous in its `eq`.
     let mut refusals = neq_supplier_refusals(kb, &carriers, &eq_index);
-    // WI-20261025-TSYS6 — which carriers provide `Eq`, by a provision of their own (and the
-    // specs it provides, `sort_provides`) or a witness's about them (`provisions_about`). One
-    // that does not is `PartialEq`'s alone, and its own `eq` decides identical operands too.
-    let eq_spec = kb.try_resolve_symbol("anthill.prelude.Eq");
-    let eq_about: std::collections::HashSet<Symbol> = eq_spec
-        .map(|e| super::typing::provisions_about(kb, e).into_iter().map(|p| p.about).collect())
-        .unwrap_or_default();
-    // A CONDITIONAL `Eq` (`provides Eq[Option] :- Eq[T]`) holds at some instances only, and
-    // the law is read where the member is entered, from the operands alone: at `Option[T =
-    // Float]` it does not hold, and `eq(some(nan), some(nan))` is the member's `false`.
+    // WI-20261025-TSYS6 — which carriers provide `Eq` ([`EqProviders`]). One that does not
+    // is `PartialEq`'s alone, and its own `eq` decides identical operands too. A CONDITIONAL
+    // `Eq` (`provides Eq[Option] :- Eq[T]`) holds at some instances only, and the law is read
+    // where the member is entered, from the operands alone: at `Option[T = Float]` it does
+    // not hold, and `eq(some(nan), some(nan))` is the member's `false`.
+    let eq_providers = EqProviders::of(kb);
     let lawful = |kb: &KnowledgeBase, sort: Symbol| {
-        (eq_about.contains(&kb.canonical_sort_sym(sort))
-            || eq_spec.is_some_and(|e| super::typing::sort_provides(kb, sort, e)))
-            && !eq_spec.is_some_and(|e| super::typing::provision_is_conditional(kb, sort, e))
+        eq_providers.carrier_eq(kb, sort) == Some(CarrierEq::Unconditional)
     };
     let mut entries: Vec<(Symbol, Symbol, bool)> = Vec::new();
     // Collected rather than built into `LoadError`s as we go: `carriers` comes from

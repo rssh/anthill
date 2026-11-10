@@ -220,7 +220,9 @@ fn the_stdlib_without_its_binding_layer_does_not_load() {
     for (op, owner) in [
         ("anthill.prelude.Map.get", "anthill.prelude.Map"),
         ("anthill.prelude.Int64.compare", "anthill.prelude.Int64"),
-        ("anthill.prelude.PartialEq.neq", "anthill.prelude.PartialEq"),
+        // A spec's own operation, mapped once for every carrier. It was `PartialEq.neq` until
+        // WI-20261109-JEE0E made that a body in the spec.
+        ("anthill.persistence.Store.persist", "anthill.persistence.Store"),
         ("anthill.reflect.term_field", "anthill.reflect"),
     ] {
         assert!(
@@ -358,9 +360,8 @@ const REFLECT_SET: [&str; 24] = [
 /// before this ticket (`register_if_present`), each now an `operation_map` entry: 46 then,
 /// 44 since WI-200 retired `ModifyRuntime.get` and `.set` with their sort, 43 since
 /// WI-20261109-5BP39 left `PartialEq.eq` with no host implementation (each scalar carrier
-/// maps its own `eq`).
-const MIGRATED: [&str; 43] = [
-    "anthill.prelude.PartialEq.neq",
+/// maps its own `eq`), 42 since WI-20261109-JEE0E made `PartialEq.neq` a body in the spec.
+const MIGRATED: [&str; 42] = [
     "anthill.kernel.struct_eq",
     "anthill.prelude.Map.empty",
     "anthill.prelude.Map.put",
