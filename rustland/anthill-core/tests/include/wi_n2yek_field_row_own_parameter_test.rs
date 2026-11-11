@@ -221,10 +221,12 @@ fn an_operation_slot_refuses_it_by_the_same_rule() {
 }
 
 /// A LABEL OVER A BINDER OUT OF SCOPE THAT IS NOT THE CALLBACK'S OWN, at the same slot: the
-/// write to `y` a lambda returned by `lambda (y) -> …` carries, and the `Modify[g.y]` a lambda
-/// applying `use`'s callback parameter `g` is charged as `g` writes it. Each was refused
-/// "unconstrained" (MEASURED), and is refused at the argument, the row variable lacking the
-/// label — and neither is called the lambda's own parameter. FAILS when backed out.
+/// write to `y` a lambda returned by `lambda (y) -> …` carries. It was refused "unconstrained"
+/// (MEASURED), and is refused at the argument, the row variable lacking the label — and is not
+/// called the lambda's own parameter. FAILS when backed out. A lambda applying `inner`'s callback
+/// parameter `g` to its own `k` writes `k` (the application reads `g`'s parameter at its
+/// argument, WI-20261014-7EZS6), and is refused as a lambda writing its own parameter is; it
+/// carried `g`'s place `Modify[g.y]` before, out of scope, and was refused by the first rule.
 #[test]
 fn a_binder_out_of_scope_is_refused_by_the_same_rule() {
     let above = "  operation run[EffP](p: Cell[V = Int64], f: (k: Cell[V = Int64]) -> Int64 @ {EffP}) -> Int64 effects {EffP} = f(p)\n";
@@ -235,15 +237,17 @@ fn a_binder_out_of_scope_is_refused_by_the_same_rule() {
              let mk = lambda (y: Cell[V = Int64]) -> lambda (k: Cell[V = Int64]) -> put(y, 5)\n    \
              run(q, mk(r))\n",
             "Modify[T = y]",
+            false,
         ),
         (
             "applied",
             "  operation inner(q: Cell[V = Int64], g: (y: Cell[V = Int64]) -> Int64 @ {Modify[y]}) -> Int64 effects {Modify[q]} =\n    \
              run(q, lambda (k: Cell[V = Int64]) -> g(k))\n",
-            "Modify[T = g.y]",
+            "Modify[T = k]",
+            true,
         ),
     ];
-    for (name, inner, label) in cases {
+    for (name, inner, label, own) in cases {
         let src = program(
             &format!("win2yek.out_of_scope_{name}"),
             &format!("{above}{inner}"),
@@ -251,6 +255,18 @@ fn a_binder_out_of_scope_is_refused_by_the_same_rule() {
             "    0",
         );
         let errs = load_errors_of(&src);
+        if own {
+            assert_refused_naming(
+                &errs,
+                &[
+                    "run.f (op-arg)",
+                    &format!("may not take `{label}`"),
+                    "over its own parameter `k`",
+                ],
+                name,
+            );
+            continue;
+        }
         assert_refused_naming(
             &errs,
             &[

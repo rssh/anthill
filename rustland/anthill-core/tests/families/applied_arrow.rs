@@ -93,39 +93,9 @@ pub static FAMILY: Family = Family {
     exceptions: EXCEPTIONS,
 };
 
-const TICKET_7EZS6: &str = "WI-20261014-7EZS6";
 const TICKET_6T5C6: &str = "WI-20261014-6T5C6";
 
 const EXCEPTIONS: &[Exception] = &[
-    // Applying a function value does not rename its own parameter to the argument: the
-    // label left over is undeclared where the parameter is a lambda's. (Where it is a
-    // callback parameter's it used to be DROPPED — a write to `q` in a `use` declaring
-    // none; the boundary classifier now keeps a label on a callback read as a value on
-    // every modifiable input, so those rows are refused and their exceptions are gone.)
-    Exception {
-        property: Property::OneVerdict,
-        when: &["typed=unannotated", "does=writes-own", "applied=call"],
-        ticket: TICKET_7EZS6,
-        why: "a let-held lambda applied as `w(q)` writes `Modify[z]`, undeclared, where handed to a slot it is renamed",
-    },
-    Exception {
-        property: Property::OneVerdict,
-        when: &["typed=unannotated", "does=writes-own", "applied=alias"],
-        ticket: TICKET_7EZS6,
-        why: "a let-held lambda applied through an alias writes `Modify[z]`, undeclared",
-    },
-    Exception {
-        property: Property::OneVerdict,
-        when: &["typed=tuple", "does=writes-own", "applied=call"],
-        ticket: TICKET_7EZS6,
-        why: "a lambda out of a tuple applied as `w(q)` writes `Modify[z]`, undeclared",
-    },
-    Exception {
-        property: Property::OneVerdict,
-        when: &["typed=tuple", "does=writes-own", "applied=alias"],
-        ticket: TICKET_7EZS6,
-        why: "a lambda out of a tuple applied through an alias writes `Modify[z]`, undeclared",
-    },
     // An arrow names its own parameter in its row only in an operation's parameter list.
     Exception {
         property: Property::OneVerdict,

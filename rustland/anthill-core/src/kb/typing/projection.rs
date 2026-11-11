@@ -368,6 +368,182 @@ impl ArgPlaces {
     }
 }
 
+/// What applying a function value does to the labels over its own parameters (proposal 050.1
+/// §5.2): the binder at each position its arrow records ([`arrow_own_binders`]) is an alias of
+/// the argument at that position, classified as a call of an operation by name classifies its
+/// arguments ([`ArgPlaces`]). So `w(q)` over `(z: Cell[V = Int64]) -> Int64 @ {Modify[z]}`
+/// writes `Modify[q]`, and an argument naming no place is refused where a `Modify` is over it
+/// ([`placeless_modify`]). A binder taking the whole tuple of several arguments (`lambda (t:
+/// (Cell[V = Int64], Int64))` applied as `w(p, 3)`) holds the tuple the application builds,
+/// which lies in its components' memory (§2): a label over it is charged onto each component
+/// that names a place, and a component that names none but can hold memory is refused as a
+/// placeless argument is.
+#[derive(Default)]
+pub(super) struct ApplicationPlaces {
+    /// The binders of one argument each.
+    one: ArgPlaces,
+    /// Each binder taking the tuple of several arguments, and the places its components name.
+    whole: Vec<(Symbol, Vec<Symbol>)>,
+    /// Every binder given an argument, for [`placeless_modify`].
+    binders: Vec<Symbol>,
+}
+
+impl ApplicationPlaces {
+    /// Pair the binders of the function `fn_type`, whose row is `labels`, with the arguments of
+    /// its application at `target`. Nothing is paired where the arguments meet no component one
+    /// to one — an arity fault the application reports itself.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn of(
+        kb: &mut KnowledgeBase,
+        env: &TypingEnv,
+        fn_type: &Value,
+        labels: &[Value],
+        target: &ApplicationTarget,
+        pos_args: &[Rc<NodeOccurrence>],
+        named_args: &[(Symbol, Rc<NodeOccurrence>)],
+        pos_results: &[Result<TypeResult, TypeError>],
+        named_results: &[Result<TypeResult, TypeError>],
+    ) -> Self {
+        let mut places = Self::default();
+        // An arrow written in an operation's parameter list records no binders; its row names
+        // the callback's own places, each of which says its position ([`callback_of_place`]).
+        // A row joined from several callbacks (`if b then f else g`) names each one's places,
+        // and each list is paired with the arguments alike.
+        let binder_lists: Vec<Vec<Option<Symbol>>> = match arrow_own_binders(kb, fn_type) {
+            Some(binders) => vec![binders],
+            None => {
+                let mut callbacks: Vec<Symbol> = Vec::new();
+                for label in labels {
+                    if let Some(callback) =
+                        extract_effect_resource_sym(kb, label).and_then(|place| callback_of_place(kb, place))
+                    {
+                        if !callbacks.contains(&callback) {
+                            callbacks.push(callback);
+                        }
+                    }
+                }
+                callbacks
+                    .into_iter()
+                    .map(|callback| kb.symbols.arg_places(callback).iter().map(|p| Some(*p)).collect())
+                    .collect()
+            }
+        };
+        for binders in &binder_lists {
+            places.pair(kb, env, binders, target, pos_args, named_args, pos_results, named_results);
+        }
+        places
+    }
+
+    /// [`Self::of`] for one list of binders.
+    #[allow(clippy::too_many_arguments)]
+    fn pair(
+        &mut self,
+        kb: &mut KnowledgeBase,
+        env: &TypingEnv,
+        binders: &[Option<Symbol>],
+        target: &ApplicationTarget,
+        pos_args: &[Rc<NodeOccurrence>],
+        named_args: &[(Symbol, Rc<NodeOccurrence>)],
+        pos_results: &[Result<TypeResult, TypeError>],
+        named_results: &[Result<TypeResult, TypeError>],
+    ) {
+        let places = self;
+        let result = |at: &BoundArg| match *at {
+            BoundArg::Pos(j) => pos_results[j].as_ref().ok(),
+            BoundArg::Named(k) => named_results[k].as_ref().ok(),
+        };
+        let typed = |at: &BoundArg| typed_arg(at.of(pos_args, named_args), result(at));
+        let every: Vec<BoundArg> = (0..pos_args.len())
+            .map(BoundArg::Pos)
+            .chain((0..named_args.len()).map(BoundArg::Named))
+            .collect();
+        let args: Vec<BoundArg> = match target {
+            ApplicationTarget::Tuple(fields) => {
+                match bound_args(kb, fields, pos_args.len(), named_args) {
+                    Some(bound) => bound.into_vec(),
+                    None => return,
+                }
+            }
+            ApplicationTarget::Whole(_) | ApplicationTarget::Var(_) => every,
+            ApplicationTarget::NoVerdict => return,
+        };
+        if binders.len() == args.len() {
+            for (binder, at) in binders.iter().zip(args) {
+                if let Some(binder) = *binder {
+                    let arg = Rc::clone(typed(&at));
+                    places.one.record(kb, binder, &arg);
+                    places.binders.push(binder);
+                }
+            }
+            return;
+        }
+        let [Some(binder)] = binders else {
+            return;
+        };
+        let mut onto = Vec::new();
+        for at in args {
+            let arg = Rc::clone(through_option_coercion(kb, typed(&at)));
+            match arg_place(kb, &arg) {
+                ArgPlace::Var {
+                    sym,
+                    placeable: true,
+                } => onto.push(sym),
+                ArgPlace::Head(head) => onto.push(head),
+                ArgPlace::Var { .. } | ArgPlace::Placeless => {
+                    let ty = result(&at).map(|r| r.ty.clone());
+                    if !value_regions(kb, env, &arg, ty.as_ref()).is_empty() {
+                        places.one.placeless.entry(*binder).or_insert(arg);
+                    }
+                }
+            }
+        }
+        places.whole.push((*binder, onto));
+        places.binders.push(*binder);
+    }
+
+    /// The first `Modify` among `labels` — the function's own row, as its arrow writes it — over
+    /// a binder whose argument names no place, refused against the caller's own expression.
+    pub(super) fn placeless_refusal(
+        &self,
+        kb: &mut KnowledgeBase,
+        fn_sym: Symbol,
+        labels: &[Value],
+        span: Option<Span>,
+    ) -> Option<TypeError> {
+        if self.one.placeless.is_empty() {
+            return None;
+        }
+        let keys = ModifyKeys::new(kb)?;
+        let mut leak = labels
+            .iter()
+            .find_map(|l| placeless_modify(kb, &keys, &self.binders, l, &self.one.placeless))?;
+        // Named by its own name beside the function's: a callback's place is `<op>.w.z`.
+        let short = short_name_of(kb.local_name_of(leak.param)).to_owned();
+        leak.param = kb.intern(&short);
+        Some(placeless_modify_refusal(kb, fn_sym, &leak, span))
+    }
+
+    /// `label`, a label of the function's own row, as the application incurs it: over the
+    /// arguments' places where it is over a binder — one label per component a whole-tuple
+    /// binder's label is charged onto.
+    pub(super) fn at_call(&self, kb: &mut KnowledgeBase, label: &Value) -> Vec<Value> {
+        let rekey = self.one.eff_rekey();
+        let label = if rekey.is_empty() {
+            label.clone()
+        } else {
+            substitute_ref_syms_value(kb, label, &rekey)
+        };
+        let resource = extract_effect_resource_sym(kb, &label);
+        match self.whole.iter().find(|(binder, _)| resource == Some(*binder)) {
+            Some((binder, onto)) => onto
+                .iter()
+                .map(|place| crate::kb::region::rekey_resource_value(kb, &label, *binder, *place))
+                .collect(),
+            None => vec![label],
+        }
+    }
+}
+
 /// The argument a call's typing left for a parameter, for [`ArgPlaces::record`]: the TYPED node
 /// where the argument synthesized — a `@[simp]` rewrite applied (`same(c)` is `c`), a dot call
 /// dispatched (`h.fresh()` is the call `Holder.fresh(h)`) — else the written one. Classified as
@@ -529,10 +705,10 @@ pub(super) fn arg_place_head(kb: &mut KnowledgeBase, occ: &Rc<NodeOccurrence>) -
 /// entry there was given no argument at all — an arity fault another pass reports — and
 /// this one stays quiet rather than adding a second message about a call the author has
 /// not finished writing.
-pub(super) fn placeless_modify(
+pub(super) fn placeless_modify<P: Labelled>(
     kb: &mut KnowledgeBase,
     keys: &ModifyKeys,
-    params: &[(Symbol, Value)],
+    params: &[P],
     atom: &Value,
     placeless: &HashMap<Symbol, Rc<NodeOccurrence>>,
 ) -> Option<PlacelessModify> {
@@ -546,7 +722,7 @@ pub(super) fn placeless_modify(
         .to_value();
     // `None`: not a place at all — `check_modify_targets` owns that refusal.
     let param = denoted_place_head_sym(kb, &target)?;
-    if !params.iter().any(|(p, _)| *p == param) {
+    if !params.iter().any(|p| p.label() == param) {
         return None;
     }
     let arg = Rc::clone(placeless.get(&param)?);

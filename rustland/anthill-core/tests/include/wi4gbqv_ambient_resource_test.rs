@@ -270,7 +270,7 @@ namespace {ns}
     effects {{}}
   =
     match l
-      case nil() -> f(Cell.new(0))
+      case nil() -> ()
       case cons(h, t) -> f(h)
 end
 "#

@@ -273,8 +273,9 @@ end
     );
 }
 
-/// A lambda's parameter's memory is its caller's: a write through it keeps naming it, so an
-/// application that writes the operation's own cell is refused where nothing declares it.
+/// A lambda's parameter's memory is its caller's: a write through it keeps naming it at the
+/// lambda's end, and an application reads it at the argument (WI-20261014-7EZS6), so one that
+/// writes the operation's own cell is refused naming that cell where nothing declares it.
 /// Fails with that kept label backed out (`supplied`): the label was dropped and `use` ran,
 /// writing `q` (family `e-applied-arrow`'s `writes-own` programs, which moved to `runs`);
 /// and with the charge (`charge`), which drops it too.
@@ -290,7 +291,7 @@ fn a_write_through_a_lambdas_parameter_keeps_naming_it() {
     );
     assert_refused_naming(
         &load_errors_of(&src),
-        &["use.effects", "undeclared effect: Modify[T = z]"],
+        &["use.effects", "undeclared effect: Modify[T = q]"],
         "a lambda's write through its own parameter is not dropped",
     );
 }

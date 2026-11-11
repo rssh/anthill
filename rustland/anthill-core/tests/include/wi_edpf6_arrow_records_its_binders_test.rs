@@ -202,7 +202,7 @@ fn a_returned_lambda_is_read_by_the_parameters_its_own_type_records() {
 }
 
 /// A LAMBDA'S BINDERS ARE ITS PARAMETERS EVEN WHERE ITS ROW NAMES NONE OF THEM: `lambda (k) ->
-/// g(d)` writes `g.y`, a callback parameter's place, and that is no write to the cell `app`
+/// g(d)` writes `d`, the cell its callback is applied to, and that is no write to the cell `app`
 /// hands the lambda. Refused at `app`'s slot, which admits only that write; the lambda writing
 /// its own `k` runs (1 * 10 + 5, `d` untouched).
 #[test]
@@ -217,7 +217,7 @@ fn a_lambdas_binders_are_its_parameters_where_its_row_names_none() {
     let src = program("wi_edpf6.own_row_names_none", &make("g(d)"), &body);
     assert_refused_naming(
         &load_errors_of(&src),
-        &["app.f (op-arg)", "declares `Modify[T = g.y]`"],
+        &["app.f (op-arg)", "declares `Modify[T = d]`"],
         "a lambda handing its callback another cell, out of a tuple",
     );
 }

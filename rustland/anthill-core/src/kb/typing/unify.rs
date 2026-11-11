@@ -1198,16 +1198,22 @@ pub(super) fn unify_denoted_view<A: TermView, B: TermView>(
 /// last segment (`<op>.f.a` → `<op>.f`), and its ordered params are on its symbol
 /// (`SymbolTable::arg_places`).
 pub(super) fn callback_binder_position(kb: &KnowledgeBase, sym: Symbol) -> Option<usize> {
+    let callback = callback_of_place(kb, sym)?;
+    kb.symbols
+        .arg_places(callback)
+        .iter()
+        .position(|&p| p == sym)
+}
+
+/// The callback a `CallbackParam` place is a parameter of (`<op>.f.a` → `<op>.f`); `None` for
+/// any other symbol.
+pub(super) fn callback_of_place(kb: &KnowledgeBase, sym: Symbol) -> Option<Symbol> {
     if !kb.kinds(sym).is_place(crate::intern::SymbolKind::CallbackParam) {
         return None;
     }
     let qn = kb.qualified_name_of(sym);
     let parent_qn = qn.rsplit_once('.').map(|(p, _)| p)?;
-    let callback = kb.try_resolve_symbol(parent_qn)?;
-    kb.symbols
-        .arg_places(callback)
-        .iter()
-        .position(|&p| p == sym)
+    kb.try_resolve_symbol(parent_qn)
 }
 
 /// The symbol a `denoted`'s `value` child refers to, if it is a NAME-shaped

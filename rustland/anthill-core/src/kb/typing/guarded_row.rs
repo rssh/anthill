@@ -134,10 +134,11 @@ pub(super) fn hold_call_to_guarded_row(
 }
 
 /// Hold the application of a function value `f` (`callee`, of type `fn_type`) to the guarded
-/// elements of the enclosing operation's row ([`hold_incurred`]). `labels` is the row the
-/// application incurs, flattened; a label a guarded element of the function's row flattened to
-/// keeps that guard, its binders — the places of a callback parameter — substituted by the
-/// arguments.
+/// elements of the enclosing operation's row ([`hold_incurred`]). `labels` is the function's
+/// row as its arrow writes it, flattened; a label a guarded element of that row flattened to keeps that
+/// guard, its binders — the places of a callback parameter — substituted by the arguments. Each
+/// label is held as the application incurs it, over the arguments' places: `at_call[i]` for
+/// `labels[i]`.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn hold_application_to_guarded_row(
     kb: &mut KnowledgeBase,
@@ -145,6 +146,7 @@ pub(super) fn hold_application_to_guarded_row(
     flow: &FlowEnv,
     fn_type: &Value,
     labels: &[Value],
+    at_call: &[Vec<Value>],
     callee: Symbol,
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
@@ -167,6 +169,11 @@ pub(super) fn hold_application_to_guarded_row(
             *slot = guard_conjuncts(kb, &guard);
         }
     }
+    let incurred: Vec<(Value, Option<Vec<Value>>)> = incurred
+        .into_iter()
+        .zip(at_call)
+        .flat_map(|((_, guard), labels)| labels.iter().map(move |l| (l.clone(), guard.clone())))
+        .collect();
     // A guard in a function's row names a binder as it is written (`eq(x, 0)` reads `x`).
     let binders: Vec<Symbol> = kb
         .symbols

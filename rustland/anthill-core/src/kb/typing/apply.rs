@@ -5974,6 +5974,22 @@ fn check_apply_call(
                 }
                 other => other,
             };
+            // The function's own parameters read at the arguments (050.1 §5.2): `w(q)` over
+            // `(z: …) -> … @ {Modify[z]}` writes `Modify[q]`, as a call of an operation by name
+            // re-keys its parameters.
+            let places = ApplicationPlaces::of(
+                kb,
+                env,
+                &fn_type,
+                &call_effects,
+                &target,
+                pos_args,
+                named_args,
+                pos_results,
+                named_results,
+            );
+            // Each label of the row as the application incurs it, in the row's order.
+            let at_call: Vec<Vec<Value>> = call_effects.iter().map(|e| places.at_call(kb, e)).collect();
             // WI-516: `f(arg…)` performs the arrow's OWN call effect UNIONED with
             // the effects of EVALUATING each argument — the same arg-effect
             // accumulation Path 1 (known op) and Path 3 (unknown functor) do.
@@ -5986,12 +6002,16 @@ fn check_apply_call(
                 flow,
                 &fn_type,
                 &call_effects,
+                &at_call,
                 fn_sym,
                 pos_args,
                 named_args,
                 span,
             )?;
-            let mut effects = call_effects;
+            let mut effects: Vec<Value> = Vec::with_capacity(call_effects.len());
+            for incurred in &at_call {
+                merge_effects_into(kb, &mut effects, incurred);
+            }
             for r in pos_results.iter().chain(named_results.iter()).flatten() {
                 merge_effects_into(kb, &mut effects, &r.effects);
             }
@@ -6203,6 +6223,9 @@ fn check_apply_call(
             }
             if !arg_errors.is_empty() {
                 return Err(aggregate_errors(arg_errors));
+            }
+            if let Some(err) = places.placeless_refusal(kb, fn_sym, &call_effects, span) {
+                return Err(err);
             }
             // At load the application takes its TUPLED FORM, `f(7, 1)` over `(x: Int64, y:
             // Int64) -> R` becoming `f((x: 7, y: 1))` (§4.4): the conversion needs `A`'s labels,

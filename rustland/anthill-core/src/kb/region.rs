@@ -618,8 +618,11 @@ mod tests {
 /// **real** WI-352 flow facts (derived from each op's body) and the **real**
 /// registered places. The input effect row is built synthetically (`modify_label`,
 /// keyed to the genuine `CallbackParam` place the loader registered), so a label
-/// no source program puts in a row can be asked too. The same verdicts from
-/// source, through the whole pipeline, are `wi341_callback_modify_test`.
+/// no source program puts in a row can be asked too. Since an application reads a
+/// callback's row at its arguments (050.1 §5.2, WI-20261014-7EZS6), no source program
+/// leaves such a label to the boundary — a trace of this arm over the workspace's
+/// suites and every family found only these rows — so these are its only witnesses
+/// until proposal 050.1's stage 5 (WI-20261015-038RQ) retires it.
 #[cfg(test)]
 mod wi353_tests {
     use super::*;
@@ -819,6 +822,142 @@ end
             [foreign].into_iter().collect(),
             "a foreign callback place is external to `each`: kept, not re-keyed or dropped"
         );
+    }
+
+    /// The programs `wi341_callback_modify_test` ran from source while the arm decided
+    /// them, with callbacks whose arrows write no row (so each body loads) and the label
+    /// a written `@ Modify[a]` used to leave given here.
+    const UNTRACED: &str = r#"
+namespace anthill.test.wi353untraced
+  import anthill.prelude.{Int64, Unit, Cell, List, Function, Modifiable}
+  import anthill.prelude.List.{cons, nil}
+  sort Wrap
+    entity wrap(rep: Cell[V = Int64])
+  end
+  sort Tok
+    provides Modifiable[T = Self]
+    entity tok
+  end
+  sort Ep
+    provides Modifiable[T = Self]
+    entity Ep
+  end
+  operation first(l: List[T = Cell[V = Int64]], d: Cell[V = Int64]) -> Cell[V = Int64] =
+    match l
+      case cons(h, _) -> h
+      case nil() -> d
+  operation useFirst(l: List[T = Cell[V = Int64]], d: Cell[V = Int64], f: (a: Cell[V = Int64]) -> Unit) -> Unit =
+    f(first(l, d))
+  operation useAlias(l: List[T = Cell[V = Int64]], d: Cell[V = Int64], f: (a: Cell[V = Int64]) -> Unit) -> Unit =
+    let k = f
+    match l
+      case cons(h, _) -> k(h)
+      case nil() -> k(d)
+  operation gate[Acc](l: List[T = Cell[V = Int64]], d: Cell[V = Int64], z: Acc, n: Int64, ns: List[T = Int64], w: Wrap, k: Function[A = Int64, B = Int64], f: (a: Cell[V = Int64]) -> Unit) -> Unit =
+    f(first(l, d))
+  operation walk(l: List[T = Cell[V = Int64]], z: Cell[V = Int64], f: (a: Cell[V = Int64]) -> Unit) -> Unit =
+    match l
+      case nil() -> f(z)
+      case cons(_, t) -> walk(t, first(l, z), f)
+  operation foldG[Acc](xs: List[T = Cell[V = Int64]], z: Acc, f: (a: Acc, t: Cell[V = Int64]) -> Acc) -> Acc =
+    match xs
+      case nil() -> z
+      case cons(h, rest) -> foldG(rest, f(z, h), f)
+  operation mkOne(mk: () -> Cell[V = Int64], f: (a: Cell[V = Int64]) -> Unit) -> Cell[V = Int64] =
+    let c = mk()
+    let _ = f(c)
+    c
+  operation mkList(mk: () -> Cell[V = Int64], f: (a: Cell[V = Int64]) -> Unit) -> List[T = Cell[V = Int64]] =
+    let c = mk()
+    let _ = f(c)
+    cons(c, nil())
+  operation useFresh(d: Cell[V = Int64], mk: () -> Cell[V = Int64], f: (a: Cell[V = Int64]) -> Unit) -> Cell[V = Int64] =
+    let c = mk()
+    let _ = f(c)
+    d
+  operation tailBare(mk: () -> Cell[V = Int64], f: (a: Cell[V = Int64]) -> Unit) -> Tok =
+    let c = mk()
+    let _ = f(c)
+    tok
+  operation tailApplied(mk: () -> Cell[V = Int64], f: (a: Cell[V = Int64]) -> Unit) -> Tok =
+    let c = mk()
+    let _ = f(c)
+    tok()
+  operation tailQualified(mk: () -> Cell[V = Int64], f: (a: Cell[V = Int64]) -> Unit) -> Tok =
+    let c = mk()
+    let _ = f(c)
+    Tok.tok
+  operation tailEponymous(mk: () -> Cell[V = Int64], f: (a: Cell[V = Int64]) -> Unit) -> Ep =
+    let c = mk()
+    let _ = f(c)
+    Ep
+  operation feedTok(c: Cell[V = Int64], f: (a: Tok) -> Unit) -> Unit =
+    f(tok)
+end
+"#;
+
+    /// A label on each operation's `f.a`, at the result type its signature writes: the
+    /// local names it is charged to.
+    ///
+    /// - A place the pass did not follow a feed of keeps the label on every input a
+    ///   `Modify` can fire on and on the result: `f` handed a call's result (`useFirst`),
+    ///   `f` read as a value (`useAlias`), `z` handed a call's result by the recursion
+    ///   (`walk`), a thunk's output returned alone (`mkOne`) or inside a constructor
+    ///   (`mkList`).
+    /// - Only an input a `Modify` can fire on (`gate`): a modifiable sort `d`, a type
+    ///   argument `l`, a data sort `w` with a `Cell` field, a type parameter `z` — never
+    ///   `n: Int64`, `ns: List[T = Int64]` or `k: Function[…]`.
+    /// - A result typed by a type variable may be a `Cell` (`foldG`'s `result`).
+    /// - A traced place fed only a thunk's output that stays local drops (`useFresh`),
+    ///   and so does one whose body ends in a constructor applied to nothing, in every
+    ///   spelling (`tail*`), and one handed such a constructor (`feedTok`).
+    ///
+    /// BACK-OUT, each alone, by a temporary switch (MEASURED): `traced` not asserted
+    /// fails `foldG` (`xs` charged), `useFresh`, the four `tail*` and `feedTok`; a `() ->
+    /// T` callback not read as callable charges `mk` in `mkOne`, `mkList`, `useFresh`
+    /// and the four `tail*`; the type gate off fails `gate`; the type-variable arm of
+    /// [`result_type_admits_region`] off fails `foldG`; the `VarRef` spelling dropped
+    /// from `holds_no_value` fails `tailBare`, `tailQualified`, `tailEponymous` and
+    /// `feedTok`; the constructor's kind read by `kind_of` fails `tailEponymous`;
+    /// `feed.anthill`'s fresh output on an untraced result removed fails `mkList`.
+    #[test]
+    fn the_flow_facts_charge_a_callback_place_by_its_feeds() {
+        let mut kb = crate::kb::test_support::load_stdlib(Some(UNTRACED));
+        let ns = "anthill.test.wi353untraced";
+        let mut wrong = Vec::new();
+        for (op, expected) in [
+            ("useFirst", &["d", "l"][..]),
+            ("useAlias", &["d", "l"]),
+            ("walk", &["l", "z"]),
+            ("mkOne", &["result"]),
+            ("mkList", &["result"]),
+            ("gate", &["d", "l", "w", "z"]),
+            ("foldG", &["result", "z"]),
+            ("useFresh", &[]),
+            ("tailBare", &[]),
+            ("tailApplied", &[]),
+            ("tailQualified", &[]),
+            ("tailEponymous", &[]),
+            ("feedTok", &[]),
+        ] {
+            let op_sym = sym(&kb, &format!("{ns}.{op}"));
+            let ret = kb
+                .op_record(op_sym)
+                .and_then(|r| r.signature.as_ref())
+                .map(|sig| sig.return_type.clone())
+                .unwrap_or_else(|| panic!("{op}'s return type"));
+            let regions = region_sorts(&kb);
+            let resource = sym(&kb, &format!("{ns}.{op}.f.a"));
+            let row = vec![modify_label(&mut kb, resource)];
+            let out = op_boundary_effects(&mut kb, &TypingEnv::empty(), &ret, op_sym, &regions, &row);
+            let mut got: Vec<String> =
+                resources(&kb, &out).into_iter().map(|s| kb.local_name_of(s).to_string()).collect();
+            got.sort();
+            if got != expected {
+                wrong.push(format!("{op}: expected {expected:?}, got {got:?}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{wrong:#?}");
     }
 }
 

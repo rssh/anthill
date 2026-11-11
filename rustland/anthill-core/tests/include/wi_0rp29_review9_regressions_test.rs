@@ -428,7 +428,7 @@ end
 "#;
     assert_refused_naming(
         &load_errors(src),
-        &["app.f (op-arg)", "the lambda argument declares `Modify[T = g.y]`"],
+        &["app.f (op-arg)", "the lambda argument declares `Modify[T = d]`"],
         "a lambda handing its callback another cell",
     );
 }
@@ -455,7 +455,7 @@ end
 "#;
     assert_refused_naming(
         &load_errors(src),
-        &["app2.f (op-arg)", "the lambda argument declares `Modify[T = g.y2]`"],
+        &["app2.f (op-arg)", "to lack `Modify[T = f.a]`", "the lambda argument declares `Modify[T = k1]` on the corresponding parameter"],
         "a lambda swapping its callback's arguments",
     );
 }

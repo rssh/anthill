@@ -2,9 +2,9 @@
 //! propagation). A callback parameter whose arrow effect modifies its OWN param
 //! — `f: (a: Cell) -> Unit @ Modify[a]` — now LOADS: the binder `a` resolves to
 //! the registered `CallbackParam` place `<op>.f.a` (it used to fail as
-//! `UnresolvedName "a"`). Applied over a list element, that latent `Modify[f.a]`
-//! flows to the op boundary, where the WI-353 classifier re-keys it via the
-//! WI-352 flow facts and surfaces `Modify[l]` — the full pipeline, from source.
+//! `UnresolvedName "a"`). Applied to a list element `h`, the write is `h`'s, read
+//! at the application as a named call's parameter is read at its argument (050.1
+//! §5.2, WI-20261014-7EZS6), and charged `Modify[l]` where `h`'s scope ends.
 
 /// Load stdlib + user source together (the path the effect check runs on) and
 /// surface load errors as strings rather than panicking.
@@ -48,8 +48,8 @@ fn callback_modify_arrow_param_loads() {
 fn callback_element_modify_surfaces_on_list_from_source() {
     // The WI-360 acceptance, end-to-end: without the declaration, the modify on
     // the element callback must surface as `Modify[l]` at the boundary and be
-    // reported undeclared — proving the full pipeline (binder->place ->
-    // body row Modify[f.a] -> WI-352 flow -> WI-353 re-key -> Modify[l]) fired.
+    // reported undeclared — proving the full pipeline (binder->place -> row
+    // Modify[f.a] -> `Modify[h]` at `f(h)` -> `Modify[l]` at the arm's end) fired.
     let errs = load_result(&each_src(""))
         .expect_err("a foreach whose callback modifies its element must surface Modify[l]");
     assert!(
@@ -98,24 +98,28 @@ end
     load_result(src).expect("a non-modifying callback must leave `each` pure");
 }
 
-// ── A feed the flow pass does not follow is KEPT, never dropped ────────────────
+// ── A callback's write is read at its argument, as a named call's is ───────────
 //
-// The boundary classifier drops a callback parameter's `Modify` whose sources are
-// all fresh and non-escaping. It used to read "the flow pass saw no feed" the same
-// way, so each op below loaded typed PURE while it wrote a cell its caller holds
-// (MEASURED on the tree before the change: `use_first` and `use_alias` loaded
-// clean, `walk` reported `Modify[z]` and not `Modify[l]`, `mk_one` loaded clean).
-// Now a place counts as fed only by what the pass followed when it carries a
-// `traced` fact, and an untraced one is kept on every input and on the result.
-// MEASURED back-outs: with the whole change out, each `*_is_kept` test and
-// `an_untraced_feed_is_charged_only_to_inputs_a_modify_can_fire_on` FAIL; each
-// `*_declared` test passes either way by design (the coarse answer is declarable).
-// `a_thunks_output_that_stays_local_drops_while_it_counts_as_fresh` passes with the
-// whole change out (that drop is old behaviour) and FAILS with only `traced` not
-// asserted, or with only a `() -> T` callback not read as callable — it is the
-// control that a traced place still drops. With only the fresh-output rule for an
-// untraced result out, `a_fresh_output_returned_inside_a_constructor_is_kept` fails;
-// with only the type gate out, the `…charged_only_to_inputs…` test does.
+// Applying `f` reads its row's own parameters at the arguments (050.1 §5.2,
+// WI-20261014-7EZS6): `f(y)` is `Modify[y]`, charged where `y`'s scope ends, as
+// `put(y, 5)` is over `put(c: Cell[V = Int64], n: Int64) effects Modify[c]`. Each
+// program below is run beside that twin, the named call where it applies `f`, and the
+// two give one verdict. Before, `Modify[f.a]` stayed in the row to the boundary, where
+// the flow facts (WI-352/353) charged it: onto every modifiable input where their pass
+// had not followed a feed. Since no application leaves the label there, the rows of
+// that arm's own rules are `kb::region::wi353_tests`, moved from here.
+//
+// Where the twin's verdict is not the program's meaning — a call's or a thunk's result
+// may be a cell of the caller's, and nothing says so — both are WI-20261016-HE2J6's,
+// and the row says so; it flips with that ticket.
+//
+// BACK-OUT (each part of WI-20261014-7EZS6 alone, by a temporary switch, MEASURED): the
+// application's re-key off fails the two `HE2J6` rows, `walk`'s, `fold_g`'s and the
+// constant's (its `let` spelling charged `Modify[c]` again) — the flow facts' old
+// answers; a written callback arrow's binders not read off its places fails those five
+// and `a_callback_fed_a_call_result_names_no_place`; the refusal of an argument naming
+// no place off fails that row and the constant's (`f(tok)` loads). The alias rows and
+// the fresh local's drop pass either way by design: the flow facts answered them alike.
 
 /// The labels a load reported as undeclared, as written (`Modify[T = l]`).
 fn undeclared(src: &str) -> std::collections::BTreeSet<String> {
@@ -133,55 +137,83 @@ fn labels(names: &[&str]) -> std::collections::BTreeSet<String> {
     names.iter().map(|n| format!("Modify[T = {n}]")).collect()
 }
 
-/// The callback is handed what an ordinary call returned — here an element of
-/// `l` or `d` itself. The pass does not follow a call's result, so `f.a` is
-/// untraced and the label stays on both inputs.
-fn use_first_src(decl: &str) -> String {
+fn put_src() -> &'static str {
+    "  operation put(c: Cell[V = Int64], n: Int64) -> Int64 effects Modify[c] =\n    let _ = Cell.set(c, n)\n    n\n"
+}
+
+/// `first` returns an element of `l` or `d` itself, and declares no memory clause.
+fn first_src() -> &'static str {
+    "  operation first(l: List[T = Cell[V = Int64]], d: Cell[V = Int64]) -> Cell[V = Int64] =\n    match l\n      case cons(h, _) -> h\n      case nil() -> d\n"
+}
+
+/// A program over `put` and `first`: `ops` is the rest of the namespace.
+fn program(ns: &str, ops: &str) -> String {
     format!(
-        r#"
-namespace anthill.test.wi341untraced.first
-  import anthill.prelude.{{Int64, Unit, Cell, Modify, List}}
-  operation first(l: List[T = Cell[V = Int64]], d: Cell[V = Int64]) -> Cell[V = Int64] =
-    match l
-      case cons(h, _) -> h
-      case nil() -> d
-  operation use_first(l: List[T = Cell[V = Int64]], d: Cell[V = Int64], f: (a: Cell[V = Int64]) -> Unit @ Modify[a]) -> Unit{decl} =
-    f(first(l, d))
-end
-"#
+        "namespace anthill.test.wi341app.{ns}\n  import anthill.prelude.{{Int64, Unit, Cell, Modify, List}}\n  import anthill.prelude.List.{{cons, nil}}\n{}{}{ops}end\n",
+        put_src(),
+        first_src(),
     )
 }
 
-#[test]
-fn a_callback_fed_a_call_result_is_kept() {
-    assert_eq!(undeclared(&use_first_src("")), labels(&["d", "l"]));
+/// The errors of a load that must be refused.
+fn refusal(src: &str) -> Vec<String> {
+    load_result(src).expect_err("the program must be refused")
 }
 
+/// An argument that names no place is refused at a parameter the callback's row writes,
+/// whatever the operation declares, as at a named call's: there is no name to charge.
 #[test]
-fn a_callback_fed_a_call_result_declared() {
-    load_result(&use_first_src(" effects {Modify[l], Modify[d]}")).expect("declared, it loads");
+fn a_callback_fed_a_call_result_names_no_place() {
+    let callback = "(a: Cell[V = Int64]) -> Unit @ Modify[a]";
+    for decl in ["", " effects {Modify[l], Modify[d]}"] {
+        for (spelling, op) in [
+            (
+                "callback",
+                format!("  operation use(l: List[T = Cell[V = Int64]], d: Cell[V = Int64], f: {callback}) -> Unit{decl} =\n    f(first(l, d))\n"),
+            ),
+            (
+                "named",
+                format!("  operation use(l: List[T = Cell[V = Int64]], d: Cell[V = Int64]) -> Int64{decl} =\n    put(first(l, d), 5)\n"),
+            ),
+        ] {
+            let errs = refusal(&program("noplace", &op));
+            assert!(
+                errs.iter().any(|e| e.contains("expected an argument naming a PLACE")
+                    && e.contains("Bind it first")),
+                "{spelling}, declares `{decl}`: a call's result names no place; got: {errs:#?}"
+            );
+        }
+    }
 }
 
-/// The callback is applied through a `let` alias. The pass sees `k(h)` as no
-/// application of `f`, and `f` read as a value escapes: all of its places are
-/// untraced.
+/// Bound by a `let`, the call's result is a name, and its write is charged as `put(y,
+/// 5)`'s: `first` declares no memory clause, so its result is connected with nothing the
+/// caller holds, and the write is to fresh memory. At run time it writes an element of
+/// `l` or `d`: WI-20261016-HE2J6 (its program (1) is the named twin).
+#[test]
+fn a_callback_fed_a_bound_call_result_writes_what_its_twin_does() {
+    for op in [
+        "  operation use(l: List[T = Cell[V = Int64]], d: Cell[V = Int64], f: (a: Cell[V = Int64]) -> Unit @ Modify[a]) -> Unit =\n    let y = first(l, d)\n    f(y)\n",
+        "  operation use(l: List[T = Cell[V = Int64]], d: Cell[V = Int64]) -> Int64 =\n    let y = first(l, d)\n    put(y, 5)\n",
+    ] {
+        load_result(&program("bound", op))
+            .unwrap_or_else(|errs| panic!("HE2J6's verdict, today: loads; got: {errs:#?}\n{op}"));
+    }
+}
+
+/// The callback applied through a `let` alias is applied: `k(h)` writes `h`, a binder of
+/// `l`'s match, and `k(d)` writes `d`.
 fn use_alias_src(decl: &str) -> String {
-    format!(
-        r#"
-namespace anthill.test.wi341untraced.alias
-  import anthill.prelude.{{Int64, Unit, Cell, Modify, List}}
-  operation use_alias(l: List[T = Cell[V = Int64]], d: Cell[V = Int64], f: (a: Cell[V = Int64]) -> Unit @ Modify[a]) -> Unit{decl} =
-    let k = f
-    match l
-      case cons(h, _) -> k(h)
-      case nil() -> k(d)
-end
-"#
+    program(
+        "alias",
+        &format!(
+            "  operation use_alias(l: List[T = Cell[V = Int64]], d: Cell[V = Int64], f: (a: Cell[V = Int64]) -> Unit @ Modify[a]) -> Unit{decl} =\n    let k = f\n    match l\n      case cons(h, _) -> k(h)\n      case nil() -> k(d)\n"
+        ),
     )
 }
 
 #[test]
-fn a_callback_applied_through_an_alias_is_kept() {
+fn a_callback_applied_through_an_alias_writes_each_argument() {
     assert_eq!(undeclared(&use_alias_src("")), labels(&["d", "l"]));
 }
 
@@ -190,126 +222,78 @@ fn a_callback_applied_through_an_alias_declared() {
     load_result(&use_alias_src(" effects {Modify[l], Modify[d]}")).expect("declared, it loads");
 }
 
-/// The coarse answer is charged only to inputs a `Modify` can fire on: a
-/// modifiable sort (`d: Cell`), a type argument that is one (`l: List[T =
-/// Cell]`), a data sort whose field is one (`w: Wrap`), a type parameter (`z:
-/// Acc` — it may be a `Cell`). Never `n: Int64`, `ns: List[T = Int64]` or `k:
-/// Function[…]`: charging those made an op declare `Modify[n]` on an `Int64`,
-/// which then spread to every caller (MEASURED before the gate). FAILS with the
-/// type gate backed out (the last three come back) and with the change backed
-/// out (the op loads clean).
+/// The recursion hands `z` what `first` returned. `walk` declares nothing, so its own
+/// call incurs nothing, and `f(z)` is `Modify[z]` alone, as `put(z, 5)` is. Declared,
+/// the recursive call writes its argument, bound by a `let`, and that is the
+/// `bound_call_result` row's case (HE2J6).
 #[test]
-fn an_untraced_feed_is_charged_only_to_inputs_a_modify_can_fire_on() {
-    let src = r#"
-namespace anthill.test.wi341untraced.gate
-  import anthill.prelude.{Int64, Unit, Cell, Modify, List, Function}
-  sort Wrap
-    entity wrap(rep: Cell[V = Int64])
-  end
-  operation first(l: List[T = Cell[V = Int64]], d: Cell[V = Int64]) -> Cell[V = Int64] =
-    match l
-      case cons(h, _) -> h
-      case nil() -> d
-  operation gate[Acc](l: List[T = Cell[V = Int64]], d: Cell[V = Int64], z: Acc, n: Int64, ns: List[T = Int64], w: Wrap, k: Function[A = Int64, B = Int64], f: (a: Cell[V = Int64]) -> Unit @ Modify[a]) -> Unit =
-    f(first(l, d))
-end
-"#;
-    assert_eq!(undeclared(src), labels(&["d", "l", "w", "z"]));
+fn a_callback_carried_by_the_recursion_writes_its_argument() {
+    let callback = "(a: Cell[V = Int64]) -> Unit @ Modify[a]";
+    let callback_walk = |decl: &str, step: &str| {
+        format!(
+            "  operation walk(l: List[T = Cell[V = Int64]], z: Cell[V = Int64], f: {callback}) -> Unit{decl} =\n    match l\n      case nil() -> f(z)\n      case cons(_, t) -> {step}\n"
+        )
+    };
+    let named_walk = |decl: &str, step: &str| {
+        format!(
+            "  operation walk(l: List[T = Cell[V = Int64]], z: Cell[V = Int64]) -> Int64{decl} =\n    match l\n      case nil() -> put(z, 5)\n      case cons(_, t) -> {step}\n"
+        )
+    };
+    for op in [
+        callback_walk("", "walk(t, first(l, z), f)"),
+        named_walk("", "walk(t, first(l, z))"),
+    ] {
+        assert_eq!(undeclared(&program("walk", &op)), labels(&["z"]), "{op}");
+    }
+    for op in [
+        callback_walk(" effects Modify[z]", "\n        let y = first(l, z)\n        walk(t, y, f)"),
+        named_walk(" effects Modify[z]", "\n        let y = first(l, z)\n        walk(t, y)"),
+    ] {
+        load_result(&program("walkdecl", &op))
+            .unwrap_or_else(|errs| panic!("HE2J6's verdict, today: loads; got: {errs:#?}\n{op}"));
+    }
 }
 
-/// A result typed by a type variable may be a `Cell` at a call, so the escaping
-/// accumulator's `Modify[result]` is kept beside the seed's `Modify[z]`. FAILS with
-/// the type-variable arm of `result_type_admits_region` backed out: only `Modify[z]`
-/// was reported (MEASURED, 2026-10-16) — the variable fell through to the functor
-/// test and read as "cannot carry a region". (No `*_declared` twin: an op declaring
-/// `Modify[z]` must be handed a place for `z` at its own recursive call, and a
-/// `let`-bound step is then charged `Modify[acc]` — the same for a `Cell` fold, and
-/// not this rule's.)
+/// `f(z, h)` writes the seed. The accumulators after it are `f`'s results, connected with
+/// nothing `f` was handed (its arrow writes no memory clause), so their writes are to
+/// fresh memory and `result` is not charged — as over a named `step` with `Modify[a]`.
+/// A step returning `t` makes the accumulator an element of `xs`: HE2J6's fold step.
 #[test]
-fn a_type_variable_result_keeps_the_escaping_modify() {
-    let src = r#"
-namespace anthill.test.wi341untraced.generic
-  import anthill.prelude.{Int64, Unit, Cell, Modify, List}
-  operation fold_g[Acc](xs: List[T = Cell[V = Int64]], z: Acc, f: (a: Acc, t: Cell[V = Int64]) -> Acc @ Modify[a]) -> Acc =
-    match xs
-      case nil() -> z
-      case cons(h, rest) -> fold_g(rest, f(z, h), f)
-end
-"#;
-    assert_eq!(undeclared(src), labels(&["result", "z"]));
+fn a_callback_fed_its_own_result_writes_only_the_seed() {
+    for op in [
+        "  operation fold_g[Acc](xs: List[T = Cell[V = Int64]], z: Acc, f: (a: Acc, t: Cell[V = Int64]) -> Acc @ Modify[a]) -> Acc =\n    match xs\n      case nil() -> z\n      case cons(h, rest) -> fold_g(rest, f(z, h), f)\n",
+        "  operation step[Acc](a: Acc, t: Cell[V = Int64]) -> Acc effects Modify[a] = a\n  operation fold_g[Acc](xs: List[T = Cell[V = Int64]], z: Acc) -> Acc =\n    match xs\n      case nil() -> z\n      case cons(h, rest) -> fold_g(rest, step(z, h))\n",
+    ] {
+        assert_eq!(undeclared(&program("fold", op)), labels(&["z"]), "{op}");
+    }
 }
 
-/// The recursion hands the accumulator `z` an ordinary call's result, so `z` is
-/// untraced, and so is `f.a`, which `z` feeds: `Modify[l]` as well as `Modify[z]`.
+/// A thunk's output, written and returned — alone, or inside a constructed value. The
+/// thunk's row is empty, so it allocates nothing: what it returns is a cell its closure
+/// holds, which the operation writes with nothing declared. The regions read a call's
+/// result as fresh memory, which the allocation's own `Modify[result]` covers, and the
+/// named twin loads as the callback does: HE2J6's program (2).
 #[test]
-fn an_untraced_value_carried_by_the_recursion_is_kept() {
-    let src = r#"
-namespace anthill.test.wi341untraced.walk
-  import anthill.prelude.{Int64, Unit, Cell, Modify, List}
-  operation first(l: List[T = Cell[V = Int64]], d: Cell[V = Int64]) -> Cell[V = Int64] =
-    match l
-      case cons(h, _) -> h
-      case nil() -> d
-  operation walk(l: List[T = Cell[V = Int64]], z: Cell[V = Int64], f: (a: Cell[V = Int64]) -> Unit @ Modify[a]) -> Unit =
-    match l
-      case nil() -> f(z)
-      case cons(_, t) -> walk(t, first(l, z), f)
-end
-"#;
-    assert_eq!(undeclared(src), labels(&["l", "z"]));
+fn a_thunks_output_written_and_returned_writes_what_its_twin_does() {
+    for tail in ["c", "cons(c, nil())"] {
+        let result = if tail == "c" { "Cell[V = Int64]" } else { "List[T = Cell[V = Int64]]" };
+        for write in ["f(c)", "put(c, 5)"] {
+            let op = format!(
+                "  operation mk(mk: () -> Cell[V = Int64], f: (a: Cell[V = Int64]) -> Unit @ Modify[a]) -> {result} =\n    let c = mk()\n    let _ = {write}\n    {tail}\n"
+            );
+            load_result(&program("thunk", &op))
+                .unwrap_or_else(|errs| panic!("HE2J6's verdict, today: loads; got: {errs:#?}\n{op}"));
+        }
+    }
 }
 
-/// A `() -> T` callback is a callback: `mk()` is its fresh output, which `f`
-/// writes and the op returns — `Modify[result]`. It used to read as "not
-/// callable" (its argument places are empty), so `c` had no origin at all.
-fn mk_one_src(decl: &str) -> String {
-    format!(
-        r#"
-namespace anthill.test.wi341untraced.thunk
-  import anthill.prelude.{{Int64, Unit, Cell, Modify}}
-  operation mk_one(mk: () -> Cell[V = Int64], f: (a: Cell[V = Int64]) -> Unit @ Modify[a]) -> Cell[V = Int64]{decl} =
-    let c = mk()
-    let _ = f(c)
-    c
-end
-"#
-    )
-}
-
-#[test]
-fn a_thunks_output_written_and_returned_is_kept() {
-    assert_eq!(undeclared(&mk_one_src("")), labels(&["result"]));
-}
-
-#[test]
-fn a_thunks_output_written_and_returned_declared() {
-    load_result(&mk_one_src(" effects Modify[result]")).expect("declared, it loads");
-}
-
-/// The written fresh output leaves inside a constructed value. The pass does not
-/// follow what a constructor holds, so `result` is untraced and the fresh output
-/// may be in it.
-#[test]
-fn a_fresh_output_returned_inside_a_constructor_is_kept() {
-    let src = r#"
-namespace anthill.test.wi341untraced.cons
-  import anthill.prelude.{Int64, Unit, Cell, Modify, List}
-  import anthill.prelude.List.{cons, nil}
-  operation mk_list(mk: () -> Cell[V = Int64], f: (a: Cell[V = Int64]) -> Unit @ Modify[a]) -> List[T = Cell[V = Int64]] =
-    let c = mk()
-    let _ = f(c)
-    cons(c, nil())
-end
-"#;
-    assert_eq!(undeclared(src), labels(&["result"]));
-}
-
-/// What a traced drop still is: every feed traced, the result traced and holding
-/// only `d`, and `f.a` fed only `mk`'s result — which counts as FRESH. That is an
-/// assumption, not evidence (`flow_derive`'s module doc): a `mk` returning a cell
-/// its closure holds makes this op write a caller's cell while typed pure. This
-/// pins today's verdict under it; when a callback's result stops counting as
-/// fresh, this op is refused and the test flips.
+/// What a write to a fresh local is: `f(c)` writes `c`, which holds `mk()`'s result —
+/// fresh memory, by the same reading — and `c` is not returned, so nothing is charged.
+/// That is an assumption, not evidence: a `mk` returning a cell its closure holds makes
+/// this op write a caller's cell while typed pure. This pins today's verdict under it;
+/// when a callback's result stops counting as fresh (WI-20261016-HE2J6), this op is
+/// refused and the test flips. Passes with either part of WI-20261014-7EZS6 backed out:
+/// the flow facts dropped it too.
 #[test]
 fn a_thunks_output_that_stays_local_drops_while_it_counts_as_fresh() {
     let src = r#"
@@ -324,53 +308,25 @@ end
     load_result(src).expect("a written fresh value that does not escape owes no declaration");
 }
 
-/// A CONSTRUCTOR applied to nothing holds no value a callback wrote, in every spelling an
-/// operation body gives it — `tok`, `tok()`, `Tok.tok`, an eponymous `Tok` — at the body's
-/// tail and as a callback's argument. `holds_no_value` read a bare name off `Ref`/`Ident` by
-/// `kind_of`; a body writes a bare name as `VarRef`, and an eponymous constructor's kind is its
-/// sort's. So the bare tail was refused `undeclared effect: Modify[T = result]` where `tok()`
-/// loaded, and `f(tok)` charged the callback's `Modify` to the unrelated input `c` (MEASURED).
-///
-/// BACK-OUT: the `VarRef` spelling dropped from `holds_no_value` fails the bare, the eponymous
-/// and the callback-argument rows; reading the kind by `kind_of` again fails the eponymous one.
-/// `tok()` passes either way by design: an applied constructor is a `Constructor` node.
+/// A constructor applied to nothing is a constant and names no resource, so handing it to
+/// a callback whose row writes the parameter is refused, as handing it to `touch` is. Bound
+/// by a `let`, the write is the local's, which holds no memory of the caller's: it loads,
+/// as `touch(t)` does. Before, the flow facts read `f(tok)` as holding no value and loaded
+/// it, and charged `let t = tok; f(t)` to the unrelated input `c` (MEASURED on 29613621).
 #[test]
-fn a_bare_constructor_holds_no_value_in_every_spelling() {
-    for (ns, sort_body, tail) in [
-        ("bare", "entity tok", "tok"),
-        ("applied", "entity tok", "tok()"),
-        ("qualified", "entity tok", "Tok.tok"),
-        ("eponymous", "entity Tok", "Tok"),
-    ] {
-        let src = format!(
-            r#"
-namespace anthill.test.wi341noval.{ns}
-  import anthill.prelude.{{Int64, Unit, Cell, Modify, Modifiable}}
-  sort Tok
-    provides Modifiable[T = Self]
-    {sort_body}
-  end
-  operation use_fresh(mk: () -> Cell[V = Int64], f: (a: Cell[V = Int64]) -> Unit @ Modify[a]) -> Tok =
-    let c = mk()
-    let _ = f(c)
-    {tail}
-end
-"#
+fn a_constant_handed_to_a_callback_is_read_as_at_a_named_call() {
+    let decls = "  import anthill.prelude.{Int64, Unit, Cell, Modify, Modifiable}\n  sort Tok\n    provides Modifiable[T = Self]\n    entity tok\n  end\n  operation touch(a: Tok) -> Unit effects Modify[a] = ()\n";
+    let callback = "f: (a: Tok) -> Unit @ Modify[a]";
+    let src = |ns: &str, param: &str, body: &str| {
+        format!("namespace anthill.test.wi341noval.{ns}\n{decls}  operation feed_tok(c: Cell[V = Int64]{param}) -> Unit =\n{body}end\n")
+    };
+    for (spelling, param, call) in [("callback", format!(", {callback}"), "f"), ("named", String::new(), "touch")] {
+        let errs = refusal(&src("bare", &param, &format!("    {call}(tok)\n")));
+        assert!(
+            errs.iter().any(|e| e.contains("expected an argument naming a PLACE") && e.contains("a constant")),
+            "{spelling}: a constant names no resource; got: {errs:#?}"
         );
-        if let Err(errs) = load_result(&src) {
-            panic!("{ns}: a constructor at the tail holds no written value; got: {errs:#?}");
-        }
+        load_result(&src("bound", &param, &format!("    let t = tok\n    {call}(t)\n")))
+            .unwrap_or_else(|errs| panic!("{spelling}: a local holding a constant is no input of the caller's; got: {errs:#?}"));
     }
-    let src = r#"
-namespace anthill.test.wi341noval.cbarg
-  import anthill.prelude.{Int64, Unit, Cell, Modify, Modifiable}
-  sort Tok
-    provides Modifiable[T = Self]
-    entity tok
-  end
-  operation feed_tok(c: Cell[V = Int64], f: (a: Tok) -> Unit @ Modify[a]) -> Unit =
-    f(tok)
-end
-"#;
-    load_result(src).expect("a constructor handed to a callback is no input of the caller's");
 }

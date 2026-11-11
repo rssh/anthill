@@ -29,3 +29,9 @@ EXPECTED (§4, §8 B, §8 E):
 
 ROWS: first refused at its boundary without its clause, and viaCall then charged Modify[l]; a body wrapping MutableStack.push(s, v) and returning Unit refused without ensures memory_maybe_connected(s, v); the push lambda refused at f's slot and admitted under requires memory_maybe_connected(f.a, f.b), g then owing ensures memory_maybe_connected(s, c); a member that returns a fresh cell refused where its spec promises memory_alias(result, b); f.zz refused.
 
+## Changes
+
+### 2026-11-11T16:36:34Z — feedback — claude
+
+viaCall's callback spelling, let y = first(l, d); f(y) over f: (a: Cell[V = Int64]) -> Unit @ Modify[a], now loads as put(y, 5) does (WI-20261014-7EZS6: an application reads a callback's row at its arguments). first's clause, when this stage checks it, should charge both alike; the rows are WI-20261016-HE2J6's (wi341_callback_modify_test::a_callback_fed_a_bound_call_result_writes_what_its_twin_does).
+
