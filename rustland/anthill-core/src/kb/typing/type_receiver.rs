@@ -46,9 +46,11 @@ pub(super) enum DenotedDot {
 /// value of the sort, so it fills no parameter — which is the call `Sort.member(args)` makes;
 /// a rule is the relation `Sort.member(args)` cites; a type member is the type value
 /// `Sort.Member` is. Without parentheses the member is the same call with no arguments,
-/// which `Sort.member` is too. A member the sort does not declare is refused about that sort,
-/// whether or not `Type` has one of the name. A constructor is refused in a rule body's own
-/// term, with its written spelling.
+/// which `Sort.member` is too. An operation the sort does not declare and one of its own
+/// provisions lends is called at the sort's instance (`A.viaDefault()` beside `provides Mk[C
+/// = A]`); any other member the sort does not declare is refused about that sort, whether or
+/// not `Type` has one of the name. A constructor is refused in a rule body's own term, with
+/// its written spelling.
 pub(super) fn denoted_sort_dot(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
@@ -69,35 +71,55 @@ pub(super) fn denoted_sort_dot(
     let Some(denotation) = denotation_of(kb, env, receiver) else {
         return DenotedDot::NotDenoting;
     };
-    written_sort_dot(kb, env, type_sym, &denotation, member, pos_args, named_args, type_args, occ)
+    // Written where the dot is, the receiver is the type itself; a `let` holding it denotes it.
+    let written = Rc::ptr_eq(&denotation, receiver);
+    written_sort_dot(
+        kb, env, type_sym, &denotation, written, member, pos_args, named_args, type_args, occ,
+    )
 }
 
 /// [`denoted_sort_dot`] for the type value the receiver denotes: the call the written
 /// `Sort[…].member(args)` makes, or its refusal.
+///
+/// `written` says the receiver is the type written at the dot (`Sort.member(…)`,
+/// `(Sort).member(…)`) rather than a name a `let` bound to one.
+#[allow(clippy::too_many_arguments)]
 fn written_sort_dot(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
     type_sym: Symbol,
     denotation: &Rc<NodeOccurrence>,
+    written: bool,
     member: Symbol,
     pos_args: &[Rc<NodeOccurrence>],
     named_args: &[(Symbol, Rc<NodeOccurrence>)],
     type_args: &[(Option<Symbol>, Value)],
     occ: &Rc<NodeOccurrence>,
 ) -> DenotedDot {
+    let sort = denoted_sort(kb, denotation);
+    let (head, alias, bracketed) = (sort.head, sort.alias, sort.bracketed);
+    let short = short_name_of(kb.local_name_of(member)).to_string();
     // The bracket a dot writes is the type arguments of the call it resolves to, and what
     // the call on a denoted sort is at is its receiver's to say; the dot's bracket is not
-    // read there.
-    if !type_args.is_empty() {
+    // read there. A member the sort's provisions lend, on a receiver written at the dot, is
+    // the call `Sort.member[…](…)` writes, whose bracket is the call's own as on
+    // `Spec[…].member[…](…)` — read below; a member the sort declares under the name is
+    // reached by its qualified name, and never here with a bracket.
+    let lent_with_bracket = !type_args.is_empty()
+        && written
+        && head != type_sym
+        && !kb
+            .symbols
+            .by_qualified_name
+            .contains_key(&format!("{}.{short}", kb.qualified_name_of(head)))
+        && spec_op_lent_by_own_provisions(kb, head, &short).is_some();
+    if !type_args.is_empty() && !lent_with_bracket {
         return DenotedDot::Refused(TypeError::DotBracketUnread {
             span: Some(occ.span.span),
             member,
             reading: UnreadDotBracket::DenotedSort,
         });
     }
-    let sort = denoted_sort(kb, denotation);
-    let (head, alias, bracketed) = (sort.head, sort.alias, sort.bracketed);
-    let short = short_name_of(kb.local_name_of(member)).to_string();
     let span = Some(occ.span.span);
     // `site` is the caller's, so each refusal below records its own line.
     let refused = |site, expected: String, actual: String| {
@@ -334,6 +356,55 @@ fn written_sort_dot(
             ),
         );
     }
+    // A member the sort does not declare and one of its own provisions lends — a default of
+    // a spec it provides, `A.viaDefault()` beside `provides Mk[C = A]` — is that spec's
+    // operation called at the sort's instance: the receiver is the sort, and the call binds
+    // the spec's parameters as the sort's provision binds them ([`seed_provider_receiver`]).
+    // It is the member a value of the sort reaches with a dot, chosen by the same order
+    // (kernel-language §8.7). After every member of the sort's own, so what the sort declares
+    // under the name is the answer.
+    if head != type_sym {
+        if let Some(op) = spec_op_lent_by_own_provisions(kb, head, &short) {
+            if let Some(refusal) = hidden(kb, op) {
+                return refusal;
+            }
+            if let Some(carrier) = witness_route_only(kb, head, op) {
+                let (op_qn, carrier) = (
+                    kb.qualified_name_of(op).to_string(),
+                    kb.qualified_name_of(carrier).to_string(),
+                );
+                return refused(
+                    TypeError::here(),
+                    format!("an operation of `{denoted}`, or one it inherits at its own instance"),
+                    format!(
+                        "`{short}` is `{op_qn}`, which `{denoted}` provides as a witness at `{carrier}`; a call does not choose a witness's instance for a body its spec writes"
+                    ),
+                );
+            }
+            if let Some(e) = effectful_rewrite_call(kb, occ, op) {
+                return DenotedDot::Refused(e);
+            }
+            let recv_type = match receiver(kb) {
+                Ok(Some(recv_type)) => recv_type,
+                Ok(None) => Value::term(kb.make_sort_ref(head)),
+                Err(refusal) => return refusal,
+            };
+            let pass = crate::kb::simp_rewrite::simp_pass(kb);
+            return DenotedDot::Call(NodeOccurrence::synthesized_expr_written(
+                Expr::Apply {
+                    recv_type: Some(recv_type),
+                    functor: op,
+                    pos_args: pos_args.to_vec(),
+                    named_args: named_args.to_vec(),
+                    type_args: type_args.to_vec(),
+                },
+                Rc::clone(occ),
+                pass,
+                occ.owner,
+                occ.is_paren_less(),
+            ));
+        }
+    }
     // A member of `Type` of this name is not an answer, and the refusal says where it is.
     if head != type_sym {
         if let Some(on_type) = type_value_member(kb, type_sym, &short) {
@@ -353,6 +424,37 @@ fn written_sort_dot(
         receiver_sort: Some(head),
         receiver_param: None,
     })
+}
+
+/// The carrier of `provider`'s provisions that lead to `op`'s spec, where every one of them
+/// is a witness's — a provision `provider` writes at another sort (`sort W provides Mk[C =
+/// A]`), whose instance is `provider`'s own members at `A`. A call at `A` would run `A`'s
+/// instance, so the operation reached through `W`'s name has no instance the call can take.
+/// `None` where a provision leads there at `provider` itself, or names no other carrier sort
+/// (a spec a sort is its own carrier of, a spec over the provider's own parameter).
+fn witness_route_only(kb: &mut KnowledgeBase, provider: Symbol, op: Symbol) -> Option<Symbol> {
+    let spec = spec_op_parent_sort(kb, op)?;
+    let spec_canon = kb.canonical_sort_sym(spec);
+    let provider_canon = kb.canonical_sort_sym(provider);
+    let mut witness = None;
+    for row in provides_rows_of_provider(kb, provider) {
+        let base = kb.canonical_sort_sym(row.spec_base);
+        if base != spec_canon && !provides_reaches(kb, base, spec_canon) {
+            continue;
+        }
+        match provision_carrier_sort(kb, row.spec_base, &row.spec_view) {
+            // A carrier that is a parameter of the provider is a spec over that parameter
+            // (`Numeric provides Additive[T = T]`), which names no instance of its own.
+            Some(carrier)
+                if kb.canonical_sort_sym(carrier) != provider_canon
+                    && type_param_global_var(kb, carrier).is_none() =>
+            {
+                witness = Some(carrier);
+            }
+            _ => return None,
+        }
+    }
+    witness
 }
 
 /// The sort a type value denotes, read as a name path reads it
@@ -877,7 +979,7 @@ pub(super) fn written_type_dots_as_calls(
         return walked;
     };
     match written_sort_dot(
-        kb, env, type_sym, receiver, *name, pos_args, named_args, type_args, &walked,
+        kb, env, type_sym, receiver, true, *name, pos_args, named_args, type_args, &walked,
     ) {
         DenotedDot::Call(call) => call,
         DenotedDot::Refused(e) => {

@@ -1106,7 +1106,7 @@ pub(super) fn bind_this_instance_params(
 /// gives the binding: every parameter typed by the spec parameter reads that one type. Bound as
 /// written, `T = Box[C = Car]` was expanded per occurrence, so `x: T, y: T` took two boxes of
 /// different element types and a member tying them failed at run time (MEASURED: review 9).
-fn once_per_call(kb: &mut KnowledgeBase, instance: &Value) -> Value {
+pub(super) fn once_per_call(kb: &mut KnowledgeBase, instance: &Value) -> Value {
     expand_sorts_deep(kb, instance, SlotVar::Flexible)
 }
 

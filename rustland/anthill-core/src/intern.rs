@@ -834,6 +834,12 @@ pub struct Scope {
     /// positional sort bindings (`Map[String, Int]` for `sort Map { sort K = ?; sort
     /// V = ? }`) map index 0 → `K`, index 1 → `V` off this list.
     pub type_params_ordered: Vec<Symbol>,
+    /// The scopes of the sorts this scope's `provides` clauses name, each once, in the
+    /// order they are written — a carrier's (`provides Stream[T, {}]`) as well as a
+    /// conversion's. Not a parent link: a carrier's provision lends no name bare. Read
+    /// by the loader to ask whether `Sort.member` names a member a provision of `Sort`
+    /// lends ([`SymbolTable::written_provisions`]).
+    pub written_provisions: Vec<ScopeId>,
 }
 
 // ── SymbolTable ─────────────────────────────────────────────────
@@ -2389,6 +2395,22 @@ impl SymbolTable {
                 is_enclosing: false,
             },
         );
+    }
+
+    /// Record that `scope`'s `provides` clause names the sort whose scope is `target`
+    /// ([`Scope::written_provisions`]). Idempotent.
+    pub fn add_written_provision(&mut self, scope: ScopeId, target: ScopeId) {
+        let written = &mut self.scope_mut(scope).written_provisions;
+        if !written.contains(&target) {
+            written.push(target);
+        }
+    }
+
+    /// The scopes of the sorts `scope`'s `provides` clauses name ([`Scope::written_provisions`]).
+    pub fn written_provisions(&self, scope: ScopeId) -> &[ScopeId] {
+        self.scopes
+            .get(&scope)
+            .map_or(&[][..], |s| s.written_provisions.as_slice())
     }
 
     /// WI-20260906-6BX85 — [`Self::add_parent`] for a sort's `requires` CLAUSE. One call

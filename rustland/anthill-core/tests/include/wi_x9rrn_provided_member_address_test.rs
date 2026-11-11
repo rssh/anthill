@@ -671,10 +671,8 @@ end
         ("anthill.prelude.Numeric.add", true),
         ("anthill.prelude.Eq.eq", true),
         ("anthill.prelude.algebra.Ring.mul", true),
-        // A CONCRETE `provides` binding (`TotalFloat provides PartialEq[T = TotalFloat]`)
-        // is a claim about a value, not a conversion, so it wires no scope parent — and
-        // the IMPORT refuses it too.
-        ("anthill.prelude.TotalFloat.neq", false),
+        // A member no provision of the head lends names nothing under either spelling.
+        ("anthill.prelude.TotalFloat.nosuchmember", false),
     ] {
         let (q, i) = (qualified_resolves(path), import_resolves(path));
         assert_eq!(
@@ -714,6 +712,21 @@ end
             "{path}: …and the ADDRESS must not, because {why} and neither edge is an offer"
         );
     }
+
+    // A CARRIER'S PROVISION (`TotalFloat provides PartialEq[T = TotalFloat]`) is a claim
+    // about a value, not a conversion: it wires no scope parent, so the IMPORT refuses
+    // `neq`, a bare name with no instance to be called at. The CALL `TotalFloat.neq(…)` is
+    // `PartialEq.neq` at `TotalFloat`'s instance (WI-20261102-YCZ0J, kernel-language §8.7),
+    // read as the dot on the sort's type value and not through this rung, which it leaves
+    // to conversions. Before that ticket the call named nothing too.
+    assert!(
+        qualified_resolves("anthill.prelude.TotalFloat.neq"),
+        "`TotalFloat.neq(…)` is the member its provision lends, called at its instance"
+    );
+    assert!(
+        !import_resolves("anthill.prelude.TotalFloat.neq"),
+        "…and `import TotalFloat.{{neq}}` still names nothing: a provision lends no bare name"
+    );
 
     // AND WHERE THE TWO NOW AGREE BY REFUSING. The enclosing chain is an offer under
     // neither spelling; `wi_nb88h_member_import_stops_at_the_sort_test` owns the import

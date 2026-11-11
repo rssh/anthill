@@ -2463,3 +2463,5 @@ mod wi_p07e8_struct_neq_test;
 mod wi_mhf0b_binder_typed_through_callee_var_test;
 #[path = "include/wi_kq6dg_occurs_check_through_sigma_test.rs"]
 mod wi_kq6dg_occurs_check_through_sigma_test;
+#[path = "include/wi_ycz0j_carrier_names_inherited_member_test.rs"]
+mod wi_ycz0j_carrier_names_inherited_member_test;

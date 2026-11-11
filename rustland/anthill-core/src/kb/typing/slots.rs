@@ -800,7 +800,7 @@ pub(super) fn seed_receiver_type_args(
         return Ok(());
     };
     if !same_sort_canonical(kb, recv_base, parent) {
-        return Ok(());
+        return seed_provider_receiver(kb, subst, &rt, recv_base, parent, fn_sym, span);
     }
     // A BINDING THAT NAMES A REQUIREMENT SLOT IS VALIDATED HERE, by the callee leg's own
     // owner ([`validate_written_selection`]), so the two spellings refuse the same
@@ -923,6 +923,150 @@ pub(super) fn seed_receiver_type_args(
                 span,
             )?;
         }
+    }
+    Ok(())
+}
+
+/// A RECEIVER THAT NAMES A PROVIDER of the callee's spec — `A` on `Mk.viaDefault` beside
+/// `sort A { provides Mk[C = A] }`, `Numeric[T = Int64]` on `Additive.add` beside `Numeric
+/// provides Additive[T = T]` — binds the spec's parameters as the provider's own provision
+/// binds them, read at the receiver: `C = A`, `T = Int64`. The call is made at the
+/// provider's instance, which is what the written `A.viaDefault()` and `Numeric[T =
+/// Int64].add(…)` say. A spec the receiver reaches through another (`List` to `Iterable`
+/// through `Stream`) has no provision of the receiver's own; there the receiver is its
+/// carrier parameter, when the receiver is a carrier and not a spec over a parameter. A
+/// spec the receiver is its own carrier of takes no binding for the receiver itself; its
+/// arguments are held to it ([`pin_provider_receiver_arguments`]).
+///
+/// A receiver that provides nothing the callee's sort is binds nothing.
+fn seed_provider_receiver(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    rt: &Value,
+    provider: Symbol,
+    spec: Symbol,
+    fn_sym: Symbol,
+    span: Option<Span>,
+) -> Result<(), TypeError> {
+    let (provider_canon, spec_canon) = (kb.canonical_sort_sym(provider), kb.canonical_sort_sym(spec));
+    if !provides_reaches(kb, provider_canon, spec_canon) {
+        return Ok(());
+    }
+    let at = expand_sort_application(kb, rt).unwrap_or_else(|| rt.clone());
+    let bind = |kb: &mut KnowledgeBase,
+                    subst: &mut Substitution,
+                    param: Symbol,
+                    vid: VarId,
+                    value: Value|
+     -> Result<(), TypeError> {
+        match subst.resolve_as_value(vid).cloned() {
+            None => {
+                if !occurs_in_view(kb, vid, &value) {
+                    subst.bind_value(kb, vid, value);
+                }
+                Ok(())
+            }
+            Some(prior) => {
+                let var = kb.alloc(Term::Var(Var::Global(vid)));
+                if unify_types(kb, subst, &TermIdView(var), &value) {
+                    return Ok(());
+                }
+                let callee = walk_type_deep_value(kb, subst, &prior);
+                Err(TypeError::ReceiverBracketConflict {
+                    span,
+                    op: fn_sym,
+                    param,
+                    receiver: value,
+                    callee,
+                })
+            }
+        }
+    };
+    if let Some(bindings) = provider_spec_view_bindings(kb, provider, spec) {
+        for (param, written) in bindings {
+            // An operation binding (`provides Monoid[T = E, combine = myCombine]`) names no
+            // type parameter and binds nothing here.
+            let Some(vid) = type_param_vid_in_sort(kb, spec, param) else {
+                continue;
+            };
+            // `at` writes every parameter of the provider, so the binding reads at it.
+            let value = binding_at_receiver(kb, provider, &at, &written).unwrap_or_else(|| {
+                panic!(
+                    "seed_provider_receiver: `{}`'s binding `{}` does not read at the expanded receiver",
+                    kb.qualified_name_of(provider),
+                    kb.local_name_of(param)
+                )
+            });
+            let value = once_per_call(kb, &value);
+            bind(kb, subst, param, vid, value)?;
+        }
+    } else if !spec_has_carrier_param(kb, provider) {
+        if let Some(carrier) = spec_carrier_param(kb, spec) {
+            if let Some(vid) = type_param_global_var(kb, carrier) {
+                if subst.resolve_as_value(vid).is_none() {
+                    bind(kb, subst, carrier, vid, at)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The receiver type a call names a provider of its own spec by — the expanded `List[T = ?]`
+/// of `Stream.isEmpty` written `List.isEmpty(xs)` — where `spec` is a sort its providers ARE
+/// (`List provides Stream`, a list is a stream): each argument at a parameter the spec types
+/// by itself (`s: Self`) is held to the receiver, so `List.isEmpty(v)` takes a list and the
+/// call runs a list's instance. `None` where the receiver is the spec's own sort, or names
+/// no provider of it ([`seed_provider_receiver`]'s population).
+pub(super) fn pin_provider_receiver_arguments(
+    kb: &mut KnowledgeBase,
+    subst: &mut Substitution,
+    occ: &Rc<NodeOccurrence>,
+    spec: Symbol,
+    op: &OperationInfoFull,
+    fn_sym: Symbol,
+    span: Option<Span>,
+    supplied: &dyn Fn(&KnowledgeBase, usize) -> Option<Value>,
+) -> Result<(), TypeError> {
+    let Some(rt) = call_recv_type_of(occ).cloned() else {
+        return Ok(());
+    };
+    let Some((provider, _)) = sort_application_parts(kb, &rt) else {
+        return Ok(());
+    };
+    let (provider_canon, spec_canon) = (kb.canonical_sort_sym(provider), kb.canonical_sort_sym(spec));
+    if provider_canon == spec_canon || !provides_reaches(kb, provider_canon, spec_canon) {
+        return Ok(());
+    }
+    let at = expand_sort_application(kb, &rt).unwrap_or(rt);
+    for (i, (param, pty)) in op.params.iter().enumerate() {
+        if carrier_sort_of_value(kb, pty).map(|s| kb.canonical_sort_sym(s)) != Some(spec_canon) {
+            continue;
+        }
+        let Some(actual) = supplied(kb, i) else {
+            continue;
+        };
+        // Unified on a copy, so a unify that fails leaves the call's σ as it was for the
+        // subtype check and for every reader after it.
+        let mut tried = subst.clone();
+        if unify_types(kb, &mut tried, &at, &actual) {
+            *subst = tried;
+            continue;
+        }
+        if types_compatible(kb, subst, &actual, &at) {
+            continue;
+        }
+        return Err(TypeError::TypeMismatch {
+            site: TypeError::here(),
+            span,
+            context: TypeErrorContext::OperationArgument {
+                op_name: fn_sym,
+                param: *param,
+            },
+            expected: walk_type_deep_value(kb, subst, &at),
+            quoted: None,
+            actual: walk_type_deep_value(kb, subst, &actual),
+        });
     }
     Ok(())
 }

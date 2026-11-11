@@ -532,6 +532,22 @@ fn check_apply_call(
         // inference-expanded list and `written_params` its clone, so ONE index serves both.
         let pos_call_params = positional_param_indices(kb, &op.params, pos_args.len(), named_args);
         let self_recv_spec = self_receiver_spec_sort(kb, &op, fn_sym);
+        // A receiver naming a provider of a spec its providers ARE (`List.isEmpty(xs)`, the
+        // call `Stream.isEmpty` at `List`): the arguments the spec types by itself are the
+        // provider's ([`pin_provider_receiver_arguments`]).
+        if let Some(spec) = self_recv_spec {
+            pin_provider_receiver_arguments(kb, &mut subst, occ, spec, &op, fn_sym, span, &|kb, i| {
+                supplied_arg_type(
+                    kb,
+                    &op.params,
+                    &pos_call_params,
+                    i,
+                    pos_results,
+                    named_args,
+                    named_results,
+                )
+            })?;
+        }
         // WI-383 B: capture the CARRIER-PARAM provision (the `Iterable.find(c: C)` shape —
         // receiver typed by the spec's own carrier param, not the spec sort) so the LATE
         // ground-value bind below can reuse its `view` without re-scanning the provider

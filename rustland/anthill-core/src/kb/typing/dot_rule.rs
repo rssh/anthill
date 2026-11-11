@@ -315,6 +315,31 @@ pub(super) fn find_spec_op_for_provided_sort(
             spec_syms.push(spec_sym);
         }
     }
+    nearest_spec_op(kb, spec_syms, short)
+}
+
+/// The operation `short` a sort's OWN provisions lend it: the member a spec it provides
+/// declares, chosen among the specs it provides, directly and through theirs, by
+/// [`find_spec_op_for_provided_sort`]'s order — the nearest, and of several equally near
+/// the one that requires the others. A provision another sort writes AT `provider` (a
+/// witness's carrier) lends nothing here: what a sort's name offers is what the sort
+/// itself provides. `None` where no such spec declares `short`.
+pub(super) fn spec_op_lent_by_own_provisions(
+    kb: &mut KnowledgeBase,
+    provider: Symbol,
+    short: &str,
+) -> Option<Symbol> {
+    let spec_syms: Vec<Symbol> = directly_provided_specs(kb, provider).into_vec();
+    nearest_spec_op(kb, spec_syms, short)
+}
+
+/// The member `short` among the specs `spec_syms` and every spec they provide, by distance
+/// first and `requires`-refinement among equally near ones (kernel-language §8.7).
+fn nearest_spec_op(
+    kb: &mut KnowledgeBase,
+    mut spec_syms: Vec<Symbol>,
+    short: &str,
+) -> Option<Symbol> {
     // WI-495: a member can live on a TRANSITIVELY-provided spec — `xs.map` on a
     // `List` is `Iterable.map`, reached via `List provides Stream` + `Stream
     // provides Iterable` (List no longer declares `provides Iterable` directly).

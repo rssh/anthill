@@ -13176,6 +13176,7 @@ impl ScopePass for ImportPass<'_> {
                                 scope,
                                 alias,
                                 provides: false,
+                                lends_names: false,
                                 file_idx,
                                 written: req_sort_name.clone(),
                                 span: r.span,
@@ -13289,6 +13290,11 @@ fn provides_speaks_only_of_own_params(
 /// a second diagnostic here would double every one of them. The kind refusal is the
 /// load phase's too, so this adds no `RequiresNamesNonSort` twin — it only declines to
 /// link a target with no contents.
+///
+/// Every clause's target is RECORDED as written (`SymbolTable::add_written_provision`),
+/// a conversion's and a carrier's alike: it is what tells the loader that `A.viaDefault`
+/// names a member `A`'s provisions lend ([`written_provisions_lend`]). Only a conversion
+/// becomes a parent edge, which is what lends its names bare.
 fn wire_provides_scope_parent(
     kb: &mut KnowledgeBase,
     parse_sym: &crate::intern::SymbolTable,
@@ -13301,9 +13307,7 @@ fn wire_provides_scope_parent(
     if spec_name == "anthill.prelude.EffectsRuntime" {
         return;
     }
-    if !provides_speaks_only_of_own_params(kb, parse_sym, spec, scope) {
-        return;
-    }
+    let lends_names = provides_speaks_only_of_own_params(kb, parse_sym, spec, scope);
     let resolved = kb.symbols.resolve_in_scope(&spec_name, scope).or_else(|| {
         match kb.try_resolve_symbol(&spec_name) {
             Some(sym) => ResolveResult::Found(sym),
@@ -13318,6 +13322,7 @@ fn wire_provides_scope_parent(
                 scope,
                 alias: sym,
                 provides: true,
+                lends_names,
                 file_idx,
                 written: spec_name,
                 span: Span::default(),
@@ -13325,11 +13330,14 @@ fn wire_provides_scope_parent(
             return;
         }
         if let Some(parent_scope) = parent_scope_of(kb, sym, REQUIRES_PARENT_ADMITS) {
+            kb.symbols.add_written_provision(scope, parent_scope);
             // WI-20260825-N2865 — `add_provides_parent`, not `add_parent`: the same
             // inclusion, filed under an origin that says WHICH clause wrote it, so the
             // resolver can stop the ENCLOSING chain below a conversion without stopping
             // it below a `requires`. See `SymbolTable::add_provides_parent`.
-            kb.symbols.add_provides_parent(scope, parent_scope);
+            if lends_names {
+                kb.symbols.add_provides_parent(scope, parent_scope);
+            }
         }
     }
 }
@@ -15187,6 +15195,7 @@ fn run_deferred_alias_work(
             scope,
             alias,
             provides,
+            lends_names,
             file_idx,
             written,
             span,
@@ -15197,6 +15206,7 @@ fn run_deferred_alias_work(
                         scope,
                         alias,
                         provides,
+                        lends_names,
                         file_idx,
                         written,
                         span,
@@ -15205,14 +15215,17 @@ fn run_deferred_alias_work(
                 // Nothing to wire: the clause's own load reports an alias of no sort.
                 return;
             };
-            // A conversion through an alias that APPLIES its target speaks of the bindings
-            // the alias fixes too, which the gate cannot read here: no names are lent, as
-            // `provides Store[State = WIS, Key = T]` written out lends none.
-            if provides && alias_chain_applies(kb, alias) {
-                return;
-            }
             match (parent_scope_of(kb, head, REQUIRES_PARENT_ADMITS), provides) {
-                (Some(parent), true) => kb.symbols.add_provides_parent(scope, parent),
+                (Some(parent), true) => {
+                    kb.symbols.add_written_provision(scope, parent);
+                    // A conversion through an alias that APPLIES its target speaks of the
+                    // bindings the alias fixes too, which the gate cannot read here: no
+                    // names are lent, as `provides Store[State = WIS, Key = T]` written out
+                    // lends none.
+                    if lends_names && !alias_chain_applies(kb, alias) {
+                        kb.symbols.add_provides_parent(scope, parent);
+                    }
+                }
                 (Some(parent), false) => kb.symbols.add_requires_parent(scope, parent),
                 (None, true) => {}
                 (None, false) => errors.push((
@@ -15263,6 +15276,10 @@ enum DeferredAliasWork {
         scope: ScopeId,
         alias: Symbol,
         provides: bool,
+        /// A `provides` that speaks only of the sort's own parameters, whose target's names
+        /// the sort lends under its own (`provides_speaks_only_of_own_params`). Every
+        /// `provides` is recorded as written (`SymbolTable::add_written_provision`).
+        lends_names: bool,
         file_idx: usize,
         written: String,
         span: Span,
@@ -28871,6 +28888,42 @@ fn dotted_by_provision(
     ResolveResult::NotFound
 }
 
+/// Does a `provides` clause of `sort` — or of a sort it provides, at any depth — name a sort
+/// that declares the operation `member`? The scan's reading of `Sort.member` for a member
+/// the sort does not declare: such a name is the dot on the sort's type value, and the
+/// typer answers it with the member the sort's provisions lend, chosen as a dot on a value
+/// of the sort chooses it (`typing::written_sort_dot`). A name no provision lends stays the
+/// qualified name it is, and its miss stays the loud unknown functor.
+///
+/// A carrier's provisions as well as a conversion's ([`Scope::written_provisions`]), which
+/// is the difference from [`dotted_by_provision`]: a conversion lends its names under the
+/// sort's own, as members of it; a carrier's provision lends the member to a call AT the
+/// sort's instance, which the dot makes and a name cannot.
+fn written_provisions_lend(kb: &KnowledgeBase, sort: Symbol, member: &str) -> bool {
+    let Some(scope) = parent_scope_of(kb, sort, PROVISION_HEAD_ADMITS) else {
+        return false;
+    };
+    let mut visited: std::collections::HashSet<ScopeId> = std::collections::HashSet::new();
+    visited.insert(scope);
+    let mut frontier: Vec<ScopeId> = kb.symbols.written_provisions(scope).to_vec();
+    while let Some(provided) = frontier.pop() {
+        if !visited.insert(provided) {
+            continue;
+        }
+        let qualified = kb.qualified_name_of(provided.owner());
+        if kb
+            .symbols
+            .by_qualified_name
+            .get(&format!("{qualified}.{member}"))
+            .is_some_and(|op| kb.has_kind(*op, SymbolKind::Operation))
+        {
+            return true;
+        }
+        frontier.extend_from_slice(kb.symbols.written_provisions(provided));
+    }
+    false
+}
+
 /// WI-20261013-50ZMN — the operation `Name.member` is, where `Name` is a requirement's
 /// name and requires `spec`: the sort's own operation of that name, or one of a sort it
 /// provides ([`dotted_by_provision`]) — the sort's own first, as the qualified name
@@ -29413,6 +29466,11 @@ struct Loader<'a> {
     // a typo'd place (`-Modify[zzz]`) would otherwise load as a vacuous
     // constraint with only a warning — silently unenforced.
     in_effect_absence: bool,
+    /// The goals of an effect guard are being converted (`E :- guard`). A guard does not
+    /// dispatch a dot (kernel-language §5.5), so a name read elsewhere as the dot on a sort
+    /// ([`Self::lent_member_dot_term`]) stays the name it spells there, and is refused as
+    /// one that names nothing.
+    in_effect_guard: bool,
     // WI-429: true while lowering a TYPE expression (`type_expr_to_child` and
     // everything beneath it). An unresolvable Capitalized DOTTED name there is
     // upgraded from the advisory `UnresolvedName` (+ degenerate minted nominal)
@@ -30047,6 +30105,7 @@ impl<'a> Loader<'a> {
             type_param_vars: HashMap::new(),
             arrow_binder_scope: HashMap::new(),
             in_effect_absence: false,
+            in_effect_guard: false,
             in_type_position: false,
             alias_nodes: false,
             hk_slot: false,
@@ -32858,22 +32917,7 @@ impl<'a> Loader<'a> {
             );
         }
         let name = self.kb.intern(method);
-        let pos_args = pos_args
-            .iter()
-            .map(|&a| self.build_body_atom_occurrence(a))
-            .collect();
-        let named_args: Vec<(Symbol, ParseTermId)> = named_args
-            .iter()
-            .copied()
-            .filter(|&(_, a)| self.named_child_survives_walk(a))
-            .collect();
-        let named_args = named_args
-            .iter()
-            .map(|&(k, a)| {
-                let key = self.kb.intern(self.parsed.symbols.local_name(k));
-                (key, self.build_body_atom_occurrence(a))
-            })
-            .collect();
+        let (pos_args, named_args) = self.body_call_args(&pos_args, &named_args);
         Some(NodeOccurrence::new_expr(
             Expr::DotApply {
                 receiver,
@@ -32885,6 +32929,107 @@ impl<'a> Loader<'a> {
             span,
             owner,
         ))
+    }
+
+    /// A call written `Sort.member(…)` in a rule body whose `member` the sort does not declare
+    /// and one of its provisions lends ([`Self::sort_lending_member`]): the dot on the
+    /// sort's type value, as the operation-body walk builds it, which the typer replaces by
+    /// the call at the sort's instance before the rule body is read
+    /// (`typing::written_type_dots_as_calls`). Without parentheses it is that dot with no
+    /// arguments, as `(Sort).member` is. A call with a bracket on it, the receiver's or its
+    /// own, is not read so and stays the name it spells.
+    fn lending_sort_method_call(
+        &mut self,
+        parse_id: ParseTermId,
+        span: SourceSpan,
+    ) -> Option<Rc<NodeOccurrence>> {
+        // Without parentheses the chain is the converter's `field_access`, and the dot has
+        // no arguments: `A.viaDefault` is `(A).viaDefault`.
+        if let Some(chain) =
+            dotted_citation_name(&self.parsed.symbols, &self.parsed.terms, parse_id)
+        {
+            if self.qualified_name_resolves(&chain) {
+                return None;
+            }
+            let (receiver_name, member) = chain.rsplit_once('.')?;
+            let sort = self.sort_lending_member(receiver_name, member)?;
+            let receiver = self.bare_type_value_occ(sort, span, None, true);
+            let name = self.kb.intern(member);
+            return Some(NodeOccurrence::new_expr_written(
+                Expr::DotApply {
+                    receiver,
+                    name,
+                    pos_args: Vec::new(),
+                    named_args: Vec::new(),
+                    type_args: Vec::new(),
+                },
+                span,
+                self.current_owner,
+                false,
+                true,
+            ));
+        }
+        let Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } = self.parsed.terms.get(parse_id)
+        else {
+            return None;
+        };
+        let written = self.parsed.symbols.local_name(*functor);
+        if !written.contains('.') {
+            return None;
+        }
+        let written = written.to_owned();
+        let (pos_args, named_args) = (pos_args.clone(), named_args.clone());
+        if self.read_parse_recv_type(parse_id).is_some()
+            || self.read_parse_call_type_args(parse_id).is_some()
+            || self.qualified_name_resolves(&written)
+        {
+            return None;
+        }
+        let (receiver_name, member) = written.rsplit_once('.')?;
+        let sort = self.sort_lending_member(receiver_name, member)?;
+        let owner = self.current_owner;
+        let receiver = self.bare_type_value_occ(sort, span, None, true);
+        let name = self.kb.intern(member);
+        let (pos_args, named_args) = self.body_call_args(&pos_args, &named_args);
+        Some(NodeOccurrence::new_expr(
+            Expr::DotApply {
+                receiver,
+                name,
+                pos_args,
+                named_args,
+                type_args: Vec::new(),
+            },
+            span,
+            owner,
+        ))
+    }
+
+    /// The arguments of a call a rule body writes on a flattened dotted name, each built as
+    /// the rule body's walk builds a child: positional ones, then named ones by their keys.
+    #[allow(clippy::type_complexity)]
+    fn body_call_args(
+        &mut self,
+        pos: &[ParseTermId],
+        named: &[(Symbol, ParseTermId)],
+    ) -> (Vec<Rc<NodeOccurrence>>, Vec<(Symbol, Rc<NodeOccurrence>)>) {
+        let pos_args = pos.iter().map(|&a| self.build_body_atom_occurrence(a)).collect();
+        let named: Vec<(Symbol, ParseTermId)> = named
+            .iter()
+            .copied()
+            .filter(|&(_, a)| self.named_child_survives_walk(a))
+            .collect();
+        let named_args = named
+            .iter()
+            .map(|&(k, a)| {
+                let key = self.kb.intern(self.parsed.symbols.local_name(k));
+                (key, self.build_body_atom_occurrence(a))
+            })
+            .collect();
+        (pos_args, named_args)
     }
 
     /// The name a converter-minted dotted chain spells ([`dotted_citation_name`]) where a
@@ -33402,25 +33547,7 @@ impl<'a> Loader<'a> {
                     } else {
                         self.convert_term(pos_args[1])
                     };
-                    let mut arg_terms: SmallVec<[TermId; 4]> = SmallVec::new();
-                    for &pid in &pos_args[2..] {
-                        let value = self.convert_term(pid);
-                        let none = build_none(self.kb);
-                        arg_terms.push(self.mk_apply_arg(none, value));
-                    }
-                    // A call's bracket is no argument: what reads it is the operation-body
-                    // walk, and anywhere else the end-of-file sweep refuses it.
-                    for &(sym, pid) in named_args.iter() {
-                        if !self.named_child_survives_walk(pid) {
-                            continue;
-                        }
-                        let value = self.convert_term(pid);
-                        let reinterned = self.reintern(sym);
-                        let arg_name = self.kb.alloc(Term::Ref(reinterned));
-                        let some_name = build_some(self.kb, arg_name);
-                        arg_terms.push(self.mk_apply_arg(some_name, value));
-                    }
-                    let args_list = self.kb.build_list(&arg_terms);
+                    let args_list = self.dot_args_term(&pos_args[2..], &named_args);
                     let (dot, k_receiver, k_name, k_args) = {
                         let s = &self.expr_syms;
                         (s.dot_apply, s.k_receiver, s.k_name, s.k_args)
@@ -33434,6 +33561,13 @@ impl<'a> Loader<'a> {
                             (k_args, args_list),
                         ]),
                     });
+                    self.term_map.insert(parse_id, kb_id);
+                    return kb_id;
+                }
+                // `Sort.member(…)` for a member the sort does not declare and one of its
+                // provisions lends is the dot on the sort, the term `(Sort).member(…)` is
+                // ([`Self::lent_member_dot_term`]).
+                if let Some(kb_id) = self.lent_member_dot_term(parse_id) {
                     self.term_map.insert(parse_id, kb_id);
                     return kb_id;
                 }
@@ -35079,6 +35213,11 @@ impl<'a> Loader<'a> {
                                     ) {
                                         return;
                                     }
+                                    if self.try_lending_sort_dot(
+                                        parse_id, &pos_args, receiver, work, results,
+                                    ) {
+                                        return;
+                                    }
                                 }
                             }
                         }
@@ -35249,10 +35388,16 @@ impl<'a> Loader<'a> {
         let Some((receiver_name, member)) = functor_name.rsplit_once('.') else {
             return false;
         };
-        let Some((root_sym, trailing)) = self.dot_call_receiver_chain(receiver_name, functor_name)
-        else {
-            return false;
-        };
+        // A sort whose provisions lend the member is a receiver of its own kind, rung 4 of the
+        // ladder, read only where the three value rungs found nothing.
+        let (root_sym, trailing, lending_sort) =
+            match self.dot_call_receiver_chain(receiver_name, functor_name) {
+                Some((root, trailing)) => (root, trailing, false),
+                None => match self.lending_sort_receiver(parse_id, receiver_name, functor_name) {
+                    Some(sort) => (sort, "", true),
+                    None => return false,
+                },
+            };
         // Synthesized receiver ROOT: the `var_ref(name: Ref(binder))` shape
         // `load_var_ref` builds for a bare identifier reference, plus its
         // leaf occurrence — pushed BEFORE the arg Visits so it lands in the
@@ -35286,7 +35431,9 @@ impl<'a> Loader<'a> {
         let aliased_rule = (self.is_paren_less_citation_target(root_sym))
             .then(|| self.alias_recv_type_of(root_name, root_sym))
             .flatten();
-        if self.kb.has_kind(root_sym, SymbolKind::Operation) {
+        if lending_sort {
+            self.push_sort_receiver(None, parse_id, root_sym, results);
+        } else if self.kb.has_kind(root_sym, SymbolKind::Operation) {
             let recv_type = self.alias_recv_type_of(root_name, root_sym);
             self.push_zero_arg_apply(parse_id, root_sym, recv_type, results);
         } else if let Some(recv_type) = aliased_rule {
@@ -35353,6 +35500,8 @@ impl<'a> Loader<'a> {
     /// rooted at no value at all (a sort/namespace receiver, or nothing in scope),
     /// which is what keeps the APPLIED `Sort.rule(args)` form and every genuine
     /// qualified call on the qualified-name path with its loud unknown-functor miss.
+    /// A sort whose provisions lend a member it does not declare is asked after it, by
+    /// [`Self::lending_sort_receiver`].
     ///
     /// The returned trailing segments are EMPTY for the common depth-1 receiver;
     /// `try_identifier_dot_call` folds any it does get into zero-arg `DotApply`s, so
@@ -35439,6 +35588,190 @@ impl<'a> Loader<'a> {
         // 3. The longest VALUE prefix — a rule or a const — the receiver's remaining
         // segments trailing it.
         self.value_prefix_split(receiver_name)
+    }
+
+    /// Rung 4 of the dot-call receiver ladder, asked where [`Self::dot_call_receiver_chain`]
+    /// found no value: the sort `receiver_name` names, when the whole name resolves to
+    /// nothing and one of the sort's provisions lends the member
+    /// ([`Self::sort_lending_member`]) — the call at the sort's instance, made by the dot on
+    /// its type value. A bracket written on the receiver is the instance the call is at, and
+    /// the application's own build reads it ([`Self::lent_through_written_receiver`]).
+    fn lending_sort_receiver(
+        &self,
+        parse_id: ParseTermId,
+        receiver_name: &str,
+        functor_name: &str,
+    ) -> Option<Symbol> {
+        let (_, member) = functor_name.rsplit_once('.')?;
+        if self.read_parse_recv_type(parse_id).is_some() || self.qualified_name_resolves(functor_name) {
+            return None;
+        }
+        self.sort_lending_member(receiver_name, member)
+    }
+
+    /// The term of an applied `Sort.member(…)` in a clause's own text — a head, a fact, an
+    /// equation's side — whose `member` the sort does not declare and one of its provisions
+    /// lends ([`Self::sort_lending_member`]): the `dot_apply` the written `(Sort).member(…)`
+    /// converts to, so the two spellings are one term and the typer reads both as the call at
+    /// the sort's instance. A call with a bracket on it, the receiver's or its own, is not read
+    /// so. `None` for every other node.
+    fn lent_member_dot_term(&mut self, parse_id: ParseTermId) -> Option<TermId> {
+        let Term::Fn {
+            functor,
+            pos_args,
+            named_args,
+        } = self.parsed.terms.get(parse_id).clone()
+        else {
+            return None;
+        };
+        let written = self.parsed.symbols.local_name(functor);
+        if self.in_effect_guard || !written.contains('.') {
+            return None;
+        }
+        let written = written.to_owned();
+        if self.read_parse_recv_type(parse_id).is_some()
+            || self.read_parse_call_type_args(parse_id).is_some()
+            || self.qualified_name_resolves(&written)
+        {
+            return None;
+        }
+        let (receiver_name, member) = written.rsplit_once('.')?;
+        let sort = self.sort_lending_member(receiver_name, member)?;
+        let receiver = self.kb.alloc(Term::Ref(sort));
+        let span = self.parsed.terms.span(parse_id);
+        let member = self.remap_name_str(member, span);
+        let name_ref = self.kb.alloc(Term::Ref(member));
+        let args_list = self.dot_args_term(&pos_args, &named_args);
+        Some(self.mk_dot_apply(receiver, name_ref, args_list))
+    }
+
+    /// The `args` list of a `dot_apply` term in a clause's own text: each argument converted
+    /// as a term, positional ones first. A call's bracket is no argument: what reads it is
+    /// the operation-body walk, and anywhere else the end-of-file sweep refuses it.
+    fn dot_args_term(&mut self, pos: &[ParseTermId], named: &[(Symbol, ParseTermId)]) -> TermId {
+        let mut arg_terms: SmallVec<[TermId; 4]> = SmallVec::new();
+        for &pid in pos {
+            let value = self.convert_term(pid);
+            let none = build_none(self.kb);
+            arg_terms.push(self.mk_apply_arg(none, value));
+        }
+        for &(sym, pid) in named {
+            if !self.named_child_survives_walk(pid) {
+                continue;
+            }
+            let value = self.convert_term(pid);
+            let reinterned = self.reintern(sym);
+            let arg_name = self.kb.alloc(Term::Ref(reinterned));
+            let some_name = build_some(self.kb, arg_name);
+            arg_terms.push(self.mk_apply_arg(some_name, value));
+        }
+        self.kb.build_list(&arg_terms)
+    }
+
+    /// The paren-less `Sort.member` whose `member` the sort does not declare and one of its
+    /// provisions lends ([`Self::sort_lending_member`]): the dot on the sort's type value,
+    /// as the applied `Sort.member()` is. A dot without parentheses takes no arguments, so
+    /// the receiver is placed now and the dot built next.
+    fn try_lending_sort_dot(
+        &mut self,
+        parse_id: ParseTermId,
+        pos_args: &[ParseTermId],
+        receiver_name: &str,
+        work: &mut Vec<LoadWorkOp>,
+        results: &mut Vec<TermId>,
+    ) -> bool {
+        if pos_args.len() != 2 {
+            return false;
+        }
+        let Term::Ident(member) = self.parsed.terms.get(pos_args[1]).clone() else {
+            return false;
+        };
+        let member_name = self.parsed.symbols.local_name(member).to_owned();
+        let Some(sort) = self.sort_lending_member(receiver_name, &member_name) else {
+            return false;
+        };
+        let kb_member = self.remap_symbol(member, self.parsed.terms.span(pos_args[1]));
+        let name_ref = self.kb.alloc(Term::Ref(kb_member));
+        work.push(LoadWorkOp::Build(LoadBuildFrame::DotApply {
+            outer_parse_id: parse_id,
+            name_ref,
+            pos_count: 0,
+            named_keys: SmallVec::new(),
+            paren_less: true,
+        }));
+        self.push_sort_receiver(Some(pos_args[0]), pos_args[0], sort, results);
+        true
+    }
+
+    /// The receiver a dot whose member a sort's provisions lend is made on: the sort's type
+    /// value, whatever its bare name reads as elsewhere — an eponymous sort's and a
+    /// free-standing entity's bare name is their construction (§4.4), and here the name is
+    /// read as the sort the provisions belong to. `own_node` is the receiver's own parse
+    /// node where it has one; `site` is where the occurrence points.
+    fn push_sort_receiver(
+        &mut self,
+        own_node: Option<ParseTermId>,
+        site: ParseTermId,
+        sort: Symbol,
+        results: &mut Vec<TermId>,
+    ) {
+        let kb_id = self.mk_var_ref(sort);
+        if let Some(node) = own_node {
+            self.create_occurrence(node, kb_id);
+        }
+        results.push(kb_id);
+        if self.occ_suppress == 0 {
+            let span = self.source_span_of(site);
+            let occ = self.bare_type_value_occ(sort, span, None, !self.lowering_rule_compound_expr);
+            self.expr_occ_results.push(occ);
+        }
+    }
+
+    /// The member and the receiver's type of a call written `Sort[…].member(…)` whose
+    /// `member` the sort does not declare and one of its provisions lends
+    /// ([`Self::sort_lending_member`]): the functor resolved to nothing, the receiver's
+    /// bracket was read (`recv_type`), and the written name's receiver is the sort. `None`
+    /// for every other call.
+    fn lent_through_written_receiver(
+        &mut self,
+        outer_parse_id: ParseTermId,
+        parse_functor: Symbol,
+        kb_functor: Symbol,
+        recv_type: Option<&crate::eval::value::Value>,
+        through_requirement: bool,
+    ) -> Option<(Symbol, TermId)> {
+        let recv_type = recv_type?;
+        if through_requirement || !self.kb.symbols.get(kb_functor).kinds().is_empty() {
+            return None;
+        }
+        let written = self.parsed.symbols.local_name(parse_functor).to_owned();
+        let (receiver_name, member) = written.rsplit_once('.')?;
+        self.sort_lending_member(receiver_name, member)?;
+        // The type value's term: a type that holds a value (`Buf[T = Int64, N = 3]`) rides an
+        // occurrence, and is lowered here, where the type value is built from a term.
+        let receiver = match recv_type {
+            crate::eval::value::Value::Term { id } => *id,
+            other => node_occurrence::value_to_term(self.kb, other).ok()?,
+        };
+        let span = self.parsed.terms.span(outer_parse_id);
+        Some((self.remap_name_str(member, span), receiver))
+    }
+
+    /// The sort a dotted receiver `name` names — read through a type alias that owns no
+    /// members, as the qualified name is — when the sort does not declare `member` and one
+    /// of its provisions lends it ([`written_provisions_lend`]): `A` in `A.viaDefault()`
+    /// beside `sort A { provides Mk[C = A] }`, where `Mk` writes `viaDefault`'s body. The
+    /// receiver then lowers to the sort's type value, as its name does
+    /// ([`Self::push_leaf_occ`]), and the typer reads the dot as the call at the sort's
+    /// instance. `None` for every other receiver, which keeps the qualified-name reading.
+    fn sort_lending_member(&self, name: &str, member: &str) -> Option<Symbol> {
+        let sym = self.resolve_qualified_readonly(name)?;
+        let sort = if self.kb.is_scan_alias(sym) && !super::typing::owns_members(self.kb, sym) {
+            self.kb.alias_head(sym)?
+        } else {
+            sym
+        };
+        written_provisions_lend(self.kb, sort, member).then_some(sym)
     }
 
     /// Does this dotted name resolve to a symbol AS WRITTEN — the read-only, kind-blind
@@ -36646,6 +36979,7 @@ impl<'a> Loader<'a> {
                     Vec::new()
                 };
                 // The name the callee was written through, as the entry it stands for.
+                let through_requirement = requirement_call.is_some();
                 if let Some(call) = requirement_call {
                     type_args.push((Some(call.key), call.name));
                 }
@@ -36661,6 +36995,48 @@ impl<'a> Loader<'a> {
                 } else {
                     None
                 };
+
+                // A member the receiver's sort does not declare and one of its provisions
+                // lends, written with a bracket on the receiver — `List[T = Int64].isEmpty(xs)`
+                // — is the dot on that type value, as the bare `List.isEmpty(xs)` is
+                // ([`Self::sort_lending_member`]): the call at the instance the bracket names.
+                if let Some((member, receiver)) = self.lent_through_written_receiver(
+                    outer_parse_id,
+                    parse_functor,
+                    kb_functor,
+                    recv_type.as_ref(),
+                    through_requirement,
+                ) {
+                    let name_ref = self.kb.alloc(Term::Ref(member));
+                    let kb_id = self.mk_dot_apply(receiver, name_ref, args_list);
+                    self.create_occurrence(outer_parse_id, kb_id);
+                    results.push(kb_id);
+                    if self.occ_suppress == 0 {
+                        let span = SourceSpan::from_span(
+                            self.source_id,
+                            self.parsed.terms.span(outer_parse_id),
+                        );
+                        let occ_named_keys: Vec<Symbol> =
+                            named_keys.iter().map(|s| self.reintern(*s)).collect();
+                        let receiver_occ =
+                            type_value_occurrence(self.kb, receiver, span, self.current_owner);
+                        let at = self.expr_occ_results.len() - pos_count - occ_named_keys.len();
+                        self.expr_occ_results.insert(at, receiver_occ);
+                        node_occurrence::build_frame(
+                            self.kb,
+                            node_occurrence::BuildFrame::DotApply {
+                                span,
+                                name: member,
+                                pos_count,
+                                named_keys: occ_named_keys,
+                                paren_less: self.parsed.terms.is_paren_less_citation(outer_parse_id),
+                                type_args,
+                            },
+                            &mut self.expr_occ_results,
+                        );
+                    }
+                    return;
+                }
 
                 let kb_id = if is_entity {
                     self.constructor_expr_term(name_ref, args_list)
@@ -39143,6 +39519,9 @@ impl<'a> Loader<'a> {
                     return occ;
                 }
                 if let Some(occ) = self.named_requirement_call(parse_id, span) {
+                    return occ;
+                }
+                if let Some(occ) = self.lending_sort_method_call(parse_id, span) {
                     return occ;
                 }
                 // WI-20261001-KDMQS — a dotted chain naming a const in a DATA slot is its
@@ -42993,7 +43372,9 @@ impl<'a> Loader<'a> {
                 let guard_terms: Vec<TermId> = guard
                     .iter()
                     .map(|g| {
+                        let saved_guard = std::mem::replace(&mut self.in_effect_guard, true);
                         let t = self.convert_term(*g);
+                        self.in_effect_guard = saved_guard;
                         let t = self.var_ref_signature_places(t);
                         let site = crate::kb::EffectGuardSite {
                             goal: t,
