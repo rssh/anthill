@@ -1947,7 +1947,9 @@ pub(super) fn report_call_solutions(
         if out.resolve_as_value(v).is_some() {
             continue;
         }
-        if value_reaches_var(kb, out, &val, v) {
+        // Two calls can contribute `?a := f(?b)` and `?b := g(?a)`, each acyclic and
+        // walk-local on its own: the check follows what `out` has committed.
+        if occurs_through(kb, out, v, &val) {
             continue;
         }
         out.bind_value(kb, v, val);
@@ -2011,45 +2013,6 @@ pub(super) fn names_a_type_parameter_variable(kb: &KnowledgeBase, ty: &Value) ->
     let mut seen = HashSet::new();
     collect_value_type_and_bare_vars(kb, ty, &mut vars, &mut seen);
     vars.iter().any(|v| kb.is_canonical_type_param_var(*v))
-}
-
-/// WI-20260904-50B2K part (c) — can `var` be reached FROM `v`, following the bindings
-/// already recorded in `out`? The occurs-check [`report_call_solutions`] performs itself.
-///
-/// **THE DIRECT TEST IS NOT ENOUGH, AND THE DOC THAT DEMANDED THIS CHECK SAID SO.** It names
-/// the hazard as "two calls can contribute `?a := f(?b)` and `?b := g(?a)`, each acyclic and
-/// walk-local ON ITS OWN" — and a direct `value_mentions_var` passes each of them, because
-/// neither value mentions its OWN variable. So the first cut implemented the check the doc
-/// argued against. The cycle then reaches `resolve_type_deep_value`, whose `map_fn_children`
-/// recursion has no visited set: a STACK OVERFLOW, not a wrong type. /code-review found it.
-///
-/// Following `out` is what makes the test transitive: a candidate is rejected when `var` is
-/// reachable from its value through bindings THIS walk has already committed.
-pub(super) fn value_reaches_var(
-    kb: &KnowledgeBase,
-    out: &Substitution,
-    v: &Value,
-    var: VarId,
-) -> bool {
-    let mut stack: Vec<Value> = vec![v.clone()];
-    let mut seen_vars: HashSet<u32> = HashSet::new();
-    while let Some(cur) = stack.pop() {
-        let mut vars: Vec<VarId> = Vec::new();
-        let mut seen = HashSet::new();
-        collect_value_type_and_bare_vars(kb, &cur, &mut vars, &mut seen);
-        for w in vars {
-            if w == var {
-                return true;
-            }
-            if !seen_vars.insert(w.raw()) {
-                continue;
-            }
-            if let Some(bound) = out.resolve_as_value(w) {
-                stack.push(bound.clone());
-            }
-        }
-    }
-    false
 }
 
 /// WI-20260904-50B2K part (c) — is every variable inside `v` walk-local? The RANGE half of

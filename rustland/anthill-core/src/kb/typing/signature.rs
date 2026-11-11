@@ -812,8 +812,7 @@ impl From<Narrowing> for MemberFit {
 /// across the positions, by unification, and a variable it binds two ways is the tie
 /// ([`genuine_contradiction_since`]); where unification stops short of a wider member, its
 /// variables are bound along the relation's own decomposition ([`bind_member_vars_along`]).
-/// UNIFICATION ONLY BINDS; THE RELATION JUDGES. It runs on a probe, a unifier that binds a
-/// variable inside itself is dropped before anything walks it ([`binds_a_cycle`]), and its
+/// UNIFICATION ONLY BINDS; THE RELATION JUDGES. It runs on a probe, and its
 /// `true` is no verdict — it equates two types across an invariant slot, a reversed arrow or
 /// an alias that the relation does not relate — so the relation is asked of what it bound, at
 /// every position and at the return. The provision's own open variables (a written `?`, a
@@ -944,15 +943,6 @@ fn member_narrower_than_spec(
             // two are equal where each is a subtype of the other.
             let unified = unify_types(kb, &mut probe, &b, &t)
                 && !genuine_contradiction_since(kb, &probe, before);
-            // A meet that binds a variable to a type holding itself (`s: Sp[T = List[T = U], W =
-            // U]` at `T = V, W = List[T = V]`) admits no receiver — and is not to be resolved
-            // through: a deep resolve of such a substitution does not return.
-            if unified && binds_a_cycle(kb, &probe) {
-                if closed {
-                    return MemberFit::Unreached;
-                }
-                continue;
-            }
             let mut reached = unified && {
                 let bb = resolve_type_deep_value(kb, &probe, &b);
                 let tb = resolve_type_deep_value(kb, &probe, &t);
@@ -974,12 +964,6 @@ fn member_narrower_than_spec(
                         &t,
                         variance == Variance::Contravariant,
                     );
-                }
-                if binds_a_cycle(kb, &probe) {
-                    if closed {
-                        return MemberFit::Unreached;
-                    }
-                    continue;
                 }
                 let t = resolve_type_deep_value(kb, &probe, &t);
                 reached = match variance {
@@ -1014,10 +998,8 @@ fn member_narrower_than_spec(
         if prep.resolve_as_value(v).is_some() {
             continue;
         }
-        let mut probe = prep.clone();
-        probe.bind_value(kb, v, tb.clone());
-        if !binds_a_cycle(kb, &probe) {
-            prep = probe;
+        if !occurs_through(kb, &prep, v, tb) {
+            prep.bind_value(kb, v, tb.clone());
         }
     }
     // Every variable left open is ANY type: the instance's slots first, named after its
@@ -1267,10 +1249,8 @@ fn member_narrower_than_spec(
         // UNIFICATION BINDS — the member's variables, a wildcard, a slot left to the other side —
         // and the RELATION judges ([`bind_on_probe`]).
         let before = subst.contradiction_details.len();
-        let (probe, unified, cyclic) = bind_on_probe(kb, &subst, before, &arg, &member, false);
-        if !cyclic {
-            subst = probe;
-        }
+        let (probe, unified) = bind_on_probe(kb, &subst, before, &arg, &member, false);
+        subst = probe;
         let contradiction = first_genuine_contradiction_since(kb, &subst, before);
         // Resolved first: the relation walks the top of a type, not the variables inside it —
         // BOTH sides, the spec's a wildcard an earlier position bound (left unresolved it read as
@@ -1281,18 +1261,15 @@ fn member_narrower_than_spec(
         // to the subtype relation in ARGUMENT order at every depth, whatever the position's
         // variance (`Cell[V = cat]` "unifies" with `Cell[V = Animal]`), and across two sorts it
         // compares no binding. So where it unified, the two are EQUAL or the relation holds.
-        let fits = !cyclic
-            && contradiction.is_none()
+        let fits = contradiction.is_none()
             && if unified {
                 views_structurally_equal(kb, &arg, &member)
                     || types_compatible(kb, &mut subst.clone(), &arg, &member)
             } else {
                 // The relation binds as it decomposes, and what it binds is kept for the
-                // positions after this one — unless it bound a variable inside itself, which is
-                // no verdict and nothing a later resolve may walk.
+                // positions after this one.
                 let mut related = subst.clone();
-                let holds = types_compatible(kb, &mut related, &arg, &member)
-                    && !binds_a_cycle(kb, &related);
+                let holds = types_compatible(kb, &mut related, &arg, &member);
                 if holds {
                     subst = related;
                 }
@@ -1430,18 +1407,18 @@ fn member_narrower_than_spec(
         };
         let slots_to = kb.fresh_var(mark).raw();
         let own_slot = |v: VarId| (slots_from..slots_to).contains(&v.raw());
-        // As a parameter is judged: unification BINDS, on a probe a cyclic unifier never leaves;
-        // where it stops short the member's variables are bound along the relation, the member
-        // the subtype here (`mk[W](…) -> (a: List[T = W], b: Int64)` behind `-> (a: List[T =
-        // Int64])` is `W = Int64`); and the verdict is the relation's whatever unification
+        // As a parameter is judged: unification BINDS, on a probe; where it stops short the
+        // member's variables are bound along the relation, the member the subtype here
+        // (`mk[W](…) -> (a: List[T = W], b: Int64)` behind `-> (a: List[T = Int64])` is `W =
+        // Int64`); and the verdict is the relation's whatever unification
         // answered — its `true` between two types holding no variable is the subtype relation in
         // argument order at every depth (`-> (x: cat) -> Int64` behind `-> (x: Animal) -> Int64`
         // and `-> Cell[V = cat]` behind `-> Cell[V = Animal]` "unified", and the caller of the
         // spec then read a `cat` where a `dog` was — MEASURED). A variable the return binds a
         // second way is the refusal it is in a parameter.
         let before = subst.contradiction_details.len();
-        let (probe, _, cyclic) = bind_on_probe(kb, &subst, before, &got, &want, true);
-        let fits = !cyclic && !genuine_contradiction_since(kb, &probe, before) && {
+        let (probe, _) = bind_on_probe(kb, &subst, before, &got, &want, true);
+        let fits = !genuine_contradiction_since(kb, &probe, before) && {
             let got = resolve_type_deep_value(kb, &probe, &got);
             let want = resolve_type_deep_value(kb, &probe, &want);
             let want_open = resolve_type_deep_value(kb, &probe, &want_open);
@@ -1461,7 +1438,7 @@ fn member_narrower_than_spec(
             // The substitution the verdict holds under: the relation binds on its own copy.
             let related = |kb: &mut KnowledgeBase, want: &Value| {
                 let mut s = probe.clone();
-                (types_compatible(kb, &mut s, &got, want) && !binds_a_cycle(kb, &s)).then_some(s)
+                types_compatible(kb, &mut s, &got, want).then_some(s)
             };
             let under = if views_structurally_equal(kb, &got, &want) {
                 Some(probe.clone())
@@ -1808,49 +1785,12 @@ fn meet_receiver_binding(
     };
     let b = expand_sorts_and_row_labels(kb, &b, SlotVar::Flexible);
     let mut probe = prep.clone();
-    if unify_types(kb, &mut probe, &Value::term(own), &b) && !binds_a_cycle(kb, &probe) {
+    if unify_types(kb, &mut probe, &Value::term(own), &b) {
         *prep = probe;
         true
     } else {
         false
     }
-}
-
-/// Does `subst` bind a variable to a value holding that variable — directly, or through the
-/// variables its bindings hold (`V ↦ List[T = W]`, `W ↦ List[T = V]`)? No finite type solves
-/// such a substitution, and a deep resolve through it does not return: unification's occurs
-/// check reads a binding as written, so the second of two such bindings passes it.
-pub(super) fn binds_a_cycle(kb: &KnowledgeBase, subst: &Substitution) -> bool {
-    fn visit(
-        kb: &KnowledgeBase,
-        subst: &Substitution,
-        v: VarId,
-        path: &mut Vec<VarId>,
-        done: &mut HashSet<VarId>,
-    ) -> bool {
-        if done.contains(&v) {
-            return false;
-        }
-        if path.contains(&v) {
-            return true;
-        }
-        let Some(bound) = subst.resolve_as_value(v) else {
-            done.insert(v);
-            return false;
-        };
-        path.push(v);
-        let mut held: Vec<VarId> = kb.collect_vars(bound).into_iter().collect();
-        referenced_param_vars(kb, bound, &mut held);
-        let cyclic = held.into_iter().any(|w| visit(kb, subst, w, path, done));
-        path.pop();
-        done.insert(v);
-        cyclic
-    }
-    let mut done = HashSet::new();
-    let roots: Vec<VarId> = subst.iter().map(|(v, _)| *v).collect();
-    roots
-        .into_iter()
-        .any(|v| visit(kb, subst, v, &mut Vec::new(), &mut done))
 }
 
 /// The variables `view` names by a type parameter's REFERENCE (`List[T = Car.V]`), at any
@@ -2144,7 +2084,7 @@ impl ProjectionReader {
             // `Option[T = Int64]` (MEASURED, run time).
             Some(view) => {
                 let mut at = Substitution::new();
-                if !unify_types(kb, &mut at, view, recv_ty) || binds_a_cycle(kb, &at) {
+                if !unify_types(kb, &mut at, view, recv_ty) {
                     return None;
                 }
                 let v = resolve_type_deep_value(kb, &at, b);
@@ -2527,12 +2467,8 @@ fn bind_member_vars_through_provision(
 /// with `sup` on a probe of `subst`, then the member's variables bound along the relation
 /// ([`bind_member_vars_along`], the member the subtype where `member_is_sub`) — whatever the
 /// unifier answered, since its `true` can leave a variable the relation reads unbound (a bare
-/// carrier against an applied spec it provides is admitted binding nothing). The probe, whether
-/// the unifier answered `true`, and whether the probe binds a variable inside itself: such a
-/// unifier solves nothing (its occurs check reads a binding as written: `K ↦ W`, then `W ↦ List[T
-/// = K]`), and a deep resolve through it does not return (MEASURED: the loader's stack overflowed
-/// on such a member instead of refusing it), so a caller keeps nothing of a cyclic probe. Nothing
-/// is bound past a contradiction since `before`.
+/// carrier against an applied spec it provides is admitted binding nothing). The probe, and
+/// whether the unifier answered `true`. Nothing is bound past a contradiction since `before`.
 fn bind_on_probe(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
@@ -2540,19 +2476,15 @@ fn bind_on_probe(
     sub: &Value,
     sup: &Value,
     member_is_sub: bool,
-) -> (Substitution, bool, bool) {
+) -> (Substitution, bool) {
     let mut probe = subst.clone();
     let unified = unify_types(kb, &mut probe, sub, sup);
-    if binds_a_cycle(kb, &probe) {
-        return (probe, unified, true);
-    }
     if genuine_contradiction_since(kb, &probe, before) {
-        return (probe, unified, false);
+        return (probe, unified);
     }
     let (spec, member) = if member_is_sub { (sup, sub) } else { (sub, sup) };
     bind_member_vars_along(kb, &mut probe, spec, member, member_is_sub);
-    let cyclic = binds_a_cycle(kb, &probe);
-    (probe, unified, cyclic)
+    (probe, unified)
 }
 
 /// [`bind_member_vars_along`] over two field lists, each member field against the spec's it

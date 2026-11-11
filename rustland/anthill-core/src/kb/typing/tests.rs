@@ -1801,7 +1801,7 @@ mod p4_tests {
     /// WI-342 occurs-check over a `Value::Node` Rep-A type: binding `?v` to a Node
     /// `named_tuple` whose field mentions `?v` must be REJECTED (the view hides
     /// fields, so `occurs_in_view` walks the occurrence spine via
-    /// `occ_contains_var`). Without the complete walk this would create a cyclic
+    /// `occ_holds_var`). Without the complete walk this would create a cyclic
     /// binding `?v = (f: ?v -> …)`.
     #[test]
     fn occurs_check_var_in_node_tuple_field() {
@@ -6646,6 +6646,17 @@ mod type_reader_carrier_agreement_test {
 mod part_c_bare_var_collection_test {
     use super::super::*;
 
+    /// A KB a tuple value is read in, as eval leaves one: the prelude's `TupleLiteral`, and the
+    /// positional labels of the widths the rows build.
+    fn kb() -> KnowledgeBase {
+        let mut kb = KnowledgeBase::new();
+        crate::kb::load::register_prelude(&mut kb);
+        for i in 0..2 {
+            kb.intern(&crate::intern::positional_label(i));
+        }
+        kb
+    }
+
     fn tuple_of(children: Vec<Value>) -> Value {
         Value::Tuple {
             pos: children.into(),
@@ -6655,14 +6666,14 @@ mod part_c_bare_var_collection_test {
 
     #[test]
     fn a_bare_var_at_the_top_level_is_seen_by_both_predicates() {
-        let mut kb = KnowledgeBase::new();
+        let mut kb = kb();
         let name = kb.intern("?v");
         let v = kb.fresh_var(name);
         let val = Value::Var(Var::Global(v));
 
         let empty = Substitution::new();
         assert!(
-            value_reaches_var(&kb, &empty, &val, v),
+            occurs_through(&kb, &empty, v, &val),
             "occurs-check must see it"
         );
         assert!(
@@ -6677,13 +6688,13 @@ mod part_c_bare_var_collection_test {
 
     #[test]
     fn a_bare_var_one_carrier_deep_is_seen_by_the_occurs_check() {
-        let mut kb = KnowledgeBase::new();
+        let mut kb = kb();
         let name = kb.intern("?v");
         let v = kb.fresh_var(name);
         let nested = tuple_of(vec![Value::Var(Var::Global(v))]);
 
         assert!(
-            value_reaches_var(&kb, &Substitution::new(), &nested, v),
+            occurs_through(&kb, &Substitution::new(), v, &nested),
             "`(?v,)` mentions `?v` — a cyclic binding this misses is a stack overflow in \
              `resolve_type_deep_value`, not a wrong type"
         );
@@ -6691,7 +6702,7 @@ mod part_c_bare_var_collection_test {
 
     #[test]
     fn a_bare_var_one_carrier_deep_is_seen_by_the_walk_local_gate() {
-        let mut kb = KnowledgeBase::new();
+        let mut kb = kb();
         let name = kb.intern("?v");
         let older = kb.fresh_var(name);
         let watermark = kb.var_watermark();
@@ -6706,7 +6717,7 @@ mod part_c_bare_var_collection_test {
 
     #[test]
     fn the_walk_local_gate_still_admits_a_nested_walk_minted_var() {
-        let mut kb = KnowledgeBase::new();
+        let mut kb = kb();
         let watermark = kb.var_watermark();
         let name = kb.intern("?v");
         let fresh = kb.fresh_var(name);
@@ -6733,7 +6744,7 @@ mod part_c_bare_var_collection_test {
     /// one that separates them. /code-review found it.
     #[test]
     fn a_binding_that_closes_a_cycle_through_an_earlier_one_is_refused() {
-        let mut kb = KnowledgeBase::new();
+        let mut kb = kb();
         let na = kb.intern("?a");
         let nb = kb.intern("?b");
         let a = kb.fresh_var(na);
@@ -6745,14 +6756,14 @@ mod part_c_bare_var_collection_test {
 
         let a_val = tuple_of(vec![Value::Var(Var::Global(b))]);
         assert!(
-            value_reaches_var(&kb, &out, &a_val, a),
+            occurs_through(&kb, &out, a, &a_val),
             "`?a := (?b,)` closes a cycle through the recorded `?b := (?a,)` and must be \
              refused; a direct occurs-check sees nothing here"
         );
         // CONTROL: with `out` EMPTY the same value is acyclic and must be admitted, so the
         // row above measures the TRANSITIVE step and not merely "this value has variables".
         assert!(
-            !value_reaches_var(&kb, &Substitution::new(), &a_val, a),
+            !occurs_through(&kb, &Substitution::new(), a, &a_val),
             "with nothing recorded, `?a := (?b,)` is acyclic"
         );
     }
@@ -6773,7 +6784,7 @@ mod part_c_bare_var_collection_test {
     /// measures the growing-`out` step and not "the filter refuses things".
     #[test]
     fn two_candidates_in_one_batch_cannot_jointly_close_a_cycle() {
-        let mut kb = KnowledgeBase::new();
+        let mut kb = kb();
         let watermark = kb.var_watermark();
         let na = kb.intern("?a");
         let nb = kb.intern("?b");
@@ -6839,7 +6850,7 @@ mod part_c_bare_var_collection_test {
     /// both halves were covered.
     #[test]
     fn a_binding_made_before_this_argument_is_not_reported_by_it() {
-        let mut kb = KnowledgeBase::new();
+        let mut kb = kb();
         let watermark = kb.var_watermark();
         let np = kb.intern("?p");
         let p = kb.fresh_var(np);
@@ -6877,13 +6888,13 @@ mod part_c_bare_var_collection_test {
     /// TWO DEEP, because a one-level fix and a recursive one agree at depth 1.
     #[test]
     fn the_walk_is_recursive_not_one_level() {
-        let mut kb = KnowledgeBase::new();
+        let mut kb = kb();
         let name = kb.intern("?v");
         let older = kb.fresh_var(name);
         let watermark = kb.var_watermark();
         let deep = tuple_of(vec![tuple_of(vec![Value::Var(Var::Global(older))])]);
 
-        assert!(value_reaches_var(&kb, &Substitution::new(), &deep, older));
+        assert!(occurs_through(&kb, &Substitution::new(), older, &deep));
         assert!(!value_vars_all_walk_local(&kb, &deep, watermark));
     }
 }
@@ -7568,7 +7579,7 @@ mod wi_n3w68_occurs_bare_head_tests {
     //! is also the WI-359 nullary `Fn{p}` a sort parameter keeps under the CZJ2N canon. The σ
     //! walk chases BOTH spellings, so the `TermId` check let a binding through that
     //! `walk_type` then followed round the alias. Both checks now ask
-    //! `bare_head_is_param_var` of the view head.
+    //! `bare_head_param_var` of the view head.
     //!
     //! A UNIT ROW, because no program reaches it: a temporary probe on the missed arm fired
     //! zero times across the stdlib, both example corpora and the 7410-test workspace suite.
@@ -7678,8 +7689,8 @@ end
     }
 
     /// CONTROL — ANOTHER sort's parameter, in the widened spelling, is not an occurrence of
-    /// this one: the vid comparison WI-7TN1Q measured as the load-bearing half of
-    /// `sort_param_ref_is_var`. Passes either way.
+    /// this one: naming the variable, which WI-7TN1Q measured as the load-bearing half of
+    /// `sort_param_ref_var`. Passes either way.
     #[test]
     fn another_sorts_parameter_does_not_occur() {
         let mut kb = kb();
@@ -8154,10 +8165,11 @@ mod deep_resolve_link_carrier_tests {
     //!    [`an_open_chain_end_off_the_term_carrier_interns_no_variable`].
     //! 4. THE EXPANSION GUARD (`DeepWalk::expanding`, a variable met again while its binding is
     //!    walked): [`a_binding_that_holds_its_own_variable_is_walked_once`] overflows the stack, and
-    //!    so do `wi_rdns4_nested_callback_row_test::a_cyclic_binding_the_arguments_leave_is_walked_once`
-    //!    and two `d-mutual-callbacks` programs that run with it (`first=x,second=list-y,passed=let`,
+    //!    so did three programs whose σ the unifier left cyclic — RDNS4's cyclic row and two
+    //!    `d-mutual-callbacks` programs (`first=x,second=list-y,passed=let`,
     //!    `first=list-x,second=list-y,passed=let`): the child arm follows a binding off the term
-    //!    carrier, which the term walk never entered.
+    //!    carrier, which the term walk never entered. Since WI-20261003-KQ6DG those programs are
+    //!    refused at the argument that closes the cycle, and the row here is the guard's witness.
     //!
     //! [`a_link_off_the_term_carrier_interns_no_variable`] passes under parts 2 and 3; under part 1
     //! the cycle row aborts the binary before its verdict is seen. Over the whole workspace with
@@ -8440,5 +8452,228 @@ mod deep_resolve_link_carrier_tests {
                 );
             }
         }
+    }
+}
+
+mod occurs_through_sigma_tests {
+    //! `bind_resolved`'s occurs check over σ ([`super::super::occurs_through`]): a variable
+    //! held in the value through the binding of another, on every carrier the other rides; a
+    //! bare head naming a sort parameter, read as its variable inside a binding; a σ that
+    //! already holds a cycle, read to an end; and a variable met against itself on another
+    //! carrier, which binds nothing.
+    //!
+    //! ── WHICH ROWS FAIL WHEN A PART IS BACKED OUT (measured 2026-11-11) ──────
+    //!
+    //! 1. THROUGH σ (`bind_resolved` asking the occurs check as written): 2 FAIL —
+    //!    [`a_variable_held_through_another_binding_is_refused_and_recorded`] and
+    //!    [`a_parameter_named_in_a_binding_is_read_as_its_variable`].
+    //! 2. A VARIABLE AGAINST ITSELF BINDING NOTHING (the identity test in `bind_resolved`): 1
+    //!    FAILS, [`a_variable_against_itself_on_any_carrier_binds_nothing`]; with the test on the
+    //!    variable as handed alone, not on its links' end, the same row fails on its linked half,
+    //!    on every carrier.
+    //! 3. EACH BINDING READ ONCE (`occurs_through`'s `read`):
+    //!    [`a_sigma_already_holding_a_cycle_is_read_to_an_end`] overflows the stack.
+    //! 4. `map_held_arrows_on`'s `entered` (WI-20260820-RDNS4 part 5):
+    //!    [`held_arrows_walk_a_cycle_once`] overflows the stack.
+    //!
+    //! [`a_variable_held_through_an_acyclic_binding_binds`] passes under every part. Each row was
+    //! run alone, an overflow aborting the binary.
+    use super::super::{bind_resolved, make_arrow_value, map_held_arrows, resolve_sort_alias};
+    use crate::eval::value::Value;
+    use crate::intern::Symbol;
+    use crate::kb::load::{self, NullResolver};
+    use crate::kb::subst::Substitution;
+    use crate::kb::term::{Term, TermId, Var, VarId};
+    use crate::kb::KnowledgeBase;
+    use crate::span::{SourceId, SourceSpan};
+    use smallvec::SmallVec;
+
+    const SRC: &str = r#"
+namespace kq6dgu
+  sort Box[T]
+    entity box(v: T)
+  end
+  sort Opt[T]
+    entity none
+    entity some(value: T)
+  end
+end
+"#;
+
+    fn kb() -> KnowledgeBase {
+        let parsed = crate::parse::parse(SRC).expect("parse");
+        let mut kb = KnowledgeBase::new();
+        if let Err(errs) = load::load_all(&mut kb, &[&parsed], &NullResolver) {
+            panic!(
+                "fixture must load:\n{}",
+                errs.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n")
+            );
+        }
+        kb
+    }
+
+    fn span() -> SourceSpan {
+        SourceSpan::new(SourceId::from_raw(0), 0, 0)
+    }
+
+    fn var(kb: &mut KnowledgeBase, name: &str) -> VarId {
+        let name = kb.intern(name);
+        kb.fresh_var(name)
+    }
+
+    /// `Opt[T = leaf]`.
+    fn opt_of(kb: &mut KnowledgeBase, leaf: TermId) -> TermId {
+        let opt = kb.resolve_symbol("kq6dgu.Opt");
+        let t = kb.resolve_symbol("kq6dgu.Opt.T");
+        kb.alloc(Term::Fn {
+            functor: opt,
+            pos_args: SmallVec::new(),
+            named_args: SmallVec::from_elem((t, leaf), 1),
+        })
+    }
+
+    fn var_term(kb: &mut KnowledgeBase, v: VarId) -> TermId {
+        kb.alloc(Term::Var(Var::Global(v)))
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum On {
+        Term,
+        Var,
+        Node,
+    }
+    const ALL: [On; 3] = [On::Term, On::Var, On::Node];
+
+    fn carried(kb: &mut KnowledgeBase, v: VarId, on: On) -> Value {
+        match on {
+            On::Term => Value::term(var_term(kb, v)),
+            On::Var => Value::Var(Var::Global(v)),
+            On::Node => Value::Node(kb.make_type_var_occ(Var::Global(v), span(), None)),
+        }
+    }
+
+    /// `?b ↦ Opt[T = ?a]`: `(?b) -> ?b` holds no `?a` as written, and is `?a` inside itself once
+    /// `?b` is read. Binding `?a` to it is refused, binds nothing, and is recorded, wherever `?b`
+    /// rides in it.
+    #[test]
+    fn a_variable_held_through_another_binding_is_refused_and_recorded() {
+        let mut failed = Vec::new();
+        for on in ALL {
+            let mut kb = kb();
+            let (a, b) = (var(&mut kb, "a"), var(&mut kb, "b"));
+            let mut subst = Substitution::new();
+            let at = var_term(&mut kb, a);
+            let opt_a = opt_of(&mut kb, at);
+            subst.bind_term(&kb, b, opt_a);
+            let held = carried(&mut kb, b, on);
+            let arrow = make_arrow_value(&mut kb, &held, &held, &[], &[], span(), None);
+            let bound = bind_resolved(&mut kb, &mut subst, a, arrow);
+            let recorded = subst.occurs_refusals.iter().map(|(v, _)| *v).collect::<Vec<_>>();
+            if bound || subst.resolve_as_value(a).is_some() || recorded != [a] {
+                failed.push(format!("{on:?}: bound {bound}, recorded {recorded:?}"));
+            }
+        }
+        assert!(failed.is_empty(), "{}", failed.join("\n"));
+    }
+
+    /// CONTROL — the same shape with no way back: `?b ↦ Opt[T = Box]` binds `?a`. Passes either
+    /// way.
+    #[test]
+    fn a_variable_held_through_an_acyclic_binding_binds() {
+        let mut kb = kb();
+        let (a, b) = (var(&mut kb, "a"), var(&mut kb, "b"));
+        let boxed = kb.resolve_symbol("kq6dgu.Box");
+        let boxed = kb.alloc(Term::Ref(boxed));
+        let opt_box = opt_of(&mut kb, boxed);
+        let mut subst = Substitution::new();
+        subst.bind_term(&kb, b, opt_box);
+        let held = carried(&mut kb, b, On::Var);
+        let arrow = make_arrow_value(&mut kb, &held, &held, &[], &[], span(), None);
+        assert!(bind_resolved(&mut kb, &mut subst, a, arrow));
+        assert!(subst.resolve_as_value(a).is_some() && subst.occurs_refusals.is_empty());
+    }
+
+    /// A written `T` inside `sort Box[T]` lowers to `Ref(Box.T)`, which σ reads as the
+    /// parameter's variable: `?w ↦ Opt[T = Ref(Box.T)]`, so binding that variable to `Opt[T =
+    /// ?w]` closes a cycle through the alias.
+    #[test]
+    fn a_parameter_named_in_a_binding_is_read_as_its_variable() {
+        let mut kb = kb();
+        let t_sym: Symbol = kb.resolve_symbol("kq6dgu.Box.T");
+        let alias = resolve_sort_alias(&kb, t_sym).expect("a sort parameter has a SortAlias");
+        let Term::Var(Var::Global(t_var)) = *kb.get_term(alias) else {
+            panic!("`Box.T`'s alias is not a flex variable");
+        };
+        let w = var(&mut kb, "w");
+        let named = kb.alloc(Term::Ref(t_sym));
+        let opt_t = opt_of(&mut kb, named);
+        let mut subst = Substitution::new();
+        subst.bind_term(&kb, w, opt_t);
+        let at_w = var_term(&mut kb, w);
+        let opt_w = opt_of(&mut kb, at_w);
+        assert!(!bind_resolved(&mut kb, &mut subst, t_var, Value::term(opt_w)));
+        assert!(subst.resolve_as_value(t_var).is_none());
+    }
+
+    /// A σ bound by hand around the check may already hold a cycle (`?b ↦ Opt[T = ?c]`, `?c ↦
+    /// Opt[T = ?b]`): each variable's binding is read once, and binding `?a`, which is in no
+    /// cycle, to `Opt[T = ?b]` binds.
+    #[test]
+    fn a_sigma_already_holding_a_cycle_is_read_to_an_end() {
+        let mut kb = kb();
+        let (a, b, c) = (var(&mut kb, "a"), var(&mut kb, "b"), var(&mut kb, "c"));
+        let (bt, ct) = (var_term(&mut kb, b), var_term(&mut kb, c));
+        let (opt_b, opt_c) = (opt_of(&mut kb, bt), opt_of(&mut kb, ct));
+        let mut subst = Substitution::new();
+        subst.bind_term(&kb, b, opt_c);
+        subst.bind_term(&kb, c, opt_b);
+        assert!(bind_resolved(&mut kb, &mut subst, a, Value::term(opt_b)));
+    }
+
+    /// A variable against itself on another carrier — the identity fast-path of `unify_types`
+    /// compares carriers — binds nothing, agrees, and records no refusal; so does a variable
+    /// whose links end at it, which a caller handing an unwalked value may pass.
+    #[test]
+    fn a_variable_against_itself_on_any_carrier_binds_nothing() {
+        let mut failed = Vec::new();
+        for on in ALL {
+            let mut kb = kb();
+            let a = var(&mut kb, "a");
+            let mut subst = Substitution::new();
+            let itself = carried(&mut kb, a, on);
+            let agreed = bind_resolved(&mut kb, &mut subst, a, itself);
+            if !agreed || subst.resolve_as_value(a).is_some() || !subst.occurs_refusals.is_empty() {
+                failed.push(format!("{on:?}: agreed {agreed}, refusals {:?}", subst.occurs_refusals));
+            }
+            // And an unwalked variable whose links end at `a`: `?w ↦ a`, on this carrier.
+            let w = var(&mut kb, "w");
+            let link = carried(&mut kb, a, on);
+            subst.bind_value(&kb, w, link);
+            let linked = bind_resolved(&mut kb, &mut subst, a, Value::Var(Var::Global(w)));
+            if !linked || subst.resolve_as_value(a).is_some() || !subst.occurs_refusals.is_empty() {
+                failed.push(format!("{on:?} through a link: agreed {linked}"));
+            }
+        }
+        assert!(failed.is_empty(), "{}", failed.join("\n"));
+    }
+
+    /// `map_held_arrows` over a σ holding a cycle bound by hand (`?a ↦ Opt[T = ?b]`, `?b ↦ Opt[T
+    /// = ?a]`) reads each variable once on a path and ends. The unifier no longer leaves such a
+    /// σ, so no program reaches the guard: this row is its witness (WI-20260820-RDNS4 part 5).
+    #[test]
+    fn held_arrows_walk_a_cycle_once() {
+        let mut kb = kb();
+        let (a, b) = (var(&mut kb, "a"), var(&mut kb, "b"));
+        let (at, bt) = (var_term(&mut kb, a), var_term(&mut kb, b));
+        let (opt_a, opt_b) = (opt_of(&mut kb, at), opt_of(&mut kb, bt));
+        let mut subst = Substitution::new();
+        subst.bind_term(&kb, a, opt_b);
+        subst.bind_term(&kb, b, opt_a);
+        let mut visited = 0;
+        let out = map_held_arrows(&mut kb, &subst, &Value::term(at), None, true, &mut |_, _, _| {
+            visited += 1;
+            None
+        });
+        assert!(out.is_none() && visited == 0, "no arrow in it: {out:?}, {visited}");
     }
 }

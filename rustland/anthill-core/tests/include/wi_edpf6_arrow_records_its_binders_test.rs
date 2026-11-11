@@ -45,7 +45,7 @@
 //!    [`a_returned_lambda_is_read_by_the_parameters_its_own_type_records`] and
 //!    `wi_0rp29_nested_projection_value_in_type_test::
 //!    a_binder_out_of_its_scope_is_refused_where_the_row_speaks_of_one`.
-//! 5. THE BINDERS RIDE THE σ WALK (`rewrite_type_occ_deep`) — dropped. 1 FAILS:
+//! 5. THE BINDERS RIDE THE σ WALK (`rewrite_occ_deep`) — dropped. 1 FAILS:
 //!    [`a_lambda_whose_binder_the_call_types_keeps_its_parameters`].
 //! 6. … AND THE GENERIC MAP, which instantiates a ∀ (`map_type_node`) — dropped. 1 FAILS:
 //!    [`an_operation_with_type_parameters_taken_as_a_value_keeps_its_parameters`].

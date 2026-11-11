@@ -790,6 +790,19 @@ pub enum TypeError {
         op: Symbol,
         type_param: Symbol,
     },
+    /// An argument whose type, unified with its parameter's, would make a variable hold
+    /// itself: over `two[A, B](f: (x: A) -> B, g: (y: B) -> A)`, `two(lambda (x) -> [x],
+    /// lambda (y) -> [y])` makes `B` a list of `A` at `f` and `A` a list of `B` at `g`. No
+    /// finite type solves the call. `var` is the variable, `holds` the type it would have
+    /// been, read through the call's σ; `context` names the argument that closes the cycle.
+    NoFiniteType {
+        span: Option<Span>,
+        context: TypeErrorContext,
+        var: Value,
+        holds: Value,
+        // WI-510: construction site — see `TypeMismatch::site`.
+        site: &'static std::panic::Location<'static>,
+    },
     /// WI-20260911-5G28A S1 — WI-270's rule at a RULE CITATION. The cited relation's
     /// columns mention a type parameter of its enclosing SORT, and nothing at the citation
     /// fixed it: not the receiver bracket, not an applied argument, not the type the
@@ -1770,6 +1783,10 @@ impl TypeError {
                 };
                 format!("type mismatch: expected {expected}, got {actual}")
             }
+            TypeError::NoFiniteType { var, holds, .. } => {
+                let (expected, actual) = no_finite_type_text(kb, var, holds);
+                format!("type mismatch: expected {expected}, got {actual}")
+            }
             TypeError::NoParentSort { name } => {
                 format!("entity has no parent sort: {}", kb.local_name_of(*name))
             }
@@ -2702,6 +2719,7 @@ impl TypeError {
             | TypeError::UnnamedRequirementBesideTwo { span, .. }
             | TypeError::InvalidTypeArgument { span, .. }
             | TypeError::UnconstrainedTypeParam { span, .. }
+            | TypeError::NoFiniteType { span, .. }
             | TypeError::UnconstrainedCitationParam { span, .. }
             | TypeError::MissingRequiresForSpecOp { span, .. }
             | TypeError::ProvisionConditionOutOfScope { span, .. }
@@ -3182,6 +3200,27 @@ impl TypeError {
             TypeError::InvalidTypeArgument { sort, problem, .. } => {
                 LoadError::InvalidTypeArgument {
                     detail: problem.describe(kb, *sort),
+                    span: self.span(kb),
+                }
+            }
+            TypeError::NoFiniteType {
+                context,
+                var,
+                holds,
+                site,
+                ..
+            } => {
+                let (expected_type, actual_type) = no_finite_type_text(kb, var, holds);
+                LoadError::TypeMismatch {
+                    origin: Some(TypeMismatchOrigin {
+                        error_kind: "NoFiniteType",
+                        context_kind: context.kind_tag(),
+                        site: *site,
+                    }),
+                    entity_name: context.entity_name(kb),
+                    field_name: context.field_name(kb),
+                    expected_type,
+                    actual_type,
                     span: self.span(kb),
                 }
             }
@@ -3732,6 +3771,19 @@ fn members_no_bracket_names(kb: &KnowledgeBase, op: Symbol, key: Option<Symbol>)
             spelled(several)
         ),
     }
+}
+
+/// What [`TypeError::NoFiniteType`] says it expected and got, for both of its renderings:
+/// `a finite type` and `?A = List[T = List[T = ?A]]`.
+fn no_finite_type_text(kb: &KnowledgeBase, var: &Value, holds: &Value) -> (String, String) {
+    (
+        "a finite type".to_string(),
+        format!(
+            "{} = {}, a type inside itself",
+            type_display_name_value(kb, var),
+            type_display_name_value(kb, holds),
+        ),
+    )
 }
 
 /// What [`TypeError::UnconstrainedTypeParam`] names the parameter and advises, for both of

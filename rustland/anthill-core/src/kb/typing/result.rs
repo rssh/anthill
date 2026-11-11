@@ -1102,7 +1102,7 @@ fn walk_var_chain(
 /// term-versus-entity decision, which hash-conses an application whose children are all
 /// leaves and builds a `Value::Entity` otherwise, read through `TermView` exactly like its
 /// term twin. `None` when nothing needed splicing, so the common case keeps its term.
-/// [`rewrite_type_occ_deep`] asks the same of an occurrence's interned children, and places
+/// [`rewrite_occ_deep`] asks the same of an occurrence's interned children, and places
 /// the answer with [`spliced_type_child`].
 ///
 /// THE SAME TWO STOPS AS THE TERM WALK, for the same reasons: a NEUTRAL head
@@ -1200,16 +1200,6 @@ fn splice_non_term_bindings(
 /// not any more: WI-20260904-02ERR walks its `Value`-carried `fields` through
 /// [`walk_type_deep_value_g`], because once a type VARIABLE could ride the occurrence
 /// carrier a tuple's field types stopped resolving (a wrong accept).
-pub(super) fn rewrite_type_occ_deep(
-    kb: &mut KnowledgeBase,
-    subst: &Substitution,
-    occ: &Rc<NodeOccurrence>,
-    ground: bool,
-) -> Rc<NodeOccurrence> {
-    rewrite_occ_deep(kb, subst, occ, &mut DeepWalk::new(ground))
-}
-
-/// [`rewrite_type_occ_deep`] within one walk.
 fn rewrite_occ_deep(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
@@ -1242,7 +1232,7 @@ fn rewrite_occ_deep(
                         // worse than before the splice existed.
                         Err(why) => debug_assert!(
                             false,
-                            "rewrite_type_occ_deep: no occurrence child for the spliced \
+                            "rewrite_occ_deep: no occurrence child for the spliced \
                              type ({why}) {spliced:?}"
                         ),
                     }

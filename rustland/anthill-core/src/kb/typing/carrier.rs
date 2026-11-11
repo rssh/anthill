@@ -4223,14 +4223,8 @@ pub(super) fn projection_receivers<'a>(
             })
         })
         .collect();
-    // NOT THROUGH A CYCLE: the argument check resolves σ deeply, and a call whose arguments bound
-    // a variable inside itself (`two(none, lambda (x) -> [x], lambda (y) -> [y], …)` over
-    // `f: (x: A) -> B, g: (y: B) -> A` — the call-side occurs check reads a binding as written)
-    // does not return from it: the loader overflowed its stack where the call's own diagnostics
-    // used to be printed (MEASURED: review 9). Such a call has no finite type, and its
-    // receivers are its arguments' as they stand.
     let mut out = std::borrow::Cow::Borrowed(arg_types);
-    if options.is_empty() || binds_a_cycle(kb, subst) {
+    if options.is_empty() {
         return out;
     }
     let ctx = TypeErrorContext::OperationReturn {

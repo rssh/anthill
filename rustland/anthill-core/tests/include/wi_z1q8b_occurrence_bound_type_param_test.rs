@@ -11,7 +11,7 @@
 //! in and out, so a variable bound to a non-`Term` carrier comes back as the bare variable
 //! (WI-394: `walk_type` "deliberately STOPS" there). A bare variable in a resolved type is a
 //! WILDCARD, so the binding was not just unread — it stopped constraining anything.
-//! `rewrite_type_occ_deep` had the same drop in its interned-child arm, one carrier over.
+//! `rewrite_occ_deep` had the same drop in its interned-child arm, one carrier over.
 //!
 //! MEASURED at 5ec10808 — every program below loaded clean, or was refused, the wrong way
 //! round, while its hash-consed twin was right:
@@ -19,7 +19,7 @@
 //!     `Foo[T = String, N = 3]` — a WRONG ACCEPT through the identity function;
 //!   * `wrap[A](x: A) -> Option[T = A]`, the same one level down;
 //!   * `pairUp[A](x: A) -> Two[L = A, R = Foo[T = Int64, N = 3]]`, the same with the RETURN
-//!     type itself on the occurrence carrier (the `rewrite_type_occ_deep` twin);
+//!     type itself on the occurrence carrier (the `rewrite_occ_deep` twin);
 //!   * `mk(1).v`, `idf(mk(1)).v`, and `.v` on a `match`-bound payload REFUSED — `field_access`
 //!     declares `-> FieldOf[T = R, Name = Name]`, `R` stayed a variable, and `FieldOf`
 //!     reduced over an abstract operand to a residual (or the dot saw no receiver at all).
@@ -179,7 +179,7 @@ fn a_parameter_under_a_hash_consed_constructor_is_substituted() {
 #[test]
 fn a_parameter_inside_an_occurrence_carried_return_type_is_substituted() {
     // `pairUp`'s return type carries a denoted, so IT is an occurrence, and `A` is one of
-    // its interned children — `rewrite_type_occ_deep`'s arm, not the term walk's. BACK-OUT
+    // its interned children — `rewrite_occ_deep`'s arm, not the term walk's. BACK-OUT
     // O takes it; BACK-OUT T does not.
     let errs = load_errors(&src(
         "pair_wrong",

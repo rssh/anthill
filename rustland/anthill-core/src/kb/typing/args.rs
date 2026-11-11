@@ -3310,10 +3310,10 @@ pub(super) fn nested_callable_pairs(
 /// after its own result — or kept; a position `actual` holds no counterpart for is not visited.
 /// `top`: `declared` itself too. `None`: nothing replaced, so an unchanged type keeps its carrier.
 ///
-/// Read through σ, and a variable is not read again inside its own binding: an argument's types
-/// can leave σ cyclic where the occurs check is the call's to report, and `two[A, B](f: (x: A) ->
-/// B, g: (y: B) -> A)` given `lambda (x) -> [x]` twice made `A` a list of lists of itself — the
-/// walk down the results followed it for ever (MEASURED, a stack overflow where the call ran).
+/// Read through σ, and a variable is not read again inside its own binding: a σ bound around the
+/// unifier's occurs check can hold a cycle, and the walk down the results would follow it for
+/// ever (MEASURED, a stack overflow, while the unifier still admitted `A` a list of lists of
+/// itself for `two[A, B](f: (x: A) -> B, g: (y: B) -> A)` given `lambda (x) -> [x]` twice).
 pub(super) fn map_held_arrows(
     kb: &mut KnowledgeBase,
     subst: &Substitution,

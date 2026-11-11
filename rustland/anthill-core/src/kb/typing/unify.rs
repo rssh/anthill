@@ -228,7 +228,10 @@ pub(super) fn atom_is_projected_instance_member(
 /// σ holds what agreed: evidence about the argument, not an instantiation of the call, and now
 /// the same evidence however the disagreeing type was spelled. On `true`, σ is a unifier.
 ///
-/// σ carries a second channel that neither verdict resets: the sticky `contradiction` flag
+/// σ carries two more channels that neither verdict resets. `occurs_refusals` records each
+/// binding refused because its variable occurs in it ([`bind_resolved`]); a caller reporting
+/// why a unify failed reads what that unify added, by the length before it
+/// ([`no_finite_type_since`]). And the sticky `contradiction` flag
 /// and `contradiction_details`, set by `Substitution::bind` / `bind_value` on a conflicting
 /// re-bind. It is NOT inert — the member rule and the override's instantiation read what a
 /// unify recorded there ([`first_genuine_contradiction_since`], [`first_genuine_conflict_on`])
@@ -995,28 +998,120 @@ fn occ_type_var_global(occ: &Rc<NodeOccurrence>) -> Option<VarId> {
 }
 
 /// Bind `vid` to a resolved type by its carrier (WI-342 P3): `bind_term` for a
-/// hash-consed `TermId`, `bind_value` for any other `Value` carrier.
+/// hash-consed `TermId`, `bind_value` for any other `Value` carrier. `other` that is `vid`
+/// itself, on any carrier, binds nothing and agrees. `false`, binding nothing, where `vid`
+/// occurs in `other` read through σ ([`occurs_through`]): no finite type solves the binding,
+/// and the pair is recorded in `subst.occurs_refusals` for a caller that reports it
+/// ([`no_finite_type_since`]).
 pub(super) fn bind_resolved(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
     vid: VarId,
     other: Value,
 ) -> bool {
-    match other {
-        Value::Term { id: t, .. } => {
-            if occurs_in(kb, vid, t) {
-                return false;
-            }
-            subst.bind_term(kb, vid, t);
-        }
-        other => {
-            if occurs_in_view(kb, vid, &other) {
-                return false;
-            }
-            subst.bind_value(kb, vid, other);
+    // The identity fast-path of `unify_types` compares carriers: `Term::Var(v)` against
+    // `Value::Var(v)` reaches here as `v` against itself, and a caller that hands an unwalked
+    // variable may hand one whose links end at `vid`.
+    if let Some(w) = resolved_var(kb, &other) {
+        let end = sigma_chain_end(kb, subst, w).and_then(|end| kb.value_global_var(end));
+        if w == vid || end == Some(vid) {
+            return !subst.is_contradiction();
         }
     }
+    if occurs_through(kb, subst, vid, &other) {
+        subst.occurs_refusals.push((vid, other));
+        return false;
+    }
+    match other {
+        Value::Term { id: t, .. } => subst.bind_term(kb, vid, t),
+        other => subst.bind_value(kb, vid, other),
+    }
     !subst.is_contradiction()
+}
+
+/// The refusal of an argument whose unification with its parameter's type refused a binding
+/// for its variable occurring in it: the first such refusal `subst` recorded at or after
+/// `from` ([`Substitution::occurs_refusals`]'s length before the unify), the variable and the
+/// type it would have held read through σ. `None` where the unify recorded none — its failure,
+/// if it failed, is another relation's to judge.
+#[track_caller]
+pub(super) fn no_finite_type_since(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    from: usize,
+    context: TypeErrorContext,
+    span: Option<Span>,
+) -> Option<TypeError> {
+    let (vid, holds) = subst.occurs_refusals.get(from)?.clone();
+    let holds = resolve_type_deep_value(kb, subst, &holds);
+    // A variable a type parameter of the call is linked to — a `let`-held lambda's binder, which
+    // the call's `A` was bound to — is named by that parameter, the earliest where several are:
+    // the program says `A`, and the binder's own variable prints as no name it wrote.
+    let parameter = (!kb.is_canonical_type_param_var(vid))
+        .then(|| {
+            let mut linked: SmallVec<[VarId; 2]> = subst
+                .iter()
+                .map(|(v, _)| *v)
+                .filter(|&v| {
+                    kb.is_canonical_type_param_var(v)
+                        && sigma_chain_end(kb, subst, v)
+                            .is_some_and(|end| kb.value_global_var(end) == Some(vid))
+                })
+                .collect();
+            linked.sort_by_key(|v| v.raw());
+            linked.first().copied()
+        })
+        .flatten();
+    let (var, holds) = match parameter {
+        Some(p) => {
+            let mut renamed = Substitution::new();
+            renamed.bind_value(kb, vid, Value::Var(Var::Global(p)));
+            let holds = resolve_type_deep_value(kb, &renamed, &holds);
+            (Value::Var(Var::Global(p)), holds)
+        }
+        None => (Value::Var(Var::Global(vid)), holds),
+    };
+    Some(TypeError::NoFiniteType {
+        span,
+        context,
+        var,
+        holds,
+        site: TypeError::here(),
+    })
+}
+
+/// The occurs check unification asks: does `vid` occur in `v` read through σ — in `v`, or in
+/// the binding of a variable `v` holds, at any depth? `B := List[T = A]` beside `A := List[T =
+/// B]` holds no `B` as written, and is `B` inside itself once `A` is read; a deep reader of
+/// such a σ does not return. A bare head naming a sort-level type parameter is that
+/// parameter's variable here, as it is to [`walk_type`] ([`bare_head_param_var`]). Each
+/// variable's binding is read once, so a σ that already holds a cycle is read to an end.
+pub(super) fn occurs_through(
+    kb: &KnowledgeBase,
+    subst: &Substitution,
+    vid: VarId,
+    v: &impl TermView,
+) -> bool {
+    fn reaches(
+        kb: &KnowledgeBase,
+        subst: &Substitution,
+        vid: VarId,
+        read: &std::cell::RefCell<SmallVec<[VarId; 8]>>,
+        w: VarId,
+    ) -> bool {
+        if w == vid {
+            return true;
+        }
+        if read.borrow().contains(&w) {
+            return false;
+        }
+        read.borrow_mut().push(w);
+        subst
+            .resolve_as_value(w)
+            .is_some_and(|bound| view_holds_var(kb, bound, &|x| reaches(kb, subst, vid, read, x)))
+    }
+    let read = std::cell::RefCell::new(SmallVec::new());
+    view_holds_var(kb, v, &|w| reaches(kb, subst, vid, &read, w))
 }
 
 /// Short functor name of a resolved type, carrier-agnostically (via [`TermView`]).
@@ -1138,38 +1233,45 @@ fn denoted_ref_sym(kb: &mut KnowledgeBase, r: &impl TermView) -> Option<Symbol> 
 }
 
 /// Occurs check over a [`TermView`] (the `Value`-carried analog of
-/// [`occurs_in`]): does `vid` appear anywhere inside `v`?
+/// [`occurs_in`]): does `vid` appear anywhere inside `v`, as written?
+pub(super) fn occurs_in_view(kb: &KnowledgeBase, vid: VarId, v: &impl TermView) -> bool {
+    view_holds_var(kb, v, &|w| w == vid)
+}
+
+/// Does `v` hold a variable `hit` answers for — a flex `Global` it names, or one a bare head
+/// naming a sort-level type parameter stands for ([`bare_head_param_var`])? The walk of
+/// both occurs checks, [`occurs_in_view`] as written and [`occurs_through`] through σ.
 ///
-/// A `Value::Node` type is walked completely via [`occ_contains_var`] (which reads
+/// A `Value::Node` type is walked completely via [`occ_holds_var`] (which reads
 /// the occurrence storage directly), not through the view alone — belt-and-braces
 /// so a var nested in a parameterized binding / named-tuple field can't be missed,
 /// which would let `bind_resolved` create a cyclic binding. A hash-consed type is
-/// walked as the term it is ([`occurs_in`]); every other carrier uses the view walk.
-pub(super) fn occurs_in_view(kb: &KnowledgeBase, vid: VarId, v: &impl TermView) -> bool {
+/// walked as the term it is ([`term_holds_var`]); every other carrier uses the view walk.
+fn view_holds_var(kb: &KnowledgeBase, v: &impl TermView, hit: &dyn Fn(VarId) -> bool) -> bool {
     match v.as_bind_value() {
         // A hash-consed type is walked where it is stored ([`occurs_in`], which says why):
         // the two checks ask one question of a leaf, and this is nearly every binding.
-        BindValue::Term(t) => return occurs_in(kb, vid, t),
-        BindValue::Value(Value::Node(occ)) => return occ_contains_var(kb, vid, &occ),
+        BindValue::Term(t) => return term_holds_var(kb, t, hit),
+        BindValue::Value(Value::Node(occ)) => return occ_holds_var(kb, &occ, hit),
         _ => {}
     }
     match v.head(kb) {
         // Only a flex `Global` can be the var being bound; a `Rigid` / `DeBruijn`
         // head is a distinct constant/binder and never occurs as `vid` (it would
         // formerly have read as `Opaque` and fallen through to `false`).
-        ViewHead::Var(x) => x.as_global() == Some(vid),
+        ViewHead::Var(x) => x.as_global().is_some_and(hit),
         head @ ViewHead::Functor {
             pos_arity,
             named_arity,
             ..
         } => {
             // WI-20260911-7TN1Q: a BARE head naming a sort-level type parameter IS an
-            // occurrence of that parameter's variable — [`bare_head_is_param_var`], the one
+            // occurrence of that parameter's variable — [`bare_head_param_var`], the one
             // predicate [`occurs_in`] asks too.
             if pos_arity == 0 && named_arity == 0 {
-                return bare_head_is_param_var(kb, &head, vid);
+                return bare_head_param_var(kb, &head).is_some_and(hit);
             }
-            view_any_child(kb, v, pos_arity, |c| occurs_in_view(kb, vid, c))
+            view_any_child(kb, v, pos_arity, |c| view_holds_var(kb, c, hit))
         }
         _ => false,
     }
@@ -1178,18 +1280,18 @@ pub(super) fn occurs_in_view(kb: &KnowledgeBase, vid: VarId, v: &impl TermView) 
 /// Complete occurs-check over a `Value::Node` occurrence spine — walks ALL
 /// children (including the bindings/fields the [`TermView`] doesn't expose for
 /// Rep-A `parameterized`/`named_tuple`). A ground `TypeChild` defers to the
-/// hash-consed [`occurs_in`]; a poisoned child recurses.
-fn occ_contains_var(kb: &KnowledgeBase, vid: VarId, occ: &Rc<NodeOccurrence>) -> bool {
+/// hash-consed [`term_holds_var`]; a poisoned child recurses.
+fn occ_holds_var(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>, hit: &dyn Fn(VarId) -> bool) -> bool {
     let child = |kb: &KnowledgeBase, c: &TypeChild| match c {
-        TypeChild::Interned(t) => occurs_in(kb, vid, *t),
-        TypeChild::Node(n) => occ_contains_var(kb, vid, n),
+        TypeChild::Interned(t) => term_holds_var(kb, *t, hit),
+        TypeChild::Node(n) => occ_holds_var(kb, n, hit),
     };
     if let Some(tn) = occ.as_type() {
         return match tn {
             // WI-20260904-02ERR: THE OCCURS CHECK'S WHOLE SUBJECT. Its interned twin is
             // caught by `occurs_in` through the `Interned` arm; missing it here would let
             // `?T := List[?T]` through and build an infinite type.
-            TypeNode::Var(Var::Global(w)) => *w == vid,
+            TypeNode::Var(Var::Global(w)) => hit(*w),
             TypeNode::Var(_) => false,
             TypeNode::Aliased { stands_for, .. } | TypeNode::Defaulted { stands_for, .. } => {
                 child(kb, stands_for)
@@ -1209,9 +1311,9 @@ fn occ_contains_var(kb: &KnowledgeBase, vid: VarId, occ: &Rc<NodeOccurrence>) ->
                 binders: _,
             } => child(kb, param) || child(kb, result) || child(kb, effects),
             // WI-361: `fields` is the `Value`-carried `List[TypeField]`; the
-            // view-walking `occurs_in_view` descends its cons cells + records and
-            // into any poisoned (`Value::Node`) field type via `occ_contains_var`.
-            TypeNode::NamedTuple { fields } => occurs_in_view(kb, vid, fields),
+            // view walk descends its cons cells + records and
+            // into any poisoned (`Value::Node`) field type via `occ_holds_var`.
+            TypeNode::NamedTuple { fields } => view_holds_var(kb, fields, hit),
             // WI-397: the receiver occurrence + the ground `member` ref.
             TypeNode::ExprCarried { value, member } => child(kb, value) || child(kb, member),
             // WI-1083: an occurs-check asks whether binding `vid` here would build a
@@ -1223,8 +1325,8 @@ fn occ_contains_var(kb: &KnowledgeBase, vid: VarId, occ: &Rc<NodeOccurrence>) ->
                 context,
                 body,
             } => {
-                occurs_in_view(kb, vid, binders)
-                    || occurs_in_view(kb, vid, context)
+                view_holds_var(kb, binders, hit)
+                    || view_holds_var(kb, context, hit)
                     || child(kb, body)
             }
         };
@@ -1237,7 +1339,7 @@ fn occ_contains_var(kb: &KnowledgeBase, vid: VarId, occ: &Rc<NodeOccurrence>) ->
             // WI-478: the var may occur in the label (a `TypeChild`) or inside the
             // guard's `Value`-carried goal list (`occurs_in_view`, as NamedTuple).
             EffectExprNode::Guarded { label, guard } => {
-                child(kb, label) || occurs_in_view(kb, vid, guard)
+                child(kb, label) || view_holds_var(kb, guard, hit)
             }
             EffectExprNode::Merge { left, right } => child(kb, left) || child(kb, right),
             EffectExprNode::Open { tail } => child(kb, tail),
@@ -1413,8 +1515,13 @@ pub(super) fn unify_through_refinement<A: TermView, B: TermView>(
 /// question WI-20260923-N3W68 (#4) found them answering two ways — and that is one
 /// predicate.
 pub(super) fn occurs_in(kb: &KnowledgeBase, vid: VarId, term: TermId) -> bool {
+    term_holds_var(kb, term, &|w| w == vid)
+}
+
+/// [`view_holds_var`] on the term carrier, walked where the term is stored.
+fn term_holds_var(kb: &KnowledgeBase, term: TermId, hit: &dyn Fn(VarId) -> bool) -> bool {
     term_any_subterm(kb, term, &|t, node| match node {
-        Term::Var(Var::Global(v)) => *v == vid,
+        Term::Var(Var::Global(v)) => hit(*v),
         // An interior node is not an occurrence itself; the walk descends it.
         Term::Fn {
             pos_args,
@@ -1422,13 +1529,13 @@ pub(super) fn occurs_in(kb: &KnowledgeBase, vid: VarId, term: TermId) -> bool {
             ..
         } if !pos_args.is_empty() || !named_args.is_empty() => false,
         // A leaf: `Ref(p)`, the nullary `Fn{p}`, an `Ident`, a literal, a non-flex var.
-        _ => bare_head_is_param_var(kb, &TermIdView(t).head(kb), vid),
+        _ => bare_head_param_var(kb, &TermIdView(t).head(kb)).is_some_and(hit),
     })
 }
 
-/// WI-20260923-N3W68 (#4) — is this view head a BARE head naming the sort-level type
-/// parameter whose variable is `vid`? The leaf question of BOTH occurs checks, asked of the
-/// view head so they cannot disagree about which spellings are bare.
+/// WI-20260923-N3W68 (#4) — the variable of the sort-level type parameter a BARE view head
+/// names, if it names one. The leaf question of BOTH occurs checks, asked of the view head so
+/// they cannot disagree about which spellings are bare.
 ///
 /// They did. [`occurs_in`] matched `Term::Ref` alone while [`occurs_in_view`] matched any
 /// nullary functor head, which on a `TermId` also covers the WI-359 nullary `Fn{p}` — the
@@ -1446,17 +1553,21 @@ pub(super) fn occurs_in(kb: &KnowledgeBase, vid: VarId, term: TermId) -> bool {
 /// suite (7410 tests), a temporary probe on the missed arm fired ZERO times, and none on
 /// the `Fn` spelling reaching `walk_type`'s hop either. No source spelling brings the `Fn`
 /// form to a binding today, so the widening refuses nothing any corpus writes.
-fn bare_head_is_param_var(kb: &KnowledgeBase, head: &ViewHead, vid: VarId) -> bool {
-    matches!(
-        head,
-        ViewHead::Functor { functor: s, pos_arity: 0, named_arity: 0 }
-            if sort_param_ref_is_var(kb, *s, vid)
-    )
+fn bare_head_param_var(kb: &KnowledgeBase, head: &ViewHead) -> Option<VarId> {
+    match head {
+        ViewHead::Functor {
+            functor: s,
+            pos_arity: 0,
+            named_arity: 0,
+        } => sort_param_ref_var(kb, *s),
+        _ => None,
+    }
 }
 
-/// WI-20260911-7TN1Q — is `sym` a sort-level type PARAMETER whose `SortAlias` target is
-/// `Var::Global(vid)`? The alias-aware half of the occurs check, asked of a bare head by
-/// [`bare_head_is_param_var`] for both [`occurs_in`] and [`occurs_in_view`].
+/// WI-20260911-7TN1Q — the variable `Var::Global(vid)` that is the `SortAlias` target of
+/// `sym`, where `sym` is a sort-level type PARAMETER. The alias-aware half of the occurs
+/// check, asked of a bare head by [`bare_head_param_var`] for both [`occurs_in`] and
+/// [`occurs_in_view`].
 ///
 /// MIRRORS [`walk_type`]'S ALIAS HOP EXACTLY — the same `is_sort_param_symbol` gate and
 /// the same `resolve_sort_alias` read — and that correspondence is the whole
@@ -1476,20 +1587,20 @@ fn bare_head_is_param_var(kb: &KnowledgeBase, head: &ViewHead, vid: VarId) -> bo
 /// bindings for no reason — not because a row needs it. `walk_type` states the same gate's
 /// purpose at its own site.
 ///
-/// WHAT THE VID COMPARISON IS FOR, by contrast, is measured: answering "is `sym` ANY sort
-/// parameter" instead of "is it THIS one" refuses `Duo.pairOf[A = Box[T = T]]()` written
+/// WHAT NAMING THE VARIABLE IS FOR, by contrast, is measured: answering "is `sym` ANY sort
+/// parameter" instead of "which one" refuses `Duo.pairOf[A = Box[T = T]]()` written
 /// inside `sort Box[T]`, a legitimate program — back-out (E) of the test file, 1 red.
 ///
 /// THE CENSUS, with a temporary probe on every firing: the arm fires NOWHERE in `stdlib/`,
 /// `examples/github-todo`, `rustland/anthill-todo/anthill`, or the workspace suite —
 /// only on the programs the test file names.
-fn sort_param_ref_is_var(kb: &KnowledgeBase, sym: Symbol, vid: VarId) -> bool {
+fn sort_param_ref_var(kb: &KnowledgeBase, sym: Symbol) -> Option<VarId> {
     if !is_sort_param_symbol(kb, sym) {
-        return false;
+        return None;
     }
-    match resolve_sort_alias(kb, sym) {
-        Some(t) => matches!(kb.get_term(t), Term::Var(Var::Global(v)) if *v == vid),
-        None => false,
+    match kb.get_term(resolve_sort_alias(kb, sym)?) {
+        Term::Var(Var::Global(v)) => Some(*v),
+        _ => None,
     }
 }
 

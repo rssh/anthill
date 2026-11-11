@@ -2,9 +2,9 @@
 # 8 programs: name, tab, verdict. Written by `scripts/families.sh bless`; a changed line is a changed verdict.
 first=x,second=y,passed=lambda	refused TypeMismatch
 first=x,second=y,passed=let	refused TypeMismatch
-first=x,second=list-y,passed=lambda	refused TypeMismatch
-first=x,second=list-y,passed=let	runs 1
-first=list-x,second=y,passed=lambda	refused TypeMismatch
-first=list-x,second=y,passed=let	refused TypeMismatch
-first=list-x,second=list-y,passed=lambda	DIED stack overflow
-first=list-x,second=list-y,passed=let	runs 1
+first=x,second=list-y,passed=lambda	refused TypeMismatch/op-arg
+first=x,second=list-y,passed=let	refused TypeMismatch/op-arg
+first=list-x,second=y,passed=lambda	refused TypeMismatch/op-arg
+first=list-x,second=y,passed=let	refused TypeMismatch/op-arg
+first=list-x,second=list-y,passed=lambda	refused TypeMismatch/op-arg
+first=list-x,second=list-y,passed=let	refused TypeMismatch/op-arg

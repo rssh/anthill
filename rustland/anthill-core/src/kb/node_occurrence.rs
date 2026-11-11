@@ -7306,7 +7306,7 @@ fn subst_type_args(
 ///
 /// `pub(crate)` for WI-1083's ∀-instantiation, which needs exactly this walk and NOT
 /// `typing::walk_type_deep_value`: that one routes a `Value::Node` through
-/// `rewrite_type_occ_deep`, whose `NamedTuple` arm answers "unchanged" — so a binder
+/// `rewrite_occ_deep`, whose `NamedTuple` arm answers "unchanged" — so a binder
 /// sitting in a Node-carried parameter LIST (any multi-parameter operation with an arrow
 /// or `denoted`-bearing parameter) was left un-freshened, which is the aliasing the whole
 /// design exists to retire. This walk has a real `NamedTuple` arm because close / open /

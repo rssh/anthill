@@ -2,16 +2,16 @@
 //! -> A)`, where what one lambda returns is what the other takes.
 //!
 //! It is here for ONE program and the three around it. With each lambda returning a list
-//! of its parameter the call binds `B` to a list of `A` and `A` to a list of `B`; the
-//! unifier's occurs check reads a binding as written, the substitution holds a cycle, and
-//! the loader overflows its stack (WI-20261003-KQ6DG). That is the family's listed
-//! exception to P1 — and, on every run, the control that a program which kills its
-//! process is named and the run goes on, driven by the typer and not by a planted fault.
-//! The same lambdas held in a `let` load, and so does a cycle through one list that the
-//! call refuses: the family's exceptions to P4, the same ticket's. When it lands the
-//! exceptions excuse nothing, the run says so, and they go.
+//! of its parameter the call binds `B` to a list of `A` and `A` to a list of `B`: no finite
+//! type solves it, and the unifier's occurs check, which reads a binding through σ, refuses
+//! the binding at `g` that closes the cycle (WI-20261003-KQ6DG). Before it read a binding as
+//! written, σ held the cycle and the loader overflowed its stack — the family's exception to
+//! P1 then. A cycle through one list (`[x]` beside `y`, `x` beside `[y]`) is refused alike,
+//! and so is each program with its lambdas held in `let`s, which loaded while the check read
+//! as written: one verdict for the two spellings of each pair. The two identities leave `A`
+//! unconstrained, in both spellings.
 
-use super::{opt, spelt, Exception, Family, Hole, Picks, Program, Property};
+use super::{opt, spelt, Exception, Family, Hole, Picks, Program};
 
 pub static FAMILY: Family = Family {
     name: "d-mutual-callbacks",
@@ -36,29 +36,7 @@ pub static FAMILY: Family = Family {
     exceptions: EXCEPTIONS,
 };
 
-/// All three are WI-20261003-KQ6DG's, whose note of 2026-10-13 has the programs.
-const EXCEPTIONS: &[Exception] = &[
-    Exception {
-        property: Property::NoCrash,
-        when: &["first=list-x", "second=list-y", "passed=lambda"],
-        ticket: "WI-20261003-KQ6DG",
-        why: "the call binds each type parameter inside the other, and every deep reader of the substitution recurses through the cycle",
-    },
-    // The lambdas held in a `let`: the call that is refused, or dies, where they are
-    // written at it loads and runs.
-    Exception {
-        property: Property::OneVerdict,
-        when: &["first=list-x", "passed=let"],
-        ticket: "WI-20261003-KQ6DG",
-        why: "a cycle the call refuses is admitted from a `let`",
-    },
-    Exception {
-        property: Property::OneVerdict,
-        when: &["second=list-y", "passed=let"],
-        ticket: "WI-20261003-KQ6DG",
-        why: "a cycle the call refuses is admitted from a `let`",
-    },
-];
+const EXCEPTIONS: &[Exception] = &[];
 
 fn render(picks: &Picks<'_>) -> Program {
     let first = format!("lambda (x) -> {}", picks.text("first"));

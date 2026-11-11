@@ -60,7 +60,11 @@ fn check_function_value_argument(
         ArgValidation::Fail(_) => false,
     };
     if unifies {
+        let refused_from = subst.occurs_refusals.len();
         let unified = unify_types(kb, subst, at_slot.as_ref().unwrap_or(&own_ty), meets);
+        if let Err(err) = refuse_no_finite_type(kb, subst, unified, refused_from, fn_sym, slot, span) {
+            return ArgValidation::Fail(err);
+        }
         // WI-20260904-50B2K part (c) — REPORT FROM PATH 2 TOO: `let g = lambda x -> x  g(2)`
         // calls an ENV-BOUND ARROW, which is this path, and the walk learns the binder's use here.
         if let Some(before) = &before {
@@ -1057,6 +1061,7 @@ fn check_apply_call(
                         // reads every argument naming the tail.
                         let slot =
                             slot_at_argument_row(kb, &subst, &op, *param_sym, param_type, arg_ty);
+                        let refused_from = subst.occurs_refusals.len();
                         let unified = unify_arg_with_param(
                             kb,
                             &mut subst,
@@ -1064,6 +1069,7 @@ fn check_apply_call(
                             slot.as_ref().unwrap_or(param_type),
                             receiverless_sort,
                         );
+                        refuse_no_finite_type(kb, &subst, unified, refused_from, fn_sym, *param_sym, span)?;
                         // WI-20260904-50B2K part (c) — REPORT HERE, not at a return.
                         // `check_apply_iter` has 22 exits and an argument's solving is
                         // complete the moment its unification is: reporting at one exit
@@ -1138,6 +1144,7 @@ fn check_apply_call(
                         // See the positional loop.
                         let slot =
                             slot_at_argument_row(kb, &subst, &op, *param_sym, param_type, arg_ty);
+                        let refused_from = subst.occurs_refusals.len();
                         let unified = unify_arg_with_param(
                             kb,
                             &mut subst,
@@ -1145,6 +1152,7 @@ fn check_apply_call(
                             slot.as_ref().unwrap_or(param_type),
                             receiverless_sort,
                         );
+                        refuse_no_finite_type(kb, &subst, unified, refused_from, fn_sym, *param_sym, span)?;
                         // WI-20260904-50B2K part (c) — REPORT HERE, not at a return.
                         // `check_apply_iter` has 22 exits and an argument's solving is
                         // complete the moment its unification is: reporting at one exit
@@ -1204,6 +1212,7 @@ fn check_apply_call(
                 pair.2 = arg_ty.clone();
             }
             let slot = slot_at_argument_row(kb, &subst, &op, param_sym, &param_type, arg_ty);
+            let refused_from = subst.occurs_refusals.len();
             let unified = unify_arg_with_param(
                 kb,
                 &mut subst,
@@ -1211,6 +1220,7 @@ fn check_apply_call(
                 slot.as_ref().unwrap_or(&param_type),
                 receiverless_sort,
             );
+            refuse_no_finite_type(kb, &subst, unified, refused_from, fn_sym, param_sym, span)?;
             if let Some(before) = &before {
                 report_walk_solutions(kb, solving.as_deref_mut(), before, &mut subst, unified, ShapeSite { fn_sym, param: Some(param_sym), span })?;
             }
@@ -1375,7 +1385,9 @@ fn check_apply_call(
                     let arg_ty = at_slot.as_ref().unwrap_or(arg_ty);
                     // The row is the discharge inference's, as in the argument loops.
                     let slot = slot_at_argument_row(kb, &subst, &op, *param_sym, &eff, arg_ty);
+                    let refused_from = subst.occurs_refusals.len();
                     let unified = unify_types(kb, &mut subst, arg_ty, slot.as_ref().unwrap_or(&eff));
+                    refuse_no_finite_type(kb, &subst, unified, refused_from, fn_sym, *param_sym, span)?;
                     // Reported as the argument loops report (WI-20261105-MHF0B): a binder met
                     // only here was never learned — `lambda x -> put(bx, x)` over `put(b: Box,
                     // x: b.T)` kept `x` untyped, and `g("a")` loaded where `put(bx, "a")` is
@@ -6788,6 +6800,29 @@ fn unify_arg_with_param(
         unify_types(kb, subst, param, arg)
     } else {
         unify_types(kb, subst, arg, param)
+    }
+}
+
+/// The argument loops' question after an argument's unify: `Err` naming the argument at
+/// `param` where the unify failed because a binding would hold its own variable
+/// ([`no_finite_type_since`]); every other outcome is the validation's to judge.
+#[track_caller]
+fn refuse_no_finite_type(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    unified: bool,
+    refused_from: usize,
+    op_name: Symbol,
+    param: Symbol,
+    span: Option<Span>,
+) -> Result<(), TypeError> {
+    if unified {
+        return Ok(());
+    }
+    let context = TypeErrorContext::OperationArgument { op_name, param };
+    match no_finite_type_since(kb, subst, refused_from, context, span) {
+        Some(err) => Err(err),
+        None => Ok(()),
     }
 }
 

@@ -73,6 +73,12 @@ pub struct Substitution {
     /// writers record nothing (readers must tolerate an empty list with the
     /// flag set).
     pub contradiction_details: Vec<(VarId, Value, Value)>,
+    /// Every binding the typer's unification refused because its variable occurs in the
+    /// value read through σ (`B := List[T = A]` beside `A := List[T = B]`): the variable and
+    /// the value it would have held. A unify that fails answers only `false`; a caller that
+    /// reports why reads what its own unify added here, by the length before it. Nothing is
+    /// bound for an entry, so σ stays acyclic. Empty on the happy path.
+    pub occurs_refusals: Vec<(VarId, Value)>,
     /// WI-502 Step 1 — the per-branch **tagged constraint store** (see
     /// `docs/design/constrained-term-substrate.md`). Generalizes the WI-328
     /// `lacks` side-table: each [`Constraint`] is tagged by kind (`Lacks` #1,
@@ -122,6 +128,7 @@ impl Substitution {
             parent: None,
             contradiction: false,
             contradiction_details: Vec::new(),
+            occurs_refusals: Vec::new(),
             constraints: ImHashMap::new(),
         }
     }
@@ -132,6 +139,7 @@ impl Substitution {
             parent: Some(Box::new(parent)),
             contradiction: false,
             contradiction_details: Vec::new(),
+            occurs_refusals: Vec::new(),
             constraints: ImHashMap::new(),
         }
     }

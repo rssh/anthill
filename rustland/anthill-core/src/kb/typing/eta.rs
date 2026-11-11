@@ -84,7 +84,7 @@ fn generalize_eta_arrow(
 ///
 /// NOT [`walk_type_deep_value`], which is what the first cut used and which was WRONG HERE
 /// for a reason that has since been REPAIRED AT ITS SOURCE: it routes a `Value::Node`
-/// through [`rewrite_type_occ_deep`], whose `NamedTuple` arm answered "unchanged" until
+/// through [`rewrite_occ_deep`], whose `NamedTuple` arm answered "unchanged" until
 /// WI-20260904-02ERR gave it a walking arm. The measurement below is therefore historical —
 /// it is why this function uses the shared close/open/σ walk, and that choice still stands
 /// on its own ground (one walk, kept in step with σ by construction), but the specific hole

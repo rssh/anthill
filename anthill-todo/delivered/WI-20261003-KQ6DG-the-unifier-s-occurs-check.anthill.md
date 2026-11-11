@@ -3,9 +3,9 @@
 - id: WI-20261003-KQ6DG-the-unifier-s-occurs-check
 - created: 2026-10-03T12:31:34Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-10-03T12:31:34Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-11-11T11:32:03Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -24,4 +24,8 @@ MEASURED 2026-10-13 by the generated family d-mutual-callbacks (WI-20261002-E1WN
 ### 2026-11-11T02:42:20Z — feedback — claude
 
 Note 2026-11-11 (WI-20261105-MHF0B): the family d-mutual-callbacks program first=list-x,second=y,passed=let (let f = lambda (x) -> [x], let g = lambda (y) -> y, two(f, g)) moved from runs 1 to refused TypeMismatch, the same refusal as its lambda spelling, word for word: 'type mismatch in family.d.two.type_arg: expected a type for A, got unconstrained'. MHF0B roots a call's link from a lambda binder to the callee's type variable at the binder, and the let spelling now meets the cycle as the lambda spelling did. The OneVerdict exception first=list-x,passed=let still excuses second=list-y (let runs 1, lambda DIED). The wording of both refusals names A unconstrained where the fault is A = List[A]; that is this ticket's occurs check, not changed.
+
+### 2026-11-11T11:32:02Z — feedback — claude
+
+Delivered 2026-11-11. The occurs check reads a binding through σ: bind_resolved asks occurs_through, which follows every bound variable the value reaches (a bare head naming a sort parameter read as its variable, each binding read once), so the binding that would close a cycle is refused and σ stays acyclic. Each refusal is recorded on the substitution (Substitution::occurs_refusals), and the call's argument loops — positional, named, the waiting callables, WI-398's projection-deferred unify, and the env-bound arrow path — refuse the argument whose unify recorded one (TypeError::NoFiniteType, refused as a type mismatch at op-arg): 'two.g (op-arg): expected a finite type, got ?A = List[T = List[T = ?A]], a type inside itself'. Acceptance: the three programs (the pair, the pair beside an option, the pair at a body applying it) are refused naming g, with no overflow; the chained acyclic call runs to 42. The one-lambda case one(lambda (x) -> [x]) now names one.f where it named A unconstrained. A variable met against itself on another carrier, or through links ending at it, binds nothing and agrees: the old check refused it silently, and with a reader it named a cycle in the identities' let spelling. A variable a type parameter of the call is linked to (a let-held binder) is named by that parameter, so both spellings print the same words. The binds_a_cycle scans are gone (10 sites in signature.rs and carrier.rs; one guarded a direct bind, which now asks occurs_through first); a temporary trace over the whole gate found only that one firing. report_call_solutions' own value_reaches_var is replaced by occurs_through. Family d-mutual-callbacks: its three exceptions are removed and six verdicts moved, each pair now one verdict in both spellings (the identities 'refused TypeMismatch', the three cyclic pairs 'refused TypeMismatch/op-arg'). Rows: wi_kq6dg_occurs_check_through_sigma_test (8) and kb::typing::tests::occurs_through_sigma_tests (6); review-9's cyclic row and RDNS4's cyclic row now assert the refusal, and RDNS4 part 5's guard has a unit row. Back-outs measured by switches: through σ off — 6 rows die and 2 load and run; the argument refusal off — 7 rows refused as unconstrained; the self test off — 2 rows; the naming off — 1. Wall time: test execution 124 s before and after (binaries' own times 119.6 s and 119.3 s). Full workspace 11,895 passed, 0 failed; families green on both carriers; scaland 1 + 51 + 800. No spec change.
 

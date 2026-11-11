@@ -63,6 +63,8 @@
 //!     [`a_wrapped_payload_is_what_the_calls_type_reads`].
 //! 98. NOT THROUGH A CYCLE (`binds_a_cycle` in `projection_receivers`) — walked. 1 FAILS, its
 //!     process killed: [`a_cyclic_call_beside_a_projection_over_a_wrong_argument_is_refused`].
+//!     The scan is gone since WI-20261003-KQ6DG: the unifier refuses the binding that would
+//!     close the cycle, so no call's σ holds one.
 //! 99. A FOREIGN SORT'S UNWRITTEN SLOT ONE VARIABLE PER CALL (`once_per_call`) — expanded per
 //!     occurrence. 2 FAIL: [`a_foreign_unwritten_slot_is_one_type_for_a_self_receiver_call`] and
 //!     [`a_foreign_unwritten_slot_is_one_type_for_a_carrier_param_call`].
@@ -566,9 +568,10 @@ end
 /// A CALL WRONG TWICE — `5` for a list whose element a later parameter projects, and two lambdas
 /// with no finite typing — IS REFUSED, NOT A STACK OVERFLOW. The receivers' fixpoint walked the
 /// cyclic substitution the two lambdas leave and overflowed the loader's stack (MEASURED on the
-/// tree the ninth review saw; the tree before it printed this refusal). Nothing runs: the program
-/// is wrong.
-/// FAILS under ledger part 98 (the process dies).
+/// tree the ninth review saw; the tree before it printed the projection's refusal). Nothing runs:
+/// the program is wrong. Since WI-20261003-KQ6DG the unifier refuses the binding that closes the
+/// cycle, and the call is refused at that argument, `g`, before the projection is read.
+/// FAILED under ledger part 98 (the process died) while the cycle was admitted.
 #[test]
 fn a_cyclic_call_beside_a_projection_over_a_wrong_argument_is_refused() {
     let src = r#"
@@ -581,7 +584,7 @@ end
 "#;
     assert_refused_naming(
         &load_errors(src),
-        &["two.return (op-return)", "has no member 'T'"],
+        &["two.g (op-arg)", "expected a finite type", "a type inside itself"],
         "a projection off a wrong argument beside a cyclic pair",
     );
 }

@@ -36,8 +36,12 @@
 //! 4. TWO ARROWS BELOW THE TOP THAT DIFFER IN A ROW PRINTED WITH THEIR ROWS (`Spelling::Rows`).
 //!    1 FAILS: [`a_mismatch_of_nested_arrows_prints_their_rows`], "these render alike".
 //! 5. A VARIABLE NOT WALKED AGAIN INSIDE ITS OWN BINDING (`map_held_arrows_on`'s `entered`).
-//!    [`a_cyclic_binding_the_arguments_leave_is_walked_once`] overflows the stack, which aborts
-//!    the test binary: measured with that row alone.
+//!    The row it was measured with, `a_cyclic_binding_the_arguments_leave_is_walked_once`,
+//!    overflowed the stack, which aborts the test binary. Since WI-20261003-KQ6DG that program is
+//!    refused at its closing argument
+//!    ([`a_cyclic_binding_the_arguments_leave_is_refused_at_the_closing_argument`]) and no σ the
+//!    walk reads holds a cycle; the guard's witness is the unit row
+//!    `kb::typing::tests::occurs_through_sigma_tests::held_arrows_walk_a_cycle_once`.
 //! 6. AN ARROW'S RESULT READ (`map_held_arrows` stopping at a callable). 1 FAILS:
 //!    [`a_callback_a_callback_returns_is_held_to_its_row`].
 //! 7. A PAYLOAD CALLBACK'S ROW REFUSAL REPORTED AS IT IS (`some_coercion` reporting its outer pair).
@@ -354,14 +358,22 @@ fn a_callback_a_callback_returns_is_held_to_its_row() {
     );
 }
 
-/// A BINDING THE ARGUMENTS LEAVE CYCLIC IS WALKED ONCE: `two_ab[A, B](f: (x: A) -> B, g: (y: B)
-/// -> A)` given `let`-held `lambda (x) -> [x]` and `lambda (y) -> [y]` makes `A` a list of lists of
-/// itself, and the walk down the callbacks' results followed it until the stack overflowed, where
-/// the call runs (MEASURED, family `d-mutual-callbacks`): 1 (12).
+/// THE ARGUMENTS OF A CYCLE ARE REFUSED, NOT WALKED: `two_ab[A, B](f: (x: A) -> B, g: (y: B) ->
+/// A)` given `let`-held `lambda (x) -> [x]` and `lambda (y) -> [y]` makes `A` a list of lists of
+/// itself. The walk down the callbacks' results followed the cycle until the stack overflowed
+/// (MEASURED, family `d-mutual-callbacks`); with that walk guarded the call ran, to 1 (12). Since
+/// WI-20261003-KQ6DG the unifier refuses the binding that closes the cycle, and the call is
+/// refused at `g`, so no σ this walk reads holds one: part 5's guard is driven by its unit row,
+/// `kb::typing::tests::occurs_through_sigma_tests::held_arrows_walk_a_cycle_once`.
 #[test]
-fn a_cyclic_binding_the_arguments_leave_is_walked_once() {
-    assert_eq!(
-        runs("cyclic", "", "    let f = lambda (x) -> [x]\n    let g = lambda (y) -> [y]\n    two_ab(f, g)"),
-        Ok(12),
+fn a_cyclic_binding_the_arguments_leave_is_refused_at_the_closing_argument() {
+    assert_refused_naming(
+        &refused(
+            "cyclic",
+            "",
+            "    let f = lambda (x) -> [x]\n    let g = lambda (y) -> [y]\n    two_ab(f, g)",
+        ),
+        &["two_ab.g (op-arg)", "expected a finite type", "a type inside itself"],
+        "the cyclic pair from `let`s",
     );
 }
