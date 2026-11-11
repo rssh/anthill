@@ -792,7 +792,7 @@ impl WalkSolutions {
     }
 
     /// WI-20260904-34J8Z — HOLD A CALL'S σ TO THE SHAPES IT DECIDES, after one of its arguments
-    /// met its parameter ([`hold_walk_shapes`]). For each [`TupleShape`] whose variable this
+    /// met its parameter ([`report_walk_solutions`]). For each [`TupleShape`] whose variable this
     /// argument's unify decided — not `before`, whose bindings an earlier argument's unify made
     /// and may have made failing, as [`report_call_solutions`] reads them: the type must be a tuple
     /// of the pattern's width, and each component meets its binder — checked as an argument meets
@@ -1790,25 +1790,6 @@ fn root_callee_links_at_walk_vars(
     }
 }
 
-/// WI-20260904-34J8Z — the shape half of [`report_walk_solutions`] alone, for the one
-/// argument-unification site that reports nothing else: WI-398's deferred unify at a
-/// projection-typed parameter, whose solutions this walk does not read (the known gap
-/// [`report_call_solutions`] records). A pattern decided only through such a parameter is held
-/// to it all the same.
-pub(super) fn hold_walk_shapes(
-    kb: &mut KnowledgeBase,
-    solving: Option<&mut WalkSolutions>,
-    before: &Substitution,
-    subst: &mut Substitution,
-    unified: bool,
-    site: ShapeSite,
-) -> Result<(), TypeError> {
-    match solving {
-        Some(w) if unified => w.close_under_shapes(kb, before, subst, site),
-        _ => Ok(()),
-    }
-}
-
 /// A positional tuple of `width` components nothing says, as a refusal shows the tuple a
 /// pattern takes apart.
 pub(super) fn unsaid_tuple_of(kb: &mut KnowledgeBase, width: usize) -> Value {
@@ -1881,7 +1862,7 @@ pub(super) struct ShapeSite {
 /// `body_solutions` CYCLIC for `resolve_type_deep_value` to walk. An ALREADY-BOUND variable
 /// is left alone: the rest of the walk has already been typed against the first answer.
 ///
-/// TWO THINGS THIS DOES NOT DO, named because they are unmeasured rather than absent:
+/// ONE THING THIS DOES NOT DO, named because it is unmeasured rather than absent:
 ///
 ///   * NO ROLLBACK. A report happens when an argument's unification finishes, which is
 ///     BEFORE the CALL is known to type: [`report_walk_solutions`] withholds a FAILED
@@ -1889,10 +1870,6 @@ pub(super) struct ShapeSite {
 ///     returns `Err` for another reason still leaves its bindings behind. Combined with
 ///     first-wins, a speculative binding could outrank a later well-typed one. No corpus
 ///     program shows it; the scoped container below is what would remove the possibility.
-///   * THE PROJECTION-DEFERRED PATH DOES NOT REPORT. The report sits inside the
-///     `!(op_has_projection && value_contains_projection(..))` arm, and WI-398's deferred
-///     elimination unify afterwards has no report of its own. A binder pinned only through
-///     a projection-typed parameter keeps the pre-change behaviour.
 ///
 /// AND THE CONTAINER IS STILL WALK-LIFETIME, WHICH IS NOT WHERE THIS BELONGS. Solutions
 /// travelling WITH the result would scope to the body that produced them and make the gate

@@ -1376,11 +1376,13 @@ fn check_apply_call(
                     // The row is the discharge inference's, as in the argument loops.
                     let slot = slot_at_argument_row(kb, &subst, &op, *param_sym, &eff, arg_ty);
                     let unified = unify_types(kb, &mut subst, arg_ty, slot.as_ref().unwrap_or(&eff));
-                    // WI-20260904-34J8Z: this unify reports no solution to the walk (the known
-                    // gap at [`report_call_solutions`]), and holds its tuple shapes all the same.
+                    // Reported as the argument loops report (WI-20261105-MHF0B): a binder met
+                    // only here was never learned — `lambda x -> put(bx, x)` over `put(b: Box,
+                    // x: b.T)` kept `x` untyped, and `g("a")` loaded where `put(bx, "a")` is
+                    // refused.
                     if let Some(before) = &before {
                         let site = ShapeSite { fn_sym, param: Some(*param_sym), span };
-                        hold_walk_shapes(kb, solving.as_deref_mut(), before, &mut subst, unified, site)?;
+                        report_walk_solutions(kb, solving.as_deref_mut(), before, &mut subst, unified, site)?;
                     }
                     // The discharge inference reads the callback as this slot reads it: the
                     // argument loops deferred this parameter, and recorded it as written.

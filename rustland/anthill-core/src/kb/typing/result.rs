@@ -919,16 +919,16 @@ fn walk_payload_deep(
     subst: &Substitution,
     pos: &Rc<[Value]>,
     named: &Rc<[(Symbol, Value)]>,
-    ground: bool,
+    w: &mut DeepWalk,
 ) -> Option<(Rc<[Value]>, Rc<[(Symbol, Value)]>)> {
     let same = |a: &Value, b: &Value| value_identity_key(a) == value_identity_key(b);
     let walked_pos: Vec<Value> = pos
         .iter()
-        .map(|c| walk_type_deep_value_g(kb, subst, c, ground))
+        .map(|c| deep_value(kb, subst, c, w))
         .collect();
     let walked_named: Vec<(Symbol, Value)> = named
         .iter()
-        .map(|(s, c)| (*s, walk_type_deep_value_g(kb, subst, c, ground)))
+        .map(|(s, c)| (*s, deep_value(kb, subst, c, w)))
         .collect();
     let pos_same = pos.iter().zip(&walked_pos).all(|(a, b)| same(a, b));
     let named_same = named.iter().zip(&walked_named).all(|((_, a), (_, b))| same(a, b));
@@ -949,12 +949,33 @@ pub(super) fn walk_type_deep_value_g(
     e: &Value,
     ground: bool,
 ) -> Value {
+    deep_value(kb, subst, e, &mut DeepWalk::new(ground))
+}
+
+/// One deep walk of a type through σ: whether it grounds, and the variables whose bindings it
+/// is expanding, so a binding that holds its own variable is walked once
+/// ([`walk_var_chain`]). The term walk never needed one, as it stops at a binding off the term
+/// carrier; this walk follows those bindings, and `d-mutual-callbacks` makes one cyclic (`A` a
+/// list of lists of itself).
+struct DeepWalk {
+    ground: bool,
+    expanding: SmallVec<[VarId; 4]>,
+}
+
+impl DeepWalk {
+    fn new(ground: bool) -> Self {
+        DeepWalk { ground, expanding: SmallVec::new() }
+    }
+}
+
+/// [`walk_type_deep_value_g`] within one walk.
+fn deep_value(kb: &mut KnowledgeBase, subst: &Substitution, e: &Value, w: &mut DeepWalk) -> Value {
     match e {
         // The term walk first — byte-identical wherever every binding it meets is a term —
         // then the bindings it cannot hold; see [`splice_non_term_bindings`].
         Value::Term { id: t, .. } => {
-            let walked = walk_type_deep_g(kb, subst, *t, ground);
-            splice_non_term_bindings(kb, subst, walked, ground)
+            let walked = walk_type_deep_g(kb, subst, *t, w.ground);
+            splice_non_term_bindings(kb, subst, walked, w)
                 .unwrap_or_else(|| Value::term(walked))
         }
         // WI-441: a NODE-carried type DOES carry type-param vars — a callback
@@ -963,7 +984,14 @@ pub(super) fn walk_type_deep_value_g(
         // type-param vars" assumption left those un-walked, so the rigidify
         // pass missed them (the body then unified/leaked the raw Global).
         // Rebuild share-preservingly: unchanged subtrees keep their Rc.
-        Value::Node(occ) => Value::Node(rewrite_type_occ_deep(kb, subst, occ, ground)),
+        //
+        // An occurrence that IS a variable is read as its `Value::Var` spelling below: the
+        // rewrite substitutes a variable one level up, in its parent's child slot, since the
+        // binding may ride another carrier, and at the top there is no parent.
+        Value::Node(occ) => match occ.as_type() {
+            Some(TypeNode::Var(Var::Global(vid))) => walk_var_chain(kb, subst, e, *vid, w),
+            _ => Value::Node(rewrite_occ_deep(kb, subst, occ, w)),
+        },
         // WI-20260904-B1KFS — AN ENTITY-CARRIED TYPE'S INNER VARS ARE WALKED TOO. This
         // was `other => other.clone()`, so `Map[K = ?T]` had its `?T` resolved as a term
         // and left RAW as its `Value::Entity` twin — one type, two answers, and the
@@ -988,7 +1016,7 @@ pub(super) fn walk_type_deep_value_g(
             functor,
             pos,
             named,
-        } => match walk_payload_deep(kb, subst, pos, named, ground) {
+        } => match walk_payload_deep(kb, subst, pos, named, w) {
             Some((pos, named)) => Value::Entity {
                 functor: *functor,
                 pos,
@@ -996,7 +1024,7 @@ pub(super) fn walk_type_deep_value_g(
             },
             None => e.clone(),
         },
-        Value::Tuple { pos, named } => match walk_payload_deep(kb, subst, pos, named, ground) {
+        Value::Tuple { pos, named } => match walk_payload_deep(kb, subst, pos, named, w) {
             Some((pos, named)) => Value::Tuple { pos, named },
             None => e.clone(),
         },
@@ -1013,20 +1041,45 @@ pub(super) fn walk_type_deep_value_g(
         // it. `reify_value` (kb/mod.rs) needed both this arm and the children arms above
         // for the same reason; one without the other is half a walk.
         //
-        // Cycle-guarded by the same `visited` reasoning as `walk_value_to_resolved`: a
-        // bound var's value is walked, and an unbound one (or a cycle, which
-        // `resolve_as_value` terminates) is returned as itself.
-        Value::Var(Var::Global(vid)) => match subst.resolve_as_value(*vid) {
-            Some(bound) => {
-                let bound = bound.clone();
-                walk_type_deep_value_g(kb, subst, &bound, ground)
-            }
-            None => e.clone(),
-        },
+        Value::Var(Var::Global(vid)) => walk_var_chain(kb, subst, e, *vid, w),
         // A LEAF: a scalar, a rigid/De Bruijn var (neither is σ-bound), an interpreter
         // handle. Nothing beneath it to resolve.
         other => other.clone(),
     }
+}
+
+/// A variable `e` read through σ, on either carrier it rides as a value — `Value::Var`, or the
+/// occurrence `TypeNode::Var`: its chain of links followed to the end ([`sigma_chain_end`], which
+/// follows a link on every carrier and stops where the chain comes back to a variable it passed),
+/// and that end walked. A chain that ends at a variable answers that variable, on the carrier σ
+/// holds it on; an unbound `e` answers itself.
+///
+/// The occurrence spelling was returned untouched at the top of a type, and a link onto it — the
+/// callee's `T` bound to a lambda binder's variable — stopped there: `T ↦ ?a`, `?a ↦ Int64` read
+/// `?a`, interned as a term by [`splice_non_term_bindings`], where its `Value::Var` and term
+/// spellings read `Int64`.
+fn walk_var_chain(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    e: &Value,
+    vid: VarId,
+    w: &mut DeepWalk,
+) -> Value {
+    let Some(end) = sigma_chain_end(kb, subst, vid) else {
+        return e.clone();
+    };
+    if kb.value_global_var(end).is_some() {
+        return end.clone();
+    }
+    // A binding that holds its own variable answers the variable where the walk meets it again.
+    if w.expanding.contains(&vid) {
+        return e.clone();
+    }
+    let end = end.clone();
+    w.expanding.push(vid);
+    let read = deep_value(kb, subst, &end, w);
+    w.expanding.pop();
+    read
 }
 
 /// THE BINDINGS THE TERM WALK CANNOT HOLD. [`walk_type_deep_g`] is `TermId` in and out, so
@@ -1063,7 +1116,7 @@ fn splice_non_term_bindings(
     kb: &mut KnowledgeBase,
     subst: &Substitution,
     t: TermId,
-    ground: bool,
+    w: &mut DeepWalk,
 ) -> Option<Value> {
     match kb.get_term(t).clone() {
         Term::Var(Var::Global(vid)) => {
@@ -1074,12 +1127,14 @@ fn splice_non_term_bindings(
             let bound = bound.clone();
             // A chain ending at a VARIABLE, on either spelling — `TypeNode::Var` is a variable's
             // NESTED spelling and must not escape into value position (WI-20260904-02ERR) — is that
-            // END variable, held as its term: what the term walk answers for the same chain carried
-            // on terms. Left as the variable it started from, a callee's own parameter `B` bound to
-            // a caller's open variable kept `B` in the call's type — one binding, two answers by
+            // END variable, held as a bare `Value::Var`: what the term walk answers for the same
+            // chain carried on terms, without interning a per-site variable the term store would
+            // keep (WI-20261105-MHF0B; held as a `Term::Var` it was). Left as the variable it
+            // started from, a callee's own parameter `B` bound to a caller's open variable kept
+            // `B` in the call's type — one binding, two answers by
             // carrier, and `Pair.mk(o)` under an un-annotated `lambda (o)` typed `Pair[A = ?_, …]`
             // with `A` tied to nothing (MEASURED: review 9).
-            let walked = walk_type_deep_value_g(kb, subst, &bound, ground);
+            let walked = deep_value(kb, subst, &bound, w);
             let end = match &walked {
                 Value::Var(end) => Some(*end),
                 Value::Node(occ) => match occ.as_type() {
@@ -1089,7 +1144,7 @@ fn splice_non_term_bindings(
                 _ => None,
             };
             if let Some(end) = end {
-                return (end != Var::Global(vid)).then(|| Value::term(kb.alloc(Term::Var(end))));
+                return (end != Var::Global(vid)).then_some(Value::Var(end));
             }
             match walked {
                 Value::Node(occ) if occ.as_type().is_none() && occ.as_effect_expr().is_none() => {
@@ -1119,13 +1174,13 @@ fn splice_non_term_bindings(
             let mut changed = false;
             let mut pos = Vec::with_capacity(pos_args.len());
             for c in pos_args {
-                let s = splice_non_term_bindings(kb, subst, c, ground);
+                let s = splice_non_term_bindings(kb, subst, c, w);
                 changed |= s.is_some();
                 pos.push(s.unwrap_or_else(|| Value::term(c)));
             }
             let mut named = Vec::with_capacity(named_args.len());
             for (k, c) in named_args {
-                let s = splice_non_term_bindings(kb, subst, c, ground);
+                let s = splice_non_term_bindings(kb, subst, c, w);
                 changed |= s.is_some();
                 named.push((k, s.unwrap_or_else(|| Value::term(c))));
             }
@@ -1151,22 +1206,32 @@ pub(super) fn rewrite_type_occ_deep(
     occ: &Rc<NodeOccurrence>,
     ground: bool,
 ) -> Rc<NodeOccurrence> {
+    rewrite_occ_deep(kb, subst, occ, &mut DeepWalk::new(ground))
+}
+
+/// [`rewrite_type_occ_deep`] within one walk.
+fn rewrite_occ_deep(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    occ: &Rc<NodeOccurrence>,
+    w: &mut DeepWalk,
+) -> Rc<NodeOccurrence> {
     fn child(
         kb: &mut KnowledgeBase,
         subst: &Substitution,
         c: &TypeChild,
-        ground: bool,
+        w: &mut DeepWalk,
         changed: &mut bool,
     ) -> TypeChild {
         match c {
             TypeChild::Interned(t) => {
-                let w = walk_type_deep_g(kb, subst, *t, ground);
+                let walked = walk_type_deep_g(kb, subst, *t, w.ground);
                 // The bindings the term walk cannot hold, as in `walk_type_deep_value_g`'s
                 // `Value::Term` arm — the SAME drop on this carrier: `Two[L = A, R = Foo[T =
                 // Int64, N = 3]]` with `A` bound to an occurrence-carried type kept `A` a
                 // wildcard (MEASURED: a wrong `L` loaded clean). Placed by
                 // [`spliced_type_child`].
-                if let Some(spliced) = splice_non_term_bindings(kb, subst, w, ground) {
+                if let Some(spliced) = splice_non_term_bindings(kb, subst, walked, w) {
                     match spliced_type_child(kb, &spliced) {
                         Ok(c) => {
                             *changed = true;
@@ -1182,10 +1247,10 @@ pub(super) fn rewrite_type_occ_deep(
                         ),
                     }
                 }
-                if w != *t {
+                if walked != *t {
                     *changed = true;
                 }
-                TypeChild::Interned(w)
+                TypeChild::Interned(walked)
             }
             // WI-20260904-02ERR: the SECOND σ walk that must be able to change a child's
             // carrier (the first is `node_occurrence::map_type_child`). A bound `?T` becomes
@@ -1193,29 +1258,28 @@ pub(super) fn rewrite_type_occ_deep(
             // Without this arm the recursion below returns an occurrence and the variable is
             // never substituted on this path — the deep walk would silently stop resolving
             // type vars that moved carrier.
-            TypeChild::Node(n) if matches!(n.as_type(), Some(TypeNode::Var(_))) => {
-                let Some(TypeNode::Var(v)) = n.as_type() else {
-                    unreachable!("guarded by the arm's `matches!`")
-                };
-                match v {
-                    Var::Global(vid) => match subst.resolve_as_value(*vid) {
-                        None => TypeChild::Node(Rc::clone(n)),
-                        Some(bound) => {
-                            let bound = bound.clone();
-                            *changed = true;
-                            // The same answer `SubstTypeRewrite::var` gives, from the same
-                            // helper, so the two σ walks cannot drift: the type the binding
-                            // DENOTES, or a loud `⊥` when it denotes none.
-                            let t = crate::kb::node_occurrence::type_denoted_by(kb, &bound)
-                                .unwrap_or_else(|| kb.alloc(Term::Bottom));
-                            TypeChild::Interned(walk_type_deep_g(kb, subst, t, ground))
-                        }
-                    },
-                    _ => TypeChild::Node(Rc::clone(n)),
+            //
+            // Read as the same variable at the top of a type is ([`walk_var_chain`]): its chain
+            // followed on every carrier and the end walked, then placed by
+            // [`spliced_type_child`]. Read as the term its binding denotes, the term walk stopped
+            // at a link to a variable bound off the term carrier: `(S) -> S` with `S ↦ U`, `U ↦
+            // Buf[N = 3]` read `U`. A binding with no child form is the loud `⊥` it always was.
+            TypeChild::Node(n) if matches!(n.as_type(), Some(TypeNode::Var(Var::Global(_)))) => {
+                let read = deep_value(kb, subst, &Value::Node(Rc::clone(n)), w);
+                if matches!(&read, Value::Node(r) if Rc::ptr_eq(r, n)) {
+                    return TypeChild::Node(Rc::clone(n));
+                }
+                *changed = true;
+                match spliced_type_child(kb, &read) {
+                    Ok(c) => c,
+                    Err(_) => TypeChild::Interned(
+                        crate::kb::node_occurrence::type_denoted_by(kb, &read)
+                            .unwrap_or_else(|| kb.alloc(Term::Bottom)),
+                    ),
                 }
             }
             TypeChild::Node(n) => {
-                let r = rewrite_type_occ_deep(kb, subst, n, ground);
+                let r = rewrite_occ_deep(kb, subst, n, w);
                 if !Rc::ptr_eq(&r, n) {
                     *changed = true;
                 }
@@ -1231,14 +1295,14 @@ pub(super) fn rewrite_type_occ_deep(
             TypeNode::Var(_) => None,
             // The name stays; σ acts on the type it stands for.
             TypeNode::Aliased { alias, stands_for } => {
-                let s = child(kb, subst, stands_for, ground, &mut changed);
+                let s = child(kb, subst, stands_for, w, &mut changed);
                 Some(NodeKind::Type(TypeNode::Aliased {
                     alias: *alias,
                     stands_for: s,
                 }))
             }
             TypeNode::Defaulted { param, stands_for } => {
-                let s = child(kb, subst, stands_for, ground, &mut changed);
+                let s = child(kb, subst, stands_for, w, &mut changed);
                 Some(NodeKind::Type(TypeNode::Defaulted {
                     param: *param,
                     stands_for: s,
@@ -1251,9 +1315,9 @@ pub(super) fn rewrite_type_occ_deep(
                 binders,
             } => {
                 let (p, r, e) = (
-                    child(kb, subst, param, ground, &mut changed),
-                    child(kb, subst, result, ground, &mut changed),
-                    child(kb, subst, effects, ground, &mut changed),
+                    child(kb, subst, param, w, &mut changed),
+                    child(kb, subst, result, w, &mut changed),
+                    child(kb, subst, effects, w, &mut changed),
                 );
                 // The arrow's own binders are places, not types, so σ / rigidify / δ-ground
                 // have nothing to say about them: TRANSPLANTED, not rewritten.
@@ -1265,10 +1329,10 @@ pub(super) fn rewrite_type_occ_deep(
                 }))
             }
             TypeNode::Parameterized { base, bindings } => {
-                let b = child(kb, subst, base, ground, &mut changed);
+                let b = child(kb, subst, base, w, &mut changed);
                 let bs: Vec<(Symbol, TypeChild)> = bindings
                     .iter()
-                    .map(|(s, c)| (*s, child(kb, subst, c, ground, &mut changed)))
+                    .map(|(s, c)| (*s, child(kb, subst, c, w, &mut changed)))
                     .collect();
                 Some(NodeKind::Type(TypeNode::Parameterized {
                     base: b,
@@ -1276,7 +1340,7 @@ pub(super) fn rewrite_type_occ_deep(
                 }))
             }
             TypeNode::EffectsRows { effects_expr } => {
-                let e = child(kb, subst, effects_expr, ground, &mut changed);
+                let e = child(kb, subst, effects_expr, w, &mut changed);
                 Some(NodeKind::Type(TypeNode::EffectsRows { effects_expr: e }))
             }
             // WI-1083 — σ DOES NOT WALK UNDER A ∀, and that is a decision rather than
@@ -1316,7 +1380,7 @@ pub(super) fn rewrite_type_occ_deep(
             // deep compare to decide whether to. Correct either way; the share-preservation
             // the sibling arms get is what is given up.
             TypeNode::NamedTuple { fields } => {
-                let walked = walk_type_deep_value_g(kb, subst, fields, ground);
+                let walked = deep_value(kb, subst, fields, w);
                 changed = true;
                 Some(NodeKind::Type(TypeNode::NamedTuple { fields: walked }))
             }
@@ -1327,8 +1391,8 @@ pub(super) fn rewrite_type_occ_deep(
         NodeKind::EffectExpr(node) => match node {
             EffectExprNode::Merge { left, right } => {
                 let (l, r) = (
-                    child(kb, subst, left, ground, &mut changed),
-                    child(kb, subst, right, ground, &mut changed),
+                    child(kb, subst, left, w, &mut changed),
+                    child(kb, subst, right, w, &mut changed),
                 );
                 Some(NodeKind::EffectExpr(EffectExprNode::Merge {
                     left: l,
@@ -1336,7 +1400,7 @@ pub(super) fn rewrite_type_occ_deep(
                 }))
             }
             EffectExprNode::Present { label } => {
-                let l = child(kb, subst, label, ground, &mut changed);
+                let l = child(kb, subst, label, w, &mut changed);
                 Some(NodeKind::EffectExpr(EffectExprNode::Present { label: l }))
             }
             EffectExprNode::Guarded { label, guard } => {
@@ -1345,18 +1409,18 @@ pub(super) fn rewrite_type_occ_deep(
                 // present), carried unchanged. (This used to cite `TypeNode::NamedTuple`
                 // as the precedent; that arm now walks its fields — WI-20260904-02ERR —
                 // so the reason here stands on the guard's own inertness alone.)
-                let l = child(kb, subst, label, ground, &mut changed);
+                let l = child(kb, subst, label, w, &mut changed);
                 Some(NodeKind::EffectExpr(EffectExprNode::Guarded {
                     label: l,
                     guard: guard.clone(),
                 }))
             }
             EffectExprNode::Absent { label } => {
-                let l = child(kb, subst, label, ground, &mut changed);
+                let l = child(kb, subst, label, w, &mut changed);
                 Some(NodeKind::EffectExpr(EffectExprNode::Absent { label: l }))
             }
             EffectExprNode::Open { tail } => {
-                let t = child(kb, subst, tail, ground, &mut changed);
+                let t = child(kb, subst, tail, w, &mut changed);
                 Some(NodeKind::EffectExpr(EffectExprNode::Open { tail: t }))
             }
             EffectExprNode::EmptyRow => None,

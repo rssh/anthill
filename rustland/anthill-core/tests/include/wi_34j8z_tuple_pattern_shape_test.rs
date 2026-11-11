@@ -70,8 +70,9 @@
 //!    [`a_pattern_after_the_call_that_decided_its_binder_reads_that_call`].
 //! 13. A KNOWN TUPLE OF ANOTHER WIDTH NOT REFUSED at an irrefutable pattern. 1 FAILS:
 //!    [`another_width_is_refused_where_the_pattern_cannot_fail`].
-//! 14. THE PROJECTION-TYPED PARAMETER NOT HELD (`hold_walk_shapes` at WI-398's deferred unify). 1
-//!    FAILS: [`a_projection_typed_parameter_holds_the_pattern`].
+//! 14. THE PROJECTION-TYPED PARAMETER NOT HELD (the shapes at WI-398's deferred unify, held by
+//!    `report_walk_solutions` there since WI-20261105-MHF0B). 1 FAILS:
+//!    [`a_projection_typed_parameter_holds_the_pattern`].
 //! 15. A LABELLED PATTERN MISSING FROM THE BODY NOT REFUSED (`write_shape_labels`'s `Err`). NONE
 //!    FAILS — UNDRIVEN by design: no program reaches it, and it is the loud form of what would
 //!    otherwise be a slot read (the full gate ran with it, and nothing raised it).

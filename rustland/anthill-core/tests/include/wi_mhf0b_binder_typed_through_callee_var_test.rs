@@ -10,7 +10,9 @@
 //! result is `T` answers the binder; a binding is read through the call's σ where it names the
 //! callee's variable, so `?x := ?T` with `?T := Int64` in the same unify is kept as `Int64`; and a
 //! tuple literal handed as an argument is not unified, in a σ nothing reads, with the callee's
-//! parameter type, which put the callee's variable in place of the binder's.
+//! parameter type, which put the callee's variable in place of the binder's. A fourth place is the
+//! same gap by another route: an argument at a parameter typed by a projection off another
+//! argument is unified after both argument loops, and what it bound was not reported at all.
 //!
 //! EVERY ROW DRIVES WHAT IT CLAIMS: a refusal is asserted by the words that name it, beside the
 //! twin that differs in one thing and runs to its value. The bracket in a row's comment is the
@@ -19,7 +21,7 @@
 //!
 //! ── WHICH ROWS FAIL WHEN A PART IS BACKED OUT ────────────────────────────────
 //!
-//! THREE PARTS, each backed out in place over a temporary binary of this file and the
+//! FOUR PARTS, each backed out in place over a temporary binary of this file and the
 //! twenty-seven suites nearest it — the binder lists and their arrows, the tuple patterns, the
 //! components and their order, destructuring by label, the arity rows, the binder's variable
 //! carrier, the polytype (`wi517`, `wi620`, `wi782`–`wi788`, `wi791`, `wi792`, `wi794`, `wi795`,
@@ -39,17 +41,24 @@
 //! 3. THE LITERAL UNIFIED WITH THE CALLEE'S PARAMETER TYPE (`thread_expected_tuple_fields`). 2
 //!    FAIL: [`a_literal_handed_to_the_call_keeps_its_binders`] and
 //!    [`a_literal_whose_binder_meets_the_variable_first_is_read_through_the_call`].
+//! 4. NOTHING REPORTED AT THE PROJECTION-TYPED PARAMETER (the tuple shapes alone held at WI-398's
+//!    deferred unify, as before). 1 FAILS:
+//!    [`a_binder_met_at_a_projection_typed_parameter_is_held_at_the_use`]. Measured over the same
+//!    suites and the projection ones (`wi385`, `wi398`, `wi399`, `wi400`, `wi459`): 341 rows, green
+//!    with nothing backed out.
 //!
 //! PASSES UNDER EVERY PART, by design: [`what_the_change_does_not_decide_is_unchanged`] — an
 //! operation's own type parameter nothing at the call fixes, an annotated binder — and the
-//! `g(1, true)` arm of the list row, refused at `g.b` before this change as after.
+//! `g(1, true)` arm of the list row, refused at `g.b` before this change as after, and the
+//! written-out `pick(bx, "a")` of the projection row.
 //!
 //! Where the link is turned round, the callee's variable is bound to the binder's on a bare
 //! `Value::Var`. On an interned `Term::Var` the binding entered the hash-consed store, and
 //! `wi_02err`'s two counting rows failed. On the occurrence carrier a binder's variable rides, a
 //! reader of σ stopped at it and interned it there (`splice_non_term_bindings`): a call's result
 //! read `?a` where σ said `Int64`, and `g(1, true)` over `a * 10 + b` was refused for an
-//! `Additive` at `Bool`.
+//! `Additive` at `Bool`. That reader now follows a link on every carrier (`walk_var_chain`,
+//! driven by `kb::typing::tests::deep_resolve_link_carrier_tests`).
 
 use crate::common::{assert_refused_naming, load_errors_of, run_int64};
 
@@ -221,6 +230,34 @@ fn a_literal_whose_binder_meets_the_variable_first_is_read_through_the_call() {
     assert_eq!(
         runs("wi_mhf0b.first4", BOTH_L, "    let g = lambda h -> bothL((a: h, b: 10))\n    g([1])"),
         Ok(10)
+    );
+}
+
+const BOX: &str = "  sort Box\n    sort T = ?\n    entity box(v: T)\n  end\n  \
+                   operation pick(b: Box, x: b.T) -> b.T = x";
+
+/// A binder met only at a parameter typed by a projection off another argument: that argument is
+/// unified after both argument loops, once the projection is read off the receiver's type, and
+/// what it binds is reported as every other argument's is.
+#[test]
+fn a_binder_met_at_a_projection_typed_parameter_is_held_at_the_use() {
+    const G: &str = "    let bx = box(v: 1)\n    let g = lambda x -> pick(bx, x)";
+    // [loads, and `go`, declared `-> Int64`, returns "a"]
+    refused(
+        "wi_mhf0b.proj",
+        BOX,
+        &format!("{G}\n    g(\"a\")"),
+        &["g._1 (op-arg)", "expected Int64, got String"],
+        "a binder `pick(bx, x)` types at `bx.T`, used at a String",
+    );
+    assert_eq!(runs("wi_mhf0b.proj2", BOX, &format!("{G}\n    g(5)")), Ok(5));
+    // [refused here before as after: the call written out]
+    refused(
+        "wi_mhf0b.proj3",
+        BOX,
+        "    let bx = box(v: 1)\n    pick(bx, \"a\")",
+        &["pick.x (op-arg)", "expected Int64, got String"],
+        "the call the lambda makes, written out",
     );
 }
 

@@ -8135,3 +8135,310 @@ mod wi_7g99a_unit_display_test {
         assert_eq!(type_qualified_text(&kb, &ViewItem::Term(unit)), "()");
     }
 }
+
+#[cfg(test)]
+mod deep_resolve_link_carrier_tests {
+    //! `resolve_type_deep_value` over one chain `S ↦ U ↦ Buf`, the link `S ↦ U` on each carrier
+    //! a variable rides, read from each carrier `S` itself rides, at the top and as a child.
+    //!
+    //! ── WHICH ROWS FAIL WHEN A PART IS BACKED OUT (measured 2026-11-11) ──────
+    //!
+    //! 1. THE TOP-LEVEL ARM (`walk_var_chain` replaced by the two arms as they were: an occurrence
+    //!    variable at the top left alone, a `Value::Var` walked one binding at a time): 3 FAIL —
+    //!    [`a_link_is_followed_to_the_binding_on_every_carrier`],
+    //!    [`a_child_linked_to_a_type_that_holds_a_value_reads_that_type`], and
+    //!    [`a_cycle_of_links_ends_at_one_of_its_variables`], which overflows the stack.
+    //! 2. THE CHILD ARM (a bound variable child read as the term its binding denotes, then walked
+    //!    as a term): 1 FAILS, [`a_child_linked_to_a_type_that_holds_a_value_reads_that_type`].
+    //! 3. THE SPLICE'S OPEN END (held as an interned `Term::Var`): 1 FAILS,
+    //!    [`an_open_chain_end_off_the_term_carrier_interns_no_variable`].
+    //! 4. THE EXPANSION GUARD (`DeepWalk::expanding`, a variable met again while its binding is
+    //!    walked): [`a_binding_that_holds_its_own_variable_is_walked_once`] overflows the stack, and
+    //!    so do `wi_rdns4_nested_callback_row_test::a_cyclic_binding_the_arguments_leave_is_walked_once`
+    //!    and two `d-mutual-callbacks` programs that run with it (`first=x,second=list-y,passed=let`,
+    //!    `first=list-x,second=list-y,passed=let`): the child arm follows a binding off the term
+    //!    carrier, which the term walk never entered.
+    //!
+    //! [`a_link_off_the_term_carrier_interns_no_variable`] passes under parts 2 and 3; under part 1
+    //! the cycle row aborts the binary before its verdict is seen. Over the whole workspace with
+    //! all three backed out, every integration binary passes: no program reaches these readers on
+    //! these carriers today, and these rows are their witnesses.
+    use super::super::{
+        make_arrow_value, resolve_type_deep_value, value_vars_all_walk_local,
+        views_structurally_equal,
+    };
+    use crate::eval::value::Value;
+    use crate::kb::subst::Substitution;
+    use crate::kb::term::{Term, TermId, Var, VarId};
+    use crate::kb::node_occurrence::{TypeChild, TypeNode};
+    use crate::kb::KnowledgeBase;
+    use crate::span::{SourceId, SourceSpan};
+    use smallvec::SmallVec;
+
+    #[derive(Clone, Copy, Debug)]
+    enum On {
+        Term,
+        Var,
+        Node,
+    }
+    const ALL: [On; 3] = [On::Term, On::Var, On::Node];
+
+    fn span() -> SourceSpan {
+        SourceSpan::new(SourceId::from_raw(0), 0, 0)
+    }
+
+    fn carried(kb: &mut KnowledgeBase, v: VarId, on: On) -> Value {
+        match on {
+            On::Term => Value::term(kb.alloc(Term::Var(Var::Global(v)))),
+            On::Var => Value::Var(Var::Global(v)),
+            On::Node => Value::Node(kb.make_type_var_occ(Var::Global(v), span(), None)),
+        }
+    }
+
+    fn chain(kb: &mut KnowledgeBase, link: On) -> (VarId, TermId, Substitution) {
+        let s = kb.intern("S");
+        let s = kb.fresh_var(s);
+        let u = kb.intern("U");
+        let u = kb.fresh_var(u);
+        let buf = kb.intern("Buf");
+        let buf = kb.alloc(Term::Ref(buf));
+        let mut subst = Substitution::new();
+        let l = carried(kb, u, link);
+        subst.bind_value(kb, s, l);
+        subst.bind_term(kb, u, buf);
+        (s, buf, subst)
+    }
+
+    #[test]
+    fn a_link_is_followed_to_the_binding_on_every_carrier() {
+        let mut failed = Vec::new();
+        for link in ALL {
+            for start in ALL {
+                let mut kb = KnowledgeBase::new();
+                let (s, buf, subst) = chain(&mut kb, link);
+                let at = carried(&mut kb, s, start);
+                let read = resolve_type_deep_value(&mut kb, &subst, &at);
+                if !views_structurally_equal(&kb, &read, &Value::term(buf)) {
+                    failed.push(format!("link {link:?}, start {start:?}: {read:?}"));
+                }
+                // As a child: `F(t: S)` on the term carrier, `(S) -> S` on the occurrence one.
+                let functor = kb.intern("F");
+                let t = kb.intern("t");
+                if let Value::Term { id, .. } = carried(&mut kb, s, On::Term) {
+                    let app = kb.alloc(Term::Fn {
+                        functor,
+                        pos_args: SmallVec::new(),
+                        named_args: SmallVec::from_elem((t, id), 1),
+                    });
+                    let want = kb.alloc(Term::Fn {
+                        functor,
+                        pos_args: SmallVec::new(),
+                        named_args: SmallVec::from_elem((t, buf), 1),
+                    });
+                    let read = resolve_type_deep_value(&mut kb, &subst, &Value::term(app));
+                    if !views_structurally_equal(&kb, &read, &Value::term(want)) {
+                        failed.push(format!("link {link:?}, in a term: {read:?}"));
+                    }
+                }
+                // `(S) -> S` reads `(Buf) -> Buf`: both children `Buf`, and no variable left
+                // anywhere in it (`u32::MAX` admits none).
+                let arrow = make_arrow_value(&mut kb, &at, &at, &[], &[], span(), None);
+                let read = resolve_type_deep_value(&mut kb, &subst, &arrow);
+                let children_buf = match &read {
+                    Value::Node(occ) => matches!(
+                        occ.as_type(),
+                        Some(TypeNode::Arrow {
+                            param: TypeChild::Interned(p),
+                            result: TypeChild::Interned(r),
+                            ..
+                        }) if *p == buf && *r == buf
+                    ),
+                    _ => false,
+                };
+                if !children_buf || !value_vars_all_walk_local(&kb, &read, u32::MAX) {
+                    failed.push(format!("link {link:?}, start {start:?}, in an arrow: {read:?}"));
+                }
+            }
+        }
+        assert!(failed.is_empty(), "{}", failed.join("\n"));
+    }
+
+    /// A variable CHILD read through the same chain, to a type that holds a value and so rides
+    /// the occurrence carrier: `(S) -> S`, `S ↦ U`, `U ↦ Buf[N = 3]`. The child arm read a bound
+    /// child as the term its binding denotes and walked that term, which stops at a binding off
+    /// the term carrier: the link `S ↦ U` on the occurrence or value carrier read `U`.
+    #[test]
+    fn a_child_linked_to_a_type_that_holds_a_value_reads_that_type() {
+        use crate::kb::node_occurrence::{Expr, NodeOccurrence};
+        use crate::kb::term::Literal;
+        let mut failed = Vec::new();
+        for link in ALL {
+            let mut kb = KnowledgeBase::new();
+            let (s, buf, mut subst) = chain(&mut kb, link);
+            let u = kb
+                .value_global_var(subst.resolve_as_value(s).expect("bound"))
+                .expect("a link");
+            let three = NodeOccurrence::new_expr(Expr::Const(Literal::Int(3)), span(), None);
+            let denoted = kb.make_denoted_occ(three, span(), None);
+            let n = kb.intern("N");
+            let holding = kb.make_parameterized_occ(
+                TypeChild::Interned(buf),
+                vec![(n, TypeChild::Node(denoted))],
+                span(),
+                None,
+            );
+            subst.bindings.insert(u, Value::Node(std::rc::Rc::clone(&holding)));
+            let at = carried(&mut kb, s, On::Node);
+            let arrow = make_arrow_value(&mut kb, &at, &at, &[], &[], span(), None);
+            let read = resolve_type_deep_value(&mut kb, &subst, &arrow);
+            let param = match &read {
+                Value::Node(occ) => match occ.as_type() {
+                    Some(TypeNode::Arrow { param, .. }) => Some(param.clone()),
+                    _ => None,
+                },
+                _ => None,
+            };
+            // `Buf[N = 3]`: the parameterized type over `Buf`, with its `N`.
+            let reads_holding = match &param {
+                Some(TypeChild::Node(p)) => matches!(
+                    p.as_type(),
+                    Some(TypeNode::Parameterized { base: TypeChild::Interned(b), bindings })
+                        if *b == buf && bindings.iter().any(|(k, _)| *k == n)
+                ),
+                _ => false,
+            };
+            if !reads_holding {
+                failed.push(format!("link {link:?}: param {param:?}"));
+            }
+        }
+        assert!(failed.is_empty(), "{}", failed.join("\n"));
+    }
+
+    /// A link onto an occurrence variable, or a `Value::Var` one, is read without interning a
+    /// variable: the read went through a `Term::Var` of the chain's end, one per read.
+    #[test]
+    fn a_link_off_the_term_carrier_interns_no_variable() {
+        for link in [On::Var, On::Node] {
+            for start in ALL {
+                let mut kb = KnowledgeBase::new();
+                let (s, _, subst) = chain(&mut kb, link);
+                let at = carried(&mut kb, s, start);
+                let interned = kb.interned_global_var_count();
+                resolve_type_deep_value(&mut kb, &subst, &at);
+                assert_eq!(
+                    kb.interned_global_var_count(),
+                    interned,
+                    "link {link:?}, start {start:?}: the read interned a variable"
+                );
+            }
+        }
+    }
+
+    /// A chain that ends at an UNBOUND variable off the term carrier — `S ↦ U`, `U` open — read
+    /// from the term `S` answers `U` and interns nothing: the splice held the end as a
+    /// `Term::Var`, a per-site variable entering the hash-consed store. Read from the term spine
+    /// `F(t: S)` it answers `F(t: U)`, which as a term interns `U`, as any term over it does.
+    #[test]
+    fn an_open_chain_end_off_the_term_carrier_interns_no_variable() {
+        for link in [On::Var, On::Node] {
+            let mut kb = KnowledgeBase::new();
+            let s = kb.intern("S");
+            let s = kb.fresh_var(s);
+            let u = kb.intern("U");
+            let u = kb.fresh_var(u);
+            let mut subst = Substitution::new();
+            let l = carried(&mut kb, u, link);
+            subst.bind_value(&kb, s, l);
+            let at = carried(&mut kb, s, On::Term);
+            let Value::Term { id: ts, .. } = at else { unreachable!() };
+            let functor = kb.intern("F");
+            let t = kb.intern("t");
+            let app = kb.alloc(Term::Fn {
+                functor,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::from_elem((t, ts), 1),
+            });
+            let interned = kb.interned_global_var_count();
+            let read = resolve_type_deep_value(&mut kb, &subst, &at);
+            assert_eq!(kb.value_global_var(&read), Some(u), "link {link:?}: {read:?}");
+            assert_eq!(
+                kb.interned_global_var_count(),
+                interned,
+                "link {link:?}: the read interned the chain's end"
+            );
+            let tu = kb.alloc(Term::Var(Var::Global(u)));
+            let want = kb.alloc(Term::Fn {
+                functor,
+                pos_args: SmallVec::new(),
+                named_args: SmallVec::from_elem((t, tu), 1),
+            });
+            let read = resolve_type_deep_value(&mut kb, &subst, &Value::term(app));
+            assert!(
+                views_structurally_equal(&kb, &read, &Value::term(want)),
+                "link {link:?}, in a term: {read:?}"
+            );
+        }
+    }
+
+    /// A binding that holds its own variable — `S ↦ F[T = S]` on the occurrence carrier — is
+    /// walked once: the inner `S` answers itself, and the walk does not overflow the stack.
+    #[test]
+    fn a_binding_that_holds_its_own_variable_is_walked_once() {
+        let mut kb = KnowledgeBase::new();
+        let s = kb.intern("S");
+        let s = kb.fresh_var(s);
+        let f = kb.intern("F");
+        let f = kb.alloc(Term::Ref(f));
+        let t = kb.intern("T");
+        let inner = kb.make_type_var_occ(Var::Global(s), span(), None);
+        let holds = kb.make_parameterized_occ(
+            TypeChild::Interned(f),
+            vec![(t, TypeChild::Node(inner))],
+            span(),
+            None,
+        );
+        let mut subst = Substitution::new();
+        subst.bind_value(&kb, s, Value::Node(holds));
+        let at = carried(&mut kb, s, On::Node);
+        let read = resolve_type_deep_value(&mut kb, &subst, &at);
+        let inner_is_s = match &read {
+            Value::Node(occ) => match occ.as_type() {
+                Some(TypeNode::Parameterized { bindings, .. }) => matches!(
+                    bindings.first().map(|(_, c)| c),
+                    Some(TypeChild::Node(c))
+                        if matches!(c.as_type(), Some(TypeNode::Var(Var::Global(v))) if *v == s)
+                ),
+                _ => false,
+            },
+            _ => false,
+        };
+        assert!(inner_is_s, "`F[T = S]`, the inner `S` left as itself: {read:?}");
+    }
+
+    /// `S ↦ U ↦ S` ends at a variable of the cycle, on every pair of carriers, and does not
+    /// overflow the stack.
+    #[test]
+    fn a_cycle_of_links_ends_at_one_of_its_variables() {
+        for first in ALL {
+            for second in ALL {
+                let mut kb = KnowledgeBase::new();
+                let s = kb.intern("S");
+                let s = kb.fresh_var(s);
+                let u = kb.intern("U");
+                let u = kb.fresh_var(u);
+                let mut subst = Substitution::new();
+                let to_u = carried(&mut kb, u, first);
+                let to_s = carried(&mut kb, s, second);
+                subst.bind_value(&kb, s, to_u);
+                subst.bind_value(&kb, u, to_s);
+                let at = carried(&mut kb, s, On::Var);
+                let read = resolve_type_deep_value(&mut kb, &subst, &at);
+                let end = kb.value_global_var(&read);
+                assert!(
+                    end == Some(s) || end == Some(u),
+                    "links {first:?}, {second:?}: {read:?}"
+                );
+            }
+        }
+    }
+}
