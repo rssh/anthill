@@ -3,9 +3,9 @@
 - id: WI-20260827-XBHX3-a-host-call-nested-inside-the
 - created: 2026-08-27T05:51:57Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-08-27T12:42:45Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-11-11T01:42:27Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -164,4 +164,8 @@ So both open items of the earlier feedback are live on today's tree: w's soundne
 THE CAUSE (068's problem section): a rule-body operand is untyped, so each consumer evaluates calls to a different depth — the unfold none at all, hence this gate. 068 evaluates every rule-body call by value (functional fragments), which makes the gate unnecessary: OTHER's ground calls evaluate (bodyNest), its unground ones SUSPEND (app, no split), and w compares a value.
 
 THE NARROW FIX, designed and NOT implemented, in case 068 stalls: in unfold_eq_operand replace the gate by (A) decline when OTHER contains ANY call (bodied, host, builtin — the operand_is_unevaluated_call test at every depth, as a widened fold_gate) AND is not deep-ground — termination; (B) OR 'OTHER contains a call' into both of P1TPE's OTHER halves (override and Float) — soundness for w. Predicted: bodyNest (1,1), w (1,0), app (1,0), P1TPE rows and bodiedFirst unchanged. Its cost: (A) is coarse — a call anywhere plus a variable anywhere in OTHER declines.
+
+### 2026-11-11T01:42:19Z — feedback — claude
+
+DELIVERED BY WI-20261013-2HX69 (67aa9e45), decided with the user 2026-11-11. The gate is gone, with `value_has_bodied_op_call`, `HAS_BODIED_OP_CALL` and `HeadCheck::BodiedOpCall`: `unfold_eq_operand` evaluates OTHER first (068 §1.1) and declines the split when any call in it is stuck, so P1TPE's decline (`other_can_meet_an_override`) reads a value, and a call hiding a carrier, bodied or host, can no longer slip past it. The rows, in wi_2hx69_unfold_threads_dictionaries_test: `an_other_operand_holding_a_call_that_runs_is_read_as_its_value` (`bodyNest` and the nested host call `hostNest` (1, 1) `?c = red`, (1, 0) with the gate restored); `an_override_behind_a_call_is_never_refuted` (`w` (1, 0), `wg` (1, 1), the NAF polarity `w0Naf` (1, 0); with OTHER read unevaluated `w` is (0, 0) and `w0Naf` (1, 1)); `an_other_operand_holding_a_call_that_waits_declines_the_split` (`append(?a, [3]) = append(?b, [4])` one suspension, 24 rows with OTHER read unevaluated). P1TPE's masked row is now `an_override_behind_a_call_is_read_through_its_value`; the stale `push_choice_test::wi580_op_call_other_operand_declines` is `wi580_op_call_other_operand_that_waits_declines`, pinning one suspension. The `bodiedFirst` control, `wi_vpewk_host_op_operand_test::an_eq_between_a_host_call_and_a_bodied_call_does_not_depend_on_operand_order`, is unchanged: 1 definite. Full workspace 11,866 passed and 0 failed.
 
