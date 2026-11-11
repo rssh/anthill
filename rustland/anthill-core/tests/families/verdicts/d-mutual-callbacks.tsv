@@ -5,6 +5,6 @@ first=x,second=y,passed=let	refused TypeMismatch
 first=x,second=list-y,passed=lambda	refused TypeMismatch
 first=x,second=list-y,passed=let	runs 1
 first=list-x,second=y,passed=lambda	refused TypeMismatch
-first=list-x,second=y,passed=let	runs 1
+first=list-x,second=y,passed=let	refused TypeMismatch
 first=list-x,second=list-y,passed=lambda	DIED stack overflow
 first=list-x,second=list-y,passed=let	runs 1

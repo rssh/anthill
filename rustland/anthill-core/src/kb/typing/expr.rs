@@ -679,7 +679,8 @@ pub(super) fn type_check_node_gated_at(
     // SCOPED BY A VARIABLE WATERMARK, and the first cut's "no scoping rule needed" was
     // MEASURED WRONG — see [`report_call_solutions`] for the three populations that
     // falsified it. `var_watermark` is read once here; a binding is reported only when its
-    // variable and every variable inside its value were minted DURING this walk. The
+    // variable and every variable inside its value, read through the call's σ where it names
+    // one older than the walk, were minted DURING this walk. The
     // distinction the per-call σ exists to keep is thereby preserved rather than assumed.
     //
     // THIS IS THE GENERAL CHANNEL, CONSUMED BY ONE FRAME SO FAR: `LambdaBody` reads it to

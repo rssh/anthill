@@ -611,6 +611,14 @@ pub(super) fn denoted_name(kb: &KnowledgeBase, v: &Value) -> Option<String> {
 /// not BIND a var on the actual side — a checking relation that bound would need no
 /// separate hint, and no second correspondence to keep in step with the first. WI-800
 /// removes the duplicate correspondence, not the duplicate pass.
+///
+/// WI-20261105-MHF0B: AN EXPECTED COMPONENT THAT NAMES A TYPE PARAMETER'S OWN VARIABLE IS LEFT
+/// ALONE. A literal handed as an argument is expected at the callee's parameter type, whose
+/// variables are the callee's (one variable per parameter at every call site); unified with it
+/// here, in a σ nothing reads afterwards, a component typed at a lambda's binder took the callee's
+/// variable in its place, and the call's own unify never met the binder:
+/// `lambda x -> both((a: x, b: 10))`, `both[T](p: (a: T, b: T))`, kept `x` untyped and `g("a")`
+/// loaded. The call's unify relates the component to the parameter in the call's σ.
 pub(super) fn thread_expected_tuple_fields(
     kb: &mut KnowledgeBase,
     subst: &mut Substitution,
@@ -621,6 +629,9 @@ pub(super) fn thread_expected_tuple_fields(
         return;
     };
     for (&slot, (_, exp_ty)) in slots.iter().zip(exp_fields.iter()) {
+        if names_a_type_parameter_variable(kb, exp_ty) {
+            continue;
+        }
         unify_types(kb, subst, &fields[slot].1, exp_ty);
         let walked = walk_type_deep_value(kb, subst, &fields[slot].1);
         fields[slot].1 = walked;

@@ -6788,7 +6788,7 @@ mod part_c_bare_var_collection_test {
 
         let mut out = Substitution::new();
         out.bind_value(&kb, c, tuple_of(vec![Value::Var(Var::Global(a))]));
-        report_call_solutions(&kb, Some(&mut out), &Substitution::new(), &subst, watermark);
+        report_call_solutions(&mut kb, Some(&mut out), &Substitution::new(), &subst, watermark);
         // WHICH one lands is asserted, not just HOW MANY. A sequential decision makes the
         // ITERATION ORDER part of the answer, and `subst` is an `imbl` map whose HAMT order
         // varies with a per-process seed — so `landed == 1` alone would pass while the
@@ -6808,7 +6808,7 @@ mod part_c_bare_var_collection_test {
         // the row above measures the cycle and not a filter that refuses batches of two.
         let mut clean = Substitution::new();
         report_call_solutions(
-            &kb,
+            &mut kb,
             Some(&mut clean),
             &Substitution::new(),
             &subst,
@@ -6832,7 +6832,7 @@ mod part_c_bare_var_collection_test {
     /// included, and first-wins then makes them permanent for the walk. `before` is the σ as
     /// it stood before THIS unify, and a variable already bound there is skipped.
     ///
-    /// BACK-OUT: drop the `before.resolve_as_value(v).is_some()` guard and this row fails
+    /// BACK-OUT: drop the `before.resolve_as_value(..).is_none()` filter and this row fails
     /// with the stale binding reported. The CONTROL below offers the same σ with an EMPTY
     /// `before` and requires it to land, so the row measures the provenance filter and not a
     /// gate that refuses everything. /code-review found it, on the pass AFTER the doc claimed
@@ -6852,7 +6852,7 @@ mod part_c_bare_var_collection_test {
         let subst = leftover.clone();
 
         let mut out = Substitution::new();
-        report_call_solutions(&kb, Some(&mut out), &leftover, &subst, watermark);
+        report_call_solutions(&mut kb, Some(&mut out), &leftover, &subst, watermark);
         assert!(
             out.resolve_as_value(p).is_none(),
             "`?p` was bound by the FAILED unify before this argument ran; reporting it here \
@@ -6862,7 +6862,7 @@ mod part_c_bare_var_collection_test {
         // CONTROL: the same σ with nothing bound beforehand IS this argument's to report.
         let mut fresh = Substitution::new();
         report_call_solutions(
-            &kb,
+            &mut kb,
             Some(&mut fresh),
             &Substitution::new(),
             &subst,

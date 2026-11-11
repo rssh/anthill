@@ -227,6 +227,13 @@ impl Substitution {
         self.bindings.insert(var, val);
     }
 
+    /// Take `var`'s binding out of this layer and answer it, for a reader that moves the root of
+    /// a class of linked variables: `?a := ?T` taken out and `?T := ?a` bound in its place leaves
+    /// the class as it was. A binding a parent layer holds is not this layer's, and stays.
+    pub fn take_own_binding(&mut self, var: VarId) -> Option<Value> {
+        self.bindings.remove(&var)
+    }
+
     /// Legacy alias for `bind_term`. New code should prefer the explicit
     /// name to make the fast-path vs. value-path choice visible.
     #[inline]

@@ -151,9 +151,18 @@ fn a_let_or_a_match_over_an_unannotated_binder_is_held_to_its_use() {
     refused(
         "wi_34j8z.let",
         "",
-        &format!("{LET}\n    g((\"x\", true))"),
+        &format!("{LET}\n    g((1, true))"),
         &["g.b (op-arg)", "expected Int64, got Bool"],
         "a let over the binder, given what its body does not take",
+    );
+    // `a * 10` types `a` too (WI-20261105-MHF0B): before, `b` alone was held, and this refusal
+    // named `g.b`. Fails with that ticket's turn-round backed out, as `matcha` below does.
+    refused(
+        "wi_34j8z.leta",
+        "",
+        &format!("{LET}\n    g((\"x\", true))"),
+        &["g.a (op-arg)", "expected Int64, got String"],
+        "a let over the binder, its first component what `a * 10` does not take",
     );
     assert_eq!(runs("wi_34j8z.let2", "", &format!("{LET}\n    g((1, 2))")), Ok(12));
     // [loads, raises match_failed]
@@ -168,9 +177,16 @@ fn a_let_or_a_match_over_an_unannotated_binder_is_held_to_its_use() {
     refused(
         "wi_34j8z.match",
         "",
-        &format!("{MATCH}\n    g((\"x\", true))"),
+        &format!("{MATCH}\n    g((1, true))"),
         &["g.b (op-arg)", "expected Int64, got Bool"],
         "a match over the binder, given what its arm does not take",
+    );
+    refused(
+        "wi_34j8z.matcha",
+        "",
+        &format!("{MATCH}\n    g((\"x\", true))"),
+        &["g.a (op-arg)", "expected Int64, got String"],
+        "a match over the binder, its first component what `a * 10` does not take",
     );
     assert_eq!(runs("wi_34j8z.match2", "", &format!("{MATCH}\n    g((1, 2))")), Ok(12));
 }

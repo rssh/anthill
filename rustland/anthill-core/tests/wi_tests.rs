@@ -2457,3 +2457,5 @@ mod wi_skwth_a_pinned_call_takes_the_overrides_labels_test;
 mod wi_c6gk8_known_type_call_test;
 #[path = "include/wi_p07e8_struct_neq_test.rs"]
 mod wi_p07e8_struct_neq_test;
+#[path = "include/wi_mhf0b_binder_typed_through_callee_var_test.rs"]
+mod wi_mhf0b_binder_typed_through_callee_var_test;

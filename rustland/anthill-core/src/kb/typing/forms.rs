@@ -1726,10 +1726,68 @@ pub(super) fn report_walk_solutions(
     if !unified {
         return Ok(());
     }
+    root_callee_links_at_walk_vars(kb, before, subst, w.watermark);
     w.close_under_shapes(kb, before, subst, site)?;
     w.observe_deferred_carriers(kb, before, subst);
     report_call_solutions(kb, Some(&mut w.solved), before, subst, w.watermark);
     Ok(())
+}
+
+/// WI-20261105-MHF0B — where this argument's unify linked a walk variable to the callee's own
+/// type variable, the link is turned round: `?x := ?T` becomes `?T := ?x`, so the class is rooted
+/// at the walk's variable. The class is the same; what changes is the variable a later reading
+/// of the call's σ lands on. `x * 10` binds `?x := ?T` at `x`; with `?T` the root, `10` then binds
+/// `?T := Int64` and `?x` stays a link to a variable the walk may not keep (the callee's `T` is one
+/// variable at every call site, [`report_call_solutions`]' first population), so the lambda's
+/// arrow kept `?x` and `g("a")` loaded. With `?x` the root, `10` binds `?x := Int64`, which the
+/// walk keeps. And a call whose result is the callee's variable — `a + b` over two binders —
+/// answers `?a`, where it answered `?T` and each use of the lambda bound `?T` again in its own σ.
+///
+/// Only an unbound canonical type parameter's variable is turned round
+/// ([`KnowledgeBase::is_canonical_type_param_var`]): any other variable older than the walk
+/// — a rule variable's type, a fact pattern's — means the same thing outside the call, and a link
+/// to it stays as unify made it. Only a link this argument made: one `before` holds was an earlier
+/// argument's.
+fn root_callee_links_at_walk_vars(
+    kb: &mut KnowledgeBase,
+    before: &Substitution,
+    subst: &mut Substitution,
+    watermark: u32,
+) {
+    let mut linked: Vec<VarId> = subst
+        .iter()
+        .filter(|(v, val)| {
+            v.raw() >= watermark
+                && kb.value_global_var(val).is_some()
+                && before.resolve_as_value(**v).is_none()
+        })
+        .map(|(v, _)| *v)
+        .collect();
+    if linked.is_empty() {
+        return;
+    }
+    // Mint order, as [`report_call_solutions`] reads its candidates: the first variable of a class
+    // becomes its root, and the next one's chain then ends at it.
+    linked.sort_by_key(|v| v.raw());
+    for v in linked {
+        let Some(root) = sigma_chain_end(kb, subst, v).and_then(|end| kb.value_global_var(end))
+        else {
+            continue;
+        };
+        // A chain that came back to a variable it passed ends at a bound one.
+        if root.raw() >= watermark
+            || !kb.is_canonical_type_param_var(root)
+            || subst.resolve_as_value(root).is_some()
+        {
+            continue;
+        }
+        subst
+            .take_own_binding(v)
+            .expect("a binding read off this layer's own iterator");
+        // A bare `Value::Var`: it interns nothing ([`KnowledgeBase::type_var_child`]), and a
+        // reader of σ follows it on to what `v` is bound to.
+        subst.bind_value(kb, root, Value::Var(Var::Global(v)));
+    }
 }
 
 /// WI-20260904-34J8Z — the shape half of [`report_walk_solutions`] alone, for the one
@@ -1841,8 +1899,15 @@ pub(super) struct ShapeSite {
 /// above unnecessary rather than merely correct — `check_apply_iter` already returns
 /// `env: env.clone()` at fifteen of its return points, so the channel exists and is inert
 /// (user, 2026-09-05; WI-502's `σ → (σ, residual C)` shape).
+///
+/// WI-20261105-MHF0B: A VALUE IS READ THROUGH THE CALL'S σ where it is not the walk's as it stands.
+/// One unify can bind `?x := ?T` and `?T := Int64` both — an argument `(a: x, b: 10)` at a
+/// parameter `(a: T, b: T)` — and the link was dropped with the callee's variable in it, where the type it
+/// stands for is the walk's. Read through σ it is `Int64`, and kept; a reading that still names a
+/// variable older than the walk is dropped as before. A link to the callee's variable that a LATER
+/// argument decides is turned round before it is read ([`root_callee_links_at_walk_vars`]).
 pub(super) fn report_call_solutions(
-    kb: &KnowledgeBase,
+    kb: &mut KnowledgeBase,
     solved: Option<&mut Substitution>,
     before: &Substitution,
     subst: &Substitution,
@@ -1857,13 +1922,41 @@ pub(super) fn report_call_solutions(
     // checked and `?a` is unbound when `?b` is checked — and the pair is cyclic once both
     // land. That is the same hazard the transitive check was added for, one level up, with
     // the same consequence: a stack overflow in `resolve_type_deep_value`, not a wrong type.
-    // Only the WALK-LOCAL and watermark filters can be batched, because neither reads `out`.
-    // /code-review found it.
-    let mut candidates: Vec<(VarId, Value)> = subst
+    // Only the filters that do not read `out` can be batched: the watermark, `before` below, and
+    // the walk-local reading. /code-review found it.
+    //
+    // ALREADY BOUND BEFORE THIS ARGUMENT'S UNIFY ⇒ NOT THIS ARGUMENT'S TO REPORT, and
+    // this is the half the first two cuts left open. `subst` is ACCUMULATED across the
+    // argument loop, so `if !unified { return }` suppresses only the FAILING argument's
+    // report: the next argument that unifies cleanly hands the whole σ over, leftovers
+    // and all. Concretely, `take(f: (x: Int64) -> String, n: Int64)` applied as
+    // `take(lambda v -> v, 3)` binds `?p := Int64` descending into the param slot, fails
+    // on the result slot, and reports nothing — then `3` unifies and carries `?p := Int64`
+    // into `solved`, where first-wins makes it permanent for the walk. The filter costs
+    // NOTHING on the good path: a variable bound by an earlier SUCCESSFUL argument was
+    // already offered at that argument's own site, and first-wins means re-offering it
+    // is a no-op. A link to an older variable that a later argument decides does improve
+    // in between, read through σ, and is still not reported: a link to a callee's variable
+    // was turned round before it could be one ([`root_callee_links_at_walk_vars`]), and a
+    // link to any other older variable is not the walk's to keep. Asked before a value is
+    // read through σ, so nothing is resolved only to be skipped. /code-review found it, on
+    // the pass after the doc claimed both halves were gated.
+    let bound: Vec<(VarId, Value)> = subst
         .iter()
-        .filter(|(v, val)| v.raw() >= watermark && value_vars_all_walk_local(kb, val, watermark))
+        .filter(|(v, _)| v.raw() >= watermark && before.resolve_as_value(**v).is_none())
         .map(|(v, val)| (*v, val.clone()))
         .collect();
+    let mut candidates: Vec<(VarId, Value)> = Vec::with_capacity(bound.len());
+    for (v, val) in bound {
+        if value_vars_all_walk_local(kb, &val, watermark) {
+            candidates.push((v, val));
+            continue;
+        }
+        let read = resolve_type_deep_value(kb, subst, &val);
+        if value_vars_all_walk_local(kb, &read, watermark) {
+            candidates.push((v, read));
+        }
+    }
     // ORDERED, BECAUSE A SEQUENTIAL DECISION MAKES THE ORDER PART OF THE ANSWER. `subst` is
     // an `imbl` HashMap over `RandomState` (kb/subst.rs) — HAMT iteration order varies with
     // a per-process seed. The batch filter this replaced could not see that, every candidate
@@ -1874,22 +1967,6 @@ pub(super) fn report_call_solutions(
     // applies across calls. /code-review found it.
     candidates.sort_by_key(|(v, _)| v.raw());
     for (v, val) in candidates {
-        // ALREADY BOUND BEFORE THIS ARGUMENT'S UNIFY ⇒ NOT THIS ARGUMENT'S TO REPORT, and
-        // this is the half the first two cuts left open. `subst` is ACCUMULATED across the
-        // argument loop, so `if !unified { return }` suppresses only the FAILING argument's
-        // report: the next argument that unifies cleanly hands the whole σ over, leftovers
-        // and all. Concretely, `take(f: (x: Int64) -> String, n: Int64)` applied as
-        // `take(lambda v -> v, 3)` binds `?p := Int64` descending into the param slot, fails
-        // on the result slot, and reports nothing — then `3` unifies and carries `?p := Int64`
-        // into `solved`, where first-wins makes it permanent for the walk. The filter costs
-        // NOTHING on the good path: a variable bound by an earlier SUCCESSFUL argument was
-        // already offered at that argument's own site, and first-wins means re-offering it
-        // is a no-op. Its candidacy cannot have improved in between either — a bound var
-        // keeps its value, and the walk-local test reads only the value and the watermark.
-        // /code-review found it, on the pass after the doc claimed both halves were gated.
-        if before.resolve_as_value(v).is_some() {
-            continue;
-        }
         if out.resolve_as_value(v).is_some() {
             continue;
         }
@@ -1947,6 +2024,16 @@ fn collect_value_type_and_bare_vars(
         }
         other => crate::kb::node_occurrence::collect_value_type(kb, other, vars, seen),
     }
+}
+
+/// WI-20261105-MHF0B — does `ty` name a declared type parameter's own variable, at any depth
+/// ([`KnowledgeBase::is_canonical_type_param_var`])? The variable is one at every call site, so a
+/// type naming it is a callee's parameter type, read before a call's σ instantiates it.
+pub(super) fn names_a_type_parameter_variable(kb: &KnowledgeBase, ty: &Value) -> bool {
+    let mut vars: Vec<VarId> = Vec::new();
+    let mut seen = HashSet::new();
+    collect_value_type_and_bare_vars(kb, ty, &mut vars, &mut seen);
+    vars.iter().any(|v| kb.is_canonical_type_param_var(*v))
 }
 
 /// WI-20260904-50B2K part (c) — can `var` be reached FROM `v`, following the bindings
