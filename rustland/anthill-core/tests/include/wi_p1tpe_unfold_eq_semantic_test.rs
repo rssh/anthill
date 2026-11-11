@@ -25,15 +25,12 @@
 //! comparing it, and a residual-only key took both to a suspension. `unify` can only
 //! wrongly refute where BOTH sides are concrete.
 //!
-//! WHAT THIS DOES NOT REACH, said here because WI-20260827-XBHX3 depends on it: an OTHER
-//! that is an UN-REDUCED CALL reduces to a value neither half can see, so `w` below is
-//! invisible to this decline. It is sound today only because the neighbouring
-//! `value_has_bodied_op_call` gate declines it first, for a reason that has nothing to do
-//! with equality — and it goes (0, 0) the moment that gate is neutralized. XBHX3 must add
-//! an "OTHER still carries an unevaluated computation" test to this decline when it
-//! removes that gate; `the_masked_row_still_rests_on_its_neighbour` is the row that
-//! measures it. A disjunct on that same predicate was written HERE and removed: the gate
-//! shadows it completely, so it was unreachable and untestable.
+//! AN OVERRIDE BEHIND A CALL IN OTHER (`w` below) is reached since WI-20261013-2HX69: the
+//! unfold reads OTHER as its value (068 §1.1) before this decline asks it, so `C.mk(red())`
+//! is the `ae(k: 1, tag: 9)` it reaches `AE` through. Before, OTHER was read unevaluated,
+//! `AE` occurred nowhere in it, and a neighbouring gate declining every OTHER that held a
+//! bodied call is what kept `w` from a refutation — at the cost of `bodyNest`'s answer.
+//! `an_override_behind_a_call_is_read_through_its_value` is the row.
 //!
 //! THE TWO KEYS THAT WERE PROTOTYPED FIRST AND EACH LEFT THE DEFECT LIVE:
 //!   * OTHER's structure — `C.mk(red())`'s head is `mk`, and `AE` occurs nowhere in it,
@@ -60,9 +57,11 @@
 //! made its reduced value structurally EQUAL to the matching arm's, and the `w` row was
 //! then green in every state.
 //!
-//! THE FOUR STATES, MEASURED. This site's decline is the `value_reaches_eq_override` on
-//! `result_occ`; its neighbour is `value_has_bodied_op_call`, which WI-20260827-XBHX3
-//! removes.
+//! THE FOUR STATES, MEASURED when this decline landed. This site's decline is the
+//! `value_reaches_eq_override` on `result_occ`; its neighbour was the gate on an OTHER
+//! holding a bodied call, which WI-20261013-2HX69 replaced by reading OTHER as its value. In
+//! that state `w` is (1, 0) by this decline and `bodyNest` (1, 1) `?c = red`; every other row
+//! is as in the "neighbour OFF, this ON" column.
 //!
 //! ```text
 //!                 neighbour ON     neighbour ON    neighbour OFF    neighbour OFF
@@ -90,8 +89,8 @@
 //! ```
 //!
 //! Read the two right-hand columns together: `bodyNest` is the answer XBHX3 measured the
-//! neighbour COSTING and this key does not take it back, while `w` is the row XBHX3 still
-//! owes a clause for.
+//! neighbour COSTING and this key does not take it back, while `w` is the row the neighbour's
+//! replacement had to cover.
 //!
 //! ONE SHAPE THAT LOOKS LIKE THIS DEFECT AND IS NOT, so the next reader does not read it
 //! as a miss of this key: an arm residual that puts a PARAMETER UNDER A CONSTRUCTOR —
@@ -487,37 +486,20 @@ fn a_residual_that_hoists_its_call_still_decides() {
     );
 }
 
-/// THE ROW WI-20260827-XBHX3 IS BLOCKED ON — AND THIS TICKET DOES NOT UNBLOCK IT ON ITS
-/// OWN. Stated as a fact rather than as a hope, because the ticket's plan assumed it would.
-///
-/// `C.pick(?c) = C.mk(red())` is the same unsoundness reached through a REDUCED call.
-/// `C.mk(red())` reduces to `ae(k: 1, tag: 9)`: declared-equal to arm `red`'s
+/// AN OVERRIDE BEHIND A CALL: `C.pick(?c) = C.mk(red())` is the same unsoundness reached
+/// through a call. `C.mk(red())` is `ae(k: 1, tag: 9)`: declared-equal to arm `red`'s
 /// `ae(k: 1, tag: 8)`, structurally different from it and from arm `green`'s too, so both
-/// arms fail structurally. Neither half of this decline can see it: the arm's residual
-/// does reach `AE`, but OTHER is an un-reduced `Expr::Apply` whose head is `mk`, and `AE`
-/// occurs nowhere in it until it reduces — which happens inside `unify_values`, long
-/// after this decision.
+/// arms fail structurally. Read unevaluated, OTHER's head is `mk` and `AE` occurs nowhere in
+/// it, so neither half of this decline could see it; the neighbouring gate that declined
+/// every OTHER holding a bodied call is what kept it from a refutation.
 ///
-/// SO IT IS SOUND TODAY FOR THE NEIGHBOUR'S REASON, NOT FOR THIS ONE.
-/// `unfold_eq_operand` also declines whenever OTHER carries a bodied op-call
-/// (`value_has_bodied_op_call`), and `C.mk(red())` is one. MEASURED with that gate
-/// neutralized — the state XBHX3 will land: `w` is (0, 0), DECIDED FALSE, while `wg`
-/// stays 1 DEFINITE as the witness that `?c = red` exists. THIS IS THE ROW XBHX3 MUST
-/// MEASURE ITS REPLACEMENT WITH.
-///
-/// A DISJUNCT FOR IT WAS WRITTEN HERE AND REMOVED. Adding
-/// `|| value_has_bodied_op_call(&other)` to the decline's OTHER half makes `w` safe on
-/// paper, and /code-review showed the clause is UNREACHABLE: the standalone gate above
-/// declines every value that would satisfy it, proved by an assert that never fired
-/// across the suite. An untestable branch whose first execution is someone else's diff is
-/// worse than an honest gap, so the gap is written down instead.
-///
-/// AND THE ANSWER XBHX3 MEASURED THE NEIGHBOUR COSTING IS NOT COLLATERAL OF THIS KEY:
-/// in that same neutralized state `bodyNest` — `C.bpick(?c) = box(v: C.tag(red()))`, a
-/// `Box` with no custom `Eq` — reaches 1 DEFINITE `?c = red`. Its (1, 0) here is the
-/// neighbour's doing, not this decline's.
+/// SINCE WI-20261013-2HX69 THE UNFOLD READS OTHER AS ITS VALUE (068 §1.1), and the gate is
+/// gone: this decline reads `ae(k: 1, tag: 9)`, reaches `AE` on both sides, and suspends. `w`
+/// is (1, 0) by THIS decline now — backed out, it is (0, 0) — while `wg` stays 1 DEFINITE as
+/// the witness that `?c = red` exists. And `bodyNest` — `C.bpick(?c) = box(v: C.tag(red()))`,
+/// a `Box` with no custom `Eq` — answers `?c = red`, the answer the gate cost.
 #[test]
-fn the_masked_row_still_rests_on_its_neighbour() {
+fn an_override_behind_a_call_is_read_through_its_value() {
     let mut kb = crate::common::load_kb_with(SRC);
     assert_eq!(
         counts(&mut kb, "p1tpe.wg(1)"),
@@ -528,15 +510,12 @@ fn the_masked_row_still_rests_on_its_neighbour() {
     assert_eq!(
         counts(&mut kb, "p1tpe.w(?c)"),
         (1, 0),
-        "a suspension — and green with THIS decline backed out too, because the \
-         neighbouring gate is what declines it. Neutralize that gate and it is (0, 0): \
-         see this test's doc"
+        "a suspension: OTHER read as `ae(k: 1, tag: 9)` reaches `AE`"
     );
     assert_eq!(
-        counts(&mut kb, "p1tpe.bodyNest(?c)"),
-        (1, 0),
-        "the neighbour still declines this one, and THIS decline does not: with the \
-         neighbour neutralized it is (1, 1) `?c = red`, the answer XBHX3 keeps"
+        (counts(&mut kb, "p1tpe.bodyNest(?c)"), definite_names(&mut kb, "p1tpe.bodyNest")),
+        ((1, 1), vec!["red".to_string()]),
+        "OTHER is `box(v: 1)`, which `Box`'s structural equality decides"
     );
 }
 

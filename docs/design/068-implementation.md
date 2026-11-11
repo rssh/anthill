@@ -1615,6 +1615,37 @@ answer.
 Rows: `wi_dey66_per_consumer_reductions_test` (17; each part backed out on its own fails its own
 rows, HEAD fails all but the four controls).
 
+### 6.24 D1c, the unfold threads dictionaries (WI-20261013-2HX69, 2026-11-10)
+
+068 §8 step 4, and WI-20260827-XBHX3's gate.
+
+- **OTHER is read as its value.** `unfold_eq_operand` evaluates its other operand by
+  `evaluate_value` before it splits, and declines where a call is left in it — waiting,
+  unreduced, symbolic — or where it holds an opaque carrier. It replaced the gate that declined
+  every OTHER holding a bodied call. `C.bpick(?c) = box(v: C.tag(red()))` answers `?c = red`;
+  `C.pick(?c) = C.mk(red())` over a custom `Eq` is a suspension, P1TPE's decline now reading
+  `ae(k: 1, tag: 9)` where it read the call `mk(red())`; `append(?a, [3]) = append(?b, [4])` is
+  one suspension (read unevaluated, a split per step until the depth cap, 24 rows).
+- **A hoisted call carries its dictionaries.** `anf_flatten` hoisted each call of an arm as a
+  new node with none of the typer's stamps, so it ran with the dictionary its value selects —
+  wrong where the body selected another, with no `requires` involved: over `pickD(c, x, y) =
+  match c case red() -> Util.sign[A = Int64, WeakOrd = Descending](x, y) …`, `pickD(?c, 1, 5) =
+  4` was refuted and `= -1` answered `red`. The call is now the body's call
+  (`body_specialize::residual_call_source`, through a pass of the unfold's own) with its stamps.
+- **An operation with `requires` is unfolded** (`folded_call_match` declined it). The unfold
+  reads the slots the unfolded call carries for its operation's chain (`unfold_frame`), as the
+  bridge would enter it: a woven call's conditions, the dictionary a dispatch went through
+  (expanded into the member's slots as eval's apply does, `frame_through_dictionary`), the
+  typer's dictionary for the callee and its `op_dicts`. A call through a slot
+  (`DeferToRequirement`) is hoisted as a dispatch woven with that slot's dictionary; a call that
+  hands slots on to its callee is hoisted woven with the callee's slots
+  (`hoisted_call`). A slot the call carries nothing for is derived, as the bridge derives it;
+  one it carries evidence for that cannot be read declines the split. Rows: at literals,
+  cited with a rival, through the operation's own slot, handed on to a callee, through the sort's.
+
+Rows: `wi_2hx69_unfold_threads_dictionaries_test` (6; each part backed out on its own fails its
+own rows).
+
 ## 7. Testing
 
 Per CLAUDE.md: each ticket's rows live in one test module, driven by value with its back-outs run

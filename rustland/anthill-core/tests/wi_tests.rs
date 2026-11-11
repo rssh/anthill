@@ -2397,6 +2397,8 @@ mod wi_bdvyw_boundary_pattern_test;
 mod wi_dk83q_identical_substitution_test;
 #[path = "include/wi_dey66_per_consumer_reductions_test.rs"]
 mod wi_dey66_per_consumer_reductions_test;
+#[path = "include/wi_2hx69_unfold_threads_dictionaries_test.rs"]
+mod wi_2hx69_unfold_threads_dictionaries_test;
 #[path = "include/wi_qpc89_empty_scope_resolution_memo_test.rs"]
 mod wi_qpc89_empty_scope_resolution_memo_test;
 #[path = "include/wi_dg57j_witness_only_requirement_test.rs"]

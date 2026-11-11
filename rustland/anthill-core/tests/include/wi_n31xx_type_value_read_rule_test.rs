@@ -160,8 +160,8 @@ end
 /// `TypeValue` the argument's value carries, which the clause derives when the goal runs.
 /// WI-20261013-RYDNV decides the call in an operand of `=` as the same call written as a
 /// goal: a condition of the clause in both. The goal spelling answers `Cell[V = Int64]` at
-/// `1`; the `=` spelling is undecided, `=` reducing no operand that calls an operation with
-/// `requires` (WI-20260926-DSEXA's item 3). Before RYDNV the `=` spelling was refused at load
+/// `1`; the `=` spelling is undecided: `=` never binds `?t` (kernel-language §8.3), so the
+/// compare waits for it. Before RYDNV the `=` spelling was refused at load
 /// as an unevidenced forward (this row's old subject, 065 §1's synthesized read), while the
 /// goal spelling loaded. A read nothing could ever supply is still refused: a spec no sort
 /// provides, below ([`a_user_typeclass_of_the_same_shape_is_refused_too`]).
@@ -243,8 +243,8 @@ end
 /// element the argument carries — `Holder.get(?x)` under `requires TypeValue[T = U]` — is a
 /// condition of the clause in every spelling, as the operation half's is
 /// ([`a_rule_body_forward_is_the_clauses_condition`]; WI-20261013-RYDNV). The goal spelling
-/// answers `Cell[V = Int64]` at `1`; the `=` spelling is undecided (WI-20260926-DSEXA's item
-/// 3). Both were refused at load. A sort-level requirement no value could supply is still
+/// answers `Cell[V = Int64]` at `1`; the `=` spelling is undecided, `=` never binding `?t`
+/// (kernel-language §8.3). Both were refused at load. A sort-level requirement no value could supply is still
 /// refused ([`a_sort_level_user_typeclass_is_refused_too`] below).
 #[test]
 fn a_sort_level_rule_body_forward_is_the_clauses_condition() {

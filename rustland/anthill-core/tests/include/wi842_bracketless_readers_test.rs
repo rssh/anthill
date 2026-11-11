@@ -278,8 +278,8 @@ fn a_self_providing_carrier_now_answers_where_it_used_to_tie() {
 /// resolved by first-match — is measured at the HOST entry by this file's `probe_entity`
 /// rows, and here at run time: the goal spelling at `leaf()` answers `Leaf`'s 1 (rung 2a
 /// over `WrapDesc`'s open row), and at `twig()`, where `TwigA` and `TwigB` tie, it is
-/// undecided. The `=` spelling is undecided at both: `=` does not reduce an operand that
-/// calls an operation with `requires` (WI-20260926-DSEXA's item 3). Before RYDNV both arms
+/// undecided. The `=` spelling is undecided at both: `eq(?y, …)` never binds `?y`
+/// (kernel-language §8.3), so the compare waits for it. Before RYDNV both arms
 /// were refused at load in the `=` spelling, where the goal spelling loaded. Since 060.1 stage 2
 /// each clause declares `Desc` at `?x`'s type, and the goal at `twig()` builds the tied
 /// dictionary at load, where it is refused, as an operation's call at `Twig` is: the tied arm
@@ -304,7 +304,7 @@ fn a_rule_body_tie_is_decided_when_the_goal_runs_on_both_arms() {
         "{ns}: the goal spelling answers `Leaf`'s own"
     );
     let eq = crate::common::query_unary(&mut kb, &format!("{ns}.viaEq"));
-    assert!(eq.len() == 1 && !eq[0].1, "{ns}: the `=` spelling is undecided (DSEXA item 3); got {eq:?}");
+    assert!(eq.len() == 1 && !eq[0].1, "{ns}: the `=` spelling is undecided (`=` never binds `?y`); got {eq:?}");
     // The tied arm, asked as queries — whose reads run — and refused as rule goals at load.
     let ns = "wi842.vd.rule.tie";
     let mut kb = crate::common::load_kb_with(&program(ns, TWIG, clauses));

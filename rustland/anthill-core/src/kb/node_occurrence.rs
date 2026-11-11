@@ -1236,6 +1236,17 @@ impl NodeOccurrence {
         }
     }
 
+    /// The typer's `CallClass` for this occurrence, copied out — for a reader that must ask
+    /// which dictionary a call reads as well as where it goes (the resolver's unfold, which
+    /// hands a call it hoists out of an operation body the dictionaries that body's frame
+    /// holds). `None` for an unclassified call and a non-Expr kind.
+    pub(crate) fn call_class(&self) -> Option<super::typing::CallClass> {
+        match &self.kind {
+            NodeKind::Expr { classification, .. } => classification.borrow().as_deref().cloned(),
+            _ => None,
+        }
+    }
+
     pub fn set_classification(&self, class: super::typing::CallClass) {
         if let NodeKind::Expr { classification, .. } = &self.kind {
             *classification.borrow_mut() = Some(Box::new(class));

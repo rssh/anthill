@@ -529,12 +529,11 @@ fn wi580_catchall_arm_declines_no_overgeneration() {
 }
 
 #[test]
-fn wi580_op_call_other_operand_declines() {
-    // WI-580 §3.3 soundness: when the OTHER eq operand is itself an unevaluated
-    // bodied op-call, the residual/OTHER `unify` would compare it structurally
-    // and wrongly fail (dropping real solutions). `unfold_eq_operand` declines
-    // when OTHER carries an op-call, so the goal DELAYS (residual) as before —
-    // never a wrong definite answer.
+fn wi580_op_call_other_operand_that_waits_declines() {
+    // WI-580 §3.3: the OTHER operand is read as its value (068 §1.1), and `append(?b, [4])`
+    // waits on `?b`, so `unfold_eq_operand` declines and the goal DELAYS — one suspension.
+    // Split against the waiting call, no arm could bind the hoisted variables against data:
+    // read raw, the unfold recursed to the depth cap, 24 rows (WI-20261013-2HX69).
     let src = r#"
         namespace test.wi580oc
           import anthill.prelude.List.{append, cons, nil}
@@ -558,8 +557,8 @@ fn wi580_op_call_other_operand_declines() {
     });
     let sols = kb.resolve(&[goal], &ResolveConfig::default());
     assert!(
-        sols.iter().all(|s| !s.is_definite()),
-        "an op-call OTHER operand must decline the unfold and delay; got {} solution(s), some definite",
+        sols.len() == 1 && !sols[0].is_definite(),
+        "an OTHER operand that waits declines the unfold: one suspension; got {} solution(s)",
         sols.len(),
     );
 }

@@ -1738,6 +1738,69 @@ enum WovenDispatch {
     },
 }
 
+/// The call [`KnowledgeBase::unfold_eq_operand`] splits, and where the dictionaries of its
+/// operation's chain come from (068 §8 step 4).
+struct UnfoldSubject {
+    call: Rc<NodeOccurrence>,
+    frame: FrameSource,
+}
+
+/// Where an unfolded call's dictionaries come from — the evidence the bridge would enter its
+/// operation with ([`KnowledgeBase::reduce_op_value`]), read by
+/// [`KnowledgeBase::unfold_frame`].
+enum FrameSource {
+    /// A call woven with its callee's slots (WI-20260925-P7VP4): the clause's condition for
+    /// each slot of the chain, in chain order.
+    Slots(Vec<Rc<NodeOccurrence>>),
+    /// A call a dictionary dispatched to the member it unfolds: the dictionary, where it can be
+    /// read as one, and whether the call's stamps were built for that member (it is the
+    /// operation the call names).
+    Dispatched {
+        spec_op: Symbol,
+        dict: Option<crate::eval::value::Dictionary>,
+        stamps_apply: bool,
+    },
+    /// The call as written, with the typer's stamps on it — none on a call no typer saw.
+    Stamped,
+}
+
+/// One slot of an unfolded call's dictionary chain.
+#[derive(Clone)]
+enum UnfoldSlot {
+    /// The call carries this dictionary for the slot: a citation filled the clause's
+    /// condition, or the typer built it where the call is written.
+    Supplied(crate::eval::value::Dictionary),
+    /// The call carries nothing for the slot, and the bridge derives it from the argument
+    /// values.
+    Derived,
+    /// The call carries evidence for the slot this reader cannot read.
+    Unknown,
+}
+
+/// The dictionary chain of the call the unfold splits: the slots of its operation
+/// ([`super::typing::op_dict_entries`]) by name, as the call supplies them. A call an arm of
+/// the operation's body makes reads these, and is hoisted carrying what it reads
+/// ([`KnowledgeBase::hoisted_call`]).
+struct UnfoldFrame {
+    names: Rc<Vec<Symbol>>,
+    slots: Vec<UnfoldSlot>,
+}
+
+impl UnfoldFrame {
+    fn slot(&self, name: Symbol) -> Option<&UnfoldSlot> {
+        self.names
+            .iter()
+            .position(|n| *n == name)
+            .and_then(|i| self.slots.get(i))
+    }
+
+    /// Does the call carry nothing for any slot? Then every call the body makes reads what
+    /// the bridge derives, as the whole call would.
+    fn all_derived(&self) -> bool {
+        self.slots.iter().all(|s| matches!(s, UnfoldSlot::Derived))
+    }
+}
+
 /// What a dispatch through a dictionary owes the operation it enters, for the slots of its
 /// sort ([`KnowledgeBase::dictionary_owed_to`]), asked of the member the dispatch lands on.
 /// A `requires` the member writes of its own is owed besides, by the call's stamps and the
@@ -5865,7 +5928,7 @@ enum OccPattern {
 ///   dispatch-time gates chase; the structural gates read already-reduced values).
 /// * `head_check` — an optional head-level short-circuit ([`HeadCheck`]).
 /// * `opaque` — the verdict for an [`ViewHead::Opaque`] carrier (normally the
-///   combine identity; `has_bodied_op_call` conservatively declines with `true`).
+///   combine identity; [`HOLDS_OPAQUE`] is the gate that asks for it).
 /// * `depth_cap` — an optional `(cap, verdict-at-cap)` bound (only the
 ///   `reaches_eq_override` scan caps, conservatively `true` at 256).
 #[derive(Clone, Copy)]
@@ -5898,10 +5961,6 @@ enum HeadCheck {
     /// WI-616: the head functor is an eq-dispatch-index carrier (overrides `eq`),
     /// read off either the `Functor` or the canonical bare-`Ref` spelling.
     EqOverride,
-    /// WI-580/690: the head is a bodied (non-builtin) operation call — read off the
-    /// raw `Functor` functor ONLY (a bare `Ref` is a 0-ary constructor, never a
-    /// bodied op, so it takes the recurse-over-no-children path to the identity).
-    BodiedOpCall,
     /// The head is a `Float` leaf; anything else walks its children.
     FloatLeaf,
     /// Is the value equal to itself by `Eq`'s law alone? A `Float` is not (`nan`); a value
@@ -5943,13 +6002,12 @@ pub(crate) const REACHES_EQ_OVERRIDE: GateSpec = GateSpec {
     depth_cap: Some((REACH_DEPTH_CAP, true)),
 };
 
-/// WI-580/690 — does the value structurally CONTAIN a bodied (non-builtin) op-call?
-pub(crate) const HAS_BODIED_OP_CALL: GateSpec = GateSpec {
+/// Does the value hold an opaque carrier — a closure, a runtime handle — anywhere? The
+/// WI-580 unfold compares no residual with one structurally.
+pub(crate) const HOLDS_OPAQUE: GateSpec = GateSpec {
     combine: Combine::Any,
     chase_sigma: false,
-    head_check: HeadCheck::BodiedOpCall,
-    // An opaque carrier we cannot decompose MIGHT hide a bodied op-call — decline
-    // (conservatively `true`) rather than structurally unify a form we can't inspect.
+    head_check: HeadCheck::AlwaysRecurse,
     opaque: true,
     depth_cap: None,
 };
@@ -5990,33 +6048,6 @@ impl HeadCheck {
                 .and_then(|s| kb.eq_dispatch_target(s))
             {
                 Some(target) if !kb.is_derived_eq_member(target) => HeadVerdict::Stop(true),
-                _ => HeadVerdict::Recurse,
-            },
-            HeadCheck::BodiedOpCall => match head {
-                ViewHead::Functor {
-                    functor: f, ..
-                    // WI-20260826-VPEWK — BODY-ONLY, and the reason is measured rather
-                    // than assumed. This gate does NOT choose the split SUBJECT (that is
-                    // `op_call_as_occ`, which needs a body and is guarded there); its one
-                    // caller asks whether the *OTHER* operand is safe to compare
-                    // STRUCTURALLY. By that question a HOST call should count — it is a
-                    // computation, not data — and /code-review raised exactly that.
-                    //
-                    // WIDENING IT WAS TRIED AND BACKED OUT. It only ever DECLINES more,
-                    // so it is sound; the cost is completeness, and the cost is real:
-                    // `:- Colour.isRed(?c) = String.contains("abc","b")` went from 1
-                    // DEFINITE to a suspension, because OTHER holds a host call that
-                    // the operand evaluation reduces before any structural compare.
-                    // The gate cannot currently tell "un-reduced and will stay so" from
-                    // "not yet reduced", which is the distinction it needs.
-                    //
-                    // So the hazard is left OPEN and pre-existing (a host call NESTED
-                    // inside OTHER, where nothing reduces it, can still be compared
-                    // structurally) rather than closed at the price of a live
-                    // regression. WI-20260827-XBHX3 owns it, with both measurements.
-                } if kb.builtins.get(f).is_none() && kb.op_body_node(*f).is_some() => {
-                    HeadVerdict::Stop(true)
-                }
                 _ => HeadVerdict::Recurse,
             },
             // A `Float` literal read carrier-neutrally through the view (a bare
@@ -12450,23 +12481,9 @@ impl KnowledgeBase {
         // Elsewhere the derivation answers as before.
         let classified = woven
             .is_none()
-            .then(|| occ.classified_dispatch())
+            .then(|| self.classified_entry(&occ, op))
             .flatten()
-            .filter(|&(spec_op, provider, _)| {
-                let covered = match self.dictionary_owed_to(provider, op) {
-                    DictionaryOwed::Environment => true,
-                    DictionaryOwed::Slots => {
-                        let spec =
-                            super::typing::dispatch_spec_of_op(self, spec_op).or_provider(provider);
-                        super::typing::dictionary_covers_target(self, spec, provider, op)
-                    }
-                    DictionaryOwed::Nothing => false,
-                };
-                covered
-                    && super::typing::resolve_op_target_checked(self, provider, op)
-                        .is_ok_and(|entered| entered == op)
-            })
-            .map(|(spec_op, _, dict)| WovenDispatch::Classified {
+            .map(|(spec_op, dict)| WovenDispatch::Classified {
                 spec_op,
                 dict,
                 stamps: stamps.clone().unwrap_or_default(),
@@ -12479,6 +12496,26 @@ impl KnowledgeBase {
         let woven = woven.or(classified.as_ref()).or(stamped.as_ref());
         self.bridge_op_to_eval(op, &params, &param_args, subst, woven, faults)
             .map_or(OpReduction::Value(v), OpReduction::Value)
+    }
+
+    /// The dictionary the TYPER built for `occ`, a call it classified `ConcreteApplyWithin`, and
+    /// the spec operation the call dispatches — where the bridge enters `op` through it, as
+    /// eval's apply does ([`WovenDispatch::Classified`]; the paragraph at its use in
+    /// [`Self::reduce_op_value`] says when). `None` where the derivation answers instead.
+    fn classified_entry(&mut self, occ: &NodeOccurrence, op: Symbol) -> Option<(Symbol, TermId)> {
+        let (spec_op, provider, dict) = occ.classified_dispatch()?;
+        let covered = match self.dictionary_owed_to(provider, op) {
+            DictionaryOwed::Environment => true,
+            DictionaryOwed::Slots => {
+                let spec = super::typing::dispatch_spec_of_op(self, spec_op).or_provider(provider);
+                super::typing::dictionary_covers_target(self, spec, provider, op)
+            }
+            DictionaryOwed::Nothing => false,
+        };
+        (covered
+            && super::typing::resolve_op_target_checked(self, provider, op)
+                .is_ok_and(|entered| entered == op))
+        .then_some((spec_op, dict))
     }
 
     /// WI-20260925-P7VP4 — the dictionary a woven call's requirement variable is BOUND to in
@@ -13311,8 +13348,13 @@ impl KnowledgeBase {
     /// call to the member that dictionary selects — `reduce_op_value` rebuilds it exactly so —
     /// and that member is what this reader unfolds: the inference weaves a Bool-view call
     /// (`Palette.warm(?c, rod())`) to carry its clause's condition, and read as an opaque woven
-    /// call it lost the split on `?c` the unwoven call had. Unbound, it is no call yet.
-    fn op_call_as_occ(&mut self, v: &Value, subst: &Substitution) -> Option<Rc<NodeOccurrence>> {
+    /// call it lost the split on `?c` the unwoven call had. Unbound, it is no call yet. A call
+    /// woven with its callee's SLOTS is the call of the operation it names, its slots the
+    /// conditions the clause holds for that operation's chain.
+    ///
+    /// Each comes with where its operation's dictionaries come from ([`FrameSource`]), which
+    /// the split hands to the calls it hoists out of the body.
+    fn op_call_as_occ(&mut self, v: &Value, subst: &Substitution) -> Option<UnfoldSubject> {
         if let Value::Node(o) = v {
             if let Some(Expr::ApplyWithin {
                 functor,
@@ -13322,25 +13364,40 @@ impl KnowledgeBase {
                 type_args,
             }) = o.as_expr()
             {
-                // A call woven with its callee's slots ([`super::typing::is_woven_slots_call`]) is
-                // no dispatch this split can open — an `=` operand's, since WI-20261013-RYDNV:
-                // the comparison over it stays undecided (WI-20260926-DSEXA's item 3).
                 if super::typing::is_woven_slots_call(self, o) {
-                    return None;
+                    self.op_body_node(*functor)?;
+                    return Some(UnfoldSubject {
+                        call: o.rebuilt_expr(Expr::Apply {
+                            recv_type: None,
+                            functor: *functor,
+                            pos_args: args.clone(),
+                            named_args: named_args.clone(),
+                            type_args: type_args.clone(),
+                        }),
+                        frame: FrameSource::Slots(requirements.clone()),
+                    });
                 }
-                let (target, _) = self.dictionary_dispatch_target(*functor, requirements, subst)?;
+                let (target, dict) =
+                    self.dictionary_dispatch_target(*functor, requirements, subst)?;
                 self.op_body_node(target)?;
                 let (pos_args, named_args) = self.woven_args_at_member(*functor, args, named_args);
-                return Some(o.rebuilt_expr(Expr::Apply {
-                    recv_type: None,
-                    functor: target,
-                    pos_args,
-                    named_args,
-                    type_args: type_args.clone(),
-                }));
+                return Some(UnfoldSubject {
+                    call: o.rebuilt_expr(Expr::Apply {
+                        recv_type: None,
+                        functor: target,
+                        pos_args,
+                        named_args,
+                        type_args: type_args.clone(),
+                    }),
+                    frame: FrameSource::Dispatched {
+                        spec_op: *functor,
+                        dict,
+                        stamps_apply: target == *functor,
+                    },
+                });
             }
         }
-        match v {
+        let call = match v {
             // WI-1040 — an `ApplyWithin` is `is_unreduced_op_call` (it is un-reduced
             // by construction until its dictionary reads), but it is NOT what this
             // reader's contract promises: "BODIED ops only … which UNFOLDS the
@@ -13413,25 +13470,11 @@ impl KnowledgeBase {
                     None
                 }
             }
-        }
-    }
-
-    /// WI-690 — carrier-neutral peer of the former `term_has_bodied_op_call`:
-    /// does the value STRUCTURALLY CONTAIN (at any depth) a bodied (non-builtin)
-    /// operation call — an unevaluated op-call that structural `unify` would
-    /// compare wrongly? WI-580 declines to case-split against such an OTHER
-    /// operand (leaving it to the builtin, which delays), preserving soundness
-    /// for a query like `eq(append(?a, x), reverse(?b))`.
-    ///
-    /// A thin [`Self::fold_gate`] over [`HAS_BODIED_OP_CALL`]: structural (no σ
-    /// chase — the empty σ is inert), reading the shallow-walked OTHER value
-    /// directly through `TermView` so a Node/Entity operand is not lowered to a
-    /// term. An [`ViewHead::Opaque`] carrier we cannot decompose conservatively
-    /// declines (`opaque: true`) — the builtin still handles the eq; a "loud over
-    /// silent" decline rather than a latent unsound miss.
-    fn value_has_bodied_op_call(&self, v: &Value) -> bool {
-        // Structural gate (no σ chase) — `None` is the inert empty σ.
-        self.fold_gate(v, None, 0, HAS_BODIED_OP_CALL)
+        }?;
+        Some(UnfoldSubject {
+            call,
+            frame: FrameSource::Stamped,
+        })
     }
 
     /// WI-20260822-J38JE / WI-20260822-ZJZS7 — can a RULE BODY reduce a call on `f`?
@@ -13635,11 +13678,9 @@ impl KnowledgeBase {
             return false;
         };
         // Effect-free — [`Self::effect_row_admits_relational_view`], which owns what
-        // that means. `requires` is deliberately NOT excluded here (unlike the
-        // unfold's `folded_call_match` gate): `member`'s `requires Eq[T]` is
-        // discharged at the body's own `eq(head, x)` call by value-directed dispatch,
-        // which the bridge honours (the unfold would drop the dict; the bridge does
-        // not).
+        // that means. `requires` is not excluded: `member`'s `requires Eq[T]` is
+        // discharged at the body's own `eq(head, x)` call, which the bridge runs with the
+        // call's dictionary.
         if !self.effect_row_admits_relational_view(f, sig) {
             return false;
         }
@@ -14362,6 +14403,344 @@ impl KnowledgeBase {
             && super::typing::lookup_spec_op_dispatch(self, op).is_some()
     }
 
+    /// The dictionaries an unfolded call carries for its operation's chain, slot by slot — what
+    /// the bridge would enter `op` with if the call ran ([`Self::reduce_op_value`]): the
+    /// clause's conditions of a call woven with its slots; the dictionary a dispatch selected
+    /// the member through, where the member reads its sort's slots out of it; the dictionary
+    /// the typer built for a call's callee ([`Self::classified_entry`]) and the typer's stamps
+    /// for the callee's own `requires`. A slot none of these fills is derived.
+    fn unfold_frame(
+        &mut self,
+        op: Symbol,
+        call: &NodeOccurrence,
+        source: FrameSource,
+        subst: &Substitution,
+    ) -> UnfoldFrame {
+        let chain = super::typing::op_dict_entries(self, op);
+        let names = chain.names(self);
+        let sort_len = chain.sort_len();
+        let mut slots = vec![UnfoldSlot::Derived; names.len()];
+        if slots.is_empty() {
+            return UnfoldFrame { names, slots };
+        }
+        match source {
+            // The weave read one condition per slot of this chain; a count that disagrees
+            // cannot be placed, as the bridge refuses it (`resolve_bridge_requirements_supplied`).
+            FrameSource::Slots(requirements) if requirements.len() != slots.len() => {
+                slots.fill(UnfoldSlot::Unknown);
+            }
+            FrameSource::Slots(requirements) => {
+                for (slot, r) in slots.iter_mut().zip(&requirements) {
+                    if let Some(d) = self.supplied_dictionary(r, subst) {
+                        *slot = UnfoldSlot::Supplied(d);
+                    }
+                }
+            }
+            FrameSource::Dispatched {
+                spec_op,
+                dict,
+                stamps_apply,
+            } => {
+                // Handed to the bridge on the condition `reduce_op_value`'s `woven_next` sets.
+                if let Some(dict) = dict {
+                    if self.dictionary_owed_to(dict.impl_sort(), op) != DictionaryOwed::Nothing
+                        || !super::typing::op_requires_chain_rc(self, op).is_empty()
+                    {
+                        self.fill_sort_half(&mut slots[..sort_len], &names, spec_op, op, &dict);
+                    }
+                }
+                if stamps_apply {
+                    self.fill_op_half(&mut slots[sort_len..], call);
+                }
+            }
+            FrameSource::Stamped => {
+                if let Some((spec_op, dict)) = self.classified_entry(call, op) {
+                    let dict = super::node_occurrence::materialize_from_handle(self, dict);
+                    match self.stamp_slot(&dict, None) {
+                        UnfoldSlot::Supplied(d) => {
+                            self.fill_sort_half(&mut slots[..sort_len], &names, spec_op, op, &d)
+                        }
+                        _ => slots[..sort_len].fill(UnfoldSlot::Unknown),
+                    }
+                }
+                self.fill_op_half(&mut slots[sort_len..], call);
+            }
+        }
+        UnfoldFrame { names, slots }
+    }
+
+    /// The sort half of `target`'s chain, from the dictionary a call dispatched from `spec_op`
+    /// enters it through — the slots eval's apply installs from it, by name. A slot it does not
+    /// install is one this cannot read.
+    fn fill_sort_half(
+        &mut self,
+        sort_slots: &mut [UnfoldSlot],
+        names: &[Symbol],
+        spec_op: Symbol,
+        target: Symbol,
+        dict: &crate::eval::value::Dictionary,
+    ) {
+        let mut entered: Option<Vec<(Symbol, crate::eval::value::Dictionary)>> = None;
+        self.run_in_bridge_interp(|interp| {
+            entered = interp.frame_through_dictionary(spec_op, target, dict).ok();
+            Ok(Value::Unit)
+        });
+        for (slot, name) in sort_slots.iter_mut().zip(names) {
+            *slot = entered
+                .as_ref()
+                .and_then(|e| e.iter().find(|(n, _)| n == name))
+                .map_or(UnfoldSlot::Unknown, |(_, d)| UnfoldSlot::Supplied(d.clone()));
+        }
+    }
+
+    /// The operation's own half of its chain, from the typer's stamps on the call
+    /// ([`NodeOccurrence::op_dicts`]), one per slot; none stamped is derived.
+    fn fill_op_half(&self, op_slots: &mut [UnfoldSlot], call: &NodeOccurrence) {
+        let stamps = call.op_dicts();
+        if stamps.is_empty() {
+            return;
+        }
+        if stamps.len() != op_slots.len() {
+            op_slots.fill(UnfoldSlot::Unknown);
+            return;
+        }
+        for (slot, stamp) in op_slots.iter_mut().zip(stamps) {
+            if let Some(t) = stamp {
+                let node = super::node_occurrence::materialize_from_handle(self, t);
+                *slot = self.stamp_slot(&node, None);
+            }
+        }
+    }
+
+    /// What a requirement-chain node — a stamp the typer put on a call — supplies, read against
+    /// `frame`, the slots of the operation body the call is written in: the dictionary it is
+    /// (`Spliced`), builds (`Dictionary(…)`), projects (`requirement_at_sort`) or forwards from a
+    /// slot (`var_ref`), as eval reads it (`try_eval_requirement_chain_node`). A forward with
+    /// no frame to read is unknown, and half a dictionary is not one.
+    fn stamp_slot(&self, node: &NodeOccurrence, frame: Option<&UnfoldFrame>) -> UnfoldSlot {
+        use crate::eval::value::Dictionary;
+        match node.as_expr() {
+            Some(Expr::Spliced(v)) => {
+                Dictionary::from_view(self, v).map_or(UnfoldSlot::Unknown, UnfoldSlot::Supplied)
+            }
+            Some(Expr::Dictionary { impl_sort, subs }) => {
+                let mut built = Vec::with_capacity(subs.len());
+                for sub in subs {
+                    match self.stamp_slot(sub, frame) {
+                        UnfoldSlot::Supplied(d) => built.push(d),
+                        _ => return UnfoldSlot::Unknown,
+                    }
+                }
+                Dictionary::build(self, *impl_sort, built)
+                    .map_or(UnfoldSlot::Unknown, UnfoldSlot::Supplied)
+            }
+            Some(Expr::RequirementAtSort { chain, slot }) => match self.stamp_slot(chain, frame) {
+                UnfoldSlot::Supplied(d) => usize::try_from(*slot)
+                    .ok()
+                    .and_then(|k| d.sub(k))
+                    .map_or(UnfoldSlot::Unknown, UnfoldSlot::Supplied),
+                _ => UnfoldSlot::Unknown,
+            },
+            Some(Expr::VarRef { name }) => frame
+                .and_then(|f| f.slot(*name))
+                .cloned()
+                .unwrap_or(UnfoldSlot::Unknown),
+            _ => UnfoldSlot::Unknown,
+        }
+    }
+
+    /// Does the stamp `t` read a slot of the frame it is evaluated in (a `var_ref` anywhere in
+    /// it)?
+    fn stamp_reads_frame(&self, t: TermId) -> bool {
+        fn reads(node: &NodeOccurrence) -> bool {
+            match node.as_expr() {
+                Some(Expr::VarRef { .. }) => true,
+                Some(e) => {
+                    let mut any = false;
+                    node_occurrence::for_each_child(e, |c| any |= reads(c));
+                    any
+                }
+                None => false,
+            }
+        }
+        reads(&super::node_occurrence::materialize_from_handle(self, t))
+    }
+
+    /// The call an arm's residual makes, as the goal the unfold hoists it into: the call of the
+    /// operation body it was rebuilt from ([`super::body_specialize::residual_call_source`]),
+    /// carrying the dictionaries that body gives it (068 §8 step 4), as eval's run of the body
+    /// would. A call through a slot of the unfolded operation's chain (`WeakOrd.compare(x, y)`
+    /// in a body that `requires WeakOrd[T = A]`) is woven with that slot's dictionary; a call
+    /// that hands slots on to its callee (`Util.sign(x, y)` there) is woven with the callee's
+    /// slots; any other call keeps the typer's stamps, which select what its call site selected
+    /// (`Util.sign[A = Int64, WeakOrd = Descending](x, y)`). Where the unfolded call supplies
+    /// nothing, every slot is derived, and the call is hoisted as written — the bridge derives
+    /// the slots it reads as it would for the whole call.
+    ///
+    /// `None` — the unfold declines — where the call reads a slot the unfolded call carries
+    /// evidence for that this cannot read, or reads its frame in a way this does not thread: a
+    /// call the typer sent to another operation than the one it names, a dictionary the typer
+    /// built for the callee out of the frame's slots, a lambda's, the spec operation's own
+    /// `requires` beside a dispatch through a slot.
+    fn hoisted_call(
+        &mut self,
+        occ: &Rc<NodeOccurrence>,
+        functor: Symbol,
+        pos: Vec<Rc<NodeOccurrence>>,
+        named: Vec<(Symbol, Rc<NodeOccurrence>)>,
+        frame: &UnfoldFrame,
+    ) -> Option<Rc<NodeOccurrence>> {
+        use super::typing::{CallClass, CalleeFrame};
+        let span = occ.span;
+        let source = super::body_specialize::residual_call_source(self, occ);
+        let call = |pos_args, named_args| Expr::Apply {
+            recv_type: None,
+            functor,
+            pos_args,
+            named_args,
+            type_args: Vec::new(),
+        };
+        // An operation with no chain has no slot a call of its body can read.
+        if frame.slots.is_empty() {
+            return Some(source.rebuilt_expr(call(pos, named)));
+        }
+        let class = source.call_class();
+        let stamps = source.op_dicts();
+        let dict_occ = |d: crate::eval::value::Dictionary| {
+            NodeOccurrence::new_expr(Expr::Spliced(d.into_value()), span, None)
+        };
+        if let Some(CallClass::DeferToRequirement {
+            spec_op_sym,
+            slot,
+            proj_path,
+            enclosing_sort,
+            enclosing_op,
+            ..
+        }) = &class
+        {
+            // The slot's name in the chain it indexes, as eval names it (`start_apply_deferred`).
+            let names = match enclosing_op {
+                Some(op) => super::typing::op_dict_entries(self, *op).names(self),
+                None => super::typing::provider_dict_entries(self, (*enclosing_sort)?, None).names(self),
+            };
+            let name = *names.get(*slot)?;
+            if stamps.iter().any(Option::is_some) {
+                return None;
+            }
+            return match frame.slot(name)? {
+                UnfoldSlot::Supplied(d) => {
+                    let mut d = d.clone();
+                    for &k in proj_path {
+                        d = d.sub(k)?;
+                    }
+                    Some(NodeOccurrence::new_expr(
+                        Expr::ApplyWithin {
+                            functor: *spec_op_sym,
+                            args: pos,
+                            named_args: named,
+                            requirements: vec![dict_occ(d)],
+                            type_args: Vec::new(),
+                        },
+                        span,
+                        None,
+                    ))
+                }
+                UnfoldSlot::Derived => Some(NodeOccurrence::new_expr(call(pos, named), span, None)),
+                UnfoldSlot::Unknown => None,
+            };
+        }
+        let reads_frame = match &class {
+            Some(CallClass::ConcreteApplyWithin {
+                frame: CalleeFrame::Inherited,
+                ..
+            })
+            | Some(CallClass::DeferToDictionary { .. }) => true,
+            Some(CallClass::ConcreteApplyWithin {
+                frame: CalleeFrame::Dict(t),
+                ..
+            }) => self.stamp_reads_frame(*t),
+            _ => false,
+        } || stamps.iter().flatten().any(|t| self.stamp_reads_frame(*t));
+        // A stamp that forwards a slot of a frame the bridge has not got is derived there
+        // (`call_op_bridged_stamped`), which is what every slot of an all-derived frame is.
+        if !reads_frame || frame.all_derived() {
+            return Some(source.rebuilt_expr(call(pos, named)));
+        }
+        // Woven with the slots of the operation it names, so a call the typer sent elsewhere —
+        // a member its dispatch selected, a pin — is not threaded, nor one whose callee's
+        // dictionary the typer built out of the frame's slots, nor a lambda's.
+        let elsewhere = match &class {
+            Some(CallClass::ConcreteApplyWithin {
+                fn_target_sym,
+                frame,
+                ..
+            }) => *fn_target_sym != functor || matches!(frame, CalleeFrame::Dict(_)),
+            Some(CallClass::PinNow { impl_op_sym, .. }) => *impl_op_sym != functor,
+            Some(CallClass::DeferToDictionary { .. }) => true,
+            _ => false,
+        };
+        if elsewhere {
+            return None;
+        }
+        // The callee's slots: its sort's half the caller's own where the call enters the
+        // caller's frame (`CalleeFrame::Inherited`), else derived; its own half read off the
+        // stamps against the frame.
+        let chain = super::typing::op_dict_entries(self, functor);
+        let names = chain.names(self);
+        let sort_len = chain.sort_len();
+        if !stamps.is_empty() && stamps.len() != names.len() - sort_len {
+            return None;
+        }
+        let inherited = matches!(
+            class,
+            Some(CallClass::ConcreteApplyWithin {
+                frame: CalleeFrame::Inherited,
+                ..
+            })
+        );
+        let mut requirements = Vec::with_capacity(names.len());
+        for (k, name) in names.iter().enumerate() {
+            let slot = if k < sort_len {
+                if inherited {
+                    frame.slot(*name)?.clone()
+                } else {
+                    UnfoldSlot::Derived
+                }
+            } else {
+                match stamps.get(k - sort_len).copied().flatten() {
+                    Some(t) => {
+                        let node = super::node_occurrence::materialize_from_handle(self, t);
+                        self.stamp_slot(&node, Some(frame))
+                    }
+                    None => UnfoldSlot::Derived,
+                }
+            };
+            requirements.push(match slot {
+                UnfoldSlot::Supplied(d) => dict_occ(d),
+                // An unbound condition: the bridge derives the slot (`WovenDispatch::Slots`).
+                UnfoldSlot::Derived => {
+                    let name = self.intern("_dict");
+                    let v = self.fresh_var(name);
+                    NodeOccurrence::new_expr(Expr::Var(Var::Global(v)), span, None)
+                }
+                UnfoldSlot::Unknown => return None,
+            });
+        }
+        let pass = super::typing::woven_slots_pass(self);
+        Some(NodeOccurrence::synthesized_expr(
+            Expr::ApplyWithin {
+                functor,
+                args: pos,
+                named_args: named,
+                requirements,
+                type_args: Vec::new(),
+            },
+            source,
+            pass,
+            None,
+        ))
+    }
+
     /// WI-580 (design §3.3): abstract-interpretation fallback for a suspended
     /// op-call operand in a `SemEq` goal. When `eq(A, B)` has an operand that is
     /// an unground, rule-less bodied op-call whose body case-splits on a flex
@@ -14379,6 +14758,10 @@ impl KnowledgeBase {
     /// operand is a case-splittable unground op-call — the caller then runs the
     /// builtin, which delays (WI-519 residual) as before.
     ///
+    /// OTHER is read as its value (068 §1.1), and an OTHER still holding a call declines;
+    /// each hoisted call carries the dictionaries the unfolded body gives it, read off the
+    /// unfolded call (068 §8 step 4, [`Self::hoisted_call`]).
+    ///
     /// Precedence (design §3.3): only a functor whose rules are ALL equations
     /// (or none) unfolds — a functor with genuine relational (`:-`) rules
     /// resolves via those ("rules win while both exist" during migration).
@@ -14391,13 +14774,14 @@ impl KnowledgeBase {
         // genuinely unground op-call case-splits.
         let a = self.walk_arg(goal.pos_arg(self, 0), subst)?;
         let b = self.walk_arg(goal.pos_arg(self, 1), subst)?;
-        let (occ, other) = if let Some(o) = self.op_call_as_occ(&a, subst) {
-            (o, b)
-        } else if let Some(o) = self.op_call_as_occ(&b, subst) {
-            (o, a)
+        let (subject, other) = if let Some(s) = self.op_call_as_occ(&a, subst) {
+            (s, b)
+        } else if let Some(s) = self.op_call_as_occ(&b, subst) {
+            (s, a)
         } else {
             return None;
         };
+        let occ = subject.call;
         let (op, pos_args, named_args) = match occ.as_expr() {
             Some(Expr::Apply {
                 functor,
@@ -14415,11 +14799,24 @@ impl KnowledgeBase {
         }
         let (scrutinee_occ, arms) =
             super::body_specialize::folded_call_match(self, op, &pos_args, &named_args)?;
-        // OTHER must be finite DATA: the per-arm `unify(result, OTHER)` compares
-        // structurally, so an unevaluated bodied op-call inside OTHER would
-        // wrongly FAIL (dropping real solutions — unsound under NAF). DECLINE if
-        // OTHER carries a bodied op-call (read on the value carrier, WI-690).
-        if self.value_has_bodied_op_call(&other) {
+        // OTHER is read as every other consumer reads an operand (068 §1.1, `evaluate_value`):
+        // each call in it that can run is replaced by its value, so what the arms meet is data.
+        // A call left in it — waiting on a variable, unreduced, symbolic — declines the split
+        // and the builtin delays on it: the per-arm `unify(result, OTHER)` is structural, and a
+        // call's VALUE is what the residual must equal, not the call. So `bpick(?c) = box(v:
+        // tag(red()))` meets `box(v: 1)`, and P1TPE's decline below reads `mk(red())` as the
+        // `ae(k: 1, tag: 9)` it is. And `append(?a, [3]) = append(?b, [4])` declines rather
+        // than split: OTHER is the waiting `append(?b, [4])`, so no arm can bind the hoisted
+        // variables against finite data and the recursion would not end.
+        //
+        // An opaque carrier — a closure, a runtime handle — declines too: no residual compares
+        // with it structurally.
+        let mut faults = ReduceFaults::default();
+        let other = match self.evaluate_value(other, subst, &mut faults) {
+            Ok(v) if faults.is_empty() => v,
+            _ => return None,
+        };
+        if self.fold_gate(&other, None, 0, HOLDS_OPAQUE) {
             return None;
         }
         // OTHER as a goal occurrence for the Node `unify(result, OTHER)` goal, through
@@ -14427,12 +14824,11 @@ impl KnowledgeBase {
         // carrier is read through the view with its children on their own carriers.
         //
         // It was `alloc_from_value` + `materialize_from_handle`, which refused an entity
-        // holding an occurrence, so the unfold was skipped for it (WI-20261030-BXMPK). A
-        // closure never reached that lowering — `value_has_bodied_op_call` above declines
-        // an opaque OTHER — and no program is known to put an entity there: MEASURED,
-        // `?o <=> mk(1), pick(?c) = ?o` with `mk` run by the bridge brings OTHER as the
-        // occurrence the entity is spliced into, which rode directly before as now.
+        // holding an occurrence, so the unfold was skipped for it (WI-20261030-BXMPK).
         let other_occ = super::node_occurrence::value_as_occurrence(self, &other);
+        // The dictionaries the call carries for its operation's chain, which the calls the
+        // arms make are hoisted with ([`Self::hoisted_call`]).
+        let frame = self.unfold_frame(op, &occ, subject.frame, subst);
         let unify_sym = self.unify_functor();
         // Build a `Value::Node` `unify(a, b)` goal — the shape shared by the
         // scrutinee-shape and result/OTHER decompositions in each arm.
@@ -14469,7 +14865,7 @@ impl KnowledgeBase {
             // `eq` goals) as `Value::Node` occurrences directly — no Term::Fn build
             // re-walked back to a Node (the retired `materialize_from_handle`
             // round-trip).
-            let result_occ = self.anf_flatten(&arm.body, &rename, &mut hoists)?;
+            let result_occ = self.anf_flatten(&arm.body, &rename, &mut hoists, &frame)?;
             // WI-20260827-P1TPE — THE ARM'S OWN RESIDUAL DECIDES WHETHER THIS UNFOLD IS
             // THE RIGHT RELATION. The goal is `eq`, which DISPATCHES to the carrier's
             // declared equality (kernel-language.md §8.3); `result_g` below asserts
@@ -14521,20 +14917,11 @@ impl KnowledgeBase {
             // where structural and IEEE happen to AGREE (`C.fplain(?c) = p(f: 2.5)`, 1
             // DEFINITE → suspension).
             //
-            // WHAT IT DOES NOT COVER, and this is the handover to WI-20260827-XBHX3
-            // rather than a gap left open: an OTHER that is an UN-REDUCED CALL reduces to
-            // a value this scan cannot see, so `C.pick(?c) = C.mk(red())` is invisible to
-            // BOTH halves. It is sound today only because the `value_has_bodied_op_call`
-            // gate ABOVE declines it first, for a reason that has nothing to do with
-            // equality. A disjunct here on that same predicate was written and REMOVED:
-            // that gate shadows it completely, so the clause was unreachable and could
-            // not be tested — /code-review proved it with an assert that never fired.
-            // When XBHX3 removes that gate, THIS is where the replacement belongs: an
-            // "OTHER still carries an unevaluated computation" test in
-            // `other_can_meet_an_override`, covering host calls as well as bodied ones.
-            // The row that measures it is pinned already —
-            // `wi_p1tpe_unfold_eq_semantic_test::the_masked_row_still_rests_on_its_neighbour`,
-            // which is (1, 0) today and (0, 0) with that gate neutralized.
+            // AN OVERRIDE BEHIND A CALL IN OTHER is read too: OTHER was evaluated above, so
+            // `C.pick(?c) = C.mk(red())` meets `ae(k: 1, tag: 9)` here and declines
+            // (`wi_p1tpe_unfold_eq_semantic_test::an_override_behind_a_call_is_read_through_its_value`).
+            // Read unevaluated, `mk`'s head hid `AE` from both halves, and only a gate
+            // declining every OTHER that held a bodied call kept the row from a refutation.
             //
             // WHAT IT STILL COSTS, driven at
             // `wi_p1tpe_unfold_eq_semantic_test::the_one_answer_the_decline_costs_was_half_an_answer_set`:
@@ -14742,6 +15129,7 @@ impl KnowledgeBase {
         occ: &Rc<NodeOccurrence>,
         rename: &[(Symbol, VarId)],
         hoists: &mut Vec<Value>,
+        frame: &UnfoldFrame,
     ) -> Option<Rc<NodeOccurrence>> {
         let span = occ.span;
         let Some(expr) = occ.as_expr() else {
@@ -14798,11 +15186,11 @@ impl KnowledgeBase {
                 let named_c = named_args.clone();
                 let mut pos = Vec::with_capacity(pos_c.len());
                 for a in &pos_c {
-                    pos.push(self.anf_flatten(a, rename, hoists)?);
+                    pos.push(self.anf_flatten(a, rename, hoists, frame)?);
                 }
                 let mut named = Vec::with_capacity(named_c.len());
                 for (fs, a) in &named_c {
-                    named.push((*fs, self.anf_flatten(a, rename, hoists)?));
+                    named.push((*fs, self.anf_flatten(a, rename, hoists, frame)?));
                 }
                 // WI-20260827-T2470 — DESUGAR POSITIONAL → NAMED, the same canonical
                 // entity form [`Self::fresh_pattern_occ`] builds on the PATTERN side of
@@ -14906,28 +15294,17 @@ impl KnowledgeBase {
                 let named_c = named_args.clone();
                 let mut pos = Vec::with_capacity(pos_c.len());
                 for a in &pos_c {
-                    pos.push(self.anf_flatten(a, rename, hoists)?);
+                    pos.push(self.anf_flatten(a, rename, hoists, frame)?);
                 }
                 let mut named = Vec::with_capacity(named_c.len());
                 for (fs, a) in &named_c {
-                    named.push((*fs, self.anf_flatten(a, rename, hoists)?));
+                    named.push((*fs, self.anf_flatten(a, rename, hoists, frame)?));
                 }
-                // Build the op-call as a Node occurrence directly (the shape
-                // `materialize_from_handle` produced for a `Term::Fn` op-call:
-                // `Expr::Apply` with empty `type_args`), then ANF-hoist it as a
-                // fresh var + a `Value::Node` `eq` goal that re-triggers the
-                // unfold on its now-smaller arguments.
-                let call = NodeOccurrence::new_expr(
-                    Expr::Apply {
-                        recv_type: None,
-                        functor,
-                        pos_args: pos,
-                        named_args: named,
-                        type_args: Vec::new(),
-                    },
-                    span,
-                    None,
-                );
+                // The call as the body makes it, carrying the dictionaries the body gives
+                // it ([`Self::hoisted_call`]), then ANF-hoisted as a fresh var + a
+                // `Value::Node` `eq` goal that re-triggers the unfold on its now-smaller
+                // arguments.
+                let call = self.hoisted_call(occ, functor, pos, named, frame)?;
                 let anf = self.intern("_anf");
                 let tvid = self.fresh_var(anf);
                 let tvar = NodeOccurrence::new_expr(Expr::Var(Var::Global(tvid)), span, None);
@@ -14986,11 +15363,11 @@ impl KnowledgeBase {
                 }
                 let mut pos = Vec::with_capacity(pos_c.len());
                 for a in &pos_c {
-                    pos.push(self.anf_flatten(a, rename, hoists)?);
+                    pos.push(self.anf_flatten(a, rename, hoists, frame)?);
                 }
                 let mut named = Vec::with_capacity(named_c.len());
                 for (fs, a) in &named_c {
-                    named.push((*fs, self.anf_flatten(a, rename, hoists)?));
+                    named.push((*fs, self.anf_flatten(a, rename, hoists, frame)?));
                 }
                 Some(NodeOccurrence::new_expr(
                     Expr::TypeValue {

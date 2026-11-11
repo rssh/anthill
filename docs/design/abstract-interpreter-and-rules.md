@@ -16,8 +16,9 @@ covers **structural** ops (relational `append(?a, ys) = zs` solves; `code(?c) = 
 `list.anthill`'s `length`/`append` `<=>` twins are **retired** (a ground call folds via the bridge,
 a non-ground occurrence unfolds). Soundness gates in place: only DISJOINT constructor arms
 case-split (a catch-all needs earlier-arm negation guards — undecidable on an unground scrutinee →
-declined to a WI-519 residual, not over-generated); effectful / `requires`-carrying bodies are
-declined (not yet threaded); an op-call OTHER operand is declined; and — WI-20260827-P1TPE — an
+declined to a WI-519 residual, not over-generated); effectful bodies are declined; OTHER is read as
+its value (068 §1.1) and one still holding a call — waiting, unreduced, symbolic — is declined, as
+is one holding an opaque carrier; and — WI-20260827-P1TPE — an
 arm whose **residual reaches a carrier whose `eq` is not structural — a declared override, or
 WI-664's unshielded `Float` — where OTHER reaches one too**, declines the whole unfold, because the
 goal being expanded is `eq` (which *dispatches*, §8.3) while each arm asserts `unify` (which is
@@ -34,11 +35,11 @@ suspend, never wrongly refute. The second half (OTHER reaches an override too) i
 **generator** shape working: `unify` can only wrongly refute where both sides are concrete, and
 against a flex operand it BINDS, so `C.pick(?c) = ?v` still enumerates both arms definitely. It
 costs one shape — `C.pick(?c) = ae(k: ?k, tag: 8)` was 1 definite and is now a suspension — and that
-answer set was 1 of 2, the other dropped structurally on the field the carrier's `eq` ignores. What
-it does NOT reach is an OTHER that is an **un-reduced call**, which reduces to a value neither half
-can see: `C.pick(?c) = C.mk(red())` is sound only because the op-call-OTHER decline above fires
-first, so whatever replaces that decline owes this one an "OTHER still carries an unevaluated
-computation" clause. The `Float` leg fails in the OPPOSITE and worse direction and is driven
+answer set was 1 of 2, the other dropped structurally on the field the carrier's `eq` ignores. An
+OTHER that is a call is read here as the value it evaluated to, so `C.pick(?c) = C.mk(red())` meets
+`ae(k: 1, tag: 9)` and declines (WI-20261013-2HX69; before, a decline of every OTHER holding a bodied
+call kept it from a refutation and cost `C.bpick(?c) = box(v: C.tag(red()))` its answer). The
+`Float` leg fails in the OPPOSITE and worse direction and is driven
 separately: `unify` reads two `nan`s as equal (`OrderedFloat` is reflexive) while IEEE `eq` does not,
 so `C.fnan(?c) = p(f: nan)` was answered **1 definite** where its ground twin is correctly refuted —
 a proof of a false equation rather than a dropped solution. Both legs are the predicates
@@ -55,9 +56,9 @@ bodied **Bool** goal (`member(?x, ?l)`) to `eq(member(?x, ?l), true)`
 (`KnowledgeBase::bare_bodied_bool_relation` + the `step_init` routing), so a ground call decides
 via the eval bridge *using the declared `Eq`* and an unground one suspends to a WI-519 residual (§5,
 the "sound checker, not generator"). The route is gated **effect-free** (an effectful body is not a
-logical relation — `Stream.isEmpty` is excluded) but NOT requires-free (unlike the unfold's
-`folded_call_match` gate): `contains`'s `requires Eq[T]` is discharged at the body's own `eq(head, x)`
-call by value-directed dispatch, which the bridge honours. A carrier whose `eq` is defined by
+logical relation — `Stream.isEmpty` is excluded) but NOT requires-free: `contains`'s `requires Eq[T]`
+is discharged at the body's own `eq(head, x)` call, which the bridge runs with the call's
+dictionary. A carrier whose `eq` is defined by
 `<=>` *rules* (rather than a runnable body) is still decided — the bridge fires those rules by
 ordinary SLD — so retiring the structural twins strands nothing decidable. This is the §5 semantics **without** the nested-choice
 `if`-flattening / an owed `requires Eq[T]` on the unfold: those are needed only to *case-split* a
@@ -66,8 +67,10 @@ lists contain `?x`; the `= true` operand — unlike `append`'s finite `zs` — d
 recursion). The bridge-plus-residual realizes §5's "evaluate or suspend `eq` per branch" and
 *terminates*; the `if`-flattening unfold path stays deferred until a bodied Bool op has a
 **terminating** relational consumer (design §10 Q4: add a mechanism only when a consumer serves it).
-The requires-gate in `folded_call_match` therefore still declines `contains` for the unfold — correct,
-since the bridge (not the unfold) serves it. **Deferred:**
+The `if` in `contains`'s `cons` arm keeps it out of the unfold (`anf_flatten` declines an `if`) —
+correct, since the bridge (not the unfold) serves it. An operation with `requires` is unfolded since
+WI-20261013-2HX69: each call an arm makes is hoisted with the dictionaries the unfolded call carries
+for it (068 §8 step 4; `docs/design/068-implementation.md` §6.24). **Deferred:**
 the typer inlining site (§3.2) — abandoned as type-unsound (it rewrote a call before the signature
 check); the prover site (§3.4). **Related:** proposal [043](../proposals/043-simp-rewrite.md)
 (`@[simp]` rewriting), proposal 049 (`<=>`), WI-283 (typer-hosted firing — the natural host for the

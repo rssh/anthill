@@ -1344,9 +1344,9 @@ fn a_rule_goal_passes_its_callee_the_callers_dictionary() {
 /// condition, and so it does under the introducer (WI-20261013-RYDNV, one classification per
 /// call): it was refused there, for a requirement the clause's text does not determine,
 /// while the goal and `<=>` spellings got the condition. What `=` answers over such an operand
-/// is `=`'s: at literals the clause loads and its `=` is undecided, `?c` free — `=` reduces no
-/// operand that calls an operation with `requires` (WI-20260926-DSEXA's item 3) — and so is a
-/// citation's answer of the woven `=` spelling.
+/// is `=`'s: at literals the clause loads and its `=` is undecided, `?c` free — `=` never binds
+/// (kernel-language §8.3), so the compare waits for `?c` — and so is a citation's answer of the
+/// woven `=` spelling.
 ///
 /// The rows of a `require[WeakOrd[T]]` beside the call — refused as one no body call grounds,
 /// a bracket holding what its spec REQUIRES and not the spec (`scope_contract_covers_dep`) —

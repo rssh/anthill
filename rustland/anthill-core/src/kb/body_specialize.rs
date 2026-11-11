@@ -78,8 +78,9 @@ pub(crate) struct UnfoldArm {
 /// the direct call; a non-match body has nothing to case-split) — the caller
 /// then leaves the call to its normal delay handling.
 ///
-/// The requires/effects gate is the CALLER's: at the SLD site a `requires`-op's
-/// dictionary is owed-on-consumption (WI-562), unlike the typer rewrite site.
+/// An operation with `requires` is unfolded too: the residual's calls keep the stamps of the
+/// body calls they were rebuilt from ([`residual_call_source`]), and the resolver gives each
+/// the dictionaries the unfolded call carries (068 §8 step 4).
 pub(crate) fn folded_call_match(
     kb: &mut KnowledgeBase,
     op: Symbol,
@@ -90,18 +91,15 @@ pub(crate) fn folded_call_match(
         return None;
     }
     let info = lookup_operation_info(kb, op)?;
-    // Purity gate (design §9 + WI-562): an EFFECTFUL body is not a rewrite, and a
-    // `requires`-carrying op owes its dictionary on consumption — the case-split
-    // does not yet thread it. Decline both (the caller then delays / residualizes)
-    // rather than enumerate arms whose effect or guard was never discharged.
-    // (`member`'s `requires Eq[T]` is also excluded at the resolver's relational-
-    // rules gate; this covers a `requires`/effect-only bodied op with no rules.)
-    if !info.effects.is_empty() || !info.requires.is_empty() {
+    // Purity gate (design §9 + WI-562): an EFFECTFUL body is not a rewrite. Declined (the
+    // caller then delays / residualizes) rather than enumerate arms whose effect was never
+    // discharged.
+    if !info.effects.is_empty() {
         return None;
     }
     let body = info.body_node.clone()?;
     let env = bind_params(kb, &info.params, pos_args, named_args)?;
-    let pass = super::simp_rewrite::simp_pass(kb);
+    let pass = unfold_pass(kb);
     let residual = reduce(kb, &body, &env, pass)?;
     // Case-split only a residual that is a `match` on a flex-var scrutinee — the
     // suspend shape. A `Var(Global)` here is an unbound resolver goal var (the
@@ -155,6 +153,30 @@ pub(crate) fn folded_call_match(
         }
     }
     Some((scrutinee, arms))
+}
+
+/// The pass that marks the nodes [`folded_call_match`] rebuilds, so a reader of its residual
+/// can find the operation-body node each was rebuilt from ([`residual_call_source`]).
+fn unfold_pass(kb: &mut KnowledgeBase) -> PassId {
+    kb.register_pass(UNFOLD_PASS)
+}
+
+const UNFOLD_PASS: &str = "anthill.kb.passes.unfold";
+
+/// The operation-body node a node of [`folded_call_match`]'s residual was rebuilt from, or the
+/// node itself where it was not rebuilt. A rebuild is a new node with the call's arguments
+/// substituted, and it carries none of the typer's stamps; the body node carries them — which
+/// dictionary a call is dispatched through, what it hands its callee's `requires`.
+pub(crate) fn residual_call_source(kb: &KnowledgeBase, occ: &Rc<NodeOccurrence>) -> Rc<NodeOccurrence> {
+    let Some(pass) = kb.symbols.lookup(UNFOLD_PASS).map(PassId::from_symbol) else {
+        return Rc::clone(occ);
+    };
+    let mut node = Rc::clone(occ);
+    while node.synthesized_by() == Some(pass) {
+        let Some(from) = node.synthesized_from() else { break };
+        node = Rc::clone(from);
+    }
+    node
 }
 
 /// A `match` on a tuple of the call's arguments, narrowed component by component (068 §4):

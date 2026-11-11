@@ -1047,6 +1047,20 @@ impl Interpreter {
         }
     }
 
+    /// The slots `target`'s frame takes from `dict`, a dictionary the call dispatched from
+    /// `spec_op` hands it — what eval's apply installs before it enters the body
+    /// ([`Self::expand_dispatching_dict`]), by slot name. For a reader that runs a part of
+    /// `target`'s body elsewhere and owes that part the same dictionaries (the resolver's
+    /// unfold).
+    pub(crate) fn frame_through_dictionary(
+        &mut self,
+        spec_op: Symbol,
+        target: Symbol,
+        dict: &value::Dictionary,
+    ) -> Result<Vec<(Symbol, value::Dictionary)>, EvalError> {
+        Ok(self.expand_dispatching_dict(spec_op, target, dict)?.into_vec())
+    }
+
     pub(crate) fn call_op_bridged(
         &mut self,
         sym: Symbol,
