@@ -185,7 +185,16 @@ pub(super) fn decompose_effect_row_raw(
             Some("empty_row") => {}
             Some("present") => {
                 if let Some(l) = named_child_value(kb, &node, label_key) {
-                    present.push(l);
+                    // An instance member's row whose carrier σ fixes is the row the
+                    // provisions say ([`read_instance_member`]) — read here, or by a walk
+                    // before, which leaves the row where the label stood — and its labels
+                    // are this row's.
+                    let l = read_instance_member(kb, subst, &l).unwrap_or(l);
+                    if effects_rows_inner(kb, &l).is_some() || value_is_bare_effect_expr(kb, &l) {
+                        stack.push(l);
+                    } else {
+                        present.push(l);
+                    }
                 }
             }
             // WI-478 (proposal 048): a `guarded(label, guard)` atom is

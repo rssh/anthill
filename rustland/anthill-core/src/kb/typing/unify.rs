@@ -1697,7 +1697,14 @@ pub(super) fn walk_type_deep_g(
             // ordinary σ-walk.
             let head = type_head(kb, &TermIdView(resolved));
             if matches!(head, TypeHead::RigidProjection) {
-                return if ground {
+                // An instance member's subject is an application (`Storage[C = ?p]` of
+                // `Storage[C = ?p].Val`), whose variables are walked as any type's are, and
+                // once its carrier is fixed the member is the type the provisions say, on
+                // every walk: it names no parameter whose identity a check must keep. The
+                // subject of a projection off a parameter or a sort is a name, and stays.
+                let (resolved, instance) =
+                    walk_instance_member_subject(kb, subst, resolved, ground);
+                return if ground || instance {
                     ground_rigid_projection_if_concrete(kb, subst, resolved).unwrap_or(resolved)
                 } else {
                     resolved
@@ -1743,6 +1750,56 @@ pub(super) fn walk_type_deep_g(
     }
 }
 
+/// The type an instance member `v` reads to where `subst` fixes its carrier
+/// ([`instance_member_at`]), for a reader that meets it before a walk does: a row's labels
+/// ([`decompose_effect_row_raw`]). `None` for any other type, and while the carrier is not
+/// fixed.
+pub(super) fn read_instance_member<V: TermView>(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    v: &V,
+) -> Option<Value> {
+    if !matches!(type_head(kb, v), TypeHead::RigidProjection) {
+        return None;
+    }
+    let TypeExtractor::RigidTypeProjection {
+        sort,
+        subject,
+        member,
+    } = extract_type(kb, v)
+    else {
+        return None;
+    };
+    let bindings = instance_member_bindings(kb, sort, &subject)?;
+    instance_member_at(kb, subst, sort, &bindings, member)
+}
+
+/// The instance member `proj` with its subject walked through `subst` ([`walk_type_deep_g`]),
+/// and `true`; any other projection as it is, and `false`.
+fn walk_instance_member_subject(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    proj: TermId,
+    ground: bool,
+) -> (TermId, bool) {
+    let TypeExtractor::RigidTypeProjection {
+        sort,
+        subject: Value::Term { id: subject, .. },
+        member,
+    } = extract_type(kb, &TermIdView(proj))
+    else {
+        return (proj, false);
+    };
+    if instance_member_bindings(kb, sort, &Value::term(subject)).is_none() {
+        return (proj, false);
+    }
+    let walked = walk_type_deep_g(kb, subst, subject, ground);
+    if walked == subject {
+        return (proj, true);
+    }
+    (kb.make_rigid_projection(sort, walked, member), true)
+}
+
 /// WI-383: δ-ground a `RigidProjection` when its subject has resolved (through `subst`) to
 /// a CONCRETE sort — the call-time concrete-fill CHECK. The member resolves off the
 /// carrier via [`project_type_member`] (including through the carrier's `provides` facts,
@@ -1765,6 +1822,14 @@ fn ground_rigid_projection_if_concrete(
     else {
         return None;
     };
+    // An instance member (`Storage[C = ?p].Val`) is read off its instance where its carrier is
+    // fixed ([`instance_member_at`]).
+    if let Some(bindings) = instance_member_bindings(kb, sort, &subject) {
+        let read = instance_member_at(kb, subst, sort, &bindings, member)?;
+        let read = crate::kb::node_occurrence::value_to_term(kb, &read)
+            .expect("a provision's binding is a type, which has a term");
+        return Some(walk_type_deep(kb, subst, read));
+    }
     // WI-383: an OPERATION-type-param projection grounds below (decl_sort = the op). A
     // SORT-type-param projection (decl_sort = a sort) grounds through the requirement that
     // lends its member ([`ground_sort_param_projection`], WI-20261003-QGVB1) — where that
@@ -1984,6 +2049,16 @@ impl UnreadProjection {
             else {
                 return None;
             };
+            if let Some(bindings) = instance_member_bindings(kb, *sort, subject) {
+                let carrier = instance_member_carrier(kb, subst, *sort, &bindings)?;
+                *found.borrow_mut() = Some(UnreadProjection {
+                    decl: *sort,
+                    subject: subject.clone(),
+                    member: *member,
+                    carrier,
+                });
+                return Some(true);
+            }
             let subj = view_ref_symbol(kb, subject)?;
             let walked = if kb.has_kind(*sort, crate::intern::SymbolKind::Operation) {
                 let name = kb.local_name_of(subj).to_owned();
@@ -2017,6 +2092,18 @@ impl UnreadProjection {
     /// caller holding `Pair[P = Leaf, Q = Pebble]`). `None` where no requirement lends it — a
     /// carrier's own member, read as it was.
     pub(super) fn why_unread(&self, kb: &mut KnowledgeBase) -> Option<String> {
+        let member = kb.local_name_of(self.member).to_owned();
+        // An instance member names its lender itself. Whether no provision answers the
+        // instance, or those that do name no one type, the read fails the same way.
+        if instance_member_bindings(kb, self.decl, &self.subject).is_some() {
+            let instance = type_display_name_value(kb, &self.subject);
+            return Some(format!(
+                "`{instance}.{member}` does not read at this call, where its carrier is `{}`: no \
+                 one provision answering `{instance}` names one type for `{member}` — write it \
+                 in the requirement that lends it",
+                kb.qualified_name_of(self.carrier),
+            ));
+        }
         let chain: Vec<RequiresEntry> =
             if kb.has_kind(self.decl, crate::intern::SymbolKind::Operation) {
                 op_requires_chain_rc(kb, self.decl).as_ref().clone()
@@ -2024,7 +2111,6 @@ impl UnreadProjection {
                 requires_chain(kb, self.decl)
             };
         let key = subject_key_of(kb, &self.subject)?;
-        let member = kb.local_name_of(self.member).to_owned();
         let entry = lending_requirement(kb, &chain, key, &member)?;
         let shown = format!(
             "`{}.{member}` does not read at this call, where `{}` is `{}`",

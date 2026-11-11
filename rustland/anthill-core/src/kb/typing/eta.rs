@@ -423,15 +423,26 @@ pub(super) fn operation_as_function_value(
         owner,
     )
     .unwrap_or_else(|| op.return_type.clone());
+    // A projection off a parameter the lift quantifies is that parameter's instance member
+    // ([`projection_as_instance_member`]), so each reference reads it at its own instance.
+    let return_type = projections_as_instance_members(kb, sym, &return_type);
+    let effects: Vec<Value> = op
+        .effects
+        .iter()
+        .map(|e| projections_as_instance_members(kb, sym, e))
+        .collect();
     let param = if op.params.len() == 1 {
-        op.params[0].1.clone()
+        projections_as_instance_members(kb, sym, &op.params[0].1)
     } else {
         let fields: Vec<(Symbol, Value)> = op
             .params
             .iter()
             .map(|(p, t)| {
                 let label = short_name_of(kb.local_name_of(*p)).to_owned();
-                (kb.intern(&label), t.clone())
+                (
+                    kb.intern(&label),
+                    projections_as_instance_members(kb, sym, t),
+                )
             })
             .collect();
         named_tuple_value(kb, &fields, span, owner)
@@ -451,7 +462,7 @@ pub(super) fn operation_as_function_value(
         kb,
         &param,
         &return_type,
-        &op.effects,
+        &effects,
         &binders,
         span,
         owner,
@@ -459,6 +470,77 @@ pub(super) fn operation_as_function_value(
     // WI-1083: ∀ over whatever the signature binds — and the bare arrow unchanged when it
     // binds nothing, which is every operation this function could lift before.
     Some(generalize_eta_arrow(kb, sym, &op, arrow, span, owner))
+}
+
+/// `ty` with each projection off a parameter the lift of `op` quantifies read as that
+/// parameter's instance member ([`projection_as_instance_member`]).
+fn projections_as_instance_members(kb: &mut KnowledgeBase, op: Symbol, ty: &Value) -> Value {
+    rewrite_type_leaves(kb, ty, &|kb, leaf| {
+        projection_as_instance_member(kb, op, leaf)
+    })
+    .unwrap_or_else(|| ty.clone())
+}
+
+/// The member a projection off one of `op`'s parameters names, as the member of the instance of
+/// the requirement that lends it: `P.Val` under `requires Storage[C = P]` is `Storage[C =
+/// P].Val`. The projection names `op`'s own `P`, which no reference instantiates — a call reads
+/// it through its own binding of `P`, a function value is used where another call binds the
+/// variable — while the instance names the variable, so the reference's instantiation reaches it
+/// and the type is read wherever that variable is fixed ([`instance_member_bindings`]). `P` is
+/// an operation's bracket parameter, written as the variable its ∀ binds, or a parameter of the
+/// sort declaring `op`, written as the sort's parameter, which
+/// [`open_declaring_sort_params`] opens. `None` for any other leaf, and for a projection no
+/// requirement lends (a carrier's own member).
+fn projection_as_instance_member(
+    kb: &mut KnowledgeBase,
+    op: Symbol,
+    leaf: &Value,
+) -> Option<Value> {
+    if !matches!(type_head(kb, leaf), TypeHead::RigidProjection) {
+        return None;
+    }
+    let TypeExtractor::RigidTypeProjection {
+        sort: decl,
+        subject,
+        member,
+    } = extract_type(kb, leaf)
+    else {
+        return None;
+    };
+    let (chain, sigma): (Vec<RequiresEntry>, Vec<(String, Value)>) =
+        if decl == op && kb.has_kind(op, crate::intern::SymbolKind::Operation) {
+            let params = crate::kb::op_info::lookup_operation_info(kb, op)?.type_params;
+            let sigma = params
+                .into_iter()
+                .filter(|(_, var)| matches!(var, Var::Global(_)))
+                .map(|(name, var)| {
+                    let short = short_name_of(kb.local_name_of(name)).to_owned();
+                    (short, Value::term(type_param_var_term(kb, var)))
+                })
+                .collect();
+            (op_requires_chain_rc(kb, op).as_ref().clone(), sigma)
+        } else if impl_parent_sort_of_op(kb, op) == Some(decl) {
+            (requires_chain(kb, decl), Vec::new())
+        } else {
+            return None;
+        };
+    let key = subject_key_of(kb, &subject)?;
+    let name = kb.local_name_of(member).to_owned();
+    let entry = lending_requirement(kb, &chain, key, &name)?.clone();
+    let goal = requirement_goal(kb, &entry, &|kb, v| subst_requires_value(kb, v, &sigma));
+    let mut bindings: Vec<(Symbol, TermId)> = Vec::with_capacity(goal.bindings.len());
+    for (k, v) in &goal.bindings {
+        let t = crate::kb::node_occurrence::value_to_term(kb, v)
+            .expect("a requirement's binding is a type, which has a term");
+        bindings.push((*k, t));
+    }
+    let base = kb.make_sort_ref(goal.spec_sort);
+    let instance = kb.make_parameterized_type(base, &bindings);
+    Some(Value::term(kb.make_rigid_projection(
+        goal.spec_sort,
+        instance,
+        member,
+    )))
 }
 
 /// WI-700: is `sym` a NULLARY (zero-parameter) operation? Only a nullary op has both

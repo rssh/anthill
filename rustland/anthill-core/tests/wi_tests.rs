@@ -2465,3 +2465,5 @@ mod wi_mhf0b_binder_typed_through_callee_var_test;
 mod wi_kq6dg_occurs_check_through_sigma_test;
 #[path = "include/wi_ycz0j_carrier_names_inherited_member_test.rs"]
 mod wi_ycz0j_carrier_names_inherited_member_test;
+#[path = "include/wi_kbz4f_operation_value_reads_projection_test.rs"]
+mod wi_kbz4f_operation_value_reads_projection_test;

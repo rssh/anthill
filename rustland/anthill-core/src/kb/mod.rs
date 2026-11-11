@@ -12860,10 +12860,10 @@ impl KnowledgeBase {
     /// the TYPE-receiver projection `P.Key` / `MemStore.Key` (WI-428, design §5.3): the
     /// type-keyed sibling of [`Self::make_expr_carried`]. `subject` is the projection's
     /// receiver TERM — `Ref(P)` for a rigid type-parameter, `Ref(S)` for a concrete
-    /// sort; `decl_sort` is the sort whose `requires` chain lends the subject its
-    /// members (= the subject itself for a concrete-sort subject — the discriminator
-    /// the eliminator uses). All three slots are ground, so the projection always
-    /// hash-conses (no Node carrier).
+    /// sort, or an application of `decl_sort` for the member of that instance; `decl_sort` is
+    /// the sort whose `requires` chain lends the subject its members (= the subject itself
+    /// for a concrete-sort subject — the discriminator the eliminator uses). Every slot is a
+    /// term, so the projection always hash-conses (no Node carrier).
     pub fn make_rigid_projection(
         &mut self,
         decl_sort: Symbol,

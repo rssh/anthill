@@ -83,9 +83,11 @@ pub enum TypeExtractor {
     /// WI-428: a RIGID type-receiver projection `P.Key` / `MemStore.Key` — the
     /// type-keyed sibling of [`TypeExtractor::ExprCarried`] (design §5.3). `subject`
     /// is the projection's receiver type term (`Ref(P)` for a rigid type-parameter,
-    /// `Ref(S)` for a concrete sort); `sort` is the sort whose `requires` chain lends
-    /// the subject its members (= the subject's own symbol for a concrete-sort
-    /// subject); `member` the projected member name.
+    /// `Ref(S)` for a concrete sort, or an application of the spec `sort` for the member of
+    /// that instance, `Storage[C = ?p].Val`, which an operation taken as a function value
+    /// writes for a projection off its own parameter); `sort` is the sort whose `requires`
+    /// chain lends the subject its members (= the subject's own symbol for a concrete-sort
+    /// subject, the spec for an instance); `member` the projected member name.
     RigidTypeProjection {
         sort: Symbol,
         subject: Value,

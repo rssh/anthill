@@ -3889,9 +3889,14 @@ pub(super) fn member_through_lending_requirement(
     let key = subject_key_of(kb, subject)?;
     let name = kb.local_name_of(member).to_owned();
     let entry = lending_requirement(kb, chain, key, &name)?;
-    // The member alone is said, where the requirement leaves it unwritten: a slot the
-    // provisions name apart beside it does not leave it unread.
-    let mut goal = requirement_goal(kb, entry, &|kb, v| subst_requires_value(kb, v, sigma));
+    let goal = requirement_goal(kb, entry, &|kb, v| subst_requires_value(kb, v, sigma));
+    goal_member(kb, goal, &name)
+}
+
+/// The member `name` of the instance `goal` states, read as the provisions answering the rest
+/// say it where the goal leaves it unwritten. Only the member is said: a slot the provisions name
+/// apart beside it does not leave it unread. `None` where it is not one type.
+fn goal_member(kb: &mut KnowledgeBase, mut goal: SortGoal, name: &str) -> Option<Value> {
     if let Some(open) = goal
         .left_open
         .iter()
@@ -3905,6 +3910,73 @@ pub(super) fn member_through_lending_requirement(
         .iter()
         .find(|(k, _)| short_name_of(kb.local_name_of(*k)) == name)?;
     (!view_contains_type_param(kb, v)).then(|| v.clone())
+}
+
+/// The bindings of the instance an instance member is taken off: `[C = ?p]` of `Storage[C =
+/// ?p].Val`, the projection whose subject is an application of the spec it is read through.
+/// `None` for a projection off a parameter or a sort, whose subject is a name. A function value
+/// made from an operation writes one for each projection off a parameter it quantifies
+/// (`projection_as_instance_member`).
+pub(super) fn instance_member_bindings(
+    kb: &KnowledgeBase,
+    spec: Symbol,
+    subject: &Value,
+) -> Option<Vec<(Symbol, Value)>> {
+    match extract_type(kb, subject) {
+        TypeExtractor::Parameterized { base, bindings } if same_sort_canonical(kb, base, spec) => {
+            Some(bindings)
+        }
+        _ => None,
+    }
+}
+
+/// The concrete sort `subst` fixes an instance's carrier at — the binding of the spec's carrier
+/// parameter — or `None` while it is a variable or a type parameter.
+pub(super) fn instance_member_carrier(
+    kb: &KnowledgeBase,
+    subst: &Substitution,
+    spec: Symbol,
+    bindings: &[(Symbol, Value)],
+) -> Option<Symbol> {
+    let carrier_param = clause_carrier_param(kb, spec)?;
+    let short = short_name_of(kb.local_name_of(carrier_param));
+    let (_, at) = bindings
+        .iter()
+        .find(|(k, _)| short_name_of(kb.local_name_of(*k)) == short)?;
+    let walked = walk_value_to_resolved(kb, subst, at.clone());
+    genuine_concrete_sort(kb, extract_sort_ref_sym(kb, &walked)?)
+}
+
+/// An instance member read where `subst` fixes its instance's carrier at a concrete sort, as a
+/// requirement lending a parameter's member is read ([`member_through_lending_requirement`]):
+/// `Storage[C = ?p].Val` with `?p := MemStore` is the `Val` of the provision answering
+/// `Storage[C = MemStore]`. A binding still a variable or a type parameter selects nothing and is
+/// left open. `None` while the carrier is not fixed, or where the member is not one type.
+pub(super) fn instance_member_at(
+    kb: &mut KnowledgeBase,
+    subst: &Substitution,
+    spec: Symbol,
+    bindings: &[(Symbol, Value)],
+    member: Symbol,
+) -> Option<Value> {
+    instance_member_carrier(kb, subst, spec, bindings)?;
+    let mut written: SmallVec<[(Symbol, Value); 2]> = SmallVec::new();
+    for (k, v) in bindings {
+        let walked = walk_type_deep_value(kb, subst, v);
+        if matches!(walked.head(kb), ViewHead::Var(_)) || is_type_param_view(kb, &walked) {
+            continue;
+        }
+        written.push((*k, walked));
+    }
+    let left_open = unwritten_requires_slots(kb, spec, &written);
+    let goal = SortGoal {
+        spec_sort: spec,
+        bindings: written,
+        carrier: None,
+        left_open,
+    };
+    let name = kb.local_name_of(member).to_owned();
+    goal_member(kb, goal, &name)
 }
 
 /// WI-20261003-QGVB1 — the one entry of `chain` that lends `member` to the parameter keyed
