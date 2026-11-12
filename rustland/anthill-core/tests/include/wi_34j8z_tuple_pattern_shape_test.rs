@@ -472,7 +472,7 @@ fn two_uses_giving_one_pattern_two_label_sets_are_refused() {
 /// What the shape does not decide is as it was. A named value at a pattern no type declares is
 /// read by the labels its type carries (§6.7's fallback, now the use's type), not refused as a
 /// positional tuple type would refuse it; the labels are the type's, never the binder names; and
-/// a lambda nothing uses has no evidence for its binders.
+/// a lambda nothing uses keeps what its body owes in its type.
 #[test]
 fn what_the_shape_does_not_decide_is_unchanged() {
     // [1]
@@ -484,12 +484,9 @@ fn what_the_shape_does_not_decide_is_unchanged() {
     );
     // [2]: the use's type is `(b: Int64, a: Int64)`, and the binder named `a` reads its first.
     assert_eq!(runs("wi_34j8z.same3", "", "    let g = lambda ((a, b), c) -> a\n    g((b: 2, a: 1), 3)"), Ok(2));
-    // [refused: "missing `requires Additive[T = …]`"]
-    refused(
-        "wi_34j8z.same4",
-        "",
-        "    let g = lambda ((a, b), c) -> a + b\n    1",
-        &["Additive"],
-        "a lambda no use gives its binders' types",
-    );
+    // [1]: quantified over its binders' type, the `Additive` it owes in that type, as the single
+    // binder of `lambda x -> x + x` is. Was refused "missing `requires Additive[T = …]`" while
+    // the walks that quantify a lambda did not see a variable in its own tuple of binder types
+    // (WI-20260929-6NMGQ).
+    assert_eq!(runs("wi_34j8z.same4", "", "    let g = lambda ((a, b), c) -> a + b\n    1"), Ok(1));
 }

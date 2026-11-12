@@ -1250,6 +1250,12 @@ pub(super) fn holds_a_type_var(kb: &KnowledgeBase, v: &impl TermView) -> bool {
     view_holds_var(kb, v, &|_| true)
 }
 
+/// Does `v` hold a type variable that is no declared type parameter's own — one inference
+/// still has to solve ([`KnowledgeBase::is_canonical_type_param_var`])?
+pub(super) fn holds_an_unsolved_type_var(kb: &KnowledgeBase, v: &impl TermView) -> bool {
+    view_holds_var(kb, v, &|w| !kb.is_canonical_type_param_var(w))
+}
+
 /// Does `v` hold a variable `hit` answers for — a flex `Global` it names, or one a bare head
 /// naming a sort-level type parameter stands for ([`bare_head_param_var`])? The walk of
 /// both occurs checks, [`occurs_in_view`] as written and [`occurs_through`] through σ.

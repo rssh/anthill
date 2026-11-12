@@ -3576,6 +3576,25 @@ trait TypeChildRewrite {
         let (nt, ch) = self.term(kb, t);
         (Value::term(nt), ch)
     }
+    /// A type variable on the value carrier ([`map_value_type`]'s `Value::Var` arm, a
+    /// `NamedTuple` field's): [`Self::var`]'s answer, handed back as a value. The default
+    /// builds the occurrence `var` reads; a rewriter that can tell a variable it leaves alone
+    /// without one says so first ([`Self::leaves_var`]).
+    fn value_var(&self, kb: &mut KnowledgeBase, v: Var) -> (Value, bool) {
+        if self.leaves_var(kb, v) {
+            return (Value::Var(v), false);
+        }
+        let occ = kb.make_type_var_occ(v, empty_span(), None);
+        match self.var(kb, v, &occ) {
+            (child, true) => (type_child_as_value(&child), true),
+            (_, false) => (Value::Var(v), false),
+        }
+    }
+    /// Does [`Self::var`] keep `v` as it is? Asked before an occurrence is built for it; the
+    /// default asks `var`, so a rewriter that overrides `var` alone is still asked.
+    fn leaves_var(&self, _kb: &KnowledgeBase, _v: Var) -> bool {
+        false
+    }
 }
 
 fn map_type_child<R: TypeChildRewrite>(
@@ -3765,7 +3784,8 @@ fn map_type_node<R: TypeChildRewrite>(
 /// `Value::Entity`/`Tuple` (the `NamedTuple.fields` `List[TypeField]` cons-list,
 /// whose element field-types can themselves be `Value::Term`/`Value::Node`)
 /// recurses into its children — matching the head-side `close_value_head_debruijn`
-/// and the occurs-check, which also descend that cons-list. A scalar / other
+/// and the occurs-check, which also descend that cons-list. A `Value::Var` (a field
+/// type that is a variable) is rewritten by the rewriter's `var`. A scalar / other
 /// carrier has no vars (no-op).
 fn map_value_type<R: TypeChildRewrite>(r: &R, kb: &mut KnowledgeBase, v: &Value) -> (Value, bool) {
     match v {
@@ -3813,6 +3833,10 @@ fn map_value_type<R: TypeChildRewrite>(r: &R, kb: &mut KnowledgeBase, v: &Value)
                 (v.clone(), false)
             }
         }
+        // A type variable on the value carrier, a `NamedTuple` field's
+        // ([`occurrence_as_type_value`]): rewritten by the rewriter's `var`, as the
+        // `TypeNode::Var` it stands for is, and handed back on the value carrier.
+        Value::Var(var) => r.value_var(kb, *var),
         // Scalars / runtime carriers hold no type vars — leave untouched.
         other => (other.clone(), false),
     }
@@ -3978,6 +4002,9 @@ impl TypeChildRewrite for ClauseCanonRewrite {
             None => (TypeChild::Node(Rc::clone(occ)), false),
         }
     }
+    fn leaves_var(&self, kb: &KnowledgeBase, v: Var) -> bool {
+        !matches!(v, Var::Global(vid) if kb.type_param_of_canonical_var(vid).is_some())
+    }
 }
 
 struct CloseTypeRewrite<'a> {
@@ -4013,6 +4040,10 @@ impl TypeChildRewrite for CloseTypeRewrite<'_> {
             (TypeChild::Node(Rc::clone(occ)), false)
         }
     }
+    /// A variable `var_order` does not name is left as it is, and is not interned to find so.
+    fn leaves_var(&self, _kb: &KnowledgeBase, v: Var) -> bool {
+        !matches!(v, Var::Global(vid) if self.var_order.contains(&vid))
+    }
 }
 
 struct OpenTypeRewrite<'a> {
@@ -4045,6 +4076,9 @@ impl TypeChildRewrite for OpenTypeRewrite<'_> {
         };
         (kb.type_var_child(opened, occ.span, occ.owner), true)
     }
+    fn leaves_var(&self, _kb: &KnowledgeBase, v: Var) -> bool {
+        !matches!(v, Var::DeBruijn(_))
+    }
 }
 
 /// WI-20260925-SHED7 — [`OpenTypeRewrite`] for a value spliced into a rule body
@@ -4065,6 +4099,9 @@ impl TypeChildRewrite for OpenSplicedValue<'_> {
     }
     fn var(&self, kb: &mut KnowledgeBase, v: Var, occ: &Rc<NodeOccurrence>) -> (TypeChild, bool) {
         self.0.var(kb, v, occ)
+    }
+    fn leaves_var(&self, kb: &KnowledgeBase, v: Var) -> bool {
+        self.0.leaves_var(kb, v)
     }
     fn value_term(&self, kb: &mut KnowledgeBase, t: TermId) -> (Value, bool) {
         if !kb.term_mentions_debruijn(t) {
@@ -4343,6 +4380,10 @@ impl TypeChildRewrite for SubstTypeRewrite<'_> {
                 (TypeChild::Interned(t), true)
             }
         }
+    }
+    /// An unbound variable, or one σ does not read (`DeBruijn`, `Rigid`), is kept.
+    fn leaves_var(&self, _kb: &KnowledgeBase, v: Var) -> bool {
+        !matches!(v, Var::Global(vid) if self.subst.resolve_as_value(vid).is_some())
     }
 }
 
@@ -4714,8 +4755,8 @@ fn collect_expr_termid_field_vars(
 /// the var set gathered here is exactly the set those rewriters close (WI-378).
 /// A `Value::Term` reads via `collect_vars_rec`; a `Value::Node` descends the
 /// Type/EffectExpr spine; a `Value::Entity`/`Tuple` (the `NamedTuple.fields`
-/// `List[TypeField]` cons-list) recurses into its element field types; scalars /
-/// other carriers contribute nothing.
+/// `List[TypeField]` cons-list) recurses into its element field types; a `Value::Var` (a
+/// field type that is a variable) is collected; scalars / other carriers contribute nothing.
 ///
 /// `pub(super)` for WI-1078, which asks this exact question of a declared signature
 /// (which variables does this type mention?) and must get the SAME answer the
@@ -4731,6 +4772,14 @@ pub(super) fn collect_value_type(
     match v {
         Value::Term { id: t, .. } => kb.collect_vars_rec(t, vars, seen),
         Value::Node(occ) => collect_type_or_expr_node_vars(kb, occ, vars, seen),
+        // A type variable on the value carrier: a field type of a `NamedTuple` list
+        // ([`occurrence_as_type_value`]), as a lambda's own tuple of unannotated binders
+        // holds one. Collected as its `TypeNode::Var` and `Term::Var` twins are.
+        Value::Var(Var::Global(vid)) => {
+            if seen.insert(vid.raw()) {
+                vars.push(*vid);
+            }
+        }
         Value::Entity { pos, named, .. } | Value::Tuple { pos, named, .. } => {
             for c in pos.iter() {
                 collect_value_type(kb, c, vars, seen);

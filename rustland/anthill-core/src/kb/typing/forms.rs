@@ -1046,7 +1046,7 @@ impl WalkSolutions {
         let bound: Vec<Value> = outer_env.bound_types().cloned().collect();
         for t in bound {
             let r = resolve_type_deep_value(kb, &self.solved, &t);
-            collect_value_type_and_bare_vars(kb, &r, &mut out, &mut seen);
+            crate::kb::node_occurrence::collect_value_type(kb, &r, &mut out, &mut seen);
         }
         out
     }
@@ -1104,7 +1104,7 @@ impl WalkSolutions {
         let resolved = resolve_type_deep_value(kb, &self.solved, bound);
         let mut free: Vec<VarId> = Vec::new();
         let mut seen = HashSet::new();
-        collect_value_type_and_bare_vars(kb, &resolved, &mut free, &mut seen);
+        crate::kb::node_occurrence::collect_value_type(kb, &resolved, &mut free, &mut seen);
         let env_free = self.env_free_vars(kb, outer_env);
         let mut binders: Vec<VarId> = Vec::new();
         let mut context: Vec<Value> = Vec::new();
@@ -1114,13 +1114,32 @@ impl WalkSolutions {
         // (at once the UNSOLVED test and the EXPRESSIBILITY one — quantifying a variable the
         // type does not mention gives an obligation no instantiation can reach) and none may
         // be free in the enclosing environment.
+        //
+        // A carrier the walk linked to another is read as the variable its chain ends at: the
+        // two carriers of `Store.both(a, b)` over `lambda (a, b)`, or over a curried `lambda a
+        // -> lambda b`, are one variable once the call has unified them, and the entry is
+        // re-keyed to it ([`DeferredSpecRequirement::rekey_to_roots`]). Read as written, the
+        // second was bound and so not free, and the lambda was not generalized: two uses at
+        // two types were refused, and a use at the enclosing declaration's `S` beside one at
+        // `Buf` read `Buf`'s dictionary for both.
         for i in 0..self.deferred.len() {
-            if self.deferred[i].generalized
-                || !self.deferred[i].carriers.iter().all(|v| free.contains(v))
-                || self.deferred[i]
-                    .carriers
-                    .iter()
-                    .any(|v| env_free.contains(v))
+            if self.deferred[i].generalized {
+                continue;
+            }
+            let Some(roots) = self.deferred[i]
+                .carriers
+                .iter()
+                .map(|c| sigma_root(kb, &self.solved, *c))
+                .collect::<Option<SmallVec<[VarId; 2]>>>()
+            else {
+                continue;
+            };
+            // A root this walk did not mint — the enclosing declaration's own type parameter,
+            // which a carrier was unified with — is no variable a lambda of this walk may
+            // quantify.
+            if !roots
+                .iter()
+                .all(|v| v.raw() >= self.watermark && free.contains(v) && !env_free.contains(v))
             {
                 continue;
             }
@@ -1129,6 +1148,7 @@ impl WalkSolutions {
                 continue;
             };
             let base = kb.make_sort_ref(spec_sort);
+            self.deferred[i].rekey_to_roots(&roots);
             let carriers = self.deferred[i].carriers.clone();
             for v in &carriers {
                 let carrier_ty = Value::term(type_param_var_term(kb, Var::Global(*v)));
@@ -1186,7 +1206,10 @@ impl WalkSolutions {
             }
             d.instances.retain(|v| !moved.contains(v));
             d.moved.extend(moved.iter().copied());
-            let origin = moved.iter().map(|v| (*v, d.origin_of(*v))).collect();
+            let origin = moved
+                .iter()
+                .flat_map(|v| d.origins_of(*v).into_iter().map(move |o| (*v, o)))
+                .collect();
             spawned.push(DeferredSpecRequirement {
                 occ: Rc::clone(&d.occ),
                 carriers: moved,
@@ -1264,8 +1287,9 @@ impl WalkSolutions {
                     claimed_here = true;
                     if !d.instances.contains(new) {
                         d.instances.push(*new);
-                        let origin = d.origin_of(*old);
-                        d.origin.push((*new, origin));
+                        for origin in d.origins_of(*old) {
+                            d.origin.push((*new, origin));
+                        }
                         d.sites.push((*new, Rc::clone(site)));
                     }
                 }
@@ -1279,6 +1303,20 @@ impl WalkSolutions {
             }
         }
         matched
+    }
+
+    /// The application `old`, a site [`Self::note_instantiation`] recorded, was rebuilt as `new`
+    /// — its tupled form, or a coerced argument wrapped: the dictionaries the discharge hands
+    /// the application go on the node the run time evaluates. Left on `old`, `f(buf(v: 7), 1)`
+    /// over `lambda (a, b) -> Store.peek(a) + b` ran with its slot unbound.
+    pub(super) fn application_rebuilt(&mut self, old: &Rc<NodeOccurrence>, new: &Rc<NodeOccurrence>) {
+        for d in &mut self.deferred {
+            for (_, site) in d.sites.iter_mut() {
+                if Rc::ptr_eq(site, old) {
+                    *site = Rc::clone(new);
+                }
+            }
+        }
     }
 
     /// The shapes [`Self::note_instantiation`] copies at one ∀-elimination.
@@ -1296,7 +1334,7 @@ impl WalkSolutions {
             let mut named: Vec<VarId> = vec![shape.parent];
             let mut seen = HashSet::new();
             for c in &shape.components {
-                collect_value_type_and_bare_vars(kb, c, &mut named, &mut seen);
+                crate::kb::node_occurrence::collect_value_type(kb, c, &mut named, &mut seen);
             }
             if !named.into_iter().any(quantified) {
                 continue;
@@ -1387,7 +1425,11 @@ impl WalkSolutions {
             let mut at: SmallVec<[(VarId, Value); 2]> = SmallVec::new();
             for c in &own.carriers {
                 match self.one_type_of(kb, own, *c)? {
-                    Some(ty) => at.push((own.origin_of(*c), ty)),
+                    Some(ty) => {
+                        for o in own.origins_of(*c) {
+                            at.push((o, ty.clone()));
+                        }
+                    }
                     None => {
                         self.unanswered(kb, own);
                         return Ok(());
@@ -1419,7 +1461,9 @@ impl WalkSolutions {
                 let mut at: SmallVec<[(VarId, Value); 2]> = SmallVec::new();
                 for v in &vars {
                     if let Some(ty) = self.one_type_of(kb, d, *v)? {
-                        at.push((d.origin_of(*v), ty));
+                        for o in d.origins_of(*v) {
+                            at.push((o, ty.clone()));
+                        }
                     }
                 }
                 let dict = lambda_requirement_dict(kb, call, &frame, &at, Some(site.span.span))?;
@@ -1449,15 +1493,21 @@ impl WalkSolutions {
         d: &DeferredSpecRequirement,
         var: VarId,
     ) -> Result<Option<Value>, TypeError> {
+        // Open: it holds a variable inference still has to solve. A declared type parameter's
+        // own is no such part — `S` beside `Buf` is two types, and read as open, `S` yielded
+        // to `Buf` and its use read `Buf`'s dictionary.
+        let open = |kb: &KnowledgeBase, ty: &Value| {
+            !type_is_ground(kb, ty) && holds_an_unsolved_type_var(kb, ty)
+        };
         let mut found: Option<Value> = None;
         for (_, ty) in d.uses.iter().filter(|(w, _)| *w == var) {
             let ty = resolve_type_deep_value(kb, &self.solved, ty);
             match &found {
                 None => found = Some(ty),
                 Some(first) if views_structurally_equal(kb, first, &ty) => {}
-                Some(first) => match (type_is_ground(kb, first), type_is_ground(kb, &ty)) {
-                    (false, true) => found = Some(ty),
-                    (true, true) => {
+                Some(first) => match (open(kb, first), open(kb, &ty)) {
+                    (true, false) => found = Some(ty),
+                    (false, false) => {
                         let first = type_display_name_value(kb, first);
                         let second = type_display_name_value(kb, &ty);
                         return Err(d.call.refusal(
@@ -1559,12 +1609,36 @@ pub(super) fn classify_or_hold_deferral(
 }
 
 impl DeferredSpecRequirement {
-    /// The variable of the held call's σ `var` stands for ([`Self::origin`]).
-    fn origin_of(&self, var: VarId) -> VarId {
+    /// The variables of the held call's σ `var` stands for ([`Self::origin`]): one, unless
+    /// [`Self::rekey_to_roots`] made `var` the root of carriers that stood for two. None for
+    /// a carrier the call's σ already decided (the binder deferral records no root for it):
+    /// the σ holds its type, and a use's type has nothing to be bound to.
+    fn origins_of(&self, var: VarId) -> SmallVec<[VarId; 1]> {
         self.origin
             .iter()
-            .find(|(w, _)| *w == var)
-            .map_or(var, |(_, o)| *o)
+            .filter(|(w, _)| *w == var)
+            .map(|(_, o)| *o)
+            .collect()
+    }
+
+    /// The carriers read as `roots`, the variables the walk's σ ends their chains at, one per
+    /// carrier: each root is a carrier once, and stands for the σ variables of every carrier
+    /// whose chain ends at it.
+    fn rekey_to_roots(&mut self, roots: &[VarId]) {
+        let mut carriers: SmallVec<[VarId; 2]> = SmallVec::new();
+        let mut origin: SmallVec<[(VarId, VarId); 2]> = SmallVec::new();
+        for (c, r) in self.carriers.iter().zip(roots) {
+            if !carriers.contains(r) {
+                carriers.push(*r);
+            }
+            for o in self.origins_of(*c) {
+                if !origin.contains(&(*r, o)) {
+                    origin.push((*r, o));
+                }
+            }
+        }
+        self.carriers = carriers;
+        self.origin = origin;
     }
 }
 
@@ -1636,10 +1710,8 @@ pub(super) fn carrier_provides_spec(kb: &KnowledgeBase, carrier: Symbol, spec: S
 /// which **3** have a walk-minted carrier, and all three are the fixtures this ticket
 /// added. The predicate is therefore narrow by measurement, not by argument.
 ///
-/// The bare `Value::Var` arm is written HERE and not left to `collect_value_type`, for the
-/// reason [`value_vars_all_walk_local`] states at length: that collector has no
-/// `Value::Var` arm and a `_ => {}`, so a carrier that IS a variable — which is this
-/// function's whole population — would collect nothing and read as empty.
+/// A carrier that IS a variable is this function's whole population, so it reads a collector
+/// that sees a `Value::Var` at every depth ([`value_vars_all_walk_local`]).
 ///
 /// **EVERY ARGUMENT POSITION, NOT THE CARRIER POSITIONS**, and the imprecision is stated
 /// because it is a deliberate approximation rather than an oversight. A spec op whose
@@ -1652,10 +1724,7 @@ pub(super) fn carrier_provides_spec(kb: &KnowledgeBase, carrier: Symbol, spec: S
 /// **THE CONVERSE IS NOT SYMMETRIC, AND MY FIRST DOC CLAIMED IT WAS.** A SUBSET is a LOOSER
 /// licence: a carrier this list omits is never demanded of the discharge, so the call is
 /// licensed on the other binders' evidence alone — the exact half-evidence case
-/// [`DeferredSpecRequirement::uses`] is per-variable to prevent. Raised by /code-review
-/// against the collector, and the reason this reads
-/// [`collect_value_type_and_bare_vars`] rather than the shared collector, whose missing
-/// `Value::Var` arm produces precisely that subset.
+/// [`DeferredSpecRequirement::uses`] is per-variable to prevent.
 pub(super) fn walk_minted_carriers(
     kb: &KnowledgeBase,
     pos_results: &[Result<TypeResult, TypeError>],
@@ -1666,7 +1735,7 @@ pub(super) fn walk_minted_carriers(
     for r in pos_results.iter().chain(named_results.iter()).flatten() {
         let mut vars: Vec<VarId> = Vec::new();
         let mut seen = HashSet::new();
-        collect_value_type_and_bare_vars(kb, &r.ty, &mut vars, &mut seen);
+        crate::kb::node_occurrence::collect_value_type(kb, &r.ty, &mut vars, &mut seen);
         for v in vars {
             if v.raw() >= watermark && !out.contains(&v) {
                 out.push(v);
@@ -2014,80 +2083,28 @@ pub(super) fn report_call_solutions(
     }
 }
 
-/// WI-20260904-50B2K part (c) — [`collect_value_type`]'s walk PLUS THE ARM IT LACKS: a
-/// bare `Value::Var`, at EVERY depth.
-///
-/// **THE SHARED COLLECTOR CANNOT ANSWER THIS QUESTION, AND ANSWERING IT WRONG IS SILENT.**
-/// `collect_value_type` has arms for `Value::Term`, `Value::Node` and `Value::Entity` /
-/// `Value::Tuple`, then `_ => {}` — a bare `Value::Var` contributes NOTHING. Its three
-/// callers here all ask "which variables does this value mention?", and for all three an
-/// under-collecting answer fails in the UNSAFE direction: a walk-local gate answers `true`
-/// on an empty list, an occurs-check answers "no cycle", and a carrier list omits a binder
-/// the discharge would otherwise have demanded evidence for.
-///
-/// THE FIRST CUT HANDLED THE TOP LEVEL ONLY, in each of the three, and /code-review found
-/// all three: `Value::Tuple { … Value::Var(?a) … }` walks straight past the special case
-/// into the shared collector, which recurses into the children WITH ITSELF and drops the
-/// var. So the special case covered exactly the depth-0 shape and nothing under it.
-///
-/// **NOT FIXED IN `collect_value_type` ITSELF, AND THAT IS THE SAME DECISION AS BEFORE.**
-/// That collector feeds [`signature_bound_vars`], the ONE OWNER of a signature's binder set
-/// (WI-1083) — widening it changes which variables a `∀` quantifies. It is measurably green
-/// either way and the shape occurs ZERO times on this corpus, so the wider change still has
-/// no witness. This one is LOCAL to the three functions part (c) owns, has no other reader,
-/// and can only TIGHTEN; the under-collection in the shared collector is real, is NOT this
-/// ticket's, and is recorded at its site.
-fn collect_value_type_and_bare_vars(
-    kb: &KnowledgeBase,
-    v: &Value,
-    vars: &mut Vec<VarId>,
-    seen: &mut HashSet<u32>,
-) {
-    match v {
-        Value::Var(Var::Global(vid)) => {
-            if !vars.contains(vid) {
-                vars.push(*vid);
-            }
-        }
-        // Recurse with THIS function, not the shared one: the shared one recurses into a
-        // carrier's children with ITSELF, which is exactly where the bare var is lost.
-        Value::Entity { pos, named, .. } | Value::Tuple { pos, named, .. } => {
-            for c in pos.iter() {
-                collect_value_type_and_bare_vars(kb, c, vars, seen);
-            }
-            for (_, c) in named.iter() {
-                collect_value_type_and_bare_vars(kb, c, vars, seen);
-            }
-        }
-        other => crate::kb::node_occurrence::collect_value_type(kb, other, vars, seen),
-    }
-}
-
 /// WI-20261105-MHF0B — does `ty` name a declared type parameter's own variable, at any depth
 /// ([`KnowledgeBase::is_canonical_type_param_var`])? The variable is one at every call site, so a
 /// type naming it is a callee's parameter type, read before a call's σ instantiates it.
 pub(super) fn names_a_type_parameter_variable(kb: &KnowledgeBase, ty: &Value) -> bool {
     let mut vars: Vec<VarId> = Vec::new();
     let mut seen = HashSet::new();
-    collect_value_type_and_bare_vars(kb, ty, &mut vars, &mut seen);
+    crate::kb::node_occurrence::collect_value_type(kb, ty, &mut vars, &mut seen);
     vars.iter().any(|v| kb.is_canonical_type_param_var(*v))
 }
 
 /// WI-20260904-50B2K part (c) — is every variable inside `v` walk-local? The RANGE half of
 /// [`report_call_solutions`]' gate; the measurement that made it necessary is there.
 ///
-/// **IT READS [`collect_value_type_and_bare_vars`], AND THE REASON IS THIS GATE'S OWN
-/// HISTORY.** The first cut asked `collect_value_type`, which has no `Value::Var` arm, so
-/// a binding `?param := Value::Var(T_canonical)` — the shape `unify_types`' var arm mints
-/// when it binds one variable to another's WALKED value — collected ZERO variables and
-/// `all()` answered `true` on an empty list, admitting exactly the leak the gate exists to
-/// stop. The repair then handled the TOP LEVEL only, which /code-review found in turn: the
-/// same value one carrier deep (`Value::Tuple { … Value::Var(?T) … }`) walks past the
-/// special case and is dropped by the shared collector's own recursion. A GATE IS ONLY AS
-/// EXHAUSTIVE AS THE READER IT ASKS, and asking it at one depth is asking it at one depth.
+/// A GATE IS ONLY AS EXHAUSTIVE AS THE READER IT ASKS. A collector blind to a `Value::Var`
+/// makes `all()` answer `true` on an empty list — a binding `?param := Value::Var(T_canonical)`
+/// (the shape `unify_types`' var arm mints when it binds one variable to another's walked value)
+/// admitted exactly the leak this gate exists to stop, and so did the same value one carrier deep
+/// (`Value::Tuple { … Value::Var(?T) … }`). `node_occurrence::collect_value_type` sees it at
+/// every depth, inside a type node too (a `NamedTuple` field of a lambda's own tuple of binders).
 pub(super) fn value_vars_all_walk_local(kb: &KnowledgeBase, v: &Value, watermark: u32) -> bool {
     let mut vars: Vec<VarId> = Vec::new();
     let mut seen = HashSet::new();
-    collect_value_type_and_bare_vars(kb, v, &mut vars, &mut seen);
+    crate::kb::node_occurrence::collect_value_type(kb, v, &mut vars, &mut seen);
     vars.iter().all(|vid| vid.raw() >= watermark)
 }

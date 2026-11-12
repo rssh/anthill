@@ -6629,19 +6629,18 @@ mod type_reader_carrier_agreement_test {
 ///
 /// Part (c)'s three questions — "is every variable in this value walk-local?", "does this
 /// value mention this variable?", "which walk-minted variables is this argument typed at?"
-/// — all reduce to one walk, and all three fail in the UNSAFE direction when it
-/// under-collects. The shared `collect_value_type` has no `Value::Var` arm, so a bare
-/// variable contributes nothing; the first repair special-cased the TOP level, which meant
-/// the same value one carrier deep was still invisible.
+/// — all reduce to one walk, `collect_value_type`, and all three fail in the UNSAFE direction
+/// when it under-collects: a bare `Value::Var` must be seen at every depth.
 ///
-/// THIS IS THE ONLY THING THAT CAN DRIVE IT. The nested shape occurs ZERO times on the
-/// corpus (measured), so no loadable program exercises it and a green suite says nothing
-/// about it either way. The rows below build the value directly.
+/// The rows below build the value directly, a variable one carrier deep. A program reaches the
+/// variable one TYPE NODE deep — a `NamedTuple` field of a lambda's own tuple of binders —
+/// driven by `wi_6nmgq_lambda_requirement_passing_test`'s binder-list rows.
 ///
-/// BACK-OUT: point `collect_value_type_and_bare_vars`' `Entity`/`Tuple` arm at
-/// `collect_value_type` instead of at itself, or restore the top-level-only `matches!` in
-/// the two predicates, and `a_bare_var_one_carrier_deep_*` fail while the `top_level` rows
-/// keep passing — which is exactly the asymmetry that made the first repair look complete.
+/// BACK-OUT: drop `collect_value_type`'s `Value::Var` arm, and the walk-local rows fail
+/// (`a_bare_var_at_the_top_level_is_seen_by_both_predicates`,
+/// `a_bare_var_one_carrier_deep_is_seen_by_the_walk_local_gate`,
+/// `the_walk_is_recursive_not_one_level`); the occurs-check rows pass, that check has a walk of
+/// its own.
 #[cfg(test)]
 mod part_c_bare_var_collection_test {
     use super::super::*;

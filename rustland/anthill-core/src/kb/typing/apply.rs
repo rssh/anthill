@@ -6259,6 +6259,7 @@ fn check_apply_call(
             // or by position as it met its slot, a lambda hands it to its pattern. AFTER the
             // some-wraps, which index the ORIGINAL children: a coerced argument is wrapped
             // before it becomes a component.
+            let original_occ = occ;
             let named_node;
             let occ = if let Some(fields) = gather {
                 named_node = gather_args_into_tuple(
@@ -6297,6 +6298,9 @@ fn check_apply_call(
                 named_node = wrap_some_children(kb, occ, &some_wraps, pos_results, named_results);
                 &named_node
             };
+            if let Some(w) = solving.as_deref_mut().filter(|_| !Rc::ptr_eq(original_occ, occ)) {
+                w.application_rebuilt(original_occ, occ);
+            }
             // WI-20260904-50B2K — resolved through the argument check's own `subst`, the
             // same way Path 1 resolves its declared return. For a ground arrow this is an
             // identity. BOTH HALVES, and Path 1 is the precedent: resolving only the
