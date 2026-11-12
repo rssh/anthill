@@ -549,6 +549,29 @@ pub(crate) struct WalkSolutions {
     /// them ([`WalkSolutions::close_under_shapes`]) — one list per pattern, for every shape of
     /// it: an instance a use's ∀-elimination copied shares its pattern.
     agreed_labels: Vec<(Rc<NodeOccurrence>, Rc<[Symbol]>)>,
+    /// The operations taken as function values at a slot that holds a variable — see
+    /// [`HeldFunctionValue`].
+    held_values: Vec<HeldFunctionValue>,
+}
+
+/// An operation taken as a function value at a slot whose type holds a variable where the
+/// reference is typed: `useS` in `app(useS, leaf)` over `app[X](f: (x: X) -> Int64, x: X)`
+/// meets `(x: X) -> Int64` before `leaf` fixes `X`. The value is the lambda that calls the
+/// operation, typed at the instance the value is used at (kernel-language §5.4), so its
+/// dictionaries are built where that instance is known: by the call or the construction whose
+/// argument it is, once its σ is complete and closes the slot ([`attach_held_arguments`]),
+/// and otherwise where the walk ends, at the slot as far as it was read
+/// ([`WalkSolutions::attach_held_values`]).
+pub(super) struct HeldFunctionValue {
+    /// The reference, stamped `EtaOpRef` with no dictionary until it is decided.
+    pub(super) occ: Rc<NodeOccurrence>,
+    pub(super) op: Symbol,
+    /// The operation's own type, the ∀ the dictionary pin reads ([`attach_eta_dispatch_dict`]).
+    pub(super) fn_ty: Value,
+    /// The slot as the reference met it, read through the σ of each call or construction that
+    /// left it open.
+    pub(super) expected: Value,
+    pub(super) env: TypingEnv,
 }
 
 /// WI-20260904-34J8Z — A TUPLE PATTERN BOUND OVER A TYPE THE WALK HAD NOT DECIDED: a tuple nested
@@ -747,7 +770,42 @@ impl WalkSolutions {
             deferred: Vec::new(),
             shapes: Vec::new(),
             agreed_labels: Vec::new(),
+            held_values: Vec::new(),
         }
+    }
+
+    /// Hold `value` until its instance is known ([`HeldFunctionValue`]). A reference typed
+    /// again replaces what it held before.
+    pub(super) fn hold_function_value(&mut self, value: HeldFunctionValue) {
+        self.held_values.retain(|h| !Rc::ptr_eq(&h.occ, &value.occ));
+        self.held_values.push(value);
+    }
+
+    /// Does this walk hold a function value no call has decided yet?
+    pub(super) fn holds_function_values(&self) -> bool {
+        !self.held_values.is_empty()
+    }
+
+    /// The function value `occ` holds, taken out to be decided by the call it is an argument
+    /// of; `None` where it holds none.
+    pub(super) fn take_held_value(&mut self, occ: &Rc<NodeOccurrence>) -> Option<HeldFunctionValue> {
+        let at = self.held_values.iter().position(|h| Rc::ptr_eq(&h.occ, occ))?;
+        Some(self.held_values.swap_remove(at))
+    }
+
+    /// Where the walk ends, every function value no call decided is given its dictionaries at
+    /// its slot as far as it was read. The first refusal is the walk's. A call that types
+    /// decides its arguments, so what reaches here is a value whose call was refused before it
+    /// could (traced over `wi_tests`: nine references, each in a refused program).
+    pub(super) fn attach_held_values(&mut self, kb: &mut KnowledgeBase) -> Result<(), TypeError> {
+        let mut refusal: Option<TypeError> = None;
+        for h in std::mem::take(&mut self.held_values) {
+            let labels = h.occ.eta_slot_labels().flatten();
+            if let Err(e) = attach_eta_dispatch_dict(kb, &h.env, h.op, &h.occ, &h.fn_ty, &h.expected, labels) {
+                refusal.get_or_insert(e);
+            }
+        }
+        refusal.map_or(Ok(()), Err)
     }
 
     /// WI-20260904-34J8Z — where the body of a lambda ends, the components of the shapes its

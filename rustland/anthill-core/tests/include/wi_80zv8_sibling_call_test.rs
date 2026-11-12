@@ -532,12 +532,11 @@ fn an_unplaced_sibling_call_is_not_placed_later() {
 /// reference captured its minting frame whatever the arrow said — 1 for the `B` boxes
 /// (MEASURED, instance test backed out).
 ///
-/// At an ABSTRACT other instance it is refused, with or without a `requires Tag[T = D]` on
-/// the operation: a function value's dictionary is built from the enclosing SORT's clauses
-/// alone (`TypingEnv::enclosing_dict_chain`), and those hold a `Tag[T = T]`. So the direct
-/// call's `requires Tag[T = D]` repair does not carry over to the reference — a limit of
-/// the function-value route, and a loud one. The refusal is the one the direct call gets
-/// where nothing supplies the requirement.
+/// At an ABSTRACT other instance the operation's `requires Tag[T = D]` answers it, as it
+/// answers the direct call: a function value's dictionary is built from the enclosing
+/// frame's whole chain, as a call's is (WI-20261112-PBSEM; it read the enclosing SORT's
+/// clauses alone, `Tag[T = T]`, and was refused). Without the `requires` it is refused, as
+/// the direct call is where nothing supplies the requirement.
 #[test]
 fn a_sibling_passed_as_a_function_value_is_placed_by_its_arrow() {
     let elsewhere = box_program(
@@ -556,21 +555,26 @@ fn a_sibling_passed_as_a_function_value_is_placed_by_its_arrow() {
     );
     assert_eq!(run_src(&here, "wi80zv8s.h2.go"), Ok(1));
 
-    for (ns, requires) in [("wi80zv8s.h3", " requires Tag[T = D]"), ("wi80zv8s.h4", "")] {
-        let abstractly = box_program(
+    let abstractly = |ns: &str, requires: &str| {
+        box_program(
             ns,
             &format!(
                 "    operation tags[D](bx: Self, others: List[T = Box[T = D]]) -> List[T = \
                  Int64]{requires} = List.mapElems(others, tagIn)"
             ),
             "sum(Box.tags(box(v: a(k: 0)), [box(v: b(k: 0))]))",
-        );
-        assert_refused_naming(
-            &load_errors(&abstractly),
-            &[&format!("cannot be supplied for `{ns}.Box.tagIn` used as a function value")],
-            "a sibling passed as a function value at `T = D`",
-        );
-    }
+        )
+    };
+    assert_eq!(
+        run_src(&abstractly("wi80zv8s.h3", " requires Tag[T = D]"), "wi80zv8s.h3.go"),
+        Ok(2),
+        "a sibling passed as a function value at `T = D`, under `requires Tag[T = D]`"
+    );
+    assert_refused_naming(
+        &load_errors(&abstractly("wi80zv8s.h4", "")),
+        &["cannot be supplied for `wi80zv8s.h4.Box.tagIn` used as a function value"],
+        "a sibling passed as a function value at `T = D`",
+    );
 }
 
 // ── A projection off a carrier, in the three places a receiver stands ────────

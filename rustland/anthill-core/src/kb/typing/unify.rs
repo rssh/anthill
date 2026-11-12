@@ -1244,6 +1244,12 @@ pub(super) fn occurs_in_view(kb: &KnowledgeBase, vid: VarId, v: &impl TermView) 
     view_holds_var(kb, v, &|w| w == vid)
 }
 
+/// Does `v` hold a type variable — a flex `Global`, or a bare head naming a sort-level type
+/// parameter, read as its variable ([`view_holds_var`])?
+pub(super) fn holds_a_type_var(kb: &KnowledgeBase, v: &impl TermView) -> bool {
+    view_holds_var(kb, v, &|_| true)
+}
+
 /// Does `v` hold a variable `hit` answers for — a flex `Global` it names, or one a bare head
 /// naming a sort-level type parameter stands for ([`bare_head_param_var`])? The walk of
 /// both occurs checks, [`occurs_in_view`] as written and [`occurs_through`] through σ.

@@ -2120,8 +2120,7 @@ impl UntiedForward {
             return format!(
                 "named slot `{b}` of `{o}` is bound to `{p}`, whose dictionary is the enclosing \
                  OPERATION's own requirement slot, and this route reads only the enclosing \
-                 SORT's slots, as an operation used as a function value does — declare the \
-                 slot for `{short}` on the enclosing SORT instead",
+                 SORT's slots — declare the slot for `{short}` on the enclosing SORT instead",
                 b = kb.local_name_of(self.binder),
                 o = kb.qualified_name_of(self.owner),
                 p = self.param,

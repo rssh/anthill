@@ -2467,3 +2467,6 @@ mod wi_kq6dg_occurs_check_through_sigma_test;
 mod wi_ycz0j_carrier_names_inherited_member_test;
 #[path = "include/wi_kbz4f_operation_value_reads_projection_test.rs"]
 mod wi_kbz4f_operation_value_reads_projection_test;
+
+#[path = "include/wi_pbsem_function_value_instance_at_call_test.rs"]
+mod wi_pbsem_function_value_instance_at_call_test;

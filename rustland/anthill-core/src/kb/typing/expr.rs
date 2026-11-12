@@ -723,7 +723,10 @@ pub(super) fn type_check_node_gated_at(
     // WI-20260904-34J8Z: the labels the uses gave each tuple pattern bound over an undecided
     // type, written onto it below ([`WalkSolutions::agreed_labels`]).
     let labelled = solving.agreed_labels().to_vec();
-    let discharged = solving.discharge(kb);
+    // A function value whose instance no call fixed is given its dictionaries at the slot
+    // its reference met ([`HeldFunctionValue`]).
+    let attached = solving.attach_held_values(kb);
+    let discharged = attached.and_then(|()| solving.discharge(kb));
     debug_assert_eq!(
         results.len(),
         1,
@@ -1184,7 +1187,7 @@ pub(super) fn check_bare_ref(
         // has always been given the hint; this is the bare one catching up, not a new
         // channel.
         let expected = expected.cloned();
-        return check_constructor_iter(kb, env, flow, sym, &[], &[], &[], &[], span, expected, occ);
+        return check_constructor_iter(kb, env, flow, sym, &[], &[], &[], &[], span, expected, occ, None);
     }
     // WI-275: a bare operation reference used where a function type is expected
     // denotes the operation as a first-class function value (eta-expansion) —
@@ -1319,7 +1322,26 @@ pub(super) fn check_bare_ref(
                     // WI-1083: handed the ORIGINAL `fn_ty` — the ∀ — not the instantiation
                     // above, because the dictionary's dependencies are keyed by the
                     // declaring sort's canonical variables. See [`poly_type_body`].
-                    attach_eta_dispatch_dict(kb, env, sym, occ, &original_fn_ty, exp, slot_labels)?;
+                    //
+                    // A slot that holds a variable is not the instance the value is used at:
+                    // a call's type parameter its later arguments fix (`app(useS, leaf)`).
+                    // The reference is held, and decided where the instance is known
+                    // ([`HeldFunctionValue`]).
+                    if !slot_leaves_instance_open(kb, exp) {
+                        attach_eta_dispatch_dict(kb, env, sym, occ, &original_fn_ty, exp, slot_labels)?;
+                    } else {
+                        occ.set_classification(CallClass::EtaOpRef {
+                            dict: None,
+                            spread_labels: slot_labels,
+                        });
+                        solving.hold_function_value(HeldFunctionValue {
+                            occ: Rc::clone(occ),
+                            op: sym,
+                            fn_ty: original_fn_ty,
+                            expected: exp.clone(),
+                            env: env.clone(),
+                        });
+                    }
                     return Ok(TypeResult::pure_value(fn_ty, env.clone(), Rc::clone(occ)));
                 }
             }

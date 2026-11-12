@@ -1312,6 +1312,11 @@ pub(super) fn check_constructor_iter(
     span: Option<Span>,
     expected: Option<Value>,
     occ: &Rc<NodeOccurrence>,
+    // The walk's state, where a function value written in a field is held until the
+    // construction fixes its instance ([`HeldFunctionValue`]); `None` where the construction
+    // is typed on no walk (a bare constructor name, a synthesized call), whose held values,
+    // if any, the walk's end decides.
+    solving: Option<&mut WalkSolutions>,
 ) -> Result<TypeResult, TypeError> {
     // Surface any sub-expression failure before continuing.
     collect_arg_errors(pos_results.iter().chain(named_results.iter()))?;
@@ -1690,6 +1695,11 @@ pub(super) fn check_constructor_iter(
     // (`wi_kssa4_spec_typed_value_test …a_parameter_only_the_expected_type_fixes_is_judged`).
     if let Some(sort) = parent_sort {
         construction_meets_sort_requires(kb, env, &subst, ctor_sym, sort, span)?;
+    }
+    // A function value in a field, at the instance the construction has fixed
+    // (`boxed(f: useS, v: leaf)`), as at a call ([`attach_held_arguments`]).
+    if let Some(w) = solving {
+        attach_held_arguments(kb, w, &subst, [pos_results, named_results])?;
     }
 
     // WI-578 — build the parameterized result type via the shared finish tail, so this

@@ -224,6 +224,7 @@ fn check_apply_call(
             span,
             expected,
             occ,
+            solving,
         );
     }
 
@@ -2394,6 +2395,14 @@ fn check_apply_call(
             }
             None => (occ, pos_args, named_args, pos_results, named_results, &pos_call_params),
         };
+
+        // An operation taken as a function value at a slot that held one of this call's
+        // variables where it was typed is the lambda that calls it at the instance the call
+        // has now fixed (kernel-language §5.4): its dictionaries are built at that slot as σ
+        // reads it ([`attach_held_arguments`]).
+        if let Some(w) = solving.as_deref_mut() {
+            attach_held_arguments(kb, w, &subst, [pos_results, named_results])?;
+        }
 
         // Apply param-name substitution to op.effects (WI-209), then
         // walk each through `walk_type_deep` so type-var bindings from

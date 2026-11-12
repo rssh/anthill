@@ -611,27 +611,28 @@ fn a_same_sort_sibling_refuses_an_untied_forward() {
     }
 }
 
-/// AN OPERATION'S OWN SLOT, OUT OF AN ETA'S REACH: an operation used as a function value
-/// builds its dictionary from the enclosing SORT's slots only, so a forward of the
-/// enclosing operation's own `OE` has nothing to read there. It was refused before this
-/// ticket too. What this pins is the reason: the refusal must not say that nothing holds a
-/// dictionary for `OE`, which the operation declares, but that this route cannot read it.
+/// AN OPERATION'S OWN SLOT REACHES AN ETA: an operation used as a function value builds its
+/// dictionary from the enclosing frame's whole chain, as a written call does, so a forward of
+/// the enclosing operation's own `OE` reads it. It was refused while the value read the
+/// enclosing SORT's slots only ("this route reads only the enclosing SORT's slots");
+/// WI-20261112-PBSEM made it read the chain the call reads. Driven at both orderings, so the
+/// slot read is the one the set was built with.
 #[test]
-fn an_operations_own_slot_is_out_of_an_etas_reach() {
-    let src = program(
-        "  sort RE\n    \
+fn an_operations_own_slot_reaches_an_eta() {
+    let src = driven(
+        "  sort RE
+    \
            operation grow[E, OE](f: (SortedSet[T = E, O = OE], E) -> SortedSet[T = E, O = OE], \
          s: SortedSet[T = E, O = OE], x: E) -> SortedSet[T = E, O = OE] requires OE: WeakOrd[E] = f(s, x)\n    \
            operation add[E, OE](s: SortedSet[T = E, O = OE], x: E) -> SortedSet[T = E, O = OE] \
          requires OE: WeakOrd[E] = grow(insert, s, x)\n  \
          end",
+        "RE.add",
+        "ByLength",
+        "RE.add",
+        "RevLen",
     );
-    let msg = sole_message(&src, "eta of an op-scoped slot");
-    assert!(
-        msg.contains("this route reads only the enclosing SORT's slots")
-            && !msg.contains("nothing in the enclosing scope holds a dictionary FOR"),
-        "the refusal must name the route's reach, not deny the slot exists; got: {msg}"
-    );
+    assert_runs_both_orders(&src, "eta of an op-scoped slot");
 }
 
 // ── Two named slots on one sort ──────────────────────────────────────

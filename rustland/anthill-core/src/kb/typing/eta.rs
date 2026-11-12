@@ -660,7 +660,10 @@ pub(super) fn attach_eta_dispatch_dict(
         });
         return Ok(());
     }
-    let caller_requires = env.enclosing_dict_chain().clone();
+    // The caller's whole frame chain, as the written call's sort half reads it: a caller's own
+    // `requires Desc[T = Q]` answers `Sp.t` taken as a value at `Q` (`app(Sp.t, y)`), as it
+    // answers `Sp.t(y)`.
+    let caller_requires = env.enclosing_frame_chain().clone();
     // WI-20261001-80ZV8: a reference into the caller's OWN sort at another instance reads
     // the caller's clauses at the caller's — see [`chain_at_callers_instance`]. The same
     // condition as the Direct-call site's.
@@ -731,6 +734,62 @@ pub(super) fn attach_eta_dispatch_dict(
             })
         }
     }
+}
+
+/// Does the slot `expected` leave open what an operation's dictionaries are read at — a
+/// variable in its parameters or its result, the two the pin unifies
+/// ([`eta_op_scoped_dicts`])? A variable only in the row (`(x: Leaf) -> Int64 @ {E}`) fixes
+/// no instance.
+pub(super) fn slot_leaves_instance_open(kb: &mut KnowledgeBase, expected: &Value) -> bool {
+    match arrow_parts(kb, expected) {
+        Some((param, result, _)) => {
+            param.as_ref().is_some_and(|p| holds_a_type_var(kb, p)) || holds_a_type_var(kb, &result)
+        }
+        None => holds_a_type_var(kb, expected),
+    }
+}
+
+/// The function values written as arguments of a call, given their instance by the call's σ,
+/// now complete: each held reference ([`HeldFunctionValue`]) is given its dictionaries at the
+/// slot it met read through `subst` — `useS` in `app(useS, leaf)` at `(x: Leaf) -> Int64`,
+/// where it met `(x: X) -> Int64`. An argument is read through the constructions the slot's
+/// type reaches it through — a field (`appOpt(some(useS), leaf)`), a list's or a tuple's
+/// element, which are constructions too (`appAll([useS], leaf)`). Not into a call, which
+/// decides its own arguments, nor into a lambda, a `let` or a `match`, whose bodies are typed
+/// in a scope of their own. `results` are the typed arguments (a call's, a construction's
+/// fields), positional and named.
+pub(super) fn attach_held_arguments(
+    kb: &mut KnowledgeBase,
+    solving: &mut WalkSolutions,
+    subst: &Substitution,
+    results: [&[Result<TypeResult, TypeError>]; 2],
+) -> Result<(), TypeError> {
+    if !solving.holds_function_values() {
+        return Ok(());
+    }
+    let mut stack: Vec<Rc<NodeOccurrence>> =
+        results.iter().flat_map(|rs| rs.iter()).flatten().map(|r| Rc::clone(&r.node)).collect();
+    while let Some(node) = stack.pop() {
+        if !solving.holds_function_values() {
+            break;
+        }
+        if let Some(held) = solving.take_held_value(&node) {
+            let at = resolve_type_deep_value(kb, subst, &held.expected);
+            if slot_leaves_instance_open(kb, &at) {
+                // Not fixed here either: `some(useS)` fixes nothing of the `X` in
+                // `appOpt(some(useS), leaf)`, whose call does.
+                solving.hold_function_value(HeldFunctionValue { expected: at, ..held });
+                continue;
+            }
+            let labels = held.occ.eta_slot_labels().flatten();
+            attach_eta_dispatch_dict(kb, &held.env, held.op, &held.occ, &held.fn_ty, &at, labels)?;
+            continue;
+        }
+        if let Some(e @ Expr::Constructor { .. }) = node.as_expr() {
+            crate::kb::node_occurrence::for_each_child(e, |c| stack.push(Rc::clone(c)));
+        }
+    }
+    Ok(())
 }
 
 /// WI-1091 — an eta site's σ, its selections, and the OPERATION's own `requires` slots
@@ -843,12 +902,10 @@ fn eta_op_scoped_dicts(
     } else {
         Vec::new()
     };
-    // THE COMPOSED CHAIN, and the distinction is the same one the written call site draws
-    // (found by /code-review): `build_concrete_dispatch_dict` takes
-    // `enclosing_dict_chain` — the SORT half alone, because an INSTANCE dictionary must
-    // not forward an op slot — while `build_op_scoped_dicts` takes
+    // THE COMPOSED CHAIN (found by /code-review): `build_op_scoped_dicts` takes
     // `enclosing_frame_chain`, since "a callee op slot may forward from the caller's own
-    // op slots, which is how an op-scoped requirement relays hop to hop". Reading the
+    // op slots, which is how an op-scoped requirement relays hop to hop" — and so does the
+    // sort half, at the written call site and at this one. Reading the
     // sort-only chain here made the eta the one spelling that cannot relay: an operation
     // that itself `requires Eq[T]` can hand its `__req_eq` to a written
     // `List.member(x, l)` and could not hand it to an eta'd `member`, so two spellings of

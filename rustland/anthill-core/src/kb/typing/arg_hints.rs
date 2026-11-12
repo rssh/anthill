@@ -1402,8 +1402,21 @@ pub(super) fn arg_holds_function_value(kb: &KnowledgeBase, arg: &Rc<NodeOccurren
 /// function ([`KnowledgeBase::is_type_value_head`]), and the plain symbol of a sort beside
 /// a same-named operation is the operation, in a data context (WI-20261022-7EXEY). It
 /// asked for the keyword written first, which lifted the pair in one order only (WI-974).
+///
+/// A member named on its sort without parentheses (`Sp.t`) is the same spelling: an
+/// application with no arguments and no parentheses, read as the one-segment name
+/// ([`paren_less_member_as_function`]).
 pub(super) fn arg_is_bare_operation_name(kb: &KnowledgeBase, arg: &Rc<NodeOccurrence>) -> bool {
-    leaf_var_ref(arg).is_some_and(|head| {
+    let paren_less_member = || match arg.as_expr() {
+        Some(Expr::Apply {
+            functor,
+            pos_args,
+            named_args,
+            ..
+        }) if arg.is_paren_less() && pos_args.is_empty() && named_args.is_empty() => Some(*functor),
+        _ => None,
+    };
+    leaf_var_ref(arg).or_else(paren_less_member).is_some_and(|head| {
         kb.has_kind(head, crate::intern::SymbolKind::Operation) && !kb.is_type_value_head(head)
     })
 }

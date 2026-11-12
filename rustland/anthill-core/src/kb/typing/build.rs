@@ -586,6 +586,7 @@ pub(super) fn build_type(
                 span,
                 expected,
                 &node,
+                Some(solving),
             );
             results.push(r);
         }
