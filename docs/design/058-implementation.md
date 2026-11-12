@@ -583,6 +583,8 @@ Back-out matrix driven per piece, four reverts (at `wi1043_bodyless_rule_body_te
 
 Back-out matrix driven per piece, five reverts (at `wi1043_bodyless_rule_body_test`, plus the wi625 canary for the cap). Full workspace green (29 binaries, 4434 tests).
 
+*Since WI-20261015-ZPETZ (2026-11-12) the host entry hands a call to the in-body dispatch (`dispatch_resolved_operation`), so the host-entry piece and its channel discard are gone; a stand-in `__req_self` the entry seeds is read as no instance after the redirect (`requirements_for_value_directed_impl`), which is what the discard was for.*
+
 ---
 
 ## 25. WI-1044 — a query is a call site, and the resolver had no way to know it (DELIVERED 2026-08-09)

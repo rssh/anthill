@@ -84,9 +84,9 @@ impl Interpreter {
     /// frame no longer faults the next call — it is SILENT, and this truncate is the only
     /// thing keeping leftovers from accumulating (`Interpreter::activation_depth` sees one).
     ///
-    /// HERE AND NOT AT THE DRIVER, because there are four drivers
-    /// (`invoke_op_with_requirements`, `invoke_reify_boundary`, `run_with_requirements`,
-    /// `eval_node_isolated`) and repairing one leaves the others to rediscover it. Every
+    /// HERE AND NOT AT THE DRIVER, because there are three drivers
+    /// (`invoke_op_with_requirements`, `run_with_requirements`, `eval_node_isolated`) and
+    /// repairing one leaves the others to rediscover it. Every
     /// present and future entry into the trampoline is covered by construction — each goes
     /// through [`Self::run_from`] — and `floor` — which this run already computes to bound
     /// the boundary scan — is exactly the depth to return to.
@@ -107,11 +107,12 @@ impl Interpreter {
 
     /// [`Self::run`] over a floor its driver computed, and the answer of the step taken
     /// before the loop: `Continue` for a driver that only pushed its frame. The one driver
-    /// that takes a step of its own is [`Self::invoke_reify_boundary`]: its run's bottom
-    /// frame is the boundary, and entering the thunk above it is that step. So what entering
-    /// answers — a frame to reduce, a value to deliver, or an error — is read by the loop as
-    /// every step's answer is: a raise there meets the boundary the entry installed, as it
-    /// does in the in-body faces, and any other error leaves the run truncated to its floor.
+    /// that takes a step of its own is the host entry ([`Self::invoke_op_with_requirements`]):
+    /// its run's bottom frame is the one it pushed for the call, and dispatching the call
+    /// from it is that step. So what the dispatch answers — a frame to reduce, a value to
+    /// deliver, or an error — is read by the loop as every step's answer is: a raise from an
+    /// `Error.reify` thunk the dispatch entered meets the boundary it installed, as it does in
+    /// a body, and any other error leaves the run truncated to its floor.
     ///
     /// INLINED ALWAYS, because every bridged call runs through here and the bridge's native
     /// stack per eval↔SLD crossing is a measured budget (`BRIDGE_REENTRY_CAP`): this must not
@@ -130,35 +131,44 @@ impl Interpreter {
         result
     }
 
-    /// Proposal 027.4 — `Error.reify` ENTERED FROM THE HOST: a rule body's call, which
-    /// reaches the evaluator through [`Self::invoke_op_with_requirements`] (the bridge's
-    /// `call_op_bridged*`) rather than through the two in-body dispatch faces.
+    /// The host entry, shared by [`Self::call`], [`Self::call_with_requirements`] and the
+    /// resolver's bridge ([`Self::call_op_bridged`]): the call is handed to the dispatch an
+    /// operation body's call takes (`dispatch_resolved_operation`), so every route of that
+    /// dispatch — a body, a builtin, a supplier found from the value, the `eq` bridge, the
+    /// `Error.reify` boundary, the unrunnable classifier — is a route of this entry too,
+    /// and `requirements` is the call's channel there as a caller's is in a body.
     ///
-    /// The mechanism is theirs. The one frame this run owns IS the boundary:
-    /// [`Self::enter_reify_boundary`] suspends it and enters the thunk above it, and the
-    /// run's floor sits beneath it. So the boundary's `ok` / `err` is the run's value, and a
-    /// payload it declines leaves the run as the raise it is. The requirement channel is the
-    /// call's — at a rule body, the `TypePattern` evidence the typer stamped on the call,
-    /// which the bridge hands to `call_op_bridged_stamped` — and it is read, not installed:
-    /// the boundary frame carries none, as the thunk enters with its own.
-    pub(super) fn invoke_reify_boundary(
+    /// The dispatch delivers a value into, or enters its operation in place of, the frame
+    /// on top of the stack: here the one frame this run owns, pushed for the call, as a
+    /// body's call is made from the frame of its `apply`. That frame holds no locals and
+    /// no requirements, so a route that reads the caller's frame (a spec body's sibling,
+    /// its receiver-less member) reads nothing of a caller the host does not have, and a
+    /// host function calling back in from a body does not hand its caller's frame on.
+    ///
+    /// THE BRIDGE'S EVAL↔SLD CROSSING RUNS THROUGH HERE, and its native stack per crossing
+    /// is a measured budget (`BRIDGE_REENTRY_CAP`, whose canary is
+    /// `wi625…::eval_undecidable_instance_fact_eq_is_loud_not_false` under `RUST_MIN_STACK`):
+    /// the dispatch returns before the run starts, so it is not on the stack while the call
+    /// runs, and nothing on this path may re-enter it.
+    pub(super) fn invoke_op_with_requirements(
         &mut self,
-        reify: Symbol,
+        sym: Symbol,
         args: &[Value],
-        requirements: &[(Symbol, super::value::Dictionary)],
+        requirements: SmallVec<[(Symbol, super::value::Dictionary); 2]>,
     ) -> Result<Value, EvalError> {
         let top_level = self.begin_host_entry();
         let floor = self.stack.depth();
         self.stack.push(Frame {
-            op: reify,
+            op: sym,
             expr: crate::kb::node_occurrence::bottom_node(),
             locals: SmallVec::new(),
             requirements: SmallVec::new(),
             awaiting: None,
         })?;
-        let entered = self.enter_reify_boundary(args, requirements);
-        let result = self.run_from(floor, entered);
-        self.end_host_entry(top_level, reify);
+        self.note_dispatch(sym);
+        let dispatched = self.dispatch_resolved_operation(sym, args.to_vec(), requirements);
+        let result = self.run_from(floor, dispatched);
+        self.end_host_entry(top_level, sym);
         result
     }
 
@@ -2902,8 +2912,8 @@ impl Interpreter {
         //    operation the typer certified effect-free, because the DISCHARGE was
         //    granted on the resolved signature while the CALL went elsewhere.
         //    (`dispatch_resolved_operation` keeps its own copy of this test — that
-        //    is the arm an `OpRef` denoting `reify` arrives at, which never passes
-        //    through here.)
+        //    is the arm an `OpRef` denoting `reify` and a host call arrive at, which
+        //    never pass through here.)
         if Some(target) == self.error_layer.as_ref().map(|l| l.reify) {
             return self.enter_reify_boundary(&arg_values, &requirements);
         }
@@ -3691,7 +3701,6 @@ impl Interpreter {
         arg_values: &[Value],
         incoming: SmallVec<[(Symbol, super::value::Dictionary); 2]>,
     ) -> Result<SmallVec<[(Symbol, super::value::Dictionary); 2]>, EvalError> {
-        use crate::kb::typing::BridgeRequirements;
         // An incoming channel was built FOR THIS CALL by a caller that knew the
         // callee (an `apply_within` dict, a same-sort inherit). It is the more
         // specific supply; leave it. Only the empty channel — the abstract call
@@ -3721,9 +3730,8 @@ impl Interpreter {
         // `__req_sp not bound … frame binds ["__req_self", "__req_base"]`, the SPEC's
         // half. With this it reads the ELEMENT's dictionary and answers 10.
         if !incoming.is_empty() {
-            // EVERY CALLER IS ALREADY PAST A REDIRECT — both eval sites are inside
-            // `if impl_target != target`, and the host-entry site hands in an EMPTY
-            // channel, which the guard above excludes. So this equality never holds
+            // EVERY CALLER IS ALREADY PAST A REDIRECT — both sites are inside
+            // `if impl_target != target`. So this equality never holds
             // today (found by /code-review, whose objection to the comment was right:
             // it read as though a same-op path were covered here). It is kept as the
             // statement of WHEN the WI-822 LEG 2 short-circuit is legitimate — a caller
@@ -3772,8 +3780,23 @@ impl Interpreter {
                 .filter(|(n, _)| own.contains(n))
                 .cloned()
                 .collect();
+            // A `__req_self` whose provider is `built_for`'s own sort is no instance of it but
+            // a stand-in for that sort's frame (an entry's placeholder, `seed_entry_requirements`;
+            // a same-sort inherit of one): it says nothing about a member of another sort, and
+            // the channel it heads was laid out for the spec's frame. So the member's frame is
+            // built from the values, as for an empty channel. Passed through, the member read
+            // the placeholder's names and found none of its own: a host call of
+            // `Desc.describe(wrap(leaf()))` reaching `WrapDesc.describe` died `__req_desc not
+            // bound` where the same call in an operation body answers 12.
+            let stand_in = covered.is_none()
+                && find_requirement(&incoming, self.fields.req_self).is_some_and(|dict| {
+                    crate::kb::typing::impl_parent_sort_of_op(&self.kb, built_for).is_some_and(
+                        |sort| crate::kb::typing::same_sort_canonical(&self.kb, dict.impl_sort(), sort),
+                    )
+                });
             let mut out = match covered {
                 Some(dict) => self.expand_dispatching_dict(built_for, impl_target, &dict)?,
+                None if stand_in => self.requirements_at_the_values(impl_target, arg_values)?,
                 None => {
                     let mut rest = incoming;
                     rest.retain(|(n, _)| !own.contains(n));
@@ -3783,6 +3806,19 @@ impl Interpreter {
             self.hand_spec_op_slots(built_for, impl_target, &filled, &mut out);
             return Ok(out);
         }
+        self.requirements_at_the_values(impl_target, arg_values)
+    }
+
+    /// The frame of `impl_target`, a member value-direction landed on, built from the
+    /// argument values ([`crate::kb::typing::resolve_bridge_requirements`]): empty where it
+    /// has no chain or the values cannot pin it, entered unsupplied then, and an error for a
+    /// tie (see [`Self::requirements_for_value_directed_impl`]).
+    fn requirements_at_the_values(
+        &mut self,
+        impl_target: Symbol,
+        arg_values: &[Value],
+    ) -> Result<SmallVec<[(Symbol, super::value::Dictionary); 2]>, EvalError> {
+        use crate::kb::typing::BridgeRequirements;
         match crate::kb::typing::resolve_bridge_requirements(
             &mut self.kb,
             impl_target,
@@ -3793,7 +3829,7 @@ impl Interpreter {
         ) {
             // No chain to supply: the pre-WI-822 behaviour for every leaf impl,
             // which is the overwhelming majority of value-directed dispatches.
-            BridgeRequirements::NoneNeeded => Ok(incoming),
+            BridgeRequirements::NoneNeeded => Ok(SmallVec::new()),
             // Unpinnable at these argument types — enter unsupplied, deliberately
             // (see the doc comment: measured against the stdlib, and still loud at
             // the read). Traced, not swallowed: `ANTHILL_TRACE_REQ` prints what
@@ -3806,7 +3842,7 @@ impl Interpreter {
                         self.kb.qualified_name_of(impl_target),
                     );
                 }
-                Ok(incoming)
+                Ok(SmallVec::new())
             }
             // WI-855 — a TIE is the one unresolvable cause that does NOT enter
             // unsupplied: see the doc comment's last paragraph.

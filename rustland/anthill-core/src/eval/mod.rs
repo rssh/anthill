@@ -908,11 +908,11 @@ impl Interpreter {
             self.seed_entry_op_requirements(sym, args, &mut requirements)?;
             return self.call_host(sym, &builtin, args, requirements);
         }
-        // A BODY-LESS operation is entered by value-directed dispatch to a provider's,
-        // and `invoke_op_with_requirements` builds THAT frame from the provider's own
-        // chain, discarding the one seeded here (its WI-1057 arm). A witness laid over
-        // this frame would be dropped in silence, so it is refused, naming the repair.
-        // Found by /code-review.
+        // A BODY-LESS operation is entered by value-directed dispatch to a provider's, and
+        // the dispatch builds THAT frame from the values, the channel seeded here being a
+        // stand-in for the operation's own sort (`requirements_for_value_directed_impl`).
+        // A witness laid over this frame would be dropped in silence, so it is refused,
+        // naming the repair. Found by /code-review.
         if !witnesses.is_empty() && self.cached_operation_body(sym).is_none() {
             return Err(refuse(
                 &self.kb,
@@ -1552,11 +1552,9 @@ impl Interpreter {
         self.invoke_op_with_requirements(sym, args, requirements)
     }
 
-    /// WI-818 (review): the ONE classifier for "this call target cannot run",
-    /// shared by the host-entry direct path
-    /// ([`Self::invoke_op_with_requirements`]) and the in-body dispatch
-    /// fall-through (`dispatch_resolved_operation`), so the two paths report
-    /// the SAME verdict for the same target and cannot drift:
+    /// WI-818 (review): the ONE classifier for "this call target cannot run", the
+    /// fall-through of the dispatch (`dispatch_resolved_operation`) a body's call and a
+    /// host call ([`Self::invoke_op_with_requirements`]) both take:
     ///   - a DECLARED operation (it has an `OperationInfo` signature) with no
     ///     runnable backing → [`EvalError::OperationBodyMissing`], qualified —
     ///     a missing implementation, not an unknown name;
@@ -1582,151 +1580,8 @@ impl Interpreter {
         }
     }
 
-    /// Shared body of [`Self::call`] and [`Self::call_with_requirements`]:
-    /// validate arity, build the frame's locals, push, run.
-    fn invoke_op_with_requirements(
-        &mut self,
-        sym: Symbol,
-        args: &[Value],
-        requirements: smallvec::SmallVec<[(Symbol, value::Dictionary); 2]>,
-    ) -> Result<Value, EvalError> {
-        // Proposal 027.4 — `Error.reify` has no body to push: its boundary is a frame
-        // ([`Self::invoke_reify_boundary`]). Keyed by symbol, as in the two in-body faces.
-        if Some(sym) == self.error_layer.as_ref().map(|l| l.reify) {
-            return self.invoke_reify_boundary(sym, args, &requirements);
-        }
-        // `PartialEq.eq` reached with no member, as in `dispatch_resolved_operation`'s
-        // step 2b: a host call of the spec operation compares by the values.
-        if self.is_eq_spec_op(sym) {
-            return self.eq_by_value(args);
-        }
-        // WI-1057 — `sym` and `requirements` are REBOUND rather than passed to a
-        // recursive call. When the body-less arm below dispatches value-directed, the
-        // impl it picks is run by falling through to the frame push at the BOTTOM OF
-        // THIS SAME FUNCTION. Re-entering `invoke_op_with_requirements` reads
-        // identically and costs one more native frame per crossing on a path with no
-        // room for one: this entry is what `bridge_op_to_eval` calls, and the eval↔SLD
-        // ping-pong nests real Rust frames per crossing up to `BRIDGE_REENTRY_CAP`.
-        //
-        // THIS IS A MEASURED STACK BUDGET, not a style preference.
-        // `wi625…::eval_undecidable_instance_fact_eq_is_loud_not_false` is the
-        // circular-`eq` fixture that exhausts that cap, and it is this path's canary:
-        // at the old cap of 32 it already needed essentially all of libtest's default
-        // 2 MiB thread stack, the recursive spelling of this arm pushed it past 2.6
-        // MiB, and the whole `wi_tests` binary died with `fatal runtime error: stack
-        // overflow` — 2463 tests reported as nothing. The cap is now 16 (see
-        // `BRIDGE_REENTRY_CAP`, which records all three measurements). Nothing on this
-        // path may grow without re-measuring that test under `RUST_MIN_STACK`.
-        let mut requirements = requirements;
-        let (sym, body_term, params) = match self.cached_operation_body(sym) {
-            Some((body, params)) => (sym, body, params),
-            None => {
-                // WI-1057 — the VALUE-DIRECTED escape, matching the in-body dispatch
-                // fall-through (step 3b of `dispatch_resolved_operation`) in ORDER and
-                // in READER: `resolve_spec_op_target_by_value` is WI-842's collected
-                // supplier set, which refuses a tie rather than picking by route
-                // order, and the `!= sym` filter rejects the INHERITED SELF-ENTRY that
-                // a body-less spec op's own `sort_ops` row points back at.
-                //
-                // Without it the two faces disagreed about one call: an OPERATION BODY
-                // reached a WI-431 instance-fact supplier through step 3b, while this
-                // entry — the one the resolver's `bridge_op_to_eval` calls — answered
-                // `OperationBodyMissing`. That is why a RULE BODY could not reach a
-                // fact-route supplier: such a supplier writes no typer pin
-                // (`dispatch_spec_op_cached` does not read instance-fact op-bindings,
-                // WI-431 inc 2), so it is discoverable BY VALUE alone, and this was
-                // the one crossing that never looked.
-                let impl_target = self
-                    .resolve_spec_op_target_by_value(sym, args)?
-                    .filter(|t| *t != sym);
-                let runnable = match impl_target {
-                    Some(t) => {
-                        if let Some(builtin) = self.builtins.get(&t).cloned() {
-                            return self.call_host(t, &builtin, args, requirements);
-                        }
-                        self.cached_operation_body(t)
-                            .map(|(body, params)| (t, body, params))
-                    }
-                    None => None,
-                };
-                match runnable {
-                    Some((t, body, params)) => {
-                        // WI-822 leg 2, as at step 3b: the impl's OWN `requires` chain,
-                        // resolved at the runtime argument types.
-                        //
-                        // The incoming channel is DISCARDED here, and that is the one
-                        // place this site cannot copy step 3b. There, `requirements` is
-                        // the CALL's channel and is EMPTY for the abstract call that
-                        // reached value-direction — which is the case
-                        // `requirements_for_value_directed_impl` fills; it returns a
-                        // non-empty channel untouched, on the premise that a caller who
-                        // built one "knew the callee". At a HOST ENTRY that premise is
-                        // false: `call_op_sym` seeds `__req_self` for any op with a
-                        // parent sort, and `call_op_bridged` resolves the chain of the
-                        // SPEC op — both keyed to the sort we are dispatching AWAY from,
-                        // carrying none of the impl's own `__req_<spec>` names. Passing
-                        // it through would silence leg 2 at every host entry and enter a
-                        // conditional impl (`WrapDesc requires Desc[T = E]`) with a
-                        // channel its first dictionary read cannot satisfy.
-                        // WI-1091: `built_for` is `t` itself, since the channel handed
-                        // in is EMPTY — this site discards the incoming one for the
-                        // reason above, so there is no other operation's supply here to
-                        // re-key. The two arguments coincide and the short-circuit is
-                        // not reached either way.
-                        requirements = self.requirements_for_value_directed_impl(
-                            t,
-                            t,
-                            args,
-                            smallvec::SmallVec::new(),
-                        )?;
-                        (t, body, params)
-                    }
-                    // Nothing runnable came back — fall through to the classifiers
-                    // below, which is exactly what step 3b does.
-                    //
-                    // WI-625 (eval→SLD bridge): a host-invoked body-less carrier `eq`
-                    // op (e.g. `Set.eq`/`Map.eq` resolved from a dictionary — gap 4)
-                    // has no body to run, but the SLD resolver can prove it. The
-                    // host-entry twin of the in-body dispatch bridge; anything else
-                    // classifies through the shared [`Self::unrunnable_target_error`]
-                    // (WI-818): a declared op is a loud `OperationBodyMissing`, a
-                    // resolvable NON-operation (a sort, an entity, a rule label) is
-                    // `UnknownOperation` — not a missing-body claim about something
-                    // that never was an operation.
-                    None => match self.eq_bridge_target(sym, args) {
-                        Some(pred) => return self.prove_rule_predicate_value(pred, args),
-                        None => return Err(self.unrunnable_target_error(sym)),
-                    },
-                }
-            }
-        };
-        if args.len() != params.len() {
-            return Err(EvalError::ArityMismatch {
-                op: "operation call",
-                expected: params.len(),
-                got: args.len(),
-            });
-        }
-        let mut locals: smallvec::SmallVec<[(Symbol, Value); 4]> = smallvec::SmallVec::new();
-        for (i, (pname, _)) in params.iter().enumerate() {
-            locals.push((*pname, args[i].clone()));
-        }
-        let top_level = self.begin_host_entry();
-        self.stack.push(Frame {
-            op: sym,
-            expr: body_term,
-            locals,
-            requirements,
-            awaiting: None,
-        })?;
-        let result = self.run();
-        self.end_host_entry(top_level, sym);
-        result
-    }
-
-    /// The start of a host entry's run ([`Self::invoke_op_with_requirements`],
-    /// [`Self::invoke_reify_boundary`]): answers whether it is TOP-LEVEL, for
-    /// [`Self::end_host_entry`].
+    /// The start of a host entry's run ([`Self::invoke_op_with_requirements`]): answers
+    /// whether it is TOP-LEVEL, for [`Self::end_host_entry`].
     ///
     /// WI-20260913-2858G — ONLY A TOP-LEVEL ENTRY STARTS A NEW BUDGET. A host function
     /// calling back in from inside a body lands here with the caller's frames still on

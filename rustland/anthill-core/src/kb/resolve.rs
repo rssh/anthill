@@ -100,6 +100,11 @@ use evaluate::{Holes, Stuck};
 /// at opt-level 2 — both clear the default thread. The figures to re-measure when this path
 /// grows, on both builds, are those of
 /// `wi625_eval_semantic_eq_test::eval_undecidable_instance_fact_eq_is_loud_not_false`.
+///
+/// **Re-measured 2026-11-12 (WI-20261015-ZPETZ), on the tree before that change and after
+/// it**, which hands a host call to the in-body dispatch (it returns before the run starts, so
+/// it is not on the stack while the call runs): (1296, 1304] KiB before and (1288, 1296] KiB
+/// after at opt-level 0, (384, 392] KiB before and (376, 384] KiB after at opt-level 2.
 const BRIDGE_REENTRY_CAP: usize = 8;
 
 thread_local! {
@@ -13515,8 +13520,8 @@ impl KnowledgeBase {
     /// `Error.reify`, the thunk the call hands it?
     ///
     /// `Error.reify` has neither a body nor a host function: its boundary is a frame the
-    /// interpreter installs (`Interpreter::invoke_reify_boundary` at the bridge's host
-    /// entry), and what then runs is the thunk, under the bridge's registry, as a body
+    /// interpreter's dispatch installs (the bridge's host entry reaches it as a body's call
+    /// does), and what then runs is the thunk, under the bridge's registry, as a body
     /// runs. So for the two questions that turn on what the bridge runs — may a rule body
     /// reduce the call ([`Self::op_reducible_in_rule_body`]), and may a parametric row be
     /// read as a body's ([`Self::effect_row_admits_relational_view`]) — it answers as a

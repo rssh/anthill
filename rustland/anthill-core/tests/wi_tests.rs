@@ -2470,3 +2470,6 @@ mod wi_kbz4f_operation_value_reads_projection_test;
 
 #[path = "include/wi_pbsem_function_value_instance_at_call_test.rs"]
 mod wi_pbsem_function_value_instance_at_call_test;
+
+#[path = "include/wi_zpetz_one_dispatch_test.rs"]
+mod wi_zpetz_one_dispatch_test;

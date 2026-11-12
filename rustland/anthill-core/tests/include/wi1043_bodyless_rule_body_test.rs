@@ -105,20 +105,24 @@
 //! ## WI-1057 — the fourth row, and why it needed a different mechanism
 //!
 //! The table above has four columns because WI-1043's four pieces all turn on the
-//! typer's PIN. Row 3 has no pin: `dispatch_spec_op_cached` does not read a WI-431
-//! instance fact's op-binding, so an implementation supplied only that way is
-//! discoverable BY VALUE, at eval. WI-1057 closed it with four more pieces, each
-//! keyed to one early return, and its two tests state their own controls at their
-//! sites (they are not columns here — reverting any WI-1043 piece leaves both alone):
+//! typer's PIN. Row 3 had no pin when WI-1057 was written: `dispatch_spec_op_cached` did
+//! not read a WI-431 instance fact's op-binding, so an implementation supplied only that
+//! way was discoverable BY VALUE, at eval. The typer decides it at load now (measured
+//! 2026-11-06 under WI-20261015-ZPETZ: neither face reaches a value-directed step for it).
+//! WI-1057 closed it with four more pieces, each keyed to one early return, and its two
+//! tests state their own controls at their sites (they are not columns here — reverting
+//! any WI-1043 piece leaves both alone):
 //!
 //! * **the goal shape** (`body_less_relation_arity`) admits a body-less spec op on the
 //!   SPELLED functor, since there is no pin to redirect to. Kept OFF
 //!   `functional_relation_arity`, which also gates WI-1040's dictionary weave.
 //! * **the reduction** (`reduce_op_value`) stops bailing on a body-less op and runs it
 //!   through the eval bridge instead.
-//! * **the host entry** (`invoke_op_with_requirements`) gains the value-directed
+//! * **the host entry** (`invoke_op_with_requirements`) gained the value-directed
 //!   escape the in-body path had at its step 3b — the bridge calls the host entry, so
-//!   without this the rule body asked the one crossing that could not answer.
+//!   without this the rule body asked the one crossing that could not answer. Since
+//!   WI-20261015-ZPETZ the host entry hands its call to the in-body dispatch, and the
+//!   copy is gone; the table's host-entry column measured it.
 //! * **the hook's guard** (`reduction_left_body_less_call`) kept an UNDECIDED call
 //!   from being `unify`d with the result variable. Since WI-20260926-K4JGC the hook
 //!   EVALUATES its call by proposal 068 §1.1's one strategy, and a call that did not run
