@@ -3,9 +3,9 @@
 - id: WI-20260909-SM910-make-the-ordering-family-value
 - created: 2026-09-09T04:05:18Z
 
-- status: Claimed
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-11-07T22:28:18Z
+- status_at: 2026-11-12T08:25:09Z
 
 - acceptance: cargo-test
 
@@ -46,4 +46,8 @@ TEMPORARY COMMIT, 2026-11-08 (the user: "let finish part and do temporary commit
 ### 2026-11-09T09:59:54Z — feedback — claude
 
 Part committed 2026-11-09 (the user, 2026-11-08: pin a binding's eq at load). (1) An eq a binding supplies (provides PartialEq[T = X, eq = f]) is the call's member as an own member is: resolve_at_goal no longer answers semantic equality from the provider's table, so a recursive binding compares at any depth (a 40-link chain answers in both bodies; depth 20 was undecided at the bridge's re-entry cap), and a circular binding runs to the step budget as a circular member does. (2) The eq of a carrier that provides Eq is not entered on identical operands (dispatch_resolved_operation, kernel-language 8.3): an own eq = false under Eq answered 0 in an operation body and true in a rule body; both answer 1 now. A generic operation bound as such an eq keeps the law on its carrier's values alone. Left for the rework of eq/neq (proposal 051 Phase 2 under 073; its tickets to be filed separately, decided with the user 2026-11-09): neq at a known type still finds eq from the value through the index; a composite holding a carrier with its own eq compares structurally in an operation body and is undecided in a rule body; the wi625 stack canary rides neq's route.
+
+### 2026-11-12T08:25:02Z — feedback — claude
+
+Delivered 2026-11-12 (the user: close it, the last row goes to WI-20261105-CBRD2). Re-measured on 15e39605 after its dependencies (89J6K, 5BP39, JEE0E) were delivered: reading 1's program — Cmp with greater requires Rank[T], Temp writing its own greater, Score providing Rank and writing none, bigger[A] requires Cmp[T = A] — loads, bigger(temp(5), temp(3)) and bigger(score(5), score(3)) answer true, and sort Blob providing Cmp[T = Blob] alone is refused at load naming Rank; the ordering family's eight spellings, the spec body's provision requirement, the binding eq, the Eq law and the result column are the rows of wi_sm910_ordering_dispatch_test, green on the last full gate. The 2026-11-08 review finding left skipped (caller_holds_spec does not read the type the spec is held at) needs no change: big2[A, B](a: A, b: A, c: B) requires PartialOrd[T = B] = PartialOrd.gt(a, b) is refused at the call in an operation body, and its rule twin rule big2[A, B](?a: A, ?b: A, ?c: B) :- PartialOrd[T = B], PartialOrd.gt(?a, ?b) is refused naming the type the call is at — the call's own PartialOrd at A is checked apart from the body's requirement. MOVED TO CBRD2: an equality under a declared PartialEq[T = A] (rule eqG[A] … :- PartialEq[T = A], ?a = ?b cited at pt) or under a sort's requires PartialEq[T = T] is still decided by the equality index, with the answer the clause's dictionary would give; the measurement and why it needs a resolver reader of its own are in CBRD2's note of today. Also left with CBRD2 as before: no_typed_caller (an_untyped_comparison_runs_at_the_type_its_values_carry) and the index's other readers.
 
