@@ -483,9 +483,10 @@ fn the_walk_gate_is_the_two_halves_and_a_data_sorts_operations() {
 /// own table pointed, rather than moved to a new file: it is one more row of the supply
 /// matrix this file measures, and the row it contradicts is three screens up.
 ///
-/// A body-less spec op supplied ONLY by a retroactive instance fact has no typer pin —
-/// `dispatch_spec_op_cached` does not read instance-fact op-bindings (WI-431 inc 2), so
-/// the implementation is discoverable only BY VALUE, at eval. WI-1043 gave every OTHER
+/// A body-less spec op supplied ONLY by a retroactive instance fact had no typer pin when
+/// WI-1057 was written — `dispatch_spec_op_cached` did not read instance-fact op-bindings
+/// (WI-431 inc 2), so the implementation was discoverable only BY VALUE, at eval; the typer
+/// decides it at load now (the module header). WI-1043 gave every OTHER
 /// route its goal shape by reading that pin (`dispatched_relation_arity`); this route
 /// has no pin to read, so WI-1057 admits the shape on the spelled functor itself
 /// (`body_less_relation_arity`) and lets the eval bridge decide the supplier from the
