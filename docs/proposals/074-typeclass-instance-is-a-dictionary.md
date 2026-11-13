@@ -4,6 +4,8 @@
 
 ## Extends: [073](073-abstract-values-are-instances.md) §2 (a value typed at a spec over a parameter is an instance at the carrier its type fixes; its spelling at a call is replaced by §2 here) and §6.2 (no type is stored with a value).
 
+## Tracked by: the `proposal-074` sequence, one ticket per stage (filed 2026-11-13): stage 1 WI-20261113-2KSAA, stage 2 WI-20261113-24ZZ0, stage 3 WI-20261113-Q2C01, stage 4 WI-20261113-5CZ9F, stage 5 WI-20261113-DY84V, stage 6 WI-20261113-FCMJA, stage 7 WI-20261113-10SN8 (PreOpened), stage 8 WI-20261113-64272. WI-817 depends on stage 1.
+
 ## Relates to: kernel-language §4.4 (a quantified type is inferred, never written; §4 keeps it so), §5.4 (the member spelling `Spec.Member`: one instance per signature), §8.2 (a spec over a parameter), §8.7 (which provider a call gets); WI-20261005-KSSA4 (the user's decision of 2026-10-05: `w: Tagger` is not `w: Tagger.C`); WI-20261024-TC54R (a call's bracket read in a rule body; §2, "In a rule body"); WI-817 (one closure applied at several types; its witness is T2, §4's dictionary-parameter program); `stdlib/anthill/realization/runtime.anthill` (`Dictionary[S]`: "S … tracked statically by the typer, never read off the value").
 
 ## The problem
