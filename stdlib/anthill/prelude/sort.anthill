@@ -499,9 +499,9 @@ enum anthill.prelude.TypeExtractor
      `binders` are the arrow's own parameters by position: each the place as a type holds
      it (`Denoted`), or the positional label `_i` at a position that binds no single name.
      A row label naming one (`Modify[k]` of `lambda (k: Cell[V = Int64]) -> put(k, 5)`) is
-     read as that position, whatever the value came through. A lambda's and an operation's
-     arrow write them; a written arrow leaves the field out, the places its row names being
-     a callback parameter's, which say their position themselves. It sits outside `param`:
+     read as that position, whatever the value came through, and two arrows are compared
+     with their parameters matched by it. A lambda's and an operation's arrow write them, and
+     so does a written arrow whose row names one of its parameters. It sits outside `param`:
      for one parameter `param` is that parameter's type, which a type variable may be bound
      to. >}
   entity Arrow(param: Term, result: Term, effects: Term, binders: List[Term])

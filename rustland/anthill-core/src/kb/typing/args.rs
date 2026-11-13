@@ -2867,8 +2867,8 @@ pub(super) fn callback_row_error(
     }
     // The callback's OWN BINDERS by position, as its type records them ([`arrow_own_binders`])
     // — what a label of its row may name, aligned below to the declared slot's places. `None`
-    // for a type that records none — a written arrow, whose places say their position
-    // themselves (below) — and its row is judged all the same. The whole check used to return
+    // for a type that records none, whose row names none of its own, and its row is judged all
+    // the same. The whole check used to return
     // for an argument whose expression said no binders, so `Strm.each(s, h.f)` passed a
     // callback raising its own stream's row where `let g = h.f` then `Strm.each(s, g)` was
     // refused, and `each2[EffP = {}](h.f)` passed one raising a label the row denies
@@ -2879,7 +2879,7 @@ pub(super) fn callback_row_error(
     // positionally. An eta'd op contributes its `arg_places` (all real); a lambda contributes
     // its top-level binder slots (`None` for a `_`/literal position, which occupies a slot so
     // arity stays aligned but names nothing an effect place could reference).
-    let declared_places: SmallVec<[Symbol; 4]> = at.declared_places(kb);
+    let declared_places: SmallVec<[Symbol; 4]> = at.declared_places(kb, declared);
     // Positional alignment is meaningful only for EQUAL arities — a mismatch
     // (which the generic arg validation rejects on the param type) must not
     // silently truncate the map and mis-align the surviving places.
@@ -2925,7 +2925,7 @@ pub(super) fn callback_row_error(
             unaligned_own.extend(places.iter().flatten().copied());
         }
     }
-    let mut place_map: HashMap<Symbol, Symbol> = actual_places
+    let place_map: HashMap<Symbol, Symbol> = actual_places
         .iter()
         .flat_map(|places| places.iter().zip(declared_places.iter().copied()))
         .filter_map(|(a, e)| a.map(|a| (a, e)))
@@ -2994,30 +2994,7 @@ pub(super) fn callback_row_error(
             e_admitting.remove(pos);
         }
     }
-    // A label naming a CALLBACK PARAMETER's place (`<op>.g.y`) says its position itself: that
-    // kind of place exists in the row of its own arrow only (WI-341,
-    // [`callback_binder_position`]), so a type that records no places of its own and carries
-    // the arrow has this callback's binder at that position. NOT ONE THAT RECORDS ITS OWN (a
-    // lambda's, an operation's): an APPLICATION of `g` inside it charges `g`'s place as written
-    // whatever `g` was applied to, so `lambda (k) -> g(d)` carried `Modify[g.y]` exactly as
-    // `lambda (k) -> g(k)` does, and read as the lambda's binder it admitted the write to `d`
-    // past a closed `@ {Modify[x]}` and defeated a `-Modify[a]` (MEASURED: review 9). There the
-    // label is compared as it stands, as the lambda's own places are aligned above.
-    if actual_places.is_none() {
-        for la in &a_present {
-            let Some(place) = extract_effect_resource_sym(kb, la) else {
-                continue;
-            };
-            if place_map.contains_key(&place) {
-                continue;
-            }
-            if let Some(e) =
-                callback_binder_position(kb, place).and_then(|i| declared_places.get(i))
-            {
-                place_map.insert(place, *e);
-            }
-        }
-    }
+    // A label naming no parameter the callback's type records is compared as it stands.
     let open_lacks = if e_open {
         open_tail_lacks(kb, subst, &e_tails)
     } else {
@@ -3179,13 +3156,9 @@ pub(super) fn callback_row_error(
                     .any(|l| labels_match_aligned(kb, subst, &place_map, la, l))
             })
         }) {
-            // The callback's own parameter: one its type records, or, where it records none, a
-            // callback parameter's place (as the alignment above reads it).
-            let own = extract_effect_resource_sym(kb, la).filter(|place| {
-                place_map.contains_key(place)
-                    || unaligned_own.contains(place)
-                    || (actual_places.is_none() && callback_binder_position(kb, *place).is_some())
-            });
+            // The callback's own parameter: one its type records.
+            let own = extract_effect_resource_sym(kb, la)
+                .filter(|place| place_map.contains_key(place) || unaligned_own.contains(place));
             let why = match own {
                 Some(place) => format!(
                     " over its own parameter `{}`, which names nothing outside the callback's \
@@ -3456,8 +3429,7 @@ pub(super) enum CallbackAt<'a> {
     },
     /// The arrow a site checks the value written there against: an entity field's, a collection
     /// element's, a function value's parameter, an option's payload a bare callback is wrapped
-    /// in. An operation's callback parameter registered places, which the row names its binders
-    /// by; anywhere else none are registered, and the row names values only.
+    /// in. Its row names the callback's binders by the parameters the arrow records.
     Top {
         context: &'a TypeErrorContext,
         node: &'a Rc<NodeOccurrence>,
@@ -3506,7 +3478,13 @@ impl CallbackAt<'_> {
         }
     }
 
-    fn declared_places(&self, kb: &KnowledgeBase) -> SmallVec<[Symbol; 4]> {
+    /// The declared arrow's own parameters by position, which its row names the callback's
+    /// binders by: those its type records ([`declared_arrow_places`]), else a callback
+    /// parameter's registered places.
+    fn declared_places(&self, kb: &mut KnowledgeBase, declared: &Value) -> SmallVec<[Symbol; 4]> {
+        if let Some(places) = declared_arrow_places(kb, declared) {
+            return places;
+        }
         match self {
             CallbackAt::Parameter { param, .. } => kb.symbols.arg_places(*param).iter().copied().collect(),
             CallbackAt::Top {
@@ -3633,13 +3611,16 @@ pub(super) fn callback_at_slot(
     let mut renamed: HashMap<Symbol, Symbol> = HashMap::new();
     let mut unaligned: SmallVec<[Symbol; 4]> = SmallVec::new();
     if let Some(places) = arrow_own_binders(kb, actual) {
-        let declared_places = kb.symbols.arg_places(param_sym);
+        let declared_places: SmallVec<[Symbol; 4]> = match declared_arrow_places(kb, declared) {
+            Some(places) => places,
+            None => kb.symbols.arg_places(param_sym).iter().copied().collect(),
+        };
         if places.len() == declared_places.len() {
             renamed.extend(
                 places
                     .iter()
                     .zip(declared_places)
-                    .filter_map(|(a, e)| a.filter(|a| a != e).map(|a| (a, *e))),
+                    .filter_map(|(a, e)| a.filter(|a| *a != e).map(|a| (a, e))),
             );
         } else {
             unaligned.extend(places.iter().flatten().copied());

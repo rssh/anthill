@@ -31,7 +31,7 @@
 //! w)`, `@ {Modify[k], EA}`) is a program of its own: that slot says a write to the cell
 //! whatever `w` does.
 
-use super::{opt, spelt, Exception, Family, Hole, Picks, Program, Property};
+use super::{opt, spelt, Exception, Family, Hole, Picks, Program};
 
 pub static FAMILY: Family = Family {
     name: "e-applied-arrow",
@@ -93,23 +93,7 @@ pub static FAMILY: Family = Family {
     exceptions: EXCEPTIONS,
 };
 
-const TICKET_6T5C6: &str = "WI-20261014-6T5C6";
-
-const EXCEPTIONS: &[Exception] = &[
-    // An arrow names its own parameter in its row only in an operation's parameter list.
-    Exception {
-        property: Property::OneVerdict,
-        when: &["typed=annotated", "does=writes-own"],
-        ticket: TICKET_6T5C6,
-        why: "a `let` annotation's arrow cannot name its own parameter",
-    },
-    Exception {
-        property: Property::OneVerdict,
-        when: &["typed=result", "does=writes-own"],
-        ticket: TICKET_6T5C6,
-        why: "an operation result's arrow cannot name its own parameter, and the refusal's company differs by spelling",
-    },
-];
+const EXCEPTIONS: &[Exception] = &[];
 
 fn skips(picks: &Picks<'_>) -> bool {
     let names_use = picks.is("does", "writes-scope") || picks.is("does", "raises-callers");

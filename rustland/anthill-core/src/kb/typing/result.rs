@@ -744,16 +744,25 @@ pub(super) fn arrow_own_binders<V: TermView>(
     kb: &mut KnowledgeBase,
     ty: &V,
 ) -> Option<Vec<Option<Symbol>>> {
+    let extracted = extract_callable_type(kb, ty);
+    extracted_own_binders(kb, &extracted)
+}
+
+/// [`arrow_own_binders`] of a type already classified by [`extract_callable_type`].
+pub(super) fn extracted_own_binders(
+    kb: &mut KnowledgeBase,
+    ty: &TypeExtractor,
+) -> Option<Vec<Option<Symbol>>> {
     let TypeExtractor::Arrow {
         binders: Some(binders),
         ..
-    } = extract_callable_type(kb, ty)
+    } = ty
     else {
         return None;
     };
-    let elements = value_list_elements(kb, &binders);
+    let elements = value_list_elements(kb, binders);
     debug_assert!(
-        !elements.is_empty() || value_is_nil_list(kb, &binders),
+        !elements.is_empty() || value_is_nil_list(kb, binders),
         "an arrow's `binders` must be a list of its places (`make_arrow_binders`)",
     );
     Some(
@@ -775,6 +784,23 @@ pub(super) fn arrow_own_binders<V: TermView>(
                     None
                 }
             })
+            .collect(),
+    )
+}
+
+/// A declared arrow's own parameters by position ([`arrow_own_binders`]), a position that
+/// binds no single name standing as its positional label `_i`, which no label names — so the
+/// list keeps the arity a positional alignment reads. `None` for a type that records none.
+pub(super) fn declared_arrow_places<V: TermView>(
+    kb: &mut KnowledgeBase,
+    ty: &V,
+) -> Option<SmallVec<[Symbol; 4]>> {
+    let binders = arrow_own_binders(kb, ty)?;
+    Some(
+        binders
+            .iter()
+            .enumerate()
+            .map(|(i, b)| b.unwrap_or_else(|| kb.intern(&crate::intern::positional_label(i))))
             .collect(),
     )
 }

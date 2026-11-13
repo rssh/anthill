@@ -6527,7 +6527,6 @@ fn check_apply_call(
                 kb,
                 env,
                 &fn_type,
-                &call_effects,
                 &target,
                 pos_args,
                 named_args,

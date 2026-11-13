@@ -696,11 +696,11 @@ pub(super) fn unify_function_types<A: TermView, B: TermView>(
     a: &A,
     b: &B,
 ) -> bool {
-    let (Some(a_parts), Some(b_parts)) = (arrow_parts(kb, a), arrow_parts(kb, b)) else {
+    let Some(((a_param, a_result, a_eff), (b_param, b_result, b_eff))) =
+        function_parts_at_one_binders(kb, a, b)
+    else {
         return false;
     };
-    let (a_param, a_result, a_eff) = a_parts;
-    let (b_param, b_result, b_eff) = b_parts;
     if let (Some(x), Some(y)) = (&a_param, &b_param) {
         if !unify_arrow_params(kb, subst, x, y) {
             return false;
@@ -717,6 +717,60 @@ pub(super) fn unify_function_types<A: TermView, B: TermView>(
             unify_effect_rows(kb, subst, &ae, &ee)
         }
     }
+}
+
+/// The parts ([`arrow_parts`]) of the function types `a` and `b`, `b`'s own parameters named as
+/// `a` names its own at the same positions — so two arrows that differ only in their
+/// parameters' names are one type (kernel-language §4.4): `(k: Cell[V = Int64]) -> Unit @
+/// {Modify[k]}` and `(j: Cell[V = Int64]) -> Unit @ {Modify[j]}`. `b`'s are unchanged where
+/// either records no parameters ([`arrow_own_binders`]) or the two record different counts: a
+/// type that records none names none of its own. `None` where either is no function type.
+pub(super) fn function_parts_at_one_binders<A: TermView, B: TermView>(
+    kb: &mut KnowledgeBase,
+    a: &A,
+    b: &B,
+) -> Option<(FunctionParts, FunctionParts)> {
+    let ea = extract_callable_type(kb, a);
+    let eb = extract_callable_type(kb, b);
+    let a_parts = arrow_parts_extracted(kb, &ea)?;
+    let b_parts = arrow_parts_extracted(kb, &eb)?;
+    let b_parts = match (extracted_own_binders(kb, &ea), extracted_own_binders(kb, &eb)) {
+        (Some(a_binders), Some(b_binders)) => parts_at_binders(kb, &a_binders, &b_binders, b_parts),
+        _ => b_parts,
+    };
+    Some((a_parts, b_parts))
+}
+
+/// A function type's parameter tuple, result and row, as [`arrow_parts`] reads them.
+pub(super) type FunctionParts = (Option<Value>, Value, Option<Value>);
+
+/// `parts` with each of `theirs` renamed to `mine` at the same position.
+fn parts_at_binders(
+    kb: &mut KnowledgeBase,
+    mine: &[Option<Symbol>],
+    theirs: &[Option<Symbol>],
+    parts: FunctionParts,
+) -> FunctionParts {
+    if mine.len() != theirs.len() {
+        return parts;
+    }
+    let renamed: HashMap<Symbol, Symbol> = theirs
+        .iter()
+        .zip(mine)
+        .filter_map(|(theirs, mine)| match (theirs, mine) {
+            (Some(theirs), Some(mine)) if theirs != mine => Some((*theirs, *mine)),
+            _ => None,
+        })
+        .collect();
+    if renamed.is_empty() {
+        return parts;
+    }
+    let (param, result, eff) = parts;
+    (
+        param.map(|p| substitute_ref_syms_value(kb, &p, &renamed)),
+        substitute_ref_syms_value(kb, &result, &renamed),
+        eff.map(|e| substitute_ref_syms_value(kb, &e, &renamed)),
+    )
 }
 
 /// Decode a `List[record]` of two-field records into `(symbol-field, value-field)`
@@ -1146,23 +1200,23 @@ pub(super) fn unify_denoted_view<A: TermView, B: TermView>(
             if sa == sb {
                 return true;
             }
-            // ALPHA-EQUIVALENCE of a binder-naming effect target — §5.5. The
-            // binder is a `CallbackParam` place (`f.a`) and its alpha-canonical
-            // identity is its POSITION among the callback's params, which is the
-            // spec's rule expressed as this function's De Bruijn view of the place.
+            // ALPHA-EQUIVALENCE of a binder-naming effect target — §5.5. Two arrows
+            // compared whole have their own parameters renamed to one another's first
+            // ([`function_parts_at_one_binders`]), and their labels meet here as one symbol. What
+            // meets here as two is a label a row variable was made to LACK — a
+            // label over a callback's parameter, held in σ ([`Substitution::add_lacks`],
+            // [`callback_at_slot`]) — compared with a label over another callback's
+            // parameter, a provider member's against its spec's: no arrow around the
+            // pair renames it, and the two are one where they stand at one position
+            // among their callbacks' parameters (`Strm.each.f.k`, `Each.each.f.k`).
             //
             // SOUNDNESS INVARIANT (position-only comparison), which is local to
-            // this site and NOT in the spec: a raw `Modify[CallbackParam]`
-            // label exists ONLY inside its own callback arrow's `effects` child —
-            // the binder is meaningless outside its arrow's scope, and
-            // `region::op_boundary_effects` re-keys any callback Modify to a
-            // concrete op place (input / result), or drops it, before it reaches
-            // a top-level op effect row. So two `CallbackParam` denoteds only
-            // ever meet here through `arrow_compatible_view`, which has ALREADY
-            // aligned the two arrows (param children unified first) — i.e. they
-            // are corresponding binders, so equal position ⇒ same binder. A
-            // future caller comparing two binders NOT through aligned-arrow
-            // unify would break this — keep callback-Modify labels arrow-local.
+            // this site and NOT in the spec: a raw `Modify[CallbackParam]` label
+            // exists ONLY inside its own callback arrow's `effects` child, or a lacks
+            // set taken from one — `region::op_boundary_effects` re-keys any callback
+            // Modify to a concrete op place (input / result), or drops it, before it
+            // reaches a top-level op effect row. Keep callback-Modify labels
+            // arrow-local.
             match (
                 callback_binder_position(kb, sa),
                 callback_binder_position(kb, sb),
@@ -1207,7 +1261,7 @@ pub(super) fn callback_binder_position(kb: &KnowledgeBase, sym: Symbol) -> Optio
 
 /// The callback a `CallbackParam` place is a parameter of (`<op>.f.a` → `<op>.f`); `None` for
 /// any other symbol.
-pub(super) fn callback_of_place(kb: &KnowledgeBase, sym: Symbol) -> Option<Symbol> {
+fn callback_of_place(kb: &KnowledgeBase, sym: Symbol) -> Option<Symbol> {
     if !kb.kinds(sym).is_place(crate::intern::SymbolKind::CallbackParam) {
         return None;
     }

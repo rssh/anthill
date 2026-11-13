@@ -3,9 +3,9 @@
 - id: WI-20261014-6T5C6-an-entity-field-s-arrow-type
 - created: 2026-10-14T08:25:03Z
 
-- status: Open
-- status_agent: user
-- status_at: 2026-10-14T08:25:03Z
+- status: Delivered
+- status_agent: claude
+- status_at: 2026-11-13T11:42:22Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -35,4 +35,8 @@ WHERE TO LOOK: found during 1TJQH. A guess, not measured: the name k is resolved
 ### 2026-10-14T08:35:08Z — feedback — user
 
 WIDENED (user, 2026-10-14), found by the family e-applied-arrow: an arrow type names its own parameter in its row only in an operation's PARAMETER LIST. Refused the same way ('unresolved name z') in a let annotation (let w: (z: Cell[V = Int64]) -> Int64 @ {Modify[z]} = lambda (z: Cell[V = Int64]) -> put(z, 5)) and in an operation's result type (operation mk() -> (z: Cell[V = Int64]) -> Int64 @ {Modify[z]} = …), as well as in an entity field. EXPECTED: all three load, the row naming the arrow's own parameter as it does in a parameter list.
+
+### 2026-11-13T11:42:20Z — feedback — claude
+
+Delivered with WI-20261002-DNDZF part 1. A written arrow whose row names one of its parameters records them (TypeNode::Arrow binders), so the field's `Modify[k]` is the field's own parameter: this ticket's program (`box` beside the row parameter `EB`) runs to 55. The family exceptions in tests/families/applied_arrow.rs are removed. Row: wi_dndzf_arrow_names_its_own_parameters_test::a_field_arrow_beside_a_row_parameter_names_its_own_parameter; with the RECORD switch it fails (back-out ledger at the file's head).
 

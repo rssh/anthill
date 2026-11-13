@@ -389,15 +389,14 @@ pub(super) struct ApplicationPlaces {
 }
 
 impl ApplicationPlaces {
-    /// Pair the binders of the function `fn_type`, whose row is `labels`, with the arguments of
-    /// its application at `target`. Nothing is paired where the arguments meet no component one
+    /// Pair the binders of the function `fn_type` with the arguments of its application at
+    /// `target`. Nothing is paired where the arguments meet no component one
     /// to one — an arity fault the application reports itself.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn of(
         kb: &mut KnowledgeBase,
         env: &TypingEnv,
         fn_type: &Value,
-        labels: &[Value],
         target: &ApplicationTarget,
         pos_args: &[Rc<NodeOccurrence>],
         named_args: &[(Symbol, Rc<NodeOccurrence>)],
@@ -405,32 +404,12 @@ impl ApplicationPlaces {
         named_results: &[Result<TypeResult, TypeError>],
     ) -> Self {
         let mut places = Self::default();
-        // An arrow written in an operation's parameter list records no binders; its row names
-        // the callback's own places, each of which says its position ([`callback_of_place`]).
-        // A row joined from several callbacks (`if b then f else g`) names each one's places,
-        // and each list is paired with the arguments alike.
-        let binder_lists: Vec<Vec<Option<Symbol>>> = match arrow_own_binders(kb, fn_type) {
-            Some(binders) => vec![binders],
-            None => {
-                let mut callbacks: Vec<Symbol> = Vec::new();
-                for label in labels {
-                    if let Some(callback) =
-                        extract_effect_resource_sym(kb, label).and_then(|place| callback_of_place(kb, place))
-                    {
-                        if !callbacks.contains(&callback) {
-                            callbacks.push(callback);
-                        }
-                    }
-                }
-                callbacks
-                    .into_iter()
-                    .map(|callback| kb.symbols.arg_places(callback).iter().map(|p| Some(*p)).collect())
-                    .collect()
-            }
+        // A function whose row names one of its own parameters records them; one that records
+        // none names none, and nothing is re-keyed.
+        let Some(binders) = arrow_own_binders(kb, fn_type) else {
+            return places;
         };
-        for binders in &binder_lists {
-            places.pair(kb, env, binders, target, pos_args, named_args, pos_results, named_results);
-        }
+        places.pair(kb, env, &binders, target, pos_args, named_args, pos_results, named_results);
         places
     }
 

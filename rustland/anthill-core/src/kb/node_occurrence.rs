@@ -2356,9 +2356,10 @@ pub enum TypeNode {
     /// `List[Term]`, each the place as a type holds it (`denoted`, what a row label
     /// `Modify[k]` holds) or the positional label `_i` at a position that binds no single
     /// name. A label of the row is aligned to another arrow's parameter by its index here,
-    /// whatever expression the value came through. An arrow formed from a lambda or an
-    /// operation records them; a written one records none, its row's places being a
-    /// callback parameter's, which say their position themselves. It lives outside
+    /// whatever expression the value came through, and two arrows are compared with their
+    /// parameters matched by it. An arrow formed from a lambda or an operation records them,
+    /// and so does a written one whose row names one — an operation's callback parameter by
+    /// the places registered for it (`<op>.f.a`), any other by fresh ones. It lives outside
     /// `param`: for one parameter `param` is the parameter's type, which a type variable may
     /// be bound to.
     Arrow {

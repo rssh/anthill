@@ -29365,6 +29365,31 @@ impl ConstFold {
     }
 }
 
+/// The parameters of a written arrow while its row is lowered ([`Loader::arrow_binder_frame`]):
+/// each named parameter's place, and whether a label of the row named one — the arrow records
+/// its parameters then.
+struct ArrowBinderFrame {
+    names: Vec<(String, Symbol)>,
+    named: bool,
+}
+
+impl ArrowBinderFrame {
+    fn new(places: &[(Option<String>, Option<Symbol>)]) -> Self {
+        let names = places
+            .iter()
+            .filter_map(|(name, place)| Some((name.clone()?, (*place)?)))
+            .collect();
+        Self { names, named: false }
+    }
+
+    /// The place of the parameter `name`, noted as named.
+    fn name(&mut self, name: &str) -> Option<Symbol> {
+        let place = self.names.iter().find(|(n, _)| n == name).map(|(_, p)| *p)?;
+        self.named = true;
+        Some(place)
+    }
+}
+
 struct Loader<'a> {
     kb: &'a mut KnowledgeBase,
     parsed: &'a ParsedFile,
@@ -29454,13 +29479,16 @@ struct Loader<'a> {
     // Cache: type param name → TermId (Var) per scope, so all references to T share the same Var
     /// Keyed by the SCOPE a type param was written in, not a raw (WI-984).
     type_param_vars: HashMap<(ScopeId, String), TermId>,
-    // WI-341 loader binder context: while loading a callback PARAMETER's arrow
-    // type, its arrow param names (`a`, `t`) are bound here to their registered
-    // `CallbackParam` place symbols (`<op>.f.a`), so a self-referential arrow
-    // effect like `Modify[a]` resolves to the place `<op>.f.a` (the binder's
-    // canonical name from the op frame, doc §2) rather than failing as an
-    // unresolved name. Empty except during that one arrow-type conversion.
-    arrow_binder_scope: HashMap<String, Symbol>,
+    /// The callback parameter whose arrow type is lowered next — the operation and the
+    /// parameter: its parameters are the `CallbackParam` places [`register_callback_places`]
+    /// defined (`<op>.f.a`). Set by the operation's parameter lowering for a parameter whose
+    /// written type is an arrow, and taken by the arrow it lowers, so no other arrow sees it.
+    arrow_callback: Option<(Symbol, String)>,
+    /// The parameters of the arrow whose effect row is being lowered, by name: a row label
+    /// naming one (`Modify[a]`) is that parameter's place. Set only while that row is
+    /// lowered, so the arrow's parameter and result types, and an arrow nested in them, do
+    /// not see it.
+    arrow_binder_frame: Option<ArrowBinderFrame>,
     // WI-440: true while lowering the INNER label of a `-E` absence atom
     // (`TypeExpr::EffectAbsent`). An unresolved name there is upgraded from the
     // advisory `UnresolvedName` to the load-BLOCKING `ValueInTypeNotResolved`:
@@ -30104,7 +30132,8 @@ impl<'a> Loader<'a> {
             pending_empty_blocks: Vec::new(),
             written_declaration_blocks: HashSet::new(),
             type_param_vars: HashMap::new(),
-            arrow_binder_scope: HashMap::new(),
+            arrow_callback: None,
+            arrow_binder_frame: None,
             in_effect_absence: false,
             in_effect_guard: false,
             in_type_position: false,
@@ -40443,28 +40472,50 @@ impl<'a> Loader<'a> {
         })
     }
 
-    /// WI-341: bind a callback parameter's arrow param names to their registered
-    /// `CallbackParam` place symbols, so a self-referential arrow effect
-    /// (`Modify[a]`) resolves to the place `<op>.f.a` — the binder's canonical
-    /// name from the op frame (doc §2). The places are read straight off the
-    /// callback symbol's `arg_places` (set by `register_callback_places`), which
-    /// is authoritative and already excludes the arrow `result` (so it is not
-    /// bound and cannot shadow the op's reserved `result`) and handles the
-    /// unnamed/`result`-named conventions — unlike reconstructing qualified
-    /// strings. Each binder is keyed by the place's own short name (`…f.a` → `a`).
-    /// A non-callback param has empty `arg_places`, leaving the scope empty.
-    /// Nested-arrow params (`f.g.x`) are out of v1 scope (only the top-level
-    /// callback's `arg_places` are bound; the arrow case suspends the scope while
-    /// converting nested arrows, so their effects do not see this binder).
-    fn set_arrow_binder_scope(&mut self, callback_sym: Symbol) {
-        self.arrow_binder_scope.clear();
-        let places: Vec<Symbol> = self.kb.symbols.arg_places(callback_sym).to_vec();
-        for place in places {
-            if let Some(short) = self.kb.qualified_name_of(place).rsplit('.').next() {
-                let short = short.to_owned();
-                self.arrow_binder_scope.insert(short, place);
-            }
-        }
+    /// The places of a written arrow's own parameters, by position: what a label of its row
+    /// names when it names one (`Modify[a]`), and what the arrow records as its binders
+    /// (kernel-language §4.4). An operation's callback parameter (`callback`: the operation and
+    /// the parameter) has them registered, `<op>.f.a` ([`register_callback_places`]), read
+    /// here by name; a parameter named `result`, which has none, is refused. Any other arrow — an operation's result, an entity's field, an
+    /// alias, an annotation, an arrow inside another — has a fresh place per named
+    /// parameter, as a lambda's binder is one. An unnamed parameter names nothing.
+    fn written_arrow_places(
+        &mut self,
+        params: &[(Option<Symbol>, TypeExpr)],
+        callback: Option<(Symbol, String)>,
+    ) -> Vec<(Option<String>, Option<Symbol>)> {
+        let registered: Vec<Symbol> = callback
+            .as_ref()
+            .and_then(|(op, rel)| self.kb.symbols.operation_place(*op, rel))
+            .map(|cb| self.kb.symbols.arg_places(cb).to_vec())
+            .unwrap_or_default();
+        params
+            .iter()
+            .map(|(name, _)| {
+                let Some(name) = name.map(|s| self.parsed.symbols.local_name(s).to_owned()) else {
+                    return (None, None);
+                };
+                let place = if let Some((op, rel)) = &callback {
+                    // `<rel>.result` is the callback's own result place, so no parameter has
+                    // that name: refused, as an operation's parameter of that name is.
+                    if name == "result" {
+                        self.errors.push(LoadError::Other {
+                            message: format!(
+                                "operation '{}': parameter name 'result' of the callback `{rel}` is \
+                                 reserved for its return value; rename the parameter",
+                                self.kb.qualified_name_of(*op)
+                            ),
+                        });
+                    }
+                    registered.iter().copied().find(|p| {
+                        self.kb.qualified_name_of(*p).rsplit('.').next() == Some(name.as_str())
+                    })
+                } else {
+                    Some(self.kb.intern_unique(&name))
+                };
+                (Some(name), place)
+            })
+            .collect()
     }
 
     /// WI-342: the hash-consed logic `Var` (`TermId`) for a `Simple` type name
@@ -43006,13 +43057,12 @@ impl<'a> Loader<'a> {
                         return node_occurrence::TypeChild::Interned(requirement.instance);
                     }
                 }
-                // WI-341: a callback arrow's own param (`a` in `Modify[a]`,
-                // in scope only while loading that callback param's arrow type)
-                // resolves to its `CallbackParam` place — minted as a
-                // `Value::Node` `denoted` occurrence (not a hash-consed `Ref`).
-                if name.segments.len() == 1 && !self.arrow_binder_scope.is_empty() {
+                // An arrow's own parameter (`a` in `Modify[a]`, in scope while that arrow's
+                // row is lowered) is its place — minted as a `Value::Node` `denoted`
+                // occurrence (not a hash-consed `Ref`).
+                if name.segments.len() == 1 {
                     let nm = self.parsed.symbols.local_name(name.segments[0]);
-                    if let Some(&place) = self.arrow_binder_scope.get(nm) {
+                    if let Some(place) = self.arrow_binder_frame.as_mut().and_then(|f| f.name(nm)) {
                         return node_occurrence::TypeChild::Node(
                             self.kb.make_denoted_occ_ref(place, span, owner),
                         );
@@ -43181,13 +43231,13 @@ impl<'a> Loader<'a> {
                 effects,
             } => {
                 use node_occurrence::TypeChild;
-                // WI-341: a callback arrow whose effect is denoted-bearing
-                // (`Modify[a]`) becomes a `Value::Node` arrow so the occurrence is
-                // CARRIED, not re-grounded. The binder scope applies only to the
-                // EFFECT labels (a self-referential `Modify[a]`); suspend it for
-                // the param/return TYPE positions (mirror `type_expr_to_child`),
-                // restore it for the effects.
-                let saved = std::mem::take(&mut self.arrow_binder_scope);
+                // An arrow whose row names one of its own parameters (`Modify[a]`) is a
+                // `Value::Node` arrow, so the occurrence is CARRIED, not re-grounded, and it
+                // records its parameters (kernel-language §4.4). Its parameters are in scope
+                // for its row only: the frame of an enclosing arrow is put aside while this
+                // one is lowered, and its own is set for the row alone.
+                let callback = self.arrow_callback.take();
+                let saved = self.arrow_binder_frame.take();
                 // The arrow's `A` (kernel-language §4.4): the parameter list is the tuple for
                 // n ≠ 1, the parameter's type for one, so `(t: (a: A, b: B)) -> R` and
                 // `(a: A, b: B) -> R` are one type.
@@ -43222,11 +43272,17 @@ impl<'a> Loader<'a> {
                     }
                 };
                 let result_child = self.type_expr_to_child(return_type, span, owner);
-                self.arrow_binder_scope = saved;
+                let places = self.written_arrow_places(params, callback);
+                self.arrow_binder_frame = Some(ArrowBinderFrame::new(&places));
                 let effect_children: Vec<TypeChild> = effects
                     .iter()
                     .map(|e| self.type_expr_to_child(e, span, owner))
                     .collect();
+                let frame = std::mem::replace(&mut self.arrow_binder_frame, saved);
+                let binders = frame.is_some_and(|f| f.named).then(|| {
+                    let slots: Vec<Option<Symbol>> = places.iter().map(|(_, p)| *p).collect();
+                    self.kb.make_arrow_binders(&slots, span, owner)
+                });
                 // WI-440 (row-openness decision): an absence-only annotation
                 // (`@ -Modify[x]`) stays a CLOSED row carrying the lacks atom —
                 // openness is written EXPLICITLY with a row variable
@@ -43235,7 +43291,8 @@ impl<'a> Loader<'a> {
                 // and reverted: the minted var is unnameable, so a HOF APPLYING
                 // the callback surfaced an "undeclared effect ?ρ" it had no
                 // syntax to declare.
-                let any_node = matches!(param_child, TypeChild::Node(_))
+                let any_node = binders.is_some()
+                    || matches!(param_child, TypeChild::Node(_))
                     || matches!(result_child, TypeChild::Node(_))
                     || effect_children
                         .iter()
@@ -43263,13 +43320,11 @@ impl<'a> Loader<'a> {
                 // from the `EffectAbsent` arm) into `present(absent(E))`; the
                 // helper keeps absent atoms bare.
                 let effects_child = self.fold_effect_row_occ(effects, effect_children, span, owner);
-                // A written arrow records no binders: a place its row names is the callback
-                // parameter's (`<op>.f.a`), which says its position itself.
                 TypeChild::Node(self.kb.make_arrow_occ(
                     param_child,
                     result_child,
                     effects_child,
-                    None,
+                    binders,
                     span,
                     owner,
                 ))
@@ -48609,13 +48664,13 @@ impl<'a> Loader<'a> {
                 // The record holds the name as written (`FieldInfo.name: String`); the
                 // parameter's symbol is `<operation>.<name>` ([`op_info`]'s `extract_params`).
                 let name_term = self.kb.alloc(Term::Const(Literal::String(param_name_str.clone())));
-                // WI-341: bind a callback param's arrow param names to their
-                // `CallbackParam` places for this arrow type's conversion, so a
-                // self-referential effect (`Modify[a]`) resolves to `<op>.f.a`.
-                // Cleared after so they never leak to the next param / the body.
-                self.set_arrow_binder_scope(field_sym);
+                // A callback parameter's arrow names its parameters by the `CallbackParam`
+                // places registered for them, so a self-referential effect (`Modify[a]`) is
+                // `<op>.f.a`. Taken by that arrow; cleared after in case none took it.
+                self.arrow_callback =
+                    matches!(p.ty, TypeExpr::Arrow { .. }).then(|| (functor, param_name_str.clone()));
                 let type_value = self.annotation_type_to_value(&p.ty);
-                self.arrow_binder_scope.clear();
+                self.arrow_callback = None;
                 // WI-489: record this param's static type so a value-in-type field
                 // projection off it (`Modify[c.backend]`) validates its field path in
                 // the effects clause converted below. `field_sym` is the param's place

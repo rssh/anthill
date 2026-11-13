@@ -495,10 +495,9 @@ pub(super) fn function_types_compatible<A: TermView, E: TermView>(
     actual: &A,
     expected: &E,
 ) -> bool {
-    let Some((a_param, a_result, a_eff)) = arrow_parts(kb, actual) else {
-        return false;
-    };
-    let Some((b_param, b_result, b_eff)) = arrow_parts(kb, expected) else {
+    let Some(((a_param, a_result, a_eff), (b_param, b_result, b_eff))) =
+        function_parts_at_one_binders(kb, actual, expected)
+    else {
         return false;
     };
     if let (Some(ap), Some(bp)) = (&a_param, &b_param) {

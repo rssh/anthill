@@ -319,7 +319,7 @@ pub(super) fn type_is_callable(kb: &KnowledgeBase, ty: &Value) -> bool {
 /// [`extract_callable_type`] — can read its parts without paying for a second
 /// classification. [`arrow_parts`] keeps its carrier-taking signature for the
 /// many single-shot callers that have no extraction to share.
-fn arrow_parts_extracted(
+pub(super) fn arrow_parts_extracted(
     kb: &KnowledgeBase,
     ty: &TypeExtractor,
 ) -> Option<(Option<Value>, Value, Option<Value>)> {
