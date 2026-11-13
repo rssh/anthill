@@ -3,9 +3,9 @@
 - id: WI-20261105-P0QGF-proposal-073-stage-3-a-value
 - created: 2026-11-05T22:18:05Z
 
-- status: Open
+- status: Delivered
 - status_agent: claude
-- status_at: 2026-11-05T22:18:05Z
+- status_at: 2026-11-13T14:24:42Z
 
 - acceptance: cargo-test, scaland-sbt-test
 
@@ -46,4 +46,8 @@ PART 2 DELIVERED 2026-11-13 (the user: "ok"; ticket kept open for `sumWith`, whi
 ### 2026-11-13T12:51:51Z — feedback — claude
 
 sumWith no longer waits on WI-20261002-DNDZF (delivered): its arrow (x: Additive, a: x.T, b: x.T) -> x.T loads and sumWith(add2, 2, 3) runs to 5, sumWith(add2, 1.5, 2.5) to 4.0 (wi_dndzf_arrow_parameter_projects_another_test::sum_with_reads_its_callbacks_projection_at_the_instance_it_hands). The lambda spelling, lambda (x: Additive, a: x.T, b: x.T) -> a + b, is still refused in its body: 'missing requires Additive[T = …]' at a + b — a lambda's parameter typed at a spec over a parameter is not yet an instance, as an operation's is since part 2.
+
+### 2026-11-13T14:24:32Z — feedback — claude
+
+PART 3 DELIVERED 2026-11-13 (the user: "yes"): the ticket's last rows. (1) A lambda's parameter typed at a spec over a parameter is an instance, as an operation's is (kernel-language §8.2 already says so; instance-values.md §7): the binder's type at its own members is its requirement (lambda_instance_requires), held in the body's licence and as a frame slot after the chain the lambda is written in, named __req_<spec>@<place> (DictChain::with_instance_binders); a call it covers reads it by name (DeferToDictionary); the lambda node records each binder with its slot and enter_closure fills it from the argument. sumWith(f, 2, 3) 5 and sumWith(f, 1.5, 2.5) 4.0 with one closure; also both zero spellings, the instance passed on, nested lambdas, two instances, a binder named as the operation's, a rule body, a const, an unannotated binder typed by the slot. Found and fixed on the way (pre-existing since part 2): an operation handing its instance on as Additive[T = x.T] was refused 'names no type'; it answers 5 / 4.0. (2) Part 1 leftover: a provider member's result a call on an instance cannot convert is refused at load where the provision is checked (check_member_result_at_instance), only for the member the call runs; it loaded and died Internal at the call before. (3) Part 1 leftover: a call in an operation body only the enclosing sort's requires admits, with no frame slot reading it, is refused at load (TypeError::LicensedCallWithoutRoute); reached by nothing in the full gate. Rows: wi_p0qgf_lambda_instance_test (13; back-out ledger in its header, 6 parts over 576 neighbouring rows, none outside failing), part 1's file +1. Full workspace 12,016 passed, 0 failed; families green on both carriers; scaland 51 + 800.
 

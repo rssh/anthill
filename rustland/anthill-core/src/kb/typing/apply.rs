@@ -5338,11 +5338,11 @@ fn check_apply_call(
                     // WI-590 — an abstract dispatch the ENCLOSING SORT's `requires` covers
                     // is DECLARED to resolve, so it must not be reported as a
                     // missing-`requires`: the sort-level twin of WI-562's op-scoped licence.
-                    // The call is left unclassified, as that licence leaves one whose chain
-                    // names no slot, and the run time has no route left for it (proposal 073
-                    // §1: it would end "operation has no body"). Traced over wi_tests on
-                    // stage 3's tree, neither licence leaves a call here: the pre-check above
-                    // classified every covered call.
+                    // The pre-check above classified every call a slot of the frame reads;
+                    // one the licence alone admits has no route where an operation body runs
+                    // (proposal 073 §1: it would end "operation has no body"), and is refused
+                    // there ([`TypeError::LicensedCallWithoutRoute`]). A rule body's goal keeps it: the
+                    // bridge runs it.
                     //
                     // ORDER MATTERS, and it is the op-scoped licence that must come first:
                     // the two read INDEPENDENT sources (`env.op_requires()` vs the enclosing
@@ -5351,6 +5351,13 @@ fn check_apply_call(
                     // classification — the thing that makes an op-scoped slot's supply, and a
                     // call-site `[Spec = Impl]` selection, reach the call at all.
                     } else if enclosing_requires_clause.is_some() {
+                        if env.in_evaluated_body() {
+                            return Err(TypeError::LicensedCallWithoutRoute {
+                                span,
+                                spec_op_sym: fn_sym,
+                                spec_sort_sym: spec_sort,
+                            });
+                        }
                     } else if spec_warrants_abstract_check(kb, spec_sort) {
                         let spec_qn = kb.qualified_name_of(spec_sort).to_string();
                         // WI-387 FIX 3: the receiver carrier's provider fact may
@@ -5845,15 +5852,22 @@ fn check_apply_call(
                     // FIRST for the same reason. UNLIKE that arm this one does not fall
                     // through to a pass-through: reaching its end is `DispatchNoMatch`, so a
                     // licence here must RETURN the spec-op result, exactly as the op-scoped
-                    // branch does. A call the sort-level licence returns is unclassified,
-                    // and the run time has no route left for it (proposal 073 §1); traced
-                    // over wi_tests on stage 3's tree, no call reaches this licence.
+                    // branch does. A call the sort-level licence alone admits is refused
+                    // where an operation body runs, as in that arm.
                     if op_requires_covers_call(kb, env, &subst, spec_sort)
                         || enclosing_requires_clause.is_some()
                     {
                         // WI-1091: as in the `NoCandidates` arm above. Only the op-scoped
                         // licence names a slot to defer to; the sort-level one does not.
-                        if op_requires_covers_call(kb, env, &subst, spec_sort) {
+                        let op_scoped = op_requires_covers_call(kb, env, &subst, spec_sort);
+                        if !op_scoped && env.in_evaluated_body() {
+                            return Err(TypeError::LicensedCallWithoutRoute {
+                                span,
+                                spec_op_sym: fn_sym,
+                                spec_sort_sym: spec_sort,
+                            });
+                        }
+                        if op_scoped {
                             defer_to_op_scoped_slot(
                                 kb,
                                 env,
@@ -7575,3 +7589,4 @@ fn resolve_at_open_goal(
         env.sub_goal_requires(),
     )
 }
+

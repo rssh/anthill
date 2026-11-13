@@ -223,7 +223,9 @@ pub struct MemberMisfit {
     /// takes less than the spec's — `"receiver"`, `"any-provider"`, `"tied"`, `"narrower"`,
     /// `"circular"`; a type that does not read at the spec's arguments — `"unreadable"`,
     /// `"spec-unreadable"`, and `"return-unreadable"`, `"spec-return-unreadable"` for the
-    /// return; or `"return"`, a return that is not a subtype of the spec's.
+    /// return; `"return"`, a return that is not a subtype of the spec's; or
+    /// `"return-instance"`, a return a call on an instance of the spec cannot take as the
+    /// instance it answers (proposal 073 §2).
     pub leg: &'static str,
     /// The parameter it was found at, counted as the message counts it, from 1. `None` for
     /// the arity, the order and the return.

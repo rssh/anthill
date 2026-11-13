@@ -842,6 +842,15 @@ pub enum TypeError {
     /// the way the author can act on: the repair is to move the operation into the
     /// block (or give it its own `requires`), not to add a sort-level `requires` that
     /// would condition every provision of the carrier.
+    /// WI-590 — a call in an operation body (or a const's value) that a `requires` of the
+    /// enclosing sort admits over the call's carrier, where no slot of the body's frame answers
+    /// it at the call's types: nothing would run it, a dictionary being read from no value
+    /// (proposal 073 §1).
+    LicensedCallWithoutRoute {
+        span: Option<Span>,
+        spec_op_sym: Symbol,
+        spec_sort_sym: Symbol,
+    },
     ProvisionConditionOutOfScope {
         span: Option<Span>,
         /// The operation whose body made the call.
@@ -2354,6 +2363,11 @@ impl TypeError {
                     missing_requires_repair(kb, &clause, *spec_sort_sym, *spec_op_sym, *site),
                 )
             }
+            TypeError::LicensedCallWithoutRoute { spec_op_sym, .. } => format!(
+                "a `requires` of the enclosing sort covers `{}` over its carrier, and no slot of \
+                 the body's frame answers it at the call's types, so nothing would run it",
+                kb.qualified_name_of(*spec_op_sym)
+            ),
             TypeError::ProvisionConditionOutOfScope {
                 op,
                 spec_op_sym,
@@ -2732,6 +2746,7 @@ impl TypeError {
             | TypeError::UnconstrainedCitationParam { span, .. }
             | TypeError::MissingRequiresForSpecOp { span, .. }
             | TypeError::ProvisionConditionOutOfScope { span, .. }
+            | TypeError::LicensedCallWithoutRoute { span, .. }
             | TypeError::UnsatisfiableRequirement { span, .. }
             | TypeError::NonBoolOpInGoalPosition { span, .. }
             | TypeError::ConstantInGoalPosition { span, .. }
@@ -3281,6 +3296,21 @@ impl TypeError {
                     span: self.span(kb),
                 }
             }
+            TypeError::LicensedCallWithoutRoute {
+                spec_op_sym,
+                spec_sort_sym,
+                ..
+            } => LoadError::TypeMismatch {
+                origin: None,
+                entity_name: kb.qualified_name_of(*spec_op_sym).to_string(),
+                field_name: "requires".to_string(),
+                expected_type: format!(
+                    "a slot of the body's frame answering `{}` at this call's types",
+                    short_name_of(kb.qualified_name_of(*spec_sort_sym)),
+                ),
+                actual_type: self.format(kb),
+                span: self.span(kb),
+            },
             TypeError::ProvisionConditionOutOfScope {
                 op, spec_sort_sym, ..
             } => LoadError::TypeMismatch {

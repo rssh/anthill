@@ -1362,6 +1362,20 @@ pub struct DictChain {
     /// which is every chain of a carrier with no conditional provision). Part of the
     /// OWNER, not an annotation: [`Self::names`] answers for `(owner, provision)`.
     pub(super) provision: Option<Symbol>,
+    /// Proposal 073 §2 — a lambda body's chain: the entries its parameters typed at a spec
+    /// over a parameter add after the chain it is written in ([`Self::with_instance_binders`]).
+    /// `None` for every chain that is not a lambda body's.
+    pub(super) locals: Option<LambdaLocals>,
+}
+
+/// [`DictChain::locals`]: where a lambda body's own entries start, and the names of the whole
+/// chain's slots, the declared ones and then the lambda's, computed once where the chain is
+/// built. No operation or sort names the lambda's, so they are read by name only: a call
+/// covered by one reads its dictionary as `var_ref(name)` ([`DictChain::local_name_at`]).
+#[derive(Clone)]
+pub struct LambdaLocals {
+    first: usize,
+    names: Rc<Vec<Symbol>>,
 }
 
 impl DictChain {
@@ -1388,6 +1402,7 @@ impl DictChain {
             sort_len,
             entries: Rc::new(entries),
             provision: None,
+            locals: None,
         }
     }
 
@@ -1435,6 +1450,15 @@ impl DictChain {
     /// its slots from it. A collision between the halves is therefore resolved on
     /// the OP side (see [`synth_op_req_names_of`]).
     pub fn names(&self, kb: &mut KnowledgeBase) -> Rc<Vec<Symbol>> {
+        match &self.locals {
+            None => self.declared_names(kb),
+            Some(locals) => Rc::clone(&locals.names),
+        }
+    }
+
+    /// The names of the entries the owner and the operation declare — every entry but a
+    /// lambda body's own ([`Self::locals`]).
+    fn declared_names(&self, kb: &mut KnowledgeBase) -> Rc<Vec<Symbol>> {
         match (self.owner, self.op) {
             (Some(o), None) => synth_req_names_of(kb, o, self.provision),
             (owner, Some(op)) => {
@@ -1460,6 +1484,50 @@ impl DictChain {
     /// Slot `idx`'s name; `None` iff out of range.
     pub fn name_at(&self, kb: &mut KnowledgeBase, idx: usize) -> Option<Symbol> {
         self.names(kb).get(idx).copied()
+    }
+
+    /// Proposal 073 §2 — slot `idx`'s name where it is a lambda body's own entry
+    /// ([`Self::locals`]), which no operation's chain names: a call that reads it reads it by
+    /// this name. `None` for every other slot.
+    pub fn local_name_at(&self, idx: usize) -> Option<Symbol> {
+        let locals = self.locals.as_ref()?;
+        (idx >= locals.first).then(|| locals.names.get(idx).copied()).flatten()
+    }
+
+    /// Proposal 073 §2 — this chain, followed by `entries`, the requirements a lambda's
+    /// parameters typed at a spec over a parameter stand for (each `SupplySource::Instance`),
+    /// and the name of each one's slot. A name is the spec's slot name and the entry's place in
+    /// the chain, `__req_additive@3`, so a lambda written in another lambda's body names its
+    /// own apart from the outer one's, and from every operation's slot.
+    pub(super) fn with_instance_binders(
+        &self,
+        kb: &mut KnowledgeBase,
+        entries: Vec<RequiresEntry>,
+    ) -> (DictChain, Vec<Symbol>) {
+        let mut all: Vec<RequiresEntry> = (*self.entries).clone();
+        let mut all_names: Vec<Symbol> = (*self.names(kb)).clone();
+        debug_assert_eq!(all_names.len(), all.len(), "a chain names each of its slots");
+        let first = match &self.locals {
+            Some(outer) => outer.first,
+            None => all.len(),
+        };
+        let mut names: Vec<Symbol> = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let name = format!("{}@{}", req_slot_base(kb, entry.required_sort), all.len());
+            let name = kb.intern(&name);
+            names.push(name);
+            all_names.push(name);
+            all.push(entry);
+        }
+        let chain = DictChain {
+            entries: Rc::new(all),
+            locals: Some(LambdaLocals {
+                first,
+                names: Rc::new(all_names),
+            }),
+            ..self.clone()
+        };
+        (chain, names)
     }
 }
 
@@ -1550,6 +1618,7 @@ pub fn provider_dict_entries(
         sort_len,
         entries,
         provision: key,
+        locals: None,
     }
 }
 
@@ -1651,6 +1720,7 @@ pub fn op_dict_entries(kb: &mut KnowledgeBase, op_sym: Symbol) -> DictChain {
         sort_len,
         entries,
         provision: base.provision,
+        locals: None,
     }
 }
 
@@ -1741,7 +1811,7 @@ pub(super) fn op_requires_application_bindings(
 /// spec has free parameters leaves the entry AS WRITTEN: the slot still exists and is
 /// still named, so nothing desynchronizes, but it carries the bare shape and reads as
 /// binding-free — loud in debug, since a clause the loader accepted should decode here.
-fn normalize_op_requires_entry(kb: &mut KnowledgeBase, entry: &RequiresEntry) -> RequiresEntry {
+pub(super) fn normalize_op_requires_entry(kb: &mut KnowledgeBase, entry: &RequiresEntry) -> RequiresEntry {
     if kb.try_resolve_symbol("anthill.reflect.SortView").is_none() {
         // No `anthill.reflect` in this KB — nothing reads a `SortView` either.
         return entry.clone();
@@ -1968,6 +2038,47 @@ pub(super) fn param_instance_requires(kb: &mut KnowledgeBase, op_sym: Symbol) ->
             required_sort: spec,
             spec: applied,
             supply: SupplySource::Instance { param: pname },
+            binder: None,
+        });
+    }
+    out
+}
+
+/// Proposal 073 §2 — the requirement each binder of a lambda's parameter typed at a spec over
+/// a parameter stands for, as [`param_instance_requires`] gives an operation's: the binder's
+/// type in `env`, which the typer reads at the binder's own members (`x: Additive` is bound at
+/// `Additive[T = x.T]`). A type that leaves a parameter of the spec unbound stands for no
+/// instance, and a call at it is refused as before.
+pub(super) fn lambda_instance_requires(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    param: &Rc<NodeOccurrence>,
+) -> Vec<RequiresEntry> {
+    let mut out: Vec<RequiresEntry> = Vec::new();
+    for binder in lambda_binder_slots(param).into_iter().flatten() {
+        let Some(ty) = env.lookup_var(binder) else {
+            continue;
+        };
+        let (spec, bindings) = match extract_type(kb, &ty) {
+            TypeExtractor::SortRef(s) => (s, Vec::new()),
+            TypeExtractor::Parameterized { base, bindings } => (base, bindings),
+            _ => continue,
+        };
+        if spec_over_parameter(kb, spec).is_none() {
+            continue;
+        }
+        let every_bound = kb.type_params_of_sort(spec).iter().all(|short| {
+            bindings
+                .iter()
+                .any(|(k, _)| short_name_of(kb.local_name_of(*k)) == short.as_str())
+        });
+        if !every_bound {
+            continue;
+        }
+        out.push(RequiresEntry {
+            required_sort: kb.canonical_sort_sym(spec),
+            spec: ty,
+            supply: SupplySource::Instance { param: binder },
             binder: None,
         });
     }

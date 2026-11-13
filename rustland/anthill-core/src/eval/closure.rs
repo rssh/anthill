@@ -63,6 +63,10 @@ pub struct Closure {
         crate::kb::typing::InstanceConversion,
         Option<crate::eval::value::Dictionary>,
     )>,
+    /// Proposal 073 §2 — the lambda's parameters typed at a spec over a parameter, each with
+    /// the frame slot its argument fills where the closure is applied (the typer's stamp on the
+    /// lambda, [`NodeOccurrence::instance_binders`]). `None` for every other closure.
+    pub instance_binders: Option<Rc<[(Symbol, Symbol)]>>,
 }
 
 struct Slot {
@@ -286,6 +290,7 @@ mod tests {
             written_in: None,
             relabel: None,
             result_conversion: None,
+            instance_binders: None,
         }
     }
 
@@ -334,6 +339,7 @@ mod tests {
             written_in: None,
             relabel: None,
             result_conversion: None,
+            instance_binders: None,
         });
         let pat = h.with(|c| c.param_pattern.clone());
         assert!(Rc::ptr_eq(&pat, &param));
@@ -357,6 +363,7 @@ mod tests {
             written_in: None,
             relabel: None,
             result_conversion: None,
+            instance_binders: None,
         };
         let pa = NodeOccurrence::new_pattern(Pattern::Wildcard, span, None);
         let pb = NodeOccurrence::new_pattern(Pattern::Wildcard, span, None);

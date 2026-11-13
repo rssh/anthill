@@ -1741,6 +1741,11 @@ pub(super) fn surviving_dot_apply(
         if let Expr::DotApply { name, receiver, .. } = expr {
             return Some((*name, Some(node.span.span), Rc::clone(receiver)));
         }
+        // Proposal 073 §2 — a spec application read as an instance is its dictionary where it
+        // runs; its arguments (`x.T` in `Additive[T = x.T]`) are types, and nothing runs them.
+        if node.spec_application_dict().is_some() {
+            continue;
+        }
         let mut children: Vec<Rc<NodeOccurrence>> = Vec::new();
         crate::kb::node_occurrence::for_each_child(expr, |child| children.push(Rc::clone(child)));
         stack.extend(children.into_iter().rev());

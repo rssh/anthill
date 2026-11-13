@@ -2423,7 +2423,45 @@ fn op_scoped_defer_class(
     let chain = env.enclosing_frame_chain().clone();
     let (slot, proj_path) =
         op_scoped_defer_location(kb, subst, spec_sort, &chain, Some(&sigma_ctx))?;
-    Some(CallClass::DeferToRequirement {
+    Some(deferral_to_frame_slot(
+        kb,
+        env,
+        &chain,
+        fn_sym,
+        op_short_sym,
+        slot,
+        proj_path,
+    ))
+}
+
+/// A body call of the spec operation `fn_sym` deferred to slot `slot` of the frame `chain`,
+/// read at `proj_path` beneath it. A slot an operation or its sort declares is read by its
+/// place in that operation's chain (`DeferToRequirement`); a lambda's own (proposal 073 §2,
+/// [`DictChain::local_name_at`]), which no operation's chain holds, by its name, as the
+/// dictionary `var_ref(name)` is where the call runs (`DeferToDictionary`).
+fn deferral_to_frame_slot(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    chain: &DictChain,
+    fn_sym: Symbol,
+    op_short_sym: Symbol,
+    slot: usize,
+    proj_path: SmallVec<[usize; 2]>,
+) -> CallClass {
+    if let Some(name) = chain.local_name_at(slot) {
+        let syms = ProjectionSyms::resolve(kb)
+            .expect("a lambda's instance slot is named only where `anthill.reflect` is loaded");
+        let mut dict = build_req_var_ref(kb, &syms, name);
+        for k in proj_path {
+            dict = build_req_at_sort(kb, &syms, dict, k);
+        }
+        return CallClass::DeferToDictionary {
+            spec_op_sym: fn_sym,
+            op_short_sym,
+            dict,
+        };
+    }
+    CallClass::DeferToRequirement {
         spec_op_sym: fn_sym,
         op_short_sym,
         resolved_spec: chain.entries()[slot].clone(),
@@ -2431,7 +2469,7 @@ fn op_scoped_defer_class(
         proj_path,
         enclosing_sort: env.enclosing_sort(),
         enclosing_op: env.enclosing_op(),
-    })
+    }
 }
 
 /// The deferral of a body call of the spec operation `fn_sym` to a requirement of the
@@ -2618,19 +2656,16 @@ pub(super) fn read_requirement_by_name(
         let op_qn = kb.qualified_name_of(fn_sym).to_string();
         kb.intern(short_name_of(&op_qn))
     };
-    classify(
+    let class = deferral_to_frame_slot(
         kb,
-        occ,
-        CallClass::DeferToRequirement {
-            spec_op_sym: fn_sym,
-            op_short_sym,
-            resolved_spec: chain[path[0]].clone(),
-            slot: path[0],
-            proj_path: path[1..].iter().copied().collect(),
-            enclosing_sort: env.enclosing_sort(),
-            enclosing_op: env.enclosing_op(),
-        },
+        env,
+        &chain,
+        fn_sym,
+        op_short_sym,
+        path[0],
+        path[1..].iter().copied().collect(),
     );
+    classify(kb, occ, class);
     Ok(true)
 }
 

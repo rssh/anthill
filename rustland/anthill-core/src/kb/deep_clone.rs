@@ -406,6 +406,7 @@ impl Copier {
                 lowered_receiver,
                 instance_conversion,
                 call_params,
+                instance_binders,
             } => {
                 receiver = lowered_receiver.borrow().as_ref().map(Weak::upgrade);
                 NodeKind::Expr {
@@ -446,6 +447,14 @@ impl Copier {
                             .map(|(name, ty)| (plain(name), self.value(ty)))
                             .collect()
                     })),
+                    instance_binders: RefCell::new(instance_binders.borrow().as_ref().map(
+                        |binders| {
+                            binders
+                                .iter()
+                                .map(|(binder, slot)| (plain(binder), plain(slot)))
+                                .collect()
+                        },
+                    )),
                 }
             }
             NodeKind::RuleHead {

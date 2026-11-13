@@ -71,6 +71,10 @@ abstract_sort }`. Eval (`Interpreter::dispatch_on_instance`) reads the receiver'
 3. a default body of an abstract sort keeps the receiver as the pair; a provider's own
    member takes the carrier's value, and its result is converted to the type the call was
    typed at (`member_result_conversion`, memoized per `(member at the sort, member run)`).
+   That conversion is decided where the provision is checked: a member whose result no
+   conversion takes is refused at load (`check_member_result_at_instance`), as `Sq.wrap ->
+   Holder[T = Sq]` behind `Shape.wrap -> Holder[T = Self]` is where `Holder`, declared
+   covariant, holds its `T` inside a `List`.
 
 A spec's default the abstract sort does not write runs at the abstract sort through its
 provision, as any call at a carrier without a member does (073 §3,
@@ -83,7 +87,10 @@ provision, as any call at a carrier without a member does (073 §3,
 Every typed call passes what its callee reads (073 §6.3): a call at a known type is
 decided at load (stage 1), with its dictionary built there; a call at a type parameter
 reads the caller's requirement or is refused at load; a call at a type no provision
-answers is refused at load, naming the requirement. A value's dictionary is never recovered
+answers is refused at load, naming the requirement. A call a `requires` of the enclosing sort
+admits over its carrier and no slot of the body's frame answers at its types would have no
+route in an operation body, and is refused there (`TypeError::LicensedCallWithoutRoute`); a rule body's
+goal keeps it, the bridge running it. A value's dictionary is never recovered
 from the value: `Desc.describe(s)` with `s: Shape` is a call at `Shape`, which runs
 `Desc`'s default or is refused without one, whichever sort built `s`.
 
@@ -146,6 +153,11 @@ check of value reads of a type parameter does not look inside it. An application
 a parameter of the spec unwritten, or that no provision answers, is refused at load. Where a
 `Type` is expected, nothing changed.
 
+An application at a parameter's own members, `Additive[T = x.T]`, reads `x.T` as the
+projection type a binder annotation spells (`type_member_of_variable`), so it forwards the
+parameter's slot; nothing runs its arguments, and the check that no dot is left in a stored body
+does not look inside it.
+
 The instance's `T` is in its static type, so no value chooses one: `if c then Additive[T =
 Int64] else Additive[T = Float]` is an instance at `T = ?`, and `add2` of it, `2` and `3` is
 refused, `2` not being its `T`.
@@ -157,5 +169,29 @@ provides Sp[T = Self]`, `Car.size(y: Sp)` is refused at load (decided 2026-11-13
 (`spec_at_provision`), which is right only for a spec that is its own carrier, whose values
 are its providers'.
 
-Not done here: the lambda and arrow spelling, `(x: Additive, a: x.T, b: x.T) -> x.T` on a
-binder (`sumWith`, WI-20261002-DNDZF).
+**A lambda's parameter.** A lambda's parameter typed at such a spec is an instance as an
+operation's is:
+
+```anthill
+operation sumWith[X](f: (x: Additive, a: x.T, b: x.T) -> x.T, a: X, b: X) -> X
+  requires Additive[T = X]
+= f(Additive[T = X], a, b)
+operation both() -> (Int64, Float) =
+  let f = lambda (x: Additive, a: x.T, b: x.T) -> a + b
+  let ints = sumWith(f, 2, 3)
+  (ints, sumWith(f, 1.5, 2.5))                                                     -- (5, 4.0)
+```
+
+The binder is typed at the spec at its own members (`x: Additive` at `Additive[T = x.T]`, the
+receiver the lambda's own, so a lambda's `x` is never an enclosing operation's), and that type
+is its requirement (`lambda_instance_requires`): the typer adds it to the body's licence and,
+after the frame chain the lambda is written in, as a slot of the body's frame named by the
+spec and its place in the chain, `__req_additive@3` (`DictChain::with_instance_binders`), so a
+lambda written in another lambda's body names its slot apart. A call the slot covers reads it
+by name, `var_ref(__req_additive@3)` (`CallClass::DeferToDictionary`), since no operation's
+chain holds the place; a forward to a callee's `requires` and an application at `x.T` read it
+by the same name. The lambda node records each binder with its slot
+(`NodeOccurrence::instance_binders`), the closure keeps the list, and `enter_closure` fills
+each slot from the argument the binder takes, as `enter_operation` fills an operation's. A
+binder typed from the slot the lambda is passed at (`sumWith(lambda (x, a, b) -> a + b, 2,
+3)`) is one too.

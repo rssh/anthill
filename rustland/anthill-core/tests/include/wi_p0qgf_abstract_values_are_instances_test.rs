@@ -299,3 +299,50 @@ end
     );
     assert_eq!(int(&mut interp_for(&PROGRAM.replace("AT", "Bool")), "p0qgf.pin.go"), 51);
 }
+
+/// A provider's member whose result a call on an instance cannot convert to the type the call
+/// was typed at is refused at load, where the provision is checked: `Holder` is declared
+/// covariant, so `Sq.wrap`'s `Holder[T = Sq]` fits `Shape.wrap`'s `Holder[T = Self]`, and its
+/// field holds `T` inside a `List`, which no conversion of a `Holder` takes. With the check
+/// (`check_member_result_at_instance`) backed out, as on c17589c8, the program loads and `go()`
+/// dies at the call, `Internal("the result of `Sq.wrap` for `Shape.wrap`: field `xs` … holds
+/// `List[T = ?_]` other than as itself")` (MEASURED, a temporary switch). The control, the same
+/// shape through `Option`, whose field holds `T` as itself, runs (3) either way.
+#[test]
+fn a_member_result_no_instance_can_take_is_refused_at_load() {
+    const PROGRAM: &str = r#"
+namespace p0qgf.conv
+  import anthill.prelude.{Int64, List, Option}
+  import anthill.prelude.Option.{some, none}
+  import anthill.reflect.typing.{Covariant}
+  sort Holder
+    sort T = ?
+    entity holder(xs: List[T = T])
+  end
+  fact Covariant(sort: Holder, param: T)
+  sort Shape
+    operation wrap(s: Self) -> RESULT[T = Self]
+  end
+  sort Sq
+    entity sq
+    provides Shape
+    operation wrap(s: Sq) -> RESULT[T = Sq] = BODY
+  end
+  operation use(s: Shape) -> Int64 =
+    match Shape.wrap(s)
+      case _ -> 3
+  operation go() -> Int64 = use(sq())
+end
+"#;
+    let program = |result: &str, body: &str| PROGRAM.replace("RESULT", result).replace("BODY", body);
+    crate::common::assert_refused_naming(
+        &crate::common::load_errors_of(&program("Holder", "holder(xs: [s])")),
+        &[
+            "'p0qgf.conv.Sq' provides 'p0qgf.conv.Shape' but its own member 'wrap' does not fit",
+            "field `xs` of `p0qgf.conv.Holder.holder` holds `List[T = ?_]` other than as itself",
+        ],
+        "a member result no instance takes",
+    );
+    let mut interp = interp_for(&program("Option", "some(s)"));
+    assert_eq!(int(&mut interp, "p0qgf.conv.go"), 3);
+}

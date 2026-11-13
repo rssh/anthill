@@ -550,6 +550,7 @@ impl NodeOccurrence {
                 lowered_receiver: RefCell::new(None),
                 instance_conversion: RefCell::new(None),
                 call_params: RefCell::new(None),
+                instance_binders: RefCell::new(None),
             },
             span,
             owner,
@@ -657,6 +658,7 @@ impl NodeOccurrence {
                     lowered_receiver: RefCell::new(None),
                     instance_conversion: RefCell::new(None),
                     call_params: RefCell::new(None),
+                    instance_binders: RefCell::new(None),
                 },
                 span: self.span,
                 owner: self.owner,
@@ -823,6 +825,7 @@ impl NodeOccurrence {
                 lowered_receiver: RefCell::new(None),
                 instance_conversion: RefCell::new(None),
                 call_params: RefCell::new(None),
+                instance_binders: RefCell::new(None),
             },
             span: self.span,
             owner,
@@ -856,6 +859,7 @@ impl NodeOccurrence {
                 lowered_receiver: RefCell::new(None),
                 instance_conversion: RefCell::new(None),
                 call_params: RefCell::new(None),
+                instance_binders: RefCell::new(None),
             },
             span: at.span,
             owner: at.owner,
@@ -954,6 +958,7 @@ impl NodeOccurrence {
                 lowered_receiver: _,
                 instance_conversion: dst_conv,
                 call_params: dst_params,
+                instance_binders: dst_binders,
             },
             NodeKind::Expr {
                 expr: _,
@@ -969,6 +974,7 @@ impl NodeOccurrence {
                 lowered_receiver: _,
                 instance_conversion: src_conv,
                 call_params: src_params,
+                instance_binders: src_binders,
             },
         ) = (&self.kind, &src.kind)
         else {
@@ -998,6 +1004,9 @@ impl NodeOccurrence {
         }
         if let Some(params) = src_params.borrow().as_ref() {
             *dst_params.borrow_mut() = Some(Rc::clone(params));
+        }
+        if let Some(binders) = src_binders.borrow().as_ref() {
+            *dst_binders.borrow_mut() = Some(Rc::clone(binders));
         }
     }
 
@@ -1047,6 +1056,7 @@ impl NodeOccurrence {
                 lowered_receiver: RefCell::new(None),
                 instance_conversion: RefCell::new(None),
                 call_params: RefCell::new(None),
+                instance_binders: RefCell::new(None),
             },
             span,
             owner,
@@ -1320,6 +1330,28 @@ impl NodeOccurrence {
                 instance_conversion,
                 ..
             } => instance_conversion.borrow().clone(),
+            _ => None,
+        }
+    }
+
+    /// Proposal 073 §2 — record, on a lambda, its parameters that are instances and the slot
+    /// each fills (see the `instance_binders` field). One writer, the typer's lambda arm, which
+    /// also clears it (`None`) where a lambda typed again has none. No-op on non-Expr kinds.
+    pub fn set_instance_binders(&self, binders: Option<Rc<[(Symbol, Symbol)]>>) {
+        if let NodeKind::Expr {
+            instance_binders, ..
+        } = &self.kind
+        {
+            *instance_binders.borrow_mut() = binders;
+        }
+    }
+
+    /// The binders [`Self::set_instance_binders`] recorded, or `None`.
+    pub fn instance_binders(&self) -> Option<Rc<[(Symbol, Symbol)]>> {
+        match &self.kind {
+            NodeKind::Expr {
+                instance_binders, ..
+            } => instance_binders.borrow().clone(),
             _ => None,
         }
     }
@@ -1727,6 +1759,11 @@ pub enum NodeKind {
         /// converts each argument to ([`super::typing::stamp_instance_conversions`]). Written
         /// by the typer where it completes the call; `None` on every other node.
         call_params: RefCell<Option<Rc<[(Symbol, crate::eval::value::Value)]>>>,
+        /// Proposal 073 §2 — on a lambda, each parameter typed at a spec over a parameter
+        /// (`lambda (x: Additive, a: x.T, b: x.T) -> a + b`) with the frame slot its value
+        /// fills where the lambda is applied: the body's calls at `x.T` read that slot. Written
+        /// by the typer's lambda arm; `None` on every other node.
+        instance_binders: RefCell<Option<Rc<[(Symbol, Symbol)]>>>,
     },
     /// Rule head — positional wrapper around a Term-shaped head pattern.
     /// Args are `TermId` (KB-position content); the wrap exists for span

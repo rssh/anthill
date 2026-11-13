@@ -512,6 +512,48 @@ pub(super) fn check_member_signature(
     MemberSignature::Alignable
 }
 
+/// Proposal 073 §2 — a call of `spec_op` on an instance of the abstract sort `spec` runs the
+/// provider's own member `impl_op` where the instance's dictionary is `carrier`'s, and that
+/// member's result is converted to the type the call was typed at
+/// ([`member_result_conversion`]). Decided here, where the provision is checked: a result no
+/// conversion takes there (a field holding the spec's `Self` inside another type) is refused
+/// at load, not at the first call. Only where the call reaches `impl_op` — the member the
+/// carrier's dictionary answers `spec_op` with, as the call resolves it; a same-named member
+/// beside the spec's own body that does not back it is another operation. The caller asks it
+/// only of a provision of an abstract sort by a carrier that is not one: a carrier that is
+/// answers with a default body that takes the pair, and converts nothing.
+fn check_member_result_at_instance(
+    kb: &mut KnowledgeBase,
+    carrier: Symbol,
+    spec: Symbol,
+    spec_op: Symbol,
+    impl_op: Symbol,
+    op_short: &str,
+    errors: &mut Vec<crate::kb::load::LoadError>,
+) {
+    if resolve_op_target_checked(kb, carrier, spec_op).ok() != Some(impl_op) {
+        return;
+    }
+    if let Err(why) = member_result_conversion(kb, spec_op, impl_op) {
+        errors.push(crate::kb::load::LoadError::IncompatibleMemberSignature {
+            carrier: kb.qualified_name_of(carrier).to_string(),
+            spec: kb.qualified_name_of(spec).to_string(),
+            op: op_short.to_string(),
+            reason: format!(
+                "a call of `{}.{op_short}` on a value of `{}` runs this member where the value \
+                 is a `{}`, and its result is the spec's at that call; it cannot be: {why}",
+                kb.local_name_of(spec),
+                kb.local_name_of(spec),
+                kb.local_name_of(carrier),
+            ),
+            misfit: crate::kb::load::MemberMisfit {
+                leg: "return-instance",
+                parameter: None,
+            },
+        });
+    }
+}
+
 /// WI-20260929-0RP29 — what [`member_narrower_than_spec`] reads of a PROVISION, built on the
 /// first gated member that asks and shared by the rest of its operations: a provision whose
 /// spec backs every operation with a body pays nothing.
@@ -2961,6 +3003,9 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
         // WI-20260929-0RP29 — what the member rule reads of this provision, built on the
         // first member it compares ([`ProvisionMembers`]).
         let provision = ProvisionMembers::new(p.spec, p.carrier, &p.sigma, p.witness);
+        // Proposal 073 §2 — a call on an instance of `p.spec` runs `p.carrier`'s members.
+        let at_instance =
+            is_abstract_carrier_sort(kb, p.spec) && !is_abstract_carrier_sort(kb, p.carrier);
         for &spec_op in spec_ops {
             // An operation answered from its dictionary is answered by no carrier's member
             // ([`answered_by_its_dictionary`]): a sort's own `type_value` overrides nothing
@@ -3037,6 +3082,17 @@ pub fn check_override_refinement(kb: &mut KnowledgeBase) -> Vec<crate::kb::load:
             ) == MemberSignature::ArityDiffers
             {
                 continue;
+            }
+            if at_instance {
+                check_member_result_at_instance(
+                    kb,
+                    p.carrier,
+                    p.spec,
+                    spec_op,
+                    impl_op,
+                    &sn,
+                    &mut errors,
+                );
             }
 
             // ── the result binder, and the return type it commits to ───────

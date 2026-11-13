@@ -1030,6 +1030,49 @@ fn type_value_member(kb: &mut KnowledgeBase, type_sym: Symbol, short: &str) -> O
 /// `Box[V = Int64]`), and a type parameter of the enclosing declaration is that
 /// parameter, whether typing left the read as written or lowered it to its slot. `None`
 /// when an argument names no type.
+/// `x.T` written as a type argument in value position (`Additive[T = x.T]`), where `x` is a
+/// variable of the body and `T` a type member of its sort: the projection type `x.T`, read as
+/// the same text written as a binder's type is ([`read_written_annotation`]) — at an
+/// operation's parameter the projection off it, at a lambda's that lambda's own. `None` where
+/// `occ` is no such dot, so the caller reads it as before; `Some(None)` where it is one and its
+/// reading fails.
+fn type_member_of_variable(
+    kb: &mut KnowledgeBase,
+    env: &TypingEnv,
+    occ: &Rc<NodeOccurrence>,
+) -> Option<Option<TermId>> {
+    let Some(Expr::DotApply {
+        receiver,
+        name,
+        pos_args,
+        named_args,
+        type_args,
+    }) = occ.as_expr()
+    else {
+        return None;
+    };
+    if !pos_args.is_empty() || !named_args.is_empty() || !type_args.is_empty() {
+        return None;
+    }
+    let var = match receiver.as_expr()? {
+        Expr::VarRef { name, .. } | Expr::Ref(name) | Expr::Ident(name) => *name,
+        _ => return None,
+    };
+    let sort = sort_functor_of_view(kb, &env.lookup_var(var)?)?;
+    let member = short_name_of(kb.local_name_of(*name)).to_string();
+    if !kb.type_params_of_sort(sort).contains(&member) {
+        return None;
+    }
+    let member = kb.intern(&member);
+    let recv = kb.alloc(Term::Ref(var));
+    let written = Value::term(kb.make_expr_carried(recv, member));
+    let ctx = TypeErrorContext::DotProjection { member };
+    Some(match read_written_annotation(kb, env, &written, &ctx, occ) {
+        Ok(Value::Term { id, .. }) => Some(id),
+        _ => None,
+    })
+}
+
 pub(super) fn type_value_denoted_type(
     kb: &mut KnowledgeBase,
     env: &TypingEnv,
@@ -1037,6 +1080,9 @@ pub(super) fn type_value_denoted_type(
 ) -> Option<TermId> {
     if let Some(param) = value_read_type_param(kb, env.enclosing_frame_chain(), occ) {
         return Some(kb.alloc(Term::Var(Var::Global(param))));
+    }
+    if let Some(projection) = type_member_of_variable(kb, env, occ) {
+        return projection;
     }
     let Some(Expr::TypeValue {
         head,

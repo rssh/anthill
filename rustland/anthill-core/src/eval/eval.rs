@@ -627,7 +627,7 @@ impl Interpreter {
             } => self.start_match(scrutinee, branches),
             Expr::Lambda { param, body } => {
                 let relabel = lambda_relabel(&self.kb, occ, param);
-                self.reduce_lambda(Rc::clone(param), body.clone(), relabel)
+                self.reduce_lambda(Rc::clone(param), body.clone(), relabel, occ.instance_binders())
             }
             Expr::Proof { body, .. } => {
                 // WI-538: an in-body proof is a static (type-level)
@@ -1694,6 +1694,8 @@ impl Interpreter {
         param: Rc<NodeOccurrence>,
         body: Rc<NodeOccurrence>,
         relabel: Option<Rc<[Symbol]>>,
+        // Proposal 073 §2 — the parameters that are instances, and the slot each fills.
+        instance_binders: Option<Rc<[(Symbol, Symbol)]>>,
     ) -> Result<StepOutcome, EvalError> {
         // WI-511: `param` is a Pattern-kind Rc<NodeOccurrence>, stored
         // directly on the closure and read by `match_pattern` on the Pattern
@@ -1730,6 +1732,7 @@ impl Interpreter {
             written_in: self.stack.top().map(|f| f.op),
             relabel,
             result_conversion: None,
+            instance_binders,
         });
         Ok(StepOutcome::Deliver(Value::Closure(handle)))
     }
@@ -2883,6 +2886,8 @@ impl Interpreter {
             return self.dispatch_resolved_operation(target, args, requirements);
         }
         args[receiver] = carried;
+        // The conversion is decided where the provision is checked
+        // (`check_member_result_at_instance`, a load refusal); read here once per pair.
         let key = (at_abstract, target);
         let conversion = match self.member_result_conversions.get(&key) {
             Some(c) => c.clone(),
@@ -4784,6 +4789,32 @@ impl Interpreter {
         }
     }
 
+    /// Proposal 073 §2 — the instance a parameter typed at a spec over a parameter holds: its
+    /// argument, a dictionary. A rule body hands its spec application over as the node it
+    /// wrote, read here as the instance the typer stamped on it, and `v` becomes that
+    /// dictionary. `what` names the parameter where the argument is no instance.
+    fn instance_of_argument(
+        &mut self,
+        v: &mut Value,
+        what: impl Fn(&KnowledgeBase) -> String,
+    ) -> Result<super::value::Dictionary, EvalError> {
+        let stamped = match &*v {
+            Value::Node(occ) => occ.spec_application_dict(),
+            _ => None,
+        };
+        if let Some(dict) = stamped {
+            *v = self.spec_application_instance(dict)?;
+        }
+        super::value::Dictionary::from_view(&self.kb, v).ok_or_else(|| {
+            EvalError::Internal(format!(
+                "{} is typed at a spec over a parameter, and its argument is a {}, not the \
+                 instance",
+                what(&self.kb),
+                v.type_name(),
+            ))
+        })
+    }
+
     fn enter_operation(
         &mut self,
         target: Symbol,
@@ -4811,21 +4842,13 @@ impl Interpreter {
         let mut arg_values = arg_values;
         let mut requirements = requirements;
         for &(i, slot) in instance_slots {
-            let stamped = match &arg_values[i] {
-                Value::Node(occ) => occ.spec_application_dict(),
-                _ => None,
-            };
-            if let Some(dict) = stamped {
-                arg_values[i] = self.spec_application_instance(dict)?;
-            }
-            let dict = super::value::Dictionary::from_view(&self.kb, &arg_values[i]).ok_or_else(|| {
-                EvalError::Internal(format!(
-                    "`{}`'s parameter `{}` is typed at a spec over a parameter, and its argument \
-                     is a {}, not the instance",
-                    self.kb.qualified_name_of(target),
-                    self.kb.local_name_of(params[i].0),
-                    arg_values[i].type_name(),
-                ))
+            let pname = params[i].0;
+            let dict = self.instance_of_argument(&mut arg_values[i], |kb| {
+                format!(
+                    "`{}`'s parameter `{}`",
+                    kb.qualified_name_of(target),
+                    kb.local_name_of(pname)
+                )
             })?;
             match requirements.iter_mut().find(|(s, _)| *s == slot) {
                 Some(entry) => entry.1 = dict,
@@ -4918,6 +4941,7 @@ impl Interpreter {
             written_in: None,
             relabel,
             result_conversion: None,
+            instance_binders: occ.instance_binders(),
         });
         Value::Closure(handle)
     }
@@ -4999,19 +5023,27 @@ impl Interpreter {
         // inline size 1 (most lambdas need 0–1 reqs/type-args), the
         // frame-side has 2; collect across the size boundary. Single
         // arena borrow grabs param/body/both channels at once.
-        let (param_pattern, body, mut requirements, written_in, relabel, result_conversion) =
-            handle.with(|c| {
-                let reqs: SmallVec<[(Symbol, super::value::Dictionary); 2]> =
-                    c.requirements.iter().cloned().collect();
-                (
-                    c.param_pattern.clone(),
-                    c.body.clone(),
-                    reqs,
-                    c.written_in,
-                    c.relabel.clone(),
-                    c.result_conversion.clone(),
-                )
-            });
+        let (
+            param_pattern,
+            body,
+            mut requirements,
+            written_in,
+            relabel,
+            result_conversion,
+            instance_binders,
+        ) = handle.with(|c| {
+            let reqs: SmallVec<[(Symbol, super::value::Dictionary); 2]> =
+                c.requirements.iter().cloned().collect();
+            (
+                c.param_pattern.clone(),
+                c.body.clone(),
+                reqs,
+                c.written_in,
+                c.relabel.clone(),
+                c.result_conversion.clone(),
+                c.instance_binders.clone(),
+            )
+        });
         for (slot, dict) in handed {
             match requirements.iter_mut().find(|(s, _)| *s == slot) {
                 Some(entry) => entry.1 = dict,
@@ -5044,6 +5076,25 @@ impl Interpreter {
         let mut locals: SmallVec<[(Symbol, Value); 4]> = handle.clone_env();
         for (sym, v) in bindings {
             locals.push((sym, v));
+        }
+        // Proposal 073 §2 — a parameter typed at a spec over a parameter is the instance its
+        // slot holds, as an operation's is ([`Self::enter_operation`]): the argument.
+        for (binder, slot) in instance_binders.iter().flat_map(|b| b.iter()) {
+            let Some(i) = locals.iter().rposition(|(s, _)| s == binder) else {
+                return Err(EvalError::Internal(format!(
+                    "a lambda's parameter `{}` is typed at a spec over a parameter, and its \
+                     pattern bound no value to it",
+                    self.kb.local_name_of(*binder),
+                )));
+            };
+            let binder = *binder;
+            let dict = self.instance_of_argument(&mut locals[i].1, |kb| {
+                format!("a lambda's parameter `{}`", kb.local_name_of(binder))
+            })?;
+            match requirements.iter_mut().find(|(s, _)| s == slot) {
+                Some(entry) => entry.1 = dict,
+                None => requirements.push((*slot, dict)),
+            }
         }
         // Proposal 073 §2 — a closure used at a type whose result is an instance: its body's
         // value is converted where it is delivered, by a frame beneath the body's.

@@ -197,6 +197,7 @@ impl Interpreter {
                 written_in: c.written_in,
                 relabel: c.relabel.clone(),
                 result_conversion: Some((result.clone(), receiver.cloned())),
+                instance_binders: c.instance_binders.clone(),
             })
         })?;
         let env = handle.clone_env();

@@ -567,6 +567,39 @@ impl TypingEnv {
         &self.op_requires
     }
 
+    /// Proposal 073 §2 — a lambda's parameters typed at a spec over a parameter are instances,
+    /// as an operation's are (`set_enclosing_op`): each requirement in `entries`, `Additive[T =
+    /// x.T]` for `x: Additive` (`SupplySource::Instance`), licenses the body's calls at `x.T`
+    /// and is a slot of the body's frame, after the chain the lambda is written in
+    /// ([`DictChain::with_instance_binders`]). Answers each binder with its slot's name, which
+    /// the lambda's application fills from the argument.
+    pub(super) fn hold_instance_binders(
+        &mut self,
+        kb: &mut KnowledgeBase,
+        entries: Vec<RequiresEntry>,
+    ) -> Rc<[(Symbol, Symbol)]> {
+        let mut licence = (*self.op_requires).clone();
+        licence.extend(entries.iter().cloned());
+        self.op_requires = Rc::new(licence);
+        let binders: Vec<Symbol> = entries
+            .iter()
+            .map(|e| match e.supply {
+                SupplySource::Instance { param } => param,
+                _ => unreachable!("a lambda's instance requirement is supplied by its parameter"),
+            })
+            .collect();
+        let normalized: Vec<RequiresEntry> = entries
+            .iter()
+            .map(|e| normalize_op_requires_entry(kb, e))
+            .collect();
+        let (chain, names) = self
+            .enclosing_frame_chain()
+            .clone()
+            .with_instance_binders(kb, normalized);
+        self.enclosing_op_chain = Some(chain);
+        binders.into_iter().zip(names).collect()
+    }
+
     /// WI-822 LEG 1 — the operation whose body is being checked (see the field doc).
     pub(super) fn enclosing_op(&self) -> Option<Symbol> {
         self.enclosing_op

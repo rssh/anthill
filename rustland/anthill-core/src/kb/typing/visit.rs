@@ -442,6 +442,12 @@ pub(super) fn visit_type(
                 param_repoints.is_empty(),
                 "WI-20260827-EJ5F5: a parameter binds, and must never rewrite",
             );
+            // Proposal 073 §2: a parameter typed at a spec over a parameter is an instance, and
+            // the body's calls at its carrier read the slot its application fills.
+            let instances = lambda_instance_requires(kb, &lambda_env, &param);
+            occ.set_instance_binders(
+                (!instances.is_empty()).then(|| lambda_env.hold_instance_binders(kb, instances)),
+            );
             // WI-270: if expected is `arrow(param, result, effects)`,
             // decompose and pass `result` to the body. Mismatching
             // shapes (or `None`) leave the body without a hint. WI-342 S3a: the
